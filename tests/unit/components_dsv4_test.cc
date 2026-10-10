@@ -712,6 +712,73 @@ TEST(ComponentsDsv4Test, AMarkovHeadAndAnInjectedEmbeddingMatchTheirReferences) 
 
 // ---------------------------------------------------------------- compressor inputs
 
+TEST(ComponentsDsv4Test, VisibleCellCountsUseOwnerAndRealCapacityWithoutPadding) {
+  ir::Builder b;
+  StepContext context(
+      b, {{.slot = 2, .rows = 3, .past = 2}, {.slot = 7, .first_row = 3, .rows = 2, .past = 11}},
+      false);
+  const CellKey cells{.capacity = 256, .block = 4, .positions = true};
+  const auto first = context.VisibleCells(0, cells, 16, 3);
+  const auto second = context.VisibleCells(1, cells, 16, 3);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(context.VisibleCells(0, cells, 16, 3), first);
+  EXPECT_NE(context.VisibleCells(0, cells, 2, 3), first);
+  auto inputs = context.TakeInputs();
+  ASSERT_EQ(inputs.size(), 3U);
+  const planner::StepShape shape{.segments = {Seg(2, 3, 2, 256, 0), Seg(7, 2, 11, 256, 0)}};
+  EXPECT_EQ(InputValues(inputs[0], shape, {}).value(), (std::vector<std::int64_t>{0, 1, 1}));
+  EXPECT_EQ(InputValues(inputs[1], shape, {}).value(), (std::vector<std::int64_t>{3, 3}));
+  auto shifted = shape;
+  shifted.segments[0].past = UINT32_MAX;
+  EXPECT_EQ(InputValues(inputs[0], shifted, {}).value(), (std::vector<std::int64_t>{3, 3, 3}));
+  EXPECT_EQ(InputValues(inputs[2], shifted, {}).value(), (std::vector<std::int64_t>{2, 2, 2}));
+  for (int bad = 0; bad < 12; ++bad) {
+    auto input = inputs[0];
+    switch (bad) {
+      case 0:
+        input.segment = ir::kJoinedSegment;
+        break;
+      case 1:
+        input.cells.block = 0;
+        break;
+      case 2:
+        input.cells.positions = false;
+        break;
+      case 3:
+        input.cells.ring = true;
+        break;
+      case 4:
+        input.cells.frozen = true;
+        break;
+      case 5:
+        input.cells.first_row = 1;
+        break;
+      case 6:
+        input.visible_capacity = 0;
+        break;
+      case 7:
+        input.visible_capacity = 257;
+        break;
+      case 8:
+        input.read = 257;
+        break;
+      case 9:
+        input.read = 0;
+        break;
+      case 10:
+        input.ratio = 1;
+        break;
+      case 11:
+        input.sections = 2;
+        break;
+    }
+    EXPECT_FALSE(InputValues(input, shape, {})) << bad;
+  }
+  EXPECT_FALSE(context.VisibleCells(2, cells, 16, 3));
+  EXPECT_FALSE(context.VisibleCells(0, cells, 257, 3));
+}
+
 TEST(ComponentsDsv4Test, CompressorInputsAreTodaysPlans) {
   // Every chunk of a CSA (4, overlapping, ring of 8) and an HCA (128, ring
   // of 128) compressor against Dsv4CompressorPlan: the pooled reads, the

@@ -97,6 +97,14 @@ constexpr std::array<Rule, 4> kIndexScoreRules = {
      {.operand = 1, .encodings = kF16, .layouts = kDense},
      {.operand = 2, .encodings = kF32, .layouts = kDense},
      {.operand = 3, .encodings = kF16, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kVisibleTopKRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kI32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kI32, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kSelectedMaskRules = {
+    {{.operand = 0, .encodings = kF16, .layouts = kDense},
+     {.operand = 1, .encodings = kI32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF16, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kF32Glu = kF32Binary;
 constexpr std::array<Rule, 1> kFloatTable = {
     {{.operand = 0, .encodings = kFloats, .layouts = kDense}}};
@@ -619,6 +627,29 @@ bool AcceptsTopK(const ex::CapabilityQuery& q) {
          x->ne[1] != 0 && x->ne[2] != 0 && x->ne[3] != 0 && x->ne[1] <= max / x->ne[2] / x->ne[3];
 }
 
+bool AcceptsVisibleTopK(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::TopKParams>(q);
+  const auto* scores = Operand(q, 0);
+  const auto* counts = Operand(q, 1);
+  constexpr auto max = static_cast<std::uint64_t>(INT32_MAX);
+  return Built(q) && p && scores && counts && p->k > 0 && p->k <= 65536 && scores->ne[0] > 0 &&
+         scores->ne[0] <= max / 4 && scores->ne[1] > 0 && scores->ne[1] <= max / p->k &&
+         scores->ne[2] == 1 && scores->ne[3] == 1 &&
+         counts->ne == std::array<std::uint64_t, 4>{scores->ne[1], 1, 1, 1};
+}
+bool AcceptsSelectedMask(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::SelectedMaskParams>(q);
+  const auto* raw = Operand(q, 0);
+  const auto* ids = Operand(q, 1);
+  if (!Built(q) || !p || !raw || !ids || p->cells == 0 || p->raw_cells == 0) return false;
+  const auto width = std::uint64_t{p->raw_cells} + p->cells;
+  return raw->ne[0] > 0 && raw->ne[0] <= p->raw_cells && raw->ne[1] > 0 && raw->ne[2] == 1 &&
+         raw->ne[3] == 1 && ids->ne[0] > 0 &&
+         ids->ne[0] <= static_cast<std::uint64_t>(INT32_MAX) / 4 && ids->ne[1] == raw->ne[1] &&
+         ids->ne[2] == 1 && ids->ne[3] == 1 && width <= std::uint64_t{65535} * 4096 &&
+         raw->ne[1] <= INT32_MAX / width;
+}
+
 // ------------------------------------------------- Qwen3.8's fast forms
 
 // The architecture llmpalooza's CUTLASS tensor-core kernels (MXFP8 products,
@@ -987,6 +1018,10 @@ const std::array kEntries = {
     Entry{kLightningIndexerName, Operation::kLightningIndexer,
           Cap(P(Op::kIndexScore), kIndexScoreRules, &AcceptsIndexScore, true),
           "; selectable for the build's SASS architectures: D 128, 32 or 64 indexer heads"},
+    Entry{kVisibleTopKName, Operation::kTopK,
+          Cap(P(Op::kVisibleTopK), kVisibleTopKRules, &AcceptsVisibleTopK, true), kBuilt},
+    Entry{kSelectedMaskName, Operation::kFill,
+          Cap(P(Op::kSelectedMask), kSelectedMaskRules, &AcceptsSelectedMask, true), kBuilt},
     Entry{kTopKName, Operation::kTopK, Cap(P(Op::kTopK), kF32In, &AcceptsTopK, true),
           "; selectable for the build's SASS architectures: F32 rows within I32 counts"},
     Entry{"ggml.rms_norm", Operation::kRmsNorm, Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true),

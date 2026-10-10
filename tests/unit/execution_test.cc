@@ -240,7 +240,7 @@ using llmp::format::Layout;
 
 TEST(CapabilityTest, EveryOperationHasAKeyInTheOpSet) {
   std::set<std::string_view> ops;
-  for (int i = 0; i <= static_cast<int>(ir::Op::kFused); ++i) {
+  for (int i = 0; i <= static_cast<int>(ir::Op::kSelectedMask); ++i) {
     const std::string_view name = ir::OpName(static_cast<ir::Op>(i));
     EXPECT_NE(name, "unknown") << i;
     EXPECT_TRUE(ops.insert(name).second) << name;

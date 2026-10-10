@@ -116,6 +116,7 @@ enum class InputKind : std::uint8_t {
   kBlockCells,
   kBlockStarts,
   kHadamard,
+  kVisibleCells,  // I32 owner rows: completed blocks capped by real/scored capacity
 };
 
 // A state tensor's cells as an input indexes them (components/step.h
@@ -163,7 +164,8 @@ struct InputSlot {
   // Joined verify saves use stable slots, each max_verify_rows wide.
   // Their row indices are supplied by the runner, independently of past.
   bool commit_save = false;
-  std::uint16_t component = 0;  // kSideRows' source component
+  std::uint16_t component = 0;         // kSideRows' source component
+  std::uint64_t visible_capacity = 0;  // kVisibleCells: excludes padded/dummy cells
 };
 
 // An output the step returns: copied to the host after the run, each

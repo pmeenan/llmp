@@ -306,6 +306,18 @@ F16/BF16 results use the fallback's explicit conversion. The source layout
 and state-backing rules do not change, and the indexer's existing
 arithmetic, TopK and masks remain in the graph.
 
+The separate exact selection/mask primitives (G4b2b2a) have vendor-free
+scalar implementations and native GGML recipes. `VisibleTopK` accepts
+F32 scores/I32 counts, top 1–65536, C at most INT32_MAX/4 and an
+I32-bounded output element count; top may exceed C. `SelectedMask` accepts
+F16 raw masks and arbitrary I32 IDs, including duplicates, with total
+width at most 65535×4096, an I32-bounded output element count and top at
+most INT32_MAX/4. Both accept whole-element input strides, including
+repeated views, and require packed outputs disjoint from all inputs.
+Unsupported native shapes refuse selection; ordinary GGML TopK is not an
+equivalent fallback for the exact operator. The existing score semantics,
+MQA component version and default policy remain unchanged.
+
 **What closing the gaps takes**, as the rule applies to new work from
 now on: an unfused composition for the model-specific operations
 (hyper-connection mixing and Sinkhorn, the lightning indexer, the gated

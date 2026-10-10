@@ -335,7 +335,7 @@ __device__ __forceinline__ void ChooseBin(TopKShared& sh, std::uint32_t prefix, 
 // over the block, then written.
 template <typename KeyOf>
 __device__ void SelectTopK(const float* s, int n, const KeyOf& key_of, int k, std::int32_t* out,
-                           TopKShared& sh) {
+                           TopKShared& sh, std::uint64_t score_stride = 1) {
   const int tid = static_cast<int>(threadIdx.x);
   const int lane = tid % 32;
   const int warp = tid / 32;
@@ -351,7 +351,8 @@ __device__ void SelectTopK(const float* s, int n, const KeyOf& key_of, int k, st
     for (int base = 0; base < n; base += kTopKThreads) {
       const int e = base + tid;
       const int key = e < n ? key_of(e) : -1;
-      const std::uint32_t u = key >= 0 ? Ordered(s[key]) : 0;
+      const std::uint32_t u =
+          key >= 0 ? Ordered(s[static_cast<std::uint64_t>(key) * score_stride]) : 0;
       const bool match = key >= 0 && (u & mask) == prefix;
       const unsigned bin = match ? (u >> shift) & 255U : 256U;
       const unsigned peers = __match_any_sync(0xFFFFFFFFU, bin);
@@ -384,7 +385,8 @@ __device__ void SelectTopK(const float* s, int n, const KeyOf& key_of, int k, st
   const unsigned below = (1U << lane) - 1U;
   const auto classify = [&](int e, bool& above_it, bool& equal_it, int& key) {
     key = e < last ? key_of(e) : -1;
-    const std::uint32_t u = key >= 0 ? Ordered(s[key]) : 0;
+    const std::uint32_t u =
+        key >= 0 ? Ordered(s[static_cast<std::uint64_t>(key) * score_stride]) : 0;
     above_it = key >= 0 && (all || u > threshold);
     equal_it = key >= 0 && !all && u == threshold;
   };
@@ -485,6 +487,97 @@ __global__ void __launch_bounds__(kTopKThreads) TopKMergeKernel(const TopKArgs a
   SelectTopK(
       s, a.slices * a.k, [candidates](int e) { return candidates[e]; }, a.k,
       a.out + (static_cast<std::int64_t>(row) * a.k), sh);
+}
+
+// Standalone selection reads materialized arbitrary scores and a strided count.
+// The radix body is shared; legacy callers retain their unit score stride.
+struct VisibleTopKArgs {
+  const float* scores = nullptr;
+  std::uint64_t score_col = 0;
+  std::uint64_t score_row = 0;
+  const std::int32_t* counts = nullptr;
+  std::uint64_t count_stride = 0;
+  std::int32_t* out = nullptr;
+  std::int32_t* candidates = nullptr;
+  int cells = 0;
+  int top = 0;
+  int slices = 0;
+  int slice = 0;
+};
+
+__global__ void __launch_bounds__(kTopKThreads) VisibleTopKKernel(VisibleTopKArgs a) {
+  __shared__ TopKShared sh;
+  ggml_cuda_pdl_sync();
+  const auto row = a.slices > 0 ? blockIdx.y : blockIdx.x;
+  const float* scores = a.scores + row * a.score_row;
+  const int visible = min(max(a.counts[row * a.count_stride], 0), a.cells);
+  const int first = a.slices > 0 ? static_cast<int>(blockIdx.x) * a.slice : 0;
+  const int count = max(0, min(visible - first, a.slices > 0 ? a.slice : a.cells));
+  std::int32_t* out =
+      a.slices > 0
+          ? a.candidates + (static_cast<std::uint64_t>(row) * a.slices + blockIdx.x) * a.top
+          : a.out + static_cast<std::uint64_t>(row) * a.top;
+  SelectTopK(scores, count, [first](int e) { return first + e; }, a.top, out, sh, a.score_col);
+}
+
+__global__ void __launch_bounds__(kTopKThreads) VisibleTopKMergeKernel(VisibleTopKArgs a) {
+  __shared__ TopKShared sh;
+  ggml_cuda_pdl_sync();
+  const auto row = blockIdx.x;
+  const auto* candidates = a.candidates + static_cast<std::uint64_t>(row) * a.slices * a.top;
+  SelectTopK(
+      a.scores + row * a.score_row, a.slices * a.top, [candidates](int e) { return candidates[e]; },
+      a.top, a.out + static_cast<std::uint64_t>(row) * a.top, sh, a.score_col);
+}
+
+// Arbitrary IDs, including duplicates and repeated/cross-row views: atomics
+// touch only a shared membership bitset. Each output half has exactly one
+// writer; the raw mask is copied as bits, including NaN payload and signed zero.
+struct SelectedMaskArgs {
+  const std::uint16_t* raw = nullptr;
+  std::uint64_t raw_col = 0;
+  std::uint64_t raw_row = 0;
+  const std::int32_t* ids = nullptr;
+  std::uint64_t id_col = 0;
+  std::uint64_t id_row = 0;
+  std::uint16_t* out = nullptr;
+  int window = 0;
+  int raw_cells = 0;
+  int cells = 0;
+  int top = 0;
+};
+
+__global__ void __launch_bounds__(kMaskThreads) SelectedMaskKernel(SelectedMaskArgs a) {
+  __shared__ unsigned selected[kMaskSpan / 32];
+  ggml_cuda_pdl_sync();
+  const int tid = static_cast<int>(threadIdx.x);
+  const auto row = blockIdx.x;
+  const int first = static_cast<int>(blockIdx.y) * kMaskSpan;
+  const int width = a.raw_cells + a.cells;
+  const int last = min(width, first + kMaskSpan);
+  for (int i = tid; i < kMaskSpan / 32; i += kMaskThreads) selected[i] = 0;
+  __syncthreads();
+  for (int i = tid; i < a.top; i += kMaskThreads) {
+    const int id = a.ids[row * a.id_row + static_cast<std::uint64_t>(i) * a.id_col];
+    if (id >= 0 && id < a.cells) {
+      const int at = a.raw_cells + id;
+      if (at >= first && at < last) {
+        const auto bit = static_cast<unsigned>(at - first);
+        atomicOr(&selected[bit / 32], 1U << (bit % 32));
+      }
+    }
+  }
+  __syncthreads();
+  for (int cell = first + tid; cell < last; cell += kMaskThreads) {
+    std::uint16_t bits = 0xfc00;
+    if (cell < a.window) {
+      bits = a.raw[row * a.raw_row + static_cast<std::uint64_t>(cell) * a.raw_col];
+    } else {
+      const auto bit = static_cast<unsigned>(cell - first);
+      if ((selected[bit / 32] & (1U << (bit % 32))) != 0) bits = 0;
+    }
+    a.out[static_cast<std::uint64_t>(row) * width + cell] = bits;
+  }
 }
 
 // ---------------------------------------------------------------- mask
@@ -691,6 +784,78 @@ std::expected<void, KernelFailure> RunDsv4SparseMask(LaunchContext& launch, ggml
         ggml_cuda_kernel_launch_params(dim3(static_cast<unsigned>(node->ne[1]), spans),
                                        dim3(kMaskThreads), 0, context.stream()),
         m);
+  });
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanVisibleTopK(const LaunchContext& /*launch*/,
+                                                            const ggml_tensor* node) {
+  if (auto checked = CheckVisibleTopK(node); !checked) return std::unexpected(checked.error());
+  const auto slices = Slices(node->ne[1], node->src[0]->ne[0]);
+  const auto bytes = static_cast<std::uint64_t>(node->ne[1] * slices * node->ne[0]) * 4;
+  return (bytes + 255) / 256 * 256;
+}
+
+std::expected<void, KernelFailure> RunVisibleTopK(LaunchContext& launch, ggml_tensor* node) {
+  const auto scratch = PlanVisibleTopK(launch, node);
+  if (!scratch) return std::unexpected(scratch.error());
+  return launch.Run(base::Bytes(*scratch), [node](ggml_backend_cuda_context& context) {
+    const auto* scores = node->src[0];
+    const auto* counts = node->src[1];
+    VisibleTopKArgs a;
+    a.scores = static_cast<const float*>(scores->data);
+    a.score_col = scores->nb[0] / 4;
+    a.score_row = scores->nb[1] / 4;
+    a.counts = static_cast<const std::int32_t*>(counts->data);
+    a.count_stride = counts->nb[0] / 4;
+    a.out = static_cast<std::int32_t*>(node->data);
+    a.cells = static_cast<int>(scores->ne[0]);
+    a.top = static_cast<int>(node->ne[0]);
+    a.slices = static_cast<int>(Slices(node->ne[1], scores->ne[0]));
+    a.slice = static_cast<int>(SliceKeys(scores->ne[0]));
+    ggml_cuda_pool_alloc<std::int32_t> candidates;
+    const auto rows = static_cast<unsigned>(node->ne[1]);
+    if (a.slices > 0) {
+      candidates.alloc(context.pool(), static_cast<std::size_t>(node->ne[1] * a.slices * a.top));
+      a.candidates = candidates.get();
+    }
+    ggml_cuda_kernel_launch(
+        VisibleTopKKernel,
+        ggml_cuda_kernel_launch_params(
+            a.slices > 0 ? dim3(static_cast<unsigned>(a.slices), rows) : dim3(rows),
+            dim3(kTopKThreads), 0, context.stream()),
+        a);
+    if (a.slices > 0) {
+      ggml_cuda_kernel_launch(
+          VisibleTopKMergeKernel,
+          ggml_cuda_kernel_launch_params(dim3(rows), dim3(kTopKThreads), 0, context.stream()), a);
+    }
+  });
+}
+
+std::expected<void, KernelFailure> RunSelectedMask(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckSelectedMask(node); !checked) return checked;
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const auto* raw = node->src[0];
+    const auto* ids = node->src[1];
+    SelectedMaskArgs a;
+    a.raw = static_cast<const std::uint16_t*>(raw->data);
+    a.raw_col = raw->nb[0] / 2;
+    a.raw_row = raw->nb[1] / 2;
+    a.ids = static_cast<const std::int32_t*>(ids->data);
+    a.id_col = ids->nb[0] / 4;
+    a.id_row = ids->nb[1] / 4;
+    a.out = static_cast<std::uint16_t*>(node->data);
+    a.window = static_cast<int>(raw->ne[0]);
+    a.raw_cells = LlmpOpInt(node, 0);
+    a.cells = static_cast<int>(node->ne[0]) - a.raw_cells;
+    a.top = static_cast<int>(ids->ne[0]);
+    ggml_cuda_kernel_launch(
+        SelectedMaskKernel,
+        ggml_cuda_kernel_launch_params(
+            dim3(static_cast<unsigned>(node->ne[1]),
+                 static_cast<unsigned>((node->ne[0] + kMaskSpan - 1) / kMaskSpan)),
+            dim3(kMaskThreads), 0, context.stream()),
+        a);
   });
 }
 

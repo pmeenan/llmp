@@ -990,6 +990,203 @@ TEST(GgmlLowerDsv4Test, CompressorCapabilitiesAndLaunchValidationBoundBothGridAx
   }
 }
 
+TEST(GgmlLowerDsv4Test, ExactSelectionPredicatesAgreeWithActualLaunchBounds) {
+  using llmp::format::Encoding;
+  for (const std::uint64_t cells : {17ULL, 536870911ULL, 536870912ULL}) {
+    for (const std::uint32_t top : {1U, 65536U, 65537U}) {
+      auto arena = kg::TensorArena::Create(8);
+      ASSERT_TRUE(arena);
+      std::uint64_t address = 1ULL << 40;
+      const auto bind = [&](ggml_tensor* t) {
+        kg::TensorArena::Bind(t, address);
+        address += 1ULL << 36;
+        return t;
+      };
+      auto* scores = bind(
+          ggml_new_tensor_2d(arena->context(), GGML_TYPE_F32, static_cast<std::int64_t>(cells), 2));
+      auto* counts = bind(ggml_new_tensor_1d(arena->context(), GGML_TYPE_I32, 2));
+      auto* selected = bind(kg::VisibleTopK(arena->context(), scores, counts, top));
+      const auto* cap = kg::CapabilityOf(kg::kVisibleTopKName);
+      ASSERT_NE(cap, nullptr);
+      const auto params = ir::ToBytes(ir::TopKParams{.k = top});
+      const std::array<ex::OperandFormat, 3> operands{
+          {{.operand = 0, .encoding = Encoding::kF32, .ne = {cells, 2, 1, 1}},
+           {.operand = 1, .encoding = Encoding::kI32, .ne = {2, 1, 1, 1}},
+           {.operand = ex::kOutputOperand, .encoding = Encoding::kI32, .ne = {top, 2, 1, 1}}}};
+      const ex::CapabilityQuery q{
+          .op = cap->op, .operands = operands, .arch = 121, .params = params};
+      const bool supported = cells <= 536870911ULL && top <= 65536;
+      EXPECT_EQ(cap->accepts(q), supported);
+      EXPECT_EQ(kg::CheckVisibleTopK(selected).has_value(), supported);
+      if (!supported) continue;
+      scores->nb[0] = 0;
+      counts->nb[0] = 0;
+      EXPECT_TRUE(kg::CheckVisibleTopK(selected));
+      scores->nb[0] = 3;
+      EXPECT_FALSE(kg::CheckVisibleTopK(selected));
+      scores->nb[0] = 4;
+      const auto saved = selected->data;
+      selected->data = scores->data;
+      EXPECT_FALSE(kg::CheckVisibleTopK(selected));
+      selected->data = saved;
+      selected->ne[0] = 0;
+      EXPECT_FALSE(kg::CheckVisibleTopK(selected));
+    }
+  }
+  for (const std::uint32_t cells : {268431352U, 268431353U}) {
+    auto arena = kg::TensorArena::Create(8);
+    ASSERT_TRUE(arena);
+    auto* raw = ggml_new_tensor_2d(arena->context(), GGML_TYPE_F16, 5, 1);
+    auto* ids = ggml_new_tensor_2d(arena->context(), GGML_TYPE_I32, 17, 1);
+    auto* mask = kg::SelectedMask(arena->context(), raw, ids, 8, cells);
+    kg::TensorArena::Bind(raw, 1ULL << 40);
+    kg::TensorArena::Bind(ids, 2ULL << 40);
+    kg::TensorArena::Bind(mask, 3ULL << 40);
+    const auto* cap = kg::CapabilityOf(kg::kSelectedMaskName);
+    ASSERT_NE(cap, nullptr);
+    const auto params = ir::ToBytes(ir::SelectedMaskParams{.raw_cells = 8, .cells = cells});
+    const std::array<ex::OperandFormat, 3> operands{
+        {{.operand = 0, .encoding = Encoding::kF16, .ne = {5, 1, 1, 1}},
+         {.operand = 1, .encoding = Encoding::kI32, .ne = {17, 1, 1, 1}},
+         {.operand = ex::kOutputOperand,
+          .encoding = Encoding::kF16,
+          .ne = {8ULL + cells, 1, 1, 1}}}};
+    const ex::CapabilityQuery q{.op = cap->op, .operands = operands, .arch = 121, .params = params};
+    const bool supported = cells == 268431352;
+    EXPECT_EQ(cap->accepts(q), supported);
+    EXPECT_EQ(kg::CheckSelectedMask(mask).has_value(), supported);
+    if (!supported) continue;
+    ids->nb[0] = 0;
+    EXPECT_TRUE(kg::CheckSelectedMask(mask));
+    ids->nb[0] = 3;
+    EXPECT_FALSE(kg::CheckSelectedMask(mask));
+    ids->nb[0] = 4;
+    mask->data = raw->data;
+    EXPECT_FALSE(kg::CheckSelectedMask(mask));
+  }
+}
+
+TEST(GgmlLowerDsv4Test, ExactPrimitivesLowerWithTypedOwnerCountsAndRefuseMalformedCounts) {
+  using llmp::format::Encoding;
+  ir::Builder b;
+  co::StepContext context(
+      b, {{.slot = 1, .rows = 2, .past = 2}, {.slot = 5, .first_row = 2, .rows = 3, .past = 7}},
+      false);
+  for (std::size_t owner = 0; owner < 2; ++owner) {
+    const auto rows = context.segments()[owner].rows;
+    auto counts =
+        context.VisibleCells(owner, {.capacity = 256, .block = 4, .positions = true}, 17, 3);
+    ASSERT_TRUE(counts);
+    b.SetOwner(static_cast<std::uint8_t>(owner));
+    auto scores = b.Fill(ir::ShapeOf({17, rows}), 1);
+    auto raw = b.Fill(ir::ShapeOf({5, rows}), 0, Encoding::kF16);
+    const auto ids = b.VisibleTopK(scores, *counts, 19);
+    b.Output(ids);
+    b.Output(b.SelectedMask(raw, ids, {.raw_cells = 8, .cells = 17}));
+  }
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  co::StepGraph step{
+      .graph = std::move(*graph), .inputs = context.TakeInputs(), .weights = {}, .state = {}};
+  const pl::StepShape shape{
+      .segments = {{.slot = 1, .rows = 2, .past = 2}, {.slot = 5, .rows = 3, .past = 7}}};
+  auto registry = Registry();
+  std::vector<ir::TensorId> staged;
+  for (const auto& in : step.inputs) staged.push_back(in.tensor);
+  auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                       {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+  const auto lower = [&] {
+    return kg::LowerStep(
+        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 1024}, registry,
+        Device());
+  };
+  auto lowered = lower();
+  ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+  ASSERT_EQ(lowered->inputs.size(), 2U);
+  for (const auto& input : lowered->inputs) {
+    EXPECT_EQ(input.kind, kn::InputKind::kVisibleCells);
+    EXPECT_EQ(input.read, 17U);
+    EXPECT_EQ(input.visible_capacity, 3U);
+    EXPECT_EQ(input.bytes, shape.segments[input.segment].rows * 4);
+  }
+  int selected = 0, masked = 0;
+  for (const auto* node : lowered->nodes) {
+    if (kg::LlmpOpOf(node) == kg::LlmpOp::kVisibleTopK) {
+      ++selected;
+      EXPECT_TRUE(kg::CheckVisibleTopK(node));
+    }
+    if (kg::LlmpOpOf(node) == kg::LlmpOp::kSelectedMask) {
+      ++masked;
+      EXPECT_TRUE(kg::CheckSelectedMask(node));
+    }
+  }
+  EXPECT_EQ(selected, 2);
+  EXPECT_EQ(masked, 2);
+  const auto saved = step.inputs[0];
+  for (int bad = 0; bad < 4; ++bad) {
+    step.inputs[0] = saved;
+    switch (bad) {
+      case 0:
+        step.inputs[0].segment = 2;
+        break;
+      case 1:
+        step.inputs[0].read = 0;
+        break;
+      case 2:
+        step.inputs[0].visible_capacity = 257;
+        break;
+      case 3:
+        step.inputs[0].cells.ring = true;
+        break;
+    }
+    EXPECT_FALSE(lower()) << bad;
+  }
+}
+
+TEST(GgmlLowerDsv4Test, ExactPrimitivesLowerRefusesCountsFromAnotherEqualRowOwner) {
+  ir::Builder b;
+  co::StepContext context(
+      b, {{.slot = 1, .rows = 2, .past = 2}, {.slot = 5, .first_row = 2, .rows = 2, .past = 7}},
+      false);
+  auto counts = context.VisibleCells(0, {.capacity = 256, .block = 4, .positions = true}, 17, 3);
+  ASSERT_TRUE(counts);
+  b.SetOwner(0);
+  const auto scores = b.Fill(ir::ShapeOf({17, 2}), 1);
+  b.Output(b.VisibleTopK(scores, *counts, 2));
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+  co::StepGraph step{
+      .graph = std::move(*graph), .inputs = context.TakeInputs(), .weights = {}, .state = {}};
+  const pl::StepShape shape{
+      .segments = {{.slot = 1, .rows = 2, .past = 2}, {.slot = 5, .rows = 2, .past = 7}}};
+  auto registry = Registry();
+  const std::vector<ir::TensorId> staged{*counts};
+  auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                       {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+  const auto lower = [&] {
+    return kg::LowerStep(
+        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 1024}, registry,
+        Device());
+  };
+  ASSERT_TRUE(lower());
+  ASSERT_EQ(step.inputs.size(), 1U);
+  ASSERT_EQ(step.graph.tensor(*counts).segment, 0);
+  const auto own_values = co::InputValues(step.inputs[0], shape, {});
+  ASSERT_TRUE(own_values);
+  step.inputs[0].segment = 1;
+  const auto other_values = co::InputValues(step.inputs[0], shape, {});
+  ASSERT_TRUE(other_values);
+  EXPECT_NE(*own_values, *other_values) << "equal row counts must not authenticate another owner";
+  auto refused = lower();
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().detail,
+            "lowering onto GGML: visible counts disagree with their owner rows");
+  step.inputs[0].segment = ir::kJoinedSegment;
+  EXPECT_FALSE(lower());
+}
+
 TEST(GgmlLowerDsv4Test, PrimitivePredicatesRejectUnsupportedTypesAndBounds) {
   using llmp::format::Encoding;
   std::array<ex::OperandFormat, 2> operands{

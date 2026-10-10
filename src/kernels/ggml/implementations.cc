@@ -110,7 +110,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 131> kKernels = {{
+constexpr std::array<Kernel::Entry, 133> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -1018,6 +1018,18 @@ constexpr std::array<Kernel::Entry, 131> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4Compress(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4Compress(launch, n[0]); }},
+    {.name = "llmp.visible_top_k",
+     .operation = execution::Operation::kTopK,
+     .variant = "exact visible-prefix radix selection, ascending IDs and -1 padding",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckVisibleTopK(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunVisibleTopK(launch, n[0]); }},
+    {.name = "llmp.selected_mask",
+     .operation = execution::Operation::kFill,
+     .variant = "duplicate-safe shared bitset and one writer per output half",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSelectedMask(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunSelectedMask(launch, n[0]); }},
     {.name = "llmp.dsv4.lid_topk",
      .operation = execution::Operation::kLightningIndexer,
      .variant = "LidScoreKernel<R>: R rows' 64 heads a block on mma.sync F16 (F32 sums), 64 keys "

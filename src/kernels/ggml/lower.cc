@@ -749,6 +749,20 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         out_.leaves.push_back({.tensor = t, .primitive = prim});
         return t;
       }
+      case co::InputKind::kVisibleCells: {
+        if (input.segment >= in_.shape.segments.size() || d.segment != input.segment ||
+            d.format.encoding != Encoding::kI32 ||
+            d.shape().ne != ir::ShapeOf({in_.shape.segments[input.segment].rows}).ne)
+          return Refused("visible counts disagree with their owner rows");
+        const auto values = co::InputValues(input, in_.shape, {});
+        if (!values) return Refused(values.error());
+        slot.kind = InputKind::kVisibleCells;
+        slot.cells = {
+            .capacity = input.cells.capacity, .block = input.cells.block, .positions = true};
+        slot.read = input.read;
+        slot.visible_capacity = input.visible_capacity;
+        break;
+      }
       case co::InputKind::kPositionPhases:
       case co::InputKind::kKeptRows:
       case co::InputKind::kKeptCells:
@@ -1259,6 +1273,12 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
           n.Params<ir::ArgsortParams>().descending ? GGML_SORT_ORDER_DESC : GGML_SORT_ORDER_ASC);
     case Op::kIndexScore:
       return ggml_lightning_indexer(c_, s[0], s[1], s[2], s[3]);
+    case Op::kVisibleTopK:
+      return VisibleTopK(c_, s[0], s[1], n.Params<ir::TopKParams>().k);
+    case Op::kSelectedMask: {
+      const auto p = n.Params<ir::SelectedMaskParams>();
+      return SelectedMask(c_, s[0], s[1], p.raw_cells, p.cells);
+    }
     case Op::kTopK:
       return ggml_top_k(c_, s[0], static_cast<int>(n.Params<ir::TopKParams>().k));
     default:

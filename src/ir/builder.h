@@ -153,6 +153,8 @@ class Builder {
   TensorId Argmax(TensorId x, ArgmaxNan nan = ArgmaxNan::kIgnore);
   TensorId Argsort(TensorId x, bool descending);
   TensorId TopK(TensorId x, std::uint32_t k);
+  TensorId VisibleTopK(TensorId scores, TensorId counts, std::uint32_t k);
+  TensorId SelectedMask(TensorId raw, TensorId ids, const SelectedMaskParams& params);
 
   // ---- routing
   Outputs Route(TensorId logits, TensorId bias, TensorId table, TensorId tokens,

@@ -144,9 +144,14 @@ update this section as each slice lands):
   G4b is split into G4b1 (past-safe plan-shape/key contract, matching MQA
   reference width, focused primitive-lowering correctness) and G4b2 (fast
   patterns/default policy, structural parity and GPU execution). Its local
-  forms are complete in G4b2a and state banks in G4b2b1; the indexer
-  contract remains G4b2b2, and output-A/products, mixed encodings and full
-  policy remain G4b2c. G4c then
+  forms are complete in G4b2a and state banks in G4b2b1. G4b2b2a adds
+  exact visible-prefix selection, duplicate-safe bit-preserving masks and
+  owner-authenticated completed-block count inputs. Scalar/native operand
+  controls cover arbitrary score bits and ID views, unequal owners and
+  changed-input captured replay. Existing score/TopK, MQA version1 and
+  default policies retain their semantics. Rounded-query score, portable
+  fallback and exact native fusion remain required in G4b2b2b; output-A/
+  products, mixed encodings and full policy remain G4b2c. G4c then
   binds the hash-routing IDs, compressor inputs and injection features and
   runs serving/state/quality/swap/1% controls; G4d deletes the M3 path. The
   active checkout is `.claude/worktrees/m36-g4b`; its assigned Spark copy
@@ -187,7 +192,7 @@ spark-b during the weight-handle review.
 
 The slice plan as designed before work began. Where it differs from what was
 built, docs/engine-components.md's "as built" text and the commits win.
-Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b, G3c1 and G3c2a, G4a, G4b1, G4b2a and G4b2b1, N1.
+Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b, G3c1 and G3c2a, G4a, G4b1, G4b2a, G4b2b1 and G4b2b2a, N1.
 
 #### Wave 3: families, one at a time through the gate
 

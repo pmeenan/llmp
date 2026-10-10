@@ -828,7 +828,13 @@ class CompressorInputsTest : public ModelRunnerTest {
            .kind = kn::InputKind::kMask,
            .cells = {.capacity = 16, .block = 4, .positions = true},
            .read = 16,
-           .mask_rows = 32}};
+           .mask_rows = 32},
+          {.bytes = 8,
+           .segment = 0,
+           .kind = kn::InputKind::kVisibleCells,
+           .cells = {.capacity = 16, .block = 4, .positions = true},
+           .read = 16,
+           .visible_capacity = 3}};
     };
     return o;
   }
@@ -871,7 +877,44 @@ TEST_F(CompressorInputsTest, TypedCompressorInputsAndAheadMasksRefreshOnReusedPl
   EXPECT_EQ(compressed[17], 0xFC00U);  // no padded/unfinished compressed cell is visible
   EXPECT_EQ(compressed[31], 0xFC00U);  // the last dummy cell is never visible
   EXPECT_EQ(compressed[32], 0xFC00U);  // no padded query row is visible
+  EXPECT_EQ(values.template operator()<std::int32_t>(9), (std::vector<std::int32_t>{0, 1}));
+  for (std::uint32_t past = 4; past <= 14; past += 2) {
+    const auto ran = Run(Shape(pl::Phase::kPrefill, {Seg(0, past, 2, 1)}), {{7, 8}});
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error().what);
+  }
+  EXPECT_EQ(values.template operator()<std::int32_t>(9), (std::vector<std::int32_t>{3, 3}));
   EXPECT_EQ(runner_->plans().size(), 1U);
+}
+
+class VisibleCellsRunnerTest : public ModelRunnerTest {
+ protected:
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = ModelRunnerTest::SourceOptions();
+    options.extra_inputs = [](const pl::StepShape&) {
+      return std::vector<kn::InputSlot>{{.bytes = 4,
+                                         .segment = 0,
+                                         .kind = kn::InputKind::kVisibleCells,
+                                         .cells = {.capacity = 256, .block = 4, .positions = true},
+                                         .read = 2,
+                                         .visible_capacity = 3}};
+    };
+    return options;
+  }
+};
+
+TEST_F(VisibleCellsRunnerTest, CountsRefreshBeforeTheSameCapturedGraphReplays) {
+  for (std::uint32_t past = 0; past < 13; ++past) {
+    auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, past, 1, 1)}), {{7}});
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error().what);
+    if (past >= 2) EXPECT_EQ(ran->path, en::RunPath::kReplayed);
+    const auto& bytes = source_->options().seen_inputs->at(0);
+    ASSERT_EQ(bytes.size(), sizeof(std::int32_t));
+    std::int32_t count = -1;
+    std::memcpy(&count, bytes.data(), bytes.size());
+    EXPECT_EQ(count, static_cast<std::int32_t>(std::min((past + 1) / 4, 2U)));
+  }
+  EXPECT_EQ(runner_->plans().size(), 1U);
+  EXPECT_EQ(runner_->plans().graphs(), 1U);
 }
 
 class PositionedTest : public ModelRunnerTest {

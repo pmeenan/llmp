@@ -1654,6 +1654,20 @@ each is checked against the design as M3.6 proceeds.
                               rounding, visibility and nonfinite selection
                               explicit; prove the native recipe without
                               silently changing the primitive TopK contract.
+                              - [x] **G4b2b2a — exact selection and counts:**
+                                    define visible-prefix selection and a
+                                    bit-preserving mask for arbitrary IDs;
+                                    stage owner-authenticated completed-block
+                                    counts within logical real capacity.
+                                    Scalar/native operands and changed-input
+                                    replay pass; existing score, TopK and
+                                    default component semantics are retained.
+                              - [ ] **G4b2b2b — score and fusion:** define
+                                    rounded-query scoring with a real primitive
+                                    fallback and recorded numerical relation;
+                                    expose one native score producer and prove
+                                    exact unfused/fused/legacy execution before
+                                    opting in the component recipe.
                   - [ ] **G4b2c — full policy:** output-A and product forms,
                         mixed encodings, default policy, whole-artifact GPU
                         parity and row-invariant verify.

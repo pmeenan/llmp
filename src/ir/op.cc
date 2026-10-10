@@ -90,6 +90,10 @@ std::string_view OpName(Op op) {
       return "argsort";
     case Op::kTopK:
       return "top_k";
+    case Op::kVisibleTopK:
+      return "visible_top_k";
+    case Op::kSelectedMask:
+      return "selected_mask";
     case Op::kRoute:
       return "route";
     case Op::kExpertReduce:

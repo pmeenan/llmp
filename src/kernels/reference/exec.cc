@@ -1492,6 +1492,53 @@ std::expected<void, ExecFailure> Executor::Exec(const ir::Node& node) {
       return Store(out, r);
     }
 
+    case Op::kVisibleTopK: {
+      LLMP_LOAD(scores, node.src[0]);
+      const auto counts = LoadInts(node.src[1]);
+      if (!counts) return std::unexpected(counts.error());
+      const std::uint64_t cells = ne(0)[0];
+      const std::uint64_t top = node.Params<ir::TopKParams>().k;
+      Vec selected(static_cast<std::size_t>(top * ne(0)[1]), -1);
+      for (std::uint64_t row = 0; row < ne(0)[1]; ++row) {
+        const auto visible = static_cast<std::uint64_t>(
+            std::clamp((*counts)[row], std::int64_t{0}, static_cast<std::int64_t>(cells)));
+        auto order = Order(std::span(scores).subspan(row * cells, visible), true);
+        order.resize(static_cast<std::size_t>(std::min(top, visible)));
+        std::ranges::sort(order);
+        for (std::size_t i = 0; i < order.size(); ++i) {
+          selected[row * top + i] = static_cast<double>(order[i]);
+        }
+      }
+      return Store(out, selected);
+    }
+    case Op::kSelectedMask: {
+      const auto ids = LoadInts(node.src[1]);
+      if (!ids) return std::unexpected(ids.error());
+      const auto p = node.Params<ir::SelectedMaskParams>();
+      const TensorDesc& raw = graph().tensor(node.src[0]);
+      const TensorDesc& dest = graph().tensor(out);
+      const auto& source = RootOf(node.src[0]).parts[0];
+      auto& target = RootOf(out).parts[0];
+      for (std::uint64_t row = 0; row < raw.ne(1); ++row) {
+        for (std::uint64_t cell = 0; cell < dest.ne(0); ++cell) {
+          const auto bits = cell < raw.ne(0)
+                                ? Raw<std::uint16_t>(source.data() + raw.view_offset +
+                                                     row * raw.nb[1] + cell * raw.nb[0])
+                                : std::uint16_t{0xfc00};
+          Put(target.data() + dest.view_offset + row * dest.nb[1] + cell * dest.nb[0], bits);
+        }
+        for (std::uint64_t i = 0; i < ne(1)[0]; ++i) {
+          const auto id = (*ids)[row * ne(1)[0] + i];
+          if (id >= 0 && static_cast<std::uint64_t>(id) < p.cells) {
+            Put(target.data() + dest.view_offset + row * dest.nb[1] +
+                    (p.raw_cells + static_cast<std::uint64_t>(id)) * dest.nb[0],
+                std::uint16_t{0});
+          }
+        }
+      }
+      return {};
+    }
+
     case Op::kRoute: {
       const auto p = node.Params<ir::RouteParams>();
       LLMP_LOAD(logits, node.src[0]);

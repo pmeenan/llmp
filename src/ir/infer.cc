@@ -423,7 +423,10 @@ std::size_t ParamSize(OpKey key) {
     case Op::kArgsort:
       return sizeof(ArgsortParams);
     case Op::kTopK:
+    case Op::kVisibleTopK:
       return sizeof(TopKParams);
+    case Op::kSelectedMask:
+      return sizeof(SelectedMaskParams);
     case Op::kRoute:
       return sizeof(RouteParams);
     case Op::kHcPre:
@@ -1062,6 +1065,36 @@ Out InferPrimitive(const Ctx& c) {
         return Fail(GraphError::kParams, c, std::format("k {} of {}", p.k, x.ne(0)));
       }
       return One(Fresh(S(p.k, x.ne(1), x.ne(2), x.ne(3)), Encoding::kI32), false);
+    }
+
+    case Op::kVisibleTopK: {
+      LLMP_TRY(Arity(c, 2, 2));
+      const auto p = c.params<TopKParams>();
+      const TensorDesc& x = *c.src(0);
+      const TensorDesc& counts = *c.src(1);
+      if (p.k == 0 || p.k > INT32_MAX) {
+        return Fail(GraphError::kParams, c, "a positive I32 selection width");
+      }
+      LLMP_TRY(Want(x.format.encoding == Encoding::kF32 && x.ne(0) <= INT32_MAX && x.ne(2) == 1 &&
+                        x.ne(3) == 1 && counts.format.encoding == Encoding::kI32 &&
+                        counts.shape().ne == S(x.ne(1)).ne,
+                    c, "F32 [C,T] scores and I32 [T] counts, C representable as I32"));
+      return One(Fresh(S(p.k, x.ne(1)), Encoding::kI32), false);
+    }
+    case Op::kSelectedMask: {
+      LLMP_TRY(Arity(c, 2, 2));
+      const auto p = c.params<SelectedMaskParams>();
+      const TensorDesc& raw = *c.src(0);
+      const TensorDesc& ids = *c.src(1);
+      if (p.raw_cells == 0 || p.cells == 0 || p.cells > INT32_MAX) {
+        return Fail(GraphError::kParams, c, "positive raw and compressed widths, I32 cells");
+      }
+      LLMP_TRY(Want(raw.format.encoding == Encoding::kF16 && raw.ne(0) <= p.raw_cells &&
+                        raw.ne(2) == 1 && raw.ne(3) == 1 && ids.format.encoding == Encoding::kI32 &&
+                        ids.ne(1) == raw.ne(1) && ids.ne(0) <= INT32_MAX && ids.ne(2) == 1 &&
+                        ids.ne(3) == 1,
+                    c, "F16 [window,T] raw mask and I32 [k,T] IDs"));
+      return One(Fresh(S(std::uint64_t{p.raw_cells} + p.cells, raw.ne(1)), Encoding::kF16), false);
     }
 
     case Op::kRoute: {

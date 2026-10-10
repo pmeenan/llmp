@@ -295,6 +295,9 @@ enum class InputKind : std::uint8_t {
   // A constant F32 [n, n] (`read` = n): the normalized Hadamard matrix
   // (HadamardValues), which a product hinted kHadamard multiplies by.
   kHadamard,
+  // I32 [segment rows]: completed zero-based blocks, capped by
+  // visible_capacity (real cells, excluding padding/dummy) and read (scored C).
+  kVisibleCells,
 };
 struct StepInput {
   ir::TensorId tensor{};
@@ -313,6 +316,7 @@ struct StepInput {
   std::uint32_t ratio = 0;
   bool overlap = false;
   std::uint64_t ring = 0;
+  std::uint64_t visible_capacity = 0;  // kVisibleCells: logical real-cell capacity
 };
 
 struct SegmentRows {
@@ -376,6 +380,11 @@ class StepContext {
   // Segment s's read cells' positions for tensors of `cells` (the input
   // its masks read): I32 [ReadCells].
   ir::TensorId HeldPositions(std::size_t segment, const CellKey& cells);
+  // Exact visible prefix of zero-based positions-basis block cells. The logical
+  // capacity excludes padded/dummy cells; read is the actual scored width.
+  std::expected<ir::TensorId, std::string> VisibleCells(std::size_t segment, const CellKey& cells,
+                                                        std::uint64_t read,
+                                                        std::uint64_t visible_capacity);
   // Segment s's `blocks` blocks' first positions (kBlockPositions).
   ir::TensorId BlockPositions(std::size_t segment, const CellKey& cells, std::uint64_t blocks,
                               std::uint8_t sections);
@@ -446,6 +455,8 @@ class StepContext {
   planner::Phase phase_ = planner::Phase::kPrefill;
   std::uint16_t component_ = 0;
   ir::TensorId tokens_{}, positions_{}, output_rows_{}, features_{}, state_row_{};
+  std::map<std::tuple<std::size_t, CellKey, std::uint64_t, std::uint64_t>, ir::TensorId>
+      visible_cells_;
   std::map<std::uint8_t, ir::TensorId> sectioned_;
   std::map<std::uint16_t, ir::TensorId> side_rows_;
   std::map<std::tuple<std::size_t, CellKey, std::uint64_t, std::uint8_t>, ir::TensorId> blocks_;

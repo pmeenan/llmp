@@ -1031,6 +1031,30 @@ ir::TensorId StepContext::HeldPositions(std::size_t segment, const CellKey& cell
   return held;
 }
 
+std::expected<ir::TensorId, std::string> StepContext::VisibleCells(std::size_t segment,
+                                                                   const CellKey& cells,
+                                                                   std::uint64_t read,
+                                                                   std::uint64_t visible_capacity) {
+  if (segment >= segments_.size()) return Refused("visible counts of no segment");
+  const auto& seg = segments_[segment];
+  StepInput input{.kind = InputKind::kVisibleCells,
+                  .segment = 0,
+                  .cells = cells,
+                  .read = read,
+                  .visible_capacity = visible_capacity};
+  planner::StepShape shape;
+  shape.segments.push_back({.slot = seg.slot, .rows = seg.rows, .past = seg.past});
+  if (auto values = InputValues(input, shape, {}); !values) return std::unexpected(values.error());
+  const auto key = std::tuple{segment, cells, read, visible_capacity};
+  if (const auto at = visible_cells_.find(key); at != visible_cells_.end()) return at->second;
+  const auto id = Input(InputKind::kVisibleCells, static_cast<std::uint8_t>(segment),
+                        ir::Dense(format::Encoding::kI32, ir::ShapeOf({seg.rows})), cells, read,
+                        std::format("visible.{}.{}.{}", segment, read, visible_capacity));
+  inputs_.back().visible_capacity = visible_capacity;
+  visible_cells_.emplace(key, id);
+  return id;
+}
+
 ir::TensorId StepContext::SegmentPositions(std::size_t segment) {
   if (!segment_positions_.at(segment).valid()) {
     const SegmentRows& seg = segments_.at(segment);
@@ -2177,6 +2201,27 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
       return Refused("a side table's rows are the caller's (its source's lookup)");
     case InputKind::kCommitRows:
       return Refused("a verify's saved rows are the caller's");
+    case InputKind::kVisibleCells: {
+      const auto& c = input.cells;
+      constexpr auto max = static_cast<std::uint64_t>(INT32_MAX);
+      if (input.segment >= shape.segments.size() || c.capacity == 0 || c.capacity > max ||
+          c.block == 0 || c.block > max || !c.positions || c.ring || c.frozen || c.fixed ||
+          c.per_row || c.first_row != 0 || c.recent || c.cell_pad == 0 ||
+          input.visible_capacity == 0 || input.visible_capacity > c.capacity || input.read == 0 ||
+          input.read > c.capacity || input.sections != 1 || input.ratio != 0 || input.overlap ||
+          input.ring != 0) {
+        return Refused(
+            "visible counts require zero-based positions blocks and bounded real/scored cells");
+      }
+      const auto& segment = shape.segments[input.segment];
+      if (segment.rows == 0) return Refused("visible counts of no rows");
+      for (std::uint32_t row = 0; row < segment.rows; ++row) {
+        out.push_back(
+            static_cast<std::int64_t>(std::min((std::uint64_t{segment.past} + row + 1) / c.block,
+                                               std::min(input.visible_capacity, input.read))));
+      }
+      return out;
+    }
     case InputKind::kTokens:
       if (tokens.size() != rows) return Refused("a token per row");
       out.assign(tokens.begin(), tokens.end());

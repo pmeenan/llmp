@@ -109,6 +109,8 @@ constinit std::array kTagDsv4HcPre = std::to_array("llmp.dsv4.hc_pre");
 constinit std::array kTagDsv4Compress = std::to_array("llmp.dsv4.compress");
 constinit std::array kTagGdnStep = std::to_array("llmp.gdn.step");
 constinit std::array kTagGdnGates = std::to_array("llmp.gdn.gates");
+constinit std::array kTagVisibleTopK = std::to_array("llmp.visible_top_k");
+constinit std::array kTagSelectedMask = std::to_array("llmp.selected_mask");
 constinit std::array kTagDsv4LidTopK = std::to_array("llmp.dsv4.lid_topk");
 constinit std::array kTagGemma4Mask = std::to_array("llmp.gemma4.mask");
 constinit std::array kTagFlashAttnOwners = std::to_array("llmp.flash_attn.owner_roots");
@@ -201,7 +203,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return LlmpOp::kArgmax;
   }
-  const std::array<std::pair<const char*, LlmpOp>, 47> fused = {{
+  const std::array<std::pair<const char*, LlmpOp>, 49> fused = {{
       {kTagDsv4F16Copy.data(), LlmpOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), LlmpOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), LlmpOp::kDsv4WeightedReduce},
@@ -209,6 +211,8 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
       {kTagDsv4OutA.data(), LlmpOp::kDsv4OutA},
       {kTagGdnStep.data(), LlmpOp::kGdnStep},
       {kTagGdnGates.data(), LlmpOp::kGdnGates},
+      {kTagVisibleTopK.data(), LlmpOp::kVisibleTopK},
+      {kTagSelectedMask.data(), LlmpOp::kSelectedMask},
       {kTagDsv4LidTopK.data(), LlmpOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), LlmpOp::kDsv4SparseMask},
       {kTagGemma4Mask.data(), LlmpOp::kGemma4Mask},
@@ -2594,6 +2598,64 @@ std::expected<void, KernelFailure> CheckDsv4SparseMask(const ggml_tensor* node) 
       return Rejected("an output overlapping an operand");
     }
   }
+  return {};
+}
+
+ggml_tensor* VisibleTopK(ggml_context* context, ggml_tensor* scores, ggml_tensor* counts,
+                         std::int64_t top) {
+  return Custom(context, GGML_TYPE_I32, {top, scores->ne[1], 1, 1}, {scores, counts},
+                kTagVisibleTopK.data());
+}
+
+ggml_tensor* SelectedMask(ggml_context* context, ggml_tensor* raw, ggml_tensor* ids,
+                          std::int64_t raw_cells, std::int64_t cells) {
+  return WithInts(Custom(context, GGML_TYPE_F16, {raw_cells + cells, raw->ne[1], 1, 1}, {raw, ids},
+                         kTagSelectedMask.data()),
+                  {raw_cells});
+}
+
+std::expected<void, KernelFailure> CheckVisibleTopK(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kVisibleTopK, 2); !checked) return checked;
+  const ggml_tensor* scores = node->src[0];
+  const ggml_tensor* counts = node->src[1];
+  if (AnyEmpty({node, scores, counts}) || !AllSane({node, scores, counts}) ||
+      !AllCurrent({node, scores, counts}))
+    return Rejected("empty, unmeasurable or stale selection");
+  const auto cells = scores->ne[0];
+  const auto rows = scores->ne[1];
+  const auto top = node->ne[0];
+  if (!IsF32(scores) || scores->ne[2] != 1 || scores->ne[3] != 1 || counts->type != GGML_TYPE_I32 ||
+      !Shaped(counts, rows, 1, 1) || node->type != GGML_TYPE_I32 || !Packed(node) ||
+      !Shaped(node, top, rows, 1) || top > 65536 || cells > std::int64_t{INT32_MAX} / 4 ||
+      rows > std::int64_t{INT32_MAX} / top || !Aligned(scores, 4) || scores->nb[0] % 4 ||
+      scores->nb[1] % 4 || !Aligned(counts, 4) || counts->nb[0] % 4 || !Aligned(node, 4)) {
+    return Rejected("F32 [C,T], I32 [T] into I32 [top,T], top<=65536 and bounded radix extents");
+  }
+  if (!Disjoint(node, scores, false) || !Disjoint(node, counts, false))
+    return Rejected("a selection output overlapping an operand");
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckSelectedMask(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kSelectedMask, 2); !checked) return checked;
+  const ggml_tensor* raw = node->src[0];
+  const ggml_tensor* ids = node->src[1];
+  if (AnyEmpty({node, raw, ids}) || !AllSane({node, raw, ids}) || !AllCurrent({node, raw, ids}))
+    return Rejected("empty, unmeasurable or stale selected mask");
+  const auto raw_cells = LlmpOpInt(node, 0);
+  const auto width = node->ne[0];
+  const auto rows = node->ne[1];
+  if (raw->type != GGML_TYPE_F16 || !Shaped(raw, raw->ne[0], rows, 1) ||
+      ids->type != GGML_TYPE_I32 || !Shaped(ids, ids->ne[0], rows, 1) ||
+      node->type != GGML_TYPE_F16 || !Packed(node) || !Shaped(node, width, rows, 1) ||
+      raw_cells < raw->ne[0] || width <= raw_cells || width > std::int64_t{65535} * 4096 ||
+      rows > std::int64_t{INT32_MAX} / width || ids->ne[0] > std::int64_t{INT32_MAX} / 4 ||
+      !Aligned(raw, 2) || raw->nb[0] % 2 || raw->nb[1] % 2 || !Aligned(ids, 4) || ids->nb[0] % 4 ||
+      ids->nb[1] % 4 || !Aligned(node, 2)) {
+    return Rejected("F16 [window,T], I32 [top,T] into a bounded F16 [raw_cells+C,T] mask");
+  }
+  if (!Disjoint(node, raw, false) || !Disjoint(node, ids, false))
+    return Rejected("a selected mask output overlapping an operand");
   return {};
 }
 

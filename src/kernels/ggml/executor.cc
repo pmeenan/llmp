@@ -129,6 +129,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
       planned = PlanMulMatIdQ2D2r(launch, step.nodes.front());
     } else if (step.implementation == kTopKName) {
       planned = PlanTopK(launch, step.nodes.front());
+    } else if (step.implementation == kVisibleTopKName) {
+      planned = PlanVisibleTopK(launch, step.nodes.front());
     } else if (step.implementation == kDsv4LidTopKName) {
       planned = PlanDsv4LidTopK(launch, step.nodes.front());
     } else if (step.implementation == kMoeGemmName) {

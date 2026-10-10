@@ -386,6 +386,12 @@ TensorId Builder::Argsort(TensorId x, bool descending) {
 TensorId Builder::TopK(TensorId x, std::uint32_t k) {
   return One(Primitive(Op::kTopK), B(TopKParams{.k = k}), std::array{x});
 }
+TensorId Builder::VisibleTopK(TensorId scores, TensorId counts, std::uint32_t k) {
+  return One(Primitive(Op::kVisibleTopK), B(TopKParams{.k = k}), std::array{scores, counts});
+}
+TensorId Builder::SelectedMask(TensorId raw, TensorId ids, const SelectedMaskParams& params) {
+  return One(Primitive(Op::kSelectedMask), B(params), std::array{raw, ids});
+}
 
 Outputs Builder::Route(TensorId logits, TensorId bias, TensorId table, TensorId tokens,
                        const RouteParams& params) {

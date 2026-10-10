@@ -356,6 +356,30 @@ TEST(IrTest, VerifyRefusesBindingsAndSegments) {
   }
 }
 
+TEST(IrTest, ExactSelectionAndMaskVerifyTheirSeparateTypedContracts) {
+  Builder b;
+  const auto scores = b.Input(F32({5, 3}));
+  const auto counts = b.Input(I32({3}));
+  const auto ids = b.VisibleTopK(scores, counts, 8);
+  const auto raw = b.Input(Dense(Encoding::kF16, ShapeOf({2, 3})));
+  const auto mask = b.SelectedMask(raw, ids, {.raw_cells = 4, .cells = 5});
+  EXPECT_EQ(b.tensor(ids).shape().ne, ShapeOf({8, 3}).ne);
+  EXPECT_EQ(b.tensor(mask).shape().ne, ShapeOf({9, 3}).ne);
+  EXPECT_EQ(b.tensor(mask).format.encoding, Encoding::kF16);
+  b.Output(mask);
+  ASSERT_TRUE(std::move(b).Finish());
+  for (int bad = 0; bad < 6; ++bad) {
+    Builder x;
+    const auto a = x.Input(Dense(bad == 0 ? Encoding::kF16 : Encoding::kF32, ShapeOf({5, 3})));
+    const auto c =
+        x.Input(Dense(bad == 1 ? Encoding::kI64 : Encoding::kI32, ShapeOf({bad == 2 ? 2U : 3U})));
+    const auto selected = x.VisibleTopK(a, c, bad == 3 ? 0U : 8U);
+    const auto r = x.Input(Dense(bad == 4 ? Encoding::kF32 : Encoding::kF16, ShapeOf({2, 3})));
+    x.SelectedMask(r, selected, {.raw_cells = bad == 5 ? 1U : 4U, .cells = 5});
+    EXPECT_FALSE(std::move(x).Finish()) << bad;
+  }
+}
+
 TEST(IrTest, VerifyHoldsGgmlsInt32Limits) {
   // RE-037: [n_kv, rows] F32 permuted puts its plane stride (2^31 bytes
   // here) in a dimension GGML takes as int.

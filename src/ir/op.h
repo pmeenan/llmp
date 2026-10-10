@@ -162,6 +162,15 @@
 //       argsort is not stable: compare a port's selection by the multiset of
 //       selected values (ties at the k-th value, ReLU's zeros, padded -inf
 //       cells, a QSA block's shared score, pick either index).
+//   kVisibleTopK (scores F32 [C,T], counts I32 [T]): TopKParams, I32
+//       [k,T]. Clamp count to [0,C]; rank that prefix by descending numeric
+//       value (NaN below every number), ties including signed zero and NaNs
+//       by lower cell. Return the chosen IDs in ascending cell order, then
+//       -1 to k. Every F32 bit pattern is supported; k may exceed C.
+//   kSelectedMask (raw F16 [window,T], ids I32 [k,T]): SelectedMaskParams,
+//       F16 [raw_cells + cells,T]. Copy raw half bits exactly, fill all
+//       remaining cells with -Inf, set compressed IDs in [0,cells) to +0.
+//       Duplicate IDs are idempotent; all other integers are ignored.
 // Routing:
 //   kRoute (logits [E, T], bias? [E], table? [U, V], tokens? [T]):
 //       RouteParams: outputs ids I32 [U, T] and weights F32 [U, T].
@@ -307,6 +316,9 @@ enum class Op : std::uint16_t {
   kRecv,
   // A pattern's result; FusedKind names it.
   kFused,
+  // Exact visibility-bounded selection and its bit-preserving mask.
+  kVisibleTopK,
+  kSelectedMask,
 };
 
 // Each fused kind's sources (in order), outputs and parameters; its
@@ -645,6 +657,11 @@ struct TopKParams {
   std::uint32_t k = 0;
 };
 
+struct SelectedMaskParams {
+  std::uint32_t raw_cells = 0;
+  std::uint32_t cells = 0;
+};
+
 struct ExpertSortParams {
   std::uint32_t experts = 0;
 };
@@ -810,11 +827,12 @@ static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskPa
               kIsParams<GluParams> && kIsParams<ScaleParams> && kIsParams<ClampParams> &&
               kIsParams<FillParams> && kIsParams<SoftcapParams> && kIsParams<SoftMaxParams> &&
               kIsParams<ArgmaxParams> && kIsParams<ArgsortParams> && kIsParams<TopKParams> &&
-              kIsParams<ExpertSortParams> && kIsParams<RouteParams> && kIsParams<HcParams> &&
-              kIsParams<ConcatParams> && kIsParams<PermuteParams> && kIsParams<Conv2dParams> &&
-              kIsParams<UpsampleParams> && kIsParams<PoolParams> && kIsParams<SampleParams> &&
-              kIsParams<CollectiveParams> && kIsParams<NormRopeParams> &&
-              kIsParams<OwnerAttnParams> && kIsParams<HcNormPostParams> && kIsParams<DupUpParams> &&
+              kIsParams<SelectedMaskParams> && kIsParams<ExpertSortParams> &&
+              kIsParams<RouteParams> && kIsParams<HcParams> && kIsParams<ConcatParams> &&
+              kIsParams<PermuteParams> && kIsParams<Conv2dParams> && kIsParams<UpsampleParams> &&
+              kIsParams<PoolParams> && kIsParams<SampleParams> && kIsParams<CollectiveParams> &&
+              kIsParams<NormRopeParams> && kIsParams<OwnerAttnParams> &&
+              kIsParams<HcNormPostParams> && kIsParams<DupUpParams> &&
               kIsParams<ScaledUnaryParams> && kIsParams<HcFoldParams> && kIsParams<GdnConvParams> &&
               kIsParams<GdnHistoryParams> && kIsParams<GdnStepParams> &&
               kIsParams<HeadGateParams> && kIsParams<QsaPoolParams> && kIsParams<QsaAttnParams> &&

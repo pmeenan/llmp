@@ -155,6 +155,27 @@ simulated devices. Where GGML's kernels differ from the definition (a
 fully masked row is 0, not NaN; top-k and argsort order among ties),
 `op.h` says so, and a port's comparison allows for it.
 
+Exact selection has separate primitives (G4b2b2a): `VisibleTopK` reads
+F32 scores and an I32 visible-prefix count per row, clamps the count, ranks
+numeric values above NaNs with lower-cell ties, and returns ascending
+selected IDs followed by -1 padding. `SelectedMask` copies raw F16 mask
+bits, fills padding and compressed cells with literal -Inf, and sets each
+valid selected compressed cell to +0. Duplicate IDs are idempotent; every
+other integer is ignored. These definitions cover all input bit patterns
+without changing ordinary `IndexScore` or `TopK`. Their scalar executors
+are independent sorting and mask construction; the native selection shares
+the existing radix routine, and the native mask uses a duplicate-safe
+membership bitset with one writer per output half. The standalone forms
+do not establish a score recipe, a Lid fusion or a new component version.
+
+`StepContext::VisibleCells` declares an ordinary staged I32 input for each
+owner's completed positions-basis blocks. Counts use the owner's past and
+local row, block ratio, scored width and explicit real-cell capacity;
+the latter excludes padding and dummy storage from `CellKey.capacity`.
+Only zero-based, non-ring, non-frozen positions blocks are accepted.
+The runner refreshes these bytes on every execution, including graph
+replay; visibility does not reduce the state backing required by readers.
+
 Op-set changes after the first review (2026-10-09; still version 1, as
 nothing has been released): products (`kMatMul`, `kMatMulId`) carry
 `ProductParams`, the accumulation (`kDefault`, or `kF32`: GGML's

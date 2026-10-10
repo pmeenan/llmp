@@ -13,9 +13,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <initializer_list>
 #include <limits>
@@ -169,6 +171,79 @@ class ExecTest : public testing::Test {
     return v ? *v : std::vector<std::int64_t>{};
   }
 };
+
+TEST_F(ExecTest, VisibleTopKHasExactPrefixTieNanAndPaddingSemantics) {
+  const auto scores = F({12, 7});
+  const auto counts = I({7});
+  std::vector<TensorId> outputs;
+  for (const auto top : {1U, 2U, 9U, 15U}) {
+    outputs.push_back(b.VisibleTopK(scores, counts, top));
+    b.Output(outputs.back());
+  }
+  ASSERT_TRUE(Finish());
+  const std::vector<std::uint32_t> bits{0x7fc00001, 0xffc12345, 0xff800000, 0x80000001,
+                                        0x80000000, 0,          1,          0x7f800000,
+                                        0x3f800000, 0x3f800000, 0x7fa12345, 0x7f800000};
+  std::vector<float> values;
+  for (int row = 0; row < 7; ++row)
+    for (const auto value : bits) values.push_back(std::bit_cast<float>(value));
+  Set(scores, values);
+  SetInts(counts, {-7, 0, 1, 2, 6, 12, INT32_MAX});
+  ASSERT_TRUE(Run());
+  const std::array<std::vector<std::int64_t>, 7> ranked{std::vector<std::int64_t>{},
+                                                        {},
+                                                        {0},
+                                                        {0, 1},
+                                                        {4, 5, 3, 2, 0, 1},
+                                                        {7, 11, 8, 9, 6, 4, 5, 3, 2, 0, 1, 10},
+                                                        {7, 11, 8, 9, 6, 4, 5, 3, 2, 0, 1, 10}};
+  for (const auto output : outputs) {
+    const auto top = graph->tensor(output).ne(0);
+    std::vector<std::int64_t> expected;
+    for (auto row : ranked) {
+      row.resize(std::min<std::size_t>(row.size(), top));
+      std::ranges::sort(row);
+      row.resize(top, -1);
+      expected.insert(expected.end(), row.begin(), row.end());
+    }
+    EXPECT_EQ(GetInts(output), expected);
+  }
+}
+
+TEST_F(ExecTest, SelectedMaskCopiesHalfBitsAndAcceptsArbitraryAliasedIds) {
+  const auto raw_root = In(Encoding::kF16, {8, 2});
+  const auto raw =
+      b.Permute(b.View(raw_root, ir::ShapeOf({1, 3, 2}), {2, 4, 16, 32}, 2), {2, 0, 1, 3});
+  const auto ids_root = I({8, 2});
+  const auto ids = b.View(ids_root, ir::ShapeOf({5, 2}), {4, 32, 64, 64}, 4);
+  const auto repeated =
+      b.Permute(b.View(ids_root, ir::ShapeOf({1, 5, 2}), {4, 0, 0, 64}, 8), {2, 0, 1, 3});
+  const auto mask = b.SelectedMask(raw, ids, {.raw_cells = 5, .cells = 4});
+  const auto duplicate_mask = b.SelectedMask(raw, repeated, {.raw_cells = 5, .cells = 4});
+  b.Output(mask);
+  b.Output(duplicate_mask);
+  ASSERT_TRUE(Finish());
+  const std::vector<std::uint16_t> halves{0, 0x7d35, 0, 0x8000, 0, 0x0001, 0, 0,
+                                          0, 0xfd21, 0, 0x7c00, 0, 0xfc00, 0, 0};
+  std::vector<std::byte> bytes(halves.size() * 2);
+  std::memcpy(bytes.data(), halves.data(), bytes.size());
+  SetBytes(raw_root, bytes);
+  SetInts(ids_root, {99, -2, 1, 1, 4, INT32_MAX, 99, 99, 99, 3, 0, -1, INT32_MIN, 3, 99, 99});
+  ASSERT_TRUE(Run());
+  const auto read = [&](TensorId id) {
+    const auto data = exec->Bytes(id);
+    std::vector<std::uint16_t> result(data.size() / 2);
+    std::memcpy(result.data(), data.data(), data.size());
+    return result;
+  };
+  EXPECT_EQ(read(mask), (std::vector<std::uint16_t>{0x7d35, 0x8000, 1, 0xfc00, 0xfc00, 0xfc00, 0,
+                                                    0xfc00, 0xfc00, 0xfd21, 0x7c00, 0xfc00, 0xfc00,
+                                                    0xfc00, 0, 0xfc00, 0xfc00, 0}));
+  EXPECT_EQ(read(duplicate_mask),
+            (std::vector<std::uint16_t>{0x7d35, 0x8000, 1, 0xfc00, 0xfc00, 0xfc00, 0, 0xfc00,
+                                        0xfc00, 0xfd21, 0x7c00, 0xfc00, 0xfc00, 0xfc00, 0xfc00, 0,
+                                        0xfc00, 0xfc00}));
+}
 
 // ---------------------------------------------------------------- structure
 

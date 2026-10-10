@@ -826,6 +826,12 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case LlmpOp::kDsv4Compress:
             add(Operation::kSoftMax, kDsv4CompressName, i, {node}, 1);
             break;
+          case LlmpOp::kVisibleTopK:
+            add(Operation::kTopK, kVisibleTopKName, i, {node}, 1);
+            break;
+          case LlmpOp::kSelectedMask:
+            add(Operation::kFill, kSelectedMaskName, i, {node}, 1);
+            break;
           case LlmpOp::kDsv4LidTopK:
             add(Operation::kLightningIndexer, kDsv4LidTopKName, i, {node}, 1);
             break;

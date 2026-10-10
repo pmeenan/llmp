@@ -147,9 +147,25 @@ enum class LlmpOp : std::uint8_t {
   kQRows,
   kGemma4Mask,
   kFlashAttnOwners,
+  kVisibleTopK,
+  kSelectedMask,
 };
 
 class LaunchContext;
+
+// Exact standalone IR selection/mask primitives. Inputs may have arbitrary
+// whole-element strides, including repeated views. The mask launch is duplicate
+// safe and does not rely on the IDs' producer or on uniqueness.
+ggml_tensor* VisibleTopK(ggml_context* context, ggml_tensor* scores, ggml_tensor* counts,
+                         std::int64_t top);
+ggml_tensor* SelectedMask(ggml_context* context, ggml_tensor* raw, ggml_tensor* ids,
+                          std::int64_t raw_cells, std::int64_t cells);
+std::expected<void, KernelFailure> CheckVisibleTopK(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckSelectedMask(const ggml_tensor* node);
+std::expected<std::uint64_t, KernelFailure> PlanVisibleTopK(const LaunchContext& launch,
+                                                            const ggml_tensor* node);
+std::expected<void, KernelFailure> RunVisibleTopK(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunSelectedMask(LaunchContext& launch, ggml_tensor* node);
 
 // Explicit owner attention only. Fixed ten-source layout: Q, mask, four K
 // slots, four V slots; inactive slots are null. Cohort2/3 uses all active

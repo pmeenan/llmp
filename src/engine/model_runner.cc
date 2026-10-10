@@ -73,7 +73,8 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
                       .read = in.read,
                       .ratio = in.ratio,
                       .overlap = in.overlap,
-                      .ring = in.ring};
+                      .ring = in.ring,
+                      .visible_capacity = in.visible_capacity};
   switch (in.kind) {
     case kn::InputKind::kHadamard: {
       const auto values = co::HadamardValues(in.read);
@@ -81,6 +82,7 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
       std::memcpy(out.data(), values.data(), out.size());
       return {};
     }
+    case kn::InputKind::kVisibleCells:
     case kn::InputKind::kPositionPhases:
     case kn::InputKind::kKeptRows:
     case kn::InputKind::kKeptCells:
@@ -88,6 +90,9 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
     case kn::InputKind::kBlockCells:
     case kn::InputKind::kBlockStarts: {
       switch (in.kind) {
+        case kn::InputKind::kVisibleCells:
+          input.kind = co::InputKind::kVisibleCells;
+          break;
         case kn::InputKind::kPositionPhases:
           input.kind = co::InputKind::kPositionPhases;
           break;
@@ -1404,6 +1409,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
       case kn::InputKind::kStoreCells:
       case kn::InputKind::kMask:
       case kn::InputKind::kBlockPositions:
+      case kn::InputKind::kVisibleCells:
       case kn::InputKind::kPositionPhases:
       case kn::InputKind::kKeptRows:
       case kn::InputKind::kKeptCells:

@@ -17,6 +17,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <thread>
@@ -174,6 +175,15 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
             out.push_back(value);
           }
     return out;
+  }
+  template <class T>
+  std::vector<T> ReadTyped(const ggml_tensor* t) {
+    if (!Finish()) return {};
+    std::vector<T> result(ggml_nbytes(t) / sizeof(T));
+    const auto copied = cudaMemcpy(result.data(), t->data, ggml_nbytes(t), cudaMemcpyDeviceToHost);
+    if (copied != cudaSuccess) retirement_failed = true;
+    EXPECT_EQ(copied, cudaSuccess);
+    return result;
   }
   kg::LoweredStep* Lower(ir::Graph graph, std::vector<co::StepInput> inputs,
                          const pl::StepShape& shape, const ex::Registry* selected = nullptr) {
@@ -839,6 +849,165 @@ TEST_F(GgmlLowerDsv4Gpu, HcCarriesAndDownstreamOwnersMatchExistingHelpers) {
         EXPECT_EQ(Read(step->keep[4 + 2 * owner]), Read(output));
         EXPECT_EQ(Read(step->keep[5 + 2 * owner]), Read(normalized));
         first += n;
+      }
+    }
+  }
+}
+
+// Independent scalar ordering of supplied F32 bits. No score arithmetic and
+// no radix-key imitation: numeric descending, NaN last, stable lower-index ties.
+std::vector<std::int32_t> VisibleIds(const std::vector<float>& scores, std::int32_t count,
+                                     std::size_t top) {
+  const auto visible = static_cast<std::size_t>(
+      std::clamp<std::int64_t>(count, 0, static_cast<std::int64_t>(scores.size())));
+  std::vector<std::int32_t> ids(visible);
+  std::iota(ids.begin(), ids.end(), 0);
+  std::ranges::stable_sort(ids, [&](auto a, auto b) {
+    const auto x = scores[static_cast<std::size_t>(a)], y = scores[static_cast<std::size_t>(b)];
+    if (std::isnan(x) || std::isnan(y)) return !std::isnan(x) && std::isnan(y);
+    return x > y;
+  });
+  ids.resize(std::min(top, visible));
+  std::ranges::sort(ids);
+  ids.resize(top, -1);
+  return ids;
+}
+
+TEST_F(GgmlLowerDsv4Gpu, VisibleTopKAndSelectedMaskMatchArbitraryBitsAcrossPersistentReplay) {
+  constexpr std::array<std::uint32_t, 16> bits{
+      0x7fc01234, 0xffc05678, 0x7fa00001, 0xff800000, 0x80000001, 0x807fffff, 0x80000000, 0, 1,
+      0x007fffff, 0x3f800000, 0x3f800000, 0x7f800000, 0x7f800000, 0xbf800000, 0xffa00001};
+  constexpr std::array<std::uint16_t, 5> raw_bits{0x8000, 0x7d35, 0xfd21, 1, 0xfc00};
+  for (const std::int64_t cells : {17, 4097}) {
+    for (const std::int64_t rows : {1, 8, 9}) {
+      std::vector<std::int64_t> tops{1, 2, 17, cells + 3};
+      if (cells == 17 && rows == 1) tops.push_back(65536);
+      for (const auto top : tops) {
+        SCOPED_TRACE(::testing::PrintToString(std::make_tuple(cells, rows, top)));
+        auto* c = Context();
+        const auto score_pitch = static_cast<std::size_t>(cells * 2 + 3);
+        auto* score_root = Place(ggml_new_tensor_2d(c, GGML_TYPE_F32, cells * 2 + 3, rows));
+        auto* scores = ggml_view_2d(c, score_root, cells, rows, score_pitch * 4, 4);
+        scores->nb[0] = 8;
+        kg::TensorArena::Bind(scores, reinterpret_cast<std::uintptr_t>(score_root->data) + 4);
+        auto* count_root = Place(ggml_new_tensor_1d(c, GGML_TYPE_I32, rows * 2 + 1));
+        auto* counts = ggml_view_1d(c, count_root, rows, 4);
+        counts->nb[0] = 8;
+        kg::TensorArena::Bind(counts, reinterpret_cast<std::uintptr_t>(count_root->data) + 4);
+        auto* raw_root = Place(ggml_new_tensor_2d(c, GGML_TYPE_F16, 13, rows));
+        auto* raw = ggml_view_2d(c, raw_root, 5, rows, 26, 2);
+        raw->nb[0] = 4;
+        kg::TensorArena::Bind(raw, reinterpret_cast<std::uintptr_t>(raw_root->data) + 2);
+        auto* selected = Place(kg::VisibleTopK(c, scores, counts, top));
+        auto* mask = Place(kg::SelectedMask(c, raw, selected, 8, cells));
+        ASSERT_TRUE(kg::CheckVisibleTopK(selected));
+        ASSERT_TRUE(kg::CheckSelectedMask(mask));
+        const auto scratch = kg::PlanVisibleTopK(*launch, selected);
+        ASSERT_TRUE(scratch);
+        EXPECT_EQ(*scratch > 0, cells > 2048 && rows <= 8);
+        const auto run = [&](kg::LaunchContext& l) -> std::expected<void, kg::KernelFailure> {
+          if (auto r = kg::RunVisibleTopK(l, selected); !r) return r;
+          return kg::RunSelectedMask(l, mask);
+        };
+        std::optional<std::size_t> captured;
+        for (int revision = 0; revision < 7; ++revision) {
+          SCOPED_TRACE(revision);
+          std::vector<float> score_values(score_pitch * static_cast<std::size_t>(rows), 99);
+          std::vector<std::int32_t> count_values(static_cast<std::size_t>(rows * 2 + 1), -99);
+          std::vector<std::uint16_t> raw_values(static_cast<std::size_t>(rows * 13), 0xffff);
+          std::vector<std::int32_t> expected_ids;
+          std::vector<std::uint16_t> expected_mask(static_cast<std::size_t>((8 + cells) * rows),
+                                                   0xfc00);
+          const std::array<std::int32_t, 7> visible{INT32_MIN,
+                                                    0,
+                                                    1,
+                                                    static_cast<std::int32_t>(cells / 2),
+                                                    static_cast<std::int32_t>(cells - 1),
+                                                    static_cast<std::int32_t>(cells),
+                                                    INT32_MAX};
+          for (std::size_t row = 0; row < static_cast<std::size_t>(rows); ++row) {
+            std::vector<float> logical(static_cast<std::size_t>(cells));
+            for (std::size_t cell = 0; cell < logical.size(); ++cell) {
+              logical[cell] = std::bit_cast<float>(
+                  bits[(cell + row + static_cast<std::size_t>(revision)) % bits.size()]);
+              score_values[row * score_pitch + 1 + cell * 2] = logical[cell];
+            }
+            count_values[1 + row * 2] =
+                visible[(row + static_cast<std::size_t>(revision)) % visible.size()];
+            const auto ids =
+                VisibleIds(logical, count_values[1 + row * 2], static_cast<std::size_t>(top));
+            expected_ids.insert(expected_ids.end(), ids.begin(), ids.end());
+            for (std::size_t i = 0; i < raw_bits.size(); ++i) {
+              const auto v = raw_bits[(i + static_cast<std::size_t>(revision)) % raw_bits.size()];
+              raw_values[row * 13 + 1 + 2 * i] = v;
+              expected_mask[row * static_cast<std::size_t>(8 + cells) + i] = v;
+            }
+            for (const auto id : ids)
+              if (id >= 0)
+                expected_mask[row * static_cast<std::size_t>(8 + cells) + 8 +
+                              static_cast<std::size_t>(id)] = 0;
+          }
+          Upload(score_root, score_values);
+          Upload(count_root, count_values);
+          Upload(raw_root, raw_values);
+          ASSERT_TRUE(run(*launch));
+          EXPECT_EQ(ReadTyped<std::int32_t>(selected), expected_ids);
+          EXPECT_EQ(ReadTyped<std::uint16_t>(mask), expected_mask);
+          if (!captured) {
+            auto graph = launch->Capture(run);
+            ASSERT_TRUE(graph);
+            graphs.push_back(std::move(*graph));
+            captured = graphs.size() - 1;
+          }
+          ASSERT_TRUE(launch->Launch(graphs[*captured]));
+          EXPECT_EQ(ReadTyped<std::int32_t>(selected), expected_ids);
+          EXPECT_EQ(ReadTyped<std::uint16_t>(mask), expected_mask);
+        }
+      }
+    }
+  }
+}
+
+TEST_F(GgmlLowerDsv4Gpu, SelectedMaskAcceptsDuplicateInvalidRepeatedAndCrossRowIds) {
+  constexpr std::int64_t cells = 8193, rows = 3, top = 12, raw_cells = 7;
+  for (const std::size_t col_stride : {0U, 1U, 2U}) {
+    for (const std::size_t row_stride : {0U, 3U, 27U}) {
+      SCOPED_TRACE(::testing::PrintToString(std::make_tuple(col_stride, row_stride)));
+      auto* c = Context();
+      auto* root = Place(ggml_new_tensor_1d(c, GGML_TYPE_I32, 96));
+      auto* ids = ggml_view_2d(c, root, top, rows, row_stride * 4, 4);
+      ids->nb[0] = col_stride * 4;
+      kg::TensorArena::Bind(ids, reinterpret_cast<std::uintptr_t>(root->data) + 4);
+      auto* raw = Place(ggml_new_tensor_2d(c, GGML_TYPE_F16, 3, rows));
+      const std::vector<std::uint16_t> raw_values{0x7d35, 0x8000, 1, 0xfd12, 0,
+                                                  0xfc00, 0x7c00, 2, 0x8001};
+      Upload(raw, raw_values);
+      auto* mask = Place(kg::SelectedMask(c, raw, ids, raw_cells, cells));
+      ASSERT_TRUE(kg::CheckSelectedMask(mask));
+      const auto run = [&](kg::LaunchContext& l) { return kg::RunSelectedMask(l, mask); };
+      auto graph = launch->Capture(run);
+      ASSERT_TRUE(graph);
+      graphs.push_back(std::move(*graph));
+      for (int revision = 0; revision < 3; ++revision) {
+        const std::array<std::int32_t, 12> values{-1,   INT32_MIN, INT32_MAX, 8193, 0,    0,
+                                                  4088, 4089,      4090,      8185, 8192, 8192};
+        std::vector<std::int32_t> source(96);
+        for (std::size_t i = 0; i < source.size(); ++i)
+          source[i] = values[(i + static_cast<std::size_t>(revision)) % values.size()];
+        Upload(root, source);  // writes through the same root that the aliased view reads
+        std::vector<std::uint16_t> expected(static_cast<std::size_t>((raw_cells + cells) * rows),
+                                            0xfc00);
+        for (std::size_t row = 0; row < rows; ++row) {
+          std::copy_n(raw_values.begin() + static_cast<std::ptrdiff_t>(row * 3), 3,
+                      expected.begin() + static_cast<std::ptrdiff_t>(row * (raw_cells + cells)));
+          for (std::size_t i = 0; i < top; ++i) {
+            const auto id = source[1 + row * row_stride + i * col_stride];
+            if (id >= 0 && id < cells)
+              expected[row * (raw_cells + cells) + raw_cells + static_cast<std::size_t>(id)] = 0;
+          }
+        }
+        ASSERT_TRUE(launch->Launch(graphs.back()));
+        EXPECT_EQ(ReadTyped<std::uint16_t>(mask), expected);
       }
     }
   }
