@@ -39,6 +39,90 @@ one Spark and on two.
 
 ---
 
+## D-114: The model archive: source checkpoints on the long-term store, one directory per commit with a manifest, an event-sourced catalog; import straight from it, install into it with libcurl  (2026-10-10, status: accepted by the owner, 2026-10-10 (requirements, the token in an ignored `.env`, and libcurl "is appropriate"); the formats are proposed for review with their slice; amends D-054's identity rule, its staging default and its artifact archive's use; uses D-063's `checkpoints` role; on-disk public interfaces under D-016 and D-062)
+
+**Decision.** [model-archive.md](model-archive.md) is the specification.
+
+- **The archive is the `checkpoints` role** (D-063), pointed at a
+  long-term store when one is configured, else node-local with the same
+  layout. Only import and install jobs and the archive tools touch it;
+  the runtime never does (D-054).
+- **Layout.** `<root>/hf/<org>/<repo>@<full commit>/` holds the
+  repository's own files (no cache links: the NAS refuses symbolic
+  links) and `llmp-archive.json`, the revision manifest, written last.
+  A revision may hold a subset of its repository's files. Files arrive
+  under `<path>.llmp-partial.<writer>`, are verified against the Hub
+  while written, and are renamed into place; a partial's modification
+  time is its writer's claim, and a claim idle for 15 minutes may be
+  adopted by renaming it, then resumed with HTTP ranges. No file locks.
+- **The manifest** (`llmp-archive-checkpoint`, version 1) lists every
+  file of the commit with size, blob ID, SHA-256 and whether it is
+  present; the Hub's license, gated flag and base-model relations; and
+  each variant's container, scheme, encodings, bits and quantizer
+  detected from the files' headers. It is the identity record that
+  staging and import verify against.
+- **The catalog** is derived: immutable events (`catalog/events/`),
+  immutable content-addressed packs, and `catalog.json` and `catalog.md`
+  folded from them. A file is deleted only after a pack holding all its
+  events has been published, so concurrent writers on SMB lose nothing;
+  it relates families, models, variants and revisions, records imports
+  (artifact ID, format version, importer), stages and installs per host
+  (owner environment, read by no runtime), and is rebuilt from the
+  manifests if lost.
+- **Import from the archive.** `llmp import` takes an archived or staged
+  revision, verifies every file it reads against the manifest, and from
+  the archive reads each needed byte once, hashing and copying in one
+  pass; a mismatch publishes nothing. Staging on a Spark's NVMe (one NAS
+  read, then the direct link to the peer, verified on each) is for
+  repeated testing. The artifact format does not change: its `source`
+  hashes tie an artifact to its revision.
+- **Install into the archive.** `llmp install <org/repo>[@rev]` fetches
+  missing files into the archive under the same protocol, writes the
+  manifest and events, then imports. **libcurl** is its HTTPS client
+  (license `curl`, permissive: an incorporated implementation in the
+  core under D-017 and D-091), in the install job only, never the
+  runtime; its provisioning (the locked source with an Apache-2.0 TLS
+  library, or the platform's libcurl, which would extend D-017's platform
+  exception) is chosen and recorded when M5 builds it. The token comes
+  from `HF_TOKEN` or a credential file the configuration names by path;
+  it is never logged, printed, stored in the archive or put on a command
+  line, and goes only to the Hub's host.
+- **Prepared artifacts are not archived** for now: an artifact is about
+  as large as its source (D-108), so a copy from the NAS costs the same
+  read as an import; the format is experimental (D-018); peer replication
+  (D-054) serves a second node.
+- **Versions.** Each file kind has its own `format_version`, 1 today;
+  readers refuse others, ignore unknown keys and event kinds, and
+  writers preserve them; a change of meaning, names, layout or claims is
+  a new version and a decision.
+
+**Context.** The owner (2026-10-10): a large collection will be
+downloaded to the NAS ahead of use; imports outside our own testing are
+rare and run straight from the archive; install stores the Hugging Face
+assets in the archive; a meta-index on the NAS relates quantizations and
+versions without asking the Hub or crawling directories. The share
+([environment.md](environment.md#long-term-model-store-2026-09-22)) has
+no symbolic links, working rename-over, unreliable locks and about
+118 MB/s per client. Interim Python tools (`tools/archive-model`,
+`archive-catalog`, `stage-model`, standard library only, speaking the
+same two Hub requests as the native install) write exactly this format
+so downloads start before M5.
+
+**Consequences.** D-054 is amended in three places: an archive manifest
+on the store is the identity recorded at download and is verified
+against (trusting the environment, D-073 and D-105 as amended; D-054's
+"never against hash files in the same store" no longer applies to it);
+direct import from the store is allowed and is the default for one-off
+imports, with staging for repeated testing; and its artifact archive role
+stays unused. M3.6's importer slice N4 adds import from an archive; M5's
+install fetches into it. AGENTS.md gains the download-once rule.
+
+**Reopen if** the share gains reliable links or locks worth using, an
+origin other than Hugging Face is needed, the artifact format gains
+compatibility guarantees and an import is measured to cost much more than
+a copy, or archived manifests need protection the environment does not
+give.
+
 ## D-113: Prepared-artifact format version 1: tensor formats and parts in the index, the model spec as a hashed document of its own, applied folds and relayouts, the importer's identity; v0 stays readable and other versions are refused  (2026-10-09, status: proposed by M3.6's slice N1, for review with it; implements D-108's and D-109's new format version; amends D-056's manifest and index (descriptors, model block, converter, transformations) beside v0, keeping its profile, container, groups, chunks and page-in; adds version 1 of D-089's composition)
 
 **Decision.** [artifact-format.md](artifact-format.md#version-1) holds the
@@ -6097,7 +6181,7 @@ retains preexisting caches. Prepared savings do not close the cold-switch
 adoption gate; see the [final factor](experiments/partial-weight-eviction/README.md#final-current-source-selection).
 
 
-## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041; role paths and keys in D-063)
+## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041; role paths and keys in D-063; its identity rule, staging default and artifact archive amended by D-114's model archive, 2026-10-10)
 
 **Decision.** Model storage has three roles, each a configured path; the
 paths must not overlap:

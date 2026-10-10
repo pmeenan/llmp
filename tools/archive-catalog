@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Read, compact, rebuild and annotate the model archive's catalog (docs/model-archive.md).
+
+    archive-catalog show [WORD...]          inventory rows whose text contains every WORD
+    archive-catalog compact                 fold events into catalog.json and catalog.md
+    archive-catalog rebuild                 re-derive revision events from every manifest, then compact
+    archive-catalog relation REPO BASE RELATION   override a repository's base (BASE "-" removes it)
+    archive-catalog family REPO LABEL       label the family REPO roots, or join REPO to one
+
+The archive defaults to $LLMP_ARCHIVE, else /mnt/llm/checkpoints (owner
+environment); --archive DIR overrides it. `show` reads catalog.json and
+compacts first only if it is missing.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import os
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import llmp_archive as arc  # noqa: E402
+
+TOOL = f"archive-catalog/{arc.TOOL_VERSION}"
+STALE_PARTIAL = 24 * 3600
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(prog="archive-catalog", description=__doc__.split("\n\n")[0])
+    p.add_argument("--archive", type=pathlib.Path,
+                   default=pathlib.Path(os.environ.get("LLMP_ARCHIVE", "/mnt/llm/checkpoints")))
+    sub = p.add_subparsers(dest="command", required=True)
+    show = sub.add_parser("show")
+    show.add_argument("words", nargs="*")
+    sub.add_parser("compact")
+    sub.add_parser("rebuild")
+    rel = sub.add_parser("relation")
+    rel.add_argument("repo")
+    rel.add_argument("base")
+    rel.add_argument("relation", nargs="?", choices=arc.RELATIONS)
+    fam = sub.add_parser("family")
+    fam.add_argument("repo")
+    fam.add_argument("label")
+    return p.parse_args(argv)
+
+
+def show(root: pathlib.Path, words: list[str]) -> int:
+    path = arc.catalog_dir(root) / "catalog.json"
+    try:
+        snapshot = arc.loads_strict(arc.read_capped(path, arc.PACK_CAP), str(path))
+    except FileNotFoundError:
+        snapshot = arc.compact(root)
+    rows = arc.variant_rows(snapshot)
+    words = [w.lower() for w in words]
+    shown = 0
+    for r in rows:
+        text = " ".join(str(v) for v in r.values()).lower()
+        if all(w in text for w in words):
+            bits = f"{r['bits']:.2f}" if isinstance(r["bits"], float) else (r["bits"] or "?")
+            present = {True: "present", False: "absent", "partial": "partial"}[r["present"]]
+            print(f"{r['repo']}@{r['commit'][:8]}  {r['variant']}  {r['container']} {r['scheme']} "
+                  f"{bits} bits  {r['bytes'] / 1e9:.1f} GB  {present}  model {r['model']}  family {r['family']}"
+                  + (f"  staged {r['staged']}" if r["staged"] else ""))
+            shown += 1
+    print(f"{shown} of {len(rows)} variants (catalog generated {snapshot['generated']})")
+    return 0
+
+
+def rebuild(root: pathlib.Path) -> int:
+    report = []
+    current = {}
+    path = arc.catalog_dir(root) / "catalog.json"
+    events, _, _ = arc.read_all_events(root, report)
+    for e in events.values():
+        if e["kind"] == "revision" and isinstance(e["body"].get("manifest"), dict):
+            m = e["body"]["manifest"]
+            current[(m.get("repo"), m.get("commit"))] = e["body"].get("manifest_sha256")
+    written = 0
+    base = root / arc.ORIGIN
+    for org in sorted(p for p in base.iterdir() if p.is_dir()) if base.is_dir() else []:
+        for rev in sorted(p for p in org.iterdir() if p.is_dir()):
+            for partial in rev.rglob(f"*{arc.PARTIAL}*"):
+                try:
+                    if arc.now() - partial.stat().st_mtime > STALE_PARTIAL:
+                        report.append(f"stale partial file (left for the owner): {partial}")
+                except FileNotFoundError:
+                    pass
+            try:
+                m = arc.read_manifest(rev)
+            except arc.ArchiveError as error:
+                report.append(f"invalid manifest, not catalogued: {error}")
+                continue
+            if m is None:
+                report.append(f"no manifest (in progress or abandoned): {rev}")
+                continue
+            digest = arc.manifest_sha256(m)
+            if current.get((m["repo"], m["commit"])) != digest:
+                arc.write_event(root, "revision", {"manifest": m, "manifest_sha256": digest,
+                                                   "path": arc.relative_revision_path(m["repo"], m["commit"])},
+                                TOOL)
+                written += 1
+    arc.compact(root, report, force_pack=True)
+    report.append(f"wrote {written} revision events")
+    for line in report:
+        print(f"archive-catalog: {line}")
+    return 0
+
+
+def main(argv=None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        if args.command == "show" and not (args.archive / arc.ROOT_MARKER).exists() and (
+                not args.archive.exists() or not any(args.archive.iterdir())):
+            print(f"archive-catalog: no archive at {args.archive} yet: nothing is archived "
+                  "(or the share is not mounted; check that its directory lists)")
+            print("0 of 0 variants")
+            return 0
+        root = arc.open_root(args.archive, create=False)
+        if args.command == "show":
+            return show(root, args.words)
+        if args.command == "compact":
+            report = []
+            arc.compact(root, report)
+            for line in report:
+                print(f"archive-catalog: {line}")
+            return 0
+        if args.command == "rebuild":
+            return rebuild(root)
+        if args.command == "relation":
+            arc.check_repo(args.repo)
+            base = None if args.base == "-" else arc.check_repo(args.base)
+            if base and not args.relation:
+                print("archive-catalog: relation needs one of " + ", ".join(arc.RELATIONS), file=sys.stderr)
+                return 2
+            arc.write_event(root, "relation", {"repo": args.repo, "base": base, "relation": args.relation}, TOOL)
+        elif args.command == "family":
+            arc.write_event(root, "family", {"repo": arc.check_repo(args.repo), "label": args.label}, TOOL)
+        arc.compact(root)
+        return 0
+    except (arc.ArchiveError, OSError) as error:
+        print(f"archive-catalog: error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

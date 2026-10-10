@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Archive a pinned Hugging Face model revision on the model archive (docs/model-archive.md).
+
+    archive-model ORG/REPO[@REV] [--include GLOB]... [--exclude GLOB]... [--all-variants]
+                  [--dry-run] [--latest] [--repair] [--no-wait] [--no-compact]
+                  [--from DIR [--move]] [--archive DIR] [--init-root] [--jobs N]
+
+Downloads every selected file of the revision into
+<archive>/hf/<org>/<repo>@<commit>/, verifying each against the Hub's size
+and SHA-256 (or Git blob ID), then writes the revision's manifest and a
+catalog event and compacts the catalog. What is already archived is
+skipped; a rerun resumes. Without @REV, a repository already archived uses
+its newest archived commit (--latest resolves the Hub's main instead).
+--from copies (or with --move, renames on the same file system) a local
+copy in, verified against the same Hub identities. --repair rehashes the
+revision's present files against the manifest and fetches bad ones again.
+
+The token comes from HF_TOKEN in the environment (mise exports it from the
+repository's ignored .env) and is never printed. The archive defaults to
+$LLMP_ARCHIVE, else /mnt/llm/checkpoints (owner environment). A root that
+does not exist is an error unless --init-root makes it (once, on a new
+archive; its parent directory must exist). Exit codes:
+0 archived, 1 error, 2 usage, 3 files still held by another writer.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import concurrent.futures
+import os
+import pathlib
+import signal
+import threading
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import llmp_archive as arc  # noqa: E402
+import llmp_archive_detect as detect  # noqa: E402
+import llmp_hub as hublib  # noqa: E402
+
+TOOL = f"archive-model/{arc.TOOL_VERSION}"
+DEFAULT_ARCHIVE = "/mnt/llm/checkpoints"
+WAIT_POLL = 30
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(prog="archive-model", description=__doc__.split("\n\n")[0])
+    p.add_argument("repo", help="ORG/REPO[@REVISION]: a commit, branch or tag")
+    p.add_argument("--include", action="append", default=[], metavar="GLOB",
+                   help="weight files to take (repository paths); repeatable")
+    p.add_argument("--exclude", action="append", default=[], metavar="GLOB")
+    p.add_argument("--all-variants", action="store_true", help="take every GGUF variant")
+    p.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    p.add_argument("--latest", action="store_true", help="resolve the Hub's main even if archived")
+    p.add_argument("--repair", action="store_true", help="rehash present files, fetch bad ones again")
+    p.add_argument("--no-wait", action="store_true", help="exit 3 rather than wait for other writers")
+    p.add_argument("--no-compact", action="store_true", help="write the event but do not compact")
+    p.add_argument("--from", dest="source", type=pathlib.Path, help="a local copy to bring in")
+    p.add_argument("--init-root", action="store_true",
+                   help="make a new archive at --archive (without it a missing root is an error: an "
+                        "unmounted share must not be filled on the local disk)")
+    p.add_argument("--move", action="store_true", help="with --from on the archive's file system: rename")
+    p.add_argument("--archive", type=pathlib.Path,
+                   default=pathlib.Path(os.environ.get("LLMP_ARCHIVE", DEFAULT_ARCHIVE)))
+    p.add_argument("--jobs", type=int, default=2, help="files fetched at once (default 2)")
+    p.add_argument("--endpoint", default=hublib.ENDPOINT, help=argparse.SUPPRESS)
+    args = p.parse_args(argv)
+    if args.move and not args.source:
+        p.error("--move needs --from")
+    args.repo, _, args.revision = args.repo.partition("@")
+    try:
+        arc.check_repo(args.repo)
+    except arc.ArchiveError as error:
+        p.error(str(error))
+    if args.jobs < 1:
+        p.error("--jobs must be at least 1")
+    return args
+
+
+def log(message: str) -> None:
+    print(f"archive-model: {message}", flush=True)
+
+
+def main(argv=None, hub=None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    def interrupt(signum, frame):
+        if arc.cancel.is_set():  # the second one means it
+            raise KeyboardInterrupt
+        arc.cancel.set()  # every transfer stops at its next chunk and releases its partial file
+    previous = {}
+    if threading.current_thread() is threading.main_thread():
+        for number in (signal.SIGTERM, signal.SIGINT):
+            previous[number] = signal.signal(number, interrupt)
+    scrub = lambda text: text  # noqa: E731
+    try:
+        hub = hub or hublib.Hub(args.endpoint, hublib.token_from_env())
+        scrub = hub.scrub
+        return run(args, hub)
+    except (arc.ArchiveError, hublib.HubError, OSError) as error:
+        print(f"archive-model: error: {scrub(str(error))}", file=sys.stderr)
+        return 1
+    except Exception as error:  # noqa: BLE001 (no traceback: it could carry a request's text)
+        print(f"archive-model: internal error: {type(error).__name__}: {scrub(str(error))}", file=sys.stderr)
+        return 1
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def run(args, hub) -> int:
+    root = args.archive
+    if args.dry_run:
+        if (root / arc.ROOT_MARKER).exists():
+            arc.open_root(root, create=False)
+    else:
+        arc.open_root(root, create=args.init_root)
+    repo, revision = args.repo, args.revision
+    archived = arc.list_revisions(root, repo) if (root / arc.ROOT_MARKER).exists() else []
+    manifest = None
+    if not revision and archived and not args.latest:
+        commit, manifest = archived[0]
+        repo = manifest["repo"]
+        files = [dict(e, present=False) for e in manifest["files"]]
+        hub_info = manifest["hub"]
+        log(f"{repo} is archived at {commit}; using that commit (--latest to check the Hub)")
+    else:
+        requested = revision or "main"
+        if revision and arc.COMMIT_RE.match(revision):
+            existing = arc.read_manifest(arc.revision_dir(root, repo, revision)) if archived else None
+        else:
+            existing = None
+        if existing:
+            commit, manifest = revision, existing
+            repo = manifest["repo"]
+            files = [dict(e, present=False) for e in manifest["files"]]
+            hub_info = manifest["hub"]
+        else:
+            info = hub.revision_info(repo, requested)
+            commit = arc.check_commit(str(info.get("sha", "")))
+            canonical = info.get("id") if isinstance(info.get("id"), str) else repo
+            repo = arc.check_repo(canonical)
+            files = arc.hub_files(info)
+            hub_info = arc.hub_summary(info, requested)
+            manifest = arc.read_manifest(arc.revision_dir(root, repo, commit)) if (
+                root / arc.ROOT_MARKER).exists() else None
+            if manifest:
+                hub_info = manifest["hub"]
+    directory = arc.revision_dir(root, repo, commit)
+    chosen, problems = arc.select_files(files, args.include, args.exclude, args.all_variants)
+    if problems:
+        for problem in problems:
+            print(f"archive-model: {problem}", file=sys.stderr)
+        return 2 if any("--include" in p for p in problems) else 1
+    listed = {e["path"]: e for e in (manifest or {}).get("files", [])}
+
+    def intact(entry) -> bool:  # the manifest lists it present and it is on the share at its size
+        if not listed.get(entry["path"], {}).get("present"):
+            return False
+        try:
+            return os.stat(directory / entry["path"]).st_size == entry["size"]
+        except FileNotFoundError:
+            return False
+    missing = [e for e in chosen if not intact(e)]
+    if args.repair:
+        missing = chosen
+    total = sum(e["size"] for e in missing)
+    log(f"{repo}@{commit}: {len(chosen)} files selected, {len(missing)} to fetch or check "
+        f"({total / 1e9:.2f} GB) into {directory}")
+    if args.dry_run:
+        for e in missing:
+            print(f"  {e['size']:>15,}  {e['path']}")
+        return 0
+    if not missing and manifest:
+        log("already archived; nothing to do")
+        return 0
+    arc.make_dirs(root, directory)
+    writer = arc.writer_id()
+    if args.repair:
+        for e in missing:
+            final = directory / e["path"]
+            recorded = listed.get(e["path"], e)
+            if final.is_file() and recorded.get("sha256"):
+                try:
+                    arc.hash_file(final, recorded)
+                except arc.Mismatch as error:
+                    log(f"{error}; fetching it again")
+                    final.unlink()
+    done, busy, errors = {}, [], []
+    via = "move" if args.move else ("copy" if args.source else "hub")
+
+    def fetch(entry):
+        try:
+            arc.ensure_root(root)  # an unmounted share must not be recreated on the local disk
+            return fetch_one(entry)
+        except (arc.ArchiveError, hublib.HubError, OSError) as error:
+            return entry, "error", hub.scrub(str(error))
+
+    def fetch_one(entry):
+        if args.source:
+            src = args.source / entry["path"]
+            if not src.is_file():
+                raise arc.ArchiveError(f"{entry['path']}: not in {args.source}")
+            if args.move:
+                final = directory / entry["path"]
+                if final.is_file() and final.stat().st_size == entry["size"]:
+                    return entry, "present", None
+                digest = arc.hash_file(src, entry)
+                arc.make_dirs(directory, final.parent)
+                os.rename(src, final)
+                return entry, "done", digest
+            opener = arc.file_opener(src)
+        else:
+            def opener(start, path=entry["path"]):
+                return hub.open_file(repo, commit, path, start)
+        status, digest = arc.transfer(directory, entry, opener, writer, log=log)
+        return entry, status, digest
+
+    def record(entry, status, digest):
+        if status == "busy":
+            busy.append(entry)
+            return
+        if status == "error":
+            errors.append(f"{entry['path']}: {digest}")
+            return
+        final = directory / entry["path"]
+        if status == "present":
+            if entry.get("sha256") is None:  # a small file another writer finished: hash it once
+                digest = arc.hash_file(final, entry)
+            else:
+                digest = entry["sha256"]
+            done[entry["path"]] = {"sha256": digest, "fetched": listed.get(entry["path"], {}).get(
+                "fetched") or {"time": arc.utc(), "host": arc.host_name(), "tool": TOOL, "via": "found"}}
+            return
+        done[entry["path"]] = {"sha256": digest, "fetched": {"time": arc.utc(), "host": arc.host_name(),
+                                                             "tool": TOOL, "via": via}}
+        log(f"{entry['path']}: verified ({entry['size']:,} bytes)")
+
+    pending = list(missing)
+    while pending:
+        busy.clear()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            for entry, status, digest in pool.map(fetch, pending):
+                record(entry, status, digest)
+        if not busy or errors or arc.cancel.is_set():
+            break
+        if args.no_wait:
+            break
+        log(f"waiting for another writer's {len(busy)} files")
+        arc.sleep(WAIT_POLL)
+        pending = list(busy)
+    if done:  # what finished is listed even when something else failed
+        write(args, root, repo, commit, hub_info, files, done, directory, writer)
+    if errors or arc.cancel.is_set():
+        for line in errors[:10]:
+            print(f"archive-model: error: {line}", file=sys.stderr)
+        if len(errors) > 10:
+            print(f"archive-model: error: ... and {len(errors) - 10} more files failed", file=sys.stderr)
+        if not done and not manifest:
+            arc.prune_empty(directory)
+            try:
+                directory.parent.rmdir()  # the organisation's directory, if this created it
+            except OSError:
+                pass
+        if arc.cancel.is_set():
+            print("archive-model: interrupted; partial files are released, rerun to resume", file=sys.stderr)
+        log(f"{len(done)} files archived, {len(errors)} failed" + (f", {len(busy)} held by another writer"
+                                                                    if busy else "") + "; rerun to resume")
+        return 1
+    if busy:
+        log(f"{len(busy)} files are held by another writer; rerun later")
+        return 3
+    log(f"archived {repo}@{commit}")
+    return 0
+
+
+def write(args, root, repo, commit, hub_info, files, done, directory, writer) -> None:
+    arc.ensure_root(root)
+    manifest = arc.write_manifest(directory, lambda existing: arc.merge_manifest(
+        existing, repo, commit, hub_info, files, done, directory, detect.detect), writer)
+    try:
+        arc.write_event(root, "revision", {"manifest": manifest, "manifest_sha256": arc.manifest_sha256(manifest),
+                                           "path": arc.relative_revision_path(repo, commit)}, TOOL)
+    except (arc.ArchiveError, OSError) as error:
+        raise arc.ArchiveError(f"{repo}@{commit}: the files and manifest are archived but the catalog event "
+                               f"was not written ({error}); run `mise run archive:catalog -- rebuild`") from None
+    if not args.no_compact:
+        report = []
+        try:
+            arc.compact(root, report)
+        except (arc.ArchiveError, OSError) as error:  # the catalog is a cache; the archive is complete
+            report.append(f"catalog not compacted ({error}); `mise run archive:catalog -- compact` retries")
+        for line in report:
+            log(line)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

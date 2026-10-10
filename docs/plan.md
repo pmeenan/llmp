@@ -1578,7 +1578,12 @@ each is checked against the design as M3.6 proceeds.
       (D-113, [artifact-format.md](artifact-format.md#version-1)); the
       container readers ([as built](engine-components.md#the-importer)).
       The fold catalog, the writer, the CLI, the re-import and the gate
-      remain.
+      remain. *2026-10-10 (D-114):* the writer and `llmp import` slice (N4)
+      also imports straight from the [model archive](model-archive.md) or a
+      staged copy, verifying every file against its manifest and reading
+      each needed byte once, and records an `import` event in its catalog;
+      the interim archive tools landed. Native `llmp install` (fetching
+      into the archive with libcurl) stays in M5's importer item.
 - [ ] **Qwen-Image-2.1 onto the shared blocks**, with its rounding policy.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where its
@@ -1616,7 +1621,8 @@ each is checked against the design as M3.6 proceeds.
   against F16 measured and reported (an opt-in mode carries no parity
   claim).
 - **Import:** the native importer imports every migrated model from its
-  source checkpoint into the new format version, and each passes the
+  source checkpoint (archived or staged, verified against its archive
+  manifest, D-114) into the new format version, and each passes the
   admission gate and the gates above; the MLX checkpoint of a migrated
   architecture, `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` (chosen
   with the owner, 2026-10-09), imports and passes the admission
@@ -1770,7 +1776,9 @@ M3.
       Confined import jobs take sources only from the configured stores
       (the `checkpoints` role or the long-term store; D-054, D-063) or the
       Hugging Face Hub (resumable and verified; the token comes from a
-      `.env` or config file and is never logged). Hard-linked and symlinked
+      `.env` or config file and is never logged); `llmp install` fetches
+      into the [model archive](model-archive.md) with libcurl, writes its
+      manifest and catalog events, then imports (D-114). Hard-linked and symlinked
       sources are rejected, and the user docs say to copy them in or
       download with `--local-dir` (D-063). Removal waits for
       quiescence. Jobs keep their records, locks and grants and report

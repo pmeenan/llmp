@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Stage an archived revision on this host's model store, then optionally on a peer.
+
+    stage-model ORG/REPO[@COMMIT] [--variant GLOB]... [--dest DIR] [--host NAME]
+                [--peer HOST [--peer-address ADDR] [--peer-dest DIR]] [--archive DIR]
+    stage-model ORG/REPO@COMMIT --adopt DIR      verify an existing local copy, write its manifest
+
+Run on the receiving Spark (docs/model-archive.md, "Staging to the
+Sparks"). Copies the selected variants (globs over variant IDs; all when
+none is given) and the revision's other present files from the archive to
+<dest>/<org>/<repo>@<first 8 of the commit>/, hashing each against the
+archive's manifest while copying, and writes the manifest last, byte for
+byte. --peer then sends the verified files over SSH (AES-128-GCM, to
+--peer-address, the direct link) with rsync, has the peer rehash them with
+sha256sum -c and sends the manifest last. Records `stage` events. A rerun
+keeps what already matches. --dest defaults to ~/.local/share/llmp/models
+(owner environment).
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import argparse
+import fnmatch
+import os
+import pathlib
+import shlex
+import subprocess
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import llmp_archive as arc  # noqa: E402
+
+TOOL = f"stage-model/{arc.TOOL_VERSION}"
+CIPHER = "aes128-gcm@openssh.com"
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(prog="stage-model", description=__doc__.split("\n\n")[0])
+    p.add_argument("repo", help="ORG/REPO[@COMMIT]; without a commit, the newest archived one")
+    p.add_argument("--variant", action="append", default=[], metavar="GLOB")
+    p.add_argument("--dest", type=pathlib.Path, default=pathlib.Path.home() / ".local/share/llmp/models")
+    p.add_argument("--host", default=arc.host_name(), help="this host's name in the catalog")
+    p.add_argument("--peer")
+    p.add_argument("--peer-address")
+    p.add_argument("--peer-dest", help="the peer's store (default: the same path as --dest)")
+    p.add_argument("--adopt", type=pathlib.Path)
+    p.add_argument("--archive", type=pathlib.Path,
+                   default=pathlib.Path(os.environ.get("LLMP_ARCHIVE", "/mnt/llm/checkpoints")))
+    args = p.parse_args(argv)
+    args.repo, _, args.commit = args.repo.partition("@")
+    return args
+
+
+def log(message: str) -> None:
+    print(f"stage-model: {message}", flush=True)
+
+
+def selected(manifest: dict, globs: list[str]) -> list[dict]:
+    variants = manifest["variants"]
+    chosen = [v for v in variants if not globs or any(fnmatch.fnmatchcase(v["id"], g) for g in globs)]
+    if globs and not chosen:
+        raise arc.ArchiveError("no variant matches; the revision has: " + ", ".join(v["id"] for v in variants))
+    weight = {p for v in variants for p in v["files"]}
+    want = {p for v in chosen for p in v["files"]}
+    files = []
+    for e in manifest["files"]:
+        if e["path"] in want or (e["path"] not in weight and e["present"]):
+            if not e["present"]:
+                raise arc.ArchiveError(f"{e['path']}: not present on the archive; archive it first")
+            files.append(e)
+    return files
+
+
+def find_revision(root: pathlib.Path, repo: str, commit: str) -> tuple[pathlib.Path, dict]:
+    if commit:
+        directory = arc.revision_dir(root, repo, commit)
+        manifest = arc.read_manifest(directory)
+        if manifest is None:
+            raise arc.ArchiveError(f"{repo}@{commit} is not archived")
+        return directory, manifest
+    revisions = arc.list_revisions(root, repo)
+    if not revisions:
+        raise arc.ArchiveError(f"{repo} is not archived")
+    commit, manifest = revisions[0]
+    return arc.revision_dir(root, manifest["repo"], commit), manifest
+
+
+def run(cmd: list[str], stdin: bytes | None = None) -> None:
+    env = {k: v for k, v in os.environ.items() if k not in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")}
+    result = subprocess.run(cmd, input=stdin, check=False, env=env)  # the Hub token is not for ssh or rsync
+    if result.returncode != 0:
+        raise arc.ArchiveError(f"{shlex.join(cmd[:3])} ... exited {result.returncode}")
+
+
+def main(argv=None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    try:
+        root = arc.open_root(args.archive, create=False)
+        source, manifest = find_revision(root, arc.check_repo(args.repo), args.commit)
+        repo, commit = manifest["repo"], manifest["commit"]
+        manifest_bytes = arc.read_capped(source / arc.MANIFEST, arc.MANIFEST_CAP)
+        files = selected(manifest, args.variant)
+        org, name = repo.split("/")
+        relative = pathlib.PurePosixPath(org, f"{name}@{commit[:8]}")
+        target = args.adopt or args.dest / relative
+        writer = arc.writer_id(args.host)
+        variants = [v["id"] for v in manifest["variants"]
+                    if not args.variant or any(fnmatch.fnmatchcase(v["id"], g) for g in args.variant)]
+        if not args.adopt:
+            target.mkdir(parents=True, exist_ok=True)  # local; the archive's directories are never made here
+        for e in files:
+            final = target / e["path"]
+            if args.adopt:
+                arc.hash_file(final, e)
+                log(f"{e['path']}: verified in place")
+                continue
+            if final.is_file() and final.stat().st_size == e["size"]:
+                arc.hash_file(final, e)  # local and fast; a mismatch raises and names it
+                continue
+            status, _ = arc.transfer(target, e, arc.file_opener(source / e["path"]), writer, log=log)
+            if status == "busy":
+                raise arc.ArchiveError(f"{e['path']}: another stage of this revision is running here")
+            log(f"{e['path']}: staged and verified ({e['size']:,} bytes)")
+        arc.atomic_write(target / arc.MANIFEST, manifest_bytes, writer)
+        arc.write_event(root, "stage", {"host": args.host, "repo": repo, "commit": commit, "path": str(target),
+                                        "variants": variants}, TOOL)
+        log(f"staged {repo}@{commit} at {target}")
+        if args.peer:
+            address = args.peer_address or args.peer
+            peer_target = f"{args.peer_dest or args.dest}/{relative}"
+            ssh = f"ssh -c {CIPHER}"
+            run(["ssh", "-c", CIPHER, address, f"mkdir -p {shlex.quote(peer_target)}"])
+            listing = "".join(f"{e['path']}\n" for e in files).encode()
+            run(["rsync", "-rlpc", "--partial", "--files-from=-", "-e", ssh, f"{target}/",
+                 f"{address}:{peer_target}/"], listing)
+            sums = "".join(f"{e['sha256']}  {e['path']}\n" for e in files).encode()
+            run(["ssh", "-c", CIPHER, address, f"cd {shlex.quote(peer_target)} && nice sha256sum -c --quiet -"],
+                sums)
+            run(["rsync", "-p", "-e", ssh, str(target / arc.MANIFEST), f"{address}:{peer_target}/"])
+            arc.write_event(root, "stage", {"host": args.peer, "repo": repo, "commit": commit,
+                                            "path": peer_target, "variants": variants}, TOOL)
+            log(f"staged and verified on {args.peer} at {peer_target}")
+        arc.compact(root)
+        return 0
+    except (arc.ArchiveError, OSError) as error:
+        print(f"stage-model: error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

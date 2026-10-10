@@ -13,6 +13,14 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- The model archive (D-114, docs/model-archive.md): source checkpoints
+  on a long-term store as one directory per pinned commit with a verified
+  manifest, and a catalog relating quantizations and versions, written by
+  the new `tools/archive-model`, `tools/archive-catalog` and
+  `tools/stage-model` (`mise run archive`, `archive:catalog`, `stage`).
+  New on-disk formats, each at version 1; nothing in the runtime reads
+  them yet.
+
 - Prepared-artifact format version 1 (D-113), read beside version 0:
   each tensor's format and part in the index in place of v0's
   library-named descriptors, the model spec as a hashed `spec.json`, the

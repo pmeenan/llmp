@@ -61,6 +61,18 @@ run = "python3 tools/check"
 description = "check, the sanitizer builds and the offline, copyleft-disabled build in the reference container"
 run = "python3 tools/check full"
 
+[tasks.archive]
+description = "Archive a pinned Hugging Face revision on the model archive, verified (docs/model-archive.md; ORG/REPO[@REV] --include GLOB)"
+run = "python3 tools/archive-model"
+
+[tasks."archive:catalog"]
+description = "Show, compact or rebuild the model archive's catalog (show WORD..., compact, rebuild)"
+run = "python3 tools/archive-catalog"
+
+[tasks.stage]
+description = "Stage an archived revision on this Spark's model store, verified, optionally then on its peer (--peer)"
+run = "python3 tools/stage-model"
+
 [tasks."check:spark"]
 description = "The cross, ASan and TSan builds' tests on a Spark over SSH, GPU tests included (--host is required)"
 run = "python3 tools/check spark"

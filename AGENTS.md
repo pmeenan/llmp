@@ -179,7 +179,7 @@ affected docs. Until then, these govern.
 | `tests/unit/`, `tests/version/`, `tests/smoke/` | Module unit tests (GoogleTest; a `std::expected`'s error is read through `tests/support/expected_error.h`, D-083; `tests/unit/data/` holds the tokenizer corpus and reference fixtures, and the `models` label marks tests that need the model files on a Spark); the version rules on synthetic repositories, and `llmp --version` against the receipt; `llmp doctor` on each host, requiring a clean report on a GB10 (`gpu`) |
 | `tests/sources/` | The source mechanism: the receipt and the compile/link inventory against the lock, and D-057's gates on a synthetic lock |
 | `tests/support/` | Test and benchmark support, never linked into production binaries (configure checks): the safe reading of a `std::expected`'s error (D-083), the launch recorder and the executed-plan recording that `docs/experiments/backend-proof-p2/plan_compare.py` compares with the FP16 bridge's recorded plan; the harnesses' names for the engine's paged node and the scheduler's task programs (`paged_node.h`, `paged_programs.h`, D-096); a writer of small v1 artifacts and compositions for tests (`artifact_writer.h`, D-113) |
-| `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test, deploy and package tasks; the package's documents and inventory in `llmp_package.py`), `job-proof` (the confined-job proof), `spark-job` (detached long runs on a Spark, supervised and waited on; required, docs/workflow.md), `run-target` (runs cross-built tests under qemu-user or over SSH), `gen-unicode-tables` (the tokenizer's tables from pinned UCD files, D-088), `nsys_steps.py` (matched GPU-step comparison of two nsys traces, docs/optimization-inventory.md) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `llmp_headers.py`, its portability boundary check `llmp_boundaries.py`) |
+| `tools/` | `setup` (SDK, then sources), `setup-toolchain` and `check-toolchain` (the SDK), `prepare-sources` and `inspect-sources` (the source lock), `build` (the build, test, deploy and package tasks; the package's documents and inventory in `llmp_package.py`), `job-proof` (the confined-job proof), `spark-job` (detached long runs on a Spark, supervised and waited on; required, docs/workflow.md), `run-target` (runs cross-built tests under qemu-user or over SSH), `gen-unicode-tables` (the tokenizer's tables from pinned UCD files, D-088), `nsys_steps.py` (matched GPU-step comparison of two nsys traces, docs/optimization-inventory.md), `archive-model`, `archive-catalog` and `stage-model` (the model archive's interim writers and readers, `llmp_archive*.py`, `llmp_hub.py`; docs/model-archive.md) and `check` (the `check`, `check:full` and `check:spark` tiers, D-061; its header check is `llmp_headers.py`, its portability boundary check `llmp_boundaries.py`) |
 | `.devcontainer/` | The digest-pinned reference container (D-012, D-061) |
 
 Update this table as new top-level scaffolding lands.
@@ -209,6 +209,7 @@ the commit gate.
 | [docs/engine-components.md](docs/engine-components.md) | M3.6's design: components, the graph IR, the format layer and its ladder, the native importer, execution, partitioning, the migration gate and where each retired transfer lands |
 | [docs/engine.md](docs/engine.md) | The engine's runner skeleton and how a new model family plugs in: what a runner holds, its life, and where the long-context work goes |
 | [docs/artifact-format.md](docs/artifact-format.md) | The experimental v0 prepared-artifact format (D-056): container, manifest/index schema, layout and page-in rules, worked examples |
+| [docs/model-archive.md](docs/model-archive.md) | The NAS model archive (D-114): downloader quickstart, layout, revision manifests, the catalog relating quantizations and versions, verification, staging, import from and install into it |
 | [docs/model-support.md](docs/model-support.md) | The model support matrix: each model and drafter llmpalooza runs, its pin, artifact, template hash, tokenizer, decoding modes, evidence, divergences and status |
 | [docs/portability.md](docs/portability.md) | Other GPU platforms and OSes: where vendor and Linux code may live (the boundary check), the device runtime and platform seams, the registry's primitive-fallback rule and each model's minimum primitive set, the runners' shared skeleton, distribution |
 | [docs/optimization-inventory.md](docs/optimization-inventory.md) | The catalog of optimization techniques with their measurements, consumers as of `cc70d69` (the per-family transfer record, frozen by D-107) and shape/format limits, including useful pieces of rejected kernels; read before proposing another kernel experiment |
@@ -298,8 +299,8 @@ the commit gate.
    no log-marker or `pgrep` polling loops, jobs of at most 600 s, and never
    copy a build directory between paths (CMake caches absolute paths; sync
    sources with `rsync -rlpc --exclude=/build`). Job steps call
-   `~/.local/bin/mise`. Download a checkpoint once, on `spark`, then copy it
-   to `spark-b` over the direct link. Details: docs/workflow.md
+   `~/.local/bin/mise`. Checkpoints come from the model archive (rule 14),
+   staged on `spark` and copied to `spark-b` over the direct link. Details: docs/workflow.md
    ("Long runs on the Sparks"), docs/environment.md.
 10. **Checks run once per slice.** The full Spark set (build, shared
     `-LE 'models|timing'`, exclusive `-L 'models|timing'`) runs once, on the
@@ -362,6 +363,19 @@ the commit gate.
     reviewer these rules and the same host limits, and keep merges and merge
     checks with the main agent. M3.6's specifics are in
     docs/engine-components.md ("Migration and its gate").
+14. **Models are downloaded once, into the archive** (D-114). Source
+    checkpoints live in the model archive on the NAS
+    (`/mnt/llm/checkpoints`); docs/model-archive.md's "Downloader
+    quickstart" is the whole procedure. Check first and never download
+    what it holds: `mise run archive:catalog -- show <word>`, then
+    `mise run archive -- --dry-run <org/repo>`. Download a pinned revision
+    with `hostlock shared --label "llmp: archive <org/repo>" -- mise run
+    archive -- <org/repo>@<rev> [--include GLOB]`; rerun the same command
+    to resume. The Hugging Face token is `HF_TOKEN` in the ignored `/.env`,
+    which mise exports: never print, log, commit or pass it as an argument.
+    For repeated testing, stage a revision to a Spark with `mise run stage`
+    (one NAS read, then `--peer` over the direct link), never a second
+    download.
 
 ## Current status
 
