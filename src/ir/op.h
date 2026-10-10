@@ -459,9 +459,27 @@ enum class FusedKind : std::uint16_t {
   // (gate [W, F, E], up [W, F, E], x [W, T], ids [U, T]): MoeExpertsParams:
   // glu(gate[ids] · x, up[ids] · x), [F, U, T].
   kMatMulIdGlu,
+  // (q [D, H, T], positions [T]): NormRopeParams: the Q heads'
+  // rope(rms_norm(q, eps)); no learned norm weight. The primitive formula
+  // is general; the fast implementation's capability restricts its rotary
+  // tail and head width.
+  kDsv4QHead,
+  // (state_kv [C, S], state_score [C, S], kv [C, T], score [C, T],
+  // read_idxs [ratio * B * (overlap ? 2 : 1)] I32): CompressorParams:
+  // each block's rows from [state | current] softmax pooled per channel.
+  // Without overlap C = D; with overlap C = 2D, each block takes its
+  // previous rows' first D channels, then its current rows' second D.
+  // Overlap's source also has a final zero row with score -inf. The
+  // indices address this source; [D, 1, B] F32 before norm or rotation.
+  kDsv4Compress,
+  // (x [W, hc, T], fn [W * hc, (2 + hc) * hc], scale [3],
+  // base [(2 + hc) * hc], norm [W]): SinkhornPreParams: the full-carry
+  // Sinkhorn block mix. Outputs are the folded stream's weighted RMSNorm
+  // [W, T], post [hc, T], and combination [hc, hc, T], all packed F32.
+  kDsv4HcPre,
 };
 // The op set's last fused kind (the kinds are 1 to it).
-inline constexpr FusedKind kLastFusedKind = FusedKind::kMatMulIdGlu;
+inline constexpr FusedKind kLastFusedKind = FusedKind::kDsv4HcPre;
 
 struct OpKey {
   Op op = Op::kInput;
@@ -696,6 +714,12 @@ struct NormRopeParams {
   RopeParams rope{};
 };
 
+struct CompressorParams {
+  std::uint32_t ratio = 0;
+  bool overlap = false;
+  std::array<std::uint8_t, 3> reserved{};
+};
+
 // The most owners a step joins under kOwnerAttention's groups.
 inline constexpr std::uint32_t kMaxOwnerCohort = 64;
 struct OwnerAttnParams {
@@ -710,6 +734,13 @@ struct OwnerAttnParams {
 struct HcNormPostParams {
   float eps = 0.0f;
   std::uint32_t streams = 0;
+};
+
+struct SinkhornPreParams {
+  std::uint32_t streams = 0;
+  float eps = 0.0F;
+  float hc_eps = 0.0F;
+  std::uint32_t iterations = 0;
 };
 
 struct DupUpParams {
@@ -782,12 +813,14 @@ static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskPa
               kIsParams<ScaledUnaryParams> && kIsParams<HcFoldParams> && kIsParams<GdnConvParams> &&
               kIsParams<GdnHistoryParams> && kIsParams<GdnStepParams> &&
               kIsParams<HeadGateParams> && kIsParams<QsaPoolParams> && kIsParams<QsaAttnParams> &&
-              kIsParams<MoeExpertsParams>);
-static_assert(sizeof(ScaledUnaryParams) == 8 && sizeof(HcFoldParams) == 8 &&
-              sizeof(GdnConvParams) == 16 && sizeof(GdnStepParams) == 4 &&
-              sizeof(QsaPoolParams) == 8 + sizeof(RopeParams) &&
+              kIsParams<MoeExpertsParams> && kIsParams<CompressorParams> &&
+              kIsParams<SinkhornPreParams>);
+static_assert(sizeof(CompressorParams) == 8 && sizeof(ScaledUnaryParams) == 8 &&
+              sizeof(HcFoldParams) == 8 && sizeof(GdnConvParams) == 16 &&
+              sizeof(GdnStepParams) == 4 && sizeof(QsaPoolParams) == 8 + sizeof(RopeParams) &&
               sizeof(QsaAttnParams) == sizeof(AttnParams) + 8 &&
               sizeof(MoeExpertsParams) == sizeof(GluParams) + 4);
+static_assert(sizeof(SinkhornPreParams) == 16);
 
 // No implicit padding: each struct's size is the sum of its fields'.
 static_assert(sizeof(RopeParams) == 4 + (3 * 4) + (6 * 4) + 16);

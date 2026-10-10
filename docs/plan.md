@@ -1568,8 +1568,9 @@ each is checked against the design as M3.6 proceeds.
             to today's fast-form launches; on the real artifacts the
             model runner's 31 outputs and 242 state tensors are bit-identical
             to today's fast form in each import, including joined owners,
-            selection beyond the QSA budget and captured replays. Verify,
-            commit and MTP GPU numerics remain with the wiring in G3c.
+            selection beyond the QSA budget and captured replays. G3c1
+            proves native verify and all-three-format commits; actual MTP
+            GPU numerics remain with the composition in G3c2a.
       - [ ] Wiring and the gate, then deletion of the old code.
             - [x] **G3c1 — shared runner execution:** bind verify saves and
                   commit execution; bind n-gram side tables on demand; stage
@@ -1615,12 +1616,20 @@ each is checked against the design as M3.6 proceeds.
             - [ ] **G4b2 — fast forms:** add patterns and default policy,
                   then prove structural parity and GPU execution for the
                   fast forms and row-invariant verify.
-                  - [ ] **G4b2a — local opt-in forms:** Q-head, compressor
+                  - [x] **G4b2a — local opt-in forms:** Q-head, compressor
                         pooling, full-carry HC pre and flat-norm HC post;
                         prove guarded fallback and existing-kernel operand
                         execution without changing the default policy.
                   - [ ] **G4b2b — indexer and sparse banks:** prove their
                         ownership, backing and execution contracts.
+                        - [ ] **G4b2b1 — state banks:** derive and bind
+                              contiguous spans of owned state; prove sparse
+                              attention and primitive fallback with existing
+                              indexer/TopK/mask semantics retained.
+                        - [ ] **G4b2b2 — indexer contract:** make query
+                              rounding, visibility and nonfinite selection
+                              explicit; prove the native recipe without
+                              silently changing the primitive TopK contract.
                   - [ ] **G4b2c — full policy:** output-A and product forms,
                         mixed encodings, default policy, whole-artifact GPU
                         parity and row-invariant verify.

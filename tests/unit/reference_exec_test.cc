@@ -712,6 +712,87 @@ TEST_F(ExecTest, PoolingMeansOrSoftmaxWeightsEachRun) {
   ExpectNear(Get(soft), D({(1 + 3 + (2.0 * 5)) / 4.0, 0}), 1e-6, "softmax");
 }
 
+TEST_F(ExecTest, Dsv4CompressorPoolsPreviousAndCurrentHalvesAndMasksDummyRows) {
+  // Two ratio-two overlapping blocks: the first sees state rows 0,1
+  // (first half) and current rows 0,1 (second half). The second sees state
+  // rows 2,3 and only the dummy current row. Its first channel is all masked.
+  const TensorId state = F({4, 4});
+  const TensorId state_score = F({4, 4});
+  const TensorId current = F({4, 2});
+  const TensorId current_score = F({4, 2});
+  const TensorId indices = I({8});
+  const TensorId out = b.Fused(ir::FusedKind::kDsv4Compress,
+                               std::array{state, state_score, current, current_score, indices},
+                               ir::CompressorParams{.ratio = 2, .overlap = true})[0];
+  b.Output(out);
+  ASSERT_TRUE(Finish());
+  Set(state, {1, 10, 100, 1000, 3, 30, 300, 3000, 5, 50, 500, 5000, 7, 70, 700, 7000});
+  const float neg_inf = -std::numeric_limits<float>::infinity();
+  Set(state_score, {0, 0, 0, 0, 0, 0, 0, 0, neg_inf, 0, 0, 0, neg_inf, 0, 0, 0});
+  Set(current, {9, 90, 900, 9000, 11, 110, 1100, 11000});
+  Set(current_score, std::vector<float>(8, 0.0F));
+  SetInts(indices, {0, 1, 2, 3, 4, 5, 6, 6});
+  ASSERT_TRUE(Run());
+  ExpectNear(Get(out), D({501, 5010, 0, 60}), 1e-6, "overlap compressor");
+}
+
+TEST_F(ExecTest, Dsv4CompressorDummyDoesNotReadAMaskedFirstScore) {
+  // Reviewer witness: previous half is dummy row 2, current half is
+  // row 1's second channel, 900. The first stored score is already -inf.
+  // Deriving the dummy as first_score * 0 - inf would turn it into NaN.
+  const TensorId state = F({2, 1});
+  const TensorId state_score = F({2, 1});
+  const TensorId current = F({2, 1});
+  const TensorId current_score = F({2, 1});
+  const TensorId indices = I({2});
+  const TensorId out = b.Fused(ir::FusedKind::kDsv4Compress,
+                               std::array{state, state_score, current, current_score, indices},
+                               ir::CompressorParams{.ratio = 1, .overlap = true})[0];
+  b.Output(out);
+  ASSERT_TRUE(Finish());
+  const float neg_inf = -std::numeric_limits<float>::infinity();
+  Set(state, {1, 100});
+  Set(state_score, {neg_inf, 0});
+  Set(current, {9, 900});
+  Set(current_score, {0, 0});
+  SetInts(indices, {2, 1});
+  ASSERT_TRUE(Run());
+  EXPECT_EQ(Get(out), std::vector<float>{900});
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  for (const float score : {0.0F, neg_inf, nan}) {
+    for (const float value : {900.0F, nan, std::numeric_limits<float>::infinity()}) {
+      Set(current, {9, value});
+      Set(current_score, {0, score});
+      ASSERT_TRUE(Run());
+      if (!std::isfinite(value) && (std::isnan(value) || score != 0.0F))
+        EXPECT_TRUE(std::isnan(Get(out)[0]));
+      else
+        EXPECT_EQ(Get(out)[0], score == 0.0F ? value : 0.0F);
+    }
+  }
+}
+
+TEST_F(ExecTest, Dsv4CompressorWithoutOverlapUsesWeightedWholeRows) {
+  const TensorId state = F({2, 4});
+  const TensorId state_score = F({2, 4});
+  const TensorId current = F({2, 2});
+  const TensorId current_score = F({2, 2});
+  const TensorId indices = I({4});
+  const TensorId out = b.Fused(ir::FusedKind::kDsv4Compress,
+                               std::array{state, state_score, current, current_score, indices},
+                               ir::CompressorParams{.ratio = 2})[0];
+  b.Output(out);
+  ASSERT_TRUE(Finish());
+  Set(state, {1, 10, 3, 30, 5, 50, 7, 70});
+  Set(state_score, std::vector<float>(8, 0.0F));
+  Set(current, {9, 90, 11, 110});
+  const float neg_inf = -std::numeric_limits<float>::infinity();
+  Set(current_score, {std::log(3.0F), neg_inf, 0, neg_inf});
+  SetInts(indices, {0, 1, 4, 5});
+  ASSERT_TRUE(Run());
+  ExpectNear(Get(out), D({2, 20, 9.5, 0}), 1e-6, "nonoverlap compressor");
+}
+
 // ---------------------------------------------------------------- norms
 
 TEST_F(ExecTest, NormsMatchTheirDefinitions) {
@@ -1956,6 +2037,9 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
        b.Rope(b.Mul(b.RmsNorm(heads, 1e-6f), hw), pos, {}, rope));
   const TensorId k = in({4, 2, 3});
   const TensorId kw = in({4});
+  pair(b.Fused(ir::FusedKind::kDsv4QHead, std::array{heads, pos},
+               ir::NormRopeParams{.eps = 1e-6F, .rope = rope})[0],
+       b.Rope(b.RmsNorm(heads, 1e-6F), pos, {}, rope));
   const ir::Outputs qk = b.Fused(ir::FusedKind::kQkPrep, std::array{heads, hw, k, kw, pos},
                                  ir::NormRopeParams{.eps = 1e-6f, .rope = rope});
   pair(qk[1], b.Rope(b.Mul(b.RmsNorm(k, 1e-6f), kw), pos, {}, rope));
@@ -1987,6 +2071,38 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
   pair(gres, b.Add(x, b.Mul(r, b.Unary(mod, ir::UnaryFn::kTanh))));
   const TensorId dt = in({1});
   pair(b.Fused(ir::FusedKind::kEulerStep, std::array{x, r, dt})[0], b.Add(x, b.Mul(r, dt)));
+  // Full Sinkhorn pre carries and the following post's two outputs.
+  const TensorId hx = in({8, 4, 3}), hfn = in({32, 24});
+  const TensorId hs = in({3}), hb = in({24}), hn = in({8});
+  const ir::SinkhornPreParams hp{.streams = 4, .eps = 1e-6F, .hc_eps = 1e-5F, .iterations = 5};
+  const auto hpre = b.Fused(ir::FusedKind::kDsv4HcPre, std::array{hx, hfn, hs, hb, hn}, hp);
+  const TensorId mixes = b.MatMul(hfn, b.RmsNorm(b.Reshape(hx, ir::ShapeOf({32, 3})), hp.eps));
+  const auto run = [&](std::uint64_t first) {
+    return b.View(mixes, ir::ShapeOf({4, 3}), {4, 96, 288, 288}, first * 4);
+  };
+  const auto sub = [&](TensorId t, std::uint64_t first, std::uint64_t count) {
+    return b.View(t, ir::ShapeOf({count}), {4, count * 4, count * 4, count * 4}, first * 4);
+  };
+  const TensorId post = b.Scale(
+      b.Unary(b.Add(b.Mul(run(4), sub(hs, 1, 1)), sub(hb, 4, 4)), ir::UnaryFn::kSigmoid), 2.0F);
+  const TensorId comb = b.HcMix(mixes, hs, hb,
+                                {.mix = ir::HcMixKind::kSinkhorn,
+                                 .streams = 4,
+                                 .iterations = hp.iterations,
+                                 .eps = hp.hc_eps});
+  const TensorId pre =
+      b.Scale(b.Unary(b.Add(b.Mul(run(0), sub(hs, 0, 1)), sub(hb, 0, 4)), ir::UnaryFn::kSigmoid),
+              1.0F, hp.hc_eps);
+  const TensorId folded = b.HcPre(hx, pre, {.fold = ir::HcFold::kWeights, .streams = 4});
+  pair(hpre[0], b.Mul(b.RmsNorm(folded, hp.eps), hn));
+  pair(hpre[1], post);
+  pair(hpre[2], comb);
+  const TensorId hy = in({8, 3});
+  const auto hpost = b.Fused(ir::FusedKind::kHcNormPost, std::array{hy, hx, post, comb},
+                             ir::HcNormPostParams{.eps = hp.eps, .streams = 4});
+  const TensorId hand_post = b.HcPost(hy, hx, post, comb, {.streams = 4});
+  pair(hpost[0], hand_post);
+  pair(hpost[1], b.RmsNorm(b.Reshape(hand_post, ir::ShapeOf({32, 3})), hp.eps));
   // Routed experts' scales and combine.
   const TensorId gate = in({5, 2, 3});
   const TensorId up = in({5, 2, 3});

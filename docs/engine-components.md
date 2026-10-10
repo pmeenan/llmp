@@ -1067,11 +1067,32 @@ widens a half mask before its F32 add; it also lowers with the native
 indexer disabled. Structural checks cover target and draft steps and
 validate the newly selected operations' launch constraints.
 
-Open for G4b2 and G4c: the fast plan's patterns, declared by name
-(`dsv4_qhead`, `dsv4_compress`, `dsv4_lid_topk`,
-`dsv4_sparse_attention`, `dsv4_out_a`, `dsv4_hc_pre`, `dsv4_hc_post`),
-the default policy, the row-invariant verify and real-artifact numerical
-parity. The engine's binding of the hash rows and injection's features,
+G4b2a adds four opt-in local patterns, disabled by default:
+`dsv4_qhead` (F32 head norm and tail RoPE), `dsv4_compress` (source assembly
+and pooling), `dsv4_hc_pre` (the full Sinkhorn carry), and `dsv4_hc_post`
+(the post's streams and flat F32 norm). They authenticate the primitive
+formula, complete parameters, ownership and intervening writes before
+selecting existing helpers. HC pre exposes packed post and combination
+carries through explicit copies of the helper's pitched tail; placement
+funds its entire blob, mixing partials and both copies. HC post requires
+packed boundaries, so strided inputs retain the primitive path. The mix
+weight stays in F32, F16 or BF16 through the format layer.
+
+Compressor dummy rows are literal zero/-infinity fills, independent of
+masked state scores. Pooling's primitive decomposition clamps softmax
+probabilities to [0,1]: GGML CUDA's fminf/fmaxf clamp converts its
+all-masked NaNs to the IR's zero probabilities. The existing compressor
+helper preserves zero-probability multiplication of nonfinite values,
+including NaNs, while retaining its finite-value arithmetic. Its computed
+read indices must come from the typed owner/ratio/ring contract; launch
+checks bound both the channel and block grids.
+
+These local forms have structural checks over target and draft fragments,
+scalar definitions, and GPU operand comparisons against their existing
+helpers, including capture replay and unequal owner carries. Default policy,
+whole-artifact numerical parity and performance remain open. G4b2b ports
+`dsv4_lid_topk` and `dsv4_sparse_attention`; G4b2c ports output-A and the
+product policies and establishes whole-artifact parity. The engine's binding of the hash rows and injection's features,
 and its complete setup and state-lifecycle integration, are G4c's. Expert
 parallelism with as many experts as devices (`partition.cc`) is not
 reachable for DeepSeek on two Sparks (256 experts) and is left as it is.

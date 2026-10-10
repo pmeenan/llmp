@@ -1191,6 +1191,7 @@ __global__ void __launch_bounds__(256) CompressKernel(const CompressArgs a) {
     float mx = -INFINITY;
     float sum = 0.0f;
     float acc = 0.0f;
+    bool nonfinite_value = false;
     for (int j = 0; j < per_block; ++j) {
       // Overlap: the first `ratio` rows' first half (the previous block),
       // then the next `ratio` rows' second half (this one).
@@ -1207,7 +1208,12 @@ __global__ void __launch_bounds__(256) CompressKernel(const CompressArgs a) {
         s = a.score[((row - a.state_rows) * a.score_stride) + ch];
         v = a.kv[((row - a.state_rows) * a.kv_stride) + ch];
       }
+      // Pool's primitive definition multiplies every selected value by
+      // its probability, including zero masked probabilities. Preserve
+      // 0 * NaN/Inf without changing the finite-value arithmetic.
+      if (!isfinite(v)) nonfinite_value = true;
       if (s == -INFINITY) {
+        if (!isfinite(v)) acc += 0.0f * v;
         continue;
       }
       if (s > mx) {
@@ -1220,7 +1226,8 @@ __global__ void __launch_bounds__(256) CompressKernel(const CompressArgs a) {
       sum += e;
       acc += e * v;
     }
-    a.out[(static_cast<std::ptrdiff_t>(b) * a.head) + c] = sum > 0.0f ? acc / sum : 0.0f;
+    a.out[(static_cast<std::ptrdiff_t>(b) * a.head) + c] =
+        (sum > 0.0f || nonfinite_value) ? acc / sum : 0.0f;
   }
 }
 

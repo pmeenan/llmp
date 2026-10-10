@@ -35,6 +35,11 @@
 //     GGML makes three-dimensional where the IR reshapes it; masks are the
 //     framework's (the reference form's host masks are inputs), their
 //     views to a step's rows the IR's alone; a fill has no source.
+//   - the overlap compressor's dummy row is now a literal zero/-inf Fill.
+//     Only the exact legacy first-row View -> Scale(0, bias) -> Reshape
+//     chain is normalized, with its state role and exclusive users checked.
+//     This deliberately fixes its nonfinite-source behaviour; numeric tests
+//     prove the new semantics, rather than treating 0 * infinity as zero.
 // The fast plan's fusions (llmp.dsv4.*, the vector products, the sparse
 // attention) are the planner's patterns, slice G4b; the waves' and the
 // row-invariant verify's forms are its too.
@@ -48,15 +53,18 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "components/step.h"
 #include "dsv4_fixture.h"
 #include "ggml.h"
+#include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/ggml/dsv4_graph.h"
@@ -201,6 +209,7 @@ struct Entry {
   std::vector<std::size_t> nodes;
   std::optional<ir::Op> composite{};
   std::vector<std::size_t> outputs{};
+  std::optional<float> dummy_fill{};
   std::size_t at() const { return nodes.back(); }
 };
 
@@ -220,6 +229,85 @@ bool InputView(const ggml_tensor* t, const std::map<const ggml_tensor*, std::str
   return at != leaves.end() && (at->second == "tokens" || at->second == "positions");
 }
 
+// Recognize only AppendZeroRow in an overlap compressor. The joined source
+// and its later Concat/GetRows remain ordinary entries, so their complete
+// dataflow still has to match. No arbitrary scale, view or fill is discarded.
+std::optional<float> DummyFill(const std::vector<ggml_tensor*>& nodes,
+                               const std::map<const ggml_tensor*, std::string>& leaves,
+                               const ggml_tensor* row) {
+  const auto unary = [](const ggml_tensor* t, ggml_op op) {
+    return t != nullptr && t->op == op && t->src[0] != nullptr &&
+           std::ranges::all_of(std::span(t->src).subspan(1),
+                               [](const auto* s) { return s == nullptr; });
+  };
+  if (!unary(row, GGML_OP_RESHAPE)) return std::nullopt;
+  const ggml_tensor* scale = row->src[0];
+  if (!unary(scale, GGML_OP_SCALE) || scale->view_src != nullptr || scale->view_offs != 0 ||
+      row->view_src != scale || row->view_offs != 0) {
+    return std::nullopt;
+  }
+  const ggml_tensor* view = scale->src[0];
+  if (!unary(view, GGML_OP_VIEW) || view->view_offs != 0 || view->view_src != view->src[0])
+    return std::nullopt;
+  const ggml_tensor* joined = view->src[0];
+  if (joined->op != GGML_OP_CONCAT || Param<std::int32_t>(joined, 0) != 1 ||
+      joined->src[0] == nullptr || joined->src[1] == nullptr || joined->ne[1] < 2 ||
+      joined->ne[2] != 1 || joined->ne[3] != 1) {
+    return std::nullopt;
+  }
+  const ggml_tensor* state = joined->src[0];
+  if (!unary(state, GGML_OP_VIEW) || state->view_offs != 0) return std::nullopt;
+  const auto named = leaves.find(state->src[0]);
+  if (named == leaves.end()) return std::nullopt;
+  const bool values =
+      named->second.starts_with("compressed_kv.") || named->second.starts_with("index_kv.");
+  const bool scores =
+      named->second.starts_with("compressed_score.") || named->second.starts_with("index_score.");
+  if (!values && !scores) return std::nullopt;
+  const float value = scores ? -std::numeric_limits<float>::infinity() : 0.0F;
+  if (Param<float>(scale, 0) != 0.0F || Param<float>(scale, 1) != value) return std::nullopt;
+  for (const ggml_tensor* t : {joined, state, view, scale, row}) {
+    if (t->type != GGML_TYPE_F32 || t->ne[0] != joined->ne[0] || !ggml_is_contiguous(t))
+      return std::nullopt;
+  }
+  for (const ggml_tensor* t : {view, scale, row}) {
+    if (t->ne[1] != 1 || t->ne[2] != 1 || t->ne[3] != 1) return std::nullopt;
+    if (t->nb[0] != sizeof(float)) return std::nullopt;
+    for (std::size_t d = 1; d < 4; ++d) {
+      if (t->nb[d] != static_cast<std::size_t>(joined->ne[0]) * sizeof(float)) return std::nullopt;
+    }
+  }
+  const auto only_user = [&](const ggml_tensor* t, const ggml_tensor* expected,
+                             std::size_t source) {
+    std::size_t readers = 0;
+    for (const ggml_tensor* n : nodes) {
+      for (std::size_t s = 0; s < GGML_MAX_SRC; ++s) {
+        if (n->src[s] != t) continue;
+        if (n != expected || s != source) return false;
+        ++readers;
+      }
+    }
+    return readers == 1;
+  };
+  const ggml_tensor* padded = ConsumerOf(nodes, row, GGML_OP_CONCAT, 1);
+  if (padded == nullptr || padded->src[0] != joined || Param<std::int32_t>(padded, 0) != 1 ||
+      !only_user(view, scale, 0) || !only_user(scale, row, 0) || !only_user(row, padded, 1)) {
+    return std::nullopt;
+  }
+  const ggml_tensor* picked = ConsumerOf(nodes, padded, GGML_OP_GET_ROWS, 0);
+  if (picked == nullptr || !only_user(padded, picked, 0)) return std::nullopt;
+  const std::array chain{joined, view, scale, row, padded, picked};
+  auto previous = nodes.end();
+  for (const auto* t : chain) {
+    const auto at = std::ranges::find(nodes, t);
+    if (at == nodes.end() || (previous != nodes.end() && at <= previous)) return std::nullopt;
+    previous = at;
+  }
+  const auto reads = leaves.find(picked->src[1]);
+  if (reads == leaves.end() || reads->second != "pool_reads") return std::nullopt;
+  return value;
+}
+
 std::vector<Entry> Entries(const std::vector<ggml_tensor*>& nodes,
                            const std::map<const ggml_tensor*, std::string>& leaves,
                            std::uint32_t used) {
@@ -234,6 +322,14 @@ std::vector<Entry> Entries(const std::vector<ggml_tensor*>& nodes,
     const auto at = leaves.find(t);
     return at != leaves.end() && at->second.starts_with(prefix);
   };
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    if (const auto value = DummyFill(nodes, leaves, nodes[i])) {
+      const ggml_tensor* scale = nodes[i]->src[0];
+      const std::vector<std::size_t> run{index.at(scale->src[0]), index.at(scale), i};
+      out.push_back({.nodes = run, .outputs = {i}, .dummy_fill = value});
+      for (const auto n : run) taken.insert(n);
+    }
+  }
   // The pooling runs: around each softmax.
   for (std::size_t i = 0; i < nodes.size(); ++i) {
     const ggml_tensor* s = nodes[i];
@@ -329,6 +425,7 @@ struct Names {
 std::vector<std::string> Wanted(const std::vector<ggml_tensor*>& nodes, const Entry& entry,
                                 const Names& names) {
   std::vector<std::string> want;
+  if (entry.dummy_fill) return {};
   if (entry.composite) {
     std::set<const ggml_tensor*> inside;
     for (const std::size_t k : entry.nodes) inside.insert(nodes[k]);
@@ -388,7 +485,12 @@ bool Same(const std::vector<ggml_tensor*>& nodes, const Entry& entry, const ir::
           const ir::Node& n, const std::vector<std::string>& got, const Names& names) {
   if (entry.composite) return n.key.op == *entry.composite && Wanted(nodes, entry, names) == got;
   const ggml_tensor* t = nodes[entry.at()];
-  if (OpOf(t) != n.key.op) return false;
+  if (entry.dummy_fill) {
+    if (n.key.op != ir::Op::kFill || n.Params<ir::FillParams>().value != *entry.dummy_fill)
+      return false;
+  } else if (OpOf(t) != n.key.op) {
+    return false;
+  }
   const ir::TensorDesc& out = g.tensor(n.out[0]);
   if (TypeOf(t->type) != out.format.encoding) return false;
   for (std::size_t d = 0; d < 4; ++d) {
@@ -506,7 +608,7 @@ std::vector<std::size_t> ExpectSameSteps(
         EXPECT_EQ(Param<std::int32_t>(t, 0), n.Params<ir::ConcatParams>().dim);
         break;
       case ir::Op::kFill:
-        EXPECT_EQ(Param<float>(t, 0), n.Params<ir::FillParams>().value);
+        EXPECT_EQ(entry.dummy_fill.value_or(Param<float>(t, 0)), n.Params<ir::FillParams>().value);
         break;
       case ir::Op::kTopK:
         EXPECT_EQ(static_cast<std::uint32_t>(t->ne[0]), n.Params<ir::TopKParams>().k);
@@ -901,6 +1003,95 @@ void CompareCase(const Fixture& f, const Case& c) {
   testing::Test::RecordProperty(c.name + " reordered", static_cast<int>(reordered.size()));
   EXPECT_EQ(unexpected, "") << c.name << ": " << reordered.size() << " of " << graph->nodes.size()
                             << " entries out of order";
+}
+
+TEST(ComponentsDsv4OrderTest, OnlyTheExactLegacyDummyChainBecomesALiteralFill) {
+  for (const bool scores : {false, true}) {
+    SCOPED_TRACE(scores);
+    auto arena = kg::TensorArena::Create(20);
+    ASSERT_TRUE(arena);
+    auto* ctx = arena->context();
+    auto* state = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 8);
+    auto* current = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 8, 3);
+    auto* ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 8);
+    auto* whole = ggml_view_2d(ctx, state, 8, 8, state->nb[1], 0);
+    auto* joined = ggml_concat(ctx, whole, current, 1);
+    auto* view = ggml_view_1d(ctx, joined, 8, 0);
+    const float value = scores ? -std::numeric_limits<float>::infinity() : 0.0F;
+    auto* scale = ggml_scale_bias(ctx, view, 0.0F, value);
+    auto* row = ggml_reshape_2d(ctx, scale, 8, 1);
+    auto* padded = ggml_concat(ctx, joined, row, 1);
+    auto* picked = ggml_get_rows(ctx, padded, ids);
+    auto* other = ggml_scale(ctx, current, 2.0F);
+    std::vector<ggml_tensor*> nodes{whole, joined, view, scale, row, padded, picked, other};
+    std::map<const ggml_tensor*, std::string> leaves{
+        {state, scores ? "compressed_score.1" : "compressed_kv.1"},
+        {current, "current"},
+        {ids, "pool_reads"}};
+    ASSERT_EQ(DummyFill(nodes, leaves, row), value);
+    const auto entries = Entries(nodes, leaves, 1);
+    ASSERT_EQ(entries.size(), nodes.size() - 2);
+    const auto fill =
+        std::ranges::find_if(entries, [](const auto& e) { return e.dummy_fill.has_value(); });
+    ASSERT_NE(fill, entries.end());
+    EXPECT_EQ(fill->nodes, (std::vector<std::size_t>{2, 3, 4}));
+    EXPECT_EQ(fill->outputs, (std::vector<std::size_t>{4}));
+    // Every other node keeps its original identity and order.
+    std::vector<std::size_t> ordinary;
+    for (const auto& e : entries) {
+      if (e.dummy_fill) continue;
+      ASSERT_EQ(e.nodes.size(), 1U);
+      ordinary.push_back(e.at());
+    }
+    EXPECT_EQ(ordinary, (std::vector<std::size_t>{0, 1, 5, 6, 7}));
+    ir::Builder b;
+    b.Output(b.Fill(ir::ShapeOf({8, 1}), value, format::Encoding::kF32));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    Names names{.leaves = leaves, .matched = {}};
+    EXPECT_TRUE(Same(nodes, *fill, *graph, graph->nodes()[0], {}, names));
+    // Exact literal value and shape remain part of matching.
+    ir::Builder wrong;
+    wrong.Output(wrong.Fill(ir::ShapeOf({8, 1}), 1.0F, format::Encoding::kF32));
+    auto wrong_graph = std::move(wrong).Finish();
+    ASSERT_TRUE(wrong_graph);
+    EXPECT_FALSE(Same(nodes, *fill, *wrong_graph, wrong_graph->nodes()[0], {}, names));
+    const auto refuse = [&](ggml_tensor* t, const auto& change) {
+      const ggml_tensor saved = *t;
+      change(*t);
+      EXPECT_FALSE(DummyFill(nodes, leaves, row));
+      EXPECT_EQ(Entries(nodes, leaves, 1).size(), nodes.size());
+      *t = saved;
+    };
+    refuse(scale, [](auto& t) {
+      const float one = 1.0F;
+      std::memcpy(t.op_params, &one, sizeof(one));
+    });
+    refuse(scale, [](auto& t) {
+      const float one = 1.0F;
+      std::memcpy(reinterpret_cast<char*>(t.op_params) + 4, &one, sizeof(one));
+    });
+    refuse(row, [](auto& t) { t.ne[1] = 2; });
+    refuse(row, [](auto& t) { t.nb[2] += 4; });
+    refuse(view, [](auto& t) { t.view_offs = 4; });
+    refuse(view, [&](auto& t) { t.src[0] = current; });
+    refuse(view, [&](auto& t) { t.view_src = current; });
+    refuse(row, [&](auto& t) { t.view_src = joined; });
+    refuse(scale, [&](auto& t) { t.view_src = joined; });  // an inplace scale mutates its source
+    refuse(joined, [](auto& t) { std::swap(t.src[0], t.src[1]); });
+    refuse(padded, [](auto& t) { std::swap(t.src[0], t.src[1]); });
+    refuse(picked, [&](auto& t) { t.src[1] = current; });
+    for (auto* interior : {view, scale, row}) {
+      refuse(other, [&](auto& t) { t.src[0] = interior; });
+    }
+    std::swap(nodes[2], nodes[3]);
+    EXPECT_FALSE(DummyFill(nodes, leaves, row));
+    std::swap(nodes[2], nodes[3]);
+    leaves[state] = scores ? "compressed_kv.1" : "compressed_score.1";
+    EXPECT_FALSE(DummyFill(nodes, leaves, row));
+    leaves[state] = "unrelated.1";
+    EXPECT_FALSE(DummyFill(nodes, leaves, row));
+  }
 }
 
 TEST(ComponentsDsv4OrderTest, TheTargetsStepsAreTheReferenceFormsNodeForNode) {

@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -104,6 +105,10 @@ double Gap(std::span<const float> got, std::span<const double> want) {
   double worst = 0.0;
   double scale = 1.0;
   for (std::size_t i = 0; i < std::min(got.size(), want.size()); ++i) {
+    if (!std::isfinite(got[i]) || !std::isfinite(want[i])) {
+      if (static_cast<double>(got[i]) == want[i]) continue;  // matching masked infinities
+      return std::numeric_limits<double>::infinity();
+    }
     worst = std::max(worst, std::fabs(static_cast<double>(got[i]) - want[i]));
     scale = std::max(scale, std::fabs(want[i]));
   }
@@ -129,7 +134,8 @@ struct Lone {
 void Compare(const Instance& in, std::span<const format::TensorFormat> formats,
              std::span<const std::uint64_t> cells, std::span<const Step> steps, double tolerance,
              double state_tolerance, const Lone& lone = {},
-             const std::map<std::uint16_t, std::pair<float, float>>& ranges = {}) {
+             const std::map<std::uint16_t, std::pair<float, float>>& ranges = {},
+             const std::map<std::uint16_t, float>& first_state_values = {}) {
   std::mt19937 rng(77);
   std::uniform_real_distribution<float> u(-1.0F, 1.0F);
   const auto shapes = in.def->shapes(in);
@@ -192,6 +198,9 @@ void Compare(const Instance& in, std::span<const format::TensorFormat> formats,
       if (start.empty()) start.resize(contract.tensors.size());
       if (at == carried.end()) {
         std::vector<float> values(ir::Elements(graph->step.graph.tensor(st.tensor).shape()), 0.0F);
+        if (const auto initial = first_state_values.find(st.ref.tensor);
+            initial != first_state_values.end())
+          values[0] = initial->second;
         ASSERT_TRUE(exec->BindValues(st.tensor, values));
         auto held = exec->Values(st.tensor);
         ASSERT_TRUE(held.has_value());
@@ -499,6 +508,21 @@ TEST(ComponentsDsv4Test, CompressedSparseAttentionMatchesItsReference) {
   EXPECT_EQ(contract.tensors[2].window_or_ratio, 8U);
   EXPECT_EQ(contract.tensors[2].cell_bytes, 2U * kHead * 4U);
   EXPECT_EQ(contract.tensors[5].cell_bytes, 2U * kIndexDim * 4U);
+}
+
+TEST(ComponentsDsv4Test, OverlapDummyRowsDoNotReadMaskedStateScores) {
+  auto in = MakeInstance(
+      Mqa("ring", 4,
+          {P("overlap", B(true)), P("indexer", B(true)), P("indexer_heads", I(kIndexHeads)),
+           P("index_dim", I(kIndexDim)), P("top_k", I(3))}),
+      kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in) << in.error();
+  const std::array<std::uint64_t, 7> cells{16, 32, 8, 8, 32, 8, 8};
+  const std::array<Step, 2> steps{Step{.shape = {.segments = {Seg(0, 4, 0, 16, 1)}}},
+                                  Step{.shape = {.segments = {Seg(0, 1, 4, 16, 1)}}}};
+  const float neg_inf = -std::numeric_limits<float>::infinity();
+  Compare(*in, MqaFormats(Encoding::kF32, 2), cells, steps, kTolerance, kF16State, {}, {},
+          {{3, neg_inf}, {6, neg_inf}});
 }
 
 TEST(ComponentsDsv4Test, HeavilyCompressedAttentionMatchesItsReference) {

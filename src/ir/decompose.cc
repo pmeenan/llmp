@@ -299,7 +299,12 @@ Outputs Pool(D& d, const PoolParams& p) {
   for (std::uint64_t i3 = 0; i3 < x.ne(3) && b.ok(); ++i3) {
     TensorId vals = runs(d.s(0), i3);
     if (p.kind == PoolKind::kSoftmax) {
-      vals = b.Mul(vals, b.SoftMax(runs(d.s(1), i3), {}, {}, SoftMaxParams{}));
+      // IR softmax gives zero for an all-masked row. GGML CUDA's
+      // softmax gives NaN there; its fminf/fmaxf clamp maps that to zero
+      // while preserving every finite probability. The reference already
+      // has zero probabilities and the clamp is its identity.
+      const TensorId probabilities = b.SoftMax(runs(d.s(1), i3), {}, {}, SoftMaxParams{});
+      vals = b.Mul(vals, b.Clamp(probabilities, 0.0F, 1.0F));
     }
     TensorId sum = b.Reshape(b.SumRows(vals), S(c, n, a2));
     if (p.kind == PoolKind::kMean) {
@@ -600,6 +605,110 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       }
       const auto p = Get<NormRopeParams>(params);
       return One(b.Rope(b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1)), d.s(2), d.s(3), p.rope));
+    }
+    case FusedKind::kDsv4QHead: {
+      if (!d.need(2, 2)) return {};
+      const auto p = Get<NormRopeParams>(params);
+      return One(b.Rope(b.RmsNorm(d.s(0), p.eps), d.s(1), {}, p.rope));
+    }
+    case FusedKind::kDsv4Compress: {
+      if (!d.need(5, 5)) return {};
+      const auto p = Get<CompressorParams>(params);
+      const TensorDesc sk = d.t(d.s(0));
+      const TensorDesc ss = d.t(d.s(1));
+      const TensorDesc kv = d.t(d.s(2));
+      const TensorDesc sc = d.t(d.s(3));
+      const TensorDesc ids = d.t(d.s(4));
+      const auto matrix = [](const TensorDesc& t) {
+        return t.format.encoding == format::Encoding::kF32 && t.ne(2) == 1 && t.ne(3) == 1;
+      };
+      if (!d.check(p.ratio > 0 && p.ratio <= std::numeric_limits<std::uint32_t>::max() / 2,
+                   GraphError::kParams, "a bounded positive compressor ratio") ||
+          !d.check(matrix(sk) && matrix(ss) && matrix(kv) && matrix(sc), GraphError::kShape,
+                   "compressor values and scores are F32 matrices") ||
+          !d.check(sk.shape().ne == ss.shape().ne && kv.shape().ne == sc.shape().ne &&
+                       sk.ne(0) == kv.ne(0) && (!p.overlap || sk.ne(0) % 2 == 0),
+                   GraphError::kShape, "matching compressor channels, states and current rows") ||
+          !d.check(ids.format.encoding == format::Encoding::kI32 && ids.ne(1) == 1 &&
+                       ids.ne(2) == 1 && ids.ne(3) == 1,
+                   GraphError::kShape, "compressor read indices are an I32 vector")) {
+        return {};
+      }
+      const std::uint64_t halves = p.overlap ? 2 : 1;
+      const std::uint64_t per_block = halves * p.ratio;
+      if (!d.check(ids.ne(0) % per_block == 0, GraphError::kShape,
+                   "one complete compressor index run per block"))
+        return {};
+      const std::uint64_t blocks = ids.ne(0) / per_block;
+      const std::uint64_t dim = sk.ne(0) / halves;
+      const std::uint64_t reads = std::uint64_t{p.ratio} * blocks;
+      const auto rows = [&](std::size_t state, std::size_t current, bool scores) {
+        TensorId source = b.Concat(d.s(state), d.s(current), 1);
+        if (!b.ok()) return TensorId{};
+        if (p.overlap) {
+          const TensorDesc sd = d.t(source);
+          // A true constant: 0 * a masked score (-inf) would produce NaN.
+          const TensorId zero = b.Fill(ShapeOf({sd.ne(0), 1}),
+                                       scores ? -std::numeric_limits<float>::infinity() : 0.0F,
+                                       format::Encoding::kF32);
+          source = b.Concat(source, zero, 1);
+        }
+        const TensorId picked = b.GetRows(source, d.s(4));
+        if (!b.ok()) return TensorId{};
+        if (!p.overlap) return b.Reshape(picked, ShapeOf({dim, p.ratio, blocks}));
+        const TensorDesc pd = d.t(picked);
+        const auto half = [&](std::uint64_t offset) {
+          const TensorId v = d.View2(picked, dim, reads, pd.nb[0], pd.nb[1], offset);
+          return b.Reshape(b.Cont(v), ShapeOf({dim, p.ratio, blocks}));
+        };
+        const TensorId previous = half(0);
+        const TensorId current_half = half(reads * pd.nb[1] + dim * pd.nb[0]);
+        return b.Concat(previous, current_half, 1);
+      };
+      const TensorId values = rows(0, 2, false);
+      const TensorId scores = rows(1, 3, true);
+      return One(
+          b.Pool(values, scores,
+                 {.ratio = static_cast<std::uint32_t>(per_block), .kind = PoolKind::kSoftmax}));
+    }
+    case FusedKind::kDsv4HcPre: {
+      if (!d.need(5, 5)) return {};
+      const auto p = Get<SinkhornPreParams>(params);
+      const TensorId x = d.s(0);
+      const TensorDesc xd = d.t(x);
+      const std::uint64_t width = xd.ne(0);
+      const std::uint64_t hc = p.streams;
+      const std::uint64_t tokens = xd.ne(2);
+      const auto shape = [&](std::size_t at, const Shape& wanted) {
+        const TensorDesc td = d.t(d.s(at));
+        return td.shape().ne == wanted.ne && td.format.encoding == format::Encoding::kF32;
+      };
+      if (!d.check(hc >= 2 && hc <= 64 && p.iterations >= 1 && p.iterations <= 1024,
+                   GraphError::kParams, "bounded Sinkhorn streams and iterations") ||
+          !d.check(shape(0, S(width, hc, tokens)) && shape(2, S(3)) && shape(3, S((2 + hc) * hc)) &&
+                       shape(4, S(width)) &&
+                       d.t(d.s(1)).shape().ne == S(width * hc, (2 + hc) * hc).ne,
+                   GraphError::kShape, "Sinkhorn streams, mixing weights, scales, bases and norm"))
+        return {};
+      const TensorId flat = b.Reshape(d.Packed(x), S(width * hc, tokens));
+      const TensorId mixes = b.MatMul(d.s(1), b.RmsNorm(flat, p.eps));
+      if (!b.ok()) return {};
+      const TensorDesc md = d.t(mixes);
+      const auto run = [&](std::uint64_t first) {
+        return d.View2(mixes, hc, tokens, md.nb[0], md.nb[1], first * md.nb[0]);
+      };
+      TensorId post = b.Mul(run(hc), Element(d, d.s(2), 1));
+      post = b.Scale(b.Unary(b.Add(post, Range(d, d.s(3), hc, hc)), UnaryFn::kSigmoid), 2.0F);
+      const TensorId comb = b.HcMix(mixes, d.s(2), d.s(3),
+                                    {.mix = HcMixKind::kSinkhorn,
+                                     .streams = p.streams,
+                                     .iterations = p.iterations,
+                                     .eps = p.hc_eps});
+      TensorId pre = b.Mul(run(0), Element(d, d.s(2), 0));
+      pre =
+          b.Scale(b.Unary(b.Add(pre, Range(d, d.s(3), 0, hc)), UnaryFn::kSigmoid), 1.0F, p.hc_eps);
+      const TensorId folded = b.HcPre(x, pre, {.fold = HcFold::kWeights, .streams = p.streams});
+      return Many({b.Mul(b.RmsNorm(folded, p.eps), d.s(4)), post, comb});
     }
     case FusedKind::kRmsNormMulAdd: {
       if (!d.need(3, 3)) {

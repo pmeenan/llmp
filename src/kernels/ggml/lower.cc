@@ -32,6 +32,8 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "kernels/ggml/dsv4_hc_norm.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
@@ -441,6 +443,18 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
       }
       exact_mask_positions_[n.out[0].v] =
           multi == 1 && candidate.valid() ? candidate : p_.root(n.src[0]);
+    }
+    if (n.key == ir::Fused(FusedKind::kDsv4Compress)) {
+      const auto p = n.Params<ir::CompressorParams>();
+      const auto* reads = input(n.src[4]);
+      const auto owner = p_.tensor(n.out[0]).segment;
+      if (reads == nullptr || reads->kind != co::InputKind::kPoolReads || reads->segment != owner ||
+          owner >= in_.shape.segments.size() || reads->ratio != p.ratio ||
+          reads->overlap != p.overlap || n.src[4] != p_.root(n.src[4]) ||
+          reads->ring != p_.tensor(n.src[0]).ne(1) ||
+          p_.tensor(n.src[2]).ne(1) != in_.shape.segments[owner].rows) {
+        return Refused("a compressor requires its owner's typed bounded pool reads");
+      }
     }
     if (n.key == ir::Fused(FusedKind::kRmsNormMulRope) && Selected(id) == kQsaPrepName) {
       if (!positions(n.src[2], ir::kJoinedSegment, true) ||
@@ -1897,6 +1911,10 @@ bool Lowering::Direct(NodeId id) const {
   const ir::Node& n = p_.node(id);
   if (n.key.op != Op::kFused) return false;
   switch (n.key.fused) {
+    case FusedKind::kDsv4QHead:
+    case FusedKind::kDsv4Compress:
+    case FusedKind::kDsv4HcPre:
+    case FusedKind::kHcNormPost:
     case FusedKind::kHcPrep:
     case FusedKind::kScaledUnary:
     case FusedKind::kHcFold:
@@ -2210,6 +2228,72 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     }
   }
   switch (n.key.fused) {
+    case FusedKind::kDsv4QHead: {
+      const auto p = n.Params<ir::NormRopeParams>();
+      const auto& r = p.rope;
+      ggml_tensor* out =
+          Dsv4QHead(c_, src(0), src(1),
+                    {.eps = p.eps,
+                     .original_context = static_cast<std::int32_t>(r.original_context),
+                     .base = r.base,
+                     .scale = r.scale,
+                     .extension = r.ext_factor,
+                     .attention = r.attn_factor,
+                     .beta_fast = r.beta_fast,
+                     .beta_slow = r.beta_slow});
+      Node(out, id);
+      set(0, out);
+      return {};
+    }
+    case FusedKind::kDsv4Compress: {
+      const auto p = n.Params<ir::CompressorParams>();
+      ggml_tensor* out =
+          Dsv4Compress(c_, src(0), src(1), src(2), src(3), src(4), p.ratio, p.overlap);
+      Node(out, id);
+      set(0, out);
+      return {};
+    }
+    case FusedKind::kDsv4HcPre: {
+      const auto p = n.Params<ir::SinkhornPreParams>();
+      const auto width = src(0)->ne[0];
+      const auto tokens = src(0)->ne[2];
+      ggml_tensor* partials = Dsv4HcMix(c_, src(0), src(1));
+      ggml_tensor* blob = Dsv4HcPre(c_, partials, src(0), src(2), src(3), src(4), p.eps, p.hc_eps,
+                                    static_cast<std::int32_t>(p.iterations));
+      Node(partials, id);
+      Node(blob, id);
+      placed_root_[n.out[0].v] = blob;
+      Inside(partials, n.out[0], Round(ggml_nbytes(blob), 256));
+      const auto tail = static_cast<std::size_t>(width * tokens) * sizeof(float);
+      ggml_tensor* normed =
+          ggml_view_2d(c_, blob, width, tokens, static_cast<std::size_t>(width) * sizeof(float), 0);
+      ggml_tensor* post = ggml_view_2d(c_, blob, 4, tokens, kDsv4HcTail * sizeof(float), tail);
+      ggml_tensor* comb = ggml_view_3d(c_, blob, 4, 4, tokens, 4 * sizeof(float),
+                                       kDsv4HcTail * sizeof(float), tail + 4 * sizeof(float));
+      Node(normed, id);
+      Node(post, id);
+      ggml_tensor* post_packed = ggml_cont(c_, post);
+      Node(post_packed, id);
+      Node(comb, id);
+      ggml_tensor* comb_packed = ggml_cont(c_, comb);
+      Node(comb_packed, id);
+      set(0, normed);
+      set(1, post_packed);
+      set(2, comb_packed);
+      return {};
+    }
+    case FusedKind::kHcNormPost: {
+      const auto p = n.Params<ir::HcNormPostParams>();
+      ggml_tensor* post = ggml_dsv4_hc_post(c_, src(0), src(1), src(2), src(3));
+      ggml_tensor* flat = ggml_reshape_2d(c_, post, post->ne[0] * post->ne[1], post->ne[2]);
+      ggml_tensor* norm = Dsv4HcNormF16(c_, flat, p.eps, GGML_TYPE_F32);
+      Node(post, id);
+      Node(flat, id);
+      Node(norm, id);
+      set(0, post);
+      set(1, norm);
+      return {};
+    }
     case FusedKind::kHcPrep: {
       const auto p = n.Params<ir::HcNormPostParams>();
       const ir::TensorDesc& xd = desc(0);
@@ -2606,6 +2690,9 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   // weight's parts and a verify's saves.
   for (const ir::Node& n : p_.nodes()) {
     if (n.key == ir::Primitive(Op::kRoute)) tensors += 10;
+    // A fill's shape tensor and ggml_fill's duplicated result both need
+    // descriptors, although the shape tensor is no execution dependency.
+    if (n.key == ir::Primitive(Op::kFill)) ++tensors;
     // ggml.convert owns a destination root and returns its cpy view.
     if (n.key == ir::Primitive(Op::kConvert)) ++tensors;
     if (n.key == ir::Primitive(Op::kExpertReduce) && n.nsrc >= 1) {
@@ -2635,6 +2722,34 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   if (auto saved = MakeSaves(); !saved) return std::unexpected(saved.error());
   if (auto bound = Bind(); !bound) return std::unexpected(bound.error());
   if (auto compared = PlanAndCompare(); !compared) return std::unexpected(compared.error());
+  // Capabilities describe shape/format metadata. The actual local fast
+  // launches additionally prove their bound strides, addresses and aliasing.
+  for (const auto& step : out_.plan.steps) {
+    std::expected<void, KernelFailure> valid;
+    if (step.implementation == kDsv4HcPostNormF16Name) {
+      if (step.nodes.size() != 2) return Refused("an HC post/norm pair without both outputs");
+      valid = CheckDsv4HcPostNormF16(step.nodes[0], step.nodes[1]);
+    } else if (step.nodes.size() == 1) {
+      const auto* node = step.nodes[0];
+      switch (LlmpOpOf(node)) {
+        case LlmpOp::kDsv4QHead:
+          valid = CheckDsv4QHead(node);
+          break;
+        case LlmpOp::kDsv4Compress:
+          valid = CheckDsv4Compress(node);
+          break;
+        case LlmpOp::kDsv4HcMix:
+          valid = CheckDsv4HcMix(node);
+          break;
+        case LlmpOp::kDsv4HcPre:
+          valid = CheckDsv4HcPre(node);
+          break;
+        default:
+          break;
+      }
+    }
+    if (!valid) return std::unexpected(valid.error());
+  }
   if (auto slots = Slots(); !slots) return std::unexpected(slots.error());
   out_.extent = plan_.placement.extent;
   out_.measuring = in_.addresses.measuring();
@@ -2780,6 +2895,13 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
       }
     }
     const auto rows = [&](std::size_t i) { return graph.tensor(made.src.at(i)); };
+    if (made.key == ir::Fused(FusedKind::kDsv4HcPre)) {
+      const auto x = rows(0);
+      // First output's root: normalized values and pitched carry tails,
+      // followed by the mix partials. Packed carry copies have own roots.
+      return Round((x.ne(0) + kDsv4HcTail) * x.ne(2) * sizeof(float), 256) +
+             Round(25 * kDsv4HcChunks * x.ne(2) * sizeof(float), 256);
+    }
     if (made.key == ir::Fused(FusedKind::kHcPrep)) {
       const ir::TensorDesc& x = rows(0);
       return HcPrepLayout{.width = static_cast<std::int64_t>(x.ne(0)),

@@ -107,8 +107,17 @@ update this section as each slice lands):
   dimensions reuse plans while actual positions refresh the typed inputs.
   The fragment, reference and key share the state's compressed-cell padding,
   independent of the raw read envelope. Primitive lowering and its descriptor
-  checks pass with the native indexer enabled or decomposed. Fast patterns,
-  default policies and whole-model GPU parity remain G4b2's. Owed by G4c:
+  checks pass with the native indexer enabled or decomposed. G4b2a has
+  landed four local, opt-in forms: Q-head, compressor pooling, full-carry HC
+  pre and flat-norm HC post. Their guarded primitive fallbacks, descriptor
+  accounting and existing-kernel operands are checked, including reuse of
+  the same capture after changed inputs and pitched compressor views at
+  ratio-four and ratio-128 block boundaries. The primitive dummy rows are
+  literal constants; masked/nonfinite pooling agrees with the reference.
+  The graph-order comparator authenticates only that exact dummy correction
+  and continues to check all other nodes and dataflow. Indexer/sparse-bank
+  forms remain G4b2b; default policies and
+  whole-artifact GPU parity remain G4b2c's. Owed by G4c:
   - binding the hash-routing side ids, checked against the expert count as
     `CheckDsv4HashRouting` does;
   - the compressor plan inputs;
@@ -116,7 +125,9 @@ update this section as each slice lands):
 
   G4b is split into G4b1 (past-safe plan-shape/key contract, matching MQA
   reference width, focused primitive-lowering correctness) and G4b2 (fast
-  patterns/default policy, structural parity and GPU execution). G4c then
+  patterns/default policy, structural parity and GPU execution). Its local
+  forms are complete in G4b2a; indexer/sparse banks remain G4b2b, and
+  output-A/products, mixed encodings and full policy remain G4b2c. G4c then
   binds the hash-routing IDs, compressor inputs and injection features and
   runs serving/state/quality/swap/1% controls; G4d deletes the M3 path. The
   active checkout is `.claude/worktrees/m36-g4b`; its assigned Spark copy
@@ -157,7 +168,7 @@ spark-b during the weight-handle review.
 
 The slice plan as designed before work began. Where it differs from what was
 built, docs/engine-components.md's "as built" text and the commits win.
-Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b and G3c1, G4a and G4b1, N1.
+Done so far: waves 0–2, P1, G1a–d, G2a–d, G3a–b and G3c1, G4a, G4b1 and G4b2a, N1.
 
 #### Wave 3: families, one at a time through the gate
 

@@ -200,6 +200,12 @@ std::string_view FusedKindName(FusedKind kind) {
       return "moe_experts";
     case FusedKind::kMatMulIdGlu:
       return "mul_mat_id_glu";
+    case FusedKind::kDsv4QHead:
+      return "dsv4_qhead";
+    case FusedKind::kDsv4Compress:
+      return "dsv4_compress";
+    case FusedKind::kDsv4HcPre:
+      return "dsv4_hc_pre";
   }
   return "unknown";
 }

@@ -332,7 +332,12 @@ std::size_t ParamSize(OpKey key) {
         return sizeof(NormParams);
       case FusedKind::kRmsNormMulRope:
       case FusedKind::kQkPrep:
+      case FusedKind::kDsv4QHead:
         return sizeof(NormRopeParams);
+      case FusedKind::kDsv4Compress:
+        return sizeof(CompressorParams);
+      case FusedKind::kDsv4HcPre:
+        return sizeof(SinkhornPreParams);
       case FusedKind::kRopeStore:
         return sizeof(RopeParams);
       case FusedKind::kMatMulGlu:
@@ -1367,11 +1372,16 @@ Out InferFused(const Ctx& c) {
   if (c.key().fused == FusedKind::kRopeStore) {
     LLMP_TRY(CheckRope(c, c.params<RopeParams>(), 0));
   }
-  if (c.key().fused == FusedKind::kRmsNormMulRope || c.key().fused == FusedKind::kQkPrep) {
+  if (c.key().fused == FusedKind::kRmsNormMulRope || c.key().fused == FusedKind::kQkPrep ||
+      c.key().fused == FusedKind::kDsv4QHead) {
     LLMP_TRY(CheckRope(c, c.params<NormRopeParams>().rope, 4));
   }
   if (c.key().fused == FusedKind::kQsaPool) {
     LLMP_TRY(CheckRope(c, c.params<QsaPoolParams>().rope, 8));
+  }
+  if (c.key().fused == FusedKind::kDsv4Compress) {
+    LLMP_TRY(Bool(c, 4));
+    LLMP_TRY(Zero(c, 5, 3));
   }
   if (c.key().fused == FusedKind::kHcFold) {
     LLMP_TRY(Bool(c, 4));

@@ -537,12 +537,9 @@ void Emitter::Compressor(const Comp& c) {
       if (overlap) {
         // dsv4_append_zero_row: a zero value (a -inf score) past the rows.
         const ir::TensorDesc jd = Desc(b_, joined);
-        ir::TensorId row =
-            b_.View(joined, Shape({jd.ne(0)}),
-                    ViewStrides(jd.nb[0], jd.nb[0] * jd.ne(0), 0, Shape({jd.ne(0)})), 0);
-        row = scores ? b_.Scale(row, 0.0F, -std::numeric_limits<float>::infinity())
-                     : b_.Scale(row, 0.0F);
-        row = b_.Reshape(row, Shape({jd.ne(0), 1}));
+        const ir::TensorId row =
+            b_.Fill(Shape({jd.ne(0), 1}), scores ? -std::numeric_limits<float>::infinity() : 0.0F,
+                    Encoding::kF32);
         joined = b_.Concat(joined, row, 1);
       }
       const ir::TensorId picked = b_.GetRows(joined, f_.step.PoolReads(s, ring, ratio, overlap));

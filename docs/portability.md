@@ -281,8 +281,19 @@ indexer selection is limited to D 128 and 32 or 64 heads; other valid
 shapes take the decomposition. Conversion currently requires packed
 F16/F32 operands and an I32-bounded element count. Device ahead masks
 require the existing block kernel's full ring and positive window; other
-valid ahead geometries can use the host mask. Fast-pattern and
-runtime migration checks remain G4b2/G4c work.
+valid ahead geometries can use the host mask.
+
+G4b2a's four local fast forms are opt-in and keep typed primitive
+definitions. Q-head takes F32 [512,64,T], 16–8192 rows and the 64-value
+tail rotation; full-carry HC pre takes four streams of width 4096 or
+8192 with F32/F16/BF16 mixing weights; HC post takes four packed F32
+4096-value streams and returns F32 streams and norm. Other shapes keep
+the primitive path. Compressor selection requires generated typed read
+indices and the existing helper's ratio/grid bounds. Literal dummy fills
+and a probability clamp preserve zero all-masked pools on GGML CUDA;
+nonfinite-value probes cover the helper and primitive fallback. Default
+fast-policy, whole-model parity and runtime migration remain G4b2b/G4b2c
+and G4c work.
 
 **What closing the gaps takes**, as the rule applies to new work from
 now on: an unfused composition for the model-specific operations

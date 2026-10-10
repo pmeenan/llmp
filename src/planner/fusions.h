@@ -26,6 +26,10 @@
 namespace llmp::planner::fusions {
 
 // Round 0 (over the step's primitive graph).
+std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> Dsv4CompressMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> Dsv4HcPreMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> Dsv4HcPostMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> HcPrepMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> HcMixMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> HcCombineMatch(const MatchContext& c, ir::NodeId anchor);

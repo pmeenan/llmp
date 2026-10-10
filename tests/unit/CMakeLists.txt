@@ -1150,6 +1150,14 @@ target_link_libraries(ggml_lower_dsv4_test PRIVATE llmp_ggml_tensors llmp_planne
                                                 llmp_engine_core llmp_components llmp_spec
                                                 llmp_model llmp_artifact llmp_json)
 llmp_gtest(ggml_lower_dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+if(LLMP_CUDA)
+  add_executable(ggml_lower_dsv4_gpu_test ggml_lower_dsv4_gpu_test.cc)
+  target_include_directories(ggml_lower_dsv4_gpu_test SYSTEM PRIVATE
+      "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+  target_link_libraries(ggml_lower_dsv4_gpu_test PRIVATE llmp_ggml_kernels llmp_planner
+                                                        llmp_components llmp_cuda_device_memory)
+  llmp_gpu_gtest(ggml_lower_dsv4_gpu_test DISCRETE ALL)
+endif()
 add_executable(ggml_lower_qwen38_test ggml_lower_qwen38_test.cc)
 target_link_libraries(ggml_lower_qwen38_test PRIVATE llmp_ggml_tensors llmp_planner
                                                      llmp_components llmp_spec llmp_model

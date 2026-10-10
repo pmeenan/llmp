@@ -304,6 +304,69 @@ TEST(GgmlLowerDsv4Test, PrimitiveTargetAndDraftStepsLowerWithTypedInputs) {
   }
 }
 
+TEST(GgmlLowerDsv4Test, OptInLocalFormsLowerActualTargetAndDraftFragments) {
+  Fixture f;
+  ASSERT_TRUE(f.Init());
+  const std::array<const md::StateLayoutDerived*, 2> layouts{&f.layouts[0], &f.layouts[1]};
+  const std::array<std::span<const co::BoundTensor>, 2> tensors{f.target_source.tensors,
+                                                                f.draft_source.tensors};
+  const std::array<std::string, 4> forms{"dsv4_qhead", "dsv4_compress", "dsv4_hc_pre",
+                                         "dsv4_hc_post"};
+  for (const auto& shape : std::vector<pl::StepShape>{
+           {.segments = {{.rows = 16, .read_cells = 768, .outputs = 1}}},
+           {.segments = {{.rows = 130, .past = 127, .read_cells = 768, .outputs = 1}}},
+           {.segments = {{.rows = 7, .past = 1027, .read_cells = 2048, .outputs = 1},
+                         {.slot = 1, .rows = 9, .past = 127, .read_cells = 2048, .outputs = 1}},
+            .read_align = 2048},
+           {.stage = 1,
+            .phase = pl::Phase::kDraft,
+            .segments = {{.rows = 5, .past = 812, .read_cells = 256, .outputs = 5},
+                         {.slot = 1, .rows = 1, .past = 945, .read_cells = 256, .outputs = 1}}}}) {
+    SCOPED_TRACE(shape.stage);
+    SCOPED_TRACE(shape.rows());
+    auto spec = f.spec;
+    if (shape.stage == 0) {
+      spec.stages.resize(1);
+      spec.stages[0].taps.clear();
+    }
+    const co::Bindings bindings{.tensors = tensors[shape.stage],
+                                .state = layouts[shape.stage],
+                                .stages = layouts,
+                                .artifacts = tensors};
+    auto step = co::BuildStep(spec, shape.stage, shape, bindings, {.narrow = false});
+    ASSERT_TRUE(step) << step.error();
+    std::vector<ir::TensorId> staged;
+    for (const auto& input : step->inputs)
+      if (input.kind != co::InputKind::kCellPositions) staged.push_back(input.tensor);
+    // Test each form independently: HC pre includes the flat norm that
+    // HC post can pair with, so enabling both gives the earlier pattern priority.
+    for (const auto& form : forms) {
+      if (shape.stage == 1 && form == "dsv4_compress") continue;
+      if (shape.rows() < 16 && form == "dsv4_qhead") continue;
+      SCOPED_TRACE(form);
+      pl::Policy policy;
+      policy.enabled = {form};
+      for (const auto& pattern : pl::Patterns())
+        if (pattern.name != form) policy.disabled.emplace_back(pattern.name);
+      pl::Canonicalize(policy);
+      auto plan =
+          pl::Plan(step->graph.Clone(), f.registry, {.device_class = "sm_121", .arch = 121}, policy,
+                   {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+      ASSERT_TRUE(plan) << plan.error().detail;
+      const auto count = std::ranges::count_if(
+          plan->applied, [&](const auto& applied) { return applied.pattern == form; });
+      EXPECT_GT(count, 0) << "the actual component fragment must select its local form";
+      auto lowered = kg::LowerStep(
+          {.plan = *plan, .step = *step, .shape = shape, .addresses = {}, .context = 65536},
+          f.registry, Device());
+      ASSERT_TRUE(lowered) << lowered.error().detail;
+      // LowerStep calls the actual CheckDsv4* launch validators, including
+      // packed carry copies and the disjoint HC post/norm output pair.
+      EXPECT_EQ(lowered->outputs.size(), shape.segments.size());
+    }
+  }
+}
+
 TEST(GgmlLowerDsv4Test, ConvertChainsBudgetEveryDestinationAndCopyView) {
   using llmp::format::Encoding;
   ir::Builder b;
@@ -334,6 +397,39 @@ TEST(GgmlLowerDsv4Test, ConvertChainsBudgetEveryDestinationAndCopyView) {
     ASSERT_EQ(operation.nodes.size(), 1U);
     const auto valid = kg::CheckConvert(operation.nodes.front());
     EXPECT_TRUE(valid) << valid.error().detail;
+  }
+}
+
+TEST(GgmlLowerDsv4Test, FillGraphsBudgetEveryShapeAndResultDescriptor) {
+  using llmp::format::Encoding;
+  ir::Builder b;
+  ir::TensorId output;
+  for (int i = 0; i < 18; ++i) {
+    output = b.Fill(ir::ShapeOf({16, 1}),
+                    i % 2 == 0 ? 0.0F : -std::numeric_limits<float>::infinity(), Encoding::kF32);
+    b.Output(output);
+  }
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << graph.error().detail;
+  co::StepGraph step{
+      .graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}, .logits = output};
+  const pl::StepShape shape{.segments = {{.rows = 1, .read_cells = 256, .outputs = 1}}};
+  auto registry = Registry();
+  auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                       {.written = kg::WrittenBytes, .shape = &shape});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  auto lowered =
+      kg::LowerStep({.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256},
+                    registry, Device());
+  ASSERT_TRUE(lowered) << lowered.error().detail;
+  ASSERT_EQ(lowered->plan.steps.size(), 18U);
+  for (const auto& operation : lowered->plan.steps) {
+    ASSERT_EQ(operation.nodes.size(), 1U);
+    const auto* node = operation.nodes.front();
+    EXPECT_EQ(node->op, GGML_OP_FILL);
+    EXPECT_EQ(node->type, GGML_TYPE_F32);
+    EXPECT_EQ(node->src[0], nullptr);
+    EXPECT_NE(node->data, nullptr);
   }
 }
 
@@ -379,6 +475,137 @@ TEST(GgmlLowerDsv4Test, DeviceAheadMasksRefuseUnsupportedBlockGeometry) {
         {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 65536}, registry,
         Device(), {.device_masks = false});
     EXPECT_TRUE(host) << host.error().detail;
+  }
+}
+
+TEST(GgmlLowerDsv4Test, FusedCompressorRequiresGeneratedReadsForItsExactOwnerGeometry) {
+  using llmp::format::Encoding;
+  for (int mutation = 0; mutation <= 6; ++mutation) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    b.SetOwner(0);
+    std::vector<co::StepInput> inputs;
+    const auto f32 = [&](std::uint64_t rows) {
+      const auto t = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({2, rows})));
+      inputs.push_back({.tensor = t, .kind = co::InputKind::kFeatures});
+      return t;
+    };
+    const auto state = f32(2), score = f32(2), current = f32(1), current_score = f32(1);
+    const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2})));
+    inputs.push_back({.tensor = ids,
+                      .kind = mutation == 1 ? co::InputKind::kFeatures : co::InputKind::kPoolReads,
+                      .segment = static_cast<std::uint8_t>(mutation == 5 ? 1 : 0),
+                      .cells = {.capacity = 2, .ring = true, .recent = true},
+                      .ratio = mutation == 2 ? 2U : 1U,
+                      .overlap = mutation != 3,
+                      .ring = mutation == 4 ? 4U : 2U});
+    const auto reads = mutation == 6 ? b.View(ids, ir::ShapeOf({2}), {4, 8, 8, 8}, 0) : ids;
+    b.Output(b.Fused(ir::FusedKind::kDsv4Compress,
+                     std::array{state, score, current, current_score, reads},
+                     ir::CompressorParams{.ratio = 1, .overlap = true})[0]);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    co::StepGraph step{.graph = std::move(*graph), .inputs = inputs, .weights = {}, .state = {}};
+    const pl::StepShape shape{.segments = {{.rows = 1, .outputs = 0, .want_head = false}}};
+    std::vector<ir::TensorId> staged;
+    for (const auto& in : inputs) staged.push_back(in.tensor);
+    auto registry = Registry();
+    auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                         {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    auto lowered = kg::LowerStep(
+        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 65536}, registry,
+        Device());
+    EXPECT_EQ(lowered.has_value(), mutation == 0);
+    if (!lowered)
+      EXPECT_NE(lowered.error().detail.find("typed bounded pool reads"), std::string::npos);
+  }
+}
+
+TEST(GgmlLowerDsv4Test, StridedHcPostBoundariesRetainThePrimitiveFallback) {
+  for (int strided = 0; strided < 4; ++strided) {
+    SCOPED_TRACE(strided);
+    ir::Builder b;
+    std::vector<co::StepInput> inputs;
+    const auto input = [&](int index, llmp::format::Shape shape) {
+      auto source_shape = shape;
+      if (index == strided) source_shape.ne[0] *= 2;
+      const auto root = b.Input(ir::Dense(llmp::format::Encoding::kF32, source_shape));
+      inputs.push_back({.tensor = root, .kind = co::InputKind::kFeatures});
+      return index == strided ? b.View(root, shape, b.tensor(root).nb, 0) : root;
+    };
+    const auto y = input(0, ir::ShapeOf({4096, 3}));
+    const auto x = input(1, ir::ShapeOf({4096, 4, 3}));
+    const auto post = input(2, ir::ShapeOf({4, 3}));
+    const auto comb = input(3, ir::ShapeOf({4, 4, 3}));
+    const auto out = b.HcPost(y, x, post, comb, {.streams = 4});
+    b.Output(out);
+    b.Output(b.RmsNorm(b.Reshape(out, ir::ShapeOf({16384, 3})), 1e-6F));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    co::StepGraph step{.graph = std::move(*graph), .inputs = inputs, .weights = {}, .state = {}};
+    const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 0, .want_head = false}}};
+    auto registry = Registry();
+    pl::Policy policy;
+    policy.enabled = {"dsv4_hc_post"};
+    for (const auto& pattern : pl::Patterns())
+      if (pattern.name != "dsv4_hc_post") policy.disabled.emplace_back(pattern.name);
+    pl::Canonicalize(policy);
+    std::vector<ir::TensorId> staged;
+    for (const auto& in : inputs) staged.push_back(in.tensor);
+    auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121},
+                         policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    EXPECT_TRUE(plan->applied.empty());
+    auto lowered = kg::LowerStep(
+        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 65536}, registry,
+        Device());
+    ASSERT_TRUE(lowered) << lowered.error().detail;
+  }
+}
+
+TEST(GgmlLowerDsv4Test, CompressorCapabilitiesAndLaunchValidationBoundBothGridAxes) {
+  using llmp::format::Encoding;
+  const auto* capability = kg::CapabilityOf(kg::kDsv4CompressName);
+  ASSERT_NE(capability, nullptr);
+  auto arena = kg::TensorArena::Create(64);
+  ASSERT_TRUE(arena);
+  std::uint64_t address = 1ULL << 40;
+  const auto bind = [&](ggml_tensor* t) {
+    kg::TensorArena::Bind(t, address);
+    address += 1ULL << 36;
+    return t;
+  };
+  for (const bool overlap : {false, true}) {
+    for (const std::uint64_t head : {65535ULL * 64, 65535ULL * 64 + 2}) {
+      const std::uint64_t channels = head * (overlap ? 2 : 1);
+      const std::uint64_t count = overlap ? 2 : 1;
+      const ir::CompressorParams p{.ratio = 1, .overlap = overlap};
+      const auto raw = ir::ToBytes(p);
+      const std::array<ex::OperandFormat, 6> operands{
+          {{.operand = 0, .encoding = Encoding::kF32, .ne = {channels, 1, 1, 1}},
+           {.operand = 1, .encoding = Encoding::kF32, .ne = {channels, 1, 1, 1}},
+           {.operand = 2, .encoding = Encoding::kF32, .ne = {channels, 1, 1, 1}},
+           {.operand = 3, .encoding = Encoding::kF32, .ne = {channels, 1, 1, 1}},
+           {.operand = 4, .encoding = Encoding::kI32, .ne = {count, 1, 1, 1}},
+           {.operand = ex::kOutputOperand, .encoding = Encoding::kF32, .ne = {head, 1, 1, 1}}}};
+      const ex::CapabilityQuery query{
+          .op = capability->op, .operands = operands, .arch = 121, .params = raw};
+      const bool supported = head == 65535ULL * 64;
+      EXPECT_EQ(capability->accepts(query), supported);
+      const auto matrix = [&] {
+        return bind(ggml_new_tensor_2d(arena->context(), GGML_TYPE_F32,
+                                       static_cast<std::int64_t>(channels), 1));
+      };
+      auto* sk = matrix();
+      auto* ss = matrix();
+      auto* kv = matrix();
+      auto* sc = matrix();
+      auto* ids = bind(
+          ggml_new_tensor_1d(arena->context(), GGML_TYPE_I32, static_cast<std::int64_t>(count)));
+      auto* output = bind(kg::Dsv4Compress(arena->context(), sk, ss, kv, sc, ids, 1, overlap));
+      EXPECT_EQ(kg::CheckDsv4Compress(output).has_value(), supported);
+    }
   }
 }
 

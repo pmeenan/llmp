@@ -1352,6 +1352,294 @@ TensorId SegmentPositions(RewriteContext& r, const StepShape* shape, TensorId po
 
 }  // namespace
 
+// ------------------------------------------------ DeepSeek local fast forms
+
+std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kRope) || c.taken(anchor)) return std::nullopt;
+  const ir::Node& ro = c.node(anchor);
+  const NodeId norm = Made(c, ro.src[0]);
+  if (!Is(c, norm, Op::kRmsNorm) || Only(c, ro.src[0]) != anchor || ro.source(2).valid())
+    return std::nullopt;
+  const ir::Node& nn = c.node(norm);
+  const ir::TensorDesc& q = c.tensor(nn.src[0]);
+  const ir::NormRopeParams p{.eps = nn.Params<ir::NormParams>().eps,
+                             .rope = ro.Params<ir::RopeParams>()};
+  // This opt-in selects the existing packed normal-RoPE tail kernel. Other
+  // rotary forms retain the primitive nodes, even with a permissive registry.
+  if (q.format.encoding != Encoding::kF32 ||
+      c.tensor(nn.out[0]).format.encoding != Encoding::kF32 ||
+      c.tensor(ro.out[0]).format.encoding != Encoding::kF32 || !ir::IsContiguous(q) ||
+      q.ne(0) != 512 || q.ne(3) != 1 || p.rope.mode != ir::RopeMode::kNormal || p.rope.dims != 64 ||
+      p.rope.offset != 448 || p.rope.inverse || p.rope.table || nn.component != ro.component ||
+      nn.batch != ro.batch || c.tensor(nn.out[0]).segment != c.tensor(ro.out[0]).segment)
+    return std::nullopt;
+  Building b(c);
+  const std::array<TensorId, 2> sources{nn.src[0], ro.src[1]};
+  const std::array<TensorId, 1> outputs{ro.out[0]};
+  const std::array<const ir::TensorDesc*, 1> descs{&c.tensor(ro.out[0])};
+  if (!b.Add({norm, anchor}) || !b.Closed(outputs) ||
+      !Has(c, ir::Fused(FusedKind::kDsv4QHead), Descs(c, sources), descs, ir::ToBytes(p)))
+    return std::nullopt;
+  const auto emit = [=](RewriteContext& r, int) {
+    ContextOf(r, r.original().node(anchor));
+    const std::array<TensorId, 2> mapped{r.Map(sources[0]), r.Map(sources[1])};
+    r.Set(outputs[0], r.builder().Fused(FusedKind::kDsv4QHead, mapped, p)[0]);
+  };
+  return b.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
+}
+
+namespace {
+
+// The candidate's boundaries; the full assembly is authenticated below
+// against its primitive definition, not only these producer op names.
+struct CompressorSide {
+  TensorId state, current, indices;
+};
+
+std::optional<CompressorSide> CompressorSideOf(const MatchContext& c, TensorId t, bool overlap) {
+  NodeId n = Made(c, t);
+  if (overlap) {
+    if (!Is(c, n, Op::kConcat)) return std::nullopt;
+    n = Made(c, c.node(n).src[0]);
+  }
+  if (!Is(c, n, Op::kReshape)) return std::nullopt;
+  n = Made(c, c.node(n).src[0]);
+  if (overlap) {
+    if (!Is(c, n, Op::kCont)) return std::nullopt;
+    n = Made(c, c.node(n).src[0]);
+    if (!Is(c, n, Op::kView)) return std::nullopt;
+    n = Made(c, c.node(n).src[0]);
+  }
+  if (!Is(c, n, Op::kGetRows)) return std::nullopt;
+  const ir::Node& get = c.node(n);
+  n = Made(c, get.src[0]);
+  if (overlap) {
+    if (!Is(c, n, Op::kConcat)) return std::nullopt;
+    n = Made(c, c.node(n).src[0]);
+  }
+  if (!Is(c, n, Op::kConcat)) return std::nullopt;
+  return CompressorSide{c.node(n).src[0], c.node(n).src[1], get.src[1]};
+}
+
+// Matches the definition's computed DAG against this graph, stopping at
+// its explicit boundary inputs. Parameter bytes and every meaningful view
+// stride/offset must agree. Boundary leaves retain their actual strides. Callers validate any views
+// of those leaves; compressor views follow fresh packed concatenations.
+bool PrimitiveDefinition(const MatchContext& c, Building& match, const ir::Graph& definition,
+                         TensorId expected, TensorId actual, std::span<const TensorId> sources,
+                         const ir::Node& anchor, std::vector<TensorId>& mapped) {
+  if (!expected.valid() || !actual.valid()) return expected == actual;
+  if (mapped.at(expected.v).valid()) return mapped.at(expected.v) == actual;
+  const ir::Node& want = definition.node(definition.producer(expected));
+  if (want.key == Prim(Op::kInput)) {
+    const auto inputs = definition.inputs();
+    const auto at = std::ranges::find(inputs, expected);
+    if (at == inputs.end()) return false;
+    return sources[static_cast<std::size_t>(at - inputs.begin())] == actual;
+  }
+  const NodeId id = Made(c, actual);
+  const ir::Node& got = c.node(id);
+  const ir::TensorDesc& wd = definition.tensor(expected);
+  const ir::TensorDesc& gd = c.tensor(actual);
+  // A shared weight's direct view stays joined even inside an owner's
+  // fragment. It contains no owner data; all computed values still have
+  // to belong to the anchor's owner.
+  const bool weight_view = got.key == Prim(Op::kView) && got.nsrc == 1 && Weight(c, got.src[0]) &&
+                           std::ranges::contains(sources, got.src[0]);
+  if (want.key != got.key || want.params != got.params || want.nsrc != got.nsrc || want.nout != 1 ||
+      got.nout != 1 || wd.shape().ne != gd.shape().ne || wd.format.encoding != gd.format.encoding ||
+      wd.format.layout != gd.format.layout || wd.is_view() != gd.is_view() ||
+      got.component != anchor.component ||
+      (!weight_view &&
+       (got.batch != anchor.batch || gd.segment != c.tensor(anchor.out[0]).segment)) ||
+      c.taken(id))
+    return false;
+  for (std::size_t axis = 0; axis < format::kMaxDims; ++axis) {
+    if (wd.ne(axis) > 1 && wd.nb[axis] != gd.nb[axis]) return false;
+  }
+  if (wd.is_view()) {
+    // Offsets are part of the formula, including the compressor's current
+    // channel half and the distinct scale/base runs of an HC mix.
+    if (wd.view_offset != gd.view_offset) return false;
+  }
+  for (std::size_t i = 0; i < want.nsrc; ++i) {
+    if (!PrimitiveDefinition(c, match, definition, want.src[i], got.src[i], sources, anchor,
+                             mapped))
+      return false;
+  }
+  mapped.at(expected.v) = actual;
+  return match.Add(id);
+}
+
+}  // namespace
+
+std::optional<Match> Dsv4CompressMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kPool) || c.taken(anchor)) return std::nullopt;
+  const ir::Node& pool = c.node(anchor);
+  const auto pp = pool.Params<ir::PoolParams>();
+  if (pp.kind != ir::PoolKind::kSoftmax || pool.nsrc != 2) return std::nullopt;
+  const bool overlap = Is(c, Made(c, pool.src[0]), Op::kConcat);
+  if (overlap && pp.ratio % 2 != 0) return std::nullopt;
+  const ir::CompressorParams params{.ratio = pp.ratio / (overlap ? 2U : 1U), .overlap = overlap};
+  const auto values = CompressorSideOf(c, pool.src[0], overlap);
+  const auto scores = CompressorSideOf(c, pool.src[1], overlap);
+  if (!values || !scores || values->indices != scores->indices) return std::nullopt;
+  const std::array<TensorId, 5> sources{values->state, scores->state, values->current,
+                                        scores->current, values->indices};
+  const std::array<TensorId, 1> outputs{pool.out[0]};
+  const std::array<const ir::TensorDesc*, 1> descs{&c.tensor(outputs[0])};
+  if (!Has(c, ir::Fused(FusedKind::kDsv4Compress), Descs(c, sources), descs, ir::ToBytes(params)))
+    return std::nullopt;
+  ir::Builder b;
+  std::array<TensorId, 5> inputs{};
+  for (std::size_t i = 0; i < sources.size(); ++i) inputs[i] = b.Input(c.tensor(sources[i]).format);
+  const auto expanded =
+      ir::Decompose(b, ir::Fused(FusedKind::kDsv4Compress), ir::ToBytes(params), inputs, {});
+  if (!b.ok() || expanded.n != 1) return std::nullopt;
+  b.Output(expanded[0]);
+  auto definition = std::move(b).Finish();
+  if (!definition) return std::nullopt;
+  Building match(c);
+  std::vector<TensorId> mapped(definition->tensor_count());
+  if (!PrimitiveDefinition(c, match, *definition, definition->outputs()[0], outputs[0], sources,
+                           pool, mapped) ||
+      !match.Closed(outputs))
+    return std::nullopt;
+  const auto emit = [=](RewriteContext& r, int) {
+    ContextOf(r, r.original().node(anchor));
+    std::array<TensorId, 5> mapped_sources{};
+    for (std::size_t i = 0; i < sources.size(); ++i) mapped_sources[i] = r.Map(sources[i]);
+    r.Set(outputs[0], r.builder().Fused(FusedKind::kDsv4Compress, mapped_sources, params)[0]);
+  };
+  return match.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
+}
+
+std::optional<Match> Dsv4HcPreMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kMul) || c.taken(anchor)) return std::nullopt;
+  const ir::Node& last = c.node(anchor);
+  const NodeId norm = Made(c, last.src[0]);
+  const NodeId fold = Is(c, norm, Op::kRmsNorm) ? Made(c, c.node(norm).src[0]) : NodeId{};
+  if (!Is(c, fold, Op::kHcPre)) return std::nullopt;
+  const TensorId x = c.node(fold).src[0];
+  const auto& xd = c.tensor(x);
+  const NodeId pre = Made(c, c.node(fold).src[1]);
+  const NodeId sigmoid = Is(c, pre, Op::kScale) ? Made(c, c.node(pre).src[0]) : NodeId{};
+  const NodeId add =
+      IsUnary(c, sigmoid, ir::UnaryFn::kSigmoid) ? Made(c, c.node(sigmoid).src[0]) : NodeId{};
+  const NodeId mul = Is(c, add, Op::kAdd) ? Made(c, c.node(add).src[0]) : NodeId{};
+  const NodeId run = Is(c, mul, Op::kMul) ? Made(c, c.node(mul).src[0]) : NodeId{};
+  const NodeId product = Is(c, run, Op::kView) ? Made(c, c.node(run).src[0]) : NodeId{};
+  if (!Is(c, product, Op::kMatMul)) return std::nullopt;
+  const NodeId scale_view = Made(c, c.node(mul).src[1]);
+  const NodeId base_view = Made(c, c.node(add).src[1]);
+  if (!Is(c, scale_view, Op::kView) || !Is(c, base_view, Op::kView)) return std::nullopt;
+  const std::array<TensorId, 5> sources{x, c.node(product).src[0], c.node(scale_view).src[0],
+                                        c.node(base_view).src[0], last.src[1]};
+  // The definition's input stand-ins are packed. Its views of scale/base
+  // address these whole weights, never an offset within a containing root.
+  if (!ir::IsContiguous(xd)) return std::nullopt;
+  for (std::size_t i = 1; i < sources.size(); ++i)
+    if (!Weight(c, sources[i]) || !ir::IsContiguous(c.tensor(sources[i]))) return std::nullopt;
+  const TensorId mixes = c.node(product).out[0];
+  for (const NodeId comb_id : c.readers(mixes)) {
+    if (!Is(c, comb_id, Op::kHcMix)) continue;
+    const ir::Node& comb = c.node(comb_id);
+    const auto hp = comb.Params<ir::HcParams>();
+    if (hp.mix != ir::HcMixKind::kSinkhorn || comb.src[1] != sources[2] ||
+        comb.src[2] != sources[3])
+      continue;
+    const ir::SinkhornPreParams params{.streams = hp.streams,
+                                       .eps = c.node(norm).Params<ir::NormParams>().eps,
+                                       .hc_eps = hp.eps,
+                                       .iterations = hp.iterations};
+    ir::Builder b;
+    std::array<TensorId, 5> inputs{};
+    for (std::size_t i = 0; i < sources.size(); ++i)
+      inputs[i] = b.Input(c.tensor(sources[i]).format);
+    const auto expanded =
+        ir::Decompose(b, ir::Fused(FusedKind::kDsv4HcPre), ir::ToBytes(params), inputs, {});
+    if (!b.ok() || expanded.n != 3) continue;
+    for (const TensorId out : expanded.span()) b.Output(out);
+    auto definition = std::move(b).Finish();
+    if (!definition) continue;
+    for (std::uint32_t j = product.v + 1; j < anchor.v; ++j) {
+      const NodeId post_id{j};
+      if (!Is(c, post_id, Op::kScale)) continue;
+      const std::array<TensorId, 3> outputs{last.out[0], c.node(post_id).out[0], comb.out[0]};
+      Building match(c);
+      std::vector<TensorId> mapped(definition->tensor_count());
+      bool matches = true;
+      for (std::size_t i = 0; i < outputs.size() && matches; ++i)
+        matches = PrimitiveDefinition(c, match, *definition, definition->outputs()[i], outputs[i],
+                                      sources, last, mapped);
+      if (!matches || !match.Closed(outputs)) continue;
+      // Both carries were computed earlier in the primitive graph. They
+      // must not escape to a reader before their replacement is emitted.
+      for (const TensorId out : outputs)
+        for (const NodeId reader : c.readers(out))
+          if (reader < anchor && !match.Has(reader)) matches = false;
+      if (!matches || !Has(c, ir::Fused(FusedKind::kDsv4HcPre), Descs(c, sources),
+                           Descs(c, outputs), ir::ToBytes(params)))
+        continue;
+      const auto emit = [=](RewriteContext& r, int) {
+        ContextOf(r, r.original().node(anchor));
+        std::array<TensorId, 5> mapped_sources{};
+        for (std::size_t i = 0; i < sources.size(); ++i) mapped_sources[i] = r.Map(sources[i]);
+        const auto out = r.builder().Fused(FusedKind::kDsv4HcPre, mapped_sources, params);
+        for (std::size_t i = 0; i < outputs.size(); ++i) r.Set(outputs[i], out[i]);
+      };
+      return match.Finish({{anchor, 0}}, emit,
+                          std::vector<TensorId>(sources.begin(), sources.end()));
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<Match> Dsv4HcPostMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kRmsNorm) || c.taken(anchor)) return std::nullopt;
+  const ir::Node& norm = c.node(anchor);
+  const NodeId flat_id = Made(c, norm.src[0]);
+  const NodeId post_id = Is(c, flat_id, Op::kReshape) ? Made(c, c.node(flat_id).src[0]) : NodeId{};
+  if (!Is(c, post_id, Op::kHcPost) || Only(c, norm.src[0]) != anchor) return std::nullopt;
+  const ir::Node& post = c.node(post_id);
+  if (post.nsrc != 4 || !post.src[3].valid()) return std::nullopt;
+  const auto hp = post.Params<ir::HcParams>();
+  if (post.params != ir::ToBytes(ir::HcParams{.streams = hp.streams})) return std::nullopt;
+  const auto& pd = c.tensor(post.out[0]);
+  const auto& fd = c.tensor(norm.src[0]);
+  const auto& nd = c.tensor(norm.out[0]);
+  // A post belongs to the preceding combine, while the flat norm belongs
+  // to the next mix. The direct data edge crosses components, but never
+  // owners; the flat reshape and norm must share their component.
+  if (c.node(flat_id).component != norm.component || post.batch != norm.batch ||
+      c.node(flat_id).batch != norm.batch || pd.segment != nd.segment || fd.segment != nd.segment ||
+      pd.format.encoding != Encoding::kF32 || nd.format.encoding != Encoding::kF32 ||
+      fd.shape().ne != ir::ShapeOf({pd.ne(0) * pd.ne(1), pd.ne(2)}).ne || fd.view_offset != 0 ||
+      !ir::IsContiguous(pd) || !ir::IsContiguous(fd))
+    return std::nullopt;
+  // The paired helper reads packed boundaries; strided consumers retain
+  // the primitive sequence instead of selecting a pair that cannot launch.
+  for (const TensorId source : post.sources())
+    if (!ir::IsContiguous(c.tensor(source))) return std::nullopt;
+  const ir::HcNormPostParams params{.eps = norm.Params<ir::NormParams>().eps,
+                                    .streams = hp.streams};
+  const std::array<TensorId, 2> outputs{post.out[0], norm.out[0]};
+  if (!Has(c, ir::Fused(FusedKind::kHcNormPost), Descs(c, post.sources()), Descs(c, outputs),
+           ir::ToBytes(params)))
+    return std::nullopt;
+  Building match(c);
+  if (!match.Add({post_id, flat_id, anchor}) || !match.Closed(outputs)) return std::nullopt;
+  const std::vector<TensorId> sources(post.sources().begin(), post.sources().end());
+  const auto emit = [=](RewriteContext& r, int) {
+    ContextOf(r, r.original().node(post_id));
+    std::vector<TensorId> mapped;
+    for (const TensorId input : sources) mapped.push_back(r.Map(input));
+    const auto out = r.builder().Fused(FusedKind::kHcNormPost, mapped, params);
+    for (std::size_t i = 0; i < outputs.size(); ++i) r.Set(outputs[i], out[i]);
+  };
+  return match.Finish({{post_id, 0}}, emit, sources);
+}
+
 // qsa_pool: an owner's block keys (their raw rows pooled, normed, rotated
 // and rounded, stored at their cells) as llmp.qsa.pool, which writes only
 // the blocks the step completes.

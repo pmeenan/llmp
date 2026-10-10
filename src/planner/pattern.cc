@@ -1102,6 +1102,7 @@ constexpr std::array kQuantProductAnchors = {Op::kMatMul, Op::kMatMulId, Op::kFu
 constexpr std::array kAttentionAnchors = {Op::kAttention};
 constexpr std::array kProductAnchors = {Op::kMatMul};
 constexpr std::array kRopeAnchors = {Op::kRope};
+constexpr std::array kPoolAnchors = {Op::kPool};
 constexpr std::array kStoreAnchors = {Op::kCacheStore};
 constexpr std::array kRouteReduce = {ir::Primitive(Op::kRoute), ir::Primitive(Op::kExpertReduce)};
 
@@ -1111,6 +1112,34 @@ constexpr std::array kPatterns = {
     // The fast forms' fusions (fusions.h), opt-in: a model's policy enables
     // them. Before the norms', which they take precedence over where a
     // policy enables both.
+    Pattern{.name = "dsv4_qhead",
+            .result = ir::Fused(FusedKind::kDsv4QHead),
+            .anchors = kRopeAnchors,
+            .match = &fusions::Dsv4QHeadMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "dsv4_compress",
+            .result = ir::Fused(FusedKind::kDsv4Compress),
+            .anchors = kPoolAnchors,
+            .match = &fusions::Dsv4CompressMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "dsv4_hc_pre",
+            .result = ir::Fused(FusedKind::kDsv4HcPre),
+            .anchors = kMulAnchors,
+            .match = &fusions::Dsv4HcPreMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "dsv4_hc_post",
+            .result = ir::Fused(FusedKind::kHcNormPost),
+            .anchors = kNormAnchors,
+            .match = &fusions::Dsv4HcPostMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
     Pattern{.name = "hc_prep",
             .result = ir::Fused(FusedKind::kHcPrep),
             .anchors = kNormAnchors,

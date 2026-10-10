@@ -253,6 +253,315 @@ TEST(PlannerPolicyTest, RanksAreTheDeviceClasses) {
 
 // ------------------------------------------------------- rewrite patterns
 
+TEST(PlannerPatternTest, Dsv4QHeadChecksTailOwnershipSideReadersAndInterveningWrites) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.dsv4_qhead", Any(ir::Fused(FusedKind::kDsv4QHead))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (int mutation = 0; mutation <= 10; ++mutation) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    b.SetComponent(1);
+    const TensorId root = mutation == 5
+                              ? b.State(F32({512, 6}), ir::StateRef{})
+                              : b.Input(ir::Dense(mutation == 8 ? Encoding::kF16 : Encoding::kF32,
+                                                  ir::ShapeOf({512, 6})));
+    const TensorId q = b.Reshape(root, ir::ShapeOf({512, 2, 3}));
+    const TensorId positions = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+    ir::TensorDesc rounded;
+    rounded.format = ir::Dense(Encoding::kF16, ir::ShapeOf({512, 2, 3}));
+    const TensorId normalized = mutation == 9 ? b.Emit(ir::Primitive(Op::kRmsNorm),
+                                                       ir::ToBytes(ir::NormParams{.eps = 1e-6F}),
+                                                       std::array{q}, std::array{rounded})[0]
+                                              : b.RmsNorm(q, 1e-6F);
+    if (mutation == 4) b.Keep(normalized);
+    if (mutation == 5) {
+      const TensorId replacement = b.Input(F32({512, 1}));
+      const TensorId cell = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({1})));
+      b.CacheStore(root, replacement, cell);
+    }
+    const TensorId frequency = mutation == 7 ? b.Input(F32({32})) : TensorId{};
+    if (mutation == 6) b.SetComponent(2);
+    const ir::RopeParams rope{.mode = mutation == 2 ? ir::RopeMode::kNeox : ir::RopeMode::kNormal,
+                              .inverse = mutation == 3,
+                              .dims = 64,
+                              .offset = mutation == 1 ? 446U : 448U,
+                              .original_context = 65536,
+                              .base = 1000000.0F,
+                              .scale = 0.125F,
+                              .ext_factor = 1.0F,
+                              .attn_factor = 1.25F};
+    ir::TensorDesc result_desc;
+    result_desc.format =
+        ir::Dense(mutation == 10 ? Encoding::kF16 : Encoding::kF32, ir::ShapeOf({512, 2, 3}));
+    const TensorId out =
+        b.Emit(ir::Primitive(Op::kRope), ir::ToBytes(rope),
+               std::array{normalized, positions, frequency}, std::array{result_desc})[0];
+    b.Output(out);
+    auto g = std::move(b).Finish();
+    ASSERT_TRUE(g) << (g ? "" : g.error().detail);
+    const MatchContext c(*g, selection, nullptr);
+    EXPECT_EQ(fusions::Dsv4QHeadMatch(c, g->producer(out)).has_value(), mutation == 0);
+    if (mutation != 0) continue;
+    Policy on;
+    on.enabled = {"dsv4_qhead"};
+    const SelectionView enabled(registry, kDevice, on, false, false);
+    auto rewritten = ApplyPatterns(*g, enabled, nullptr);
+    ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
+    ASSERT_EQ(rewritten->applied.size(), 1U);
+    EXPECT_EQ(rewritten->applied[0].pattern, "dsv4_qhead");
+    const auto& result =
+        rewritten->graph.node(rewritten->graph.producer(rewritten->graph.outputs()[0]));
+    EXPECT_EQ(result.key, ir::Fused(FusedKind::kDsv4QHead));
+    const auto params = result.Params<ir::NormRopeParams>();
+    EXPECT_EQ(ir::ToBytes(params.rope), g->node(g->producer(out)).params);
+    EXPECT_EQ(params.eps, 1e-6F);
+    auto disabled = ApplyPatterns(*g, selection, nullptr);
+    ASSERT_TRUE(disabled);
+    EXPECT_TRUE(disabled->applied.empty());
+    const auto primitive_registry = Registry();
+    const SelectionView unavailable(primitive_registry, kDevice, on, false, false);
+    EXPECT_FALSE(fusions::Dsv4QHeadMatch(MatchContext(*g, unavailable, nullptr), g->producer(out)));
+  }
+}
+
+TEST(PlannerPatternTest, Dsv4HcPreChecksTheFullCarryAndPrimitiveArithmetic) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.dsv4_hc_pre", Any(ir::Fused(FusedKind::kDsv4HcPre))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (int mutation = 0; mutation <= 10; ++mutation) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    b.SetComponent(1);
+    b.SetOwner(0);
+    const TensorId x =
+        mutation == 7 ? b.State(F32({8, 4, 3}), ir::StateRef{}) : b.Input(F32({8, 4, 3}));
+    const TensorId fn = b.Weight(F32({32, 24}), ir::WeightRef{});
+    const TensorId scale = b.Weight(F32({3}), ir::WeightRef{.role = 1});
+    const TensorId base = b.Weight(F32({24}), ir::WeightRef{.role = 2});
+    const TensorId norm_weight =
+        mutation == 10 ? b.Input(F32({8})) : b.Weight(F32({8}), ir::WeightRef{.role = 3});
+    const TensorId mixes =
+        b.MatMul(fn, b.RmsNorm(b.Reshape(x, ir::ShapeOf({32, 3})), mutation == 1 ? 1e-3F : 1e-6F));
+    const auto run = [&](std::uint64_t first) {
+      return b.View(mixes, ir::ShapeOf({4, 3}), {4, 96, 288, 288}, first * 4);
+    };
+    const auto sub = [&](TensorId t, std::uint64_t n, std::uint64_t first) {
+      return b.View(t, ir::ShapeOf({n}), {4, n * 4, n * 4, n * 4}, first * 4);
+    };
+    TensorId post = b.Mul(run(4), sub(scale, 1, 1));
+    post = b.Scale(b.Unary(b.Add(post, sub(base, 4, 4)), ir::UnaryFn::kSigmoid),
+                   mutation == 3 ? 3.0F : 2.0F);
+    const TensorId comb =
+        b.HcMix(mixes, mutation == 5 ? b.Input(F32({3})) : scale, base,
+                {.mix = ir::HcMixKind::kSinkhorn, .streams = 4, .iterations = 5, .eps = 1e-5F});
+    if (mutation == 6) b.Keep(mixes);
+    if (mutation == 7) {
+      const TensorId replacement = b.Input(F32({8, 1, 3}));
+      const TensorId idx = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({1, 3})));
+      b.CacheStore(x, replacement, idx);
+    }
+    if (mutation == 9) b.Output(b.Add(post, post));
+    TensorId pre = b.Mul(run(0), sub(scale, 1, 0));
+    pre = b.Scale(b.Unary(b.Add(pre, sub(base, 4, 0)), ir::UnaryFn::kSigmoid), 1.0F,
+                  mutation == 2 ? 1e-4F : 1e-5F);
+    if (mutation == 8) b.SetComponent(2);
+    const TensorId folded = b.HcPre(mutation == 4 ? b.Input(F32({8, 4, 3})) : x, pre,
+                                    {.fold = ir::HcFold::kWeights, .streams = 4});
+    const TensorId out = b.Mul(b.RmsNorm(folded, 1e-6F), norm_weight);
+    for (const TensorId t : {out, post, comb}) b.Output(t);
+    auto g = std::move(b).Finish();
+    ASSERT_TRUE(g) << (g ? "" : g.error().detail);
+    const MatchContext c(*g, selection, nullptr);
+    EXPECT_EQ(fusions::Dsv4HcPreMatch(c, g->producer(out)).has_value(), mutation == 0);
+    if (mutation != 0) continue;
+    Policy on;
+    on.enabled = {"dsv4_hc_pre"};
+    const SelectionView enabled(registry, kDevice, on, false, false);
+    auto rewritten = ApplyPatterns(*g, enabled, nullptr);
+    ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
+    ASSERT_EQ(rewritten->applied.size(), 1U);
+    EXPECT_EQ(rewritten->applied[0].pattern, "dsv4_hc_pre");
+    const auto& node =
+        rewritten->graph.node(rewritten->graph.producer(rewritten->graph.outputs()[0]));
+    EXPECT_EQ(node.key, ir::Fused(FusedKind::kDsv4HcPre));
+    EXPECT_EQ(node.nout, 3);
+    for (const TensorId t : node.outputs())
+      EXPECT_TRUE(ir::IsContiguous(rewritten->graph.tensor(t)));
+  }
+}
+
+TEST(PlannerPatternTest, Dsv4HcPostPreservesBothOutputsAcrossComponentBoundaries) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.dsv4_hc_post", Any(ir::Fused(FusedKind::kHcNormPost))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (int mutation = 0; mutation <= 9; ++mutation) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    b.SetComponent(1);
+    b.SetOwner(0);
+    const auto input = [&](int strided, std::uint64_t width, std::uint64_t inner) {
+      const auto root = b.Input(F32({width * (mutation == strided ? 2U : 1U), inner, 3}));
+      return mutation == strided
+                 ? b.View(root, ir::ShapeOf({width, inner, 3}), b.tensor(root).nb, 0)
+                 : root;
+    };
+    const TensorId x = input(6, 8, 4);
+    const TensorId y = b.Reshape(b.Input(F32({mutation == 7 ? 16U : 8U, 3})),
+                                 ir::ShapeOf({mutation == 7 ? 16U : 8U, 3}));
+    const TensorId yy = mutation == 7 ? b.View(y, ir::ShapeOf({8, 3}), b.tensor(y).nb, 0) : y;
+    const TensorId p_root = b.Input(F32({mutation == 8 ? 8U : 4U, 3}));
+    const TensorId p =
+        mutation == 8 ? b.View(p_root, ir::ShapeOf({4, 3}), b.tensor(p_root).nb, 0) : p_root;
+    const TensorId c = mutation == 1 ? TensorId{} : input(9, 4, 4);
+    const TensorId post = b.HcPost(yy, x, p, c, {.streams = 4});
+    b.SetComponent(2);
+    if (mutation == 2) b.SetJoined();
+    const TensorId flat = mutation == 3 ? post : b.Reshape(post, ir::ShapeOf({32, 3}));
+    if (mutation == 4) b.Keep(flat);
+    if (mutation == 5) b.SetComponent(3);
+    const TensorId norm = b.RmsNorm(flat, 1e-6F);
+    b.Output(post);
+    b.Output(norm);
+    auto g = std::move(b).Finish();
+    ASSERT_TRUE(g) << (g ? "" : g.error().detail);
+    EXPECT_EQ(fusions::Dsv4HcPostMatch(MatchContext(*g, selection, nullptr), g->producer(norm))
+                  .has_value(),
+              mutation == 0);
+    if (mutation != 0) continue;
+    Policy on;
+    on.enabled = {"dsv4_hc_post"};
+    const SelectionView enabled(registry, kDevice, on, false, false);
+    auto rewritten = ApplyPatterns(*g, enabled, nullptr);
+    ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
+    ASSERT_EQ(rewritten->applied.size(), 1U);
+    EXPECT_EQ(rewritten->applied[0].pattern, "dsv4_hc_post");
+    EXPECT_EQ(rewritten->graph.producer(rewritten->graph.outputs()[0]),
+              rewritten->graph.producer(rewritten->graph.outputs()[1]));
+  }
+}
+
+TEST(PlannerPatternTest, Dsv4CompressorDefinitionRejectsMalformedTypedOperands) {
+  for (int mutation = 0; mutation <= 7; ++mutation) {
+    SCOPED_TRACE(mutation);
+    ir::Builder b;
+    const std::uint64_t channels = mutation == 3 ? 7 : 8;
+    const TensorId state = b.Input(F32({channels, 8}));
+    const TensorId state_score = b.Input(F32({channels, mutation == 2 ? 7U : 8U}));
+    const TensorId current = b.Input(F32({channels, 3}));
+    const TensorId current_score = b.Input(
+        ir::Dense(mutation == 1 ? Encoding::kF16 : Encoding::kF32, ir::ShapeOf({channels, 3})));
+    const TensorId indices = b.Input(ir::Dense(mutation == 4 ? Encoding::kI64 : Encoding::kI32,
+                                               ir::ShapeOf({mutation == 5 ? 15U : 16U})));
+    const ir::CompressorParams params{.ratio = mutation == 0 ? 0U : 4U, .overlap = true};
+    ir::ParamBytes raw = ir::ToBytes(params);
+    if (mutation == 6) raw[4] = std::byte{2};  // noncanonical bool
+    if (mutation == 7) raw[5] = std::byte{1};  // reserved byte
+    b.FusedBytes(FusedKind::kDsv4Compress,
+                 std::array{state, state_score, current, current_score, indices}, raw, {});
+    EXPECT_FALSE(b.ok());
+  }
+}
+
+TEST(PlannerPatternTest, Dsv4CompressorChecksTheEntireCanonicalAssemblyAndReadOrder) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.dsv4_compress", Any(ir::Fused(FusedKind::kDsv4Compress))));
+  const auto registry = Registry(std::move(implementations));
+  const Policy policy{};
+  const SelectionView selection(registry, kDevice, policy, false, false);
+  for (bool overlap : {false, true}) {
+    for (int mutation = 0; mutation <= 9; ++mutation) {
+      if (!overlap && mutation >= 1 && mutation <= 3) continue;
+      SCOPED_TRACE(overlap);
+      SCOPED_TRACE(mutation);
+      constexpr std::uint64_t kDim = 8, kRatio = 4, kBlocks = 2, kRows = 3;
+      const std::uint64_t channels = kDim * (overlap ? 2 : 1);
+      const std::uint64_t reads = kRatio * kBlocks;
+      ir::Builder b;
+      b.SetComponent(1);
+      b.SetOwner(0);
+      const TensorId state = b.State(F32({channels, 8}), ir::StateRef{});
+      const TensorId state_score = b.State(F32({channels, 8}), ir::StateRef{.tensor = 1});
+      const TensorId current = b.Input(F32({channels, kRows}));
+      const TensorId current_score = b.Input(F32({channels, kRows}));
+      const auto index = [&]() {
+        return b.Input(ir::Dense(mutation == 8 ? Encoding::kI64 : Encoding::kI32,
+                                 ir::ShapeOf({reads * (overlap ? 2 : 1)})));
+      };
+      const TensorId indices = index();
+      const TensorId other_indices = mutation == 4 ? index() : indices;
+      const auto side = [&](TensorId saved, TensorId fresh, bool scores) {
+        TensorId source = b.Concat(saved, fresh, 1);
+        if (overlap) {
+          const TensorId zero = b.Fill(
+              ir::ShapeOf({channels, 1}),
+              scores ? (mutation == 1 ? -1000.0F : -std::numeric_limits<float>::infinity()) : 0.0F,
+              Encoding::kF32);
+          source = b.Concat(source, zero, 1);
+        }
+        const TensorId picked = b.GetRows(source, scores ? other_indices : indices);
+        if (!scores && mutation == 5) b.Keep(picked);
+        if (!scores && mutation == 9)
+          b.Keep(b.View(picked, ir::ShapeOf({channels}),
+                        {4, channels * 4, channels * 4, channels * 4}, 0));
+        if (!overlap) return b.Reshape(picked, ir::ShapeOf({kDim, kRatio, kBlocks}));
+        const std::array<std::uint64_t, 4> strides{4, channels * 4, channels * 4 * reads,
+                                                   channels * 4 * reads};
+        const auto half = [&](std::uint64_t offset) {
+          return b.Reshape(b.Cont(b.View(picked, ir::ShapeOf({kDim, reads}), strides, offset)),
+                           ir::ShapeOf({kDim, kRatio, kBlocks}));
+        };
+        const TensorId previous = half(0);
+        const TensorId next = half(mutation == 2 ? 0 : reads * channels * 4 + kDim * 4);
+        return mutation == 3 ? b.Concat(next, previous, 1) : b.Concat(previous, next, 1);
+      };
+      const TensorId values = side(state, current, false);
+      if (mutation == 6) {
+        const TensorId replacement = b.Input(F32({channels, 1}));
+        const TensorId cell = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({1})));
+        b.CacheStore(state, replacement, cell);
+      }
+      const TensorId scores = side(state_score, current_score, true);
+      if (mutation == 7) b.SetJoined();
+      const TensorId out = b.Pool(values, scores,
+                                  {.ratio = static_cast<std::uint32_t>(kRatio * (overlap ? 2 : 1)),
+                                   .kind = ir::PoolKind::kSoftmax});
+      b.Output(out);
+      auto g = std::move(b).Finish();
+      if (mutation == 8) {
+        // The IR itself refuses I64 gathers, before pattern selection.
+        EXPECT_FALSE(g);
+        continue;
+      }
+      ASSERT_TRUE(g) << (g ? "" : g.error().detail);
+      const MatchContext c(*g, selection, nullptr);
+      EXPECT_EQ(fusions::Dsv4CompressMatch(c, g->producer(out)).has_value(), mutation == 0);
+      if (mutation != 0) continue;
+      Policy on;
+      on.enabled = {"dsv4_compress"};
+      const SelectionView enabled(registry, kDevice, on, false, false);
+      auto rewritten = ApplyPatterns(*g, enabled, nullptr);
+      ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
+      ASSERT_EQ(rewritten->applied.size(), 1U);
+      EXPECT_EQ(rewritten->applied[0].pattern, "dsv4_compress");
+      const auto& result =
+          rewritten->graph.node(rewritten->graph.producer(rewritten->graph.outputs()[0]));
+      EXPECT_EQ(result.key, ir::Fused(FusedKind::kDsv4Compress));
+      EXPECT_EQ(result.Params<ir::CompressorParams>().ratio, kRatio);
+      EXPECT_EQ(result.Params<ir::CompressorParams>().overlap, overlap);
+      EXPECT_EQ(result.nsrc, 5U);
+      auto disabled = ApplyPatterns(*g, selection, nullptr);
+      ASSERT_TRUE(disabled);
+      EXPECT_TRUE(disabled->applied.empty());
+    }
+  }
+}
+
 TEST(PlannerPatternTest, HyperConnectionMixChecksItsStreamViewsAndFinalScale) {
   auto implementations = Everything();
   implementations.push_back(Fake("t.hc_norm", Any(ir::Fused(FusedKind::kHcNorm))));

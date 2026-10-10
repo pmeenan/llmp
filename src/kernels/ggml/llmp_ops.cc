@@ -2155,11 +2155,12 @@ std::expected<void, KernelFailure> CheckDsv4Compress(const ggml_tensor* node) {
                                kInt32Max);
   };
   if (ratio < 1 || ratio > 1024 || (overlap != 0 && overlap != 1) || channels % 2 != 0 ||
-      !rows(skv) || !rows(ssc) || !rows(kv) || !rows(score) || ssc->ne[1] != skv->ne[1] ||
-      score->ne[1] != kv->ne[1] || read->type != GGML_TYPE_I32 || !Packed(read) || !Bound(read) ||
-      read->ne[0] % per_block != 0 || !Shaped(read, read->ne[0], 1, 1) || !IsF32(node) ||
-      !Packed(node) || !Shaped(node, head, 1, read->ne[0] / per_block) ||
-      read->ne[0] / per_block > 65535 || !Disjoint(node, read, false) || !AllCurrent({node})) {
+      head > 65535 * 64 || !rows(skv) || !rows(ssc) || !rows(kv) || !rows(score) ||
+      ssc->ne[1] != skv->ne[1] || score->ne[1] != kv->ne[1] || read->type != GGML_TYPE_I32 ||
+      !Packed(read) || !Bound(read) || read->ne[0] % per_block != 0 ||
+      !Shaped(read, read->ne[0], 1, 1) || !IsF32(node) || !Packed(node) ||
+      !Shaped(node, head, 1, read->ne[0] / per_block) || read->ne[0] / per_block > 65535 ||
+      !Disjoint(node, read, false) || !AllCurrent({node})) {
     return Rejected(
         "a compressor's state and rows F32 [channels, rows], its read indices I32, "
         "into F32 [head, 1, blocks]");

@@ -21,6 +21,8 @@
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ir/op.h"
+#include "kernels/ggml/dsv4_hc_norm.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/gemma_moe.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
@@ -288,6 +290,34 @@ constexpr std::array<Rule, 4> kScaledReduce = {
      {.operand = 1, .encodings = kF32, .layouts = kDense},
      {.operand = 2, .encodings = kI32, .layouts = kDense},
      {.operand = 3, .encodings = kF32, .layouts = kDense}}};
+
+constexpr std::array<Rule, 3> kDsv4QHeadRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kI32, .layouts = kDense},
+     {.operand = kOut, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 6> kDsv4CompressRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = 3, .encodings = kF32, .layouts = kDense},
+     {.operand = 4, .encodings = kI32, .layouts = kDense},
+     {.operand = kOut, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 8> kDsv4HcPreRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kFloats, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = 3, .encodings = kF32, .layouts = kDense},
+     {.operand = 4, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut + 1, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut + 2, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 6> kDsv4HcPostRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = 3, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut, .encodings = kF32, .layouts = kDense},
+     {.operand = kOut + 1, .encodings = kF32, .layouts = kDense}}};
 
 // ------------------------------------------------------------- predicates
 
@@ -569,6 +599,78 @@ std::uint64_t Ne(const ex::CapabilityQuery& q, std::uint8_t operand, std::size_t
   return o == nullptr ? 0 : o->ne.at(d);
 }
 
+// ------------------------------------------------- DeepSeek's local forms
+
+bool ShapedOperand(const ex::CapabilityQuery& q, std::uint8_t at,
+                   std::array<std::uint64_t, 4> shape) {
+  const auto* operand = Operand(q, at);
+  return operand != nullptr && operand->ne == shape;
+}
+
+bool AcceptsDsv4QHead(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::NormRopeParams>(q);
+  const auto tokens = Ne(q, 0, 2);
+  if (!Built(q) || !p || tokens < 16 || tokens > 8192 ||
+      !ShapedOperand(q, 0, {512, 64, tokens, 1}) || !ShapedOperand(q, 1, {tokens, 1, 1, 1}) ||
+      !ShapedOperand(q, kOut, {512, 64, tokens, 1}) || Has(q, 2))
+    return false;
+  const auto& r = p->rope;
+  const std::array values{p->eps,        r.base,      r.scale,    r.ext_factor,
+                          r.attn_factor, r.beta_fast, r.beta_slow};
+  return r.mode == ir::RopeMode::kNormal && !r.inverse && !r.table && r.dims == 64 &&
+         r.offset == 448 &&
+         r.original_context <=
+             static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) &&
+         std::ranges::all_of(values, [](float v) { return std::isfinite(v); }) && p->eps >= 0 &&
+         r.base > 0 && r.scale > 0 && r.ext_factor >= 0 &&
+         (r.ext_factor == 0 ||
+          (r.original_context > 0 && r.beta_fast > 0 && r.beta_slow > 0 && r.base != 1));
+}
+
+bool AcceptsDsv4Compress(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::CompressorParams>(q);
+  if (!Built(q) || !p || p->ratio < 1 || p->ratio > 1024) return false;
+  const auto channels = Ne(q, 0, 0);
+  const auto state = Ne(q, 0, 1);
+  const auto tokens = Ne(q, 2, 1);
+  const auto count = Ne(q, 4, 0);
+  const std::uint64_t halves = p->overlap ? 2 : 1;
+  const std::uint64_t per_block = halves * p->ratio;
+  constexpr auto max = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  return channels > 0 && channels / halves <= 65535 * 64 && channels % 2 == 0 && state > 0 &&
+         tokens > 0 && count > 0 && state <= max / channels && tokens <= max / channels &&
+         count % per_block == 0 && count / per_block <= 65535 &&
+         ShapedOperand(q, 0, {channels, state, 1, 1}) &&
+         ShapedOperand(q, 1, {channels, state, 1, 1}) &&
+         ShapedOperand(q, 2, {channels, tokens, 1, 1}) &&
+         ShapedOperand(q, 3, {channels, tokens, 1, 1}) && ShapedOperand(q, 4, {count, 1, 1, 1}) &&
+         ShapedOperand(q, kOut, {channels / halves, 1, count / per_block, 1});
+}
+
+bool AcceptsDsv4HcPre(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::SinkhornPreParams>(q);
+  const auto width = Ne(q, 0, 0);
+  const auto tokens = Ne(q, 0, 2);
+  return Built(q) && p && p->streams == 4 && p->iterations >= 1 && p->iterations <= 100 &&
+         std::isfinite(p->eps) && p->eps >= 0 && std::isfinite(p->hc_eps) && p->hc_eps >= 0 &&
+         (width == 4096 || width == 8192) && tokens >= 1 && tokens <= 65535 &&
+         ShapedOperand(q, 0, {width, 4, tokens, 1}) && ShapedOperand(q, 1, {width * 4, 24, 1, 1}) &&
+         ShapedOperand(q, 2, {3, 1, 1, 1}) && ShapedOperand(q, 3, {24, 1, 1, 1}) &&
+         ShapedOperand(q, 4, {width, 1, 1, 1}) && ShapedOperand(q, kOut, {width, tokens, 1, 1}) &&
+         ShapedOperand(q, kOut + 1, {4, tokens, 1, 1}) &&
+         ShapedOperand(q, kOut + 2, {4, 4, tokens, 1});
+}
+
+bool AcceptsDsv4HcPost(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::HcNormPostParams>(q);
+  const auto tokens = Ne(q, 0, 1);
+  return Built(q) && p && p->streams == 4 && std::isfinite(p->eps) && p->eps > 0 && tokens >= 1 &&
+         tokens <= 65535 && ShapedOperand(q, 0, {4096, tokens, 1, 1}) &&
+         ShapedOperand(q, 1, {4096, 4, tokens, 1}) && ShapedOperand(q, 2, {4, tokens, 1, 1}) &&
+         ShapedOperand(q, 3, {4, 4, tokens, 1}) && ShapedOperand(q, kOut, {4096, 4, tokens, 1}) &&
+         ShapedOperand(q, kOut + 1, {16384, tokens, 1, 1});
+}
+
 // llmp.mxfp8.mul_mat_vec: up to kMxfp8VecColumns columns (a wave's to
 // kMxfp8VecWaveColumns).
 bool AcceptsMxfp8Vec(const ex::CapabilityQuery& q) {
@@ -812,6 +914,10 @@ constexpr std::array<std::string_view, 7> kMoeExpertsSteps = {
 constexpr std::array<std::string_view, 1> kVecQSteps = {kVecQName};
 // GGML's expert products over NVFP4 blocks: upstream's routing picks MMVQ
 // or MMQ (ggml_cuda_mul_mat_id).
+// The pre's two kernels and packed copies of its tiny strided carries.
+constexpr std::string_view kDsv4HcPrePackedName = "llmp.dsv4.hc_pre_packed";
+constexpr std::array<std::string_view, 3> kDsv4HcPreSteps = {kDsv4HcMixName, kDsv4HcPreName,
+                                                             kContName};
 constexpr std::string_view kMulMatIdNvfp4Name = "ggml.mul_mat_id.nvfp4";
 constexpr std::array<std::string_view, 2> kMulMatIdSteps = {kMulMatIdVecQ, kMulMatIdQ};
 constexpr std::string_view kAttentionGroup = "ggml.flash_attn_ext";
@@ -953,6 +1059,19 @@ const std::array kEntries = {
           "; selectable for the build's SASS architectures: causal, window and ahead masks"},
     Entry{"llmp.argmax", Operation::kTopK, Cap(P(Op::kArgmax), kF32In, &AcceptsArgmax, true),
           kBuilt},
+    Entry{kDsv4QHeadName, Operation::kRope,
+          Cap(F(FusedKind::kDsv4QHead), kDsv4QHeadRules, &AcceptsDsv4QHead, true),
+          "; packed F32 [512, 64, 16..8192] Q heads and normal rotary tail"},
+    Entry{kDsv4CompressName, Operation::kSoftMax,
+          Cap(F(FusedKind::kDsv4Compress), kDsv4CompressRules, &AcceptsDsv4Compress, true),
+          "; F32 compressor values/scores, ratio 1..1024, at most 65535 blocks"},
+    Entry{kDsv4HcPrePackedName, Operation::kHcPre,
+          Cap(F(FusedKind::kDsv4HcPre), kDsv4HcPreRules, &AcceptsDsv4HcPre, true, {}, 0, {}, 0,
+              kDsv4HcPreSteps),
+          "; full Sinkhorn carry, four F32 streams, width 4096 or 8192; packed carry copies"},
+    Entry{kDsv4HcPostNormF16Name, Operation::kHcPost,
+          Cap(F(FusedKind::kHcNormPost), kDsv4HcPostRules, &AcceptsDsv4HcPost, true),
+          "; four 4096-value streams, post and flat F32 norm"},
     // Qwen3.8's fast forms (slice G3b; qwen38_graph.h): the MXFP8 and BF16
     // products, the n-gram tables' rows, the hyper-connections, Gated
     // DeltaNet, QSA and the routed experts.
