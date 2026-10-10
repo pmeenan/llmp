@@ -39,6 +39,115 @@ one Spark and on two.
 
 ---
 
+## D-113: Prepared-artifact format version 1: tensor formats and parts in the index, the model spec as a hashed document of its own, applied folds and relayouts, the importer's identity; v0 stays readable and other versions are refused  (2026-10-09, status: proposed by M3.6's slice N1, for review with it; implements D-108's and D-109's new format version; amends D-056's manifest and index (descriptors, model block, converter, transformations) beside v0, keeping its profile, container, groups, chunks and page-in; adds version 1 of D-089's composition)
+
+**Decision.** [artifact-format.md](artifact-format.md#version-1) holds the
+schema and a worked example.
+
+- **Version 1 beside version 0.** `llmp-artifact`, `llmp-index`,
+  `llmp-shard` and `llmp-composition`, format version 1, with the
+  `llmp-` names D-111 reserved. The reader takes both: the manifest's
+  `format` says which, v0's names only ever with version 0. Any other
+  version of either is refused as `unsupported-version`, with the
+  version found as the error's item: a later version needs a later
+  runtime, an earlier one a re-import, and nothing is migrated (D-018).
+- **What stays.** Directory, identity and one-rename publication, the
+  safetensors shards, the spark-v0 profile (4 KiB-aligned dependency
+  groups, 2 MiB chunks, 256-byte members), tiling, over-read
+  reservation, expert arrays and their uniform expert groups, chunk
+  digests, kept metadata and every cap. The reader gives v1 the same
+  groups, chunks, placements and read plans as v0, so nothing that pages
+  an artifact in knows its version; the tests place v1 copies of the
+  prototype's v0 goldens and compare every placement, row lookup and
+  read plan.
+- **Tensors: a format and a part.** Each resource and expert array names
+  its tensor's format (D-108: encoding, layout, shape in GGML's order,
+  the encoding's non-default parameters, stacked matrices) and the part
+  of it the entry holds; its bytes and readable bytes are exactly what
+  the size rule gives that part. A tensor stored in several parts (MXFP8
+  codes and scales, NVFP4's tensor scale, an EXL3 trellis and its
+  vectors) is one entry per part, each with the tensor's format; which
+  entries make one tensor is the spec's weight binding (role, tensor,
+  part), which the component catalog checks, so the index has no closure
+  rule of its own and no library-named families. The container dtype is
+  informational: a dense tensor keeps its dtype and shape, every other
+  part is `U8` bytes.
+- **The spec is a document of its own,** `spec.json` (file role `spec`),
+  listed and hashed in the manifest, not a manifest member. The spec
+  already uses all eight levels of the strict JSON's nesting cap, which
+  bounds every document and stays as it is; the artifact module comes
+  before the spec module in the layers, so the artifact reader checks
+  `spec.json` as strict canonical JSON within its own cap (4 MiB, the
+  spec's) and leaves its schema to `spec/stored.h`; since the spec's
+  JSON is canonical, the file's SHA-256 is the spec's digest, which the
+  manifest (and so the artifact ID) covers and from which kept-state
+  layouts and plan keys derive; and the manifest keeps its 1 MiB cap.
+- **Where the spec lives.** An artifact carries the spec of the model it
+  holds alone, every stage running from it (artifact index 0). A model of
+  several artifacts (a pipeline's components, a target and its drafter)
+  carries it in its version 1 composition, the stages' indexes counting
+  the composition's components in their role order. A component may carry
+  none (a drafter that reads its target) or a spec of its own.
+- **Applied folds and relayouts** join v0's two transformations
+  (`dedupe-identical` for ties, `expert-slice`): `fold` names a fold
+  catalog entry (spec.h's names) and the tensors the importer applied it
+  to; `relayout` names the layout tensors were losslessly relaid out
+  from. The reader checks their patterns, that every tensor named is a
+  resource (by name, not alias) or an expert array, and that a relayout's
+  source layout holds the tensor's format and is not its own; the spec
+  module refuses a fold outside the catalog, one not among the folds of
+  every stage that runs from the artifact, so a component never applies
+  one twice, and one naming no tensor those stages bind.
+- **Folds are a stage's.** Each stage of the spec lists the folds its
+  own artifact's tensors carry: its source container converter's (the
+  mapping's, per container) and its importer's records. Not the model's:
+  a composition's stages may come from different containers (a GGUF
+  target whose converter folded its norms beside a safetensors drafter),
+  and a model-wide list would treat the drafter's norms as folded.
+  Stages that run from one artifact list the same folds. A binding to
+  another stage's tensor carries that stage's folds.
+- **The importer's identity** replaces v0's converter: name, version,
+  build and the SHA-256 of the options it ran with. The model block names
+  the source container in place of v0's representation families.
+- **Compositions.** Version 1 keeps version 0's rules, names its
+  importer, may carry `spec.json`, and keeps whatever files its pipeline
+  has, possibly none (a target and its drafter have no model_index.json).
+- **Versions.** The format version changes for anything a reader of the
+  previous version would misread: keys, meaning, order, caps, the
+  container or the profile's rules. New vocabulary in a field the reader
+  matches against its tables (an encoding, layout, part, codebook, source
+  container, transformation kind; a fold, against the spec module's
+  catalog) needs no new version: an older reader refuses the artifact
+  naming the rule (`repr` or `schema`), never misreads it.
+
+**Context.** D-108 and D-109 asked for a format version whose manifest
+names encodings independently of any kernel library, records layouts,
+the spec, the folds applied and the importer's identity; until now v0
+artifacts were mapped to formats at read time (`format_map.h`) and their
+specs synthesized from compiled profiles (`SynthesizeV0`). The owner's
+directions of 2026-10-09 apply: describe whatever is unambiguous and
+correct, refuse only ambiguous, inconsistent or unsafe input; harden
+content, not the filesystem.
+
+**Consequences.** N3's fold catalog extends spec.h's names; N4's writer
+writes this format deterministically and publishes it with one rename;
+N5 re-imports every artifact. The M3 per-family binders read v0's
+representation descriptors only (a v1 resource's is empty), so a family
+reads v1 artifacts once it runs on the component engine, through
+`spec/stored.h`; until its migration it keeps its v0 artifacts, and each
+binder refuses a v1 artifact, naming its version (`model/v0_artifact.h`).
+Moving folds from the model to its stages changed the spec's canonical
+JSON, so every spec digest changed (the spec's version stays 1: no
+artifact stored one before this format); a kept conversation the shared
+runner recorded before it (only under its diagnostic switch, no family
+being served by it yet) no longer matches its layout (`KeptLayoutId`
+derives from the bound digest) and is discarded, never misread. A public surface (D-062): the product stays in the 0.x line, a
+minor change.
+
+**Reopen if** a tool must read a spec without the spec module, a cap must
+rise, or a reader needs a tensor's parts grouped without a spec (then an
+explicit tensor key in the index).
+
 ## D-112: Kept conversations of the shared runner: a spill file per stage, record format version 2; the other version is refused, not migrated  (2026-10-09, status: proposed by M3.6's serving-adapter slice, for review with it; amends D-105's record (format version 2 beside version 1) and its file names (`slot-N.stage-S.state`); implements engine-components.md's "old kept state discarded rather than migrated" for the shared runner)
 
 **Decision.**
@@ -173,7 +282,7 @@ decoders. features.md's platform rows and environment.md's hosts follow.
 **Reopen if** the owner reorders the ports, or a port proves to need
 something D-107's backend seam cannot express.
 
-## D-109: A native importer reads containers and formats by capability and architectures through declarative mappings; the model spec lives in the artifact  (2026-10-08, status: accepted by the owner, 2026-10-08; implements D-009's owned import pipeline in the distribution; amends D-056's manifest with the model spec, encodings, layouts and applied folds (a new artifact format version, re-import, no migration); replaces the per-checkpoint Python importers; changes how checkpoints are approved, not who approves them)
+## D-109: A native importer reads containers and formats by capability and architectures through declarative mappings; the model spec lives in the artifact  (2026-10-08, status: accepted by the owner, 2026-10-08; implements D-009's owned import pipeline in the distribution; amends D-056's manifest with the model spec, encodings, layouts and applied folds (a new artifact format version, re-import, no migration; version 1 in D-113, whose manifest lists and hashes the spec as a document of its own, spec.json); replaces the per-checkpoint Python importers; changes how checkpoints are approved, not who approves them)
 
 **Decision.**
 
@@ -197,7 +306,7 @@ something D-107's backend seam cannot express.
 - **The spec lives in the artifact.** The manifest records the model spec
   (pipeline kind, residual stream, side inputs, per-layer components and
   parameters, feature taps, heads), every tensor's encoding and layout, the
-  folds applied and the importer's identity. The runtime validates the spec
+  folds applied (each stage's, D-113) and the importer's identity. The runtime validates the spec
   against its compiled component catalog and refuses what it cannot run.
 - **Admission is a standard gate.** A checkpoint of a known architecture is
   supported once it passes logits and perplexity against a reference
@@ -2035,7 +2144,7 @@ streams, events and scratch pools are the launch context's, made once at
 bind and destroyed with it after its graphs; their pools are fixed
 places in the node's workspace, as the stream's pool is.
 
-## D-089: A model of several components is one v0 artifact per component and a content-addressed composition that names them by ID  (2026-09-28, status: accepted by the main agent under the owner's overnight delegation (2026-09-28); confirmed by the owner, 2026-09-28; experimental under D-018 like the rest of v0; settles plan.md's M3 open question and artifact-format.md's "Companion and multi-component artifacts" for pipelines)
+## D-089: A model of several components is one v0 artifact per component and a content-addressed composition that names them by ID  (2026-09-28, status: accepted by the main agent under the owner's overnight delegation (2026-09-28); confirmed by the owner, 2026-09-28; experimental under D-018 like the rest of v0; settles plan.md's M3 open question and artifact-format.md's "Companion and multi-component artifacts" for pipelines; the composition's version 1, which may carry the model's spec and needs no model_index.json, in D-113)
 
 **Decision.**
 
@@ -5609,7 +5718,7 @@ or a measured need for shared binary packages makes maintaining this explicit
 closure more work than a package manager. Preserve pinned inputs, cross-build
 separation and D-017's profile exclusion under any replacement.
 
-## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085; representation descriptors and manifest amended by D-108 and D-109 (encodings and layouts, the model spec; a new format version); a linked root and hard-linked files allowed, 2026-10-09, below)
+## D-056: Experimental artifact v0: safetensors shards, 4 KiB-aligned dependency groups, 2 MiB paging chunks  (2026-09-22, status: accepted; resolves open question 5; amends D-035's on-disk extent and read rules; specializes D-009, D-018 and D-054; coalescing off by default after BP-P1's A/B under D-085; representation descriptors and manifest amended by D-108 and D-109 (encodings and layouts, the model spec; a new format version, version 1 in D-113); a linked root and hard-linked files allowed, 2026-10-09, below)
 
 **Decision.** Prepared artifacts use the [v0 format](artifact-format.md),
 experimental under D-018:

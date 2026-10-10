@@ -18,6 +18,7 @@
 
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -145,6 +146,9 @@ std::expected<Qwen2Binding, std::string> BindQwen2(const Qwen2Profile& profile,
 
 std::expected<Qwen2Binding, std::string> BindQwen2(const Qwen2Profile& profile,
                                                    const artifact::Artifact& artifact) {
+  if (auto v0 = RequireV0Artifact(artifact, "Qwen2"); !v0) {
+    return std::unexpected(v0.error());
+  }
   std::vector<ResourceShape> shapes;
   shapes.reserve(artifact.resources().size());
   for (const artifact::Resource& resource : artifact.resources()) {

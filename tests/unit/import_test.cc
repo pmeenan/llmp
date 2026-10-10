@@ -665,7 +665,7 @@ TEST(ImportGgufTest, MakesTheSourceAMappingReads) {
   ASSERT_EQ(s->stages.size(), 1U);
   EXPECT_EQ(s->stages[0].layers.size(), 2U);
   EXPECT_EQ(s->stages[0].context, 128U);
-  EXPECT_EQ(s->folds, std::vector<std::string>{"norm.plus_one"});
+  EXPECT_EQ(s->stages[0].folds, std::vector<std::string>{"norm.plus_one"});
   ASSERT_TRUE(s->stages[0].heads.output.has_value());
   if (const auto& output = s->stages[0].heads.output) {
     EXPECT_EQ(output->weights.at(0).tensor, "token_embd.weight");

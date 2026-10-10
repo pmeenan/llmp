@@ -245,6 +245,13 @@ void WriteStage(std::string& out, const Stage& s) {
     Key(out, "embedding", first);
     WriteComponent(out, *s.embedding);
   }
+  Key(out, "folds", first);
+  out += '[';
+  for (std::size_t i = 0; i < s.folds.size(); ++i) {
+    out += i > 0 ? "," : "";
+    Quoted(out, s.folds[i]);
+  }
+  out += ']';
   Key(out, "heads", first);
   {
     out += '{';
@@ -531,8 +538,8 @@ std::expected<std::optional<ComponentRef>, std::string> MaybeComponent(json::Val
 
 std::expected<Stage, std::string> ReadStage(json::Value v, const std::string& where) {
   if (auto k = Keys(v, where,
-                    {"artifact", "context", "heads", "layers", "name", "reads", "role", "side",
-                     "stream", "taps"},
+                    {"artifact", "context", "folds", "heads", "layers", "name", "reads", "role",
+                     "side", "stream", "taps"},
                     {"embedding"});
       !k) {
     return std::unexpected(k.error());
@@ -661,6 +668,15 @@ std::expected<Stage, std::string> ReadStage(json::Value v, const std::string& wh
     }
     r.kind = *k;
     s.reads.push_back(std::move(r));
+  }
+
+  LLMP_SPEC_TRY(folds, Array(Member(v, "folds"), where + ".folds", kMaxNamed));
+  for (std::size_t i = 0; i < folds->size(); ++i) {
+    const json::Value f = folds->at(i);
+    if (!f.is_string() || FindFold(f.string()) == nullptr) {
+      return Refuse(std::format("{}.folds[{}]", where, i), "not in the fold catalog");
+    }
+    s.folds.emplace_back(f.string());
   }
   return s;
 }
@@ -874,6 +890,14 @@ Status CheckStage(const ModelSpec& spec, const Stage& s, const std::string& wher
       return Refuse(at, "a tap the stage does not have");
     }
   }
+  if (s.folds.size() > kMaxNamed || !StrictlySorted(s.folds, std::identity{})) {
+    return Refuse(where + ".folds", "not sorted, or a fold twice");
+  }
+  for (const std::string& f : s.folds) {
+    if (FindFold(f) == nullptr) {
+      return Refuse(where + ".folds", std::format("\"{}\" is not in the fold catalog", f));
+    }
+  }
   return {};
 }
 
@@ -902,6 +926,14 @@ std::span<const FoldInfo> Folds() { return kFolds; }
 const FoldInfo* FindFold(std::string_view name) {
   const auto found = std::ranges::find(kFolds, name, &FoldInfo::name);
   return found == kFolds.end() ? nullptr : &*found;
+}
+
+const Stage* HoldingStage(const ModelSpec& spec, const Stage& stage, const WeightBinding& binding) {
+  if (binding.stage.empty()) {
+    return &stage;
+  }
+  const auto found = std::ranges::find(spec.stages, binding.stage, &Stage::name);
+  return found == spec.stages.end() ? nullptr : &*found;
 }
 
 void Canonicalize(ModelSpec& spec) {
@@ -941,8 +973,8 @@ void Canonicalize(ModelSpec& spec) {
     std::ranges::sort(s.reads, {}, [](const Read& r) {
       return std::tuple<std::string_view, ReadKind, std::string_view>(r.stage, r.kind, r.name);
     });
+    std::ranges::sort(s.folds);
   }
-  std::ranges::sort(spec.folds);
 }
 
 Status Validate(const ModelSpec& spec) {
@@ -966,18 +998,21 @@ Status Validate(const ModelSpec& spec) {
     if (auto ok = CheckStage(spec, s, std::format("stages[{}]", i)); !ok) {
       return ok;
     }
+    // A stage's folds are its artifact's tensors': stages that run from one
+    // artifact list the same, so that none applies a fold another's
+    // components take as done.
+    for (std::size_t j = 0; j < i; ++j) {
+      const Stage& o = spec.stages[j];
+      if (o.artifact == s.artifact && o.folds != s.folds) {
+        return Refuse(std::format("stages[{}].folds", i),
+                      std::format("not those of stage {}, which runs from the same artifact {}",
+                                  o.name, s.artifact));
+      }
+    }
   }
   if ((spec.pipeline == PipelineKind::kLlm || spec.pipeline == PipelineKind::kEmbedding) &&
       targets != 1) {
     return Refuse("stages", "a language model's one target stage");
-  }
-  if (spec.folds.size() > kMaxNamed || !StrictlySorted(spec.folds, std::identity{})) {
-    return Refuse("folds", "not sorted, or a fold twice");
-  }
-  for (const std::string& f : spec.folds) {
-    if (FindFold(f) == nullptr) {
-      return Refuse("folds", std::format("\"{}\" is not in the fold catalog", f));
-    }
   }
   return {};
 }
@@ -986,13 +1021,6 @@ std::string ToJson(const ModelSpec& spec) {
   std::string out;
   bool first = true;
   out += '{';
-  Key(out, "folds", first);
-  out += '[';
-  for (std::size_t i = 0; i < spec.folds.size(); ++i) {
-    out += i > 0 ? "," : "";
-    Quoted(out, spec.folds[i]);
-  }
-  out += ']';
   Key(out, "pipeline", first);
   Quoted(out, PipelineName(spec.pipeline));
   Key(out, "stages", first);
@@ -1021,8 +1049,8 @@ std::expected<ModelSpec, std::string> FromJson(std::string_view text) {
     return Refuse("spec", "not canonical JSON (sorted keys, no whitespace, one trailing newline)");
   }
   const json::Value root = doc->root();
-  if (auto k = Keys(root, "spec", {"folds", "pipeline", "stages", "version"}); !k) {
-    return std::unexpected(k.error());
+  if (!root.is_object() || !root.find("version")) {
+    return Refuse("spec", "not an object with a version");
   }
   ModelSpec spec;
   // The version first: a newer spec's other keys are not this build's.
@@ -1034,6 +1062,9 @@ std::expected<ModelSpec, std::string> FromJson(std::string_view text) {
   if (*version != kSpecVersion) {
     return Refuse("version", std::format("{}, not this build's {}", *version, kSpecVersion));
   }
+  if (auto k = Keys(root, "spec", {"pipeline", "stages", "version"}); !k) {
+    return std::unexpected(k.error());
+  }
   spec.version = kSpecVersion;
   const json::Value pipeline = Member(root, "pipeline");
   const auto p =
@@ -1042,17 +1073,6 @@ std::expected<ModelSpec, std::string> FromJson(std::string_view text) {
     return Refuse("pipeline", "not a pipeline kind");
   }
   spec.pipeline = *p;
-  const auto folds = Array(Member(root, "folds"), "folds", kMaxNamed);
-  if (!folds) {
-    return std::unexpected(folds.error());
-  }
-  for (std::size_t i = 0; i < folds->size(); ++i) {
-    const json::Value f = folds->at(i);
-    if (!f.is_string() || FindFold(f.string()) == nullptr) {
-      return Refuse(std::format("folds[{}]", i), "not in the fold catalog");
-    }
-    spec.folds.emplace_back(f.string());
-  }
   const auto stages = Array(Member(root, "stages"), "stages", kMaxStages);
   if (!stages) {
     return std::unexpected(stages.error());

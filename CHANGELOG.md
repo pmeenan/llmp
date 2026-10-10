@@ -13,6 +13,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Prepared-artifact format version 1 (D-113), read beside version 0:
+  each tensor's format and part in the index in place of v0's
+  library-named descriptors, the model spec as a hashed `spec.json`, the
+  folds and relayouts the importer applied and its identity in the
+  manifest, and compositions of version 1 that may carry a model's spec.
+  Groups, chunks and page-in are unchanged. An artifact or composition of
+  any other version is refused as `unsupported-version`, naming the
+  version; nothing is migrated. No importer writes version 1 yet; a minor
+  change of the 0.x line.
+
 - `spark-job start --shared` runs builds and non-timing functional tests
   up to `$LLMP_JOBS_SHARED` (default 2) at a time on a Spark, never beside
   a `--gpu` job, which stays exclusive and, while it waits, admits no new

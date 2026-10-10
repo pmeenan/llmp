@@ -222,6 +222,15 @@ std::optional<format::Encoding> EncodingOfDtype(std::string_view dtype) {
   return Lookup(kDtypeNames, dtype);
 }
 
+std::optional<std::string_view> DtypeOfEncoding(format::Encoding encoding) {
+  const auto found =
+      std::ranges::find_if(kDtypeNames, [&](const auto& e) { return e.second == encoding; });
+  if (found == kDtypeNames.end()) {
+    return std::nullopt;
+  }
+  return found->first;
+}
+
 std::expected<format::TensorFormat, format::FormatError> FormatOf(const Representation& rep) {
   switch (rep.family) {
     case Family::kGgml:

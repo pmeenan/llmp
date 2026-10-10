@@ -13,6 +13,7 @@
 #include "artifact/artifact.h"
 #include "artifact/gguf_metadata.h"
 #include "artifact/representation.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -132,6 +133,9 @@ std::expected<Gemma4AssistantBinding, std::string> BindGemma4Assistant(
 }
 std::expected<Gemma4AssistantBinding, std::string> BindGemma4Assistant(
     const Gemma4AssistantProfile& p, const artifact::Artifact& a) {
+  if (auto v0 = RequireV0Artifact(a, "The Gemma4 assistant"); !v0) {
+    return std::unexpected(v0.error());
+  }
   if (!Approved(p) || a.model().architecture != "gemma4-assistant" || a.model().expert_count != 0 ||
       !a.expert_arrays().empty() || a.resources().size() != kGemma4AssistantResources)
     return Refused("not an approved ordinary assistant artifact");

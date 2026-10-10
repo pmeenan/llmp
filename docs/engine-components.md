@@ -746,9 +746,13 @@ Checkpoint approval is a list in data, not a profile in code
 ([admission](#admitting-a-checkpoint)).
 
 **As built** (`src/spec`, 2026-10-09). `spec.h` holds `ModelSpec`: spec
-version 1, the pipeline kind, the folds applied and the stages; a stage
-has its role (target, drafter, encoder, text encoder, denoiser, VAE), its
-artifact index in the bound list, its trained context, an embedding, the
+version 1, the pipeline kind and the stages; a stage has its role
+(target, drafter, encoder, text encoder, denoiser, VAE), its artifact
+index in the bound list, the folds its artifact's tensors carry (a
+stage's, not the model's: a composition's stages may come from different
+containers, so a drafter never inherits its target's folds; stages of
+one artifact list the same; a binding to another stage's tensor carries
+its holding stage's, `HoldingStage`), its trained context, an embedding, the
 residual stream (stream count, width, and a mixing component exactly when
 there are several streams), side inputs with the layers that read them,
 layers of components in execution order, feature taps (a layer's output,
@@ -766,9 +770,10 @@ would be a second encoding of 0). Its digest is the SHA-256 of
 those bytes. Kept-state layout IDs and plan keys are to derive from
 `BoundDigest`: the spec digest with the length-prefixed IDs of the
 artifacts its stages bind (of a spec `Validate` accepts), since another
-checkpoint of the same spec shares the layout but not the state. The spec nests eight levels, the v0 JSON's limit: a v1
-manifest that holds it as a member raises that limit or keeps it as a
-document of its own.
+checkpoint of the same spec shares the layout but not the state. The spec nests eight levels, the v0 JSON's limit, so the v1
+format keeps it as a document of its own, `spec.json`, listed and hashed
+in the manifest, whose SHA-256 is then the spec's digest; `stored.h`
+reads it from a v1 artifact or composition (D-113).
 
 `mapping.h` makes specs from architecture mappings: compiled tables of
 slots (component kinds at the embedding, the layers of some types, the
@@ -778,7 +783,8 @@ source keys with a fixed set of transforms (reciprocal, square root,
 reciprocal square root) and constants, tried in order per layer type,
 requirements on source values, and folds from a fixed catalog
 (`norm.plus_one`, `ssm.a_neg_exp`, `gdn.value_heads_tiled`) asserted per
-source container. Mappings are validated like untrusted input.
+source container; a stage's folds are its source container's with the
+folds its importer recorded (`Source::folds`). Mappings are validated like untrusted input.
 Synthesis binds every source tensor to exactly one rule and every
 required role to a tensor, and resolves every parameter. For a v0
 artifact the tensors are its resources' roles and expert arrays and the
@@ -896,7 +902,8 @@ model; their speed against the tuned kernels is in
 v0's CUTLASS import keeps gate's and up's per-expert tensor scales as two
 resources, while a stacked format has one tensor-scale part ordered
 [matrix][stacked]: a launch gathers them until the importer writes that
-part, which the v1 manifest should hold as such.
+part, which the v1 index holds as one resource of the stacked format with
+part `tensor_scale` (D-113).
 
 **The EXL3 trellis (2026-10-09).** `kernels/reference` decodes the
 trellis as ExLlamaV3's pinned kernels define it: `exl3_dq.cuh`'s 16-bit
@@ -1096,7 +1103,13 @@ Native C++, part of the distribution; no Python (D-109).
   tensor's encoding and layout, the folds applied, and the importer's
   identity, under a new format version whose identifiers are `llmp-`
   (v0's `jitllm-` names retire with v0's reader, D-111). Import stays
-  deterministic and published by one rename (D-056).
+  deterministic and published by one rename (D-056). *As built
+  (2026-10-09, D-113):* [format version 1](artifact-format.md#version-1)
+  and its reader: each index entry's tensor format and part in place of
+  v0's descriptors, the spec as `spec.json`, `fold` and `relayout`
+  records and the importer's identity in the manifest, compositions of
+  version 1 that may carry a model's spec; the groups, chunks and page-in
+  are v0's, and the reader takes both versions.
 - **Admission.** <a id="admitting-a-checkpoint"></a>A checkpoint of a known
   architecture is supported once it passes a standard automated gate:
   logits and perplexity against a reference engine on a fixed corpus, and
@@ -1292,8 +1305,8 @@ full-attention q_proj's MXFP8 and routed expert 7's NVFP4 agree at 0.095,
 bounds: one step, and 0.15).
 Still to come: AWQ's and GPTQ's layouts, the fold catalog (MLX's and
 EXL3's sources need theirs: MLX's stacked experts and moved convolution
-axes, EXL3's packed sign vectors), the writer and its format version, the
-CLI and the admission gate.
+axes, EXL3's packed sign vectors), the writer of format version 1 (its
+reader has landed, D-113), the CLI and the admission gate.
 
 ## Execution
 

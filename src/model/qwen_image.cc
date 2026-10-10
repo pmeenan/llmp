@@ -21,6 +21,7 @@
 
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -324,6 +325,9 @@ std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
 std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
     std::span<const QwenImageTensor> tensors, std::string_view want,
     const artifact::Artifact& artifact) {
+  if (auto v0 = RequireV0Artifact(artifact, "Qwen-Image-2.1"); !v0) {
+    return std::unexpected(v0.error());
+  }
   std::vector<QwenImageResource> resources;
   resources.reserve(artifact.resources().size());
   for (const artifact::Resource& r : artifact.resources()) {

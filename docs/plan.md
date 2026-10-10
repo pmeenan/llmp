@@ -1535,6 +1535,11 @@ each is checked against the design as M3.6 proceeds.
       and the fold catalog for every migrated family; the new artifact
       format version, with every current artifact re-imported; the standard
       admission gate. The Python importers leave the production path.
+      *2026-10-09:* format version 1 and its reader, v0 still read
+      (D-113, [artifact-format.md](artifact-format.md#version-1)); the
+      container readers ([as built](engine-components.md#the-importer)).
+      The fold catalog, the writer, the CLI, the re-import and the gate
+      remain.
 - [ ] **Qwen-Image-2.1 onto the shared blocks**, with its rounding policy.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where its

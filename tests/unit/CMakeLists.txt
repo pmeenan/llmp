@@ -913,6 +913,16 @@ add_dependencies(artifact_test artifact_corpus)
 llmp_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# The v1 artifact format (D-113) through the reader: valid artifacts the
+# test-only writer makes (tests/support/artifact_writer.h), v1 copies of the
+# corpus's v0 goldens placed and read as the originals, each rule refused
+# with its reason, seeded document mutations, v1 compositions.
+add_executable(artifact_v1_test artifact_v1_test.cc)
+target_link_libraries(artifact_v1_test PRIVATE llmp_artifact llmp_test_artifact_writer)
+add_dependencies(artifact_v1_test artifact_corpus)
+llmp_gtest(artifact_v1_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+             PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 # The kept GGUF metadata reader (artifact/gguf_metadata.h): values and each
 # refusal on headers built in the test.
 add_executable(gguf_metadata_test gguf_metadata_test.cc)
@@ -1049,6 +1059,15 @@ add_executable(spec_test spec_test.cc)
 target_link_libraries(spec_test PRIVATE llmp_spec llmp_model llmp_artifact llmp_json)
 llmp_gtest(spec_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
+# The spec a v1 artifact or composition stores (spec/stored.h, D-113), on
+# artifacts the test-only writer makes, and v0's goldens as before.
+add_executable(spec_stored_test spec_stored_test.cc)
+target_link_libraries(spec_stored_test PRIVATE llmp_spec llmp_artifact llmp_model
+                                               llmp_test_artifact_writer)
+add_dependencies(spec_stored_test artifact_corpus)
+llmp_gtest(spec_stored_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+             PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 # The spec synthesized from the installed Gemma 2 and Gemma 3 v0 artifacts.
 add_executable(spec_models_test spec_models_test.cc)

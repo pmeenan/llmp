@@ -36,6 +36,10 @@ namespace llmp::artifact {
 // dtype (Dtypes()), as encodings.
 std::optional<format::Encoding> EncodingOfGgmlType(std::string_view type);
 std::optional<format::Encoding> EncodingOfDtype(std::string_view dtype);
+// The container dtype of a dense encoding (EncodingOfDtype's inverse);
+// nothing for an encoding safetensors has no dtype for (E8M0, every
+// quantized one).
+std::optional<std::string_view> DtypeOfEncoding(format::Encoding encoding);
 
 // The resource's own format, whose size rule gives exactly its recorded
 // bytes and readable range (for a trellis: its kCodes part's). A plain

@@ -27,6 +27,7 @@
 #include "artifact/representation.h"
 #include "model/host_mask.h"
 #include "model/state.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -309,6 +310,9 @@ std::expected<Dsv4Binding, std::string> BindDsv4Roles(const Dsv4Profile& profile
                                                       std::string_view want_architecture,
                                                       const artifact::Artifact& artifact,
                                                       bool tables, std::span<Dsv4ExtraRole> extra) {
+  if (auto v0 = RequireV0Artifact(artifact, want_architecture); !v0) {
+    return std::unexpected(v0.error());
+  }
   std::vector<Dsv4Resource> all;
   all.reserve(artifact.resources().size() + artifact.expert_arrays().size());
   for (const artifact::Resource& resource : artifact.resources()) {

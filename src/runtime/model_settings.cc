@@ -27,6 +27,7 @@
 #include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "model/qwen38.h"
+#include "model/v0_artifact.h"
 #include "runtime/calibration.h"
 #include "runtime/gemma_profile.h"
 #include "tokenizer/gguf.h"
@@ -431,6 +432,10 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
         return Error("the selected draft head requires its weight and token map");
       }
       if (head) {
+        // v0's descriptors: a v1 drafter's are empty (D-113).
+        if (auto v0 = model::RequireV0Artifact(*drafter, "The Qwen3.8 MTP drafter"); !v0) {
+          return Error(v0.error());
+        }
         const auto& weight = drafter->resources()[*head].repr;
         const auto& map = drafter->resources()[*ids].repr;
         if (weight.family != ja::Family::kGgml ||

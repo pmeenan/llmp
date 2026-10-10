@@ -16,6 +16,7 @@
 #include "artifact/artifact.h"
 #include "model/dsv4.h"
 #include "model/state.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -118,6 +119,9 @@ std::expected<DsparkBinding, std::string> BindDspark(const DsparkProfile& profil
                                                      const artifact::Artifact& drafter,
                                                      const Dsv4Profile& target_profile,
                                                      const Dsv4Binding& target) {
+  if (auto v0 = RequireV0Artifact(drafter, "DSpark"); !v0) {
+    return std::unexpected(v0.error());
+  }
   DsparkBinding b;
   auto extra = DsparkRoles(profile, target_profile, target, b);
   if (!extra) {

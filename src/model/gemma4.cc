@@ -24,6 +24,7 @@
 #include "artifact/representation.h"
 #include "base/check.h"
 #include "model/host_mask.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -342,6 +343,9 @@ std::expected<Gemma4Binding, std::string> BindGemma4(const Gemma4Profile& p,
 
 std::expected<Gemma4Binding, std::string> BindGemma4(const Gemma4Profile& p,
                                                      const artifact::Artifact& artifact) {
+  if (auto v0 = RequireV0Artifact(artifact, "Gemma4"); !v0) {
+    return std::unexpected(v0.error());
+  }
   if (artifact.model().expert_count != p.experts) {
     return Refused("Gemma4 artifact expert count differs from its profile");
   }

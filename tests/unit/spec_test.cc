@@ -97,8 +97,9 @@ ModelSpec Fixture() {
   drafter.reads = {Read{.stage = "target", .kind = ReadKind::kTap, .name = "post_norm"},
                    Read{.stage = "target", .kind = ReadKind::kState, .name = "kv"}};
 
-  ModelSpec spec{
-      .pipeline = PipelineKind::kLlm, .stages = {target, drafter}, .folds = {"norm.plus_one"}};
+  target.folds = {"norm.plus_one"};
+
+  ModelSpec spec{.pipeline = PipelineKind::kLlm, .stages = {target, drafter}};
   Canonicalize(spec);
   return spec;
 }
@@ -157,6 +158,11 @@ TEST(SpecTest, RefusesWhatIsNotCanonicalOrValid) {
        Replace(good, R"("pipeline":"llm")", R"("pipeline":"llm","pipeline":"llm")")},
       {"newer version", Replace(good, R"("version":1})", R"("version":2})")},
       {"unknown fold", Replace(good, R"("norm.plus_one")", R"("norm.times_two")")},
+      {"fold twice", Replace(good, R"("folds":["norm.plus_one"])",
+                             R"("folds":["norm.plus_one","norm.plus_one"])")},
+      // Folds are a stage's, never the model's.
+      {"model-wide folds", Replace(good, R"({"pipeline":)", R"({"folds":[],"pipeline":)")},
+      {"stage without folds", Replace(good, R"("folds":[],)", "")},
       {"unknown pipeline", Replace(good, R"("pipeline":"llm")", R"("pipeline":"video")")},
       {"artifact index", Replace(good, R"("artifact":1)", R"("artifact":16)")},
       {"component version", Replace(good, R"("kind":"head.linear","params":{},"version":1)",
@@ -219,6 +225,11 @@ TEST(SpecTest, RefusesWhatIsNotCanonicalOrValid) {
     EXPECT_FALSE(parsed.has_value()) << what;
   }
   EXPECT_FALSE(FromJson(std::string(kMaxSpecBytes + 1, ' ')).has_value());
+  // A newer spec is refused for its version, whatever keys it holds.
+  const auto newer = FromJson(Replace(Replace(good, R"({"pipeline":)", R"({"extra":1,"pipeline":)"),
+                                      R"("version":1})", R"("version":2})"));
+  ASSERT_FALSE(newer.has_value());
+  EXPECT_TRUE(newer.error().starts_with("version")) << newer.error();
   // Validate's own rules on built specs.
   ModelSpec empty_reals = Fixture();
   empty_reals.stages[0].layers[0].components[1].params[0].value = std::vector<double>{};
@@ -229,6 +240,23 @@ TEST(SpecTest, RefusesWhatIsNotCanonicalOrValid) {
   ModelSpec unsorted = Fixture();
   std::ranges::reverse(unsorted.stages[0].taps);
   EXPECT_FALSE(Validate(unsorted).has_value());
+  ModelSpec unsorted_folds = Fixture();
+  unsorted_folds.stages[1].folds = {"ssm.a_neg_exp", "norm.plus_one"};
+  EXPECT_FALSE(Validate(unsorted_folds).has_value());
+  Canonicalize(unsorted_folds);
+  EXPECT_TRUE(Validate(unsorted_folds).has_value());
+  ModelSpec uncatalogued = Fixture();
+  uncatalogued.stages[1].folds = {"norm.times_two"};
+  EXPECT_FALSE(Validate(uncatalogued).has_value());
+  // Stages of one artifact carry that artifact's folds: the same list.
+  ModelSpec one_artifact = Fixture();
+  one_artifact.stages[1].artifact = one_artifact.stages[0].artifact;
+  const auto differing = Validate(one_artifact);
+  ASSERT_FALSE(differing.has_value());
+  EXPECT_NE(differing.error().find("runs from the same artifact"), std::string::npos)
+      << differing.error();
+  one_artifact.stages[1].folds = one_artifact.stages[0].folds;
+  EXPECT_TRUE(Validate(one_artifact).has_value()) << Validate(one_artifact).error();
   ModelSpec negative_zero = Fixture();
   negative_zero.stages[0].embedding->params[0].value = -0.0;
   EXPECT_FALSE(Validate(negative_zero).has_value());
@@ -236,6 +264,28 @@ TEST(SpecTest, RefusesWhatIsNotCanonicalOrValid) {
   negative_zero_listed.stages[0].layers[0].components[1].params[0].value =
       std::vector<double>{0.5, -0.0};
   EXPECT_FALSE(Validate(negative_zero_listed).has_value());
+}
+
+// A binding's tensor is its holding stage's: the reading stage's own, or
+// the stage WeightBinding::stage names, whose artifact and folds it has.
+TEST(SpecTest, ABindingsTensorIsItsHoldingStages) {
+  const ModelSpec spec = Fixture();
+  const Stage& target = spec.stages[0];
+  const Stage& drafter = spec.stages[1];
+  ASSERT_EQ(target.name, "target");
+  ASSERT_EQ(drafter.name, "assistant");
+  const WeightBinding own = W("weight", "blk.0.attn_norm.weight");
+  WeightBinding shared = W("table", "token_embd.weight");
+  shared.stage = "target";
+  EXPECT_EQ(HoldingStage(spec, drafter, own), &drafter);
+  const Stage* holder = HoldingStage(spec, drafter, shared);
+  ASSERT_EQ(holder, &target);
+  EXPECT_EQ(holder->artifact, 0U);
+  EXPECT_EQ(holder->folds, std::vector<std::string>{"norm.plus_one"});
+  EXPECT_TRUE(drafter.folds.empty());
+  WeightBinding dangling = shared;
+  dangling.stage = "nowhere";
+  EXPECT_EQ(HoldingStage(spec, drafter, dangling), nullptr);
 }
 
 TEST(SpecTest, CanonicalEdgesRoundTrip) {
@@ -435,7 +485,7 @@ TEST(MappingTest, Gemma2SpecFromItsTensorsAndProfile) {
   ASSERT_TRUE(spec.has_value()) << spec.error();
   ASSERT_EQ(spec->stages.size(), 1U);
   const Stage& s = spec->stages[0];
-  EXPECT_EQ(spec->folds, std::vector<std::string>{"norm.plus_one"});
+  EXPECT_EQ(s.folds, std::vector<std::string>{"norm.plus_one"});
   EXPECT_EQ(s.context, 8192U);
   EXPECT_EQ(s.stream.width, 2304U);
   EXPECT_EQ(s.stream.streams, 1U);
@@ -475,8 +525,17 @@ TEST(MappingTest, Gemma2SpecFromItsTensorsAndProfile) {
   other.container = "safetensors";
   const auto unfolded = Synthesize(mappings::Gemma2Mapping(), other, *values);
   ASSERT_TRUE(unfolded.has_value());
-  EXPECT_TRUE(unfolded->folds.empty());
+  EXPECT_TRUE(unfolded->stages[0].folds.empty());
   EXPECT_NE(unfolded->Digest(), spec->Digest());
+  // One whose importer applied the fold (a v1 artifact's record) carries
+  // it as GGUF's converter's: the same spec.
+  other.folds = {"norm.plus_one"};
+  const auto imported = Synthesize(mappings::Gemma2Mapping(), other, *values);
+  ASSERT_TRUE(imported.has_value()) << imported.error();
+  EXPECT_EQ(imported->Digest(), spec->Digest());
+  // A fold outside the catalog is refused, never ignored.
+  other.folds = {"norm.times_two"};
+  EXPECT_FALSE(Synthesize(mappings::Gemma2Mapping(), other, *values).has_value());
 }
 
 TEST(MappingTest, Gemma3SpecFromItsTensorsAndProfile) {
@@ -622,7 +681,7 @@ TEST(MappingTest, Gemma4SpecsFromTheirTablesAndProfiles) {
     ASSERT_TRUE(from_gguf.has_value()) << from_gguf.error();
     EXPECT_EQ(*from_gguf, *spec);
     // No norm fold: the converter keeps Gemma 4's norm weights as they are.
-    EXPECT_TRUE(spec->folds.empty());
+    EXPECT_TRUE(spec->stages[0].folds.empty());
     const Stage& s = spec->stages[0];
     EXPECT_EQ(s.context, p.context);
     EXPECT_EQ(s.stream.width, p.width);
@@ -803,6 +862,33 @@ TEST(MappingTest, Gemma4AssistantComposesWithItsTarget) {
     ASSERT_TRUE(back.has_value()) << back.error();
     EXPECT_EQ(*back, *spec);
     EXPECT_TRUE(ToJson(*spec).contains(R"("stage":"target")"));
+    // Folds are each stage's own artifact's, never merged: a target whose
+    // importer folded its norms leaves the drafter's unfolded, and the
+    // other way round.
+    {
+      Source folded_target = test_support::Gemma4Source(size);
+      folded_target.folds = {"norm.plus_one"};
+      const auto ft =
+          Synthesize(mappings::Gemma4Mapping(), folded_target, *mappings::Gemma4V0Values(p));
+      ASSERT_TRUE(ft.has_value()) << ft.error();
+      const auto c = ComposeDrafter(*ft, mappings::Gemma4Mapping(),
+                                    mappings::Gemma4AssistantMapping(), source, *values);
+      ASSERT_TRUE(c.has_value()) << c.error();
+      EXPECT_EQ(c->stages[0].folds, std::vector<std::string>{"norm.plus_one"});
+      EXPECT_TRUE(c->stages[1].folds.empty());
+      EXPECT_NE(c->Digest(), spec->Digest());
+      Source folded_drafter = source;
+      folded_drafter.folds = {"norm.plus_one"};
+      const auto d2 = ComposeDrafter(*target, mappings::Gemma4Mapping(),
+                                     mappings::Gemma4AssistantMapping(), folded_drafter, *values);
+      ASSERT_TRUE(d2.has_value()) << d2.error();
+      EXPECT_TRUE(d2->stages[0].folds.empty());
+      EXPECT_EQ(d2->stages[1].folds, std::vector<std::string>{"norm.plus_one"});
+      EXPECT_NE(d2->Digest(), c->Digest());
+      auto rt = FromJson(ToJson(*d2));
+      ASSERT_TRUE(rt.has_value()) << rt.error();
+      EXPECT_EQ(*rt, *d2);
+    }
     const auto policy = DefaultPolicy(mappings::Gemma4AssistantMapping(), *values);
     ASSERT_TRUE(policy.has_value());
     EXPECT_TRUE(policy->contains("disable rms_norm_mul\n"));

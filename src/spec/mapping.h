@@ -21,7 +21,8 @@
 //     local and global layers, "lg"), and optionally the source key that
 //     lists them as a flag a layer (Gemma 4's sliding-window pattern),
 //     which must agree;
-//   - the folds (spec.h's catalog) a source container's converter applied;
+//   - the folds (spec.h's catalog) a source container's converter applied,
+//     which with the source's own (an importer's) are the stage's folds;
 //   - its default planning policies (planner/policy.h's canonical text),
 //     each gated by a source key as a slot is: the patterns and bounds a
 //     model of the architecture is planned with, the first migrations'
@@ -237,13 +238,19 @@ struct SourceTensor {
 };
 struct Source {
   std::string architecture{};
-  std::string container{};  // "gguf", "safetensors", or "other"
+  std::string container{};  // v0: "gguf", "safetensors" or "other"; v1: its manifest's
   std::vector<SourceTensor> tensors{};
+  // Folds the tensors carry beyond the container converter's (the mapping's
+  // FoldRules): a v1 artifact's importer's (spec/stored.h SourceOf). The
+  // stage made of the source lists them, so that no component applies one
+  // again.
+  std::vector<std::string> folds{};
 };
 
 // A v0 artifact as a source: every role of every resource (its name and
 // tied aliases) and every expert array (its slice's format with the expert
 // count as ne[2]); the container "gguf" when every source file is a GGUF.
+// Any other format version is refused (stored.h SourceOf reads both).
 std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact);
 
 // The serving envelope a policy is chosen for: the stage's context and the
@@ -272,8 +279,9 @@ std::expected<ModelSpec, std::string> SynthesizeV0(const artifact::Artifact& art
 // `target_mapping`) with a drafter stage the drafter's mapping makes of
 // its source and values, bound to the next artifact index: the drafter's
 // reads of the target, its target-tensor bindings (WeightBinding::stage),
-// and the target's taps it reads added to the target stage. The values
-// gain the target's facts (kTargetLastLayer). Validated.
+// its own source's folds (never the target's), and the target's taps it
+// reads added to the target stage. The values gain the target's facts
+// (kTargetLastLayer). Validated.
 std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
                                                      const Mapping& target_mapping,
                                                      const Mapping& drafter, const Source& source,

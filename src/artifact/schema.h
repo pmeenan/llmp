@@ -179,6 +179,41 @@ constexpr bool IsMetaPath(std::string_view s) {
   return s.starts_with("meta/") && IsName(s.substr(5));
 }
 
+constexpr bool IsLowerWordChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+// v1's source container, one the importer reads. Matched against this
+// table, not a pattern: a mapping's folds depend on the container (GGUF's
+// converter folds norms), so a container this build does not know is
+// refused rather than read as some other one (D-113's version rule).
+constexpr bool IsContainerName(std::string_view s) {
+  return s == "exl3" || s == "gguf" || s == "mlx" || s == "safetensors";
+}
+
+// Dot-separated words [a-z][a-z0-9_]*, 1-64 characters: v1's fold names,
+// as spec/spec.h's fold catalog spells them ("norm.plus_one").
+constexpr bool IsFoldName(std::string_view s) {
+  if (s.empty() || s.size() > 64) {
+    return false;
+  }
+  bool word_start = true;
+  for (const char c : s) {
+    if (c == '.') {
+      if (word_start) {
+        return false;
+      }
+      word_start = true;
+      continue;
+    }
+    if (word_start ? !(c >= 'a' && c <= 'z') : !IsLowerWordChar(c)) {
+      return false;
+    }
+    word_start = false;
+  }
+  return !word_start;
+}
+
 // Printable ASCII without `"` or `\`, 1-200 characters: converter fields.
 constexpr bool IsText(std::string_view s) {
   if (s.empty() || s.size() > 200) {

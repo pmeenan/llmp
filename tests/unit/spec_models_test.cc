@@ -78,7 +78,7 @@ TEST_P(SpecModelsTest, SynthesizesTheSpecFromTheArtifact) {
   ASSERT_TRUE(spec.has_value()) << spec.error();
   ASSERT_EQ(spec->stages.size(), 1U);
   EXPECT_EQ(spec->stages[0].layers.size(), c.layers);
-  EXPECT_EQ(spec->folds, std::vector<std::string>{"norm.plus_one"});
+  EXPECT_EQ(spec->stages[0].folds, std::vector<std::string>{"norm.plus_one"});
   // Every binding names a tensor the artifact resolves.
   std::size_t bindings = 0;
   const auto resolves = [&](const ComponentRef& component) {
@@ -167,7 +167,7 @@ TEST(SpecModelsTest, Gemma4SpecsFromTheirArtifacts) {
     ASSERT_TRUE(values.has_value());
     const auto spec = SynthesizeV0(*a, *mapping, *values);
     ASSERT_TRUE(spec.has_value()) << spec.error();
-    EXPECT_TRUE(spec->folds.empty());
+    EXPECT_TRUE(spec->stages[0].folds.empty());
     const auto table = Synthesize(*mapping, test_support::Gemma4Source(size), *values);
     ASSERT_TRUE(table.has_value()) << table.error();
     EXPECT_EQ(*table, *spec);

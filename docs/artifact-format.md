@@ -1,9 +1,9 @@
 <!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Experimental prepared-artifact format v0
+# Experimental prepared-artifact formats v0 and v1
 
-This is the bring-up encoding and layout ABI chosen for open question 5
+Version 0 is the bring-up encoding and layout ABI chosen for open question 5
 (D-056). It implements D-009's prepared artifacts and D-035's import-time
 repacking. It is **experimental** under D-018: any change may require
 re-import, and no compatibility guarantee exists until a dense model and a
@@ -15,13 +15,18 @@ and Gemma 4, and planned three more MoE models. It is not the native C++
 importer (M3.6, D-109) or the verifier (M5); until the importer lands it
 writes the artifacts (D-087).
 
-**Next version (M3.6, D-108, D-109).** The native C++ importer replaces the
-prototype and the per-checkpoint scripts. The next format version names
-each tensor's encoding independently of any kernel library, records its
-layout separately, and carries the model spec, the folds applied and the
-importer's identity in the manifest; target-specific layouts are prepared
-artifacts of their own. Every v0 artifact is re-imported; nothing migrates
-in place ([engine-components.md](engine-components.md#weight-and-state-formats)).
+**Version 1 (M3.6, D-108, D-109, D-113).** The native C++ importer
+replaces the prototype and the per-checkpoint scripts and writes
+[version 1](#version-1): the same directory, container, profile, groups,
+chunks and page-in, with each tensor's format (encoding, layout and
+shape, named independently of any kernel library) and part in the index,
+the model spec as a hashed document of its own, the folds and relayouts
+the importer applied, and its identity in the manifest; target-specific
+layouts are prepared artifacts of their own. The reader takes both
+versions. Every v0 artifact is re-imported; nothing migrates in place
+([engine-components.md](engine-components.md#weight-and-state-formats)).
+The sections up to [Version 1](#version-1) describe v0, and v1 where it
+does not say otherwise.
 
 ## Terms
 
@@ -708,6 +713,281 @@ place, when:
 Re-import creates a new ID. D-054's installer quiesces users of the old
 one and removes it. The source must remain available (D-018).
 
+## Version 1
+
+The native importer's format (D-113; D-108's formats, D-109's spec in
+the artifact). Experimental under D-018 like v0. The reader
+(`artifact/artifact.h`, `composition.h`) takes both versions, and gives
+v1 the same groups, chunks, placements, row lookups and read plans as
+v0, so nothing that pages an artifact in knows which version it read.
+
+**What stays v0's.** The directory and its identity (the SHA-256 of
+`manifest.json`), staging and one-rename publication, the walk's rules
+(only `data/` and `meta/`, regular files, no links inside, exactly the
+listed files), the safetensors shards and their header rules, the
+spark-v0 profile (`layout` exactly as in v0), groups tiling each shard,
+4 KiB group alignment, 2 MiB chunks numbered in group order, 256-byte
+resource alignment, over-read reserved inside a resource's own group,
+tied resources stored once, expert arrays over uniform expert groups,
+chunk digests, kept metadata and its source coverage, strict canonical
+ASCII JSON, and every cap. What changes:
+
+```text
+<installed store>/<artifact-id>/        artifact-id = SHA-256 of manifest.json bytes
+  manifest.json                         format "llmp-artifact", format_version 1
+  spec.json                             the model spec (optional), hashed in the manifest
+  index.json                            format "llmp-index", format_version 1
+  data/00000.safetensors ...            __metadata__ {"format":"llmp-shard","format_version":"1"}
+  meta/...                              kept source metadata, as v0
+```
+
+### manifest.json (v1)
+
+| Key | Content |
+| --- | --- |
+| `format`, `format_version` | `"llmp-artifact"`, `1`. The format names the version family: `jitllm-artifact` only ever with 0, `llmp-artifact` with 1 and later. Any other version is `unsupported-version`, the error's item the version found: a later one needs a later runtime, an earlier one a re-import |
+| `experimental`, `layout` | As v0: `true`, and the spark-v0 profile exactly |
+| `model` | `{architecture, container, expert_count}`: the architecture and expert count as v0's; `container` the reader the importer read the checkpoint with, one of `exl3`, `gguf`, `mlx` and `safetensors` (a table, not a pattern: a mapping's folds depend on the container, so one this build does not know is `schema`, never read as another). No representation families |
+| `source` | As v0 |
+| `transformations` | v0's `dedupe-identical` (ties) and `expert-slice`, which must describe the index exactly; and `fold` `{kind, fold, tensors}` and `relayout` `{kind, from, tensors}` (below). In canonical order by each record's canonical JSON |
+| `importer` | `{name, version, build, options_sha256}`: what made the artifact (text fields as v0's converter's; the SHA-256 of the options it ran with), so the same sources, importer and options give the same bytes and ID |
+| `files` | As v0, plus at most one `spec.json` with role `spec` |
+
+**Folds and relayouts.** A `fold` record names a fold catalog entry
+(spec.h's `Folds()`: `norm.plus_one`, `ssm.a_neg_exp`,
+`gdn.value_heads_tiled`, and N3's additions; dot-separated
+`[a-z][a-z0-9_]*` words, at most 64 characters) and the tensors the
+importer applied it to; each fold is recorded once. A `relayout` record
+names the layout the tensors were losslessly relaid out from (a layout
+name, each once) into the one their format records. Tensors are named
+by resource name (never a tied alias, so one content has one manifest)
+or expert array name, at least one, sorted and unique, 2^18 in all;
+a tensor is relaid out from one layout at most, which is not its own and
+which holds its format (refused as `repr` otherwise). The artifact
+reader checks these rules; the spec module (`spec/stored.h`) refuses a
+fold outside the catalog, whose meaning it would not know, one not among
+the folds of every stage that runs from the artifact, which a component
+would then apply a second time, and one that names no tensor the spec's
+stages bind from the artifact. Folds are a stage's, not the model's: each
+stage runs from one artifact, and a composition's stages may come from
+different containers (a GGUF target and a safetensors drafter), so a
+stage lists its own source's folds only, the same as every other stage
+of its artifact. A fold the source's own
+converter applied (GGUF's `(1 + w)` norms) is not the importer's: it
+appears only in the stage's folds. Ties and
+expert slicing keep v0's records; of the transforms N3's fold catalog
+plans, those that only change the tensor's layout between two
+`format::Layout`s of one format (NVFP4 scale atoms) are `relayout`
+records, and everything else is a `fold` record: whatever changes a
+tensor's meaning or which row or value means what (`(1 + w)`,
+`−exp(A_log)`, value-head tiling, a fused q/k projection split, and a
+permutation of linear attention's heads, which keeps its layout and so
+cannot be a relayout). A spec synthesized from a v1 artifact without one
+(`spec::SourceOf`, then its mapping) lists, on the stage made of it, the
+importer's folds with its container's.
+
+### spec.json
+
+The model spec ([engine-components.md](engine-components.md#the-model-spec)),
+`spec::ToJson`'s canonical bytes, kept as a document of its own and not
+as a manifest member:
+
+- the spec already uses all eight levels of the strict JSON's nesting
+  cap (root, stages, a stage, layers, a layer, a component, its weights,
+  a binding), and that cap bounds every document, so it stays as it is;
+- the artifact module comes before the spec module in the layers: the
+  reader checks `spec.json` as a document (listed size and SHA-256, at
+  most 4 MiB, the spec's own cap, strict canonical JSON, an object) and
+  `spec/stored.h` reads its schema;
+- the spec's JSON being canonical, the file's SHA-256 *is* the spec's
+  digest (`ModelSpec::Digest`), from which kept-state layouts and plan
+  keys derive (with the bound artifacts' IDs, `BoundDigest`), and the
+  manifest, and so the artifact ID, covers it;
+- the manifest keeps its 1 MiB cap whatever the spec's size.
+
+An artifact carries the spec of the model it holds alone: every stage
+runs from it (artifact index 0). A model of several artifacts carries
+its spec in its composition (below). A component artifact may carry
+none, such as a drafter that reads its target, or a spec of its own,
+such as a text encoder usable alone.
+
+### index.json (v1)
+
+`format` `"llmp-index"`, `format_version` 1; the header, `shards`,
+`groups` and `chunk_sha256` as v0's. Resources and expert arrays name a
+**format** and a **part** in place of v0's `repr`:
+
+| Key | Content |
+| --- | --- |
+| `resources[]` | `name`, `group`, `offset`, `bytes`, `readable_bytes`, `roles`, optional `access: "rows"` as v0's; `format`; `part` |
+| `expert_arrays[]` | `name`, `layer`, `count`, `first_group`, `group_offset`, `slice_bytes`, `readable_bytes` as v0's; `format` (one slice's, at most two dimensions); `part` |
+| `format` | `{encoding, layout, ne, params, stacked}`: the names of `format::Info` (`q4_k`, `nvfp4`, `exl3_trellis`; `ggml_blocks`, `split`, `cutlass_scale_atoms`), the logical shape in GGML's order (0 to 4 positive integers, its length the rank), the stacked matrices (1 to 255), and in `params` exactly the encoding parameters that differ from their zero defaults (`k_bits`, `codebook` `mcg`/`mul1`/`3inst`, `tensor_scale: true`, `bits`, `group`, `scale` `f16`/`bf16`/`f32`, `zero_point: true`; one written at its default is non-canonical) |
+| `part` | The part of the format the entry holds (`data`, `codes`, `block_scales`, `tensor_scale`, `input_signs`, `output_signs`, `codebook_marker`, `biases`, `zeros`) |
+
+Rules, in place of v0's representation rules:
+
+- **The size rule.** The format must be one `format::PartsOf` takes (a
+  known encoding and layout that holds it, its parameters, whole blocks
+  a row), and the entry's `bytes` and `readable_bytes` are exactly what
+  it gives the part: GGML's over-read for GGML's block layouts as in v0,
+  nothing past any other. An unknown name, a format the rule refuses and
+  a part the format lacks are `repr`; keys and ranges `schema`.
+- **Parts.** A tensor stored in several parts is one entry per part,
+  each carrying the tensor's format: an MXFP8 matrix's codes and block
+  scales, an affine matrix's codes, scales and biases, an EXL3 trellis's
+  codes, sign vectors and codebook marker, an NVFP4 tensor's tensor
+  scale. Which entries make one tensor is the spec's weight binding
+  (role, tensor, part), which the component catalog checks
+  (`components::ValidateSpec`); the index has no closure rule of its own
+  (v0's EXL3 closure and suffix rules do not apply). An expert array's
+  part may also be a resource of the layer: NVFP4 experts' tensor scales,
+  `[matrix][stacked]` F32 values over every expert, are one resource with
+  the stacked 3-D format and part `tensor_scale`, which v0 kept as one
+  resource per stacked matrix.
+- **Expert slices** are of any format of at most two dimensions (v0: a
+  2-D GGML matrix); a source of the spec sees the array's format with the
+  expert count as `ne[2]`.
+- **Row tables** (`access: "rows"`): one matrix (at most two dimensions)
+  whose part has addressable rows (`format::RowBytes`): `ne[1]` rows of
+  that many bytes.
+- **The container entry** is informational, as in v0: a dense tensor's
+  data part keeps its safetensors dtype and its shape outermost first;
+  every other part, and a dense encoding safetensors has no dtype for
+  (E8M0), is `U8 [bytes]`. The reader rebuilds every shard header from
+  the index with these, as for v0.
+
+### Compositions (v1)
+
+`format` `"llmp-composition"`, `format_version` 1 (other versions
+refused as for an artifact), `importer` in place of `converter`, and v0's
+other rules, except that the kept files are whatever the pipeline has,
+possibly none (v0 requires `model_index.json`; a target and its drafter
+keep nothing), and that it may list `spec.json` (role `spec`), checked as
+an artifact's. That spec is the model the composition makes: its stages'
+artifact indexes count the components in their (role) order, and
+`spec::StoredSpec(composition, components)` checks them against the
+opened components, whose IDs and architectures must be the recorded ones
+and whose importers' folds must each be among the folds of every stage
+that runs from that component. Components may be
+of either version.
+
+### Versions
+
+The format version changes for anything a reader of the previous version
+would misread: keys, meaning, order, caps, the container or the profile's
+rules. New vocabulary in a field matched against the reader's tables (an
+encoding, layout, part, codebook, source container, transformation kind;
+a fold, against the spec module's catalog) needs no new version: an
+older reader refuses such an artifact naming the rule (`repr`, `schema`,
+or the spec module's refusal) and never misreads it. Every other string
+in the manifest and index is a name, a path checked against its role, a
+digest or informational text (the importer's identity, source names). A runtime refuses a version it
+does not implement as `unsupported-version`, naming the version found;
+nothing is migrated in place.
+
+### Worked example
+
+The reader's test fixture (`artifact_v1_test`'s full plan, made by the
+test-only writer `tests/support/artifact_writer.h`): a toy model with
+four experts, eight groups of 77,824 stored bytes in two shards. Its manifest, laid out
+here for reading (on disk it is one line of canonical JSON, and the
+digests are shortened):
+
+```json
+{"experimental": true,
+ "files": [
+  {"bytes": 77824, "path": "data/00000.safetensors", "role": "shard", "sha256": "3c088d52…"},
+  {"bytes": 8192, "path": "data/00001.safetensors", "role": "shard", "sha256": "cbcb9d52…"},
+  {"bytes": 5993, "path": "index.json", "role": "index", "sha256": "2ed43164…"},
+  {"bytes": 12, "path": "meta/tokenizer.json", "role": "source-metadata", "sha256": "bf424d8d…"},
+  {"bytes": 69, "path": "spec.json", "role": "spec", "sha256": "127533c4…"}],
+ "format": "llmp-artifact", "format_version": 1,
+ "importer": {"build": "test", "name": "llmp-import-test", "options_sha256": "e3b0c442…",
+              "version": "1"},
+ "layout": {"byte_order": "little", "chunk_bytes": 2097152, "container": "safetensors",
+            "file_alignment": 4096, "member_alignment": 256, "profile": "spark-v0",
+            "profile_version": 0},
+ "model": {"architecture": "toy", "container": "safetensors", "expert_count": 4},
+ "source": [{"bytes": 14, "name": "model.safetensors", "sha256": "2ac572d2…"},
+            {"bytes": 12, "name": "tokenizer.json", "sha256": "bf424d8d…"}],
+ "transformations": [
+  {"count": 4, "kind": "expert-slice", "tensor": "blk.1.ffn_gate_up_exps.codes"},
+  {"count": 4, "kind": "expert-slice", "tensor": "blk.1.ffn_gate_up_exps.scales"},
+  {"fold": "norm.plus_one", "kind": "fold",
+   "tensors": ["blk.0.attn_norm.weight", "output_norm.weight"]},
+  {"from": "split", "kind": "relayout",
+   "tensors": ["blk.1.ffn_gate_up_exps.codes", "blk.1.ffn_gate_up_exps.scales"]},
+  {"kind": "dedupe-identical", "resource": "token_embd.weight", "role": "output.weight",
+   "sha256": "60bb7d25…"}]}
+```
+
+From its index, layer 0's MXFP8 matrix (K 64, N 32) as two parts, and
+layer 1's NVFP4 gate and up (K 64, 128 rows each, stacked) as two expert
+arrays in CUTLASS's scale atoms, with their tensor scale as one resource
+of the layer:
+
+```json
+{"bytes": 2048, "format": {"encoding": "mxfp8", "layout": "split", "ne": [64, 32],
+  "params": {}, "stacked": 1}, "group": 1, "name": "blk.0.attn_k.weight", "offset": 1792,
+  "part": "codes", "readable_bytes": 2048, "roles": ["blk.0.attn_k.weight"]}
+{"bytes": 64, "format": {"encoding": "mxfp8", "layout": "split", "ne": [64, 32],
+  "params": {}, "stacked": 1}, "group": 1, "name": "blk.0.attn_k.weight_scale",
+  "offset": 3840, "part": "block_scales", "readable_bytes": 64,
+  "roles": ["blk.0.attn_k.weight_scale"]}
+{"bytes": 32, "format": {"encoding": "nvfp4", "layout": "cutlass_scale_atoms",
+  "ne": [64, 256, 4], "params": {"tensor_scale": true}, "stacked": 2}, "group": 2,
+  "name": "blk.1.ffn_gate_up_exps.weight_scale_2", "offset": 0, "part": "tensor_scale",
+  "readable_bytes": 32, "roles": ["blk.1.ffn_gate_up_exps.weight_scale_2"]}
+{"count": 4, "first_group": 3, "format": {"encoding": "nvfp4", "layout": "cutlass_scale_atoms",
+  "ne": [64, 256], "params": {"tensor_scale": true}, "stacked": 2}, "group_offset": 0,
+  "layer": 1, "name": "blk.1.ffn_gate_up_exps.codes", "part": "codes",
+  "readable_bytes": 8192, "slice_bytes": 8192}
+{"count": 4, "first_group": 3, "format": {"encoding": "nvfp4", "layout": "cutlass_scale_atoms",
+  "ne": [64, 256], "params": {"tensor_scale": true}, "stacked": 2}, "group_offset": 8192,
+  "layer": 1, "name": "blk.1.ffn_gate_up_exps.scales", "part": "block_scales",
+  "readable_bytes": 1024, "slice_bytes": 1024}
+```
+
+The sizes are the size rule's: MXFP8's 64 one-byte codes and two E8M0
+scales a row; NVFP4's 32 code bytes a row of 256 rows, and four E4M3
+scales a row in two 512-byte atoms of 128 rows; a tensor scale of 4
+bytes a stacked matrix, two a matrix, four matrices. Each expert group
+holds one slice of each array at the same offset (9,216 bytes used,
+12,288 stored); the relayout says the importer moved the scales out of
+the checkpoint's split layout into the atoms (the codes are the same
+bytes in both). A layer 0 Q4_K matrix of
+K 256 reserves GGML's over-read (1,152 bytes, 1,296 readable), as in v0.
+
+The `spec.json` of `spec_stored_test`'s fixture, another artifact (a
+target over its token table, tied output, one norm and an MXFP8 expert
+array), as a single-artifact model carries it:
+
+```json
+{"pipeline": "llm",
+ "stages": [{"artifact": 0, "context": 0,
+   "embedding": {"kind": "embedding.token", "params": {}, "version": 1,
+                 "weights": [{"part": "data", "role": "table", "tensor": "token_embd.weight"}]},
+   "folds": ["norm.plus_one"],
+   "heads": {"mtp": [], "output": {"kind": "head.linear", "params": {}, "version": 1,
+             "weights": [{"part": "data", "role": "weight", "tensor": "output.weight"}]}},
+   "layers": [[{"kind": "norm.rms", "params": {}, "version": 1,
+                "weights": [{"part": "data", "role": "weight", "tensor": "blk.0.attn_norm.weight"}]},
+               {"kind": "ffn.moe", "params": {}, "version": 1,
+                "weights": [{"experts": true, "part": "codes", "role": "gate",
+                             "tensor": "blk.0.ffn_exps.codes"},
+                            {"experts": true, "part": "block_scales", "role": "gate",
+                             "tensor": "blk.0.ffn_exps.scales"}]}]],
+   "name": "target", "reads": [], "role": "target", "side": [],
+   "stream": {"streams": 1, "width": 64},
+   "taps": [{"layer": 0, "name": "features", "point": "layer_out"}]}],
+ "version": 1}
+```
+
+The `ffn.moe` component's `gate` role binds two parts, codes and block
+scales, of the same format; the stage's fold `norm.plus_one` covers the
+importer's record, which names the norm the stage binds, so
+`spec::StoredSpec` accepts it.
+
 ## Deliberately open
 
 - **Backing strategy (M2, D-035 comparison).** Independent 2 MiB handles
@@ -743,8 +1023,10 @@ one and removes it. The source must remain available (D-018).
   table from the target's artifact. DeepSeek V4's DSpark import settled
   the binding: the drafter's own artifact holds no copy of the tables, and
   at load it binds the target artifact's `token_embd.weight` and
-  `output.weight` by name (`model/dspark.h`); the composition document for
-  such a pair waits for a version without model_index.json (D-089).
+  `output.weight` by name (`model/dspark.h`); such a pair's composition
+  document is [version 1's](#compositions-v1), which needs no
+  model_index.json and carries the pair's spec (D-089, D-113); none is
+  written until the importer writes version 1.
   Stored MTP layers are ordinary tensors in their checkpoints. Qwen3.8's is
   imported the same way as DSpark: as its own drafter artifact
   (architecture `qwen4exp-mtp`, `modelopt_qwen38.py` `plan_mtp`), binding

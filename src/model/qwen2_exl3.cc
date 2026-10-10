@@ -21,6 +21,7 @@
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
 #include "base/sha256.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -236,6 +237,9 @@ const Qwen2Profile& Qwen25Instruct05BExl3() {
 
 std::expected<Exl3Binding, std::string> BindQwen2Exl3(const Qwen2Profile& profile,
                                                       const artifact::Artifact& artifact) {
+  if (auto v0 = RequireV0Artifact(artifact, "Qwen2 EXL3"); !v0) {
+    return std::unexpected(v0.error());
+  }
   if (!artifact.expert_arrays().empty()) {
     return Refused("a dense Qwen2 artifact has no expert arrays");
   }

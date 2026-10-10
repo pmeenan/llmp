@@ -345,6 +345,8 @@ std::string_view RoleName(artifact::FileRole role) {
       return "shard";
     case artifact::FileRole::kSourceMetadata:
       return "source-metadata";
+    case artifact::FileRole::kSpec:
+      return "spec";
   }
   return "?";
 }

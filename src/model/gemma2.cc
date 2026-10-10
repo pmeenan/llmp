@@ -14,6 +14,7 @@
 #include "artifact/representation.h"
 #include "base/check.h"
 #include "base/sha256.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -46,6 +47,9 @@ const Gemma2Profile& Gemma2_2B() {
 }
 
 std::expected<Gemma2Binding, std::string> BindApprovedGemma2(const artifact::Artifact& artifact) {
+  if (auto v0 = RequireV0Artifact(artifact, "Gemma2"); !v0) {
+    return std::unexpected(v0.error());
+  }
   const auto sources = artifact.sources();
   if (sources.size() != 1 || sources[0].name != "gemma-2-2b-it-Q8_0.gguf" ||
       sources[0].bytes.value() != 2784495456ULL ||
@@ -149,6 +153,9 @@ std::expected<Gemma2Binding, std::string> BindGemma2(const Gemma2Profile& p,
 
 std::expected<Gemma2Binding, std::string> BindGemma2(const Gemma2Profile& p,
                                                      const artifact::Artifact& artifact) {
+  if (auto v0 = RequireV0Artifact(artifact, "Gemma2"); !v0) {
+    return std::unexpected(v0.error());
+  }
   if (artifact.model().expert_count != 0 || !artifact.expert_arrays().empty() ||
       artifact.resources().size() != 288) {
     return std::unexpected("Gemma2 requires 288 ordinary resources and no expert storage");

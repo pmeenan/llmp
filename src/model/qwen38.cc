@@ -30,6 +30,7 @@
 #include "artifact/representation.h"
 #include "model/host_mask.h"
 #include "model/state.h"
+#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {
@@ -344,6 +345,9 @@ bool PackedFromTheStart(const Qwen38Layer& l) {
 // index of its first expert array.
 std::expected<std::vector<Qwen38Resource>, std::string> ResourcesOf(
     const artifact::Artifact& artifact, std::size_t& first_array) {
+  if (auto v0 = RequireV0Artifact(artifact, "Qwen3.8"); !v0) {
+    return std::unexpected(v0.error());
+  }
   std::vector<Qwen38Resource> all;
   all.reserve(artifact.resources().size() + artifact.expert_arrays().size());
   for (const artifact::Resource& resource : artifact.resources()) {

@@ -558,7 +558,6 @@ std::expected<void, std::string> CheckLayerFlags(const Mapping& m, const Values&
 // folds; not its name, role, artifact or reads.
 struct Made {
   Stage stage;
-  std::vector<std::string> folds;
 };
 std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source& source,
                                            std::span<const SourceValue> values,
@@ -664,9 +663,17 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   }
   stage.heads.final_norm = std::move(*final_norm);
   stage.heads.output = std::move(*output);
+  // The stage's folds: its container converter's and its importer's (the
+  // latter validated against the catalog with the spec), sorted by
+  // Canonicalize.
   for (const FoldRule& f : mapping.folds) {
-    if (f.container == source.container && !std::ranges::contains(made.folds, f.fold)) {
-      made.folds.emplace_back(f.fold);
+    if (f.container == source.container && !std::ranges::contains(stage.folds, f.fold)) {
+      stage.folds.emplace_back(f.fold);
+    }
+  }
+  for (const std::string& f : source.folds) {
+    if (!std::ranges::contains(stage.folds, f)) {
+      stage.folds.push_back(f);
     }
   }
   return made;
@@ -894,6 +901,12 @@ Status ValidateMapping(const Mapping& m) {
 }
 
 std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact) {
+  if (artifact.format_version() != 0) {
+    // Its descriptors are empty; spec/stored.h SourceOf reads its formats.
+    return Refuse(
+        std::format("artifact {}", artifact.id()),
+        std::format("format version {}, not 0 (read it with SourceOf)", artifact.format_version()));
+  }
   Source s;
   s.architecture = artifact.model().architecture;
   const auto sources = artifact.sources();
@@ -950,7 +963,6 @@ std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const S
   made->stage.role = StageRole::kTarget;
   ModelSpec spec{.pipeline = mapping.pipeline};
   spec.stages.push_back(std::move(made->stage));
-  spec.folds = std::move(made->folds);
   Canonicalize(spec);
   if (auto ok = Validate(spec); !ok) {
     return std::unexpected(ok.error());
@@ -1033,12 +1045,9 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
                     std::format("the target's tap {} is not the one the drafter reads", r.name));
     }
   }
+  // The drafter's folds are its own artifact's, never merged with the
+  // target's: the two may come from different containers.
   spec.stages.push_back(std::move(stage));
-  for (std::string& f : made->folds) {
-    if (!std::ranges::contains(spec.folds, f)) {
-      spec.folds.push_back(std::move(f));
-    }
-  }
   Canonicalize(spec);
   if (auto ok = Validate(spec); !ok) {
     return std::unexpected(ok.error());

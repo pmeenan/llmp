@@ -8,8 +8,8 @@
 // mixing), per-layer side inputs, layer list of component references with
 // their parameters and weight bindings, feature taps, heads (final norm,
 // output, logit softcap, MTP heads) and what it reads from another stage
-// (a tap, or state it borrows); and the folds the checkpoint's tensors
-// already carry (FoldInfo). The importer writes it into the artifact and the
+// (a tap, or state it borrows) and the folds its artifact's tensors already
+// carry (FoldInfo). The importer writes it into the artifact and the
 // runtime validates it; until then a v0 artifact's spec is synthesized from
 // its architecture's mapping (spec/mapping.h).
 //
@@ -32,9 +32,8 @@
 // integers (an empty array too) and an array of real strings a list of
 // reals. A layer is the array of its components; the nesting (eight
 // levels: the root, stages, a stage, layers, a layer, a component, its
-// parameters, a list) is the v0 JSON's limit, so a manifest that holds the
-// spec as a member needs that limit raised or keeps the spec as its own
-// document.
+// parameters, a list) is the v0 JSON's limit, so a v1 artifact keeps the
+// spec as a document of its own, spec.json (D-113; stored.h reads it).
 //
 // Digest() hashes the canonical JSON (the format version is in it). The
 // kept-state layout and plan keys derive from BoundDigest: the spec's
@@ -184,6 +183,13 @@ struct Stage {
   std::vector<FeatureTap> taps{};  // sorted by name
   Heads heads{};
   std::vector<Read> reads{};  // sorted by (stage, kind, name)
+  // The folds the tensors of the stage's artifact carry (FoldInfo names,
+  // sorted): its source container converter's and its importer's. A
+  // stage's, not the model's: a composition's stages may come from
+  // different containers. Stages that run from one artifact list the same
+  // folds (Validate). A binding to another stage's tensor
+  // (WeightBinding::stage) carries that stage's folds (HoldingStage).
+  std::vector<std::string> folds{};
   bool operator==(const Stage&) const = default;
 };
 
@@ -191,16 +197,15 @@ struct ModelSpec {
   std::uint32_t version = kSpecVersion;
   PipelineKind pipeline = PipelineKind::kLlm;
   std::vector<Stage> stages{};
-  std::vector<std::string> folds{};  // FoldInfo names, sorted
 
   // SHA-256 of ToJson(*this).
   base::Sha256Digest Digest() const;
   bool operator==(const ModelSpec&) const = default;
 };
 
-// The fold catalog: transforms a checkpoint's converter may already have
-// applied to its tensors, which a component then must not apply again. A
-// mapping cannot name any other.
+// The fold catalog: transforms a checkpoint's converter or llmpalooza's
+// importer may already have applied to its tensors, which a component then
+// must not apply again (Stage::folds). A mapping cannot name any other.
 struct FoldInfo {
   std::string_view name{};
   std::string_view meaning{};
@@ -208,8 +213,15 @@ struct FoldInfo {
 std::span<const FoldInfo> Folds();
 const FoldInfo* FindFold(std::string_view name);
 
+// The stage whose artifact holds a binding's tensor: the one the binding's
+// WeightBinding::stage names, or `stage` (the reading stage, one of the
+// spec's) when it names none; null for a name the spec does not have
+// (which Validate refuses). The tensor is that stage's artifact's and
+// carries that stage's folds, never the reading stage's.
+const Stage* HoldingStage(const ModelSpec& spec, const Stage& stage, const WeightBinding& binding);
+
 // Sorts every list the spec keeps sorted (parameters, weights, taps, side
-// inputs and their layers, reads, folds); it does not validate.
+// inputs and their layers, reads, each stage's folds); it does not validate.
 void Canonicalize(ModelSpec& spec);
 
 // The spec's own rules (see the header comment); the first violation, with

@@ -1,32 +1,52 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The v0 prepared-artifact reader (docs/artifact-format.md; D-009, D-018,
-// D-056). Artifact::Open treats the directory as untrusted input and
+// The prepared-artifact reader (docs/artifact-format.md; D-009, D-018,
+// D-056, D-113). Artifact::Open treats the directory as untrusted input and
 // either refuses it with the violated rule or returns its validated view:
 // the manifest's identity and model, the dependency groups and their
 // chunks, every resource's and expert slice's place in its group, and
 // coalesced direct-read plans for missing chunks. It never reads tensor
 // payload.
 //
-// Open checks what the prototype verifier checks when a loader opens an
-// artifact (layout.py's verify with deep=False), in its order:
+// It reads two format versions, told apart by the manifest's `format`: v0
+// ("jitllm-artifact", format_version 0), whose resources carry v0's
+// library-named representation descriptors, and v1 ("llmp-artifact",
+// format_version 1), whose resources carry their tensor's format and the
+// part of it they hold (format_json.h), whose manifest names the importer,
+// the source container and the folds and relayouts the importer applied,
+// and which may carry the model spec as a hashed document of its own,
+// spec.json. Any other version of either is refused (kUnsupportedVersion,
+// `item` the version found): a newer artifact needs a newer runtime, an
+// older one a re-import; nothing is migrated (D-018). Groups, chunks,
+// placements and read plans are the same for both, so nothing that pages
+// an artifact in depends on which version it read.
+//
+// Open checks what the prototype verifier checks when a loader opens a v0
+// artifact (layout.py's verify with deep=False), in its order, and the
+// same for v1 with v1's descriptors:
 //
 //   - the directory (itself possibly reached through a link): holding
 //     only data/ and meta/ and regular files, no links inside it, exactly
 //     the files the manifest lists plus manifest.json;
-//   - manifest.json (at most 1 MiB): strict JSON, format "jitllm-artifact",
-//     format_version 0 and the spark-v0 profile exactly, canonical bytes,
-//     the directory named by their SHA-256; every key and value typed and
-//     patterned, lists in canonical order;
+//   - manifest.json (at most 1 MiB): strict JSON, a format and version
+//     this reader implements and the spark-v0 profile exactly, canonical
+//     bytes, the directory named by their SHA-256; every key and value
+//     typed and patterned, lists in canonical order;
 //   - every listed file's size, before anything reads it; kept metadata
 //     within its caps and covered by the recorded sources;
+//   - v1's spec.json, when listed (at most kMaxSpecBytes): its digest, and
+//     strict canonical JSON whose root is an object. Its schema is the
+//     spec module's (spec/stored.h), which comes after this one in the
+//     layers; so is checking the applied folds' names against the fold
+//     catalog;
 //   - index.json (at most 64 MiB): its manifest digest, strict canonical
 //     JSON, the profile's header, shards, groups tiling each shard in
 //     order with chunks numbered in group order, resources and expert
-//     arrays sized by their representations, aligned, inside their groups
-//     and not overlapping, EXL3 closure, expert structure, and the
-//     manifest's model and transformations agreeing with it;
+//     arrays sized by their representations (v0) or formats (v1),
+//     aligned, inside their groups and not overlapping, EXL3 closure (v0),
+//     expert structure, and the manifest's model and transformations
+//     agreeing with it;
 //   - each shard's header: rebuilt from the index and compared byte for
 //     byte, never parsed, and its digest checked.
 //
@@ -38,8 +58,8 @@
 //
 // Caps bound every allocation by the documents' size limits: 2^18
 // resources plus expert slices plus alias roles, 2^18 groups, 8 alias
-// roles per resource, 100,000,000-byte shard headers, 2^16 directory
-// entries.
+// roles per resource, 2^18 tensors named by v1's folds and relayouts,
+// 100,000,000-byte shard headers, 2^16 directory entries.
 
 #ifndef LLMP_ARTIFACT_ARTIFACT_H_
 #define LLMP_ARTIFACT_ARTIFACT_H_
@@ -60,6 +80,8 @@
 #include "artifact/layout.h"
 #include "artifact/representation.h"
 #include "base/bytes.h"
+#include "format/layout.h"
+#include "format/tensor_format.h"
 
 namespace llmp::artifact {
 
@@ -73,6 +95,10 @@ inline constexpr std::uint64_t kMaxAliases = 8;
 inline constexpr std::uint64_t kMaxExperts = std::uint64_t{1} << 20U;
 inline constexpr std::uint64_t kMaxLayer = std::uint64_t{1} << 20U;
 inline constexpr std::uint64_t kMaxDirectoryEntries = std::uint64_t{1} << 16U;
+// v1's spec.json; spec::kMaxSpecBytes (spec/stored.cc checks they agree).
+inline constexpr std::uint64_t kMaxSpecBytes = std::uint64_t{4} << 20U;
+// The newest artifact format version this build reads; it reads 0 too.
+inline constexpr std::uint32_t kFormatVersion = 1;
 
 // An owned file descriptor.
 class FileDescriptor {
@@ -95,7 +121,10 @@ class FileDescriptor {
 struct Model {
   std::string architecture;
   std::uint32_t expert_count = 0;
-  std::vector<Family> representation;  // sorted by name
+  std::vector<Family> representation;  // v0: sorted by name; v1: empty
+  // v1: the container the importer read ("gguf", "safetensors", "mlx",
+  // "exl3"); v0: empty.
+  std::string container;
 };
 
 struct Source {
@@ -104,7 +133,7 @@ struct Source {
   Digest sha256{};
 };
 
-enum class FileRole : std::uint8_t { kIndex, kShard, kSourceMetadata };
+enum class FileRole : std::uint8_t { kIndex, kShard, kSourceMetadata, kSpec };
 
 struct ListedFile {
   std::string path;
@@ -113,9 +142,14 @@ struct ListedFile {
   Digest sha256{};
 };
 
+// v0's `converter`, or v1's `importer`: its name and version, and for v1
+// its build identity and the SHA-256 of the options it ran with (empty
+// and zero for v0).
 struct Converter {
   std::string name;
   std::string version;
+  std::string build{};
+  Digest options_sha256{};
 };
 
 struct Resource {
@@ -124,8 +158,13 @@ struct Resource {
   std::uint32_t group = 0;
   Bytes offset;  // within the group, 256-byte aligned
   Bytes bytes;
-  Bytes readable;  // bytes plus the backend's over-read (zero pad)
-  Representation repr{};
+  Bytes readable;         // bytes plus the backend's over-read (zero pad)
+  Representation repr{};  // v0 only; a v1 resource's is empty
+  // The format of the tensor it holds a part of, and that part: v1's as
+  // recorded; v0's as format_map.h reads its representation (none where
+  // that has no format: Q8_1).
+  std::optional<format::TensorFormat> format;
+  format::PartRole part = format::PartRole::kData;
   bool rows = false;  // a row table (`access: "rows"`)
 };
 
@@ -139,7 +178,26 @@ struct ExpertArray {
   Bytes group_offset;
   Bytes slice_bytes;
   Bytes readable;
-  Representation repr{};  // of one 2-D slice
+  Representation repr{};  // of one 2-D slice; v0 only
+  // One slice's format (at most two dimensions) and the part each slice
+  // holds, as for a resource.
+  std::optional<format::TensorFormat> format;
+  format::PartRole part = format::PartRole::kData;
+};
+
+// v1: a fold the importer applied (a name from the fold catalog,
+// spec/spec.h's FoldInfo) and the tensors it applied it to, by resource
+// name or expert array name, sorted.
+struct AppliedFold {
+  std::string name;
+  std::vector<std::string> tensors;
+};
+
+// v1: tensors the importer relaid out losslessly from layout `from` into
+// the one their format records.
+struct Relayout {
+  format::Layout from = format::Layout::kDense;
+  std::vector<std::string> tensors;  // sorted
 };
 
 // Where a resource or slice lives: its byte range in its group and the
@@ -169,6 +227,8 @@ class Artifact {
   ~Artifact() = default;
 
   const std::string& id() const { return id_; }
+  // 0 or 1.
+  std::uint32_t format_version() const { return format_version_; }
   const Model& model() const { return model_; }
   const Converter& converter() const { return converter_; }
   std::span<const Source> sources() const { return sources_; }
@@ -181,6 +241,15 @@ class Artifact {
   // One digest per chunk, by global chunk number (for verification and
   // replication; page-in never hashes).
   std::span<const Digest> chunk_sha256() const { return chunk_sha256_; }
+  // v1: the spec.json bytes Open read, hashed and checked, when the
+  // artifact carries a spec (spec/stored.h parses them). Their SHA-256 is
+  // the spec's digest, the spec's JSON being canonical.
+  std::optional<std::string_view> spec_json() const {
+    return spec_json_ ? std::optional<std::string_view>(*spec_json_) : std::nullopt;
+  }
+  // v1: what the importer applied; empty for v0.
+  std::span<const AppliedFold> folds() const { return folds_; }
+  std::span<const Relayout> relayouts() const { return relayouts_; }
 
   // The resource bound to `role` (its name or a tied alias).
   std::optional<std::uint32_t> FindResource(std::string_view role) const;
@@ -248,6 +317,7 @@ class Artifact {
 
   FileDescriptor root_;
   std::string id_;
+  std::uint32_t format_version_ = 0;
   Model model_;
   Converter converter_;
   std::vector<Source> sources_;
@@ -257,6 +327,9 @@ class Artifact {
   std::vector<Resource> resources_;
   std::vector<ExpertArray> expert_arrays_;
   std::vector<Digest> chunk_sha256_;
+  std::optional<std::string> spec_json_;
+  std::vector<AppliedFold> folds_;
+  std::vector<Relayout> relayouts_;
   // (role, resource) and (name, array), sorted by name.
   std::vector<std::pair<std::string, std::uint32_t>> roles_;
   std::vector<std::pair<std::string, std::uint32_t>> array_names_;
