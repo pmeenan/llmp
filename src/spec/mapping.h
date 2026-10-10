@@ -21,8 +21,9 @@
 //     local and global layers, "lg"), and optionally the source key that
 //     lists them as a flag a layer (Gemma 4's sliding-window pattern),
 //     which must agree;
-//   - the folds (spec.h's catalog) a source container's converter applied,
-//     which with the source's own (an importer's) are the stage's folds;
+//   - the folds (spec.h's catalog) a source container's converter, or a
+//     v0 artifact's named converter, applied, which with the source's own
+//     (a v1 artifact's importer's) are the stage's folds;
 //   - its default planning policies (planner/policy.h's canonical text),
 //     each gated by a source key as a slot is: the patterns and bounds a
 //     model of the architecture is planned with, the first migrations'
@@ -54,6 +55,7 @@
 #ifndef LLMP_SPEC_MAPPING_H_
 #define LLMP_SPEC_MAPPING_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -68,14 +70,19 @@
 
 namespace llmp::artifact {
 class Artifact;
-}
+struct Representation;
+}  // namespace llmp::artifact
 
 namespace llmp::spec {
 
 inline constexpr std::size_t kMaxMappingRules = 1024;
 inline constexpr std::size_t kMaxLayerTypes = 64;  // a layer-type pattern's letters
-inline constexpr std::size_t kMaxSourceTensors = std::size_t{1} << 18U;
-inline constexpr std::size_t kMaxSourceValues = 4096;
+// A source's bounds, as untrusted input: tensors (a ModelOpt checkpoint
+// keeps every expert's matrices and scales as tensors of their own:
+// Qwen3.8's has 301,730; the GGUF reader's own bound is 2^20) and values
+// (a config.json flattened, a GGUF's metadata).
+inline constexpr std::size_t kMaxSourceTensors = std::size_t{1} << 20U;
+inline constexpr std::size_t kMaxSourceValues = std::size_t{1} << 16U;
 
 // The pseudo-slots parameter rules may name besides a mapping's slots: the
 // stage (context), its stream (width, streams) and its heads (softcap).
@@ -85,7 +92,10 @@ inline constexpr std::string_view kHeadsSlot = "heads";
 // The layer number in a tensor pattern.
 inline constexpr std::string_view kLayerField = "{layer}";
 
-enum class Site : std::uint8_t { kEmbedding, kLayer, kFinalNorm, kOutput };
+// kSide: a side input's source (spec.h SideInput, named by its slot), at
+// the layers its layers_key names; kMixing: a stage of several streams'
+// mixing (spec.h ResidualStream).
+enum class Site : std::uint8_t { kEmbedding, kLayer, kFinalNorm, kOutput, kSide, kMixing };
 
 struct SlotRule {
   std::string_view slot{};  // a name, unique in the mapping
@@ -98,6 +108,10 @@ struct SlotRule {
   // when it is absent or zero. Empty: always present.
   std::string_view gate{};
   bool gate_absent = false;
+  // kLayer: present only at the layers the source key names (an integer,
+  // or a list of integers: Qwen3.8's n-gram layer); kSide: the layers that
+  // read the side input. Empty: every layer of its types (kLayer).
+  std::string_view layers_key{};
 };
 
 struct TensorRule {
@@ -120,9 +134,19 @@ struct TensorRule {
   // with the target stage's name, spec.h WeightBinding::stage): never
   // matched against the drafter's own source.
   bool target = false;
+  // The tensor binds with the part it holds, whatever it is (a matrix one
+  // container keeps whole, kData, and another as its codes beside its
+  // scales, kCodes: the scales a rule of their own).
+  bool any_part = false;
+  // A tensor the spec does not bind (its role empty): its values are the
+  // slot's parameters (the n-gram hash's constants, which a GGUF keeps in
+  // its metadata and the ModelOpt import as tensors too).
+  bool unbound = false;
 };
 
-enum class ValueType : std::uint8_t { kInt, kReal, kBool, kString };
+// kInts: a list of integers (from a key only: a GGUF array, the n-gram
+// hash's constants).
+enum class ValueType : std::uint8_t { kInt, kReal, kBool, kString, kInts };
 // Applied to a real value: 1 / x, sqrt(x), 1 / sqrt(x).
 enum class Transform : std::uint8_t { kNone, kReciprocal, kSqrt, kRsqrt };
 
@@ -155,6 +179,29 @@ struct ParamRule {
 struct FoldRule {
   std::string_view fold{};       // spec.h's catalog
   std::string_view container{};  // the source container whose converter applied it ("gguf")
+  // Or a v0 artifact's converter that applied it, by the start of one of
+  // its identity's '+'-joined parts (Source::converter: name and version;
+  // Qwen3.8's ModelOpt import, which repacks its tensors without recording
+  // it; no '+' of its own). Either one set.
+  std::string_view converter{};
+};
+
+// Resources of a v0 artifact that hold one tensor's parts (an MXFP8
+// matrix's codes and scales, the CUTLASS expert arrays, the n-gram table
+// and its tensor scale), which the artifact lists apart: paired by the
+// mapping's data (artifact/format_map.h Assemble), each a source tensor of
+// the assembled format holding its part. A resource `stem + suffixes[i]`
+// holds part roles[i], where the stem matches `stem` (a pattern with
+// {layer}; empty: any stem), and a set is assembled only where every part's
+// resource exists (otherwise the resources stay as they are).
+struct V0Assembly {
+  std::string_view stem{};
+  std::array<std::string_view, 3> suffixes{};  // the parts' resources; an empty one: none
+  std::array<format::PartRole, 3> roles{};
+  format::Encoding encoding = format::Encoding::kF32;
+  format::Layout layout = format::Layout::kDense;
+  std::uint8_t stacked = 1;
+  bool experts = false;  // expert arrays
 };
 
 // The planner's default policy for some checkpoints of the architecture,
@@ -175,6 +222,8 @@ struct PolicyRule {
 // What a drafter's stage reads of its target (spec.h Read): its state by
 // its components' contract name, or a feature tap, which the composition
 // gives the target (at `point`, layer 0) unless it has one of the name.
+// A tap at a layer's output or streams is its target's last layer's (the
+// streams before the head's mix: an MTP drafter's).
 struct ReadRule {
   ReadKind kind = ReadKind::kState;
   std::string_view name{};
@@ -205,6 +254,8 @@ struct Mapping {
   // text at most kMaxPolicyText bytes of printable lines, each ending in
   // '\n'); none: the planner's default policy (every pattern).
   std::span<const PolicyRule> policies{};
+  // A v0 artifact's resources paired into tensors (SourceOfV0).
+  std::span<const V0Assembly> v0_assembly{};
 };
 inline constexpr std::size_t kMaxPolicyText = 4096;
 
@@ -239,6 +290,9 @@ struct SourceTensor {
 struct Source {
   std::string architecture{};
   std::string container{};  // v0: "gguf", "safetensors" or "other"; v1: its manifest's
+  // A v0 artifact's converter ("<name> <version>"); empty for a checkpoint
+  // and a v1 artifact, whose importer's folds are `folds` below.
+  std::string converter{};
   std::vector<SourceTensor> tensors{};
   // Folds the tensors carry beyond the container converter's (the mapping's
   // FoldRules): a v1 artifact's importer's (spec/stored.h SourceOf). The
@@ -251,7 +305,25 @@ struct Source {
 // tied aliases) and every expert array (its slice's format with the expert
 // count as ne[2]); the container "gguf" when every source file is a GGUF.
 // Any other format version is refused (stored.h SourceOf reads both).
-std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact);
+// With a mapping, the resources its v0_assembly pairs are one tensor's
+// parts (refused where a set's sizes are not the format's).
+std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact,
+                                              const Mapping* mapping = nullptr);
+
+// The same of a v0 artifact's tensors as listed: each resource (its name,
+// the name and tied aliases as its roles) or expert array (its name, its
+// slice's representation, its experts' count) with its representation,
+// which outlives the call.
+struct V0Tensor {
+  std::string name{};
+  std::vector<std::string> roles{};
+  const artifact::Representation* repr = nullptr;
+  std::uint32_t count = 0;  // an expert array's experts; 0: a resource
+};
+std::expected<Source, std::string> SourceOfV0Tensors(std::string architecture,
+                                                     std::string container, std::string converter,
+                                                     std::span<const V0Tensor> tensors,
+                                                     const Mapping* mapping = nullptr);
 
 // The serving envelope a policy is chosen for: the stage's context and the
 // owners it serves (0: unknown; an envelope-bounded rule then never holds).

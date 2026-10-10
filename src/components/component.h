@@ -110,14 +110,23 @@ class Params {
 
 // --------------------------------------------------------------- instances
 
-// Where in a stage a component sits.
-enum class Site : std::uint8_t { kEmbedding, kLayer, kFinalNorm, kOutput };
+// Where in a stage a component sits: besides the embedding, the layers and
+// the heads, a side input's source (spec.h SideInput: a table the layers
+// read beside the stream) and the stream's mixing (spec.h ResidualStream:
+// the hyper-connection streams made from the embedding).
+enum class Site : std::uint8_t { kEmbedding, kLayer, kFinalNorm, kOutput, kSide, kMixing };
 
 // What a component reads of its stage besides its own parameters.
 struct StageFacts {
   std::uint64_t width = 0;          // the residual stream's
   std::uint32_t context = 0;        // the trained context (a rotation's original context)
   std::optional<double> softcap{};  // the heads' final logit softcap (the output's)
+  std::uint32_t streams = 1;        // the residual's streams (hyper-connections: several)
+  // The folds the stage's tensors carry (spec.h Stage::folds, its own
+  // artifact's): a component whose arithmetic assumes one refuses a stage
+  // without it. A binding to another stage's tensor carries that stage's
+  // (spec.h HoldingStage).
+  std::span<const std::string> folds{};
 };
 
 // One component of a stage, ready to use: its definition, validated
@@ -141,6 +150,11 @@ struct WeightRole {
   // describes (a product's or a lookup's operand reads any of them through
   // its decoder).
   std::span<const format::Encoding> encodings{};
+  // A table read by rows on demand (D-035): never resident whole; before a
+  // step the engine reads the rows its lookup names into row slots, which
+  // the step's lookup then reads (engine/ple_rows.h: Qwen3.8's n-gram
+  // table). Its lookup's indices are a step input the engine computes.
+  bool rows_on_demand = false;
 };
 
 // A role in use for an instance and the logical shape its parameters
@@ -230,21 +244,44 @@ struct Fragment {
   // rows (the head then gathers none).
   bool narrow = false;
   bool narrowed = false;
+  // A stage of several streams (spec.h ResidualStream, hyper-connections):
+  // the streams F32 [width, streams, rows] as this component finds them.
+  // A block between a mix and its combine reads `stream` (the mix's
+  // single stream) and returns its output there; the mix (hc.pre) reads
+  // the streams, a combine (hc.post) or a side input's consumer writes
+  // them (FragmentOut::residual). Invalid in a stage of one stream.
+  ir::TensorId residual{};
+  // The latest carry a component of its layer handed on (FragmentOut::
+  // carry): a hyper-connection mix's normalized streams, which the
+  // combine after its block reads.
+  ir::TensorId carry{};
+  // The stage's side inputs by name (made after the embedding, in name
+  // order); invalid for a name the stage has not.
+  std::function<ir::TensorId(std::string_view name)> side{};
 
   ir::TensorId Weight(std::uint16_t role) const { return weight(role); }
   ir::TensorId State(std::size_t segment, std::size_t tensor) const {
     return state[(segment * state_tensors) + tensor];
   }
+  ir::TensorId Side(std::string_view name) const { return side ? side(name) : ir::TensorId{}; }
 };
 
 struct FragmentOut {
   ir::TensorId stream{};  // the output stream (the input when unchanged)
   // An output head's results: its logits, each row's token when greedy, and
   // a drafter's next feature (F32 [feature width, outputs], its rows
-  // projected back to its target's width).
+  // projected back to its target's width, or its streams before the
+  // head's mix: an MTP drafter's).
   ir::TensorId logits{};
   ir::TensorId greedy{};
   ir::TensorId features{};
+  // The streams it wrote (a stage of several streams; invalid: unchanged).
+  ir::TensorId residual{};
+  // What the next component of its layer reads (Fragment::carry).
+  ir::TensorId carry{};
+  // It gathered the step's output rows itself (a final norm that mixes the
+  // streams after gathering them): what follows reads only those rows.
+  bool narrowed = false;
 };
 
 // ---------------------------------------------------------------- reference
@@ -271,6 +308,14 @@ struct RefIO {
   std::vector<RefSegment> segments{};
   std::vector<std::int32_t> tokens{};  // [rows], an embedding's
   std::vector<double> stream{};
+  // A stage of several streams: the streams [width, streams, rows] in and
+  // out, the carry in and out (Fragment::carry), and the side input a
+  // consumer reads ([its width, rows]) or a source's table rows (its
+  // lookup's indices, as the step's input holds them).
+  std::vector<double> residual{};
+  std::vector<double> carry{};
+  std::vector<double> side{};
+  std::vector<std::int64_t> side_rows{};
   std::vector<double> features{};
   std::vector<std::vector<float>> weights{};
   std::vector<format::Shape> weight_shapes{};
@@ -299,6 +344,15 @@ struct ComponentDef {
   bool row_local = false;
   // It gathers its output stream's output rows when asked (Fragment::narrow).
   bool narrows = false;
+  // It makes a side input (a spec SideInput's source, Site::kSide): its
+  // output stream is the side input, [its width, rows].
+  bool side_source = false;
+  // It makes a stage's several streams from the embedding's output (a spec
+  // ResidualStream's mixing, Site::kMixing): FragmentOut::residual.
+  bool mixing = false;
+  // The side input an instance reads (a layer component's), by name; null
+  // or empty: none.
+  std::string_view (*side_input)(const Instance& instance) = nullptr;
   std::span<const ParamSpec> params{};
   std::span<const WeightRole> roles{};
   // The roles an instance uses and their shapes, or why its parameters do
@@ -319,6 +373,21 @@ struct ComponentDef {
   bool (*gathers)(const Instance& instance) = nullptr;
   std::expected<FragmentOut, std::string> (*emit)(Fragment& fragment) = nullptr;
   std::expected<void, std::string> (*reference)(RefIO& io) = nullptr;
+  // A side input's source (side_source): the rows of its table the step
+  // row at `position` reads (InputKind::kSideRows: `side_count` of them),
+  // from the token history through that position, which the engine
+  // computes before the step; refused for a position past the history.
+  std::expected<void, std::string> (*side_rows)(const Instance& instance,
+                                                std::span<const std::int32_t> history,
+                                                std::uint32_t position,
+                                                std::span<std::int32_t> out) = nullptr;
+  std::uint64_t (*side_count)(const Instance& instance) = nullptr;
+  // State that rolls back by commit (model::Rollback::kCommit): a verify
+  // step's fragment saves its rows' values (StepContext::Save) instead of
+  // writing that state, and this, given those saves of each owner's kept
+  // rows (StepContext::Saved), writes the state the kept rows alone would
+  // have left (BuildCommit). Null: none.
+  std::expected<void, std::string> (*commit)(Fragment& fragment) = nullptr;
 };
 
 // The compiled catalog, in kind order, and a lookup.

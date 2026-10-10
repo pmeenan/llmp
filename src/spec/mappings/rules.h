@@ -101,6 +101,10 @@ inline SourceValue Value(std::string_view key, std::string_view v) {
 inline SourceValue Value(std::string_view key, std::vector<std::int64_t> v) {
   return {.key = std::string(key), .value = ParamValue(std::move(v))};
 }
+// A flag (a fact a v0 artifact's binding gives).
+inline SourceValue FlagValue(std::string_view key, bool v) {
+  return {.key = std::string(key), .value = ParamValue(v)};
+}
 
 }  // namespace llmp::spec::mappings
 

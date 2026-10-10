@@ -23,6 +23,7 @@
 #include "components/component.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
+#include "ir/builder.h"
 #include "ir/graph.h"
 
 namespace llmp::components::defs {
@@ -36,6 +37,14 @@ const ComponentDef& AttentionBorrowed();
 const ComponentDef& FfnGlu();
 const ComponentDef& FfnMoe();
 const ComponentDef& HeadLinear();
+const ComponentDef& ResidualHc();
+const ComponentDef& HcMix();
+const ComponentDef& HcCombine();
+const ComponentDef& AttentionGdn();
+const ComponentDef& AttentionQsa();
+const ComponentDef& SideNgram();
+const ComponentDef& ResidualPle();
+const ComponentDef& EmbeddingMtp();
 
 // The encodings a norm's weight takes: the converters keep norms F32.
 inline constexpr std::array<format::Encoding, 1> kF32Only{format::Encoding::kF32};
@@ -60,6 +69,14 @@ inline std::array<std::uint64_t, 4> ViewStrides(std::uint64_t element, std::uint
 }
 
 inline format::Shape Shape(std::initializer_list<std::uint64_t> ne) { return ir::ShapeOf(ne); }
+
+// A tensor's description (a copy, as Builder::tensor gives), or an empty
+// one where the builder refused an earlier node (its ids are then
+// invalid): the step fails with the builder's error at Finish rather than
+// here.
+inline ir::TensorDesc Desc(const ir::Builder& b, ir::TensorId t) {
+  return t.valid() && b.ok() ? b.tensor(t) : ir::TensorDesc{};
+}
 
 // ------------------------------------------------------------ references
 

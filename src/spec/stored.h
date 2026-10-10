@@ -59,12 +59,14 @@ std::expected<ModelSpec, std::string> StoredSpec(
     std::span<const artifact::Artifact* const> components);
 
 // An artifact's tensors as a source (mapping.h): v0's as SourceOfV0 gives
-// them; v1's each resource role and expert array with the format and part
-// its index records (an expert array's slice format with the expert count
-// as ne[2]), its manifest's container, and its applied folds, checked
-// against the catalog, as the source's folds (so that a spec synthesized
-// from it lists them).
-std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact);
+// them (with `mapping`, the resources its v0_assembly pairs as one
+// tensor's parts); v1's each resource role and expert array with the
+// format and part its index records (an expert array's slice format with
+// the expert count as ne[2]), its manifest's container, no converter, and
+// its applied folds, checked against the catalog, as the source's folds
+// (so that a spec synthesized from it lists them).
+std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact,
+                                            const Mapping* mapping = nullptr);
 
 }  // namespace llmp::spec
 

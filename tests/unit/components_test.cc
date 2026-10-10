@@ -94,10 +94,11 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
     EXPECT_EQ(Find(def->kind, def->version), def);
   }
   EXPECT_TRUE(std::ranges::is_sorted(kinds));
-  EXPECT_EQ(kinds,
-            (std::vector<std::string_view>{"attention.borrowed", "attention.dense",
-                                           "embedding.projected", "embedding.token", "ffn.glu",
-                                           "ffn.moe", "head.linear", "norm.rms", "scale.learned"}));
+  EXPECT_EQ(kinds, (std::vector<std::string_view>{
+                       "attention.borrowed", "attention.dense", "attention.gdn", "attention.qsa",
+                       "embedding.mtp", "embedding.projected", "embedding.token", "ffn.glu",
+                       "ffn.moe", "hc.combine", "hc.mix", "head.linear", "norm.rms", "residual.hc",
+                       "residual.ple", "scale.learned", "side.ngram"}));
   EXPECT_EQ(Find("attention.dense", 2), nullptr);
   EXPECT_EQ(Find("attention.sparse", 1), nullptr);
   EXPECT_EQ(RoleIndex(*Find("ffn.glu", 1), "down"), 3);
@@ -674,8 +675,9 @@ TEST(ComponentsTest, FeedForwardNormEmbeddingAndHeadMatchTheirReferences) {
     facts.softcap = softcap;
     auto head = MakeInstance(C("head.linear", {}), facts, Site::kOutput, 0, 4);
     ASSERT_TRUE(head.has_value());
+    // The weight, a projection and (unused) a selected head's ids.
     const std::vector<format::TensorFormat> hf{Matrix(Encoding::kQ8_0, kWidth, 40),
-                                               Matrix(Encoding::kQ8_0, kWidth, 32)};
+                                               Matrix(Encoding::kQ8_0, kWidth, 32), Vector(1)};
     Compare(*head, hf, {}, rows, 1e-5);
     // Greedy: one output a segment, each row's highest logit.
     const std::vector<Step> greedy{
@@ -980,7 +982,7 @@ TEST(ComponentsTest, Gemma4BlocksMatchTheirReferences) {
                            kFacts, Site::kOutput, 0, 4);
   ASSERT_TRUE(head.has_value()) << head.error();
   const std::vector<format::TensorFormat> hf{Matrix(Encoding::kQ8_0, kWidth, 40),
-                                             Matrix(Encoding::kQ8_0, kWidth, 48)};
+                                             Matrix(Encoding::kQ8_0, kWidth, 48), Vector(1)};
   Compare(*head, hf, {}, rows, 1e-5);
   // Not every row an output: refused.
   EXPECT_FALSE(BuildComponent(*head, {.segments = {Seg(0, 3, 0, 256, 1)}}, hf, {}));
@@ -991,21 +993,16 @@ std::vector<format::TensorFormat> MoeFormats(Encoding e, bool stacked) {
   constexpr std::uint64_t kHidden = 64;
   constexpr std::uint64_t kExperts = 8;
   constexpr std::uint64_t kExpertHidden = 32;
-  return {Vector(kWidth),
-          Matrix(e, kWidth, kHidden),
-          Matrix(e, kWidth, kHidden),
-          Matrix(e, kHidden, kWidth),
-          Vector(kWidth),
-          Matrix(Encoding::kF32, kWidth, kExperts),
-          Vector(kWidth),
-          Vector(kWidth),
+  return {Vector(kWidth), Matrix(e, kWidth, kHidden), Matrix(e, kWidth, kHidden),
+          Matrix(e, kHidden, kWidth), Vector(kWidth), Matrix(Encoding::kF32, kWidth, kExperts),
+          Vector(kWidth), Vector(kWidth),
           Matrix3(e, kWidth, stacked ? 2 * kExpertHidden : kExpertHidden, kExperts),
-          Matrix3(e, kWidth, kExpertHidden, kExperts),
-          Matrix3(e, kWidth, kExpertHidden, kExperts),
-          Matrix3(e, kExpertHidden, kWidth, kExperts),
-          Vector(kExperts),
+          Matrix3(e, kWidth, kExpertHidden, kExperts), Matrix3(e, kWidth, kExpertHidden, kExperts),
+          Matrix3(e, kExpertHidden, kWidth, kExperts), Vector(kExperts), Vector(kWidth),
           Vector(kWidth),
-          Vector(kWidth)};
+          // Qwen3.8's roles, unused here: each product's expert scales,
+          // the shared expert's gate.
+          Vector(kExperts), Vector(kExperts), Vector(kExperts), Vector(kWidth)};
 }
 
 ComponentRef Moe(bool stacked, bool scales, bool normalize) {

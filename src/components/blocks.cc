@@ -119,7 +119,9 @@ std::expected<std::vector<RoleShape>, std::string> EmbeddingShapes(const Instanc
 
 std::expected<FragmentOut, std::string> EmbeddingEmit(Fragment& f) {
   const ir::TensorId rows = f.b.GetRows(f.Weight(0), f.step.Tokens());
-  return FragmentOut{.stream = f.b.Scale(rows, F32(f.instance.params.Real("scale")))};
+  // A scale of 1 is no node (Qwen3.8's rows are the stream as they are).
+  const float scale = F32(f.instance.params.Real("scale"));
+  return FragmentOut{.stream = scale == 1.0F ? rows : f.b.Scale(rows, scale)};
 }
 
 // Each token's row of `table` (`width` values a row) times `scale`.
@@ -237,9 +239,20 @@ constexpr std::array kHeadParams{
               .least = 0,
               .most = 1 << 16,
               .fallback = 0},
+    // A selected head (an MTP drafter's draft vocabulary): its weight's
+    // rows are some tokens' (role ids, I32 [1, rows]: each row's token,
+    // strictly ascending), and a greedy row's token is its best row's id.
+    ParamSpec{.name = "selected",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0.0},
 };
-enum : std::uint16_t { kHeadWeight, kHeadProjection };
-constexpr std::array kHeadRoles{WeightRole{.name = "weight"}, WeightRole{.name = "projection"}};
+enum : std::uint16_t { kHeadWeight, kHeadProjection, kHeadIds };
+constexpr std::array<format::Encoding, 1> kI32Only{format::Encoding::kI32};
+constexpr std::array kHeadRoles{WeightRole{.name = "weight"}, WeightRole{.name = "projection"},
+                                WeightRole{.name = "ids", .encodings = kI32Only}};
 constexpr std::array<std::string_view, 1> kHeadPatterns{"prepared_products"};
 
 // By the vocabulary: the output matrix by its rows, the logits gathered
@@ -267,6 +280,7 @@ std::expected<std::vector<RoleShape>, std::string> HeadShapes(const Instance& in
   if (HeadFeatures(in) != 0) {
     out.push_back(Role(kHeadProjection, {in.stage.width, HeadFeatures(in)}));
   }
+  if (in.params.Flag("selected")) out.push_back(Role(kHeadIds, {1, 0}));
   return out;
 }
 
@@ -291,7 +305,14 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
   }
   FragmentOut out{.stream = f.stream, .logits = logits};
   if (HeadFeatures(f.instance) != 0) out.features = b.MatMul(f.Weight(kHeadProjection), rows);
-  if (f.step.greedy()) out.greedy = b.Argmax(logits, ir::ArgmaxNan::kFirstColumn);
+  if (f.step.greedy()) {
+    out.greedy = b.Argmax(logits, ir::ArgmaxNan::kFirstColumn);
+    // A selected head's rows to their tokens.
+    if (f.instance.params.Flag("selected")) {
+      out.greedy =
+          b.Reshape(b.GetRows(f.Weight(kHeadIds), out.greedy), Shape({b.tensor(out.greedy).ne(0)}));
+    }
+  }
   return out;
 }
 
@@ -329,12 +350,14 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
   }
   io.tokens_out.clear();
   if (io.greedy) {
+    const bool mapped = in.params.Flag("selected");
     for (std::size_t r = 0; r < io.logits.size() / vocab; ++r) {
       std::size_t best = 0;
       for (std::size_t j = 1; j < vocab; ++j) {
         if (io.logits[(r * vocab) + j] > io.logits[(r * vocab) + best]) best = j;
       }
-      io.tokens_out.push_back(static_cast<std::int32_t>(best));
+      io.tokens_out.push_back(mapped ? static_cast<std::int32_t>(io.weights.at(kHeadIds).at(best))
+                                     : static_cast<std::int32_t>(best));
     }
   }
   return {};

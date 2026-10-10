@@ -474,8 +474,7 @@ std::map<std::uint32_t, std::string> StepLeaves(const StepGraph& step,
       case InputKind::kFeatures:
         out[in.tensor.v] = "features";
         break;
-      case InputKind::kStream:
-      case InputKind::kOutputCells:
+      default:
         out[in.tensor.v] = "?";
         break;
     }

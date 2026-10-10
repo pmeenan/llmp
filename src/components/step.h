@@ -10,7 +10,8 @@
 // ir::Graph, the planner's input.
 //
 // A stage's components have ordinals (OrdinalOf): the embedding 0, then
-// every layer's components in order, the final norm and the output head.
+// its side inputs' sources and its streams' mixing, every layer's
+// components in order, the final norm and the output head.
 // A weight leaf is made once per bound tensor (a tied head reads the
 // embedding's leaf, as today's builders do), its WeightRef the first
 // component binding it; a weight of another stage's artifact (a drafter
@@ -29,7 +30,8 @@
 // committed positions by the masks). A target's step with outputs writes
 // each feature tap a drafter reads into that drafter's tensor of the tap's
 // name (target_writes): the final norm's output rows, stored at their
-// positions' cells. A step never stores into a borrowed tensor nor, on
+// positions' cells, or a layer's output or streams, every row's. A step
+// never stores into a borrowed tensor nor, on
 // another stage's, into one its contract does not let the target write
 // (CheckStateWrites).
 //
@@ -41,6 +43,16 @@
 // segment's positions (a view of the step's) and its cells' positions.
 // Where that mask runs, the device or the host (an input), is a
 // lowering's choice. Masks have Pad(rows, kMaskRowAlign) rows.
+//
+// A stage of several streams (hyper-connections) carries its residual, F32
+// [width, streams, rows], beside the stream each block reads: its mixing
+// component makes it from the embedding's rows, the components between
+// read and return it (Fragment::residual) and a carry from a mix to its
+// combine (Fragment::carry). A side input's source component (a table read
+// at rows the engine computes) runs after the embedding, and the one
+// component of each layer it lists reads its output. A verify step leaves
+// fixed state (kCommit rollback) as it was and saves what its commit
+// replays (StepGraph::saves, BuildCommit).
 //
 // Model layer, after spec: the planner's step shape is a header-only type.
 
@@ -82,9 +94,15 @@ inline constexpr std::uint16_t kFrameworkComponent = 0xFFFF;
 // v0 artifact's: spec::SourceOfV0).
 using BoundTensor = spec::SourceTensor;
 
-// A stage's components with their parameters validated and their ordinals.
+// A stage's components with their parameters validated and their ordinals:
+// the embedding 0, then the side inputs' sources in the spec's (name)
+// order, the stream's mixing, every layer's components, the final norm and
+// the output head (a stage without side inputs or mixing numbers as
+// before them).
 struct StageInstances {
   std::optional<Instance> embedding;
+  std::vector<Instance> side;      // spec.h SideInput::source, by the spec's order
+  std::optional<Instance> mixing;  // a stage of several streams' (spec.h ResidualStream)
   std::vector<std::vector<Instance>> layers;
   std::optional<Instance> final_norm;
   std::optional<Instance> output;
@@ -108,15 +126,21 @@ std::optional<std::pair<std::size_t, std::size_t>> NarrowPoint(const StageInstan
 // artifact of the stage the binding names), in an encoding the role
 // accepts and of the shape the role implies, and no binding of a role it
 // does not use; a layer count and stream width within the catalog's
-// bounds; one stream (no mixing component is in the catalog yet); state
-// only on a layer's or the embedding's components; and the reads linked
-// to the state contracts both ways: a drafter's borrowed tensor read of
-// its target's state of that name (and the target's tensor of that name
-// in its target layer one of equal kind, cells, window and cell bytes),
-// a tensor the target writes read of a target's tap of that name (a final
-// norm's, of the target's width in F32), and every read used by one; only
-// a drafter reads, and only its target. The first violation, with where
-// it is.
+// bounds; a stage of several streams' mixing a mixing component
+// (ComponentDef::mixing), and of one stream none; each side input's source
+// a side-input component (ComponentDef::side_source), read by exactly one
+// component of each layer it lists and by no other (ComponentDef::
+// side_input); no in-checkpoint MTP heads (a drafter stage instead); state
+// only on a layer's or the embedding's components; and the reads linked to
+// the state contracts both ways: a drafter's borrowed tensor read of state
+// of that name of the stage it reads (and that stage's tensor of that name
+// in its target layer one of equal kind, cells, window and cell bytes), a
+// tensor another stage writes read of that stage's tap of that name (in
+// F32: a final norm's or a layer's output of its width, or a layer's
+// streams of its streams times its width), and every read used by one.
+// Only a drafter reads, and only stages before it (its target, or the
+// drafter before it in a cascade), each name of one stage. The first
+// violation, with where it is.
 std::expected<void, std::string> ValidateSpec(
     const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors);
 // A single-artifact spec.
@@ -145,10 +169,21 @@ std::expected<model::Batching, std::string> StageBatching(const spec::ModelSpec&
 // is a ring (position p in cell p mod capacity), and whether the step reads
 // it frozen (another stage's, borrowed: the step stores none of its rows,
 // so its cells hold the positions before the segment's).
+//
+// Other cell rules: a fixed tensor (`fixed`: kFixed state, one cell a
+// request, rewritten whole: recurrent or convolution state), a tensor of a
+// cell per block of `block` positions (kPerBlock: indexer block keys, whose
+// cells read as the last position of each block the stored positions
+// complete), and a tensor of a cell per chunk row (`per_row`: kPerRow, a
+// segment's row i at cell first_row + i: an MTP drafter's streams).
 struct CellKey {
   std::uint64_t capacity = 0;
   bool ring = false;
   bool frozen = false;
+  bool fixed = false;
+  std::uint32_t block = 0;
+  bool per_row = false;
+  std::uint32_t first_row = 0;
   auto operator<=>(const CellKey&) const = default;
 };
 
@@ -169,13 +204,36 @@ enum class InputKind : std::uint8_t {
   // I64 [segment outputs]: the cell each output row's tap is stored at in
   // a drafter's tensor (its position's).
   kOutputCells,
+  // I32 [count · rows]: the rows of a side table each step row reads, a
+  // row's `count` together (its source's lookup: Qwen3.8's n-gram hash of
+  // the token history), the caller's (`component`: the source's ordinal).
+  kSideRows,
+  // I32 [sections · blocks]: the first position of each of a segment's
+  // `read` blocks of `cells.block` positions (block b's: b · block), every
+  // section a copy, section-major (a multi-section rotation's positions).
+  kBlockPositions,
+  // A lone component's other inputs (BuildComponent), the caller's: F32
+  // [width, streams, rows] the streams, [width, rows] a carry and a side
+  // input.
+  kResidual,
+  kCarry,
+  kSide,
+  // F32 [width, segment rows]: a verify's save (StepGraph::saves) of a
+  // segment's kept rows, which a commit step reads (BuildCommit): the
+  // caller's (`component` and `what` name the save).
+  kCommitRows,
 };
 struct StepInput {
   ir::TensorId tensor{};
   InputKind kind = InputKind::kTokens;
   std::uint8_t segment = ir::kJoinedSegment;
   CellKey cells{};
-  std::uint64_t read = 0;  // kCellPositions' cells
+  std::uint64_t read = 0;  // kCellPositions' cells, kBlockPositions' blocks
+  // kPositions and kBlockPositions: copies of the positions, one after
+  // another (a multi-section rotation's; 1: plain).
+  std::uint8_t sections = 1;
+  std::uint16_t component = 0;  // kSideRows' source, kCommitRows' saver
+  std::string what{};           // kCommitRows' save
 };
 
 struct SegmentRows {
@@ -187,6 +245,18 @@ struct SegmentRows {
   std::uint32_t outputs = 0;
 };
 
+// A verify's save for its commit (components whose state rolls back by
+// commit: Rollback::kCommit): a component's per-row values, F32 [width,
+// rows], that the commit of the kept rows replays (BuildCommit). `segment`
+// is the owner's, or kJoinedSegment for every owner's rows.
+struct CommitSave {
+  std::uint32_t layer = 0;
+  std::uint16_t component = 0;
+  std::string what;
+  std::uint8_t segment = ir::kJoinedSegment;
+  ir::TensorId tensor{};
+};
+
 class StepContext {
  public:
   StepContext(ir::Builder& b, std::vector<SegmentRows> segments, bool greedy);
@@ -196,11 +266,37 @@ class StepContext {
   std::uint32_t outputs() const { return outputs_; }
   // Whether the head picks each output row's token (every segment greedy).
   bool greedy() const { return greedy_; }
+  // What the step is for (planner::Phase): a verify's fragments save what
+  // their state's commit replays instead of rewriting fixed state.
+  planner::Phase phase() const { return phase_; }
+  void SetPhase(planner::Phase phase) { phase_ = phase; }
   // The component nodes are attributed to (step inputs: kFrameworkComponent).
   void SetComponent(std::uint16_t component);
   ir::TensorId Tokens();
   ir::TensorId Positions();
+  // The positions in `sections` copies, section-major: I32 [sections ·
+  // rows] (a multi-section rotation's positions; 1: Positions()).
+  ir::TensorId Positions(std::uint8_t sections);
+  // Segment s's view of the positions, I32 [its rows].
+  ir::TensorId SegmentPositions(std::size_t segment);
   ir::TensorId OutputRows();
+  // The cell a fixed tensor's one row is stored at: I64 [1], 0.
+  ir::TensorId StateRow();
+  // Segment s's read cells' positions for tensors of `cells` (the input
+  // its masks read): I32 [ReadCells].
+  ir::TensorId HeldPositions(std::size_t segment, const CellKey& cells);
+  // Segment s's `blocks` blocks' first positions (kBlockPositions).
+  ir::TensorId BlockPositions(std::size_t segment, const CellKey& cells, std::uint64_t blocks,
+                              std::uint8_t sections);
+  // A side table's rows, `count` a step row (kSideRows).
+  ir::TensorId SideRows(std::uint16_t component, std::uint64_t count);
+  // A verify's save of `tensor` for its commit (a step output), and a
+  // commit's read of segment s's kept rows of it (kCommitRows).
+  void Save(const Instance& in, std::string_view what, ir::TensorId tensor,
+            std::uint8_t segment = ir::kJoinedSegment);
+  ir::TensorId Saved(const Instance& in, std::string_view what, std::size_t segment,
+                     std::uint64_t width);
+  std::vector<CommitSave> TakeSaves() { return std::move(saves_); }
   // The rows' feature, F32 [width, rows].
   ir::TensorId Features(std::uint64_t width);
   // Segment s's store cells for tensors of `cells`.
@@ -228,14 +324,19 @@ class StepContext {
   std::uint32_t rows_ = 0;
   std::uint32_t outputs_ = 0;
   bool greedy_ = false;
+  planner::Phase phase_ = planner::Phase::kPrefill;
   std::uint16_t component_ = 0;
-  ir::TensorId tokens_{}, positions_{}, output_rows_{}, features_{};
+  ir::TensorId tokens_{}, positions_{}, output_rows_{}, features_{}, state_row_{};
+  std::map<std::uint8_t, ir::TensorId> sectioned_;
+  std::map<std::uint16_t, ir::TensorId> side_rows_;
+  std::map<std::tuple<std::size_t, CellKey, std::uint64_t, std::uint8_t>, ir::TensorId> blocks_;
   std::vector<ir::TensorId> segment_positions_;
   std::map<std::pair<std::size_t, CellKey>, ir::TensorId> store_cells_;
   std::map<std::pair<std::size_t, CellKey>, ir::TensorId> output_cells_;
   std::map<std::tuple<std::size_t, CellKey, std::uint64_t>, ir::TensorId> cell_positions_;
   std::map<std::tuple<std::size_t, CellKey, std::uint32_t>, ir::TensorId> masks_;
   std::vector<StepInput> inputs_;
+  std::vector<CommitSave> saves_;
 };
 
 // --------------------------------------------------------------- the step
@@ -265,10 +366,16 @@ struct StepState {
   ir::TensorId tensor{};
   ir::StateRef ref{};
   // Its StateLayoutDerived item: of stage ref.stage's layout, or for a
-  // borrowed tensor of the target's (the tensor it reads).
+  // borrowed tensor of the stage it reads (`source`: the tensor it reads).
   std::size_t item = 0;
-  bool borrowed = false;  // a drafter's view of its target's tensor: read only
-  bool tap = false;       // a drafter's tensor this target step writes (target_writes)
+  bool borrowed = false;     // a drafter's view of another stage's tensor: read only
+  bool tap = false;          // another stage's tensor this step writes (target_writes)
+  std::uint16_t source = 0;  // a borrowed tensor's stage
+  // What the step does with it (Finish sets them from the graph): a node
+  // reads it, a store writes it. A verify's saves and a target's writes
+  // into a drafter's stage follow `written`.
+  bool read = false;
+  bool written = false;
 };
 
 struct StepGraph {
@@ -279,12 +386,23 @@ struct StepGraph {
   ir::TensorId logits{};    // F32 [vocab, outputs], when the step has outputs
   ir::TensorId greedy{};    // I32 [outputs], when every segment is greedy
   ir::TensorId features{};  // F32 [feature width, outputs]: a drafter head's next feature
+  // A verify's saves for its commit (outputs of the step).
+  std::vector<CommitSave> saves{};
 };
 
 // Refuses a step that stores into a borrowed tensor, or (`stage` writing
-// another stage's tensor) into one that is not a tap its target writes:
-// every cache store's cache is a state leaf the step may write.
+// another stage's tensor) into one that is not a tap it writes: every
+// store into a state leaf (a cache store's cache, a fused RoPE store's)
+// may write it. A store into an activation (a mask built by stores) is the
+// step's own.
 std::expected<void, std::string> CheckStateWrites(const StepGraph& step, std::uint16_t stage);
+// The same over another graph of the step's leaves (the planned graph, its
+// fused stores included): `tensors[primitive tensor]` its tensor there
+// (planner/plan.h StepPlan::tensors; empty: the step's own graph).
+std::expected<void, std::string> CheckStateWrites(const ir::Graph& graph,
+                                                  std::span<const StepState> state,
+                                                  std::span<const ir::TensorId> tensors,
+                                                  std::uint16_t stage);
 
 // The stage's components' fragments for `shape`, joined and verified. Its
 // segments are in row order; each reads min(capacity, read_cells) cells of
@@ -297,6 +415,8 @@ std::expected<void, std::string> CheckStateWrites(const StepGraph& step, std::ui
 // state. Greedy segments must be all of them, each with one output. A
 // target's step with outputs writes the taps its drafters read (each
 // segment's outputs within the tap's cells), which needs their layouts.
+// A verify (shape.phase) that writes its stage's state of Rollback::kCommit
+// is refused: its commit writes that state (BuildCommit).
 // With `narrow` off (a policy without the planner's narrow_final option,
 // planner/pattern.h), a step with a head does not narrow: every row runs
 // to the final norm and the head gathers its rows there (today's Gemma 4
@@ -309,20 +429,44 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
                                                 const Bindings& bindings,
                                                 const StepOptions& options = {});
 
+// The commit of a verify's kept rows: each component with a commit
+// (ComponentDef::commit) writes, from the verify's saves of each owner's
+// kept rows (InputKind::kCommitRows inputs, which the caller binds to the
+// first rows of the verify step's StepGraph::saves), the state those rows
+// alone would have left. `kept`'s segments are the verify's owners, each
+// its kept rows (1 to the verify's). Refused for a stage with nothing to
+// commit.
+std::expected<StepGraph, std::string> BuildCommit(const spec::ModelSpec& spec, std::uint16_t stage,
+                                                  const planner::StepShape& kept,
+                                                  const Bindings& bindings);
+
 // One instance's fragment as a step of its own, for its tests and ports:
-// its input stream an input (kStream; none for an embedding), its weights
-// in `formats` (by role; those its shapes use), `cells` cells per state
-// tensor of its contract, its masks, then the fragment; the output stream
-// (or a head's logits) is the step's output.
+// its inputs (kStream, unless an embedding's or a side source's; and as
+// `inputs` asks, the streams, a carry and a side input), its weights in
+// `formats` (by role; those its shapes use), `cells` cells per state
+// tensor of its contract, its masks, then the fragment; its outputs (the
+// stream, the streams and the carry it returns, or a head's logits) are
+// the step's.
+struct ComponentInputs {
+  bool residual = false;    // kResidual: F32 [width, streams, rows]
+  std::uint64_t carry = 0;  // kCarry: F32 [carry, rows]; 0: none
+  std::uint64_t side = 0;   // kSide: F32 [side, rows]; 0: none
+};
 struct ComponentGraph {
   StepGraph step;
   ir::TensorId stream_in{};
   ir::TensorId stream_out{};
+  ir::TensorId residual_in{};
+  ir::TensorId residual_out{};
+  ir::TensorId carry_in{};
+  ir::TensorId carry_out{};
+  ir::TensorId side_in{};
   std::vector<ir::TensorId> weights;  // by role; invalid where unused
 };
 std::expected<ComponentGraph, std::string> BuildComponent(
     const Instance& instance, const planner::StepShape& shape,
-    std::span<const format::TensorFormat> formats, std::span<const std::uint64_t> cells);
+    std::span<const format::TensorFormat> formats, std::span<const std::uint64_t> cells,
+    const ComponentInputs& inputs = {});
 
 // An instance outside a spec, for tests: `ref` validated against its kind's
 // definition, at `site` in a stage of `stage`.

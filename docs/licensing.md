@@ -158,7 +158,13 @@ lock pin):
   `src/kernels/reference/exec.cc` (rope.cu's YaRN rotation and
   multi-section angles, ggml.c's YaRN correction dims, the ALiBi slope) and
   `tests/unit/reference_exec_test.cc` (the same rotation as its expected
-  values). The packaged GGML MIT notice covers them.
+  values), and Qwen3.8's components from llama.cpp's qwen4exp graph:
+  `src/components/gdn.cc` (`build_layer_attn_linear`, `build_conv_state_at`
+  and `build_gdn_l2_norm`), `src/components/qsa.cc` (`build_layer_attn`,
+  `build_attn_qsa`, `build_qsa_top_k` and its input's own-block bias),
+  `src/components/hc.cc` (`build_hc_mix` and `build_hc_combine`) and
+  `src/components/ple.cc` (`build_ple`, `llm_graph_input_ple`'s n-gram hash
+  and gate, and the MTP pass). The packaged GGML MIT notice covers them.
 - ExLlamaV3 (`2025 Turboderp`): `src/kernels/reference/decode_exl3.cc`
   (codebook.cuh's `decode_3inst`, exl3_dq.cuh's state extraction and
   reconstruct.cu's tile placement, on the CPU). Its library

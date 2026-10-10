@@ -16,7 +16,8 @@
 //
 // Graphs are made by a Builder (builder.h) and checked by Verify
 // (verify.h); a Graph is immutable, move-only, and holds at most kMaxNodes
-// nodes and kMaxTensors tensors in storage it reserves once.
+// nodes and kMaxTensors tensors. Its storage grows while it is built, so
+// only a finished graph hands out references (a builder's are copies).
 //
 // Its digest (Digest()) is canonical: the plan-key and pattern input. Two
 // graphs digest the same when they run the same operations in the same

@@ -293,21 +293,36 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         slot.kind = InputKind::kTokens;
         break;
       case co::InputKind::kPositions:
+        if (input.sections > 1) return Refused("multi-section positions (slice G3b)");
         slot.kind = InputKind::kPositions;
         break;
       case co::InputKind::kOutputRows:
         slot.kind = InputKind::kOutputRows;
         break;
       case co::InputKind::kStoreCells:
+        // Fixed, per-row and block cells (Qwen3.8's state, its drafter's
+        // streams) are not lowered yet (slice G3b).
+        if (input.cells.fixed || input.cells.per_row || input.cells.block != 0) {
+          return Refused("store cells of fixed, per-row or block state");
+        }
         slot.kind = InputKind::kStoreCells;
         slot.cells = {.capacity = input.cells.capacity, .ring = input.cells.ring};
         break;
       case co::InputKind::kCellPositions:
         // Read only by masks, which derive (device) or fold in (host) them.
+        if (input.cells.block != 0) return Refused("a block tensor's positions");
         if (!MaskOnly(out)) return Refused("cells' positions read by more than a mask");
         return nullptr;
       case co::InputKind::kStream:
-        return Refused("a lone component's stream input");
+      case co::InputKind::kResidual:
+      case co::InputKind::kCarry:
+      case co::InputKind::kSide:
+        return Refused("a lone component's input");
+      case co::InputKind::kSideRows:
+      case co::InputKind::kBlockPositions:
+      case co::InputKind::kCommitRows:
+        // Qwen3.8's inputs, lowered with its patterns (slice G3b).
+        return Refused("a side table's rows, blocks' positions or a verify's saves");
       case co::InputKind::kFeatures:
         // A drafter's rows' features: the caller's bytes for the step.
         slot.kind = InputKind::kStepBytes;
@@ -315,6 +330,9 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
       case co::InputKind::kOutputCells: {
         // A target's tap rows' cells: its segment's last rows' store cells.
         const auto outputs = static_cast<std::uint32_t>(d.ne(0));
+        if (input.cells.fixed || input.cells.per_row || input.cells.block != 0) {
+          return Refused("a tap's cells of fixed, per-row or block state (slice G3b)");
+        }
         if (input.segment >= in_.shape.segments.size() || outputs == 0 ||
             outputs != in_.shape.segments[input.segment].outputs) {
           return Refused("a tap's cells of no segment's outputs");

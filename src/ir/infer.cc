@@ -1348,7 +1348,7 @@ Out InferFused(const Ctx& c) {
       r.out.at(i) = ViewOf(c, *alias, s.format, s.nb, s.view_offset);
       continue;
     }
-    const TensorDesc& t = b.tensor(outs[i]);
+    const TensorDesc t = b.tensor(outs[i]);
     r.out.at(i) = Fresh(t.shape(), t.format.encoding);
     r.float_result.at(i) = ResultEncoding(t.format.encoding);
   }

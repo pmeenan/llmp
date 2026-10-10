@@ -1525,6 +1525,17 @@ each is checked against the design as M3.6 proceeds.
       - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF.
       - [ ] Components, patterns and the mapping.
+            *2026-10-10:* the components and mappings landed (slice G3a:
+            `residual.hc`, `hc.mix`, `hc.combine`, `attention.gdn`,
+            `attention.qsa`, `side.ngram`, `residual.ple`, `embedding.mtp`,
+            `ffn.moe`'s shared-gated form; streams, side inputs, fixed,
+            per-block and per-row cells, a verify's saves and its commit;
+            the `qwen4exp` mapping over the ModelOpt and GGUF imports and
+            `qwen4exp-mtp`, the MTP drafter a stage composed with its
+            target; [as built](engine-components.md#initial-catalog)), at
+            parity with the unfused builder's graphs but for the n-gram
+            layer's node order. The patterns, the policy and the lowering
+            of the new inputs (the fast form's kernels) are slice G3b's.
       - [ ] Wiring and the gate, then deletion of the old code.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.
       - [ ] Components, patterns and the mapping.

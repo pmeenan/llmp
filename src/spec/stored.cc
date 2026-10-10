@@ -194,15 +194,17 @@ std::expected<ModelSpec, std::string> StoredSpec(
   return spec;
 }
 
-std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact) {
+std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact,
+                                            const Mapping* mapping) {
   if (artifact.format_version() == 0) {
-    return SourceOfV0(artifact);
+    return SourceOfV0(artifact, mapping);
   }
   if (auto ok = CheckCatalog(artifact); !ok) {
     return std::unexpected(ok.error());
   }
   Source s{.architecture = artifact.model().architecture,
            .container = artifact.model().container,
+           .converter = {},  // a v1 artifact's folds are its importer's, below
            .tensors = {},
            .folds = {}};
   for (const artifact::AppliedFold& f : artifact.folds()) {

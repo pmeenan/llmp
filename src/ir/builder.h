@@ -74,8 +74,10 @@ class Builder {
   }
   bool ok() const { return !error_.has_value(); }
   const std::optional<VerifyError>& error() const { return error_; }
-  // A tensor made so far (a valid id of this builder).
-  const TensorDesc& tensor(TensorId id) const { return graph_.tensor(id); }
+  // A tensor made so far (a valid id of this builder), as a copy: the
+  // builder's tensors move whenever it makes another, so it hands out no
+  // reference into them (one kept across a later call would dangle).
+  TensorDesc tensor(TensorId id) const { return graph_.tensor(id); }
   std::size_t node_count() const { return graph_.nodes_.size(); }
   std::size_t tensor_count() const { return graph_.tensors_.size(); }
 

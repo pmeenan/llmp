@@ -723,6 +723,105 @@ reduce fusions, owner-root attention and common-width reads,
 rope-store, shared Q8 inputs), which are patterns and selection, held
 to the builders by the lowering's comparison (slice G2b, above).
 
+**Qwen3.8** (slice G3a, 2026-10-10). The framework gains what the
+hyper-connected, partly recurrent stage needs. A stage of several
+streams carries its residual F32 [width, streams, rows] beside the
+stream a block reads: its mixing component (`ComponentDef::mixing`,
+`residual.hc`) repeats the embedding's rows into every stream (an
+embedding may return the streams itself: `embedding.mtp`), a fragment
+reads and returns the residual and a carry (`Fragment::residual`,
+`carry`: what a mix hands the combine after its block), and the final
+norm may gather the output rows itself (`FragmentOut::narrowed`).
+`hc.mix` (each stream RMS-normed, the streams as one row times the norm
+weight, the low-rank sigmoid gate, the gated streams' mean) and
+`hc.combine` (the block's output added to every stream, weighted by
+2 · sigmoid(inject · xn / streams)) wrap each block; `hc.mix` with
+`inject` false is the head's mix. Side inputs are components of their
+own (`ComponentDef::side_source`, numbered after the embedding):
+`side.ngram` gathers each row's `heads` rows of its table (a role read by
+rows on demand, `WeightRole::rows_on_demand`) at rows the engine computes
+from the token history (`InputKind::kSideRows`, `ComponentDef::side_rows`:
+llama.cpp's n-gram hash, equal to `Qwen38PleRows`), and exactly one
+component of each layer it lists reads it (`side_input`: `residual.ple`,
+the n-gram block before the layer's first mix, which adds to every
+stream). Three cell rules join the contracts' (`CellKey`): fixed state
+(one cell a request rewritten whole, stored at `StateRow`), a cell per
+block of positions (whose held position is its last once complete), and a
+cell per chunk row (a drafter's streams, the rows before the chunk
+first); positions may come in several sections (a multi-section
+rotation's) and blocks' first positions are an input
+(`kBlockPositions`). `attention.gdn` is Gated DeltaNet: the qkv, gate,
+beta and alpha products, the causal depthwise convolution over its fixed
+history and SiLU, q and k L2-normed (rms_norm at eps / d, scaled by
+1 / sqrt(d)), `kGatedDeltaNet` over the fixed recurrent state, the gated
+output norm and the output product; it requires the folds
+`gdn.value_heads_tiled` and `ssm.a_neg_exp`. `attention.qsa` is QSA: the
+indexer's raw keys stored F32 a cell per position, the gated query, K and
+V products, per-head norms and the interleaved multi-section rotation,
+F16 K and V; past the budget the primitive fragment pools every block of
+the read cells each step (mean, normed, rotated at the block's first
+position, BF16), scores them against the indexer's BF16 query
+(`kIndexScore`, the token's own block kept by a 1e9 bias over the blocks'
+held positions), spreads the scores over the cells under the causal mask
+and keeps the best min(read, budget + ratio − 1) cells (`kTopK`) as a
+-inf mask whose `n_kv_max` promises that width; its contract holds the
+BF16 block keys (`indexer_blocks`, a cell per block) for implementations
+that keep them (`llmp.qsa.pool` writes each once), which the primitive
+fragment never reads or writes; `rollback` is `snapshot` for a target and
+`truncate` for an MTP drafter, whose catch-up rewrites its caches.
+`ffn.moe` gains placement `none` with the router over the stream itself
+(`router_input` `stream`), per-expert projection scales (gate, up and down
+roles; down's applied in the reduce) and the shared expert behind its
+sigmoid gate (`shared_gate`: SumRows of the stream times the gate's row).
+`embedding.mtp` is the MTP drafter's input: its target's token row,
+normed and projected, added to every stream of the feature it reads (its
+target's last layer's streams, or its own last pass's), the feature
+normed over its streams together and each stream projected; its state is
+that tap, a cell a chunk row its target writes every row of.
+`head.linear` gains `selected` (role `ids`: its rows' token ids, the
+greedy pick mapped through them) and `embedding.token` emits no scale of
+1.
+
+A verify cannot rewrite fixed state (`Rollback::kCommit`): in a verify
+step (`StepContext::phase`) `attention.gdn` and `residual.ple` read their
+state, write none, and save each row's convolution input, convolution
+output, gate and beta (`StepContext::Save`, `StepGraph::saves`); the
+commit of each owner's kept rows (`BuildCommit`, from `ComponentDef::
+commit` fragments over `kCommitRows` inputs the caller binds to the
+saves' first rows) leaves the state those rows alone would have, bit for
+bit on the reference executor; `BuildStep` refuses a verify that writes
+its stage's commit-rolled state. A step's state leaves say whether a node
+reads them and a store writes them (`StepState::read`, `written`), and
+`CheckStateWrites` refuses a store into a weight, a borrowed tensor or
+another stage's tensor that is not a tap the step writes (a store into an
+activation, a mask built by stores, is the step's own). Taps may be a
+layer's output or its streams (`TapPoint::kStreams`, F32 streams times
+width, written every row after their layer, which the MTP drafter reads),
+and reads reach any earlier stage (its target, or the drafter before it
+in a cascade), each name of one stage.
+
+The structural comparison (`components_qwen38_order_test`) holds the
+target's steps, from a GGUF import's tensors and the ModelOpt import's
+with GGML-layout experts, to `BuildQwen38Graph`'s unfused form node for
+node over five one-owner prefill and decode shapes below the indexer's
+budget (the unfused form builds one sequence; its selection rounds in
+F32 where the components round as the fast form's kernels do, in BF16).
+The selection, the MTP drafter, verifies with their commits and several
+owners are held to the components' references here, and to today's
+runner by G3b's lowering. What differs: GGML's graph order visits the
+n-gram layer's history, value and key products before layer 0's shared
+expert and combine (the comparison allows reorders only within that
+window: the lowering's order, G3b); the builder's MXFP8 dequantization
+nodes are the products' operands; the GDN's per-segment views and the
+shared gate's row trick (a reshape and `get_rows`, where the components
+multiply and sum) compare by alias; the builders' host masks and the
+convolution's padding past 32 rows are the lowering's. The fast form
+(`llmp.hc.*`, `llmp.gdn.*`, `llmp.qsa.pool`, `.topk`, `.attn`, the MXFP8
+tensor-core products), the default planning policy and the lowering of
+the new inputs and cell rules (the GGML lowering refuses them today) are
+slice G3b's; the engine's binding of side rows, commits and the MTP
+passes' features is G3c's.
+
 ### The model spec
 
 A model is a spec in its artifact's manifest, written by the importer and
@@ -820,6 +919,43 @@ weight bindings may name another stage's artifact (`stage`, written in
 the JSON only when set). The `gemma4` mapping asserts no fold: llama.cpp's
 converter keeps Gemma 4's norm weights as they are (its
 `Gemma4Model.norm_shift` is 0, read at 8019dc56).
+
+Qwen3.8 (slice G3a) extends it again, all as data: side-input and
+mixing slots (`Site::kSide`, `kMixing`); slots whose layers a source
+key lists (`SlotRule::layers_key`: `qwen4exp.ple.layers`); tensor rules
+binding any part of a tensor (`any_part`: the ModelOpt import's MXFP8
+codes and scales) or accounting for tensors the spec holds as parameters
+(`unbound`: the hash's constants); folds asserted for a v0 artifact's
+converter identity (`FoldRule::converter`, the ModelOpt importer's, which
+records no transformation: the start of one of the identity's `+`-joined
+parts; a v1 artifact records its importer's folds, so no converter rule
+applies to it) as well as per container; v0 resources paired into
+one tensor's parts (`V0Assembly`: MXFP8 codes and scales, the n-gram
+table's NVFP4 rows and scale, the CUTLASS expert arrays); integer-list
+values (`ValueType::kInts`: the rotation's sections, the hash's
+constants); and drafter taps of a layer's output or streams (the target's
+last layer). `SourceOfV0` takes the mapping to assemble, and the caps
+rise to 2^20 source tensors (an artifact's are 301,730) and 2^16 values.
+The `qwen4exp` mapping makes one spec structure from the ModelOpt
+import (experts in the CUTLASS layout or GGML's blocks) and a GGUF's:
+the streams' mixing, the n-gram side input read by `residual.ple` at
+layer 1, three `attention.gdn` layers to a `attention.qsa` one (the
+per-layer compression ratios must agree), every layer's MoE, each block
+between `hc.mix` and `hc.combine`, the head's mix and the untied output.
+The forms differ in data only (the indexer's projection fused or split,
+the experts stacked or not, projection scales or none). `qwen4exp-mtp`
+composes the MTP drafter stage: it reads its target's streams after the
+last layer, its token rows from the target's table, one QSA layer
+(rollback `truncate`) and MoE, the head's mix returning its streams as
+the next feature, and its own selected head where the artifact has one.
+Both mappings' values come from today's profile, binding and hash
+(`Qwen38V0Values`, `Qwen38MtpV0Values`); no default policy is declared
+until G3b's patterns exist. On the installed artifacts
+(`components_qwen38_models_test`), the ModelOpt specs equal the unit
+fixture's, every import's layers are the same components, the layouts are
+today's state, and every step kind builds; the reference executor does
+not run them (it binds whole weights: 97 GB a ModelOpt artifact), so
+their numerical gate is G3b's lowering against today's runner.
 
 ## Weight and state formats
 

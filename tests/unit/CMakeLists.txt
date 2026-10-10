@@ -1096,6 +1096,28 @@ target_link_libraries(components_gemma4_order_test PRIVATE llmp_components llmp_
 llmp_gtest(components_gemma4_order_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
+# The Qwen3.8 components (hyper-connections, Gated DeltaNet, QSA, the n-gram
+# embedding, the MoE's hyper-connection form, the MTP drafter's input)
+# against their references, verify saves and commits, the qwen4exp and
+# qwen4exp-mtp mappings over every import's tensors and the steps they
+# make; and the steps against today's unfused graph builder, node for node.
+add_executable(components_qwen38_test components_qwen38_test.cc)
+target_link_libraries(components_qwen38_test PRIVATE llmp_components llmp_reference_kernels
+                                                     llmp_spec llmp_model llmp_artifact llmp_json)
+llmp_gtest(components_qwen38_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+add_executable(components_qwen38_order_test components_qwen38_order_test.cc)
+target_link_libraries(components_qwen38_order_test PRIVATE llmp_components llmp_ggml_tensors
+                                                           llmp_spec llmp_model llmp_artifact
+                                                           llmp_json)
+llmp_gtest(components_qwen38_order_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+# The Qwen3.8 mappings on the installed artifacts: each import's spec, the
+# fixture's equal to the ModelOpt ones, today's state layouts, the MTP
+# drafter composed, every step kind built.
+add_executable(components_qwen38_models_test components_qwen38_models_test.cc)
+target_link_libraries(components_qwen38_models_test PRIVATE llmp_components llmp_spec llmp_model
+                                                            llmp_artifact llmp_json)
+llmp_gtest(components_qwen38_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
+
 # The planner (D-107): policies, patterns, selection, placement, lanes and
 # plan keys on small graphs and a fake registry.
 add_executable(planner_test planner_test.cc)

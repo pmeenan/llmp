@@ -59,12 +59,16 @@ struct RouterParams {
   std::uint32_t used = 0;
   bool normalize = false;
   float eps = 0.0F;
+  // Its input Gemma 4's scaled norm of the stream (with `scale`); false:
+  // the stream itself (Qwen3.8's).
+  bool rms_input = true;
 };
 struct Routed {
   ir::TensorId ids{};      // I32 [used, rows]
   ir::TensorId weights{};  // F32 [used, rows]
 };
-// x [width, rows], router [width, experts], scale [width].
+// x [width, rows], router [width, experts], scale [width] (none without
+// rms_input).
 Routed EmitRouter(ir::Builder& b, ir::TensorId x, ir::TensorId router, ir::TensorId scale,
                   const RouterParams& p);
 struct RoutedRef {
@@ -85,16 +89,22 @@ struct ExpertParams {
 };
 // h [width, rows]; gate_up [width, 2 · hidden, experts] when stacked, else
 // gate and up [width, hidden, experts]; down [hidden, width, experts];
-// scale [experts] or none. The reduced output [width, rows].
+// scale [experts] or none: each slot's down output's; gate_scale and
+// up_scale [experts] or none: each slot's gate and up products' (NVFP4's
+// per-expert tensor scales kept beside the experts, applied after each
+// product as llama.cpp's build_lora_mm_id applies a `_s` tensor). The
+// reduced output [width, rows].
 ir::TensorId EmitExperts(ir::Builder& b, ir::TensorId h, const Routed& routed, ir::TensorId gate,
                          ir::TensorId up, ir::TensorId down, ir::TensorId scale,
-                         const ExpertParams& p);
+                         const ExpertParams& p, ir::TensorId gate_scale = {},
+                         ir::TensorId up_scale = {});
 // The same over decoded expert arrays (each expert's matrix after the
 // last, GGML order; `up` unused when stacked) and the routing.
 std::vector<double> ExpertsReference(std::span<const double> h, const RoutedRef& routed,
                                      std::span<const float> gate, std::span<const float> up,
                                      std::span<const float> down, std::span<const float> scale,
-                                     const ExpertParams& p);
+                                     const ExpertParams& p, std::span<const float> gate_scale = {},
+                                     std::span<const float> up_scale = {});
 
 }  // namespace llmp::components::moe
 

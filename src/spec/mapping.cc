@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -28,6 +29,7 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
 
 namespace llmp::spec {
@@ -78,6 +80,19 @@ bool IsText(std::string_view s) {
   return !s.empty() && s.size() <= kMaxText && std::ranges::all_of(s, [](char c) {
     return c > ' ' && c < 0x7F && c != '"' && c != '\\' && c != '{' && c != '}';
   });
+}
+
+// Whether a fold rule's converter names one of `identity`'s '+'-joined
+// parts (Source::converter: "name version", the version's parts joined by
+// '+'): the part begins with it ("modelopt_qwen38-" names the part
+// "modelopt_qwen38-031ed8750c9da55d", never "xmodelopt_qwen38-…").
+bool NamesPart(std::string_view identity, std::string_view rule) {
+  while (true) {
+    const std::size_t end = identity.find('+');
+    if (identity.substr(0, end).starts_with(rule)) return true;
+    if (end == std::string_view::npos) return false;
+    identity.remove_prefix(end + 1);
+  }
 }
 
 bool IsPseudo(std::string_view slot) {
@@ -214,6 +229,8 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& 
         return ParamValue(r.value.flag);
       case ValueType::kString:
         return ParamValue(std::string(r.value.text));
+      case ValueType::kInts:
+        return Refuse(where, "a list without its key");
     }
   }
   const auto found = values.find(r.key);
@@ -275,6 +292,11 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& 
         return ParamValue(*s);
       }
       return Refuse(at, "not a name");
+    case ValueType::kInts:
+      if (const auto* is = std::get_if<std::vector<std::int64_t>>(&v)) {
+        return ParamValue(*is);
+      }
+      return Refuse(at, "not a list of integers");
   }
   return Refuse(at, "an unknown value type");
 }
@@ -368,13 +390,39 @@ bool Exclusive(const SlotRule& a, const SlotRule& b) {
   return !a.gate.empty() && a.gate == b.gate && a.gate_absent != b.gate_absent;
 }
 
+// The layers a source key names: an integer or a list of integers, each
+// below `layers`.
+std::expected<std::set<std::uint32_t>, std::string> LayersOf(std::string_view key,
+                                                             const Values& values,
+                                                             std::uint32_t layers) {
+  std::set<std::uint32_t> out;
+  const auto found = values.find(key);
+  if (found == values.end()) return out;
+  std::vector<std::int64_t> list;
+  if (const auto* i = std::get_if<std::int64_t>(found->second)) {
+    list.push_back(*i);
+  } else if (const auto* is = std::get_if<std::vector<std::int64_t>>(found->second)) {
+    list = *is;
+  } else {
+    return Refuse(key, "not a layer or a list of layers");
+  }
+  for (const std::int64_t l : list) {
+    if (l < 0 || l >= static_cast<std::int64_t>(layers)) {
+      return Refuse(key, std::format("a layer {} past the {} layers", l, layers));
+    }
+    out.insert(static_cast<std::uint32_t>(l));
+  }
+  return out;
+}
+
 class Synthesis {
  public:
   Synthesis(const Mapping& m, const Source& s, const Values& v, std::uint32_t layers,
             std::string_view target_stage)
       : m_(m), source_(s), values_(v), layers_(layers), target_stage_(target_stage) {}
 
-  // The slots the source has, by their gates.
+  // The slots the source has, by their gates, and the layers a slot with a
+  // layers key is at.
   std::expected<void, std::string> Gate() {
     for (const SlotRule& slot : m_.slots) {
       auto present = Holds(slot.gate, slot.gate_absent, values_);
@@ -384,14 +432,34 @@ class Synthesis {
       if (*present) {
         present_.insert(slot.slot);
       }
+      if (!slot.layers_key.empty()) {
+        auto at = LayersOf(slot.layers_key, values_, layers_);
+        if (!at) {
+          return std::unexpected(at.error());
+        }
+        at_.emplace(slot.slot, std::move(*at));
+      }
     }
     return {};
   }
   bool Present(std::string_view slot) const { return present_.contains(slot); }
+  // Whether a layer slot is at layer `il` (its types and its layers key).
+  bool At(const SlotRule& s, std::uint32_t il) const {
+    if (!Applies(s.layer_types, Type(il)) || !Present(s.slot)) {
+      return false;
+    }
+    const auto found = at_.find(s.slot);
+    return s.layers_key.empty() || (found != at_.end() && found->second.contains(il));
+  }
+  const std::set<std::uint32_t>& Layers(std::string_view slot) const {
+    static const std::set<std::uint32_t> none;
+    const auto found = at_.find(slot);
+    return found == at_.end() ? none : found->second;
+  }
 
   std::expected<void, std::string> Bind() {
     for (const SourceTensor& t : source_.tensors) {
-      names_.insert(t.name);
+      names_.emplace(t.name, &t);
     }
     for (const SourceTensor& t : source_.tensors) {
       std::optional<std::pair<std::size_t, std::uint32_t>> match;
@@ -415,12 +483,11 @@ class Synthesis {
       const TensorRule& rule = m_.tensors[match->first];
       const SlotRule& slot = *FindSlot(m_, rule.slot);
       if (match->second != kShared && slot.site == Site::kLayer &&
-          (!Applies(slot.layer_types, Type(match->second)) ||
-           !Applies(rule.layer_types, Type(match->second)))) {
+          (!At(slot, match->second) || !Applies(rule.layer_types, Type(match->second)))) {
         return Refuse(t.name, std::format("layer {} of type '{}' has no {} {}", match->second,
                                           Type(match->second), rule.slot, rule.role));
       }
-      if (t.part != rule.part || t.experts != rule.experts) {
+      if ((!rule.any_part && t.part != rule.part) || t.experts != rule.experts) {
         return Refuse(t.name,
                       std::format("holds {}{}, not the rule's {}{}", format::PartRoleName(t.part),
                                   t.experts ? " experts" : "", format::PartRoleName(rule.part),
@@ -457,7 +524,7 @@ class Synthesis {
     }
     for (std::size_t i = 0; i < m_.tensors.size(); ++i) {
       const TensorRule& rule = m_.tensors[i];
-      if (rule.slot != slot.slot || (layered && !Applies(rule.layer_types, type))) {
+      if (rule.slot != slot.slot || rule.unbound || (layered && !Applies(rule.layer_types, type))) {
         continue;
       }
       if (rule.target) {
@@ -485,10 +552,12 @@ class Synthesis {
       } else {
         return Refuse(Expand(rule.pattern, layer), "absent from the source");
       }
-      c.weights.push_back(WeightBinding{.role = std::string(rule.role),
-                                        .tensor = tensor,
-                                        .part = rule.part,
-                                        .experts = rule.experts});
+      // The part it holds: the rule's, or with any_part the tensor's own.
+      const auto held = names_.find(tensor);
+      const format::PartRole part =
+          rule.any_part && held != names_.end() ? held->second->part : rule.part;
+      c.weights.push_back(WeightBinding{
+          .role = std::string(rule.role), .tensor = tensor, .part = part, .experts = rule.experts});
     }
     return c;
   }
@@ -512,8 +581,9 @@ class Synthesis {
   const Values& values_;
   std::uint32_t layers_;
   std::string_view target_stage_;
-  std::set<std::string_view> names_;
+  std::map<std::string_view, const SourceTensor*> names_;
   std::set<std::string_view> present_;
+  std::map<std::string_view, std::set<std::uint32_t>> at_;
   std::map<std::pair<std::size_t, std::uint32_t>, std::string> bound_;  // (rule, layer)
 };
 
@@ -643,10 +713,27 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
     return std::unexpected(embedding.error());
   }
   stage.embedding = std::move(*embedding);
+  auto mixing = syn.Only(Site::kMixing);
+  if (!mixing) {
+    return std::unexpected(mixing.error());
+  }
+  stage.stream.mixing = std::move(*mixing);
+  for (const SlotRule& s : mapping.slots) {
+    if (s.site != Site::kSide || !syn.Present(s.slot)) {
+      continue;
+    }
+    auto c = syn.Component(s, 0);
+    if (!c) {
+      return std::unexpected(std::format("side input {}: {}", s.slot, c.error()));
+    }
+    const auto& at = syn.Layers(s.slot);
+    stage.side.push_back(
+        {.name = std::string(s.slot), .source = std::move(*c), .layers = {at.begin(), at.end()}});
+  }
   stage.layers.resize(*layers);
   for (std::uint32_t il = 0; il < *layers; ++il) {
     for (const SlotRule& s : mapping.slots) {
-      if (s.site != Site::kLayer || !Applies(s.layer_types, syn.Type(il)) || !syn.Present(s.slot)) {
+      if (s.site != Site::kLayer || !syn.At(s, il)) {
         continue;
       }
       auto c = syn.Component(s, il);
@@ -667,7 +754,12 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   // latter validated against the catalog with the spec), sorted by
   // Canonicalize.
   for (const FoldRule& f : mapping.folds) {
-    if (f.container == source.container && !std::ranges::contains(stage.folds, f.fold)) {
+    // A converter rule names a v0 artifact's converter, so it never adds a
+    // fold to a v1 artifact's or a checkpoint's source (empty converter).
+    const bool applied =
+        f.converter.empty() ? f.container == source.container
+                            : !source.converter.empty() && NamesPart(source.converter, f.converter);
+    if (applied && !std::ranges::contains(stage.folds, f.fold)) {
       stage.folds.emplace_back(f.fold);
     }
   }
@@ -711,9 +803,10 @@ std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mappin
 }
 
 std::span<const Mapping* const> Mappings() {
-  static const std::array<const Mapping*, 4> all = {
-      &mappings::Gemma2Mapping(), &mappings::Gemma3Mapping(), &mappings::Gemma4Mapping(),
-      &mappings::Gemma4AssistantMapping()};
+  static const std::array<const Mapping*, 6> all = {
+      &mappings::Gemma2Mapping(), &mappings::Gemma3Mapping(),
+      &mappings::Gemma4Mapping(), &mappings::Gemma4AssistantMapping(),
+      &mappings::Qwen38Mapping(), &mappings::Qwen38MtpMapping()};
   return all;
 }
 
@@ -749,10 +842,8 @@ Status ValidateMapping(const Mapping& m) {
   }
   for (const ReadRule& r : m.reads) {
     if (!IsName(r.name) || static_cast<std::uint8_t>(r.kind) > 1 ||
-        static_cast<std::uint8_t>(r.point) > static_cast<std::uint8_t>(TapPoint::kPostFinalNorm) ||
-        (r.kind == ReadKind::kTap && r.point != TapPoint::kPostFinalNorm)) {
-      return Refuse(std::format("{} read {}", where, r.name),
-                    "an invalid name or kind, or a tap other than the final norm's");
+        static_cast<std::uint8_t>(r.point) > static_cast<std::uint8_t>(TapPoint::kPostFinalNorm)) {
+      return Refuse(std::format("{} read {}", where, r.name), "an invalid name, kind or point");
     }
   }
   // A policy's own rules are the planner's; here, printable lines.
@@ -778,8 +869,13 @@ Status ValidateMapping(const Mapping& m) {
       return Refuse(at, "not a name, a pseudo-slot's, or named twice");
     }
     if (!IsKind(s.kind) || s.version == 0 ||
-        static_cast<std::uint8_t>(s.site) > static_cast<std::uint8_t>(Site::kOutput)) {
+        static_cast<std::uint8_t>(s.site) > static_cast<std::uint8_t>(Site::kMixing)) {
       return Refuse(at, "an invalid kind, version or site");
+    }
+    if ((s.site == Site::kSide && s.layers_key.empty()) ||
+        (!s.layers_key.empty() &&
+         (!IsText(s.layers_key) || (s.site != Site::kLayer && s.site != Site::kSide)))) {
+      return Refuse(at, "a side input without its layers' key, or a layers key off a layer");
     }
     if (s.site != Site::kLayer ? !s.layer_types.empty()
                                : !TypesWithin(s.layer_types, m.layer_types)) {
@@ -790,7 +886,7 @@ Status ValidateMapping(const Mapping& m) {
     }
     // An embedding, final norm or output is a checkpoint's only one: a
     // second of the site is the alternative of the first's gate.
-    if (s.site != Site::kLayer) {
+    if (s.site != Site::kLayer && s.site != Site::kSide) {
       for (const SlotRule& o : m.slots) {
         if (&o == &s) {
           break;
@@ -831,6 +927,13 @@ Status ValidateMapping(const Mapping& m) {
     if (t.target && (!drafter || !t.fallback.empty() || t.optional)) {
       return Refuse(at, "a target's tensor in a target's mapping, or with a fallback");
     }
+    if (t.unbound) {
+      // A tensor accounted for, bound to no role.
+      if (!t.role.empty() || t.target || !t.fallback.empty() || t.any_part) {
+        return Refuse(at, "an unbound tensor with a role, a target or a fallback");
+      }
+      continue;
+    }
     // A role bound once a layer type: rules for one role and part may
     // split the layer types between them (no types: all of them).
     if (!IsName(t.role) ||
@@ -846,7 +949,8 @@ Status ValidateMapping(const Mapping& m) {
   }
   for (const ParamRule& r : m.params) {
     const std::string at = std::format("{} parameter {}.{}", where, r.slot, r.param);
-    if (static_cast<std::uint8_t>(r.type) > static_cast<std::uint8_t>(ValueType::kString) ||
+    if (static_cast<std::uint8_t>(r.type) > static_cast<std::uint8_t>(ValueType::kInts) ||
+        (r.type == ValueType::kInts && (r.key.empty() || r.per_layer)) ||
         static_cast<std::uint8_t>(r.transform) > static_cast<std::uint8_t>(Transform::kRsqrt) ||
         (r.transform != Transform::kNone && r.type != ValueType::kReal)) {
       return Refuse(at, "an unknown type or transform, or a transform of a non-real");
@@ -892,61 +996,144 @@ Status ValidateMapping(const Mapping& m) {
     }
   }
   for (const FoldRule& f : m.folds) {
-    if (FindFold(f.fold) == nullptr || !IsName(f.container)) {
+    if (FindFold(f.fold) == nullptr || f.container.empty() == f.converter.empty() ||
+        (!f.container.empty() && !IsName(f.container)) ||
+        (!f.converter.empty() && (!IsText(f.converter) || f.converter.contains('+')))) {
       return Refuse(std::format("{} fold {}", where, f.fold),
-                    "not in the fold catalog, or an invalid container");
+                    "not in the fold catalog, or not one container or converter part");
+    }
+  }
+  for (const V0Assembly& a : m.v0_assembly) {
+    const std::string at = std::format("{} v0 assembly {}", where, a.stem);
+    if ((!a.stem.empty() && !IsPattern(a.stem, true) && !IsPattern(a.stem, false)) ||
+        a.suffixes[0].empty() || a.suffixes[1].empty() || a.stacked == 0) {
+      return Refuse(at, "an invalid stem, fewer than two parts or no stack");
+    }
+    for (std::size_t i = 0; i < a.suffixes.size(); ++i) {
+      if (!a.suffixes.at(i).empty() && !IsText(a.suffixes.at(i))) {
+        return Refuse(at, "an invalid suffix");
+      }
     }
   }
   return {};
 }
 
-std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact) {
+std::expected<Source, std::string> SourceOfV0Tensors(std::string architecture,
+                                                     std::string container, std::string converter,
+                                                     std::span<const V0Tensor> tensors,
+                                                     const Mapping* mapping) {
+  Source s{.architecture = std::move(architecture),
+           .container = std::move(container),
+           .converter = std::move(converter),
+           .tensors = {}};
+  // The resources and arrays the mapping pairs: by name, the format of the
+  // tensor they hold a part of, and the part.
+  std::map<std::string, std::pair<format::TensorFormat, format::PartRole>, std::less<>> paired;
+  if (mapping != nullptr) {
+    std::map<std::string_view, const V0Tensor*> by_name;
+    for (const V0Tensor& t : tensors) by_name.emplace(t.name, &t);
+    for (const V0Assembly& a : mapping->v0_assembly) {
+      for (const V0Tensor& t : tensors) {
+        if ((t.count != 0) != a.experts || !t.name.ends_with(a.suffixes[0])) continue;
+        const std::string_view stem =
+            std::string_view(t.name).substr(0, t.name.size() - a.suffixes[0].size());
+        if (!a.stem.empty() && !Match(a.stem, stem, std::numeric_limits<std::uint32_t>::max())) {
+          continue;
+        }
+        std::vector<artifact::V0Part> parts;
+        std::vector<std::string> part_names;
+        std::size_t wanted = 0;
+        for (std::size_t i = 0; i < a.suffixes.size(); ++i) {
+          if (a.suffixes.at(i).empty()) continue;
+          ++wanted;
+          std::string name = std::format("{}{}", stem, a.suffixes.at(i));
+          const auto found = by_name.find(name);
+          if (found == by_name.end() || (found->second->count != 0) != a.experts ||
+              found->second->repr == nullptr) {
+            break;
+          }
+          parts.push_back({.role = a.roles.at(i), .rep = found->second->repr});
+          part_names.push_back(std::move(name));
+        }
+        if (parts.size() != wanted) continue;  // not every part: left as it is
+        auto f = artifact::Assemble(a.encoding, a.layout, parts, a.stacked);
+        if (!f) {
+          return Refuse(t.name, std::format("its parts do not assemble ({})",
+                                            format::FormatErrorName(f.error())));
+        }
+        if (a.experts) {
+          f->shape.ne[2] = t.count;
+          f->shape.rank = 3;
+        }
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+          if (!paired.emplace(part_names[i], std::pair{*f, parts[i].role}).second) {
+            return Refuse(part_names[i], "a part of two tensors");
+          }
+        }
+      }
+    }
+  }
+  for (const V0Tensor& t : tensors) {
+    if (t.repr == nullptr) return Refuse(t.name, "no representation");
+    auto f = artifact::FormatOf(*t.repr);
+    if (!f || (t.count != 0 && f->shape.rank > 2)) {
+      return Refuse(t.name,
+                    f ? std::string("no two-dimensional slice format")
+                      : std::format("no tensor format ({})", format::FormatErrorName(f.error())));
+    }
+    format::PartRole part = artifact::V0PartRole(*t.repr);
+    if (const auto at = paired.find(t.name); at != paired.end()) {
+      f = at->second.first;
+      part = at->second.second;
+    } else if (t.count != 0) {
+      f->shape.ne[2] = t.count;
+      f->shape.rank = 3;
+    }
+    if (t.count != 0) {
+      s.tensors.push_back({.name = t.name, .format = *f, .part = part, .experts = true});
+      continue;
+    }
+    for (const std::string& role : t.roles) {
+      s.tensors.push_back({.name = role, .format = *f, .part = part, .experts = false});
+    }
+  }
+  if (s.tensors.size() > kMaxSourceTensors) {
+    return Refuse("source", std::format("more than {} tensors", kMaxSourceTensors));
+  }
+  return s;
+}
+
+std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact,
+                                              const Mapping* mapping) {
   if (artifact.format_version() != 0) {
     // Its descriptors are empty; spec/stored.h SourceOf reads its formats.
     return Refuse(
         std::format("artifact {}", artifact.id()),
         std::format("format version {}, not 0 (read it with SourceOf)", artifact.format_version()));
   }
-  Source s;
-  s.architecture = artifact.model().architecture;
   const auto sources = artifact.sources();
   const auto all = [&](auto pred) {
     return !sources.empty() && std::ranges::all_of(sources, pred);
   };
+  std::string container = "other";
   if (all([](const artifact::Source& f) { return f.name.ends_with(".gguf"); })) {
-    s.container = "gguf";
+    container = "gguf";
   } else if (all([](const artifact::Source& f) {
                return f.name.ends_with(".safetensors") || f.name.ends_with(".json");
              })) {
-    s.container = "safetensors";
-  } else {
-    s.container = "other";
+    container = "safetensors";
   }
+  std::vector<V0Tensor> tensors;
   for (const artifact::Resource& r : artifact.resources()) {
-    auto f = artifact::FormatOf(r.repr);
-    if (!f) {
-      return Refuse(r.name,
-                    std::format("no tensor format ({})", format::FormatErrorName(f.error())));
-    }
-    for (const std::string& role : r.roles) {
-      s.tensors.push_back(
-          {.name = role, .format = *f, .part = artifact::V0PartRole(r.repr), .experts = false});
-    }
+    tensors.push_back({.name = r.name, .roles = r.roles, .repr = &r.repr, .count = 0});
   }
   for (const artifact::ExpertArray& a : artifact.expert_arrays()) {
-    auto f = artifact::FormatOf(a.repr);
-    if (!f || f->shape.rank > 2) {
-      return Refuse(a.name, "no two-dimensional slice format");
-    }
-    f->shape.ne[2] = a.count;
-    f->shape.rank = 3;
-    s.tensors.push_back(
-        {.name = a.name, .format = *f, .part = artifact::V0PartRole(a.repr), .experts = true});
+    tensors.push_back({.name = a.name, .roles = {a.name}, .repr = &a.repr, .count = a.count});
   }
-  if (s.tensors.size() > kMaxSourceTensors) {
-    return Refuse("source", std::format("more than {} tensors", kMaxSourceTensors));
-  }
-  return s;
+  return SourceOfV0Tensors(
+      artifact.model().architecture, std::move(container),
+      std::format("{} {}", artifact.converter().name, artifact.converter().version), tensors,
+      mapping);
 }
 
 std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const Source& source,
@@ -973,7 +1160,7 @@ std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const S
 std::expected<ModelSpec, std::string> SynthesizeV0(const artifact::Artifact& artifact,
                                                    const Mapping& mapping,
                                                    std::span<const SourceValue> values) {
-  auto source = SourceOfV0(artifact);
+  auto source = SourceOfV0(artifact, &mapping);
   if (!source) {
     return std::unexpected(source.error());
   }
@@ -1037,10 +1224,16 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
     if (r.kind != ReadKind::kTap) {
       continue;
     }
+    // A layer's tap is the target's last layer's.
+    const std::uint32_t tap_layer =
+        r.point == TapPoint::kPostFinalNorm || target_stage.layers.empty()
+            ? 0
+            : static_cast<std::uint32_t>(target_stage.layers.size() - 1);
     const auto tap = std::ranges::find(target_stage.taps, r.name, &FeatureTap::name);
     if (tap == target_stage.taps.end()) {
-      target_stage.taps.push_back({.name = std::string(r.name), .layer = 0, .point = r.point});
-    } else if (tap->point != r.point || tap->layer != 0) {
+      target_stage.taps.push_back(
+          {.name = std::string(r.name), .layer = tap_layer, .point = r.point});
+    } else if (tap->point != r.point || tap->layer != tap_layer) {
       return Refuse(where,
                     std::format("the target's tap {} is not the one the drafter reads", r.name));
     }
@@ -1060,7 +1253,7 @@ std::expected<ModelSpec, std::string> ComposeDrafterV0(const ModelSpec& target,
                                                        const artifact::Artifact& artifact,
                                                        const Mapping& drafter,
                                                        std::span<const SourceValue> values) {
-  auto source = SourceOfV0(artifact);
+  auto source = SourceOfV0(artifact, &drafter);
   if (!source) {
     return std::unexpected(source.error());
   }

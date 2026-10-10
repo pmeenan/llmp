@@ -164,7 +164,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     auto synthesized = spec::SynthesizeV0(*artifact, *mapping, *values);
     if (!synthesized) return Error(synthesized.error());
     hold->spec = std::move(*synthesized);
-    auto source = spec::SourceOfV0(*artifact);
+    auto source = spec::SourceOfV0(*artifact, mapping);
     if (!source) return Error(source.error());
     hold->source = std::move(*source);
     if (auto valid = components::ValidateSpec(hold->spec, hold->source.tensors); !valid) {
