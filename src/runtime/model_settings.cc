@@ -257,7 +257,7 @@ std::uint32_t RunnerContextCeiling(std::string_view architecture) {
   }
   if (architecture == "gemma4") return model::kGemma4Context;
   if (architecture == "gemma3") return 8448;
-  if (architecture == "gemma2") return model::kGemma2Context;
+  if (architecture == "gemma2") return model::Gemma2_2B().context;
   return 0;
 }
 

@@ -54,7 +54,7 @@ target_link_libraries(llmp_fake_device_backend INTERFACE llmp_fake_device_runtim
 if(LLMP_CUDA)
   add_library(llmp_engine STATIC planned.cc graph_runs.cc runner_resources.cc expert_slab.cc
                                    live_state_launch.cc
-                                   dsv4_plan.cc dsv4_runner.cc gemma2_plan.cc gemma2_runner.cc gemma3_plan.cc gemma3_runner.cc gemma4_plan.cc gemma4_runner.cc qwen38_plan.cc qwen38_wave_plan.cc
+                                   dsv4_plan.cc dsv4_runner.cc gemma4_plan.cc gemma4_runner.cc qwen38_plan.cc qwen38_wave_plan.cc
                                    qwen38_runner.cc qwen_image_runner.cc)
   target_include_directories(llmp_engine PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_sources(llmp_engine PRIVATE gemma4_assistant_plan.cc gemma4_assistant.cc)

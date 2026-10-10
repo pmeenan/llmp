@@ -29,6 +29,17 @@ StepFailure Failure(const KernelFailure& f) {
           .detail = f.detail};
 }
 
+// The launch context queues on its own stream, never the one a caller
+// names: a runner's job on another stream would not fence its work.
+std::expected<void, StepFailure> SameStream(const LaunchContext& context,
+                                            providers::NativeStream stream) {
+  if (stream.handle != context.native_stream().handle) {
+    return std::unexpected(
+        StepFailure{.detail = "the step's stream is not its backend's (the runner's job stream)"});
+  }
+  return {};
+}
+
 // What a planned step holds on the host besides its arena (engine/planned.h
 // kPlanNodeHostBytes: the plan's steps, the activations' places and the
 // bound launches, an upper bound a node measured on GB10).
@@ -104,10 +115,11 @@ class GgmlStepProgram final : public StepProgram {
   }
 
   std::expected<void, StepFailure> Run(StepLaunch& launch,
-                                       providers::NativeStream /*stream*/) const override {
+                                       providers::NativeStream stream) const override {
     if (!bound_ || &launch != *launch_) {
       return std::unexpected(StepFailure{.detail = "the step is not bound to this launch"});
     }
+    if (auto same = SameStream((*launch_)->context(), stream); !same) return same;
     if (auto ran = bound_->Run((*launch_)->context()); !ran) {
       return std::unexpected(Failure(ran.error()));
     }
@@ -126,7 +138,8 @@ class GgmlStepProgram final : public StepProgram {
 }  // namespace
 
 std::expected<std::unique_ptr<Recorded>, StepFailure> GgmlStepLaunch::Capture(
-    providers::NativeStream /*stream*/, const Body& body) {
+    providers::NativeStream stream, const Body& body) {
+  if (auto same = SameStream(*launch_, stream); !same) return std::unexpected(same.error());
   auto captured = launch_->Capture([&](LaunchContext&) -> std::expected<void, KernelFailure> {
     auto recorded = body();
     if (!recorded) {
@@ -141,8 +154,9 @@ std::expected<std::unique_ptr<Recorded>, StepFailure> GgmlStepLaunch::Capture(
   return std::make_unique<GgmlRecorded>(this, std::move(*captured));
 }
 
-std::expected<void, StepFailure> GgmlStepLaunch::Launch(providers::NativeStream /*stream*/,
+std::expected<void, StepFailure> GgmlStepLaunch::Launch(providers::NativeStream stream,
                                                         const Recorded& recorded) {
+  if (auto same = SameStream(*launch_, stream); !same) return same;
   if (recorded.owner() != this) {
     return std::unexpected(StepFailure{.detail = "another launch's recording"});
   }
@@ -194,6 +208,12 @@ kernels::StepBackend GgmlBackend::Backend() {
               },
           .written = &WrittenBytes,
           .lower = [this](const kernels::LowerInput& input) { return Lower(input); }};
+}
+
+std::expected<void, std::string> GgmlBackend::LendCublas(CublasHandle* cublas) {
+  if (launch_ != nullptr) return std::unexpected("the backend's launch was made already");
+  cublas_ = cublas;
+  return {};
 }
 
 std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> GgmlBackend::Launch(

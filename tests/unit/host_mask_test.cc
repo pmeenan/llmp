@@ -14,8 +14,6 @@
 #include <vector>
 
 #include "model/dsv4.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "model/qwen38.h"
 
@@ -113,8 +111,6 @@ void GemmaOracle(const Profile& profile, StateBuilder state_builder, ChunkBuilde
 }
 
 TEST(HostMaskTest, AllGemmaBuildersMatchCompleteOldGlobalAndWindowMasks) {
-  GemmaOracle<md::Gemma2Segment>(md::Gemma2_2B(), md::Gemma2State, md::Gemma2Chunk);
-  GemmaOracle<md::Gemma3Segment>(md::Gemma3_4BQat(), md::Gemma3State, md::Gemma3Chunk);
   GemmaOracle<md::Gemma4Segment>(
       md::Gemma4_26BA4B(), md::Gemma4State,
       [](const auto& p, const auto& state, auto segments, bool masks, auto align, auto) {

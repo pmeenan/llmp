@@ -66,7 +66,7 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
 | Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
-| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, a verify's Accept, discard and settle among them, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); not yet used by the family runners | The stages' contracts and read alignments, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
+| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, a verify's Accept, discard and settle among them, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); the model runner's, so Gemma 2's and Gemma 3's (the other families' runners move to it as they migrate) | The stages' contracts and read alignments, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
 
 Startup measurement can skip greedy activation placement when a checked
 disjoint root-storage bound fits the current exact maximum. Gemma2/3,
@@ -271,8 +271,8 @@ verify row with the scratch every rejection restores: `ChunkWrites`,
 `WritesFor`, below), the ranges later positions may overwrite
 (`CheckpointWrites`), its D-068 representations and `KeptLayoutId`
 (`llmp-state-v2:` and the SHA-256 of the spec's digest and every stage's
-layout). Contracts equivalent to today's reproduce Gemma2's and Gemma3's
-layouts, used state and chunk writes, Qwen3.8's (and its MTP region's)
+layout). Contracts reproduce Gemma's closed-form layouts, used state and chunk
+writes (the M3 Gemma 2 and Gemma 3 layouts', deleted in G1d), Qwen3.8's (and its MTP region's)
 layout, used state and checkpoint writes, DeepSeek V4's in both window
 modes and DSpark's ring byte for byte, and the saves of Qwen3.8's,
 DeepSeek V4's and DSpark's verifies (`state_contract_test`). The IDs are new: kept state
@@ -386,10 +386,11 @@ backend (`kernels/ggml/step_program.h` `GgmlBackend`) gives the registry
 with its capabilities, the device's architecture, the lowering of
 [engine-components.md](engine-components.md#the-graph-ir) and the step
 launch the runner makes at Bind. Over it the runner runs Gemma 2 and Gemma
-3 steps of two owners bit for bit as today's runners under the full
-serving recipe (`component_runner_gpu_test`: owner decode and prefill,
-bounded roots, the narrowed final layer, ring wrap, logits and greedy
-heads); the serving wiring is G1c's.
+3 steps of two owners under the full serving recipe (`component_runner_gpu_test`:
+owner decode and prefill, bounded roots, the narrowed final layer, ring wrap,
+logits and greedy heads, finite and exact from one runner to the next; they
+were bit for bit the M3 runners', deleted after the gate); serving runs Gemma 2 and Gemma 3 on it
+([the serving adapter](#the-serving-adapter)).
 
 **Planner types** (`planner/step_shape.h`, header-only; the planner,
 `planner/plan.h`, plans a step's graph and makes its key,
@@ -627,11 +628,26 @@ step returns its tokens chosen on the device, and the prefill futures'
 options, and what the source and launch borrow (`keep`: the spec, the
 artifact's tensors, the kernel source's backend), released after the
 runner. Serving's build (`serving.cc`) synthesizes the spec from the v0
-artifact, takes the stage's layout and batching from the components, and
-makes a `ComponentStepSource` over a `GgmlBackend` created on the model's
-own stream (one backend per runner, its launch made once at Bind); Gemma 2
-and Gemma 3 have it so far, their migration finalizing the policy, cuBLAS
-and device greedy choice. The tests' build is the fake's. At Setup the adapter makes
+artifact, takes the stage's layout (each state tensor on its own paged
+extents, as the M3 layouts: packed tensors straddle extents, so a prompt
+would grow its state at staggered positions every chunk or two, each
+growth a host cost between steps) and batching from the components, and
+makes a `ComponentStepSource` planned under the architecture mapping's
+policy over a `GgmlBackend` created on the model's own stream (the
+runner's job stream, which every launch checks; one backend per runner,
+its launch made once at Bind). The head's logit width is the spec head's
+vocabulary (its logits' width); a greedy step returns each owner's token
+chosen on the device. cuBLAS gets the workspace the runner maps for it
+(`RunnerConfig::kernel_memory`: mapped and charged at Setup as the
+runner's own memory, before any measurement, in every closure; the
+handle made by `prepare` over it and lent to the backend's launch, and
+retired at Release after the launch, before the memory), as
+`RunnerResources` does for the M3 runners. Its setup shapes are a
+prompt chunk and a decode row, joined and alone, with logits and with
+device tokens, at the end of the context reading all of it. Gemma 2 and
+Gemma 3 have it and are served by it since their migration;
+any other architecture, or a drafter, is refused at Setup. The tests'
+build is the fake's. At Setup the adapter makes
 the `ModelRunner` (owner and stream its registration index; its slots
 named after the model, `max_slots` of them, spilling to the spill role or
 the kept places the server sets before Register), a `WaveComposer` over
@@ -644,13 +660,13 @@ How `Llm`'s units map:
 | `Llm` | The shared runner |
 | --- | --- |
 | A branch | The request slot of its index (`SelectBranches` → `SelectSlots`) |
-| `RunPrefillChunkFor`, `RunPreparedPrefillWave` | Prefill `PendingWork` a unit through `RunWave`, joined by the composer; the last row's head as F32 logits (none for a state-only cut); the sessions' `PrefillHint`s composed as the step's two futures, under the parts' lookahead, capture-ahead and prepare-ahead |
+| `RunPrefillChunkFor`, `RunPreparedPrefillWave` | Prefill `PendingWork` a unit through `RunWave`, joined by the composer; the last row's head as F32 logits (none for a state-only cut); the sessions' `PrefillHint`s composed as the step's two futures (the next chunks joined where `CompatiblePrefill` would join them; when they step apart, as a prompt's shorter last chunk does, the first two of those steps), under the parts' lookahead, capture-ahead and prepare-ahead |
 | `RunChunkFor` | One row after the state: the plain mode's decode row (a scorer's, a generation's); more: prefill steps of the model's chunk |
-| `RunGreedyChunkFor`, a greedy plain wave | The plain mode's greedy rows: one I32 a segment in the step's joined output (only where the parts say the step returns it) |
+| `RunGreedyChunkFor`, a greedy plain wave | The plain mode's greedy rows: one I32, the segment's own output (only where the parts say the step returns it) |
 | `SpecStepFor`, a speculative wave | The speculative mode's unit: drafts from each drafter's rows (their argmax), one verify, the verdict by `Llm::Keep`/`Choose` (greedy agreement, or speculative sampling seeded by position); a refused or failed unit keeps its prefix when the state is usable (the verify was undone whole) |
 | `PrepareDecodeStateFor`, `PreparePrefillStateFor` | `ReserveStateThrough` through a verify's rows or the chunk, so a capacity refusal comes before dispatch (`StateRefusedFor`) |
 | `SettleFor`, clear, idle clear, spill, restore, copies | The slot lifecycle's verbs |
-| Checkpoint ranges, restores, adoption | `CheckpointRanges` at the committed positions; `ValidateFootprint`, `PrepareRestore` against `KeptLayoutId`, `CompleteRestore`; `Adopt` with the layout ID; the cursor is the committed positions |
+| Checkpoint ranges, restores, adoption | `CheckpointRanges` at the committed positions; `ValidateFootprint`, `PrepareRestore` against `KeptLayoutId` (the restored state's: a turn checkpoint keeps the layout it was saved or adopted under), `CompleteRestore`; `Adopt` with the kept record's layout ID, which the lifecycle holds against its own; the cursor is the committed positions |
 | `CheckPlaces`, `RecoverInPlace`, reclaim, graphs | The lifecycle's place check and recovery (records of discarded slots removed first, their conversations forgotten); the runner's plans |
 | Kept state (D-105) | Record version 2 (D-112): a spill file a stage, `KeptRegions`/`KeptLayouts` a stage each |
 
@@ -673,7 +689,10 @@ costs acceptance only), and the adaptive wave form
 the importer, plus any component its shape still lacks
 ([engine-components.md](engine-components.md)); no family gets a runner of
 its own, and the guidance below describes the M3/M3.5 runners until they
-move.* Start from the [optimization inventory's catalog](optimization-inventory.md#transfers-and-gaps):
+move. Gemma 2's and Gemma 3's are gone (slice G1d: `engine/gemma{2,3}_
+{runner,plan}.*`, `kernels/ggml/gemma{2,3}_graph.*`, the serving classes);
+their paragraphs below stay as the record of the techniques the shared
+engine carries for them, and name files that no longer exist.* Start from the [optimization inventory's catalog](optimization-inventory.md#transfers-and-gaps):
 a new runner adopts each technique there whose contract it meets before the
 family's speed is compared with its reference. Shared mechanisms (graph
 capture policy, held direct steps, state reuse across Clear, the pager's

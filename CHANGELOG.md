@@ -27,8 +27,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   M3 serving classes keep writing version 1; a record of the version a
   model does not write is refused and its conversation prefilled again,
   never migrated. One serving adapter per pipeline kind (LLM, image) over
-  the shared runner backs a model once its family's migration enables it;
-  no family is served by it yet.
+  the shared runner backs a model once its family's migration enables it
+  (Gemma 2 and Gemma 3 first, below).
 
 - Serve the approved Gemma2 2B Q8_0 artifact through bounded chat/literal
   completions at context<=8192 and up to two owners. Compatible prefill and
@@ -563,6 +563,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Gemma 2 and Gemma 3 are served by the shared engine (D-107): one model
+  runner over their components' steps, planned under each architecture
+  mapping's policy and lowered onto the same GGML kernels in the same
+  order, so their replies and scores are unchanged. Their conversations
+  are kept across a restart in record version 2 (D-112): a conversation
+  the previous build kept for either model (version 1) is refused once at
+  the first start, its files discarded, and its next turn prefilled again.
+  Their turn checkpoints are now saved past about 1K tokens (the M3
+  classes' saves failed there), so a later prompt that diverges after a
+  turn's boundary restores it instead of prefilling the whole prompt.
 - The directories and files the runtime keeps conversations and calibration
   records in are no longer refused for their owner, modes or links (D-105
   and D-103 as amended on 2026-10-09). What the runtime creates is still
@@ -1032,6 +1042,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   of the VAE's convolutions (still within the bounds of diffusers' image).
 
 ### Removed
+
+- The internal Gemma 2 and Gemma 3 diagnostics of `ServingOptions`
+  (`gemma2_*`/`gemma3_*`: owner and flexible owner prefill, shared Q8,
+  prefill lookahead, capture ahead, prepared state and host masks, and the
+  `component_engine` set; the settings hook `gemma3_trained_max` stays) go
+  with the M3 classes they controlled, deleted now that both models serve
+  on the shared engine (D-107); absent from the configuration and the
+  command line, they affect no setting. The internal
+  `llmp_gemma2_probe`, `llmp_gemma3_probe` and the other Gemma 2 and Gemma 3
+  runner probes built on those classes are gone with them.
 
 - The temporary complete ds4 prefill reference (the `llmp_ds4_complete`
   benchmark and its original cache, HC/norm, compressor, repack, product,

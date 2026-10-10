@@ -32,6 +32,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -127,6 +128,7 @@ class SlotLifecycleTest : public ::testing::Test {
   bool running_ = false;
 
   virtual std::uint64_t BudgetExtents() const { return 48; }
+  virtual std::vector<en::StageState> MakeStages() const { return Stages(); }
   en::SlotLifecycle& slots() { return runner_->slots; }
 
   void SetUp() override {
@@ -138,7 +140,7 @@ class SlotLifecycleTest : public ::testing::Test {
     fixed_ = node_.catalog().OccupancyOf(node_.domain()).Total().value();
     en::SlotLifecycleOptions options{.model = "Test",
                                      .slots = 3,
-                                     .stages = Stages(),
+                                     .stages = MakeStages(),
                                      .spec = {},
                                      .read_align = 256,
                                      .spill_place = {},
@@ -156,7 +158,7 @@ class SlotLifecycleTest : public ::testing::Test {
     auto dir = llmp::platform::OpenPrivateDirectory(-1, kept_.c_str());
     ASSERT_TRUE(dir.has_value());
     kept_dir_ = *dir;
-    const auto stages = Stages();
+    const auto stages = MakeStages();
     for (std::uint32_t s = 0; s < stages.size(); ++s) {
       auto file =
           llmp::platform::OpenPrivateFile(kept_dir_, std::format("stage-{}", s).c_str(),
@@ -1037,6 +1039,86 @@ TEST_F(SlotLifecycleTest, ServingSequencesAroundAnAcceptStayOpen) {
   EXPECT_TRUE(All(1, fixed, 0xBB));
   const std::array<Range, 1> early = {Range{.region = 0, .offset = 0, .bytes = 300 * 8192}};
   EXPECT_TRUE(All(1, early, 0xC3));
+}
+
+// A Gemma-like target: per layer a K and a V cache, a global one a cell a
+// position and a local one a ring (window 4,096, chunk 128: 4,352 cells),
+// at a context of 8,192 and 2 KiB a cell, so that every tensor spans
+// several extents.
+class GemmaFootprintTest : public SlotLifecycleTest {
+ protected:
+  static constexpr std::uint32_t kGemmaContext = 8192, kRows = 128, kWindow = 4096;
+  std::vector<en::StageState> MakeStages() const override {
+    using C = md::StateTensorContract;
+    const auto kv = [](const char* name, bool local) {
+      return C{.name = name,
+               .kind = local ? md::StateKind::kRing : md::StateKind::kKv,
+               .encoding = md::Encoding::kF16,
+               .cell_bytes = 2048,
+               .cells = local ? md::CellRule::kRing : md::CellRule::kPerPosition,
+               .window_or_ratio = local ? kWindow : 0,
+               .rollback = local ? md::Rollback::kNone : md::Rollback::kTruncate};
+    };
+    const std::vector<std::pair<std::uint32_t, md::StateContract>> layers = {
+        {0, {.tensors = {kv("k", true), kv("v", true)}}},
+        {1, {.tensors = {kv("k", false), kv("v", false)}}}};
+    std::vector<en::StageState> out;
+    out.push_back(
+        {.name = "target", .layout = md::Layout(layers, kGemmaContext, kRows, kExtent).value()});
+    return out;
+  }
+  // The whole extents of the stage's layout that `positions` positions read.
+  std::vector<Range> Footprint(std::uint32_t positions) const {
+    const auto layout = MakeStages().front().layout;
+    std::vector<Range> out;
+    for (const auto& r : md::UsedThrough(layout, positions, 256).value()) {
+      if (r.bytes == 0) continue;
+      for (std::uint64_t e = r.offset / kExtent; e <= (r.offset + r.bytes - 1) / kExtent; ++e) {
+        out.push_back({0, e * kExtent, std::min(kExtent, layout.bytes - (e * kExtent))});
+      }
+    }
+    std::ranges::sort(out, {}, &Range::offset);
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](const Range& a, const Range& b) { return a.offset == b.offset; }),
+              out.end());
+    return out;
+  }
+};
+
+// A restored footprint must be an ordered set of whole extents that funds
+// what the completed positions read, at the ring's and the context's
+// boundaries (Gemma's local layers' ring wraps at 4,352 cells).
+TEST_F(GemmaFootprintTest, ARestoredFootprintIsOrderedWholeExtentsAtTheRingAndContextBoundaries) {
+  for (const std::uint32_t positions : {1U, 4096U, 4224U, 4353U, 8192U}) {
+    SCOPED_TRACE(positions);
+    const auto footprint = Footprint(positions);
+    ASSERT_FALSE(footprint.empty());
+    ASSERT_TRUE(slots().ValidateFootprint(positions, footprint));
+    auto bad = footprint;
+    bad.pop_back();
+    EXPECT_FALSE(slots().ValidateFootprint(positions, bad));  // unfunded
+    bad = footprint;
+    ++bad[0].offset;
+    EXPECT_FALSE(slots().ValidateFootprint(positions, bad));  // not an extent
+    bad = footprint;
+    --bad[0].bytes;
+    EXPECT_FALSE(slots().ValidateFootprint(positions, bad));  // not a whole one
+    bad = footprint;
+    bad[0].region = 1;
+    EXPECT_FALSE(slots().ValidateFootprint(positions, bad));  // no such stage
+    bad = footprint;
+    bad.push_back(bad.back());
+    EXPECT_FALSE(slots().ValidateFootprint(positions, bad));  // repeated
+    bad = footprint;
+    std::ranges::reverse(bad);
+    EXPECT_FALSE(slots().ValidateFootprint(positions, bad));  // out of order
+    bad = footprint;
+    bad.back().offset = std::numeric_limits<std::uint64_t>::max();
+    EXPECT_FALSE(slots().ValidateFootprint(positions, bad));                // past the layout
+    EXPECT_FALSE(slots().ValidateFootprint(0, footprint));                  // backing for nothing
+    EXPECT_FALSE(slots().ValidateFootprint(kGemmaContext + 1, footprint));  // past the context
+  }
+  EXPECT_TRUE(slots().ValidateFootprint(0, {}));
 }
 
 class LowCapacitySlotTest : public SlotLifecycleTest {

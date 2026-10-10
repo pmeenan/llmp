@@ -262,6 +262,7 @@ class EngineLlmTest : public ::testing::Test {
     const std::uint64_t fixed = node_->catalog().OccupancyOf(node_->domain()).Total().value();
     llm_ = std::make_unique<rt::EngineLlm>(*node_, entry_, Settings(speculate), roles_, 0,
                                            Build(drafters));
+    llm_->set_turn_checkpoints(save_checkpoints_);
     auto set = llm_->Setup();
     ASSERT_TRUE(set) << Why(set);
     ASSERT_TRUE(
@@ -343,6 +344,7 @@ class EngineLlmTest : public ::testing::Test {
   std::unique_ptr<en::PagedNode> node_;
   std::unique_ptr<rt::EngineLlm> llm_;
   ts::FakeStepSource* source_ = nullptr;
+  bool save_checkpoints_ = true;  // Llm::set_turn_checkpoints at Start
 };
 
 // Prompts in chunks (state-only cuts, the last headed) and plain decoding,
@@ -433,6 +435,110 @@ TEST_F(EngineLlmTest, PromptAndGenerationWavesJoinTheSlots) {
   }
   Close();
   EXPECT_GE(llm_->counts().joined_waves, 1U);
+}
+
+// A joined prompt step whose owners' last chunks differ in rows (they step
+// apart) builds both of those steps while it runs, so neither is planned
+// on its own first run; the prompts still end on the chain.
+TEST_F(EngineLlmTest, UnequalLastChunksAreBuiltAhead) {
+  Start(false, false);
+  const std::array<std::vector<std::int32_t>, 2> prompts = {Prompt(kChunk + 20, 3),
+                                                            Prompt(kChunk + 40, 17)};
+  rt::Llm::Branch& a = BranchAt(0);
+  rt::Llm::Branch& b = BranchAt(1);
+  Open({&a, &b});
+  std::array<std::unique_ptr<rt::Llm::PromptSession>, 2> sessions;
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto begun = BranchAt(i).BeginPrompt(prompts[i]);
+    ASSERT_TRUE(begun.has_value()) << begun.error();
+    sessions[i] = std::move(*begun);
+    while (!sessions[i]->done() && sessions[i]->NextUnit().has_value() &&
+           sessions[i]->NextUnit()->phase != rt::Llm::PromptSession::Phase::kChunk) {
+      auto advanced = sessions[i]->Advance();
+      ASSERT_TRUE(advanced) << Why(advanced);
+    }
+  }
+  const std::uint64_t before = llm_->runner().lookahead_stats().built;
+  // The first chunks joined; then each prompt's last chunk alone.
+  const std::array<rt::Llm::PromptSession*, 2> both = {sessions[0].get(), sessions[1].get()};
+  const std::array<rt::PrefillGoOn, 2> go_on{};
+  auto ran = llm_->RunPromptWave(both, go_on);
+  ASSERT_TRUE(ran) << Why(ran);
+  EXPECT_EQ(llm_->counts().joined_prefill_steps, 1U);
+  EXPECT_EQ(llm_->runner().lookahead_stats().built - before, 2U);
+  const std::size_t built = source_->built().size();
+  for (auto& session : sessions) {
+    while (!session->done()) {
+      auto advanced = session->Advance();
+      ASSERT_TRUE(advanced) << Why(advanced);
+    }
+  }
+  // Nothing more was built: both last chunks ran on plans built ahead.
+  EXPECT_EQ(source_->built().size(), built);
+  for (std::size_t i = 0; i < 2; ++i) {
+    EXPECT_EQ(ArgmaxOf(sessions[i]->last()), Chain(prompts[i], 1).front()) << i;
+    auto finished = sessions[i]->Finish();
+    ASSERT_TRUE(finished) << Why(finished);
+  }
+  Close();
+}
+
+// A joined prompt wave ran with both owners' next chunks predicted (built,
+// captured and their state prepared ahead); then the first owner's
+// callback stops it. Its peer runs on alone and ends on its chain; the
+// stopped owner keeps the prefix its completed chunk wrote (an abandoned
+// prediction leaves no pending preparation), and its next turn reuses that
+// prefix and follows its own chain.
+TEST_F(EngineLlmTest, AStoppedOwnerKeepsItsCompletedPrefixAndItsPeerRunsOn) {
+  Start(false, false);
+  const std::array<std::vector<std::int32_t>, 2> prompts = {Prompt(3 * kChunk, 5),
+                                                            Prompt(3 * kChunk, 23)};
+  rt::Llm::Branch& a = BranchAt(0);
+  rt::Llm::Branch& b = BranchAt(1);
+  Open({&a, &b});
+  std::array<std::unique_ptr<rt::Llm::PromptSession>, 2> sessions;
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto begun = BranchAt(i).BeginPrompt(prompts[i]);
+    ASSERT_TRUE(begun.has_value()) << begun.error();
+    sessions[i] = std::move(*begun);
+    while (!sessions[i]->done() && sessions[i]->NextUnit().has_value() &&
+           sessions[i]->NextUnit()->phase != rt::Llm::PromptSession::Phase::kChunk) {
+      auto advanced = sessions[i]->Advance();
+      ASSERT_TRUE(advanced) << Why(advanced);
+    }
+  }
+  const std::array<rt::Llm::PromptSession*, 2> both = {sessions[0].get(), sessions[1].get()};
+  const std::array<rt::PrefillGoOn, 2> go_on{};
+  auto ran = llm_->RunPromptWave(both, go_on);
+  ASSERT_TRUE(ran) << Why(ran);
+  EXPECT_EQ(llm_->counts().joined_prefill_steps, 1U);
+  EXPECT_GE(llm_->runner().lookahead_stats().built, 1U);
+  ASSERT_EQ(a.history().size(), kChunk);
+  const std::array<rt::PrefillGoOn, 2> stop_first = {[](std::uint32_t) { return false; },
+                                                     rt::PrefillGoOn{}};
+  ran = llm_->RunPromptWave(both, stop_first);
+  ASSERT_TRUE(ran) << Why(ran);
+  EXPECT_TRUE(sessions[0]->done());
+  EXPECT_FALSE(node_->has_pending_state_preparation());
+  auto finished = sessions[0]->Finish();
+  ASSERT_TRUE(finished) << Why(finished);
+  EXPECT_EQ(a.history(),
+            std::vector<std::int32_t>(prompts[0].begin(), prompts[0].begin() + kChunk));
+  while (!sessions[1]->done()) {
+    const std::array<rt::Llm::PromptSession*, 1> alone = {sessions[1].get()};
+    const std::array<rt::PrefillGoOn, 1> on{};
+    ran = llm_->RunPromptWave(alone, on);
+    ASSERT_TRUE(ran) << Why(ran);
+  }
+  EXPECT_EQ(ArgmaxOf(sessions[1]->last()), Chain(prompts[1], 1).front());
+  finished = sessions[1]->Finish();
+  ASSERT_TRUE(finished) << Why(finished);
+  EXPECT_EQ(b.history(), prompts[1]);
+  EXPECT_FALSE(node_->has_pending_state_preparation());
+  Close();
+  const Turned next = Turn(0, prompts[0], 6);
+  EXPECT_EQ(next.reused, kChunk);
+  EXPECT_EQ(next.out.tokens, Chain(prompts[0], 6));
 }
 
 // Speculation with two drafters in a cascade: the MTP-like drafter's two
@@ -539,6 +645,46 @@ TEST_F(EngineLlmTest, ATurnCheckpointRestoresItsPrefix) {
   const Turned second = Turn(0, diverged, 10);
   EXPECT_EQ(second.reused, 200U);
   EXPECT_EQ(second.out.tokens, Chain(diverged, 10));
+}
+
+// The speed gate's diagnostic (ServingOptions::diagnostic_skip_turn_
+// checkpoints): the turn saves no checkpoint and is otherwise the same (its
+// tokens and the steps it ran); a later divergent prompt then has none to
+// restore and prefills, with the same reply.
+TEST_F(EngineLlmTest, TheGateDiagnosticSkipsOnlyTheTurnCheckpointSave) {
+  const auto prompt = Prompt(300, 4);
+  std::vector<std::int32_t> diverged(prompt.begin(), prompt.begin() + 250);
+  const auto tail = Prompt(30, 11);
+  diverged.insert(diverged.end(), tail.begin(), tail.end());
+  struct Seen {
+    std::vector<std::int32_t> tokens;
+    std::uint64_t queued = 0, executed = 0;
+    std::size_t checkpoints = 0;
+    std::uint32_t reused = 0;
+  };
+  std::array<Seen, 2> seen;
+  for (const bool save : {true, false}) {
+    save_checkpoints_ = save;
+    Start(false, false);
+    Seen& s = seen.at(save ? 0 : 1);
+    const Turned first = Turn(0, prompt, 8, false, /*boundary=*/200);
+    s.tokens = first.out.tokens;
+    s.queued = source_->queued();
+    s.executed = source_->executed();
+    s.checkpoints = BranchAt(0).turn_checkpoints();
+    const Turned second = Turn(0, diverged, 10);
+    EXPECT_EQ(second.out.tokens, Chain(diverged, 10));
+    s.reused = second.reused;
+    Stop();
+  }
+  EXPECT_EQ(seen[0].tokens, Chain(prompt, 8));
+  EXPECT_EQ(seen[1].tokens, seen[0].tokens);
+  EXPECT_EQ(seen[1].queued, seen[0].queued);
+  EXPECT_EQ(seen[1].executed, seen[0].executed);
+  EXPECT_EQ(seen[0].checkpoints, 1U);
+  EXPECT_EQ(seen[1].checkpoints, 0U);
+  EXPECT_EQ(seen[0].reused, 200U);
+  EXPECT_EQ(seen[1].reused, 0U);
 }
 
 // D-102's rung 2: a step that failed after it queued its work faults the

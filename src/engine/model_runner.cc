@@ -7,7 +7,9 @@
 #include <chrono>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include "components/step.h"
 #include "engine/prefill_lookahead.h"
@@ -287,6 +289,20 @@ Status ModelRunner::Setup() {
     if (auto reserved = w.weights->Reserve(node_, w.places, w.slabs); !reserved) return reserved;
   }
   if (auto snapshots = SetupSnapshots(); !snapshots) return snapshots;
+  // The kernels' own memory, then what uses it, before any measurement.
+  std::vector<std::uint64_t> bases;
+  for (const RunnerConfig::KernelMemory& k : config_.kernel_memory) {
+    auto& mapped = kernel_mapped_.emplace_back(std::make_unique<Mapped>());
+    if (auto r = memory_.Map(*mapped, k.name, k.bytes, catalog::MemoryClass::kRuntime); !r) {
+      return r;
+    }
+    bases.push_back(mapped->base);
+  }
+  if (config_.prepare) {
+    // Retired at Release even when it fails part way (what it made goes).
+    prepared_ = true;
+    if (auto prepared = config_.prepare(bases); !prepared) return Error(prepared.error());
+  }
   std::uint64_t activations = 0, pool = 0, inputs = 0, outputs = 0;
   for (const pl::StepShape& shape : config_.setup_shapes) {
     if (auto checked = CheckShape(shape); !checked) {
@@ -424,6 +440,8 @@ Status ModelRunner::Release() {
   // The recordings name the launch and the memory: they go first (D-090).
   DropPlans();
   launch_.reset();
+  // What used the kernels' memory goes before it.
+  if (prepared_ && config_.retire) config_.retire();
   std::vector<std::string> problems;
   memory_.ReleaseMappings(problems);
   slots_.Release(node_.memory(), problems);

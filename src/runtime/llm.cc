@@ -911,12 +911,15 @@ Status Llm::Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_char
          .file = std::move(*file),
          .footprint = LiveRanges(c.footprint),
          .cursor = c.cursor,
-         .decoding = depth->WithCost(cost)});
+         .decoding = depth->WithCost(cost),
+         .layout = record.identity.layout});
     if (const auto named = kept::ParseFileName(c.file); named) {
       checkpoint_serial_ = std::max(checkpoint_serial_, named->serial + 1);
     }
   }
-  if (auto adopted = AdoptPositionFor(branch, record.tokens, record.cursor, used); !adopted) {
+  if (auto adopted =
+          AdoptPositionFor(branch, record.tokens, record.cursor, used, record.identity.layout);
+      !adopted) {
     return refused(adopted.error());
   }
   ReleaseTokens(branch.history_, branch.history_charge_);
@@ -1291,6 +1294,9 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
   if (!ranges) {
     return std::unexpected(ranges.error());
   }
+  if (!turn_checkpoints_) {
+    return {};  // the speed gate's diagnostic: no save, as the M3 Gemma classes'
+  }
   const engine::CheckpointFile::Continue progress =
       go_on ? engine::CheckpointFile::Continue([&]() { return go_on(0); })
             : engine::CheckpointFile::Continue{};
@@ -1325,7 +1331,8 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
                             .file = std::move(*file),
                             .footprint = UsedStateRangesFor(branch),
                             .cursor = CursorFor(branch),
-                            .decoding = TurnDecodingStateFor(branch)};
+                            .decoding = TurnDecodingStateFor(branch),
+                            .layout = KeptLayout()};
   branch.turn_checkpoints_.push_back(std::move(checkpoint));
   if (branch.turn_checkpoints_.size() > kTurnCheckpointLimit) {
     branch.turn_checkpoints_.erase(branch.turn_checkpoints_.begin());
@@ -1410,7 +1417,8 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
   auto restored = checkpoint.file.Restore(
       *node_,
       [&]() {
-        return PreparePositionRestoreFor(branch, position, restored_cursor, checkpoint.footprint);
+        return PreparePositionRestoreFor(branch, position, restored_cursor, checkpoint.footprint,
+                                         checkpoint.layout);
       },
       [&](void* host, std::span<const engine::LiveState::Range> page) {
         return CopyCheckpointStateFor(branch, host, page, false);

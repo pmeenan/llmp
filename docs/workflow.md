@@ -134,7 +134,7 @@ downgrade a heavy-path change to the light loop on their own.
   tokenizer and chat (`ChatTokens|ChatCorpus|Vocabularies|Nfc|ChatAssets|Agreement`),
   importer and formats (`Import|SpecModels|Exl3Trellis|DecodeProof`),
   Gemma 2/3 engine and serving
-  (`Gemma2|Gemma3|GemmaPrefill|GemmaJoined|ComponentRunner|ComponentsModels|PlainTokens`),
+  (`Gemma2|Gemma3|GemmaEngine|GemmaJoined|ComponentRunner|ComponentsModels|PlainTokens`),
   Gemma 4 (`Gemma4|Gemma26|Gemma31`), Qwen3.8 and DeepSeek
   (`Qwen38|Dspark|Dsv4|FourSlot`). A round that finds only low-severity
   issues fixes them without another round.

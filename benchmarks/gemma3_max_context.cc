@@ -103,22 +103,13 @@ rt::Status Run(std::span<const std::string_view> args) {
   rt::ServingOptions options;
   options.plain = true;
   options.gemma3_trained_max = true;
-  // Optional words after the input and output: device-masks; legacy (no
-  // prefill lookahead or first-run capture) or lookahead-only; repeat (one
-  // earlier timed traversal of the same prefix, then Clear: the measured
-  // pass runs on its plans and graphs); no-zero (fresh state read from the
-  // spill file's holes) and no-reserve (no handle reserve), the pager's
-  // matched controls.
+  // Optional words after the input and output: repeat (one earlier timed
+  // traversal of the same prefix, then Clear: the measured pass runs on its
+  // plans and graphs); no-zero (fresh state read from the spill file's
+  // holes) and no-reserve (no handle reserve), the pager's matched controls.
   bool repeat = false;
-  options.gemma3_device_masks = false;
   for (const auto word : args.subspan(5)) {
-    if (word == "device-masks") {
-      options.gemma3_device_masks = true;
-    } else if (word == "legacy") {
-      options.gemma3_prefill_lookahead = options.gemma3_capture_ahead = false;
-    } else if (word == "lookahead-only") {
-      options.gemma3_capture_ahead = false;
-    } else if (word == "repeat") {
+    if (word == "repeat") {
       repeat = true;
     } else if (word == "no-zero") {
       options.zero_state = false;

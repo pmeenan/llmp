@@ -200,6 +200,7 @@ its records).
 T=tools/speed_gate.py; OLD=~/.local/share/llmp/m36-baseline/1facc957/src/runtime/llmp-runtime
 python3 -B $T plan --family F --old $OLD --new NEW --out DIR > F.steps   # min_blocks of ABBA runs
 #   [--new-config NEW.toml]: the new arm's own configuration template
+#   [--new-env LLMP_DIAGNOSTIC_X=1]: a diagnostic switch for the new arm's runtime (defect 3)
 #   [--job-runs K --steps F]: F-01.steps, F-02.steps ..., K runs a job, each primed
 spark-job start --gpu --name F-ab1 --timeout 600 --steps F.steps       # one job a steps file (<= 600 s)
 python3 -B $T verdict DIR --family F                                   # PASS / FAIL / CONTINUE ...
@@ -577,6 +578,80 @@ fixed in their own change, whose diff is the fixed baseline's patch
   (`CompleteContinuationRows`). Nothing masks logit rows past the
   tokenizer: greedy and sampling choose over the whole row, as before
   ([RE-050](../../rough-edges.md#re-050-qwen38s-output-head-is-wider-than-its-tokenizerjson)).
+
+A third defect, found by the Gemma 2 and Gemma 3 migration's gate
+(2026-10-09), is not fixed in the baseline (its classes are deleted after
+that gate):
+
+3. **The M3 Gemma 2 and Gemma 3 classes never save a turn checkpoint past
+   about 1K tokens.** `Gemma2Runner::CheckpointRanges`
+   (`src/engine/gemma2_runner.cc:322`) and `Gemma3Runner::CheckpointRanges`
+   (`src/engine/gemma3_runner.cc:326`) return one range a K/V tensor over
+   all its used cells (8 MiB at a 4K window), and `CheckpointFile::Capture`
+   refuses any range over one 2 MiB page (`src/engine/checkpoint_file.cc:86`,
+   "invalid checkpoint page range"), so the save is skipped with a log
+   line and the turn goes on. The baseline's `gemma2` and `gemma3` prefill
+   therefore does less work than a runtime that saves the checkpoint (the
+   component engine copies 177–274 MiB to the host and writes it before the
+   prompt's last chunk, 28–51 ms). The gate compares equal work: those
+   families' new arm runs with the gate-only diagnostic
+   `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1` (`plan --new-env`), which
+   skips the save at the point where the baseline's failed (after the
+   branch settled and its ranges were taken). Moving the checkpoint's copy
+   off the first token's path, for every family, is separate work.
+
+## Gemma 2 and Gemma 3 on the shared engine (slice G1c)
+
+The first family through the gate: the new arm is the component engine
+(Gemma 2 and Gemma 3 served by `EngineLlm`), the old arm the frozen
+binary's M3 classes, both with the checkpoint-equal-work switch (defect 3:
+the new arm ran with `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`).
+
+**First candidate (`g1c-4bafb4f2`): Gemma 2 FAIL, Gemma 3 PASS only at 12
+blocks.** Gemma 2 failed on C2 prefill, +1.45% (lower bound +1.24%), with
+C2 wall not passed at +0.92%; Gemma 3 passed only at 12 blocks, its C2
+prefill +0.69%. The cause was host cost, not GPU time (the joined graphs
+took 32.59 against 32.72 ms each): the component layouts packed the state
+tensors at 256 B instead of one 2 MiB extent each, so a prompt's state
+crossed an extent boundary every one or two chunks and `LiveState` grew
+(about 1 to 2.5 ms each time), and the unequal last chunks of a joined
+prompt were not built ahead. The fix: each state tensor starts on its own
+paged extent (`components::StageLayout` with `kExtent`, as the M3 layouts
+did), and the lookahead builds the unequal last chunks
+([EngineLlmTest.UnequalLastChunksAreBuiltAhead](../../../tests/unit/engine_llm_test.cc)).
+
+**Passing candidate (`g1c-cd4726d1`).** Slowdown of the new arm against the
+old, with the upper bound of its interval (the limit is ln 1.01, +0.995%); a
+negative number is faster.
+
+Gemma 2, PASS at 5 blocks (peak memory +0.008 GiB):
+
+| Metric | Slowdown | Upper bound |
+|---|---|---|
+| C1 decode | -0.14% | -0.03% |
+| C1 prefill | +0.05% | +0.90% |
+| C1 wall | -0.05% | +0.26% |
+| C2 decode | +0.13% | +0.18% |
+| C2 prefill | -0.07% | +0.23% |
+| C2 wall | +0.12% | +0.25% |
+
+Gemma 3, PASS at 7 blocks (peak memory +0.019 GiB):
+
+| Metric | Slowdown | Upper bound |
+|---|---|---|
+| C1 decode | -0.22% | -0.06% |
+| C1 prefill | -0.44% | +0.07% |
+| C1 wall | -0.29% | -0.07% |
+| C2 decode | +0.41% | +0.73% |
+| C2 prefill | -0.73% | -0.09% |
+| C2 wall | +0.14% | +0.54% |
+
+The quality controls are identical to the baseline's: Gemma 2's NLL is
+3.5635004927 and Gemma 3's 3.6671293402, with the same scores and reply
+digests. Raw records stay outside Git on `spark`:
+`~/scratch/m36-gate/g1c-4bafb4f2` and `~/scratch/m36-gate/g1c-cd4726d1`
+(and `-quality`). The classes the baseline compares with were deleted with
+this gate's slice (G1d); the frozen binary keeps them.
 
 ## Provenance
 

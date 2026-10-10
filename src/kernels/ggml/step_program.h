@@ -75,10 +75,18 @@ class GgmlBackend {
   // the prepared inputs' padded rows and the lowering, for a step source.
   // The backend outlives what it gives.
   kernels::StepBackend Backend();
+  // Lends `cublas` (a handle on the backend's device and stream, which
+  // must outlive the launch) to the launch Launch makes; refused once it is
+  // made. Its plans are built the same with or without one (only running a
+  // cuBLAS product needs it).
+  std::expected<void, std::string> LendCublas(CublasHandle* cublas);
   // The step launch over `pool` (the node's pool, mapped), made once at the
   // runner's Bind; a program of this backend binds only to it.
   std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> Launch(
       LaunchContext::Workspace pool);
+  // The runner destroyed the launch (its Release): nothing binds to it
+  // after, and another may be made.
+  void LaunchReleased() { launch_ = nullptr; }
 
   // A planned step as a program (Backend().lower).
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Lower(

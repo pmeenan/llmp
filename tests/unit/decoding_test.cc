@@ -1060,12 +1060,11 @@ TEST_F(DecodingTest, SinglePassModesAndRefusedModes) {
     ASSERT_FALSE(out.refusal.has_value()) << out.refusal->what;
     EXPECT_EQ(out.kept, 1U);
     EXPECT_EQ(slots().positions(slot), prompts[slot] + 1);
-    // The device's choice, in the step's joined outputs at its place.
+    // The device's choice: the segment's own output (the lowering's form).
+    ASSERT_EQ(out.outputs.size(), sizeof(std::int32_t));
     std::int32_t chosen = 0;
-    std::memcpy(&chosen, out.joined.data() + (out.segment * sizeof(std::int32_t)), sizeof(chosen));
+    std::memcpy(&chosen, out.outputs.data(), sizeof(chosen));
     EXPECT_EQ(chosen, Truth(prompts[slot]) + 1000);
-    EXPECT_EQ(Rows(out.outputs).front().hash,
-              Hash(std::span(history_[slot]).first(prompts[slot] + 1)));
   }
   // Scored: every given token's row, from the positions.
   auto scored = Make({.kind = K::kScored});

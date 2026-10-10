@@ -26,9 +26,9 @@
 //     `emit` (RefIO), the oracle `emit` and every backend port are tested
 //     against.
 //
-// A fragment emits the primitive ops in the order today's graph builders
-// record them (kernels/ggml/gemma2_graph.cc's GraphOrder), so a lowering
-// can reproduce those graphs node for node: docs/engine-components.md's
+// A fragment emits the primitive ops in the order the M3 graph builders
+// recorded them (GGML's execution order), so a lowering reproduces those
+// graphs node for node: docs/engine-components.md's
 // "Initial catalog" lists the rules and what a fragment cannot express.
 //
 // Model layer, after spec: no planner, kernel or engine type.

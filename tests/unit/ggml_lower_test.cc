@@ -1,27 +1,22 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The GGML lowering (kernels/ggml/lower.h) against today's graph builders,
-// structurally, on the CPU (every profile builds the descriptor-only
-// builders, PlanGraph and the lowering). For every Gemma 2 and Gemma 3
-// shape the runners measure at setup at the serving defaults (Gemma 2 at
-// 8,192 with two owners; Gemma 3 at 4,096 with two and 8,448 with one),
-// and Gemma 3's joined decode of 2 to 12 owners with every count of long
-// owners (its runner's four-root carriers), with device masks and with host
-// masks, the step planned under the architecture mapping's policy and
-// lowered is BuildGemma2Graph's or BuildGemma3Graph's graph under the
-// serving recipe (runtime/serving.cc: owner decode with bounded roots,
-// owner and flexible owner prefill, the narrowed final layer of
-// frontier_head, shared Q8 preparation, the fused norm-mul, norm-add and
-// quantized GeGLU, and for Gemma 3 the fused norm-rope and grouped KV
-// stores), node for node: the operation, type, extents, strides, view
-// offset, operation parameters and flags, every source (a computed one by
-// its position, a leaf by what it binds: the same weight resource, layer's,
-// owner's and tensor's cache, or step input), and PlanGraph's steps over
-// it are the builders' (the same implementations over the same nodes). The
-// planner selects over the GGML module's own capabilities (capabilities.h),
-// on a model of the GB10's product routing that is upstream's
-// (MmvqRouted) on both sides.
+// The GGML lowering (kernels/ggml/lower.h) of the Gemma 2 and Gemma 3
+// components' steps, structurally, on the CPU (every profile builds the
+// planner and the lowering). For every shape the engine measures at setup
+// at the serving defaults (Gemma 2 at 8,192 with two owners; Gemma 3 at
+// 4,096 with two and 8,448 with one), and Gemma 3's joined decode of 2 to
+// 12 owners with every count of long owners, with device masks and with
+// host masks, the step planned under the architecture mapping's policy
+// lowers: the lowered graph's leaves each bind a weight resource, a
+// layer's, owner's and tensor's cache or a step input; the plan's steps
+// cover its nodes; its owners' outputs and staged inputs are the shape's;
+// and the policy's patterns (the owner-root attention among them) apply.
+// (These graphs were once compared node for node with the M3 graph
+// builders, retired with their runners after the migration's gate.) The
+// planner selects over the GGML module's own capabilities
+// (capabilities.h), on a model of the GB10's product routing that is
+// upstream's (MmvqRouted).
 
 #include <gtest/gtest.h>
 
@@ -52,8 +47,6 @@
 #include "ir/op.h"
 #include "kernels/common/lower.h"
 #include "kernels/ggml/capabilities.h"
-#include "kernels/ggml/gemma2_graph.h"
-#include "kernels/ggml/gemma3_graph.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/tensors.h"
@@ -134,31 +127,26 @@ kg::DeviceChoices Device() {
   return d;
 }
 
-// The recipes (runtime/serving.cc): as the mappings' policies for the
-// planner, as flags for PlanGraph over the builders' graphs.
-
-kg::DeviceChoices Recipe(bool gemma3) {
-  kg::DeviceChoices d = Device();
-  d.fuse_norms = true;
-  d.fuse_quant_glu = true;
-  d.fuse_norm_add = true;
-  d.fuse_norm_rope = gemma3;
-  d.group_set_rows = gemma3;
-  return d;
+// Each family: its mapping's policy, spec and source, and the cells its
+// state holds (the K/V caches' global and ring cells, in closed form).
+struct Cells {
+  std::uint32_t global_cells = 0, local_cells = 0;
+};
+Cells CellsOf(std::uint32_t window, std::uint32_t context, std::uint32_t rows) {
+  const auto pad = [](std::uint64_t v) {
+    return static_cast<std::uint32_t>((v + 255) / 256 * 256);
+  };
+  return {pad(context), pad(std::min<std::uint64_t>(context, window + rows))};
 }
 
 struct Gemma2Family {
-  using Shape = kg::Gemma2ChunkShape;
-  using Options = kg::Gemma2GraphOptions;
-  static constexpr bool kGemma3 = false;
   static std::string_view Policy() {
     return llmp::spec::mappings::Gemma2Mapping().policies.front().text;
   }
   static const md::Gemma2Profile& P() { return md::Gemma2_2B(); }
   static auto Resources() { return llmp::test_support::gemma2::Resources(); }
-  static auto Binding() { return md::BindGemma2(P(), "gemma2", Resources()).value(); }
-  static auto State(std::uint32_t context, std::uint32_t rows) {
-    return md::Gemma2State(P(), context, rows).value();
+  static Cells State(std::uint32_t context, std::uint32_t rows) {
+    return CellsOf(P().window, context, rows);
   }
   static llmp::spec::ModelSpec Spec() {
     auto values = llmp::spec::mappings::Gemma2V0Values(P());
@@ -166,31 +154,18 @@ struct Gemma2Family {
                                    llmp::test_support::Gemma2Source(), *values);
   }
   static llmp::spec::Source Source() { return llmp::test_support::Gemma2Source(); }
-  static std::size_t Tensors(std::size_t segments) { return kg::Gemma2GraphTensors(P(), segments); }
-  template <typename... A>
-  static auto Build(A&&... a) {
-    return kg::BuildGemma2Graph(std::forward<A>(a)...);
-  }
-  static constexpr auto kStateOnly = kg::Gemma2OutputMode::kStateOnly;
-  static constexpr auto kHead = kg::Gemma2OutputMode::kHead;
-  static std::vector<std::pair<std::uint32_t, std::uint32_t>> Contexts() {
-    return {{md::kGemma2Context, 2}};
-  }
+  static std::vector<std::pair<std::uint32_t, std::uint32_t>> Contexts() { return {{8192, 2}}; }
   static std::vector<std::pair<std::uint32_t, std::uint32_t>> Cohorts() { return {}; }
 };
 
 struct Gemma3Family {
-  using Shape = kg::Gemma3ChunkShape;
-  using Options = kg::Gemma3GraphOptions;
-  static constexpr bool kGemma3 = true;
   static std::string_view Policy() {
     return llmp::spec::mappings::Gemma3Mapping().policies.front().text;
   }
   static const md::Gemma3Profile& P() { return md::Gemma3_4BQat(); }
   static auto Resources() { return llmp::test_support::gemma3::Resources(); }
-  static auto Binding() { return md::BindGemma3(P(), "gemma3", Resources()).value(); }
-  static auto State(std::uint32_t context, std::uint32_t rows) {
-    return md::Gemma3State(P(), context, rows).value();
+  static Cells State(std::uint32_t context, std::uint32_t rows) {
+    return CellsOf(P().window, context, rows);
   }
   static llmp::spec::ModelSpec Spec() {
     auto values = llmp::spec::mappings::Gemma3V0Values(P());
@@ -198,17 +173,10 @@ struct Gemma3Family {
                                    llmp::test_support::Gemma3Source(), *values);
   }
   static llmp::spec::Source Source() { return llmp::test_support::Gemma3Source(); }
-  static std::size_t Tensors(std::size_t segments) { return kg::Gemma3GraphTensors(P(), segments); }
-  template <typename... A>
-  static auto Build(A&&... a) {
-    return kg::BuildGemma3Graph(std::forward<A>(a)...);
-  }
-  static constexpr auto kStateOnly = kg::Gemma3OutputMode::kStateOnly;
-  static constexpr auto kHead = kg::Gemma3OutputMode::kHead;
   static std::vector<std::pair<std::uint32_t, std::uint32_t>> Contexts() {
     return {{4096, 2}, {8448, 1}};
   }
-  // The runner's joined decode beyond the serving envelope (its four-root
+  // The joined decode beyond the serving envelope (the four-root
   // carriers): at 4,096 with twelve owners.
   static std::vector<std::pair<std::uint32_t, std::uint32_t>> Cohorts() { return {{4096, 12}}; }
 };
@@ -226,8 +194,8 @@ struct Case {
   }
 };
 
-// The shapes a runner measures at setup (gemma2_runner.cc Setup's loop,
-// with shared Q8's supplemental rows) with `slots` owners of 128 rows.
+// The shapes the engine measures at setup (with shared Q8's supplemental
+// rows) with `slots` owners of 128 rows.
 std::vector<Case> SetupCases(std::uint32_t context, std::uint32_t slots) {
   constexpr std::uint32_t kMaxRows = 128;
   std::vector<Case> out;
@@ -260,9 +228,9 @@ std::vector<Case> SetupCases(std::uint32_t context, std::uint32_t slots) {
   return out;
 }
 
-// The joined one-row steps of 2 to `slots` owners a runner measures at
-// setup (gemma3_runner.cc: every count of long owners, the last ones near
-// the context's end), returning every owner's row, its token, or nothing.
+// The joined one-row steps of 2 to `slots` owners measured at setup
+// (every count of long owners, the last ones near the context's end),
+// returning every owner's row, its token, or nothing.
 std::vector<Case> CohortCases(std::uint32_t context, std::uint32_t slots) {
   std::vector<Case> out;
   for (std::uint32_t count = 2; count <= slots; ++count) {
@@ -280,29 +248,12 @@ std::vector<Case> CohortCases(std::uint32_t context, std::uint32_t slots) {
   return out;
 }
 
-template <typename State>
-std::uint32_t ReadOf(const std::array<std::uint32_t, 3>& s, const State& state, bool local) {
+std::uint32_t ReadOf(const std::array<std::uint32_t, 3>& s, const Cells& state, bool local) {
   const std::uint32_t read = (s[1] + s[2] + 255) / 256 * 256;
   return std::min(read, local ? state.local_cells : state.global_cells);
 }
 
-template <typename F, typename State>
-typename F::Shape LegacyShape(const Case& c, const State& state) {
-  typename F::Shape shape;
-  std::uint32_t rows = 0;
-  for (const auto& s : c.segments) {
-    shape.segments.push_back({s[0], s[1], s[2], ReadOf(s, state, false), ReadOf(s, state, true)});
-    rows += s[1];
-  }
-  const auto count = static_cast<std::uint32_t>(c.segments.size());
-  shape.output_mode = c.out == Out::kStateOnly ? F::kStateOnly : F::kHead;
-  shape.outputs = c.out == Out::kStateOnly ? 0U : c.out == Out::kAll ? rows : count;
-  shape.greedy = c.out == Out::kGreedy;
-  return shape;
-}
-
-template <typename State>
-pl::StepShape IrShape(const Case& c, const State& state) {
+pl::StepShape IrShape(const Case& c, const Cells& state) {
   pl::StepShape shape;
   for (const auto& s : c.segments) {
     shape.segments.push_back({.slot = static_cast<std::uint8_t>(s[0]),
@@ -316,96 +267,6 @@ pl::StepShape IrShape(const Case& c, const State& state) {
                               .greedy = c.out == Out::kGreedy});
   }
   return shape;
-}
-
-// ------------------------------------------------------------ the builders
-
-struct Legacy {
-  std::optional<kg::TensorArena> arena;
-  std::vector<ggml_tensor*> nodes;
-  std::vector<ggml_tensor*> inputs;
-  std::map<const ggml_tensor*, std::string> leaves;
-  kg::GraphPlan plan;
-};
-
-// Every leaf at an address of its own, every computed node at another
-// (PlaceAndPlan's first pass), so that the gates see disjoint operands.
-void BindAll(std::span<ggml_tensor* const> nodes) {
-  std::uint64_t next = std::uint64_t{1} << 40U;
-  std::set<ggml_tensor*> bound;
-  for (ggml_tensor* node : nodes) {
-    for (ggml_tensor* src : node->src) {
-      while (src != nullptr && src->view_src != nullptr) src = src->view_src;
-      if (src == nullptr || src->op != GGML_OP_NONE || bound.contains(src)) continue;
-      kg::TensorArena::Bind(src, next);
-      next += (ggml_nbytes(src) + 511) / 256 * 256 + 256;
-      bound.insert(src);
-    }
-  }
-  kg::BindDistinct(nodes, std::uint64_t{1} << 46U);
-}
-
-// The builders' leaves by what they bind (components_order_test's names).
-template <typename Graph>
-std::map<const ggml_tensor*, std::string> LegacyLeaves(const Graph& g) {
-  std::map<const ggml_tensor*, std::string> out;
-  const auto add = [&](const ggml_tensor* t, std::string name) {
-    if (t != nullptr) out[t] = std::move(name);
-  };
-  add(g.tokens, "tokens");
-  add(g.positions, "positions");
-  add(g.out_ids, "out_ids");
-  for (std::size_t s = 0; s < g.segments.size(); ++s) {
-    const auto& seg = g.segments[s];
-    add(seg.global_cells, std::format("cells.{}.global", s));
-    add(seg.local_cells, std::format("cells.{}.local", s));
-    if (seg.global_mask != nullptr && seg.global_mask->op == GGML_OP_NONE) {
-      add(seg.global_mask, std::format("mask.{}.global", s));
-      add(seg.local_mask, std::format("mask.{}.local", s));
-    }
-    for (std::size_t l = 0; l < seg.caches.size(); ++l) {
-      add(seg.caches[l].first, std::format("k.{}.{}", l, s));
-      add(seg.caches[l].second, std::format("v.{}.{}", l, s));
-    }
-  }
-  for (const auto& w : g.weights) add(w.tensor, std::format("w.{}", w.resource.index));
-  return out;
-}
-
-template <typename F, typename State>
-Legacy BuildLegacy(const Case& c, const State& state, bool device_masks) {
-  Legacy out;
-  auto arena = kg::TensorArena::Create(F::Tensors(c.segments.size()));
-  EXPECT_TRUE(arena.has_value());
-  out.arena.emplace(std::move(*arena));
-  const kg::DeviceChoices device = Recipe(F::kGemma3);
-  typename F::Options options;
-  options.device_masks = device_masks;
-  options.shared_q8 = true;
-  options.max_total_rows = 256;  // the runners' wave rows: two owners of 128
-  // The serving recipe's owner forms and frontier head.
-  options.narrow_final = true;
-  options.owner_decode = true;
-  options.packed_prefill = true;
-  options.owner_prefill = true;
-  options.flexible_owner_prefill = true;
-  options.bounded_roots = true;
-  auto g = F::Build(*out.arena, F::P(), F::Binding(), state, LegacyShape<F>(c, state), options,
-                    device.dense_mmvq_shape);
-  EXPECT_TRUE(g.has_value()) << g.error().detail;
-  if (!g) return out;
-  out.nodes = g->nodes;
-  out.inputs = g->inputs;
-  out.leaves = LegacyLeaves(*g);
-  std::vector<ggml_tensor*> keep;
-  for (ggml_tensor* k : {g->logits, g->greedy, g->hidden}) {
-    if (k != nullptr) keep.push_back(k);
-  }
-  BindAll(out.nodes);
-  auto plan = kg::PlanGraph(out.nodes, false, device, keep);
-  EXPECT_TRUE(plan.has_value()) << plan.error().detail;
-  if (plan) out.plan = std::move(*plan);
-  return out;
 }
 
 // ------------------------------------------------------------ the lowering
@@ -472,8 +333,8 @@ std::map<std::uint32_t, std::string> StepLeaves(const co::StepGraph& step,
   return out;
 }
 
-template <typename F, typename State>
-Lowered Lower(Ir& ir_, const Case& c, const State& state, bool device_masks,
+template <typename F>
+Lowered Lower(Ir& ir_, const Case& c, const Cells& state, bool device_masks,
               std::string_view policy_text) {
   Lowered out;
   const pl::StepShape shape = IrShape(c, state);
@@ -513,88 +374,49 @@ Lowered Lower(Ir& ir_, const Case& c, const State& state, bool device_masks,
   return out;
 }
 
-// ------------------------------------------------------------ comparisons
+// ------------------------------------------------------------ checks
 
-void ExpectSameGraph(const Legacy& l, const Lowered& w) {
-  const auto& a = l.nodes;
-  const auto& b = w.lowered->nodes;
-  ASSERT_EQ(a.size(), b.size());
-  std::map<const ggml_tensor*, std::size_t> ai, bi;
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    ai[a[i]] = i;
-    bi[b[i]] = i;
+// Every leaf binds something the step names (a weight resource, a cache, an
+// input), every plan step's nodes are the graph's own, and the plan covers
+// every node that launches something.
+void ExpectWellFormed(const Lowered& w) {
+  const auto& nodes = w.lowered->nodes;
+  std::set<const ggml_tensor*> mine(nodes.begin(), nodes.end());
+  EXPECT_EQ(mine.size(), nodes.size());
+  for (const auto& [tensor, name] : w.leaves) {
+    EXPECT_NE(name, "?") << ggml_get_name(tensor);
+    EXPECT_FALSE(mine.contains(tensor)) << name;
   }
-  const auto name = [](const std::map<const ggml_tensor*, std::size_t>& index,
-                       const std::map<const ggml_tensor*, std::string>& leaves,
-                       const ggml_tensor* t) -> std::string {
-    if (t == nullptr) return "-";
-    if (const auto at = index.find(t); at != index.end()) return std::format("#{}", at->second);
-    const auto leaf = leaves.find(t);
-    return leaf == leaves.end() ? "?" : leaf->second;
-  };
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    const ggml_tensor* x = a[i];
-    const ggml_tensor* y = b[i];
-    SCOPED_TRACE(std::format("node {}: {} ({})", i, ggml_op_desc(x), ggml_get_name(x)));
-    ASSERT_EQ(x->op, y->op) << ggml_op_desc(y);
-    ASSERT_EQ(x->type, y->type);
-    for (std::size_t d = 0; d < GGML_MAX_DIMS; ++d) {
-      ASSERT_EQ(x->ne[d], y->ne[d]) << "ne " << d;
-      ASSERT_EQ(x->nb[d], y->nb[d]) << "nb " << d;
+  std::set<const ggml_tensor*> planned;
+  for (const kg::PlanStep& step : w.lowered->plan.steps) {
+    EXPECT_FALSE(step.nodes.empty());
+    for (const ggml_tensor* node : step.nodes) {
+      EXPECT_TRUE(mine.contains(node));
+      planned.insert(node);
     }
-    ASSERT_EQ(x->view_offs, y->view_offs);
-    ASSERT_EQ(x->flags, y->flags);
-    ASSERT_EQ(std::memcmp(x->op_params, y->op_params, sizeof(x->op_params)), 0) << "op params";
-    for (std::size_t s = 0; s < GGML_MAX_SRC; ++s) {
-      ASSERT_EQ(name(ai, l.leaves, x->src[s]), name(bi, w.leaves, y->src[s])) << "source " << s;
-      if (x->src[s] != nullptr && !ai.contains(x->src[s])) {
-        // A leaf: its type, extents and flags (a weight's row padding).
-        ASSERT_EQ(x->src[s]->type, y->src[s]->type) << "source " << s;
-        ASSERT_EQ(x->src[s]->flags, y->src[s]->flags) << "source " << s;
-        for (std::size_t d = 0; d < GGML_MAX_DIMS; ++d) {
-          ASSERT_EQ(x->src[s]->ne[d], y->src[s]->ne[d]) << "source " << s;
-        }
-      }
-    }
+  }
+  // Every node that launches something is some step's.
+  for (const ggml_tensor* node : nodes) {
+    if (!kg::LaunchesNothing(node)) EXPECT_TRUE(planned.contains(node)) << ggml_op_desc(node);
   }
 }
 
-void ExpectSamePlan(const Legacy& l, const Lowered& w) {
-  std::map<const ggml_tensor*, std::size_t> ai, bi;
-  for (std::size_t i = 0; i < l.nodes.size(); ++i) ai[l.nodes[i]] = i;
-  for (std::size_t i = 0; i < w.lowered->nodes.size(); ++i) bi[w.lowered->nodes[i]] = i;
-  const auto& a = l.plan.steps;
-  const auto& b = w.lowered->plan.steps;
-  ASSERT_EQ(a.size(), b.size());
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    ASSERT_EQ(a[i].implementation, b[i].implementation) << "step " << i;
-    ASSERT_EQ(a[i].operation, b[i].operation) << "step " << i;
-    ASSERT_EQ(a[i].nodes.size(), b[i].nodes.size()) << "step " << i;
-    for (std::size_t k = 0; k < a[i].nodes.size(); ++k) {
-      ASSERT_EQ(ai.at(a[i].nodes[k]), bi.at(b[i].nodes[k])) << "step " << i;
-    }
-  }
-}
-
-// The inputs the step stages: the builders' inputs, each as its slot.
-void ExpectInputs(const Legacy& l, const Lowered& w, bool device_masks) {
-  std::multiset<std::string> want, got;
-  for (const ggml_tensor* t : l.inputs) {
-    want.insert(std::format("{} {}", l.leaves.at(t), ggml_nbytes(t)));
-  }
+// The inputs the step stages: a mask only in the host-mask build, of its
+// rows and cells; every other one a named input.
+void ExpectInputs(const Lowered& w, bool device_masks) {
   std::map<std::uint64_t, const ggml_tensor*> by_address;
   for (const auto& [t, name] : w.leaves) {
     by_address[static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(t->data))] = t;
   }
   for (const kn::InputSlot& slot : w.lowered->inputs) {
-    const ggml_tensor* t = by_address.at(slot.device_address);
-    got.insert(std::format("{} {}", w.leaves.at(t), slot.bytes));
+    const auto found = by_address.find(slot.device_address);
+    ASSERT_NE(found, by_address.end());
+    EXPECT_NE(w.leaves.at(found->second), "?");
     if (slot.kind == kn::InputKind::kMask) {
       EXPECT_FALSE(device_masks);
       EXPECT_EQ(slot.bytes, slot.read * slot.mask_rows * 2);
     }
   }
-  EXPECT_EQ(got, want);
 }
 
 template <typename F>
@@ -605,7 +427,7 @@ void ExpectFamilyLowers() {
   for (const auto& [context, slots] : F::Contexts()) runs.emplace_back(context, slots, false);
   for (const auto& [context, slots] : F::Cohorts()) runs.emplace_back(context, slots, true);
   for (const auto& [context, slots, cohorts] : runs) {
-    const auto state = F::State(context, 128);
+    const Cells state = F::State(context, 128);
     Ir ir_{.spec = F::Spec(), .source = F::Source()};
     auto layout = co::StageLayout(ir_.spec, 0, context, 128, kExtent);
     ASSERT_TRUE(layout.has_value()) << layout.error();
@@ -614,14 +436,11 @@ void ExpectFamilyLowers() {
       for (const bool device_masks : {true, false}) {
         SCOPED_TRACE(
             std::format("context {} {}{}", context, c.Name(), device_masks ? "" : ", host masks"));
-        const Legacy l = BuildLegacy<F>(c, state, device_masks);
         const Lowered w = Lower<F>(ir_, c, state, device_masks, F::Policy());
         ASSERT_TRUE(w.lowered.has_value());
-        ExpectSameGraph(l, w);
+        ExpectWellFormed(w);
         if (::testing::Test::HasFatalFailure()) return;
-        ExpectSamePlan(l, w);
-        if (::testing::Test::HasFatalFailure()) return;
-        ExpectInputs(l, w, device_masks);
+        ExpectInputs(w, device_masks);
         // Each owner's own outputs, and nothing placed past the extent.
         std::uint32_t outputs = 0;
         for (const kn::OutputSlot& o : w.lowered->outputs) {
@@ -645,9 +464,9 @@ void ExpectFamilyLowers() {
   EXPECT_GT(owner_forms, 0U);
 }
 
-TEST(GgmlLowerTest, Gemma2LowersToTheBuildersGraphs) { ExpectFamilyLowers<Gemma2Family>(); }
+TEST(GgmlLowerTest, Gemma2LowersEverySetupShape) { ExpectFamilyLowers<Gemma2Family>(); }
 
-TEST(GgmlLowerTest, Gemma3LowersToTheBuildersGraphs) { ExpectFamilyLowers<Gemma3Family>(); }
+TEST(GgmlLowerTest, Gemma3LowersEverySetupShape) { ExpectFamilyLowers<Gemma3Family>(); }
 
 // A selection PlanGraph would not make is refused, never run otherwise:
 // without the norm-mul pattern the IR selects the norm and its mul alone
@@ -656,8 +475,8 @@ TEST(GgmlLowerTest, Gemma3LowersToTheBuildersGraphs) { ExpectFamilyLowers<Gemma3
 // two as the fused RMSNorm-mul.
 TEST(GgmlLowerTest, RefusesASelectionPlanGraphDoesNotMake) {
   Ir ir_{.spec = Gemma2Family::Spec(), .source = Gemma2Family::Source()};
-  const auto state = Gemma2Family::State(md::kGemma2Context, 128);
-  auto layout = co::StageLayout(ir_.spec, 0, md::kGemma2Context, 128, kExtent);
+  const Cells state = Gemma2Family::State(8192, 128);
+  auto layout = co::StageLayout(ir_.spec, 0, 8192, 128, kExtent);
   ASSERT_TRUE(layout.has_value());
   ir_.layout.emplace(std::move(*layout));
   const Case c{.segments = {{0, 1, 7}}, .out = Out::kHead};

@@ -3,7 +3,8 @@
 
 // State contracts (model/state_contract.h): contracts equivalent to each
 // current family's state reproduce its layout and ranges byte for byte
-// (Gemma2's and Gemma3's used state and chunk writes, Qwen3.8's used state
+// (Gemma2's and Gemma3's, against their closed form since the M3 layouts'
+// deletion: used state and chunk writes; Qwen3.8's used state
 // and checkpoint writes, DeepSeek V4's in both window modes); a verify's
 // saves by row, byte for byte what Qwen3.8's, DeepSeek V4's and DSpark's
 // verifies save today; the D-068 representations; the kept layout's
@@ -89,8 +90,77 @@ Layers GemmaContracts(const Profile& p) {
   return layers;
 }
 
-template <typename Layout>
-void ExpectGemmaLayout(const md::StateLayoutDerived& got, const Layout& want) {
+// Gemma's state in closed form, as the M3 layouts were (retired with their
+// runners; the contracts above are its one source now): a K and a V tensor
+// per layer, global ones a cell a position, local ones a ring of
+// pad(min(context, window + rows), 256) cells, each tensor on an extent.
+struct GemmaTensorRef {
+  std::uint32_t layer = 0;
+  bool local = false;
+  std::uint32_t width = 0, cells = 0;  // F16 [width, cells]
+  std::uint64_t offset = 0, bytes = 0;
+};
+struct GemmaLayoutRef {
+  std::vector<GemmaTensorRef> tensors;
+  std::uint64_t bytes = 0;
+};
+std::uint64_t PadTo(std::uint64_t value, std::uint64_t align) {
+  return (value + align - 1) / align * align;
+}
+
+template <typename Profile>
+GemmaLayoutRef GemmaRef(const Profile& p, std::uint32_t context, std::uint32_t rows) {
+  GemmaLayoutRef out;
+  const auto global_cells = static_cast<std::uint32_t>(PadTo(context, 256));
+  const auto local_cells =
+      static_cast<std::uint32_t>(PadTo(std::min<std::uint64_t>(context, p.window + rows), 256));
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    for (const bool value : {false, true}) {
+      const auto width = (value ? p.value_dim : p.key_dim) * p.kv_heads;
+      const auto cells = p.local(il) ? local_cells : global_cells;
+      const auto bytes = std::uint64_t{width} * cells * 2;
+      out.tensors.push_back({.layer = il,
+                             .local = p.local(il),
+                             .width = width,
+                             .cells = cells,
+                             .offset = out.bytes,
+                             .bytes = bytes});
+      out.bytes += PadTo(bytes, kExtent);
+    }
+  }
+  return out;
+}
+
+// What `positions` positions read: each tensor's cells, up to the next
+// multiple of `align`, capped at the tensor's own.
+std::vector<StateRange> GemmaUsedRef(const GemmaLayoutRef& layout, std::uint32_t positions,
+                                     std::uint32_t align) {
+  std::vector<StateRange> out;
+  if (positions == 0) return out;
+  for (const auto& t : layout.tensors) {
+    const auto cells = std::min<std::uint64_t>(t.cells, PadTo(positions, align));
+    out.push_back({.offset = t.offset, .bytes = cells * t.width * 2});
+  }
+  return out;
+}
+
+// The cells a chunk of `rows` rows after `past` positions writes: a
+// global tensor's next cells, a ring's from `past` mod its cells, split at
+// the wrap.
+std::vector<StateRange> GemmaWritesRef(const GemmaLayoutRef& layout, std::uint32_t past,
+                                       std::uint32_t rows) {
+  std::vector<StateRange> out;
+  for (const auto& t : layout.tensors) {
+    const std::uint64_t first = t.local ? past % t.cells : past;
+    const std::uint64_t count = std::min<std::uint64_t>(rows, t.cells - first);
+    const std::uint64_t row_bytes = std::uint64_t{t.width} * 2;
+    out.push_back({.offset = t.offset + first * row_bytes, .bytes = count * row_bytes});
+    if (count < rows) out.push_back({.offset = t.offset, .bytes = (rows - count) * row_bytes});
+  }
+  return out;
+}
+
+void ExpectGemmaLayout(const md::StateLayoutDerived& got, const GemmaLayoutRef& want) {
   ASSERT_EQ(got.items.size(), want.tensors.size());
   for (std::size_t i = 0; i < got.items.size(); ++i) {
     EXPECT_EQ(got.items[i].layer, want.tensors[i].layer);
@@ -101,23 +171,22 @@ void ExpectGemmaLayout(const md::StateLayoutDerived& got, const Layout& want) {
   EXPECT_EQ(got.bytes, want.bytes);
 }
 
-TEST(StateContractTest, Gemma2ContractsReproduceItsLayoutUsedStateAndChunkWrites) {
+TEST(StateContractTest, Gemma2ContractsDeriveItsLayoutUsedStateAndChunkWrites) {
   const auto& p = md::Gemma2_2B();
   for (const auto& [context, rows] : {std::pair{4096U, 128U}, {8192U, 512U}, {8192U, 4096U}}) {
-    auto want = md::Gemma2State(p, context, rows);
-    ASSERT_TRUE(want.has_value());
+    const auto want = GemmaRef(p, context, rows);
     const Layers contracts = GemmaContracts(p);
     auto got = md::Layout(contracts, context, rows, kExtent);
     ASSERT_TRUE(got.has_value()) << got.error();
-    ExpectGemmaLayout(*got, *want);
+    ExpectGemmaLayout(*got, want);
     for (const std::uint32_t align : {256U, 512U, 2048U}) {
       for (const std::uint32_t positions : {0U, 1U, 255U, 256U, 257U, p.window - 1, p.window,
                                             p.window + rows, context - 1, context}) {
         if (positions > context) continue;
         auto used = md::UsedThrough(*got, positions, align);
-        auto old = md::Gemma2UsedState(p, *want, positions, align);
-        ASSERT_TRUE(used.has_value() && old.has_value());
-        ExpectSame(*used, *old, std::format("Gemma2 {} positions align {}", positions, align));
+        ASSERT_TRUE(used.has_value());
+        ExpectSame(*used, GemmaUsedRef(want, positions, align),
+                   std::format("Gemma2 {} positions align {}", positions, align));
       }
     }
     for (const auto& [past, n] : {std::pair{0U, 1U},
@@ -128,30 +197,29 @@ TEST(StateContractTest, Gemma2ContractsReproduceItsLayoutUsedStateAndChunkWrites
                                   {got->items[0].cells * 2 - 1, 2U}}) {
       if (past > context || n > rows || n > context - past) continue;
       auto writes = md::ChunkWrites(*got, past, n);
-      auto old = md::Gemma2ChunkWrites(p, *want, past, n);
-      ASSERT_TRUE(writes.has_value() && old.has_value());
-      ExpectSame(*writes, *old, std::format("Gemma2 writes {}+{}", past, n));
+      ASSERT_TRUE(writes.has_value());
+      ExpectSame(*writes, GemmaWritesRef(want, past, n),
+                 std::format("Gemma2 writes {}+{}", past, n));
     }
   }
 }
 
-TEST(StateContractTest, Gemma3ContractsReproduceItsLayoutAndUsedState) {
+TEST(StateContractTest, Gemma3ContractsDeriveItsLayoutAndUsedState) {
   const auto& p = md::Gemma3_4BQat();
   for (const auto& [context, rows] : {std::pair{8448U, 128U}, {4096U, 512U}}) {
-    auto want = md::Gemma3State(p, context, rows);
-    ASSERT_TRUE(want.has_value());
+    const auto want = GemmaRef(p, context, rows);
     const Layers contracts = GemmaContracts(p);
     auto got = md::Layout(contracts, context, rows, kExtent);
     ASSERT_TRUE(got.has_value()) << got.error();
-    ExpectGemmaLayout(*got, *want);
+    ExpectGemmaLayout(*got, want);
     for (const std::uint32_t align : {256U, 2048U}) {
       for (const std::uint32_t positions :
            {0U, 1U, 256U, 1025U, p.window, p.window + rows + 1, context}) {
         if (positions > context) continue;
         auto used = md::UsedThrough(*got, positions, align);
-        auto old = md::Gemma3UsedState(p, *want, positions, align);
-        ASSERT_TRUE(used.has_value() && old.has_value());
-        ExpectSame(*used, *old, std::format("Gemma3 {} positions align {}", positions, align));
+        ASSERT_TRUE(used.has_value());
+        ExpectSame(*used, GemmaUsedRef(want, positions, align),
+                   std::format("Gemma3 {} positions align {}", positions, align));
       }
     }
   }

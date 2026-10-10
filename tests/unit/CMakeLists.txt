@@ -324,7 +324,7 @@ target_link_libraries(gemma2_test PRIVATE llmp_model llmp_artifact llmp_json)
 llmp_gtest(gemma2_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
-# Approved Gemma3 profile, tensor storage, state/input and descriptor foundations.
+# Approved Gemma3 profile and actual tensor binding only.
 add_executable(gemma3_test gemma3_test.cc)
 target_link_libraries(gemma3_test PRIVATE llmp_model llmp_artifact llmp_json)
 llmp_gtest(gemma3_test TEST_PREFIX unit. PROPERTIES LABELS unit
@@ -341,46 +341,6 @@ add_executable(gemma_profile_test gemma_profile_test.cc)
 target_link_libraries(gemma_profile_test PRIVATE llmp_runtime llmp_model llmp_json)
 llmp_gtest(gemma_profile_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-
-add_executable(gemma2_graph_test gemma2_graph_test.cc)
-target_link_libraries(gemma2_graph_test PRIVATE llmp_ggml_tensors llmp_artifact llmp_json)
-llmp_gtest(gemma2_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-if(LLMP_CUDA)
-  add_executable(gemma2_plan_test gemma2_plan_test.cc)
-  target_link_libraries(gemma2_plan_test PRIVATE llmp_engine llmp_json)
-  llmp_gtest(gemma2_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
-               ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-endif()
-
-add_executable(gemma3_graph_test gemma3_graph_test.cc)
-target_link_libraries(gemma3_graph_test PRIVATE llmp_ggml_tensors llmp_artifact llmp_json)
-llmp_gtest(gemma3_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-if(LLMP_CUDA)
-  add_executable(gemma2_checkpoint_gpu_test gemma2_checkpoint_gpu_test.cc)
-  target_link_libraries(gemma2_checkpoint_gpu_test PRIVATE llmp_engine)
-  llmp_gpu_gtest(gemma2_checkpoint_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma2_runner_test gemma2_runner_test.cc)
-  target_link_libraries(gemma2_runner_test PRIVATE llmp_engine)
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(gemma2_runner_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  llmp_gtest(gemma2_runner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-  add_executable(gemma3_serving_gpu_test gemma3_serving_gpu_test.cc)
-  target_link_libraries(gemma3_serving_gpu_test PRIVATE llmp_engine)
-  llmp_gpu_gtest(gemma3_serving_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma3_runner_test gemma3_runner_test.cc)
-  target_link_libraries(gemma3_runner_test PRIVATE llmp_engine)
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(gemma3_runner_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  llmp_gtest(gemma3_runner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-  add_executable(gemma3_plan_test gemma3_plan_test.cc)
-  target_link_libraries(gemma3_plan_test PRIVATE llmp_engine llmp_json)
-  llmp_gtest(gemma3_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
-               ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-endif()
 
 add_executable(gemma4_graph_test gemma4_graph_test.cc)
 add_executable(gemma4_greedy_test gemma4_greedy_test.cc)
@@ -414,9 +374,11 @@ if(LLMP_CUDA)
   target_link_libraries(plain_tokens_serving_gpu_test PRIVATE llmp_runtime_serving)
   llmp_gpu_gtest(plain_tokens_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(gemma_prefill_serving_gpu_test gemma_prefill_serving_gpu_test.cc)
-  target_link_libraries(gemma_prefill_serving_gpu_test PRIVATE llmp_runtime_serving)
-  llmp_gpu_gtest(gemma_prefill_serving_gpu_test MODELS
+  # Gemma 2 and Gemma 3 on the shared engine through the server: heads,
+  # state, spill, restart, the near-8K context and the swap transactions.
+  add_executable(gemma_engine_serving_gpu_test gemma_engine_serving_gpu_test.cc)
+  target_link_libraries(gemma_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
+  llmp_gpu_gtest(gemma_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(gemma_joined_serving_gpu_test gemma_joined_serving_gpu_test.cc)
   target_link_libraries(gemma_joined_serving_gpu_test PRIVATE llmp_runtime_serving)
@@ -1097,19 +1059,11 @@ llmp_gtest(spec_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models"
 # The component catalog (components/): parameters, ValidateSpec on the
 # Gemma specs and its refusals, each fragment run by the reference executor
 # against its scalar reference, BuildStep, the stage layout against
-# today's Gemma layouts and the step's inputs against today's host masks.
+# Gemma's closed-form layouts and the step's inputs against its host masks.
 add_executable(components_test components_test.cc)
 target_link_libraries(components_test PRIVATE llmp_components llmp_reference_kernels llmp_spec
                                               llmp_model llmp_artifact llmp_json)
 llmp_gtest(components_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-
-# The Gemma components' steps against today's Gemma2/Gemma3 graph builders,
-# node for node (every profile builds the descriptor-only builders).
-add_executable(components_order_test components_order_test.cc)
-target_link_libraries(components_order_test PRIVATE llmp_components llmp_ggml_tensors llmp_spec
-                                                    llmp_model llmp_artifact llmp_json)
-llmp_gtest(components_order_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
 # The Gemma 4 components' steps (26B-A4B, 31B and their assistants)
@@ -1140,18 +1094,17 @@ target_link_libraries(planner_partition_test PRIVATE llmp_planner llmp_component
 llmp_gtest(planner_partition_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
-# The planner on the Gemma 2 and Gemma 3 steps against today's PlanGraph
-# and PlaceActivations over the graph builders, under each family's
-# production recipe (every profile builds the descriptor-only builders).
+# The planner on the Gemma 2 and Gemma 3 steps under each family's
+# production recipe: its fusions, shared preparations and a sound placement
+# at every setup shape.
 add_executable(planner_gemma_test planner_gemma_test.cc)
 target_link_libraries(planner_gemma_test PRIVATE llmp_planner llmp_components llmp_ggml_tensors
                                                  llmp_spec llmp_model llmp_artifact llmp_json)
 llmp_gtest(planner_gemma_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
-# The GGML lowering (kernels/ggml/lower.h) against today's Gemma 2 and
-# Gemma 3 graph builders and PlanGraph, node for node, at every setup shape
-# (every profile builds the descriptor-only builders and the lowering).
+# The GGML lowering (kernels/ggml/lower.h) of the Gemma 2 and Gemma 3 steps
+# at every setup shape (every profile builds the lowering).
 add_executable(ggml_lower_test ggml_lower_test.cc)
 target_link_libraries(ggml_lower_test PRIVATE llmp_ggml_tensors llmp_planner llmp_components
                                               llmp_spec llmp_model llmp_artifact llmp_json)
@@ -1177,10 +1130,11 @@ llmp_gtest(components_state_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 # The Gemma 2 and Gemma 3 components end to end on the installed artifacts,
-# by the reference executor, against today's production runners.
+# by the reference executor, against the served model (the server over the
+# shared engine).
 if(LLMP_CUDA)
   add_executable(components_models_gpu_test components_models_gpu_test.cc)
-  target_link_libraries(components_models_gpu_test PRIVATE llmp_engine llmp_components
+  target_link_libraries(components_models_gpu_test PRIVATE llmp_runtime_serving llmp_components
                                                            llmp_reference_kernels llmp_spec
                                                            llmp_artifact)
   llmp_gpu_gtest(components_models_gpu_test MODELS
@@ -1197,7 +1151,8 @@ if(LLMP_CUDA)
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   # The one model runner over the component step source and the GGML
-  # lowering on the installed artifacts, bit for bit against today's runners.
+  # lowering on the installed artifacts, a scripted run finite and exact
+  # from one runner to the next.
   add_executable(component_runner_gpu_test component_runner_gpu_test.cc)
   target_link_libraries(component_runner_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                           llmp_components llmp_spec llmp_artifact)

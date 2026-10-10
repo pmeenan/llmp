@@ -17,6 +17,7 @@
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <map>
 #include <print>
 #include <set>
@@ -35,26 +36,26 @@
 #include "engine/component_source.h"
 #include "engine/dsv4_plan.h"
 #include "engine/dsv4_runner.h"
-#include "engine/gemma2_runner.h"
-#include "engine/gemma3_runner.h"
 #include "engine/gemma4_runner.h"
 #include "engine/paged_weights.h"
 #include "engine/qwen38_runner.h"
 #include "engine/qwen_image_runner.h"
 #include "execution/adaptive_depth.h"
 #include "execution/adaptive_wave_mode.h"
+#include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
 #include "memory/reclaim.h"
 #include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/qwen38.h"
-#include "planner/policy.h"
+#include "planner/step_shape.h"
 #include "platform/crash_policy.h"
 #include "platform/files.h"
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
 #include "platform/memory_pressure.h"
+#include "providers/device_runtime.h"
 #include "runtime/engine_image.h"
 #include "runtime/engine_llm.h"
 #include "runtime/gemma_profile.h"
@@ -103,56 +104,64 @@ std::string SlotsReport(const ModelSettings& s) {
                      SourceName(s.max_slots.source), s.max_slots.basis);
 }
 
-// The component engine's parts for a family moved to it: its spec from its
-// architecture's mapping (a v0 artifact's, with its compiled profile's
-// values, D-109's synthesis), its components' state layout and batching,
-// and the component step source planned over GGML's registry and lowered
-// onto its graphs (engine/component_source.h, kernels/ggml/
-// step_program.h), the backend on the runner's own stream (its launch's).
-// Gemma 2 and Gemma 3 so far, with the policy that reproduces their
-// recipes' selections as the lowering has them (component_runner_gpu_
-// test); their migration (G1c) finalizes it, with cuBLAS (none lent yet: a
-// plan that needs it is refused), the owner attention forms and device
-// greedy choice. Any other architecture is refused at Setup, naming why.
+// The component engine's parts for a family moved to it (D-107): its spec
+// from its architecture's mapping (a v0 artifact's, with its compiled
+// profile's values, D-109's synthesis), its components' state layout and
+// batching, and the component step source planned under the mapping's
+// default policy for those values (its recipe as data, spec/mapping.h
+// DefaultPolicy) over GGML's registry and lowered onto its
+// graphs (engine/component_source.h, kernels/ggml/step_program.h). The
+// backend runs on the model's own stream (its runner's job stream), with a
+// cuBLAS handle over a workspace the runner maps and charges as its own
+// (RunnerConfig::kernel_memory, as RunnerResources does for the M3
+// runners). A head row is the head's vocabulary of logits; a greedy step
+// returns each owner's token chosen on the device. Gemma 2 and Gemma 3
+// (their compiled profiles' values); any other architecture, or a drafter,
+// is refused at Setup, naming why.
 struct ComponentHold {
   spec::ModelSpec spec;
   spec::Source source;
   model::StateLayoutDerived layout;
   std::map<ir::WeightRef, std::uint32_t> resource;
+  // Before the backend, whose launch borrows it (the runner's Release
+  // destroys that launch, then retires the handle).
+  std::unique_ptr<kernels::ggml::CublasHandle> cublas;
   std::unique_ptr<kernels::ggml::GgmlBackend> backend;
 };
+
+// A v0 artifact's values for its architecture's mapping: its compiled
+// profile's (spec/mappings/*.h).
+std::expected<std::vector<spec::SourceValue>, std::string> V0Values(std::string_view architecture) {
+  if (architecture == "gemma2") return spec::mappings::Gemma2V0Values(model::Gemma2_2B());
+  if (architecture == "gemma3") return spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
+  return Error(
+      std::format("the component engine has no recipe for architecture {} yet", architecture));
+}
+
+// The architectures served by the component engine's adapter for their
+// pipeline kind (engine_llm.h, engine_image.h; D-107): Gemma 2 and Gemma 3
+// since their migration. A family joins when its migration passes its gate.
+bool OnComponentEngine(std::string_view architecture) {
+  return architecture == "gemma2" || architecture == "gemma3";
+}
 
 EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                               const config::ModelEntry& entry, int index) {
   return [&node, store = std::move(store), id = entry.artifact.value_or(""),
+          drafter = entry.drafter.has_value(),
           index](const ModelSettings& settings) -> std::expected<EngineLlmParts, std::string> {
-    std::vector<spec::SourceValue> values;
-    std::string policy_text;
-    std::uint32_t vocab = 0;
-    if (settings.architecture == "gemma2") {
-      auto v = spec::mappings::Gemma2V0Values(model::Gemma2_2B());
-      if (!v) return Error(v.error());
-      values = std::move(*v);
-      vocab = model::Gemma2_2B().vocab;
-      policy_text =
-          "max_decode_rows 16\ndisable grouped_stores\ndisable rms_norm_mul_rope\n"
-          "disable rope_store\n";
-    } else if (settings.architecture == "gemma3") {
-      auto v = spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
-      if (!v) return Error(v.error());
-      values = std::move(*v);
-      vocab = model::Gemma3_4BQat().vocab;
-      policy_text = "max_decode_rows 16\ndisable rope_store\n";
-    } else {
-      return Error(std::format("the component engine has no recipe for architecture {} yet",
+    if (drafter) {
+      return Error(std::format("the component engine has no drafter stage for architecture {} yet",
                                settings.architecture));
     }
+    auto values = V0Values(settings.architecture);
+    if (!values) return Error(values.error());
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
     const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
     if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
     auto hold = std::make_shared<ComponentHold>();
-    auto synthesized = spec::SynthesizeV0(*artifact, *mapping, values);
+    auto synthesized = spec::SynthesizeV0(*artifact, *mapping, *values);
     if (!synthesized) return Error(synthesized.error());
     hold->spec = std::move(*synthesized);
     auto source = spec::SourceOfV0(*artifact);
@@ -161,20 +170,31 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (auto valid = components::ValidateSpec(hold->spec, hold->source.tensors); !valid) {
       return Error(valid.error());
     }
+    // The spec bound to the artifacts its stages run from (each stage's
+    // index into them; D-105's layout identity and the plans' key): a v0
+    // artifact's one target stage, so its own ID.
+    const std::array<std::string_view, 1> artifacts{id};
+    auto bound = spec::BoundDigest(hold->spec, artifacts);
+    if (!bound) return Error(bound.error());
+    // Each state tensor starts on its own paged extent, as the M3 layouts
+    // did: packed tensors would straddle extents, so their growth would
+    // cross extent boundaries at staggered positions and a prompt would
+    // grow its state (each growth a fixed host cost between steps) every
+    // chunk or two instead of once every extent's worth of cells.
     auto layout = components::StageLayout(hold->spec, 0, settings.context.value,
-                                          settings.prefill_chunk.value);
+                                          settings.prefill_chunk.value, kExtent);
     if (!layout) return Error(layout.error());
     hold->layout = std::move(*layout);
     auto caps = components::StageBatching(hold->spec, 0);
     if (!caps) return Error(caps.error());
-    const std::array<std::string_view, 1> ids{id};
-    auto bound = spec::BoundDigest(hold->spec, ids);
-    if (!bound) return Error(bound.error());
     const std::uint32_t slots = std::clamp<std::uint32_t>(
         settings.max_slots.value, 1, static_cast<std::uint32_t>(Llm::kMaxBranches));
     const std::uint32_t context = hold->layout.context;
     const std::uint32_t chunk = std::max<std::uint32_t>(hold->layout.max_rows, 1);
-    const auto shape = [&](planner::Phase phase, std::uint32_t owners, std::uint32_t rows) {
+    // The widest steps (the setup measurement): every owner's rows at the
+    // end of its context, reading all of it.
+    const auto shape = [&](planner::Phase phase, std::uint32_t owners, std::uint32_t rows,
+                           bool greedy) {
       planner::StepShape s{
           .stage = 0, .phase = phase, .segments = {}, .row_invariant = false, .read_align = 256};
       for (std::uint32_t o = 0; o < owners; ++o) {
@@ -185,35 +205,46 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                               .outputs = 1,
                               .group = 0,
                               .want_head = true,
-                              .greedy = false});
+                              .greedy = greedy});
       }
       return s;
     };
     const std::uint32_t joined = std::min(slots, std::max(caps->max_segments, 1U));
-    // Each weight's resource, by what a step binds (the head's included).
+    // Each weight's resource, by what a step binds (the head's included),
+    // and a head row's width: its logits' (the head's vocabulary).
+    std::uint32_t logit_width = 0;
     {
-      auto step = components::BuildStep(hold->spec, 0, shape(planner::Phase::kPrefill, 1, chunk),
-                                        {.tensors = hold->source.tensors, .state = &hold->layout});
+      auto step =
+          components::BuildStep(hold->spec, 0, shape(planner::Phase::kPrefill, 1, chunk, false),
+                                {.tensors = hold->source.tensors, .state = &hold->layout});
       if (!step) return Error(step.error());
       for (const components::StepWeight& w : step->weights) {
         const auto found = artifact->FindResource(w.parts.front().first);
         if (!found) return Error(std::format("no resource holds {}", w.parts.front().first));
         hold->resource[w.ref] = *found;
       }
+      if (!step->logits.valid()) return Error("the spec's target stage has no head");
+      const std::uint64_t width = step->graph.tensor(step->logits).shape().ne[0];
+      if (width == 0 ||
+          width > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+        return Error(std::format("the head's {} logits a row", width));
+      }
+      logit_width = static_cast<std::uint32_t>(width);
     }
     auto backend = kernels::ggml::GgmlBackend::Create(
         0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,
         {.lower = {.device_masks = true}});
     if (!backend) return Error(backend.error());
     hold->backend = std::move(*backend);
-    auto policy = planner::ParsePolicy(policy_text);
-    if (!policy) return Error(policy.error());
     auto component = engine::ComponentStepSource::Create(
         {.spec = &hold->spec,
          .stage = 0,
          .bindings = {.tensors = hold->source.tensors, .state = &hold->layout},
          .bound_digest = *bound,
-         .policy = *policy,
+         .mapping = mapping,
+         .values = *values,
+         .slots = slots,
+         .policy = std::nullopt,
          .backend = hold->backend->Backend()});
     if (!component) return Error(component.error());
     auto weights = std::make_unique<engine::PagedWeights>();
@@ -233,10 +264,45 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                            engine::GroupPlace::kDevice);
     parts.config.weights.push_back(
         {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
-    parts.config.setup_shapes = {
-        shape(planner::Phase::kPrefill, caps->join_prefill ? joined : 1, chunk),
-        shape(planner::Phase::kDecode, joined, 1)};
+    // A prompt chunk and a decode row, joined and alone, with logits and
+    // with device tokens: their plans differ (owner attention joins
+    // owners), so each is measured.
+    std::vector<planner::StepShape>& setup = parts.config.setup_shapes;
+    for (const std::uint32_t owners : {1U, joined}) {
+      planner::StepShape prompt = shape(planner::Phase::kPrefill, owners, chunk, false);
+      if ((owners == 1 || caps->join_prefill) && std::ranges::find(setup, prompt) == setup.end()) {
+        setup.push_back(std::move(prompt));
+      }
+      for (const bool greedy : {false, true}) {
+        planner::StepShape row = shape(planner::Phase::kDecode, owners, 1, greedy);
+        if (std::ranges::find(setup, row) == setup.end()) setup.push_back(std::move(row));
+      }
+    }
+    // cuBLAS on the model's stream over the runner's workspace (D-053: the
+    // engine's handle, never one GGML makes).
+    const providers::DeviceFacts facts =
+        providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
+    const std::uint64_t cublas_bytes =
+        kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
+            .value();
+    parts.config.kernel_memory.push_back(
+        {.name = std::format("{} cuBLAS workspace", settings.name), .bytes = cublas_bytes});
     ComponentHold* held = hold.get();
+    parts.config.prepare =
+        [&node, held, index,
+         cublas_bytes](std::span<const std::uint64_t> bases) -> std::expected<void, std::string> {
+      if (bases.size() != 1) return Error("the cuBLAS workspace is not mapped");
+      auto cublas = kernels::ggml::CublasHandle::Create(
+          0, node.execution(), node.stream(static_cast<std::uint32_t>(index)),
+          {.base = bases.front(), .size = base::Bytes(cublas_bytes)});
+      if (!cublas) return Error(std::format("cuBLAS: {}", cublas.error().detail));
+      held->cublas = std::move(*cublas);
+      return held->backend->LendCublas(held->cublas.get());
+    };
+    parts.config.retire = [held] {
+      held->backend->LaunchReleased();
+      held->cublas.reset();
+    };
     parts.config.launch =
         [&node, held]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
       return held->backend->Launch(
@@ -249,8 +315,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     };
     parts.source = std::move(*component);
     parts.caps = *caps;
-    parts.logit_width = vocab;
-    parts.device_greedy = false;
+    parts.logit_width = logit_width;
+    parts.device_greedy = true;
     parts.prefill = {.chunk_rows = chunk,
                      .lookahead = 2,
                      .capture_ahead = true,
@@ -1367,7 +1433,8 @@ class Gemma final : public Llm {
     return runner_.ValidateFootprint(pos, ranges);
   }
   Status PreparePositionRestoreFor(Branch& branch, std::uint32_t pos, std::uint32_t cursor,
-                                   std::span<const engine::LiveState::Range> ranges) override {
+                                   std::span<const engine::LiveState::Range> ranges,
+                                   std::string_view /*layout*/) override {
     if (auto r = CheckCheckpointMetadataFor(branch, pos, cursor, ranges); !r) return r;
     // Llm checks the retained record's layout against KeptLayout before
     // adoption; local snapshots are produced by this same runner.
@@ -1384,7 +1451,7 @@ class Gemma final : public Llm {
   Status RestoreSnapshotFor(Branch& branch, void* host,
                             std::span<const engine::LiveState::Range> ranges,
                             std::uint32_t pos) override {
-    if (auto r = PreparePositionRestoreFor(branch, pos, pos, ranges); !r) return r;
+    if (auto r = PreparePositionRestoreFor(branch, pos, pos, ranges, KeptLayout()); !r) return r;
     if (auto r = CopyCheckpointStateFor(branch, host, ranges, false); !r) return r;
     return CompletePositionRestoreFor(branch, pos);
   }
@@ -1405,7 +1472,8 @@ class Gemma final : public Llm {
   }
   bool KeptWholeFor(const Branch& branch) const override { return NativeSlot(branch).kept_whole(); }
   Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t pos,
-                          std::span<const engine::LiveState::Range> ranges) override {
+                          std::span<const engine::LiveState::Range> ranges,
+                          std::string_view /*layout*/) override {
     if (pos != tokens.size() || pos == 0)
       return Error("Gemma kept positions differ from its owned token history");
     return runner_.Adopt(BranchIndex(branch), pos, ranges, KeptLayout());
@@ -1517,898 +1585,6 @@ class Gemma final : public Llm {
   std::uint32_t max_bound_bounded_owner_attention_ = 0;
   engine::Gemma4Runner runner_;
   std::array<engine::Gemma4Runner::Slot*, engine::kMaxRequestSlots> slots_{};
-};
-
-class Gemma2 final : public Llm {
- public:
-  Gemma2(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-         const config::RuntimeRoles& roles, int index, const ServingOptions& serving)
-      : entry_(entry),
-        artifact_id_(entry.artifact.value_or("")),
-        store_(roles.installed),
-        profile_(model::Gemma2_2B()),
-        options_(Options(entry, settings, roles, serving)),
-        runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
-    name_ = entry.name;
-    settings_ = settings;
-    node_ = &node;
-    context_ = options_.context;
-    max_rows_ = options_.max_rows;
-    configured_rows_ = settings.prefill_chunk.value;
-    checkpoint_directory_ = roles.spill;
-  }
-  engine::PagedModel& paged() override { return runner_; }
-  Status Setup() override {
-    if (entry_.drafter || settings_.speculation.value)
-      return Error("Gemma serving has no qualified assistant or speculative path");
-    auto artifact = OpenInstalled(store_, artifact_id_);
-    if (!artifact) return Error(artifact.error());
-    auto binding = model::BindApprovedGemma2(*artifact);
-    if (!binding) return Error(binding.error());
-    if (auto r = UseChatAssets(*artifact, entry_); !r) return r;
-    if (auto r = runner_.Setup(); !r) return r;
-    for (std::uint32_t i = 0; i < options_.slots; ++i) {
-      auto slot = runner_.request_slot(i);
-      if (!slot) return Error(slot.error());
-      slots_[i] = *slot;
-    }
-    return PrepareBranches(options_.slots, 1);
-  }
-  Status Register() override { return runner_.Register(); }
-  Status Bind() override { return runner_.Bind(); }
-  std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
-  std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
-  std::uint64_t host_input_bytes() const override {
-    // The startup guard sets this bounded heap workspace apart before any
-    // scalar output or per-owner sampling vector grows. One retained frontier
-    // and one prepared result per owner, plus the sampling candidate capacity.
-    // The independently catalog-backed pinned output holds one row per slot.
-    const auto heap = std::uint64_t{options_.slots} * profile_.vocab *
-                      (2 * sizeof(float) + 2 * sizeof(execution::SamplingCandidate));
-    return runner_.host_input_bytes() + heap;
-  }
-  std::uint64_t plan_floor_bytes() const override { return runner_.plan_floor_bytes(); }
-  std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
-  std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
-  std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
-  std::vector<catalog::ExtentId> kept_state() const override { return runner_.kept_state(); }
-  void StateWrittenBack(bool whole) override { runner_.StateWrittenBack(whole); }
-  const catalog::Closure& everything() const override { return runner_.everything(); }
-  const catalog::Closure& request_closure() const override { return runner_.closure(); }
-  std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
-  std::uint32_t logit_width() const override { return profile_.vocab; }
-  bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
-  Status CheckPlaces() override { return runner_.CheckPlaces(); }
-  void DropPlans() override { runner_.DropPlans(); }
-  void ReclaimCandidates(std::uint32_t owner, bool running,
-                         std::vector<memory::ReclaimCandidate>& out) override {
-    runner_.ReclaimCandidates(owner, running, out);
-  }
-  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
-    return runner_.Reclaim(kind, id);
-  }
-  GraphCounts graphs() const override {
-    const auto& g = runner_.graph_stats();
-    return {g.eager, g.captured, g.replayed, g.refused, runner_.graph_count()};
-  }
-  std::string violations() const override { return runner_.coverage().first_violation; }
-  std::string extra() const override {
-    const auto& selected = runner_.plan_selections();
-    const auto& ahead = runner_.lookahead_stats();
-    return std::format(
-        R"({{"architecture":"gemma2","recipe":"bounded-8192-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"owner_prefill":{},"bound_owner_prefill_attention":{},"flexible_owner_prefill":{},"bound_flexible_owner_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"attention_softcap":50,"bound_norm_mul":{},"bound_quant_geglu":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{},"prefill_lookahead":{},"capture_ahead":{},"lookahead_built":{},"lookahead_cached":{},"lookahead_refused":{},"captured_first":{},"captured_ahead":{},"dropped_ahead":{}}})",
-        options_.max_rows, options_.max_wave_rows, joined_prefill_groups_, joined_prefill_rows_,
-        joined_groups_, joined_units_, selected.owner_attention, selected.packed_prefill_attention,
-        options_.owner_prefill, selected.owner_prefill_attention, options_.flexible_owner_prefill,
-        selected.flexible_owner_prefill_attention, selected.bounded_owner_attention,
-        options_.device_masks, selected.device_masks, selected.norm_mul, selected.quant_geglu,
-        selected.norm_rope, selected.norm_add, runner_.greedy_tokens(), options_.prefill_lookahead,
-        options_.capture_ahead, ahead.built, ahead.cached, ahead.refused, ahead.captured_first,
-        ahead.captured_ahead, ahead.dropped_ahead);
-  }
-  std::string slots_report() const override { return SlotsReport(settings_); }
-  std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
-  std::vector<std::uint64_t> KeptRegions() const override {
-    return KeptRegionsOf(NativeSlot(default_branch()).state(), true);
-  }
-  std::vector<std::uint64_t> KeptLayouts() const override {
-    return KeptRegionsOf(NativeSlot(default_branch()).state(), false);
-  }
-  Status PrepareDefaultRequest() override {
-    std::array<Branch*, 1> selected{&default_branch()};
-    return SelectBranches(selected);
-  }
-  Status SelectBranches(std::span<Branch* const> active) override {
-    if (active.size() > options_.slots) return Error("too many Gemma conversation owners");
-    std::array<std::uint32_t, engine::kMaxRequestSlots> ids{};
-    for (std::size_t i = 0; i < active.size(); ++i) {
-      if (!active[i] || &active[i]->model() != this) return Error("foreign Gemma conversation");
-      ids[i] = BranchIndex(*active[i]);
-    }
-    return runner_.SelectSlots(std::span(ids).first(active.size()));
-  }
-  std::span<const std::int32_t> ChatStops() const override { return chat_stops_; }
-  bool supports_generation_waves() const override { return true; }
-  std::size_t generation_wave_capacity() const override { return options_.slots; }
-  std::size_t prefill_wave_capacity() const override { return options_.slots; }
-  bool CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
-                         std::uint32_t peer_rows) const override {
-    if (rows != peer_rows || rows < 2 || past > context_ || rows > context_ - past ||
-        peer_past > context_ || rows > context_ - peer_past)
-      return false;
-    const auto read = [](std::uint32_t end, std::uint32_t capacity) {
-      return std::min(capacity, (end + 255U) / 256U * 256U);
-    };
-    const auto& layout = runner_.layout();
-    return read(past + rows, layout.global_cells) == read(peer_past + rows, layout.global_cells) &&
-           read(past + rows, layout.local_cells) == read(peer_past + rows, layout.local_cells);
-  }
-  std::uint64_t StateBytesThrough(std::uint32_t positions) const override {
-    const auto ranges = runner_.CheckpointRanges(positions);
-    if (!ranges || !slots_[0]) return 0;
-    return slots_[0]->state().UsedBytesOf(*ranges).value_or(0);
-  }
-  void Defaults(chat::Conversation& c) const override {
-    if (!c.enable_thinking) c.enable_thinking = false;
-  }
-
- protected:
-  Status CheckConversation(const chat::Conversation& c) const override {
-    if (c.enable_thinking.value_or(false))
-      return Error("Gemma thought-channel output is not qualified in this serving slice");
-    if (!c.tools.empty())
-      return Error("Gemma generated tool-call output is not qualified in this serving slice");
-    return {};
-  }
-  Status PrepareSamplingScratchFor(Branch& branch, std::size_t logits) override {
-    const auto vocab = profile_.vocab;
-    if (logits != vocab) return Error("Gemma sampling needs its complete target vocabulary");
-    // TopK may reserve 2*k. Reserve the complete bound from empty storage
-    // before the first sample, so subsequent rows never reallocate it.
-    ReserveBranchSamplingScratch(branch, 2 * std::size_t{vocab});
-    return {};
-  }
-  void RetireSamplingScratchFor(Branch& branch) override { DropBranchSamplingScratch(branch); }
-  bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
-  Status RunPreparedGenerationWave(std::span<PreparedGeneration> units) override {
-    // Greedy waves take their tokens from the device: no 1 MiB row back, no
-    // host scan. A wave is all one kind (the runner publishes one or the other).
-    const bool greedy =
-        !units.empty() && std::ranges::all_of(units, [](const auto& u) { return DeviceGreedy(u); });
-    if (units.size() == 1) return RunScalarGenerationUnits(units);
-    if (greedy)
-      for (auto& unit : units) unit.chosen = 0;
-    if (units.empty() || units.size() > options_.slots)
-      return Error("Gemma joined generation exceeds its funded owner envelope");
-    std::array<engine::Gemma2Runner::Work, engine::kMaxRequestSlots> work{};
-    std::array<bool, engine::kMaxRequestSlots> seen{};
-    for (std::size_t i = 0; i < units.size(); ++i) {
-      const auto& unit = units[i];
-      if (unit.branch == nullptr || &unit.branch->model() != this || unit.step.speculative ||
-          unit.step.all.size() != std::size_t{unit.step.position} + 1)
-        return Error("Gemma joined generation needs plain owned one-anchor units");
-      const auto id = BranchIndex(*unit.branch);
-      if (id >= options_.slots || seen[id] ||
-          NativeSlot(*unit.branch).completed_positions() != unit.step.position)
-        return Error("Gemma joined generation needs distinct current native cursors");
-      seen[id] = true;
-      work[i] = {id, unit.step.position, unit.step.all.last(1), greedy ? nullptr : &units[i].row,
-                 greedy ? &*units[i].chosen : nullptr};
-    }
-    auto ran = runner_.Wave(std::span(work).first(units.size()));
-    if (ran) {
-      ++joined_groups_;
-      joined_units_ += units.size();
-    } else {
-      for (auto& unit : units) {
-        unit.result = std::unexpected(ran.error());
-        unit.failed_prefix_valid = StateUsableFor(*unit.branch);
-      }
-      if (!GenerationCohortUsable()) return ran;
-    }
-    return {};
-  }
-  Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
-                     bool inject, std::vector<float>& logits) override {
-    if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty chunk");
-    const engine::Gemma2Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
-    return runner_.Wave(std::span(&work, 1));
-  }
-  std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
-                                          std::uint32_t past, std::int32_t& token) override {
-    if (past >= all.size()) return Error("Gemma needs a plain nonempty chunk");
-    const engine::Gemma2Runner::Work work{BranchIndex(branch), past, all.subspan(past), nullptr,
-                                          &token};
-    return runner_.Wave(std::span(&work, 1));
-  }
-  Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
-                            bool inject, bool want_head, std::vector<float>& logits,
-                            PrefillHint next) override {
-    if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty prefill chunk");
-    const engine::Gemma2Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
-    const engine::Gemma2Runner::PrefillNext hint{work.slot, next.rows, next.after_rows};
-    return runner_.WavePrefill(std::span(&work, 1), want_head,
-                               std::span(&hint, next.rows == 0 ? 0U : 1U), next.want_head,
-                               next.after_want_head);
-  }
-  Status PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows) override {
-    if (past != NativeSlot(branch).completed_positions() || rows == 0 || rows > options_.max_rows ||
-        past > context_ || rows > context_ - past)
-      return Error("Gemma prefill funding needs an owned bounded continuation");
-    return runner_.ReserveStateThrough(BranchIndex(branch), past + rows);
-  }
-  Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) override {
-    if (prepared.empty() || prepared.size() > options_.slots)
-      return Error("Gemma prefill exceeds its funded owner envelope");
-    if (prepared.size() == 1) return Llm::RunPreparedPrefillWave(prepared);
-    const bool want_head = prepared.front().want_head;
-    std::array<engine::Gemma2Runner::Work, engine::kMaxRequestSlots> work{};
-    std::array<engine::Gemma2Runner::PrefillNext, engine::kMaxRequestSlots> hints{};
-    for (std::size_t i = 0; i < prepared.size(); ++i) {
-      const auto& unit = prepared[i];
-      if (!unit.branch || &unit.branch->model() != this || unit.want_head != want_head ||
-          unit.all.size() != std::size_t{unit.past} + unit.rows ||
-          !CompatiblePrefill(prepared.front().past, prepared.front().rows, unit.past, unit.rows))
-        return Error("Gemma prefill needs compatible owned chunks");
-      work[i] = {BranchIndex(*unit.branch), unit.past, unit.all.last(unit.rows), unit.logits};
-      hints[i] = {work[i].slot, unit.next.rows, unit.next.after_rows};
-    }
-    const auto heads = FuturePrefillHeads(prepared);
-    auto ran =
-        runner_.WavePrefill(std::span(work).first(prepared.size()), want_head,
-                            std::span(hints).first(prepared.size()), heads.next, heads.after);
-    if (ran && prepared.size() > 1) {
-      ++joined_prefill_groups_;
-      for (const auto& unit : prepared) joined_prefill_rows_ += unit.rows;
-    }
-    if (!ran) {
-      for (auto& unit : prepared) unit.result = Error(ran.error());
-      if (!GenerationCohortUsable()) return ran;
-    }
-    return {};
-  }
-  Status SettleFor(Branch& branch) override {
-    return NativeSlot(branch).state_usable() ? Status{} : Error("Gemma state is quarantined");
-  }
-  Status ClearStateFor(Branch& branch) override { return runner_.Clear(BranchIndex(branch)); }
-  bool StateUsableFor(const Branch& branch) const override {
-    return NativeSlot(branch).state_usable();
-  }
-  bool StateRefusedFor(const Branch& branch) const override {
-    return NativeSlot(branch).refused_state_growth();
-  }
-  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t) override {
-    if (pos != NativeSlot(branch).completed_positions() || pos >= context_)
-      return Error("Gemma decode position differs from its completed state");
-    return runner_.ReserveStateThrough(BranchIndex(branch), pos + 1);
-  }
-  std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
-    return NativeSlot(branch).state().base(0);
-  }
-  std::uint64_t TargetStateBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).state().bytes(0);
-  }
-  std::uint64_t DrafterStateBaseFor(const Branch&) const override { return 0; }
-  std::uint64_t DrafterStateBytesFor(const Branch&) const override { return 0; }
-  std::uint64_t UsedStateBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).used_state_bytes();
-  }
-  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const override {
-    return NativeSlot(branch).state().used_ranges();
-  }
-  Status SaveUsedStateFor(Branch& branch, void* host,
-                          std::span<const engine::LiveState::Range> ranges) override {
-    return runner_.CopyState(BranchIndex(branch), host, ranges, true);
-  }
-  Status RestoreUsedStateFor(Branch&, void*, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma restore requires owned logical-position metadata");
-  }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
-      const Branch& branch, std::uint32_t pos) const override {
-    if (pos != NativeSlot(branch).completed_positions())
-      return Error("Gemma checkpoint boundary differs from completed state");
-    return runner_.CheckpointRanges(pos);
-  }
-  Status PrepareRestoreStateFor(Branch&, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma restore requires owned logical-position metadata");
-  }
-  Status CheckCheckpointMetadataFor(
-      const Branch&, std::uint32_t pos, std::uint32_t cursor,
-      std::span<const engine::LiveState::Range> ranges) const override {
-    if (pos != cursor) return Error("Gemma checkpoint cursor differs from its logical boundary");
-    return runner_.ValidateFootprint(pos, ranges);
-  }
-  Status PreparePositionRestoreFor(Branch& branch, std::uint32_t pos, std::uint32_t cursor,
-                                   std::span<const engine::LiveState::Range> ranges) override {
-    if (auto r = CheckCheckpointMetadataFor(branch, pos, cursor, ranges); !r) return r;
-    // Llm checks the retained record's layout against KeptLayout before
-    // adoption; local snapshots are produced by this same runner.
-    return runner_.PrepareRestore(BranchIndex(branch), pos, ranges, KeptLayout());
-  }
-  Status CompletePositionRestoreFor(Branch& branch, std::uint32_t pos) override {
-    return runner_.CompleteRestore(BranchIndex(branch), pos);
-  }
-  Status CopyCheckpointStateFor(Branch& branch, void* host,
-                                std::span<const engine::LiveState::Range> ranges,
-                                bool to_host) override {
-    return runner_.CopyState(BranchIndex(branch), host, ranges, to_host);
-  }
-  Status RestoreSnapshotFor(Branch& branch, void* host,
-                            std::span<const engine::LiveState::Range> ranges,
-                            std::uint32_t pos) override {
-    if (auto r = PreparePositionRestoreFor(branch, pos, pos, ranges); !r) return r;
-    if (auto r = CopyCheckpointStateFor(branch, host, ranges, false); !r) return r;
-    return CompletePositionRestoreFor(branch, pos);
-  }
-  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
-  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
-  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
-    return BranchDecoding(branch);
-  }
-  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
-    BranchDecoding(branch) = state;
-  }
-  std::uint32_t CursorFor(const Branch& branch) const override {
-    return NativeSlot(branch).completed_positions();
-  }
-  void SetCursorFor(Branch&, std::uint32_t) override {}  // checked restore/adopt publishes it
-  const engine::LiveState* KeptLiveFor(const Branch& branch) const override {
-    return &NativeSlot(branch).state();
-  }
-  bool KeptWholeFor(const Branch& branch) const override { return NativeSlot(branch).kept_whole(); }
-  Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t pos,
-                          std::span<const engine::LiveState::Range> ranges) override {
-    if (pos != tokens.size() || pos == 0)
-      return Error("Gemma kept positions differ from its owned token history");
-    return runner_.Adopt(BranchIndex(branch), pos, ranges, KeptLayout());
-  }
-  void SetSpillPlaces(
-      const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& place) override {
-    runner_.SetSpillPlaces(place);
-  }
-  Status ReleaseIdleStateFor(Branch& branch) override {
-    return runner_.ClearIdle(BranchIndex(branch));
-  }
-  Status SpillFor(Branch& branch) override { return runner_.Spill(BranchIndex(branch)); }
-  Status RestoreFor(Branch& branch) override { return runner_.Restore(BranchIndex(branch)); }
-  bool SpilledFor(const Branch& branch) const override { return NativeSlot(branch).is_spilled(); }
-  std::uint64_t SpilledBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).spilled_bytes();
-  }
-  bool LeasedFor(const Branch& branch) const override { return runner_.Held(BranchIndex(branch)); }
-  std::uint64_t RefusedBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).refused_bytes();
-  }
-  Status RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
-                  std::vector<float>& logits) override {
-    return RunChunkFor(default_branch(), all, past, inject, logits);
-  }
-  Status SpecStep(std::span<const std::int32_t>, std::uint32_t, std::uint32_t,
-                  std::vector<std::int32_t>&, std::vector<std::vector<float>>*,
-                  std::uint64_t&) override {
-    return Error("Gemma speculation is unavailable");
-  }
-  Status Settle() override { return SettleFor(default_branch()); }
-  Status ClearState() override { return ClearStateFor(default_branch()); }
-  bool StateUsable() const override { return StateUsableFor(default_branch()); }
-  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
-    return PrepareDecodeStateFor(default_branch(), pos, left);
-  }
-  std::uint64_t target_state_base() const override { return TargetStateBaseFor(default_branch()); }
-  std::uint64_t target_state_bytes() const override {
-    return TargetStateBytesFor(default_branch());
-  }
-  std::uint64_t drafter_state_base() const override { return 0; }
-  std::uint64_t drafter_state_bytes() const override { return 0; }
-  std::uint64_t used_state_bytes() const override { return UsedStateBytesFor(default_branch()); }
-  std::vector<engine::LiveState::Range> used_state_ranges() const override {
-    return UsedStateRangesFor(default_branch());
-  }
-  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return SaveUsedStateFor(default_branch(), host, ranges);
-  }
-  Status RestoreUsedState(void*, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma restore requires owned metadata");
-  }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
-      std::uint32_t pos) const override {
-    return runner_.CheckpointRanges(pos);
-  }
-  Status PrepareRestoreState(std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma restore requires owned metadata");
-  }
-  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
-                             bool to_host) override {
-    return CopyCheckpointStateFor(default_branch(), host, ranges, to_host);
-  }
-
- private:
-  static engine::Gemma2Options Options(const config::ModelEntry& entry,
-                                       const ModelSettings& settings,
-                                       const config::RuntimeRoles& roles,
-                                       const ServingOptions& serving) {
-    return {.artifact = roles.installed / entry.artifact.value_or(""),
-            .out = roles.spill,
-            .context = settings.context.value,
-            .max_rows = settings.prefill_chunk.value,
-            .slots = settings.max_slots.value,
-            .max_wave_rows = settings.prefill_chunk.value * settings.max_slots.value,
-            .max_head_rows = settings.max_slots.value,
-            .prefill_lookahead = serving.gemma2_prefill_lookahead,
-            .capture_ahead = serving.gemma2_capture_ahead,
-            .prepare_state = serving.gemma2_prepare_state,
-            .owner_decode = true,
-            .packed_prefill = true,
-            .shared_q8 = serving.gemma2_shared_q8,
-            .owner_prefill = serving.gemma2_owner_prefill,
-            .flexible_owner_prefill = serving.gemma2_flexible_owner_prefill,
-            .bounded_roots = true,
-            .fuse_norms = true,
-            .fuse_quant_glu = true,
-            .fuse_norm_rope = false,
-            .fuse_norm_add = true};
-  }
-  engine::Gemma2Runner::Slot& NativeSlot(const Branch& branch) const {
-    return *slots_[BranchIndex(branch)];
-  }
-  std::vector<std::int32_t> chat_stops_;
-  config::ModelEntry entry_;
-  std::string artifact_id_;
-  fs::path store_;
-  const model::Gemma2Profile& profile_;
-  engine::Gemma2Options options_;
-  std::uint64_t joined_prefill_groups_ = 0, joined_prefill_rows_ = 0;
-  std::uint64_t joined_groups_ = 0;
-  std::uint64_t joined_units_ = 0;
-  engine::Gemma2Runner runner_;
-  std::array<engine::Gemma2Runner::Slot*, engine::kMaxRequestSlots> slots_{};
-};
-
-class Gemma3 final : public Llm {
- public:
-  Gemma3(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-         const config::RuntimeRoles& roles, int index, const ServingOptions& serving)
-      : entry_(entry),
-        artifact_id_(entry.artifact.value_or("")),
-        store_(roles.installed),
-        profile_(model::Gemma3_4BQat()),
-        options_(Options(entry, settings, roles, serving)),
-        runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
-    name_ = entry.name;
-    settings_ = settings;
-    node_ = &node;
-    context_ = options_.context;
-    max_rows_ = options_.max_rows;
-    configured_rows_ = settings.prefill_chunk.value;
-    checkpoint_directory_ = roles.spill;
-  }
-  engine::PagedModel& paged() override { return runner_; }
-  Status Setup() override {
-    if (entry_.drafter || settings_.speculation.value)
-      return Error("Gemma serving has no qualified assistant or speculative path");
-    auto artifact = OpenInstalled(store_, artifact_id_);
-    if (!artifact) return Error(artifact.error());
-    auto binding = model::BindApprovedGemma3(*artifact);
-    if (!binding) return Error(binding.error());
-    if (auto r = UseChatAssets(*artifact, entry_); !r) return r;
-    if (auto r = runner_.Setup(); !r) return r;
-    for (std::uint32_t i = 0; i < options_.slots; ++i) {
-      auto slot = runner_.request_slot(i);
-      if (!slot) return Error(slot.error());
-      slots_[i] = *slot;
-    }
-    return PrepareBranches(options_.slots, 1);
-  }
-  Status Register() override { return runner_.Register(); }
-  Status Bind() override { return runner_.Bind(); }
-  std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
-  std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
-  std::uint64_t host_input_bytes() const override {
-    // The startup guard sets this bounded heap workspace apart before any
-    // scalar output or per-owner sampling vector grows. One retained frontier
-    // and one prepared result per owner, plus the sampling candidate capacity.
-    // The independently catalog-backed pinned output holds one row per slot.
-    const auto heap = std::uint64_t{options_.slots} * profile_.vocab *
-                      (2 * sizeof(float) + 2 * sizeof(execution::SamplingCandidate));
-    return runner_.host_input_bytes() + heap;
-  }
-  std::uint64_t plan_floor_bytes() const override { return runner_.plan_floor_bytes(); }
-  std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
-  std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
-  std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
-  std::vector<catalog::ExtentId> kept_state() const override { return runner_.kept_state(); }
-  void StateWrittenBack(bool whole) override { runner_.StateWrittenBack(whole); }
-  const catalog::Closure& everything() const override { return runner_.everything(); }
-  const catalog::Closure& request_closure() const override { return runner_.closure(); }
-  std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
-  std::uint32_t logit_width() const override { return profile_.vocab; }
-  bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
-  Status CheckPlaces() override { return runner_.CheckPlaces(); }
-  void DropPlans() override { runner_.DropPlans(); }
-  void ReclaimCandidates(std::uint32_t owner, bool running,
-                         std::vector<memory::ReclaimCandidate>& out) override {
-    runner_.ReclaimCandidates(owner, running, out);
-  }
-  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
-    return runner_.Reclaim(kind, id);
-  }
-  GraphCounts graphs() const override {
-    const auto& g = runner_.graph_stats();
-    return {g.eager, g.captured, g.replayed, g.refused, runner_.graph_count()};
-  }
-  std::string violations() const override { return runner_.coverage().first_violation; }
-  std::string extra() const override {
-    const auto& selected = runner_.plan_selections();
-    const auto& ahead = runner_.lookahead_stats();
-    return std::format(
-        R"({{"architecture":"gemma3","recipe":"bounded-serving","context":{},"configured_slots":{},"max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"owner_prefill":{},"bound_owner_prefill_attention":{},"flexible_owner_prefill":{},"bound_flexible_owner_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{},"prefill_lookahead":{},"capture_ahead":{},"lookahead_built":{},"lookahead_cached":{},"lookahead_refused":{},"captured_first":{},"captured_ahead":{},"dropped_ahead":{}}})",
-        options_.context, options_.slots, options_.max_rows, options_.max_wave_rows,
-        joined_prefill_groups_, joined_prefill_rows_, joined_groups_, joined_units_,
-        selected.owner_attention, selected.packed_prefill_attention, options_.owner_prefill,
-        selected.owner_prefill_attention, options_.flexible_owner_prefill,
-        selected.flexible_owner_prefill_attention, selected.bounded_owner_attention,
-        options_.device_masks, selected.device_masks, selected.norm_rope, selected.norm_add,
-        runner_.greedy_tokens(), options_.prefill_lookahead, options_.capture_ahead, ahead.built,
-        ahead.cached, ahead.refused, ahead.captured_first, ahead.captured_ahead,
-        ahead.dropped_ahead);
-  }
-  std::string slots_report() const override { return SlotsReport(settings_); }
-  std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
-  std::vector<std::uint64_t> KeptRegions() const override {
-    return KeptRegionsOf(NativeSlot(default_branch()).state(), true);
-  }
-  std::vector<std::uint64_t> KeptLayouts() const override {
-    return KeptRegionsOf(NativeSlot(default_branch()).state(), false);
-  }
-  Status PrepareDefaultRequest() override {
-    std::array<Branch*, 1> selected{&default_branch()};
-    return SelectBranches(selected);
-  }
-  Status SelectBranches(std::span<Branch* const> active) override {
-    if (active.size() > options_.slots) return Error("too many Gemma conversation owners");
-    std::array<std::uint32_t, engine::kMaxRequestSlots> ids{};
-    for (std::size_t i = 0; i < active.size(); ++i) {
-      if (!active[i] || &active[i]->model() != this) return Error("foreign Gemma conversation");
-      ids[i] = BranchIndex(*active[i]);
-    }
-    return runner_.SelectSlots(std::span(ids).first(active.size()));
-  }
-  std::span<const std::int32_t> ChatStops() const override { return chat_stops_; }
-  bool supports_generation_waves() const override { return true; }
-  std::size_t generation_wave_capacity() const override { return options_.slots; }
-  std::size_t prefill_wave_capacity() const override { return options_.slots; }
-  bool CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
-                         std::uint32_t peer_rows) const override {
-    if (rows != peer_rows || rows < 2 || past > context_ || rows > context_ - past ||
-        peer_past > context_ || rows > context_ - peer_past)
-      return false;
-    const auto read = [](std::uint32_t end, std::uint32_t capacity) {
-      return std::min(capacity, (end + 255U) / 256U * 256U);
-    };
-    const auto& layout = runner_.layout();
-    return read(past + rows, layout.global_cells) == read(peer_past + rows, layout.global_cells) &&
-           read(past + rows, layout.local_cells) == read(peer_past + rows, layout.local_cells);
-  }
-  std::uint64_t StateBytesThrough(std::uint32_t positions) const override {
-    const auto ranges = runner_.CheckpointRanges(positions);
-    if (!ranges || !slots_[0]) return 0;
-    return slots_[0]->state().UsedBytesOf(*ranges).value_or(0);
-  }
-  void Defaults(chat::Conversation& c) const override {
-    if (!c.enable_thinking) c.enable_thinking = false;
-  }
-
- protected:
-  Status CheckConversation(const chat::Conversation& c) const override {
-    if (c.enable_thinking.value_or(false))
-      return Error("Gemma thought-channel output is not qualified in this serving slice");
-    if (!c.tools.empty())
-      return Error("Gemma generated tool-call output is not qualified in this serving slice");
-    return {};
-  }
-  Status PrepareSamplingScratchFor(Branch& branch, std::size_t logits) override {
-    const auto vocab = profile_.vocab;
-    if (logits != vocab) return Error("Gemma sampling needs its complete target vocabulary");
-    // TopK may reserve 2*k. Reserve the complete bound from empty storage
-    // before the first sample, so subsequent rows never reallocate it.
-    ReserveBranchSamplingScratch(branch, 2 * std::size_t{vocab});
-    return {};
-  }
-  void RetireSamplingScratchFor(Branch& branch) override { DropBranchSamplingScratch(branch); }
-  bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
-  Status RunPreparedGenerationWave(std::span<PreparedGeneration> units) override {
-    // Greedy waves take their tokens from the device: no 1 MiB row back, no
-    // host scan. A wave is all one kind (the runner publishes one or the other).
-    const bool greedy =
-        !units.empty() && std::ranges::all_of(units, [](const auto& u) { return DeviceGreedy(u); });
-    if (units.size() == 1) return RunScalarGenerationUnits(units);
-    if (greedy)
-      for (auto& unit : units) unit.chosen = 0;
-    if (units.empty() || units.size() > options_.slots)
-      return Error("Gemma joined generation exceeds its funded owner envelope");
-    std::array<engine::Gemma3Runner::Work, engine::kMaxRequestSlots> work{};
-    std::array<bool, engine::kMaxRequestSlots> seen{};
-    for (std::size_t i = 0; i < units.size(); ++i) {
-      const auto& unit = units[i];
-      if (unit.branch == nullptr || &unit.branch->model() != this || unit.step.speculative ||
-          unit.step.all.size() != std::size_t{unit.step.position} + 1)
-        return Error("Gemma joined generation needs plain owned one-anchor units");
-      const auto id = BranchIndex(*unit.branch);
-      if (id >= options_.slots || seen[id] ||
-          NativeSlot(*unit.branch).completed_positions() != unit.step.position)
-        return Error("Gemma joined generation needs distinct current native cursors");
-      seen[id] = true;
-      work[i] = {id, unit.step.position, unit.step.all.last(1), greedy ? nullptr : &units[i].row,
-                 greedy ? &*units[i].chosen : nullptr};
-    }
-    auto ran = runner_.Wave(std::span(work).first(units.size()));
-    if (ran) {
-      ++joined_groups_;
-      joined_units_ += units.size();
-    } else {
-      for (auto& unit : units) {
-        unit.result = std::unexpected(ran.error());
-        unit.failed_prefix_valid = StateUsableFor(*unit.branch);
-      }
-      if (!GenerationCohortUsable()) return ran;
-    }
-    return {};
-  }
-  Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
-                     bool inject, std::vector<float>& logits) override {
-    if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty chunk");
-    const engine::Gemma3Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
-    return runner_.Wave(std::span(&work, 1));
-  }
-  std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
-                                          std::uint32_t past, std::int32_t& token) override {
-    if (past >= all.size()) return Error("Gemma needs a plain nonempty chunk");
-    const engine::Gemma3Runner::Work work{BranchIndex(branch), past, all.subspan(past), nullptr,
-                                          &token};
-    return runner_.Wave(std::span(&work, 1));
-  }
-  Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
-                            bool inject, bool want_head, std::vector<float>& logits,
-                            PrefillHint next) override {
-    if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty prefill chunk");
-    const engine::Gemma3Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
-    const engine::Gemma3Runner::PrefillNext hint{work.slot, next.rows, next.after_rows};
-    return runner_.WavePrefill(std::span(&work, 1), want_head,
-                               std::span(&hint, next.rows == 0 ? 0U : 1U), next.want_head,
-                               next.after_want_head);
-  }
-  Status PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows) override {
-    if (past != NativeSlot(branch).completed_positions() || rows == 0 || rows > options_.max_rows ||
-        past > context_ || rows > context_ - past)
-      return Error("Gemma prefill funding needs an owned bounded continuation");
-    return runner_.ReserveStateThrough(BranchIndex(branch), past + rows);
-  }
-  Status RunPreparedPrefillWave(std::span<PreparedPrefill> prepared) override {
-    if (prepared.empty() || prepared.size() > options_.slots)
-      return Error("Gemma prefill exceeds its funded owner envelope");
-    if (prepared.size() == 1) return Llm::RunPreparedPrefillWave(prepared);
-    const bool want_head = prepared.front().want_head;
-    std::array<engine::Gemma3Runner::Work, engine::kMaxRequestSlots> work{};
-    std::array<engine::Gemma3Runner::PrefillNext, engine::kMaxRequestSlots> hints{};
-    for (std::size_t i = 0; i < prepared.size(); ++i) {
-      const auto& unit = prepared[i];
-      if (!unit.branch || &unit.branch->model() != this || unit.want_head != want_head ||
-          unit.all.size() != std::size_t{unit.past} + unit.rows ||
-          !CompatiblePrefill(prepared.front().past, prepared.front().rows, unit.past, unit.rows))
-        return Error("Gemma prefill needs compatible owned chunks");
-      work[i] = {BranchIndex(*unit.branch), unit.past, unit.all.last(unit.rows), unit.logits};
-      hints[i] = {work[i].slot, unit.next.rows, unit.next.after_rows};
-    }
-    const auto heads = FuturePrefillHeads(prepared);
-    auto ran =
-        runner_.WavePrefill(std::span(work).first(prepared.size()), want_head,
-                            std::span(hints).first(prepared.size()), heads.next, heads.after);
-    if (ran && prepared.size() > 1) {
-      ++joined_prefill_groups_;
-      for (const auto& unit : prepared) joined_prefill_rows_ += unit.rows;
-    }
-    if (!ran) {
-      for (auto& unit : prepared) unit.result = Error(ran.error());
-      if (!GenerationCohortUsable()) return ran;
-    }
-    return {};
-  }
-  Status SettleFor(Branch& branch) override {
-    return NativeSlot(branch).state_usable() ? Status{} : Error("Gemma state is quarantined");
-  }
-  Status ClearStateFor(Branch& branch) override { return runner_.Clear(BranchIndex(branch)); }
-  bool StateUsableFor(const Branch& branch) const override {
-    return NativeSlot(branch).state_usable();
-  }
-  bool StateRefusedFor(const Branch& branch) const override {
-    return NativeSlot(branch).refused_state_growth();
-  }
-  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t) override {
-    if (pos != NativeSlot(branch).completed_positions() || pos >= context_)
-      return Error("Gemma decode position differs from its completed state");
-    return runner_.ReserveStateThrough(BranchIndex(branch), pos + 1);
-  }
-  std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
-    return NativeSlot(branch).state().base(0);
-  }
-  std::uint64_t TargetStateBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).state().bytes(0);
-  }
-  std::uint64_t DrafterStateBaseFor(const Branch&) const override { return 0; }
-  std::uint64_t DrafterStateBytesFor(const Branch&) const override { return 0; }
-  std::uint64_t UsedStateBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).used_state_bytes();
-  }
-  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const override {
-    return NativeSlot(branch).state().used_ranges();
-  }
-  Status SaveUsedStateFor(Branch& branch, void* host,
-                          std::span<const engine::LiveState::Range> ranges) override {
-    return runner_.CopyState(BranchIndex(branch), host, ranges, true);
-  }
-  Status RestoreUsedStateFor(Branch&, void*, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma restore requires owned logical-position metadata");
-  }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
-      const Branch& branch, std::uint32_t pos) const override {
-    if (pos != NativeSlot(branch).completed_positions())
-      return Error("Gemma checkpoint boundary differs from completed state");
-    return runner_.CheckpointRanges(pos);
-  }
-  Status PrepareRestoreStateFor(Branch&, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma restore requires owned logical-position metadata");
-  }
-  Status CheckCheckpointMetadataFor(
-      const Branch&, std::uint32_t pos, std::uint32_t cursor,
-      std::span<const engine::LiveState::Range> ranges) const override {
-    if (pos != cursor) return Error("Gemma checkpoint cursor differs from its logical boundary");
-    return runner_.ValidateFootprint(pos, ranges);
-  }
-  Status PreparePositionRestoreFor(Branch& branch, std::uint32_t pos, std::uint32_t cursor,
-                                   std::span<const engine::LiveState::Range> ranges) override {
-    if (auto r = CheckCheckpointMetadataFor(branch, pos, cursor, ranges); !r) return r;
-    // Llm checks the retained record's layout against KeptLayout before
-    // adoption; local snapshots are produced by this same runner.
-    return runner_.PrepareRestore(BranchIndex(branch), pos, ranges, KeptLayout());
-  }
-  Status CompletePositionRestoreFor(Branch& branch, std::uint32_t pos) override {
-    return runner_.CompleteRestore(BranchIndex(branch), pos);
-  }
-  Status CopyCheckpointStateFor(Branch& branch, void* host,
-                                std::span<const engine::LiveState::Range> ranges,
-                                bool to_host) override {
-    return runner_.CopyState(BranchIndex(branch), host, ranges, to_host);
-  }
-  Status RestoreSnapshotFor(Branch& branch, void* host,
-                            std::span<const engine::LiveState::Range> ranges,
-                            std::uint32_t pos) override {
-    if (auto r = PreparePositionRestoreFor(branch, pos, pos, ranges); !r) return r;
-    if (auto r = CopyCheckpointStateFor(branch, host, ranges, false); !r) return r;
-    return CompletePositionRestoreFor(branch, pos);
-  }
-  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
-  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
-  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
-    return BranchDecoding(branch);
-  }
-  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
-    BranchDecoding(branch) = state;
-  }
-  std::uint32_t CursorFor(const Branch& branch) const override {
-    return NativeSlot(branch).completed_positions();
-  }
-  void SetCursorFor(Branch&, std::uint32_t) override {}  // checked restore/adopt publishes it
-  const engine::LiveState* KeptLiveFor(const Branch& branch) const override {
-    return &NativeSlot(branch).state();
-  }
-  bool KeptWholeFor(const Branch& branch) const override { return NativeSlot(branch).kept_whole(); }
-  Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t pos,
-                          std::span<const engine::LiveState::Range> ranges) override {
-    if (pos != tokens.size() || pos == 0)
-      return Error("Gemma kept positions differ from its owned token history");
-    return runner_.Adopt(BranchIndex(branch), pos, ranges, KeptLayout());
-  }
-  void SetSpillPlaces(
-      const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& place) override {
-    runner_.SetSpillPlaces(place);
-  }
-  Status ReleaseIdleStateFor(Branch& branch) override {
-    return runner_.ClearIdle(BranchIndex(branch));
-  }
-  Status SpillFor(Branch& branch) override { return runner_.Spill(BranchIndex(branch)); }
-  Status RestoreFor(Branch& branch) override { return runner_.Restore(BranchIndex(branch)); }
-  bool SpilledFor(const Branch& branch) const override { return NativeSlot(branch).is_spilled(); }
-  std::uint64_t SpilledBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).spilled_bytes();
-  }
-  bool LeasedFor(const Branch& branch) const override { return runner_.Held(BranchIndex(branch)); }
-  std::uint64_t RefusedBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).refused_bytes();
-  }
-  Status RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
-                  std::vector<float>& logits) override {
-    return RunChunkFor(default_branch(), all, past, inject, logits);
-  }
-  Status SpecStep(std::span<const std::int32_t>, std::uint32_t, std::uint32_t,
-                  std::vector<std::int32_t>&, std::vector<std::vector<float>>*,
-                  std::uint64_t&) override {
-    return Error("Gemma speculation is unavailable");
-  }
-  Status Settle() override { return SettleFor(default_branch()); }
-  Status ClearState() override { return ClearStateFor(default_branch()); }
-  bool StateUsable() const override { return StateUsableFor(default_branch()); }
-  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
-    return PrepareDecodeStateFor(default_branch(), pos, left);
-  }
-  std::uint64_t target_state_base() const override { return TargetStateBaseFor(default_branch()); }
-  std::uint64_t target_state_bytes() const override {
-    return TargetStateBytesFor(default_branch());
-  }
-  std::uint64_t drafter_state_base() const override { return 0; }
-  std::uint64_t drafter_state_bytes() const override { return 0; }
-  std::uint64_t used_state_bytes() const override { return UsedStateBytesFor(default_branch()); }
-  std::vector<engine::LiveState::Range> used_state_ranges() const override {
-    return UsedStateRangesFor(default_branch());
-  }
-  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return SaveUsedStateFor(default_branch(), host, ranges);
-  }
-  Status RestoreUsedState(void*, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma restore requires owned metadata");
-  }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
-      std::uint32_t pos) const override {
-    return runner_.CheckpointRanges(pos);
-  }
-  Status PrepareRestoreState(std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma restore requires owned metadata");
-  }
-  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
-                             bool to_host) override {
-    return CopyCheckpointStateFor(default_branch(), host, ranges, to_host);
-  }
-
- private:
-  static engine::Gemma3Options Options(const config::ModelEntry& entry,
-                                       const ModelSettings& settings,
-                                       const config::RuntimeRoles& roles,
-                                       const ServingOptions& serving) {
-    return {.artifact = roles.installed / entry.artifact.value_or(""),
-            .out = roles.spill,
-            .context = settings.context.value,
-            .max_rows = settings.prefill_chunk.value,
-            .slots = settings.max_slots.value,
-            .max_wave_rows = settings.prefill_chunk.value * settings.max_slots.value,
-            .max_head_rows = settings.max_slots.value,
-            .owner_decode = true,
-            .packed_prefill = true,
-            .shared_q8 = serving.gemma3_shared_q8,
-            .owner_prefill = serving.gemma3_owner_prefill,
-            .flexible_owner_prefill = serving.gemma3_flexible_owner_prefill,
-            .bounded_roots = true,
-            .device_masks = serving.gemma3_device_masks,
-            .fuse_norms = true,
-            .fuse_quant_glu = true,
-            .fuse_norm_rope = true,
-            .fuse_norm_add = true,
-            .prefill_lookahead = serving.gemma3_prefill_lookahead,
-            .capture_ahead = serving.gemma3_capture_ahead,
-            .prepare_state = serving.gemma3_prepare_state};
-  }
-  engine::Gemma3Runner::Slot& NativeSlot(const Branch& branch) const {
-    return *slots_[BranchIndex(branch)];
-  }
-  std::vector<std::int32_t> chat_stops_;
-  config::ModelEntry entry_;
-  std::string artifact_id_;
-  fs::path store_;
-  const model::Gemma3Profile& profile_;
-  engine::Gemma3Options options_;
-  std::uint64_t joined_prefill_groups_ = 0, joined_prefill_rows_ = 0;
-  std::uint64_t joined_groups_ = 0;
-  std::uint64_t joined_units_ = 0;
-  engine::Gemma3Runner runner_;
-  std::array<engine::Gemma3Runner::Slot*, engine::kMaxRequestSlots> slots_{};
 };
 
 // Qwen3.8 Flash Next (engine/qwen38_runner.h), with its MTP block as its
@@ -3292,22 +2468,27 @@ void Server::Log(std::string_view text) {
 }
 
 Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index) {
-  // A family moved to the component engine (the diagnostic set, while its
-  // migration is checked): the adapter of its spec's pipeline kind, which
-  // its architecture's mapping names.
-  if (!entry.composition &&
-      std::ranges::contains(options_.component_engine, settings.architecture)) {
+  // A family on the component engine: the adapter of its spec's pipeline
+  // kind, which its architecture's mapping names.
+  if (!entry.composition && OnComponentEngine(settings.architecture)) {
     const spec::Mapping* mapping = spec::FindMapping(settings.architecture);
     if (mapping == nullptr) {
       return Error(std::format("model {}: the component engine has no mapping of architecture {}",
                                entry.name, settings.architecture));
     }
     switch (mapping->pipeline) {
-      case spec::PipelineKind::kLlm:
-        models_.push_back(
+      case spec::PipelineKind::kLlm: {
+        auto llm =
             std::make_unique<EngineLlm>(node_, entry, settings, roles_, index,
-                                        ComponentLlmBuild(node_, roles_.installed, entry, index)));
+                                        ComponentLlmBuild(node_, roles_.installed, entry, index));
+        if (options_.diagnostic_skip_turn_checkpoints) {
+          llm->set_turn_checkpoints(false);
+          Log(std::format("model {}: saves no turn checkpoint (a speed gate's diagnostic)",
+                          entry.name));
+        }
+        models_.push_back(std::move(llm));
         return {};
+      }
       case spec::PipelineKind::kImage:
         models_.push_back(std::make_unique<EngineImage>(
             node_, entry, settings, index, ComponentImageBuild(settings.architecture)));
@@ -3340,10 +2521,6 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                                              : engine::Gemma4Variant::k31B;
     models_.push_back(
         std::make_unique<Gemma>(node_, entry, settings, roles_, index, variant, options_));
-  } else if (settings.architecture == "gemma2") {
-    models_.push_back(std::make_unique<Gemma2>(node_, entry, settings, roles_, index, options_));
-  } else if (settings.architecture == "gemma3") {
-    models_.push_back(std::make_unique<Gemma3>(node_, entry, settings, roles_, index, options_));
   } else if (settings.architecture == "qwen4exp") {
     models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index,
                                                options_.diagnostic_plain_device_tokens, options_));

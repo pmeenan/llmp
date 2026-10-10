@@ -452,9 +452,14 @@ void EngineLlm::RunPlain(std::span<PreparedGeneration> units) {
   std::vector<en::DecodeWork> work;
   std::vector<bool> greedy;
   work.reserve(units.size());
+  // A wave chooses on the device only when every unit may (a step's greedy
+  // segments are all of them): one that keeps its rows or samples keeps
+  // the whole wave on rows, joined, as the M3 classes' homogeneous waves.
+  const bool device =
+      device_greedy_ &&
+      std::ranges::all_of(units, [](const PreparedGeneration& unit) { return DeviceGreedy(unit); });
   for (PreparedGeneration& unit : units) {
     unit.chosen.reset();
-    const bool device = device_greedy_ && DeviceGreedy(unit);
     greedy.push_back(device);
     work.push_back({.slot = Slot(*unit.branch),
                     .history = unit.step.all,
@@ -473,13 +478,12 @@ void EngineLlm::RunPlain(std::span<PreparedGeneration> units) {
     }
     if (greedy[i]) {
       std::int32_t token = 0;
-      const std::size_t at = std::size_t{out.segment} * sizeof(token);
-      if (out.joined.size() < at + sizeof(token)) {
+      if (out.outputs.size() != sizeof(token)) {
         unit.result = Error(std::format("{}'s greedy step returned no token", name_));
         unit.anchor_processed = true;
         continue;
       }
-      std::memcpy(&token, out.joined.data() + at, sizeof(token));
+      std::memcpy(&token, out.outputs.data(), sizeof(token));
       if (token < 0 || std::cmp_greater_equal(token, logit_width_)) {
         unit.result = Error(std::format("{}'s greedy step chose token {}", name_, token));
         unit.anchor_processed = true;
@@ -651,10 +655,10 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
     of.push_back(i);
   }
   // The same owners' next two chunks, as their sessions said (an owner
-  // whose prompt ends there drops out): a future is a step only when they
-  // compose into one.
+  // whose prompt ends there drops out), as the steps they will run in:
+  // together when Llm would join them (CompatiblePrefill), else each alone.
   const auto future = [&](std::span<const std::size_t> owners,
-                          bool after) -> std::optional<pl::StepShape> {
+                          bool after) -> std::vector<pl::StepShape> {
     std::vector<en::PendingWork> next;
     for (const std::size_t j : owners) {
       const PreparedPrefill& unit = prepared[of[j]];
@@ -673,17 +677,43 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
                       .row_invariant = false,
                       .alone = false});
     }
-    if (next.empty()) return std::nullopt;
-    en::Composition composed = composer_->Compose(next);
-    if (composed.steps.size() != 1 || !composed.refused.empty()) return std::nullopt;
-    return std::move(composed.steps.front().shape);
+    std::vector<pl::StepShape> steps;
+    if (next.empty()) return steps;
+    const bool join = std::ranges::all_of(next, [&](const en::PendingWork& w) {
+      return CompatiblePrefill(next.front().past, next.front().rows, w.past, w.rows);
+    });
+    const auto compose = [&](std::span<const en::PendingWork> work) {
+      en::Composition composed = composer_->Compose(work);
+      if (!composed.refused.empty()) return false;
+      for (en::ComposedStep& c : composed.steps) steps.push_back(std::move(c.shape));
+      return true;
+    };
+    if (join) {
+      if (!compose(next)) steps.clear();
+      return steps;
+    }
+    for (const en::PendingWork& w : next) {
+      if (!compose(std::span(&w, 1))) return {};
+    }
+    return steps;
   };
   const en::AheadFor ahead = [&](const en::ComposedStep& /*step*/,
                                  std::span<const std::size_t> owners) {
     en::StepAhead a;
     if (prefill_.lookahead == 0 && !prefill_.capture_ahead && !prefill_.prepare_ahead) return a;
-    a.shapes[0] = future(owners, false);
-    if (a.shapes[0]) a.shapes[1] = future(owners, true);
+    std::vector<pl::StepShape> near = future(owners, false);
+    if (near.size() == 1) {
+      a.shapes[0] = std::move(near.front());
+      std::vector<pl::StepShape> far = future(owners, true);
+      if (far.size() == 1) a.shapes[1] = std::move(far.front());
+    } else if (near.size() > 1) {
+      // The owners' next chunks step apart (a prompt's last chunk is
+      // shorter than its peer's): the first two of those steps, each built
+      // while this one runs rather than on its own first run, when the
+      // device would wait for it.
+      a.shapes[0] = std::move(near[0]);
+      a.shapes[1] = std::move(near[1]);
+    }
     a.build = std::min<std::uint32_t>(prefill_.lookahead, 2);
     a.capture_ahead = prefill_.capture_ahead;
     a.prepare = prefill_.prepare_ahead;
@@ -817,11 +847,10 @@ std::optional<Status> EngineLlm::RunGreedyChunkFor(Branch& branch,
   const en::DecodeReport report = plain_->Step(work);
   const en::DecodeOutcome& out = report.outcomes.front();
   if (out.refusal) return Error(out.refusal->what);
-  const std::size_t at = std::size_t{out.segment} * sizeof(token);
-  if (out.joined.size() < at + sizeof(token)) {
+  if (out.outputs.size() != sizeof(token)) {
     return Error(std::format("{}'s greedy step returned no token", name_));
   }
-  std::memcpy(&token, out.joined.data() + at, sizeof(token));
+  std::memcpy(&token, out.outputs.data(), sizeof(token));
   if (token < 0 || std::cmp_greater_equal(token, logit_width_)) {
     return Error(std::format("{}'s greedy step chose token {}", name_, token));
   }
@@ -987,11 +1016,12 @@ Status EngineLlm::CheckCheckpointMetadataFor(
 
 Status EngineLlm::PreparePositionRestoreFor(Branch& branch, std::uint32_t position,
                                             std::uint32_t cursor,
-                                            std::span<const en::LiveState::Range> footprint) {
+                                            std::span<const en::LiveState::Range> footprint,
+                                            std::string_view layout) {
   if (auto checked = CheckCheckpointMetadataFor(branch, position, cursor, footprint); !checked) {
     return checked;
   }
-  return runner_->slots().PrepareRestore(Slot(branch), position, footprint, KeptLayout());
+  return runner_->slots().PrepareRestore(Slot(branch), position, footprint, layout);
 }
 
 Status EngineLlm::CompletePositionRestoreFor(Branch& branch, std::uint32_t position) {
@@ -1006,7 +1036,9 @@ Status EngineLlm::CompletePositionRestoreFor(Branch& branch, std::uint32_t posit
 Status EngineLlm::RestoreSnapshotFor(Branch& branch, void* host,
                                      std::span<const en::LiveState::Range> ranges,
                                      std::uint32_t cursor) {
-  if (auto prepared = PreparePositionRestoreFor(branch, cursor, cursor, ranges); !prepared) {
+  // A snapshot this process took: its own layout.
+  if (auto prepared = PreparePositionRestoreFor(branch, cursor, cursor, ranges, KeptLayout());
+      !prepared) {
     return prepared;
   }
   if (auto copied = CopyCheckpointStateFor(branch, host, ranges, /*to_host=*/false); !copied) {
@@ -1017,12 +1049,13 @@ Status EngineLlm::RestoreSnapshotFor(Branch& branch, void* host,
 
 Status EngineLlm::AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
                                    std::uint32_t cursor,
-                                   std::span<const en::LiveState::Range> ranges) {
+                                   std::span<const en::LiveState::Range> ranges,
+                                   std::string_view layout) {
   if (auto built = Built(); !built) return built;
   if (cursor == 0 || cursor != tokens.size()) {
     return Error(std::format("{}'s kept positions differ from its token history", name_));
   }
-  if (auto adopted = runner_->slots().Adopt(Slot(branch), cursor, ranges, KeptLayout()); !adopted) {
+  if (auto adopted = runner_->slots().Adopt(Slot(branch), cursor, ranges, layout); !adopted) {
     return adopted;
   }
   ResetDrafters(Slot(branch));

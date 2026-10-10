@@ -547,7 +547,7 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       if (!type) return Refused("a fill of no GGML type");
       ggml_tensor* t = ggml_fill(c_, ggml_new_tensor(c_, *type, 4, dims.data()),
                                  n.Params<ir::FillParams>().value);
-      // As the builders' fills: no shape leaf (gemma2_graph.cc Filled).
+      // As the M3 builders' fills were: no shape leaf.
       t->src[0] = nullptr;
       return t;
     }
@@ -898,13 +898,17 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     leaf += Round(ggml_nbytes(t), 256) + 256;
     return at;
   };
+  // A measurement binds placeholders where it has no address; a program
+  // that runs is refused one (a weight or state the caller does not bind).
   for (const auto& [t, w] : weight_leaves_) {
     const std::uint64_t address =
         addresses.weight ? addresses.weight(w->ref, w->parts.front().second) : 0;
+    if (address == 0 && !addresses.measuring()) return Refused("a weight has no address");
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
   }
   for (const auto& [t, s] : state_leaves_) {
     const std::uint64_t address = addresses.state ? addresses.state(s->ref) : 0;
+    if (address == 0 && !addresses.measuring()) return Refused("a state tensor has no address");
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
   }
   for (const auto& [t, slot] : input_leaves_) {

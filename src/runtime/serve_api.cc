@@ -2302,6 +2302,13 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       cancellable != nullptr && std::string_view(cancellable) == "1") {
     serving.hold_cancellable = true;
   }
+  // M3.6's speed gate's diagnostic (ServingOptions::diagnostic_skip_turn_
+  // checkpoints; temporary, never in configuration).
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): read before any thread starts
+  if (const char* skip = std::getenv("LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS");
+      skip != nullptr && std::string_view(skip) == "1") {
+    serving.diagnostic_skip_turn_checkpoints = true;
+  }
   {
     Server server(config, roles, serving, log);
     server.SetPatience(&patience);

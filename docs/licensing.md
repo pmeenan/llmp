@@ -114,13 +114,18 @@ graph and compressor plan (`src/kernels/ggml/dsv4_graph.cc`,
 `src/model/dsv4.cc`; llama.cpp is MIT like GGML, under the same
 copyright) and of its Qwen3.8 graph (`qwen4exp.cpp`), QSA block tables and
 n-gram hash (`src/kernels/ggml/qwen38_graph.cc`, `src/model/qwen38.cc`).
-The Gemma3 descriptor graph (`src/kernels/ggml/gemma3_graph.cc`) ports
+The Gemma3 descriptor graph (`src/kernels/ggml/gemma3_graph.cc`) ported
 llama.cpp v0.6.0/d81235049384534c167caea52b85a694f6103d14's Gemma3 text and
 GeGLU build-FFN graph arithmetic, retaining MIT AND Apache-2.0 and the GGML
-authors' copyright. Its native state, binding and plan adapter are
-llmpalooza-authored Apache-2.0. The source-lock scope records the derivative;
-existing packaged MIT attribution covers it. This incorporates no upstream
-backend runtime or new archive members.
+authors' copyright; its native state, binding and plan adapter were
+llmpalooza-authored Apache-2.0. The file was deleted in M3.6 (slice G1d,
+2026-10-10) with the Gemma 2 and Gemma 3 runners: the shared components
+(`src/components/`, Apache-2.0 only) now describe the same graph as data and
+`kernels/ggml/lower.cc` lowers it onto GGML's kernels, which keep GGML's
+notice. Whether the components, written to reproduce that graph's operations
+and order, carry the derivative's MIT notice is not decided here (owner
+question); the packaged MIT attribution of GGML and llama.cpp is unchanged.
+This incorporates no upstream backend runtime or new archive members.
 
 Llmpalooza's own kernels for Qwen3.8's formats (`src/kernels/ggml/llmp_ops.*`)
 and its fusions of Qwen3.8's GGML nodes (`llmp_fused.cu`, which repeats

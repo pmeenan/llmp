@@ -69,8 +69,8 @@ are recorded separately as they complete.
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next GGUF](#qwen38-flash-next-gguf) UD-IQ3_XXS | target | Served (runtime registers it; not in the swap table) | resident-correct against llama.cpp on the same GGUF; paged through the runtime |
 | [Qwen-Image-2.1](#qwen-image-21) BF16 | composition of 3 components | Served (M3), one prompt a process | paged-correct |
-| [Gemma 2 2B](#gemma-2-2b) Q8_0 | target | Served (M3.5, bounded): context 8,192, one or two slots | not verified; bounded controls only (below) |
-| [Gemma 3 4B QAT](#gemma-3-4b-qat) Q4_0 | target | Served (M3.5, bounded): context 4,096 with one or two slots, or 8,448 with one | not verified; bounded controls only (below) |
+| [Gemma 2 2B](#gemma-2-2b) Q8_0 | target | Served (M3.5, bounded; on the shared engine since M3.6): context 8,192, one or two slots | not verified; bounded controls only (below) |
+| [Gemma 3 4B QAT](#gemma-3-4b-qat) Q4_0 | target | Served (M3.5, bounded; on the shared engine since M3.6): context 4,096 with one or two slots, or 8,448 with one | not verified; bounded controls only (below) |
 | [Gemma 4 26B-A4B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_M and [31B](#gemma-4-26b-a4b-and-31b) UD-Q4_K_XL | target | Served (M3.5, bounded): optimized recipe at context 8,192 and four slots; scalar route beyond | not verified; bounded controls only (below) |
 | [Qwen2.5-0.5B-Instruct FP16](#m2-fixtures) | fixture | Fixture | paged-correct |
 | [Qwen2.5-0.5B-Instruct EXL3](#m2-fixtures) 4.0 and 4.5 bpw | fixtures | Fixture | paged-correct |
@@ -87,6 +87,17 @@ quality/performance or embedding API is qualified for this candidate. This
 listing is separate from the supported summary above.
 
 ## Architecture foundations
+
+*Gemma 2 and Gemma 3 since M3.6's migration (slice G1d): the bounded
+runners, plans, graph builders, state layouts and serving classes the next
+paragraphs and [gemma2.md](gemma2.md) and [gemma3.md](gemma3.md) record
+are deleted; both models serve on the shared engine, the 1% speed gate
+passed against the frozen M3 build
+([results](experiments/m36-baselines/README.md#gemma-2-and-gemma-3-on-the-shared-engine-slice-g1c)),
+and `model/gemma{2,3}.h` keep only the approved profile and tensor binding.
+The controls and screens below were taken on the M3 runners; the shared
+engine's own are in [engine.md](engine.md#the-serving-adapter) and
+`gemma_engine_serving_gpu_test`.*
 
 Gemma 2 2B Q8_0 has a separate [closed profile and bounded runner](gemma2.md)
 for all 288 actual descriptors, with checked quantized readable tails and
@@ -868,6 +879,12 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 
 - **Architecture:** Gemma 2 (`model/gemma2.h`), a closed profile with a
   checked binding of all 288 actual tensors ([gemma2.md](gemma2.md)).
+  Served by the shared engine (D-107): the spec the `gemma2` mapping makes
+  of the artifact, its components and the mapping's policy over GGML's
+  kernels, step for step bit-identical to the M3 runner it replaced (now
+  deleted) and at the 1% speed gate against it
+  ([engine.md](engine.md#the-serving-adapter)); kept conversations in
+  record version 2.
 - **Checkpoint:** `bartowski/gemma-2-2b-it-GGUF@855f67ca`,
   `gemma-2-2b-it-Q8_0.gguf`, 2,784,495,456 bytes.
 - **Artifact:** v0 `eb18d30d…`, deep-verified
@@ -898,7 +915,12 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 ## Gemma 3 4B QAT
 
 - **Architecture:** Gemma 3 (`model/gemma3.h`), a checked profile and strict
-  binding ([gemma3.md](gemma3.md)).
+  binding ([gemma3.md](gemma3.md)). Served by the shared engine (D-107):
+  the spec the `gemma3` mapping makes of the artifact, its components and
+  the mapping's policy over GGML's kernels, step for step bit-identical to
+  the M3 runner it replaced (now deleted) and at the 1% speed gate against
+  it ([engine.md](engine.md#the-serving-adapter)); kept conversations in
+  record version 2.
 - **Checkpoint:** `ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d0`,
   `gemma-3-4b-it-qat-Q4_0.gguf`, 2,526,080,992 bytes.
 - **Artifact:** v0 `8c710341…`, deep-verified

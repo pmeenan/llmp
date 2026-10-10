@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Descriptor-only funding oracle on actual device selectors; no model work is submitted.
+// Descriptor-only funding oracle on actual device selectors; no model work is
+// submitted. (Gemma 2 and Gemma 3 were measured by the same oracle on their M3
+// plans, retired with their runners; the shared runner's measurement is
+// model_runner_test's.)
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -19,14 +22,10 @@
 #include <vector>
 
 #include "base/bytes.h"
-#include "engine/gemma2_plan.h"
-#include "engine/gemma3_plan.h"
 #include "engine/gemma4_plan.h"
 #include "engine/support.h"
 #include "execution/registry.h"
 #include "expected_error.h"
-#include "gemma2_fixture.h"
-#include "gemma3_fixture.h"
 #include "gemma4_fixture.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/implementations.h"
@@ -39,116 +38,6 @@ namespace md = llmp::model;
 
 template <int Family>
 struct Adapter;
-
-template <>
-struct Adapter<2> {
-  using Model = en::Gemma2Model;
-  using Shape = kg::Gemma2ChunkShape;
-  using Segment = md::Gemma2Segment;
-  using Options = kg::Gemma2GraphOptions;
-  static constexpr std::uint32_t kContext = 8192;
-  static constexpr std::uint32_t kRows = 128;
-  static constexpr std::uint32_t kBudget = 256;
-  static constexpr std::uint32_t kSlots = 2;
-  static const auto& Profile([[maybe_unused]] std::uint32_t size) { return md::Gemma2_2B(); }
-  static auto Binding(const auto& p, [[maybe_unused]] std::uint32_t size) {
-    return md::BindGemma2(p, "gemma2", llmp::test_support::gemma2::Resources());
-  }
-  static auto State(const auto& p) { return md::Gemma2State(p, kContext, kRows); }
-  static auto Chunk(const auto& p, const auto& state, const auto& segments) {
-    return md::Gemma2Chunk(p, state, segments, false, 256, kBudget);
-  }
-  static auto Build(kg::TensorArena& arena, const auto& p, const auto& binding, const auto& state,
-                    const Shape& shape, const Options& o, const kg::DeviceChoices& choices) {
-    return kg::BuildGemma2Graph(arena, p, binding, state, shape, o, choices.dense_mmvq_shape);
-  }
-  static auto Plan(const Model& model, const Shape& shape, const kg::DeviceChoices& choices,
-                   std::optional<en::ActivationMeasurement> measurement = std::nullopt) {
-    return en::PlanGemma2Chunk(model, shape, choices, 0, 0, {}, measurement);
-  }
-  static auto Source(const auto& graph) { return en::Gemma2SourceBytes(graph); }
-  static auto Host(const auto& p, const auto& state, const auto& segments) {
-    return md::Gemma2HostInputBytes(p, state, segments, false, 256, kBudget);
-  }
-  static std::size_t Tensors(const auto& p, std::size_t owners, const Options& o) {
-    (void)o;
-    return kg::Gemma2GraphTensors(p, owners);
-  }
-  static void Output(Shape& shape, unsigned mode, std::uint32_t owners, std::uint32_t total,
-                     bool features) {
-    shape.output_mode = mode == 2 ? kg::Gemma2OutputMode::kStateOnly : kg::Gemma2OutputMode::kHead;
-    shape.outputs = mode == 2 ? 0U : mode == 1 ? total : owners;
-    shape.greedy = mode == 3;
-    (void)features;
-  }
-  static Options Policy() {
-    Options o;
-    o.max_total_rows = kBudget;
-    o.shared_q8 = true;
-    o.owner_decode = true;
-    o.device_masks = true;
-    o.narrow_final = true;
-    o.packed_prefill = true;
-    o.owner_prefill = true;
-    o.flexible_owner_prefill = true;
-    return o;
-  }
-};
-
-template <>
-struct Adapter<3> {
-  using Model = en::Gemma3Model;
-  using Shape = kg::Gemma3ChunkShape;
-  using Segment = md::Gemma3Segment;
-  using Options = kg::Gemma3GraphOptions;
-  static constexpr std::uint32_t kContext = 4096;
-  static constexpr std::uint32_t kRows = 128;
-  static constexpr std::uint32_t kBudget = 256;
-  static constexpr std::uint32_t kSlots = 2;
-  static const auto& Profile([[maybe_unused]] std::uint32_t size) { return md::Gemma3_4BQat(); }
-  static auto Binding(const auto& p, [[maybe_unused]] std::uint32_t size) {
-    return md::BindGemma3(p, "gemma3", llmp::test_support::gemma3::Resources());
-  }
-  static auto State(const auto& p) { return md::Gemma3State(p, kContext, kRows); }
-  static auto Chunk(const auto& p, const auto& state, const auto& segments) {
-    return md::Gemma3Chunk(p, state, segments, false, 256, kBudget);
-  }
-  static auto Build(kg::TensorArena& arena, const auto& p, const auto& binding, const auto& state,
-                    const Shape& shape, const Options& o, const kg::DeviceChoices& choices) {
-    return kg::BuildGemma3Graph(arena, p, binding, state, shape, o, choices.dense_mmvq_shape);
-  }
-  static auto Plan(const Model& model, const Shape& shape, const kg::DeviceChoices& choices,
-                   std::optional<en::ActivationMeasurement> measurement = std::nullopt) {
-    return en::PlanGemma3Chunk(model, shape, choices, 0, 0, {}, measurement);
-  }
-  static auto Source(const auto& graph) { return en::Gemma3SourceBytes(graph); }
-  static auto Host(const auto& p, const auto& state, const auto& segments) {
-    return md::Gemma3HostInputBytes(p, state, segments, false, 256, kBudget);
-  }
-  static std::size_t Tensors(const auto& p, std::size_t owners, const Options& o) {
-    (void)o;
-    return kg::Gemma3GraphTensors(p, owners);
-  }
-  static void Output(Shape& shape, unsigned mode, std::uint32_t owners, std::uint32_t total,
-                     bool features) {
-    shape.output_mode = mode == 2 ? kg::Gemma3OutputMode::kStateOnly : kg::Gemma3OutputMode::kHead;
-    shape.outputs = mode == 2 ? 0U : mode == 1 ? total : owners;
-    shape.greedy = mode == 3;
-    (void)features;
-  }
-  static Options Policy() {
-    Options o;
-    o.max_total_rows = kBudget;
-    o.shared_q8 = true;
-    o.owner_decode = true;
-    o.device_masks = true;
-    o.narrow_final = true;
-    o.packed_prefill = true;
-    o.owner_prefill = true;
-    o.flexible_owner_prefill = true;
-    return o;
-  }
-};
 
 template <>
 struct Adapter<4> {
@@ -363,8 +252,6 @@ TEST(GemmaMeasurementGpu, AllConfiguredCompositionsPreserveExactFunding) {
   auto launch =
       kg::LaunchContext::Create(0, **execution, *stream, {.base = 0, .size = llmp::base::Bytes(0)});
   ASSERT_TRUE(launch);
-  Oracle<2>(**launch, 2);
-  Oracle<3>(**launch, 3);
   Oracle<4>(**launch, 26);
   Oracle<4>(**launch, 31);
   const auto retire = [&]() {

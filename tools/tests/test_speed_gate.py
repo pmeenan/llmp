@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 
 sys.dont_write_bytecode = True
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -167,6 +168,8 @@ class Verdicts(unittest.TestCase):
             "gemma2-b03-p2-new.json": lambda r: r.update(problems=["C1: 1 cached prompt tokens"]),
             "gemma2-b04-p2-new.json": lambda r: r.update(runtime_sha256="rebuilt"),
             "gemma2-b01-p3-old.json": lambda r: r.update(config_sha256="other"),
+            "gemma2-b02-p2-new.json": lambda r: r.update(
+                runtime_env={"LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS": "1"}),
             "gemma2-b01-p0-old.json": lambda r: r["family_spec"].update(repeats=2),
         }
         with tempfile.TemporaryDirectory() as tmp:  # block counts are the verdict's own
@@ -369,6 +372,53 @@ class Verdicts(unittest.TestCase):
         self.assertNotIn("--config-template", lines[3])
 
 
+    def test_plan_gives_each_arm_its_diagnostic_switches(self):
+        text = io.StringIO()
+        switch = "LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1"
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(text):
+            gate.main(["plan", "--family", "gemma2", "--old", "/o", "--new", "/n",
+                       "--out", tmp, "--blocks", "1", "--new-env", switch])
+        prime, *lines = text.getvalue().splitlines()
+        self.assertNotIn("--runtime-env", prime)
+        self.assertNotIn("--runtime-env", lines[0])
+        self.assertIn(f"--runtime-env {switch}", lines[1])
+        self.assertIn(f"--runtime-env {switch}", lines[2])
+        self.assertNotIn("--runtime-env", lines[3])
+
+    def test_only_diagnostic_switches_reach_the_runtime(self):
+        self.assertEqual(gate.parse_runtime_env(["LLMP_DIAGNOSTIC_B=1", "LLMP_DIAGNOSTIC_A=x"]),
+                         {"LLMP_DIAGNOSTIC_A": "x", "LLMP_DIAGNOSTIC_B": "1"})
+        for bad in (["CUDA_VISIBLE_DEVICES=1"], ["LLMP_DIAGNOSTIC_A"],
+                    ["LLMP_DIAGNOSTIC_A=1", "LLMP_DIAGNOSTIC_A=2"]):
+            with self.subTest(bad), self.assertRaises(SystemExit):
+                gate.parse_runtime_env(bad)
+        with unittest.mock.patch.dict(gate.os.environ, {"LLMP_DIAGNOSTIC_STRAY": "1"}):
+            env = gate.arm_env({"LLMP_DIAGNOSTIC_A": "1"})
+        self.assertNotIn("LLMP_DIAGNOSTIC_STRAY", env)
+        self.assertEqual(env["LLMP_DIAGNOSTIC_A"], "1")
+        self.assertEqual(env["CUDA_DISABLE_PTX_JIT"], "1")
+
+    def test_an_arm_with_one_switch_set_in_every_run_is_valid(self):
+        n = gate.FAMILIES["gemma2"].min_blocks
+        switch = {"LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS": "1"}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            write_blocks(out, "gemma2", [(self.SAME, self.SAME)] * n)
+            for path in (out / "runs").glob("*-new.json"):
+                r = json.loads(path.read_text())
+                r["runtime_env"] = switch
+                path.write_text(json.dumps(r))
+            report = gate.verdicts(out, "gemma2")["gemma2"]
+            self.assertEqual(report["verdict"], "PASS", report["invalid"])
+            self.assertEqual(report["diagnostics"]["new"], [json.dumps(switch)])
+            # The priming run is the old arm's, switches included.
+            prime = out / "primes" / "gemma2-s1.json"
+            r = json.loads(prime.read_text())
+            r["runtime_env"] = switch
+            prime.write_text(json.dumps(r))
+            self.assertEqual(gate.verdicts(out, "gemma2")["gemma2"]["verdict"], "INVALID")
+
+
 class Cells(unittest.TestCase):
     def request(self, send, times, end, tokens):
         return {"t_send": send, "t_first": times[0], "t_last": times[-1], "t_end": end,
@@ -447,7 +497,7 @@ class Service(unittest.TestCase):
             port = listener.getsockname()[1]
             with self.assertRaisesRegex(RuntimeError, "already listens"):
                 gate.Service(pathlib.Path("/nonexistent"), pathlib.Path("/c"),
-                             pathlib.Path(tmp), port)
+                             pathlib.Path(tmp), port, {})
 
     def test_a_request_that_cannot_connect_releases_its_cell(self):
         with socket.socket() as listener, socket.socket() as closed:

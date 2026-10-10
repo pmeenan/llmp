@@ -1484,10 +1484,25 @@ each is checked against the design as M3.6 proceeds.
       TP, PP, EP, TP2×PP2 and six-device mixes equal the unpartitioned
       graphs on the reference executor
       ([as built](engine-components.md#partitioning)).
-- [ ] **Migrate Gemma2 and Gemma3**, then delete their runners, plans,
+- [x] **Migrate Gemma2 and Gemma3**, then delete their runners, plans,
       graph builders, bindings and serving classes.
       - [x] Components, patterns and the mapping.
-      - [ ] Wiring and the gate, then deletion of the old code.
+      - [x] Wiring and the gate, then deletion of the old code.
+            *2026-10-09:* wired: Gemma 2 and Gemma 3 serve on the shared
+            engine by default (the mapping's policy, the head's width,
+            cuBLAS over a runner-mapped workspace, device greedy;
+            [as built](engine.md#the-serving-adapter)); same-binary heads
+            and tokens bit-identical to the M3 classes, the quality
+            control's scores and the near-8K switch rows' continuations
+            equal the frozen baseline's. The 1% gate passes (Gemma 2 at 5
+            blocks, Gemma 3 at 7; the new arm runs with the gate-only
+            switch `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`, which saves no
+            turn checkpoint, as the baseline's M3 classes never could;
+            [the results](experiments/m36-baselines/README.md#gemma-2-and-gemma-3-on-the-shared-engine-slice-g1c)).
+            *2026-10-10:* deleted: the M3 runners, plans, graph builders and
+            serving classes with their `ServingOptions` flags, tests and
+            benchmarks; `model/gemma{2,3}.h` keep the approved profile and
+            tensor binding the admission and the mappings use.
 - [ ] **Migrate Gemma4** 26B-A4B and 31B with their assistants.
       - [x] Components, patterns and the mapping.
             *2026-10-09:* the components and mappings landed (slice G2a:

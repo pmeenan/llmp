@@ -196,6 +196,8 @@ class LaunchContext {
   bool UsesStream(const providers::DeviceExecution& execution, providers::StreamId stream) const {
     return &execution_ == &execution && stream_ == stream;
   }
+  // The stream's native handle (a step launch checks its runner's is it).
+  providers::NativeStream native_stream() const { return native_; }
   int device() const { return device_; }
   Workspace workspace() const { return workspace_; }
   // The lent cuBLAS handle, if any, while the stream is selected: a lane

@@ -3,6 +3,15 @@
 
 # Gemma 2 bounded execution
 
+> **Retired (M3.6, slice G1d).** Gemma 2 serves on the shared engine
+> (D-107): its state layout, step inputs, graph and plan are the components
+> of the `gemma2` mapping (`src/spec/mappings/gemma2.*`) lowered onto GGML,
+> and the files this record names (`model/gemma2.*`'s state and input
+> builders, `kernels/ggml/gemma2_graph.*`, `engine/gemma2_plan.*` and
+> `engine/gemma2_runner.*`) and the serving class are deleted;
+> `model/gemma2.h` keeps the approved profile and tensor binding. What
+> follows is the record of the M3.5 runner's controls and measurements.
+
 `model/gemma2.h` supplies a closed profile and checked tensor binding for the
 approved Gemma 2 2B Q8_0 checkpoint. The bounded execution source adds checked
 state/inputs, a native graph/plan and a bounded runner over the shared paged engine.

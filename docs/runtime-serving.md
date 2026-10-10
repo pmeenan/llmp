@@ -127,7 +127,9 @@ stock. The [public scalar 8K gate](experiments/gemma3-execution/README.md#public
 adds exact full-prefill literal repeats/refusal recovery and one Gemma3/Qwen
 8192-state/64-continuation swap pair with retained graphs. This repeated-text
 boundary does not qualify corpus/retrieval quality, maximum context, broader
-cohorts or sustained memory/swap behavior.
+cohorts or sustained memory/swap behavior. Since M3.6's migration the route
+runs on the [shared engine](#engine-backed-models); the M3 class and options
+these controls were qualified on are retired.
 
 The approved Gemma2 2B Q8_0 artifact has a
 [bounded ordinary route](experiments/gemma2-serving/README.md): context<=8192,
@@ -152,6 +154,9 @@ The bounded ordinary 128-row C2 context-8192 own screen reduces prefill by
 4.126% and combined paid work by 2.905% at n=2, with overlapping decode ranges
 and no decode/parity claim. Kept and fresh sparse-file sources retain their
 current path. [Evidence and limits](experiments/gemma-state-prepare-ahead/README.md).
+Since M3.6's migration the route runs on the
+[shared engine](#engine-backed-models); the M3 class these controls were
+qualified on is retired.
 
 A node names the models it serves in its configuration (D-073's document,
 `schema_version = 2`; the keys are new and compatible):
@@ -197,7 +202,7 @@ setting (below), each taken by an artifact's model, a composition's or
 both, and refused on the other kind; an artifact serves one model. A
 node names as many models as it likes: the
 library may exceed memory (D-102). The runner follows the artifact's architecture
-(`deepseek4`, `qwen4exp`, bounded `gemma4` or `gemma3`) or the composition's (Qwen-Image); another is
+(`deepseek4`, `qwen4exp`, `gemma2`, `gemma3` or bounded `gemma4`) or the composition's (Qwen-Image); another is
 refused at registration. Every
 artifact is opened and checked as the artifact reader checks it, and the
 tokenizer and template files the configuration names are read as regular
@@ -576,19 +581,29 @@ kind over the shared runner (D-107; [engine.md](engine.md#the-serving-adapter)):
 (`runtime/engine_image.h`) for image pipelines. `Server::Make` picks one
 for a family moved to the component engine, by the pipeline kind its
 architecture's mapping names (`spec/mapping.h`); every other family keeps
-its M3 class. Which families are moved is, while each one's migration is
-checked against its gate, a diagnostic (`ServingOptions::component_engine`,
-a set of architectures, absent from the configuration and the command
-line; owner, 2026-10-08), removed once the last family has moved. It is
-empty, so no family is engine-backed yet. The parts of an engine-backed
-model's runner are built at its Setup: its spec synthesized from its v0
-artifact by its architecture's mapping, its components' state layout and
-batching, and the component step source planned over GGML's registry and
-lowered onto its graphs, on the model's own stream. Gemma 2 and Gemma 3
-have that build (with the policy their lowering's parity test runs; no
-cuBLAS handle is lent yet, so a plan needing one is refused, and the greedy
-choice stays on the host); their migration finalizes it, and any other
-architecture is refused at Setup with that reason.
+its M3 class. Gemma 2 and Gemma 3 are moved (since their migration, whose
+gate passed and whose M3 classes, runners, plans, graph builders and
+`ServingOptions` flags are deleted; the other LLM families and the image
+pipeline keep their M3 classes until theirs). A gate-only diagnostic
+(`ServingOptions::diagnostic_skip_turn_checkpoints`, set by the service
+from `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`, never from configuration)
+makes an engine-backed model skip each turn checkpoint's save, so M3.6's
+speed gate compares equal work with a baseline whose M3 classes could not
+save one
+([defect 3](experiments/m36-baselines/README.md#defects-in-the-baseline));
+the Gemma gate ran with it, and it stays for the later families' gates.
+The parts of an
+engine-backed model's runner are built at its Setup: its spec synthesized
+from its v0 artifact by its architecture's mapping, its components' state
+layout and batching, and the component step source planned under the
+mapping's policy (the family's recipe as data) over GGML's registry and
+lowered onto its graphs, on the model's own stream, with a cuBLAS handle
+over a workspace the runner maps and charges as its own; a head row is the
+head's vocabulary of logits, and a greedy row's token is chosen on the
+device. Any other architecture, or a model with a drafter, is refused at
+Setup with that reason. A conversation an M3 class kept across a restart
+(record version 1) is refused by the engine's start and its files
+discarded, once ([below](#conversations-kept-across-a-restart)).
 
 `EngineLlm` is an `Llm` like the M3 classes: the conversation code
 (branches, prompt and generation sessions, turn checkpoints, spills, kept

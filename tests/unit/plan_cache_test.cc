@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include "engine/graph_runs.h"
 #include "engine/planned.h"
 #include "engine/prefill_lookahead.h"
+#include "engine/support.h"
 #include "ggml.h"
 #include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/tensors.h"
@@ -603,8 +605,6 @@ TEST(PlanCacheTest, APlansArenaHoldsWhatItsGraphUsesNotTheEstimate) {
   EXPECT_EQ(failed->bytes(), 8 * ggml_tensor_overhead() + failed->graph_visited().size_bytes());
 }
 
-}  // namespace
-
 TEST(PlanCacheTest, ReaderScratchIsMeasuredOnceAndRuntimeCannotGrowIt) {
   namespace kg = llmp::kernels::ggml;
   auto arena = kg::TensorArena::Create(8);
@@ -688,3 +688,75 @@ TEST(PlanCacheTest, ReaderScratchAdmitsAMarginOverTheMeasuredShapes) {
   EXPECT_NE(too_wide.error().find("exceeds the startup scratch allowance"), std::string::npos);
   EXPECT_EQ(en::ScratchArenaBytes(), envelope);
 }
+
+TEST(GraphRuns, LayoutPredictsTheCopiesStageReturns) {
+  // A graph captured ahead copies its inputs from the offsets Layout
+  // predicts; a replay checks them against what Stage placed.
+  ggml_init_params params{.mem_size = 1U << 16U, .mem_buffer = nullptr, .no_alloc = true};
+  auto* context = ggml_init(params);
+  ASSERT_NE(context, nullptr);
+  std::vector<ggml_tensor*> inputs;
+  for (const auto elements : {128, 129, 1, 300})
+    inputs.push_back(ggml_new_tensor_1d(context, GGML_TYPE_I32, elements));
+  std::uintptr_t fake = 0x10000;
+  for (auto* tensor : inputs) tensor->data = reinterpret_cast<void*>(fake += 0x1000);
+  std::vector<std::byte> staging(4096), source(4096, std::byte{7});
+  en::GraphRuns runs(true);
+  runs.SetStaging(staging.data(), staging.size());
+  std::vector<std::pair<ggml_tensor*, const void*>> sources;
+  for (auto* tensor : inputs) sources.emplace_back(tensor, source.data());
+  for (const std::uint64_t base : {0U, 256U}) {
+    const auto staged = runs.Stage(sources, base);
+    const auto laid = runs.Layout(inputs, base);
+    ASSERT_TRUE(staged && laid);
+    EXPECT_EQ(*staged, *laid);
+  }
+  // Both refuse the same overflow.
+  runs.SetStaging(staging.data(), 1024);
+  EXPECT_FALSE(runs.Stage(sources, 0));
+  EXPECT_FALSE(runs.Layout(inputs, 0));
+  ggml_free(context);
+}
+
+// Every bounded ordered composition of owners' rows a shared-preparation
+// measurement can select is measured, within the budget and the chunk.
+TEST(ChunkMeasurementRows, EverySmallOwnerCompositionIsMeasuredAndKeepsBudgets) {
+  for (const std::uint32_t max_rows : {1U, 3U, 128U}) {
+    for (const std::uint32_t budget : {2U, 8U, 256U}) {
+      for (const std::uint32_t owners : {1U, 2U, 3U, 4U, 8U, 12U}) {
+        const auto ordinary = en::support::ChunkMeasurementRows(max_rows, budget, owners, false);
+        const auto prepared = en::support::ChunkMeasurementRows(max_rows, budget, owners, true);
+        for (const auto& row : ordinary)
+          EXPECT_NE(std::ranges::find(prepared, row), prepared.end());
+        for (const auto& row : prepared) {
+          EXPECT_EQ(row.size(), owners);
+          std::uint32_t total = 0;
+          for (const auto n : row) {
+            EXPECT_GE(n, 1U);
+            EXPECT_LE(n, max_rows);
+            total += n;
+          }
+          EXPECT_LE(total, budget);
+        }
+        // Independently enumerate every bounded ordered row composition.
+        if (owners > budget || owners > 8) continue;
+        std::vector<std::uint32_t> row(owners, 1);
+        const auto check = [&](auto&& self, std::uint32_t owner, std::uint32_t total) -> void {
+          if (owner == owners) {
+            EXPECT_NE(std::ranges::find(prepared, row), prepared.end());
+            return;
+          }
+          const auto left = std::min(8U, budget) - total;
+          for (std::uint32_t n = 1; n <= std::min(max_rows, left); ++n) {
+            if (total + n + owners - owner - 1 > std::min(8U, budget)) break;
+            row[owner] = n;
+            self(self, owner + 1, total + n);
+          }
+        };
+        check(check, 0, 0);
+      }
+    }
+  }
+}
+
+}  // namespace

@@ -106,8 +106,7 @@ class FakeProgram final : public kn::StepProgram {
   FakeProgram(std::vector<SegmentPlan> segments, std::vector<kn::InputSlot> inputs,
               std::vector<kn::OutputSlot> outputs, std::vector<kn::TensorUse> uses,
               std::uint64_t scratch, std::uint64_t host, std::uint64_t launches, bool measuring,
-              const FakeSourceOptions* options, std::uint64_t greedy_out,
-              std::shared_ptr<std::atomic<std::uint64_t>> queued,
+              const FakeSourceOptions* options, std::shared_ptr<std::atomic<std::uint64_t>> queued,
               std::shared_ptr<std::atomic<std::uint64_t>> executed,
               std::shared_ptr<std::atomic<std::uint64_t>> positioned, pl::Phase phase)
       : segments_(std::move(segments)),
@@ -119,7 +118,6 @@ class FakeProgram final : public kn::StepProgram {
         launches_(launches),
         measuring_(measuring),
         options_(options),
-        greedy_out_(greedy_out),
         queued_(std::move(queued)),
         executed_(std::move(executed)),
         positioned_(std::move(positioned)),
@@ -169,8 +167,8 @@ class FakeProgram final : public kn::StepProgram {
     }
     queued_->fetch_add(1);
     auto launched = providers::fake::FakeDeviceExecution::Launch(
-        stream, [segments = segments_, greedy_out = greedy_out_, executed = executed_] {
-          Execute(segments, greedy_out);
+        stream, [segments = segments_, executed = executed_] {
+          Execute(segments);
           executed->fetch_add(1);
         });
     if (!launched) {
@@ -196,8 +194,7 @@ class FakeProgram final : public kn::StepProgram {
 
  private:
   // The device's work: on the fake device's thread, at run time.
-  static void Execute(const std::vector<SegmentPlan>& segments, std::uint64_t greedy_out) {
-    std::size_t greedy_index = 0;
+  static void Execute(const std::vector<SegmentPlan>& segments) {
     for (const SegmentPlan& s : segments) {
       const auto* tokens = At<const std::int32_t>(s.tokens) + s.first;
       const auto* positions = At<const std::int32_t>(s.positions) + s.first;
@@ -244,6 +241,12 @@ class FakeProgram final : public kn::StepProgram {
         if (s.target && valid < at + 1) return static_cast<std::int32_t>(s.logits - 1);
         return FakeLogit(tokens[r], at, s.logits);
       };
+      if (s.greedy) {
+        // Its own output: its last row's token (the lowering's form).
+        const std::int32_t chosen = s.logits != 0 ? choice(s.rows - 1) : tokens[s.rows - 1] + 1000;
+        if (s.outputs != 0) std::memcpy(At<void>(s.out), &chosen, sizeof(chosen));
+        continue;
+      }
       for (std::uint32_t o = 0; o < s.outputs; ++o) {
         const std::uint32_t r = s.rows - s.outputs + o;
         if (s.logits != 0) {
@@ -262,12 +265,6 @@ class FakeProgram final : public kn::StepProgram {
                           .borrowed = borrowed};
         std::memcpy(At<void>(s.out + (o * sizeof(FakeRow))), &row, sizeof(row));
       }
-      if (s.greedy && greedy_out != 0) {
-        const std::int32_t chosen = s.logits != 0 ? choice(s.rows - 1) : tokens[s.rows - 1] + 1000;
-        std::memcpy(At<void>(greedy_out + (greedy_index * sizeof(chosen))), &chosen,
-                    sizeof(chosen));
-      }
-      greedy_index += s.greedy ? 1 : 0;
     }
   }
 
@@ -278,7 +275,6 @@ class FakeProgram final : public kn::StepProgram {
   std::uint64_t scratch_ = 0, host_ = 0, launches_ = 0;
   bool measuring_ = false, bound_ = false;
   const FakeSourceOptions* options_;
-  std::uint64_t greedy_out_ = 0;
   std::shared_ptr<std::atomic<std::uint64_t>> queued_, executed_, positioned_;
   pl::Phase phase_;
 };
@@ -346,7 +342,6 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
                       .kind = kn::InputKind::kPositions});
   }
   std::uint32_t first = 0;
-  std::uint32_t greedy = 0;
   for (std::size_t i = 0; i < shape.segments.size(); ++i) {
     const pl::Segment& seg = shape.segments[i];
     SegmentPlan s;
@@ -377,7 +372,6 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
                         .kind = kn::InputKind::kPositions});
     }
     first += seg.rows;
-    greedy += seg.greedy ? 1 : 0;
     const std::uint64_t base =
         addresses.state({.stage = shape.stage, .tensor = 0, .layer = 0, .segment = segment});
     if (base == 0) return Refuse("a state tensor has no address");
@@ -432,23 +426,17 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
       }
     }
     if (seg.outputs != 0) {
-      const std::uint64_t row_bytes =
-          options_.logits != 0 ? std::uint64_t{options_.logits} * sizeof(float) : sizeof(FakeRow);
-      s.out = place(std::uint64_t{seg.outputs} * row_bytes);
-      outputs.push_back({.device_address = s.out,
-                         .bytes = std::uint64_t{seg.outputs} * row_bytes,
-                         .tensor = {},
-                         .segment = segment});
+      // A greedy segment's output is its one token.
+      const std::uint64_t bytes =
+          seg.greedy ? sizeof(std::int32_t)
+                     : std::uint64_t{seg.outputs} *
+                           (options_.logits != 0 ? std::uint64_t{options_.logits} * sizeof(float)
+                                                 : sizeof(FakeRow));
+      s.out = place(bytes);
+      outputs.push_back(
+          {.device_address = s.out, .bytes = bytes, .tensor = {}, .segment = segment});
     }
     segments.push_back(s);
-  }
-  std::uint64_t greedy_out = 0;
-  if (greedy != 0) {
-    greedy_out = place(std::uint64_t{greedy} * 4);
-    outputs.push_back({.device_address = greedy_out,
-                       .bytes = std::uint64_t{greedy} * 4,
-                       .tensor = {},
-                       .segment = ir::kJoinedSegment});
   }
   for (const kn::InputSlot& in : inputs) {
     uses.push_back({.address = in.device_address, .bytes = in.bytes, .role = ir::Role::kInput});
@@ -469,8 +457,8 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
   }
   return std::make_unique<FakeProgram>(std::move(segments), std::move(inputs), std::move(outputs),
                                        std::move(uses), scratch, options_.host_bytes,
-                                       options_.launches, addresses.measuring(), &options_,
-                                       greedy_out, queued_, executed_, positioned_, shape.phase);
+                                       options_.launches, addresses.measuring(), &options_, queued_,
+                                       executed_, positioned_, shape.phase);
 }
 
 }  // namespace llmp::test_support

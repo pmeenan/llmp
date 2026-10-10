@@ -303,7 +303,10 @@ weight multiply's by weight resource) and shared Q8 groups (by weight)
 equal `PlanGraph`'s for the recipe, and the activation extent is no more
 than `PlaceActivations`' over the builders' graphs (54% to 100% of it), with
 the owner-attention forms or without, with no two live tensors sharing
-bytes. A capability query carries the node's parameters
+bytes. (Those comparisons were made before the M3 builders and runners were
+deleted, slice G1d; `planner_gemma_test` now checks that the recipe's
+fusions and shared Q8 groups apply at every shape and that no two live
+tensors share bytes.) A capability query carries the node's parameters
 (`CapabilityQuery::params`), so a predicate can refuse what its kernel does
 not take (a rotation's mode and dimensions; the owner kernel's softcap,
 G1b), and a pattern asks with its match's parameters; an operand's
@@ -422,14 +425,19 @@ serving recipe (owner decode with bounded roots, owner and flexible owner
 prefill, `narrow_final`, and the fusions above), node for node
 (operation, type, extents, strides, view offset, operation parameters,
 flags, every source), and PlanGraph's steps over it are the builders'
-(`ggml_lower_test`, CPU). On spark-b, the model runner over the component
+(`ggml_lower_test`, CPU; the comparison went with the builders in slice
+G1d, and the test now checks that every one of these shapes lowers to
+well-formed graphs with the plan covering each node that launches). On
+spark-b, the model runner over the component
 source runs two owners of the real Gemma 2 2B and Gemma 3 4B QAT artifacts
 through one script of waves (joined prefill chunks of 128, 37 and 2 equal
 rows, ragged and single-owner chunks, state-only chunks, one owner past
 its ring until it wraps, joined one-row decodes returning logits and
 device-chosen tokens over unequal reads), each owner's outputs bit for bit
-those of today's runners under the full serving recipe, the repeated
-decode shapes captured and replayed (`component_runner_gpu_test`).
+those of the M3 runners under the full serving recipe, the repeated
+decode shapes captured and replayed (`component_runner_gpu_test`, which
+since the runners' deletion checks the script's outputs finite and exact
+from one runner to the next).
 
 Slice G2b added Gemma 4 (2026-10-09). The lowering makes `kMatMulId`
 GGML's `mul_mat_id` (capabilities `ggml.mul_mat_id.mmvq` and `.mmq`, the
@@ -611,8 +619,9 @@ Each fragment records today's builders' nodes in their execution order
 before the up product, each owner's K and V stores before its attention,
 the owners' outputs joined after the last one's attention), with the same
 types, extents, view strides and arithmetic parameters; a CPU test
-compares the Gemma 2 and Gemma 3 steps with `BuildGemma2Graph` and
-`BuildGemma3Graph` node for node, with host and device masks: every
+compared the Gemma 2 and Gemma 3 steps with `BuildGemma2Graph` and
+`BuildGemma3Graph` node for node (`components_order_test`, deleted with
+them in slice G1d), with host and device masks: every
 node's sources, the leaves among them by what they are (the weight
 resource, the layer's, owner's and tensor's cache, the step input), and
 each mask's window (and the device producer's rows, capacity and
@@ -1323,9 +1332,12 @@ pipeline kinds over the shared runner ([engine.md](engine.md#the-serving-adapter
 and the decoding orchestrators, every state verb to the slot lifecycle,
 settings from D-103's layers. `Server::Make` dispatches a family to them by
 its mapping's pipeline kind once a diagnostic set of architectures names
-it (none does yet); an LLM's parts are its synthesized spec, its
-components' layout and batching and a `ComponentStepSource` over a
-`GgmlBackend` on its own stream, built for Gemma 2 and Gemma 3 so far. The kept
+it (Gemma 2's and Gemma 3's by default since their wiring); an LLM's parts
+are its synthesized spec, its components' layout and batching and a
+`ComponentStepSource` under the mapping's policy over a `GgmlBackend` on
+its own stream, with cuBLAS over a workspace the runner maps
+(`RunnerConfig::kernel_memory`) and device greedy tokens, built for
+Gemma 2 and Gemma 3 so far. The kept
 layout is `model::KeptLayoutId` of `spec::BoundDigest` and every stage's
 layout, and the kept record gains format version 2, a spill file per
 stage (D-112); a model refuses the other version, so the M3 runners' kept

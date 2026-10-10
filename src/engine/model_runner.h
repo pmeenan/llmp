@@ -117,6 +117,21 @@ struct RunnerConfig {
   // own request). Qwen3.8 and DeepSeek capture prefill only from a hint.
   bool graphs = true;
   std::uint32_t capture_phases = 0x1F;
+  // Device memory the step source's kernels hold beside the node's
+  // workspace (a cuBLAS workspace): each mapped at Setup before any
+  // measurement, of the runtime class, pinned and in every closure as the
+  // runner's own memory. `prepare` then makes what uses it (given each
+  // one's base, in order: a cuBLAS handle on the model's stream), and
+  // `retire` unmakes it at Release (also after a `prepare` that failed part
+  // way), after the plans, their recordings and the launch are gone and
+  // before the memory is released.
+  struct KernelMemory {
+    std::string name;
+    std::uint64_t bytes = 0;
+  };
+  std::vector<KernelMemory> kernel_memory;
+  std::function<std::expected<void, std::string>(std::span<const std::uint64_t> bases)> prepare;
+  std::function<void()> retire;
   // The step launch, made at Bind (after the workspace is mapped).
   std::function<std::expected<std::unique_ptr<kernels::StepLaunch>, std::string>()> launch;
   // A weight's address by role and part (the spec's binding to the
@@ -331,7 +346,10 @@ class ModelRunner final : public PagedModel {
   std::uint64_t inputs_staging_bytes_ = 0;
   std::byte* outputs_staging_ = nullptr;
   std::uint64_t outputs_staging_bytes_ = 0;
-  Mapped snapshots_;           // every slot's stages' verify snapshots
+  Mapped snapshots_;  // every slot's stages' verify snapshots
+  // RunnerConfig::kernel_memory's mappings (each at a stable address).
+  std::vector<std::unique_ptr<Mapped>> kernel_mapped_;
+  bool prepared_ = false;      // RunnerConfig::prepare was called
   std::vector<bool> commits_;  // by slot, then stage: a commit is set
 
   GraphStats graph_stats_;

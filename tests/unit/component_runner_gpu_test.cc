@@ -4,24 +4,20 @@
 // The one model runner (engine/model_runner.h) over the component step
 // source (engine/component_source.h) and the GGML module's lowering
 // (kernels/ggml/step_program.h), on the real Gemma 2 2B and Gemma 3 4B QAT
-// artifacts (label `models`), against today's runners (engine/gemma{2,3}_
-// runner.h) under the full serving recipe (runtime/serving.cc's Gemma2 and
-// Gemma3 options: owner decode with bounded roots, owner and flexible owner
-// prefill, the frontier head's narrowed final layer, shared Q8
-// preparation, device masks, the fused norm-mul, norm-add and quantized
-// GeGLU, and for Gemma 3 the fused norm-rope and grouped KV stores), the
-// component source planning under the architecture mapping's policy. Two
-// owners run one script of waves: joined prefill chunks of equal rows (128,
-// 37 and 2: owner prefill and its flexible tiles; 20 over equal reads at
-// different pasts, each owner's own mask), ragged and single-owner chunks
-// (per-owner attention), joined one-row decodes returning logits and
-// tokens chosen on the device (owner decode, bounded roots over unequal
-// reads), state-only chunks, and one owner's chunks past its sliding
-// layers' ring until it wraps, then joined decodes again. At every wave
-// each owner's outputs (its logits row, or its token) are bit for bit
-// today's: the same kernels in the same order over the same values. The
-// repeated decode shape is captured on its second run and replayed after
-// (D-090), and the replays are compared too.
+// artifacts (label `models`), under the serving recipe (the component
+// source planning under the architecture mapping's policy). Two owners run
+// one script of waves: joined prefill chunks of equal rows (128, 37 and 2:
+// owner prefill and its flexible tiles; 20 over equal reads at different
+// pasts, each owner's own mask), ragged and single-owner chunks (per-owner
+// attention), joined one-row decodes returning logits and tokens chosen on
+// the device (owner decode, bounded roots over unequal reads), state-only
+// chunks, and one owner's chunks past its sliding layers' ring until it
+// wraps, then joined decodes again. The repeated decode shape is captured
+// on its second run and replayed after (D-090). Every output is finite,
+// and a second runner over the same script gives every output bit for bit
+// (the replays included). (The script was once compared output for output
+// with the M3 runners' under their serving options, bit for bit, retired
+// with them after the migration's gate.)
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -48,8 +44,6 @@
 #include "base/bytes.h"
 #include "components/step.h"
 #include "engine/component_source.h"
-#include "engine/gemma2_runner.h"
-#include "engine/gemma3_runner.h"
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
@@ -90,14 +84,14 @@ struct Wave {
 Wave W(std::vector<Unit> units, Head head = Head::kLogits) {
   return {.units = std::move(units), .head = head};
 }
-// A wave as both runners take it: each owner's past and tokens.
+// A wave as the runner takes it: each owner's past and tokens.
 struct Planned {
   Wave wave;
   std::vector<std::uint32_t> past;
   std::vector<std::vector<std::int32_t>> tokens;
 };
 
-// Each owner's own token stream (teacher-forced: the runners' picks are
+// Each owner's own token stream (teacher-forced: the runner's picks are
 // compared, not fed back).
 std::int32_t TokenAt(std::uint32_t slot, std::uint32_t position) {
   return static_cast<std::int32_t>(100 + (((position * 7919U) + (slot * 104729U) + 13U) % 20000U));
@@ -185,65 +179,6 @@ template <typename T>
 std::vector<std::byte> Bytes(std::span<const T> values) {
   const auto bytes = std::as_bytes(values);
   return {bytes.begin(), bytes.end()};
-}
-
-// ------------------------------------------------------------ today's runners
-
-template <typename Runner, typename Options>
-Outputs Production(const Options& options, std::span<const Planned> script) {
-  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  auto runner = std::make_unique<Runner>(node, options, 0, 0);
-  std::vector<en::PagedModel*> entered;
-  Outputs out;
-  const auto started = [&]() -> en::Status {
-    if (auto x = node.Open(); !x) return x;
-    entered.push_back(runner.get());
-    if (auto x = runner->Setup(); !x) return x;
-    if (auto x = node.MapWorkspace(runner->activations_needed(), runner->pool_needed()); !x)
-      return x;
-    const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    node.SetHostFloor(runner->host_input_bytes() + runner->plan_floor_bytes() + (16ULL << 20U));
-    if (auto x = node.Start(llmp::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
-                                              4 * node.StateCapacity()));
-        !x)
-      return x;
-    if (auto x = runner->Register(); !x) return x;
-    if (auto x = runner->Bind(); !x) return x;
-    node.Run();
-    if (auto x = runner->SelectSlots(std::array<std::uint32_t, kOwners>{0, 1}); !x) return x;
-    return node.WithRequest(0, runner->closure(), "serving recipe control", [&]() -> en::Status {
-      for (const Planned& p : script) {
-        const std::size_t n = p.wave.units.size();
-        std::vector<std::vector<float>> logits(n);
-        std::vector<std::int32_t> tokens(n, -1);
-        std::vector<typename Runner::Work> work;
-        for (std::size_t i = 0; i < n; ++i) {
-          const bool greedy = p.wave.head == Head::kGreedy;
-          work.push_back({p.wave.units[i].slot, p.past[i], p.tokens[i],
-                          greedy ? nullptr : &logits[i], greedy ? &tokens[i] : nullptr});
-        }
-        if (p.wave.head == Head::kNone) {
-          if (auto x = runner->WavePrefill(work, false); !x) return x;
-        } else if (auto x = runner->Wave(work); !x) {
-          return x;
-        }
-        auto& row = out.emplace_back();
-        for (std::size_t i = 0; i < n; ++i) {
-          if (p.wave.head == Head::kLogits) {
-            row.push_back(Bytes(std::span<const float>(logits[i])));
-          } else if (p.wave.head == Head::kGreedy) {
-            row.push_back(Bytes(std::span<const std::int32_t>(&tokens[i], 1)));
-          }
-        }
-      }
-      return {};
-    });
-  }();
-  EXPECT_TRUE(started) << (started ? "" : started.error());
-  const auto retired = node.TearDown(entered);
-  EXPECT_TRUE(retired) << (retired ? "" : retired.error());
-  if (!retired) std::ignore = runner.release();  // its memory may still be in use
-  return out;
 }
 
 // ------------------------------------------------------------ the components
@@ -391,7 +326,7 @@ struct Case {
 
 class ComponentRunnerGpu : public testing::TestWithParam<Case> {};
 
-TEST_P(ComponentRunnerGpu, ServingRecipeStepsAreTodaysBitForBit) {
+TEST_P(ComponentRunnerGpu, ServingRecipeScriptIsFiniteAndTheSameRunToRun) {
   const Case& c = GetParam();
   const fs::path root = llmp::test_support::ModelsDir() + "/" + c.path;
   if (std::error_code error; !fs::exists(root, error)) GTEST_SKIP() << "no artifact in " << root;
@@ -401,106 +336,65 @@ TEST_P(ComponentRunnerGpu, ServingRecipeStepsAreTodaysBitForBit) {
   fs::create_directories(out);
   const bool gemma2 = c.name == "gemma2";
   // Two owners: Gemma 2 at its 8,192 context, Gemma 3 at its two-owner
-  // serving bound (4,096).
+  // serving bound (4,096). The sliding layers' ring: the window and a
+  // chunk, padded to 256 cells.
   const std::uint32_t context = gemma2 ? 8192U : 4096U;
-  std::vector<Planned> script;
-  Outputs production;
-  std::vector<llmp::spec::SourceValue> values;
-  // serving.cc's Options for each (the runners' own defaults otherwise:
-  // frontier_head, device masks, and Gemma 3's grouped KV stores).
-  if (gemma2) {
-    const auto layout = llmp::model::Gemma2State(llmp::model::Gemma2_2B(), context, kMaxRows);
-    ASSERT_TRUE(layout.has_value());
-    script = Script(layout->local_cells);
-    production = Production<en::Gemma2Runner>(en::Gemma2Options{.artifact = root,
-                                                                .out = out,
-                                                                .context = context,
-                                                                .max_rows = kMaxRows,
-                                                                .slots = kOwners,
-                                                                .max_wave_rows = kMaxRows * kOwners,
-                                                                .max_head_rows = kOwners,
-                                                                .owner_decode = true,
-                                                                .packed_prefill = true,
-                                                                .shared_q8 = true,
-                                                                .owner_prefill = true,
-                                                                .flexible_owner_prefill = true,
-                                                                .bounded_roots = true,
-                                                                .fuse_norms = true,
-                                                                .fuse_quant_glu = true,
-                                                                .fuse_norm_rope = false,
-                                                                .fuse_norm_add = true},
-                                              script);
-    values = *llmp::spec::mappings::Gemma2V0Values(llmp::model::Gemma2_2B());
-  } else {
-    const auto layout = llmp::model::Gemma3State(llmp::model::Gemma3_4BQat(), context, kMaxRows);
-    ASSERT_TRUE(layout.has_value());
-    script = Script(layout->local_cells);
-    production = Production<en::Gemma3Runner>(en::Gemma3Options{.artifact = root,
-                                                                .out = out,
-                                                                .context = context,
-                                                                .max_rows = kMaxRows,
-                                                                .slots = kOwners,
-                                                                .max_wave_rows = kMaxRows * kOwners,
-                                                                .max_head_rows = kOwners,
-                                                                .owner_decode = true,
-                                                                .packed_prefill = true,
-                                                                .shared_q8 = true,
-                                                                .owner_prefill = true,
-                                                                .flexible_owner_prefill = true,
-                                                                .bounded_roots = true,
-                                                                .device_masks = true,
-                                                                .fuse_norms = true,
-                                                                .fuse_quant_glu = true,
-                                                                .fuse_norm_rope = true,
-                                                                .fuse_norm_add = true},
-                                              script);
-    values = *llmp::spec::mappings::Gemma3V0Values(llmp::model::Gemma3_4BQat());
-  }
-  ASSERT_EQ(production.size(), script.size());
+  const std::uint32_t window =
+      gemma2 ? llmp::model::Gemma2_2B().window : llmp::model::Gemma3_4BQat().window;
+  const std::uint32_t local_cells = (std::min(context, window + kMaxRows) + 255U) / 256U * 256U;
+  const std::vector<Planned> script = Script(local_cells);
+  const std::vector<llmp::spec::SourceValue> values =
+      gemma2 ? *llmp::spec::mappings::Gemma2V0Values(llmp::model::Gemma2_2B())
+             : *llmp::spec::mappings::Gemma3V0Values(llmp::model::Gemma3_4BQat());
   auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
   ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
   const auto* mapping = llmp::spec::FindMapping(artifact->model().architecture);
   ASSERT_NE(mapping, nullptr);
   const auto spec = llmp::spec::SynthesizeV0(*artifact, *mapping, values);
   ASSERT_TRUE(spec.has_value()) << spec.error();
-  const Component lowered = Lowered(root, *spec, *mapping, values, context, script, out);
-  ASSERT_EQ(lowered.outputs.size(), production.size());
+  const Component first = Lowered(root, *spec, *mapping, values, context, script, out);
+  const Component second = Lowered(root, *spec, *mapping, values, context, script, out);
+  ASSERT_EQ(first.outputs.size(), script.size());
+  ASSERT_EQ(second.outputs.size(), script.size());
   // The repeated joined decodes: run once, captured beside the second
   // run, replayed on the third (each head's).
-  EXPECT_GE(lowered.replayed, 2U);
+  EXPECT_GE(first.replayed, 2U);
+  EXPECT_EQ(second.replayed, first.replayed);
   std::size_t compared = 0;
-  for (std::size_t w = 0; w < production.size(); ++w) {
-    ASSERT_EQ(lowered.outputs[w].size(), production[w].size()) << "wave " << w;
-    for (std::size_t u = 0; u < production[w].size(); ++u) {
-      const auto& want = production[w][u];
-      const auto& got = lowered.outputs[w][u];
-      ASSERT_EQ(got.size(), want.size()) << "wave " << w << " owner " << u;
+  for (std::size_t w = 0; w < script.size(); ++w) {
+    const std::size_t outputs =
+        script[w].wave.head == Head::kNone ? 0 : script[w].wave.units.size();
+    ASSERT_EQ(first.outputs[w].size(), outputs) << "wave " << w;
+    ASSERT_EQ(second.outputs[w].size(), outputs) << "wave " << w;
+    for (std::size_t u = 0; u < outputs; ++u) {
+      const auto& got = first.outputs[w][u];
+      const auto& again = second.outputs[w][u];
+      ASSERT_EQ(got.size(), again.size()) << "wave " << w << " owner " << u;
+      EXPECT_EQ(std::memcmp(got.data(), again.data(), got.size()), 0)
+          << "wave " << w << " owner " << u << ": another "
+          << (script[w].wave.head == Head::kGreedy ? "token" : "row");
       if (script[w].wave.head == Head::kGreedy) {
-        EXPECT_EQ(std::memcmp(got.data(), want.data(), want.size()), 0)
-            << "wave " << w << " owner " << u << ": another token";
+        ASSERT_EQ(got.size(), sizeof(std::int32_t));
+        std::int32_t token = -1;
+        std::memcpy(&token, got.data(), sizeof(token));
+        EXPECT_GE(token, 0) << "wave " << w << " owner " << u;
       } else {
-        std::size_t differ = 0;
-        double worst = 0.0;
-        for (std::size_t j = 0; j < want.size() / sizeof(float); ++j) {
-          float a = 0;
-          float b = 0;
-          std::memcpy(&a, want.data() + (j * sizeof(float)), sizeof(float));
-          std::memcpy(&b, got.data() + (j * sizeof(float)), sizeof(float));
-          differ += std::memcmp(&a, &b, sizeof(float)) != 0;
-          worst = std::max(worst, std::fabs(static_cast<double>(a) - b));
+        ASSERT_FALSE(got.empty());
+        ASSERT_EQ(got.size() % sizeof(float), 0U);
+        std::size_t finite = 0;
+        for (std::size_t j = 0; j < got.size() / sizeof(float); ++j) {
+          float v = 0;
+          std::memcpy(&v, got.data() + (j * sizeof(float)), sizeof(float));
+          finite += std::isfinite(v) ? 1 : 0;
         }
-        if (differ != 0) {
-          std::printf(
-              "%s wave %zu owner %zu: %zu logits differ in their bits, the largest by %.6g\n",
-              c.name.c_str(), w, u, differ, worst);
-        }
-        EXPECT_EQ(differ, 0U) << "wave " << w << " owner " << u;
+        EXPECT_EQ(finite, got.size() / sizeof(float)) << "wave " << w << " owner " << u;
       }
       ++compared;
     }
   }
-  std::printf("%s: %zu waves, %zu owner outputs compared, %llu replayed\n", c.name.c_str(),
-              script.size(), compared, static_cast<unsigned long long>(lowered.replayed));
+  EXPECT_GT(compared, 0U);
+  std::printf("%s: %zu waves, %zu owner outputs checked, %llu replayed\n", c.name.c_str(),
+              script.size(), compared, static_cast<unsigned long long>(first.replayed));
 }
 
 INSTANTIATE_TEST_SUITE_P(

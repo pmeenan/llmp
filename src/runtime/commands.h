@@ -114,18 +114,8 @@ struct ServingOptions {
   // overrides for matched controls only.
   bool zero_state = true;
   std::optional<std::size_t> handle_reserve;  // unset: the node's default
-  // Ordinary graph-owned masks; internal host-reference override only.
-  bool gemma3_device_masks = true;
-  // Closed actual-root multirow recipes; internal packed controls only.
-  bool gemma2_shared_q8 = true, gemma3_shared_q8 = true;
-  bool gemma2_owner_prefill = true, gemma3_owner_prefill = true;
-  bool gemma2_flexible_owner_prefill = true, gemma3_flexible_owner_prefill = true;
-  // Ordinary prefill lookahead and first-run capture of a repeated shape;
-  // internal overrides for matched controls only.
-  bool gemma2_prefill_lookahead = true, gemma2_capture_ahead = true;
-  bool gemma3_prefill_lookahead = true, gemma3_capture_ahead = true;
   // Optional fresh-zero state growth; internal matched control only.
-  bool gemma2_prepare_state = true, gemma3_prepare_state = true, gemma4_prepare_state = true;
+  bool gemma4_prepare_state = true;
   // Selected scalar DS/Qwen prediction; no public setting or output-policy
   // change. Both mechanisms have independent internal matched controls.
   bool dsv4_prefill_lookahead = true, qwen38_prefill_lookahead = true;
@@ -139,12 +129,13 @@ struct ServingOptions {
   // Internal same-provisioning T54 control: false forces current/future heads.
   // Scoring remains headed and public settings never expose this override.
   bool prefill_output_intent = true;
-  // Architectures served by the component engine's adapter for their
-  // pipeline kind (engine_llm.h, engine_image.h; D-107) instead of their M3
-  // serving class, while each family's migration is checked: a diagnostic
-  // (owner, 2026-10-08), absent from configuration and the CLI, removed
-  // once the last family has moved. Empty: every family as before.
-  std::vector<std::string> component_engine;
+  // Gate-only (owner, 2026-10-09): the component engine's models save no
+  // turn checkpoint (Llm::set_turn_checkpoints), so M3.6's speed gate
+  // compares equal work with a baseline whose M3 classes never saved one
+  // (docs/experiments/m36-baselines/README.md). Kept for later families'
+  // gates. Absent from configuration; the service sets it from
+  // LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1, as its test hooks.
+  bool diagnostic_skip_turn_checkpoints = false;
 };
 
 struct ChatOptions {

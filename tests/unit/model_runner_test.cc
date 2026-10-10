@@ -171,6 +171,7 @@ class ModelRunnerTest : public ::testing::Test {
             Shape(pl::Phase::kPrefill, {Seg(0, 0, 512, 1), Seg(1, 0, 512, 1)})};
   }
   virtual std::uint64_t BudgetExtents() const { return 64; }
+  virtual void Configure(en::RunnerConfig& /*config*/) {}
 
   void SetUp() override {
     // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
@@ -195,6 +196,7 @@ class ModelRunnerTest : public ::testing::Test {
     config.launch = [this]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return std::make_unique<LoggedLaunch>(&log_);
     };
+    Configure(config);
     auto runner = en::ModelRunner::Create(node_, std::move(config), std::move(source), 0, 0);
     ASSERT_TRUE(runner.has_value()) << runner.error();
     runner_ = std::move(*runner);
@@ -348,6 +350,91 @@ TEST_F(ModelRunnerTest, RecordingsAreReleasedBeforeTheLaunch) {
   EXPECT_EQ(log_, (std::vector<std::string>{"recording", "launch"}));
   EXPECT_EQ(runner_->plans().size(), 0U);
   runner_.reset();
+}
+
+// The kernels' own memory (RunnerConfig::kernel_memory): mapped at Setup
+// before the measurements, pinned and charged as the runner's, handed to
+// `prepare` in order; `retire` runs at Release after the recordings and
+// the launch, before the memory goes.
+class KernelMemoryTest : public ModelRunnerTest {
+ protected:
+  void Configure(en::RunnerConfig& config) override {
+    config.kernel_memory = {{.name = "a kernel's workspace", .bytes = kExtent},
+                            {.name = "another's", .bytes = (2 * kExtent) + 1}};
+    config.prepare =
+        [this](std::span<const std::uint64_t> bases) -> std::expected<void, std::string> {
+      bases_.assign(bases.begin(), bases.end());
+      measured_before_ = source_->built().size();
+      log_.emplace_back("prepare");
+      return {};
+    };
+    config.retire = [this] { log_.emplace_back("retire"); };
+  }
+  std::vector<std::uint64_t> bases_;
+  std::size_t measured_before_ = 1;
+};
+
+TEST_F(KernelMemoryTest, IsMappedBeforeTheMeasurementsAndRetiredAfterTheLaunch) {
+  ASSERT_EQ(bases_.size(), 2U);
+  EXPECT_NE(bases_[0], 0U);
+  EXPECT_NE(bases_[1], 0U);
+  EXPECT_NE(bases_[0], bases_[1]);
+  EXPECT_EQ(measured_before_, 0U);
+  // Charged: the node's occupancy holds its four extents beside the rest.
+  EXPECT_GE(node_.catalog().OccupancyOf(node_.domain()).Total().value(), fixed_ + (4 * kExtent));
+  for (std::uint32_t i = 0; i < 2; ++i) {
+    ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(1, i, 1, 1)}), {{3}}).has_value());
+  }
+  ASSERT_EQ(runner_->plans().graphs(), 1U);
+  if (node_.InRequest(0)) EXPECT_TRUE(node_.EndRequest(0));
+  std::array<en::PagedModel*, 1> models = {runner_.get()};
+  auto closed = node_.TearDown(models);
+  ASSERT_TRUE(closed) << llmp::test_support::Failed(closed).value_or("");
+  EXPECT_EQ(log_, (std::vector<std::string>{"prepare", "recording", "launch", "retire"}));
+  runner_.reset();
+}
+
+// A `prepare` that fails fails the Setup; what it made is still retired.
+TEST(KernelMemory, AFailedPrepareIsStillRetired) {
+  en::PagedNode node{
+      en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent}};
+  ASSERT_TRUE(node.Open());
+  std::vector<std::string> log;
+  ts::FakeSourceOptions o;
+  for (const en::StageState& s : Stages()) o.layouts.push_back(s.layout);
+  en::RunnerConfig config;
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
+  ASSERT_NE(scratch, nullptr);
+  config.slots = {.model = "Fake",
+                  .slots = kSlots,
+                  .stages = Stages(),
+                  .spec = {},
+                  .read_align = 256,
+                  .spill_place = {},
+                  .spill_directory = scratch,
+                  .invalidate = {},
+                  .drop_plans = {}};
+  config.setup_shapes = {Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)})};
+  config.kernel_memory = {{.name = "a kernel's workspace", .bytes = kExtent}};
+  config.prepare = [&log](std::span<const std::uint64_t>) -> std::expected<void, std::string> {
+    log.emplace_back("prepare");
+    return std::unexpected("no handle");
+  };
+  config.retire = [&log] { log.emplace_back("retire"); };
+  config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+    return std::make_unique<kn::RecordingLaunch>();
+  };
+  auto runner = en::ModelRunner::Create(node, std::move(config),
+                                        std::make_unique<ts::FakeStepSource>(std::move(o)), 0, 0);
+  ASSERT_TRUE(runner.has_value()) << runner.error();
+  auto set = (*runner)->Setup();
+  ASSERT_FALSE(set);
+  EXPECT_NE(llmp::test_support::Failed(set).value_or("").find("no handle"), std::string::npos);
+  std::array<en::PagedModel*, 1> models = {runner->get()};
+  auto closed = node.TearDown(models);
+  EXPECT_TRUE(closed) << llmp::test_support::Failed(closed).value_or("");
+  EXPECT_EQ(log, (std::vector<std::string>{"prepare", "retire"}));
 }
 
 TEST_F(ModelRunnerTest, ReclaimsGraphsAndPlansOutsideAStep) {
@@ -768,10 +855,10 @@ TEST_F(WaveTest, EveryOwnerGetsItsOwnOutputs) {
   ExpectPrompt(1, std::vector<std::int32_t>{20, 21, 22});
 }
 
-TEST_F(WaveTest, EachOwnerFindsItsShareOfTheJoinedOutputs) {
-  // Greedy owners: the step's joined output is each segment's chosen token
-  // (its last token + 1000). Pending out of slot order, each outcome says
-  // where it sat in the step.
+TEST_F(WaveTest, EachOwnerFindsItsOwnOutputsAndPlaceInTheStep) {
+  // Greedy owners: each segment's own output is its chosen token (its last
+  // token + 1000). Pending out of slot order, each outcome says where it
+  // sat in the step.
   std::vector<en::PendingWork> pending = {Decode(2, 0, 1), Decode(0, 0, 2), Decode(1, 0, 3)};
   for (auto& p : pending) p.greedy = true;
   const auto report = Wave(pending, {{30}, {10, 11}, {20, 21, 22}});
@@ -785,10 +872,10 @@ TEST_F(WaveTest, EachOwnerFindsItsShareOfTheJoinedOutputs) {
     EXPECT_EQ(outcome.segment, segment[i]);
     EXPECT_EQ(outcome.first_row, before[i]);
     EXPECT_EQ(outcome.first_output, before[i]);
-    ASSERT_EQ(outcome.joined.size(), 3 * sizeof(std::int32_t));
+    EXPECT_TRUE(outcome.joined.empty());
+    ASSERT_EQ(outcome.outputs.size(), sizeof(std::int32_t));
     std::int32_t chosen = 0;
-    std::memcpy(&chosen, outcome.joined.data() + (outcome.segment * sizeof(chosen)),
-                sizeof(chosen));
+    std::memcpy(&chosen, outcome.outputs.data(), sizeof(chosen));
     EXPECT_EQ(chosen, last[i] + 1000);
   }
 }

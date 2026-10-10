@@ -6,13 +6,14 @@
 // (spec/mapping.h SynthesizeV0), validated against its tensors, built into
 // a prefill step and three decode steps (components/step.h BuildStep) and
 // run by the reference executor (double arithmetic over the decoded
-// weights, F16 KV state), against today's production runner on the GPU
-// (engine/gemma{2,3}_runner.h with the serving recipe) for the same prompt
-// and the tokens it picks. The production path quantizes activations for
-// its quantized products (Q8_1), rounds attention's operands to F16 and
-// fuses norms, so the logits agree to a tolerance, not bit for bit: the same
-// top token at every step (or two tokens within kTieMargin of each other on
-// both sides), and every logit within kLogitTolerance of the reference's.
+// weights, F16 KV state), against the served model on the GPU (the
+// runtime's server over the shared engine, runtime/engine_llm.h) for the
+// same prompt and the tokens it picks. The served path quantizes
+// activations for its quantized products (Q8_1), rounds attention's
+// operands to F16 and fuses norms, so the logits agree to a tolerance, not
+// bit for bit: the same top token at every step (or two tokens within
+// kTieMargin of each other on both sides), and every logit within
+// kLogitTolerance of the reference's.
 //
 // What the tolerance can see: the weights' binding and decoding, the
 // executor's operations against GGML's, the rotation's pairing, the norms'
@@ -25,10 +26,12 @@
 // difference stays 0.35 to 0.71, so it is not the activations'
 // quantization). Those parameters are pinned elsewhere: the spec this test
 // synthesizes from the artifact is the tensor table's (spec_models_test),
-// whose steps components_order_test holds to today's builders node for
-// node, every arithmetic parameter bit for bit.
+// whose steps were once held to the M3 builders node for node, every
+// arithmetic parameter bit for bit (retired with them after the
+// migration's gate).
 
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -52,14 +55,13 @@
 #include "artifact/artifact.h"
 #include "base/bytes.h"
 #include "components/step.h"
-#include "engine/gemma2_runner.h"
-#include "engine/gemma3_runner.h"
-#include "engine/paged_node.h"
-#include "engine/support.h"
+#include "config/node_config.h"
+#include "config/storage_roles.h"
 #include "kernels/reference/exec.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "planner/step_shape.h"
+#include "runtime/serving.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
@@ -68,13 +70,14 @@
 namespace {
 
 namespace co = llmp::components;
-namespace en = llmp::engine;
+namespace rt = llmp::runtime;
+namespace cfg = llmp::config;
 namespace ar = llmp::artifact;
 namespace ref = llmp::kernels::reference;
 namespace fs = std::filesystem;
 
-// The largest logit difference allowed between the production runner and
-// the reference (Gemma 2's logits are capped at 30, Gemma 3's are not).
+// The largest logit difference allowed between the served model and the
+// reference (Gemma 2's logits are capped at 30, Gemma 3's are not).
 // Measured on spark-b (2026-10-09; each case prints its report): the
 // largest difference 0.46 to 0.70 per step, the mean 0.05 to 0.11, over
 // the four steps of each model; the bound leaves headroom over 0.70.
@@ -90,48 +93,74 @@ std::size_t Top(std::span<const float> row) {
   return static_cast<std::size_t>(std::ranges::max_element(row) - row.begin());
 }
 
-// Today's runner: the prompt's frontier logits, then each greedy decode's.
-template <typename Runner, typename Options>
-std::vector<std::vector<float>> Production(const Options& options) {
-  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  auto runner = std::make_unique<Runner>(node, options, 0, 0);
-  std::vector<en::PagedModel*> entered;
+// The served model (the runtime's server over the shared engine, one owner
+// at a 4,096 context): the prompt's frontier logits, then each greedy
+// decode's.
+std::vector<std::vector<float>> Production(const fs::path& root, const std::string& name) {
   std::vector<std::vector<float>> rows;
-  const auto started = [&]() -> en::Status {
-    if (auto x = node.Open(); !x) return x;
-    entered.push_back(runner.get());
-    if (auto x = runner->Setup(); !x) return x;
-    if (auto x = node.MapWorkspace(runner->activations_needed(), runner->pool_needed()); !x)
-      return x;
-    const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    node.SetHostFloor(runner->host_input_bytes() + runner->plan_floor_bytes() + (16ULL << 20U));
-    if (auto x = node.Start(llmp::base::Bytes(fixed + runner->weights().size() * en::kPagedExtent +
-                                              4 * node.StateCapacity()));
-        !x)
-      return x;
-    if (auto x = runner->Register(); !x) return x;
-    if (auto x = runner->Bind(); !x) return x;
-    node.Run();
-    if (auto x = runner->SelectSlots(std::array<std::uint32_t, 1>{0}); !x) return x;
-    return node.WithRequest(0, runner->closure(), "components control", [&]() -> en::Status {
-      std::vector<float> logits;
-      const typename Runner::Work prefill{0, 0, kPrompt, &logits};
-      if (auto x = runner->Wave(std::span(&prefill, 1)); !x) return x;
+  const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const fs::path scratch_root = base != nullptr ? base : testing::TempDir();
+  std::error_code error;
+  fs::create_directories(scratch_root, error);
+  std::string dir = (scratch_root / "components-XXXXXX").string();
+  if (mkdtemp(dir.data()) == nullptr) {
+    ADD_FAILURE() << "no scratch directory";
+    return rows;
+  }
+  const fs::path scratch = dir;
+  struct Lifetime {
+    cfg::NodeConfig config;
+    cfg::RuntimeRoles roles;
+    rt::ServingOptions options;
+    std::unique_ptr<rt::Server> server;
+  };
+  auto life = std::make_unique<Lifetime>();
+  life->roles.installed = root.parent_path();
+  life->roles.spill = scratch / "spill";
+  life->roles.state = scratch / "state";
+  for (const auto& path : {life->roles.spill, life->roles.state}) {
+    if (!fs::create_directory(path) || chmod(path.c_str(), 0700) != 0) {
+      ADD_FAILURE() << "no private directory " << path;
+      return rows;
+    }
+  }
+  cfg::ModelEntry entry;
+  entry.name = name;
+  entry.artifact = root.filename().string();
+  entry.overrides["context"] = std::int64_t{4096};
+  entry.overrides["prefill_chunk"] = std::int64_t{128};
+  entry.overrides["max_slots"] = std::int64_t{1};
+  life->config.models.push_back(entry);
+  life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, stderr);
+  const auto run = [&]() -> rt::Status {
+    if (auto r = life->server->Start(true); !r) return r;
+    auto* model = dynamic_cast<rt::Llm*>(life->server->Find(name));
+    if (model == nullptr) return std::unexpected("the configured model is missing");
+    rt::SwapParts parts;
+    if (auto r = life->server->Activate(*model, parts); !r) return r;
+    auto branch = model->branch(0);
+    if (!branch) return std::unexpected(branch.error());
+    const std::array<rt::Llm::Branch*, 1> selected{*branch};
+    if (auto r = life->server->SelectRequestBranches(*model, selected); !r) return r;
+    std::vector<float> logits;
+    if (auto r = (*branch)->Prefill(kPrompt, logits); !r) return r;
+    rows.push_back(logits);
+    for (std::uint32_t i = 0; i < kDecodes; ++i) {
+      const std::array<std::int32_t, 1> token{static_cast<std::int32_t>(Top(rows.back()))};
+      if (auto r = (*branch)->Prefill(token, logits); !r) return r;
       rows.push_back(logits);
-      for (std::uint32_t i = 0; i < kDecodes; ++i) {
-        const std::array<std::int32_t, 1> token{static_cast<std::int32_t>(Top(rows.back()))};
-        const typename Runner::Work decode{0, static_cast<std::uint32_t>(kPrompt.size() + i), token,
-                                           &logits};
-        if (auto x = runner->Wave(std::span(&decode, 1)); !x) return x;
-        rows.push_back(logits);
-      }
-      return {};
-    });
+    }
+    return {};
   }();
-  EXPECT_TRUE(started) << (started ? "" : started.error());
-  const auto retired = node.TearDown(entered);
+  EXPECT_TRUE(run) << (run ? "" : run.error());
+  const auto retired = life->server->TearDown();
   EXPECT_TRUE(retired) << (retired ? "" : retired.error());
-  if (!retired) std::ignore = runner.release();  // its memory may still be in use
+  if (!retired) {
+    std::ignore = life.release();  // its memory may still be in use
+    return rows;
+  }
+  life.reset();
+  fs::remove_all(scratch, error);
   return rows;
 }
 
@@ -225,49 +254,14 @@ struct Case {
 
 class ComponentsModelsGpu : public testing::TestWithParam<Case> {};
 
-TEST_P(ComponentsModelsGpu, StepsMatchTheProductionRunner) {
+TEST_P(ComponentsModelsGpu, StepsMatchTheServedModel) {
   const Case& c = GetParam();
   const fs::path root = llmp::test_support::ModelsDir() + "/" + c.path;
   if (std::error_code error; !fs::exists(root, error)) GTEST_SKIP() << "no artifact in " << root;
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): the test environment is immutable
-  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
-  const fs::path out = fs::path(scratch != nullptr ? scratch : testing::TempDir()) / "components";
-  std::vector<std::vector<float>> production;
-  std::vector<llmp::spec::SourceValue> values;
-  if (c.name == "gemma2") {
-    production = Production<en::Gemma2Runner>(en::Gemma2Options{.artifact = root,
-                                                                .out = out,
-                                                                .context = 8192,
-                                                                .max_rows = 128,
-                                                                .slots = 2,
-                                                                .max_wave_rows = 256,
-                                                                .max_head_rows = 2,
-                                                                .owner_decode = true,
-                                                                .packed_prefill = true,
-                                                                .bounded_roots = true,
-                                                                .fuse_norms = true,
-                                                                .fuse_quant_glu = true,
-                                                                .fuse_norm_rope = false,
-                                                                .fuse_norm_add = true});
-    values = *llmp::spec::mappings::Gemma2V0Values(llmp::model::Gemma2_2B());
-  } else {
-    production = Production<en::Gemma3Runner>(en::Gemma3Options{.artifact = root,
-                                                                .out = out,
-                                                                .context = 8192,
-                                                                .max_rows = 128,
-                                                                .slots = 2,
-                                                                .max_wave_rows = 256,
-                                                                .max_head_rows = 2,
-                                                                .owner_decode = true,
-                                                                .packed_prefill = true,
-                                                                .bounded_roots = true,
-                                                                .device_masks = true,
-                                                                .fuse_norms = true,
-                                                                .fuse_quant_glu = true,
-                                                                .fuse_norm_rope = true,
-                                                                .fuse_norm_add = true});
-    values = *llmp::spec::mappings::Gemma3V0Values(llmp::model::Gemma3_4BQat());
-  }
+  const std::vector<std::vector<float>> production = Production(root, c.name);
+  const std::vector<llmp::spec::SourceValue> values =
+      c.name == "gemma2" ? *llmp::spec::mappings::Gemma2V0Values(llmp::model::Gemma2_2B())
+                         : *llmp::spec::mappings::Gemma3V0Values(llmp::model::Gemma3_4BQat());
   ASSERT_EQ(production.size(), kDecodes + 1);
   std::vector<std::int32_t> picked;
   for (std::uint32_t i = 0; i < kDecodes; ++i) {

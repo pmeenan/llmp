@@ -256,32 +256,61 @@ TEST(ComponentsTest, ValidateSpecRefusesWhatTheCatalogCannotRun) {
 
 // ---------------------------------------------------------- state layout
 
-TEST(ComponentsTest, StageLayoutsAreTodaysGemmaLayouts) {
+// Gemma's state in closed form (the M3 layouts, retired with their
+// runners): a K and a V tensor per layer, a global one a cell a position,
+// a local one a ring of pad(min(context, window + rows), 256) cells, each
+// on its own extent.
+struct GemmaStateRef {
+  struct Tensor {
+    std::uint32_t layer = 0, cells = 0;
+    std::uint64_t offset = 0, bytes = 0;
+  };
+  std::vector<Tensor> tensors;
+  std::uint64_t bytes = 0;
+};
+std::uint64_t PadUp(std::uint64_t value, std::uint64_t to) { return (value + to - 1) / to * to; }
+template <typename Profile>
+GemmaStateRef GemmaState(const Profile& p, std::uint32_t context, std::uint32_t rows) {
+  GemmaStateRef ref;
+  const auto global_cells = static_cast<std::uint32_t>(PadUp(context, 256));
+  const auto local_cells =
+      static_cast<std::uint32_t>(PadUp(std::min<std::uint64_t>(context, p.window + rows), 256));
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    for (const bool value : {false, true}) {
+      const auto width = (value ? p.value_dim : p.key_dim) * p.kv_heads;
+      const auto cells = p.local(il) ? local_cells : global_cells;
+      const auto bytes = std::uint64_t{width} * cells * 2;
+      ref.tensors.push_back({il, cells, ref.bytes, bytes});
+      ref.bytes += PadUp(bytes, kExtent);
+    }
+  }
+  return ref;
+}
+
+TEST(ComponentsTest, StageLayoutsAreTheGemmaLayouts) {
   for (const auto& [context, rows] : {std::pair{4096U, 128U}, {8192U, 512U}, {8192U, 16U}}) {
-    const auto want = model::Gemma2State(model::Gemma2_2B(), context, rows);
-    ASSERT_TRUE(want.has_value());
+    const auto want = GemmaState(model::Gemma2_2B(), context, rows);
     const auto got = StageLayout(Gemma2Spec(), 0, context, rows, kExtent);
     ASSERT_TRUE(got.has_value()) << got.error();
-    ASSERT_EQ(got->items.size(), want->tensors.size());
-    for (std::size_t i = 0; i < want->tensors.size(); ++i) {
-      EXPECT_EQ(got->items[i].layer, want->tensors[i].layer);
-      EXPECT_EQ(got->items[i].offset, want->tensors[i].offset);
-      EXPECT_EQ(got->items[i].cells, want->tensors[i].cells);
-      EXPECT_EQ(got->items[i].bytes, want->tensors[i].bytes);
+    ASSERT_EQ(got->items.size(), want.tensors.size());
+    for (std::size_t i = 0; i < want.tensors.size(); ++i) {
+      EXPECT_EQ(got->items[i].layer, want.tensors[i].layer);
+      EXPECT_EQ(got->items[i].offset, want.tensors[i].offset);
+      EXPECT_EQ(got->items[i].cells, want.tensors[i].cells);
+      EXPECT_EQ(got->items[i].bytes, want.tensors[i].bytes);
     }
-    EXPECT_EQ(got->bytes, want->bytes);
+    EXPECT_EQ(got->bytes, want.bytes);
   }
   for (const auto& [context, rows] : {std::pair{8192U, 512U}, {131072U, 2048U}}) {
-    const auto want = model::Gemma3State(model::Gemma3_4BQat(), context, rows);
-    ASSERT_TRUE(want.has_value());
+    const auto want = GemmaState(model::Gemma3_4BQat(), context, rows);
     const auto got = StageLayout(Gemma3Spec(), 0, context, rows, kExtent);
     ASSERT_TRUE(got.has_value()) << got.error();
-    ASSERT_EQ(got->items.size(), want->tensors.size());
-    for (std::size_t i = 0; i < want->tensors.size(); ++i) {
-      EXPECT_EQ(got->items[i].offset, want->tensors[i].offset);
-      EXPECT_EQ(got->items[i].cells, want->tensors[i].cells);
+    ASSERT_EQ(got->items.size(), want.tensors.size());
+    for (std::size_t i = 0; i < want.tensors.size(); ++i) {
+      EXPECT_EQ(got->items[i].offset, want.tensors[i].offset);
+      EXPECT_EQ(got->items[i].cells, want.tensors[i].cells);
     }
-    EXPECT_EQ(got->bytes, want->bytes);
+    EXPECT_EQ(got->bytes, want.bytes);
   }
   const auto batching = StageBatching(Gemma2Spec(), 0);
   ASSERT_TRUE(batching.has_value());
@@ -713,24 +742,31 @@ TEST(ComponentsTest, BuildStepMakesTheGemmaStepsFromTheirSpecs) {
   }
 }
 
-TEST(ComponentsTest, InputValuesReproduceTodaysCellsAndHostMasks) {
+TEST(ComponentsTest, InputValuesGiveTheGemmaCellsAndHostMasks) {
   const auto& p = model::Gemma2_2B();
-  const auto state = model::Gemma2State(p, 8192, 512);
-  ASSERT_TRUE(state.has_value());
   const auto spec = Gemma2Spec();
   const auto layout = StageLayout(spec, 0, 8192, 512, kExtent);
   ASSERT_TRUE(layout.has_value());
   // Two owners, one wrapping its ring (4608 local cells).
+  constexpr std::uint32_t kGlobalCells = 8192, kLocalCells = 4608;
   std::vector<std::int32_t> tokens(400 + 3, 5);
-  const std::array segments{
-      model::Gemma2Segment{.slot = 2, .n_past = 4500, .tokens = std::span(tokens).first(400)},
-      model::Gemma2Segment{.slot = 0, .n_past = 9, .tokens = std::span(tokens).last(3)}};
-  const auto chunk = model::Gemma2Chunk(p, *state, segments, true);
-  ASSERT_TRUE(chunk.has_value()) << chunk.error();
+  struct Owner {
+    std::uint8_t slot;
+    std::uint32_t rows, past, global_kv, local_kv;
+  };
+  const auto read_cells = [](std::uint32_t end, std::uint32_t cells) {
+    return static_cast<std::uint32_t>(std::min<std::uint64_t>(cells, PadUp(end, 256)));
+  };
+  const std::array<Owner, 2> owners{
+      Owner{2, 400, 4500, read_cells(4900, kGlobalCells), read_cells(4900, kLocalCells)},
+      Owner{0, 3, 9, read_cells(12, kGlobalCells), read_cells(12, kLocalCells)}};
   planner::StepShape shape;
-  for (const auto& s : chunk->segments) {
-    shape.segments.push_back(Seg(static_cast<std::uint8_t>(s.slot), s.rows, s.n_past,
-                                 std::max(s.global_n_kv, s.local_n_kv), 1));
+  std::vector<std::int32_t> positions;
+  for (const Owner& o : owners) {
+    shape.segments.push_back(Seg(o.slot, o.rows, o.past, std::max(o.global_kv, o.local_kv), 1));
+    for (std::uint32_t i = 0; i < o.rows; ++i) {
+      positions.push_back(static_cast<std::int32_t>(o.past + i));
+    }
   }
   const auto source = test_support::Gemma2Source();
   auto step = BuildStep(spec, 0, shape, {.tensors = source.tensors, .state = &*layout});
@@ -740,30 +776,46 @@ TEST(ComponentsTest, InputValuesReproduceTodaysCellsAndHostMasks) {
     auto values = InputValues(input, shape, tokens);
     ASSERT_TRUE(values.has_value()) << values.error();
     if (input.kind == InputKind::kPositions) {
-      EXPECT_TRUE(std::ranges::equal(*values, chunk->positions));
+      EXPECT_TRUE(std::ranges::equal(*values, positions));
       ++checked;
     }
     if (input.kind == InputKind::kStoreCells) {
-      const auto& seg = chunk->segments[input.segment];
-      EXPECT_TRUE(
-          std::ranges::equal(*values, input.cells.ring ? seg.local_cells : seg.global_cells));
+      // A global cache stores a position in its own cell, a ring in the
+      // position modulo its cells.
+      const Owner& o = owners[input.segment];
+      const bool ring = input.cells.ring;
+      ASSERT_EQ(values->size(), o.rows);
+      for (std::uint32_t i = 0; i < o.rows; ++i) {
+        const std::int64_t pos = o.past + i;
+        EXPECT_EQ((*values)[i], ring ? pos % kLocalCells : pos) << i;
+      }
       ++checked;
     }
     if (input.kind == InputKind::kCellPositions) {
-      // Today's host mask, row by row, from the cells' positions and the
-      // mask's definition (ir/op.h kMaskBuild).
-      const auto& seg = chunk->segments[input.segment];
+      // The host mask, row by row, from the cells' positions and the mask's
+      // definition (ir/op.h kMaskBuild), against its closed form: a global
+      // cell is visible when it holds a position up to the row's, a ring's
+      // when the latest position it holds after the segment is within the
+      // window of the row's.
+      const Owner& o = owners[input.segment];
       const bool ring = input.cells.ring;
-      const auto& want = ring ? seg.local_mask : seg.global_mask;
-      const std::uint64_t width = ring ? seg.local_n_kv : seg.global_n_kv;
+      const std::uint64_t width = ring ? o.local_kv : o.global_kv;
+      const std::uint64_t end = o.past + o.rows;
       ASSERT_EQ(values->size(), width);
-      for (std::uint32_t i = 0; i < seg.rows; ++i) {
-        const std::int64_t pos = seg.n_past + i;
+      for (std::uint32_t i = 0; i < o.rows; ++i) {
+        const std::int64_t pos = o.past + i;
         for (std::uint64_t c = 0; c < width; ++c) {
           const std::int64_t held = (*values)[c];
           bool seen = held >= 0 && held <= pos;
           if (ring) seen = seen && pos - held < p.window;
-          ASSERT_EQ(want[(i * width) + c], seen ? 0 : 0xFC00) << i << " " << c;
+          bool want = c <= static_cast<std::uint64_t>(pos);
+          if (ring) {
+            const std::uint64_t latest =
+                c + (c < end ? ((end - 1 - c) / kLocalCells) * kLocalCells : 0);
+            want = c < end && static_cast<std::int64_t>(latest) <= pos &&
+                   pos - static_cast<std::int64_t>(latest) < p.window;
+          }
+          ASSERT_EQ(seen, want) << i << " " << c;
         }
       }
       ++checked;

@@ -11,12 +11,13 @@ report, never between the runs of one comparison.
     speed_gate.py families
     speed_gate.py plan --family F --old RUNTIME --new RUNTIME --out DIR [--blocks N] [--first B]
                        [--old-config TEMPLATE] [--new-config TEMPLATE]
+                       [--old-env NAME=VALUE ...] [--new-env NAME=VALUE ...]
                        [--job-runs K --steps PREFIX]
     speed_gate.py run --family F --runtime RUNTIME --label old|new --out DIR
                       (--block B --position P | --prime) [--session S]
-                      [--config-template TEMPLATE]
+                      [--config-template TEMPLATE] [--runtime-env NAME=VALUE ...]
     speed_gate.py quality --family F --runtime RUNTIME --label old|new --out DIR
-                          [--config-template TEMPLATE]
+                          [--config-template TEMPLATE] [--runtime-env NAME=VALUE ...]
     speed_gate.py verdict DIR [--family F] [--json]
     speed_gate.py spread DIR [--family F] [--json]
     speed_gate.py operating
@@ -81,6 +82,15 @@ with {share}, {data} and {port} for the share directory, the run's data
 directory and its port. Use it when a newer runtime needs other keys or a
 re-imported artifact for the same work; `plan --old-config/--new-config`
 passes each arm its template, and the records keep its text and digest.
+
+A runtime's diagnostic switches are environment variables named
+LLMP_DIAGNOSTIC_* (never configuration): `run --runtime-env NAME=VALUE`
+gives an arm's runtime one (repeatable; no other names), `plan
+--old-env/--new-env` passes them on, and the records keep them. An arm's
+runs, and the priming runs of PRIME_ARM, must all have the same ones. The
+gate uses one where the baseline's work differs from the new runtime's by a
+known defect (LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1 for Gemma 2 and
+Gemma 3; docs/experiments/m36-baselines/README.md), so both do equal work.
 
 `spread` reads same-binary runs (old and new both the baseline) and reports
 each metric's run-to-run and block-to-block spread and the blocks its bound
@@ -300,6 +310,38 @@ def arm_template(family: Family, path: str | None) -> str:
         pathlib.Path(path).expanduser().read_text())
 
 
+DIAGNOSTIC_PREFIX = "LLMP_DIAGNOSTIC_"
+
+
+def parse_runtime_env(pairs: list[str] | None) -> dict[str, str]:
+    """An arm's diagnostic switches, NAME=VALUE each, sorted by name."""
+    env: dict[str, str] = {}
+    for pair in pairs or []:
+        name, sep, value = pair.partition("=")
+        if not sep or not name.startswith(DIAGNOSTIC_PREFIX) or name in env:
+            raise SystemExit(f"--runtime-env {pair!r}: not a single {DIAGNOSTIC_PREFIX}*=VALUE")
+        env[name] = value
+    return dict(sorted(env.items()))
+
+
+def arm_env(runtime_env: dict[str, str]) -> dict[str, str]:
+    """The runtime's environment: this process's, with no diagnostic but the arm's own."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(DIAGNOSTIC_PREFIX)}
+    env.update(runtime_env, CUDA_DISABLE_PTX_JIT="1")
+    return env
+
+
+# What makes an arm: its binary, its configuration and its diagnostic switches
+# (a record before switches had none).
+ARM_KEYS = ("runtime_sha256", "config_sha256", "runtime_env")
+
+
+def arm_identity(record: dict, key: str) -> str:
+    if key == "runtime_env":
+        return json.dumps(record.get(key) or {}, sort_keys=True)
+    return str(record.get(key))
+
+
 # ---------------------------------------------------------------- memory
 
 
@@ -338,13 +380,13 @@ class MemorySampler:
 
 class Service:
     def __init__(self, runtime: pathlib.Path, config: pathlib.Path, run_dir: pathlib.Path,
-                 port: int):
+                 port: int, runtime_env: dict[str, str]):
         self.port = port
         if port_open(port):
             # A runtime left from a killed run would answer this run's requests.
             raise RuntimeError(f"something already listens on port {port}")
         self.log = open(run_dir / "runtime.log", "wb")
-        env = dict(os.environ, CUDA_DISABLE_PTX_JIT="1")
+        env = arm_env(runtime_env)
         self.started = time.monotonic()
         # In the harness's own process group, so the supervisor's timeout or
         # kill (which signals the job's group) also stops the runtime.
@@ -584,11 +626,12 @@ def host_facts() -> dict:
 
 
 def llm_run(family: Family, runtime: pathlib.Path, share: pathlib.Path, corpus: str,
-            run_dir: pathlib.Path, port: int, template: str, record: dict) -> None:
+            run_dir: pathlib.Path, port: int, template: str, runtime_env: dict[str, str],
+            record: dict) -> None:
     config = run_dir / "node.toml"
     config.write_text(render_config(template, share, run_dir / "data", port))
     sampler = MemorySampler()
-    service = Service(runtime, config, run_dir, port)
+    service = Service(runtime, config, run_dir, port, runtime_env)
     try:
         record["ready_s"] = service.wait_ready()
         index = 0
@@ -609,7 +652,8 @@ def llm_run(family: Family, runtime: pathlib.Path, share: pathlib.Path, corpus: 
 
 
 def image_run(family: Family, runtime: pathlib.Path, share: pathlib.Path,
-              run_dir: pathlib.Path, template: str, record: dict) -> None:
+              run_dir: pathlib.Path, template: str, runtime_env: dict[str, str],
+              record: dict) -> None:
     noise = share / IMAGE_NOISE
     if sha256_file(noise) != IMAGE_NOISE_SHA256:
         raise SystemExit(f"{noise}: not the pinned latents")
@@ -622,7 +666,7 @@ def image_run(family: Family, runtime: pathlib.Path, share: pathlib.Path,
             [str(runtime), "--config", str(config), "--anchor", str(run_dir / "enrollment"),
              "chat", "--image-prompt", IMAGE_PROMPT, "--image-noise", str(noise),
              "--report", str(report), "--turn", family.model, IMAGE_PROMPT],
-            stdout=log, stderr=subprocess.STDOUT, env=dict(os.environ, CUDA_DISABLE_PTX_JIT="1"))
+            stdout=log, stderr=subprocess.STDOUT, env=arm_env(runtime_env))
     record["memory"] = sampler.stop()
     record["stop"] = {"returncode": result.returncode}
     if result.returncode != 0:
@@ -659,20 +703,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     records.mkdir(parents=True, exist_ok=True)
     run_dir = fresh_run_dir(out, name)
     template = arm_template(family, args.config_template)
+    runtime_env = parse_runtime_env(args.runtime_env)
     record = {"format": "llmp-speed-gate/1", "family": family.name, "label": args.label,
               "block": args.block, "position": args.position,
               "prime": args.prime, "session": args.session, "started_unix": time.time(),
               "runtime": str(runtime), "runtime_sha256": sha256_file(runtime),
               "config_template": template,
               "config_sha256": hashlib.sha256(template.encode()).hexdigest(),
+              "runtime_env": runtime_env,
               "family_spec": dataclasses.asdict(family), "facts": host_facts(), "error": None}
     began = time.monotonic()
     try:
         if family.kind == "llm":
             corpus = load_corpus(pathlib.Path(args.corpus).expanduser())
-            llm_run(family, runtime, share, corpus, run_dir, args.port, template, record)
+            llm_run(family, runtime, share, corpus, run_dir, args.port, template, runtime_env,
+                    record)
         else:
-            image_run(family, runtime, share, run_dir, template, record)
+            image_run(family, runtime, share, run_dir, template, runtime_env, record)
     except Exception as e:  # the record says how the run failed
         record["error"] = f"{type(e).__name__}: {e}"
     if record["facts"].get("gpu_compute_apps"):
@@ -701,15 +748,17 @@ def cmd_quality(args: argparse.Namespace) -> int:
     run_dir = fresh_run_dir(out, name)
     config = run_dir / "node.toml"
     template = arm_template(family, args.config_template)
+    runtime_env = parse_runtime_env(args.runtime_env)
     config.write_text(render_config(template, share, run_dir / "data", args.port))
     record = {"format": "llmp-speed-gate-quality/1", "family": family.name, "label": args.label,
               "runtime": str(runtime), "runtime_sha256": sha256_file(runtime),
               "config_template": template,
               "config_sha256": hashlib.sha256(template.encode()).hexdigest(),
+              "runtime_env": runtime_env,
               "facts": host_facts(), "error": None, "replies": []}
     service = None
     try:
-        service = Service(runtime, config, run_dir, args.port)
+        service = Service(runtime, config, run_dir, args.port, runtime_env)
         service.wait_ready()
         for text in QUALITY_PROMPTS:
             body = {"model": family.model, "stream": True, "temperature": 0,
@@ -776,10 +825,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
     def command(label: str, which: str) -> str:
         runtime = args.old if label == "old" else args.new
         template = args.old_config if label == "old" else args.new_config
+        env = parse_runtime_env(args.old_env if label == "old" else args.new_env)
         return (f"python3 -B {me} run --family {family.name} --runtime {runtime} "
                 f"--label {label} --out {args.out} {which}"
                 + (f" --corpus {args.corpus}" if family.kind == "llm" else "")
-                + (f" --config-template {template}" if template else ""))
+                + (f" --config-template {template}" if template else "")
+                + "".join(f" --runtime-env {k}={v}" for k, v in env.items()))
 
     texts = []
     for mine in sessions:
@@ -901,8 +952,8 @@ def validity(family: Family, mine: list[dict], primes: dict) -> list[str]:
         # PRIME_ARM's own binary and configuration, as its measured runs have.
         arm = [r for b in mine for r in b.values() if r["label"] == PRIME_ARM]
         if prime.get("label") != PRIME_ARM or any(
-                prime.get(key) != r.get(key)
-                for r in arm for key in ("runtime_sha256", "config_sha256")):
+                arm_identity(prime, key) != arm_identity(r, key)
+                for r in arm for key in ARM_KEYS):
             reasons.append(f"session {session}: its priming run is not the {PRIME_ARM} arm's "
                            "binary and configuration")
         if prime.get("error"):
@@ -915,8 +966,8 @@ def validity(family: Family, mine: list[dict], primes: dict) -> list[str]:
                 reasons.append(f"session {session}: {where} did not start after its priming run")
     for label in ("old", "new"):
         runs = [r for b in mine for r in b.values() if r["label"] == label]
-        for key, what in (("runtime_sha256", "runtimes"), ("config_sha256", "configurations")):
-            seen = sorted({str(r.get(key)) for r in runs})
+        for key, what in zip(ARM_KEYS, ("runtimes", "configurations", "diagnostic switch sets")):
+            seen = sorted({arm_identity(r, key) for r in runs})
             if len(seen) > 1:
                 reasons.append(f"{label} runs used {len(seen)} {what}: "
                                + ", ".join(x[:12] for x in seen))
@@ -959,6 +1010,10 @@ def verdicts(out: pathlib.Path, family_name: str | None) -> dict:
                         "runtimes": {label: sorted({str(r.get("runtime_sha256")) for b in mine
                                                     for r in b.values() if r["label"] == label})
                                      for label in ("old", "new")},
+                        "diagnostics": {label: sorted({arm_identity(r, "runtime_env")
+                                                       for b in mine for r in b.values()
+                                                       if r["label"] == label})
+                                        for label in ("old", "new")},
                         "problems": sorted({p for b in mine for r in b.values()
                                             for p in (r.get("problems") or [])}),
                         "errors": sorted({r["error"] for b in mine for r in b.values()
@@ -1078,6 +1133,9 @@ def cmd_verdict(args: argparse.Namespace) -> int:
         print(f"{name}: {fam['verdict']}")
         for label, hashes in fam["runtimes"].items():
             print(f"  {label} runtime {', '.join(h[:12] for h in hashes)}")
+        for label, sets in fam["diagnostics"].items():
+            if sets != ["{}"]:
+                print(f"  {label} diagnostics {'; '.join(sets)}")
         for reason in fam["invalid"]:
             print(f"  invalid: {reason}")
         if fam["ignored_blocks"]:
@@ -1161,6 +1219,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--port", type=int, default=PORT)
         p.add_argument("--config-template",
                        help="this arm's node configuration, with {share}, {data} and {port}")
+        p.add_argument("--runtime-env", action="append", metavar="NAME=VALUE",
+                       help="a diagnostic switch (LLMP_DIAGNOSTIC_*) for this arm's runtime")
         p.set_defaults(func=func)
         if command == "run":
             p.add_argument("--block", type=int)
@@ -1177,6 +1237,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--blocks", type=int)
     p.add_argument("--old-config", help="the old arm's --config-template")
     p.add_argument("--new-config", help="the new arm's --config-template")
+    p.add_argument("--old-env", action="append", metavar="NAME=VALUE",
+                   help="the old arm's --runtime-env (repeatable)")
+    p.add_argument("--new-env", action="append", metavar="NAME=VALUE",
+                   help="the new arm's --runtime-env (repeatable)")
     p.add_argument("--first", type=int, default=1)
     p.add_argument("--job-runs", type=int,
                    help="measured runs a job (session) at most, each job after its priming run")

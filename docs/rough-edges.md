@@ -28,6 +28,22 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-053: CTest reports a parameterized test as skipped, not failed, when one of its parameters skips and another fails  (2026-10-10, status: worked-around)
+
+Environment: `spark`, a `spark-native` build, CMake's `GoogleTest` module
+(`gtest_add_tests`, as `llmp_gpu_gtest` uses it). One CTest test is one
+`TEST_P` and runs all its parameters in one process, with
+`SKIP_REGULAR_EXPRESSION "\[  SKIPPED \]"`. When a test skipped one
+parameter (`GTEST_SKIP()` for the other family) and failed the other, the
+run printed `[  FAILED  ]` and ended nonzero, yet CTest listed it as
+`***Skipped` and the suite ended `100% tests passed` (found with
+`gemma_engine_serving_gpu_test`'s death test, whose expected message went to
+a log file instead of stderr). A `Skipped` line in a CTest summary is
+therefore not evidence of a pass. Work-around: a test for one family alone
+belongs to a suite instantiated with that family alone (no in-test
+`GTEST_SKIP` for the other), and a summary with skips is read with `-V` or
+`--output-on-failure` before it is believed.
+
 ## RE-052: The serving start's memory guard fails when the GB10's unified memory is full of other work's page cache  (2026-10-09, status: open)
 
 Environment: `spark-b` (GB10, 128 GB unified memory), a `spark-native`

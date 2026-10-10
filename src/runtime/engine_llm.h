@@ -43,8 +43,9 @@
 // parts (layouts, plans) and capped here by what the parts hold.
 //
 // What a head row is: `logit_width` F32 logits; a greedy device choice: one
-// I32 a greedy segment in the step's joined output, in segment order. The
-// step source's lowering and the components agree on it.
+// I32, the greedy segment's own output (its one output row's token). The
+// step source's lowering (kernels/ggml/lower.cc's output slots) and the
+// components agree on it.
 //
 // Vendor-free, every build profile: the engine core and no kernel library.
 
@@ -61,6 +62,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "config/node_config.h"
@@ -281,8 +283,11 @@ class EngineLlm final : public Llm {
   Status CopyCheckpointStateFor(Branch& branch, void* host,
                                 std::span<const engine::LiveState::Range> ranges,
                                 bool to_host) override;
+  // `layout`: the restored state's kept layout ID, which the lifecycle
+  // holds against its own (a turn checkpoint's, or its kept record's).
   Status PreparePositionRestoreFor(Branch& branch, std::uint32_t position, std::uint32_t cursor,
-                                   std::span<const engine::LiveState::Range> footprint) override;
+                                   std::span<const engine::LiveState::Range> footprint,
+                                   std::string_view layout) override;
   Status CheckCheckpointMetadataFor(
       const Branch& branch, std::uint32_t position, std::uint32_t cursor,
       std::span<const engine::LiveState::Range> footprint) const override;
@@ -290,9 +295,11 @@ class EngineLlm final : public Llm {
   Status RestoreSnapshotFor(Branch& branch, void* host,
                             std::span<const engine::LiveState::Range> ranges,
                             std::uint32_t cursor) override;
+  // `layout`: the kept record's (identity.layout), held against the
+  // lifecycle's own.
   Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
-                          std::uint32_t cursor,
-                          std::span<const engine::LiveState::Range> ranges) override;
+                          std::uint32_t cursor, std::span<const engine::LiveState::Range> ranges,
+                          std::string_view layout) override;
   // The cursor is the slot's committed positions (a restore, an adoption or
   // a step publishes them); the drafters' own catch-up cursors are the
   // decoding orchestrator's, reset to them after any of those.

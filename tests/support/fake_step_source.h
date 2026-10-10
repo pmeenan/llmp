@@ -29,14 +29,14 @@
 //   read_cells) holding a valid Cell for their own position (all of past +
 //   rows when the state persisted), `hash` is the fixed state's after the
 //   row, `tap` the tapped token (-1: none valid) and `borrowed` the count;
-// - for a shape with greedy segments, one joined output: each segment's
-//   last token + 1000, as I32.
+// - for a greedy segment, its own output is instead one I32 (as the GGML
+//   lowering's): its last token + 1000.
 // With `logits` (a serving adapter's head, runtime/engine_llm.h), each
 // output row is instead that many F32 logits, every one 0 but a 1 at
 // FakeLogit(token, position): on the target only while its tensor 0 holds a
 // valid cell for every position through the row's (else at logits - 1, the
 // lost state's mark), on a drafter always; and a greedy segment's I32 is
-// its last row's.
+// its last row's choice.
 // Recording goes through the launch (RecordingLaunch), so a replay reads
 // the inputs staged for it and writes the same way.
 

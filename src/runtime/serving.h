@@ -404,6 +404,9 @@ class Llm : public Served {
     std::vector<engine::LiveState::Range> footprint;
     std::uint32_t cursor = 0;
     execution::AdaptiveDepth decoding;
+    // The kept layout ID (D-105) of the state it holds: the process's own
+    // (KeptLayout) for one it saved, its kept record's for one adopted.
+    std::string layout;
   };
 
  public:
@@ -613,6 +616,12 @@ class Llm : public Served {
   // Where it reports what the runtime's log should show (a turn
   // checkpoint not captured or not restored); unset, nothing is reported.
   void set_log(std::function<void(std::string_view)> log) { log_ = std::move(log); }
+  // A gate-only diagnostic (ServingOptions::diagnostic_skip_turn_checkpoints;
+  // temporary): false skips each turn checkpoint's save after the branch
+  // settled and its ranges were taken, where the M3 Gemma classes' save
+  // failed (docs/experiments/m36-baselines), so a speed gate compares equal
+  // work. Nothing else of a turn changes.
+  void set_turn_checkpoints(bool save) { turn_checkpoints_ = save; }
   // After a capacity refusal of `branch` (StateRefusedFor): the bytes its
   // refused growth or restore asked for (0: unknown).
   std::uint64_t RefusedBytes(const Branch& branch) const {
@@ -1242,11 +1251,17 @@ class Llm : public Served {
                                         bool to_host);
   // Position-aware restoration. Existing families retain their byte/cursor
   // contracts; Gemma authenticates its explicit completed-position ledger.
+  // `layout` is the kept layout ID (D-105) of the state being restored or
+  // adopted: this process's own for its turn checkpoints, a kept record's
+  // for what it names; the shared runner's lifecycle refuses another than
+  // its own.
   virtual Status PreparePositionRestoreFor(Branch& branch, std::uint32_t position,
                                            std::uint32_t cursor,
-                                           std::span<const engine::LiveState::Range> footprint) {
+                                           std::span<const engine::LiveState::Range> footprint,
+                                           std::string_view layout) {
     (void)position;
     (void)cursor;
+    (void)layout;
     return PrepareRestoreStateFor(branch, footprint);
   }
   virtual Status CheckCheckpointMetadataFor(
@@ -1271,9 +1286,11 @@ class Llm : public Served {
   }
   virtual Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
                                   std::uint32_t cursor,
-                                  std::span<const engine::LiveState::Range> ranges) {
+                                  std::span<const engine::LiveState::Range> ranges,
+                                  std::string_view layout) {
     (void)tokens;
     (void)cursor;
+    (void)layout;
     return AdoptFor(branch, ranges);
   }
   virtual Status CheckConversation(const chat::Conversation& conversation) const {
@@ -1406,6 +1423,7 @@ class Llm : public Served {
   Kept kept_;
   std::uint64_t checkpoint_serial_ = 0;  // the next kept checkpoint file's
   Clock::duration retention_ = kTurnCheckpointRetention;
+  bool turn_checkpoints_ = true;  // set_turn_checkpoints
   std::function<void(std::string_view)> log_;
   void Say(std::string_view text) const {
     if (log_) {
