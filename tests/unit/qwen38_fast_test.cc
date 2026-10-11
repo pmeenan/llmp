@@ -23,22 +23,27 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "base/bytes.h"
+#include "components/step.h"
 #include "execution/registry.h"
 #include "ggml.h"
+#include "ir/builder.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
@@ -47,9 +52,13 @@
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_cutlass.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
+#include "kernels/ggml/step_program.h"
 #include "kernels/ggml/tensors.h"
+#include "planner/pattern.h"
+#include "planner/plan.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
+#include "providers/device_runtime.h"
 
 namespace {
 
@@ -1076,6 +1085,105 @@ TEST_F(Qwen38FastTest, GemvBf16IsTheProductAtDecodeWidths) {
   }
 }
 
+TEST_F(Qwen38FastTest, WideBf16KeepsEachColumnRecipeThroughChangedInputReplay) {
+  // Direct common-kernel controls; no model/source qualification. Include
+  // every dispatch boundary, partial output blocks, all supported widths,
+  // both destination encodings and a nonzero packed input view offset.
+  arena_ = std::make_unique<TensorArena>(TensorArena::Create(4096).value());
+  const auto submission = execution_->Submission(stream_);
+  ASSERT_TRUE(submission);
+  const auto native_stream = reinterpret_cast<cudaStream_t>(submission->handle);
+  constexpr std::int64_t n = 17;
+  for (const std::int64_t k : {320, 512, 520, 3072, 3080, 10240, 10248, 20480}) {
+    for (std::int64_t columns = 1; columns <= kg::kGemvBf16Columns; ++columns) {
+      for (const ggml_type type : {GGML_TYPE_F32, GGML_TYPE_BF16}) {
+        SCOPED_TRACE(std::format("k={} columns={} type={}", k, columns, static_cast<int>(type)));
+        auto values = ToBf16(Normal(static_cast<std::uint64_t>(k + columns),
+                                    static_cast<std::size_t>(k * (columns + 1))));
+        auto* weights = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, k, n),
+                             ToBf16(Normal(17, static_cast<std::size_t>(k * n))));
+        auto* storage = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, k, columns + 1), values);
+        auto* input = ggml_view_2d(c(), storage, k, columns, static_cast<std::size_t>(2 * k),
+                                   static_cast<std::size_t>(2 * k));
+        auto* wide = kg::GemvBf16(c(), weights, input, type);
+        kg::SetGemvBf16Wide(wide);
+        const auto bytes = ggml_nbytes(wide);
+        const auto guarded = Allocate(bytes + 512);
+        TensorArena::Bind(wide, guarded + 256);
+        std::vector<ggml_tensor*> scalar;
+        for (std::int64_t column = 0; column < columns; ++column) {
+          auto* one = ggml_view_2d(c(), input, k, 1, static_cast<std::size_t>(2 * k),
+                                   static_cast<std::size_t>(column * 2 * k));
+          auto* product = kg::GemvBf16(c(), weights, one, type);
+          TensorArena::Bind(product, Allocate(ggml_nbytes(product)));
+          scalar.push_back(product);
+        }
+        auto roots = scalar;
+        roots.push_back(wide);
+        kg::BindViews(kg::GraphOrder(roots));
+        ASSERT_TRUE(kg::CheckGemmBf16(wide));
+        ASSERT_TRUE(kg::UsesGemvBf16Vector(wide));
+        const auto compare = [&] {
+          const auto got = Download<std::uint8_t>(wide);
+          const auto row = ggml_row_size(type, n);
+          for (std::size_t col = 0; col < scalar.size(); ++col) {
+            const auto want = Download<std::uint8_t>(scalar[col]);
+            EXPECT_EQ(want.size(), row);
+            EXPECT_EQ(std::memcmp(want.data(), got.data() + col * row, row), 0);
+          }
+          std::array<std::uint8_t, 256> before{}, after{};
+          EXPECT_EQ(cudaMemcpy(before.data(), reinterpret_cast<void*>(guarded), 256,
+                               cudaMemcpyDeviceToHost),
+                    cudaSuccess);
+          EXPECT_EQ(cudaMemcpy(after.data(), reinterpret_cast<void*>(guarded + 256 + bytes), 256,
+                               cudaMemcpyDeviceToHost),
+                    cudaSuccess);
+          EXPECT_TRUE(std::ranges::all_of(before, [](auto b) { return b == 0x7B; }));
+          EXPECT_TRUE(std::ranges::all_of(after, [](auto b) { return b == 0x7B; }));
+        };
+        for (auto* one : scalar) ASSERT_TRUE(kg::RunGemmBf16(launch(), one));
+        ASSERT_TRUE(kg::RunGemmBf16(launch(), wide));
+        compare();
+        ASSERT_EQ(cudaStreamBeginCapture(native_stream, cudaStreamCaptureModeThreadLocal),
+                  cudaSuccess);
+        ASSERT_TRUE(kg::RunGemmBf16(launch(), wide));
+        cudaGraph_t graph = nullptr;
+        cudaGraphExec_t executable = nullptr;
+        ASSERT_EQ(cudaStreamEndCapture(native_stream, &graph), cudaSuccess);
+        ASSERT_EQ(cudaGraphInstantiate(&executable, graph, nullptr, nullptr, 0), cudaSuccess);
+        for (const std::uint64_t seed : {71U, 103U}) {
+          values = ToBf16(Normal(seed, values.size()));
+          ASSERT_EQ(cudaMemcpy(storage->data, values.data(), ggml_nbytes(storage),
+                               cudaMemcpyHostToDevice),
+                    cudaSuccess);
+          ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+          for (auto* one : scalar) ASSERT_TRUE(kg::RunGemmBf16(launch(), one));
+          ASSERT_EQ(cudaGraphLaunch(executable, native_stream), cudaSuccess);
+          compare();  // Download retires this same graph before the next upload.
+        }
+        ASSERT_EQ(cudaGraphExecDestroy(executable), cudaSuccess);
+        ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+      }
+    }
+  }
+}
+
+TEST_F(Qwen38FastTest, OrdinaryWideFlagRetainsItsLargeKBlasFallback) {
+  constexpr std::int64_t k = 32768, n = 17, columns = 2;
+  auto* weights = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, k, n),
+                       ToBf16(Normal(811, static_cast<std::size_t>(k * n))));
+  auto* input = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, k, columns),
+                     ToBf16(Normal(812, static_cast<std::size_t>(k * columns))));
+  for (const ggml_type type : {GGML_TYPE_F32, GGML_TYPE_BF16}) {
+    auto* ordinary = kg::GemmBf16(c(), weights, input, type);
+    auto* wide = kg::GemvBf16(c(), weights, input, type);
+    kg::SetGemvBf16Wide(wide);
+    EXPECT_FALSE(kg::UsesGemvBf16Vector(wide));
+    Run({ordinary, wide});
+    EXPECT_EQ(Download<std::uint8_t>(ordinary), Download<std::uint8_t>(wide));
+  }
+}
+
 TEST_F(Qwen38FastTest, QsaPrepNormalizesAndRotates) {
   constexpr std::int64_t d = 256;
   constexpr std::int64_t heads = 24;
@@ -1563,5 +1671,559 @@ TEST_F(Qwen38FastTest, TheChecksRefuseWhatTheKernelsCannotRun) {
   TensorArena::Bind(prep, Allocate(ggml_nbytes(prep)));
   EXPECT_NE(reason(kg::CheckHcPrep(prep)), "accepted");
 }
+
+// A model-free integration of the common component, typed row producer,
+// planner and normal StepProgram. All callbacks and async buffers belong to
+// one heap owner; an unproven completion retains that entire owner.
+namespace hc_step {
+namespace co = llmp::components;
+namespace ir = llmp::ir;
+namespace pl = llmp::planner;
+namespace kn = llmp::kernels;
+namespace pr = llmp::providers;
+using llmp::format::Encoding;
+constexpr std::uint64_t kW = 2560, kStreams = 4, kRank = 320, kHw = kW * kStreams;
+constexpr std::uint64_t kRowBytes = kHw * sizeof(float);
+constexpr std::uint64_t kMatrixBytes = kHw * kRank * sizeof(std::uint16_t);
+constexpr std::uint64_t kActivation = 2U << 20, kPool = 64U << 20;
+constexpr std::uint64_t kHost = 64U << 20, kDevice = 192U << 20;
+constexpr std::uint64_t kPinned = kMatrixBytes + 8 * kRowBytes + 4 * kW * sizeof(float) + 256;
+static_assert(kPinned + (32U << 20) < kHost);
+static_assert(sizeof(ir::Node) <= 384 && sizeof(ir::TensorDesc) <= 192);
+
+struct Program {
+  explicit Program(co::StepGraph made) : step(std::move(made)) {}
+
+  co::StepGraph step;
+  pl::StepShape shape;
+  std::optional<pl::StepPlan> plan;
+  std::unique_ptr<kn::StepProgram> program;
+  std::unique_ptr<kn::Recorded> graph;
+  std::uint64_t activation = 0;
+  std::uint64_t source = 0;
+  float* output = nullptr;
+  std::uint64_t output_bytes = 0;
+};
+
+struct Environment {
+  std::unique_ptr<DeviceExecution> execution;
+  StreamId stream{};
+  bool stream_ready = false, retained = false;
+  std::unique_ptr<CublasHandle> cublas;
+  std::unique_ptr<kg::GgmlBackend> backend;
+  std::unique_ptr<kn::StepLaunch> launch;
+  std::array<std::unique_ptr<Program>, 3> programs;
+  std::array<std::uint64_t, 3> weights{};
+  std::vector<std::pair<void*, std::uint64_t>> allocations;
+  std::uint64_t allocated = 0, activations = 0, features = 0;
+  void* pinned = nullptr;
+  float* host_features = nullptr;
+  float* host_outputs = nullptr;
+  std::int32_t* host_rows = nullptr;
+  std::array<float, 2 * kW> previous{};
+
+  static bool Fail(std::string_view what) {
+    ADD_FAILURE() << what;
+    return false;
+  }
+  bool Finish() {
+    if (retained) return false;
+    if (!stream_ready) return true;
+    const auto fence = execution->Record(stream);
+    if (!fence) {
+      retained = true;
+      return Fail("record completion; retaining HC environment");
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    for (;;) {
+      const auto state = execution->Query(*fence);
+      if (!state || std::chrono::steady_clock::now() >= deadline) {
+        retained = true;
+        return Fail("unproven completion; retaining HC environment");
+      }
+      if (*state == FenceState::kComplete) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    if (!execution->Release(*fence)) {
+      retained = true;
+      return Fail("release completed fence");
+    }
+    return true;
+  }
+  bool Close() {
+    if (!Finish()) return false;
+    for (auto& p : programs) p.reset();
+    launch.reset();
+    if (backend) backend->LaunchReleased();
+    backend.reset();
+    cublas.reset();
+    if (stream_ready && !execution->DestroyStream(stream)) {
+      retained = true;
+      return Fail("destroy retired stream");
+    }
+    stream_ready = false;
+    for (auto& [address, bytes] : allocations) {
+      (void)bytes;
+      if (cudaFree(address) != cudaSuccess) {
+        retained = true;
+        return Fail("release HC device buffer");
+      }
+      address = nullptr;
+    }
+    allocations.clear();
+    if (pinned) pr::FreePinned(std::exchange(pinned, nullptr));
+    execution.reset();
+    return true;
+  }
+  std::uint64_t Allocate(std::uint64_t bytes) {
+    if (bytes == 0 || bytes > kDevice - allocated) {
+      Fail("HC device allocation envelope");
+      return 0;
+    }
+    void* pointer = nullptr;
+    if (cudaMalloc(&pointer, static_cast<std::size_t>(bytes)) != cudaSuccess) {
+      Fail("HC device allocation");
+      return 0;
+    }
+    allocations.emplace_back(pointer, bytes);
+    allocated += bytes;
+    return reinterpret_cast<std::uintptr_t>(pointer);
+  }
+  bool Copy(pr::NativeStream native, std::uint64_t to, std::uint64_t from, std::uint64_t bytes,
+            pr::CopyKind kind) {
+    const auto copied = pr::CopyAsync(native, reinterpret_cast<void*>(to),
+                                      reinterpret_cast<const void*>(from), bytes, kind);
+    if (copied.ok()) return true;
+    retained = true;
+    return Fail(copied.text());
+  }
+  bool Upload(std::uint64_t destination, const void* host, std::uint64_t bytes) {
+    const auto native = execution->Submission(stream);
+    if (!native) {
+      retained = true;
+      return Fail("upload submission");
+    }
+    return Copy(*native, destination, reinterpret_cast<std::uintptr_t>(host), bytes,
+                pr::CopyKind::kHostToDevice) &&
+           Finish();
+  }
+  void Open() {
+    auto opened = pr::cuda::OpenDeviceExecution(0);
+    ASSERT_TRUE(opened);
+    execution = std::move(*opened);
+    auto made_stream = execution->CreateStream();
+    ASSERT_TRUE(made_stream);
+    stream = *made_stream;
+    stream_ready = true;
+    const auto facts = pr::QueryDeviceFacts(0);
+    ASSERT_TRUE(facts);
+    const auto cublas_bytes =
+        CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
+    // Complete device request known before the first allocation. The fixed
+    // buffers are reused only after retirement, at most three programs live.
+    constexpr auto fixed = kPool + 3 * kActivation + 8 * kRowBytes + 2 * kMatrixBytes + kRowBytes;
+    ASSERT_LE(cublas_bytes.value(), kDevice - fixed);
+    allocations.reserve(8);
+    const auto cublas_base = Allocate(cublas_bytes.value());
+    ASSERT_NE(cublas_base, 0U);
+    auto handle =
+        CublasHandle::Create(0, *execution, stream, {.base = cublas_base, .size = cublas_bytes});
+    ASSERT_TRUE(handle) << (handle ? "" : handle.error().detail);
+    cublas = std::move(*handle);
+    auto made_backend = kg::GgmlBackend::Create(0, *execution, stream, cublas.get(),
+                                                {.lower = {.index_scratch_limit = 1U << 20}});
+    ASSERT_TRUE(made_backend) << (made_backend ? "" : made_backend.error());
+    backend = std::move(*made_backend);
+    const auto pool = Allocate(kPool);
+    ASSERT_NE(pool, 0U);
+    auto made_launch = backend->Launch({.base = pool, .size = Bytes(kPool)});
+    ASSERT_TRUE(made_launch) << (made_launch ? "" : made_launch.error());
+    launch = std::move(*made_launch);
+    activations = Allocate(3 * kActivation);
+    features = Allocate(8 * kRowBytes);
+    weights = {Allocate(kRowBytes), Allocate(kMatrixBytes), Allocate(kMatrixBytes)};
+    ASSERT_NE(activations, 0U);
+    ASSERT_NE(features, 0U);
+    for (auto weight : weights) ASSERT_NE(weight, 0U);
+    auto stage = pr::AllocatePinned(kPinned);
+    ASSERT_TRUE(stage);
+    pinned = *stage;
+    auto* bytes = static_cast<std::byte*>(pinned);
+    host_features = reinterpret_cast<float*>(bytes + kMatrixBytes);
+    host_outputs = reinterpret_cast<float*>(bytes + kMatrixBytes + 8 * kRowBytes);
+    host_rows = reinterpret_cast<std::int32_t*>(bytes + kMatrixBytes + 8 * kRowBytes +
+                                                4 * kW * sizeof(float));
+    auto* norm = static_cast<float*>(pinned);
+    for (std::uint64_t i = 0; i < kHw; ++i) norm[i] = 0.75F + static_cast<float>(i % 17) / 32.0F;
+    ASSERT_TRUE(Upload(weights[0], pinned, kRowBytes));
+    auto* matrix = static_cast<std::uint16_t*>(pinned);
+    for (std::size_t which = 1; which < weights.size(); ++which) {
+      for (std::uint64_t i = 0; i < kHw * kRank; ++i) {
+        const auto v = static_cast<int>((i * (which == 1 ? 31U : 43U) + i / kRank) % 257U) - 128;
+        matrix[i] = Bf16Bits(static_cast<float>(v) / 8192.0F);
+      }
+      ASSERT_TRUE(Upload(weights[which], pinned, kMatrixBytes));
+    }
+  }
+
+  bool Covered(std::uint64_t address, std::uint64_t bytes) const {
+    for (const auto& [pointer, length] : allocations) {
+      const auto base = reinterpret_cast<std::uintptr_t>(pointer);
+      if (address >= base && address - base <= length && bytes <= length - (address - base))
+        return true;
+    }
+    return false;
+  }
+  void Build(std::size_t index, std::span<const std::uint32_t> rows, std::uint64_t source,
+             float* output) {
+    ASSERT_TRUE(Finish());
+    programs[index].reset();
+    pl::StepShape shape;
+    shape.phase = pl::Phase::kDraft;
+    std::vector<co::StepWeight> step_weights;
+    std::vector<co::SegmentRows> segments;
+    std::uint32_t first = 0;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto slot = static_cast<std::uint8_t>(i == 0 ? 7 : 2);
+      shape.segments.push_back({.slot = slot, .rows = rows[i], .outputs = 1});
+      segments.push_back({.slot = slot, .first_row = first, .rows = rows[i], .outputs = 1});
+      first += rows[i];
+    }
+    ASSERT_LE(first, 8U);
+    llmp::spec::ComponentRef ref{.kind = "hc.mix",
+                                 .params = {{"eps", 1e-6},
+                                            {"features", false},
+                                            {"inject", false},
+                                            {"mix", std::string("sigmoid")},
+                                            {"rank", std::int64_t{kRank}}}};
+    const auto instance =
+        co::MakeInstance(ref, {.width = kW, .streams = kStreams}, co::Site::kFinalNorm, 0, 1);
+    ASSERT_TRUE(instance) << (instance ? "" : instance.error());
+    ir::Builder builder(128);
+    co::StepContext context(builder, std::move(segments), false);
+    context.SetPhase(pl::Phase::kDraft);
+    context.SetComponent(1);
+    const auto feature = context.Features(kHw);
+    const auto residual = builder.Reshape(feature, ir::ShapeOf({kW, kStreams, first}));
+    const std::array formats{ir::Dense(Encoding::kF32, ir::ShapeOf({kHw})),
+                             ir::Dense(Encoding::kBF16, ir::ShapeOf({kHw, kRank})),
+                             ir::Dense(Encoding::kBF16, ir::ShapeOf({kRank, kHw}))};
+    std::array<ir::TensorId, 3> leaves{};
+    const auto role_shapes = instance->def->shapes(*instance);
+    ASSERT_TRUE(role_shapes);
+    ASSERT_EQ(role_shapes->size(), 3U);
+    co::Fragment fragment{
+        .b = builder,
+        .instance = *instance,
+        .step = context,
+        .weight =
+            [&](std::uint16_t role) {
+              if (role >= leaves.size()) return ir::TensorId{};
+              if (!leaves[role].valid()) {
+                const ir::WeightRef binding{.component = 1, .role = role};
+                leaves[role] = builder.Weight(formats[role], binding);
+                step_weights.push_back({.tensor = leaves[role],
+                                        .ref = binding,
+                                        .parts = {{std::string(instance->def->roles[role].name),
+                                                   llmp::format::PartRole::kData}}});
+              }
+              return leaves[role];
+            },
+        .residual = residual};
+    auto emitted = instance->def->emit(fragment);
+    ASSERT_TRUE(emitted) << (emitted ? "" : emitted.error());
+    ASSERT_TRUE(emitted->stream.valid());
+    builder.Output(emitted->stream);
+    auto inputs = context.TakeInputs();
+    auto graph = std::move(builder).Finish();
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    programs[index] = std::make_unique<Program>(co::StepGraph{.graph = std::move(*graph),
+                                                              .inputs = std::move(inputs),
+                                                              .weights = std::move(step_weights),
+                                                              .state = {}});
+    auto& p = *programs[index];
+    p.shape = std::move(shape);
+    p.source = source;
+    p.output = output;
+    p.activation = activations + index * kActivation;
+    // Return the complete F32 component result through ordinary per-owner
+    // output slots; this synthetic step has no vocabulary or token choice.
+    p.step.logits = emitted->stream;
+    ASSERT_LE(p.step.graph.nodes().size(), 64U);
+    // The actual catalog has made the typed OutputRows input, not a tagged
+    // lookalike. Singleton draft uses its own last-row view instead.
+    const auto id =
+        std::ranges::find(p.step.inputs, co::InputKind::kOutputRows, &co::StepInput::kind);
+    if (rows.size() == 2) {
+      ASSERT_NE(id, p.step.inputs.end());
+      const auto values = co::InputValues(*id, p.shape, {});
+      ASSERT_TRUE(values);
+      ASSERT_EQ(*values, (std::vector<std::int64_t>{rows[0] - 1, first - 1}));
+      for (std::size_t i = 0; i < values->size(); ++i)
+        host_rows[i] = static_cast<std::int32_t>((*values)[i]);
+    } else {
+      ASSERT_EQ(id, p.step.inputs.end());
+    }
+    const auto native = backend->Backend();
+    pl::Policy policy{.enabled = {"hc_prep", "owner_row_invariant"}, .disabled = {"rms_norm_mul"}};
+    pl::Canonicalize(policy);
+    std::vector<ir::TensorId> staged;
+    for (const auto& input : p.step.inputs) staged.push_back(input.tensor);
+    auto planned = pl::Plan(p.step.graph.Clone(), *native.registry, native.device, policy,
+                            {.capturable = true,
+                             .staged = std::move(staged),
+                             .on_stream = native.on_stream,
+                             .written = native.written,
+                             .within = native.within,
+                             .shape = &p.shape,
+                             .activation_alignment = 256});
+    ASSERT_TRUE(planned) << (planned ? "" : planned.error().detail);
+    p.plan.emplace(std::move(*planned));
+    ASSERT_LE(p.plan->graph.nodes().size(), 128U);
+    EXPECT_EQ(std::ranges::count_if(
+                  p.plan->graph.nodes(),
+                  [](const ir::Node& n) { return n.key == ir::Fused(ir::FusedKind::kHcPrep); }),
+              1);
+    EXPECT_EQ(std::ranges::count_if(
+                  p.plan->graph.nodes(),
+                  [](const ir::Node& n) { return n.key == ir::Fused(ir::FusedKind::kHcFold); }),
+              1);
+    ASSERT_EQ(std::ranges::count_if(
+                  p.plan->graph.nodes(),
+                  [](const ir::Node& n) { return n.key == ir::Primitive(ir::Op::kMatMul); }),
+              2);
+    kn::Addresses addresses{.weight =
+                                [this](const ir::WeightRef& binding, llmp::format::PartRole part) {
+                                  return binding.component == 1 && binding.role < weights.size() &&
+                                                 part == llmp::format::PartRole::kData
+                                             ? weights[binding.role]
+                                             : 0;
+                                },
+                            .weight_rows = {},
+                            .state = {},
+                            .save = {},
+                            .activation_bytes = kActivation,
+                            .activation_alignment = 256};
+    auto measure =
+        backend->Lower({.plan = *p.plan, .step = p.step, .shape = p.shape, .addresses = addresses});
+    ASSERT_TRUE(measure) << (measure ? "" : measure.error());
+    ASSERT_LE((*measure)->scratch_bytes(), kActivation);
+    ASSERT_LE((*measure)->pool_bytes(), kPool);
+    ASSERT_LE((*measure)->host_bytes(), 1U << 20);
+    addresses.activations = p.activation;
+    auto bound =
+        backend->Lower({.plan = *p.plan, .step = p.step, .shape = p.shape, .addresses = addresses});
+    ASSERT_TRUE(bound) << (bound ? "" : bound.error());
+    p.program = std::move(*bound);
+    ASSERT_EQ(p.program->scratch_bytes(), (*measure)->scratch_bytes());
+    ASSERT_EQ(p.program->pool_bytes(), (*measure)->pool_bytes());
+    ASSERT_EQ(p.program->host_bytes(), (*measure)->host_bytes());
+    ASSERT_EQ(p.program->inputs().size(), (*measure)->inputs().size());
+    ASSERT_EQ(p.program->outputs().size(), rows.size());
+    ASSERT_EQ((*measure)->outputs().size(), rows.size());
+    ASSERT_EQ(p.program->inputs().size(), rows.size() == 2 ? 2U : 1U);
+    const auto feature_slot =
+        std::ranges::find((*measure)->inputs(), kn::InputKind::kFeatures, &kn::InputSlot::kind);
+    ASSERT_NE(feature_slot, (*measure)->inputs().end());
+    const auto mapped_feature = p.plan->tensors.at(feature.v);
+    const auto root = p.plan->graph.root(mapped_feature);
+    const auto place = std::ranges::find(p.plan->placement.offsets, root,
+                                         &std::pair<ir::TensorId, std::uint64_t>::first);
+    ASSERT_NE(place, p.plan->placement.offsets.end());
+    const auto feature_offset = place->second + p.plan->graph.tensor(mapped_feature).view_offset;
+    ASSERT_GE(feature_slot->device_address, feature_offset);
+    const auto measured_base = feature_slot->device_address - feature_offset;
+    const auto same_place = [&](std::uint64_t actual, std::uint64_t measured, std::uint64_t bytes) {
+      return actual >= p.activation && actual - p.activation <= kActivation &&
+             bytes <= kActivation - (actual - p.activation) && measured >= measured_base &&
+             actual - p.activation == measured - measured_base;
+    };
+    const auto metadata = [](const kn::InputSlot& x) {
+      return std::tie(x.bytes, x.tensor, x.segment, x.kind, x.cells, x.read, x.window, x.mask_rows,
+                      x.outputs, x.sections, x.count, x.ratio, x.overlap, x.ring, x.ahead,
+                      x.commit_save, x.component, x.visible_capacity);
+    };
+    for (std::size_t i = 0; i < p.program->inputs().size(); ++i) {
+      const auto& a = p.program->inputs()[i];
+      const auto& m = (*measure)->inputs()[i];
+      ASSERT_EQ(metadata(a), metadata(m));
+      ASSERT_EQ(a.segment, ir::kJoinedSegment);
+      ASSERT_TRUE(a.kind == kn::InputKind::kFeatures || a.kind == kn::InputKind::kOutputRows);
+      ASSERT_TRUE(same_place(a.device_address, m.device_address, a.bytes));
+      if (a.kind == kn::InputKind::kFeatures) {
+        ASSERT_EQ(a.tensor, feature);
+        ASSERT_EQ(a.bytes, first * kRowBytes);
+      } else {
+        ASSERT_NE(id, p.step.inputs.end());
+        ASSERT_EQ(a.tensor, id->tensor);
+        ASSERT_EQ(a.bytes, rows.size() * sizeof(std::int32_t));
+      }
+    }
+    p.output_bytes = rows.size() * kW * sizeof(float);
+    std::uint64_t first_output = 0;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto& a = p.program->outputs()[i];
+      const auto& m = (*measure)->outputs()[i];
+      ASSERT_EQ(a.tensor, emitted->stream);
+      ASSERT_EQ(a.tensor, m.tensor);
+      ASSERT_EQ(a.bytes, m.bytes);
+      ASSERT_EQ(a.bytes, kW * sizeof(float));
+      ASSERT_EQ(a.segment, i);
+      ASSERT_EQ(a.segment, m.segment);
+      ASSERT_FALSE(a.features);
+      ASSERT_EQ(a.features, m.features);
+      ASSERT_TRUE(same_place(a.device_address, m.device_address, a.bytes));
+      if (i == 0) first_output = a.device_address;
+      ASSERT_EQ(a.device_address, first_output + i * kW * sizeof(float));
+    }
+    ASSERT_EQ(p.program->tensors().size(), (*measure)->tensors().size());
+    for (std::size_t i = 0; i < p.program->tensors().size(); ++i) {
+      const auto& a = p.program->tensors()[i];
+      const auto& m = (*measure)->tensors()[i];
+      ASSERT_EQ(a.bytes, m.bytes);
+      ASSERT_EQ(a.role, m.role);
+      ASSERT_FALSE(a.routed_experts);
+      ASSERT_EQ(a.routed_experts, m.routed_experts);
+      if (a.role == ir::Role::kWeight) {
+        ASSERT_EQ(a.address, m.address);
+        ASSERT_TRUE(Covered(a.address, a.bytes));
+      } else {
+        ASSERT_EQ(a.role, ir::Role::kActivation);
+        ASSERT_TRUE(same_place(a.address, m.address, a.bytes));
+      }
+    }
+    const auto installed = p.program->Bind(*launch);
+    ASSERT_TRUE(installed) << (installed ? "" : installed.error().detail);
+    ASSERT_NE(p.program->bound(), nullptr);
+    std::size_t products = 0;
+    for (std::size_t op = 0; op < p.program->bound()->size(); ++op) {
+      const auto& implementation = p.program->bound()->at(op);
+      if (implementation.operation == llmp::execution::Operation::kMatMul) {
+        ASSERT_EQ(implementation.name, kg::kGemmBf16Name);
+        ++products;
+      }
+    }
+    ASSERT_EQ(products, 2U);
+  }
+
+  std::expected<void, kn::StepFailure> Body(Program& p, pr::NativeStream native) {
+    for (const auto& input : p.program->inputs()) {
+      const bool feature = input.kind == kn::InputKind::kFeatures;
+      if (!Copy(native, input.device_address,
+                feature ? p.source : reinterpret_cast<std::uintptr_t>(host_rows), input.bytes,
+                feature ? pr::CopyKind::kDeviceToDevice : pr::CopyKind::kHostToDevice))
+        return std::unexpected(
+            kn::StepFailure{.error = kn::StepError::kUnknown, .detail = "input copy"});
+    }
+    const auto ran = p.program->Run(*launch, native);
+    if (!ran) {
+      retained = true;
+      return ran;
+    }
+    std::uint64_t output_at = reinterpret_cast<std::uintptr_t>(p.output);
+    for (const auto& output : p.program->outputs()) {
+      if (!Copy(native, output_at, output.device_address, output.bytes,
+                pr::CopyKind::kDeviceToHost))
+        return std::unexpected(
+            kn::StepFailure{.error = kn::StepError::kUnknown, .detail = "output copy"});
+      output_at += output.bytes;
+    }
+    return {};
+  }
+  void Execute(int variant, std::span<const std::uint32_t> rows) {
+    ASSERT_TRUE(Finish());
+    const auto total = rows[0] + rows[1];
+    for (std::uint32_t r = 0; r < total; ++r) {
+      const bool selected = r == rows[0] - 1 || r == total - 1;
+      // Variant3 preserves selected rows from2, changing all others. Variants
+      // 1/2 perturb individual coordinates/signs, not RMS-cancelled amplitude.
+      const int change = variant == 3 && selected ? 2 : variant;
+      for (std::uint64_t i = 0; i < kHw; ++i) {
+        const auto v = static_cast<int>((i * 17 + r * 43 + i / 13) % 251) - 125;
+        const auto perturb = static_cast<int>((i + 3 * r) % 11) - 5;
+        host_features[r * kHw + i] =
+            static_cast<float>(v) / 64.0F + static_cast<float>(change * perturb) / 16.0F;
+      }
+    }
+    ASSERT_TRUE(Upload(features, host_features, total * kRowBytes));
+    const auto native = execution->Submission(stream);
+    if (!native) retained = true;
+    ASSERT_TRUE(native);
+    auto& joined = *programs[0];
+    if (variant == 1) {
+      auto captured =
+          joined.program->Record(*launch, *native, [&] { return Body(joined, *native); });
+      if (!captured) retained = true;
+      ASSERT_TRUE(captured) << (captured ? "" : captured.error().detail);
+      joined.graph = std::move(*captured);
+      ASSERT_GT(joined.graph->nodes(), 0U);
+    }
+    if (variant == 0) {
+      const auto ran = Body(joined, *native);
+      ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+    } else {
+      ASSERT_NE(joined.graph, nullptr);
+      const auto* identity = joined.graph.get();
+      const auto ran = launch->Launch(*native, *joined.graph);
+      if (!ran) retained = true;
+      ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+      ASSERT_EQ(joined.graph.get(), identity);
+    }
+    for (std::size_t i = 1; i < programs.size(); ++i) {
+      const auto ran = Body(*programs[i], *native);
+      ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+    }
+    ASSERT_TRUE(Finish());
+    for (std::size_t owner = 0; owner < 2; ++owner) {
+      const auto* actual = joined.output + owner * kW;
+      const auto* expected = programs[owner + 1]->output;
+      ASSERT_EQ(std::memcmp(actual, expected, kW * sizeof(float)), 0) << "owner " << owner;
+      ASSERT_TRUE(
+          std::ranges::all_of(std::span(actual, kW), [](float x) { return std::isfinite(x); }));
+      if (variant == 1 || variant == 2)
+        EXPECT_NE(std::memcmp(actual, previous.data() + owner * kW, kW * sizeof(float)), 0);
+      if (variant == 3)
+        EXPECT_EQ(std::memcmp(actual, previous.data() + owner * kW, kW * sizeof(float)), 0);
+    }
+    std::memcpy(previous.data(), joined.output, sizeof(previous));
+  }
+};
+
+class SelectedHcStepProgramTest : public ::testing::Test {
+ protected:
+  void SetUp() override { environment = std::make_unique<Environment>(); }
+  void TearDown() override {
+    if (!environment->Close()) std::ignore = environment.release();
+  }
+  std::unique_ptr<Environment> environment;
+};
+
+TEST_F(SelectedHcStepProgramTest, JoinedSelectedRowsMatchScalarProgramsAndReplayChangedInputs) {
+  auto& e = *environment;
+  ASSERT_NO_FATAL_FAILURE(e.Open());
+  for (const auto rows : {std::array{1U, 1U}, std::array{1U, 3U}, std::array{3U, 1U},
+                          std::array{3U, 3U}, std::array{4U, 4U}}) {
+    SCOPED_TRACE(std::format("{}+{}", rows[0], rows[1]));
+    ASSERT_TRUE(e.Finish());
+    for (auto& p : e.programs) p.reset();
+    ASSERT_NO_FATAL_FAILURE(e.Build(0, rows, e.features, e.host_outputs));
+    const auto first_last = rows[0] - 1;
+    const auto second_last = rows[0] + rows[1] - 1;
+    ASSERT_NO_FATAL_FAILURE(
+        e.Build(1, std::array{1U}, e.features + first_last * kRowBytes, e.host_outputs + 2 * kW));
+    ASSERT_NO_FATAL_FAILURE(
+        e.Build(2, std::array{1U}, e.features + second_last * kRowBytes, e.host_outputs + 3 * kW));
+    const kn::Recorded* captured = nullptr;
+    for (int variant = 0; variant < 4; ++variant) {
+      SCOPED_TRACE(variant);
+      ASSERT_NO_FATAL_FAILURE(e.Execute(variant, rows));
+      if (variant == 1) captured = e.programs[0]->graph.get();
+      if (variant >= 2) ASSERT_EQ(e.programs[0]->graph.get(), captured);
+      ASSERT_FALSE(e.retained);
+    }
+  }
+  ASSERT_TRUE(e.Finish());
+}
+}  // namespace hc_step
 
 }  // namespace

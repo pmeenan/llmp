@@ -386,6 +386,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
           !Disabled(policy, "owner_row_invariant") && options.shape != nullptr &&
           options.shape->segments.size() > 1 &&
           std::ranges::all_of(options.shape->segments, [](const auto& s) { return s.rows == 1; }),
+      .owner_rows_policy_enabled = !Disabled(policy, "owner_row_invariant"),
       .root_alignments = std::move(alignments),
       .owner_products = std::move(scopes),
       .owner_digest =

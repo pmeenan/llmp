@@ -329,6 +329,9 @@ bool IsGemvBf16(const ggml_tensor* node);
 // waves keep the product per slot).
 void SetGemvBf16Wide(ggml_tensor* node);
 bool GemvBf16Wide(const ggml_tensor* node);
+// Exact existing adaptive dispatch predicate, after CheckGemmBf16. False
+// retains cuBLAS fallback, including for ordinary wide-flag callers.
+bool UsesGemvBf16Vector(const ggml_tensor* node);
 
 // The host checks: operands bound, typed and shaped as above, packed where
 // the kernels read them with vector loads (codes and x rows 16-byte

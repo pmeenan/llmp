@@ -162,6 +162,9 @@ class Lowering {
                                              std::string_view what) const;
   std::expected<void, KernelFailure> Bind();
   std::expected<void, KernelFailure> PlanAndCompare();
+  std::expected<void, KernelFailure> CheckSelectedHc();
+  std::expected<void, KernelFailure> BindSelectedHc();
+  std::expected<void, KernelFailure> CheckSelectedHcRecipe(const GraphPlan& graph) const;
   std::expected<void, KernelFailure> CheckOwnerProducts();
   std::expected<void, KernelFailure> BindOwnerProducts();
   std::expected<void, KernelFailure> CheckOwnerRecipes(const GraphPlan& plan) const;
@@ -215,6 +218,14 @@ class Lowering {
   };
   std::vector<OwnerProduct> owner_products_;
   std::map<const ggml_tensor*, std::string_view> owner_recipes_;
+
+  struct SelectedHc {
+    TensorId rows{}, norm{}, down{}, up{};
+    NodeId low{}, high{};
+  };
+  static_assert(sizeof(SelectedHc) <= 24);
+  static_assert(sizeof(std::optional<SelectedHc>) <= 32);
+  std::optional<SelectedHc> selected_hc_{};
 
   LoweredStep out_;
   std::vector<ggml_tensor*> made_;            // by planned tensor
@@ -1756,6 +1767,324 @@ std::expected<void, KernelFailure> Lowering::Bind() {
 
 // Scope validation happens before descriptors or plans are made. The proof
 // covers the original graph; an arbitrary StepPlan is not itself a proof.
+// The selected rows' basis is a computed input contract, not a dimension
+// heuristic. Only a final, unprepared HC corridor with one selected row per
+// owner may inherit scalar-column arithmetic when the input wave is multirow.
+std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
+  if (!plan_.owner_rows_policy_enabled || plan_.owner_row_invariant ||
+      in_.shape.segments.size() < 2)
+    return {};
+  struct GraphCheck {
+    const ir::Graph& graph;
+    std::vector<std::uint8_t> written;
+    explicit GraphCheck(const ir::Graph& g) : graph(g), written(g.tensor_count(), 0) {
+      for (const auto& n : g.nodes()) {
+        if (n.key == ir::Primitive(Op::kCacheStore)) written[g.root(n.src[0]).v] = 1;
+        for (std::size_t o = 0; o < n.nout; ++o)
+          if (const auto a = ir::AliasedSource(n.key, o); a && n.src[*a].valid())
+            written[g.root(n.src[*a]).v] = 1;
+      }
+    }
+    bool Clean(TensorId t) const {
+      return t.valid() && t.v < graph.tensor_count() && written[graph.root(t).v] == 0;
+    }
+    const ir::Node* At(TensorId t, ir::OpKey key, std::size_t sources) const {
+      if (!Clean(t)) return nullptr;
+      const auto& n = graph.node(graph.producer(t));
+      if (n.key != key || n.nsrc != sources || n.nout != 1 || n.out[0] != t) return nullptr;
+      for (std::size_t i = 0; i < sources; ++i)
+        if (!Clean(n.src[i])) return nullptr;
+      return &n;
+    }
+    const ir::Node* Prim(TensorId t, Op op, std::size_t sources) const {
+      return At(t, ir::Primitive(op), sources);
+    }
+    bool Dense(TensorId t, Encoding encoding, format::Shape shape) const {
+      return Clean(t) && graph.tensor(t).format.encoding == encoding &&
+             graph.tensor(t).format.layout == format::Layout::kDense &&
+             graph.tensor(t).shape().ne == shape.ne && ir::IsContiguous(graph.tensor(t));
+    }
+    const ir::Node* WholeReshape(TensorId t) const {
+      const auto* n = Prim(t, Op::kReshape, 1);
+      if (!n) return nullptr;
+      const auto& x = graph.tensor(n->src[0]);
+      const auto& y = graph.tensor(t);
+      return x.format.encoding == y.format.encoding && ir::IsContiguous(x) && ir::IsContiguous(y) &&
+                     graph.root(n->src[0]) == graph.root(t) && x.view_offset == y.view_offset
+                 ? n
+                 : nullptr;
+    }
+  };
+  static_assert(sizeof(GraphCheck) <= 40);
+  const GraphCheck original(g_), planned(p_);
+  const auto mapped = [&](TensorId t) -> TensorId {
+    return t.valid() && t.v < plan_.tensors.size() ? plan_.tensors[t.v] : TensorId{};
+  };
+  const auto same_leaf = [&](TensorId a, TensorId b, Op op) {
+    if (mapped(a) != b || !original.Prim(a, op, 0) || !planned.Prim(b, op, 0)) return false;
+    const auto& x = g_.tensor(a);
+    const auto& y = p_.tensor(b);
+    return !x.is_view() && !y.is_view() && x.format == y.format && x.nb == y.nb &&
+           x.binding == y.binding && x.segment == y.segment;
+  };
+  const auto weight = [&](TensorId a, TensorId b) {
+    if (!same_leaf(a, b, Op::kWeight)) return false;
+    const auto* ref = std::get_if<ir::WeightRef>(&g_.tensor(a).binding);
+    if (!ref) return false;
+    const co::StepWeight* found = nullptr;
+    for (const auto& w : in_.step.weights) {
+      if (w.tensor != a) continue;
+      if (found || w.ref != *ref || w.parts.size() != 1 ||
+          w.parts[0].second != format::PartRole::kData)
+        return false;
+      found = &w;
+    }
+    return found != nullptr;
+  };
+  // At most one selected final corridor. This bound avoids unbounded walks
+  // through overlapping fold chains in caller-rebuilt valid IR.
+  const ir::Node* fold = nullptr;
+  const ir::Node* prep = nullptr;
+  const ir::Node* selected = nullptr;
+  const ir::Node* gather = nullptr;
+  for (const auto& n : p_.nodes()) {
+    if (n.key != ir::Fused(FusedKind::kHcFold) || n.nsrc != 2 || n.nout != 1) continue;
+    const auto& candidate_prep = p_.node(p_.producer(n.src[0]));
+    if (candidate_prep.key != ir::Fused(FusedKind::kHcPrep) || candidate_prep.nsrc != 5 ||
+        candidate_prep.nout != 1)
+      continue;
+    const auto& reshape = p_.node(p_.producer(candidate_prep.src[0]));
+    if (reshape.key != ir::Primitive(Op::kReshape) || reshape.nsrc != 1) continue;
+    const auto& rows = p_.node(p_.producer(reshape.src[0]));
+    if (rows.key != ir::Primitive(Op::kGetRows) || rows.nsrc != 2) continue;
+    if (fold) return Refused("selected HC: multiple selected corridors");
+    fold = &n;
+    prep = &candidate_prep;
+    selected = &reshape;
+    gather = &rows;
+  }
+  if (!fold) return {};
+  const auto count = in_.shape.segments.size();
+  std::uint64_t rows = 0, outputs = 0;
+  bool one_per_owner = true;
+  std::array<bool, 256> slots{};
+  for (const auto& s : in_.shape.segments) {
+    if (s.rows == 0 || s.outputs > s.rows || slots[s.slot])
+      return Refused("selected HC: invalid or duplicate selected owner");
+    slots[s.slot] = true;
+    if (__builtin_add_overflow(rows, s.rows, &rows) ||
+        __builtin_add_overflow(outputs, s.outputs, &outputs))
+      return Refused("selected HC: selected row count overflow");
+    one_per_owner = one_per_owner && s.outputs == 1;
+  }
+  const auto hp = prep->Params<ir::HcNormPostParams>();
+  const auto fp = fold->Params<ir::HcFoldParams>();
+  const auto& streams = p_.tensor(selected->out[0]);
+  const auto width = streams.ne(0), hc = streams.ne(1);
+  std::uint64_t hw = 0;
+  if (__builtin_mul_overflow(width, hc, &hw)) return Refused("selected HC: stream width overflow");
+  if (prep->src[2].valid() || prep->src[3].valid() || prep->src[4].valid() ||
+      !planned.WholeReshape(selected->out[0]) || !planned.Prim(gather->out[0], Op::kGetRows, 2) ||
+      !planned.Clean(prep->src[1]) || hc < 2 || hp.streams != hc || fp.streams != hc ||
+      fp.prepared || fp.rounded ||
+      fold->params != ir::ToBytes(ir::HcFoldParams{.streams = fp.streams}) ||
+      !planned.Clean(fold->out[0]) ||
+      !planned.Dense(selected->out[0], Encoding::kF32, ir::ShapeOf({width, hc, outputs})) ||
+      !planned.Dense(gather->src[0], Encoding::kF32, ir::ShapeOf({hw, rows})) ||
+      !planned.Dense(gather->out[0], Encoding::kF32, ir::ShapeOf({hw, outputs})) ||
+      !planned.Dense(gather->src[1], Encoding::kI32, ir::ShapeOf({outputs})) ||
+      !planned.Dense(prep->out[0], Encoding::kBF16, ir::ShapeOf({hw, outputs})))
+    return Refused("selected HC: selected layout or preparation differs");
+  const co::StepInput* indices = nullptr;
+  for (const auto& input : in_.step.inputs) {
+    if (input.kind != co::InputKind::kOutputRows) continue;
+    if (indices || mapped(input.tensor) != gather->src[1] ||
+        !same_leaf(input.tensor, gather->src[1], Op::kInput) ||
+        input.segment != ir::kJoinedSegment || input.cells != co::CellKey{} || input.read != 0 ||
+        input.sections != 1 || input.component != 0 || input.layer != 0 || input.ratio != 0 ||
+        input.overlap || input.ring != 0 || input.visible_capacity != 0)
+      return Refused("selected HC: noncanonical output-row staging");
+    indices = &input;
+  }
+  if (!indices) return Refused("selected HC: missing typed output-row authority");
+  if (std::ranges::count(in_.step.inputs, indices->tensor, &co::StepInput::tensor) != 1)
+    return Refused("selected HC: ambiguous typed input binding");
+  // Authenticate the original gather as well as the rewritten descriptors
+  // before classifying a valid multi-output wave as an ordinary HC recipe.
+  const ir::Node* original_gather = nullptr;
+  const ir::Node* original_selected = nullptr;
+  for (const auto& n : g_.nodes()) {
+    if (n.key == ir::Primitive(Op::kGetRows) && n.nout == 1 && mapped(n.out[0]) == gather->out[0]) {
+      if (original_gather) return Refused("selected HC: ambiguous original gather");
+      original_gather = original.Prim(n.out[0], Op::kGetRows, 2);
+      if (!original_gather) return Refused("selected HC: changed original gather");
+    }
+    if (n.key == ir::Primitive(Op::kReshape) && n.nout == 1 &&
+        mapped(n.out[0]) == selected->out[0]) {
+      if (original_selected) return Refused("selected HC: ambiguous original selection");
+      original_selected = original.WholeReshape(n.out[0]);
+      if (!original_selected) return Refused("selected HC: changed original selection");
+    }
+  }
+  if (!original_gather || !original_selected ||
+      original_selected->src[0] != original_gather->out[0] ||
+      original_gather->src[1] != indices->tensor ||
+      mapped(original_gather->src[0]) != gather->src[0] ||
+      original_gather->params != gather->params ||
+      !original.Dense(original_gather->src[0], Encoding::kF32, ir::ShapeOf({hw, rows})) ||
+      !original.Dense(original_gather->out[0], Encoding::kF32, ir::ShapeOf({hw, outputs})) ||
+      !original.Dense(original_selected->out[0], Encoding::kF32, ir::ShapeOf({width, hc, outputs})))
+    return Refused("selected HC: original selected layout differs");
+  // A valid verify wave may request several output rows per owner. It keeps
+  // the existing ordinary recipe; it cannot acquire the protected pair proof.
+  if (!one_per_owner) return {};
+  if (count > static_cast<std::size_t>(kGemvBf16Columns))
+    return Refused("selected HC: selected owners exceed vector columns");
+  // Reconstruct the planned pair only through actual dependency edges.
+  const auto* high = planned.Prim(fold->src[1], Op::kMatMul, 2);
+  const auto* activation =
+      high ? planned.At(high->src[1], ir::Fused(FusedKind::kScaledUnary), 1) : nullptr;
+  const auto* low = activation ? planned.Prim(activation->src[0], Op::kMatMul, 2) : nullptr;
+  if (!low || low->src[1] != prep->out[0] || low->params != ir::ToBytes(ir::ProductParams{}) ||
+      high->params != low->params ||
+      activation->params !=
+          ir::ToBytes(ir::ScaledUnaryParams{.scale = 1.0F / static_cast<float>(hc)}))
+    return Refused("selected HC: changed planned product corridor");
+  const auto rank = p_.tensor(low->out[0]).ne(0);
+  if (!planned.Dense(low->src[0], Encoding::kBF16, ir::ShapeOf({hw, rank})) ||
+      !planned.Dense(low->out[0], Encoding::kF32, ir::ShapeOf({rank, count})) ||
+      !planned.Dense(activation->out[0], Encoding::kBF16, ir::ShapeOf({rank, count})) ||
+      !planned.Dense(high->src[0], Encoding::kBF16, ir::ShapeOf({rank, hw})) ||
+      !planned.Dense(high->out[0], Encoding::kBF16, ir::ShapeOf({hw, count})) || hw % 8 != 0 ||
+      rank % 8 != 0 || hw > static_cast<std::uint64_t>(kGemvBf16MaxK) ||
+      rank > static_cast<std::uint64_t>(kGemvBf16MaxK))
+    return Refused("selected HC: protected vector geometry is unsupported");
+  // The rewrite elides original low/high results. Pair by the surviving
+  // terminal output, never by Plan.from (all fused nodes may share an anchor).
+  TensorId terminal{};
+  for (std::uint32_t i = 0; i < g_.tensor_count(); ++i) {
+    if (mapped(TensorId{i}) != fold->out[0]) continue;
+    if (terminal.valid()) return Refused("selected HC: ambiguous original terminal");
+    terminal = TensorId{i};
+  }
+  const auto* scale = original.Prim(terminal, Op::kScale, 1);
+  if (!scale ||
+      scale->params != ir::ToBytes(ir::ScaleParams{.scale = 1.0F / static_cast<float>(hc)}))
+    return Refused("selected HC: original terminal differs");
+  TensorId acc = scale->src[0], gated{};
+  for (std::uint64_t h = hc; h-- > 0;) {
+    const auto* combine = original.Prim(acc, h == 0 ? Op::kCont : Op::kAdd, h == 0 ? 1 : 2);
+    const auto* view =
+        combine ? original.Prim(combine->src[h == 0 ? 0 : 1], Op::kView, 1) : nullptr;
+    if (!view || (gated.valid() && gated != view->src[0]))
+      return Refused("selected HC: original ordered fold differs");
+    gated = view->src[0];
+    const auto& vd = g_.tensor(view->out[0]);
+    const auto& gd = g_.tensor(gated);
+    if (vd.shape().ne != ir::ShapeOf({width, count}).ne ||
+        vd.view_offset != gd.view_offset + h * gd.nb[1] || vd.nb[0] != gd.nb[0] ||
+        vd.nb[1] != gd.nb[2])
+      return Refused("selected HC: original fold view differs");
+    acc = combine->src[0];
+  }
+  const auto* shaped = original.WholeReshape(gated);
+  const auto* mul = shaped ? original.Prim(shaped->src[0], Op::kMul, 2) : nullptr;
+  const auto* sigmoid = mul ? original.Prim(mul->src[1], Op::kUnary, 1) : nullptr;
+  const auto* old_high = sigmoid ? original.Prim(sigmoid->src[0], Op::kMatMul, 2) : nullptr;
+  const auto* silu = old_high ? original.Prim(old_high->src[1], Op::kUnary, 1) : nullptr;
+  const auto* downscale = silu ? original.Prim(silu->src[0], Op::kScale, 1) : nullptr;
+  const auto* old_low = downscale ? original.Prim(downscale->src[0], Op::kMatMul, 2) : nullptr;
+  const auto* normmul = old_low ? original.Prim(old_low->src[1], Op::kMul, 2) : nullptr;
+  const auto* flat = normmul ? original.WholeReshape(normmul->src[0]) : nullptr;
+  const auto* norm = flat ? original.Prim(flat->src[0], Op::kRmsNorm, 1) : nullptr;
+  const auto* old_selected = norm ? original.WholeReshape(norm->src[0]) : nullptr;
+  const auto* old_gather =
+      old_selected ? original.Prim(old_selected->src[0], Op::kGetRows, 2) : nullptr;
+  if (!old_gather || mapped(norm->src[0]) != selected->out[0] ||
+      old_gather->src[1] != indices->tensor || mapped(old_gather->src[0]) != gather->src[0] ||
+      old_gather->params != gather->params ||
+      !original.Dense(norm->src[0], Encoding::kF32, ir::ShapeOf({width, hc, count})) ||
+      !original.Dense(gated, Encoding::kF32, ir::ShapeOf({width, hc, count})) ||
+      !original.Dense(normmul->out[0], Encoding::kF32, ir::ShapeOf({hw, count})) ||
+      !original.Dense(flat->out[0], Encoding::kF32, ir::ShapeOf({hw, count})) ||
+      mul->src[0] != normmul->out[0] || old_low->params != low->params ||
+      old_high->params != high->params ||
+      norm->params != ir::ToBytes(ir::NormParams{.eps = hp.eps}) ||
+      downscale->params != scale->params ||
+      silu->params != ir::ToBytes(ir::UnaryParams{.fn = ir::UnaryFn::kSilu}) ||
+      sigmoid->params != ir::ToBytes(ir::UnaryParams{.fn = ir::UnaryFn::kSigmoid}) ||
+      !weight(normmul->src[1], prep->src[1]) || !weight(old_low->src[0], low->src[0]) ||
+      !weight(old_high->src[0], high->src[0]))
+    return Refused("selected HC: original corridor or resource mapping differs");
+  selected_hc_ = SelectedHc{.rows = indices->tensor,
+                            .norm = normmul->src[1],
+                            .down = old_low->src[0],
+                            .up = old_high->src[0],
+                            .low = p_.producer(low->out[0]),
+                            .high = p_.producer(high->out[0])};
+  return {};
+}
+
+std::expected<void, KernelFailure> Lowering::BindSelectedHc() {
+  if (!selected_hc_) return {};
+  const auto& proof = *selected_hc_;
+  const auto mapped_tensor = [&](TensorId t) { return made_.at(plan_.tensors.at(t.v).v); };
+  const auto* rows = mapped_tensor(proof.rows);
+  std::size_t matched = 0;
+  for (const auto& [tensor, slot] : input_leaves_) {
+    if (tensor != rows) continue;
+    ++matched;
+    if (slot.tensor != proof.rows || slot.kind != InputKind::kOutputRows ||
+        slot.segment != ir::kJoinedSegment)
+      return Refused("selected HC: actual output-row input slot differs");
+  }
+  if (matched != 1 || rows->op != GGML_OP_NONE || rows->view_src != nullptr)
+    return Refused("selected HC: actual computed input is missing");
+  for (const TensorId t : {proof.norm, proof.down, proof.up}) {
+    const auto* bound = mapped_tensor(t);
+    std::size_t bindings = 0;
+    for (const auto& [leaf, weight] : weight_leaves_) {
+      if (leaf != bound) continue;
+      ++bindings;
+      if (weight->tensor != t || weight->ref != std::get<ir::WeightRef>(g_.tensor(t).binding))
+        return Refused("selected HC: actual original weight binding differs");
+    }
+    if (bindings != 1 || bound->op != GGML_OP_NONE || bound->view_src != nullptr)
+      return Refused("selected HC: original weight is not a bound leaf");
+    if (auto matches = Matches(g_.tensor(t), bound, "selected HC original weight"); !matches)
+      return matches;
+  }
+  for (const NodeId id : {proof.low, proof.high}) {
+    const auto& n = p_.node(id);
+    const auto* bound = made_.at(n.out[0].v);
+    if (bound == nullptr || bound->src[0] != made_.at(n.src[0].v) ||
+        bound->src[1] != made_.at(n.src[1].v) || !GemvBf16Wide(bound) || !UsesGemvBf16Vector(bound))
+      return Refused("selected HC: bound protected product lost its vector recipe");
+    if (auto checked = CheckGemmBf16(bound); !checked) return checked;
+    for (const TensorId t : {n.src[0], n.src[1], n.out[0]})
+      if (auto match = Matches(p_.tensor(t), made_.at(t.v), "selected HC operand"); !match)
+        return match;
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> Lowering::CheckSelectedHcRecipe(const GraphPlan& graph) const {
+  if (!selected_hc_) return {};
+  for (const NodeId id : {selected_hc_->low, selected_hc_->high}) {
+    const auto* node = made_.at(p_.node(id).out[0].v);
+    std::size_t seen = 0;
+    for (const auto& step : graph.steps) {
+      if (!std::ranges::contains(step.nodes, node)) continue;
+      if (++seen != 1 || step.nodes.size() != 1 || step.implementation != kGemmBf16Name ||
+          step.operation != execution::Operation::kMatMul || !GemvBf16Wide(node) ||
+          !UsesGemvBf16Vector(node))
+        return Refused("selected HC: actual protected recipe differs");
+    }
+    if (seen != 1) return Refused("selected HC: actual plan omits a protected product");
+  }
+  return {};
+}
+
 std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
   const auto& proof = in_.step.owner_products;
   const auto products = proof.products();
@@ -2051,6 +2380,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   if (!planned) return std::unexpected(planned.error());
   GraphPlan& gp = *planned;
   if (auto checked = CheckOwnerRecipes(gp); !checked) return checked;
+  if (auto checked = CheckSelectedHcRecipe(gp); !checked) return checked;
   // Each node by its place in the graph (a refusal's message).
   std::map<const ggml_tensor*, std::size_t> place;
   for (std::size_t i = 0; i < out_.nodes.size(); ++i) place.emplace(out_.nodes[i], i);
@@ -2454,7 +2784,9 @@ std::expected<void, KernelFailure> Lowering::MakeSpecial(NodeId id, const ir::No
                         from.key == ir::Fused(FusedKind::kScaledUnary);
         ggml_tensor* t =
             hc ? GemvBf16(c_, src(0), src(1), out_type) : GemmBf16(c_, src(0), src(1), out_type);
-        if (hc && plan_.owner_row_invariant) SetGemvBf16Wide(t);
+        if (hc && (plan_.owner_row_invariant ||
+                   (selected_hc_ && (selected_hc_->low == id || selected_hc_->high == id))))
+          SetGemvBf16Wide(t);
         made_.at(n.out[0].v) = t;
         Node(t, id);
         return {};
@@ -3111,6 +3443,7 @@ std::expected<void, KernelFailure> Lowering::MakeSaves() {
 }
 
 std::expected<LoweredStep, KernelFailure> Lowering::Run() {
+  if (auto checked = CheckSelectedHc(); !checked) return std::unexpected(checked.error());
   if (auto checked = CheckOwnerProducts(); !checked) return std::unexpected(checked.error());
   if (auto indexed = Index(); !indexed) return std::unexpected(indexed.error());
   if (auto checked = CheckQsaInputs(); !checked) return std::unexpected(checked.error());
@@ -3158,6 +3491,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   }
   if (auto saved = MakeSaves(); !saved) return std::unexpected(saved.error());
   if (auto bound = Bind(); !bound) return std::unexpected(bound.error());
+  if (auto checked = BindSelectedHc(); !checked) return std::unexpected(checked.error());
   if (auto checked = BindOwnerProducts(); !checked) return std::unexpected(checked.error());
   for (const auto* node : bank_attentions_) {
     if (auto valid = CheckFlashAttnMma(node); !valid) return std::unexpected(valid.error());

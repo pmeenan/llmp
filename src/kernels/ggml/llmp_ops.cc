@@ -459,6 +459,13 @@ bool GemvBf16Wide(const ggml_tensor* node) {
   return LlmpOpOf(node) == LlmpOp::kGemmBf16 && LlmpOpInt(node, 0) == 2;
 }
 
+bool UsesGemvBf16Vector(const ggml_tensor* node) {
+  if (!IsGemvBf16(node) || node->src[0] == nullptr || node->src[1] == nullptr) return false;
+  const auto columns = node->src[1]->ne[1];
+  return (columns <= kGemvBf16FastColumns || (GemvBf16Wide(node) && columns <= kGemvBf16Columns)) &&
+         node->src[0]->ne[0] % 8 == 0 && node->src[0]->ne[0] <= kGemvBf16MaxK;
+}
+
 ggml_tensor* GdnConv(ggml_context* context, ggml_tensor* x, ggml_tensor* history,
                      ggml_tensor* weight, std::int64_t qk_channels, std::int64_t head, float eps,
                      float scale) {

@@ -849,7 +849,8 @@ if(LLMP_CUDA)
   add_executable(qwen38_fast_test qwen38_fast_test.cc)
   target_include_directories(qwen38_fast_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(qwen38_fast_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory)
+  target_link_libraries(qwen38_fast_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory
+                                               llmp_device_runtime)
   llmp_gpu_gtest(qwen38_fast_test)
 
   # Qwen3.8's routed experts over the CUTLASS layout (kernels/ggml/

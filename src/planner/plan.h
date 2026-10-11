@@ -116,10 +116,14 @@ struct StepPlan {
   // keys' names), in order.
   std::vector<std::string> decomposed;
   // Several one-row owners retain each owner's scalar product arithmetic
-  // (the policy's owner_row_invariant option). Multirow owners retain the
-  // ordinary batched arithmetic; this is independent of an exact verify's
+  // (the policy's owner_row_invariant option). Multirow input products retain
+  // ordinary batched arithmetic; a selected-output basis may be proved below.
+  // This is independent of an exact verify's
   // explicit row_invariant requirement on implementation selection.
   bool owner_row_invariant = false;
+  // The enabled policy, independent of the all-input-rows-one fast path.
+  // Lowering may prove a narrower selected-output basis for individual ops.
+  bool owner_rows_policy_enabled = false;
   // Promises used by selection, authenticated again at final placement/binding.
   std::vector<RootAlignmentFact> root_alignments{};
   // Exact products retained through rewrites; lowering authenticates recipes.

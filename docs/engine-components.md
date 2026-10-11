@@ -1893,7 +1893,22 @@ The shared runner derives side-row IDs from authenticated token history
 before admission, with explicit rows authoritative. Native component sources
 remain unqualified for multi-owner repeat-pending execution; the shared
 entry points refuse it before state mutation. Exact joined arithmetic is a
-required follow-on before serving recipes or migration gates. See
+required follow-on before serving recipes or migration gates. The bounded
+selected-HC recipe screen (G3c2b1b1) is evidence for a default-off native
+recipe correction only: its 09c report found equal K1/K3 head inputs and logits
+across all 47,172 vocabulary logits per owner, while its four K3 products had equal
+weights, consumed inputs and outputs across the compared columns. The earlier
+08 report found unequal K3 product outputs despite equal weights and consumed
+inputs. These are bounded operation observations; branch names are
+source-resolved from bound fields and immutable compiled source, not new
+dispatch instrumentation. The cleaned correction also passed a model-free
+`hc.mix` regression through the canonical output-row producer and normal
+`StepProgram`: complete mixed outputs, ragged owners and changed-input replays
+of the same recorded program. This component-only test is separate from the
+full-vocabulary diagnostic and does not cover target/drafter state. Joined
+state, full continuation replay,
+persistence and admission remain open under G3c2b1b2. See
+[the selected-HC evidence](experiments/m36-selected-owner-hc/README.md) and
 [the model runner](engine.md#the-model-runner) for the state, completion and
 checked numerical scope.
 

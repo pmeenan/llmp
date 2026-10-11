@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "ir/builder.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
@@ -181,6 +183,7 @@ void Rebuild(Fixture& f, const ex::Registry& registry,
   next->owner_products = std::move(scopes);
   next->owner_digest = old.owner_digest;
   next->owner_row_invariant = old.owner_row_invariant;
+  next->owner_rows_policy_enabled = old.owner_rows_policy_enabled;
   f.plan.emplace(std::move(*next));
 }
 
@@ -488,4 +491,419 @@ TEST(GgmlOwnerProductsTest, UnsupportedOrMissingConcreteSelectorRefuses) {
   EXPECT_EQ(refused.error().detail,
             "lowering onto GGML: owner products: unmapped or overwritten preparation");
 }
+
+Fixture MakeSelectedHc(std::span<const std::uint32_t> widths, std::uint64_t width = 32,
+                       std::uint64_t rank = 16, bool all_outputs = false, std::uint64_t hc = 4) {
+  pl::StepShape shape;
+  const float scale = 1.0F / static_cast<float>(hc);
+  std::uint64_t rows = 0, outputs = 0;
+  for (std::size_t i = 0; i < widths.size(); ++i) {
+    shape.segments.push_back({.slot = static_cast<std::uint8_t>(i),
+                              .rows = widths[i],
+                              .outputs = all_outputs ? widths[i] : 1});
+    rows += widths[i];
+    outputs += shape.segments.back().outputs;
+  }
+  ir::Builder b;
+  const auto streams = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({width, hc, rows})));
+  const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({outputs})));
+  const auto stores = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({1})));
+  const ir::WeightRef nr{.role = 1}, dr{.role = 2}, ur{.role = 3};
+  const auto norm = b.Weight(ir::Dense(Encoding::kF32, ir::ShapeOf({width * hc})), nr);
+  const auto down = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({width * hc, rank})), dr);
+  const auto up = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({rank, width * hc})), ur);
+  const auto mix = [&](ir::TensorId x, std::uint64_t columns) {
+    auto xn = b.Mul(b.Reshape(b.RmsNorm(x, 1e-6F), ir::ShapeOf({width * hc, columns})), norm);
+    auto lo = b.Unary(b.Scale(b.MatMul(down, xn), scale), ir::UnaryFn::kSilu);
+    auto gate = b.Unary(b.MatMul(up, lo), ir::UnaryFn::kSigmoid);
+    auto gated = b.Reshape(b.Mul(xn, gate), ir::ShapeOf({width, hc, columns}));
+    const auto nb = b.tensor(gated).nb;
+    const std::array<std::uint64_t, 4> strides{nb[0], nb[2], nb[3], nb[3]};
+    auto folded = b.Cont(b.View(gated, ir::ShapeOf({width, columns}), strides, 0));
+    for (std::uint64_t s = 1; s < hc; ++s)
+      folded = b.Add(folded, b.View(gated, ir::ShapeOf({width, columns}), strides, s * nb[1]));
+    return b.Scale(folded, scale);
+  };
+  // Both full-input and selected-output HC pairs are in the actual plan.
+  b.Output(mix(streams, rows));
+  auto selected = b.Reshape(b.GetRows(b.Reshape(streams, ir::ShapeOf({width * hc, rows})), ids),
+                            ir::ShapeOf({width, hc, outputs}));
+  b.Output(mix(selected, outputs));
+  co::StepGraph step{
+      .graph = std::move(b).Finish().value(), .inputs = {}, .weights = {}, .state = {}};
+  step.inputs = {{.tensor = streams, .kind = co::InputKind::kFeatures},
+                 {.tensor = ids, .kind = co::InputKind::kOutputRows},
+                 {.tensor = stores, .kind = co::InputKind::kStoreCells}};
+  step.weights = {{.tensor = norm, .ref = nr, .parts = {{"norm", llmp::format::PartRole::kData}}},
+                  {.tensor = down, .ref = dr, .parts = {{"down", llmp::format::PartRole::kData}}},
+                  {.tensor = up, .ref = ur, .parts = {{"up", llmp::format::PartRole::kData}}}};
+  return {.step = std::move(step), .shape = std::move(shape), .indices = stores};
+}
+void PlanSelectedHc(Fixture& f, const ex::Registry& registry, bool enabled = true) {
+  pl::Policy policy{.enabled = {"hc_prep"}, .disabled = {"rms_norm_mul"}};
+  if (enabled)
+    policy.enabled.push_back("owner_row_invariant");
+  else
+    policy.disabled.push_back("owner_row_invariant");
+  pl::Canonicalize(policy);
+  std::vector<ir::TensorId> staged;
+  for (const auto& i : f.step.inputs) staged.push_back(i.tensor);
+  auto planned =
+      pl::Plan(f.step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, policy,
+               {.staged = std::move(staged),
+                .written = &kg::WrittenBytes,
+                .within = &kg::WithinRoot,
+                .shape = &f.shape});
+  ASSERT_TRUE(planned) << Failed(planned, &pl::PlanFailure::detail).value_or("");
+  f.plan.emplace(std::move(*planned));
+}
+// Authenticate all four physical products against the original weight leaves
+// and the planned graph, including the primitive fallback. A custom-kernel
+// name filter alone can silently return no operations when hc_prep refuses.
+void CheckHcProducts(const Fixture& f, const kg::LoweredStep& lowered, const ex::Registry& registry,
+                     bool fused, std::vector<const ggml_tensor*>& products) {
+  const auto& original = f.step.graph;
+  const auto& planned = f.plan->graph;
+  std::vector<const ir::Node*> old_products, plan_products;
+  for (const auto& n : original.nodes())
+    if (n.key == ir::Primitive(ir::Op::kMatMul)) old_products.push_back(&n);
+  for (const auto& n : planned.nodes())
+    if (n.key == ir::Primitive(ir::Op::kMatMul)) plan_products.push_back(&n);
+  ASSERT_EQ(old_products.size(), 4U);
+  ASSERT_EQ(plan_products.size(), 4U);
+  EXPECT_EQ(std::ranges::count_if(
+                planned.nodes(),
+                [](const ir::Node& n) { return n.key == ir::Fused(ir::FusedKind::kHcPrep); }),
+            fused ? 2 : 0);
+  EXPECT_EQ(std::ranges::count_if(
+                planned.nodes(),
+                [](const ir::Node& n) { return n.key == ir::Fused(ir::FusedKind::kHcFold); }),
+            fused ? 2 : 0);
+  std::vector<const kg::PlanStep*> operations;
+  for (const auto& operation : lowered.plan.steps)
+    if (operation.operation == ex::Operation::kMatMul) operations.push_back(&operation);
+  ASSERT_EQ(operations.size(), 4U);
+  products.clear();
+  for (std::size_t i = 0; i < operations.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto& old = *old_products[i];
+    const auto& made = *plan_products[i];
+    const auto& weight = f.step.weights[1 + i % 2];
+    ASSERT_EQ(old.src[0], weight.tensor);
+    ASSERT_EQ(made.src[0], f.plan->tensors[weight.tensor.v]);
+    EXPECT_EQ(original.tensor(old.src[0]).format, planned.tensor(made.src[0]).format);
+    EXPECT_EQ(original.tensor(old.src[0]).binding, planned.tensor(made.src[0]).binding);
+    EXPECT_EQ(old.params, made.params);
+    const auto id = planned.producer(made.out[0]);
+    const pl::Selected* selection = nullptr;
+    for (const auto& step : f.plan->steps) {
+      if (std::ranges::find(step.nodes, id) == step.nodes.end()) continue;
+      ASSERT_EQ(selection, nullptr);
+      selection = &step;
+    }
+    ASSERT_NE(selection, nullptr);
+    ASSERT_EQ(selection->nodes.size(), 1U);
+    if (fused)
+      EXPECT_EQ(registry.at(selection->implementation).name, kg::kGemmBf16Name);
+    else
+      EXPECT_EQ(selection->group, "ggml.mul_mat");
+    const auto& operation = *operations[i];
+    EXPECT_EQ(operation.implementation, fused                         ? kg::kGemmBf16Name
+                                        : f.plan->owner_row_invariant ? kg::kMulMatVecFRows
+                                                                      : kg::kMulMatTensorCore);
+    ASSERT_EQ(operation.nodes.size(), 1U);
+    const auto* node = operation.nodes[0];
+    const ggml_tensor* leaf = nullptr;
+    for (const auto& candidate : lowered.leaves) {
+      if (candidate.primitive != weight.tensor) continue;
+      ASSERT_EQ(leaf, nullptr);
+      leaf = candidate.tensor;
+    }
+    ASSERT_NE(leaf, nullptr);
+    ASSERT_EQ(node->src[0], leaf);
+    ASSERT_NE(node->src[1], nullptr);
+    EXPECT_EQ(leaf->type, GGML_TYPE_BF16);
+    EXPECT_EQ(node->src[1]->type, fused ? GGML_TYPE_BF16 : GGML_TYPE_F32);
+    EXPECT_EQ(node->type, fused && i % 2 == 1 ? GGML_TYPE_BF16 : GGML_TYPE_F32);
+    for (std::size_t dim = 0; dim < 4; ++dim) {
+      EXPECT_EQ(static_cast<std::uint64_t>(node->ne[dim]), planned.tensor(made.out[0]).ne(dim));
+      EXPECT_EQ(static_cast<std::uint64_t>(node->src[0]->ne[dim]),
+                planned.tensor(made.src[0]).ne(dim));
+      EXPECT_EQ(static_cast<std::uint64_t>(node->src[1]->ne[dim]),
+                planned.tensor(made.src[1]).ne(dim));
+    }
+    if (fused) {
+      EXPECT_EQ(node->op, GGML_OP_CUSTOM);
+      EXPECT_EQ(kg::LlmpOpOf(node), kg::LlmpOp::kGemmBf16);
+      const auto& from = planned.node(planned.producer(planned.root(made.src[1])));
+      EXPECT_EQ(from.key,
+                ir::Fused(i % 2 == 0 ? ir::FusedKind::kHcPrep : ir::FusedKind::kScaledUnary));
+      const auto* source = node->src[1];
+      while (source->view_src != nullptr) source = source->view_src;
+      EXPECT_EQ(source->op, GGML_OP_CUSTOM);
+      EXPECT_EQ(kg::LlmpOpOf(source), i % 2 == 0 ? kg::LlmpOp::kHcPrep : kg::LlmpOp::kHcLo);
+    } else {
+      EXPECT_EQ(node->op, GGML_OP_MUL_MAT);
+      EXPECT_EQ(f.plan->tensors[old.out[0].v], made.out[0]);
+      EXPECT_EQ(f.plan->tensors[old.src[1].v], made.src[1]);
+      EXPECT_EQ(node->src[1]->op, i % 2 == 0 ? GGML_OP_MUL : GGML_OP_UNARY);
+    }
+    products.push_back(node);
+  }
+}
+
+TEST(GgmlOwnerProductsTest, SelectedOutputRowsProtectOnlyTheirFinalPair) {
+  const auto registry = Registry();
+  for (const auto& widths : {std::vector{1U, 1U}, std::vector{3U, 3U}, std::vector{1U, 3U},
+                             std::vector{3U, 1U}, std::vector{4U, 4U}}) {
+    auto f = MakeSelectedHc(widths);
+    PlanSelectedHc(f, registry);
+    ASSERT_TRUE(f.plan);
+    const auto lowered = Lower(f, registry);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    std::vector<const ggml_tensor*> products;
+    ASSERT_NO_FATAL_FAILURE(CheckHcProducts(f, *lowered, registry, true, products));
+    ASSERT_EQ(products.size(), 4U);
+    for (std::size_t i = 0; i < products.size(); ++i) {
+      const bool wide = i >= 2 || widths == std::vector{1U, 1U};
+      EXPECT_EQ(kg::GemvBf16Wide(products[i]), wide);
+      EXPECT_EQ(kg::UsesGemvBf16Vector(products[i]), wide);
+    }
+  }
+}
+TEST(GgmlOwnerProductsTest, UnoptedSingletonAndOldWideFallbackStayUnchanged) {
+  const auto registry = Registry();
+  for (const auto& widths : {std::vector{3U}, std::vector{3U, 3U}}) {
+    auto f = MakeSelectedHc(widths);
+    PlanSelectedHc(f, registry, false);
+    ASSERT_TRUE(f.plan);
+    const auto lowered = Lower(f, registry);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    std::vector<const ggml_tensor*> products;
+    ASSERT_NO_FATAL_FAILURE(CheckHcProducts(f, *lowered, registry, true, products));
+    ASSERT_EQ(products.size(), 4U);
+    for (const auto* node : products) {
+      EXPECT_EQ(kg::LlmpOpInt(node, 0), 1);
+      EXPECT_FALSE(kg::GemvBf16Wide(node));
+    }
+  }
+  // width8192/hc4 does not enter hc_prep (width <=4096). Keep its real
+  // BF16-weight/F32-input primitive products as a separate fallback control.
+  for (const auto& widths : {std::vector{1U, 1U}, std::vector{3U, 3U}}) {
+    auto primitive = MakeSelectedHc(widths, 8192);
+    PlanSelectedHc(primitive, registry);
+    ASSERT_TRUE(primitive.plan);
+    const auto plain = Lower(primitive, registry);
+    ASSERT_TRUE(plain) << Failed(plain, &kg::KernelFailure::detail).value_or("");
+    std::vector<const ggml_tensor*> products;
+    ASSERT_NO_FATAL_FAILURE(CheckHcProducts(primitive, *plain, registry, false, products));
+    ASSERT_EQ(products.size(), 4U);
+  }
+  // Eight streams keep the actual HC prep supported at width4096 while
+  // its down-product K32768 exceeds the existing vector branch's limit.
+  auto old = MakeSelectedHc(std::array{1U, 1U}, 4096, 16, false, 8);
+  PlanSelectedHc(old, registry);
+  ASSERT_TRUE(old.plan);
+  const auto lowered = Lower(old, registry);
+  ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+  std::vector<const ggml_tensor*> products;
+  ASSERT_NO_FATAL_FAILURE(CheckHcProducts(old, *lowered, registry, true, products));
+  ASSERT_EQ(products.size(), 4U);
+  for (std::size_t i = 0; i < products.size(); ++i) {
+    EXPECT_EQ(kg::LlmpOpInt(products[i], 0), 2);
+    EXPECT_TRUE(kg::GemvBf16Wide(products[i]));
+    // The low product retains cuBLAS fallback, the high product fits vector.
+    EXPECT_EQ(kg::UsesGemvBf16Vector(products[i]), i % 2 == 1);
+  }
+  auto protected_wide = MakeSelectedHc(std::array{3U, 3U}, 4096, 16, false, 8);
+  PlanSelectedHc(protected_wide, registry);
+  ASSERT_TRUE(protected_wide.plan);
+  EXPECT_TRUE(protected_wide.plan->owner_rows_policy_enabled);
+  EXPECT_FALSE(protected_wide.plan->owner_row_invariant);
+  const auto& graph = protected_wide.plan->graph;
+  EXPECT_EQ(std::ranges::count_if(
+                graph.nodes(),
+                [](const ir::Node& n) { return n.key == ir::Fused(ir::FusedKind::kHcPrep); }),
+            2);
+  const auto refused = Lower(protected_wide, registry);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().detail,
+            "lowering onto GGML: selected HC: protected vector geometry is unsupported");
+  // The same graph/shape remains valid without the protected recipe policy.
+  PlanSelectedHc(protected_wide, registry, false);
+  const auto ordinary = Lower(protected_wide, registry);
+  ASSERT_TRUE(ordinary) << Failed(ordinary, &kg::KernelFailure::detail).value_or("");
+  ASSERT_NO_FATAL_FAILURE(CheckHcProducts(protected_wide, *ordinary, registry, true, products));
+  ASSERT_EQ(products.size(), 4U);
+  for (const auto* node : products) EXPECT_EQ(kg::LlmpOpInt(node, 0), 1);
+}
+TEST(GgmlOwnerProductsTest, MultipleOutputsKeepTheOrdinaryHcRecipe) {
+  const auto registry = Registry();
+  for (const auto& widths : {std::vector{3U, 3U}, std::vector{3U, 1U}}) {
+    for (const auto& [width, streams] :
+         {std::pair{32U, 4U}, std::pair{4096U, 8U}, std::pair{8192U, 4U}}) {
+      SCOPED_TRACE(width);
+      auto f = MakeSelectedHc(widths, width, 16, true, streams);
+      PlanSelectedHc(f, registry);
+      ASSERT_TRUE(f.plan);
+      const auto lowered = Lower(f, registry);
+      ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+      const bool fused = width <= 4096;
+      std::vector<const ggml_tensor*> products;
+      ASSERT_NO_FATAL_FAILURE(CheckHcProducts(f, *lowered, registry, fused, products));
+      ASSERT_EQ(products.size(), 4U);
+      for (const auto* node : products) {
+        if (fused) {
+          EXPECT_EQ(kg::LlmpOpInt(node, 0), 1);  // unchanged ordinary HC selector
+          EXPECT_FALSE(kg::GemvBf16Wide(node));
+          EXPECT_FALSE(kg::UsesGemvBf16Vector(node));
+        }
+        EXPECT_EQ(node->ne[1], widths[0] + widths[1]);
+      }
+      if (!fused) continue;  // no selected-HC corridor exists in the primitive plan
+      // Coherent multi-output geometry is ordinary; changing the metadata
+      // without changing the actual gather must still refuse before lowering.
+      --f.shape.segments[0].outputs;
+      const auto refused = Lower(f, registry);
+      ASSERT_FALSE(refused);
+      EXPECT_NE(refused.error().detail.find("selected HC:"), std::string::npos);
+    }
+  }
+}
+TEST(GgmlOwnerProductsTest, SelectedPairRequiresActualCanonicalStagingAndMaps) {
+  const auto registry = Registry();
+  for (int change = 0; change < 7; ++change) {
+    SCOPED_TRACE(change);
+    auto f = MakeSelectedHc(std::array{3U, 3U});
+    PlanSelectedHc(f, registry);
+    ASSERT_TRUE(f.plan);
+    if (change == 0) f.step.inputs[1].kind = co::InputKind::kTokens;
+    if (change == 1) f.step.inputs.push_back(f.step.inputs[1]);
+    if (change == 2) f.step.inputs[1].segment = 0;
+    if (change == 3) f.step.inputs[1].sections = 2;
+    if (change == 4) f.shape.segments[0].outputs = 2;
+    if (change == 5) f.plan->tensors[f.step.weights[1].tensor.v] = {};
+    if (change == 6) ++f.step.weights[1].ref.role;
+    const auto lowered = Lower(f, registry);
+    ASSERT_FALSE(lowered);
+    EXPECT_NE(lowered.error().detail.find("selected HC:"), std::string::npos)
+        << lowered.error().detail;
+  }
+}
+TEST(GgmlOwnerProductsTest, SelectedPairRejectsValidAliasedOutputWrites) {
+  const auto registry = Registry();
+  for (int which = 0; which < 4; ++which) {
+    auto f = MakeSelectedHc(std::array{3U, 3U});
+    PlanSelectedHc(f, registry);
+    ASSERT_TRUE(f.plan);
+    std::vector<ir::TensorId> final;
+    for (const auto& n : f.plan->graph.nodes()) {
+      if (n.key == ir::Fused(ir::FusedKind::kHcPrep) && f.plan->graph.tensor(n.out[0]).ne(1) == 2)
+        final.push_back(n.out[0]);
+      if (n.key == ir::Primitive(ir::Op::kMatMul) && f.plan->graph.tensor(n.out[0]).ne(1) == 2)
+        final.push_back(n.out[0]);
+      if (n.key == ir::Fused(ir::FusedKind::kHcFold) && f.plan->graph.tensor(n.out[0]).ne(1) == 2)
+        final.push_back(n.out[0]);
+    }
+    ASSERT_EQ(final.size(), 4U);
+    const auto target = final[static_cast<std::size_t>(which)];
+    const auto indices = f.plan->tensors[f.indices.v];
+    Rebuild(f, registry, [&](const ir::Node& n, pl::RewriteContext& copy) {
+      copy.Copy(n);
+      if (n.out[0] != target) return;
+      auto& b = copy.builder();
+      const auto& d = copy.original().tensor(target);
+      auto value = b.Fill(ir::ShapeOf({d.ne(0), 1}), -3.0F);
+      if (d.format.encoding == Encoding::kBF16) value = b.Convert(value, Encoding::kBF16);
+      b.Keep(b.CacheStore(copy.Map(target), value, copy.Map(indices)));
+    });
+    ASSERT_TRUE(f.plan);
+    const auto lowered = Lower(f, registry);
+    ASSERT_FALSE(lowered);
+    EXPECT_NE(lowered.error().detail.find("selected HC:"), std::string::npos)
+        << lowered.error().detail;
+  }
+}
+
+TEST(GgmlOwnerProductsTest, SelectedPairChecksSuppliedBindingsAndNativeDescriptorDomain) {
+  const auto registry = Registry();
+  auto f = MakeSelectedHc(std::array{1U, 3U});
+  PlanSelectedHc(f, registry);
+  ASSERT_TRUE(f.plan);
+  constexpr std::uint64_t activation = 0x200000000ULL, weights = 0x400000000ULL;
+  for (int change = 0; change < 3; ++change) {
+    const llmp::kernels::Addresses addresses{
+        .weight =
+            [=](const ir::WeightRef& ref, llmp::format::PartRole) {
+              return weights + std::uint64_t{ref.role} * 65536 +
+                     (change == 1 && ref.role == 2 ? 2U : 0U);
+            },
+        .weight_rows = {},
+        .state = {},
+        .save = {},
+        .activations = activation + (change == 2 ? 1U : 0U),
+        .activation_bytes = f.plan->placement.extent};
+    const auto result = Lower(f, registry, Device(), addresses);
+    if (change) {
+      EXPECT_FALSE(result);
+      continue;
+    }
+    ASSERT_TRUE(result) << Failed(result, &kg::KernelFailure::detail).value_or("");
+    std::vector<const ggml_tensor*> products;
+    ASSERT_NO_FATAL_FAILURE(CheckHcProducts(f, *result, registry, true, products));
+    ASSERT_EQ(products.size(), 4U);
+    for (const auto* node : {products[2], products[3]}) {
+      EXPECT_TRUE(kg::UsesGemvBf16Vector(node));
+      auto changed = *node;
+      auto input = *node->src[1];
+      changed.src[1] = &input;
+      input.nb[1] += 16;
+      EXPECT_FALSE(kg::CheckGemmBf16(&changed));
+      input = *node->src[1];
+      changed.data = input.data;
+      EXPECT_FALSE(kg::CheckGemmBf16(&changed));
+    }
+  }
+  for (int change = 0; change < 3; ++change) {
+    auto bad = MakeSelectedHc(std::array{3U, 3U});
+    PlanSelectedHc(bad, registry);
+    ASSERT_TRUE(bad.plan);
+    if (change == 0) bad.shape.segments[1].slot = bad.shape.segments[0].slot;
+    if (change == 1) bad.shape.segments[0].rows = 0;
+    if (change == 2) {
+      bad.shape.segments.clear();
+      for (std::uint8_t i = 0; i < 9; ++i)
+        bad.shape.segments.push_back({.slot = i, .rows = 3, .outputs = 1});
+    }
+    EXPECT_FALSE(Lower(bad, registry));
+  }
+}
+TEST(GgmlOwnerProductsTest, SelectedPairSurvivesHonestRebuildAndRejectsChangedPrecision) {
+  const auto registry = Registry();
+  for (const bool change : {false, true}) {
+    auto f = MakeSelectedHc(std::array{3U, 3U});
+    PlanSelectedHc(f, registry);
+    ASSERT_TRUE(f.plan);
+    bool touched = false;
+    Rebuild(f, registry, [&](const ir::Node& n, pl::RewriteContext& copy) {
+      if (change && !touched && n.key == ir::Primitive(ir::Op::kMatMul) &&
+          copy.original().tensor(n.out[0]).ne(1) == 2) {
+        auto params = n.Params<ir::ProductParams>();
+        params.accumulate = ir::Accumulate::kF32;
+        copy.Set(n.out[0], copy.builder().MatMul(copy.Map(n.src[0]), copy.Map(n.src[1]), params));
+        touched = true;
+      } else
+        copy.Copy(n);
+    });
+    ASSERT_TRUE(f.plan);
+    const auto result = Lower(f, registry);
+    if (change) {
+      ASSERT_TRUE(touched);
+      ASSERT_FALSE(result);
+      EXPECT_NE(result.error().detail.find("selected HC:"), std::string::npos);
+    } else
+      ASSERT_TRUE(result) << Failed(result, &kg::KernelFailure::detail).value_or("");
+  }
+}
+
 }  // namespace

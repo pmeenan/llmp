@@ -1614,6 +1614,26 @@ each is checked against the design as M3.6 proceeds.
                                     joined heads/state and changed-input replay,
                                     old/new persistence and bounded admission
                                     before enabling repeat-pending execution.
+                                    - [x] **G3c2b1b1 — selected-HC recipe
+                                          correction:** keep source policy
+                                          default-off; prove actual selected-row
+                                          handling and the native recipe/selector;
+                                          pass the bounded first screen and
+                                          permanent host, direct-GPU and
+                                          integrated regression checks (clean03:
+                                          169 host and six GPU checks passed,
+                                          including model-free `hc.mix` complete
+                                          outputs and ragged/replay coverage).
+                                          The bounded 09c screen covers both owners' full
+                                          selected HC products and K1/K3 heads;
+                                          joined state and runtime admission
+                                          remain outside this correction.
+                                    - [ ] **G3c2b1b2 — remaining joined
+                                          qualification:** prove exact joined
+                                          heads/state, changed-input replay,
+                                          old/new persistence and bounded
+                                          admission. The G3c2b1b parent remains
+                                          open after the selected-HC correction.
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%

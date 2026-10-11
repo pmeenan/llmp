@@ -110,8 +110,16 @@ update this section as each slice lands):
   Structural/descriptor controls include combined allocation-fact forwarding
   through owner splits, patterns and primitive fallback. Current component
   sources and runtime do not opt in; joined repeat-pending remains refused.
-  G3c2b1b still owes exact native joined heads/state, changed-input capture,
-  old/new persistence and bounded admission. G3c2b1 remains open.
+  G3c2b1b1 adds a default-off selected-HC recipe correction: actual canonical
+  output rows protect the final low/high vector pair; ordinary wide fallback
+  remains unchanged. The bounded native screen matches both owners' K1/K3
+  full-vocabulary heads and final HC products. A normal model-free `hc.mix`
+  regression matches complete mixed outputs for ragged owners and replays
+  changed inputs through the same recorded program. See
+  [the selected-HC evidence](experiments/m36-selected-owner-hc/README.md).
+  G3c2b1b2 still owes native joined target/drafter heads and state through each
+  arm's own outputs, full continuation/replay, old/new persistence and bounded
+  admission. G3c2b1b and G3c2b1 remain open; native joined admission stays closed.
 
   Required G3c2b1 preserves each owner's physical product widths and numerical
   recipe and proves exact joined heads/state/capture against the legacy wave.

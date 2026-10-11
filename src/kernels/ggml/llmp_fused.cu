@@ -2009,10 +2009,7 @@ std::expected<void, KernelFailure> RunGemmBf16(LaunchContext& launch, ggml_tenso
   if (auto checked = CheckGemmBf16(node); !checked) {
     return checked;
   }
-  const std::int64_t columns = node->src[1]->ne[1];
-  if (IsGemvBf16(node) &&
-      (columns <= kGemvBf16FastColumns || (GemvBf16Wide(node) && columns <= kGemvBf16Columns)) &&
-      node->src[0]->ne[0] % 8 == 0 && node->src[0]->ne[0] <= kGemvBf16MaxK) {
+  if (UsesGemvBf16Vector(node)) {
     return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
       LaunchGemvBf16(node, context.stream());
     });
