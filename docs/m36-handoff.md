@@ -125,9 +125,17 @@ update this section as each slice lands):
   recipe and proves exact joined heads/state/capture against the legacy wave.
   G3c2b2 then composes native, GGUF and MTP serving and passes state, quality,
   swap and the matched 1% gate at every qualified cohort. G3d deletes the old
-  path after those gates. The continuing checkout is
-  `.claude/worktrees/m36-g3c`; its Spark copy is `spark:~/src/m36-g3c`, with
-  jobs in `~/scratch/m36-g3c`.
+  path after those gates. G3c2b2a now has a reviewed sole-owner serving
+  candidate in `.claude/worktrees/m36-qwen-solo`, copied to
+  `spark:~/src/m36-g3c`. Actual `qwen-solo-screen06` and `07` pass four
+  model comparisons and two startup controls; `compile08` passes the context
+  margin and invalid-token controls after review corrections. Final Spark
+  checks pass 2,500 native non-model and 1,955 CPU-only tests; all 124
+  model/timing registrations pass after two authenticated selected-head fixture
+  reruns. Raw receipts are `qwen-solo-final-parallel`, `final-cpu`,
+  `final-models02` and `fixture-final02` in the matching Spark scratch
+  directories and root coordination scratchpad.
+  The broader joined, state, quality, swap and matched 1% gates remain open.
 - **G4a: DeepSeek V4 components, mappings and the DSpark stage** landed on
   `main` (see `git log`). G4b1 has landed: complete plan keys include
   each owner's baked HCA block count and compressed read width; equivalent

@@ -582,6 +582,26 @@ constexpr Mapping kMtpMapping{
     .v0_assembly = kAssembly,
 };
 
+constexpr auto kMtpReplaySlots = [] {
+  auto slots = kMtpSlots;
+  for (auto& slot : slots)
+    if (slot.kind == "embedding.mtp" || slot.kind == "attention.qsa") slot.version = 2;
+  return slots;
+}();
+constexpr auto kMtpReplayParams = [] {
+  std::array<ParamRule, kMtpParams.size() + 1> params{};
+  std::ranges::copy(kMtpParams, params.begin());
+  params.back() = Int("embedding", "token_offset", 1);
+  return params;
+}();
+constexpr auto kMtpReplayMapping = [] {
+  auto mapping = kMtpMapping;
+  mapping.version = 2;
+  mapping.slots = kMtpReplaySlots;
+  mapping.params = kMtpReplayParams;
+  return mapping;
+}();
+
 #undef LLMP_QWEN38_BLOCK_PARAMS
 
 // The keys both mappings' blocks read, under `p`.
@@ -616,6 +636,7 @@ void BlockValues(std::vector<SourceValue>& out, const std::string& p, const mode
 
 const Mapping& Qwen38Mapping() { return kMapping; }
 const Mapping& Qwen38MtpMapping() { return kMtpMapping; }
+const Mapping& Qwen38MtpReplayMapping() { return kMtpReplayMapping; }
 
 std::expected<std::vector<SourceValue>, std::string> Qwen38V0Values(
     const model::Qwen38Profile& p, const model::Qwen38Binding& binding,

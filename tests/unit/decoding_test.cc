@@ -42,6 +42,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1549,6 +1550,95 @@ class TruncatedFixedTest : public DecodingFixture {
 
 TEST_F(TruncatedFixedTest, AVerifyOfStateItRewritesWholeCannotTruncateIt) {
   EXPECT_NE(setup_refusal_.find("cannot truncate"), std::string::npos) << setup_refusal_;
+}
+
+TEST_F(DecodingTest, CompletePassScheduleTruncatesOnlyTheVerifyAndDoesNotTeachTail) {
+  auto spec = Mtp(3);
+  spec.draft_before_limit = true;
+  spec.adaptive = true;
+  auto policy = Policy();
+  std::uint32_t chosen = 3;
+  std::vector<std::tuple<std::uint32_t, std::uint32_t, bool>> observations;
+  policy.depth = [&](std::uint32_t, std::size_t) { return chosen; };
+  policy.observe = [&](std::uint32_t, std::size_t, std::uint32_t depth, std::uint32_t kept,
+                       bool complete) { observations.emplace_back(depth, kept, complete); };
+  auto decoding =
+      Make({.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {spec}}, std::move(policy));
+  const std::array<std::uint32_t, 1> prompt{40};
+  Prefill(prompt, &decoding);
+  const auto tail = Unit(decoding, {0}, 2);
+  ASSERT_FALSE(tail.outcomes[0].refusal);
+  ASSERT_EQ(tail.outcomes[0].drafts.size(), 1U);
+  EXPECT_EQ(tail.outcomes[0].drafts[0].steps, 3U);
+  EXPECT_EQ(tail.outcomes[0].drafts[0].proposed, 3U);
+  EXPECT_EQ(verified_[0].size(), 2U);
+  ASSERT_EQ(observations.size(), 1U);
+  EXPECT_EQ(observations[0], (std::tuple{3U, 2U, false}));
+  chosen = 2;
+  const auto whole = Unit(decoding, {0});
+  ASSERT_FALSE(whole.outcomes[0].refusal);
+  EXPECT_EQ(whole.outcomes[0].drafts[0].steps, 2U);
+  EXPECT_EQ(verified_[0].size(), 3U);
+  EXPECT_EQ(observations.back(), (std::tuple{2U, 3U, true}));
+}
+
+TEST_F(DecodingTest, CompletePassScheduleRefusesContextTailBeforeEffects) {
+  auto spec = Mtp(3);
+  spec.draft_before_limit = true;
+  auto policy = Policy();
+  std::uint32_t observations = 0;
+  policy.observe = [&](std::uint32_t, std::size_t, std::uint32_t, std::uint32_t, bool) {
+    ++observations;
+  };
+  auto decoding =
+      Make({.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {spec}}, std::move(policy));
+  en::PrefillOrchestrator prefill(*runner_, *composer_,
+                                  {.chunk_rows = kChunk,
+                                   .lookahead = 0,
+                                   .capture_ahead = false,
+                                   .prepare_ahead = false,
+                                   .state_only = true});
+  for (std::uint32_t q = 0; q < kContext - 2; ++q) history_[0].push_back(Truth(q));
+  for (std::uint32_t past = 0; past < kContext - 2;) {
+    const en::PromptWork prompt{.slot = 0,
+                                .stage = 0,
+                                .tokens = std::span(history_[0]).subspan(past),
+                                .past = past,
+                                .want_head = true,
+                                .all_outputs = false,
+                                .boundary = 0,
+                                .history = history_[0]};
+    const auto report = prefill.Step(std::span(&prompt, 1));
+    ASSERT_EQ(report.outcomes.size(), 1U);
+    ASSERT_FALSE(report.outcomes[0].refusal) << report.outcomes[0].refusal->what;
+    ASSERT_EQ(report.outcomes[0].rows, std::min(kChunk, kContext - 2 - past));
+    past += report.outcomes[0].rows;
+    ASSERT_EQ(report.outcomes[0].last, past == kContext - 2);
+    ASSERT_EQ(runner_->slots().positions(0), past);
+  }
+  history_[0].push_back(Truth(kContext - 2));
+  decoding.Reset(0);
+  const auto queued = source_->queued();
+  const auto executed = source_->executed();
+  const auto tail = Unit(decoding, {0}, 8);
+  ASSERT_TRUE(tail.outcomes[0].refusal);
+  EXPECT_EQ(tail.outcomes[0].refusal->what,
+            "the requested draft depth exceeds its declared bounds");
+  EXPECT_EQ(tail.steps, 0U);
+  EXPECT_TRUE(tail.outcomes[0].drafts.empty());
+  EXPECT_EQ(runner_->slots().positions(0), kContext - 2);
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_EQ(observations, 0U);
+}
+
+TEST_F(DecodingTest, CompletePassScheduleRefusesMultiDrafterDeclaration) {
+  auto spec = Mtp(3);
+  spec.draft_before_limit = true;
+  const auto made = en::DecodingOrchestrator::Make(
+      *runner_, *composer_,
+      {.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {spec, Block(1)}}, Policy());
+  EXPECT_FALSE(made);
 }
 
 }  // namespace

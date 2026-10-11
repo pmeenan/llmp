@@ -29,14 +29,13 @@
 //   read_cells) holding a valid Cell for their own position (all of past +
 //   rows when the state persisted), `hash` is the fixed state's after the
 //   row, `tap` the tapped token (-1: none valid) and `borrowed` the count;
-// - for a greedy segment, its own output is instead one I32 (as the GGML
-//   lowering's): its last token + 1000.
+// - for a greedy segment, returns just one I32: its last token + 1000.
 // With `logits` (a serving adapter's head, runtime/engine_llm.h), each
 // output row is instead that many F32 logits, every one 0 but a 1 at
 // FakeLogit(token, position): on the target only while its tensor 0 holds a
 // valid cell for every position through the row's (else at logits - 1, the
-// lost state's mark), on a drafter always; and a greedy segment's I32 is
-// its last row's choice.
+// lost state's mark), on a drafter always; and a greedy segment returns
+// one I32 choice for each selected output row.
 // With `features`, a drafter's rows read their feature from a kFeatures
 // input (which the runner copies in on the device: its stage's tap cell, or
 // its carry) instead of its tap's state, its row's `tap` that feature's
@@ -140,6 +139,10 @@ struct FakeSourceOptions {
   // Output rows of this many F32 logits (above) instead of FakeRows; 0:
   // FakeRows.
   std::uint32_t logits = 0;
+  // Completed native-token corruption, for validating the consumer before
+  // publication. Ordinary logits and all other phases remain unchanged.
+  std::optional<std::int32_t> native_token{};
+  std::optional<planner::Phase> native_token_phase{};
   // A drafter's features as a kFeatures input and a features output.
   bool features = false;
   // Verify saves each row's fixed-state hash; a generated commit restores its kept last row.

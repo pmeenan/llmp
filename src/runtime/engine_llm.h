@@ -52,6 +52,7 @@
 #ifndef LLMP_RUNTIME_ENGINE_LLM_H_
 #define LLMP_RUNTIME_ENGINE_LLM_H_
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -93,6 +94,11 @@ struct EngineLlmParts {
   std::uint32_t logit_width = 0;  // a head row's F32 logits
   // A plain greedy step returns its tokens chosen on the device.
   bool device_greedy = false;
+  // A greedy verify may return one native I32 token per output row.
+  bool device_verify = false;
+  // The sole drafter's adaptive schedule lives with the conversation's
+  // existing persisted AdaptiveDepth, rather than the orchestrator instance.
+  std::uint32_t branch_depth = 0;  // persisted policy ceiling; 0 uses the ordinary bound
   // Lookahead, capture ahead and prepare ahead of prompt chunks (the chunk
   // rows are the settings').
   engine::PrefillOptions prefill;
@@ -169,6 +175,9 @@ class EngineLlm final : public Llm {
 
   // ---------------------------------------------------------- Llm
   std::uint32_t logit_width() const override { return logit_width_; }
+  std::uint32_t usable_context() const override {
+    return context_ - std::min(context_, context_margin_);
+  }
   void Defaults(chat::Conversation& conversation) const override;
   std::span<const std::int32_t> ChatStops() const override { return chat_stops_; }
   Status SelectBranches(std::span<Branch* const> active) override;
@@ -375,6 +384,10 @@ class EngineLlm final : public Llm {
   engine::PrefillOptions prefill_;
   std::uint32_t logit_width_ = 0;
   bool device_greedy_ = false;
+  bool device_verify_ = false;
+  std::uint32_t branch_depth_ = 0;
+  std::uint32_t context_margin_ = 0;
+  std::vector<engine::DrafterSpec> drafter_specs_;
   EngineLlmParts::ChatSlice chat_;
   std::vector<std::int32_t> chat_stops_;
   std::uint32_t slots_ = 1;
@@ -384,6 +397,7 @@ class EngineLlm final : public Llm {
   // unit asked for them.
   std::array<bool, kMaxBranches> reset_{};
   std::array<bool, kMaxBranches> want_rows_{};
+  std::array<bool, kMaxBranches> verify_tokens_{};
   std::array<std::vector<std::vector<float>>, kMaxBranches> verified_rows_{};
   Counts counts_;
 };

@@ -35,6 +35,16 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard) {
   return {};
 }
 
+std::expected<void, std::string> CheckStartupHostAllowance(std::uint64_t bytes, std::uint64_t cap,
+                                                           std::uint64_t available) {
+  constexpr std::uint64_t extent = std::uint64_t{2} << 20U;
+  if (bytes == 0 || bytes % extent != 0 || cap == 0 || bytes > cap)
+    return std::unexpected("invalid startup host allowance or execution cap");
+  if (cap > available || kUncountedMargin > available - cap)
+    return std::unexpected("startup host allowance requires known physical headroom");
+  return {};
+}
+
 std::expected<void, std::string> CheckDiagnosticBudgetCap(const MemoryGuard& guard,
                                                           std::uint64_t dynamic_budget,
                                                           std::uint64_t cap,

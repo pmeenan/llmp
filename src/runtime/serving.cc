@@ -1815,7 +1815,10 @@ void Server::Log(std::string_view text) {
 Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index) {
   // A family on the component engine: the adapter of its spec's pipeline
   // kind, which its architecture's mapping names.
-  if (!entry.composition && OnComponentEngine(settings.architecture)) {
+  const bool solo = options_.diagnostic_component_solo && settings.architecture == "qwen4exp";
+  if (solo && settings.max_slots.value != 1)
+    return Error("the Qwen component qualification requires exactly one configured slot");
+  if (!entry.composition && (OnComponentEngine(settings.architecture) || solo)) {
     const spec::Mapping* mapping = spec::FindMapping(settings.architecture);
     if (mapping == nullptr) {
       return Error(std::format("model {}: the component engine has no mapping of architecture {}",
@@ -1823,9 +1826,14 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     }
     switch (mapping->pipeline) {
       case spec::PipelineKind::kLlm: {
-        auto llm =
-            std::make_unique<EngineLlm>(node_, entry, settings, roles_, index,
-                                        ComponentLlmBuild(node_, roles_.installed, entry, index));
+        auto llm = std::make_unique<EngineLlm>(
+            node_, entry, settings, roles_, index,
+            ComponentLlmBuild(node_, roles_.installed, entry, index,
+                              {.target_policy = {},
+                               .diagnostic_solo = solo,
+                               .prefill_lookahead = options_.qwen38_prefill_lookahead,
+                               .prepare_state = options_.qwen38_prepare_state,
+                               .state_only_prefill = options_.qwen38_state_only_prefill}));
         if (options_.diagnostic_skip_turn_checkpoints) {
           llm->set_turn_checkpoints(false);
           Log(std::format("model {}: saves no turn checkpoint (a speed gate's diagnostic)",
@@ -1906,6 +1914,29 @@ Status Server::Start(bool snapshot) {
   if (config_.models.empty()) {
     return Error("the configuration names no models ([models.<name>], D-096)");
   }
+  bool prepaid = false;
+  if (const auto bytes = options_.diagnostic_startup_host_bytes; bytes != 0) {
+    const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
+    if (auto check = CheckStartupHostAllowance(bytes, cap, MemorySampler::Available()); !check)
+      return check;
+    if (auto opened = node_.Open(); !opened) return opened;
+    const auto before = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+    if (before > cap || bytes > cap - before)
+      return Error("startup host allowance exceeds the execution budget");
+    // A real pinned catalog extent, not ChargeHost's pre-Start counter.
+    // It stays alive with the complete server on failed setup/retirement.
+    auto extent = node_.catalog().AddExtent({.domain = node_.domain(),
+                                             .memory_class = catalog::MemoryClass::kRuntime,
+                                             .recovery = catalog::Recovery::kPinned,
+                                             .size = base::Bytes(bytes),
+                                             .content = {}},
+                                            true);
+    if (!extent) return Error("could not catalog the startup host allowance");
+    const auto after = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+    if (after < before || after - before != bytes)
+      return Error("startup host allowance has no physical occupancy");
+    prepaid = true;
+  }
   // Every model's settings (D-103: derived from its artifacts, calibrated on
   // this machine, or overridden), its checkpoint's ceiling among them,
   // resolved before opening the device node or constructing runners. An
@@ -1952,8 +1983,8 @@ Status Server::Start(bool snapshot) {
     settings.push_back(std::move(*resolved));
     calibrations.push_back(std::move(record));
   }
-  if (auto r = node_.Open(); !r) {
-    return r;
+  if (!prepaid) {
+    if (auto r = node_.Open(); !r) return r;
   }
   // Each model's stream and owner: its place among the registered.
   for (std::size_t i = 0; i < config_.models.size(); ++i) {
@@ -2013,7 +2044,11 @@ Status Server::Start(bool snapshot) {
       Log(std::format("model {}: {}", m->name(), slots));
     }
   }
-  const auto startup_available = MemorySampler::Available();
+  const auto measured_startup_available = MemorySampler::Available();
+  const auto allowance = options_.diagnostic_startup_host_bytes;
+  if (allowance && measured_startup_available <= allowance)
+    return Error("startup host allowance exhausts physical headroom");
+  const auto startup_available = measured_startup_available - allowance;
   const MemoryGuard startup_guard{.largest = largest,
                                   .host_inputs = host_inputs,
                                   .plans = plans + engine::ScratchArenaBytes(),
@@ -2060,7 +2095,12 @@ Status Server::Start(bool snapshot) {
   const std::uint64_t step_plans = plans;
   plans_ = plans + engine::ScratchArenaBytes();
   plans = plans_;
-  const std::uint64_t available = MemorySampler::Available();
+  const auto measured_available = MemorySampler::Available();
+  if (allowance && measured_available <= allowance)
+    return Error("startup host allowance exhausts physical headroom");
+  // Conservatively subtract the whole allowance even when part is already
+  // reflected in MemAvailable; its unused reservation is not free capacity.
+  const std::uint64_t available = measured_available - allowance;
   MemoryGuard bounds = {.largest = largest,
                         .host_inputs = host_inputs,
                         .plans = plans,

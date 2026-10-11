@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <format>
 #include <utility>
@@ -78,6 +79,12 @@ Status EngineLlm::Setup() {
   caps_ = parts->caps;
   prefill_ = parts->prefill;
   device_greedy_ = parts->device_greedy;
+  device_verify_ = parts->device_verify;
+  branch_depth_ = parts->branch_depth;
+  if (branch_depth_) depth_cost_ratio_ = settings_.depth_cost_ratio.value;
+  drafter_specs_ = parts->mode.drafters;
+  if (branch_depth_ > 7 || (branch_depth_ && drafter_specs_.size() > 1))
+    return Error("a conversation-owned depth requires exactly one drafter");
   architecture_ = parts->architecture;
   chat_ = std::move(parts->chat);
   keep_ = std::move(parts->keep);
@@ -113,6 +120,18 @@ Status EngineLlm::Setup() {
     return Error(std::format("model {}: speculation is on but its parts have no drafter", name_));
   }
   const bool speculate = drafters && settings_.speculation.value;
+  context_margin_ = 0;
+  if (speculate) {
+    for (const auto& drafter : drafter_specs_)
+      if (drafter.draft_before_limit)
+        context_margin_ = std::max(context_margin_, drafter.max_depth);
+  }
+  // A complete draft pass needs this tail even when the reply ends sooner.
+  // Reserve the configured depth, independently of the adaptive policy ceiling.
+  const auto effective_context =
+      slots.stages.empty() ? context_ : std::min(context_, slots.stages.front().layout.context);
+  if (context_margin_ != 0 && context_margin_ >= effective_context)
+    return Error("the complete draft schedule does not fit the target context");
   verify_rows_ = speculate ? parts->mode.verify_rows() : 1;
   auto runner =
       en::ModelRunner::Create(node_ref_, std::move(parts->config), std::move(parts->source), index_,
@@ -139,7 +158,8 @@ Status EngineLlm::Setup() {
     speculative_.emplace(std::move(*speculative));
   }
   speculate_ = speculate;
-  return PrepareBranches(slots_, std::clamp<std::uint32_t>(verify_rows_ - 1, 1, 7));
+  return PrepareBranches(
+      slots_, branch_depth_ ? branch_depth_ : std::clamp<std::uint32_t>(verify_rows_ - 1, 1, 7));
 }
 
 Status EngineLlm::Register() {
@@ -405,8 +425,19 @@ en::DecodingPolicy EngineLlm::Policy() {
   // A drafter's proposal a row: its head's most likely token.
   // (A drafter that returns its next features has them after its logits.)
   policy.propose =
-      [this](std::uint32_t /*slot*/, std::size_t /*drafter*/, std::span<const std::byte> outputs,
+      [this](std::uint32_t /*slot*/, std::size_t drafter, std::span<const std::byte> outputs,
              std::uint32_t want) -> std::expected<std::vector<std::int32_t>, std::string> {
+    if (drafter >= drafter_specs_.size()) return Error("unknown drafter output mode");
+    if (drafter_specs_[drafter].device_tokens) {
+      if (want == 0 || outputs.size() < std::size_t{want} * sizeof(std::int32_t))
+        return Error("a draft returned fewer native tokens than requested");
+      std::vector<std::int32_t> tokens(want);
+      std::memcpy(tokens.data(), outputs.data(), tokens.size() * sizeof(tokens.front()));
+      for (const auto token : tokens)
+        if (token < 0 || std::cmp_greater_equal(token, logit_width_))
+          return Error("a draft returned a token outside the target vocabulary");
+      return tokens;
+    }
     const std::size_t row_bytes = std::size_t{logit_width_} * sizeof(float);
     const std::size_t rows =
         row_bytes == 0 ? 0 : std::min<std::size_t>(outputs.size() / row_bytes, want);
@@ -430,6 +461,23 @@ en::DecodingPolicy EngineLlm::Policy() {
              std::span<const std::byte> outputs) -> std::expected<en::Verdict, std::string> {
     auto branch = this->branch(slot);
     if (!branch) return std::unexpected(branch.error());
+    if (verify_tokens_.at(slot)) {
+      if (verified.empty() || outputs.size() != verified.size() * sizeof(std::int32_t))
+        return Error("a verify returned inconsistent native token counts");
+      std::vector<std::int32_t> tokens(verified.size());
+      std::memcpy(tokens.data(), outputs.data(), outputs.size());
+      for (const auto token : tokens)
+        if (token < 0 || std::cmp_greater_equal(token, logit_width_))
+          return Error("a verify returned a token outside the target vocabulary");
+      std::size_t accepted = 0;
+      while (accepted + 1 < verified.size() && tokens[accepted] == verified[accepted + 1])
+        ++accepted;
+      en::Verdict verdict{.keep = static_cast<std::uint32_t>(accepted + 1), .tokens = {}};
+      verdict.tokens.assign(verified.begin() + 1,
+                            verified.begin() + 1 + static_cast<std::ptrdiff_t>(accepted));
+      verdict.tokens.push_back(tokens[accepted]);
+      return verdict;
+    }
     auto rows = HeadRows(outputs);
     if (!rows) return std::unexpected(rows.error());
     if (*rows != verified.size() || verified.empty()) {
@@ -466,6 +514,19 @@ en::DecodingPolicy EngineLlm::Policy() {
     verdict.tokens.push_back(next);
     return verdict;
   };
+  if (branch_depth_ && !drafter_specs_.empty()) {
+    policy.depth = [this](std::uint32_t slot, std::size_t) {
+      const auto b = branch(slot);
+      if (!b) return 0U;
+      const auto maximum = drafter_specs_.front().max_depth;
+      return sampling(**b) || maximum < 3 ? std::min(2U, maximum) : BranchDecoding(**b).Choose();
+    };
+    policy.observe = [this](std::uint32_t slot, std::size_t, std::uint32_t depth,
+                            std::uint32_t kept, bool complete) {
+      const auto b = branch(slot);
+      if (b && !sampling(**b)) BranchDecoding(**b).Observe(depth, kept, complete);
+    };
+  }
   return policy;
 }
 
@@ -546,14 +607,22 @@ void EngineLlm::RunPlain(std::span<PreparedGeneration> units) {
 void EngineLlm::RunSpeculative(std::span<PreparedGeneration> units) {
   std::vector<en::DecodeWork> work;
   work.reserve(units.size());
+  // The scalar SpecStepFor bridge has no session pointer. Its owned branch
+  // still supplies sampling state, and need_logits supplies output intent.
+  const bool device =
+      device_verify_ && std::ranges::all_of(units, [this](const PreparedGeneration& unit) {
+        return unit.branch != nullptr && &unit.branch->model() == this && !unit.step.need_logits &&
+               !sampling(*unit.branch);
+      });
   for (PreparedGeneration& unit : units) {
     const std::uint32_t slot = Slot(*unit.branch);
+    verify_tokens_.at(slot) = device;
     want_rows_.at(slot) = unit.step.need_logits;
     verified_rows_.at(slot).clear();
     work.push_back({.slot = slot,
                     .history = unit.step.all,
                     .left = std::max<std::uint32_t>(unit.step.left, 1),
-                    .greedy = false,
+                    .greedy = device,
                     .score = {}});
   }
   SyncDrafters(work);
@@ -915,6 +984,8 @@ Status EngineLlm::SettleFor(Branch& branch) {
 
 Status EngineLlm::ClearStateFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
+  if (branch_depth_)
+    BranchDecoding(branch) = execution::AdaptiveDepth(branch_depth_, depth_cost_ratio_);
   return runner_->slots().Clear(Slot(branch));
 }
 
@@ -928,6 +999,8 @@ bool EngineLlm::StateRefusedFor(const Branch& branch) const {
 
 Status EngineLlm::ReleaseIdleStateFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
+  if (branch_depth_)
+    BranchDecoding(branch) = execution::AdaptiveDepth(branch_depth_, depth_cost_ratio_);
   return runner_->slots().ClearIdle(Slot(branch));
 }
 

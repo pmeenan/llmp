@@ -1017,6 +1017,18 @@ TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
   EXPECT_EQ(GuardReserve({.host_inputs = kGiB, .plans = plans}), kGiB + plans + kUncountedMargin);
 }
 
+TEST(StartupHostAllowanceTest, RefusesBeforeNodeOrMetadataEffects) {
+  using llmp::runtime::CheckStartupHostAllowance;
+  constexpr std::uint64_t gib = std::uint64_t{1} << 30U;
+  EXPECT_TRUE(CheckStartupHostAllowance(3 * gib, 110 * gib, 116 * gib));
+  EXPECT_FALSE(CheckStartupHostAllowance(3 * gib, 110 * gib, 0));
+  EXPECT_FALSE(CheckStartupHostAllowance(3 * gib, 110 * gib, 116 * gib - 1));
+  EXPECT_FALSE(CheckStartupHostAllowance(3 * gib + 1, 110 * gib, 128 * gib));
+  EXPECT_FALSE(CheckStartupHostAllowance(111 * gib, 110 * gib, 128 * gib));
+  EXPECT_FALSE(CheckStartupHostAllowance(3 * gib, 0, 128 * gib));
+  EXPECT_FALSE(CheckStartupHostAllowance(2 * gib, ~std::uint64_t{0}, ~std::uint64_t{0}));
+}
+
 }  // namespace
 
 TEST(TokenStorage, GrowthFundsBothAllocationsAndRefusalChangesNothing) {

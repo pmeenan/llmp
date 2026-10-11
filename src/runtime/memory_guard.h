@@ -63,6 +63,12 @@ std::uint64_t GuardReserve(const MemoryGuard& guard);
 // passes.
 std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard);
 
+// A default-off startup screen prepays host metadata before Setup. Unknown
+// physical availability, unaligned/overflowed allowances and a cap that cannot
+// leave the ordinary driver margin all refuse before opening a node.
+std::expected<void, std::string> CheckStartupHostAllowance(std::uint64_t bytes, std::uint64_t cap,
+                                                           std::uint64_t available);
+
 // Internal matched controls can reduce the ordinary dynamic catalog budget,
 // never raise it or bypass known physical availability. Include pinned memory
 // charged after the startup guard, such as the backing handle reserve.

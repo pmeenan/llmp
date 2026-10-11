@@ -71,6 +71,13 @@ struct Turn {
 struct ServingOptions {
   // Decode plainly even where a model has a drafter.
   bool plain = false;
+  // Internal single-slot Qwen component migration screen. Not exposed by
+  // CLI/TOML/HTTP; normal Qwen serving remains on its qualified adapter.
+  bool diagnostic_component_solo = false;
+  // Prepaid host compiler/result allowance for bounded startup screens.
+  // Cataloged before artifact metadata or Setup, retained until node death.
+  // Requires a known physical budget cap; zero leaves ordinary starts alone.
+  std::uint64_t diagnostic_startup_host_bytes = 0;
   // Internal matched plain-token qualification; absent from CLI/TOML/HTTP.
   // Unset uses each runner's ordinary policy.
   std::optional<bool> diagnostic_plain_device_tokens;

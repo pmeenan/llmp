@@ -4,7 +4,9 @@
 #include "runtime/component_build.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <limits>
@@ -30,16 +32,20 @@
 #include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "model/gemma4_assistant.h"
+#include "model/qwen38.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
+#include "platform/direct_io.h"
 #include "providers/device_runtime.h"
 #include "runtime/gemma_profile.h"
 #include "runtime/model_settings.h"
+#include "runtime/prefill.h"
 #include "runtime/serving_support.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
 
 namespace llmp::runtime {
@@ -65,13 +71,68 @@ struct ComponentHold {
     bool array = false;
     std::uint32_t index = 0;
   };
-  std::map<ir::WeightRef, Place> place;
-  std::vector<std::uint64_t> pitch;  // the target's expert arrays', by array
+  std::map<std::pair<ir::WeightRef, format::PartRole>, Place> place;
+  std::map<ir::WeightRef, std::uint64_t> pitch;
   // Before the backend, whose launch borrows it (the runner's Release
   // destroys that launch, then retires the handle).
   std::unique_ptr<kernels::ggml::CublasHandle> cublas;
   std::unique_ptr<kernels::ggml::GgmlBackend> backend;
 };
+
+// Small integer recipe metadata read through the artifact's authenticated
+// shard descriptor. The synchronous direct read retires before its aligned
+// stack window is reused. Shape/type and exact byte count precede allocation.
+template <class T>
+std::expected<std::vector<T>, std::string> RecipeIntegers(const ja::Artifact& artifact,
+                                                          const model::Qwen38Tensor& tensor,
+                                                          std::uint32_t maximum,
+                                                          std::string_view type) {
+  const bool vector = type == "I64" && tensor.plain && tensor.ne.size() == 1;
+  const bool table = type == "I32" && !tensor.plain && tensor.ne.size() == 2 && tensor.ne[0] == 1;
+  if (tensor.type != type || (!vector && !table))
+    return Error("integer recipe metadata has an unsupported type or shape");
+  const auto count64 = tensor.ne[table ? 1 : 0];
+  if (count64 == 0 || count64 > maximum) return Error("integer recipe metadata exceeds its bound");
+  const auto count = static_cast<std::size_t>(count64);
+  auto place = artifact.ResourcePlacement(tensor.index);
+  if (!place || place->bytes.value() != count * sizeof(T))
+    return Error("integer recipe metadata has an inconsistent byte count");
+  const auto& group = artifact.groups()[place->group];
+  const auto& shard = artifact.shards()[group.shard];
+  // Validated artifact extents bound every addition by the shard length.
+  const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
+  const auto end = begin + place->bytes.value();
+  auto file = artifact.OpenShardForDirectRead(group.shard);
+  if (!file) return Error(file.error().ToString());
+  std::vector<T> out(count);
+  alignas(4096) std::array<std::byte, 4096> window{};
+  for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
+    if (at > shard.data_offset.value() + shard.data_bytes.value() ||
+        window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
+      return Error("integer recipe metadata's direct read passes its shard");
+    if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
+      return Error(std::format("reading integer recipe metadata: errno {}", read.error()));
+    const auto first = std::max(at, begin), last = std::min(at + window.size(), end);
+    std::memcpy(reinterpret_cast<std::byte*>(out.data()) + first - begin,
+                window.data() + first - at, last - first);
+  }
+  return out;
+}
+
+std::expected<model::Qwen38PleHash, std::string> RecipeHash(const ja::Artifact& artifact,
+                                                            const model::Qwen38Binding& binding) {
+  const auto& p = model::Qwen38Flash();
+  if (binding.gguf()) return model::ReadQwen38GgufHash(p, artifact, binding.ple_table.ne.at(1));
+  const auto& layer = binding.layers.at(p.ple_layer);
+  auto multipliers = RecipeIntegers<std::int64_t>(artifact, layer.ple_multipliers, p.ngram, "I64");
+  auto offsets =
+      RecipeIntegers<std::int64_t>(artifact, layer.ple_head_offsets, p.ple_heads(), "I64");
+  auto vocab = RecipeIntegers<std::int64_t>(artifact, layer.ple_head_vocab, p.ple_heads(), "I64");
+  if (!multipliers) return Error(multipliers.error());
+  if (!offsets) return Error(offsets.error());
+  if (!vocab) return Error(vocab.error());
+  return model::CheckQwen38PleHash(p, *multipliers, *offsets, *vocab, binding.ple_table.ne.at(1));
+}
 
 // A v0 artifact's values for its architecture's mapping: its compiled
 // profile's (spec/mappings/*.h); Gemma 4's by the approved profile its
@@ -135,9 +196,22 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
   return [&node, store = std::move(store), id = entry.artifact.value_or(""),
           drafter_id = entry.drafter.value_or(""), index, options = std::move(options)](
              const ModelSettings& settings) -> std::expected<EngineLlmParts, std::string> {
+    const bool solo = settings.architecture == "qwen4exp";
+    if (solo && (!options.diagnostic_solo || settings.max_slots.value != 1))
+      return Error("the Qwen component qualification requires exactly one configured slot");
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
-    auto values = V0Values(settings.architecture, *artifact);
+    std::optional<model::Qwen38Binding> qwen;
+    std::expected<std::vector<spec::SourceValue>, std::string> values;
+    if (solo) {
+      auto binding = model::BindQwen38(model::Qwen38Flash(), *artifact);
+      if (!binding) return Error(binding.error());
+      qwen.emplace(std::move(*binding));
+      auto hash = RecipeHash(*artifact, *qwen);
+      if (!hash) return Error(hash.error());
+      values = spec::mappings::Qwen38V0Values(model::Qwen38Flash(), *qwen, *hash);
+    } else
+      values = V0Values(settings.architecture, *artifact);
     if (!values) return Error(values.error());
     const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
     if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
@@ -161,7 +235,30 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         return Error(std::format("the drafter's architecture {} has no drafter mapping",
                                  drafter->model().architecture));
       }
-      auto dvalues = DrafterV0Values(*artifact, *drafter);
+      std::expected<std::vector<spec::SourceValue>, std::string> dvalues;
+      if (solo) {
+        if (qwen->gguf()) return Error("the GGUF target has no qualified component MTP recipe");
+        auto binding = model::BindQwen38Mtp(model::Qwen38Flash(), *drafter);
+        if (!binding) return Error(binding.error());
+        if (binding->selected_head()) {
+          auto ids = RecipeIntegers<std::int32_t>(*drafter, binding->draft_ids,
+                                                  model::Qwen38Flash().vocab, "I32");
+          if (!ids) return Error(ids.error());
+          if (auto valid = model::CheckQwen38DraftIds(*ids, model::Qwen38Flash().vocab); !valid)
+            return Error(valid.error());
+        }
+        drafter_mapping = &spec::mappings::Qwen38MtpReplayMapping();
+        dvalues = spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), *binding);
+        if (dvalues)
+          for (auto& value : *dvalues)
+            if (value.key == "qwen4exp-mtp.draft_vocab") {
+              const auto rows = binding->selected_head() ? binding->draft_output.ne.at(1)
+                                                         : model::Qwen38Flash().vocab;
+              value.value = static_cast<std::int64_t>(
+                  std::min<std::uint64_t>(settings.draft_vocab.value, rows));
+            }
+      } else
+        dvalues = DrafterV0Values(*artifact, *drafter);
       if (!dvalues) return Error(dvalues.error());
       hold->drafter_values = std::move(*dvalues);
       auto composed = spec::ComposeDrafterV0(*synthesized, *mapping, *drafter, *drafter_mapping,
@@ -190,9 +287,16 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // cross extent boundaries at staggered positions and a prompt would
     // grow its state (each growth a fixed host cost between steps) every
     // chunk or two instead of once every extent's worth of cells.
+    const auto configured_chunk =
+        solo ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
+                                model::Qwen38MostRows(settings.context.value, false))
+             : settings.prefill_chunk.value;
+    const auto depth = solo ? (configured_chunk >= 4 ? settings.draft_rows.value
+                                                     : std::min(settings.draft_rows.value, 2U))
+                            : kAssistantDepth;
     for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
       auto layout = components::StageLayout(hold->spec, stage, settings.context.value,
-                                            settings.prefill_chunk.value, kExtent);
+                                            configured_chunk, kExtent);
       if (!layout) return Error(layout.error());
       hold->layouts.push_back(std::move(*layout));
     }
@@ -211,7 +315,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (composition.prompts_alone) caps->join_prefill = false;
     if (composition.owners_alone) caps->max_segments = 1;
     // A verify's rows: the anchor and every draft.
-    const std::uint32_t verify_rows = speculate ? kAssistantDepth + 1 : 0;
+    const std::uint32_t verify_rows = speculate ? depth + 1 : 0;
+    const std::uint32_t read_align = solo ? settings.wave_read_align.value : 256;
     // The widest steps (the setup measurement): every owner's rows at the
     // end of its context, reading all of it.
     const auto shape = [&](std::uint16_t stage, planner::Phase phase, std::uint32_t owners,
@@ -220,7 +325,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                            .phase = phase,
                            .segments = {},
                            .row_invariant = false,
-                           .read_align = 256};
+                           .read_align = read_align};
       for (std::uint32_t o = 0; o < owners; ++o) {
         s.segments.push_back({.slot = static_cast<std::uint8_t>(o),
                               .rows = rows,
@@ -250,13 +355,31 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         add(shape(0, planner::Phase::kDecode, owners, 1, 1, greedy));
       }
       if (speculate) {
-        add(shape(0, planner::Phase::kVerify, owners, verify_rows, verify_rows, false));
-        add(shape(1, planner::Phase::kDraft, owners, 1, 1, false));
+        for (const bool greedy : {false, true}) {
+          add(shape(0, planner::Phase::kVerify, owners, verify_rows, verify_rows, greedy));
+          add(shape(1, planner::Phase::kDraft, owners, 1, 1, solo && greedy));
+        }
+        if (solo) {
+          for (const auto rows : {verify_rows, chunk}) {
+            add(shape(1, planner::Phase::kDraft, owners, rows, 1, true));
+            add(shape(1, planner::Phase::kDraft, owners, rows, 0, false));
+          }
+        }
       }
     }
     // Each weight's place, by what the steps bind (the head's included;
     // a state-only prompt chunk binds a subset), and a head row's width:
     // its logits' (the head's vocabulary).
+    std::vector<engine::LayerSlabs> placements;
+    for (std::size_t a = 0; a < hold->sources.size(); ++a) {
+      auto slabs = engine::ExpertSlabsOf(a == 0 ? *artifact : *drafter, solo ? 16 : 256);
+      if (!slabs) return Error(slabs.error());
+      placements.push_back(std::move(*slabs));
+    }
+    if (solo)
+      placements[0].places.at(artifact->resources()[qwen->ple_table.index].group) =
+          engine::GroupPlace::kNone;
+    std::optional<engine::RunnerConfig::RowTable> row_table;
     std::uint32_t logit_width = 0;
     for (const planner::StepShape& s : setup) {
       auto step = components::BuildStep(hold->spec, s.stage, s,
@@ -266,21 +389,23 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                          .artifacts = hold->tables},
                                         {.narrow = true});
       if (!step) return Error(step.error());
-      for (const components::StepWeight& w : step->weights) {
-        if (hold->place.contains(w.ref)) continue;
-        const ja::Artifact& a = w.ref.stage == 0 ? *artifact : *drafter;
-        const std::string& name = w.parts.front().first;
-        if (w.ref.expert_array) {
-          const auto arrays = a.expert_arrays();
-          const auto at = std::ranges::find(arrays, name, &ja::ExpertArray::name);
-          if (at == arrays.end()) return Error(std::format("no expert array holds {}", name));
-          hold->place[w.ref] = {.artifact = w.ref.stage,
-                                .array = true,
-                                .index = static_cast<std::uint32_t>(at - arrays.begin())};
-        } else {
-          const auto found = a.FindResource(name);
-          if (!found) return Error(std::format("no resource holds {}", name));
-          hold->place[w.ref] = {.artifact = w.ref.stage, .array = false, .index = *found};
+      for (const components::StepWeight& weight : step->weights) {
+        const ja::Artifact& a = weight.ref.stage == 0 ? *artifact : *drafter;
+        for (const auto& [name, role] : weight.parts) {
+          const auto found =
+              weight.ref.expert_array ? a.FindExpertArray(name) : a.FindResource(name);
+          if (!found) return Error(std::format("no weight part holds {}", name));
+          hold->place[{weight.ref, role}] = {
+              .artifact = weight.ref.stage, .array = weight.ref.expert_array, .index = *found};
+          if (weight.ref.expert_array)
+            hold->pitch[weight.ref] = placements.at(weight.ref.stage).pitch.at(*found);
+          if (solo && weight.ref.stage == 0 && !weight.ref.expert_array &&
+              *found == qwen->ple_table.index)
+            row_table = {.weight = weight.ref,
+                         .resource = *found,
+                         .format = step->graph.tensor(weight.tensor).format,
+                         .part = role,
+                         .rows_per_token = model::Qwen38Flash().ple_heads()};
         }
       }
       if (s.stage == 0 && step->logits.valid() && logit_width == 0) {
@@ -294,9 +419,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     if (logit_width == 0) return Error("the spec's target stage has no head");
     // A layer's routed experts in one slab (the M3 runners' pitch).
-    auto slabs = engine::ExpertSlabsOf(*artifact, 256);
-    if (!slabs) return Error(slabs.error());
-    hold->pitch = slabs->pitch;
+    if (solo && !row_table) return Error("the component recipe has no n-gram row table");
     ComponentHold* held = hold.get();
     auto backend = kernels::ggml::GgmlBackend::Create(
         0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,
@@ -306,12 +429,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                    // anyway.
                    .frozen_host_masks = true,
                    .expert_stride = [held](const ir::WeightRef& ref) -> std::uint64_t {
-                     const auto at = held->place.find(ref);
-                     if (at == held->place.end() || !at->second.array || at->second.artifact != 0 ||
-                         at->second.index >= held->pitch.size()) {
-                       return 0;
-                     }
-                     return held->pitch[at->second.index];
+                     const auto at = held->pitch.find(ref);
+                     return at == held->pitch.end() ? 0 : at->second;
                    }}});
     if (!backend) return Error(backend.error());
     hold->backend = std::move(*backend);
@@ -358,31 +477,39 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                           .slots = slots,
                           .stages = {{.name = "target", .layout = target, .read_align = 0}},
                           .spec = *bound,
-                          .read_align = 256,
+                          .read_align = read_align,
                           .spill_place = {},
                           .spill_directory = {},
                           .invalidate = {},
                           .drop_plans = {}};
-    parts.config.weights.push_back(
-        {.weights = std::move(weights), .places = slabs->places, .slabs = slabs->slabs});
+    parts.config.weights.push_back({.weights = std::move(weights),
+                                    .places = std::move(placements[0].places),
+                                    .slabs = std::move(placements[0].slabs)});
+    if (row_table) parts.config.row_tables.push_back(*row_table);
+    if (solo)
+      parts.config.capture_phases &= ~(1U << static_cast<unsigned>(planner::Phase::kPrefill));
     if (speculate) {
       parts.config.slots.stages.push_back(
           {.name = std::string(drafter_mapping->stage), .layout = hold->layouts.at(1)});
       auto dweights = std::make_unique<engine::PagedWeights>();
       if (auto opened = dweights->Open(store / drafter_id); !opened) return Error(opened.error());
       drafter_paged = dweights.get();
-      std::vector<engine::GroupPlace> places(drafter_paged->artifact().groups().size(),
-                                             engine::GroupPlace::kDevice);
-      parts.config.weights.push_back(
-          {.weights = std::move(dweights), .places = std::move(places), .slabs = {}});
+      parts.config.weights.push_back({.weights = std::move(dweights),
+                                      .places = std::move(placements[1].places),
+                                      .slabs = std::move(placements[1].slabs)});
       parts.config.max_verify_rows = verify_rows;
       parts.mode = {.kind = engine::DecodingMode::Kind::kSpeculative,
                     .drafters = {{.stage = 1,
                                   .shape = engine::DrafterSpec::Shape::kAutoregressive,
-                                  .max_depth = kAssistantDepth,
-                                  .borrows_target = true,
-                                  .anchored = true,
-                                  .features = true}},
+                                  .max_depth = depth,
+                                  .catch_up = solo,
+                                  .borrows_target = !solo,
+                                  .anchored = !solo,
+                                  .features = true,
+                                  .adaptive = solo && depth >= 3,
+                                  .depth_cost = solo ? settings.depth_cost_ratio.value : 1.16,
+                                  .device_tokens = solo,
+                                  .draft_before_limit = solo}},
                     .combine = engine::DecodingMode::Drafters::kCascade,
                     .row_invariant = false};
     }
@@ -416,25 +543,32 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return held->backend->Launch(
           {.base = node.pool().base, .size = base::Bytes(node.pool().bytes)});
     };
-    parts.config.weight_address = [held, paged, drafter_paged](const ir::WeightRef& ref,
-                                                               format::PartRole) -> std::uint64_t {
-      const auto at = held->place.find(ref);
+    parts.config.weight_address = [held, paged, drafter_paged](
+                                      const ir::WeightRef& ref,
+                                      format::PartRole role) -> std::uint64_t {
+      const auto at = held->place.find({ref, role});
       if (at == held->place.end()) return 0;
       const ComponentHold::Place& p = at->second;
-      if (p.artifact != 0) {
-        return drafter_paged == nullptr || p.array ? 0 : drafter_paged->resource_address(p.index);
-      }
-      return p.array ? paged->array_address(p.index) : paged->resource_address(p.index);
+      const auto* owner = p.artifact == 0 ? paged : drafter_paged;
+      if (owner == nullptr) return 0;
+      return p.array ? owner->array_address(p.index) : owner->resource_address(p.index);
     };
     parts.source = std::move(step_source);
     parts.caps = *caps;
     parts.logit_width = logit_width;
     parts.device_greedy = true;
+    parts.device_verify = solo;
+    parts.branch_depth = solo ? 3U : 0U;
     parts.prefill = {.chunk_rows = chunk,
                      .lookahead = composition.prefill_lookahead,
                      .capture_ahead = composition.capture_ahead,
                      .prepare_ahead = true,
                      .state_only = true};
+    if (solo) {
+      parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
+      parts.prefill.prepare_ahead = options.prepare_state;
+      parts.prefill.state_only = options.state_only_prefill.value_or(!speculate);
+    }
     parts.architecture = settings.architecture;
     parts.chat = ChatSliceOf(settings.architecture);
     parts.keep = std::move(hold);

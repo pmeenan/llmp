@@ -933,6 +933,7 @@ class Qwen38Runner final : public PagedModel {
   std::uint32_t table_shard_ = 0;
   std::uint64_t slots_ = 0;  // row slots: max_rows x ple_heads
   Mapped slot_memory_;
+  void* landing_allocation_ = nullptr;  // raw owner retained if a read stalls
   std::byte* landing_ = nullptr;
   std::uint64_t landing_bytes_ = 0;
   std::uint32_t* sources_ = nullptr;

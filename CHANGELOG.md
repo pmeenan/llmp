@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Add an internal sole-owner Qwen3.8 component serving route for native
+  MTP and GGUF migration checks, with funded startup ownership and draft
+  context admission. The family migration remains in progress.
+
 - The model archive (D-114, docs/model-archive.md): source checkpoints
   on a long-term store as one directory per pinned commit with a verified
   manifest, and a catalog relating quantizations and versions, written by

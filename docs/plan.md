@@ -1638,6 +1638,14 @@ each is checked against the design as M3.6 proceeds.
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%
                               gate at every qualified cohort.
+                              - [x] **G3c2b2a — sole-owner serving:** compose
+                                    native MTP and GGUF through the shared
+                                    adapter, with bounded startup accounting
+                                    and complete-draft context admission.
+                                    Focused serving and final Spark regression
+                                    checks pass (2026-10-11).
+                                    Joined execution and the family gates
+                                    remain G3c2b1b2 and G3c2b2.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.

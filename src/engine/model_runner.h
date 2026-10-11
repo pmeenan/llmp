@@ -499,6 +499,7 @@ class ModelRunner final : public PagedModel {
     std::uint32_t shard = 0;
     std::uint64_t capacity = 0;
     Mapped slots;
+    void* landing_allocation = nullptr;  // raw owner retained if a read stalls
     std::byte* landing = nullptr;
     std::uint32_t* sources = nullptr;
     std::uint32_t* count = nullptr;

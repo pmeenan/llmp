@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <expected>
+#include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -57,6 +59,9 @@ struct PinnedFreeHook {
 };
 std::mutex pinned_free_mutex;
 std::optional<PinnedFreeHook> pinned_free_hook;
+std::mutex pinned_alignment_mutex;
+std::optional<std::size_t> pinned_misalignment;
+std::map<void*, void*> misaligned_pinned;
 
 std::function<void()> TakePinnedFreeHook(void* pointer) {
   const std::lock_guard lock(pinned_free_mutex);
@@ -243,6 +248,21 @@ DeviceStatus Replay(const RecordedWork& work, NativeStream stream) {
 }
 
 std::expected<void*, DeviceStatus> AllocatePinned(std::size_t bytes) {
+  {
+    const std::lock_guard lock(pinned_alignment_mutex);
+    if (pinned_misalignment && *pinned_misalignment == bytes) {
+      pinned_misalignment.reset();
+      constexpr std::size_t page = 4096;
+      if (bytes > std::numeric_limits<std::size_t>::max() - kPinnedAlignment - (page - 1))
+        return Failed(RuntimeError::kNoMemory);
+      const auto rounded = (bytes + kPinnedAlignment + page - 1) & ~(page - 1);
+      void* backing = std::aligned_alloc(page, rounded);  // NOLINT(cppcoreguidelines-no-malloc)
+      if (backing == nullptr) return Failed(RuntimeError::kNoMemory);
+      auto* pointer = static_cast<std::byte*>(backing) + kPinnedAlignment;
+      misaligned_pinned.emplace(pointer, backing);
+      return pointer;
+    }
+  }
   const std::size_t rounded = std::max<std::size_t>(
       kPinnedAlignment, (bytes + kPinnedAlignment - 1) & ~(kPinnedAlignment - 1));
   void* pointer =
@@ -255,7 +275,15 @@ std::expected<void*, DeviceStatus> AllocatePinned(std::size_t bytes) {
 
 void FreePinned(void* pointer) {
   auto after_free = TakePinnedFreeHook(pointer);
-  std::free(pointer);  // NOLINT(cppcoreguidelines-no-malloc)
+  void* backing = pointer;
+  {
+    const std::lock_guard lock(pinned_alignment_mutex);
+    if (const auto found = misaligned_pinned.find(pointer); found != misaligned_pinned.end()) {
+      backing = found->second;
+      misaligned_pinned.erase(found);
+    }
+  }
+  std::free(backing);  // NOLINT(cppcoreguidelines-no-malloc)
   if (after_free) after_free();
 }
 
@@ -272,6 +300,14 @@ void ClearCopyFailure() {
   copy_failure.reset();
 }
 
+void MisalignNextPinned(std::size_t bytes) {
+  const std::lock_guard lock(pinned_alignment_mutex);
+  pinned_misalignment = bytes;
+}
+void ClearPinnedMisalignment() {
+  const std::lock_guard lock(pinned_alignment_mutex);
+  pinned_misalignment.reset();
+}
 void AfterNextPinnedFree(void* pointer, std::function<void()> callback) {
   const std::lock_guard lock(pinned_free_mutex);
   pinned_free_hook = PinnedFreeHook{pointer, std::move(callback)};

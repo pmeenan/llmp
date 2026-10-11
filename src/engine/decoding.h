@@ -108,6 +108,12 @@ struct DrafterSpec {
   // Alternatives: its unit's cost relative to the others' (the choice
   // weighs the tokens it commits by it).
   double unit_cost = 1.0;
+  // Return native I32 vocabulary tokens (including a selected-head ID map),
+  // instead of F32 head rows. Any next-feature output follows those tokens.
+  bool device_tokens = false;
+  // Run the complete requested autoregressive pass count before truncating
+  // the verify at the reply boundary. Refused unless this is the sole drafter.
+  bool draft_before_limit = false;
 };
 
 struct DecodingMode {
@@ -133,7 +139,7 @@ struct DecodeWork {
   // Tokens it may still emit (at least 1): a verify takes at most so many
   // rows.
   std::uint32_t left = std::numeric_limits<std::uint32_t>::max();
-  bool greedy = false;  // plain: the token chosen on the device
+  bool greedy = false;  // plain or verify: tokens chosen on the device
   // Scored: the tokens whose every row's outputs return, from the slot's
   // positions.
   std::span<const std::int32_t> score{};
@@ -167,6 +173,12 @@ struct DecodingPolicy {
   // AdaptiveWaveMode's choice of a wave's form); false: one plain decode
   // row each, which still feeds the drafters' taps. Unset: always.
   std::function<bool(std::uint32_t width)> speculate;
+  // Optional caller-owned schedule (for conversation-persisted adaptation).
+  // A depth is validated against the declared maximum before drafting.
+  std::function<std::uint32_t(std::uint32_t slot, std::size_t drafter)> depth;
+  std::function<void(std::uint32_t slot, std::size_t drafter, std::uint32_t depth,
+                     std::uint32_t kept, bool complete)>
+      observe;
 };
 
 // One drafter's part of a slot's unit.

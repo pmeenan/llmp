@@ -1000,6 +1000,34 @@ TEST(ComponentsQwen38Test, RepeatableMtpContractsCoexistWithTheOriginalLayout) {
   EXPECT_EQ(replay->items.size(), original->items.size() + 1);
 }
 
+TEST(ComponentsQwen38Test, ServingReplayMappingDeclaresDurableShiftWithoutChangingV1) {
+  auto target = TargetSpec(Sources().modelopt_cutlass, fx::Form::kCutlass);
+  ASSERT_TRUE(target);
+  model::Qwen38MtpBinding binding;
+  auto values = spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), binding);
+  ASSERT_TRUE(values);
+  const auto& original = spec::mappings::Qwen38MtpMapping();
+  const auto& replay = spec::mappings::Qwen38MtpReplayMapping();
+  EXPECT_EQ(original.version, 1U);
+  EXPECT_EQ(replay.version, 2U);
+  auto made = spec::ComposeDrafter(*target, spec::mappings::Qwen38Mapping(), replay, Sources().mtp,
+                                   *values);
+  ASSERT_TRUE(made) << made.error();
+  auto layout = StageLayout(*made, 1, 512, 16);
+  ASSERT_TRUE(layout) << layout.error();
+  auto bounds = model::DraftBounds(*layout);
+  ASSERT_TRUE(bounds);
+  ASSERT_TRUE(bounds->has_value());
+  EXPECT_EQ((*bounds)->relation, model::DraftRelation::kTokenAfterCache);
+  EXPECT_EQ((*bounds)->carry, 1U);
+  auto old = WithMtp(*target);
+  ASSERT_TRUE(old);
+  auto old_layout = StageLayout(*old, 1, 512, 16);
+  ASSERT_TRUE(old_layout);
+  EXPECT_NE(model::KeptLayoutId({}, std::span(&*old_layout, 1)),
+            model::KeptLayoutId({}, std::span(&*layout, 1)));
+}
+
 // Each layer's component kinds.
 std::vector<std::vector<std::string>> Kinds(const spec::Stage& s) {
   std::vector<std::vector<std::string>> out;

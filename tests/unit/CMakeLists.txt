@@ -353,6 +353,11 @@ if(LLMP_CUDA)
   target_link_libraries(plain_tokens_serving_gpu_test PRIVATE llmp_runtime_serving)
   llmp_gpu_gtest(plain_tokens_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  # Default-off Qwen single-slot serving qualification.
+  add_executable(qwen38_engine_serving_gpu_test qwen38_engine_serving_gpu_test.cc)
+  target_link_libraries(qwen38_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
+  llmp_gpu_gtest(qwen38_engine_serving_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Gemma 2 and Gemma 3 on the shared engine through the server: heads,
   # state, spill, restart, the near-8K context and the swap transactions.
   add_executable(gemma_engine_serving_gpu_test gemma_engine_serving_gpu_test.cc)

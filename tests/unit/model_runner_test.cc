@@ -28,8 +28,10 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -37,7 +39,9 @@
 
 #include "base/bytes.h"
 #include "engine/paged_node.h"
+#include "engine/ple_rows.h"
 #include "engine/prefill.h"
+#include "engine/runner_memory.h"
 #include "engine/step_runs.h"
 #include "engine/wave_composer.h"
 #include "expected_error.h"
@@ -46,6 +50,8 @@
 #include "model/batching.h"
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
+#include "providers/fake/fake_device_runtime.h"
+#include "providers/fake/fake_storage.h"
 
 namespace {
 
@@ -58,6 +64,139 @@ using llmp::base::Bytes;
 constexpr std::uint64_t kExtent = en::kPagedExtent;
 constexpr std::uint32_t kContext = 1024;
 constexpr std::uint32_t kSlots = 3;
+
+// The pinned-memory API promises no direct-I/O block alignment. Force the fake's
+// allowed 256-byte alignment to prove that the shared allocation owns both
+// its exact charged backing and the distinct 4 KiB landing view.
+static_assert(sizeof(void*) <= 8);
+static_assert(sizeof(en::AlignedPinned) <= 32);
+static_assert(sizeof(std::expected<void*, std::string>) <= 48);
+static_assert(sizeof(std::expected<en::AlignedPinned, std::string>) <= 48);
+
+class RunnerAlignedPinnedTest : public ::testing::Test {
+ protected:
+  en::PagedNode node_{{.compute_streams = 1, .slots = 1, .slot_bytes = kExtent}};
+  bool retired_ = false;
+  void SetUp() override { ASSERT_TRUE(node_.Open()); }
+  void TearDown() override {
+    llmp::providers::fake::ClearPinnedMisalignment();
+    llmp::providers::fake::ClearPinnedFreeHook();
+    if (!retired_) EXPECT_TRUE(node_.TearDown({}));
+  }
+};
+
+TEST_F(RunnerAlignedPinnedTest, UnalignedOwnerFundsAndCoversTheCompleteDirectReadView) {
+  namespace pf = llmp::providers::fake;
+  constexpr std::uint64_t bytes = 8192;
+  constexpr std::uint64_t charged = bytes + en::kPleBlock - 1;
+  en::RunnerMemory memory(node_, 0, 0);
+  const auto before = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  pf::MisalignNextPinned(charged);
+  auto held = memory.PinnedAligned(bytes, en::kPleBlock);
+  ASSERT_TRUE(held) << held.error();
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(held->allocation) % en::kPleBlock, 256U);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(held->data) % en::kPleBlock, 0U);
+  ASSERT_NE(held->allocation, held->data);
+  const auto offset = held->data - static_cast<std::byte*>(held->allocation);
+  EXPECT_EQ(offset, 3840);
+  EXPECT_LE(static_cast<std::uint64_t>(offset) + bytes, held->allocation_bytes);
+  EXPECT_EQ(held->bytes, bytes);
+  EXPECT_EQ(held->allocation_bytes, charged);
+  EXPECT_EQ(memory.pinned_bytes(), charged);
+  EXPECT_EQ(node_.catalog().OccupancyOf(node_.domain()).Total().value() - before, charged);
+  ASSERT_EQ(memory.extents().size(), 1U);
+  auto extent = node_.catalog().Describe(memory.extents().front());
+  ASSERT_TRUE(extent);
+  EXPECT_EQ(extent->descriptor.size.value(), charged);
+
+  pf::FakeStorage storage(4, en::kPleBlock);
+  const int fd = storage.AddFile(std::vector<std::byte>(bytes, std::byte{0x5a}));
+  const en::PleTable table{.fd = fd, .rows = 80, .row_bytes = 90, .file_bytes = bytes};
+  // Row 45 crosses the 4 KiB boundary, requiring both complete blocks.
+  const std::array<std::int32_t, 1> rows{45};
+  auto plan = en::PlanPleRows(table, rows, bytes, 1);
+  ASSERT_TRUE(plan) << plan.error();
+  ASSERT_EQ(plan->landing_bytes, bytes);
+  EXPECT_FALSE(en::ReadPleRows(storage, fd, *plan, static_cast<std::byte*>(held->allocation)));
+  ASSERT_EQ(storage.in_flight(), 0U);
+  ASSERT_TRUE(en::ReadPleRows(storage, fd, *plan, held->data));
+  EXPECT_EQ(held->data[0], std::byte{0x5a});
+  EXPECT_EQ(held->data[bytes - 1], std::byte{0x5a});
+  bool freed = false;
+  pf::AfterNextPinnedFree(held->allocation, [&] { freed = true; });
+  auto retired = node_.TearDown({});
+  retired_ = true;
+  EXPECT_TRUE(retired) << llmp::test_support::Failed(retired).value_or("");
+  EXPECT_TRUE(freed);
+}
+
+TEST_F(RunnerAlignedPinnedTest, StalledInteriorReadRetainsItsRawOwnerPastTeardown) {
+  namespace pf = llmp::providers::fake;
+  constexpr std::uint64_t bytes = 8192;
+  en::RunnerMemory memory(node_, 0, 0);
+  pf::MisalignNextPinned(bytes + en::kPleBlock - 1);
+  auto held = memory.PinnedAligned(bytes, en::kPleBlock);
+  ASSERT_TRUE(held) << held.error();
+  ASSERT_NE(held->allocation, held->data);
+  std::memset(held->data, 0, bytes);
+  auto storage = std::make_unique<pf::FakeStorage>(4, en::kPleBlock);
+  auto* ring = storage.get();
+  const int fd = ring->AddFile(std::vector<std::byte>(bytes, std::byte{0x6b}));
+  ring->ScriptNext(
+      {.submission = llmp::providers::Submission::kAccepted, .result = std::nullopt, .hold = true});
+  ASSERT_EQ(ring->Submit({.token = 7,
+                          .kind = llmp::providers::IoKind::kRead,
+                          .fd = fd,
+                          .offset = 0,
+                          .memory = held->data,
+                          .length = bytes,
+                          .segments = {}}),
+            llmp::providers::Submission::kAccepted);
+  bool freed = false;
+  pf::AfterNextPinnedFree(held->allocation, [&] { freed = true; });
+  const std::array<void*, 1> raw_owner{held->allocation};
+  ASSERT_TRUE(node_.RetireRing(std::move(storage), raw_owner));
+  EXPECT_EQ(node_.kept_pinned(), 1U);
+  auto retired = node_.TearDown({});
+  retired_ = true;
+  EXPECT_TRUE(retired) << llmp::test_support::Failed(retired).value_or("");
+  EXPECT_FALSE(freed);
+  ASSERT_TRUE(ring->Release(7));
+  std::array<llmp::providers::IoCompletion, 1> done;
+  ASSERT_EQ(ring->Harvest(done, false), 1U);
+  EXPECT_EQ(done[0].result, bytes);
+  EXPECT_EQ(held->data[bytes - 1], std::byte{0x6b});
+  EXPECT_EQ(ring->in_flight(), 0U);
+  // The production retention rule is process lifetime even after a late
+  // completion; the test never manually frees the retained allocation.
+  pf::ClearPinnedFreeHook();
+}
+
+TEST_F(RunnerAlignedPinnedTest, InvalidGeometryAndUnfundedSlackAllocateNothing) {
+  en::RunnerMemory memory(node_, 0, 0);
+  const auto before = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  EXPECT_FALSE(memory.PinnedAligned(0, 4096));
+  EXPECT_FALSE(memory.PinnedAligned(8192, 0));
+  EXPECT_FALSE(memory.PinnedAligned(8192, 3));
+  EXPECT_FALSE(memory.PinnedAligned(std::numeric_limits<std::uint64_t>::max(), 4096));
+  EXPECT_EQ(memory.pinned_bytes(), 0U);
+  EXPECT_TRUE(memory.extents().empty());
+  EXPECT_EQ(node_.catalog().OccupancyOf(node_.domain()).Total().value(), before);
+  // The payload alone fits; its full alignment allowance does not.
+  ASSERT_TRUE(node_.Start(Bytes(before + 8192)));
+  node_.Run();
+  EXPECT_FALSE(memory.PinnedAligned(8192, 4096));
+  EXPECT_EQ(memory.pinned_bytes(), 0U);
+  EXPECT_TRUE(memory.extents().empty());
+  std::uint64_t after = 0;
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        after = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+        return {};
+      },
+      "aligned-pinned refusal occupancy"));
+  EXPECT_EQ(after, before);
+}
 
 // The target: 4 KiB a position (tensor 0: 512 positions an extent, two
 // extents) and 4 KiB of fixed state (tensor 1, a third extent).

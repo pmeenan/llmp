@@ -891,9 +891,10 @@ Status ModelRunner::SetupRowTables() {
                                   catalog::MemoryClass::kWeights);
         !mapped)
       return mapped;
-    auto landing = memory_.Pinned(PleLandingBound(held.capacity));
+    auto landing = memory_.PinnedAligned(PleLandingBound(held.capacity), kPleBlock);
     if (!landing) return Error(landing.error());
-    held.landing = static_cast<std::byte*>(*landing);
+    held.landing_allocation = landing->allocation;
+    held.landing = landing->data;
     if (Address(held.landing) % kPleBlock != 0)
       return Error("a row table's landing is not aligned");
     auto sources = memory_.Pinned((held.capacity + 1) * sizeof(std::uint32_t));
@@ -1008,7 +1009,7 @@ Status ModelRunner::Release() {
   if (prepared_ && config_.retire) config_.retire();
   std::vector<std::string> problems;
   for (auto& table : row_tables_) {
-    const std::array<void*, 1> landings{table->landing};
+    const std::array<void*, 1> landings{table->landing_allocation};
     if (node_.RetireRing(std::move(table->storage), landings)) {
       problems.emplace_back("row-table reads remain in flight; their landing and ring are kept");
     }

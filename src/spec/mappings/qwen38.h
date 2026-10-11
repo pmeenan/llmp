@@ -78,6 +78,9 @@ inline constexpr std::uint64_t kQwen38DraftVocab = 65536;
 
 const Mapping& Qwen38Mapping();
 const Mapping& Qwen38MtpMapping();
+// Same numerical recipe, with the durable repeat-pending position contract.
+// Explicit opt-in; existing v1 artifacts/specs keep their original identity.
+const Mapping& Qwen38MtpReplayMapping();
 
 // The profile and the hash's constants as the GGUF keys the mapping reads,
 // with the binding's form (the ModelOpt import's or a GGUF's) as

@@ -17,6 +17,7 @@
 #ifndef LLMP_ENGINE_RUNNER_MEMORY_H_
 #define LLMP_ENGINE_RUNNER_MEMORY_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <string>
@@ -26,6 +27,13 @@
 #include "engine/paged_node.h"
 
 namespace llmp::engine {
+
+struct AlignedPinned {
+  void* allocation = nullptr;  // PagedNode owns this address; retain/free this, not data.
+  std::byte* data = nullptr;
+  std::uint64_t bytes = 0;
+  std::uint64_t allocation_bytes = 0;  // the whole cataloged charge, including slack
+};
 
 class RunnerMemory {
  public:
@@ -52,6 +60,12 @@ class RunnerMemory {
   // Pinned host memory, cataloged as the runner's staging. Before the
   // node runs.
   std::expected<void*, std::string> Pinned(std::uint64_t bytes);
+  // An aligned view of pinned staging. A nonzero size and power-of-two
+  // alignment are required. The allocation includes alignment - 1 slack
+  // bytes and is charged whole before use; node teardown owns its lifetime.
+  // RetireRing/KeepPinned/FreePinned must receive allocation, never data.
+  std::expected<AlignedPinned, std::string> PinnedAligned(std::uint64_t bytes,
+                                                          std::uint64_t alignment);
   // Successful setup allocations only, before the scheduler starts. Device
   // mappings include extent alignment; pinned bytes include PagedNode's 256
   // byte minimum. This excludes the shared workspace and growing live state.

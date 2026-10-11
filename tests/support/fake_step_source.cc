@@ -178,8 +178,8 @@ class FakeProgram final : public kn::StepProgram {
       extra.emplace_back(inputs_[i].device_address, inputs_[i].bytes);
     auto launched = providers::fake::FakeDeviceExecution::Launch(
         stream, [segments = segments_, executed = executed_, extra = std::move(extra),
-                 seen = options_->seen_inputs] {
-          Execute(segments);
+                 seen = options_->seen_inputs, options = options_, phase = phase_] {
+          Execute(segments, *options, phase);
           seen->clear();
           for (const auto& [address, bytes] : extra) {
             const auto* from = At<const std::byte>(address);
@@ -210,7 +210,8 @@ class FakeProgram final : public kn::StepProgram {
 
  private:
   // The device's work: on the fake device's thread, at run time.
-  static void Execute(const std::vector<SegmentPlan>& segments) {
+  static void Execute(const std::vector<SegmentPlan>& segments, const FakeSourceOptions& options,
+                      pl::Phase phase) {
     for (const SegmentPlan& s : segments) {
       if (s.commit_only) {
         std::int64_t row = -1;
@@ -277,12 +278,6 @@ class FakeProgram final : public kn::StepProgram {
         if (s.target && valid < at + 1) return static_cast<std::int32_t>(s.logits - 1);
         return FakeLogit(tokens[r], at, s.logits);
       };
-      if (s.greedy) {
-        // Its own output: its last row's token (the lowering's form).
-        const std::int32_t chosen = s.logits != 0 ? choice(s.rows - 1) : tokens[s.rows - 1] + 1000;
-        if (s.outputs != 0) std::memcpy(At<void>(s.out), &chosen, sizeof(chosen));
-        continue;
-      }
       for (std::uint32_t o = 0; o < s.outputs && s.next != 0; ++o) {
         const std::uint32_t r = s.rows - s.outputs + o;
         const FakeCell next{.magic = kFakeMagic,
@@ -291,8 +286,24 @@ class FakeProgram final : public kn::StepProgram {
                             .token = tokens[r] + kFakeFeatureStep};
         std::memcpy(At<void>(s.next + (o * s.feature_bytes)), &next, sizeof(next));
       }
+      // The original diagnostic-row fixture exposes only its last greedy
+      // token. A logits head exposes every selected row's native token.
+      if (s.greedy && s.logits == 0 && s.outputs != 0) {
+        const std::int32_t chosen = tokens[s.rows - 1] + 1000;
+        std::memcpy(At<void>(s.out), &chosen, sizeof(chosen));
+        continue;
+      }
       for (std::uint32_t o = 0; o < s.outputs; ++o) {
         const std::uint32_t r = s.rows - s.outputs + o;
+        if (s.greedy) {
+          const std::int32_t chosen = options.native_token && (!options.native_token_phase ||
+                                                               *options.native_token_phase == phase)
+                                          ? *options.native_token
+                                      : s.logits != 0 ? choice(r)
+                                                      : tokens[r] + 1000;
+          std::memcpy(At<void>(s.out + std::uint64_t{o} * sizeof(chosen)), &chosen, sizeof(chosen));
+          continue;
+        }
         if (s.logits != 0) {
           std::vector<float> row(s.logits, 0.0F);
           row[static_cast<std::size_t>(choice(r))] = 1.0F;
@@ -539,9 +550,10 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
       }
     }
     if (seg.outputs != 0) {
-      // A greedy segment's output is its one token.
+      // Native logits heads select one token per output row; the original
+      // diagnostic-row fixture retains its single last-token contract.
       const std::uint64_t bytes =
-          seg.greedy ? sizeof(std::int32_t)
+          seg.greedy ? std::uint64_t{options_.logits != 0 ? seg.outputs : 1U} * sizeof(std::int32_t)
                      : std::uint64_t{seg.outputs} *
                            (options_.logits != 0 ? std::uint64_t{options_.logits} * sizeof(float)
                                                  : sizeof(FakeRow));
@@ -554,7 +566,7 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
   // Each drafter segment's next features, after every segment's rows.
   for (std::size_t i = 0; i < segments.size() && features; ++i) {
     SegmentPlan& s = segments[i];
-    if (s.outputs == 0 || s.greedy) continue;
+    if (s.outputs == 0) continue;
     s.next = place(std::uint64_t{s.outputs} * feature_bytes);
     outputs.push_back({.device_address = s.next,
                        .bytes = std::uint64_t{s.outputs} * feature_bytes,

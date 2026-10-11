@@ -66,6 +66,11 @@ void ClearCopyFailure();
 // state retires if the matching free did not happen.
 void AfterNextPinnedFree(void* pointer, std::function<void()> callback);
 void ClearPinnedFreeHook();
+// The next matching allocation is 256-aligned but deliberately not 4 KiB
+// aligned. FreePinned still frees its real backing; no production guarantee
+// beyond the ordinary fake's 256-byte alignment is changed.
+void MisalignNextPinned(std::size_t bytes);
+void ClearPinnedMisalignment();
 
 }  // namespace llmp::providers::fake
 

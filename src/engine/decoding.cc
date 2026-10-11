@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <format>
 #include <utility>
 
@@ -125,6 +126,9 @@ std::expected<DecodingOrchestrator, std::string> DecodingOrchestrator::Make(
          d.shape != DrafterSpec::Shape::kAutoregressive ||
          (mode.combine == DecodingMode::Drafters::kCascade && &d != &mode.drafters.front())))
       return Error("repeat-pending stages need feature autoregression first in a cascade");
+    if (d.draft_before_limit &&
+        (mode.drafters.size() != 1 || d.shape != DrafterSpec::Shape::kAutoregressive))
+      return Error("complete passes before verify truncation need one autoregressive drafter");
     seen[d.stage] = true;
     const model::StateLayoutDerived& layout = slots.layout(d.stage);
     if (d.max_depth == 0 || (d.adaptive && d.max_depth > 7)) {
@@ -278,12 +282,13 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     bool live = false;
     std::uint32_t positions = 0;
     std::vector<std::int32_t> proposed;
-    std::vector<std::uint32_t> depth;        // by drafter: asked (0: not run)
-    std::vector<bool> full;                  // by drafter: its depth was not cut short
-    std::vector<std::uint32_t> first;        // by drafter: its first proposal's index
-    std::vector<bool> caught_up;             // by drafter: its catch-up pass ran
-    std::vector<std::size_t> run;            // by drafter: its DraftRun's index
-    std::optional<std::size_t> alternative;  // the drafter chosen
+    std::vector<std::uint32_t> depth;         // by drafter: asked (0: not run)
+    std::vector<bool> full;                   // by drafter: its depth was not cut short
+    std::vector<std::uint32_t> first;         // by drafter: its first proposal's index
+    std::vector<bool> caught_up;              // by drafter: its catch-up pass ran
+    std::vector<std::size_t> run;             // by drafter: its DraftRun's index
+    std::optional<std::uint32_t> full_depth;  // checked before any replay unit begins
+    std::optional<std::size_t> alternative;   // the drafter chosen
     std::vector<std::optional<DraftProgressLedger::Unit>> progress;
     std::vector<model::DraftRows> replay;
   };
@@ -308,6 +313,19 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
           std::format("slot {}'s work does not continue its {} positions", w.slot, u.positions),
           w.slot);
       continue;
+    }
+    if (drafters == 1 && mode_.drafters[0].draft_before_limit) {
+      const auto& spec = mode_.drafters[0];
+      const auto want = policy_.depth   ? policy_.depth(w.slot, 0)
+                        : spec.adaptive ? adaptive_.at(At(w.slot, 0)).Choose()
+                                        : spec.max_depth;
+      const auto context = slots.context(spec.stage);
+      if (want == 0 || want > spec.max_depth || want > target_context - u.positions ||
+          u.positions >= context || want > context - u.positions) {
+        out.refusal = Refusal("the requested draft depth exceeds its declared bounds", w.slot);
+        continue;
+      }
+      u.full_depth = want;
     }
     u.progress.resize(drafters);
     u.replay.resize(drafters);
@@ -360,15 +378,22 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       const DrafterSpec& spec = mode_.drafters[d];
       // A first pass reads the features before its rows: none at position 0.
       if ((spec.anchored || spec.features) && u.positions == 0) continue;
-      const std::uint32_t want =
-          spec.adaptive ? adaptive_.at(At(w.slot, d)).Choose() : spec.max_depth;
+      const std::uint32_t want = u.full_depth    ? *u.full_depth
+                                 : policy_.depth ? policy_.depth(w.slot, d)
+                                 : spec.adaptive ? adaptive_.at(At(w.slot, d)).Choose()
+                                                 : spec.max_depth;
+      if (want == 0 || want > spec.max_depth) {
+        u.live = false;
+        out.refusal = Refusal("the requested draft depth exceeds its declared bounds", w.slot);
+        break;
+      }
       // Its rows end inside its stage's context.
       const std::uint64_t end = std::uint64_t{u.positions} + proposals;
       const std::uint32_t context = slots.context(spec.stage);
       const std::uint32_t room = end < context ? static_cast<std::uint32_t>(context - end) : 0;
-      u.depth[d] = std::min({want, budget, room});
+      u.depth[d] = spec.draft_before_limit ? want : std::min({want, budget, room});
       u.full[d] = u.depth[d] == want;
-      budget -= u.depth[d];
+      budget -= std::min(budget, u.depth[d]);
       proposals += u.depth[d];
     }
   }
@@ -480,7 +505,7 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
                            .rows = rows,
                            .outputs = block ? rows : 1U,
                            .want_head = true,
-                           .greedy = false,
+                           .greedy = spec.device_tokens,
                            .row_invariant = false,
                            .alone = false});
         of.push_back(i);
@@ -606,9 +631,13 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
   for (std::size_t i = 0; i < work.size(); ++i) {
     Unit& u = units[i];
     if (!u.live) continue;
+    const auto count = std::min<std::size_t>(
+        u.proposed.size(), std::min(work[i].left, target_context - u.positions) - 1U);
     std::vector<std::int32_t> rows = {work[i].history.back()};
-    rows.insert(rows.end(), u.proposed.begin(), u.proposed.end());
-    report.outcomes[i].proposed = u.proposed;
+    rows.insert(rows.end(), u.proposed.begin(),
+                u.proposed.begin() + static_cast<std::ptrdiff_t>(count));
+    report.outcomes[i].proposed.assign(u.proposed.begin(),
+                                       u.proposed.begin() + static_cast<std::ptrdiff_t>(count));
     pending.push_back({.slot = work[i].slot,
                        .stage = 0,
                        .phase = pl::Phase::kVerify,
@@ -616,11 +645,12 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
                        .rows = static_cast<std::uint32_t>(rows.size()),
                        .outputs = static_cast<std::uint32_t>(rows.size()),
                        .want_head = true,
-                       .greedy = false,
+                       .greedy = work[i].greedy,
                        .row_invariant = mode_.row_invariant,
                        .alone = false});
     auto& history = histories.emplace_back(work[i].history.begin(), work[i].history.end());
-    history.insert(history.end(), u.proposed.begin(), u.proposed.end());
+    history.insert(history.end(), u.proposed.begin(),
+                   u.proposed.begin() + static_cast<std::ptrdiff_t>(count));
     verified.push_back(std::move(rows));
     of.push_back(i);
   }
@@ -675,10 +705,12 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       const DraftRun& run = out.drafts[u.run[d]];
       const bool judged = accepted >= u.first[d];
       const std::uint32_t own = judged ? std::min(accepted - u.first[d], run.proposed) : 0;
-      if (mode_.drafters[d].adaptive) {
-        const bool complete = u.full[d] && judged && !run.refusal && run.proposed == u.depth[d];
+      const bool complete = u.full[d] && judged && !run.refusal && run.proposed == u.depth[d] &&
+                            rows == u.proposed.size() + 1;
+      if (policy_.observe)
+        policy_.observe(slot, d, u.depth[d], own + 1, complete);
+      else if (mode_.drafters[d].adaptive)
         adaptive_.at(At(slot, d)).Observe(u.depth[d], own + 1, complete);
-      }
     }
     if (u.alternative) choice_.at(slot).Observe(*u.alternative, verdict->keep);
   }

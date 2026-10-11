@@ -189,6 +189,7 @@ class EngineLlmTest : public ::testing::Test {
     s.prefill_chunk.value = kChunk;
     s.max_slots.value = kSlots;
     s.speculation.value = speculate;
+    s.depth_cost_ratio.value = 1.16;
     return s;
   }
 
@@ -201,6 +202,7 @@ class EngineLlmTest : public ::testing::Test {
       ts::FakeSourceOptions o;
       for (const auto& s : stages) o.layouts.push_back(s.layout);
       o.logits = kWidth;
+      o.features = native_outputs_;
       o.spec = spec_;
       auto source = std::make_unique<ts::FakeStepSource>(std::move(o));
       source_ = source.get();
@@ -238,6 +240,17 @@ class EngineLlmTest : public ::testing::Test {
                                     .fill = kFill}},
                       .combine = en::DecodingMode::Drafters::kCascade,
                       .row_invariant = false};
+      }
+      if (drafters && native_outputs_) {
+        parts.mode.drafters.resize(1);
+        auto& draft = parts.mode.drafters.front();
+        draft.max_depth = 3;
+        draft.features = true;
+        draft.device_tokens = true;
+        draft.draft_before_limit = true;
+        draft.adaptive = true;
+        parts.device_verify = true;
+        parts.branch_depth = 3;
       }
       parts.logit_width = kWidth;
       parts.device_greedy = true;
@@ -344,6 +357,7 @@ class EngineLlmTest : public ::testing::Test {
   std::unique_ptr<en::PagedNode> node_;
   std::unique_ptr<rt::EngineLlm> llm_;
   ts::FakeStepSource* source_ = nullptr;
+  bool native_outputs_ = false;
   bool save_checkpoints_ = true;  // Llm::set_turn_checkpoints at Start
 };
 
@@ -1303,6 +1317,126 @@ TEST_F(EngineLlmTest, SetupRefusesWhatItCannotBuild) {
   // the node's teardown (Server::TearDown) instead of asking for it.
   EXPECT_FALSE(unbuilt.has_paged());
   EXPECT_FALSE(refused.has_paged());
+}
+
+TEST_F(EngineLlmTest, CompleteDraftScheduleReservesOnlyItsEnabledDepth) {
+  struct Case {
+    bool enabled;
+    std::uint32_t depth;
+    bool complete;
+    bool adaptive;
+    std::uint32_t target_context;
+    std::uint32_t usable;
+  };
+  for (const auto c :
+       {Case{true, 2, true, false, kContext, 1022}, Case{true, 3, true, true, kContext, 1021},
+        Case{false, 3, true, true, kContext, 1024}, Case{true, 3, false, true, kContext, 1024},
+        Case{true, 2, true, false, 2, 0}}) {
+    SCOPED_TRACE(c.enabled);
+    SCOPED_TRACE(c.depth);
+    SCOPED_TRACE(c.target_context);
+    en::PagedNode node(en::NodeSettings{
+        .compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent});
+    ASSERT_TRUE(node.Open());
+    auto build = Build(true);
+    rt::EngineLlm llm(
+        node, entry_, Settings(c.enabled), roles_, 0,
+        [build,
+         c](const rt::ModelSettings& settings) -> std::expected<rt::EngineLlmParts, std::string> {
+          auto parts = build(settings);
+          if (!parts) return parts;
+          parts->mode.drafters.resize(1);
+          auto& draft = parts->mode.drafters.front();
+          draft.max_depth = c.depth;
+          draft.draft_before_limit = c.complete;
+          draft.adaptive = c.adaptive;
+          parts->branch_depth = 3;
+          parts->config.slots.stages.front().layout.context = c.target_context;
+          return parts;
+        });
+    const auto set = llm.Setup();
+    if (c.usable == 0) {
+      ASSERT_FALSE(set);
+      EXPECT_NE(Why(set).find("complete draft schedule does not fit"), std::string::npos);
+      EXPECT_FALSE(llm.has_paged());
+    } else {
+      ASSERT_TRUE(set) << Why(set);
+      EXPECT_EQ(llm.usable_context(), c.usable);
+    }
+  }
+}
+
+TEST_F(EngineLlmTest, NativeVerifyTokenRangeRefusesBeforeAcceptance) {
+  native_outputs_ = true;
+  Start(true, true);
+  Open({&BranchAt(0)});
+  const auto prompt = Prompt(37, 7);
+  std::vector<float> head;
+  ASSERT_TRUE(BranchAt(0).Prefill(prompt, head));
+  source_->options().native_token_phase = pl::Phase::kVerify;
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  for (const auto token : {-1, static_cast<std::int32_t>(kWidth)}) {
+    source_->options().native_token = token;
+    rt::Generation bad;
+    const auto run = BranchAt(0).Generate(head, options, bad);
+    ASSERT_FALSE(run);
+    EXPECT_NE(run.error().find("outside the target vocabulary"), std::string::npos);
+    EXPECT_EQ(bad.tokens.size(), 1U);  // only the already valid prefill choice
+    EXPECT_EQ(llm_->runner().slots().positions(0), prompt.size());
+    EXPECT_TRUE(llm_->runner().slots().usable(0));
+  }
+  source_->options().native_token.reset();
+  rt::Generation good;
+  ASSERT_TRUE(BranchAt(0).Generate(head, options, good));
+  EXPECT_EQ(good.tokens, Chain(prompt, 8));
+  Close();
+}
+
+// Native proposal tokens (followed by next features) and multirow verify
+// tokens use the ordinary serving sampler/state path, including a truncated
+// final verify and the branch-owned adaptive state preserved by snapshots.
+TEST_F(EngineLlmTest, NativeDraftAndVerifyTokensPreserveRowsAndSnapshotContinuation) {
+  native_outputs_ = true;
+  Start(true, true);
+  const auto prompt = Prompt(37, 7);
+  const auto tokens = Turn(0, prompt, 18);
+  EXPECT_EQ(tokens.out.tokens, Chain(prompt, 18));
+  EXPECT_GT(tokens.out.drafted, 0U);
+  const auto rows = Turn(1, prompt, 18, true);
+  EXPECT_EQ(rows.out.tokens, tokens.out.tokens);
+  ASSERT_EQ(rows.out.logits.size(), 18U);
+  for (std::size_t i = 0; i < rows.out.tokens.size(); ++i)
+    EXPECT_EQ(ArgmaxOf(rows.out.logits[i]), rows.out.tokens[i]);
+  Open({&BranchAt(0)});
+  rt::SnapshotStore store(*node_, 8 * kExtent);
+  auto captured = BranchAt(0).CaptureState(store);
+  ASSERT_TRUE(captured) << captured.error();
+  const auto original = BranchAt(0).history();
+  auto next = original;
+  next.push_back(tokens.out.tokens.back());
+  std::vector<float> head;
+  std::uint32_t reused = 0;
+  ASSERT_TRUE(BranchAt(0).PreparePrompt(next, 0, head, reused));
+  rt::GenerateOptions options;
+  options.max_tokens = 8;
+  options.stop = false;
+  rt::Generation first;
+  ASSERT_TRUE(BranchAt(0).Generate(head, options, first));
+  ASSERT_TRUE(BranchAt(0).RestoreState(store, *captured));
+  EXPECT_EQ(BranchAt(0).history(), original);
+  ASSERT_TRUE(BranchAt(0).PreparePrompt(next, 0, head, reused));
+  rt::Generation again;
+  ASSERT_TRUE(BranchAt(0).Generate(head, options, again));
+  EXPECT_EQ(again.tokens, first.tokens);
+  EXPECT_EQ(again.drafted, first.drafted);
+  EXPECT_EQ(again.accepted, first.accepted);
+  Close();
+  // Changed prompt inputs still use the captured step programs.
+  const auto changed = Turn(0, Prompt(37, 11), 18);
+  EXPECT_EQ(changed.out.tokens, Chain(Prompt(37, 11), 18));
+  EXPECT_NE(changed.out.tokens, tokens.out.tokens);
 }
 
 }  // namespace

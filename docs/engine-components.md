@@ -1962,6 +1962,20 @@ choice, speculation with two cascaded drafters, spill and restore, a turn
 checkpoint's restore, recovery, and a restart adopting a version 2 record
 while refusing a version 1 one.
 
+**Qwen3.8 sole-owner serving (G3c2b2a).** An internal, default-off diagnostic
+route composes native Cutlass and GGML experts, GGUF and the native MTP replay
+stage through this adapter. It requires one actual slot and keeps joined
+repeat-pending execution disabled. Four focused Spark comparisons pass:
+depth-two MTP full logits, the default depth-three token schedule, native
+GGML experts and GGUF plain decoding, each including a continuation turn.
+Two startup ownership/refusal controls, 2,500 native non-model tests and
+1,955 CPU-only tests pass. All 124 model/timing registrations pass, including
+two authenticated selected-head fixture reruns after the full run skipped them.
+The full-pass drafter's configured depth is deducted from usable context;
+ordinary and disabled drafters keep their existing context. Broader state,
+quality, swap, cohort and matched
+1% gates remain open; the legacy runner stays in place.
+
 The vendor-free `engine/execution_contract` value types separately seal an
 ordered numerical-domain declaration and execution inputs (effective policy,
 pattern and registry identities, device/tuning facts, declared backend recipe,

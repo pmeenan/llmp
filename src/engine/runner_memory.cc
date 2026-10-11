@@ -4,7 +4,10 @@
 #include "engine/runner_memory.h"
 
 #include <algorithm>
+#include <bit>
 #include <format>
+#include <limits>
+#include <memory>
 #include <utility>
 
 #include "providers/device_memory.h"
@@ -30,6 +33,32 @@ std::expected<void*, std::string> RunnerMemory::Pinned(std::uint64_t bytes) {
     pinned_bytes_ += std::max<std::uint64_t>(bytes, 256);
   }
   return allocated;
+}
+
+std::expected<AlignedPinned, std::string> RunnerMemory::PinnedAligned(std::uint64_t bytes,
+                                                                      std::uint64_t alignment) {
+  if (bytes == 0 || !std::has_single_bit(alignment) ||
+      alignment > std::numeric_limits<std::size_t>::max() ||
+      bytes > std::numeric_limits<std::size_t>::max() - (alignment - 1)) {
+    return std::unexpected("aligned pinned staging has an invalid size or alignment");
+  }
+  const auto allocation_bytes = std::max<std::uint64_t>(bytes + alignment - 1, 256);
+  if (allocation_bytes > std::numeric_limits<std::uint64_t>::max() - pinned_bytes_) {
+    return std::unexpected("aligned pinned staging accounting overflows");
+  }
+  auto allocation = Pinned(allocation_bytes);
+  if (!allocation) return std::unexpected(allocation.error());
+  void* view = *allocation;
+  auto available = static_cast<std::size_t>(allocation_bytes);
+  if (std::align(static_cast<std::size_t>(alignment), static_cast<std::size_t>(bytes), view,
+                 available) == nullptr) {
+    // The node still owns and charges the allocation through fenced teardown.
+    return std::unexpected("aligned pinned staging does not fit its allocation");
+  }
+  return AlignedPinned{.allocation = *allocation,
+                       .data = static_cast<std::byte*>(view),
+                       .bytes = bytes,
+                       .allocation_bytes = allocation_bytes};
 }
 
 std::uint64_t RunnerMemory::mapped_bytes() const {

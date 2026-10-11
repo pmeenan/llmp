@@ -35,6 +35,12 @@ bool OnComponentEngine(std::string_view architecture);
 // (planner/policy.h), in place of its mapping's default.
 struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
+  // Internal qualification only; Qwen remains off in OnComponentEngine.
+  // Refuses any actual slot count other than one before opening artifacts.
+  bool diagnostic_solo = false;
+  bool prefill_lookahead = true;
+  bool prepare_state = true;
+  std::optional<bool> state_only_prefill{};
 };
 
 // The parts of `entry`'s model (its artifact and drafter in `store`), made

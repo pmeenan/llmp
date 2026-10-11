@@ -876,7 +876,7 @@ Status Qwen38Runner::Setup() {
   auto logits = resources_.Pinned(logit_rows * std::uint64_t{profile_.vocab} * sizeof(float));
   auto hash = resources_.Pinned(
       (std::uint64_t{profile_.ngram} + (2 * std::uint64_t{profile_.ple_heads()})) * 8);
-  auto landing = resources_.Pinned(landing_bytes_);
+  auto landing = resources_.PinnedAligned(landing_bytes_, kPleBlock);
   // The slots' sources, then the count of rows the next gather takes.
   auto sources = resources_.Pinned((slots_ + 1) * sizeof(std::uint32_t));
   unwritten_ = weights_.Unwritten();
@@ -942,7 +942,8 @@ Status Qwen38Runner::Setup() {
     }
     draft_ids_host_ = *ids;
   }
-  landing_ = static_cast<std::byte*>(*landing);
+  landing_allocation_ = landing->allocation;
+  landing_ = landing->data;
   sources_ = static_cast<std::uint32_t*>(*sources);
   ple_count_ = sources_ + slots_;
   *ple_count_ = 0;
@@ -996,9 +997,10 @@ Status Qwen38Runner::Setup() {
   // pinned demand. Capture/selected-head/snapshot descriptors stay identical.
   const auto pinned = [](std::uint64_t bytes) { return std::max<std::uint64_t>(bytes, 256); };
   setup_budget_.scalar_pinned =
-      setup_budget_.pinned - pinned(input_bytes) - pinned(landing_bytes_) -
+      setup_budget_.pinned - pinned(input_bytes) - pinned(landing_bytes_ + kPleBlock - 1) -
       pinned((slots_ + 1) * sizeof(std::uint32_t)) - setup_budget_.wave_output_pinned +
-      pinned(setup_budget_.scalar_staging_inputs) + pinned(PleLandingBound(scalar_slots)) +
+      pinned(setup_budget_.scalar_staging_inputs) +
+      pinned(PleLandingBound(scalar_slots) + kPleBlock - 1) +
       pinned((scalar_slots + 1) * sizeof(std::uint32_t));
   setup_budget_.runner_mapped = resources_.mapped_bytes();
   setup_budget_.target_per_branch = layout_.bytes;
@@ -3684,7 +3686,7 @@ Status Qwen38Runner::Release() {
   // to the process's end, the landing kept from the node's frees at Close.
   // Otherwise every read was harvested (ReadPleRows drains) and the ring
   // goes.
-  const std::array<void*, 1> landing = {landing_};
+  const std::array<void*, 1> landing = {landing_allocation_};
   if (node_.RetireRing(std::move(ring_), landing)) {
     problems.emplace_back(
         "n-gram row reads were still in flight; their ring and landing are kept to the "
