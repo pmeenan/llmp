@@ -518,6 +518,89 @@ TEST(GgmlLowerTest, FusedExpansionWaitsForComputedNormScale) {
   }
 }
 
+// Source logarithmic BF16 parameters stay external weight leaves. Their
+// F32 cast and scalar arithmetic have ordinary paid activation placements.
+TEST(GgmlLowerTest, Bf16LogParameterHasTransientPlacementAndStrictLowering) {
+  using llmp::format::Encoding;
+  const auto registry = PlanningRegistry();
+  ir::Builder b;
+  const ir::WeightRef ref{.stage = 0, .component = 0, .role = 0};
+  // Structural CPU lowering only: own the source bytes through every bound
+  // descriptor. Dense BF16 has one data part, not a multipart representation.
+  alignas(256) std::array<std::uint16_t, 48> source{};
+  static_assert(sizeof(source) == 96);
+  const auto weight = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({48})), ref);
+  const auto cast = b.Convert(weight, Encoding::kF32);
+  const auto exponential = b.Unary(cast, ir::UnaryFn::kExp);
+  const auto negative = b.Unary(exponential, ir::UnaryFn::kNeg);
+  b.Output(negative);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph) << graph.error().detail;
+  co::StepGraph step{.graph = std::move(*graph),
+                     .inputs = {},
+                     .weights = {{.tensor = weight,
+                                  .ref = ref,
+                                  .parts = {{"test.a_log", llmp::format::PartRole::kData}}}},
+                     .state = {}};
+  auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {}, {.written = &kg::WrittenBytes});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  ASSERT_EQ(plan->steps.size(), 3U);
+  EXPECT_EQ(step.graph.tensor(weight).format.encoding, Encoding::kBF16);
+  EXPECT_EQ(step.graph.tensor(weight).format.layout, llmp::format::Layout::kDense);
+  const auto source_bytes = pl::RootBytes(step.graph.tensor(weight));
+  ASSERT_TRUE(source_bytes);
+  EXPECT_EQ(*source_bytes, 96U);
+  const auto placed = [&](ir::TensorId original) {
+    const auto mapped = plan->tensors.at(original.v);
+    return std::ranges::find(plan->placement.offsets, mapped,
+                             &std::pair<ir::TensorId, std::uint64_t>::first);
+  };
+  EXPECT_EQ(placed(weight), plan->placement.offsets.end());
+  for (const auto tensor : {cast, exponential, negative}) {
+    const auto at = placed(tensor);
+    ASSERT_NE(at, plan->placement.offsets.end());
+    EXPECT_LE(at->second + 48U * sizeof(float), plan->placement.extent);
+  }
+  const pl::StepShape shape{};
+  const auto source_address =
+      static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(source.data()));
+  const kn::Addresses addresses{
+      .weight =
+          [&](const ir::WeightRef& actual, llmp::format::PartRole part) {
+            EXPECT_EQ(actual, ref);
+            EXPECT_EQ(part, llmp::format::PartRole::kData);
+            return actual == ref && part == llmp::format::PartRole::kData ? source_address : 0;
+          },
+      .weight_rows = {},
+      .state = {},
+      .save = {}};
+  const kn::LowerInput input{.plan = *plan, .step = step, .shape = shape, .addresses = addresses};
+  const auto lowered = kg::LowerStep(input, registry, Device());
+  ASSERT_TRUE(lowered) << lowered.error().detail;
+  ASSERT_EQ(lowered->plan.steps.size(), 3U);
+  EXPECT_EQ(lowered->plan.steps[0].implementation, "ggml.convert");
+  EXPECT_EQ(lowered->plan.steps[1].implementation, "ggml.unary");
+  EXPECT_EQ(lowered->plan.steps[2].implementation, "ggml.unary");
+  ASSERT_EQ(lowered->plan.steps[0].nodes.size(), 1U);
+  const auto* bound = lowered->plan.steps[0].nodes[0]->src[0];
+  ASSERT_NE(bound, nullptr);
+  EXPECT_EQ(bound->type, GGML_TYPE_BF16);
+  EXPECT_EQ(bound->data, source.data());
+  EXPECT_EQ(bound->op, GGML_OP_NONE);
+  EXPECT_EQ(bound->view_src, nullptr);
+  EXPECT_EQ(bound->ne[0], 48);
+  for (std::size_t d = 1; d < 4; ++d) {
+    EXPECT_EQ(bound->ne[d], 1);
+    EXPECT_EQ(bound->nb[d], sizeof(source));
+  }
+  EXPECT_EQ(bound->nb[0], sizeof(source[0]));
+  EXPECT_TRUE(ggml_is_contiguous(bound));
+  EXPECT_EQ(ggml_nbytes(bound), sizeof(source));
+  EXPECT_TRUE(lowered->measuring);
+  EXPECT_EQ(lowered->plan.steps[0].nodes[0]->type, GGML_TYPE_F32);
+  EXPECT_EQ(lowered->extent, plan->placement.extent);
+}
+
 // A selection PlanGraph would not make is refused, never run otherwise:
 // without the norm-mul pattern the IR selects the norm and its mul alone
 // (which unfused PlanGraph runs as one step of both launchers, the IR's two

@@ -1845,6 +1845,20 @@ each is checked against the design as M3.6 proceeds.
                   Gemma 2/3's GGUF norm fold is asserted already applied;
                   Gemma 4 adds no fold. Assistants, Qwen/DeepSeek, other
                   containers and remaining transforms stay open in N3b.
+            - [x] **N3b2a — source-preserving BF16 parameter operands:**
+                  shared HC, QSA, PLE, MTP and GDN components accept their
+                  declared small BF16 parameters and compute with transient
+                  F32 values. GDN's explicit logarithmic-A option computes
+                  its negative exponential without expanding resident weights.
+                  Independent challenge and 30 focused native controls passed
+                  (24 component and six lowering cases), with zero failures or
+                  skips; all ten historical F32 graph digests match the parent.
+                  Final Spark checks passed 2,561 native and 2,010 CPU tests
+                  with zero failures or skips; format, boundary, header and
+                  REUSE gates passed. Main built and passed 30
+                  integration checks and the quality gates.
+                  MLX source normalization, norm/head-order authentication,
+                  publication and runtime admission remain open.
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
             catalog import events.

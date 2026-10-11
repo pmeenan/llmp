@@ -39,8 +39,10 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "base/sha256.h"
 #include "components/component.h"
 #include "components/step.h"
 #include "format/encoding.h"
@@ -892,6 +894,229 @@ TEST(ComponentsQwen38Test, TheMtpDraftersInputMatchesItsReference) {
   EXPECT_EQ(contract.tensors[0].cells, model::CellRule::kPerRow);
   EXPECT_TRUE(contract.tensors[0].target_writes);
   EXPECT_EQ(contract.tensors[0].cell_bytes, kHcWidth * kStreams * 4);
+}
+
+// ---------------------------------------------------------------- native tiny parameters
+
+struct ParameterCase {
+  ComponentRef component;
+  StageFacts facts;
+  Site site;
+  std::vector<format::TensorFormat> formats;
+  std::vector<std::uint16_t> tiny;
+  std::vector<std::uint64_t> cells;
+  Lone lone{};
+  std::map<std::uint16_t, std::pair<float, float>> ranges{};
+};
+
+std::vector<ParameterCase> ParameterCases() {
+  const auto hw = kHcWidth * kStreams;
+  return {
+      {C("hc.mix", {P("eps", R(1e-6)), P("rank", I(8))}),
+       kHcFacts,
+       Site::kLayer,
+       {Vector(hw), Matrix(Encoding::kF16, hw, 8), Matrix(Encoding::kF16, 8, hw)},
+       {0},
+       {},
+       {.inputs = {.residual = true}},
+       {}},
+      {Gdn(),
+       kFacts,
+       Site::kLayer,
+       GdnFormats(Encoding::kF32),
+       {4, 5, 6, 7},
+       {1, 1},
+       {},
+       kGdnRanges},
+      {Qsa("fused"),
+       kFacts,
+       Site::kLayer,
+       QsaFormats(Encoding::kF32),
+       {4, 5, 9, 10},
+       {256, 256, 256, 64},
+       {},
+       {}},
+      {C("residual.ple",
+         {P("eps", R(1e-6)), P("input", N("ngram")), P("conv", I(4)), P("dilation", I(3))}),
+       kHcFacts,
+       Site::kLayer,
+       {Matrix(Encoding::kF16, 64, hw), Matrix(Encoding::kF16, 64, kHcWidth), Vector(hw),
+        Vector(hw), Vector(hw), Matrix(Encoding::kF32, 4, hw)},
+       {2, 3, 4, 5},
+       {1},
+       {.inputs = {.residual = true, .side = 64}},
+       {{5, {-0.6F, 0.6F}}}},
+      {C("embedding.mtp", {P("eps", R(1e-6)), P("tap", N("streams"))}),
+       kHcFacts,
+       Site::kEmbedding,
+       {Matrix(Encoding::kF16, kHcWidth, 40), Vector(kHcWidth),
+        Matrix(Encoding::kF16, kHcWidth, kHcWidth), Vector(hw),
+        Matrix(Encoding::kF16, kHcWidth, kHcWidth)},
+       {1, 3},
+       {9},
+       {},
+       {}},
+  };
+}
+
+// This same control is supplied as a test-only patch for the frozen parent.
+// Matching XML properties across that binary and the candidate authenticates
+// the pre-change graphs, including lazy leaf/node order, not just two new paths.
+TEST(ComponentsQwen38Test, LegacyF32ParameterGraphDigests) {
+  std::size_t ci = 0;
+  for (const auto& c : ParameterCases()) {
+    const auto in = MakeInstance(c.component, c.facts, c.site, 0, 1);
+    ASSERT_TRUE(in) << in.error();
+    const auto steps = RowSteps();
+    for (std::size_t si = 0; si < steps.size(); ++si) {
+      const auto g = BuildComponent(*in, steps[si].shape, c.formats, c.cells, c.lone.inputs);
+      ASSERT_TRUE(g) << g.error();
+      RecordProperty(std::format("case_{}_step_{}", ci, si),
+                     llmp::base::ToHex(g->step.graph.Digest()));
+    }
+    ++ci;
+  }
+}
+
+void CheckNativeParameters(const ComponentGraph& component, std::span<const std::uint16_t> roles) {
+  const auto& graph = component.step.graph;
+  for (const auto role : roles) {
+    const auto leaf = component.weights.at(role);
+    ASSERT_TRUE(leaf.valid()) << role;
+    const auto& source = graph.tensor(leaf);
+    EXPECT_EQ(source.role, ir::Role::kWeight);
+    EXPECT_EQ(source.format.encoding, Encoding::kBF16);
+    const auto source_parts = format::PartsOf(source.format);
+    ASSERT_TRUE(source_parts);
+    ASSERT_EQ(source_parts->size(), 1U);
+    EXPECT_EQ((*source_parts)[0].bytes, ir::Elements(source.shape()) * 2);
+    std::size_t conversions = 0;
+    for (const auto& node : graph.nodes()) {
+      if (node.nsrc != 1 || node.src[0] != leaf || node.key != ir::Primitive(ir::Op::kConvert))
+        continue;
+      ++conversions;
+      EXPECT_EQ(node.batch, ir::Batch::kJoined);
+      const auto& converted = graph.tensor(node.out[0]);
+      EXPECT_EQ(converted.role, ir::Role::kActivation);
+      EXPECT_EQ(converted.segment, ir::kJoinedSegment);
+      EXPECT_EQ(converted.format.encoding, Encoding::kF32);
+      EXPECT_FALSE(converted.is_view());
+      EXPECT_TRUE(std::holds_alternative<std::monostate>(converted.binding));
+      EXPECT_EQ(converted.shape(), source.shape());
+    }
+    EXPECT_EQ(conversions, 1U) << role;
+  }
+}
+
+TEST(ComponentsQwen38Test, TinyParametersKeepNativeBytesAndOneJoinedConversionPerRole) {
+  for (auto c : ParameterCases()) {
+    SCOPED_TRACE(c.component.kind);
+    const auto in = MakeInstance(c.component, c.facts, c.site, 0, 1);
+    ASSERT_TRUE(in) << in.error();
+    for (auto role : c.tiny) c.formats[role].encoding = Encoding::kBF16;
+    const auto g = BuildComponent(*in, RowSteps()[0].shape, c.formats, c.cells, c.lone.inputs);
+    ASSERT_TRUE(g) << g.error();
+    CheckNativeParameters(*g, c.tiny);
+    // Other low-precision or integer parameter encodings remain refused.
+    for (auto role : c.tiny) {
+      for (const auto rejected : {Encoding::kF16, Encoding::kI32}) {
+        auto wrong = c.formats;
+        wrong[role].encoding = rejected;
+        EXPECT_FALSE(BuildComponent(*in, RowSteps()[0].shape, wrong, c.cells, c.lone.inputs));
+      }
+    }
+  }
+}
+
+TEST(ComponentsQwen38Test, Bf16TinyParametersMatchIndependentScalarReferencesAcrossOwners) {
+  for (auto c : ParameterCases()) {
+    SCOPED_TRACE(c.component.kind);
+    const auto in = MakeInstance(c.component, c.facts, c.site, 0, 1);
+    ASSERT_TRUE(in) << in.error();
+    for (auto role : c.tiny) c.formats[role].encoding = Encoding::kBF16;
+    // Compare decodes the actual BF16 bytes for the independent scalar oracle,
+    // then checks every output and initialized state over two carried steps.
+    Compare(*in, c.formats, c.cells, RowSteps(), kTolerance,
+            c.component.kind == "attention.qsa" ? kF16State : kTolerance, c.lone, c.ranges);
+  }
+}
+
+ComponentRef LogGdn(bool logarithmic) {
+  auto c = Gdn();
+  c.params.push_back(P("a_log", B(logarithmic)));
+  std::ranges::sort(c.params, {}, &Param::name);
+  return c;
+}
+
+TEST(ComponentsQwen38Test, LogarithmicARequiresExclusiveARepresentationAndTiledHeads) {
+  EXPECT_FALSE(MakeInstance(LogGdn(true), kFacts, Site::kLayer, 0, 1));
+  const std::vector<std::string> tiled{"gdn.value_heads_tiled", "norm.plus_one"};
+  auto facts = kFacts;
+  facts.folds = tiled;
+  EXPECT_TRUE(MakeInstance(LogGdn(true), facts, Site::kLayer, 0, 1));
+  EXPECT_FALSE(MakeInstance(Gdn(), facts, Site::kLayer, 0, 1));
+  EXPECT_FALSE(MakeInstance(LogGdn(false), facts, Site::kLayer, 0, 1));
+  const std::vector<std::string> only_exp{"norm.plus_one", "ssm.a_neg_exp"};
+  facts.folds = only_exp;
+  EXPECT_FALSE(MakeInstance(Gdn(), facts, Site::kLayer, 0, 1));
+  EXPECT_FALSE(MakeInstance(LogGdn(false), facts, Site::kLayer, 0, 1));
+  EXPECT_FALSE(MakeInstance(LogGdn(true), facts, Site::kLayer, 0, 1));
+  facts.folds = {};
+  EXPECT_FALSE(MakeInstance(LogGdn(true), facts, Site::kLayer, 0, 1));
+}
+
+TEST(ComponentsQwen38Test, LogarithmicAIsTransientAndMatchesItsScalarDecay) {
+  const std::vector<std::string> folds{"gdn.value_heads_tiled", "norm.plus_one"};
+  auto facts = kFacts;
+  facts.folds = folds;
+  const auto ref = LogGdn(true);
+  const auto in = MakeInstance(ref, facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in) << in.error();
+  const std::array<std::uint64_t, 2> cells{1, 1};
+  for (const auto encoding : {Encoding::kF32, Encoding::kBF16}) {
+    auto formats = GdnFormats(Encoding::kF32);
+    for (const auto role : {4U, 5U, 6U, 7U}) formats[role].encoding = encoding;
+    const auto g = BuildComponent(*in, RowSteps()[0].shape, formats, cells);
+    ASSERT_TRUE(g) << g.error();
+    if (encoding == Encoding::kBF16) {
+      constexpr std::array<std::uint16_t, 4> roles{4, 5, 6, 7};
+      CheckNativeParameters(*g, roles);
+    }
+    std::size_t exponentials = 0, negations = 0;
+    for (const auto& n : g->step.graph.nodes()) {
+      if (n.key != ir::Primitive(ir::Op::kUnary)) continue;
+      const auto fn = n.Params<ir::UnaryParams>().fn;
+      if (fn != ir::UnaryFn::kExp && fn != ir::UnaryFn::kNeg) continue;
+      exponentials += fn == ir::UnaryFn::kExp ? 1U : 0U;
+      negations += fn == ir::UnaryFn::kNeg ? 1U : 0U;
+      EXPECT_EQ(n.batch, ir::Batch::kJoined);
+      EXPECT_EQ(g->step.graph.tensor(n.out[0]).role, ir::Role::kActivation);
+    }
+    EXPECT_EQ(exponentials, 1U);
+    EXPECT_EQ(negations, 1U);
+    Compare(*in, formats, cells, RowSteps(), kTolerance, kTolerance, {}, kGdnRanges);
+  }
+}
+
+TEST(ComponentsQwen38Test, ExplicitFalsePreservesTheDefaultGdnGraphDigest) {
+  const auto absent_ref = Gdn();
+  const auto false_ref = LogGdn(false);
+  const auto absent = MakeInstance(absent_ref, kFacts, Site::kLayer, 0, 1);
+  const auto explicit_false = MakeInstance(false_ref, kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(absent);
+  ASSERT_TRUE(explicit_false);
+  const std::array<std::uint64_t, 2> cells{1, 1};
+  auto steps = RowSteps();
+  steps.push_back({.shape = {.phase = planner::Phase::kVerify,
+                             .segments = {Seg(0, 2, 4, 256, 2), Seg(1, 1, 9, 256, 1)}}});
+  steps.push_back({.shape = {.segments = {Seg(0, 3, 6, 256, 0)}}});
+  for (const auto& step : steps) {
+    const auto a = BuildComponent(*absent, step.shape, GdnFormats(Encoding::kF32), cells);
+    const auto b = BuildComponent(*explicit_false, step.shape, GdnFormats(Encoding::kF32), cells);
+    ASSERT_TRUE(a) << a.error();
+    ASSERT_TRUE(b) << b.error();
+    EXPECT_EQ(a->step.graph.Digest(), b->step.graph.Digest());
+  }
 }
 
 TEST(ComponentsQwen38Test, ASelectedHeadsTokensAreItsRowsIds) {

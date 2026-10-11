@@ -72,6 +72,8 @@ class Builder {
     batch_ = Batch::kJoined;
     segment_ = kJoinedSegment;
   }
+  // Current batch owner; kJoinedSegment denotes the joined context.
+  std::uint8_t segment() const { return segment_; }
   bool ok() const { return !error_.has_value(); }
   const std::optional<VerifyError>& error() const { return error_; }
   // A tensor made so far (a valid id of this builder), as a copy: the

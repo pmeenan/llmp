@@ -19,7 +19,8 @@
 //     beta = sigmoid(beta), the decay's log g = softplus(alpha + dt_bias) ·
 //     A: value head h reads key head h % k_heads (the value heads tiled:
 //     the gdn.value_heads_tiled fold) and A is stored as -exp(A_log) (the
-//     ssm.a_neg_exp fold), so a spec without both folds is refused;
+//     ssm.a_neg_exp fold). Explicit a_log instead computes -exp(A_log) in
+//     transient F32 storage; the value-head fold remains mandatory;
 //   - each head's output RMS-normed, times the norm weight and sigmoid(z),
 //     and the output product.
 //
@@ -67,6 +68,13 @@ constexpr std::array kParams{
     ParamSpec{.name = "v_heads", .type = ParamType::kInt, .least = 1, .most = 1024},
     // A head's key and value width.
     ParamSpec{.name = "head_dim", .type = ParamType::kInt, .least = 1, .most = 1024},
+    // Source logarithmic A: compute -exp(A_log) in transient graph storage.
+    ParamSpec{.name = "a_log",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0.0},
     // The convolution's kernel.
     ParamSpec{.name = "conv", .type = ParamType::kInt, .least = 2, .most = 64},
 };
@@ -77,10 +85,10 @@ constexpr std::array kRoles{
     WeightRole{.name = "gate"},
     WeightRole{.name = "beta"},
     WeightRole{.name = "alpha"},
-    WeightRole{.name = "dt_bias", .encodings = kF32Only},
-    WeightRole{.name = "a", .encodings = kF32Only},
-    WeightRole{.name = "conv", .encodings = kF32Only},
-    WeightRole{.name = "norm", .encodings = kF32Only},
+    WeightRole{.name = "dt_bias", .encodings = kNormEncodings},
+    WeightRole{.name = "a", .encodings = kNormEncodings},
+    WeightRole{.name = "conv", .encodings = kNormEncodings},
+    WeightRole{.name = "norm", .encodings = kNormEncodings},
     WeightRole{.name = "output"},
 };
 
@@ -106,11 +114,10 @@ bool Folded(const Instance& in, std::string_view fold) {
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   const Dims d = DimsOf(in);
   if (d.hv % d.hk != 0) return std::unexpected("v_heads are not a multiple of k_heads");
-  if (!Folded(in, "gdn.value_heads_tiled") || !Folded(in, "ssm.a_neg_exp")) {
-    return std::unexpected(
-        "a gated delta rule needs its value heads tiled and A as -exp(A_log) (the "
-        "gdn.value_heads_tiled and ssm.a_neg_exp folds)");
-  }
+  if (!Folded(in, "gdn.value_heads_tiled"))
+    return std::unexpected("a gated delta rule needs the gdn.value_heads_tiled fold");
+  if (in.params.Flag("a_log") == Folded(in, "ssm.a_neg_exp"))
+    return std::unexpected("logarithmic A and the ssm.a_neg_exp fold must be exclusive");
   const std::uint64_t w = d.width;
   return std::vector<RoleShape>{Role(kQkv, {w, d.channels()}),
                                 Role(kGate, {w, d.hv * d.d}),
@@ -163,7 +170,12 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   ir::Builder& b = f.b;
   const Instance& in = f.instance;
   const Dims d = DimsOf(in);
-  const auto w = [&](std::uint16_t role) { return f.Weight(role); };
+  F32Parameters<kRoles.size()> parameters(f);
+  const auto w = [&](std::uint16_t role) {
+    return role >= kDtBias && role <= kNorm
+               ? parameters.Get(role, role == kA && in.params.Flag("a_log"))
+               : f.Weight(role);
+  };
   const ir::TensorId x = f.stream;
   const std::uint64_t rows = f.step.rows();
   const std::uint64_t ch = d.channels();
@@ -391,7 +403,8 @@ std::expected<void, std::string> Reference(RefIO& io) {
         const double* v = &conv[(2 * d.hk * d.d) + (h * d.d)];
         const double beta = Sigmoid(braw[(r * d.hv) + h]);
         const double g = Softplus(araw[(r * d.hv) + h] + static_cast<double>(weight(kDtBias)[h])) *
-                         static_cast<double>(weight(kA)[h]);
+                         (in.params.Flag("a_log") ? -static_cast<double>(std::exp(weight(kA)[h]))
+                                                  : static_cast<double>(weight(kA)[h]));
         const double decay = std::exp(g);
         double* s = &recurrent[h * d.d * d.d];  // s[i + d · c]
         for (std::uint64_t i = 0; i < d.d * d.d; ++i) s[i] *= decay;

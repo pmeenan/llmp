@@ -167,7 +167,7 @@ constexpr std::array kMixParams{
 };
 enum : std::uint16_t { kMixNorm, kMixDown, kMixUp, kMixFn, kMixBase, kMixScale, kMixPostNorm };
 constexpr std::array kMixRoles{
-    WeightRole{.name = "norm", .encodings = kF32Only},
+    WeightRole{.name = "norm", .encodings = kNormEncodings},
     WeightRole{.name = "down"},
     WeightRole{.name = "up"},
     WeightRole{.name = "fn"},
@@ -308,6 +308,7 @@ std::expected<FragmentOut, std::string> MixEmit(Fragment& f) {
   const Instance& in = f.instance;
   if (!f.residual.valid()) return std::unexpected("a mix without streams");
   if (Sinkhorn(in)) return SinkhornEmit(f);
+  F32Parameters<kMixRoles.size()> parameters(f);
   const std::uint64_t w = in.stage.width;
   const std::uint64_t hc = in.stage.streams;
   const float eps = F32(in.params.Real("eps"));
@@ -339,7 +340,7 @@ std::expected<FragmentOut, std::string> MixEmit(Fragment& f) {
   const std::uint64_t rows = Desc(b, x).ne(2);
   ir::TensorId xn = b.RmsNorm(x, eps);
   xn = b.Reshape(xn, Shape({w * hc, rows}));
-  xn = b.Mul(xn, f.Weight(kMixNorm));
+  xn = b.Mul(xn, parameters.Get(kMixNorm));
   ir::TensorId lo = b.MatMul(f.Weight(kMixDown), xn);
   lo = b.Unary(b.Scale(lo, inv), ir::UnaryFn::kSilu);
   const ir::TensorId gate = b.Unary(b.MatMul(f.Weight(kMixUp), lo), ir::UnaryFn::kSigmoid);

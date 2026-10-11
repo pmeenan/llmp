@@ -21,6 +21,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Keep declared small component parameters in BF16 and widen them in paid
+  execution workspace. Explicit logarithmic GDN A uses transient arithmetic.
+
 - Bind approved EXL3 operations through the shared step program. The
   4.0-bpw reconstruction fixture matches a native 145-row reference exactly;
   remaining execution profiles and lifecycle gates stay open.

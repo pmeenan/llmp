@@ -190,10 +190,10 @@ enum : std::uint16_t { kKey, kValue, kNormKey, kNormQuery, kNormConv, kConvW };
 constexpr std::array kPleRoles{
     WeightRole{.name = "key"},
     WeightRole{.name = "value"},
-    WeightRole{.name = "norm_key", .encodings = kF32Only},
-    WeightRole{.name = "norm_query", .encodings = kF32Only},
-    WeightRole{.name = "norm_conv", .encodings = kF32Only},
-    WeightRole{.name = "conv", .encodings = kF32Only},
+    WeightRole{.name = "norm_key", .encodings = kNormEncodings},
+    WeightRole{.name = "norm_query", .encodings = kNormEncodings},
+    WeightRole{.name = "norm_conv", .encodings = kNormEncodings},
+    WeightRole{.name = "conv", .encodings = kNormEncodings},
 };
 constexpr std::array<std::string_view, 1> kPlePatterns{"prepared_products"};
 
@@ -243,6 +243,7 @@ std::expected<FragmentOut, std::string> PleEmit(Fragment& f) {
   ir::Builder& b = f.b;
   const Instance& in = f.instance;
   const PleDims d = PleDimsOf(in);
+  F32Parameters<kPleRoles.size()> parameters(f);
   const ir::TensorId emb = f.Side(PleInput(in));
   if (!emb.valid() || !f.residual.valid())
     return std::unexpected("an n-gram block without its input");
@@ -256,7 +257,7 @@ std::expected<FragmentOut, std::string> PleEmit(Fragment& f) {
   const auto grouped = [&](ir::TensorId x, std::uint16_t role) {
     ir::TensorId t = b.RmsNorm(b.Reshape(x, Shape({d.width, d.hc, rows})), d.eps);
     t = b.Reshape(t, Shape({hw, rows}));
-    t = b.Mul(t, f.Weight(role));
+    t = b.Mul(t, parameters.Get(role));
     return b.Reshape(t, Shape({d.width, d.hc, rows}));
   };
   // The convolution's histories first (their stores read them first).
@@ -306,13 +307,13 @@ std::expected<FragmentOut, std::string> PleEmit(Fragment& f) {
       b.CacheStore(f.State(si, 0), kept, f.step.StateRow());
     }
     ir::TensorId sum{};
-    const ir::TensorDesc cw = Desc(b, f.Weight(kConvW));
+    const ir::TensorDesc cw = Desc(b, parameters.Get(kConvW));
     for (std::uint64_t k = 0; k < d.conv; ++k) {
       const std::uint64_t start = hist - ((d.conv - 1 - k) * d.dil);
       const ir::TensorId shifted = b.Cont(b.Transpose(b.View(
           padded, Shape({n, hw, 1}), {pt.nb[0], pt.nb[1], pt.nb[2], pt.nb[2]}, start * pt.nb[0])));
       const ir::TensorId wk = b.Reshape(
-          b.Cont(b.View(f.Weight(kConvW), Shape({1, hw}),
+          b.Cont(b.View(parameters.Get(kConvW), Shape({1, hw}),
                         {cw.nb[0], cw.nb[1], cw.nb[1] * hw, cw.nb[1] * hw}, k * cw.nb[0])),
           Shape({hw}));
       const ir::TensorId term = b.Mul(shifted, wk);
@@ -442,8 +443,8 @@ constexpr std::array kMtpRepeatParams{
 
 enum : std::uint16_t { kTable, kNormEmbd, kFcEmbd, kNormHidden, kFcHidden };
 constexpr std::array kMtpRoles{
-    WeightRole{.name = "table"},     WeightRole{.name = "norm_embd", .encodings = kF32Only},
-    WeightRole{.name = "fc_embd"},   WeightRole{.name = "norm_hidden", .encodings = kF32Only},
+    WeightRole{.name = "table"},     WeightRole{.name = "norm_embd", .encodings = kNormEncodings},
+    WeightRole{.name = "fc_embd"},   WeightRole{.name = "norm_hidden", .encodings = kNormEncodings},
     WeightRole{.name = "fc_hidden"},
 };
 
@@ -475,6 +476,7 @@ model::StateContract MtpRepeatState(const Instance& in) {
 }
 
 std::expected<FragmentOut, std::string> MtpEmit(Fragment& f) {
+  F32Parameters<kMtpRoles.size()> parameters(f);
   ir::Builder& b = f.b;
   const Instance& in = f.instance;
   const std::uint64_t w = in.stage.width;
@@ -486,11 +488,11 @@ std::expected<FragmentOut, std::string> MtpEmit(Fragment& f) {
   ir::TensorId e = b.GetRows(table, tokens);
   const ir::TensorId fc_embd = f.Weight(kFcEmbd);
   e = b.RmsNorm(e, eps);
-  e = b.Mul(e, f.Weight(kNormEmbd));
+  e = b.Mul(e, parameters.Get(kNormEmbd));
   e = b.MatMul(fc_embd, e);
   const ir::TensorId hidden = f.step.Features(w * hc);
   ir::TensorId h = b.RmsNorm(hidden, eps);
-  h = b.Mul(h, f.Weight(kNormHidden));
+  h = b.Mul(h, parameters.Get(kNormHidden));
   const ir::TensorId fc_hidden = f.Weight(kFcHidden);
   h = b.Reshape(h, Shape({w, hc * rows}));
   h = b.MatMul(fc_hidden, h);

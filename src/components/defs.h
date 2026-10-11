@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -52,7 +53,7 @@ const ComponentDef& AttentionMqa();
 const ComponentDef& SideHash();
 const ComponentDef& EmbeddingInject();
 
-// The encodings a norm's weight takes: the converters keep norms F32.
+// Source encodings admitted by the individual parameter-role contracts.
 inline constexpr std::array<format::Encoding, 1> kF32Only{format::Encoding::kF32};
 inline constexpr std::array kNormEncodings{format::Encoding::kF32, format::Encoding::kBF16};
 inline constexpr std::array kBiasEncodings{format::Encoding::kF32, format::Encoding::kF16};
@@ -64,6 +65,38 @@ inline ir::TensorId NormScale(ir::Builder& b, ir::TensorId weight) {
              ? weight
              : b.Convert(weight, format::Encoding::kF32);
 }
+
+// Tiny parameter roles remain immutable source-encoded weight leaves. Cache
+// only their transient graph results, lazily at the original Weight call site:
+// eager leaf creation would change existing F32 graph identities. Joined casts
+// are shared across owners, then the caller's emission context is restored.
+// Callers validate F32/BF16 role encodings before emitting the fragment and
+// use one fixed transformation for each role throughout that fragment.
+template <std::size_t Roles>
+class F32Parameters {
+ public:
+  explicit F32Parameters(Fragment& fragment) : f_(fragment) {}
+  ir::TensorId Get(std::uint16_t role, bool negative_exp = false) {
+    const ir::TensorId weight = f_.Weight(role);
+    if (f_.b.tensor(weight).format.encoding == format::Encoding::kF32 && !negative_exp)
+      return weight;
+    if (converted_.at(role).valid()) return converted_[role];
+    const auto segment = f_.b.segment();
+    f_.b.SetJoined();
+    ir::TensorId value = NormScale(f_.b, weight);
+    if (negative_exp) value = f_.b.Unary(f_.b.Unary(value, ir::UnaryFn::kExp), ir::UnaryFn::kNeg);
+    if (segment == ir::kJoinedSegment)
+      f_.b.SetJoined();
+    else
+      f_.b.SetOwner(segment);
+    converted_[role] = value;
+    return value;
+  }
+
+ private:
+  Fragment& f_;
+  std::array<ir::TensorId, Roles> converted_{};
+};
 
 // A product whose rounding is part of the component's arithmetic. Request
 // the output encoding on the product itself, so the planner/lowering must

@@ -971,8 +971,10 @@ rotation's) and blocks' first positions are an input
 beta and alpha products, the causal depthwise convolution over its fixed
 history and SiLU, q and k L2-normed (rms_norm at eps / d, scaled by
 1 / sqrt(d)), `kGatedDeltaNet` over the fixed recurrent state, the gated
-output norm and the output product; it requires the folds
-`gdn.value_heads_tiled` and `ssm.a_neg_exp`. `attention.qsa` is QSA: the
+output norm and the output product. It always requires the
+`gdn.value_heads_tiled` fold. The default requires `ssm.a_neg_exp`; explicit
+`a_log=true` instead requires that fold to be absent and computes the negative
+exponential in the graph. `attention.qsa` is QSA: the
 indexer's raw keys stored F32 a cell per position, the gated query, K and
 V products, per-head norms and the interleaved multi-section rotation,
 F16 K and V; past the budget the primitive fragment pools every block of
@@ -986,6 +988,23 @@ BF16 block keys (`indexer_blocks`, a cell per block) for implementations
 that keep them (`llmp.qsa.pool` writes each once), which the primitive
 fragment never reads or writes; `rollback` is `snapshot` for a target and
 `truncate` for an MTP drafter, whose catch-up rewrites its caches.
+The HC mixing norm, QSA/indexer norms, PLE norms and convolution, MTP input
+norms, and GDN's dt bias, A, convolution and output norm admit F32 or BF16.
+Their immutable weight leaves keep the source encoding. A fragment lazily
+converts each BF16 role once into joined F32 graph storage and reuses that
+transient value across owners; the planner charges its ordinary activation
+placement: E BF16 source elements remain 2E resident bytes, while their
+conversion produces 4E logical transient bytes before placement alignment.
+Logarithmic A uses ordinary F32 exp/neg operations there too.
+No converted value becomes a resident weight or a persistent decoded cache.
+Existing F32/default graphs retain their lazy weight lookup order. This
+component contract does not authenticate any MLX converter convention or
+admit an MLX artifact; source normalization, norm/head-order authentication
+and its gate remain separate. Focused native checks passed 24 component and
+six structural lowering controls, with no skips; ten historical F32 graph
+digests match the unchanged parent. These are scalar-reference and structural
+lowering results, not new GPU arithmetic or MLX execution evidence.
+
 `ffn.moe` gains placement `none` with the router over the stream itself
 (`router_input` `stream`), per-expert projection scales (gate, up and down
 roles; down's applied in the reduce) and the shared expert behind its

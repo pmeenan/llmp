@@ -118,13 +118,13 @@ constexpr std::array kRoles{
     WeightRole{.name = "k"},
     WeightRole{.name = "v"},
     WeightRole{.name = "output"},
-    WeightRole{.name = "q_norm", .encodings = kF32Only},
-    WeightRole{.name = "k_norm", .encodings = kF32Only},
+    WeightRole{.name = "q_norm", .encodings = kNormEncodings},
+    WeightRole{.name = "k_norm", .encodings = kNormEncodings},
     WeightRole{.name = "indexer_qk"},
     WeightRole{.name = "indexer_q"},
     WeightRole{.name = "indexer_k"},
-    WeightRole{.name = "indexer_q_norm", .encodings = kF32Only},
-    WeightRole{.name = "indexer_k_norm", .encodings = kF32Only},
+    WeightRole{.name = "indexer_q_norm", .encodings = kNormEncodings},
+    WeightRole{.name = "indexer_k_norm", .encodings = kNormEncodings},
 };
 
 // The state's tensors, in its contract's order.
@@ -262,7 +262,12 @@ bool Selects(const Dims& d, std::uint64_t read) { return read > d.budget + d.rat
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   ir::Builder& b = f.b;
   const Dims d = DimsOf(f.instance);
-  const auto w = [&](std::uint16_t role) { return f.Weight(role); };
+  F32Parameters<kRoles.size()> parameters(f);
+  const auto w = [&](std::uint16_t role) {
+    return role == kQNorm || role == kKNorm || role == kIndexerQNorm || role == kIndexerKNorm
+               ? parameters.Get(role)
+               : f.Weight(role);
+  };
   const ir::TensorId x = f.stream;
   const std::uint64_t rows = f.step.rows();
   const auto segments = f.step.segments();
