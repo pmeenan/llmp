@@ -150,9 +150,20 @@ enum class LlmpOp : std::uint8_t {
   kVisibleTopK,
   kSelectedMask,
   kPrefixOverwrite,
+  kRoundedIndexScore,
 };
 
 class LaunchContext;
+
+// Explicit rounded-query score with the original Lid native producer.
+// Q F32[128,64,T], K F16[128,1,C], W F32[64,T], counts I32[T].
+// One packed F32[C,T] output owns every tail: one literal fill launch then
+// the original group/R/key-tile launches. No score scratch or extra tensor.
+// All C key rows must be backed, even when counts are zero.
+ggml_tensor* RoundedIndexScore(ggml_context* context, ggml_tensor* q, ggml_tensor* k,
+                               ggml_tensor* w, ggml_tensor* counts);
+std::expected<void, KernelFailure> CheckRoundedIndexScore(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunRoundedIndexScore(LaunchContext& launch, ggml_tensor* node);
 
 // Exact bit-copy within a clamped row prefix, literal fill outside it.
 // Arbitrary whole-element input/count strides; fresh packed disjoint output.

@@ -43,7 +43,8 @@ namespace sp = llmp::spec;
 ex::Registry Registry(bool indexer = true) {
   std::vector<ex::Implementation> v;
   for (const auto& d : kg::CapabilityDeclarations()) {
-    if (!indexer && d.name == kg::kLightningIndexerName) continue;
+    if (!indexer && (d.name == kg::kLightningIndexerName || d.name == kg::kRoundedIndexScoreName))
+      continue;
     v.push_back({.name = std::string(d.name),
                  .operation = d.operation,
                  .source = "ggml",
@@ -1444,7 +1445,7 @@ TEST(GgmlLowerDsv4Test, ContractBackingCoversCompressedViewsAtWideRawAlignment) 
     ASSERT_TRUE(step) << step.error();
     auto used = md::UsedThrough(f.layouts[0], read, shape.read_align);
     ASSERT_TRUE(used) << used.error();
-    std::size_t checked = 0;
+    std::size_t checked = 0, index_keys = 0;
     bool unaligned = false;
     for (const auto& state : step->state) {
       const auto& item = f.layouts[0].items[state.item];
@@ -1466,10 +1467,172 @@ TEST(GgmlLowerDsv4Test, ContractBackingCoversCompressedViewsAtWideRawAlignment) 
                                         }))
             << "uncovered compressed view at " << begin << " bytes " << bytes;
         ++checked;
+        index_keys += item.contract.kind == md::StateKind::kIndex;
       }
     }
     EXPECT_GT(checked, 0U);
+    EXPECT_GT(index_keys, 0U);
     EXPECT_TRUE(unaligned);  // the production cache begins inside a backing extent
+  }
+}
+
+TEST(GgmlLowerDsv4Test, RoundedIndexScoreRequiresAuthenticatedRootFactsAndExactNativeViews) {
+  using llmp::format::Encoding;
+  auto registry = Registry();
+  for (int form = 0; form < 5; ++form) {
+    SCOPED_TRACE(form);
+    ir::Builder b;
+    const auto q_root = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({130, 64, 3})));
+    const auto k_root = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({136, 1, 256})));
+    const auto w = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64, 3})));
+    const auto counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+    const auto q = b.View(q_root, ir::ShapeOf({128, 64, 3}), {4, 520, 520 * 64, 520 * 64 * 3},
+                          form == 2 ? 4 : 8);
+    const auto k =
+        b.View(k_root, ir::ShapeOf({128, 1, 256}), {2, 272, 272, 272 * 256}, form == 3 ? 2 : 16);
+    const auto output = b.RoundedIndexScore(q, k, w, counts);
+    b.Output(output);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    std::vector<pl::RootAlignmentFact> facts;
+    for (std::uint32_t t = 0; t < graph->tensor_count(); ++t)
+      if (!graph->tensor({t}).is_view()) facts.push_back({.root = {t}, .alignment = 256});
+    if (form == 4) facts.back().alignment = 2;
+    co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+    const std::vector staged{q_root, k_root, w, counts};
+    for (const auto input : staged)
+      step.inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
+    const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 3}}};
+    const auto guarantee =
+        form == 1 ? pl::RootAlignment{} : pl::GraphRootAlignments(step.graph, facts);
+    auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                         {.staged = staged,
+                          .written = kg::WrittenBytes,
+                          .shape = &shape,
+                          .root_alignment = guarantee});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    const auto native = std::ranges::count_if(plan->graph.nodes(), [](const auto& node) {
+      return node.key == ir::Primitive(ir::Op::kRoundedIndexScore);
+    });
+    EXPECT_EQ(native, form == 0 ? 1 : 0);
+    auto lowered = kg::LowerStep(
+        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256}, registry,
+        Device());
+    ASSERT_TRUE(lowered) << lowered.error().detail;
+    const auto custom = std::ranges::count_if(lowered->nodes, [](const auto* node) {
+      return kg::LlmpOpOf(node) == kg::LlmpOp::kRoundedIndexScore;
+    });
+    EXPECT_EQ(custom, native);
+    if (form != 0) continue;
+    // The same logical plan cannot bind an unaligned physical arena.
+    const kn::Addresses bad{.weight = {},
+                            .weight_rows = {},
+                            .state = {},
+                            .save = {},
+                            .activations = (std::uint64_t{1} << 44) + 4,
+                            .activation_bytes = plan->placement.extent};
+    auto rebound = kg::LowerStep(
+        {.plan = *plan, .step = step, .shape = shape, .addresses = bad, .context = 256}, registry,
+        Device());
+    EXPECT_FALSE(rebound);
+  }
+}
+
+TEST(GgmlLowerDsv4Test, RoundedIndexScoreCapabilityAndActualLaunchShareEveryGeometryBound) {
+  using llmp::format::Encoding;
+  auto arena = kg::TensorArena::Create(32);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  auto* q = ggml_new_tensor_3d(c, GGML_TYPE_F32, 128, 64, 3);
+  auto* k = ggml_new_tensor_3d(c, GGML_TYPE_F16, 128, 1, 256);
+  auto* w = ggml_new_tensor_2d(c, GGML_TYPE_F32, 64, 3);
+  auto* counts = ggml_new_tensor_1d(c, GGML_TYPE_I32, 3);
+  auto* output = kg::RoundedIndexScore(c, q, k, w, counts);
+  const std::array tensors{q, k, w, counts, output};
+  for (std::size_t i = 0; i < tensors.size(); ++i)
+    kg::TensorArena::Bind(tensors[i], (std::uint64_t{i} + 1) << 44);
+  const std::array<ggml_tensor, 5> original{*q, *k, *w, *counts, *output};
+  const auto* cap = kg::CapabilityOf(kg::kRoundedIndexScoreName);
+  ASSERT_NE(cap, nullptr);
+  const auto params = ir::ToBytes(ir::RoundedIndexScoreParams{});
+  for (int mutation = 0; mutation < 16; ++mutation) {
+    SCOPED_TRACE(mutation);
+    for (std::size_t i = 0; i < tensors.size(); ++i) *tensors[i] = original[i];
+    switch (mutation) {
+      case 1:
+        q->nb[1] += 4;
+        break;
+      case 2:
+        k->nb[2] += 2;
+        break;
+      case 3:
+        w->nb[1] += 2;
+        break;
+      case 4:
+        counts->nb[0] = 8;
+        break;
+      case 5:
+        q->data = reinterpret_cast<void*>((std::uint64_t{1} << 44) + 4);
+        break;
+      case 6:
+        k->data = reinterpret_cast<void*>((std::uint64_t{2} << 44) + 8);
+        break;
+      case 7:
+        q->nb[1] = (std::uint64_t{INT32_MAX} / 63 + 2) * 4;
+        break;
+      case 8:
+        q->nb[2] = (std::uint64_t{INT32_MAX} / 2 + 1) * 4;
+        break;
+      case 9:
+        k->nb[2] = (std::uint64_t{INT32_MAX} / 255 + 8) * 2;
+        break;
+      case 10:
+        w->nb[1] = (std::uint64_t{INT32_MAX} / 2 + 1) * 4;
+        break;
+      case 11:
+        output->nb[1] += 4;
+        break;
+      case 12:
+        q->nb[1] = q->nb[2] = k->nb[2] = w->nb[1] = 0;
+        break;
+      case 13:
+      case 14:
+        q->ne[2] = w->ne[1] = counts->ne[0] = output->ne[1] =
+            std::int64_t{65535} * 4 + (mutation == 14 ? 1 : 0);
+        q->nb[1] = q->nb[2] = w->nb[1] = 0;
+        break;
+      case 15:
+        output->ne[0] += 1;
+        break;
+      default:
+        break;
+    }
+    std::vector<ex::OperandFormat> operands;
+    constexpr std::array encodings{Encoding::kF32, Encoding::kF16, Encoding::kF32, Encoding::kI32,
+                                   Encoding::kF32};
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      const auto* t = tensors[i];
+      ex::OperandFormat f{.operand = static_cast<std::uint8_t>(i == 4 ? ex::kOutputOperand : i),
+                          .encoding = encodings[i]};
+      f.memory = ex::OperandMemory{.view_offset = reinterpret_cast<std::uintptr_t>(t->data),
+                                   .root_alignment = 256};
+      for (std::size_t d = 0; d < 4; ++d) {
+        f.ne[d] = static_cast<std::uint64_t>(t->ne[d]);
+        f.memory->nb[d] = t->nb[d];
+      }
+      operands.push_back(f);
+    }
+    const ex::CapabilityQuery query{
+        .op = cap->op, .operands = operands, .arch = 121, .params = params};
+    const bool supported = mutation == 0 || mutation == 12 || mutation == 13;
+    EXPECT_EQ(cap->accepts(query), supported);
+    EXPECT_EQ(kg::CheckRoundedIndexScore(output).has_value(), supported);
+    if (mutation == 0) {
+      operands[1].memory.reset();
+      EXPECT_FALSE(cap->accepts(query));
+      output->data = k->data;
+      EXPECT_FALSE(kg::CheckRoundedIndexScore(output));
+    }
   }
 }
 

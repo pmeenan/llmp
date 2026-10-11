@@ -1198,6 +1198,54 @@ TEST_F(StateBankFootprintTest, WholeSpanCoverageRequiresOnlyTheAdmittedExtents) 
   EXPECT_EQ(slots().live(0, 0).extents().size(), 3U);
 }
 
+// Native scoring loads complete 64-key tiles within the declared C, even
+// when visibility is zero. Admission follows the typed key view, not counts.
+class IndexKeyFootprintTest : public SlotLifecycleTest {
+ protected:
+  std::vector<en::StageState> MakeStages() const override {
+    const std::vector<std::pair<std::uint32_t, md::StateContract>> layers = {
+        {0,
+         {.tensors = {{.name = "prefix",
+                       .cell_bytes = kExtent - 256,
+                       .cells = md::CellRule::kFixed,
+                       .window_or_ratio = 1},
+                      {.name = "index",
+                       .kind = md::StateKind::kIndex,
+                       .cell_bytes = 256,
+                       .cells = md::CellRule::kPerBlock,
+                       .window_or_ratio = 4,
+                       .basis = md::BlockBasis::kPositions,
+                       .dummy_last = true}}}}};
+    return {{.name = "target", .layout = md::Layout(layers, 131072, 512).value()}};
+  }
+};
+
+TEST_F(IndexKeyFootprintTest, PaddedKeyClosureIsBackedIndependentlyOfVisibleCounts) {
+  const auto layout = MakeStages().front().layout;
+  const auto& key = layout.items[1];
+  ASSERT_EQ(key.offset, kExtent - 256);
+  ASSERT_EQ((key.offset + (key.cells - 1) * key.contract.cell_bytes) / kExtent, 4U);
+  const auto used = md::UsedThrough(layout, 2048, 2048);
+  ASSERT_TRUE(used);
+  constexpr std::uint64_t cells = 512;
+  EXPECT_TRUE(std::ranges::any_of(*used, [&](const md::StateRange& r) {
+    return r.offset <= key.offset && key.offset + cells * 256 <= r.offset + r.bytes;
+  }));
+  Select({0});
+  const auto address = slots().live(0, 0).base(0) + key.offset;
+  EXPECT_FALSE(node_.Covered(address, cells * 256, 0, true));
+  ASSERT_TRUE(slots().ReserveStateThrough(0, 2048, 2048));
+  for (const std::int32_t visible : {0, 1, 511, 512}) {
+    SCOPED_TRACE(visible);
+    EXPECT_EQ(node_.Covered(address, cells * 256, 0, true), llmp::catalog::MemoryClass::kLiveState);
+  }
+  // Prefix+keys cross extent0/1, and only the last dummy needs extent4.
+  EXPECT_EQ(slots().live(0, 0).extents().size(), 3U);
+  EXPECT_FALSE(node_.Covered(slots().live(0, 0).base(0) + 2 * kExtent, 256, 0, true));
+  EXPECT_FALSE(node_.Covered(address, 12288 * 256, 0, true));  // absent extent2
+  EXPECT_EQ(slots().live(0, 0).extents().size(), 3U);
+}
+
 class LowCapacitySlotTest : public SlotLifecycleTest {
  protected:
   std::uint64_t BudgetExtents() const override { return 16; }

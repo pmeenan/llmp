@@ -1275,6 +1275,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       return ggml_lightning_indexer(c_, s[0], s[1], s[2], s[3]);
     case Op::kVisibleTopK:
       return VisibleTopK(c_, s[0], s[1], n.Params<ir::TopKParams>().k);
+    case Op::kRoundedIndexScore:
+      return RoundedIndexScore(c_, s[0], s[1], s[2], s[3]);
     case Op::kPrefixOverwrite:
       return PrefixOverwrite(c_, s[0], s[1], n.Params<ir::PrefixOverwriteParams>().fill_bits);
     case Op::kSelectedMask: {
@@ -2875,6 +2877,9 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     } else if (step.nodes.size() == 1) {
       const auto* node = step.nodes[0];
       switch (LlmpOpOf(node)) {
+        case LlmpOp::kRoundedIndexScore:
+          valid = CheckRoundedIndexScore(node);
+          break;
         case LlmpOp::kDsv4QHead:
           valid = CheckDsv4QHead(node);
           break;

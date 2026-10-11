@@ -110,7 +110,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 134> kKernels = {{
+constexpr std::array<Kernel::Entry, 135> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -1024,6 +1024,14 @@ constexpr std::array<Kernel::Entry, 134> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckVisibleTopK(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunVisibleTopK(launch, n[0]); }},
+    {.name = "llmp.rounded_index_score",
+     .operation = execution::Operation::kLightningIndexer,
+     .variant = "one full-output literal -Inf fill, then unchanged LidScoreKernel<R>; "
+                "original 128MiB group boundaries, R1/2/4, 256/1024-key blocks; "
+                "half RN query, eight MMA steps and native FTZ/FMA head reduction; no scratch",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckRoundedIndexScore(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunRoundedIndexScore(launch, n[0]); }},
     {.name = "llmp.prefix_overwrite",
      .operation = execution::Operation::kFill,
      .variant = "exact integer bit-copy within clamped row prefix and literal fill outside",

@@ -1674,15 +1674,19 @@ each is checked against the design as M3.6 proceeds.
                                           overwrite invisible scores with a
                                           literal value and fund both query
                                           conversions in the portable path.
-                                          Native specialized score remains
-                                          absent; existing component/default
+                                          B1 introduces no specialized native
+                                          score; existing component/default
                                           semantics are unchanged.
-                                    - [ ] **G4b2b2b2 — native score producer:**
+                                    - [x] **G4b2b2b2 — native score producer:**
                                           share the actual Lid score kernel and
                                           its launch grouping with standalone
                                           scoring; fund defined tails, prove
                                           launch/backing guards and exact
                                           original-helper operand execution.
+                                          Authenticated root facts fail closed;
+                                          462 native operand scenarios cover
+                                          pitches, tiles, row groups and replay.
+                                          No component/default consumer yet.
                                     - [ ] **G4b2b2b3 — component and fusion:**
                                           add the opt-in component recipe and
                                           full-mask fusion with observer/owner

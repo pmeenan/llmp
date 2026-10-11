@@ -1166,6 +1166,14 @@ target_link_libraries(ggml_lower_dsv4_test PRIVATE llmp_ggml_tensors llmp_planne
 llmp_gtest(ggml_lower_dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 if(LLMP_CUDA)
   add_executable(ggml_lower_dsv4_gpu_test ggml_lower_dsv4_gpu_test.cc)
+  # Independent original score producer: test-only, same device flags/targets.
+  target_sources(ggml_lower_dsv4_gpu_test PRIVATE ../support/dsv4_score_original.cu)
+  target_include_directories(ggml_lower_dsv4_gpu_test PRIVATE "${PROJECT_SOURCE_DIR}")
+  get_target_property(score_architectures llmp_ggml_kernels CUDA_ARCHITECTURES)
+  set_target_properties(ggml_lower_dsv4_gpu_test PROPERTIES
+                        CUDA_ARCHITECTURES "${score_architectures}")
+  set_source_files_properties(../support/dsv4_score_original.cu PROPERTIES
+                              COMPILE_OPTIONS "-use_fast_math;-extended-lambda")
   target_include_directories(ggml_lower_dsv4_gpu_test SYSTEM PRIVATE
       "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(ggml_lower_dsv4_gpu_test PRIVATE llmp_ggml_kernels llmp_planner

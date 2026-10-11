@@ -193,7 +193,7 @@ if(LLMP_CUDA)
                    fattn_mma_shape.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fattn_owner_partial_kernel.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h llmp_fused.cu llmp_moe.cu llmp_ops.cc llmp_ops.cu
-                   llmp_ops.h launch.cu launch.h
+                   llmp_ops.h rounded_index_score.h launch.cu launch.h
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
                    mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu

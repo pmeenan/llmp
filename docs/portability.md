@@ -336,12 +336,18 @@ GB10's plans, which keep their fastest implementations.
 The rounded-query score composite has a real primitive fallback: funded
 F32→F16→F32 conversion, ordinary product/ReLU/weighting/reduction, then a
 literal prefix overwrite. Nonpacked F16 keys use funded `Cont`; the native
-copy preserves half representations through its checked same-type copy paths. `PrefixOverwrite` is an exact F32 bit-copy/fill
+copy preserves half representations through its checked same-type copy paths.
+`PrefixOverwrite` is an exact F32 bit-copy/fill
 primitive with an independent CPU implementation and a basic strided-input
 native launch. A backend must provide that operation to run this optional
 composite; an additive mask is not an equivalent fallback for unseen NaN or
-infinite scores. No specialized native score or new component is registered
-by this foundation alone.
+infinite scores. An optional native rounded score uses the existing Lid score
+producer after a paid literal-tail initialization, with the original device
+arithmetic and grouping. Its capability requires authenticated operand strides
+and root alignment; unknown or unsupported metadata chooses this real fallback
+before lowering. Actual binding rechecks addresses and overlap. No component or
+mapping enables the native score yet, and the wider scalar remains an independent
+mathematical reference rather than a claim of universal native bit identity.
 
 ## The runners' shared skeleton
 

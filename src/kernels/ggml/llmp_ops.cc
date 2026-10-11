@@ -21,6 +21,7 @@
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
+#include "kernels/ggml/rounded_index_score.h"
 #include "kernels/ggml/validate_ext.h"
 #include "kernels/ggml/validate_util.h"
 
@@ -112,6 +113,7 @@ constinit std::array kTagGdnGates = std::to_array("llmp.gdn.gates");
 constinit std::array kTagVisibleTopK = std::to_array("llmp.visible_top_k");
 constinit std::array kTagSelectedMask = std::to_array("llmp.selected_mask");
 constinit std::array kTagPrefixOverwrite = std::to_array("llmp.prefix_overwrite");
+constinit std::array kTagRoundedIndexScore = std::to_array("llmp.rounded_index_score");
 constinit std::array kTagDsv4LidTopK = std::to_array("llmp.dsv4.lid_topk");
 constinit std::array kTagGemma4Mask = std::to_array("llmp.gemma4.mask");
 constinit std::array kTagFlashAttnOwners = std::to_array("llmp.flash_attn.owner_roots");
@@ -204,7 +206,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return LlmpOp::kArgmax;
   }
-  const std::array<std::pair<const char*, LlmpOp>, 50> fused = {{
+  const std::array<std::pair<const char*, LlmpOp>, 51> fused = {{
       {kTagDsv4F16Copy.data(), LlmpOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), LlmpOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), LlmpOp::kDsv4WeightedReduce},
@@ -215,6 +217,7 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
       {kTagVisibleTopK.data(), LlmpOp::kVisibleTopK},
       {kTagSelectedMask.data(), LlmpOp::kSelectedMask},
       {kTagPrefixOverwrite.data(), LlmpOp::kPrefixOverwrite},
+      {kTagRoundedIndexScore.data(), LlmpOp::kRoundedIndexScore},
       {kTagDsv4LidTopK.data(), LlmpOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), LlmpOp::kDsv4SparseMask},
       {kTagGemma4Mask.data(), LlmpOp::kGemma4Mask},
@@ -2600,6 +2603,39 @@ std::expected<void, KernelFailure> CheckDsv4SparseMask(const ggml_tensor* node) 
       return Rejected("an output overlapping an operand");
     }
   }
+  return {};
+}
+
+ggml_tensor* RoundedIndexScore(ggml_context* context, ggml_tensor* q, ggml_tensor* k,
+                               ggml_tensor* w, ggml_tensor* counts) {
+  return Custom(context, GGML_TYPE_F32, {k->ne[2], q->ne[2], 1, 1}, {q, k, w, counts},
+                kTagRoundedIndexScore.data());
+}
+
+std::expected<void, KernelFailure> CheckRoundedIndexScore(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kRoundedIndexScore, 4); !checked) return checked;
+  const std::array<const ggml_tensor*, 5> tensors{node->src[0], node->src[1], node->src[2],
+                                                  node->src[3], node};
+  const std::initializer_list<const ggml_tensor*> operands{tensors[0], tensors[1], tensors[2],
+                                                           tensors[3], tensors[4]};
+  if (AnyEmpty(operands) || !AllSane(operands) || !AllCurrent(operands))
+    return Rejected("rounded index scores on an empty, unmeasurable or stale tensor");
+  constexpr std::array types{GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_F32, GGML_TYPE_I32,
+                             GGML_TYPE_F32};
+  std::array<ScoreOperand, 5> metadata{};
+  for (std::size_t i = 0; i < tensors.size(); ++i) {
+    const auto* t = tensors[i];
+    if (t->type != types[i]) return Rejected("rounded index score operand encodings");
+    for (std::size_t d = 0; d < 4; ++d) {
+      metadata[i].ne[d] = static_cast<std::uint64_t>(t->ne[d]);
+      metadata[i].nb[d] = t->nb[d];
+    }
+    metadata[i].offset = reinterpret_cast<std::uintptr_t>(t->data);
+  }
+  if (!RoundedIndexScoreFits(metadata))
+    return Rejected("rounded index score dimensions, pitches, alignment or launch bounds");
+  for (const auto* input : {tensors[0], tensors[1], tensors[2], tensors[3]})
+    if (!Disjoint(node, input, false)) return Rejected("rounded index score overlaps an input");
   return {};
 }
 

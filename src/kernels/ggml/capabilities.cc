@@ -29,6 +29,7 @@
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/llmp_ops.h"
+#include "kernels/ggml/rounded_index_score.h"
 #include "kernels/ggml/set_rows_group.h"
 
 #ifndef LLMP_GGML_CUDA_ARCHITECTURES
@@ -97,6 +98,12 @@ constexpr std::array<Rule, 4> kIndexScoreRules = {
      {.operand = 1, .encodings = kF16, .layouts = kDense},
      {.operand = 2, .encodings = kF32, .layouts = kDense},
      {.operand = 3, .encodings = kF16, .layouts = kDense}}};
+constexpr std::array<Rule, 5> kRoundedIndexScoreRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF16, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = 3, .encodings = kI32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 3> kVisibleTopKRules = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
      {.operand = 1, .encodings = kI32, .layouts = kDense},
@@ -654,6 +661,26 @@ bool AcceptsCont(const ex::CapabilityQuery& q) {
   return count != 0 && count == elements(*output);
 }
 
+bool AcceptsRoundedIndexScore(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::RoundedIndexScoreParams>(q);
+  if (!Built(q) || q.arch < 80 || !p || p->query != ir::QueryRounding::kF16 || p->reserved[0] ||
+      p->reserved[1] || p->reserved[2])
+    return false;
+  constexpr std::array<std::uint8_t, 5> indexes{0, 1, 2, 3, ex::kOutputOperand};
+  constexpr std::array<std::uint64_t, 5> needed{8, 16, 4, 4, 4};
+  std::array<ScoreOperand, 5> metadata{};
+  for (std::size_t i = 0; i < indexes.size(); ++i) {
+    const auto* operand = Operand(q, indexes[i]);
+    if (!operand || !operand->memory) return false;
+    const auto& memory = *operand->memory;
+    if (memory.root_alignment < needed[i] ||
+        (memory.root_alignment & (memory.root_alignment - 1)) != 0)
+      return false;
+    metadata[i] = {.ne = operand->ne, .nb = memory.nb, .offset = memory.view_offset};
+  }
+  return RoundedIndexScoreFits(metadata);
+}
+
 bool AcceptsPrefixOverwrite(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::PrefixOverwriteParams>(q);
   const auto* values = Operand(q, 0);
@@ -1057,6 +1084,10 @@ const std::array kEntries = {
           "; selectable for the build's SASS architectures: D 128, 32 or 64 indexer heads"},
     Entry{kVisibleTopKName, Operation::kTopK,
           Cap(P(Op::kVisibleTopK), kVisibleTopKRules, &AcceptsVisibleTopK, true), kBuilt},
+    Entry{
+        kRoundedIndexScoreName, Operation::kLightningIndexer,
+        Cap(P(Op::kRoundedIndexScore), kRoundedIndexScoreRules, &AcceptsRoundedIndexScore, false),
+        "; explicit root alignment and native pitches; paid literal fill then original Lid groups"},
     Entry{kPrefixOverwriteName, Operation::kFill,
           Cap(P(Op::kPrefixOverwrite), kPrefixOverwriteRules, &AcceptsPrefixOverwrite, true),
           kBuilt},

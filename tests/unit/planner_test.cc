@@ -38,6 +38,7 @@
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "ir/builder.h"
+#include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "planner/fusions.h"
@@ -1646,6 +1647,115 @@ TEST(PlannerKeyTest, KeysFollowWhatDecidesAPlan) {
   EXPECT_NE(KeyOf(spec, verify, policy), key);
   EXPECT_NE(KeyOf(spec, shape, Disabling({"rms_norm_mul"})), key);
   EXPECT_NE(KeyOf(spec, shape, policy, 1), key);
+}
+
+TEST(PlannerSelectionTest, RootAlignmentFactsOwnAnExactRootIdentitySeal) {
+  const auto external = [](bool reverse) {
+    ir::Builder b;
+    const auto f = ir::Dense(Encoding::kF32, ir::ShapeOf({16}));
+    ir::TensorId a, z;
+    if (reverse) {
+      z = b.State(f, {.tensor = 1});
+      a = b.State(f, {.tensor = 0});
+    } else {
+      a = b.State(f, {.tensor = 0});
+      z = b.State(f, {.tensor = 1});
+    }
+    b.Output(b.Add(a, z));
+    return std::move(b).Finish();
+  };
+  auto original = external(false);
+  auto reversed = external(true);
+  ASSERT_TRUE(original);
+  ASSERT_TRUE(reversed);
+  ASSERT_EQ(original->Digest(), reversed->Digest());
+  const std::array facts{RootAlignmentFact{.root = {0}, .alignment = 256},
+                         RootAlignmentFact{.root = {1}, .alignment = 4}};
+  auto aligned = GraphRootAlignments(*original, facts);
+  ASSERT_TRUE(aligned);
+  EXPECT_EQ(aligned(*original, {0}), 256);
+  EXPECT_EQ(aligned(*original, {1}), 4);
+  EXPECT_EQ(aligned(*reversed, {0}), 0);
+  EXPECT_EQ(aligned(*reversed, {1}), 0);
+  auto clone = original->Clone();
+  EXPECT_EQ(aligned(clone, {0}), 256);
+  clone = std::move(*reversed);  // same Graph address, different root meanings
+  EXPECT_EQ(aligned(clone, {0}), 0);
+  EXPECT_EQ(aligned(*original, original->outputs()[0]), 0);  // no arena guarantee
+  EXPECT_EQ(aligned(*original, {999}), 0);
+  for (const auto& bad : std::vector<std::vector<RootAlignmentFact>>{
+           {{{0}, 0}}, {{{0}, 3}}, {{{999}, 16}}, {{{0}, 16}, {{0}, 16}}})
+    EXPECT_FALSE(GraphRootAlignments(*original, bad));
+
+  ir::Builder views;
+  const auto root = views.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({32})));
+  const auto view = views.View(root, ir::ShapeOf({16}), {4, 64, 64, 64}, 4);
+  views.Output(view);
+  auto graph = std::move(views).Finish();
+  ASSERT_TRUE(graph);
+  EXPECT_FALSE(GraphRootAlignments(*graph, std::array{RootAlignmentFact{view, 256}}));
+  auto owner = GraphRootAlignments(*graph, std::array{RootAlignmentFact{root, 256}});
+  auto moved = std::move(*graph);
+  EXPECT_EQ(owner(moved, root), 256);
+  EXPECT_EQ(owner(moved, view), 0);
+}
+
+TEST(PlannerSelectionTest, RootAlignmentQueriesDoNotLendFactsToHypotheticalDescriptors) {
+  ir::Builder b;
+  const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({16})));
+  const auto y = b.Unary(x, ir::UnaryFn::kRelu);
+  b.Output(y);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  auto cap = Any(ir::Primitive(Op::kUnary));
+  cap.accepts = [](const ex::CapabilityQuery& q) {
+    return q.operands[0].memory && q.operands[0].memory->root_alignment >= 16;
+  };
+  auto registry = ex::Registry::Create({Fake("aligned", cap)});
+  ASSERT_TRUE(registry);
+  const DeviceFacts device;
+  const Policy policy;
+  const SelectionView view(*registry, device, policy, false, false, {},
+                           GraphRootAlignments(*graph, std::array{RootAlignmentFact{x, 256}}));
+  const auto& node = graph->node(graph->producer(y));
+  EXPECT_EQ(view.Candidates(*graph, node).size(), 1);
+  const std::array sources{&graph->tensor(x)}, outputs{&graph->tensor(y)};
+  EXPECT_TRUE(view.Candidates(node.key, sources, outputs, node.params).empty());
+
+  ir::Builder inserted;
+  const auto before = inserted.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({16})));
+  const auto original_input = inserted.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({16})));
+  inserted.Keep(before);
+  const auto later = inserted.Unary(original_input, ir::UnaryFn::kRelu);
+  inserted.Output(later);
+  auto changed = std::move(inserted).Finish();
+  ASSERT_TRUE(changed);
+  EXPECT_TRUE(view.Candidates(*changed, changed->node(changed->producer(later))).empty());
+}
+
+TEST(PlannerSelectionTest, RootAlignmentFactsFailClosedAcrossPatternAndExpansionGraphs) {
+  ir::Builder b;
+  const auto x = b.Input(F32({16, 2}));
+  const auto weight = b.Input(F32({16}));
+  const auto y = b.Mul(b.RmsNorm(x, 1e-5F), weight);
+  b.Output(y);
+  auto graph = Finish(b);
+  const auto facts = GraphRootAlignments(graph, std::array{RootAlignmentFact{x, 256}});
+  const auto registry = Registry();
+  const Policy policy;
+  const SelectionView selection(registry, kDevice, policy, false, false, {}, facts);
+  auto rewritten = ApplyPatterns(graph, selection, nullptr);
+  ASSERT_TRUE(rewritten);
+  ASSERT_EQ(rewritten->applied.size(), 1U);
+  EXPECT_EQ(facts(rewritten->graph, rewritten->tensors.at(x.v)), 0U);
+  const auto rewritten_x = rewritten->tensors.at(x.v);
+  const auto rewritten_facts =
+      GraphRootAlignments(rewritten->graph, std::array{RootAlignmentFact{rewritten_x, 256}});
+  std::vector<TensorId> map;
+  auto expanded = ir::Expand(rewritten->graph, true, &map);
+  ASSERT_TRUE(expanded);
+  EXPECT_EQ(rewritten_facts(*expanded, map.at(rewritten_x.v)), 0U);
+  EXPECT_EQ(facts(graph.Clone(), x), 256U);
 }
 
 }  // namespace

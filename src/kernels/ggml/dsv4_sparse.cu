@@ -657,6 +657,53 @@ std::int64_t LidGroupRows(std::int64_t rows, std::int64_t n_kv) {
   return std::max<std::int64_t>(4, (kDsv4LidScratch / per_row) / 4 * 4);
 }
 
+// Host argument/launch formation shared with standalone scoring. The score
+// kernel's source arithmetic, group boundaries and R/tile choices are unchanged.
+void LaunchLidScores(ggml_backend_cuda_context& context, const ggml_tensor* q, const ggml_tensor* k,
+                     const ggml_tensor* w, const ggml_tensor* visible, std::int64_t key_row_bytes,
+                     std::int64_t n_kv, std::int64_t g0, std::int64_t g_rows, float* output) {
+  LidScoreArgs s;
+  s.q = static_cast<const float*>(q->data) + (g0 * static_cast<std::int64_t>(q->nb[2] / 4));
+  s.q_head = static_cast<int>(q->nb[1] / sizeof(float));
+  s.q_row = static_cast<int>(q->nb[2] / sizeof(float));
+  s.k = static_cast<const half*>(k->data);
+  s.k_row = static_cast<int>(key_row_bytes / static_cast<std::int64_t>(sizeof(half)));
+  s.w = static_cast<const float*>(w->data) + (g0 * static_cast<std::int64_t>(w->nb[1] / 4));
+  s.w_row = static_cast<int>(w->nb[1] / sizeof(float));
+  s.visible = static_cast<const std::int32_t*>(visible->data) + g0;
+  s.out = output;
+  s.out_row = n_kv;
+  s.rows = static_cast<int>(g_rows);
+  s.n_kv = static_cast<int>(n_kv);
+  // Decode's few rows spread over more blocks; prefill's reuse each
+  // key tile over four rows.
+  s.keys_per_block = g_rows <= 8 ? 256 : 1024;
+  const auto grid = [&](int per) {
+    return dim3(static_cast<unsigned>((n_kv + s.keys_per_block - 1) / s.keys_per_block),
+                static_cast<unsigned>((g_rows + per - 1) / per));
+  };
+  if (g_rows >= 4) {
+    ggml_cuda_kernel_launch(LidScoreKernel<4>,
+                            ggml_cuda_kernel_launch_params(grid(4), dim3(512), 0, context.stream()),
+                            s);
+  } else if (g_rows >= 2) {
+    ggml_cuda_kernel_launch(LidScoreKernel<2>,
+                            ggml_cuda_kernel_launch_params(grid(2), dim3(256), 0, context.stream()),
+                            s);
+  } else {
+    ggml_cuda_kernel_launch(LidScoreKernel<1>,
+                            ggml_cuda_kernel_launch_params(grid(1), dim3(128), 0, context.stream()),
+                            s);
+  }
+}
+
+// One paid initialization launch, no scratch: all score tails are defined
+// before the unchanged native producer writes visible cells.
+__global__ void FillScoreBits(std::uint32_t* output, std::int64_t elements) {
+  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < elements) output[i] = 0xff800000U;
+}
+
 }  // namespace
 
 std::expected<std::uint64_t, KernelFailure> PlanDsv4LidTopK(const LaunchContext& /*launch*/,
@@ -697,43 +744,12 @@ std::expected<void, KernelFailure> RunDsv4LidTopK(LaunchContext& launch, ggml_te
     }
     for (std::int64_t g0 = 0; g0 < rows; g0 += group) {
       const std::int64_t g_rows = std::min(group, rows - g0);
-      LidScoreArgs s;
-      s.q = static_cast<const float*>(q->data) + (g0 * static_cast<std::int64_t>(q->nb[2] / 4));
-      s.q_head = static_cast<int>(q->nb[1] / sizeof(float));
-      s.q_row = static_cast<int>(q->nb[2] / sizeof(float));
-      s.k = static_cast<const half*>(k->data);
-      s.k_row = static_cast<int>(k->nb[1] / sizeof(half));
-      s.w = static_cast<const float*>(w->data) + (g0 * static_cast<std::int64_t>(w->nb[1] / 4));
-      s.w_row = static_cast<int>(w->nb[1] / sizeof(float));
-      s.visible = static_cast<const std::int32_t*>(visible->data) + g0;
-      s.out = scores.get();
-      s.out_row = n_kv;
-      s.rows = static_cast<int>(g_rows);
-      s.n_kv = static_cast<int>(n_kv);
-      // Decode's few rows spread over more blocks; prefill's reuse each
-      // key tile over four rows.
-      s.keys_per_block = g_rows <= 8 ? 256 : 1024;
-      const auto grid = [&](int per) {
-        return dim3(static_cast<unsigned>((n_kv + s.keys_per_block - 1) / s.keys_per_block),
-                    static_cast<unsigned>((g_rows + per - 1) / per));
-      };
-      if (g_rows >= 4) {
-        ggml_cuda_kernel_launch(
-            LidScoreKernel<4>,
-            ggml_cuda_kernel_launch_params(grid(4), dim3(512), 0, context.stream()), s);
-      } else if (g_rows >= 2) {
-        ggml_cuda_kernel_launch(
-            LidScoreKernel<2>,
-            ggml_cuda_kernel_launch_params(grid(2), dim3(256), 0, context.stream()), s);
-      } else {
-        ggml_cuda_kernel_launch(
-            LidScoreKernel<1>,
-            ggml_cuda_kernel_launch_params(grid(1), dim3(128), 0, context.stream()), s);
-      }
+      LaunchLidScores(context, q, k, w, visible, static_cast<std::int64_t>(k->nb[1]), n_kv, g0,
+                      g_rows, scores.get());
       TopKArgs t;
       t.scores = scores.get();
       t.score_row = n_kv;
-      t.visible = s.visible;
+      t.visible = static_cast<const std::int32_t*>(visible->data) + g0;
       t.out = static_cast<std::int32_t*>(node->data) + (g0 * node->ne[0]);
       t.k = static_cast<int>(node->ne[0]);
       t.n_kv = static_cast<int>(n_kv);
@@ -756,6 +772,25 @@ std::expected<void, KernelFailure> RunDsv4LidTopK(LaunchContext& launch, ggml_te
       ggml_cuda_kernel_launch(
           TopKMergeKernel,
           ggml_cuda_kernel_launch_params(rows_grid, dim3(kTopKThreads), 0, context.stream()), t);
+    }
+  });
+}
+
+std::expected<void, KernelFailure> RunRoundedIndexScore(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckRoundedIndexScore(node); !checked) return checked;
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const std::int64_t rows = node->ne[1];
+    const std::int64_t cells = node->ne[0];
+    const std::int64_t elements = rows * cells;
+    constexpr unsigned threads = 256;
+    FillScoreBits<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
+                    context.stream()>>>(static_cast<std::uint32_t*>(node->data), elements);
+    const std::int64_t group = LidGroupRows(rows, cells);
+    for (std::int64_t g0 = 0; g0 < rows; g0 += group) {
+      const std::int64_t g_rows = std::min(group, rows - g0);
+      LaunchLidScores(context, node->src[0], node->src[1], node->src[2], node->src[3],
+                      static_cast<std::int64_t>(node->src[1]->nb[2]), cells, g0, g_rows,
+                      static_cast<float*>(node->data) + g0 * cells);
     }
   });
 }

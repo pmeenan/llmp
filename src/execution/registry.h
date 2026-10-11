@@ -236,12 +236,22 @@ inline constexpr std::uint8_t kOutputOperand = 128;
 // predicate, whose kernel takes only some (GGML's owner attention: its
 // heads, cells and each owner's cache): the rules match encodings and
 // layouts only.
+// Optional concrete descriptor information; query-owned values, never
+// borrowed spans. Root alignment is an explicit allocator/binding guarantee,
+// not inferred from a logical offset. Zero means no such guarantee.
+struct OperandMemory {
+  std::array<std::uint64_t, 4> nb{};
+  std::uint64_t view_offset = 0;
+  std::uint64_t root_alignment = 0;
+};
+
 struct OperandFormat {
   std::uint8_t operand = 0;
   format::Encoding encoding = format::Encoding::kF32;
   format::Layout layout = format::Layout::kDense;
   format::EncodingParams params{};
   std::array<std::uint64_t, 4> ne{};
+  std::optional<OperandMemory> memory{};
 };
 
 struct SelectionPolicy {

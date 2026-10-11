@@ -176,9 +176,27 @@ head weighting/reduction and `PrefixOverwrite`. That exact primitive copies
 visible F32 representations and writes literal fill bits outside the prefix,
 including for NaN/Inf inputs. Per-node F32 intermediate rounding can differ
 from the direct wider formula; exact selection consumes whichever scores its
-numerical implementation produced. This slice registers no specialized score
-implementation, component recipe or whole-indexer fusion; the existing
+numerical implementation produced. The optional native score implementation
+uses the existing Lid score kernel and its original group, row-block and key-tile
+choices. A paid full-output literal -Inf fill precedes its visible score writes;
+all declared key rows remain in the read closure even when the visible count is
+zero. The native recipe retains half query conversion, the device MMA reduction,
+and the compiled head reduction/FMA order. Its D-053 numerical relation to the
+wider scalar and ordinary products does not promise identical near-cutoff CPU
+selection; native standalone/fused equivalence is checked against a retained
+original producer. No new component recipe or whole-indexer fusion is registered;
 `IndexScore`, `TopK`, mqa@1 and mapping policies retain their definitions.
+
+Native score admission uses optional operand strides, root-relative offsets and
+explicit root-allocation alignment guarantees. `GraphRootAlignments` owns those
+facts, the canonical graph digest and an exact numeric-root-to-semantic-binding
+seal: canonical digest alone deliberately ignores leaf declaration order.
+Rewrites, newly generated roots, hypothetical descriptors and absent facts return
+unknown and keep the primitive fallback. Binding independently checks actual
+pointer alignment, disjoint output and full operand intervals. The standalone
+fixtures supply allocator guarantees; component execution does not yet supply
+these facts or select this recipe. Wiring a component consumer also requires the
+separate execution-compatibility identity for kept/restored state.
 
 `StepContext::VisibleCells` declares an ordinary staged I32 input for each
 owner's completed positions-basis blocks. Counts use the owner's past and

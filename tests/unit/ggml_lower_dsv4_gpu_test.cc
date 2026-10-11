@@ -20,6 +20,7 @@
 #include <numeric>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -43,6 +44,7 @@
 #include "planner/pattern.h"
 #include "planner/plan.h"
 #include "providers/cuda/cuda_device_execution.h"
+#include "tests/support/dsv4_score_original.h"
 
 namespace {
 namespace co = llmp::components;
@@ -130,8 +132,8 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
     allocations.push_back(p);
     return reinterpret_cast<std::uintptr_t>(p);
   }
-  ggml_context* Context() {
-    auto arena = kg::TensorArena::Create(32);
+  ggml_context* Context(std::size_t tensors = 32) {
+    auto arena = kg::TensorArena::Create(tensors);
     EXPECT_TRUE(arena);
     if (!arena) return nullptr;
     arenas.push_back(std::make_unique<kg::TensorArena>(std::move(*arena)));
@@ -203,15 +205,27 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
     return result;
   }
   kg::LoweredStep* Lower(ir::Graph graph, std::vector<co::StepInput> inputs,
-                         const pl::StepShape& shape, const ex::Registry* selected = nullptr) {
+                         const pl::StepShape& shape, const ex::Registry* selected = nullptr,
+                         bool aligned_roots = false) {
     co::StepGraph step{
         .graph = std::move(graph), .inputs = std::move(inputs), .weights = {}, .state = {}};
     std::vector<ir::TensorId> staged;
     for (const auto& input : step.inputs) staged.push_back(input.tensor);
     const auto& choices = selected == nullptr ? *registry : *selected;
-    auto plan = pl::Plan(
-        step.graph.Clone(), choices, {.device_class = "sm_121", .arch = 121}, {},
-        {.staged = staged, .written = kg::WrittenBytes, .within = kg::WithinRoot, .shape = &shape});
+    std::vector<pl::RootAlignmentFact> root_facts;
+    if (aligned_roots) {
+      // This fixture owns a cudaMalloc root and uses 256-byte activation
+      // placement for every staged/computed root in this exact graph.
+      for (std::uint32_t i = 0; i < step.graph.tensor_count(); ++i)
+        if (!step.graph.tensor(ir::TensorId{i}).is_view())
+          root_facts.push_back({.root = ir::TensorId{i}, .alignment = 256});
+    }
+    auto plan = pl::Plan(step.graph.Clone(), choices, {.device_class = "sm_121", .arch = 121}, {},
+                         {.staged = staged,
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot,
+                          .shape = &shape,
+                          .root_alignment = pl::GraphRootAlignments(step.graph, root_facts)});
     EXPECT_TRUE(plan) << (plan ? "" : plan.error().detail);
     if (!plan) return nullptr;
     const kn::Addresses addresses{.weight = {},
@@ -301,6 +315,8 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
                   std::bit_cast<std::uint32_t>(before[i][j]));
     }
   }
+  void ScoreOracle(std::int64_t cells, std::int64_t rows, bool pitched, bool repeated = false,
+                   std::int64_t top = 1);
   std::unique_ptr<llmp::providers::DeviceExecution> execution;
   llmp::providers::StreamId stream{};
   bool stream_ready = false, retirement_failed = false;
@@ -1012,6 +1028,11 @@ TEST_F(GgmlLowerDsv4Gpu, RoundedIndexScoreExecutesPortableFallbackWithLiteralNon
   auto context = kg::LaunchContext::Create(0, *execution, stream, workspace, cublas.get());
   ASSERT_TRUE(context) << context.error().detail;
   launch = std::move(*context);
+  std::vector<ex::Implementation> primitive_impls;
+  for (const auto& impl : kg::Implementations())
+    if (impl.name != kg::kRoundedIndexScoreName) primitive_impls.push_back(impl);
+  auto primitive = ex::Registry::Create(primitive_impls);
+  ASSERT_TRUE(primitive);
   for (const bool pitched : {false, true}) {
     SCOPED_TRACE(pitched);
     ir::Builder b;
@@ -1042,18 +1063,19 @@ TEST_F(GgmlLowerDsv4Gpu, RoundedIndexScoreExecutesPortableFallbackWithLiteralNon
     for (const auto input : {q_root, k_root, w_root, counts})
       inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
     const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 3}}};
-    auto* step = Lower(std::move(*graph), std::move(inputs), shape);
+    auto* step = Lower(std::move(*graph), std::move(inputs), shape, &*primitive, true);
     ASSERT_NE(step, nullptr);
     int prefixes = 0, conversions = 0;
     for (const auto* node : step->nodes) {
       EXPECT_NE(kg::LlmpOpOf(node), kg::LlmpOp::kDsv4LidTopK);
+      EXPECT_NE(kg::LlmpOpOf(node), kg::LlmpOp::kRoundedIndexScore);
       EXPECT_NE(node->op, GGML_OP_LIGHTNING_INDEXER);
       prefixes += kg::LlmpOpOf(node) == kg::LlmpOp::kPrefixOverwrite;
       conversions += node->op == GGML_OP_CPY;
     }
     EXPECT_EQ(prefixes, 1);
     EXPECT_EQ(conversions, 2);
-    auto bound = kg::BoundGraph::Bind(*registry, step->plan);
+    auto bound = kg::BoundGraph::Bind(*primitive, step->plan);
     ASSERT_TRUE(bound) << bound.error().detail;
     std::optional<std::size_t> captured;
     const float inf = std::numeric_limits<float>::infinity();
@@ -1258,6 +1280,327 @@ TEST_F(GgmlLowerDsv4Gpu, SelectedMaskAcceptsDuplicateInvalidRepeatedAndCrossRowI
         EXPECT_EQ(ReadTyped<std::uint16_t>(mask), expected);
       }
     }
+  }
+}
+
+// Compare the standalone native producer with a test-only copy of the original
+// kernel and host launch formation. This is a native recipe equivalence test;
+// the independent wider scalar and portable primitive tests remain separate.
+void GgmlLowerDsv4Gpu::ScoreOracle(std::int64_t cells, std::int64_t rows, bool pitched,
+                                   bool repeated, std::int64_t top) {
+  SCOPED_TRACE(::testing::PrintToString(std::make_tuple(cells, rows, pitched, repeated, top)));
+  constexpr std::int64_t raw_cells = 256, dim = 128, heads = 64;
+  constexpr float inf = std::numeric_limits<float>::infinity();
+  auto* c = Context(64);
+  const std::size_t qp = pitched ? 130 : 128, kp = pitched ? 136 : 128, wp = pitched ? 66 : 64,
+                    qo = pitched ? 2 : 0, ko = pitched ? 8 : 0, wo = pitched ? 1 : 0;
+  const auto t = static_cast<std::size_t>(rows), n = static_cast<std::size_t>(cells);
+  auto* qr =
+      Place(ggml_new_tensor_3d(c, GGML_TYPE_F32, static_cast<std::int64_t>(qp), heads, rows));
+  auto* kr = Place(ggml_new_tensor_2d(c, GGML_TYPE_F16, static_cast<std::int64_t>(kp), cells));
+  auto* wr = Place(ggml_new_tensor_2d(c, GGML_TYPE_F32, static_cast<std::int64_t>(wp), rows));
+  auto* q = ggml_view_3d(c, qr, dim, heads, rows, repeated ? 0 : qp * 4,
+                         repeated ? 0 : qp * heads * 4, qo * 4);
+  auto* k = ggml_view_3d(c, kr, dim, 1, cells, kp * 2, repeated ? 0 : kp * 2, ko * 2);
+  auto* k_old = ggml_view_2d(c, kr, dim, cells, repeated ? 0 : kp * 2, ko * 2);
+  auto* w = ggml_view_2d(c, wr, heads, rows, repeated ? 0 : wp * 4, wo * 4);
+  for (auto* view : {q, k, k_old, w})
+    kg::TensorArena::Bind(view,
+                          reinterpret_cast<std::uintptr_t>(view->view_src->data) + view->view_offs);
+  auto* counts = Place(ggml_new_tensor_1d(c, GGML_TYPE_I32, rows));
+  auto* window = Place(ggml_new_tensor_2d(c, GGML_TYPE_F16, raw_cells, rows));
+  auto* fresh = Place(kg::RoundedIndexScore(c, q, k, w, counts));
+  auto* original = Place(ggml_new_tensor_2d(c, GGML_TYPE_F32, cells, rows));
+  auto* fresh_ids = Place(kg::VisibleTopK(c, fresh, counts, top));
+  auto* original_ids = Place(kg::VisibleTopK(c, original, counts, top));
+  auto* legacy_ids = Place(kg::Dsv4LidTopK(c, q, k_old, w, counts, top));
+  auto* fresh_mask = Place(kg::SelectedMask(c, window, fresh_ids, raw_cells, cells));
+  auto* original_mask = Place(kg::SelectedMask(c, window, original_ids, raw_cells, cells));
+  auto* legacy_mask = Place(kg::Dsv4SparseMask(c, window, legacy_ids, nullptr, raw_cells, cells));
+  ASSERT_TRUE(kg::CheckRoundedIndexScore(fresh));
+  ASSERT_TRUE(kg::CheckDsv4LidTopK(legacy_ids));
+  ASSERT_TRUE(kg::CheckDsv4SparseMask(legacy_mask));
+  ASSERT_EQ(fresh->src[3], legacy_ids->src[3]);
+  ASSERT_EQ(fresh_ids->src[1], counts);
+  ASSERT_EQ(original_ids->src[1], counts);
+  ASSERT_EQ(fresh_mask->ne[0], raw_cells + fresh->ne[0]);
+  const auto scratch = kg::PlanDsv4LidTopK(*launch, legacy_ids);
+  ASSERT_TRUE(scratch);
+  if (rows == 513 && cells == 65536) EXPECT_EQ(*scratch, 128U << 20);
+  // Aligned widths use the same actual dense attention recipe downstream.
+  // Other widths and the group boundary are checked through all score/mask bits.
+  ggml_tensor* fresh_out = nullptr;
+  ggml_tensor* legacy_out = nullptr;
+  if (cells % 256 == 0 && rows <= 9) {
+    auto* aq = Place(ggml_new_tensor_4d(c, GGML_TYPE_F32, 256, rows, 8, 1));
+    auto* kv = Place(ggml_new_tensor_4d(c, GGML_TYPE_F16, 256, raw_cells + cells, 1, 1));
+    Upload(aq, std::vector<float>(256 * t * 8, 0));
+    std::vector<std::uint16_t> values(256 * (256 + n), 0);
+    for (std::size_t cell = 0; cell < n; ++cell) {
+      values[(256 + cell) * 256] = ggml_fp32_to_fp16(static_cast<float>(cell % 128 + 1) / 16);
+      values[(256 + cell) * 256 + 1] = ggml_fp32_to_fp16(static_cast<float>(cell / 128 + 1) / 16);
+    }
+    Upload(kv, values);
+    fresh_out = Place(ggml_flash_attn_ext(c, aq, kv, kv, fresh_mask, 1, 0, 0));
+    legacy_out = Place(ggml_flash_attn_ext(c, aq, kv, kv, legacy_mask, 1, 0, 0));
+    ggml_prec_set_acc(fresh_out, GGML_PREC_F32);
+    ggml_prec_set_acc(legacy_out, GGML_PREC_F32);
+    ASSERT_TRUE(kg::PlanFlashAttnMma(*launch, fresh_out));
+    ASSERT_TRUE(kg::PlanFlashAttnMma(*launch, legacy_out));
+  }
+  const auto run = [&](kg::LaunchContext& l) -> std::expected<void, kg::KernelFailure> {
+    if (auto r = kg::RunRoundedIndexScore(l, fresh); !r) return r;
+    if (auto r = llmp::test_support::OriginalLidScores(l, legacy_ids, original); !r) return r;
+    for (auto* ids : {fresh_ids, original_ids})
+      if (auto r = kg::RunVisibleTopK(l, ids); !r) return r;
+    if (auto r = kg::RunDsv4LidTopK(l, legacy_ids); !r) return r;
+    for (auto* mask : {fresh_mask, original_mask})
+      if (auto r = kg::RunSelectedMask(l, mask); !r) return r;
+    if (auto r = kg::RunDsv4SparseMask(l, legacy_mask); !r) return r;
+    if (fresh_out != nullptr) {
+      if (auto r = kg::FlashAttnMma(l, fresh_out); !r) return r;
+      if (auto r = kg::FlashAttnMma(l, legacy_out); !r) return r;
+    }
+    return {};
+  };
+  std::optional<std::size_t> captured;
+  std::vector<std::string_view> witnesses{
+      "head_order",      "fma_left",     "fma_right",    "query_round",          "visible_nan",
+      "all_visible_nan", "positive_inf", "negative_inf", "visible_negative_inf", "nan_key",
+      "nan_weight",      "zero_ties",    "finite_ties",  "visibility",           "unseen_inf",
+      "subnormals",      "tile_edges"};
+  if (rows > 9) witnesses = {"head_order", "fma_left", "visibility"};
+  for (const auto name : witnesses) {
+    SCOPED_TRACE(name);
+    std::vector<float> query_values(qp * heads * t, 0), weights(wp * t, 0);
+    std::vector<std::uint16_t> keys(kp * n, 0);
+    std::vector<std::int32_t> visible(t, 2);
+    const auto key = [&](std::int64_t cell, std::int64_t d, float value) {
+      keys[ko + static_cast<std::size_t>(cell) * kp + static_cast<std::size_t>(d)] =
+          ggml_fp32_to_fp16(value);
+    };
+    for (std::int64_t row = 0; row < rows; ++row) {
+      const auto query = [&](std::int64_t h, std::int64_t d, float value) {
+        query_values[qo +
+                     (static_cast<std::size_t>(row) * heads + static_cast<std::size_t>(h)) * qp +
+                     static_cast<std::size_t>(d)] = value;
+      };
+      const auto weight = [&](std::int64_t h, float value) {
+        weights[wo + static_cast<std::size_t>(row) * wp + static_cast<std::size_t>(h)] = value;
+      };
+      if (name == "head_order") {
+        query(0, 0, 1);
+        query(8, 0, 1);
+        query(1, 1, 1);
+        weight(0, 0x1p24F);
+        weight(1, 1);
+        weight(8, -0x1p24F);
+        key(0, 0, 1);
+        key(0, 1, 1);
+        key(1, 1, 0.5F);
+      } else if (name == "fma_left" || name == "fma_right") {
+        const std::int64_t a = name == "fma_left" ? 0 : 8;
+        const std::int64_t b = name == "fma_left" ? 8 : 0;
+        query(a, 0, 1);
+        query(a, 1, 0x1p-6F);
+        weight(a, 1 - 0x1p-13F);
+        query(b, 2, 1);
+        weight(b, -1);
+        query(16, 3, 1);
+        weight(16, -0x1p-27F);
+        key(0, 0, 1);
+        key(0, 1, 0x1p-7F);
+        key(0, 2, 1);
+        key(1, 3, 1);
+      } else if (name == "query_round") {
+        query(0, 0, 1.0001F);
+        query(0, 1, 1);
+        weight(0, 1);
+        key(0, 1, 1);
+        key(1, 0, 1);
+      } else if (name == "visible_nan" || name == "all_visible_nan") {
+        query(0, 0, 1);
+        query(1, 0, 1);
+        weight(0, 1);
+        weight(1, -1);
+        key(0, 0, inf);
+        if (name == "all_visible_nan")
+          key(1, 0, inf);
+        else
+          visible[static_cast<std::size_t>(row)] = 1;
+      } else if (name == "positive_inf" || name == "negative_inf" ||
+                 name == "visible_negative_inf") {
+        query(0, 0, 1);
+        weight(0, name == "positive_inf" ? 1 : -1);
+        key(0, 0, inf);
+        if (name == "visible_negative_inf") visible[static_cast<std::size_t>(row)] = 1;
+      } else if (name == "nan_key" || name == "nan_weight") {
+        query(0, 0, 1);
+        weight(0, name == "nan_weight" ? std::numeric_limits<float>::quiet_NaN() : 1);
+        key(0, 0, name == "nan_key" ? std::numeric_limits<float>::quiet_NaN() : 1);
+        key(1, 0, 1);
+      } else if (name == "zero_ties") {
+        query(0, 0, 1);
+        weight(0, -1);
+        key(0, 0, -1);
+        key(1, 0, 0);
+      } else if (name == "finite_ties") {
+        query(0, 0, 1);
+        weight(0, 1);
+        key(0, 0, 1);
+        key(1, 0, 1);
+        key(2, 0, 1);
+        visible[static_cast<std::size_t>(row)] = 3;
+      } else if (name == "visibility") {
+        query(0, 0, 1);
+        weight(0, 1);
+        for (std::int64_t cell = 0; cell < 4; ++cell) key(cell, 0, static_cast<float>(4 - cell));
+        visible[static_cast<std::size_t>(row)] = static_cast<std::int32_t>(row % 5);
+      } else if (name == "subnormals") {
+        query(0, 0, 0x1p-24F);
+        weight(0, 1);
+        key(0, 0, 0x1p-24F);
+        key(1, 0, -0x1p-24F);
+      } else if (name == "tile_edges") {
+        query(0, 0, 1);
+        weight(0, 1);
+        for (std::int64_t cell = 0; cell < cells; ++cell)
+          key(cell, 0, static_cast<float>((cell * 13) % 31 - 15));
+        const std::array<std::int32_t, 9> edges{0, 1, 63, 64, 65, 255, 256, 257, INT32_MAX};
+        visible[static_cast<std::size_t>(row)] =
+            edges[static_cast<std::size_t>(row) % edges.size()];
+      } else {
+        ASSERT_EQ(name, "unseen_inf");
+        query(0, 0, 1);
+        weight(0, 1);
+        key(0, 0, 1);
+        key(cells - 1, 0, inf);
+        visible[static_cast<std::size_t>(row)] = 1;
+      }
+    }
+    std::vector<std::uint16_t> raw(static_cast<std::size_t>(raw_cells) * t, 0xfc00);
+    for (std::size_t row = 0; row < t; ++row) raw[row * 256] = ggml_fp32_to_fp16(-0.25F);
+    Upload(qr, query_values);
+    Upload(kr, keys);
+    Upload(wr, weights);
+    Upload(counts, visible);
+    Upload(window, raw);
+    const auto check = [&] {
+      const auto got = ReadTyped<std::uint32_t>(fresh);
+      const auto want = ReadTyped<std::uint32_t>(original);
+      ASSERT_EQ(got, want);  // includes NaN payloads, signed zero and every padded tail
+      const auto ids = ReadTyped<std::int32_t>(fresh_ids);
+      EXPECT_EQ(ids, ReadTyped<std::int32_t>(original_ids));
+      EXPECT_EQ(ids, ReadTyped<std::int32_t>(legacy_ids));
+      const auto mask = ReadTyped<std::uint16_t>(fresh_mask);
+      EXPECT_EQ(mask, ReadTyped<std::uint16_t>(original_mask));
+      EXPECT_EQ(mask, ReadTyped<std::uint16_t>(legacy_mask));
+      // Independent CPU selection of the observed native scores checks all
+      // F32 ordering/visibility; it does not define the score reduction.
+      for (std::size_t row = 0; row < t; ++row) {
+        std::vector<float> scores(n);
+        for (std::size_t cell = 0; cell < n; ++cell) {
+          scores[cell] = std::bit_cast<float>(got[row * n + cell]);
+          if (static_cast<std::int64_t>(cell) >= visible[row])
+            ASSERT_EQ(got[row * n + cell], 0xff800000U);
+        }
+        const auto wanted_ids = VisibleIds(scores, visible[row], static_cast<std::size_t>(top));
+        EXPECT_EQ(
+            std::vector<std::int32_t>(
+                ids.begin() + static_cast<std::ptrdiff_t>(row * static_cast<std::size_t>(top)),
+                ids.begin() +
+                    static_cast<std::ptrdiff_t>((row + 1) * static_cast<std::size_t>(top))),
+            wanted_ids);
+        std::vector<std::uint16_t> wanted_mask(256 + n, 0xfc00);
+        wanted_mask[0] = ggml_fp32_to_fp16(-0.25F);
+        for (const auto id : wanted_ids)
+          if (id >= 0) wanted_mask[256 + static_cast<std::size_t>(id)] = 0;
+        ASSERT_TRUE(std::equal(wanted_mask.begin(), wanted_mask.end(),
+                               mask.begin() + static_cast<std::ptrdiff_t>(row * (256 + n))));
+      }
+      if (fresh_out != nullptr)
+        EXPECT_EQ(ReadTyped<std::uint32_t>(fresh_out), ReadTyped<std::uint32_t>(legacy_out));
+    };
+    const auto ran = run(*launch);
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error().detail);
+    check();
+    if (!captured) {
+      auto graph = launch->Capture(run);
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      graphs.push_back(std::move(*graph));
+      captured = graphs.size() - 1;
+    }
+    // The first capture is retained across every subsequent changed operand.
+    ASSERT_TRUE(launch->Launch(graphs[*captured]));
+    check();
+  }
+}
+
+TEST_F(GgmlLowerDsv4Gpu, NativeRoundedScoreMatchesOriginalWitnessesPitchesAndSameCapture) {
+  for (std::int64_t rows = 1; rows <= 9; ++rows)
+    for (const bool pitched : {false, true}) ScoreOracle(256, rows, pitched);
+  for (const std::int64_t rows : {1, 3, 8, 9}) ScoreOracle(4096, rows, true);
+  ScoreOracle(4096, 3, true, false, 2);
+}
+
+TEST_F(GgmlLowerDsv4Gpu, NativeRoundedScoreMatchesOriginalPartialTilesAndRepeatedViews) {
+  for (const std::int64_t cells : {63, 65, 257}) ScoreOracle(cells, 9, true);
+  ScoreOracle(256, 3, true, true);
+}
+
+TEST_F(GgmlLowerDsv4Gpu, NativeRoundedScoreRetainsOriginalScratchGroupBoundary) {
+  ASSERT_TRUE(Finish());
+  launch.reset();
+  auto context = kg::LaunchContext::Create(
+      0, *execution, stream, {.base = Allocate(144U << 20), .size = llmp::base::Bytes(144U << 20)});
+  ASSERT_TRUE(context);
+  launch = std::move(*context);
+  ScoreOracle(65536, 513, true);
+}
+
+TEST_F(GgmlLowerDsv4Gpu, NativeRoundedScoreLowersWithOwnedAlignedRootsAndRestagesCapture) {
+  ir::Builder b;
+  const auto q = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({128, 64, 3})));
+  const auto k = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({128, 1, 256})));
+  const auto w = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64, 3})));
+  const auto counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+  const auto scores = b.RoundedIndexScore(q, k, w, counts);
+  b.Output(scores);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  std::vector<co::StepInput> inputs;
+  for (auto id : {q, k, w, counts})
+    inputs.push_back({.tensor = id, .kind = co::InputKind::kFeatures});
+  const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 3}}};
+  auto* step = Lower(std::move(*graph), std::move(inputs), shape, nullptr, true);
+  ASSERT_NE(step, nullptr);
+  ASSERT_EQ(step->nodes.size(), 1U);
+  ASSERT_EQ(kg::LlmpOpOf(step->nodes[0]), kg::LlmpOp::kRoundedIndexScore);
+  ASSERT_EQ(step->keep[0], step->nodes[0]);
+  for (int revision = 0; revision < 3; ++revision) {
+    std::vector<float> queries(128 * 64 * 3, 0), weights(64 * 3, 0);
+    std::vector<std::uint16_t> keys(128 * 256, 0);
+    for (std::size_t row = 0; row < 3; ++row) {
+      queries[row * 128 * 64] = static_cast<float>(revision + 1);
+      weights[row * 64] = 2;
+    }
+    keys[0] = 0x3c00;
+    keys[128] = 0xbc00;
+    const std::vector<std::int32_t> visible{revision, 2, 0};
+    Upload(Leaf(*step, q), queries);
+    Upload(Leaf(*step, k), keys);
+    Upload(Leaf(*step, w), weights);
+    Upload(Leaf(*step, counts), visible);
+    RunAndReplay(*step);
+    const auto values = ReadTyped<std::uint32_t>(step->keep[0]);
+    for (std::size_t row = 0; row < 3; ++row)
+      for (std::size_t cell = 0; cell < 256; ++cell) {
+        const auto want =
+            static_cast<std::int64_t>(cell) >= visible[row] ? 0xff800000U
+            : cell == 0 ? std::bit_cast<std::uint32_t>(2.0F * static_cast<float>(revision + 1))
+                        : 0U;
+        ASSERT_EQ(values[row * 256 + cell], want);
+      }
   }
 }
 

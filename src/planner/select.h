@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -61,13 +62,28 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
 // kPermute) are the lowering's bindings, not steps.
 bool LaunchesNothing(ir::OpKey key);
 
+// Immutable root-allocation guarantees. The callback sees the actual graph
+// at each rewrite/decomposition pass, never original IDs in a new graph.
+// Zero means unknown; a physical binding must independently meet the promise.
+using RootAlignment = std::function<std::uint64_t(const ir::Graph&, ir::TensorId)>;
+struct RootAlignmentFact {
+  ir::TensorId root{};
+  std::uint64_t alignment = 0;
+};
+// Owns facts plus canonical digest AND exact root-ID-to-semantic-identity
+// seal. Canonical digest alone ignores leaf declaration order. Returns an
+// empty callback for malformed facts; new/reordered graphs return unknown.
+// The caller must own/guarantee each promised root's base alignment. This
+// constructor authenticates identity, not physical addresses or backing.
+RootAlignment GraphRootAlignments(const ir::Graph& graph, std::span<const RootAlignmentFact> facts);
+
 // The registry, the device and the policy, as a pattern or selection asks
 // them about a node that exists or would.
 class SelectionView {
  public:
   SelectionView(const execution::Registry& registry, const DeviceFacts& device,
                 const Policy& policy, bool row_invariant, bool capturable,
-                StateSpans state_spans = {});
+                StateSpans state_spans = {}, RootAlignment root_alignment = {});
 
   const execution::Registry& registry() const { return registry_; }
   const Policy& policy() const { return policy_; }
@@ -87,12 +103,18 @@ class SelectionView {
                                       ir::OpKey key) const;
 
  private:
+  std::vector<std::size_t> ForOperands(ir::OpKey key,
+                                       std::span<const ir::TensorDesc* const> sources,
+                                       std::span<const ir::TensorDesc* const> outputs,
+                                       std::span<const std::byte> params, bool state_span,
+                                       std::span<const std::uint64_t> alignments) const;
   const execution::Registry& registry_;
   const DeviceFacts& device_;
   const Policy& policy_;
   bool row_invariant_ = false;
   bool capturable_ = false;
   StateSpans state_spans_{};
+  RootAlignment root_alignment_{};
   std::vector<execution::MeasuredRank> ranks_;
 };
 
