@@ -6,12 +6,15 @@ catalog events, packs, compaction, the fold and the rendered inventory.
 docs/model-archive.md is the specification (D-114); tools/archive-model,
 tools/archive-catalog and tools/stage-model are its interim writers and
 readers. Everything written goes through a temporary name, a flush and a
-rename; nothing relies on file locks or symbolic links.
+rename; archive-model serializes checkpoint writers with an archive-wide
+lock. Catalog publication and staging do not rely on locks or symbolic links.
 """
 
 from __future__ import annotations
 
+import contextlib
 import errno
+import fcntl
 import fnmatch
 import hashlib
 import http.client
@@ -22,6 +25,7 @@ import re
 import secrets
 import socket
 import threading
+import stat
 import time
 
 VERSION = 1
@@ -31,11 +35,13 @@ FORMAT_EVENT = "llmp-archive-event"
 FORMAT_PACK = "llmp-archive-pack"
 FORMAT_CATALOG = "llmp-archive-catalog"
 ROOT_MARKER = "llmp-archive-root.json"
+WRITER_GUARD = ".llmp-writer"  # atomic directory creation is the cross-host exclusion
+WRITER_OWNER = "owner.json"
 MANIFEST = "llmp-archive.json"
 PARTIAL = ".llmp-partial."
 TMP = ".llmp-tmp."
 ORIGIN = "hf"
-TOOL_VERSION = "1"
+TOOL_VERSION = "2"
 
 MANIFEST_CAP = 16 << 20
 EVENT_CAP = 16 << 20
@@ -70,6 +76,10 @@ class ArchiveError(Exception):
 
 class Mismatch(ArchiveError):
     pass
+
+
+class WriterBusy(ArchiveError):
+    """The archive-wide checkpoint writer lock is held."""
 
 
 class Lost(ArchiveError):
@@ -230,6 +240,114 @@ def ensure_root(root: pathlib.Path) -> None:
     have its directories recreated on the local disk)."""
     if not (root / ROOT_MARKER).is_file():
         raise ArchiveError(f"{root}: the archive root is gone (share unmounted?); nothing was written")
+
+
+def _process_start(pid: int) -> str | None:
+    try:
+        # comm may contain spaces and parentheses; fields after its last ')' start at field 3.
+        return pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except FileNotFoundError:
+        return None
+
+
+def _writer_owner(fd: int | None = None) -> dict:
+    mutex = os.fstat(fd) if fd is not None else None
+    return {"format": "llmp-archive-writer", "format_version": 2,
+            "machine": pathlib.Path("/etc/machine-id").read_text().strip(),
+            "boot": pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            "pid_namespace": os.stat("/proc/self/ns/pid").st_ino,
+            "mount_namespace": os.stat("/proc/self/ns/mnt").st_ino,
+            "local_mutex": [mutex.st_dev, mutex.st_ino] if mutex else None,
+            "uid": os.getuid(), "pid": os.getpid(), "start": _process_start(os.getpid())}
+
+
+def _owner_dead(owner, mine) -> bool:
+    # Only prove death in this same host, boot, user and PID namespace. Foreign,
+    # rebooted or incomplete ownership stays locked until independently recovered.
+    if not isinstance(owner, dict) or owner.get("format") != "llmp-archive-writer" or owner.get(
+            "format_version") != 2:
+        return False
+    for key in ("machine", "boot", "pid_namespace", "mount_namespace", "uid", "local_mutex"):
+        if owner.get(key) != mine[key]:
+            return False
+    if mine["local_mutex"] is None:
+        return False
+    pid, start = owner.get("pid"), owner.get("start")
+    if type(pid) is not int or pid <= 0 or not isinstance(start, str) or not start.isdecimal():
+        return False
+    return _process_start(pid) != start
+
+
+@contextlib.contextmanager
+def writer_lock(root: pathlib.Path, *, no_wait: bool = False, log=None):
+    """Server-atomic directory ownership across hosts; a local flock serializes recovery.
+
+    SMB flock may fail open or stall in open, so it is never our NAS mutex.
+    A per-user, host-local flock ensures two local recovery attempts cannot
+    remove a newly acquired guard. Only demonstrably dead local owners are
+    recovered; unknown/foreign ownership is never stolen by age.
+    """
+    ensure_root(root)
+    # Fixed across launches, independent of TMPDIR and /run/user availability.
+    # Matching the held inode is also required before recovering any dead owner.
+    lock_path = pathlib.Path(f"/tmp/llmp-archive-writer-{os.getuid()}.lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    guard, owned = root / WRITER_GUARD, False
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode):
+            raise ArchiveError(f"{lock_path}: not this user's regular lock file")
+        announced = False
+        def wait():
+            nonlocal announced
+            if no_wait:
+                raise WriterBusy("another checkpoint writer holds the archive writer lock")
+            if not announced:
+                if log:
+                    log("waiting for the archive writer lock")
+                announced = True
+            sleep(1)
+        while True:
+            if cancel.is_set():
+                raise ArchiveError("interrupted while waiting for the archive writer lock")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                wait()
+        mine = _writer_owner(fd)
+        while True:
+            if cancel.is_set():
+                raise ArchiveError("interrupted while waiting for the archive writer lock")
+            ensure_root(root)
+            try:
+                guard.mkdir()  # one server operation: exactly one host can create it
+                owned = True
+                atomic_write(guard / WRITER_OWNER, dumps(mine), writer_id())
+                break
+            except FileExistsError:
+                try:
+                    owner = loads_strict(read_capped(guard / WRITER_OWNER, 4096), str(guard))
+                except FileNotFoundError:
+                    owner = None  # creation in progress or interrupted; never steal it
+                if _owner_dead(owner, mine):
+                    (guard / WRITER_OWNER).unlink()
+                    guard.rmdir()
+                    if log:
+                        log("recovered a dead local archive writer's lock")
+                    continue
+                wait()
+        yield
+    finally:
+        try:
+            if owned:
+                (guard / WRITER_OWNER).unlink(missing_ok=True)
+                # An interrupted atomic_write may have left its own temporary name.
+                for temp in guard.glob(WRITER_OWNER + TMP + "*"):
+                    temp.unlink()
+                guard.rmdir()
+        finally:
+            os.close(fd)  # host-local mutex stays held until NAS ownership is released
 
 
 def make_dirs(base: pathlib.Path, path: pathlib.Path) -> None:
@@ -526,20 +644,34 @@ def _write_all(fd: int, data, offset: int) -> None:
         offset += written
 
 
+def _progress(callback, phase, received, checked=0):
+    """Optional telemetry must never fail the transfer or perform storage queries."""
+    if callback:
+        try:
+            callback(phase, received, checked)
+        except Exception:
+            pass
+
+
 def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retries: int = 8,
-             stale: float = STALE_SECONDS, log=None) -> tuple[str, str | None]:
+             stale: float = STALE_SECONDS, log=None, writer_locked: bool = False,
+             progress=None) -> tuple[str, str | None]:
     """Bring `entry` into `directory` verified. Returns (status, sha256): status is
     `present` (already final with the recorded size), `done`, or `busy` (another writer's
     live partial holds it). `opener(start)` returns a readable whose `start` attribute is
     where it begins. Raises Mismatch (the partial is deleted), Lost, WriteFailed or, when the
     source fails for good, the source's error; a partial left behind by a failure is released
     (its modification time set to the epoch, or the file removed if empty) so that the next
-    run adopts it at once instead of waiting out another writer's claim."""
+    run adopts it at once instead of waiting out another writer's claim.
+    writer_locked requires the archive-wide writer lock for the entire transfer:
+    partials can then be adopted immediately and periodic pathname checks omitted.
+    Staging uses the default timed claims and identity checks on its local target."""
     log = log or (lambda message: None)
     final = directory / entry["path"]
     try:
         st = os.stat(final)
         if st.st_size == entry["size"]:
+            _progress(progress, "present", entry["size"])
             return "present", None
         bad = final.with_name(f"{final.name}{PARTIAL}bad-{writer}")
         os.replace(final, bad)  # a final name with the wrong size: never trusted, never served
@@ -556,7 +688,7 @@ def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retri
             age = now() - os.stat(other).st_mtime
         except FileNotFoundError:
             continue
-        if age < stale:
+        if not writer_locked and age < stale:
             return "busy", None
         try:
             os.rename(other, mine)  # adoption: only one adopter's rename finds it
@@ -566,7 +698,7 @@ def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retri
             os.utime(mine)  # a rename keeps the old time: show the claim as live at once
         except OSError:
             pass
-        log(f"{entry['path']}: resuming a stale partial download")
+        log(f"{entry['path']}: resuming a partial download")
         break
     hashes = Hashes(entry)
     fd = os.open(mine, os.O_RDWR | os.O_CREAT, 0o666)
@@ -577,6 +709,7 @@ def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retri
             os.ftruncate(fd, 0)
             size = 0
         offset, last_touch = 0, now()
+        _progress(progress, "checking resumed prefix", size)
         while offset < size:  # hash the whole prefix being resumed, keeping the claim fresh
             if cancel.is_set():
                 raise ArchiveError(f"{entry['path']}: interrupted")
@@ -585,6 +718,7 @@ def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retri
                 raise ArchiveError(f"{mine}: shorter than it said")
             hashes.update(data)
             offset += len(data)
+            _progress(progress, "checking resumed prefix", size, offset)
             if now() - last_touch > 60:
                 os.utime(fd)
                 last_touch = now()
@@ -594,33 +728,39 @@ def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retri
                 raise ArchiveError(f"{entry['path']}: interrupted")
             before = offset
             try:
+                _progress(progress, "connecting", offset)
                 source = opener(offset)
             except Exception as error:  # noqa: BLE001 (each source has its own errors)
                 if not getattr(error, "retryable", False) or attempt >= retries:
                     raise
                 attempt += 1
+                _progress(progress, "retry backoff", offset)
                 sleep(min(2 ** attempt, 60))
                 continue
             try:
                 if source.start != offset:  # the source ignored the range: start over
                     os.ftruncate(fd, 0)
                     offset, hashes = 0, Hashes(entry)
+                    _progress(progress, "receiving", 0)
                 while offset < entry["size"]:
                     if cancel.is_set():
                         raise ArchiveError(f"{entry['path']}: interrupted")
+                    _progress(progress, "receiving", offset)
                     data = source.read(CHUNK)
                     if not data:
                         break
                     if offset + len(data) > entry["size"]:
                         raise Mismatch(f"{entry['path']}: longer than the recorded {entry['size']} bytes")
                     try:
+                        _progress(progress, "writing", offset)
                         _write_all(fd, data, offset)
                     except OSError as error:
                         raise WriteFailed(f"{entry['path']}: cannot write the archive: {error}") from None
                     hashes.update(data)
                     offset += len(data)
+                    _progress(progress, "receiving", offset)
                     since_check += len(data)
-                    if since_check >= IDENTITY_CHECK_BYTES:
+                    if not writer_locked and since_check >= IDENTITY_CHECK_BYTES:
                         since_check = 0
                         if not _same_file(mine, fd):
                             raise Lost(f"{entry['path']}: another writer adopted this download")
@@ -635,7 +775,9 @@ def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retri
                 if attempt >= retries:
                     raise ArchiveError(f"{entry['path']}: the source ended at {offset} of {entry['size']} bytes")
                 attempt += 1
+                _progress(progress, "retry backoff", offset)
                 sleep(min(2 ** attempt, 60))
+        _progress(progress, "flushing and verifying", offset)
         os.fsync(fd)
         held = os.fstat(fd).st_size
         if held != entry["size"]:
@@ -649,6 +791,7 @@ def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retri
         os.close(fd)
         fd = -1
         mine.unlink(missing_ok=True)
+        _progress(progress, "hash mismatch; discarded", 0)
         raise
     except BaseException:
         release = True
@@ -668,7 +811,9 @@ def transfer(directory: pathlib.Path, entry: dict, opener, writer: str, *, retri
                         os.utime(mine, (0, 0))
                 except OSError:
                     pass
+    _progress(progress, "publishing file", entry["size"])
     _retry_rename(mine, final)
+    _progress(progress, "verified", entry["size"])
     return "done", digest
 
 
@@ -689,11 +834,15 @@ def file_opener(path: pathlib.Path):
     return lambda start: _FileSource(path, start)
 
 
-def hash_file(path: pathlib.Path, entry: dict) -> str:
+def hash_file(path: pathlib.Path, entry: dict, *, progress=None) -> str:
     hashes = Hashes(entry)
+    checked = 0
+    _progress(progress, "checking existing file", 0)
     with open(path, "rb") as f:
         while data := f.read(CHUNK):
             hashes.update(data)
+            checked += len(data)
+            _progress(progress, "checking existing file", 0, checked)
     if os.stat(path).st_size != entry["size"]:
         raise Mismatch(f"{entry['path']}: {os.stat(path).st_size} bytes, not the recorded {entry['size']}")
     return hashes.check(entry, entry["path"])

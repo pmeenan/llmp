@@ -321,18 +321,42 @@ Access-denied tasks are deferred and probed every ten minutes while the
 remaining library proceeds. The service remains waiting if access is still
 missing after other tasks finish; a failed task is never reported complete.
 
-The read-only progress view shows completed revisions and bytes, the current
-checkpoint's received bytes, recorded failures/access waits and its latest
-log message. Current-file bytes may still need verification. It refreshes
-every ten seconds; Ctrl+C exits the view without stopping downloads:
+The read-only progress view receives the local controller's in-memory status
+once per second over a Unix socket. It shows completed revisions and bytes,
+the current checkpoint's received bytes, recorded failures/access waits and
+the downloader's phase (receiving, writing, resumed-prefix hashing or
+manifest publication). Neither the view nor its status publisher polls NAS
+files. Worker counters come from the transfer itself; current-file bytes may
+still need verification. The controller sends only to connected viewers;
+bounded, nonblocking writes keep slow or disconnected viewers from delaying
+downloads. Separate viewers each receive complete snapshots. Ctrl+C exits
+the view without stopping downloads:
 
 ```sh
 llmp-archive-progress --watch
 ```
 
-Omit `--watch` for one snapshot. After a forced stop, a partial download can
-wait for its previous writer's fifteen-minute claim to expire before resuming.
-The view shows the remaining claim time when that is the current wait.
+Omit `--watch` for one snapshot. If the controller is unavailable, the view
+labels its last saved local state as offline and omits current-file bytes.
+Restart any previously open viewer after upgrading to the socket feed.
+Checkpoint writer protocol 2 takes an
+archive-wide NAS ownership directory, so a stopped writer's partial can
+resume immediately after the next writer acquires ownership. Automatic
+lock recovery requires proof of local owner death; unconfirmed or foreign
+ownership stays locked. Old protocol-1 processes must fully
+exit before switching the batch's frozen tools to protocol 2 (D-115). The batch's frozen tools were upgraded after all prior writers exited on
+2026-10-10; both local and Spark contenders were then refused while the
+running batch held ownership.
+
+A 2026-10-10 diagnostic capture of a fresh Gemma E4B download found a
+periodic NAS `stat` call blocked for 19.59 seconds; the 456 captured 4 MiB
+writes each took under 5 ms. The HTTP socket had a 32 MiB automatically
+tuned receive buffer with window scaling enabled. These are the observed
+blocking operations, not a diagnosis of the NAS internals. Fresh downloads
+already compute SHA-256 as each chunk is received. Protocol 2 removes the
+recurring 64 MiB identity check while retaining the final identity check,
+flush, size and hash validation. Resumed files also rehash their existing
+prefix before receiving more bytes. Local staging keeps its timed claims.
 
 Use these light commands to inspect or control the batch:
 

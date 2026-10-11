@@ -11,6 +11,8 @@ against a loopback server, and that nothing the tools write is a link.
 """
 
 import contextlib
+import errno
+import fcntl
 import hashlib
 import http.server
 import importlib.machinery
@@ -19,9 +21,12 @@ import io
 import json
 import os
 import pathlib
+import signal
 import struct
+import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -231,17 +236,24 @@ class DownloadTest(ArchiveCase):
         self.assertEqual((rev / "M-Q4_K_M.gguf").read_bytes(), data)
         self.assertFalse(partial.exists())
 
-    def test_a_live_writers_claim_is_left_alone(self):
+    def test_a_recent_abandoned_partial_is_resumed_under_the_writer_lock(self):
         hub = gguf_repo()
         rev = self.root / "hf/unsloth" / f"M-GGUF@{COMMIT}"
         arc.open_root(self.root, create=True)
         rev.mkdir(parents=True)
-        (rev / f"M-Q4_K_M.gguf{arc.PARTIAL}otherhost.1.live").write_bytes(b"x")
-        self.assertEqual(self.archive(hub, "unsloth/M-GGUF", "--include", "M-Q4_K_M.gguf", "--no-wait"), 3)
-        self.assertNotIn("M-Q4_K_M.gguf", [p for p, _ in hub.requests])
-        m = arc.read_manifest(rev)  # what it could do is recorded
-        self.assertTrue(next(f for f in m["files"] if f["path"] == "README.md")["present"])
-        self.assertFalse(next(f for f in m["files"] if f["path"] == "M-Q4_K_M.gguf")["present"])
+        data = hub.files["M-Q4_K_M.gguf"]
+        (rev / f"M-Q4_K_M.gguf{arc.PARTIAL}otherhost.1.dead").write_bytes(data[:300])
+        self.assertEqual(self.archive(hub, "unsloth/M-GGUF", "--include", "M-Q4_K_M.gguf", "--no-wait"), 0)
+        self.assertIn(("M-Q4_K_M.gguf", 300), hub.requests)
+        self.assertEqual((rev / "M-Q4_K_M.gguf").read_bytes(), data)
+
+    def test_no_wait_does_not_contact_the_hub_or_write_a_revision_when_locked(self):
+        hub = gguf_repo()
+        arc.open_root(self.root, create=True)
+        with arc.writer_lock(self.root):
+            self.assertEqual(self.archive(hub, "unsloth/M-GGUF", "--no-wait"), 3)
+        self.assertEqual((hub.info_calls, hub.requests), (0, []))
+        self.assertFalse((self.root / "hf").exists())
 
     def test_a_cut_off_transfer_resumes(self):
         hub = gguf_repo()
@@ -344,6 +356,176 @@ class RobustnessTest(ArchiveCase):
         src = self.tmp / "src.bin"
         src.write_bytes(data)
         return src
+
+    def test_locked_transfer_skips_periodic_identity_checks_but_checks_before_publish(self):
+        data, entry, rev = self.one()
+        src = self.write_src(data)
+        with unittest.mock.patch.object(arc, "IDENTITY_CHECK_BYTES", 1), \
+                unittest.mock.patch.object(arc, "_same_file", wraps=arc._same_file) as same:
+            self.assertEqual(arc.transfer(rev, entry, arc.file_opener(src), "w.1.x",
+                                          writer_locked=True)[0], "done")
+        self.assertEqual(same.call_count, 1)
+        self.assertEqual((rev / "m.gguf").read_bytes(), data)
+
+    def test_unlocked_transfer_keeps_live_claim_and_periodic_checks(self):
+        data, entry, rev = self.one()
+        other = rev / f"m.gguf{arc.PARTIAL}other.1.x"
+        other.write_bytes(data[:300])
+        src = self.write_src(data)
+        self.assertEqual(arc.transfer(rev, entry, arc.file_opener(src), "w.1.x")[0], "busy")
+        other.unlink()
+        with unittest.mock.patch.object(arc, "IDENTITY_CHECK_BYTES", 1), \
+                unittest.mock.patch.object(arc, "_same_file", wraps=arc._same_file) as same:
+            self.assertEqual(arc.transfer(rev, entry, arc.file_opener(src), "w.1.x")[0], "done")
+        self.assertGreater(same.call_count, 1)
+
+    def test_locked_resume_rejects_corrupt_prefix_before_publication(self):
+        data, entry, rev = self.one()
+        other = rev / f"m.gguf{arc.PARTIAL}other.1.x"
+        other.write_bytes(b"bad" + data[3:300])
+        with self.assertRaises(arc.Mismatch):
+            arc.transfer(rev, entry, arc.file_opener(self.write_src(data)), "w.1.x", writer_locked=True)
+        self.assertFalse((rev / "m.gguf").exists())
+        self.assertEqual(list(rev.iterdir()), [])
+
+    def test_lock_is_cross_process_and_released_after_errors(self):
+        arc.open_root(self.root, create=True)
+        code = ("import sys,pathlib;sys.path.insert(0,sys.argv[1]);import llmp_archive as a\n"
+                "try:\n with a.writer_lock(pathlib.Path(sys.argv[2]),no_wait=True): pass\n"
+                "except a.WriterBusy: sys.exit(3)")
+        with self.assertRaisesRegex(RuntimeError, "stop"):
+            with arc.writer_lock(self.root):
+                blocked = subprocess.run([sys.executable, "-c", code, str(TOOLS), str(self.root)],
+                                         capture_output=True)
+                self.assertEqual(blocked.returncode, 3, blocked.stderr)
+                raise RuntimeError("stop")
+        self.assertFalse((self.root / arc.WRITER_GUARD).exists())
+        free = subprocess.run([sys.executable, "-c", code, str(TOOLS), str(self.root)], capture_output=True)
+        self.assertEqual(free.returncode, 0, free.stderr)
+
+    def test_crashed_local_owner_is_recovered_without_a_timeout(self):
+        arc.open_root(self.root, create=True)
+        code = ("import sys,pathlib,os;sys.path.insert(0,sys.argv[1]);import llmp_archive as a\n"
+                "with a.writer_lock(pathlib.Path(sys.argv[2])): os._exit(0)")
+        crash = subprocess.run([sys.executable, "-c", code, str(TOOLS), str(self.root)], capture_output=True)
+        self.assertEqual(crash.returncode, 0, crash.stderr)
+        self.assertTrue((self.root / arc.WRITER_GUARD).is_dir())
+        messages = []
+        with arc.writer_lock(self.root, no_wait=True, log=messages.append):
+            self.assertTrue(any("dead local" in m for m in messages))
+        self.assertFalse((self.root / arc.WRITER_GUARD).exists())
+
+    def test_forced_interrupt_keeps_guard_until_all_worker_threads_exit(self):
+        # The actual CLI has a transfer blocked in read() after observing the
+        # first signal. A second signal must kill the process, not unwind a join
+        # and release its guard while that worker can still write the partial.
+        code = textwrap.dedent("""\
+            import pathlib, sys
+            sys.path.insert(0, sys.argv[1])
+            from test_archive import archive_model, FakeHub, FakeResponse, arc
+            base = pathlib.Path(sys.argv[2])
+            class BlockedResponse(FakeResponse):
+                def read(self, size=-1):
+                    (base / 'reading').write_text('ready')
+                    if not arc.cancel.wait(10):
+                        raise RuntimeError('first signal not received')
+                    (base / 'cancelled').write_text('worker still alive')
+                    sys.stdin.buffer.read(1)
+                    return super().read(size)
+            class BlockedHub(FakeHub):
+                def open_file(self, repo, commit, path, start=0):
+                    return BlockedResponse(self.files[path], start)
+            hub = BlockedHub('org/M', {'m.gguf': b'abcd'}, lfs=['m.gguf'])
+            sys.exit(archive_model.main(['org/M', '--include', 'm.gguf', '--jobs', '1',
+                                        '--archive', str(base / 'nas'), '--init-root'], hub=hub))
+            """)
+        env = dict(os.environ, LLMP_ARCHIVE_PROGRESS_SOCKET="", LLMP_ARCHIVE_PROGRESS_SESSION="")
+        proc = subprocess.Popen([sys.executable, "-B", "-c", code, str(TOOLS / "tests"), str(self.tmp)],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        try:
+            def wait_for(name):
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if (self.tmp / name).exists():
+                        return
+                    if proc.poll() is not None:
+                        self.fail(f"writer exited before {name}: {proc.communicate()!r}")
+                    time.sleep(0.01)
+                self.fail(f"writer did not reach {name}")
+
+            wait_for("reading")
+            guard = self.root / arc.WRITER_GUARD
+            owner = (guard / arc.WRITER_OWNER).read_bytes()
+            proc.send_signal(signal.SIGINT)
+            wait_for("cancelled")
+            self.assertIsNone(proc.poll())
+            with self.assertRaises(arc.WriterBusy):
+                with arc.writer_lock(self.root, no_wait=True):
+                    self.fail("entered while the cancelled worker could still write")
+            proc.send_signal(signal.SIGINT)
+            self.assertEqual(proc.wait(timeout=5), 128 + signal.SIGINT)
+            self.assertEqual((guard / arc.WRITER_OWNER).read_bytes(), owner)
+            messages = []
+            with arc.writer_lock(self.root, no_wait=True, log=messages.append):
+                self.assertTrue(any("dead local" in line for line in messages))
+            self.assertFalse(guard.exists())
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.communicate(timeout=5)
+
+    def test_guard_with_live_foreign_or_missing_owner_is_never_stolen_by_age(self):
+        arc.open_root(self.root, create=True)
+        guard = self.root / arc.WRITER_GUARD
+        guard.mkdir()
+        owner_path = guard / arc.WRITER_OWNER
+        for owner in (None, arc._writer_owner(), dict(arc._writer_owner(), boot="another-boot")):
+            if owner is None:
+                owner_path.unlink(missing_ok=True)
+            else:
+                owner_path.write_bytes(arc.dumps(owner))
+            os.utime(guard, (0, 0))
+            with self.assertRaises(arc.WriterBusy):
+                with arc.writer_lock(self.root, no_wait=True):
+                    self.fail("stole live or unconfirmed ownership")
+            self.assertTrue(guard.is_dir())
+
+    def test_recovery_requires_the_same_local_mutex_and_mount_namespace(self):
+        with tempfile.TemporaryFile() as mutex:
+            mine = arc._writer_owner(mutex.fileno())
+        dead = dict(mine, start=str(int(mine["start"]) + 1))
+        self.assertTrue(arc._owner_dead(dead, mine))
+        self.assertFalse(arc._owner_dead(dict(dead, local_mutex=[0, 0]), mine))
+        self.assertFalse(arc._owner_dead(dict(dead, mount_namespace=-1), mine))
+
+    def test_local_mutex_does_not_depend_on_temporary_directory_settings(self):
+        arc.open_root(self.root, create=True)
+        with arc.writer_lock(self.root):
+            owner = arc.loads_strict((self.root / arc.WRITER_GUARD / arc.WRITER_OWNER).read_bytes(), "owner")
+            info = pathlib.Path(f"/tmp/llmp-archive-writer-{os.getuid()}.lock").stat()
+            self.assertEqual(owner["local_mutex"], [info.st_dev, info.st_ino])
+            with unittest.mock.patch.dict(os.environ, TMPDIR=str(self.tmp), TEMP=str(self.tmp), TMP=str(self.tmp)):
+                with self.assertRaises(arc.WriterBusy):
+                    with arc.writer_lock(self.root, no_wait=True):
+                        self.fail("different temporary environment bypassed the mutex")
+
+    def test_waiting_writer_stops_on_cancellation(self):
+        arc.open_root(self.root, create=True)
+        with arc.writer_lock(self.root):
+            def stop_waiting(seconds):
+                arc.cancel.set()
+            with unittest.mock.patch.object(arc, "sleep", stop_waiting):
+                with self.assertRaisesRegex(arc.ArchiveError, "interrupted while waiting"):
+                    with arc.writer_lock(self.root):
+                        self.fail("entered a held lock")
+
+    def test_unsupported_local_locks_fail_closed(self):
+        arc.open_root(self.root, create=True)
+        with unittest.mock.patch.object(fcntl, "flock", side_effect=OSError(errno.EOPNOTSUPP, "no locks")):
+            with self.assertRaises(OSError):
+                with arc.writer_lock(self.root):
+                    self.fail("entered without the local recovery mutex")
+        self.assertFalse((self.root / arc.WRITER_GUARD).exists())
 
     def test_a_full_disk_stops_at_once_and_the_partial_is_adopted_by_the_rerun(self):
         data, entry, rev = self.one()

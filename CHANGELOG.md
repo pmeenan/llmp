@@ -11,11 +11,24 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Archive downloads now enforce one writer through atomic NAS ownership (D-115,
+  checkpoint writer protocol 2, tools version 2). Remove periodic partial
+  pathname checks that stalled transfers on SMB; keep inline hash
+  verification and resume abandoned downloads immediately. Stop older
+  checkpoint writers before upgrading. Stored archive schemas remain 1.
+
 ### Added
 
 - Add an internal sole-owner Qwen3.8 component serving route for native
   MTP and GGUF migration checks, with funded startup ownership and draft
   context admission. The family migration remains in progress.
+
+- Archive download telemetry can report known byte counts and transfer phases
+  to a local controller without querying model storage. The initial archive
+  batch pushes status once per second to connected progress viewers over a
+  bounded, nonblocking Unix socket.
 
 - The model archive (D-114, docs/model-archive.md): source checkpoints
   on a long-term store as one directory per pinned commit with a verified

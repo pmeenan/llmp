@@ -12,7 +12,8 @@ from each checkpoint and where it is installed. The importer reads a
 checkpoint straight from the archive, or from a copy staged on a Spark's
 NVMe for repeated testing.
 
-**Status (2026-10-10).** Format version 1 of every file below. The interim
+**Status (2026-10-10).** Stored format version 1; checkpoint writer
+protocol version 2 (D-115). The interim
 Python tools (`tools/archive-model`, `tools/archive-catalog`,
 `tools/stage-model`) write and read exactly this format, so downloads can
 start now. Native support follows: `llmp import` of an archived or staged
@@ -76,17 +77,19 @@ repository root on the workstation.
 4. **Resume** by running the same command again. Finished files are kept
    (a file the manifest lists but the share no longer holds, or holds at
    another size, is fetched again), a partial file continues where it
-   stopped, and another writer's live download of the same file is waited
-   for, never duplicated. A run that fails on a file (an error, a signal)
+   stopped. Another downloader waits for the archive writer lock before
+   reading revision state, so finished files are never duplicated. A run that fails on a file (an error, a signal)
    releases its partial files, so the rerun continues at once; the other
-   files of the run are finished and listed in the manifest first. Only a
-   writer killed outright (SIGKILL, power loss) leaves a partial that the
-   rerun waits out, up to 15 minutes.
+   files of the run are finished and listed in the manifest first. A
+   writer killed outright (a second stop signal, SIGKILL, power loss) leaves a partial that the
+   next exclusive writer can adopt and resume immediately.
 5. **Exit codes.** 0: archived (or already was). 1: an error, printed
    (a hash mismatch deletes the bad copy and names the file; a gated
    repository without a token, a revision that does not exist, a full disk
    or an unmounted share names the cause; rerun after fixing it).
-   2: a usage error. 3: another writer still holds some files; rerun later.
+   2: a usage error. 3: another writer holds the archive lock (`--no-wait`);
+   rerun later. A second SIGINT or SIGTERM forces process exit with
+   `128 + signal`; its ownership directory remains for dead-owner recovery.
    Without an explicit revision, a repository already archived is not
    downloaded again: the newest archived commit is used, and only files
    missing from it are fetched. `--latest` resolves the Hub's `main`
@@ -110,16 +113,19 @@ tools touch it; the runtime process never opens it (D-054), so an absent or
 hung mount fails a job, never serving.
 
 The share shapes the format: no symbolic links (they fail with
-`EOPNOTSUPP`), no direct I/O, rename-over works, file locking cannot be
-relied on, names are case-insensitive and Windows-restricted, and reads run
-at about 118 MB/s per client (about 225 MB/s for three). Several writers on
-different hosts may work at once.
+`EOPNOTSUPP`), no direct I/O, rename-over works, names are case-insensitive
+and Windows-restricted, and reads were measured at about 118 MB/s per
+client (about 225 MB/s for three). Cross-host SMB file locks proved
+unreliable in the 2026-10-10 checks; checkpoint writers instead serialize
+through an atomic NAS directory creation. Catalog event writers and
+readers may still work concurrently.
 
 ## Layout
 
 ```text
 <root>/                                       the `checkpoints` role
   llmp-archive-root.json                      {"format": "llmp-archive-root", "format_version": 1}
+  .llmp-writer/owner.json                     active checkpoint writer ownership (protocol 2)
   hf/<org>/<repo>@<commit>/                   one commit of one Hugging Face model repository
     <the repository's files, in its own layout>
     llmp-archive.json                         the revision manifest, written last
@@ -158,10 +164,23 @@ different hosts may work at once.
 
 ## Writing a revision
 
+Optional local telemetry uses `LLMP_ARCHIVE_PROGRESS_SOCKET` (a Unix
+datagram socket) and `LLMP_ARCHIVE_PROGRESS_SESSION` (the controller's
+per-invocation nonce). `llmp_archive_progress.py` sends full snapshots of
+the transfer's already-known counters and phase every half second, with
+nonblocking sends and no NAS queries. Missing/full receivers drop reports
+without interrupting downloads. The initial-library controller pushes
+newline-delimited JSON status (operational protocol 1) once per second over
+its host-local `status.sock`, only to connected viewers. Each viewer has
+one bounded pending frame; a stalled viewer is disconnected. These are
+ephemeral status channels, independent of stored archive schemas and the
+checkpoint writer ownership protocol. The batch's read-only viewer and
+offline behavior are documented in [the initial set](model-archive-initial-set.md).
+
 The writer (`archive-model` now, `llmp install` later) works file by file
 inside the final revision directory; nothing is renamed at the directory
 level, since a directory rename on SMB fails while any file in it is open
-and several writers may share a revision.
+and successive writers may add different subsets of the same revision.
 
 1. **Identity first.** The revision's metadata comes from the Hub's
    revision API (`?blobs=true`): the commit, the card data, the gated flag
@@ -186,25 +205,54 @@ and several writers may share a revision.
    stops on an error or a signal sets its partial's modification time to
    the epoch (or removes it if empty), so the next run adopts it without
    waiting.
-3. **Claims without locks.** A partial file's modification time is its
-   writer's heartbeat: it changes with every write, and a writer touches
-   it while it rereads a prefix. Another writer that finds a partial
-   modified in the last 15 minutes leaves the file to it, does the rest,
-   then waits for it (exit 3 with `--no-wait`). A partial older than that
-   is adopted: renamed to the adopter's own partial name, which only one
-   adopter can win (a loser waits as for a live claim), touched at once so
-   that it shows as live, then its whole prefix is reread and hashed and
-   the download continues with an HTTP `Range` from its size. A live writer never goes
-   15 minutes without writing: requests time out after 60 seconds and
-   retries back off for at most 60. A writer checks every 64 MiB, and
-   before its final rename, that its partial name still names its open
-   file, and stops if it was adopted. That leaves one window: a writer
-   suspended for over 15 minutes that resumes writing in the instant
-   between its check and its write. Use never depends on these claims:
-   staging and import hash every byte they use against the manifest
-   ([verification](#verification)), so such a collision is found and the
-   file fetched again (`archive-model --repair`). The age compares this host's clock with the share's modification
-   time, so the NAS and its clients need NTP.
+3. **One checkpoint writer, enforced by a lock (protocol 2).** Before
+   reading revision state or writing any checkpoint, `archive-model/2`
+   atomically creates `<root>/.llmp-writer/` on the NAS and writes its
+   `owner.json` (kind `llmp-archive-writer`, format version 2). Exactly one
+   host can create this directory. Its ownership spans all `--jobs` file
+   workers, manifest and catalog publication. Another downloader waits,
+   or exits 3 with `--no-wait`. Cancellation interrupts waits between NAS
+   operations; an operation blocked in the filesystem must first return.
+   Ownership is removed on normal completion and handled errors after all
+   workers finish. The first SIGINT or SIGTERM requests this orderly stop;
+   a second terminates the entire process without unwinding cleanup, leaving
+   ownership in place. It must not release the guard while a worker can
+   still write.
+
+   A per-user host-local `flock` on the fixed
+   `/tmp/llmp-archive-writer-<uid>.lock` file serializes local writers and
+   recovery attempts,
+   including runs using different paths to the same archive. That local
+   file stays in place and must never be replaced or removed while in use.
+   NAS file locks are never used for exclusion. Recovery requires the
+   recorded machine, boot, user, PID and mount namespaces and local mutex
+   device/inode
+   match this process's environment, and that the owner's PID is absent
+   or has a different `/proc/<pid>/stat` start time. A paused process
+   remains live. Foreign, rebooted, incomplete or unconfirmed ownership
+   is never stolen on a timeout; independently establish that its writer
+   has stopped before removing an abandoned ownership directory. The
+   owner record contains these identities, PID and start time, never
+   credentials. Failure to release ownership fails closed.
+
+   Once ownership is acquired, remaining checkpoint partials may be
+   adopted immediately without a 15-minute wait. Their prefixes are
+   reread and hashed before a ranged resume. Inline hashing, size check,
+   flush and final pathname identity check remain; recurring identity
+   checks every 64 MiB are omitted. On this NAS one such pathname query
+   stalled for 19.59 seconds while HTTP bytes were already queued.
+
+   **Upgrade:** stop all `archive-model/1` and other checkpoint writers
+   before using protocol 2. Old tools do not acquire this lock and must
+   never overlap new ones. Existing manifests, events, roots and partial
+   names remain readable; no checkpoint is migrated or recopied. Future
+   native install must take the same ownership guard (D-115).
+
+   Staging into local scratch retains the original timed claims: a partial
+   modified within 15 minutes is busy; an older one is renamed, touched,
+   rehashed and resumed. Staging checks pathname identity every 64 MiB and
+   before publication. These scratch claims depend on synchronized clocks;
+   the archive's exclusive writer ownership does not.
 4. **The manifest last.** Once the selected files are final, the writer
    reads the existing manifest, if any, merges (a file's `present` only
    goes from false to true, detection is redone for the variants it
@@ -589,8 +637,11 @@ never rewrites a file whose version it does not implement. A new optional
 key, a new event kind, a new origin directory, a new variant rule or a new
 detected scheme needs no new version: readers ignore unknown keys and
 event kinds (packs keep them), and writers preserve them. A change to a
-key's meaning, a name rule, the layout or the claim protocol needs a new
-version and a decision (D-062: a public on-disk surface). The catalog's
-files are derived and may be regenerated at any version; manifests and
-events are never migrated in place: a new version's writer adds new
-files beside the old, and the old stay readable while any tool reads them.
+key's meaning, a name rule or the stored layout needs a new
+format version and a decision (D-062: a public on-disk surface). The catalog's
+files are derived and may be regenerated at any version.
+The checkpoint writer protocol has its own version (2, D-115); it adds
+an operational lock without changing the stored version-1 schemas.
+Events and manifests are never migrated in place: a new version's writer
+adds new files beside the old, and the old stay readable while any tool
+reads them.

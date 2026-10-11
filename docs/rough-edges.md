@@ -28,6 +28,25 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-054: NAS SMB file locks do not reliably exclude a second archive host  (2026-10-10, status: worked-around)
+
+**Observed.** On the owner's Synology CIFS 3.1.1 mounts (`cache=strict`,
+no `nobrl`), an initial workstation/Spark `flock` test excluded the second
+host and allowed it after release. A repeat against a running archive
+writer allowed a Spark contender to acquire the same NAS lock inode while
+the workstation still held it. Other probes stalled in CIFS `open` before
+reaching nonblocking lock acquisition. A local `/proc/locks` entry is not
+proof of cross-host exclusion. The responsible server/client mechanism
+has not been isolated; do not attribute this to a specific kernel defect.
+
+**Workaround.** D-115 uses server-atomic directory creation for archive
+ownership and a host-local file lock for serialized recovery. Never steal
+ownership based on elapsed time; recover only a demonstrably dead local
+process. NAS metadata can still block. A periodic pathname query also
+stalled a download for 19.59 s with HTTP bytes queued, so locked archive
+transfers omit recurring identity checks while retaining final checks and
+inline hashes. See [model-archive.md](model-archive.md#writing-a-revision).
+
 ## RE-053: CTest reports a parameterized test as skipped, not failed, when one of its parameters skips and another fails  (2026-10-10, status: worked-around)
 
 Environment: `spark`, a `spark-native` build, CMake's `GoogleTest` module

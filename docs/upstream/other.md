@@ -6,6 +6,24 @@
 Projects with a single finding each. None has been reported, and none of
 their current versions was checked.
 
+## Linux CIFS / Synology SMB: archive lock exclusion is inconsistent (RE-054)
+
+- **Status:** unlocalized; no upstream report until the responsible
+  client/server behavior has been isolated.
+- **Environment:** owner workstation and Spark, the same Synology
+  CIFS 3.1.1 share with `cache=strict`, no `nobrl`, 2026-10-10.
+- **Problem:** an initial cross-host `flock` test excluded the second
+  client, but a repeat against a running writer allowed acquisition on
+  both clients. Other contenders stalled in `open`. Kernel lock records
+  alone do not establish server exclusion. This is an observation, not
+  an attribution to Linux or Synology.
+- **Workaround:** server-atomic directory ownership, a host-local recovery
+  mutex, and recovery only after proof of local owner death (D-115).
+- **Next investigation:** isolate lease/oplock handling on a separate
+  mount; preserve an exact client/server reproduction before reporting.
+- **Links:** [RE-054](../rough-edges.md#re-054-nas-smb-file-locks-do-not-reliably-exclude-a-second-archive-host--2026-10-10-status-worked-around),
+  [archive writer protocol](../model-archive.md#writing-a-revision).
+
 ## MLX: mx.quantize's documented affine formula is not what it computes
 
 - **Status:** open (a documentation fix; nothing reported).

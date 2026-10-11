@@ -22,7 +22,7 @@ repository's ignored .env) and is never printed. The archive defaults to
 $LLMP_ARCHIVE, else /mnt/llm/checkpoints (owner environment). A root that
 does not exist is an error unless --init-root makes it (once, on a new
 archive; its parent directory must exist). Exit codes:
-0 archived, 1 error, 2 usage, 3 files still held by another writer.
+0 archived, 1 error, 2 usage, 3 archive writer lock held (--no-wait).
 """
 
 import sys
@@ -40,6 +40,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import llmp_archive as arc  # noqa: E402
 import llmp_archive_detect as detect  # noqa: E402
 import llmp_hub as hublib  # noqa: E402
+import llmp_archive_progress as telemetry  # noqa: E402
 
 TOOL = f"archive-model/{arc.TOOL_VERSION}"
 DEFAULT_ARCHIVE = "/mnt/llm/checkpoints"
@@ -92,17 +93,24 @@ def main(argv=None, hub=None) -> int:
         pass
     def interrupt(signum, frame):
         if arc.cancel.is_set():  # the second one means it
-            raise KeyboardInterrupt
+            # Unwinding an interrupted executor join could release NAS ownership
+            # while a worker still writes. Stop all threads without running the
+            # lock's finally; the next writer must prove this process is dead.
+            os._exit(128 + signum)
         arc.cancel.set()  # every transfer stops at its next chunk and releases its partial file
     previous = {}
     if threading.current_thread() is threading.main_thread():
         for number in (signal.SIGTERM, signal.SIGINT):
             previous[number] = signal.signal(number, interrupt)
     scrub = lambda text: text  # noqa: E731
+    reporter = telemetry.Reporter.from_env()
     try:
         hub = hub or hublib.Hub(args.endpoint, hublib.token_from_env())
         scrub = hub.scrub
-        return run(args, hub)
+        return run(args, hub, reporter)
+    except arc.WriterBusy as error:
+        log(str(error))
+        return 3
     except (arc.ArchiveError, hublib.HubError, OSError) as error:
         print(f"archive-model: error: {scrub(str(error))}", file=sys.stderr)
         return 1
@@ -110,17 +118,29 @@ def main(argv=None, hub=None) -> int:
         print(f"archive-model: internal error: {type(error).__name__}: {scrub(str(error))}", file=sys.stderr)
         return 1
     finally:
+        reporter.close()
         for number, handler in previous.items():
             signal.signal(number, handler)
 
 
-def run(args, hub) -> int:
+def run(args, hub, reporter=None) -> int:
+    reporter = reporter or telemetry.Reporter()
     root = args.archive
     if args.dry_run:
         if (root / arc.ROOT_MARKER).exists():
             arc.open_root(root, create=False)
     else:
         arc.open_root(root, create=args.init_root)
+        reporter.phase("waiting for archive writer lock")
+        with arc.writer_lock(root, no_wait=args.no_wait, log=log):
+            return run_revision(args, hub, reporter)
+    return run_revision(args, hub, reporter)
+
+
+def run_revision(args, hub, reporter=None) -> int:
+    reporter = reporter or telemetry.Reporter()
+    reporter.phase("resolving metadata and checking recorded files")
+    root = args.archive
     repo, revision = args.repo, args.revision
     archived = arc.list_revisions(root, repo) if (root / arc.ROOT_MARKER).exists() else []
     manifest = None
@@ -170,6 +190,12 @@ def run(args, hub) -> int:
     missing = [e for e in chosen if not intact(e)]
     if args.repair:
         missing = chosen
+    missing_names = {e["path"] for e in missing}
+    reporter.plan(chosen, {e["path"] for e in chosen if e["path"] not in missing_names})
+
+    def progress(entry):
+        return lambda phase, received, checked=0: reporter.file(entry, phase, received, checked)
+
     total = sum(e["size"] for e in missing)
     log(f"{repo}@{commit}: {len(chosen)} files selected, {len(missing)} to fetch or check "
         f"({total / 1e9:.2f} GB) into {directory}")
@@ -188,12 +214,13 @@ def run(args, hub) -> int:
             recorded = listed.get(e["path"], e)
             if final.is_file() and recorded.get("sha256"):
                 try:
-                    arc.hash_file(final, recorded)
+                    arc.hash_file(final, recorded, progress=progress(e))
                 except arc.Mismatch as error:
                     log(f"{error}; fetching it again")
                     final.unlink()
     done, busy, errors = {}, [], []
     via = "move" if args.move else ("copy" if args.source else "hub")
+    reporter.phase("transferring files")
 
     def fetch(entry):
         try:
@@ -203,6 +230,7 @@ def run(args, hub) -> int:
             return entry, "error", hub.scrub(str(error))
 
     def fetch_one(entry):
+        reporter.file(entry, "opening file", 0)
         if args.source:
             src = args.source / entry["path"]
             if not src.is_file():
@@ -210,16 +238,20 @@ def run(args, hub) -> int:
             if args.move:
                 final = directory / entry["path"]
                 if final.is_file() and final.stat().st_size == entry["size"]:
+                    reporter.file(entry, "present", entry["size"])
                     return entry, "present", None
-                digest = arc.hash_file(src, entry)
+                digest = arc.hash_file(src, entry, progress=progress(entry))
                 arc.make_dirs(directory, final.parent)
+                reporter.file(entry, "publishing file", 0, entry["size"])
                 os.rename(src, final)
+                reporter.file(entry, "verified", entry["size"])
                 return entry, "done", digest
             opener = arc.file_opener(src)
         else:
             def opener(start, path=entry["path"]):
                 return hub.open_file(repo, commit, path, start)
-        status, digest = arc.transfer(directory, entry, opener, writer, log=log)
+        status, digest = arc.transfer(directory, entry, opener, writer, log=log, writer_locked=True,
+                                     progress=progress(entry))
         return entry, status, digest
 
     def record(entry, status, digest):
@@ -232,11 +264,12 @@ def run(args, hub) -> int:
         final = directory / entry["path"]
         if status == "present":
             if entry.get("sha256") is None:  # a small file another writer finished: hash it once
-                digest = arc.hash_file(final, entry)
+                digest = arc.hash_file(final, entry, progress=progress(entry))
             else:
                 digest = entry["sha256"]
             done[entry["path"]] = {"sha256": digest, "fetched": listed.get(entry["path"], {}).get(
                 "fetched") or {"time": arc.utc(), "host": arc.host_name(), "tool": TOOL, "via": "found"}}
+            reporter.file(entry, "verified", entry["size"])
             return
         done[entry["path"]] = {"sha256": digest, "fetched": {"time": arc.utc(), "host": arc.host_name(),
                                                              "tool": TOOL, "via": via}}
@@ -256,6 +289,7 @@ def run(args, hub) -> int:
         arc.sleep(WAIT_POLL)
         pending = list(busy)
     if done:  # what finished is listed even when something else failed
+        reporter.phase("publishing manifest and catalog")
         write(args, root, repo, commit, hub_info, files, done, directory, writer)
     if errors or arc.cancel.is_set():
         for line in errors[:10]:

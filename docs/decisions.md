@@ -39,6 +39,60 @@ one Spark and on two.
 
 ---
 
+## D-115: One archive checkpoint writer, enforced across hosts by atomic NAS directory ownership  (2026-10-10, status: accepted by the owner's single-writer requirement; supersedes D-114's lock-free checkpoint claims)
+
+**Decision.** Checkpoint writer protocol version 2 serializes normal
+`archive-model/2` runs by atomically creating `<root>/.llmp-writer/` and
+publishing its `owner.json` (`llmp-archive-writer`, format version 2).
+Ownership spans revision state reads, all file workers, manifest and
+catalog publication. Other downloaders wait, or exit 3 with `--no-wait`.
+Remove ownership on normal completion and handled failure after every
+worker finishes. A repeated stop signal terminates the process without
+releasing ownership; recovery must then prove the owner dead. Future native
+install takes the same guard. Catalog events remain independently safe
+for concurrent staging/import writers and compaction.
+
+A host-local, per-user `flock` serializes local attempts and recovery,
+including archive path aliases. Recover a guard only when its recorded
+machine, boot, user, PID and mount namespaces and local mutex
+device/inode match, and its PID is absent or its
+process start time differs. Foreign, rebooted or incomplete ownership
+fails closed until independently recovered; never steal a paused or
+partitioned writer's guard merely because time passed. Linux CIFS file
+locks are not used for cross-host exclusion.
+
+A holder can immediately adopt checkpoint partials left by a previous
+writer. Remove periodic pathname identity queries while retaining inline
+hashes, resumed-prefix hashing, length checks, flush and final identity
+check. Local scratch staging retains its original timed claims. Stop all
+old checkpoint writers before adoption: old tools ignore the new guard.
+
+**Context.** The owner requested normal downloader locking: there must
+never be more than one active archive writer. A 2026-10-10 capture
+measured one periodic NAS pathname query at 19.59 s while HTTP bytes were
+queued; 456 captured 4 MiB writes each took under 5 ms. An initial two-host
+`flock` test showed exclusion, but a repeat against the active batch
+allowed a Spark contender to acquire the same file while the workstation
+still held it; other probes stalled in CIFS open. That primitive failed
+validation. Atomic directory creation rejected a second host with
+`EEXIST` while ownership existed; the final two-host test also confirmed
+Spark acquisition after workstation release, then workstation acquisition
+after Spark release. Brief stale metadata may yield a transient busy result;
+waiting retries it. NAS operations can still stall, so a blocked request
+does not imply permission to create another writer.
+
+**Consequences.** Writer protocol and tool version become 2; root,
+manifest, event, pack and catalog stored schemas stay at format version 1.
+The additional ownership record has its own kind/version and is not part
+of checkpoint identity. Readers require no changes; this separates writer
+coordination versioning from stored-schema versioning in D-114. A crash
+with unconfirmed ownership may require manual recovery. The batch's
+frozen tools upgrade only after every prior child has exited, preserving
+acquired files and interrupted partials.
+
+**Reopen if** the storage provider lacks atomic directory creation, or
+concurrent checkpoint downloaders become a required workload.
+
 ## D-114: The model archive: source checkpoints on the long-term store, one directory per commit with a manifest, an event-sourced catalog; import straight from it, install into it with libcurl  (2026-10-10, status: accepted by the owner, 2026-10-10 (requirements, the token in an ignored `.env`, and libcurl "is appropriate"); the formats are proposed for review with their slice; amends D-054's identity rule, its staging default and its artifact archive's use; uses D-063's `checkpoints` role; on-disk public interfaces under D-016 and D-062)
 
 **Decision.** [model-archive.md](model-archive.md) is the specification.
