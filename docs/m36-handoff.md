@@ -21,16 +21,14 @@ jobs through `spark-job`, the full Spark set once per slice).
    round is clean or finds only low-severity issues (fixed without another
    round). Whoever changes code last runs the full Spark set on the final
    state (AGENTS.md rule 10).
-3. Merge: commit the worktree's work as a WIP commit on its own branch, then on
-   `main` `git merge --squash <branch>`; resolve conflicts (keep both sides'
-   intent; semantic conflicts need the reviewers' merge notes); run the merge
-   check on a dedicated copy (`spark:~/src/m36-main` or
-   `spark-b:~/src/m36-main`, steps files in `~/scratch/m36-main/`): shared
-   set `-LE 'models|timing'`, CPU-only unit tests, and the touched areas'
-   model tests in exclusive jobs under 600 s.
-4. Commit on `main` with a message file: `[M3.6] <what landed>`, the body
-   saying what changed, the review rounds and the check counts. Tick the plan
-   sub-item. Remove the worktree and its Spark copies.
+3. Merge: root carries the reviewed, checked slice onto `main`, preserving
+   its exact source identity and both sides of any integration. Semantic
+   conflicts need review. Main builds and passes affected integration checks
+   on a dedicated Spark copy before root commits.
+4. Commit on `main`: `[M3.6] <what landed>`, recording the review and checks.
+   Tick the plan sub-item. Keep unmerged worktrees and milestone evidence
+   until their work lands or the owner directs otherwise; final cleanup
+   follows `workflow.md`.
 
 Family migrations add the 1% speed gate (docs/experiments/m36-baselines/README.md:
 protocol, frozen baselines `~/.local/share/llmp/m36-baseline/1facc957-fixed`
@@ -51,6 +49,13 @@ lowering (G3a and G3b; see `git log`); artifact format v1 and its reader
 while active (`4b8b35a9`, `961fdefe`); license tags for ported code
 (`019dd77b`); AGENTS.md working rules (`db6cdff0`); `.env` through mise
 (`171717ef`).
+
+Latest completed work (2026-10-11): sole-owner Qwen3.8 serving (`e2fd5bab`),
+archive writer ownership/progress (`21ebd562`), and owned GGUF Gemma target
+normalization N3b1 (`f7401054`) are on main. N4a's copy-only v1 writer and CLI
+have clean independent challenge, exact real Gemma 2 publication/reuse, and
+2,530 native / 1,985 CPU / all 114 model checks with no skips; main build, 43 integration checks and quality gates passed. Remaining N3b domains, N4 admission and N5 execution
+qualification remain open.
 
 Recent slices and handoffs (`git worktree list` shows current worktrees;
 update this section as each slice lands):

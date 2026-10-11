@@ -118,10 +118,13 @@ TEST(Cli, Help) {
   for (const std::string_view option : {"--help", "-h"}) {
     const Result result = RunWith({option});
     EXPECT_EQ(result.status, llmp::cli::kExitOk) << option;
-    EXPECT_THAT(result.out,
-                StartsWith("Usage: llmp doctor [--config FILE]\n       llmp --version\n"))
-        << option;
+    EXPECT_THAT(result.out, StartsWith("Usage: llmp doctor [--config FILE]\n")) << option;
     EXPECT_THAT(result.out, HasSubstr("\n  doctor ")) << option;
+    EXPECT_THAT(result.out, HasSubstr("llmp import SOURCE --store DIRECTORY [--metadata-mib N]\n"))
+        << option;
+    EXPECT_THAT(result.out, HasSubstr("\n  import ")) << option;
+    EXPECT_THAT(result.out, HasSubstr("destination artifact store (required)")) << option;
+    EXPECT_THAT(result.out, HasSubstr("llmp --version\n")) << option;
     EXPECT_EQ(result.err, "") << option;
   }
 }

@@ -14,17 +14,20 @@
 #include "base/build_info.h"
 #include "base/report.h"
 #include "cli/doctor.h"
+#include "cli/import.h"
 
 namespace llmp::cli {
 namespace {
 
 constexpr std::string_view kUsage =
     "Usage: llmp doctor [--config FILE]\n"
+    "       llmp import SOURCE --store DIRECTORY [--metadata-mib N]\n"
     "       llmp --version\n"
     "       llmp --help\n";
 
 constexpr std::string_view kHelp =
     "Usage: llmp doctor [--config FILE]\n"
+    "       llmp import SOURCE --store DIRECTORY [--metadata-mib N]\n"
     "       llmp --version\n"
     "       llmp --help\n"
     "\n"
@@ -35,6 +38,9 @@ constexpr std::string_view kHelp =
     "             this host cannot run this build\n"
     "    --config FILE  the node's configuration (default\n"
     "             /etc/llmp/llmp.toml and /etc/llmp/llmp.d/)\n"
+    "  import     verify a checkpoint and publish a native v1 artifact\n"
+    "    --store DIRECTORY  destination artifact store (required)\n"
+    "    --metadata-mib N   normalization and writer metadata budget (4096)\n"
     "  --version  print the version, commit, license profile, SDK and target\n"
     "  --help     print this help\n";
 
@@ -73,9 +79,11 @@ int Run(std::span<const std::string_view> args, std::FILE* out, std::FILE* err) 
     return UsageError(err, "no command or option given");
   }
   const std::string_view command = args.front();
-  if (command != "doctor" && command != "--version" && command != "--help" && command != "-h") {
+  if (command != "import" && command != "doctor" && command != "--version" && command != "--help" &&
+      command != "-h") {
     return UsageError(err, std::format("unknown command or option '{}'", command));
   }
+  if (command == "import") return Import(args.subspan(1), out, err);
   DoctorOptions options;
   std::size_t used = 1;
   if (command == "doctor" && args.size() > 1 && args[1] == "--config") {

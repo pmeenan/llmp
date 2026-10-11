@@ -1296,3 +1296,7 @@ add_executable(import_models_test import_models_test.cc)
 target_link_libraries(import_models_test PRIVATE llmp_import llmp_spec llmp_model llmp_artifact
                                                  llmp_reference_kernels)
 llmp_gtest(import_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
+
+add_executable(import_writer_test import_writer_test.cc)
+target_link_libraries(import_writer_test PRIVATE llmp_cli llmp_import llmp_components llmp_spec llmp_artifact llmp_base)
+llmp_gtest(import_writer_test TEST_PREFIX unit. PROPERTIES LABELS unit)

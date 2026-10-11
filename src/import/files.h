@@ -33,9 +33,25 @@
 #include <string>
 
 #include "artifact/artifact.h"
+#include "base/sha256.h"
 #include "import/error.h"
 
 namespace llmp::import {
+
+// Bytes interpreted by a reader, authenticated again during source streaming.
+// Current readers interpret one contiguous prefix per file. Unread payload
+// contributes no bookkeeping; an unparsed kept file has no receipt.
+struct ParsedPrefix {
+  std::uint64_t bytes = 0;
+  base::Sha256Digest sha256{};
+  bool operator==(const ParsedPrefix&) const = default;
+};
+static_assert(sizeof(ParsedPrefix) == 40);
+
+// Publication directories: persist each new directory and its entry in its
+// parent before proceeding. With parents=false, never create a missing parent
+// (in particular an archive root that disappeared after an unmount).
+std::expected<void, Error> CreateImportDirectory(const std::filesystem::path& path, bool parents);
 
 // An open regular file, with what identifies it.
 struct OpenFile {
@@ -44,6 +60,7 @@ struct OpenFile {
   std::uint64_t bytes = 0;
   std::uint64_t device = 0;
   std::uint64_t inode = 0;
+  ParsedPrefix parsed{};
 };
 
 // The file at `path` (kFileType when it does not exist or is not a regular

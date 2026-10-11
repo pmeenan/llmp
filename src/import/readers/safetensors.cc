@@ -427,7 +427,7 @@ std::uint64_t HeaderLength(std::span<const std::byte, 8> length) {
 }
 
 // One shard's tensors from its open file, and its format.
-std::expected<std::vector<Tensor>, Error> ReadShard(const OpenFile& f, std::uint32_t file,
+std::expected<std::vector<Tensor>, Error> ReadShard(OpenFile& f, std::uint32_t file,
                                                     ShardFormat& format) {
   std::array<std::byte, 8> length{};
   if (f.bytes < length.size()) {
@@ -447,6 +447,7 @@ std::expected<std::vector<Tensor>, Error> ReadShard(const OpenFile& f, std::uint
   if (auto ok = ReadExactly(f.fd.get(), 8, std::as_writable_bytes(std::span(header)), file); !ok) {
     return std::unexpected(ok.error());
   }
+  f.parsed = {8 + n, base::Sha256().Update(length).Update(header).Finish()};
   return ParseHeader(header, 8 + n, f.bytes, file, format);
 }
 
@@ -665,7 +666,8 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
                        .path = opened.path,
                        .bytes = opened.bytes,
                        .device = opened.device,
-                       .inode = opened.inode});
+                       .inode = opened.inode,
+                       .parsed = {opened.bytes, base::Sha256().Update(*text).Finish()}});
     return std::move(*text);
   };
   const auto document =
@@ -785,7 +787,8 @@ std::expected<HfDirectory, Error> ReadHfDirectory(const std::filesystem::path& d
                            .path = f->path,
                            .bytes = f->bytes,
                            .device = f->device,
-                           .inode = f->inode});
+                           .inode = f->inode,
+                           .parsed = f->parsed});
   }
   for (std::size_t t = 0; t < tensors.size(); ++t) {
     if (!seen.insert(tensors[t].name).second) {

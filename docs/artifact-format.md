@@ -28,6 +28,41 @@ versions. Every v0 artifact is re-imported; nothing migrates in place
 The sections up to [Version 1](#version-1) describe v0, and v1 where it
 does not say otherwise.
 
+## Native writer
+
+`llmp import SOURCE --store DIRECTORY [--metadata-mib N]` writes version 1
+from the native normalizer's closed source domain (currently Gemma 2, 3 and
+4 target GGUFs). It embeds `spec.json`, retains GGUF metadata, preserves
+weight encodings and derives layer, row-table, head, global and expert groups
+from the spec's bindings. Source-converter folds stay in the spec; copying
+such bytes does not claim an importer-applied fold.
+
+Each reader records SHA-256 over the exact header/configuration prefix it
+parsed. The writer streams each source file with a 1 MiB buffer, checks that
+prefix receipt, hashes the complete file and writes its selected ranges.
+An archive manifest supplies an additional required complete-file identity.
+Changed identity, size, parsed bytes or archive hash abandons the private
+staging directory. Sparse zero padding is included in shard and chunk hashes.
+After structural, embedded-spec and complete-file/chunk verification, the
+writer syncs the staged files and directories and publishes by one rename.
+New store ancestors and archive catalog/event directories are synced along
+with their containing directories before reporting durable publication.
+An existing artifact is verified before reuse. This first standalone writer
+serializes publication with `.staging/native-import.lock`; its incomplete
+private staging directories are never installed artifacts. It does not yet
+sweep directories left by a process killed without cleanup.
+
+The explicit metadata budget covers normalization plus writer working
+storage, excluding the container readers' bounded input storage. It is an
+allocation ceiling, not process or runtime memory admission. Re-import and
+execution qualification remain N5; producing a valid artifact does not claim
+a newly admitted checkpoint.
+
+*2026-10-11:* actual Gemma 2 Q8_0 import and verified reuse matched all
+288 tensor payloads (2,778,448,896 bytes), 1,340 chunks and the same artifact ID;
+79 focused tests and the final combined checks passed: 2,530 native,
+1,985 CPU, all 114 model tests and quality gates, with no skips. Main build, 43 integration checks and quality gates passed.
+
 ## Terms
 
 - **Artifact.** One immutable, content-addressed directory holding one

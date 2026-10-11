@@ -12,15 +12,16 @@ from each checkpoint and where it is installed. The importer reads a
 checkpoint straight from the archive, or from a copy staged on a Spark's
 NVMe for repeated testing.
 
-**Status (2026-10-10).** Stored format version 1; checkpoint writer
+**Status (2026-10-11).** Stored format version 1; checkpoint writer
 protocol version 2 (D-115). The interim
 Python tools (`tools/archive-model`, `tools/archive-catalog`,
 `tools/stage-model`) write and read exactly this format, so downloads can
-start now. Native support follows: `llmp import` of an archived or staged
-checkpoint in M3.6's importer slice N4, `llmp install` (fetching into the
-archive) in M5 ([plan](plan.md)). Not yet built anywhere: the per-host
-report (`report-host`, [below](#imports-installs-and-stages)) and recording
-imports from the native importer.
+start now. Native `llmp import SOURCE --store DIRECTORY` now consumes archived or
+staged sources within the normalizer's closed domain (Gemma 2/3/4 target
+GGUFs); its source and publication checks are described in
+[artifact-format.md](artifact-format.md#native-writer). Native `llmp install`
+(fetching into the archive) remains in M5 ([plan](plan.md)). The per-host
+report (`report-host`, [below](#imports-installs-and-stages)) is not yet built.
 
 The [initial model set](model-archive-initial-set.md) gathers the planned
 models, formats, quantizations and companions, with existing copies to
@@ -511,7 +512,9 @@ D-109's rule applies: what a user runs is native, no Python.
   manifest, the importer finds it (the directory, or the nearest parent
   up to the revision root), parses it as untrusted input under the rules
   above, and every source file it reads must be listed present; a file it
-  needs that the manifest does not list is refused. Without a manifest the
+  needs that the manifest does not list is refused. Its complete weight-file
+  set must equal exactly one variant's weight members; subsets and mixed
+  independent weight containers are refused before publication. Without a manifest the
   importer works as it does today, hashing what it reads. From the archive
   the importer reads each needed byte once: it streams each source file in
   order, hashes it, and writes the byte ranges the artifact needs into its

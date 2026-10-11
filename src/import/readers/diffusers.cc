@@ -168,7 +168,8 @@ std::expected<Checkpoint, Error> ReadDiffusers(const std::filesystem::path& dire
                      .path = index_file->path,
                      .bytes = index_file->bytes,
                      .device = index_file->device,
-                     .inode = index_file->inode});
+                     .inode = index_file->inode,
+                     .parsed = {index_file->bytes, base::Sha256().Update(*text).Finish()}});
   std::uint64_t kept = 0;
   for (std::size_t r = 0; r < index->roles.size(); ++r) {
     const std::string& role = index->roles[r];

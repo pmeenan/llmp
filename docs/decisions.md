@@ -39,6 +39,39 @@ one Spark and on two.
 
 ---
 
+## D-116: Native import CLI and verified v1 publication  (2026-10-11, status: reviewed, pending N4 landing; implements D-109 and D-114)
+
+**Decision.** `llmp import SOURCE --store DIRECTORY [--metadata-mib N]`
+imports a source checkpoint into an explicitly selected local artifact store.
+The command is additive; artifact and archive schemas remain version 1.
+The metadata limit defaults to 4096 MiB and covers the newly requested
+normalization and writer storage together; the container readers' separate
+bounded input storage remains additional. This is a standalone importer,
+not runtime/catalog memory admission. Exit 0 means publication or verified
+reuse and, for an archive source, a recorded import event; 1 is a processing
+failure and 2 a usage error. A catalog failure after publication explicitly
+reports the published artifact instead of implying rollback.
+
+**Context.** N3b supplies closed, owned normalization plans. The first writer
+consumes their copy routes and model specs, derives groups from component
+bindings, and splits expert arrays without changing their encodings.
+Its current executable source domain is N3b's Gemma 2/3/4 target GGUFs;
+other normalization domains and family admission remain separate work.
+
+**Consequences.** Each source parser records a fixed-size digest receipt
+for the exact prefix it interpreted. A bounded full-file stream checks that
+receipt while hashing every input byte and copying selected ranges. Archive
+sources additionally match their listed-present identities. The writer
+validates the staged artifact and embedded spec, hashes payloads and chunks,
+flushes files and directories, and publishes by one rename under a per-store
+native import lock. Existing content is fully verified before reuse. A
+failed source stream publishes nothing. Catalog events use D-114's independent
+immutable event files; imports never take D-115's checkpoint-writer guard.
+
+**Reopen if.** Runtime import-job admission replaces the standalone path,
+additional writer transformations need options that affect artifact identity,
+or a future CLI revision changes these arguments or exit meanings.
+
 ## D-115: One archive checkpoint writer, enforced across hosts by atomic NAS directory ownership  (2026-10-10, status: accepted by the owner's single-writer requirement; supersedes D-114's lock-free checkpoint claims)
 
 **Decision.** Checkpoint writer protocol version 2 serializes normal

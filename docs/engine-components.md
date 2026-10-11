@@ -1910,10 +1910,17 @@ Each part has its own cursor so either can arrive first. Cursor
 exhaustion describes complete copy ranges, not successful writes;
 the writer must track that separately. No new fold identity is added.
 
+The native copy-only writer (`import/writer.h`) consumes owned normalized
+plans and records their specs in v1 artifacts. `llmp import` streams and
+verifies ordinary or archived sources, including exact parsed-prefix
+receipts; archived imports record independent catalog events after
+publication. Its current source domain is the normalizer's Gemma target
+GGUFs. See [the writer contract](artifact-format.md#native-writer).
+
 Still to come: AWQ's and GPTQ's layouts, the complete fold catalog (MLX's and
 EXL3's sources need theirs: MLX's stacked experts and moved convolution
-axes, EXL3's packed sign vectors), the writer of format version 1 (its
-reader has landed, D-113), the CLI and the admission gate.
+axes, EXL3's packed sign vectors), the remaining writer normalization
+domains and the admission gate.
 
 ## Execution
 

@@ -21,6 +21,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Add `llmp import SOURCE --store DIRECTORY` for native v1 publication
+  from normalized Gemma 2/3/4 target GGUFs, including archived and staged
+  sources, source-header and full-file verification, embedded specs,
+  expert slicing and archive import events. Artifact/archive schemas
+  remain version 1; family re-import and admission qualification remain owed.
+
 - Add an internal sole-owner Qwen3.8 component serving route for native
   MTP and GGUF migration checks, with funded startup ownership and draft
   context admission. The family migration remains in progress.

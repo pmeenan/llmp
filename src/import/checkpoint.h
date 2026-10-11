@@ -71,6 +71,7 @@ struct SourceFile {
   std::uint64_t bytes = 0;
   std::uint64_t device = 0;
   std::uint64_t inode = 0;
+  ParsedPrefix parsed{};
 };
 
 // A file a reader would have kept verbatim but left out because it

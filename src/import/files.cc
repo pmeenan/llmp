@@ -19,6 +19,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "artifact/artifact.h"
 #include "import/error.h"
@@ -39,6 +40,45 @@ bool Beneath(const fs::path& path, const fs::path& root) {
 }
 
 }  // namespace
+
+std::expected<void, Error> CreateImportDirectory(const fs::path& path, bool parents) {
+  std::error_code error;
+  auto absolute = fs::absolute(path, error);
+  if (error || path.empty()) return Fail(Rule::kIo, "invalid publication directory", kNoItem);
+  std::vector<fs::path> missing;
+  auto at = absolute;
+  for (;;) {
+    const auto status = fs::status(at, error);
+    if (error && error != std::errc::no_such_file_or_directory)
+      return Fail(Rule::kIo, "cannot examine publication directory", kNoItem);
+    if (fs::exists(status)) {
+      if (!fs::is_directory(status))
+        return Fail(Rule::kIo, "publication parent is not a directory", kNoItem);
+      break;
+    }
+    if ((!parents && !missing.empty()) || missing.size() == 128 || at == at.parent_path())
+      return Fail(Rule::kIo, "publication directory has no available parent", kNoItem);
+    missing.push_back(at);
+    at = at.parent_path();
+  }
+  const auto sync = [](const fs::path& directory) -> std::expected<void, Error> {
+    artifact::FileDescriptor fd(::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (!fd.valid() || ::fsync(fd.get()) != 0)
+      return Fail(Rule::kIo, "cannot persist publication directory ancestry", kNoItem);
+    return {};
+  };
+  // Also cover retry after an earlier parent fsync failed: that last created
+  // entry may now exist but its parent still needs to be persisted.
+  if (auto ok = sync(at.parent_path()); !ok) return ok;
+  for (auto next = missing.rbegin(); next != missing.rend(); ++next) {
+    error.clear();
+    fs::create_directory(*next, error);
+    if (error) return Fail(Rule::kIo, "cannot create publication directory", kNoItem);
+    if (auto ok = sync(*next); !ok) return ok;
+    if (auto ok = sync(next->parent_path()); !ok) return ok;
+  }
+  return {};
+}
 
 std::expected<OpenFile, Error> OpenCheckpointFile(const fs::path& path, std::uint64_t file) {
   auto f = OpenCheckpointFileIfPresent(path, file);

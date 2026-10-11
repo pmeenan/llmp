@@ -1833,6 +1833,17 @@ each is checked against the design as M3.6 proceeds.
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
             catalog import events.
+            - [x] **N4a — closed copy-only writer and CLI:** Gemma target
+                  plans, embedded specs, exact archived/staged variant closure,
+                  authenticated bounded streaming and independent import events.
+                  79 focused Spark host tests and repeat independent challenge
+                  pass (2026-10-11); final combined checks passed 2,530 native,
+                  1,985 CPU, all 114 model tests and quality gates, with no skips. Actual Gemma 2 Q8_0 publication
+                  and reuse verified all 288 tensors, 2,778,448,896 payload bytes
+                  and 1,340 chunks with the same artifact ID. Main build, 43 integration checks and quality gates passed.
+            Applied folds, remaining normalized domains and runtime import
+            admission remain open in N4; N5's all-artifact re-import and serving
+            qualification remain separate.
       - [ ] **N5 — re-import and admission gates:** every current artifact,
             lossless equivalence and qualified family execution.
 

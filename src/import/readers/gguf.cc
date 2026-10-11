@@ -366,7 +366,7 @@ std::expected<File, Error> Interpret(const gg::Header& header, std::uint64_t siz
 
 // Reads the file's header in growing prefixes, within what the budget
 // leaves of the header bytes, and interprets it.
-std::expected<File, Error> ReadFile(const OpenFile& f, std::uint32_t file, Budget& budget) {
+std::expected<File, Error> ReadFile(OpenFile& f, std::uint32_t file, Budget& budget) {
   const std::uint64_t cap = std::min(f.bytes, budget.header);
   std::vector<std::byte> buffer;
   std::uint64_t have = 0;
@@ -380,6 +380,8 @@ std::expected<File, Error> ReadFile(const OpenFile& f, std::uint32_t file, Budge
     auto header = gg::Parse(buffer, HeaderLimits());
     if (header) {
       budget.header -= header->end;  // within `cap`
+      f.parsed = {header->end,
+                  base::Sha256().Update(std::span(buffer).first(header->end)).Finish()};
       return Interpret(*header, f.bytes, file, budget);
     }
     if (header.error().fault != gg::Fault::kTruncated || have == f.bytes) {
@@ -456,16 +458,19 @@ std::expected<Checkpoint, Error> ReadGguf(const std::filesystem::path& path) {
   // One file's header, its file open only while it is read.
   const auto read = [&](const std::filesystem::path& at, std::string name,
                         std::uint32_t index) -> std::expected<File, Error> {
-    const auto f = OpenCheckpointFile(at, index);
+    auto f = OpenCheckpointFile(at, index);
     if (!f) {
       return std::unexpected(f.error());
     }
+    auto parsed = ReadFile(*f, index, budget);
+    if (!parsed) return std::unexpected(parsed.error());
     sources.push_back({.name = std::move(name),
                        .path = f->path,
                        .bytes = f->bytes,
                        .device = f->device,
-                       .inode = f->inode});
-    return ReadFile(*f, index, budget);
+                       .inode = f->inode,
+                       .parsed = f->parsed});
+    return parsed;
   };
   std::vector<File> files;
   auto head = read(path, path.filename().string(), 0);
