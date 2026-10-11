@@ -30,6 +30,7 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
 
@@ -897,11 +898,12 @@ std::expected<const PolicyRule*, std::string> DefaultRule(const Mapping& mapping
 }
 
 std::span<const Mapping* const> Mappings() {
-  static const std::array<const Mapping*, 8> all = {
+  static const std::array<const Mapping*, 9> all = {
       &mappings::Gemma2Mapping(), &mappings::Gemma3Mapping(),
       &mappings::Gemma4Mapping(), &mappings::Gemma4AssistantMapping(),
       &mappings::Qwen38Mapping(), &mappings::Qwen38MtpMapping(),
-      &mappings::Dsv4Mapping(),   &mappings::DsparkMapping()};
+      &mappings::Dsv4Mapping(),   &mappings::DsparkMapping(),
+      &mappings::Qwen2Mapping()};
   return all;
 }
 

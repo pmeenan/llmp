@@ -208,8 +208,8 @@ struct FoldRule {
 // resource exists (otherwise the resources stay as they are).
 struct V0Assembly {
   std::string_view stem{};
-  std::array<std::string_view, 3> suffixes{};  // the parts' resources; an empty one: none
-  std::array<format::PartRole, 3> roles{};
+  std::array<std::string_view, 4> suffixes{};  // the parts' resources; an empty one: none
+  std::array<format::PartRole, 4> roles{};
   format::Encoding encoding = format::Encoding::kF32;
   format::Layout layout = format::Layout::kDense;
   std::uint8_t stacked = 1;

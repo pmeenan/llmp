@@ -1011,9 +1011,12 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 ## M2 fixtures
 
 Small dense models from the backend proof, kept as fixtures. They run
-only in the backend-proof harnesses (`llmp_fp16_exec`,
-`llmp_fp16_paged`, `llmp_exl3_paged` and others), on recorded token
-IDs, and are never served. M5 serves them end to end and completes their
+in fixture harnesses (`llmp_fp16_exec`, `llmp_fp16_paged`,
+`llmp_exl3_paged` and the shared-engine controls), on recorded token
+IDs, and are never served. M3.6's shared catalog describes all three
+fixtures; shared FP16 execution matches both frozen 76-token control
+trajectories. Historical heldout and state lifecycle controls, and EXL3
+shared execution, remain open ([migration evidence](experiments/m36-qwen2/README.md)). M5 serves them end to end and completes their
 rows ([plan](plan.md)).
 
 | | Qwen2.5-0.5B-Instruct FP16 | Qwen2.5-0.5B-Instruct EXL3 4.0 / 4.5 bpw |

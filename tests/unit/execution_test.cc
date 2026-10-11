@@ -455,6 +455,27 @@ TEST(CapabilityTest, TuningDataGatesWhatNeedsIt) {
             std::vector<std::string>{"fake.mm.plain"});
 }
 
+TEST(CapabilityTest, TuningFactsPreserveThePinnedOutputEncoding) {
+  const ir::OpKey mm = ir::Primitive(ir::Op::kMatMul);
+  const auto registry =
+      Registry::Create({Capable("fake.mm.pinned", {.op = mm, .needs_tuning = true})}).value();
+  const std::array tuned{ex::TunedShape{.implementation = "fake.mm.pinned",
+                                        .rows = 145,
+                                        .k = 896,
+                                        .n = 128,
+                                        .output_encoding = Encoding::kF16}};
+  ex::CapabilityQuery query{.op = mm, .rows = 145, .k = 896, .n = 128, .tuned = tuned};
+  EXPECT_TRUE(ex::Candidates(registry, query).empty());
+  const std::array wrong{
+      ex::OperandFormat{.operand = ex::kOutputOperand, .encoding = Encoding::kF32}};
+  query.operands = wrong;
+  EXPECT_TRUE(ex::Candidates(registry, query).empty());
+  const std::array right{
+      ex::OperandFormat{.operand = ex::kOutputOperand, .encoding = Encoding::kF16}};
+  query.operands = right;
+  EXPECT_EQ(ex::Candidates(registry, query).size(), 1U);
+}
+
 TEST(CapabilityTest, ADeclaredCapabilityIsPartOfTheIdentity) {
   const Implementation plain = Fake("fake.mm", Operation::kMatMul);
   Implementation declared = plain;

@@ -1,0 +1,182 @@
+{
+  "date": "2026-10-11",
+  "scope": "G5a complete; FP16 shared lowering and control-trajectory progress only",
+  "host": "spark-b",
+  "serving": false,
+  "speed_baseline": false,
+  "checkpoint": "07",
+  "source_sha256": {
+    "src/components/attention.cc": "cac27e4aea57e277a3ecace2556c2fdf970b96dc76e78861ffb609d8fa361361",
+    "src/components/blocks.cc": "c13776786e2ef3ebd7e2eeef00390649f3ec26d259b5118124a360f96a3de3b6",
+    "src/components/defs.h": "e1bd2eed58a31c12d1755056ab08bfbed5656c1e24925ba61c214b2bbb4a4f66",
+    "src/components/ffn.cc": "e179acaa0b59c48a98155d1681f7f285fc3cf24cd4fb5ec1a4742be179d9e31a",
+    "src/execution/registry.cc": "d46855832a951a3cd2c11848f8ad00d8bdcc7a768c416f884a89185a910ea49a",
+    "src/execution/registry.h": "b9f6dfd332b1a133c26a14ca2a53cd309d3c78b4363528aa6d8510ac8abcadba",
+    "src/kernels/exl3/CMakeLists.txt": "4f764436415cb960209daf4afd8baf8721acd35066248ea174268401b213866b",
+    "src/kernels/exl3/reconstruction_tuning.cc": "835f387e776b8bdd5c8e2ff7eb89a41baeec5c4106fab5946daaecbe9a2aced3",
+    "src/kernels/exl3/reconstruction_tuning.h": "24c990821e9c3191f1d548ef20a428b49039ea9ba31e7ae01aa2d447b79cd013",
+    "src/kernels/ggml/capabilities.cc": "4fc283ffa46a9b3300c58db76380b69419926642edfa19c83e6b79d7943627a2",
+    "src/kernels/ggml/graph_plan.cc": "73a7b5992a9ce60209ef48b9bb6bdb4b3027835c3ec56cc5813cdbf8548a5e87",
+    "src/kernels/ggml/graph_plan.h": "ab91e76bfd6893848513502f4f77946a0d2c2f43e89b8b5faff6a6b0b7ef7b50",
+    "src/kernels/ggml/lower.cc": "bf6abb5530530bb37a2c843182e2e1196c0f9f7c8313045e226b1f6c390ebf59",
+    "src/planner/pattern.cc": "8270f1df99bcfcc9ba3426412978c3cbbfed9b27e860179ab34e62ec817f87af",
+    "src/spec/CMakeLists.txt": "a32613483a76a8500cde2bad28807468fbb6188c1d391364697183e2c9a8ca5c",
+    "src/spec/mapping.cc": "0a239c2eb9e9ebb40cc08ef5e5f697f74c17b08ac2284691761208e98a5d6513",
+    "src/spec/mapping.h": "b10953b72e720344db79917eda09c3b4b49de6d379ebef6e7805e3c1afeaf184",
+    "src/spec/mappings/qwen2.cc": "5fdcf6fb438f8bf4cf335f539caf2aff126d8345af063ba304bbcea5b8f557ca",
+    "src/spec/mappings/qwen2.h": "6d6ddba61794dcf6017fff7e65f89cb1454130b310ad291e8c00217010862db0",
+    "tests/unit/CMakeLists.txt": "ede2a67455a4fbe41df35be93670a7c6bdf388f24ad55f1d1bcbf34c365b97a3",
+    "tests/unit/component_runner_qwen2_gpu_test.cc": "b035d4f23cc40d6767044c173cfd621ab38f4baa6f8062d41e203f429f69f88e",
+    "tests/unit/components_qwen2_models_test.cc": "f446687f80cd11d430e5934b95822e3933e8b6529a2ae87d611059317a730a64",
+    "tests/unit/components_qwen2_test.cc": "4c29a1f7478238eb1aabb0ba32df954bf9372d2c3aac52031623d76783f8579f",
+    "tests/unit/components_test.cc": "f6a856f423a92b5288574205fde8be3d2dee079aabb63377c0c7a3081af4a707",
+    "tests/unit/execution_test.cc": "4a8092b8d22d8936d5ce37fd379954e56c7b7914e2f5cd490639f0b0c07dbbfa",
+    "tests/unit/exl3_validate_test.cc": "067b00274b09c998074f46bc43712b08f8594643e6762ca8bd388d910d7803c3"
+  },
+  "checks": [
+    {
+      "run": "g5-shared-native07",
+      "kind": "native build + focused host",
+      "passed": 32,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "g5-shared-controls07",
+      "kind": "actual FP16 fixture",
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "g5-shared-models02",
+      "kind": "metadata and shared specs only",
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "g5-final-shared",
+      "kind": "full native non-model",
+      "passed": 2539,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "g5-final-shared",
+      "kind": "full CPU non-model",
+      "passed": 1994,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "g5-final-format",
+      "kind": "native affected after formatting",
+      "passed": 96,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "g5-final-format",
+      "kind": "CPU affected after formatting",
+      "passed": 85,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "g5-final-models",
+      "kind": "all models and timing",
+      "passed": 130,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "controls": [
+    {
+      "name": "UnfusedScreen",
+      "result": "bit-identical",
+      "wall_seconds_diagnostic_only": 0.746
+    },
+    {
+      "name": "UnfusedFull",
+      "result": "bit-identical",
+      "wall_seconds_diagnostic_only": 0.884
+    },
+    {
+      "name": "FusedScreen",
+      "result": "bit-identical",
+      "wall_seconds_diagnostic_only": 0.353
+    },
+    {
+      "name": "FusedFull",
+      "result": "bit-identical",
+      "wall_seconds_diagnostic_only": 0.89
+    }
+  ],
+  "artifacts": {
+    "fp16": "b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073",
+    "exl3_40": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+    "exl3_45": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a"
+  },
+  "fixed_control": {
+    "tokens": 76,
+    "prefill": 32,
+    "decode_steps": 44,
+    "vocab": 151936,
+    "tokens_file_sha256": "37e46a2304b5ab5648d0f2b7fdb94224596ed690caaddc1726df27110b585e21",
+    "unfused_logits_sha256": "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1",
+    "fused_logits_sha256": "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571",
+    "oracle_bytes": 46188544
+  },
+  "funding": {
+    "source_bound_bytes": 3713099440,
+    "prepaid_host_bytes": 4294967296,
+    "execution_domain_cap_bytes": 8589934592,
+    "existing_driver_margin_bytes": 6442450944,
+    "measured_peak": false
+  },
+  "remaining": [
+    "historical heldout FP16 fused and unfused trajectories",
+    "state/spill/restore/kept shared controls",
+    "EXL3 shared ordered operation execution",
+    "EXL3 1570 exact linear controls and Tier C 750-case bounds",
+    "legacy deletion after all controls"
+  ],
+  "final_carry": {
+    "parent": "49641b52",
+    "note": "Checkpoint07 applied over native v1 writer main; three files received formatting-only corrections. Historical checkpoint hashes above describe their original runs. Final carry passed affected checks, all models/timing and quality. Main integration check is separately recorded in the commit report.",
+    "format_only_paths": [
+      "src/kernels/ggml/capabilities.cc",
+      "src/planner/pattern.cc",
+      "tests/unit/components_qwen2_test.cc"
+    ],
+    "source_sha256": {
+      "src/components/attention.cc": "cac27e4aea57e277a3ecace2556c2fdf970b96dc76e78861ffb609d8fa361361",
+      "src/components/blocks.cc": "c13776786e2ef3ebd7e2eeef00390649f3ec26d259b5118124a360f96a3de3b6",
+      "src/components/defs.h": "e1bd2eed58a31c12d1755056ab08bfbed5656c1e24925ba61c214b2bbb4a4f66",
+      "src/components/ffn.cc": "e179acaa0b59c48a98155d1681f7f285fc3cf24cd4fb5ec1a4742be179d9e31a",
+      "src/execution/registry.cc": "d46855832a951a3cd2c11848f8ad00d8bdcc7a768c416f884a89185a910ea49a",
+      "src/execution/registry.h": "b9f6dfd332b1a133c26a14ca2a53cd309d3c78b4363528aa6d8510ac8abcadba",
+      "src/kernels/exl3/CMakeLists.txt": "4f764436415cb960209daf4afd8baf8721acd35066248ea174268401b213866b",
+      "src/kernels/exl3/reconstruction_tuning.cc": "835f387e776b8bdd5c8e2ff7eb89a41baeec5c4106fab5946daaecbe9a2aced3",
+      "src/kernels/exl3/reconstruction_tuning.h": "24c990821e9c3191f1d548ef20a428b49039ea9ba31e7ae01aa2d447b79cd013",
+      "src/kernels/ggml/capabilities.cc": "3896f139e5731f475cbd5cc4e65b2a4b794e36c9eb2fc3c511582645c4ff3b9c",
+      "src/kernels/ggml/graph_plan.cc": "73a7b5992a9ce60209ef48b9bb6bdb4b3027835c3ec56cc5813cdbf8548a5e87",
+      "src/kernels/ggml/graph_plan.h": "ab91e76bfd6893848513502f4f77946a0d2c2f43e89b8b5faff6a6b0b7ef7b50",
+      "src/kernels/ggml/lower.cc": "bf6abb5530530bb37a2c843182e2e1196c0f9f7c8313045e226b1f6c390ebf59",
+      "src/planner/pattern.cc": "3fbe1ac5c535bfafd9f37909d462ce8a5b828a674d0a185ed3cd6d3640d4c198",
+      "src/spec/CMakeLists.txt": "a32613483a76a8500cde2bad28807468fbb6188c1d391364697183e2c9a8ca5c",
+      "src/spec/mapping.cc": "0a239c2eb9e9ebb40cc08ef5e5f697f74c17b08ac2284691761208e98a5d6513",
+      "src/spec/mapping.h": "b10953b72e720344db79917eda09c3b4b49de6d379ebef6e7805e3c1afeaf184",
+      "src/spec/mappings/qwen2.cc": "5fdcf6fb438f8bf4cf335f539caf2aff126d8345af063ba304bbcea5b8f557ca",
+      "src/spec/mappings/qwen2.h": "6d6ddba61794dcf6017fff7e65f89cb1454130b310ad291e8c00217010862db0",
+      "tests/unit/CMakeLists.txt": "a7674ea71093a1879b424761b3c1dfcbbaed8a0dc3aad2bef1cf6262af95b4d0",
+      "tests/unit/component_runner_qwen2_gpu_test.cc": "b035d4f23cc40d6767044c173cfd621ab38f4baa6f8062d41e203f429f69f88e",
+      "tests/unit/components_qwen2_models_test.cc": "f446687f80cd11d430e5934b95822e3933e8b6529a2ae87d611059317a730a64",
+      "tests/unit/components_qwen2_test.cc": "4fe301625b46b3106d3b32877c6e54634254a2d188c9c47bf58829f719a2edf6",
+      "tests/unit/components_test.cc": "f6a856f423a92b5288574205fde8be3d2dee079aabb63377c0c7a3081af4a707",
+      "tests/unit/execution_test.cc": "4a8092b8d22d8936d5ce37fd379954e56c7b7914e2f5cd490639f0b0c07dbbfa",
+      "tests/unit/exl3_validate_test.cc": "067b00274b09c998074f46bc43712b08f8594643e6762ca8bd388d910d7803c3"
+    }
+  }
+}

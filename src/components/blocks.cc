@@ -60,8 +60,14 @@ constexpr std::array kJoined{
 
 constexpr std::array kNormParams{
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
+    ParamSpec{.name = "f16_output",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0.0},
 };
-constexpr std::array kNormRoles{WeightRole{.name = "weight", .encodings = kF32Only}};
+constexpr std::array kNormRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
 constexpr std::array<std::string_view, 2> kNormPatterns{"rms_norm_mul", "rms_norm_mul_add"};
 
 std::expected<std::vector<RoleShape>, std::string> NormShapes(const Instance& in) {
@@ -72,8 +78,10 @@ std::expected<FragmentOut, std::string> NormEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
   const float eps = F32(f.instance.params.Real("eps"));
   const ir::TensorId normed = f.b.RmsNorm(f.stream, eps);
-  const ir::TensorId weight = f.Weight(0);
-  return FragmentOut{.stream = f.b.Mul(normed, weight)};
+  const ir::TensorId weight = NormScale(f.b, f.Weight(0));
+  ir::TensorId out = f.b.Mul(normed, weight);
+  if (f.instance.params.Flag("f16_output")) out = f.b.Convert(out, format::Encoding::kF16);
+  return FragmentOut{.stream = out};
 }
 
 std::expected<void, std::string> NormReference(RefIO& io) {
@@ -82,6 +90,8 @@ std::expected<void, std::string> NormReference(RefIO& io) {
     return std::unexpected("norm reference: a stream of another shape");
   }
   RmsRows(io.stream, in.stage.width, F32(in.params.Real("eps")), io.weights.at(0));
+  if (in.params.Flag("f16_output"))
+    for (double& value : io.stream) value = RoundF16(value);
   return {};
 }
 
@@ -234,6 +244,13 @@ std::expected<void, std::string> ProjectedReference(RefIO& io) {
 // --------------------------------------------------------------- head.linear
 
 constexpr std::array kHeadParams{
+    // The product rounds to F16, then widens for the runner's F32 logits.
+    ParamSpec{.name = "f16_output",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0.0},
     // The output rows gathered (each segment's last `outputs`); false: every
     // row is an output (a drafter's).
     ParamSpec{.name = "gather",
@@ -370,8 +387,7 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
   }
   // Its rows, unless it reads every row or what came before narrowed the
   // stream to them.
-  const ir::TensorId rows =
-      gather && !f.narrowed ? b.GetRows(f.stream, f.step.OutputRows()) : f.stream;
+  ir::TensorId rows = gather && !f.narrowed ? b.GetRows(f.stream, f.step.OutputRows()) : f.stream;
   // A prefix of the weight's rows.
   ir::TensorId weight = f.Weight(kHeadWeight);
   const auto prefix = static_cast<std::uint64_t>(f.instance.params.Int("rows"));
@@ -381,7 +397,15 @@ std::expected<FragmentOut, std::string> HeadEmit(Fragment& f) {
     const format::Shape shape = Shape({wd.ne(0), prefix});
     weight = b.View(weight, shape, ViewStrides(wd.nb[0], wd.nb[1], 0, shape), 0);
   }
-  ir::TensorId logits = b.MatMul(weight, rows);
+  const bool f16 = f.instance.params.Flag("f16_output");
+  // GetRows widens to F32 when narrowing is disabled; preserve the head's
+  // F16 operand contract after gathering too.
+  if (f16 && Desc(b, rows).format.encoding != format::Encoding::kF16) {
+    rows = b.Convert(rows, format::Encoding::kF16);
+  }
+  ir::TensorId logits =
+      MatMulOutput(b, weight, rows, f16 ? format::Encoding::kF16 : format::Encoding::kF32);
+  if (f16) logits = b.Convert(logits, format::Encoding::kF32);
   if (f.instance.stage.softcap.has_value()) {
     const float cap = F32(*f.instance.stage.softcap);
     logits = b.Scale(logits, 1.0F / cap);
@@ -443,7 +467,12 @@ std::expected<void, std::string> HeadReference(RefIO& io) {
     }
     first += s.rows;
   }
+  if (in.params.Flag("f16_output")) {
+    for (double& value : selected) value = RoundF16(value);
+  }
   io.logits = Product(w, width, vocab, selected);
+  if (in.params.Flag("f16_output"))
+    for (double& value : io.logits) value = RoundF16(value);
   if (in.stage.softcap.has_value()) {
     const double cap = *in.stage.softcap;
     for (double& l : io.logits) l = cap * std::tanh(l / cap);

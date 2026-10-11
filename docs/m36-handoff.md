@@ -351,7 +351,11 @@ Each `a` slice is about a day of CPU work. Each `b` slice is one to two slices p
 
 **Qwen2 fixtures (G5, required by plan exit).** The Qwen2.5-0.5B FP16 and
 two EXL3 fixtures need shared-engine execution even though they are not served.
-G5a defines their components and mapping; G5b adds shared GGML/EXL3 lowering
+G5a is complete: both encodings synthesize shared-component specs and all
+three installed-artifact metadata controls pass. Shared FP16's fused and
+unfused 76-token control trajectories are byte-exact; its screen/full cases
+are not the historical control/heldout four-arm gate
+([evidence](experiments/m36-qwen2/README.md)). G5b adds shared GGML/EXL3 lowering
 with the approved reconstruction tuning facts/shapes; G5c runs them through
 the shared runner and proves their existing correctness controls plus state,
 spill, restore and kept-state behavior; G5d removes the legacy execution path.

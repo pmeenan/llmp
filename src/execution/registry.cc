@@ -195,7 +195,10 @@ bool Tuned(const Implementation& implementation, const CapabilityQuery& q) {
   return !implementation.capability->needs_tuning ||
          std::ranges::any_of(q.tuned, [&](const TunedShape& t) {
            return t.implementation == implementation.name && t.rows == q.rows && t.k == q.k &&
-                  t.n == q.n;
+                  t.n == q.n &&
+                  (!t.output_encoding || std::ranges::any_of(q.operands, [&](const auto& o) {
+                    return o.operand == kOutputOperand && o.encoding == *t.output_encoding;
+                  }));
          });
 }
 

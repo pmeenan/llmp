@@ -1779,8 +1779,12 @@ each is checked against the design as M3.6 proceeds.
       migration. The fixtures are not served and have no speed baseline; their
       gate is the existing correctness controls in the
       [fixed protocol](experiments/m36-baselines/README.md#quality-controls).
-      - [ ] **G5a — components and mapping:** describe the Qwen2 FP16 and
-            approved EXL3 fixtures as specs over the shared catalog.
+      - [x] **G5a — components and mapping:** the approved FP16 and both
+            EXL3 fixtures synthesize specs over the shared catalog; all three
+            installed-artifact metadata controls pass. Shared FP16 execution
+            matches the frozen fused and unfused 76-token control trajectories
+            ([evidence](experiments/m36-qwen2/README.md)); historical heldout
+            and lifecycle controls remain G5c's.
       - [ ] **G5b — lowering:** implement shared GGML and EXL3 operation
             lowerings; supply and enforce approved EXL3 reconstruction tuning
             facts and supported shapes.

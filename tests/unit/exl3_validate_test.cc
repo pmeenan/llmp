@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "expected_error.h"
+#include "kernels/exl3/reconstruction_tuning.h"
 #include "kernels/exl3/upstream_gemv.h"
 #include "kernels/exl3/validate.h"
 
@@ -419,4 +420,54 @@ TEST(Exl3ValidateTest, UpstreamGemvChoiceOnTheFixturesShapes) {
   EXPECT_EQ(wide.blocks, 40);
 }
 
+}  // namespace
+
+namespace {
+TEST(Exl3ReconstructionTuning, CompleteMatricesUseOnlyApprovedSlicesAndOutputTypes) {
+  namespace exl3 = llmp::kernels::exl3;
+  for (const int rows : {145, 1023, 1024}) {
+    const auto head = exl3::ReconstructionAlgorithms(121, rows, 896, 151936, exl3::Output::kF16);
+    ASSERT_TRUE(head.has_value()) << head.error();
+    ASSERT_EQ(head->size(), 5U);
+    for (std::size_t i = 0; i < head->size(); ++i) {
+      EXPECT_EQ((*head)[i].m, rows);
+      EXPECT_EQ((*head)[i].k, 896);
+      EXPECT_EQ((*head)[i].n, i == 4 ? 20864 : 32768);
+      EXPECT_EQ((*head)[i].ldc, 151936);
+      EXPECT_EQ((*head)[i].output, exl3::Output::kF16);
+    }
+    EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, rows, 896, 151936, exl3::Output::kF32));
+    // A pinned slice is not a pinned standalone matrix of that width.
+    EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, rows, 896, 32768, exl3::Output::kF16));
+    EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, rows, 896, 20864, exl3::Output::kF16));
+    EXPECT_TRUE(exl3::ReconstructionAlgorithms(121, rows, 896, 128, exl3::Output::kF16));
+    EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, rows, 896, 128, exl3::Output::kF32));
+    EXPECT_TRUE(exl3::ReconstructionAlgorithms(121, rows, 896, 4864, exl3::Output::kF32));
+    EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, rows, 896, 4864, exl3::Output::kF16));
+  }
+  EXPECT_FALSE(exl3::ReconstructionAlgorithms(86, 145, 896, 896, exl3::Output::kF32));
+  EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, 144, 896, 896, exl3::Output::kF32));
+  EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, 146, 896, 896, exl3::Output::kF32));
+  EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, 1025, 896, 896, exl3::Output::kF32));
+  EXPECT_FALSE(exl3::ReconstructionAlgorithms(121, 145, 0, 896, exl3::Output::kF32));
+  const auto pin = exl3::ReconstructionAlgorithms(121, 145, 896, 896, exl3::Output::kF32);
+  ASSERT_TRUE(pin.has_value());
+  EXPECT_EQ(pin->front().config, (std::array<std::uint64_t, 9>{67, 316, 1, 0, 0, 66, 35, 0, 0}));
+}
+
+TEST(Exl3ReconstructionTuning, PlannerFactsAreCompleteTypedAndOnTheApprovedPath) {
+  namespace exl3 = llmp::kernels::exl3;
+  const auto facts = exl3::ReconstructionTuning(121);
+  EXPECT_EQ(facts.size(), 18U);
+  EXPECT_TRUE(exl3::ReconstructionTuning(86).empty());
+  for (const auto& fact : facts) {
+    ASSERT_TRUE(fact.output_encoding.has_value());
+    EXPECT_EQ(fact.implementation,
+              fact.rows == 1024 ? "exl3.linear.reconstruct_fused" : "exl3.linear.reconstruct");
+    EXPECT_TRUE(exl3::ReconstructionAlgorithms(
+        121, static_cast<int>(fact.rows), static_cast<int>(fact.k), static_cast<int>(fact.n),
+        *fact.output_encoding == llmp::format::Encoding::kF16 ? exl3::Output::kF16
+                                                              : exl3::Output::kF32));
+  }
+}
 }  // namespace

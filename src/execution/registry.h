@@ -278,6 +278,10 @@ struct TunedShape {
   std::uint64_t rows = 0;
   std::uint64_t k = 0;
   std::uint64_t n = 0;
+  // Some algorithms are pinned separately for F16 and F32 output (EXL3
+  // reconstruction). When present, a query must name that exact first
+  // output operand; an omitted output is not evidence for the pin.
+  std::optional<format::Encoding> output_encoding{};
   bool operator==(const TunedShape&) const = default;
 };
 

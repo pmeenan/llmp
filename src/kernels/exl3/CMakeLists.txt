@@ -24,9 +24,9 @@
 #                        was. CUDA builds only.
 #   llmp_exl3_qwen2    one phase of the native EXL3 plan (qwen2.h), with
 #                        GGML's operations. CUDA builds only.
-add_library(llmp_exl3 STATIC upstream_gemv.cc validate.cc)
+add_library(llmp_exl3 STATIC upstream_gemv.cc validate.cc reconstruction_tuning.cc)
 target_include_directories(llmp_exl3 PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(llmp_exl3 PUBLIC llmp_exl3_headers PRIVATE llmp_warnings)
+target_link_libraries(llmp_exl3 PUBLIC llmp_exl3_headers llmp_execution PRIVATE llmp_warnings)
 
 if(LLMP_CUDA)
   add_library(llmp_exl3_kernels STATIC implementations.cc launch.cc linear.cc recon_gemm.cc)
@@ -74,7 +74,7 @@ if(LLMP_CUDA)
   # next configure.
   set(module_files CMakeLists.txt implementations.cc implementations.h launch.cc launch.h
                    launch_contract.h linear.cc linear.h module_digest.cmake qwen2.cc qwen2.h
-                   recon_gemm.cc recon_gemm.h upstream_gemv.cc upstream_gemv.h validate.cc
+                   recon_gemm.cc recon_gemm.h reconstruction_tuning.cc reconstruction_tuning.h upstream_gemv.cc upstream_gemv.h validate.cc
                    validate.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")

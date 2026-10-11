@@ -289,7 +289,7 @@ std::optional<Match> NormMulMatch(const MatchContext& c, NodeId anchor) {
 
 // Gate and up products of one input, read only by the GLU over them; the
 // anchor is the earlier product.
-std::optional<Match> MulMatGluMatch(const MatchContext& c, NodeId anchor) {
+std::optional<Match> ProductGluMatch(const MatchContext& c, NodeId anchor, bool floating) {
   const ir::Node& p = c.node(anchor);
   if (p.key != Prim(Op::kMatMul) || c.taken(anchor)) {
     return std::nullopt;
@@ -317,7 +317,7 @@ std::optional<Match> MulMatGluMatch(const MatchContext& c, NodeId anchor) {
   }
   const ir::TensorDesc& wg = c.tensor(gn.src[0]);
   const ir::TensorDesc& wu = c.tensor(un.src[0]);
-  if (wg.format != wu.format) {
+  if (wg.format != wu.format || (wg.format.encoding == format::Encoding::kF16) != floating) {
     return std::nullopt;
   }
   std::vector<NodeId> nodes = {gate, up, *glu};
@@ -326,6 +326,47 @@ std::optional<Match> MulMatGluMatch(const MatchContext& c, NodeId anchor) {
   if (!Implemented(c, ir::Fused(FusedKind::kMatMulGlu), m.sources, g.outputs(), m.params)) {
     return std::nullopt;
   }
+  return m;
+}
+
+std::optional<Match> MulMatGluMatch(const MatchContext& c, NodeId anchor) {
+  return ProductGluMatch(c, anchor, false);
+}
+std::optional<Match> FloatMulMatGluMatch(const MatchContext& c, NodeId anchor) {
+  auto m = ProductGluMatch(c, anchor, true);
+  if (!m) return std::nullopt;
+  // A dense two-dimensional matrix and one contiguous input column. These
+  // are a sufficient host form of upstream's MMVF stride/shape conditions;
+  // lowering still checks its actual device predicate and fusion window.
+  for (const auto t : m->sources)
+    if (!ir::IsContiguous(c.tensor(t)) || c.tensor(t).ne(2) != 1 || c.tensor(t).ne(3) != 1)
+      return std::nullopt;
+  return m;
+}
+std::optional<Match> FloatMulMatAddMatch(const MatchContext& c, NodeId anchor) {
+  const auto& p = c.node(anchor);
+  if (c.taken(anchor) || p.key != Prim(Op::kMatMul) || !DefaultProduct(p) ||
+      c.tensor(p.src[0]).format.encoding != format::Encoding::kF16)
+    return std::nullopt;
+  const auto next = Next(c, p.out[0]);
+  if (!next) return std::nullopt;
+  const auto& a = c.node(*next);
+  if (a.key != Prim(Op::kAdd) || a.nsrc != 2 || a.src[0] != p.out[0] ||
+      !SameShape(c.tensor(a.src[0]), c.tensor(a.src[1])) || c.OnlyReader(p.out[0]) != next)
+    return std::nullopt;
+  // Upstream's window has no computed operation between product and add.
+  // Leaves may appear in IR order, but do not appear in a GGML graph.
+  for (std::uint32_t i = anchor.v + 1; i < next->v; ++i) {
+    const auto op = c.node(NodeId{i}).key.op;
+    if (op != Op::kInput && op != Op::kWeight && op != Op::kState) return std::nullopt;
+  }
+  const std::array sources{p.src[0], p.src[1], a.src[1]};
+  for (const auto t : sources)
+    if (!ir::IsContiguous(c.tensor(t)) || c.tensor(t).ne(2) != 1 || c.tensor(t).ne(3) != 1)
+      return std::nullopt;
+  Match m = Fusion({anchor, *next}, {sources.begin(), sources.end()}, ir::ProductParams{});
+  if (!Implemented(c, ir::Fused(FusedKind::kMatMulAdd), m.sources, a.outputs(), m.params))
+    return std::nullopt;
   return m;
 }
 
@@ -1309,6 +1350,18 @@ constexpr std::array kPatterns = {
             .anchors = kNormAnchors,
             .match = &NormMulAddMatch,
             .rewrite = &Fused<FusedKind::kRmsNormMulAdd>},
+    Pattern{.name = "float_mul_mat_glu",
+            .result = ir::Fused(FusedKind::kMatMulGlu),
+            .anchors = kProductAnchors,
+            .match = &FloatMulMatGluMatch,
+            .rewrite = &Fused<FusedKind::kMatMulGlu>,
+            .opt_in = true},
+    Pattern{.name = "float_mul_mat_add",
+            .result = ir::Fused(FusedKind::kMatMulAdd),
+            .anchors = kProductAnchors,
+            .match = &FloatMulMatAddMatch,
+            .rewrite = &Fused<FusedKind::kMatMulAdd>,
+            .opt_in = true},
     Pattern{.name = "mul_mat_glu",
             .result = ir::Fused(FusedKind::kMatMulGlu),
             .anchors = kProductAnchors,

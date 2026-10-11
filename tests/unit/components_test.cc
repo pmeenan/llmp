@@ -616,6 +616,46 @@ TEST(ComponentsTest, AttentionFragmentsMatchTheirReference) {
   }
 }
 
+// The bias is before rotation (including K's stored values); scaling
+// scores and materializing them have the same mathematical reference.
+TEST(ComponentsTest, BiasedAttentionAndExplicitScoresMatchTheirReference) {
+  for (const bool explicit_scores : {false, true}) {
+    auto r = Attention(0, 0.0, false, "neox", "pre");
+    r.params.push_back(P("qkv_bias", true));
+    r.params.push_back(P("scale_scores", true));
+    r.params.push_back(P("explicit_scores", explicit_scores));
+    std::ranges::sort(r.params, {}, &Param::name);
+    auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(in.has_value()) << in.error();
+    auto formats = AttentionFormats(Encoding::kF16);
+    formats.push_back(Vector(128));
+    formats.push_back(Vector(64));
+    formats.push_back(Vector(64));
+    const std::array<std::uint64_t, 2> cells{32, 32};
+    Compare(*in, formats, cells, AttentionSteps(32), kOutputTolerance, kF16StateTolerance,
+            {{9, {-0.25F, 0.25F}}, {10, {-0.5F, 0.5F}}, {11, {-0.75F, 0.75F}}});
+  }
+}
+
+TEST(ComponentsTest, HalfProjectionAttentionRoundsBeforeBiasAndRotation) {
+  auto r = Attention(0, 0.0, false, "neox", "pre");
+  r.params.push_back(P("qkv_bias", true));
+  r.params.push_back(P("scale_scores", true));
+  r.params.push_back(P("f16_projections", true));
+  std::ranges::sort(r.params, {}, &Param::name);
+  auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in.has_value()) << in.error();
+  auto formats = AttentionFormats(Encoding::kF16);
+  formats[0] = ir::Dense(Encoding::kBF16, ir::ShapeOf({kWidth}));
+  formats.push_back(ir::Dense(Encoding::kF16, ir::ShapeOf({128})));
+  formats.push_back(ir::Dense(Encoding::kF16, ir::ShapeOf({64})));
+  formats.push_back(ir::Dense(Encoding::kF16, ir::ShapeOf({64})));
+  const std::array<std::uint64_t, 2> cells{32, 32};
+  // Several rounded intermediates: four F16 ulps of normalized output;
+  // this scalar check is not the pinned model's Tier C qualification.
+  Compare(*in, formats, cells, AttentionSteps(32), 4 * kF16StateTolerance, 4 * kF16StateTolerance);
+}
+
 TEST(ComponentsTest, ARingTooSmallForItsRowsAndWindowIsRefused) {
   const ComponentRef r = Attention(8, 0.0, false, "neox", "pre");
   auto in = MakeInstance(r, kFacts, Site::kLayer, 0, 1);

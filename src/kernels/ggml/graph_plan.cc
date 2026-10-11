@@ -141,20 +141,23 @@ bool LaunchesNothing(const ggml_tensor* node) {
 bool NeedsGraphReadIndex(bool fusion, const DeviceChoices& device) {
   return fusion || device.fuse_norms || device.fuse_norm_rope || device.fuse_norm_add ||
          device.fuse_gemma_route || device.fuse_gemma_reduce || device.pair_glu ||
-         device.fuse_quant_glu;
+         device.fuse_quant_glu || static_cast<bool>(device.float_product_fusion);
 }
 
 std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                                                   const DeviceChoices& device,
                                                   std::span<ggml_tensor* const> keep,
                                                   std::uint64_t index_scratch_limit) {
-  if (fusion && device.row_invariant) {
+  if ((fusion || device.float_product_fusion) && device.row_invariant) {
     // Upstream's fused vector products pick their launch by the column
     // count: a row-invariant plan (D-092) cannot take them.
     return Rejected("a row-invariant plan is planned without fusion");
   }
+  if (device.float_product_fusion && !device.vector_fusible)
+    return Rejected("selected float fusion needs the device MMVF predicate");
   if (device.fuse_norm_rope || device.fuse_norm_add || device.fuse_gemma_route ||
-      device.fuse_gemma_reduce || device.fuse_quant_glu || device.group_set_rows) {
+      device.fuse_gemma_reduce || device.fuse_quant_glu || device.group_set_rows ||
+      device.float_product_fusion) {
     // OnlyReader examines every graph/keep storage root, including tensors
     // outside a prospective chain. Bound those traversals before selection.
     for (const auto* node : graph) {
@@ -276,7 +279,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         continue;
       }
     }
-    if (fusion) {
+    if (fusion || (device.float_product_fusion && device.float_product_fusion(node))) {
       // ggml_cuda_try_fuse's order: the patterns llmpalooza lacks must not
       // apply, then RoPE and its store, the gate/up products, the product
       // and its add, and the RMSNorm and its mul.

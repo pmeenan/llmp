@@ -76,7 +76,7 @@ constexpr ParamSpec Flag(std::string_view name) {
 
 // The parameters both kinds take, in order; the dense kind adds its V's
 // form, the borrowed one the target layer it reads.
-constexpr std::size_t kCommon = 15;
+constexpr std::size_t kCommon = 19;
 constexpr std::array<ParamSpec, kCommon> kCommonParams{
     ParamSpec{.name = "placement", .type = ParamType::kName, .choices = kPlacements},
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
@@ -103,6 +103,15 @@ constexpr std::array<ParamSpec, kCommon> kCommonParams{
     Flag("qk_norm"),
     // Per-pair frequency factors divide the angles (role rope_freqs).
     Flag("rope_freqs"),
+    // Biases after Q/K/V products, before their head reshapes and rotation.
+    Flag("qkv_bias"),
+    // Apply scale to the scores rather than Q (different F32 rounding).
+    Flag("scale_scores"),
+    // Materialize scores and probabilities instead of a fused attention op.
+    Flag("explicit_scores"),
+    // F16 normalized inputs, Q/K/V products and biases, and attended rows;
+    // the residual stream, rotations and output product remain F32.
+    Flag("f16_projections"),
 };
 
 template <std::size_t N>
@@ -125,9 +134,22 @@ constexpr auto kBorrowedParams = WithCommon(std::array{
     ParamSpec{.name = "target_layer", .type = ParamType::kInt, .least = 0, .most = 4095},
 });
 
-enum : std::uint16_t { kNorm, kQ, kK, kV, kOutput, kPostNorm, kQNorm, kKNorm, kRopeFreqs };
+enum : std::uint16_t {
+  kNorm,
+  kQ,
+  kK,
+  kV,
+  kOutput,
+  kPostNorm,
+  kQNorm,
+  kKNorm,
+  kRopeFreqs,
+  kQBias,
+  kKBias,
+  kVBias
+};
 constexpr std::array kRoles{
-    WeightRole{.name = "norm", .encodings = kF32Only},
+    WeightRole{.name = "norm", .encodings = kNormEncodings},
     WeightRole{.name = "q"},
     WeightRole{.name = "k"},
     WeightRole{.name = "v"},
@@ -136,6 +158,9 @@ constexpr std::array kRoles{
     WeightRole{.name = "q_norm", .encodings = kF32Only},
     WeightRole{.name = "k_norm", .encodings = kF32Only},
     WeightRole{.name = "rope_freqs", .encodings = kF32Only},
+    WeightRole{.name = "q_bias", .encodings = kBiasEncodings},
+    WeightRole{.name = "k_bias", .encodings = kBiasEncodings},
+    WeightRole{.name = "v_bias", .encodings = kBiasEncodings},
 };
 
 // The state's encoding (D-108: F16 by default; a lossy one is a later
@@ -146,6 +171,7 @@ struct Dims {
   std::uint64_t width, heads, kv_heads, kd, vd, rope_dims;
   std::uint32_t window;
   bool sandwich, qk_norm, neox, freqs, kv_tie, v_norm, borrowed;
+  bool qkv_bias, scale_scores, explicit_scores, f16;
   std::uint32_t target_layer;
   float eps, scale, softcap, base, freq_scale;
 };
@@ -166,6 +192,10 @@ Dims DimsOf(const Instance& in) {
           .kv_tie = !borrowed && p.Flag("kv_tie"),
           .v_norm = !borrowed && p.Flag("v_norm"),
           .borrowed = borrowed,
+          .qkv_bias = p.Flag("qkv_bias"),
+          .scale_scores = p.Flag("scale_scores"),
+          .explicit_scores = p.Flag("explicit_scores"),
+          .f16 = p.Flag("f16_projections"),
           .target_layer = borrowed ? static_cast<std::uint32_t>(p.Int("target_layer")) : 0U,
           .eps = F32(p.Real("eps")),
           .scale = F32(p.Real("scale")),
@@ -181,6 +211,12 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
     return std::unexpected("rope_dims is odd or past key_dim");
   }
   if (d.kv_tie && d.kd != d.vd) return std::unexpected("V tied to K of another width");
+  if (d.qkv_bias && (d.borrowed || d.kv_tie)) {
+    return std::unexpected("Q/K/V biases require separate owned Q/K/V products");
+  }
+  if (d.explicit_scores && d.softcap != 0.0F) {
+    return std::unexpected("explicit scores with a softcap are not implemented");
+  }
   std::vector<RoleShape> out{Role(kNorm, {d.width}), Role(kQ, {d.width, d.heads * d.kd}),
                              Role(kOutput, {d.heads * d.vd, d.width})};
   if (!d.borrowed) {
@@ -193,6 +229,11 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
     if (!d.borrowed) out.push_back(Role(kKNorm, {d.kd}));
   }
   if (d.freqs) out.push_back(Role(kRopeFreqs, {d.rope_dims / 2}));
+  if (d.qkv_bias) {
+    out.push_back(Role(kQBias, {d.heads * d.kd}));
+    out.push_back(Role(kKBias, {d.kv_heads * d.kd}));
+    out.push_back(Role(kVBias, {d.kv_heads * d.vd}));
+  }
   return out;
 }
 
@@ -247,9 +288,11 @@ constexpr std::array kBatchClasses{
 // group with its KV head), the K and V caches by their cells' heads, the
 // output product by its input columns; its partial sums reduce before the
 // post norm. A tied layer has no V weight (its V is K's split).
-constexpr std::array kHeadRoles{RoleSplit{.role = kQ, .dim = 1}, RoleSplit{.role = kK, .dim = 1},
-                                RoleSplit{.role = kV, .dim = 1},
-                                RoleSplit{.role = kOutput, .dim = 0}};
+constexpr std::array kHeadRoles{
+    RoleSplit{.role = kQ, .dim = 1},     RoleSplit{.role = kK, .dim = 1},
+    RoleSplit{.role = kV, .dim = 1},     RoleSplit{.role = kOutput, .dim = 0},
+    RoleSplit{.role = kQBias, .dim = 0}, RoleSplit{.role = kKBias, .dim = 0},
+    RoleSplit{.role = kVBias, .dim = 0}};
 constexpr std::array kHeadState{StateSplit{.tensor = 0, .dim = 0},
                                 StateSplit{.tensor = 1, .dim = 0}};
 std::uint32_t KvHeadUnits(const Instance& in) {
@@ -309,7 +352,17 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   const ir::TensorId x = f.stream;
   // A query-only fragment emits nothing for a state-only step.
   if (d.borrowed && !f.stream_needed) return FragmentOut{.stream = x};
-  ir::TensorId normalized = b.Mul(b.RmsNorm(x, d.eps), w(kNorm));
+  ir::TensorId normalized = b.Mul(b.RmsNorm(x, d.eps), NormScale(b, w(kNorm)));
+  if (d.f16) normalized = b.Convert(normalized, Encoding::kF16);
+  const auto projection = [&](std::uint16_t role, std::uint16_t bias) {
+    ir::TensorId product =
+        MatMulOutput(b, w(role), normalized, d.f16 ? Encoding::kF16 : Encoding::kF32);
+    if (d.qkv_bias) product = b.Add(product, w(bias));
+    return product;
+  };
+  const auto rotation_input = [&](ir::TensorId t) {
+    return d.f16 ? b.Convert(t, Encoding::kF32) : t;
+  };
   const ir::RopeParams rope = Rotation(f.instance, d);
   const ir::TensorId positions = f.step.Positions();
   const ir::TensorId freqs = d.freqs ? w(kRopeFreqs) : ir::TensorId{};
@@ -318,20 +371,20 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   };
   ir::TensorId q{};
   if (f.stream_needed) {
-    q = b.Reshape(b.MatMul(w(kQ), normalized), Shape({d.kd, d.heads, rows}));
+    q = b.Reshape(rotation_input(projection(kQ, kQBias)), Shape({d.kd, d.heads, rows}));
     q = b.Rope(head_norm(q, kQNorm), positions, freqs, rope);
-    if (d.scale != 1.0F) q = b.Scale(q, d.scale);
+    if (!d.scale_scores && d.scale != 1.0F) q = b.Scale(q, d.scale);
   }
   ir::TensorId k{};
   ir::TensorId v{};
   if (!d.borrowed) {
     // V before K, as the builders' graphs order them; a tied V is K's
     // product, which K then reshapes again.
-    const ir::TensorId v_product = b.MatMul(w(d.kv_tie ? kK : kV), normalized);
+    const ir::TensorId v_product = projection(d.kv_tie ? kK : kV, kVBias);
     v = b.Reshape(v_product, Shape({d.vd, d.kv_heads, rows}));
     if (d.v_norm) v = b.RmsNorm(v, d.eps);
-    const ir::TensorId k_product = d.kv_tie ? v_product : b.MatMul(w(kK), normalized);
-    k = b.Reshape(k_product, Shape({d.kd, d.kv_heads, rows}));
+    const ir::TensorId k_product = d.kv_tie ? v_product : projection(kK, kKBias);
+    k = b.Reshape(rotation_input(k_product), Shape({d.kd, d.kv_heads, rows}));
     k = b.Rope(head_norm(k, kKNorm), positions, freqs, rope);
   }
 
@@ -375,15 +428,29 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     };
     const ir::TensorId keys = cache_view(f.State(s, 0), d.kd, k_width);
     const ir::TensorId values = cache_view(f.State(s, 1), d.vd, v_width);
-    const ir::TensorId attention =
-        b.Attention(queries, keys, values, *mask, {},
-                    {.scale = 1.0F, .softcap = d.softcap, .accumulate = ir::Accumulate::kF32});
+    const float scale = d.scale_scores ? d.scale : 1.0F;
+    ir::TensorId attention;
+    if (d.explicit_scores) {
+      const auto scores = b.MatMul(keys, queries, {.accumulate = ir::Accumulate::kF32});
+      const auto probabilities =
+          b.SoftMax(scores, b.Convert(*mask, Encoding::kF32), {}, {.scale = scale});
+      // V remains cell-major state; only the attended view is transposed
+      // for a product, so the shared lifecycle still spills whole cells.
+      const auto transposed = b.Cont(b.Transpose(values));
+      const auto product = b.MatMul(transposed, probabilities);
+      attention = b.Cont(b.Permute(product, {0, 2, 1, 3}));
+    } else {
+      attention =
+          b.Attention(queries, keys, values, *mask, {},
+                      {.scale = scale, .softcap = d.softcap, .accumulate = ir::Accumulate::kF32});
+    }
     outputs.push_back(b.Reshape(attention, Shape({d.vd * d.heads, seg.rows})));
     b.SetJoined();
   }
   if (!f.stream_needed) return FragmentOut{.stream = x};
   ir::TensorId joined = outputs.front();
   for (std::size_t s = 1; s < outputs.size(); ++s) joined = b.Concat(joined, outputs[s], 1);
+  if (d.f16) joined = b.Convert(joined, Encoding::kF16);
   ir::TensorId projected = b.MatMul(w(kOutput), joined);
   // Narrowed (the head's rows only follow): the projection's and the
   // residual's output rows, gathered after the product (the builders'
@@ -433,12 +500,29 @@ std::expected<void, std::string> Reference(RefIO& io) {
   const std::span<const float> freqs = d.freqs ? weight(kRopeFreqs) : std::span<const float>{};
   std::vector<double> normalized = io.stream;
   RmsRows(normalized, width, d.eps, weight(kNorm));
+  if (d.f16)
+    for (double& value : normalized) value = RoundF16(value);
   std::vector<double> q = Product(weight(kQ), width, d.heads * d.kd, normalized);
   std::vector<double> k;
   std::vector<double> v;
   if (!d.borrowed) {
     k = Product(weight(kK), width, d.kv_heads * d.kd, normalized);
     v = d.kv_tie ? k : Product(weight(kV), width, d.kv_heads * d.vd, normalized);
+  }
+  const auto bias = [&](std::vector<double>& values, std::uint16_t role) {
+    const auto bs = d.qkv_bias ? weight(role) : std::span<const float>{};
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (d.f16) values[i] = RoundF16(values[i]);
+      if (!bs.empty()) {
+        values[i] += bs[i % bs.size()];
+        if (d.f16) values[i] = RoundF16(values[i]);
+      }
+    }
+  };
+  bias(q, kQBias);
+  if (!d.borrowed) {
+    bias(k, kKBias);
+    bias(v, kVBias);
     if (d.v_norm) RmsRows(v, d.vd, d.eps, {});
   }
   if (d.qk_norm) {
@@ -529,6 +613,8 @@ std::expected<void, std::string> Reference(RefIO& io) {
     }
     first += seg.rows;
   }
+  if (d.f16)
+    for (double& value : attended) value = RoundF16(value);
   std::vector<double> projected = Product(weight(kOutput), d.heads * d.vd, width, attended);
   if (d.sandwich) RmsRows(projected, width, d.eps, weight(kPostNorm));
   for (std::size_t i = 0; i < projected.size(); ++i) io.stream[i] += projected[i];

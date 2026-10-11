@@ -85,6 +85,9 @@ struct DeviceChoices {
   // RMSNorm-mul: llmpalooza's fast plans (DeepSeek V4's, the owner's policy of
   // 2026-09-28), which do not reproduce upstream's unfused arithmetic.
   bool fuse_norms = false;
+  // Exact first nodes of IR-selected float product fusions. Empty by
+  // default; it never enables fusion for other products in the graph.
+  std::function<bool(const ggml_tensor*)> float_product_fusion{};
   // Checked three-node norm fusions, separately requested and default off.
   // Keep/view readers force the existing primitive steps.
   bool fuse_norm_rope = false;

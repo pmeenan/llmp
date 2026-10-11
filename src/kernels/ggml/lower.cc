@@ -2372,6 +2372,20 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     choices.fuse_gemma_route = choices.fuse_gemma_route || name == kGemmaRouteName;
     choices.fuse_gemma_reduce = choices.fuse_gemma_reduce || name == kGemmaReduceName;
   }
+  std::set<const ggml_tensor*> float_fusions;
+  for (const auto& selected : plan_.steps) {
+    const auto& name = registry_.at(selected.implementation).name;
+    if (name != kMulMatGluFused && name != kMulMatAddFused) continue;
+    for (const auto id : selected.nodes) {
+      const auto& nodes = launched_.at(id.v);
+      if (!nodes.empty()) float_fusions.insert(nodes.front());
+    }
+  }
+  if (!float_fusions.empty()) {
+    choices.float_product_fusion = [&float_fusions](const ggml_tensor* node) {
+      return float_fusions.contains(node);
+    };
+  }
   for (const TensorId t : p_.outputs()) out_.keep.push_back(made_.at(t.v));
   for (const TensorId t : p_.keep()) out_.keep.push_back(made_.at(t.v));
   if (std::ranges::contains(out_.keep, nullptr)) return Refused("an output was not made");

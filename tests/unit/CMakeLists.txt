@@ -1086,6 +1086,16 @@ llmp_gtest(components_test TEST_PREFIX unit. PROPERTIES LABELS unit
 # against their references, verify saves and commits, the qwen4exp and
 # qwen4exp-mtp mappings over every import's tensors and the steps they
 # make; and the steps against today's unfused graph builder, node for node.
+add_executable(components_qwen2_test components_qwen2_test.cc)
+target_link_libraries(components_qwen2_test PRIVATE llmp_components llmp_spec llmp_model
+                                                 llmp_planner llmp_ggml_tensors)
+llmp_gtest(components_qwen2_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(components_qwen2_models_test components_qwen2_models_test.cc)
+target_link_libraries(components_qwen2_models_test PRIVATE llmp_components llmp_spec llmp_model
+                                                        llmp_artifact)
+llmp_gtest(components_qwen2_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
+
 add_executable(components_qwen38_test components_qwen38_test.cc)
 target_link_libraries(components_qwen38_test PRIVATE llmp_components llmp_reference_kernels
                                                      llmp_spec llmp_model llmp_artifact llmp_json)
@@ -1243,6 +1253,14 @@ if(LLMP_CUDA)
   # The one model runner over the component step source and the GGML
   # lowering on the installed artifacts, a scripted run finite and exact
   # from one runner to the next.
+  # Real Qwen2 FP16 fixture on the shared runner against the frozen bridge.
+  add_executable(component_runner_qwen2_gpu_test component_runner_qwen2_gpu_test.cc)
+  target_link_libraries(component_runner_qwen2_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
+                                                                llmp_components llmp_spec
+                                                                llmp_artifact)
+  llmp_gpu_gtest(component_runner_qwen2_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
   add_executable(component_runner_gpu_test component_runner_gpu_test.cc)
   target_link_libraries(component_runner_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                           llmp_components llmp_spec llmp_artifact)

@@ -32,11 +32,17 @@ constexpr std::array kParams{
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "activation", .type = ParamType::kName, .choices = kActivations},
     ParamSpec{.name = "hidden", .type = ParamType::kInt, .least = 1, .most = 1 << 20},
+    ParamSpec{.name = "f16_inputs",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0.0},
 };
 
 enum : std::uint16_t { kNorm, kGate, kUp, kDown, kPostNorm };
 constexpr std::array kRoles{
-    WeightRole{.name = "norm", .encodings = kF32Only},
+    WeightRole{.name = "norm", .encodings = kNormEncodings},
     WeightRole{.name = "gate"},
     WeightRole{.name = "up"},
     WeightRole{.name = "down"},
@@ -91,8 +97,17 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   const float eps = F32(f.instance.params.Real("eps"));
   const auto w = [&](std::uint16_t role) { return f.Weight(role); };
   const ir::TensorId x = f.stream;
-  const ir::TensorId h = b.Mul(b.RmsNorm(x, eps), w(kNorm));
-  const ir::TensorId down = moe::EmitGlu(b, h, w(kGate), w(kUp), w(kDown), Kind(f.instance));
+  ir::TensorId h = b.Mul(b.RmsNorm(x, eps), NormScale(b, w(kNorm)));
+  ir::TensorId down;
+  if (f.instance.params.Flag("f16_inputs")) {
+    h = b.Convert(h, format::Encoding::kF16);
+    const auto gate = b.MatMul(w(kGate), h);
+    const auto up = b.MatMul(w(kUp), h);
+    const auto glu = b.Glu(gate, up, {.kind = Kind(f.instance)});
+    down = b.MatMul(w(kDown), b.Convert(glu, format::Encoding::kF16));
+  } else {
+    down = moe::EmitGlu(b, h, w(kGate), w(kUp), w(kDown), Kind(f.instance));
+  }
   if (!Sandwich(f.instance)) return FragmentOut{.stream = b.Add(down, x)};
   return FragmentOut{.stream = b.Add(b.Mul(b.RmsNorm(down, eps), w(kPostNorm)), x)};
 }
@@ -107,8 +122,19 @@ std::expected<void, std::string> Reference(RefIO& io) {
   const double eps = F32(in.params.Real("eps"));
   std::vector<double> h = io.stream;
   RmsRows(h, width, eps, io.weights.at(kNorm));
-  std::vector<double> down = moe::GluReference(h, io.weights.at(kGate), io.weights.at(kUp),
-                                               io.weights.at(kDown), width, hidden, Kind(in));
+  std::vector<double> down;
+  if (in.params.Flag("f16_inputs")) {
+    for (double& value : h) value = RoundF16(value);
+    const auto gate = Product(io.weights.at(kGate), width, hidden, h);
+    auto up = Product(io.weights.at(kUp), width, hidden, h);
+    for (std::size_t i = 0; i < up.size(); ++i) {
+      up[i] = RoundF16(moe::GluOf(Kind(in), gate[i], up[i], 0.0F));
+    }
+    down = Product(io.weights.at(kDown), hidden, width, up);
+  } else {
+    down = moe::GluReference(h, io.weights.at(kGate), io.weights.at(kUp), io.weights.at(kDown),
+                             width, hidden, Kind(in));
+  }
   if (Sandwich(in)) RmsRows(down, width, eps, io.weights.at(kPostNorm));
   for (std::size_t i = 0; i < down.size(); ++i) io.stream[i] += down[i];
   return {};

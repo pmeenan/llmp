@@ -183,6 +183,16 @@ constexpr std::array<Rule, 3> kQuantGlu = {
     {{.operand = 0, .encodings = kQuantized, .layouts = kGgml},
      {.operand = 1, .encodings = kQuantized, .layouts = kGgml},
      {.operand = 2, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 4> kF16ProductAdd = {
+    {{.operand = 0, .encodings = kF16, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 4> kF16ProductGlu = {
+    {{.operand = 0, .encodings = kF16, .layouts = kDense},
+     {.operand = 1, .encodings = kF16, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
 // The norms' (x, w, ...).
 constexpr std::array<Rule, 2> kNormMul = kF32Binary;
 constexpr std::array<Rule, 3> kNormMulAdd = {
@@ -427,6 +437,16 @@ bool AcceptsMmq(const ex::CapabilityQuery& q) { return Built(q) && !Routed(q); }
 bool AcceptsFloatProduct(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::ProductParams>(q);
   return Built(q) && (!p || p->hint == ir::ProductHint::kNone);
+}
+bool AcceptsFloatProductFusion(const ex::CapabilityQuery& q) {
+  const auto* w = Operand(q, 0);
+  // Upstream MMVF's one-column F16 case on NVIDIA: even K and a
+  // single matrix make every dense row pitch half2 aligned and src0_small.
+  return Built(q) && q.rows == 1 && q.k % 2 == 0 && w != nullptr && w->ne[2] == 1 && w->ne[3] == 1;
+}
+bool AcceptsFloatSwiGlu(const ex::CapabilityQuery& q) {
+  const auto g = ParamsOf<ir::GluParams>(q);
+  return AcceptsFloatProductFusion(q) && g && g->kind == ir::GluKind::kSwiGlu && !g->swapped;
 }
 bool AcceptsHadamard(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::ProductParams>(q);
@@ -1138,6 +1158,16 @@ const std::array kEntries = {
     Entry{"ggml.mul_mat.fwht", Operation::kMatMul,
           Cap(P(Op::kMatMul), kFloatProduct, &AcceptsHadamard, false, {}, 3),
           "; selectable for the build's SASS architectures: a square Hadamard hint"},
+    Entry{
+        "ggml.mul_mat_add.mmvf_fused", Operation::kMulMatAdd,
+        Cap(F(FusedKind::kMatMulAdd), kF16ProductAdd, &AcceptsFloatProductFusion, false),
+        "; selectable for the build's SASS architectures: one F32 input column, one dense "
+        "F16 matrix with even K, F32 add of the same shape; actual MMVF and fusion gates checked"},
+    Entry{"ggml.mul_mat_glu.mmvf_fused", Operation::kMulMatGlu,
+          Cap(F(FusedKind::kMatMulGlu), kF16ProductGlu, &AcceptsFloatSwiGlu, false),
+          "; selectable for the build's SASS architectures: one F32 input column, dense F16 "
+          "gate/up matrices with even K, split unswapped SwiGLU; actual MMVF and fusion gates "
+          "checked"},
     // Routed experts: the expert products by upstream's routing (MMVQ or
     // MMQ, ggml_cuda_mul_mat_id), and Gemma's fused routing and scaled
     // reduce (gemma_moe_fusion.h).

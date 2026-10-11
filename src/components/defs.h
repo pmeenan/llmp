@@ -54,6 +54,29 @@ const ComponentDef& EmbeddingInject();
 
 // The encodings a norm's weight takes: the converters keep norms F32.
 inline constexpr std::array<format::Encoding, 1> kF32Only{format::Encoding::kF32};
+inline constexpr std::array kNormEncodings{format::Encoding::kF32, format::Encoding::kBF16};
+inline constexpr std::array kBiasEncodings{format::Encoding::kF32, format::Encoding::kF16};
+
+// Norm scales keep their source encoding resident. Widen a low-precision
+// scale in transient graph storage before the F32 normalization product.
+inline ir::TensorId NormScale(ir::Builder& b, ir::TensorId weight) {
+  return b.tensor(weight).format.encoding == format::Encoding::kF32
+             ? weight
+             : b.Convert(weight, format::Encoding::kF32);
+}
+
+// A product whose rounding is part of the component's arithmetic. Request
+// the output encoding on the product itself, so the planner/lowering must
+// choose a kernel that writes it (not an F32 product with an implicit cast).
+inline ir::TensorId MatMulOutput(ir::Builder& b, ir::TensorId a, ir::TensorId x,
+                                 format::Encoding encoding) {
+  if (encoding == format::Encoding::kF32) return b.MatMul(a, x);
+  ir::TensorDesc output;
+  output.format.encoding = encoding;
+  const std::array sources{a, x};
+  return b.Emit(ir::Primitive(ir::Op::kMatMul), ir::ToBytes(ir::ProductParams{}), sources,
+                std::span(&output, 1))[0];
+}
 
 // A role's shape.
 inline RoleShape Role(std::uint16_t role, std::initializer_list<std::uint64_t> ne) {
