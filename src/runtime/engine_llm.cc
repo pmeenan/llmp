@@ -1072,9 +1072,9 @@ Status EngineLlm::CompletePositionRestoreFor(Branch& branch, std::uint32_t posit
 
 Status EngineLlm::RestoreSnapshotFor(Branch& branch, void* host,
                                      std::span<const en::LiveState::Range> ranges,
-                                     std::uint32_t cursor) {
-  // A snapshot this process took: its own layout.
-  if (auto prepared = PreparePositionRestoreFor(branch, cursor, cursor, ranges, KeptLayout());
+                                     std::uint32_t cursor, std::string_view layout) {
+  // The authenticated capture names its original layout.
+  if (auto prepared = PreparePositionRestoreFor(branch, cursor, cursor, ranges, layout);
       !prepared) {
     return prepared;
   }

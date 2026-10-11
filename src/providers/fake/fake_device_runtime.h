@@ -29,6 +29,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 #include "base/bytes.h"
 #include "providers/device_runtime.h"
@@ -58,6 +59,13 @@ void ConfigureFakeDevice(FakeDeviceSettings settings);
 void FailNextCopy(CopyKind kind, std::size_t bytes, bool queue_first = false,
                   std::size_t matches_before = 0);
 void ClearCopyFailure();
+// One exact-pointer free invokes this callback after physically freeing its
+// allocation. The hook is taken before the free and called without its mutex,
+// so a test can fault subsequent bookkeeping deterministically. No callback
+// receives or may access the freed bytes. Clear it before referenced test
+// state retires if the matching free did not happen.
+void AfterNextPinnedFree(void* pointer, std::function<void()> callback);
+void ClearPinnedFreeHook();
 
 }  // namespace llmp::providers::fake
 

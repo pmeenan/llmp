@@ -347,6 +347,151 @@ class EngineLlmTest : public ::testing::Test {
   bool save_checkpoints_ = true;  // Llm::set_turn_checkpoints at Start
 };
 
+// Snapshot payload and variable metadata have one catalog charge. These are
+// integration controls over the real slot copy/restore path on the fake node;
+// no test receives a writable pointer into the opaque snapshot.
+TEST_F(EngineLlmTest, OpaqueSnapshotRestoresCapturedBytesAndHistoryWithOneCharge) {
+  Start(false, false);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  const auto prompt = Prompt(17, 3);
+  std::vector<float> logits;
+  ASSERT_TRUE(branch.Prefill(prompt, logits));
+  const auto occupancy = [&] {
+    std::uint64_t value = 0;
+    EXPECT_TRUE(node_->Call(
+        [&]() -> rt::Status {
+          value = node_->catalog().OccupancyOf(node_->domain()).Total().value();
+          return {};
+        },
+        "snapshot test occupancy"));
+    return value;
+  };
+  const auto before = occupancy();
+  {
+    rt::SnapshotStore store(*node_, 8 * kExtent);
+    auto saved = branch.CaptureState(store);
+    ASSERT_TRUE(saved) << Failed(saved).value_or("");
+    auto original = store.Digest(*saved);
+    ASSERT_TRUE(original) << Failed(original).value_or("");
+    EXPECT_EQ(occupancy() - before, store.capacity());
+    const auto tail = Prompt(3, 7);
+    ASSERT_TRUE(branch.Prefill(tail, logits));
+    EXPECT_NE(branch.history(), prompt);
+    ASSERT_TRUE(branch.RestoreState(store, *saved));
+    EXPECT_EQ(branch.history(), prompt);
+    EXPECT_EQ(llm_->runner().slots().positions(0), prompt.size());
+    // Capture again through the same owned allocation: old capability expires,
+    // while the actual copied bytes match the first completed capture.
+    auto again = branch.CaptureState(store);
+    ASSERT_TRUE(again) << Failed(again).value_or("");
+    EXPECT_FALSE(store.Digest(*saved));
+    auto repeated = store.Digest(*again);
+    ASSERT_TRUE(repeated) << Failed(repeated).value_or("");
+    EXPECT_EQ(*repeated, *original);
+  }
+  // Plans/state may grow with the tail, so only the snapshot's exact charge is
+  // checked while its lifetime is isolated, above. Continuation checks actual
+  // logical state rather than only the diagnostic byte hash.
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  rt::Generation generated;
+  // The captured frontier's logits are reconstructed by a one-row score-free
+  // continuation prompt; the state prefix remains the captured history.
+  const auto next = Prompt(1, 9);
+  ASSERT_TRUE(branch.Prefill(next, logits));
+  auto continued = prompt;
+  continued.insert(continued.end(), next.begin(), next.end());
+  ASSERT_TRUE(branch.Generate(logits, options, generated));
+  EXPECT_EQ(generated.tokens, Chain(continued, 4));
+  Close();
+}
+
+TEST_F(EngineLlmTest, OpaqueSnapshotRejectsForeignStoreAndOwnerBeforeAnyRestore) {
+  Start(false, false);
+  auto& a = BranchAt(0);
+  auto& b = BranchAt(1);
+  Open({&a, &b});
+  std::vector<float> logits;
+  ASSERT_TRUE(a.Prefill(Prompt(7, 1), logits));
+  ASSERT_TRUE(b.Prefill(Prompt(7, 8), logits));
+  rt::SnapshotStore first(*node_, 8 * kExtent);
+  rt::SnapshotStore second(*node_, 8 * kExtent);
+  auto saved = a.CaptureState(first);
+  ASSERT_TRUE(saved) << Failed(saved).value_or("");
+  const auto a_history = a.history();
+  const auto b_history = b.history();
+  const auto a_position = llm_->runner().slots().positions(0);
+  const auto b_position = llm_->runner().slots().positions(1);
+  EXPECT_FALSE(second.Digest(*saved));
+  EXPECT_FALSE(a.RestoreState(second, *saved));
+  EXPECT_FALSE(b.RestoreState(first, *saved));
+  EXPECT_EQ(a.history(), a_history);
+  EXPECT_EQ(b.history(), b_history);
+  EXPECT_EQ(llm_->runner().slots().positions(0), a_position);
+  EXPECT_EQ(llm_->runner().slots().positions(1), b_position);
+  EXPECT_FALSE(llm_->runner().slots().owed(0));
+  EXPECT_FALSE(llm_->runner().slots().owed(1));
+  EXPECT_TRUE(first.Digest(*saved));
+  Close();
+}
+
+TEST_F(EngineLlmTest, OpaqueSnapshotCanRecaptureAfterIssuerExpiryWithoutRevivingOldCapability) {
+  Start(false, false);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  std::vector<float> logits;
+  ASSERT_TRUE(branch.Prefill(Prompt(9, 2), logits));
+  rt::SnapshotStore store(*node_, 8 * kExtent);
+  auto saved = branch.CaptureState(store);
+  ASSERT_TRUE(saved) << Failed(saved).value_or("");
+  const auto capacity = store.capacity();
+  branch.InvalidateStateSnapshot();
+  EXPECT_FALSE(store.Digest(*saved));
+  EXPECT_FALSE(branch.RestoreState(store, *saved));
+  auto current = branch.CaptureState(store);
+  ASSERT_TRUE(current) << Failed(current).value_or("");
+  EXPECT_EQ(store.capacity(), capacity);
+  EXPECT_TRUE(store.Digest(*current));
+  EXPECT_FALSE(store.Digest(*saved));
+  Close();
+}
+
+TEST_F(EngineLlmTest, OpaqueSnapshotStoreAndCapabilityMayOutliveNodeAndBranch) {
+  Start(false, false);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  std::vector<float> logits;
+  ASSERT_TRUE(branch.Prefill(Prompt(9, 2), logits));
+  auto store = std::make_unique<rt::SnapshotStore>(*node_, 8 * kExtent);
+  auto saved = branch.CaptureState(*store);
+  ASSERT_TRUE(saved) << Failed(saved).value_or("");
+  Close();
+  const auto observer = node_->staging_lifetime().lock();
+  ASSERT_TRUE(observer);
+  Stop();  // node and branch retire while the non-owning capability remains
+  EXPECT_FALSE(observer->live());
+  EXPECT_FALSE(store->usable());
+  EXPECT_FALSE(store->Digest(*saved));
+  store.reset();  // must neither call the expired node nor reread freed bytes
+}
+
+TEST_F(EngineLlmTest, OpaqueSnapshotCeilingIncludesMetadataAndAllocatesNothingOnRefusal) {
+  Start(false, false);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  std::vector<float> logits;
+  ASSERT_TRUE(branch.Prefill(Prompt(7, 4), logits));
+  rt::SnapshotStore store(*node_, 1);
+  const auto history = branch.history();
+  auto refused = branch.CaptureState(store);
+  EXPECT_FALSE(refused);
+  EXPECT_EQ(store.capacity(), 0U);
+  EXPECT_EQ(branch.history(), history);
+  EXPECT_EQ(llm_->runner().slots().positions(0), history.size());
+  Close();
+}
+
 // Prompts in chunks (state-only cuts, the last headed) and plain decoding,
 // its greedy tokens chosen on the device or, with logits kept, by the host
 // from each row; the next turn reuses the whole live history.

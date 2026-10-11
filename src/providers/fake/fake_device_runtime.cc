@@ -51,6 +51,20 @@ struct CopyFailure {
 };
 std::mutex copy_failure_mutex;
 std::optional<CopyFailure> copy_failure;
+struct PinnedFreeHook {
+  void* pointer;
+  std::function<void()> callback;
+};
+std::mutex pinned_free_mutex;
+std::optional<PinnedFreeHook> pinned_free_hook;
+
+std::function<void()> TakePinnedFreeHook(void* pointer) {
+  const std::lock_guard lock(pinned_free_mutex);
+  if (!pinned_free_hook || pinned_free_hook->pointer != pointer) return {};
+  auto callback = std::move(pinned_free_hook->callback);
+  pinned_free_hook.reset();
+  return callback;
+}
 
 std::optional<CopyFailure> TakeCopyFailure(CopyKind kind, std::size_t bytes) {
   const std::lock_guard lock(copy_failure_mutex);
@@ -240,7 +254,9 @@ std::expected<void*, DeviceStatus> AllocatePinned(std::size_t bytes) {
 }
 
 void FreePinned(void* pointer) {
+  auto after_free = TakePinnedFreeHook(pointer);
   std::free(pointer);  // NOLINT(cppcoreguidelines-no-malloc)
+  if (after_free) after_free();
 }
 
 }  // namespace llmp::providers
@@ -254,6 +270,15 @@ void FailNextCopy(CopyKind kind, std::size_t bytes, bool queue_first, std::size_
 void ClearCopyFailure() {
   const std::lock_guard lock(copy_failure_mutex);
   copy_failure.reset();
+}
+
+void AfterNextPinnedFree(void* pointer, std::function<void()> callback) {
+  const std::lock_guard lock(pinned_free_mutex);
+  pinned_free_hook = PinnedFreeHook{pointer, std::move(callback)};
+}
+void ClearPinnedFreeHook() {
+  const std::lock_guard lock(pinned_free_mutex);
+  pinned_free_hook.reset();
 }
 
 void ConfigureFakeDevice(FakeDeviceSettings settings) { Settings() = settings; }

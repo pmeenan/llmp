@@ -329,6 +329,8 @@ std::size_t CountingStorage::Harvest(std::span<providers::IoCompletion> out, boo
 }
 
 PagedNode::~PagedNode() {
+  if (staging_lifetime_) staging_lifetime_->live_ = false;
+  staging_lifetime_.reset();
   if (torn_down_ || scheduler_ == nullptr) {
     return;
   }
@@ -1882,6 +1884,8 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       problems.push_back(ended.error());
     }
   }
+  if (staging_lifetime_) staging_lifetime_->live_ = false;
+  staging_lifetime_.reset();
   torn_down_ = true;
   // Requests first: their leases would hold what the teardown evicts.
   std::vector<std::uint32_t> open;

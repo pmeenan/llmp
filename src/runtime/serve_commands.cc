@@ -672,9 +672,9 @@ Status Table::Pair(Served& a, Served& b) {
                                        if (auto s = server_.SaveSnapshot(l); !s) {
                                          return s;
                                        }
-                                       digest = Sha256(std::span(
-                                           static_cast<const std::byte*>(server_.snapshot()),
-                                           l.state_snapshot_bytes()));
+                                       auto captured = server_.SnapshotDigest();
+                                       if (!captured) return Error(captured.error());
+                                       digest = base::ToHex(*captured);
                                        if (auto s = l.Generate(last, continuation, reference); !s) {
                                          return s;
                                        }
@@ -769,8 +769,9 @@ Status Table::Pair(Served& a, Served& b) {
       }
       ba.initialized_state_bytes = l.state_snapshot_bytes();
       ba.state_before_sha256 = digest;
-      ba.state_restored_sha256 = Sha256(
-          std::span(static_cast<const std::byte*>(server_.snapshot()), l.state_snapshot_bytes()));
+      auto captured = server_.SnapshotDigest();
+      if (!captured) return Error(captured.error());
+      ba.state_restored_sha256 = base::ToHex(*captured);
       ba.state_exact = ba.state_restored_sha256 == ba.state_before_sha256;
       if (!ba.state_exact) {
         problems_.push_back(

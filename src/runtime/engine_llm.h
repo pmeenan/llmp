@@ -307,8 +307,8 @@ class EngineLlm final : public Llm {
       std::span<const engine::LiveState::Range> footprint) const override;
   Status CompletePositionRestoreFor(Branch& branch, std::uint32_t position) override;
   Status RestoreSnapshotFor(Branch& branch, void* host,
-                            std::span<const engine::LiveState::Range> ranges,
-                            std::uint32_t cursor) override;
+                            std::span<const engine::LiveState::Range> ranges, std::uint32_t cursor,
+                            std::string_view layout) override;
   // `layout`: the kept record's (identity.layout), held against the
   // lifecycle's own.
   Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,

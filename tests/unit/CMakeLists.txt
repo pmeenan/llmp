@@ -613,6 +613,15 @@ llmp_gtest(anchored_drafter_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
 # Llm's conversations, waves, speculation with two drafters, spills, turn
 # checkpoints, recovery and kept conversations in a file a stage (D-105's
 # record version 2), over the same fake step source.
+add_executable(execution_contract_test execution_contract_test.cc)
+target_link_libraries(execution_contract_test PRIVATE llmp_engine_core llmp_warnings)
+llmp_gtest(execution_contract_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(snapshot_store_test snapshot_store_test.cc)
+target_link_libraries(snapshot_store_test PRIVATE llmp_runtime_llm llmp_fake_device_backend
+                                                    llmp_warnings)
+llmp_gtest(snapshot_store_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit)
+
 add_executable(engine_llm_test engine_llm_test.cc)
 target_link_libraries(engine_llm_test PRIVATE llmp_runtime_llm llmp_engine_core
                                               llmp_fake_step_source llmp_fake_device_backend

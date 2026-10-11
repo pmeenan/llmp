@@ -180,12 +180,14 @@ void Llm::PublishTokens(Branch& branch, std::vector<std::int32_t>& tokens, Memor
 }
 
 void Llm::Branch::InvalidateStateSnapshot() {
+  snapshot_issuer_ = std::make_shared<const std::byte>();
   saved_valid_ = false;
   model_.ReleaseTokens(saved_history_, saved_history_charge_);
   saved_ranges_.clear();
 }
 
 Llm::Branch::~Branch() {
+  snapshot_issuer_.reset();  // invalidate capabilities before releasing branch metadata
   base::Check(!generation_active_, "a branch with an active generation was destroyed");
   base::Check(prompt_session_ == nullptr, "a branch with an active prompt was destroyed");
 }
@@ -2635,6 +2637,9 @@ Status Llm::Generate(Branch& branch, const std::vector<float>& last, const Gener
 }
 
 Status Llm::SaveState(Branch& branch, void* host) {
+  auto identity = ExecutionIdentity();
+  if (!identity) return Error(identity.error());
+  if (*identity) return Error("this source requires an opaque snapshot capture");
   CheckIdleGeneration(branch);
   const HistoryFundingGuard funding(branch.funding_history_);
   if (!ReserveTokens(branch, branch.saved_history_, branch.saved_history_charge_,
@@ -2663,6 +2668,9 @@ Status Llm::SaveState(Branch& branch, void* host) {
 }
 
 Status Llm::RestoreState(Branch& branch, void* host) {
+  auto identity = ExecutionIdentity();
+  if (!identity) return Error(identity.error());
+  if (*identity) return Error("this source requires an authenticated snapshot capability");
   CheckIdleGeneration(branch);
   const HistoryFundingGuard funding(branch.funding_history_);
   if (!branch.saved_valid_) {
@@ -2679,7 +2687,9 @@ Status Llm::RestoreState(Branch& branch, void* host) {
   if (auto r = SettleFor(branch); !r) {
     return r;
   }
-  if (auto r = RestoreSnapshotFor(branch, host, branch.saved_ranges_, branch.saved_cursor_); !r) {
+  if (auto r = RestoreSnapshotFor(branch, host, branch.saved_ranges_, branch.saved_cursor_,
+                                  KeptLayout());
+      !r) {
     if (StateRefusedFor(branch) && StateUsableFor(branch)) return r;
     branch.needs_clear_ = true;
     ReleaseTokens(branch.history_, branch.history_charge_);
@@ -2690,6 +2700,87 @@ Status Llm::RestoreState(Branch& branch, void* host) {
   branch.history_used_ = Clock::now();
   SetCursorFor(branch, branch.saved_cursor_);
   RestoreDecodingStateFor(branch);
+  branch.needs_clear_ = false;
+  return {};
+}
+
+std::expected<StateSnapshot, std::string> Llm::Branch::CaptureState(SnapshotStore& store) {
+  return model_.CaptureState(*this, store);
+}
+
+Status Llm::Branch::RestoreState(SnapshotStore& store, const StateSnapshot& snapshot) {
+  return model_.RestoreState(*this, store, snapshot);
+}
+
+std::expected<StateSnapshot, std::string> Llm::CaptureState(Branch& branch, SnapshotStore& store) {
+  auto identity = ExecutionIdentity();
+  if (!identity) return std::unexpected(identity.error());
+  if (auto checked = store.CheckNode(node_); !checked) return std::unexpected(checked.error());
+  CheckIdleGeneration(branch);
+  const HistoryFundingGuard funding(branch.funding_history_);
+  // Opaque captures never allocate branch.saved_history_: the single
+  // snapshot allocation funds history and all other captured metadata.
+  if (auto settled = SettleFor(branch); !settled) return std::unexpected(settled.error());
+  const auto ranges = UsedStateRangesFor(branch);
+  if (branch.history_.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return std::unexpected("the snapshot history exceeds its position representation");
+  }
+  if (auto metadata = CheckCheckpointMetadataFor(
+          branch, static_cast<std::uint32_t>(branch.history_.size()), CursorFor(branch), ranges);
+      !metadata) {
+    return std::unexpected(metadata.error());
+  }
+  if (auto prepared =
+          store.Prepare(branch.snapshot_issuer_, *identity, KeptLayout(), CursorFor(branch), ranges,
+                        branch.history_, TurnDecodingStateFor(branch));
+      !prepared) {
+    return std::unexpected(prepared.error());
+  }
+  if (auto saved = SaveUsedStateFor(branch, store.WriteAddress(), ranges); !saved) {
+    store.Unproven();
+    return std::unexpected(saved.error());
+  }
+  return store.Publish();
+}
+
+Status Llm::RestoreState(Branch& branch, SnapshotStore& store, const StateSnapshot& snapshot) {
+  // All capability/issuer/identity checks precede funding, reads of payload,
+  // owed-state settlement, kept-file mutation and any device submission.
+  auto identity = ExecutionIdentity();
+  if (!identity) return Error(identity.error());
+  if (auto checked = store.CheckNode(node_); !checked) return checked;
+  auto captured = store.Read(snapshot, branch.snapshot_issuer_, *identity, KeptLayout());
+  if (!captured) return Error(captured.error());
+  if (captured->history.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return Error("the captured history exceeds its position representation");
+  }
+  if (auto metadata =
+          CheckCheckpointMetadataFor(branch, static_cast<std::uint32_t>(captured->history.size()),
+                                     captured->cursor, captured->ranges);
+      !metadata) {
+    return metadata;
+  }
+  CheckIdleGeneration(branch);
+  const HistoryFundingGuard funding(branch.funding_history_);
+  if (!ReserveTokens(branch, branch.history_, branch.history_charge_, captured->history.size())) {
+    return Error("native restored history exceeds the execution budget");
+  }
+  Unkeep(branch);
+  if (auto settled = SettleFor(branch); !settled) return settled;
+  if (auto restored = RestoreSnapshotFor(branch, captured->payload, captured->ranges,
+                                         captured->cursor, captured->layout);
+      !restored) {
+    if (StateRefusedFor(branch) && StateUsableFor(branch)) return restored;
+    store.Unproven();
+    branch.needs_clear_ = true;
+    ReleaseTokens(branch.history_, branch.history_charge_);
+    return restored;
+  }
+  branch.history_.assign(captured->history.begin(), captured->history.end());
+  branch.turn_checkpoints_.clear();
+  branch.history_used_ = Clock::now();
+  SetCursorFor(branch, captured->cursor);
+  RestoreTurnDecodingStateFor(branch, captured->decoding);
   branch.needs_clear_ = false;
   return {};
 }

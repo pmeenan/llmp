@@ -168,8 +168,13 @@ update this section as each slice lands):
   closure. No component/default consumer is introduced. G4b2b2b3a adds physical
   reservation guarantees, exact owned/borrowed state facts and authenticated
   planner-pass forwarding, with placement and actual-binding audits. It introduces
-  no new component recipe. G4b2b2b3b must enforce separate execution compatibility,
-  authenticated snapshots and numerical-domain refusals before G4b2b2b3c makes
+  no new component recipe. G4b2b2b3b1 adds owned generic execution/domain values
+  and a single accounted opaque snapshot allocation with issuer, generation,
+  metadata and completion authentication. Legacy raw APIs retain their absent-
+  identity behavior; no production source declares a required identity yet.
+  G4b2b2b3b2 must qualify the full execution build and actual late resources;
+  G4b2b2b3b3 must enforce source/plan/kept compatibility and complete operation
+  admission, including both futures and companions, before G4b2b2b3c makes
   an opt-in rounded-score component or full-mask fusion reachable. Output-A/
   products, mixed encodings and full policy remain G4b2c. G4c then
   binds the hash-routing IDs, compressor inputs and injection features and

@@ -80,6 +80,7 @@
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/pressure_trim.h"
+#include "runtime/snapshot_store.h"
 #include "runtime/state_keeper.h"
 #include "runtime/turn_reuse.h"
 #include "runtime/watchdog.h"
@@ -492,6 +493,8 @@ class Llm : public Served {
     std::uint64_t state_snapshot_bytes() const;
     Status SaveState(void* host);
     Status RestoreState(void* host);
+    std::expected<StateSnapshot, std::string> CaptureState(SnapshotStore& store);
+    Status RestoreState(SnapshotStore& store, const StateSnapshot& snapshot);
     void InvalidateStateSnapshot();
     // Whether the last serial Prefill, ScorePrompt, PreparePrompt or
     // Generate of this branch ended on a capacity refusal (Llm::
@@ -513,6 +516,8 @@ class Llm : public Served {
     std::vector<std::int32_t> history_;
     // A possibly run failed step invalidates this branch until native clear.
     bool needs_clear_ = false;
+    // A capability never owns this issuer. Expiry rejects before payload reads.
+    std::shared_ptr<const std::byte> snapshot_issuer_ = std::make_shared<const std::byte>();
     MemoryCharge saved_history_charge_;
     std::vector<std::int32_t> saved_history_;
     MemoryCharge verify_tokens_charge_;
@@ -652,6 +657,12 @@ class Llm : public Served {
   // The identity a kept record of this model must match: its runner's
   // state layout (after Setup). Empty: this model keeps none.
   virtual std::string KeptLayout() const { return {}; }
+  // Snapshot compatibility seam. Legacy adapters return no execution seal.
+  // No production adapter declares a required identity yet; a future adapter
+  // must qualify its real backend and operation admission before doing so.
+  virtual std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const {
+    return std::optional<base::Sha256Digest>{};
+  }
   // The record's format version this model writes and reads (kept_record.h):
   // the M3 runners' one spill file a slot (1) until each family migrates,
   // the shared runner's one a stage (2, EngineLlm). A record of the other
@@ -1283,8 +1294,9 @@ class Llm : public Served {
   }
   virtual Status RestoreSnapshotFor(Branch& branch, void* host,
                                     std::span<const engine::LiveState::Range> ranges,
-                                    std::uint32_t cursor) {
+                                    std::uint32_t cursor, std::string_view layout) {
     (void)cursor;
+    (void)layout;
     return RestoreUsedStateFor(branch, host, ranges);
   }
   virtual Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
@@ -1383,6 +1395,8 @@ class Llm : public Served {
                   Generation& out);
   Status SaveState(Branch& branch, void* host);
   Status RestoreState(Branch& branch, void* host);
+  std::expected<StateSnapshot, std::string> CaptureState(Branch& branch, SnapshotStore& store);
+  Status RestoreState(Branch& branch, SnapshotStore& store, const StateSnapshot& snapshot);
   void CheckBranch(const Branch& branch) const;
   void CheckDefaultBranch(const Branch& branch) const;
   void CheckIdleGeneration(const Branch& branch, const PromptSession* prompt = nullptr) const;
@@ -1501,7 +1515,7 @@ class Server {
   // its start timeout (EXTEND_TIMEOUT_USEC), so a slow start is never cut
   // short while one that stops making progress still is. Before Start.
   void set_start_progress(std::function<void()> progress) { start_progress_ = std::move(progress); }
-  void* snapshot() const { return snapshot_; }
+  std::expected<base::Sha256Digest, std::string> SnapshotDigest() const;
   Status SaveSnapshot(Llm& model);
   Status RestoreSnapshot(Llm& model);
   // Every model's memory released and the node torn down. Once; the
@@ -1773,10 +1787,9 @@ class Server {
   std::uint64_t request_memory_ = kRequestMemoryFloor;
   std::uint64_t state_room_ = 0;  // the budget beside the fixed memory and the largest weights
   std::uint64_t workspace_ = 0;
-  void* snapshot_ = nullptr;
-  std::uint64_t snapshot_capacity_ = 0;
+  std::unique_ptr<SnapshotStore> snapshot_store_;
+  StateSnapshot snapshot_;
   bool snapshot_enabled_ = false;
-  bool snapshot_unproven_ = false;
   Llm* snapshot_model_ = nullptr;
   scheduler::SchedulerStats swap_before_;  // the counters at the last Activate
   SwapHostPhases swap_host_phases_;        // cap-only cumulative attribution, driver owned

@@ -1927,6 +1927,34 @@ choice, speculation with two cascaded drafters, spill and restore, a turn
 checkpoint's restore, recovery, and a restart adopting a version 2 record
 while refusing a version 1 one.
 
+The vendor-free `engine/execution_contract` value types separately seal an
+ordered numerical-domain declaration and execution inputs (effective policy,
+pattern and registry identities, device/tuning facts, declared backend recipe,
+build and selector identities, and allocation guarantees). They own their
+inputs and reject incomplete declarations. These values do not discover
+companion work or admit an operation: authoritative production backend
+declarations, source/plan/kept integration and complete operation admission
+remain required before a component can require this contract. No production
+adapter declares that identity yet, and the model spec identity is unchanged.
+
+Diagnostic snapshots now use `runtime/SnapshotStore`, one bounded,
+catalog-charged pinned allocation for initialized state plus aligned captured
+ranges, token history, cursor, layout, optional execution identity and decoding
+metadata. A move-only capability names the completed capture's store,
+generation and live branch issuer; it exposes no writable state pointer.
+Foreign, stale, incomplete and incompatible restores refuse before history
+funding, settlement or state copies. The server reuses this allocation and its
+existing reclaim retry; its diagnostic hash authenticates the capability and
+covers only initialized payload bytes. A failed copy retains the entire
+allocation and charge through the node's completion-aware pinned retention and
+prevents reuse. Any failed release also permanently disables the store: the
+node retains the allocation only if it still owns it, since a bookkeeping
+error can follow the physical free. Explicit node-lifetime invalidation also
+protects stores that outlive teardown. Legacy direct raw-buffer APIs keep their existing behavior
+when no execution identity is declared; a declared or unavailable identity
+refuses those APIs. This snapshot protocol is not numerical-domain admission
+or production backend qualification.
+
 ## Other pipelines
 
 The same IR, components and runner serve encoders and generators. A

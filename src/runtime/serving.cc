@@ -1868,57 +1868,34 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
 }
 
 Status Server::SaveSnapshot(Llm& model) {
-  if (!snapshot_enabled_ || snapshot_unproven_) {
-    return Error("the diagnostic snapshot is disabled or its completion is unproven");
+  if (!snapshot_enabled_) return Error("the diagnostic snapshot is disabled");
+  if (!snapshot_store_) {
+    snapshot_store_ =
+        std::make_unique<SnapshotStore>(node_, node_.budget().value(), [this](std::uint64_t bytes) {
+          return Reclaim(bytes, true, "a state snapshot's staging") != 0;
+        });
   }
-  if (snapshot_model_ != nullptr) {
-    snapshot_model_->InvalidateStateSnapshot();
-    snapshot_model_ = nullptr;
-  }
-  const auto bytes = std::max<std::uint64_t>(model.state_snapshot_bytes(), 256);
-  if (bytes > snapshot_capacity_) {
-    if (auto freed = node_.FreePinned(snapshot_); !freed) {
-      return freed;
-    }
-    snapshot_ = nullptr;
-    snapshot_capacity_ = 0;
-    // Its staging is charged to the catalog, within the budget (the
-    // node's Pinned): the guard's margin, set apart beside the budget, is
-    // not counted again (that double count refused DeepSeek with DSpark
-    // beside Qwen3.8). Refused for the budget, the reclaim order makes
-    // room first.
-    std::vector<catalog::ExtentId> staging;
-    auto allocated = node_.Pinned(bytes, engine::kShared, staging);
-    if (!allocated && Reclaim(bytes, true, "a state snapshot's staging") != 0) {
-      staging.clear();
-      allocated = node_.Pinned(bytes, engine::kShared, staging);
-    }
-    if (!allocated) {
-      return std::unexpected(allocated.error());
-    }
-    snapshot_ = *allocated;
-    snapshot_capacity_ = bytes;
-  }
-  auto saved = model.SaveState(snapshot_);
-  if (!saved) {
-    snapshot_unproven_ = true;
-    node_.KeepPinned(snapshot_);
-  } else {
-    snapshot_model_ = &model;
-  }
-  return saved;
+  snapshot_ = {};
+  snapshot_model_ = nullptr;
+  auto saved = model.default_branch().CaptureState(*snapshot_store_);
+  if (!saved) return Error(saved.error());
+  snapshot_ = std::move(*saved);
+  snapshot_model_ = &model;
+  return {};
 }
 
 Status Server::RestoreSnapshot(Llm& model) {
-  if (!snapshot_enabled_ || snapshot_unproven_ || snapshot_model_ != &model) {
-    return Error("the diagnostic snapshot is disabled or its completion is unproven");
+  if (!snapshot_enabled_ || !snapshot_store_ || snapshot_model_ != &model) {
+    return Error("the diagnostic snapshot is disabled or belongs to another model");
   }
-  auto restored = model.RestoreState(snapshot_);
-  if (!restored) {
-    snapshot_unproven_ = true;
-    node_.KeepPinned(snapshot_);
+  return model.default_branch().RestoreState(*snapshot_store_, snapshot_);
+}
+
+std::expected<base::Sha256Digest, std::string> Server::SnapshotDigest() const {
+  if (!snapshot_enabled_ || !snapshot_store_) {
+    return std::unexpected("the diagnostic snapshot is disabled");
   }
-  return restored;
+  return snapshot_store_->Digest(snapshot_);
 }
 
 Status Server::Start(bool snapshot) {
@@ -2734,6 +2711,11 @@ Status Server::TearDown() {
       static_cast<Llm&>(*m).PreserveKeptFiles();
     }
   }
+  // Expire capabilities and release the single completed snapshot while
+  // the accounting node still exists. Unknown copies stay in KeepPinned.
+  snapshot_ = {};
+  snapshot_model_ = nullptr;
+  snapshot_store_.reset();
   const auto stopped = node_.TearDown(models);
   if (!stopped && node_.has_pending_state_preparation()) {
     // Server is stack-owned by its frontends. Returning would destroy a model

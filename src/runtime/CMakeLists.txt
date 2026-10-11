@@ -32,7 +32,7 @@ target_link_libraries(llmp_runtime PUBLIC llmp_artifact llmp_config llmp_platfor
 # (engine_llm.h, engine_image.h; D-107), in every build profile: they name
 # no kernel library and link no device backend, so the tests run them on
 # the fake one.
-add_library(llmp_runtime_llm STATIC llm.cc engine_llm.cc engine_image.cc)
+add_library(llmp_runtime_llm STATIC llm.cc engine_llm.cc engine_image.cc snapshot_store.cc)
 target_include_directories(llmp_runtime_llm PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_runtime_llm PUBLIC llmp_runtime llmp_engine_core llmp_sampling
                                                 llmp_chat llmp_tokenizer llmp_spec

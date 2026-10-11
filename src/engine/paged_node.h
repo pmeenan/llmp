@@ -412,6 +412,17 @@ class PagedModel {
   virtual Status Release() = 0;
 };
 
+// Driver-thread observation only. Even a retained observer cannot keep this
+// validity flag live after node teardown; it never owns the node or its bytes.
+class StagingLifetime {
+ public:
+  bool live() const { return live_; }
+
+ private:
+  friend class PagedNode;
+  bool live_ = true;
+};
+
 class PagedNode {
  public:
   explicit PagedNode(NodeSettings settings) : settings_(settings) {}
@@ -435,6 +446,11 @@ class PagedNode {
   // If teardown refuses with this true, callers must retain the complete
   // node/model/state lifetime or failstop before returning to destruction.
   bool has_pending_state_preparation() const { return preparing_state_ != nullptr; }
+
+  // Borrowed host-staging owners must stop using this node when its
+  // lifetime expires, before teardown frees allocations. The token cannot
+  // keep the node alive and is never an address or execution identity.
+  std::weak_ptr<const StagingLifetime> staging_lifetime() const { return staging_lifetime_; }
 
   providers::VmmProvider& memory() { return *memory_; }
   providers::DeviceExecution& execution() { return *execution_; }
@@ -794,6 +810,7 @@ class PagedNode {
   Mapped zone_;
   Mapped activations_;
   Mapped pool_;
+  std::shared_ptr<StagingLifetime> staging_lifetime_ = std::make_shared<StagingLifetime>();
   std::vector<void*> pinned_;
   // Left to the process's end on purpose (RetireRing): never freed.
   std::vector<void*> kept_pinned_;

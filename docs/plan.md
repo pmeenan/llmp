@@ -1715,6 +1715,24 @@ each is checked against the design as M3.6 proceeds.
                                                 authenticated snapshots and
                                                 numerical-domain refusals before
                                                 any new recipe becomes reachable.
+                                                - [x] **G4b2b2b3b1 — identity values and snapshots:**
+                                                      add owned generic identity/domain
+                                                      values and one accounted opaque
+                                                      snapshot allocation with issuer,
+                                                      generation and completion checks;
+                                                      preserve legacy raw API behavior.
+                                                      No production declaration or
+                                                      numerical admission consumer yet.
+                                                - [ ] **G4b2b2b3b2 — backend declaration:**
+                                                      authenticate the full execution
+                                                      build/invocation closure and actual
+                                                      late-bound resources before a
+                                                      production identity is available.
+                                                - [ ] **G4b2b2b3b3 — admission enforcement:**
+                                                      bind source/plan/kept identities;
+                                                      enforce owned whole-operation and
+                                                      exact-unit admission on all current,
+                                                      ahead, companion and restore paths.
                                           - [ ] **G4b2b2b3c — component and fusion:**
                                                 add the opt-in rounded-score
                                                 component and guarded full-mask
