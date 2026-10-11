@@ -1048,6 +1048,12 @@ add_executable(gemma4_assistant_artifact_test gemma4_assistant_artifact_test.cc)
 target_link_libraries(gemma4_assistant_artifact_test PRIVATE llmp_model llmp_artifact llmp_tokenizer)
 llmp_gtest(gemma4_assistant_artifact_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models")
 
+# Closed native-v1 admission over actual descriptor formats and stored specs.
+add_executable(component_admission_test component_admission_test.cc)
+target_link_libraries(component_admission_test PRIVATE llmp_runtime llmp_components llmp_json)
+llmp_gtest(component_admission_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
 # The model spec's canonical JSON, refusals and bound digest; the
 # architecture mappings as data and applied to the Gemma 2 and Gemma 3
 # tensor tables with today's profiles (spec/).

@@ -37,6 +37,7 @@
 #include "planner/step_shape.h"
 #include "platform/direct_io.h"
 #include "providers/device_runtime.h"
+#include "runtime/component_admission.h"
 #include "runtime/gemma_profile.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
@@ -201,27 +202,43 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("the Qwen component qualification requires exactly one configured slot");
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
-    std::optional<model::Qwen38Binding> qwen;
-    std::expected<std::vector<spec::SourceValue>, std::string> values;
-    if (solo) {
-      auto binding = model::BindQwen38(model::Qwen38Flash(), *artifact);
-      if (!binding) return Error(binding.error());
-      qwen.emplace(std::move(*binding));
-      auto hash = RecipeHash(*artifact, *qwen);
-      if (!hash) return Error(hash.error());
-      values = spec::mappings::Qwen38V0Values(model::Qwen38Flash(), *qwen, *hash);
-    } else
-      values = V0Values(settings.architecture, *artifact);
-    if (!values) return Error(values.error());
+    const bool stored = artifact->format_version() == 1;
+    if (stored && !drafter_id.empty())
+      return Error("native v1 component admission has no qualified drafter composition");
     const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
     if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
+    if (settings.architecture != artifact->model().architecture)
+      return Error("resolved architecture differs from the opened artifact");
     auto hold = std::make_shared<ComponentHold>();
-    hold->values = std::move(*values);
-    auto synthesized = spec::SynthesizeV0(*artifact, *mapping, hold->values);
-    if (!synthesized) return Error(synthesized.error());
-    auto source = spec::SourceOfV0(*artifact, mapping);
-    if (!source) return Error(source.error());
-    hold->sources.push_back(std::move(*source));
+    std::optional<model::Qwen38Binding> qwen;
+    std::expected<spec::ModelSpec, std::string> synthesized;
+    if (stored) {
+      auto admitted = ReadComponentAdmission(*artifact);
+      if (!admitted) return Error(admitted.error());
+      if (settings.context.value == 0 ||
+          settings.context.value > admitted->model.stages.front().context)
+        return Error("resolved context exceeds the admitted stored spec");
+      synthesized = std::move(admitted->model);
+      hold->sources.push_back(std::move(admitted->source));
+    } else {
+      std::expected<std::vector<spec::SourceValue>, std::string> values;
+      if (solo) {
+        auto binding = model::BindQwen38(model::Qwen38Flash(), *artifact);
+        if (!binding) return Error(binding.error());
+        qwen.emplace(std::move(*binding));
+        auto hash = RecipeHash(*artifact, *qwen);
+        if (!hash) return Error(hash.error());
+        values = spec::mappings::Qwen38V0Values(model::Qwen38Flash(), *qwen, *hash);
+      } else
+        values = V0Values(settings.architecture, *artifact);
+      if (!values) return Error(values.error());
+      hold->values = std::move(*values);
+      synthesized = spec::SynthesizeV0(*artifact, *mapping, hold->values);
+      if (!synthesized) return Error(synthesized.error());
+      auto source = spec::SourceOfV0(*artifact, mapping);
+      if (!source) return Error(source.error());
+      hold->sources.push_back(std::move(*source));
+    }
     // The drafter, a stage of its own, when the model speculates.
     const bool speculate = !drafter_id.empty() && settings.speculation.value;
     std::optional<ja::Artifact> drafter;
@@ -309,9 +326,16 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     const std::uint32_t context = target.context;
     const std::uint32_t chunk = std::max<std::uint32_t>(target.max_rows, 1);
     // The recipe for this serving envelope, and how it composes steps.
-    auto rule = spec::DefaultRule(*mapping, hold->values, {.context = context, .slots = slots});
-    if (!rule) return Error(rule.error());
-    const spec::PolicyRule composition = *rule != nullptr ? **rule : spec::PolicyRule{};
+    spec::PolicyRule composition;
+    if (stored) {
+      auto rule = ComponentAdmissionPolicy(*mapping, {.context = context, .slots = slots});
+      if (!rule) return Error(rule.error());
+      composition = *rule;
+    } else {
+      auto rule = spec::DefaultRule(*mapping, hold->values, {.context = context, .slots = slots});
+      if (!rule) return Error(rule.error());
+      if (*rule != nullptr) composition = **rule;
+    }
     if (composition.prompts_alone) caps->join_prefill = false;
     if (composition.owners_alone) caps->max_segments = 1;
     // A verify's rows: the anchor and every draft.
@@ -436,8 +460,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     hold->backend = std::move(*backend);
     // A harness's matched recipe in place of the target's mapping's.
     std::optional<planner::Policy> target_policy;
-    if (options.target_policy) {
-      auto parsed = planner::ParsePolicy(*options.target_policy);
+    if (stored || options.target_policy) {
+      auto parsed =
+          planner::ParsePolicy(options.target_policy ? *options.target_policy : composition.text);
       if (!parsed) return Error(std::format("the target's policy: {}", parsed.error()));
       target_policy = std::move(*parsed);
     }

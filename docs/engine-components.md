@@ -1890,6 +1890,23 @@ artifact publication or serving. Assistants, Qwen/DeepSeek, other containers
 and remaining transforms keep N3b open; writer and admission work remain
 N4/N5.
 
+**Stored-spec runtime admission** (`runtime/component_admission.h`, N4b1
+candidate, actual short control passed). Registration and component construction use the same closed
+check over `StoredSpec` and `SourceOf`. The initial declaration covers the
+approved Gemma 2 2B Q8_0 source only: copy-only native tensors, F32 norms,
+tied embedding/output, complete component parameters and the existing
+`norm.plus_one` assertion must agree with its declarative mapping. Profile
+constants provide an approval oracle; execution consumes the stored spec
+unchanged. The mapping's unconditional policy needs no legacy checkpoint-key
+bag. Context comes from the admitted spec, and its ordinary one/two-owner
+limits remain. Bound plan and kept-state identities include the native
+artifact ID through the existing bound-spec digest. No legacy representation
+is fabricated. Unknown v1 identities and drafter compositions are refused;
+v0 synthesis remains until N5. Focused host refusal controls and the actual v0/v1 full-logit, initialized-state
+and spill-continuation check passed with zero skips. Full regression and main
+integration checks remain pending for this candidate; N4 and the N5 family
+gates remain open.
+
 **Import transform primitives** (`import/transforms.h`). The historical
 ModelOpt import's `norm.plus_one` and `ssm.a_neg_exp` convert explicitly
 selected BF16 scalars to F32 using binary64 arithmetic and nearest-even

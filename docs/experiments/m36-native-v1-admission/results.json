@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-11",
+  "scope": "N4b1 approved Gemma2 native v1 admission only",
+  "host": "spark",
+  "artifact": "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076",
+  "checks": [
+    {
+      "run": "m36-n4b1-focused02",
+      "kind": "native build and focused host",
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "m36-n4b1-models02",
+      "kind": "actual v0-v1 full-logit/state/spill comparison",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "m36-n4b1-final-shared",
+      "kind": "full native build and non-model regression",
+      "passed": 2544,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "m36-n4b1-final-shared",
+      "kind": "full CPU build and regression",
+      "passed": 1999,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "m36-n4b1-final-models",
+      "kind": "all model and timing tests (176 raw GoogleTest cases)",
+      "passed": 131,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "m36-n4b1-final-shared",
+      "kind": "format, boundaries, headers and REUSE",
+      "result": "PASS"
+    },
+    {
+      "run": "m36-n4b1-main",
+      "kind": "main native build, focused integration and quality gates",
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0,
+      "format_boundaries_headers_reuse": "PASS"
+    }
+  ],
+  "review": "production01 clean; unpaid external metadata parse removed and finite full rows added in02; independent followup clean",
+  "remaining": [
+    "other native v1 profiles and drafter compositions",
+    "N4 remaining transforms/admission",
+    "N5 all-artifact qualification"
+  ]
+}

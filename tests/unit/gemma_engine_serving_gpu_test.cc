@@ -391,6 +391,103 @@ class GemmaEngineServingGpu : public ::testing::TestWithParam<std::uint32_t> {
 // skipped whatever else it printed).
 class GemmaEngineGemma3Gpu : public GemmaEngineServingGpu {};
 
+class GemmaEngineNativeV1Gpu : public GemmaEngineServingGpu {};
+
+TEST_P(GemmaEngineNativeV1Gpu, PublishedGemma2MatchesV0HeadsTokensStateAndSpillContinuation) {
+  constexpr std::string_view id =
+      "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076";
+  // A published native artifact is provided explicitly by the bounded
+  // acceptance recipe; this test never imports or rewrites model payloads.
+  const char* imported = std::getenv("LLMP_TEST_GEMMA2_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
+  if (imported == nullptr) GTEST_SKIP() << "no published Gemma2 v1 store configured";
+  // Start admits the actual native artifact through the same runtime check
+  // used by registration and execution. Avoid a second external metadata
+  // parse: this harness payment inventories only retained observation rows.
+  const auto legacy_store = life->roles.installed;
+  struct Result {
+    std::array<std::vector<float>, 2> heads, continued;
+    std::array<rt::Generation, 2> generated;
+    std::array<std::vector<std::int32_t>, 2> histories;
+    std::array<llmp::base::Sha256Digest, 2> state, resumed;
+  };
+  // Two arms * two owners * (two heads + four logit rows) = 24 rows.
+  // Pay 32 MiB while retained, including their small metadata, inside the
+  // same 16 GiB execution cap. Payload/state copies have normal node charges.
+  static_assert(24ULL * 256000 * sizeof(float) + (2ULL << 20U) <= (32ULL << 20U));
+  life->options.diagnostic_startup_host_bytes = 32ULL << 20U;
+  life->options.diagnostic_budget_cap_bytes = 16ULL << 30U;
+  // The stopped first server retains its paid host allowance until the
+  // next server has admitted the same retained-result bound. Results die
+  // before this fallback payment and before the fixture's active server.
+  std::unique_ptr<rt::Server> retired_server;
+  std::array<Result, 2> result;
+  for (std::size_t arm = 0; arm < result.size(); ++arm) {
+    life->roles.installed = arm == 0 ? legacy_store : fs::path(imported);
+    life->config.models.front().artifact = arm == 0 ? std::string(kGemma2) : std::string(id);
+    const auto started = Start();
+    ASSERT_TRUE(started) << (started ? "" : started.error());
+    retired_server.reset();
+    ASSERT_TRUE(JoinedPrompts({7, 11}, result[arm].heads));
+    rt::GenerateOptions options;
+    options.max_tokens = 4;
+    options.stop = false;
+    options.keep_logits = true;
+    for (std::uint32_t owner = 0; owner < 2; ++owner) {
+      const auto generated =
+          Branch(owner).Generate(result[arm].heads[owner], options, result[arm].generated[owner]);
+      ASSERT_TRUE(generated) << (generated ? "" : generated.error());
+      ASSERT_EQ(result[arm].generated[owner].tokens.size(), 4U);
+      ASSERT_EQ(result[arm].generated[owner].logits.size(), 4U);
+      result[arm].histories[owner] = Branch(owner).history();
+      auto state = StateHash(owner);
+      ASSERT_TRUE(state) << (state ? "" : state.error());
+      result[arm].state[owner] = *state;
+    }
+    ASSERT_TRUE(life->server->EndRequestBranches(*model));
+    for (std::uint32_t owner = 0; owner < 2; ++owner) ASSERT_TRUE(model->SpillIdle(Branch(owner)));
+    ASSERT_TRUE(Select(2));
+    for (std::uint32_t owner = 0; owner < 2; ++owner) {
+      auto prompt = result[arm].histories[owner];
+      prompt.push_back(result[arm].generated[owner].tokens.back());
+      std::uint32_t reused = 0;
+      const auto resumed =
+          Branch(owner).PreparePrompt(prompt, 0, result[arm].continued[owner], reused);
+      ASSERT_TRUE(resumed) << (resumed ? "" : resumed.error());
+      EXPECT_EQ(reused + 1, prompt.size());
+      auto state = StateHash(owner);
+      ASSERT_TRUE(state) << (state ? "" : state.error());
+      result[arm].resumed[owner] = *state;
+    }
+    EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+    ASSERT_TRUE(life->server->EndRequestBranches(*model));
+    if (arm == 0) {
+      const auto stopped = life->server->TearDown();
+      retirement_failed = !stopped;
+      ASSERT_TRUE(stopped) << (stopped ? "" : stopped.error());
+      retired_server = std::move(life->server);
+      model = nullptr;
+      ClearStorage();
+    }
+  }
+  for (std::uint32_t owner = 0; owner < 2; ++owner) {
+    for (const auto& arm : result) {
+      ASSERT_TRUE(Finite(arm.heads[owner], Vocab()));
+      ASSERT_TRUE(Finite(arm.continued[owner], Vocab()));
+      for (const auto& row : arm.generated[owner].logits) ASSERT_TRUE(Finite(row, Vocab()));
+    }
+    EXPECT_TRUE(Same(result[0].heads[owner], result[1].heads[owner]));
+    EXPECT_TRUE(Same(result[0].continued[owner], result[1].continued[owner]));
+    EXPECT_EQ(result[0].generated[owner].tokens, result[1].generated[owner].tokens);
+    EXPECT_EQ(result[0].generated[owner].steps, result[1].generated[owner].steps);
+    EXPECT_EQ(result[0].histories[owner], result[1].histories[owner]);
+    EXPECT_EQ(result[0].state[owner], result[1].state[owner]);
+    EXPECT_EQ(result[0].resumed[owner], result[1].resumed[owner]);
+    for (std::size_t row = 0; row < 4; ++row)
+      EXPECT_TRUE(
+          Same(result[0].generated[owner].logits[row], result[1].generated[owner].logits[row]));
+  }
+}
+
 TEST_P(GemmaEngineServingGpu, PlainTokensAndRowsAgreeOnTheEngine) {
   const auto started = Start();
   ASSERT_TRUE(started) << (started ? "" : started.error());
@@ -1154,6 +1251,11 @@ TEST_P(GemmaEngineGemma3Gpu, UnprovenPreparationStopsServerBeforeOwnerDestructio
       ::testing::ExitedWithCode(llmp::platform::kFatalSignalExitBase + SIGABRT),
       "unretired state preparation; aborting before owner destruction");
 }
+
+INSTANTIATE_TEST_SUITE_P(NativeV1, GemmaEngineNativeV1Gpu, ::testing::Values(2U),
+                         [](const ::testing::TestParamInfo<std::uint32_t>& info) {
+                           return std::format("gemma{}", info.param);
+                         });
 
 INSTANTIATE_TEST_SUITE_P(Gemma3, GemmaEngineGemma3Gpu, ::testing::Values(3U),
                          [](const ::testing::TestParamInfo<std::uint32_t>& info) {

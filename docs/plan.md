@@ -1845,6 +1845,17 @@ each is checked against the design as M3.6 proceeds.
                   1,985 CPU, all 114 model tests and quality gates, with no skips. Actual Gemma 2 Q8_0 publication
                   and reuse verified all 288 tensors, 2,778,448,896 payload bytes
                   and 1,340 chunks with the same artifact ID. Main build, 43 integration checks and quality gates passed.
+            - [x] **N4b1 — Gemma 2 native v1 runtime admission:**
+                  shared admission reads the stored spec and native tensor
+                  formats, checks the approved source/profile and preserves
+                  declared folds, tied heads and policy. Registration and the
+                  component build share it; v0 remains supported. Focused
+                  host checks (31) and the actual v0/v1 full-logit, initialized-state
+                  and spill-continuation comparison passed with zero skips.
+                  Final regression passed 2,544 native, 1,999 CPU and all 131 model/timing
+                  tests with zero skips; quality gates passed. Main built and passed
+                  31 integration checks and quality gates. Other v1
+                  identities and drafter compositions remain refused.
             Applied folds, remaining normalized domains and runtime import
             admission remain open in N4; N5's all-artifact re-import and serving
             qualification remain separate.

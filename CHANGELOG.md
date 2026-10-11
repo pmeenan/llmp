@@ -21,6 +21,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Admit the approved native v1 Gemma 2 Q8_0 artifact through its stored
+  component spec and native tensor formats. Full logits, tokens, initialized
+  state and spill continuation match v0; other v1 profiles remain refused.
+
 - Shared-component specs for the Qwen2.5-0.5B FP16 and approved EXL3
   fixtures. The shared runner reproduces the FP16 fixture’s frozen fused
   and unfused control trajectories; complete migration controls remain open.

@@ -29,6 +29,7 @@
 #include "model/qwen38.h"
 #include "model/v0_artifact.h"
 #include "runtime/calibration.h"
+#include "runtime/component_admission.h"
 #include "runtime/gemma_profile.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma4.h"
@@ -386,15 +387,22 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
                                                           const ja::Artifact* drafter) {
   ArtifactFacts facts;
   facts.architecture = target.model().architecture;
-  if (facts.architecture == "gemma4") {
+  std::optional<std::uint32_t> declared_context;
+  if (target.format_version() == 1) {
+    if (drafter != nullptr)
+      return Error("native v1 component admission has no qualified drafter composition");
+    auto admitted = ReadComponentAdmission(target);
+    if (!admitted) return Error(admitted.error());
+    declared_context = admitted->model.stages.front().context;
+  } else if (facts.architecture == "gemma4") {
     auto profile = ApprovedGemmaProfile(target);
     if (!profile) return std::unexpected(profile.error());
     facts.gemma_profile = *profile;
   }
-  if (facts.architecture == "gemma2") {
+  if (target.format_version() == 0 && facts.architecture == "gemma2") {
     if (auto binding = model::BindApprovedGemma2(target); !binding) return Error(binding.error());
   }
-  if (facts.architecture == "gemma3") {
+  if (target.format_version() == 0 && facts.architecture == "gemma3") {
     if (auto binding = model::BindApprovedGemma3(target); !binding) return Error(binding.error());
   }
   // generation_config.json first: GGUF's general.sampling keys are copied
@@ -425,7 +433,15 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
       return std::unexpected(read.error());
     }
   }
+  if (declared_context) {
+    if (facts.trained_context && *facts.trained_context != *declared_context)
+      return Error("kept context metadata disagrees with the admitted stored spec");
+    facts.trained_context = *declared_context;
+    facts.trained_context_from = "the admitted stored spec";
+  }
   if (drafter != nullptr) {
+    if (drafter->format_version() != 0)
+      return Error("native v1 component admission has no qualified drafter composition");
     facts.drafter_architecture = drafter->model().architecture;
     if (facts.drafter_architecture == "qwen4exp-mtp") {
       const auto head = drafter->FindResource("draft_output.weight");
