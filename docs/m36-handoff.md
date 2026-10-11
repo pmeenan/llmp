@@ -194,6 +194,21 @@ update this section as each slice lands):
   - `route_scale` 0 should map to 1 in the importer's mapping;
   - `silu_clamp` refuses a single unset limit;
   - `WritesFor` over-refuses verifies on recent rings.
+- **N3a: bounded import transform primitives** are implemented and reviewed
+  in `.claude/worktrees/m36-native-import`. The internal API covers the
+  historical BF16-to-F32 `norm.plus_one` and `ssm.a_neg_exp` operations and
+  complete F32/MXFP8 `gdn.value_heads_tiled` permutations. Scalar refusal
+  leaves output unchanged; integer nearest-even output encoding preserves
+  F32 subnormals, and each packed part has an independent monotone cursor.
+  Source-normalization consumers and the remaining folds are N3b; the
+  writer, embedded-spec integration, CLI and archive events are N4;
+  re-import and family admission remain N5. No runtime path is activated.
+  Spark-b passed all seven focused tests with ordinary floating-point
+  settings and with flush-to-zero enabled, including both exhaustive
+  65,536-input historical BF16 reference hashes. The external control
+  checked actual gradual/flush arithmetic and restoration of the original
+  floating-point environment. This is target-libm evidence, with no
+  cross-libm qualification.
 - **Model archive design** landed on `main` (`340e65c4`). This is the
   owner's direction, not part of the M3.6 plan proper:
   - `docs/model-archive.md`, with layout, manifest, catalog (meta-index)
@@ -210,7 +225,8 @@ update this section as each slice lands):
 
 Next, in order: G3c2 (Qwen3.8 composed MTP, serving and the 1% gate for
 native, GGUF and MTP); G3d (deletion); G4b2, G4c and G4d;
-Qwen2 G5a–d. N3/N4 (fold catalog, writer and `llmp import` from verified
+Qwen2 G5a–d. N3b/N4 (remaining folds and source normalization, writer and
+`llmp import` from verified
 archive/staged source) can proceed alongside Qwen-Image Q1–Q3; N5's
 all-artifact re-import and family gates follow both, then N6's adversarial
 challenge. T-slices, K1 and R1 follow their shared-engine prerequisites.
@@ -290,7 +306,9 @@ Each `a` slice is about a day of CPU work. Each `b` slice is one to two slices p
 | --- | --- | --- |
 | N1 | v1 format: `llmp-artifact` manifest with spec, per-tensor `TensorFormat` + parts, folds, importer identity; reader accepts v0 and v1 | `artifact/` + `docs/artifact-format.md`; schema decision |
 | N2a–e | Readers: GGUF; safetensors + `config.json` (ModelOpt NVFP4/MXFP8, AWQ/GPTQ, compressed-tensors); diffusers → D-089 composition; MLX; EXL3 | `src/import/readers/*`; parallel, disjoint |
-| N3 | Fold catalog (`norm_plus_one`, `a_neg_exp`, `value_head_tiling`, `split_fused_qk`, ties, expert slicing, NVFP4 scale-atom relayout, …) + mapping application, reusing wave 3's tables | |
+| N3 | Fold catalog and mapping application, reusing wave 3's tables | Partial: N3a implemented; N3b remains open |
+| N3a | Internal BF16-to-F32 `norm.plus_one` / `ssm.a_neg_exp` primitives and F32/MXFP8 `gdn.value_heads_tiled` permutation cursors | Reviewed primitive scope only; validation status above |
+| N3b | Source normalization and remaining folds: fused-QK splitting, ties, expert slicing, NVFP4 scale-atom relayout and the other migrated family/container mappings | Open; N3a does not select or apply mappings to a checkpoint |
 | N4 | Writer (deterministic, one rename), `llmp import` CLI, admission-gate harness; import from verified archive or staged source and record catalog import event | Public CLI → decision; native `llmp install` is M5 (D-114) |
 | N5 | Re-import every artifact; lossless-equivalence checks against v0 bytes; family gates; the owner-chosen MLX checkpoint | After G3/G4/G5 and Q execution paths and N3/N4; Qwen2 fixture correctness gate follows the protocol exception below |
 | N6 | Adversarial challenge rounds | |
@@ -416,7 +434,7 @@ own slice when it names none.
 - L5c: per-stage read alignment and context in SlotLifecycle (drafter stages); own phase and LoneRead must use the stage's value.
 - Family migrations onto decoding modes: spec `reads` → state contract target_writes/borrowed_from_target (components/spec emit them); Gemma4 retained features as a tap + FrozenBorrow epoch/generation guards; DeepSeek draft+verify chained in one job + Dsv4SameWidths shortening; Qwen catch-up + passes in one job, injection pass inside prefill; no multi-level verification yet.
 - I6: DeviceFacts.tuned populated from exl3-recon-pin.json; real GGML capabilities: group ggml.mul_mat, batch on llmp.set_rows.grouped, accepts predicates for norm-rope/norm-add width limits and MMVQ routing. G1b: OwnerAttnParams gains carriers' logical cohort + owner offset (op-set change); device masks as a kMaskBuild lowering choice; per-family default policy text in the architecture mapping (G1a).
-- Importer/Qwen3.8 mapping: v0 reordered linear-attention heads (rows of in_proj_qkv/z/b/a, columns of out_proj) without recording it (manifest lists only expert-slice) → the Qwen3.8 mapping needs a permutation fold. spec::kMaxSourceTensors (2^18) < Qwen3.8 ModelOpt's 301,730 tensors and kMaxSourceValues 4,096 may be < flattened config → raise caps or stack per-expert tensors. Readers follow links outside the checkpoint dir (HF cache) by design — revisit at N6 challenge.
+- Importer/Qwen3.8 mapping: the existing `gdn.value_heads_tiled` fold already denotes the grouped-to-tiled permutation of linear-attention heads (rows of in_proj_qkv/z/b/a, columns of out_proj), and `spec/mappings/qwen38.cc` asserts it for GGUF and the historical ModelOpt converter. N3a supplies bounded permutation primitives; N3b still must select/apply them to source tensors. No additional fold ID is needed. spec::kMaxSourceTensors (2^18) < Qwen3.8 ModelOpt's 301,730 tensors and kMaxSourceValues 4,096 may be < flattened config → raise caps or stack per-expert tensors. Readers follow links outside the checkpoint dir (HF cache) by design — revisit at N6 challenge.
 - I6/G1b (from planner review): CapabilityQuery carries no node parameters → real GGML fused capabilities can't refuse rotation mode/dims or softcap≠50 — add params to the query or pattern-side checks; lanes port has no default on_stream list (legacy kept cuBLAS and BF16 GEMM on the stream) — the lowering must pass it; PlanKey omits PlanOptions::capturable, device facts and registry (OK for in-process cache only if capture follows from Phase).
 - MLX admission gate checkpoint (owner-approved 2026-10-09): Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80 (needs affine CUDA decoder + Qwen3.8 migration to pass the gate).
 - Spec-reads linking (family migrations): BuildStep/ComponentStepSource must refuse stores into borrowed state refs and target-step stores into non-tap drafter state (StateRef/TensorUse carry no r/w flag); clamp borrowed reads to the target's committed positions (Gemma4 assistant) or check in Admit. Failed-job quarantine counts owed work as "wrote" (over-quarantine only) — a separate "run may have written" flag would make it exact. MTP catch-up clamp leaves stale rows until Reset (acceptance cost on long-context MTP).

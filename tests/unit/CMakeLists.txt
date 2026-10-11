@@ -1272,6 +1272,11 @@ target_link_libraries(import_test PRIVATE llmp_import llmp_gguf llmp_spec llmp_j
 llmp_gtest(import_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# Import-time BF16 folds and complete multipart value-head permutations.
+add_executable(import_transforms_test import_transforms_test.cc)
+target_link_libraries(import_transforms_test PRIVATE llmp_import llmp_base)
+llmp_gtest(import_transforms_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The readers on the current models' checkpoints: the Gemma 2 and 3 source
 # GGUFs' specs equal to their v0 artifacts', the split GGUFs, Qwen3.8's
 # ModelOpt checkpoint, Qwen-Image's pipeline against its v0 components,

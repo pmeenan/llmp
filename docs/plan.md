@@ -1791,13 +1791,31 @@ each is checked against the design as M3.6 proceeds.
       *2026-10-09:* format version 1 and its reader, v0 still read
       (D-113, [artifact-format.md](artifact-format.md#version-1)); the
       container readers ([as built](engine-components.md#the-importer)).
-      The fold catalog, the writer, the CLI, the re-import and the gate
-      remain. *2026-10-10 (D-114):* the writer and `llmp import` slice (N4)
+      The BF16 norm/A fold primitives and F32/MXFP8 value-head permutation
+      are implemented; their source-normalization tables, the rest of the
+      fold catalog, the writer, the CLI, the re-import and the gate remain.
+      *2026-10-10 (D-114):* the writer and `llmp import` slice (N4)
       also imports straight from the [model archive](model-archive.md) or a
       staged copy, verifying every file against its manifest and reading
       each needed byte once, and records an `import` event in its catalog;
       the interim archive tools landed. Native `llmp install` (fetching
       into the archive with libcurl) stays in M5's importer item.
+
+      - [x] **N3a — bounded transform primitives:** internal BF16-to-F32
+            `norm.plus_one` and `ssm.a_neg_exp` scalar folds, with atomic
+            refusal and integer nearest-even output encoding; complete
+            F32/MXFP8 `gdn.value_heads_tiled` permutations with independent
+            per-part cursors and constant-size metadata. Existing fold
+            identities are unchanged; source normalization and checkpoint
+            import remain N3b/N4.
+      - [ ] **N3b — source normalization and remaining folds:** declarative
+            mappings and transforms for every migrated family/container.
+      - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
+            publication, embedded specs, verified source streaming and
+            catalog import events.
+      - [ ] **N5 — re-import and admission gates:** every current artifact,
+            lossless equivalence and qualified family execution.
+
       N5's all-artifact re-import and family gates follow G3, G4, G5,
       Qwen-Image and N3/N4;
       K1's lossy-state work covers every migrated LLM, including Qwen2 once

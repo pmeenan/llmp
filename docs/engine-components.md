@@ -1851,7 +1851,27 @@ the bound) at 0.090 and 0.084 relative RMS, and the shared expert's and a
 full-attention q_proj's MXFP8 and routed expert 7's NVFP4 agree at 0.095,
 0.089 and 0.124 relative RMS (`DecodesLikeTheNativeCheckpoint`; test
 bounds: one step, and 0.15).
-Still to come: AWQ's and GPTQ's layouts, the fold catalog (MLX's and
+**Import transform primitives** (`import/transforms.h`). The historical
+ModelOpt import's `norm.plus_one` and `ssm.a_neg_exp` convert explicitly
+selected BF16 scalars to F32 using binary64 arithmetic and nearest-even
+rounding; integer F32 encoding preserves subnormals when hardware float
+conversion would flush them to zero. This is their import-time semantic
+conversion, not a runtime weight promotion. A refused call changes no output
+bytes; finite binary64 exponential overflow is refused, while F32 overflow is stored
+as infinity, as the historical converter does. The source-normalization
+tables that select these operations remain to be built.
+
+`gdn.value_heads_tiled` means a permutation from grouped value heads to
+tiled order, so output head `j*K+g` holds source head `g*(V/K)+j` and
+reads key head `g`. The transform's validated plan enumerates source
+bytes monotonically for each part with constant-size metadata: dense
+F32, or split MXFP8 codes and their block scales, whose corresponding
+head blocks move together without changing the encoding or any byte.
+Each part has its own cursor so either can arrive first. Cursor
+exhaustion describes complete copy ranges, not successful writes;
+the writer must track that separately. No new fold identity is added.
+
+Still to come: AWQ's and GPTQ's layouts, the complete fold catalog (MLX's and
 EXL3's sources need theirs: MLX's stacked experts and moved convolution
 axes, EXL3's packed sign vectors), the writer of format version 1 (its
 reader has landed, D-113), the CLI and the admission gate.
