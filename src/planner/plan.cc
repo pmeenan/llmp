@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -121,7 +122,8 @@ Selected One(const execution::Registry& registry, NodeId id, std::size_t impleme
                   .group = registry.at(implementation).capability->group};
 }
 
-Selection Select(const ir::Graph& graph, const SelectionView& view) {
+Selection Select(const ir::Graph& graph, const SelectionView& view,
+                 std::span<const OwnerProductScope> scopes) {
   Selection out;
   out.missing.assign(graph.nodes().size(), false);
   MatchContext context(graph, view);
@@ -135,7 +137,10 @@ Selection Select(const ir::Graph& graph, const SelectionView& view) {
     bool batched = false;
     for (const Pattern& p : Patterns()) {
       auto m = BatchAt(p, context, id);
-      if (!m) {
+      if (!m || std::ranges::any_of(m->nodes, [&](NodeId member) {
+            return std::ranges::any_of(
+                scopes, [&](const auto& scope) { return graph.producer(scope.result) == member; });
+          })) {
         continue;
       }
       // Each member keeps its own selection, for a run of one (lanes.h).
@@ -217,13 +222,55 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
        .offset = options.alignment,
        .staged = options.alignment_staged ? options.alignment_staged : options.staged,
        .within = options.within});
-  auto rewritten = ApplyPatterns(primitive, view, options.shape, options.state_spans);
+  std::optional<OwnerRewritten> owners;
+  std::vector<OwnerProductScope> scopes;
+  std::vector<NodeId> preserve;
+  if (options.owner_products != nullptr) {
+    if (options.shape != nullptr) {
+      for (const auto& p : options.owner_products->products()) {
+        if (p.owners.size() != options.shape->segments.size())
+          return Failed(PlanError::kPattern, "owner product and step partitions differ");
+        for (std::size_t i = 0; i < p.owners.size(); ++i)
+          if (p.owners[i].slot != options.shape->segments[i].slot ||
+              p.owners[i].rows != options.shape->segments[i].rows)
+            return Failed(PlanError::kPattern, "owner product and step rows differ");
+      }
+    }
+    auto split = SplitOwnerProducts(primitive, *options.owner_products);
+    if (!split) return Failed(PlanError::kPattern, split.error());
+    owners = std::move(*split);
+    view.Forward(primitive, owners->rewrite.graph, owners->rewrite.tensors);
+    scopes = owners->scopes;
+    for (const auto& scope : scopes)
+      preserve.push_back(owners->rewrite.graph.producer(scope.result));
+  }
+  const ir::Graph& pattern_input = owners ? owners->rewrite.graph : primitive;
+  auto rewritten = ApplyPatterns(pattern_input, view, options.shape, options.state_spans, preserve);
   if (!rewritten) {
     return Failed(
         PlanError::kPattern,
         std::format("a rewrite at node {}: {}", rewritten.error().node, rewritten.error().detail));
   }
-  view.Forward(primitive, rewritten->graph, rewritten->tensors);
+  view.Forward(pattern_input, rewritten->graph, rewritten->tensors);
+  for (auto& scope : scopes) scope.result = rewritten->tensors.at(scope.result.v);
+  if (owners) {
+    for (auto& a : rewritten->applied)
+      for (auto& n : a.replaced) n = owners->rewrite.from.at(n.v);
+    for (auto& a : owners->rewrite.applied) {
+      std::vector<NodeId> made;
+      for (std::uint32_t i = 0; i < rewritten->from.size(); ++i)
+        if (std::ranges::contains(a.made, rewritten->from[i])) made.push_back(NodeId{i});
+      a.made = std::move(made);
+    }
+    for (auto& n : rewritten->from) n = owners->rewrite.from.at(n.v);
+    std::vector<TensorId> composed;
+    for (auto t : owners->rewrite.tensors)
+      composed.push_back(t.valid() ? rewritten->tensors.at(t.v) : t);
+    rewritten->tensors = std::move(composed);
+    rewritten->applied.insert(rewritten->applied.begin(),
+                              std::make_move_iterator(owners->rewrite.applied.begin()),
+                              std::make_move_iterator(owners->rewrite.applied.end()));
+  }
   ir::Graph graph = std::move(rewritten->graph);
   std::vector<TensorId> tensors = std::move(rewritten->tensors);
   std::vector<NodeId> from = std::move(rewritten->from);
@@ -231,7 +278,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   std::vector<std::string> decomposed;
   Selection selection;
   for (int pass = 0;; ++pass) {
-    selection = Select(graph, view);
+    selection = Select(graph, view, scopes);
     if (selection.complete) {
       break;
     }
@@ -261,6 +308,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
                                 expanded.error().detail));
     }
     view.Forward(graph, *expanded, map);
+    for (auto& scope : scopes) scope.result = map.at(scope.result.v);
     for (TensorId& t : tensors) {
       t = t.valid() ? map.at(t.v) : t;
     }
@@ -279,6 +327,12 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     }
     from = std::move(composed);
     graph = std::move(*expanded);
+  }
+  for (const auto& scope : scopes) {
+    if (!scope.result.valid() ||
+        graph.node(graph.producer(scope.result)).key != ir::Primitive(ir::Op::kMatMul) ||
+        graph.tensor(scope.result).ne(1) != scope.columns)
+      return Failed(PlanError::kPattern, "an owner product lost its primitive scope");
   }
   std::vector<Selected> steps = std::move(selection.steps);
   // Lane tags follow the primitive nodes into what stands for them.
@@ -332,7 +386,10 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
           !Disabled(policy, "owner_row_invariant") && options.shape != nullptr &&
           options.shape->segments.size() > 1 &&
           std::ranges::all_of(options.shape->segments, [](const auto& s) { return s.rows == 1; }),
-      .root_alignments = std::move(alignments)};
+      .root_alignments = std::move(alignments),
+      .owner_products = std::move(scopes),
+      .owner_digest =
+          options.owner_products ? options.owner_products->digest() : base::Sha256Digest{}};
 }
 
 PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape, const Policy& policy,

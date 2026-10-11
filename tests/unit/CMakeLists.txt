@@ -1114,6 +1114,10 @@ llmp_gtest(components_dsv4_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit
 
 # The planner (D-107): policies, patterns, selection, placement, lanes and
 # plan keys on small graphs and a fake registry.
+add_executable(owner_products_test owner_products_test.cc)
+target_link_libraries(owner_products_test PRIVATE llmp_planner llmp_ir)
+llmp_gtest(owner_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(planner_test planner_test.cc)
 target_link_libraries(planner_test PRIVATE llmp_planner llmp_ir)
 llmp_gtest(planner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -1137,6 +1141,12 @@ target_link_libraries(planner_gemma_test PRIVATE llmp_planner llmp_components ll
                                                  llmp_spec llmp_model llmp_artifact llmp_json)
 llmp_gtest(planner_gemma_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+
+# Bound ordinary dense owner recipes, without enabling a runtime path.
+add_executable(ggml_owner_products_test ggml_owner_products_test.cc)
+target_link_libraries(ggml_owner_products_test PRIVATE llmp_ggml_tensors llmp_planner
+                                                     llmp_components llmp_spec llmp_model)
+llmp_gtest(ggml_owner_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The GGML lowering (kernels/ggml/lower.h) of the Gemma 2 and Gemma 3 steps
 # at every setup shape (every profile builds the lowering).

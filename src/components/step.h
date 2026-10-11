@@ -71,6 +71,7 @@
 #include <vector>
 
 #include "components/component.h"
+#include "components/owner_products.h"
 #include "ir/graph.h"
 #include "model/batching.h"
 #include "model/state_contract.h"
@@ -399,6 +400,13 @@ class StepContext {
   std::vector<CommitSave> TakeSaves() { return std::move(saves_); }
   // The rows' feature, F32 [width, rows].
   ir::TensorId Features(std::uint64_t width);
+  // Request physical owner-column preservation for an ordinary product.
+  // Finish proves its lineage; no caller supplies an expansion factor.
+  void EnableOwnerProducts(bool enabled) { prove_owner_products_ = enabled; }
+  void PreserveOwnerProduct(ir::TensorId result) {
+    if (prove_owner_products_) owner_products_.push_back(result);
+  }
+  std::vector<ir::TensorId> TakeOwnerProducts() { return std::move(owner_products_); }
   // Segment s's store cells for tensors of `cells`.
   ir::TensorId StoreCells(std::size_t segment, const CellKey& cells);
   // The cells of a block tensor's (`cells.block`) first `blocks` blocks, I64
@@ -473,6 +481,8 @@ class StepContext {
   std::map<std::uint8_t, ir::TensorId> save_rows_;  // by segment
   std::vector<StepInput> inputs_;
   std::vector<CommitSave> saves_;
+  std::vector<ir::TensorId> owner_products_;
+  bool prove_owner_products_ = false;
 };
 
 // --------------------------------------------------------------- the step
@@ -524,6 +534,7 @@ struct StepGraph {
   ir::TensorId features{};  // F32 [feature width, outputs]: a drafter head's next feature
   // A verify's saves for its commit (outputs of the step).
   std::vector<CommitSave> saves{};
+  OwnerProducts owner_products{};
 };
 
 // Refuses a step that stores into a borrowed tensor, or (`stage` writing
@@ -563,6 +574,8 @@ std::expected<void, std::string> CheckStateWrites(const ir::Graph& graph,
 // recipe without frontier_head).
 struct StepOptions {
   bool narrow = true;
+  // Internal compiler experiment, not execution qualification.
+  bool owner_products = false;
 };
 std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std::uint16_t stage,
                                                 const planner::StepShape& shape,
@@ -598,6 +611,7 @@ struct ComponentInputs {
   // The side input as integers (I32 [side, rows]: a token-hash side
   // input's expert ids) rather than F32.
   bool side_ids = false;
+  bool owner_products = false;
 };
 struct ComponentGraph {
   StepGraph step;

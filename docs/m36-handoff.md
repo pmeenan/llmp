@@ -105,6 +105,14 @@ update this section as each slice lands):
   whole operations and both lookahead hints refuse before settlement, unit
   changes or admission. Default mappings and serving remain unopted.
 
+  G3c2b1a adds default-off typed owner-product proofs, per-owner primitive
+  rewrites before width-sensitive preparation and bound native-recipe audits.
+  Structural/descriptor controls include combined allocation-fact forwarding
+  through owner splits, patterns and primitive fallback. Current component
+  sources and runtime do not opt in; joined repeat-pending remains refused.
+  G3c2b1b still owes exact native joined heads/state, changed-input capture,
+  old/new persistence and bounded admission. G3c2b1 remains open.
+
   Required G3c2b1 preserves each owner's physical product widths and numerical
   recipe and proves exact joined heads/state/capture against the legacy wave.
   G3c2b2 then composes native, GGUF and MTP serving and passes state, quality,

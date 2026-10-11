@@ -263,7 +263,8 @@ struct Rewritten {
 std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
                                                         const SelectionView& view,
                                                         const StepShape* shape = nullptr,
-                                                        StateSpans state_spans = {});
+                                                        StateSpans state_spans = {},
+                                                        std::span<const ir::NodeId> preserve = {});
 
 // The batch a batch pattern makes at `anchor` of `graph`, where it matches
 // and is enabled.

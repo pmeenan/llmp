@@ -162,6 +162,9 @@ class Lowering {
                                              std::string_view what) const;
   std::expected<void, KernelFailure> Bind();
   std::expected<void, KernelFailure> PlanAndCompare();
+  std::expected<void, KernelFailure> CheckOwnerProducts();
+  std::expected<void, KernelFailure> BindOwnerProducts();
+  std::expected<void, KernelFailure> CheckOwnerRecipes(const GraphPlan& plan) const;
   std::expected<void, KernelFailure> Slots();
   // `t` in the graph, standing for planned node `planned`; a computed node
   // among those it launches, and with `step` any node (a fused window's
@@ -202,6 +205,16 @@ class Lowering {
   const DeviceChoices& device_;
   const LowerOptions& options_;
   ggml_context* c_ = nullptr;
+
+  // Temporary build-time audit tables, bounded by the graph's products and
+  // owners. They never enter the returned program or capture lifetime.
+  struct OwnerProduct {
+    const co::OwnerProduct* original = nullptr;
+    const co::OwnerColumns* owner = nullptr;
+    TensorId result{};
+  };
+  std::vector<OwnerProduct> owner_products_;
+  std::map<const ggml_tensor*, std::string_view> owner_recipes_;
 
   LoweredStep out_;
   std::vector<ggml_tensor*> made_;            // by planned tensor
@@ -1741,13 +1754,281 @@ std::expected<void, KernelFailure> Lowering::Bind() {
   return {};
 }
 
+// Scope validation happens before descriptors or plans are made. The proof
+// covers the original graph; an arbitrary StepPlan is not itself a proof.
+std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
+  const auto& proof = in_.step.owner_products;
+  const auto products = proof.products();
+  if (products.empty()) {
+    if (!plan_.owner_products.empty() || plan_.owner_digest != base::Sha256Digest{})
+      return Refused("owner products: scopes without a proof");
+    return {};
+  }
+  if (plan_.owner_digest != proof.digest() || proof.graph_digest() != co::OwnerGraphIdentity(g_) ||
+      plan_.tensors.size() != g_.tensor_count() || in_.shape.segments.empty() ||
+      in_.shape.segments.size() > co::kMaxSegments)
+    return Refused("owner products: proof, shape or original graph differs");
+  const auto mapped = [&](TensorId t) {
+    return t.valid() && t.v < plan_.tensors.size() ? plan_.tensors[t.v] : TensorId{};
+  };
+  const auto valid = [&](TensorId t) { return t.valid() && t.v < p_.tensor_count(); };
+  std::vector<co::SegmentRows> segments;
+  std::uint64_t first = 0;
+  for (const auto& s : in_.shape.segments) {
+    if (first > std::numeric_limits<std::uint32_t>::max())
+      return Refused("owner products: row partition overflow");
+    segments.push_back({.slot = s.slot,
+                        .first_row = static_cast<std::uint32_t>(first),
+                        .rows = s.rows,
+                        .outputs = s.outputs});
+    first += s.rows;
+  }
+  std::vector<TensorId> requests;
+  for (const auto& p : products) requests.push_back(p.output);
+  auto repeated = co::ProveOwnerProducts(g_, in_.step.inputs, segments, requests);
+  if (!repeated || repeated->digest() != proof.digest())
+    return Refused("owner products: typed inputs or owner partition differ");
+
+  using OwnerKey = std::pair<std::uint32_t, std::uint8_t>;
+  std::map<OwnerKey, const planner::OwnerProductScope*> scopes;
+  std::set<TensorId> results;
+  for (const auto& scope : plan_.owner_products) {
+    if (!valid(scope.result) || !results.insert(scope.result).second ||
+        !scopes.emplace(OwnerKey{scope.primitive.v, scope.segment}, &scope).second)
+      return Refused("owner products: duplicate or invalid scope");
+  }
+  std::vector<bool> dependency(g_.tensor_count(), false);
+  std::vector<const co::StepWeight*> weights(g_.tensor_count());
+  std::vector<bool> duplicate_weights(g_.tensor_count(), false);
+  for (const auto& w : in_.step.weights) {
+    if (!w.tensor.valid() || w.tensor.v >= weights.size()) continue;
+    if (weights[w.tensor.v] != nullptr) duplicate_weights[w.tensor.v] = true;
+    weights[w.tensor.v] = &w;
+  }
+  std::size_t covered = 0;
+  for (const auto& product : products) {
+    dependency[product.input.v] = true;
+    dependency[product.weight.v] = true;
+    if (!valid(mapped(product.input)) || !valid(mapped(product.weight)) ||
+        !valid(mapped(product.output)))
+      return Refused("owner products: an original operand is unmapped");
+    const auto& original = g_.node(product.node);
+    const auto pp = original.Params<ir::ProductParams>();
+    if (pp.reserved != std::array<std::uint8_t, 2>{})
+      return Refused("owner products: unsupported product parameters");
+    std::vector<TensorId> ordered;
+    for (const auto& owner : product.owners) {
+      const auto at = scopes.find({product.node.v, owner.segment});
+      if (at == scopes.end()) return Refused("owner products: missing owner scope");
+      const auto& scope = *at->second;
+      if (scope.slot != owner.slot || scope.columns != owner.columns || owner.columns > 16 ||
+          owner.columns == 0)
+        return Refused("owner products: scope differs from the proved owner");
+      const auto& n = p_.node(p_.producer(scope.result));
+      if (n.key != ir::Primitive(Op::kMatMul) || n.nout != 1 || n.nsrc != 2 ||
+          n.params != original.params || n.src[0] != mapped(product.weight))
+        return Refused("owner products: product or original weight changed");
+      const auto& input = p_.tensor(n.src[1]);
+      const auto& original_input = g_.tensor(product.input);
+      auto shape = original_input.shape();
+      shape.ne[1] = owner.columns;
+      if (input.format.encoding != Encoding::kF32 || input.shape().ne != shape.ne ||
+          input.nb != original_input.nb)
+        return Refused("owner products: owner operand shape, encoding or strides changed");
+      if (product.owners.size() == 1) {
+        if (n.src[1] != mapped(product.input))
+          return Refused("owner products: singleton input changed");
+      } else {
+        const auto& view = p_.node(p_.producer(n.src[1]));
+        const auto& source = p_.tensor(mapped(product.input));
+        if (view.key != ir::Primitive(Op::kView) || view.src[0] != mapped(product.input) ||
+            input.view_of != p_.root(mapped(product.input)) ||
+            input.view_offset != source.view_offset + owner.byte_offset)
+          return Refused("owner products: owner view does not select original columns");
+      }
+      const auto& output = p_.tensor(scope.result);
+      auto output_shape = g_.tensor(product.output).shape();
+      output_shape.ne[1] = owner.columns;
+      if (output.format.encoding != Encoding::kF32 || output.shape().ne != output_shape.ne ||
+          output.is_view() || !ir::IsContiguous(output) ||
+          output.segment !=
+              (product.owners.size() == 1 ? g_.tensor(product.output).segment : owner.segment) ||
+          n.batch != (product.owners.size() == 1 ? original.batch : ir::Batch::kPerOwner))
+        return Refused("owner products: product output changed");
+      owner_products_.push_back({.original = &product, .owner = &owner, .result = scope.result});
+      ordered.push_back(scope.result);
+      ++covered;
+    }
+    auto result = mapped(product.output);
+    for (std::size_t i = ordered.size(); i > 1; --i) {
+      const auto& concat = p_.node(p_.producer(result));
+      if (concat.key != ir::Primitive(Op::kConcat) || concat.Params<ir::ConcatParams>().dim != 1 ||
+          concat.src[1] != ordered[i - 1])
+        return Refused("owner products: output owner order changed");
+      results.insert(result);
+      result = concat.src[0];
+    }
+    if (result != ordered.front()) return Refused("owner products: output owner coverage changed");
+  }
+  if (covered != scopes.size()) return Refused("owner products: an unrequested scope");
+
+  // This first bounded audit accepts unchanged primitive preparation only.
+  // It does not infer arithmetic equivalence for a rewritten/fused norm.
+  // Mark dependencies backwards and check forwards: no recursive walk.
+  for (std::size_t i = g_.nodes().size(); i > 0; --i) {
+    const auto& n = g_.nodes()[i - 1];
+    if (!std::ranges::any_of(n.outputs(), [&](TensorId t) { return dependency[t.v]; })) continue;
+    for (auto t : n.sources())
+      if (t.valid()) dependency[t.v] = true;
+  }
+  std::vector<bool> written(p_.tensor_count(), false);
+  for (const auto& n : p_.nodes()) {
+    if (n.key == ir::Primitive(Op::kView) || n.key == ir::Primitive(Op::kReshape) ||
+        n.key == ir::Primitive(Op::kPermute))
+      continue;
+    for (auto t : n.outputs())
+      if (p_.tensor(t).is_view()) written[p_.root(t).v] = true;
+  }
+  // The authenticated product must remain the value its consumer sees.
+  // A store through any alias can otherwise alter a product (including a
+  // singleton) or an intermediate/final concat without changing its edges.
+  for (auto t : results)
+    if (written[p_.root(t).v])
+      return Refused("owner products: overwritten product or concat output");
+  for (std::uint32_t i = 0; i < g_.tensor_count(); ++i) {
+    if (!dependency[i]) continue;
+    const TensorId t{i}, m = mapped(t);
+    if (!valid(m) || written[p_.root(m).v])
+      return Refused("owner products: unmapped or overwritten preparation");
+    const auto& a = g_.tensor(t);
+    const auto& b = p_.tensor(m);
+    const auto& n = g_.node(g_.producer(t));
+    const auto& next = p_.node(p_.producer(m));
+    if (a.format != b.format || a.nb != b.nb || a.binding != b.binding || a.role != b.role ||
+        a.segment != b.segment || a.view_offset != b.view_offset ||
+        (a.is_view() ? mapped(a.view_of) != b.view_of : b.is_view()) || n.key != next.key ||
+        n.params != next.params || n.nsrc != next.nsrc || n.nout != 1 || next.nout != 1)
+      return Refused("owner products: original preparation or binding changed");
+    for (std::size_t s = 0; s < n.nsrc; ++s)
+      if (mapped(n.src[s]) != next.src[s])
+        return Refused("owner products: original preparation edge changed");
+    if (n.key == ir::Primitive(Op::kWeight)) {
+      const auto* ref = std::get_if<ir::WeightRef>(&a.binding);
+      const auto* w = weights[t.v];
+      if (ref == nullptr || w == nullptr || duplicate_weights[t.v] || w->ref != *ref ||
+          w->parts.size() != 1 || w->parts[0].second != format::PartRole::kData)
+        return Refused("owner products: original weight resource binding changed");
+    }
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> Lowering::BindOwnerProducts() {
+  for (const auto& product : owner_products_) {
+    const auto& original = *product.original;
+    const auto& owner = *product.owner;
+    auto* node = made_.at(product.result.v);
+    auto* weight = made_.at(plan_.tensors[original.weight.v].v);
+    auto* source = made_.at(plan_.tensors[original.input.v].v);
+    const auto& n = p_.node(p_.producer(product.result));
+    auto* input = made_.at(n.src[1].v);
+    if (node == nullptr || weight == nullptr || source == nullptr || input == nullptr ||
+        node->op != GGML_OP_MUL_MAT || node->src[0] != weight || node->src[1] != input ||
+        weight->op != GGML_OP_NONE || weight->view_src != nullptr || node->view_src != nullptr ||
+        input->type != GGML_TYPE_F32 || node->type != GGML_TYPE_F32 ||
+        !std::ranges::all_of(node->op_params, [](auto p) { return p == 0; }))
+      return Refused("owner products: bound operation/preparation differs");
+    if (auto match = Matches(g_.tensor(original.weight), weight, "owner weight"); !match)
+      return match;
+    if (auto match = Matches(p_.tensor(n.src[1]), input, "owner input"); !match) return match;
+    if (auto match = Matches(p_.tensor(product.result), node, "owner output"); !match) return match;
+    std::uintptr_t address = 0;
+    if (__builtin_add_overflow(reinterpret_cast<std::uintptr_t>(source->data),
+                               static_cast<std::uintptr_t>(owner.byte_offset), &address) ||
+        reinterpret_cast<std::uintptr_t>(input->data) != address ||
+        (original.owners.size() > 1 && input->op != GGML_OP_VIEW))
+      return Refused("owner products: bound owner address differs");
+    if (auto valid = CheckMulMat(node); !valid) return valid;
+
+    // Descriptor-only expected product, from the authenticated original
+    // F32 owner operand, before any joined precision/preparation decision.
+    ggml_tensor expected = *node;
+    ggml_tensor expected_input = *input;
+    ggml_tensor expected_weight = *weight;
+    const auto& wd = g_.tensor(original.weight);
+    const auto& xd = g_.tensor(original.input);
+    for (std::size_t d = 0; d < 4; ++d) {
+      expected_weight.ne[d] = static_cast<std::int64_t>(wd.ne(d));
+      expected_weight.nb[d] = wd.nb[d];
+      expected_input.ne[d] = static_cast<std::int64_t>(d == 1 ? owner.columns : xd.ne(d));
+      expected_input.nb[d] = xd.nb[d];
+    }
+    expected_input.type = GGML_TYPE_F32;
+    expected.src[0] = &expected_weight;
+    expected.src[1] = &expected_input;
+    std::string_view implementation;
+    // Preserve explicit policy, including predicates keyed by the real
+    // node identity. Only the derived owner override is absent here.
+    const bool vector =
+        device_.vector_floats || (device_.vector_float_node && device_.vector_float_node(node));
+    if (device_.row_invariant || (vector && owner.columns <= kRowInvariantColumns)) {
+      if (owner.columns > kRowInvariantColumns)
+        return Refused("owner products: explicit row-invariant width unsupported");
+      implementation = kMulMatVecFRows;
+    } else {
+      if (!device_.mul_mat) return Refused("owner products: missing actual device selector");
+      const auto path = device_.mul_mat(&expected);
+      if (!path) return std::unexpected(path.error());
+      switch (*path) {
+        case MulMatPath::kVector:
+          implementation = kMulMatVector;
+          break;
+        case MulMatPath::kTensorCore:
+          if (auto valid = CheckMulMatF(node); !valid) return valid;
+          implementation = kMulMatTensorCore;
+          break;
+        default:
+          return Refused("owner products: unresolved or unsupported concrete recipe");
+      }
+    }
+    if (!owner_recipes_.emplace(node, implementation).second)
+      return Refused("owner products: duplicate bound product");
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> Lowering::CheckOwnerRecipes(const GraphPlan& plan) const {
+  std::map<const ggml_tensor*, std::size_t> seen;
+  for (const auto& step : plan.steps) {
+    for (const auto* node : step.nodes) {
+      const auto found = owner_recipes_.find(node);
+      if (found == owner_recipes_.end()) continue;
+      if (++seen[node] != 1 || step.nodes.size() != 1 ||
+          step.operation != execution::Operation::kMatMul || step.implementation != found->second)
+        return Refused(
+            "owner products: actual concrete recipe differs from "
+            "original owner");
+    }
+  }
+  if (seen.size() != owner_recipes_.size())
+    return Refused("owner products: actual plan omits a protected product");
+  return {};
+}
+
 std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   // The device's choices, with the policies the selection takes.
   DeviceChoices choices = device_;
   // Several owners' rows each as alone (the plan's owner_row_invariant):
   // float products of up to 8 columns on the vector kernel, as each
   // owner's one row alone takes (today's waves keep them per slot).
-  choices.vector_floats = choices.vector_floats || plan_.owner_row_invariant;
+  if (owner_recipes_.empty()) {
+    choices.vector_floats = choices.vector_floats || plan_.owner_row_invariant;
+  } else {
+    choices.vector_float_node = [this](const ggml_tensor* node) {
+      return (device_.vector_float_node && device_.vector_float_node(node)) ||
+             (plan_.owner_row_invariant && !owner_recipes_.contains(node));
+    };
+  }
   for (const planner::Selected& s : plan_.steps) {
     const std::string_view name = registry_.at(s.implementation).name;
     choices.fuse_norms = choices.fuse_norms || name == kRmsNormMulFused;
@@ -1769,6 +2050,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       PlanGraph(out_.nodes, /*fusion=*/false, choices, out_.keep, options_.index_scratch_limit);
   if (!planned) return std::unexpected(planned.error());
   GraphPlan& gp = *planned;
+  if (auto checked = CheckOwnerRecipes(gp); !checked) return checked;
   // Each node by its place in the graph (a refusal's message).
   std::map<const ggml_tensor*, std::size_t> place;
   for (std::size_t i = 0; i < out_.nodes.size(); ++i) place.emplace(out_.nodes[i], i);
@@ -2829,6 +3111,7 @@ std::expected<void, KernelFailure> Lowering::MakeSaves() {
 }
 
 std::expected<LoweredStep, KernelFailure> Lowering::Run() {
+  if (auto checked = CheckOwnerProducts(); !checked) return std::unexpected(checked.error());
   if (auto indexed = Index(); !indexed) return std::unexpected(indexed.error());
   if (auto checked = CheckQsaInputs(); !checked) return std::unexpected(checked.error());
   Needed();
@@ -2875,6 +3158,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   }
   if (auto saved = MakeSaves(); !saved) return std::unexpected(saved.error());
   if (auto bound = Bind(); !bound) return std::unexpected(bound.error());
+  if (auto checked = BindOwnerProducts(); !checked) return std::unexpected(checked.error());
   for (const auto* node : bank_attentions_) {
     if (auto valid = CheckFlashAttnMma(node); !valid) return std::unexpected(valid.error());
   }

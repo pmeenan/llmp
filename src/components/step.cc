@@ -229,6 +229,13 @@ class StepBuilder {
                                  graph.error().node, graph.error().detail,
                                  ir::GraphErrorName(graph.error().error)));
     }
+    OwnerProducts owners;
+    const auto requests = ctx_.TakeOwnerProducts();
+    if (!requests.empty()) {
+      auto proved = ProveOwnerProducts(*graph, inputs, ctx_.segments(), requests);
+      if (!proved) return std::unexpected(proved.error());
+      owners = std::move(*proved);
+    }
     StepGraph step{.graph = std::move(*graph),
                    .inputs = std::move(inputs),
                    .weights = std::move(weights_),
@@ -236,7 +243,8 @@ class StepBuilder {
                    .logits = logits,
                    .greedy = greedy,
                    .features = features,
-                   .saves = std::move(saves)};
+                   .saves = std::move(saves),
+                   .owner_products = std::move(owners)};
     MarkAccess(step);
     if (auto ok = CheckStateWrites(step, stage_); !ok) return std::unexpected(ok.error());
     return step;
@@ -1490,6 +1498,7 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   const spec::Stage& self = spec.stages[stage];
   StepBuilder sb(stage, shape);
   StepContext& ctx = sb.ctx();
+  ctx.EnableOwnerProducts(options.owner_products);
   const bool head = ctx.outputs() > 0;
   if (head && !instances->output) return Refused("outputs from a stage without an output head");
   TensorTables tables{.own = bindings.tensors, .stages = {}};
@@ -2061,6 +2070,7 @@ std::expected<ComponentGraph, std::string> BuildComponent(
   }
   StepBuilder sb(shape.stage, shape);
   StepContext& ctx = sb.ctx();
+  ctx.EnableOwnerProducts(inputs.owner_products);
   model::StateContract contract;
   if (in.def->state != nullptr) contract = in.def->state(in);
   if (cells.size() != contract.tensors.size()) return Refused("cells for every state tensor");

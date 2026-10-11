@@ -1604,6 +1604,16 @@ each is checked against the design as M3.6 proceeds.
                               prove exact heads, state and changed-input
                               capture replay against the legacy joined recipe
                               before qualifying joined repeat-pending work.
+                              - [x] **G3c2b1a — default-off owner products:**
+                                    typed physical-column proof, per-owner
+                                    primitive rewrite and bound native-recipe
+                                    audit; structural and descriptor controls.
+                                    No source/runtime opt-in or numerical/
+                                    persistence qualification.
+                              - [ ] **G3c2b1b — native qualification:** exact
+                                    joined heads/state and changed-input replay,
+                                    old/new persistence and bounded admission
+                                    before enabling repeat-pending execution.
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%

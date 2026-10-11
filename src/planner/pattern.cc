@@ -1466,11 +1466,9 @@ std::optional<Match> BatchAt(const Pattern& pattern, const MatchContext& context
 namespace {
 
 // One round of the table's rewrite patterns over `graph`.
-std::expected<Rewritten, ir::VerifyError> ApplyRound(const ir::Graph& graph,
-                                                     const SelectionView& view,
-                                                     const StepShape* shape,
-                                                     const StateSpans& state_spans,
-                                                     std::uint8_t round) {
+std::expected<Rewritten, ir::VerifyError> ApplyRound(
+    const ir::Graph& graph, const SelectionView& view, const StepShape* shape,
+    const StateSpans& state_spans, std::uint8_t round, std::span<const NodeId> preserve) {
   MatchContext context(graph, view, shape, state_spans);
   struct Found {
     const Pattern* pattern = nullptr;
@@ -1493,8 +1491,11 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(const ir::Graph& graph,
         continue;
       }
       auto m = p.match(context, id);
-      if (!m || (!p.own_checks && ((p.result.op == Op::kFused && !ElidesF32(context, *m)) ||
-                                   !KeepsOrder(context, *m)))) {
+      if (!m ||
+          std::ranges::any_of(m->nodes,
+                              [&](NodeId n) { return std::ranges::contains(preserve, n); }) ||
+          (!p.own_checks &&
+           ((p.result.op == Op::kFused && !ElidesF32(context, *m)) || !KeepsOrder(context, *m)))) {
         continue;
       }
       context.Take(m->nodes);
@@ -1561,8 +1562,9 @@ std::expected<Rewritten, ir::VerifyError> ApplyRound(const ir::Graph& graph,
 std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
                                                         const SelectionView& view,
                                                         const StepShape* shape,
-                                                        StateSpans state_spans) {
-  auto first = ApplyRound(graph, view, shape, state_spans, 0);
+                                                        StateSpans state_spans,
+                                                        std::span<const NodeId> preserve) {
+  auto first = ApplyRound(graph, view, shape, state_spans, 0, preserve);
   if (!first) {
     return first;
   }
@@ -1574,7 +1576,11 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
   }
   SelectionView next_view = view;
   next_view.Forward(graph, first->graph, first->tensors);
-  auto second = ApplyRound(first->graph, next_view, shape, state_spans, 1);
+  std::vector<NodeId> next_preserve;
+  for (std::uint32_t i = 0; i < first->from.size(); ++i) {
+    if (std::ranges::contains(preserve, first->from[i])) next_preserve.push_back(NodeId{i});
+  }
+  auto second = ApplyRound(first->graph, next_view, shape, state_spans, 1, next_preserve);
   if (!second) {
     return second;
   }

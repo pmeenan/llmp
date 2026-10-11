@@ -494,6 +494,7 @@ std::expected<FragmentOut, std::string> MtpEmit(Fragment& f) {
   const ir::TensorId fc_hidden = f.Weight(kFcHidden);
   h = b.Reshape(h, Shape({w, hc * rows}));
   h = b.MatMul(fc_hidden, h);
+  f.step.PreserveOwnerProduct(h);
   h = b.Reshape(h, Shape({w, hc, rows}));
   e = b.Reshape(e, Shape({w, 1, rows}));
   const ir::TensorId residual = b.Add(h, e);

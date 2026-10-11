@@ -40,6 +40,7 @@
 #include "execution/registry.h"
 #include "ir/graph.h"
 #include "planner/lanes.h"
+#include "planner/owner_products.h"
 #include "planner/pattern.h"
 #include "planner/placement.h"
 #include "planner/policy.h"
@@ -95,6 +96,9 @@ struct PlanOptions {
   // only this subset receives arena guarantees. Absent: the staged set.
   // This changes no placement/accounting; it describes physical binding.
   std::optional<std::vector<ir::TensorId>> alignment_staged{};
+  // Proved physical owner columns, expanded before width-sensitive patterns.
+  // Null keeps existing planning unchanged. The proof outlives this call.
+  const components::OwnerProducts* owner_products = nullptr;
 };
 
 struct StepPlan {
@@ -118,6 +122,9 @@ struct StepPlan {
   bool owner_row_invariant = false;
   // Promises used by selection, authenticated again at final placement/binding.
   std::vector<RootAlignmentFact> root_alignments{};
+  // Exact products retained through rewrites; lowering authenticates recipes.
+  std::vector<OwnerProductScope> owner_products{};
+  base::Sha256Digest owner_digest{};
 };
 
 std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::Registry& registry,

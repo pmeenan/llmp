@@ -38,6 +38,9 @@
 //      same GGML nodes under the selected implementation, or under a member
 //      of the selected group (the group is resolved here, by upstream's
 //      routing). Anything else is a lowering bug, and the step is refused;
+//      Requested owner products additionally require complete proof/scope
+//      coverage, original bound operands/preparation and the exact resolved
+//      owner recipe. An unresolved group is insufficient for that contract.
 //   6. gives the input slots (tokens, positions, the head's rows, each
 //      owner's store cells, a target's tap cells and host masks, a
 //      drafter's features, which the engine copies in on the device), the
