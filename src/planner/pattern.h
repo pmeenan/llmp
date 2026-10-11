@@ -48,6 +48,8 @@
 //                      masks joined once (the Gemma builders' owner
 //                      decode, owner and flexible owner prefill, bounded
 //                      roots and four-root carriers; fattn_owner.h)
+//   paired_glu_products two products of one input retain two F32 results
+//                      for one GLU, using a native paired-product implementation
 //   prepared_inputs    two or more products of one F32 input share one
 //                      Q8_1 preparation (kPrepare), each product reading it
 //                      (the Gemma builders' shared_q8, shared_q8.h)

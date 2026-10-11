@@ -1788,6 +1788,17 @@ each is checked against the design as M3.6 proceeds.
       - [ ] **G5b — lowering:** implement shared GGML and EXL3 operation
             lowerings; supply and enforce approved EXL3 reconstruction tuning
             facts and supported shapes.
+            - [x] **G5b1 — selected operations and reconstruction screen:**
+                  the shared step program binds approved EXL3 products and
+                  pinned tuning facts. All 145 full-vocabulary rows of the
+                  4.0-bpw G fixture match a newly sealed native reference
+                  bit for bit; 33 focused controls and two admission/input
+                  controls passed with zero skips ([evidence](experiments/m36-exl3-selected/README.md)).
+                  Final Spark checks passed: 2,554 native, 2,003 CPU and all
+                  134 model/timing tests (179 raw GTest arms), with zero failures
+                  or skips; quality gates passed. Main built and passed 91
+                  focused integration checks and the quality gates. Other
+                  profiles, packed execution and lifecycle gates stay open.
       - [ ] **G5c — execution controls:** run FP16 and both EXL3 fixtures
             through the shared runner; pass the FP16 bridge / EXL3 Tier C
             correctness controls and state, spill, restore and kept-state

@@ -52,6 +52,8 @@ namespace llmp::kernels::ggml {
 
 // The device's part of upstream's choices.
 struct DeviceChoices {
+  // Exact declarations of opaque selected-source markers. Empty by default.
+  std::function<const execution::Implementation*(const ggml_tensor*)> selected{};
   // The family ggml_cuda_mul_mat selects for a product, or a refusal where
   // it would take a path no implementation here has.
   std::function<std::expected<MulMatPath, KernelFailure>(const ggml_tensor*)> mul_mat;

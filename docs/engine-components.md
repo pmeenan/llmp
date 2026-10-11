@@ -1453,6 +1453,12 @@ resources, while a stacked format has one tensor-scale part ordered
 part, which the v1 index holds as one resource of the stacked format with
 part `tensor_scale` (D-113).
 
+The shared GGML step program also binds approved EXL3 selected operations
+with authenticated packed and reconstruction tuning facts. Its first 4.0-bpw
+G reconstruction prefill matches all 145 full-vocabulary rows of a native
+reference bit for bit; other paths and lifecycle controls remain open
+([evidence](experiments/m36-exl3-selected/README.md)).
+
 **The EXL3 trellis (2026-10-09).** `kernels/reference` decodes the
 trellis as ExLlamaV3's pinned kernels define it: `exl3_dq.cuh`'s 16-bit
 states over each tile's circular bit stream, `codebook.cuh`'s 3inst, mcg

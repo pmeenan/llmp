@@ -73,7 +73,7 @@ std::array<void*, sizeof...(T)> Arguments(T&... values) {
 
 std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Create(
     int device, providers::DeviceExecution& execution, providers::StreamId stream,
-    std::uint64_t locks) {
+    std::uint64_t locks, bool defer_zero) {
   if (locks == 0 || locks % 256 != 0 || locks + kLockBytes < locks) {
     return Rejected("the lock area is not a 256-byte aligned device range");
   }
@@ -132,16 +132,20 @@ std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Crea
     }
     // Queued before any launch: kernels require zeroed lock slots.
     // NOLINTNEXTLINE(performance-no-int-to-ptr): a device address.
-    if (const cudaError_t error = cudaMemsetAsync(reinterpret_cast<void*>(locks), 0, kLockBytes,
-                                                  static_cast<cudaStream_t>(native->handle));
+    if (const cudaError_t error =
+            defer_zero ? cudaSuccess
+                       : cudaMemsetAsync(reinterpret_cast<void*>(locks), 0, kLockBytes,
+                                         static_cast<cudaStream_t>(native->handle));
         error != cudaSuccess) {
       (void)cudaGetLastError();
       return Rejected(std::string("zeroing the lock area failed: ") + cudaGetErrorString(error));
     }
     areas.push_back(locks);
   }
-  return std::unique_ptr<LaunchContext>(new LaunchContext(device, execution, stream, *native, locks,
-                                                          sm_count, UpstreamCcClass(major, minor)));
+  auto result = std::unique_ptr<LaunchContext>(new LaunchContext(
+      device, execution, stream, *native, locks, sm_count, UpstreamCcClass(major, minor)));
+  result->needs_zero_ = defer_zero;
+  return result;
 }
 
 LaunchContext::LaunchContext(int device, providers::DeviceExecution& execution,
@@ -185,6 +189,18 @@ std::expected<void*, KernelFailure> LaunchContext::Begin() {
   if (const cudaError_t stale = cudaGetLastError(); stale != cudaSuccess) {
     faulted_ = true;
     return Fault(std::string("a CUDA error before the launch: ") + cudaGetErrorString(stale));
+  }
+  if (needs_zero_) {
+    // Initialization is queued only while running an owned, fenced job.
+    // Even failure may have queued work, so it faults and retains ownership.
+    if (const auto error = cudaMemsetAsync(Pointer(locks_), 0, kLockBytes,
+                                           static_cast<cudaStream_t>(native_.handle));
+        error != cudaSuccess) {
+      (void)cudaGetLastError();
+      faulted_ = true;
+      return Fault(std::string("initializing EXL3 locks failed: ") + cudaGetErrorString(error));
+    }
+    needs_zero_ = false;
   }
   return native_.handle;
 }

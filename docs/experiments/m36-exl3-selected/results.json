@@ -1,0 +1,92 @@
+{
+  "date": "2026-10-11",
+  "scope": "G5b1 selected EXL3 operations and first 4.0-bpw G reconstruction control",
+  "host": "spark-b",
+  "artifact": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+  "checks": [
+    {
+      "run": "m36-g5-mixed16-focused",
+      "host_cases": 26,
+      "selected_cases": 6,
+      "actual_cast_cases": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "run": "m36-g5-oracle15",
+      "result": "PASS",
+      "legacy_phases": 17,
+      "prefill_rows": 145,
+      "suffix_rows": 16,
+      "region_bytes": 103301376,
+      "ggml_pool_bytes": 1607936
+    },
+    {
+      "run": "m36-g5-shared16-models",
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "compared_f32": 22030720,
+      "payload_bytes": 88122880,
+      "comparison": "all F32 bits exact",
+      "functional_test_ms": 964
+    },
+    {
+      "run": "m36-g5b1-final17-shared",
+      "host": "spark",
+      "native_ctest_cases": 2554,
+      "native_raw_gtest_arms": 2544,
+      "cpu_ctest_cases": 2003,
+      "cpu_raw_gtest_arms": 1985,
+      "failed": 0,
+      "skipped": 0,
+      "quality": {
+        "status": "PASS",
+        "format_files": 28,
+        "boundary_files": 22,
+        "headers": 2182,
+        "reuse_version": "6.2.0"
+      },
+      "pre_guards": "PASS",
+      "post_guards": "PASS"
+    },
+    {
+      "run": "m36-g5b1-final17-models-b",
+      "host": "spark-b",
+      "model_timing_ctest_cases": 134,
+      "raw_gtest_arms": 179,
+      "failed": 0,
+      "skipped": 0,
+      "actual_reconstruction_control": "PASS",
+      "fp16_bridge_arms": 4,
+      "model_binary_sha256": "999b293ef4defabbb36990859f08f2dda0e7ae2062b8bb3ab926c77dc98a58db",
+      "pre_guards": "PASS",
+      "post_guards": "PASS"
+    },
+    {
+      "run": "g5b1-main-integration",
+      "host": "spark",
+      "native_ctest_cases": 91,
+      "failed": 0,
+      "skipped": 0,
+      "quality": "PASS",
+      "pre_guards": "PASS",
+      "post_guards": "PASS"
+    }
+  ],
+  "authority": {
+    "p3_results_sha256": "7a44e018bfc8403548fcf13a962b53ecf6af168afd5da316f806e2c185e9fac0",
+    "packed_records": 98,
+    "original_records_unchanged": 69,
+    "new_recorded_records": 29,
+    "original_ids_sha256": "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c",
+    "prefill_ids_sha256": "366eb09fa540020ef37213007303eef3872bcdfd1aaf262c2c13e9755f2de8f6",
+    "legacy_plan_sha256": "64215208b45fa176000707de747f55a1d5a3fe602cb2776d2f245da7f336d764",
+    "prefill_oracle_sha256": "ea491bc54c1259dc935cd6131fc3684033b0974490048b6a214dd35b5da1710d"
+  },
+  "remaining": [
+    "other execution profiles and packed paths",
+    "historical Tier C and lifecycle controls",
+    "legacy deletion"
+  ]
+}

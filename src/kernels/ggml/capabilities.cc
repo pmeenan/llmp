@@ -239,7 +239,7 @@ constexpr std::array<Rule, 3> kBf16Product = {
      {.operand = 1, .encodings = kBf16, .layouts = kDense},
      {.operand = kOut, .encodings = kF32Bf16, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kFloatConvert = {
-    {{.operand = 0, .encodings = kF32F16, .layouts = kDense},
+    {{.operand = 0, .encodings = kFloats, .layouts = kDense},
      {.operand = kOut, .encodings = kF32F16, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kToBf16 = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
@@ -504,6 +504,24 @@ bool AcceptsStateBankAttention(const ex::CapabilityQuery& q) {
          cells % 256 == 0 && mask->ne[0] == cells && mask->ne[1] >= query->ne[1] &&
          mask->ne[2] == 1 && mask->ne[3] == 1;
 }
+bool AcceptsAttention64(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::AttnParams>(q);
+  const auto* query = Operand(q, 0);
+  const auto* key = Operand(q, 1);
+  const auto* value = Operand(q, 2);
+  const auto* mask = Operand(q, 3);
+  if (!Built(q) || q.k != 64 || q.n != 64 || !p || !query || !key || !value || !mask || Has(q, 4) ||
+      p->sparse_any || p->softcap != 0 || p->max_bias != 0 ||
+      p->accumulate != ir::Accumulate::kF32 || !(p->scale > 0) ||
+      !(p->scale < std::numeric_limits<float>::infinity()) || p->n_kv_max != 0)
+    return false;
+  return query->ne[0] == 64 && key->ne[0] == 64 && value->ne == key->ne && query->ne[1] > 0 &&
+         query->ne[2] > 0 && key->ne[2] > 0 && query->ne[2] % key->ne[2] == 0 &&
+         query->ne[3] == 1 && key->ne[3] == 1 && key->ne[1] > 0 && key->ne[1] % 256 == 0 &&
+         mask->ne[0] == key->ne[1] &&
+         mask->ne[1] >= query->ne[1] + (query->ne[1] >= 1024 ? query->ne[1] % 2 : 0) &&
+         mask->ne[2] == 1 && mask->ne[3] == 1;
+}
 bool AcceptsAttention256(const ex::CapabilityQuery& q) {
   return Built(q) && q.k == 256 && q.n == 256;
 }
@@ -631,6 +649,8 @@ bool AcceptsConvert(const ex::CapabilityQuery& q) {
   const auto* from = Operand(q, 0);
   const auto* to = Operand(q, ex::kOutputOperand);
   if (!Built(q) || from == nullptr || to == nullptr || from->encoding == to->encoding) return false;
+  // The resident BF16 norm scales widen exactly; no new narrowing path.
+  if (from->encoding == Encoding::kBF16 && to->encoding != Encoding::kF32) return false;
   std::uint64_t count = 1;
   for (const auto n : from->ne) {
     if (n == 0 || n > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) / count)
@@ -1212,6 +1232,10 @@ const std::array kEntries = {
           Cap(F(FusedKind::kStateBankAttention), kStateBankAttention, &AcceptsStateBankAttention,
               false, kAttentionGroup, 0, {}, 0, {}, true),
           "; the existing flash-attention group over a proven contiguous F16 state span"},
+    Entry{"ggml.flash_attn_ext.vec", Operation::kFlashAttn,
+          Cap(P(Op::kAttention), kF16Attention, &AcceptsAttention64, false, kAttentionGroup),
+          "; selectable for the build's SASS architectures: D64 F32 query, F16 K/V/mask, "
+          "256-padded cells, no sinks, softcap or ALiBi and F32 precision"},
     Entry{"ggml.flash_attn_ext.vec_d256", Operation::kFlashAttn,
           Cap(P(Op::kAttention), kF16Attention, &AcceptsAttention256, false, kAttentionGroup, 2),
           "; selectable for the build's SASS architectures at head size 256"},

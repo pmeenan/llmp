@@ -58,6 +58,9 @@ struct ComponentSourceOptions {
   std::uint32_t slots = 0;
   std::optional<planner::Policy> policy{};
   kernels::StepBackend backend{};
+  // Require graph-capture-safe implementations. Uncaptured callers may
+  // opt out; their runner must disable graph capture too.
+  bool require_capture = true;
 };
 
 class ComponentStepSource final : public StepSource {

@@ -39,21 +39,29 @@ class CublasHandle;
 // captured graphs, a fault its context's.
 class GgmlStepLaunch final : public kernels::StepLaunch {
  public:
-  explicit GgmlStepLaunch(std::unique_ptr<LaunchContext> launch) : launch_(std::move(launch)) {}
+  explicit GgmlStepLaunch(std::unique_ptr<LaunchContext> launch,
+                          std::unique_ptr<SelectedLaunch> selected = {})
+      : launch_(std::move(launch)), selected_(std::move(selected)) {}
+  SelectedLaunch* selected() const { return selected_.get(); }
   LaunchContext& context() const { return *launch_; }
 
   std::expected<std::unique_ptr<Recorded>, StepFailure> Capture(providers::NativeStream stream,
                                                                 const Body& body) override;
   std::expected<void, StepFailure> Launch(providers::NativeStream stream,
                                           const Recorded& recorded) override;
-  bool faulted() const override { return launch_->faulted(); }
+  bool faulted() const override {
+    return launch_->faulted() || (selected_ && selected_->faulted());
+  }
 
  private:
   std::unique_ptr<LaunchContext> launch_;
+  std::unique_ptr<SelectedLaunch> selected_;
 };
 
 struct GgmlBackendOptions {
   LowerOptions lower{};
+  // Build-time native operation source; owned for the whole backend lifetime.
+  std::shared_ptr<const SelectedSource> selected{};
 };
 
 class GgmlBackend {

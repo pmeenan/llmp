@@ -3,6 +3,7 @@
 
 #include "kernels/ggml/step_program.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -63,15 +64,24 @@ class GgmlStepProgram final : public StepProgram {
   GgmlStepProgram(const GgmlStepLaunch* const* launch, const execution::Registry& registry,
                   LoweredStep lowered, std::uint64_t pool)
       : launch_(launch), registry_(registry), lowered_(std::move(lowered)), pool_(pool) {
-    for (const PlanStep& step : lowered_.plan.steps) nodes_ += step.nodes.size();
+    for (const PlanStep& step : lowered_.plan.steps) {
+      nodes_ += step.nodes.size();
+      const auto selected =
+          step.nodes.size() == 1
+              ? std::ranges::find(lowered_.selected, step.nodes[0], &SelectedNode::tensor)
+              : lowered_.selected.end();
+      launches_ +=
+          selected == lowered_.selected.end() ? step.nodes.size() : selected->call->launches();
+    }
+    for (const auto& selected : lowered_.selected) selected_host_ += selected.call->host_bytes();
   }
 
   std::uint64_t scratch_bytes() const override { return lowered_.extent; }
   std::uint64_t pool_bytes() const override { return pool_; }
   std::uint64_t host_bytes() const override {
-    return lowered_.arena->bytes() + (nodes_ * kPlanNodeHostBytes);
+    return lowered_.arena->bytes() + (nodes_ * kPlanNodeHostBytes) + selected_host_;
   }
-  std::uint64_t launches() const override { return nodes_; }
+  std::uint64_t launches() const override { return launches_; }
   std::span<const InputSlot> inputs() const override { return lowered_.inputs; }
   std::span<const OutputSlot> outputs() const override { return lowered_.outputs; }
   std::span<const TensorUse> tensors() const override { return lowered_.tensors; }
@@ -108,7 +118,8 @@ class GgmlStepProgram final : public StepProgram {
           StepFailure{.detail = std::format(
                           "the step's lane scratch ({} bytes) exceeds a lane's pool", *lane)});
     }
-    auto bound = BoundGraph::Bind(registry_, plan);
+    auto bound = BoundGraph::Bind(registry_, plan, lowered_.selected, (*launch_)->selected(),
+                                  {context.workspace().base, context.scratch_size(0).value()});
     if (!bound) return std::unexpected(Failure(bound.error()));
     bound_.emplace(std::move(*bound));
     return {};
@@ -132,6 +143,8 @@ class GgmlStepProgram final : public StepProgram {
   LoweredStep lowered_;
   std::uint64_t pool_ = 0;
   std::uint64_t nodes_ = 0;
+  std::uint64_t launches_ = 0;
+  std::uint64_t selected_host_ = 0;
   std::optional<BoundGraph> bound_;
 };
 
@@ -140,6 +153,8 @@ class GgmlStepProgram final : public StepProgram {
 std::expected<std::unique_ptr<Recorded>, StepFailure> GgmlStepLaunch::Capture(
     providers::NativeStream stream, const Body& body) {
   if (auto same = SameStream(*launch_, stream); !same) return std::unexpected(same.error());
+  if (selected_)
+    return std::unexpected(StepFailure{.detail = "selected native source is not capturable"});
   auto captured = launch_->Capture([&](LaunchContext&) -> std::expected<void, KernelFailure> {
     auto recorded = body();
     if (!recorded) {
@@ -178,7 +193,17 @@ std::expected<std::unique_ptr<GgmlBackend>, std::string> GgmlBackend::Create(
     int device, providers::DeviceExecution& execution, providers::StreamId stream,
     CublasHandle* cublas, GgmlBackendOptions options) {
   std::unique_ptr<GgmlBackend> backend(new GgmlBackend(device, execution, stream, cublas, options));
-  auto registry = execution::Registry::Create(Implementations());
+  auto implementations = Implementations();
+  if (options.selected) {
+    if (options.lower.selected_source && options.lower.selected_source != options.selected.get())
+      return std::unexpected("the selected lowering and owned source differ");
+    backend->options_.lower.selected_source = options.selected.get();
+    auto extra = options.selected->Implementations();
+    for (auto& implementation : extra) implementations.push_back(std::move(implementation));
+  } else if (options.lower.selected_source) {
+    return std::unexpected("a backend must own its selected source");
+  }
+  auto registry = execution::Registry::Create(std::move(implementations));
   if (!registry) return std::unexpected(registry.error().detail);
   backend->registry_ = std::make_unique<execution::Registry>(std::move(*registry));
   auto measuring =
@@ -191,6 +216,7 @@ std::expected<std::unique_ptr<GgmlBackend>, std::string> GgmlBackend::Create(
   // GB10); the planner's is CUDA's major · 10 + minor.
   const std::uint32_t arch = facts->architecture / 10;
   backend->facts_ = {.device_class = std::format("sm_{}", arch), .arch = arch};
+  if (options.selected) backend->facts_.tuned = options.selected->Tuning(arch);
   return backend;
 }
 
@@ -201,7 +227,10 @@ kernels::StepBackend GgmlBackend::Backend() {
   return {.registry = registry_.get(),
           .device = facts_,
           .on_stream =
-              [](std::string_view implementation) {
+              [this](std::string_view implementation) {
+                // Native adapters share one stream and one serial scratch pool.
+                // Keep the whole mixed step ordered until lane support is proved.
+                if (options_.selected) return true;
                 const execution::Capability* c = CapabilityOf(implementation);
                 return UsesCublas(implementation) ||
                        (c != nullptr && c->group == CapabilityOf("ggml.mul_mat.cublas")->group);
@@ -220,9 +249,22 @@ std::expected<void, std::string> GgmlBackend::LendCublas(CublasHandle* cublas) {
 std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> GgmlBackend::Launch(
     LaunchContext::Workspace pool) {
   if (launch_ != nullptr) return std::unexpected("the backend's launch was made already");
+  std::unique_ptr<SelectedLaunch> selected;
+  if (options_.selected) {
+    const auto prefix = options_.selected->persistent_bytes();
+    if (prefix % 256 != 0 || pool.base % 256 != 0 || prefix > pool.size.value() ||
+        pool.base + pool.size.value() < pool.base)
+      return std::unexpected("selected-source persistent workspace exceeds the pool");
+    auto made = options_.selected->Launch(device_, execution_, stream_, {pool.base, prefix});
+    if (!made) return std::unexpected(made.error().detail);
+    selected = std::move(*made);
+    if (!selected || selected->owner() != options_.selected.get())
+      return std::unexpected("selected launch belongs to another source");
+    pool = {.base = pool.base + prefix, .size = base::Bytes(pool.size.value() - prefix)};
+  }
   auto context = LaunchContext::Create(device_, execution_, stream_, pool, cublas_);
   if (!context) return std::unexpected(context.error().detail);
-  auto launch = std::make_unique<GgmlStepLaunch>(std::move(*context));
+  auto launch = std::make_unique<GgmlStepLaunch>(std::move(*context), std::move(selected));
   launch_ = launch.get();
   return launch;
 }
@@ -233,6 +275,11 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::L
   if (!lowered) return std::unexpected(lowered.error().detail);
   auto pool = PlanScratchOn(*measuring_, lowered->plan, false);
   if (!pool) return std::unexpected(pool.error().detail);
+  for (const auto& selected : lowered->selected)
+    *pool = std::max(*pool, selected.call->scratch_bytes());
+  const std::uint64_t prefix = options_.selected ? options_.selected->persistent_bytes() : 0;
+  if (__builtin_add_overflow(*pool, prefix, &*pool))
+    return std::unexpected("selected-source workspace extent overflows");
   return std::make_unique<GgmlStepProgram>(&launch_, *registry_, std::move(*lowered), *pool);
 }
 

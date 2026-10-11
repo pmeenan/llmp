@@ -422,6 +422,34 @@ std::optional<Match> RopeStoreMatch(const MatchContext& c, NodeId anchor) {
   return m;
 }
 
+// Two independent products consumed by one split GLU. The fused operation
+// retains both F32 outputs; it does not fuse the GLU or change its rounding.
+std::optional<Match> PairedGluProductsMatch(const MatchContext& c, NodeId anchor) {
+  const auto& first = c.node(anchor);
+  if (c.taken(anchor) || first.key != Prim(Op::kMatMul) || !DefaultProduct(first) ||
+      c.tensor(first.out[0]).format.encoding != format::Encoding::kF32)
+    return std::nullopt;
+  const auto reader = c.OnlyReader(first.out[0]);
+  if (!reader) return std::nullopt;
+  const auto& glu = c.node(*reader);
+  if (glu.key != Prim(Op::kGlu) || glu.nsrc != 2) return std::nullopt;
+  const auto other = glu.src[0] == first.out[0] ? glu.src[1] : glu.src[0];
+  const NodeId second_id = c.graph().producer(other);
+  const auto& second = c.node(second_id);
+  if (second_id <= anchor || c.taken(second_id) || second.key != Prim(Op::kMatMul) ||
+      !DefaultProduct(second) || second.src[1] != first.src[1] ||
+      c.OnlyReader(second.out[0]) != reader ||
+      c.tensor(second.out[0]).format.encoding != format::Encoding::kF32 ||
+      !SameShape(c.tensor(first.out[0]), c.tensor(second.out[0])))
+    return std::nullopt;
+  Match match{.nodes = {anchor, second_id}, .sources = {first.src[0], second.src[0], first.src[1]}};
+  const std::array outputs{first.out[0], second.out[0]};
+  if (!Implemented(c, ir::Fused(FusedKind::kPreparedProducts), match.sources, outputs,
+                   match.params))
+    return std::nullopt;
+  return match;
+}
+
 // The format of an input prepared for the products: Q8_1 blocks of its
 // shape (what GGML's MMVQ quantizes its activations into).
 std::optional<format::TensorFormat> PreparedFormat(const ir::TensorDesc& x) {
@@ -1010,6 +1038,18 @@ void Fused(RewriteContext& c, const Match& m, std::size_t index) {
   FusedRewrite(c, m, index, kKind);
 }
 
+// Both product outputs are retained and mapped independently.
+void PairedProductsRewrite(RewriteContext& c, const Match& m, std::size_t index) {
+  if (index + 1 != m.nodes.size()) return;
+  ContextOf(c, c.original().node(m.nodes.back()));
+  std::vector<TensorId> sources;
+  for (const auto source : m.sources) sources.push_back(c.Map(source));
+  const std::array encodings{format::Encoding::kF32, format::Encoding::kF32};
+  const auto outputs =
+      c.builder().FusedBytes(FusedKind::kPreparedProducts, sources, m.params, encodings);
+  for (std::size_t i = 0; i < 2; ++i) c.Set(c.original().node(m.nodes[i]).out[0], outputs[i]);
+}
+
 // The input prepared once, at the first product's place; every product
 // reading it.
 void PreparedRewrite(RewriteContext& c, const Match& m, std::size_t index) {
@@ -1383,6 +1423,11 @@ constexpr std::array kPatterns = {
             .match = &OwnerAttentionMatch,
             .own_checks = true,
             .rewrite = &OwnerRewrite},
+    Pattern{.name = "paired_glu_products",
+            .result = ir::Fused(FusedKind::kPreparedProducts),
+            .anchors = kProductAnchors,
+            .match = &PairedGluProductsMatch,
+            .rewrite = &PairedProductsRewrite},
     Pattern{.name = "prepared_inputs",
             .result = ir::Primitive(Op::kPrepare),
             .anchors = kProductAnchors,

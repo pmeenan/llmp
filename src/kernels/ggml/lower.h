@@ -68,6 +68,7 @@
 #include "kernels/common/lower.h"
 #include "kernels/common/step_program.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/selected_operation.h"
 #include "kernels/ggml/tensors.h"
 
 namespace llmp::kernels::ggml {
@@ -75,6 +76,8 @@ namespace llmp::kernels::ggml {
 struct LowerOptions {
   // kMaskBuild on the device (llmp.gemma4.mask), or built on the host.
   bool device_masks = true;
+  // Optional build-time source for operations the IR planner selected.
+  const SelectedSource* selected_source = nullptr;
   // A frozen read's host-built mask (a drafter over its target's borrowed
   // state): its slot's cells say so (step_program.h InputCells::frozen),
   // which a stager must honour; off, such a step is refused with host masks.
@@ -113,7 +116,8 @@ struct LoweredStep {
   std::vector<ggml_tensor*> keep;    // the step's outputs and kept tensors
   std::vector<LoweredLeaf> leaves;
   std::vector<SavedLeaf> saves;
-  GraphPlan plan;  // PlanGraph's: the IR selection's steps, lanes and regions
+  std::vector<SelectedNode> selected;  // exact selected calls, borrowing this arena
+  GraphPlan plan;                      // PlanGraph's: the IR selection's steps, lanes and regions
   std::vector<InputSlot> inputs;
   std::vector<OutputSlot> outputs;
   std::vector<TensorUse> tensors;

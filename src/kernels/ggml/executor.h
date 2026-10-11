@@ -23,6 +23,7 @@
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/selected_operation.h"
 #include "kernels/ggml/tensors.h"
 
 namespace llmp::kernels::ggml {
@@ -51,7 +52,10 @@ class BoundGraph {
   // Resolves `plan` against `registry` and binds each step; refused with
   // the registry's rejection, or if a step's nodes fail its host checks.
   static std::expected<BoundGraph, KernelFailure> Bind(const execution::Registry& registry,
-                                                       const GraphPlan& plan);
+                                                       const GraphPlan& plan,
+                                                       std::span<const SelectedNode> selected = {},
+                                                       SelectedLaunch* native = nullptr,
+                                                       SelectedWorkspace scratch = {});
 
   // Runs every step in order on the context's stream, a region's lane steps
   // on the context's lanes (graph_plan.h AssignLanes; on the stream if the
@@ -64,7 +68,7 @@ class BoundGraph {
 
  private:
   struct Step {
-    std::variant<Kernel, RmsNormMulKernel> kernel;
+    std::variant<Kernel, RmsNormMulKernel, std::unique_ptr<BoundSelectedCall>> kernel;
     std::vector<ggml_tensor*> nodes;
     std::uint8_t lane = 0;
   };

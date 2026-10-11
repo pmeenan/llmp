@@ -74,7 +74,9 @@ class LaunchContext {
   // of the lock area.
   static std::expected<std::unique_ptr<LaunchContext>, KernelFailure> Create(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
-      std::uint64_t locks);
+      std::uint64_t locks, bool defer_zero = false);
+  // defer_zero retains construction without a device write: the first Run
+  // zeros locks in stream order, as part of that completion-tracked job.
 
   LaunchContext(const LaunchContext&) = delete;
   LaunchContext& operator=(const LaunchContext&) = delete;
@@ -152,6 +154,7 @@ class LaunchContext {
   int sm_count_;
   CcClass cc_class_;
   bool faulted_ = false;
+  bool needs_zero_ = false;
   std::map<const void*, int> coresident_;
 };
 

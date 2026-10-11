@@ -6,7 +6,7 @@
 // launch context on a GB10 (label `gpu`; the over-read probe and the host
 // checks also on a discrete GPU the build targets, `gpu-discrete`, D-082):
 // - the casts (ggml.convert): F32 to F16 rounds to nearest even and F16 to
-//   F32 widens, bit for bit as the host does;
+//   F32 and BF16 to F32 widen, bit for bit as the host does;
 // - the embedding (ggml.get_rows over a BF16 table) widens exactly;
 // - the forced vector attention (ggml.flash_attn_ext.vec) is close to an
 //   FP64 reference over K and V padded to 256 cells, never reads past its
@@ -170,7 +170,7 @@ void Launched(const std::expected<void, llmp::kernels::ggml::KernelFailure>& res
 }
 
 TEST_F(GgmlExl3OpsTest, ConvertRoundsToNearestEvenAndWidensExactly) {
-  auto arena = TensorArena::Create(16).value();
+  auto arena = TensorArena::Create(24).value();
   ggml_context* c = arena.context();
   const std::int64_t rows = 7;
   const std::int64_t width = 896;
@@ -216,15 +216,32 @@ TEST_F(GgmlExl3OpsTest, ConvertRoundsToNearestEvenAndWidensExactly) {
         << i;
   }
 
+  // Resident BF16 scales are read directly and widened to F32, including
+  // signed zeros, subnormals and finite values across both signs.
+  std::vector<std::uint16_t> bf_values(values.size());
+  for (std::size_t i = 0; i < bf_values.size(); ++i) {
+    auto bits = static_cast<std::uint16_t>(i * 13U);
+    if ((bits & 0x7f80U) == 0x7f80U) bits = 0;  // NaN payloads are not this contract.
+    bf_values[i] = bits;
+  }
+  bf_values.at(1) = 0x8000U;  // Explicit negative zero, beside generated positive zero.
+  ggml_tensor* bf16 = Place(ggml_new_tensor_2d(c, GGML_TYPE_BF16, width, rows), bf_values);
+  ggml_tensor* bf_back = Place<float>(ggml_new_tensor_2d(c, GGML_TYPE_F32, width, rows));
+  Launched(llmp::kernels::ggml::Convert(*launch, ggml_cpy(c, bf16, bf_back)));
+  const auto bf_widened = Download<float>(bf_back);
+  for (std::size_t i = 0; i < bf_values.size(); ++i)
+    ASSERT_EQ(std::bit_cast<std::uint32_t>(bf_widened[i]), static_cast<std::uint32_t>(bf_values[i])
+                                                               << 16)
+        << i;
+
   // Refused: another shape of the same count (GGML's builder asserts the
-  // count), the same type, BF16, overlapping operands.
+  // count), the same type, F32 to BF16, overlapping operands.
   ggml_tensor* other = Place<std::uint16_t>(ggml_new_tensor_1d(c, GGML_TYPE_F16, width * rows));
   EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckConvert(ggml_cpy(c, src, other))),
             KernelError::kRejected);
   ggml_tensor* same = Place<float>(ggml_new_tensor_2d(c, GGML_TYPE_F32, width, rows));
   EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckConvert(ggml_cpy(c, src, same))),
             KernelError::kRejected);
-  ggml_tensor* bf16 = Place<std::uint16_t>(ggml_new_tensor_2d(c, GGML_TYPE_BF16, width, rows));
   EXPECT_EQ(FailedCode(llmp::kernels::ggml::CheckConvert(ggml_cpy(c, src, bf16))),
             KernelError::kRejected);
   ggml_tensor* over = ggml_new_tensor_2d(c, GGML_TYPE_F16, width, rows);

@@ -194,6 +194,13 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     if (taken[i] || LaunchesNothing(node)) {
       continue;
     }
+    if (device.selected) {
+      if (const auto* selected = device.selected(node)) {
+        if (node->op != GGML_OP_CUSTOM) return Rejected("a selected-source marker is not custom");
+        add(selected->operation, selected->name, i, {node}, 1);
+        continue;
+      }
+    }
     if (const auto d = deferred.find(i); d != deferred.end()) {
       const Dsv4HcPostExpertsNodes& f = d->second;
       add(Operation::kHcPost, kDsv4HcPostExpertsNormF16Name, i, {f.reduce, f.add, f.post, f.norm},
@@ -869,6 +876,11 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                 std::format("{}: quantized V needs K of the same encoding", Where(graph, i)));
           }
           add(Operation::kFlashAttn, quantized, i, {node}, 1);
+          break;
+        }
+        // D64 float attention must not bypass the quantized-cache dispatch.
+        if (node->src[0] != nullptr && node->src[0]->ne[0] == 64) {
+          add(Operation::kFlashAttn, "ggml.flash_attn_ext.vec", i, {node}, 1);
           break;
         }
         if (node->src[0] == nullptr || (node->src[0]->ne[0] != 256 && node->src[0]->ne[0] != 512)) {

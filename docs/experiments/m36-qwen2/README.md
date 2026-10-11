@@ -7,8 +7,9 @@ The approved Qwen2.5-0.5B FP16 and EXL3 4.0/4.5 bpw fixtures now synthesize
 specs over the shared embedding, attention, GLU feed-forward, norm and head
 components. The FP16 fixture also executes through `ComponentStepSource`,
 `ModelRunner` and the shared GGML lowering. These are fixture controls;
-there is no serving or speed claim. G5b's EXL3 execution, G5c's remaining
-correctness/lifecycle controls and G5d's deletion remain open.
+there is no serving or speed claim. G5b's complete EXL3 lowering, G5c's remaining
+correctness/lifecycle controls and G5d's deletion remain open. The first
+[shared EXL3 reconstruction screen](../m36-exl3-selected/README.md) now passes.
 
 The shared component additions preserve their existing defaults: optional
 Q/K/V bias, explicit scores with score scaling, and the EXL3 F16 rounding

@@ -84,6 +84,16 @@ std::int64_t SsmConvPad(const ir::Graph& graph, const ir::Node& n) {
   return nt > 32 && nt % 32 != 0 ? 32 - (nt % 32) : 0;
 }
 
+bool PackedProductPair(const ir::Graph& graph, const ir::Node& n) {
+  if (n.key != ir::Fused(FusedKind::kPreparedProducts) || n.nsrc != 3 || n.nout != 2) return false;
+  const auto& a = graph.tensor(n.out[0]);
+  const auto& b = graph.tensor(n.out[1]);
+  return graph.tensor(n.src[0]).format.encoding == Encoding::kExl3Trellis &&
+         graph.tensor(n.src[1]).format.encoding == Encoding::kExl3Trellis &&
+         a.format.encoding == Encoding::kF32 && a.format == b.format && a.ne(2) == 1 &&
+         a.ne(3) == 1 && ir::IsContiguous(a) && ir::IsContiguous(b);
+}
+
 std::optional<ggml_type> TypeOf(Encoding e) {
   switch (e) {
     case Encoding::kF32:
@@ -134,6 +144,7 @@ class Lowering {
 
   std::expected<void, KernelFailure> Index();
   std::expected<void, KernelFailure> MakeNode(NodeId id);
+  std::expected<void, KernelFailure> MakeSelected(NodeId id, const ir::Node& n);
   std::expected<void, KernelFailure> MakeFused(NodeId id, const ir::Node& n);
   std::expected<void, KernelFailure> MakeOwners(NodeId id, const ir::Node& n);
   // The composite ops an implementation of their own runs (pattern.h
@@ -982,8 +993,20 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
     out_.leaves.push_back({.tensor = t, .primitive = primitive_.at(out.v), .part = role});
     if (first == nullptr) first = t;
   };
-  if (d.format.encoding == Encoding::kMxfp8 && d.format.layout == format::Layout::kSplit &&
-      matrices == 1) {
+  if (options_.selected_source != nullptr && d.format.encoding == Encoding::kExl3Trellis &&
+      d.format.layout == format::Layout::kExl3Tiles && matrices == 1 && slots == 0) {
+    const auto extents = format::PartsOf(d.format);
+    if (!extents || extents->size() != w.parts.size())
+      return Refused("invalid selected weight parts");
+    for (const auto& extent : extents->parts()) {
+      const auto count = std::ranges::count_if(
+          w.parts, [&](const auto& entry) { return entry.second == extent.role; });
+      if (count != 1 || extent.readable > static_cast<std::uint64_t>(INT64_MAX))
+        return Refused("missing, duplicate or oversized selected weight part");
+      part(extent.role, bytes(static_cast<std::int64_t>(extent.readable), 1, 1));
+    }
+  } else if (d.format.encoding == Encoding::kMxfp8 && d.format.layout == format::Layout::kSplit &&
+             matrices == 1) {
     // E4M3 codes [k, n] and E8M0 scales [k / 32, n], each a byte.
     part(format::PartRole::kCodes, bytes(k, rows, 1));
     part(format::PartRole::kBlockScales, bytes(k / 32, rows, 1));
@@ -1342,8 +1365,17 @@ std::expected<void, KernelFailure> Lowering::Flush(NodeId limit) {
   while (cursor_ < replaced_.size() && replaced_[cursor_].primitive < limit) {
     if (!replaced_[cursor_].made) {
       const ir::Node& prim = g_.node(replaced_[cursor_].primitive);
-      const bool ready = std::ranges::all_of(
-          prim.sources(), [&](TensorId s) { return !s.valid() || ResolveReplaced(s) != nullptr; });
+      const ir::Node& fused = p_.node(replaced_[cursor_].fused);
+      // A primitive's input can be ready before another input of its
+      // selected fusion (for example a converted norm scale). Expanding it
+      // then would put the norm before that conversion, splitting the
+      // selected norm/mul sequence and changing PlanGraph's operation order.
+      const bool ready =
+          std::ranges::all_of(fused.sources(),
+                              [&](TensorId s) { return !s.valid() || made_.at(s.v) != nullptr; }) &&
+          std::ranges::all_of(prim.sources(), [&](TensorId s) {
+            return !s.valid() || ResolveReplaced(s) != nullptr;
+          });
       // Its fused node makes it, at its place, once its sources are made.
       if (!ready) return {};
       if (auto made = MakeReplaced(cursor_); !made) return made;
@@ -1529,6 +1561,63 @@ std::expected<void, KernelFailure> Lowering::MakeReduce(NodeId id, const ir::Nod
   return {};
 }
 
+std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::Node& n) {
+  const bool paired = n.key == ir::Fused(FusedKind::kPreparedProducts) && n.nout == 2;
+  if ((!paired && n.nout != 1) || n.nsrc > GGML_MAX_SRC)
+    return Refused("unsupported selected-source output count");
+  const auto& implementation = registry_.at(impl_of_.at(id.v));
+  std::vector<SelectedOperand> inputs;
+  std::vector<ggml_tensor*> dependencies;
+  for (std::size_t i = 0; i < n.nsrc; ++i) {
+    const auto tensor = n.src[i];
+    SelectedOperand operand{
+        .id = tensor, .desc = p_.tensor(tensor), .tensor = made_.at(tensor.v), .parts = {}};
+    if (operand.tensor == nullptr) return Refused("a selected-source input was not made");
+    const auto parts = parts_.find(tensor.v);
+    if (parts != parts_.end()) {
+      for (const auto& [role, part] : parts->second) {
+        operand.parts.push_back({role, part});
+        dependencies.push_back(part);
+      }
+    } else {
+      dependencies.push_back(operand.tensor);
+    }
+    inputs.push_back(std::move(operand));
+  }
+  const auto& desc = p_.tensor(n.out[0]);
+  const auto type = TypeOf(desc.format.encoding);
+  if (!type || desc.format.layout != format::Layout::kDense || !ir::IsContiguous(desc) ||
+      dependencies.size() > GGML_MAX_SRC)
+    return Refused("unsupported selected-source output or too many physical dependencies");
+  if (paired && !PackedProductPair(p_, n))
+    return Refused("a paired selected product lacks its shared placement contract");
+  std::array<std::int64_t, 4> ne{};
+  for (std::size_t d = 0; d < 4; ++d) ne[d] = static_cast<std::int64_t>(desc.ne(d));
+  ggml_tensor* marker =
+      paired ? ggml_new_tensor_1d(c_, *type, ne[0] * ne[1] * 2)
+             : ggml_new_tensor(c_, *type, std::max<int>(1, desc.shape().rank), ne.data());
+  marker->op = GGML_OP_CUSTOM;
+  for (std::size_t i = 0; i < dependencies.size(); ++i) marker->src[i] = dependencies[i];
+  std::vector<SelectedOperand> outputs;
+  for (std::size_t i = 0; i < n.nout; ++i) {
+    ggml_tensor* tensor =
+        paired ? ggml_view_2d(c_, marker, ne[0], ne[1], desc.nb[1], i * desc.nb[2]) : marker;
+    outputs.push_back({.id = n.out[i], .desc = p_.tensor(n.out[i]), .tensor = tensor, .parts = {}});
+  }
+  auto call = options_.selected_source->Lower(implementation, n, inputs, outputs);
+  if (!call) return std::unexpected(call.error());
+  if (!*call || (*call)->owner() != options_.selected_source)
+    return Refused("a selected-source operation returned another source's call");
+  Node(marker, id);
+  for (const auto& output : outputs) {
+    made_.at(output.id.v) = output.tensor;
+    if (output.tensor != marker) Node(output.tensor, id);
+  }
+  if (paired) placed_root_[n.out[0].v] = marker;
+  out_.selected.push_back({marker, &implementation, std::move(*call)});
+  return {};
+}
+
 std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
   const ir::Node& n = p_.node(id);
   // What nothing made reads (a fused selection's masks, a preparation
@@ -1539,6 +1628,8 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
     return {};
   }
   if (n.nout > 0 && made_.at(n.out[0].v) != nullptr && !folded_.contains(id.v)) return {};
+  if (options_.selected_source && options_.selected_source->Owns(Selected(id)))
+    return MakeSelected(id, n);
   switch (n.key.op) {
     case Op::kInput:
     case Op::kWeight:
@@ -2347,6 +2438,10 @@ std::expected<void, KernelFailure> Lowering::CheckOwnerRecipes(const GraphPlan& 
 std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   // The device's choices, with the policies the selection takes.
   DeviceChoices choices = device_;
+  choices.selected = [this](const ggml_tensor* tensor) -> const execution::Implementation* {
+    const auto at = std::ranges::find(out_.selected, tensor, &SelectedNode::tensor);
+    return at == out_.selected.end() ? nullptr : at->implementation;
+  };
   // Several owners' rows each as alone (the plan's owner_row_invariant):
   // float products of up to 8 columns on the vector kernel, as each
   // owner's one row alone takes (today's waves keep them per slot).
@@ -2635,6 +2730,7 @@ std::string_view Lowering::Selected(NodeId id) const {
 }
 
 bool Lowering::Direct(NodeId id) const {
+  if (options_.selected_source && options_.selected_source->Owns(Selected(id))) return true;
   const ir::Node& n = p_.node(id);
   if (n.key.op != Op::kFused) return false;
   switch (n.key.fused) {
@@ -3643,6 +3739,7 @@ std::uint64_t KernelBytes(const ir::Graph& graph, const ir::Node& n) {
 
 ir::TensorId WithinRoot(const ir::Graph& graph, ir::TensorId root) {
   const ir::Node& n = graph.node(graph.producer(root));
+  if (PackedProductPair(graph, n) && root == n.out[1]) return n.out[0];
   // A blob kernel's later outputs, in its first output's place.
   const bool blob =
       n.key == ir::Fused(FusedKind::kHcPrep) || n.key == ir::Fused(FusedKind::kHcFold) ||
@@ -3674,6 +3771,12 @@ ir::TensorId WithinRoot(const ir::Graph& graph, ir::TensorId root) {
 std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
   const ir::TensorDesc& t = graph.tensor(root);
   const ir::Node& made = graph.node(graph.producer(root));
+  if (PackedProductPair(graph, made) && root == made.out[0]) {
+    const auto own = planner::RootBytes(t);
+    if (!own || *own > std::numeric_limits<std::uint64_t>::max() / 2)
+      return std::numeric_limits<std::uint64_t>::max();
+    return *own * 2;
+  }
   // The fast forms' blobs and kernels with intermediates (lowered by
   // MakeDirect and MakeSpecial), at their first output.
   if (made.nout > 0 && made.out[0] == root) {

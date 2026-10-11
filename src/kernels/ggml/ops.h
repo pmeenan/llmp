@@ -112,7 +112,7 @@ std::expected<void, KernelFailure> GeGlu(LaunchContext& launch, ggml_tensor* nod
 // The EXL3 plan's operations beyond those above
 // (docs/experiments/backend-proof-p0/exl3-op-plan.json).
 
-// A ggml_cpy node converting F32 to F16 or F16 to F32 (validate.h
+// A ggml_cpy node converting F32 to F16 or F16/BF16 to F32 (validate.h
 // CheckConvert): ggml_cuda_cpy's cpy_scalar_contiguous. Draws no scratch.
 std::expected<void, KernelFailure> Convert(LaunchContext& launch, ggml_tensor* node);
 

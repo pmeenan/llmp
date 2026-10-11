@@ -793,6 +793,35 @@ TEST(KvQuantPlanTest, QuantizedCachesTakeTheQuantizingStoresAndAttention) {
   EXPECT_FALSE(kg::PlanGraph(nodes, false, ModelDevice()).has_value());
 }
 
+TEST(KvQuantPlanTest, Head64PreservesEachCacheImplementation) {
+  auto arena = kg::TensorArena::Create(32).value();
+  auto* c = arena.context();
+  std::uint64_t next = std::uint64_t{1} << 36U;
+  const auto leaf = [&](ggml_tensor* t) {
+    kg::TensorArena::Bind(t, next);
+    next += (ggml_nbytes(t) + 511) / 256 * 256;
+    return t;
+  };
+  for (const ggml_type type : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0}) {
+    SCOPED_TRACE(ggml_type_name(type));
+    auto* q = leaf(ggml_new_tensor_3d(c, GGML_TYPE_F32, 64, 1, 2));
+    auto* k = leaf(ggml_new_tensor_3d(c, type, 64, 256, 1));
+    auto* v = leaf(ggml_new_tensor_3d(c, type, 64, 256, 1));
+    auto* mask = leaf(ggml_new_tensor_2d(c, GGML_TYPE_F16, 256, 1));
+    auto* attention = ggml_flash_attn_ext(c, q, k, v, mask, 0.125f, 0.0f, 0.0f);
+    ggml_prec_set_acc(attention, GGML_PREC_F32);
+    const std::array<ggml_tensor*, 1> outputs{attention};
+    auto nodes = kg::GraphOrder(outputs);
+    kg::BindDistinct(nodes, std::uint64_t{1} << 41U);
+    const auto plan = kg::PlanGraph(nodes, false, ModelDevice());
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    ASSERT_EQ(plan->steps.size(), 1U);
+    const std::string_view expected =
+        type == GGML_TYPE_F16 ? "ggml.flash_attn_ext.vec" : kg::FlashAttnVecQuantName(type);
+    EXPECT_EQ(plan->steps.front().implementation, expected);
+  }
+}
+
 TEST(Qwen2GraphTest, AnUnchangedPlanIsTheSamePlan) {
   const Chunk c = Build(1, 256, 512);
   const auto a = kg::PlanGraph(c.graph.nodes, true, ModelDevice());

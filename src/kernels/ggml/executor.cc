@@ -154,6 +154,10 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
       auto attention = PlanFlashAttnOwners(launch, *in);
       if (!attention) return std::unexpected(attention.error());
       planned = attention->original.scratch;
+    } else if (step.implementation == "ggml.flash_attn_ext.vec") {
+      auto attention = PlanFlashAttnVec(launch, step.nodes.front());
+      if (!attention) return std::unexpected(attention.error());
+      planned = attention->scratch;
     } else if (step.implementation == kFlashAttnVec256Name) {
       auto attention = PlanFlashAttnVec256(launch, step.nodes.front());
       if (!attention) return std::unexpected(attention.error());
@@ -185,7 +189,10 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
 }
 
 std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Registry& registry,
-                                                          const GraphPlan& plan) {
+                                                          const GraphPlan& plan,
+                                                          std::span<const SelectedNode> selected,
+                                                          SelectedLaunch* native,
+                                                          SelectedWorkspace scratch) {
   const std::vector<execution::Choice> choices = plan.Choices();
   const auto built = execution::Plan::Build(registry, choices);
   if (!built) {
@@ -210,6 +217,18 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
   for (std::size_t i = 0; i < plan.steps.size(); ++i) {
     const PlanStep& planned = plan.steps[i];
     const execution::Implementation& implementation = bound->at(i);
+    const auto external = planned.nodes.size() == 1
+                              ? std::ranges::find(selected, planned.nodes[0], &SelectedNode::tensor)
+                              : selected.end();
+    if (external != selected.end()) {
+      if (native == nullptr || native->owner() != external->call->owner() || planned.lane != 0 ||
+          external->implementation != &implementation || !plan.regions.empty())
+        return Rejected("a selected-source call has foreign binding or concurrent lanes");
+      auto call = external->call->Bind(implementation, *native, scratch);
+      if (!call) return std::unexpected(call.error());
+      steps.push_back({.kernel = std::move(*call), .nodes = planned.nodes, .lane = 0});
+      continue;
+    }
     const auto cached = std::ranges::find(wrappers, &implementation, &CachedWrapper::first);
     std::vector<const ggml_tensor*> view(planned.nodes.begin(), planned.nodes.end());
     if (planned.operation == execution::Operation::kRmsNormMul) {
@@ -259,6 +278,8 @@ std::expected<void, KernelFailure> BoundGraph::RunStep(LaunchContext& launch, st
   std::expected<void, KernelFailure> ran;
   if (const auto* rms = std::get_if<RmsNormMulKernel>(&step.kernel)) {
     ran = rms->Run(launch, step.nodes[0], step.nodes[1]);
+  } else if (const auto* native = std::get_if<std::unique_ptr<BoundSelectedCall>>(&step.kernel)) {
+    ran = (*native)->Run(launch.native_stream());
   } else {
     ran = std::get<Kernel>(step.kernel).Run(launch, step.nodes);
   }

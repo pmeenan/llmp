@@ -76,6 +76,7 @@ planner::PlanKey ComponentStepSource::KeyBase() const {
 std::vector<std::uint64_t> ComponentStepSource::ShapeParameters(
     const planner::StepShape& shape) const {
   std::vector<std::uint64_t> out;
+  if (!o_.require_capture) out.push_back(0x6e6f636170747572ULL);  // uncaptured selection identity
   if (!planner::Disabled(policy_, "state_bank_attention")) {
     out.push_back(0x737461746562616eULL);  // state-bank layout identity, fixed four words
     for (std::size_t word = 0; word < 4; ++word) {
@@ -242,7 +243,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   const auto state_spans = StateSpans(shape, addresses);
   auto plan = planner::Plan(step->graph.Clone(), *o_.backend.registry, o_.backend.device, policy_,
                             {.row_invariant = shape.row_invariant,
-                             .capturable = true,
+                             .capturable = o_.require_capture,
                              .staged = std::move(staged),
                              .on_stream = o_.backend.on_stream,
                              .written = o_.backend.written,

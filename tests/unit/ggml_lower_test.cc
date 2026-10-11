@@ -43,6 +43,7 @@
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ggml.h"
+#include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/common/lower.h"
@@ -467,6 +468,55 @@ void ExpectFamilyLowers() {
 TEST(GgmlLowerTest, Gemma2LowersEverySetupShape) { ExpectFamilyLowers<Gemma2Family>(); }
 
 TEST(GgmlLowerTest, Gemma3LowersEverySetupShape) { ExpectFamilyLowers<Gemma3Family>(); }
+
+// A late-built norm scale is a dependency of the selected fusion, although
+// the original RMS primitive only needs the already-built activation.
+TEST(GgmlLowerTest, FusedExpansionWaitsForComputedNormScale) {
+  using llmp::format::Encoding;
+  const auto registry = PlanningRegistry();
+  for (const auto encoding : {Encoding::kF16, Encoding::kBF16}) {
+    for (const std::uint32_t rows : {1U, 32U}) {
+      SCOPED_TRACE(static_cast<int>(encoding));
+      SCOPED_TRACE(rows);
+      ir::Builder b;
+      const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({896, rows})));
+      const auto weight = b.Input(ir::Dense(encoding, ir::ShapeOf({896})));
+      const auto norm = b.RmsNorm(x, 1.0e-6F);
+      const auto scale = b.Convert(weight, Encoding::kF32);
+      b.Output(b.Mul(norm, scale));
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph.has_value()) << graph.error().detail;
+      co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+      for (const auto tensor : {x, weight})
+        step.inputs.push_back({.tensor = tensor, .kind = co::InputKind::kFeatures});
+      const std::vector<ir::TensorId> staged{x, weight};
+      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                           {.staged = staged, .written = &kg::WrittenBytes});
+      ASSERT_TRUE(plan.has_value()) << plan.error().detail;
+      ASSERT_EQ(plan->steps.size(), 2U);
+      EXPECT_EQ(registry.at(plan->steps[0].implementation).name, "ggml.convert");
+      EXPECT_EQ(registry.at(plan->steps[1].implementation).name, kg::kRmsNormMulFused);
+      const pl::StepShape shape{};
+      const kn::Addresses addresses{};
+      const kn::LowerInput input{
+          .plan = *plan, .step = step, .shape = shape, .addresses = addresses};
+      auto lowered = kg::LowerStep(input, registry, Device());
+      ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
+      ASSERT_EQ(lowered->plan.steps.size(), 2U);
+      const auto& convert = lowered->plan.steps[0];
+      const auto& fused = lowered->plan.steps[1];
+      EXPECT_EQ(convert.implementation, "ggml.convert");
+      EXPECT_EQ(fused.implementation, kg::kRmsNormMulFused);
+      ASSERT_EQ(convert.nodes.size(), 1U);
+      ASSERT_EQ(fused.nodes.size(), 2U);
+      EXPECT_EQ(convert.nodes[0]->op, GGML_OP_CPY);
+      EXPECT_EQ(fused.nodes[0]->op, GGML_OP_RMS_NORM);
+      EXPECT_EQ(fused.nodes[1]->op, GGML_OP_MUL);
+      EXPECT_EQ(fused.nodes[1]->src[0], fused.nodes[0]);
+      EXPECT_EQ(fused.nodes[1]->src[1], convert.nodes[0]);
+    }
+  }
+}
 
 // A selection PlanGraph would not make is refused, never run otherwise:
 // without the norm-mul pattern the IR selects the norm and its mul alone

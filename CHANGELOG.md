@@ -21,6 +21,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Bind approved EXL3 operations through the shared step program. The
+  4.0-bpw reconstruction fixture matches a native 145-row reference exactly;
+  remaining execution profiles and lifecycle gates stay open.
+
 - Admit the approved native v1 Gemma 2 Q8_0 artifact through its stored
   component spec and native tensor formats. Full logits, tokens, initialized
   state and spill continuation match v0; other v1 profiles remain refused.

@@ -168,7 +168,7 @@ if(LLMP_CUDA)
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files CMakeLists.txt capabilities.cc capabilities.h lower.cc lower.h step_program.cc
-                   step_program.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
+                   step_program.h selected_operation.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu
                    graph_read_index.h graph_read_index.cc gemma_moe_fusion.h gemma_moe_fusion.cc

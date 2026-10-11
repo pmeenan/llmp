@@ -977,6 +977,17 @@ if(LLMP_CUDA)
   target_link_libraries(exl3_tables_test PRIVATE llmp_exl3 llmp_exl3_cuda)
   llmp_gtest(exl3_tables_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+  add_executable(exl3_selected_test exl3_selected_test.cc)
+  target_link_libraries(exl3_selected_test PRIVATE llmp_exl3_selected llmp_model llmp_spec llmp_engine)
+  # CUDA-linked descriptor controls: discover names from source without loading cuBLAS.
+  llmp_gpu_gtest(exl3_selected_test
+                   DISCRETE Exl3SelectedTest.AllCompletePinnedReconstructionsRetainFourPartsAndBoundScratch
+                            Exl3SelectedTest.RefusesMissingDuplicateShortPartsAndWrongNumericalPath
+                            Exl3SelectedTest.SharedGraphKeepsEveryWeightPartAndExactSelectedOperation
+                            Exl3SelectedTest.ProfileIdentityAndGemvFactsAreExplicit
+                            Exl3SelectedTest.UncapturedComponentSelectionIsExplicitAndKeyed
+                            Exl3SelectedTest.AllProfilesCoverPackedPairsGemvAndReconstructionBoundaries)
+
   add_executable(exl3_kernels_test exl3_kernels_test.cc)
   target_link_libraries(exl3_kernels_test PRIVATE llmp_exl3_kernels)
   llmp_gpu_gtest(exl3_kernels_test DISCRETE Exl3KernelsGpuTest.EveryKernelLoadsFromTheDevicesSass)
@@ -1260,6 +1271,13 @@ if(LLMP_CUDA)
   # lowering on the installed artifacts, a scripted run finite and exact
   # from one runner to the next.
   # Real Qwen2 FP16 fixture on the shared runner against the frozen bridge.
+  add_executable(component_runner_qwen2_exl3_gpu_test component_runner_qwen2_exl3_gpu_test.cc)
+  target_link_libraries(component_runner_qwen2_exl3_gpu_test PRIVATE llmp_engine llmp_exl3_selected
+                                                                     llmp_components llmp_spec
+                                                                     llmp_artifact)
+  llmp_gpu_gtest(component_runner_qwen2_exl3_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
   add_executable(component_runner_qwen2_gpu_test component_runner_qwen2_gpu_test.cc)
   target_link_libraries(component_runner_qwen2_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                                 llmp_components llmp_spec

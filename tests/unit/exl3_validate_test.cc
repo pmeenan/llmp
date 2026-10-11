@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "expected_error.h"
+#include "kernels/exl3/packed_tuning.h"
 #include "kernels/exl3/reconstruction_tuning.h"
 #include "kernels/exl3/upstream_gemv.h"
 #include "kernels/exl3/validate.h"
@@ -42,6 +43,56 @@ exl3::LinearOperands Packed(int m, Output output = Output::kF16) {
 
 constexpr std::uint64_t kLocks = 16 * kMiB;
 constexpr int kCoresident = 48;
+
+TEST(Exl3ValidateTest, FrozenPackedTuningPreservesRecordedShapeAndGrid) {
+  const auto decode =
+      exl3::FrozenGemmPlan(exl3::FrozenCache::k40G, 121, 48, 1, 896, 896, 4, Output::kF16);
+  const auto prefill =
+      exl3::FrozenGemmPlan(exl3::FrozenCache::k40G, 121, 48, 144, 896, 896, 4, Output::kF16);
+  ASSERT_TRUE(decode.has_value()) << decode.error();
+  ASSERT_TRUE(prefill.has_value()) << prefill.error();
+  EXPECT_EQ(decode->shape, 2);
+  EXPECT_EQ(decode->blocks, 20);
+  EXPECT_EQ(prefill->shape, 2);
+  EXPECT_EQ(prefill->blocks, 14);
+  const auto gate40 =
+      exl3::FrozenMultiGemmPlan(exl3::FrozenCache::k40G, 121, 48, 1, 896, 4864, 4, Output::kF32);
+  const auto gate45 =
+      exl3::FrozenMultiGemmPlan(exl3::FrozenCache::k45G, 121, 48, 1, 896, 4864, 4, Output::kF32);
+  ASSERT_TRUE(gate40.has_value()) << gate40.error();
+  ASSERT_TRUE(gate45.has_value()) << gate45.error();
+  EXPECT_EQ(gate40->shape, 3);
+  EXPECT_EQ(gate40->blocks, 24);
+  EXPECT_EQ(gate40->concurrency, 2);
+  EXPECT_EQ(gate45->shape, 3);
+  EXPECT_EQ(gate45->blocks, 22);
+  EXPECT_EQ(gate45->concurrency, 2);
+  // P3's frozen row-eight records extend P0 without changing its keys.
+  const auto eight =
+      exl3::FrozenGemmPlan(exl3::FrozenCache::k40G, 121, 48, 8, 896, 896, 4, Output::kF16);
+  const auto paired_eight =
+      exl3::FrozenMultiGemmPlan(exl3::FrozenCache::k40O, 121, 48, 8, 896, 4864, 4, Output::kF32);
+  ASSERT_TRUE(eight.has_value()) << eight.error();
+  ASSERT_TRUE(paired_eight.has_value()) << paired_eight.error();
+  EXPECT_EQ(eight->shape, 2);
+  EXPECT_EQ(eight->blocks, 22);
+  EXPECT_EQ(paired_eight->shape, 2);
+  EXPECT_EQ(paired_eight->blocks, 24);
+  EXPECT_EQ(paired_eight->concurrency, 2);
+}
+
+TEST(Exl3ValidateTest, FrozenPackedTuningRefusesUnrecordedProblemsAndDevices) {
+  using exl3::FrozenCache;
+  EXPECT_FALSE(exl3::FrozenGemmPlan(FrozenCache::k40G, 120, 48, 1, 896, 896, 4, Output::kF16));
+  EXPECT_FALSE(exl3::FrozenGemmPlan(FrozenCache::k40G, 121, 47, 1, 896, 896, 4, Output::kF16));
+  EXPECT_FALSE(exl3::FrozenGemmPlan(FrozenCache::k40G, 121, 48, 145, 896, 896, 4, Output::kF16));
+  EXPECT_FALSE(exl3::FrozenGemmPlan(FrozenCache::k40G, 121, 48, 1, 896, 4864, 4, Output::kF32));
+  EXPECT_FALSE(exl3::FrozenGemmPlan(FrozenCache::k45G, 121, 48, 1, 896, 896, 4, Output::kF16));
+  EXPECT_FALSE(exl3::FrozenGemmPlan(FrozenCache::k40G, 121, 48, 1, 1024, 896, 4, Output::kF16));
+  // The recorded half head is a different typed problem from F32 output.
+  EXPECT_TRUE(exl3::FrozenGemmPlan(FrozenCache::k40G, 121, 48, 144, 896, 151936, 8, Output::kF16));
+  EXPECT_FALSE(exl3::FrozenGemmPlan(FrozenCache::k40G, 121, 48, 144, 896, 151936, 8, Output::kF32));
+}
 
 TEST(Exl3ValidateTest, WeightsNeedACompiledRateAndAlignedTensors) {
   EXPECT_TRUE(exl3::CheckWeights(Q()).has_value());

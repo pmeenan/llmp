@@ -1033,16 +1033,17 @@ std::expected<void, KernelFailure> CheckConvert(const ggml_tensor* node) {
   // writes src[1] (ggml_cuda_cpy(ctx, src[0], src[1])).
   const ggml_tensor* src = node->src[0];
   const ggml_tensor* dst = node->src[1];
-  const bool widen = src->type == GGML_TYPE_F16 && dst->type == GGML_TYPE_F32;
+  const bool widen =
+      (src->type == GGML_TYPE_F16 || src->type == GGML_TYPE_BF16) && dst->type == GGML_TYPE_F32;
   const bool narrow = src->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F16;
   if (!widen && !narrow) {
-    return Rejected("this implementation converts F32 to F16 or F16 to F32");
+    return Rejected("this implementation converts F32 to F16 or widens F16/BF16 to F32");
   }
   if (AnyEmpty({node, src, dst}) || !AllSane({node, src, dst})) {
     return Rejected("a conversion of an empty or unmeasurable tensor");
   }
   // Both contiguous and of one element count: the launcher's
-  // cpy_scalar_contiguous (cpy.cu:495-499, 552-555), one thread per element
+  // cpy_scalar_contiguous, one thread per element
   // in 64-thread blocks whose count it asserts fits an int (cpy.cu:199-200).
   if (!ggml_are_same_shape(src, dst) || !Packed(src) || !Packed(dst) || node->data != dst->data ||
       !ggml_are_same_shape(node, dst) || std::cmp_greater(ggml_nelements(src), kInt32Max)) {
