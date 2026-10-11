@@ -199,14 +199,31 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   if (auto valid = Validate(policy); !valid) {
     return Failed(PlanError::kPolicy, valid.error());
   }
-  const SelectionView view(registry, device, policy, options.row_invariant, options.capturable,
-                           options.state_spans, options.root_alignment);
+  if (options.activation_alignment != 0 &&
+      (options.activation_alignment & (options.activation_alignment - 1)) != 0)
+    return Failed(PlanError::kPlacement, "the activation base alignment is not a power of two");
+  if (options.alignment_staged) {
+    for (const auto t : *options.alignment_staged) {
+      if (!t.valid() || t.v >= primitive.tensor_count() || primitive.tensor(t).is_view() ||
+          !std::ranges::contains(primitive.inputs(), t) ||
+          (options.staged && !std::ranges::contains(*options.staged, t)))
+        return Failed(PlanError::kPlacement, "an aligned input is not actually staged");
+    }
+  }
+  SelectionView view(
+      registry, device, policy, options.row_invariant, options.capturable, options.state_spans,
+      options.root_alignment,
+      {.base = options.activation_alignment,
+       .offset = options.alignment,
+       .staged = options.alignment_staged ? options.alignment_staged : options.staged,
+       .within = options.within});
   auto rewritten = ApplyPatterns(primitive, view, options.shape, options.state_spans);
   if (!rewritten) {
     return Failed(
         PlanError::kPattern,
         std::format("a rewrite at node {}: {}", rewritten.error().node, rewritten.error().detail));
   }
+  view.Forward(primitive, rewritten->graph, rewritten->tensors);
   ir::Graph graph = std::move(rewritten->graph);
   std::vector<TensorId> tensors = std::move(rewritten->tensors);
   std::vector<NodeId> from = std::move(rewritten->from);
@@ -243,6 +260,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
                     std::format("a decomposition at node {}: {}", expanded.error().node,
                                 expanded.error().detail));
     }
+    view.Forward(graph, *expanded, map);
     for (TensorId& t : tensors) {
       t = t.valid() ? map.at(t.v) : t;
     }
@@ -291,6 +309,16 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   if (!placement) {
     return Failed(PlanError::kPlacement, placement.error());
   }
+  auto alignments = view.Alignments(graph);
+  for (const auto& fact : alignments) {
+    const auto placed = std::ranges::find(placement->offsets, fact.root,
+                                          &std::pair<TensorId, std::uint64_t>::first);
+    if (placed != placement->offsets.end() &&
+        (placed->second % fact.alignment != 0 ||
+         (options.activation_alignment != 0 && options.activation_alignment % fact.alignment != 0)))
+      return Failed(PlanError::kPlacement,
+                    "an activation's placement breaks its alignment promise");
+  }
   return StepPlan{
       .graph = std::move(graph),
       .steps = std::move(steps),
@@ -303,7 +331,8 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
       .owner_row_invariant =
           !Disabled(policy, "owner_row_invariant") && options.shape != nullptr &&
           options.shape->segments.size() > 1 &&
-          std::ranges::all_of(options.shape->segments, [](const auto& s) { return s.rows == 1; })};
+          std::ranges::all_of(options.shape->segments, [](const auto& s) { return s.rows == 1; }),
+      .root_alignments = std::move(alignments)};
 }
 
 PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape, const Policy& policy,

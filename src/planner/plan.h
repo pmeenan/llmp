@@ -87,8 +87,14 @@ struct PlanOptions {
   const StepShape* shape = nullptr;
   StateSpans state_spans{};
   // Explicit immutable allocation facts, queried against the current graph.
-  // No source wires this by default; missing facts preserve decomposition.
+  // Component sources seal physical state bindings; missing facts decompose.
   RootAlignment root_alignment{};
+  // Physical base guarantee for the activation reservation. Zero is unknown.
+  std::uint64_t activation_alignment = 0;
+  // When a lowering rebinds some listed inputs externally (commit rows),
+  // only this subset receives arena guarantees. Absent: the staged set.
+  // This changes no placement/accounting; it describes physical binding.
+  std::optional<std::vector<ir::TensorId>> alignment_staged{};
 };
 
 struct StepPlan {
@@ -110,6 +116,8 @@ struct StepPlan {
   // ordinary batched arithmetic; this is independent of an exact verify's
   // explicit row_invariant requirement on implementation selection.
   bool owner_row_invariant = false;
+  // Promises used by selection, authenticated again at final placement/binding.
+  std::vector<RootAlignmentFact> root_alignments{};
 };
 
 std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::Registry& registry,

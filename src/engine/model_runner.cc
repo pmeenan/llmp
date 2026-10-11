@@ -9,6 +9,7 @@
 #include <format>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -409,24 +410,37 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
   // binds the target's state and the drafters' tensors it writes
   // (target_writes); a drafter's binds its own stage's (its view of the
   // target's through it). Any other binds nothing: the build is refused.
-  a.state = [this, stage = shape.stage, owners](const ir::StateRef& ref) -> std::uint64_t {
-    if (ref.segment >= owners.size() || ref.stage >= slots_.stages()) return 0;
-    if (ref.stage != stage && stage != 0) return 0;
+  const auto state_place = [this, stage = shape.stage, owners](
+                               const ir::StateRef& ref) -> std::pair<std::uint64_t, std::uint64_t> {
+    if (ref.segment >= owners.size() || ref.stage >= slots_.stages()) return {};
+    if (ref.stage != stage && stage != 0) return {};
     const model::StateLayoutDerived& layout = slots_.layout(ref.stage);
     for (const auto& item : layout.items) {
       if (item.layer == ref.layer && item.tensor == ref.tensor) {
-        if (ref.stage != stage && !item.contract.target_writes) return 0;
-        return slots_.live(owners[ref.segment], ref.stage).base(0) + item.offset;
+        if (ref.stage != stage && !item.contract.target_writes) return {};
+        return {slots_.live(owners[ref.segment], ref.stage).base(0), item.offset};
       }
     }
-    if (ref.stage != stage) return 0;
+    if (ref.stage != stage) return {};
     // A drafter's view of the target's tensor: the owner's target state.
     for (const auto& borrowed : layout.borrowed) {
       if (borrowed.layer != ref.layer || borrowed.tensor != ref.tensor) continue;
       const auto* item = model::BorrowedItem(slots_.layout(0), borrowed);
-      return item == nullptr ? 0 : slots_.live(owners[ref.segment], 0).base(0) + item->offset;
+      return item == nullptr ? std::pair<std::uint64_t, std::uint64_t>{}
+                             : std::pair{slots_.live(owners[ref.segment], 0).base(0), item->offset};
     }
-    return 0;
+    return {};
+  };
+  a.state = [state_place](const ir::StateRef& ref) -> std::uint64_t {
+    const auto [base, offset] = state_place(ref);
+    std::uint64_t address = 0;
+    return base != 0 && !__builtin_add_overflow(base, offset, &address) ? address : 0;
+  };
+  const auto alignment = node_.memory().ReservationAlignment().value();
+  a.activation_alignment = alignment;
+  a.state_alignment = [state_place, alignment](const ir::StateRef& ref) -> std::uint64_t {
+    const auto [base, offset] = state_place(ref);
+    return base != 0 && alignment != 0 ? std::gcd(alignment, offset) : 0;
   };
   a.save_rows = std::uint64_t{config_.max_verify_rows} * slots_.slots();
   a.save = [this, stage = shape.stage, owners = std::move(owners)](

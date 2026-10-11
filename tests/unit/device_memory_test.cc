@@ -301,4 +301,17 @@ TEST(DeviceMemoryCallerDeathTest, ChangesFromTwoThreadsAtOnceAreFatal) {
   EXPECT_TRUE(provider.Reserve(2_MiB).has_value());
 }
 
+TEST_F(DeviceMemoryTest, ReservationAlignmentIsARealBaseGuarantee) {
+  const auto alignment = memory_.ReservationAlignment().value();
+  ASSERT_EQ(alignment, (2_MiB).value());
+  for (const auto bytes : {2_MiB, 4_MiB, 8_MiB}) {
+    auto reservation = memory_.Reserve(bytes);
+    ASSERT_TRUE(reservation);
+    auto address = memory_.RangeOf(*reservation);
+    ASSERT_TRUE(address);
+    EXPECT_EQ(address->base % alignment, 0U);
+    EXPECT_TRUE(memory_.Free(*reservation));
+  }
+}
+
 }  // namespace

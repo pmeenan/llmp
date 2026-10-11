@@ -212,20 +212,14 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
     std::vector<ir::TensorId> staged;
     for (const auto& input : step.inputs) staged.push_back(input.tensor);
     const auto& choices = selected == nullptr ? *registry : *selected;
-    std::vector<pl::RootAlignmentFact> root_facts;
-    if (aligned_roots) {
-      // This fixture owns a cudaMalloc root and uses 256-byte activation
-      // placement for every staged/computed root in this exact graph.
-      for (std::uint32_t i = 0; i < step.graph.tensor_count(); ++i)
-        if (!step.graph.tensor(ir::TensorId{i}).is_view())
-          root_facts.push_back({.root = ir::TensorId{i}, .alignment = 256});
-    }
+    // cudaMalloc's owned allocation is independently checked at binding;
+    // the planner derives each independently placed root from this guarantee.
     auto plan = pl::Plan(step.graph.Clone(), choices, {.device_class = "sm_121", .arch = 121}, {},
                          {.staged = staged,
                           .written = kg::WrittenBytes,
                           .within = kg::WithinRoot,
                           .shape = &shape,
-                          .root_alignment = pl::GraphRootAlignments(step.graph, root_facts)});
+                          .activation_alignment = aligned_roots ? 256U : 0U});
     EXPECT_TRUE(plan) << (plan ? "" : plan.error().detail);
     if (!plan) return nullptr;
     const kn::Addresses addresses{.weight = {},
@@ -1564,7 +1558,9 @@ TEST_F(GgmlLowerDsv4Gpu, NativeRoundedScoreLowersWithOwnedAlignedRootsAndRestage
   const auto k = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({128, 1, 256})));
   const auto w = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64, 3})));
   const auto counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
-  const auto scores = b.RoundedIndexScore(q, k, w, counts);
+  // A computed query root gets its own placement guarantee, not the
+  // input's old numeric ID. This remains exact for these finite integers.
+  const auto scores = b.RoundedIndexScore(b.Scale(q, 1.0F), k, w, counts);
   b.Output(scores);
   auto graph = std::move(b).Finish();
   ASSERT_TRUE(graph);
@@ -1574,9 +1570,9 @@ TEST_F(GgmlLowerDsv4Gpu, NativeRoundedScoreLowersWithOwnedAlignedRootsAndRestage
   const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 3}}};
   auto* step = Lower(std::move(*graph), std::move(inputs), shape, nullptr, true);
   ASSERT_NE(step, nullptr);
-  ASSERT_EQ(step->nodes.size(), 1U);
-  ASSERT_EQ(kg::LlmpOpOf(step->nodes[0]), kg::LlmpOp::kRoundedIndexScore);
-  ASSERT_EQ(step->keep[0], step->nodes[0]);
+  ASSERT_EQ(step->nodes.size(), 2U);
+  ASSERT_EQ(kg::LlmpOpOf(step->nodes[1]), kg::LlmpOp::kRoundedIndexScore);
+  ASSERT_EQ(step->keep[0], step->nodes[1]);
   for (int revision = 0; revision < 3; ++revision) {
     std::vector<float> queries(128 * 64 * 3, 0), weights(64 * 3, 0);
     std::vector<std::uint16_t> keys(128 * 256, 0);

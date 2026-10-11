@@ -1794,4 +1794,29 @@ TEST_F(ComponentCommitTest, AnInternalCommitCannotRunWithoutTheOwedFlow) {
   EXPECT_FALSE(runner_->slots().live(0, 0).owed());
 }
 
+TEST_F(ModelRunnerTest, PhysicalAlignmentFactsMatchMeasurementAndExecutionBindings) {
+  const auto base_alignment = node_.memory().ReservationAlignment().value();
+  ASSERT_NE(base_alignment, 0U);
+  const auto check = [&] {
+    for (const auto& built : source_->built()) {
+      EXPECT_EQ(built.activation_alignment, base_alignment);
+      EXPECT_TRUE(built.bound_alignments_hold);
+      EXPECT_TRUE(built.invalid_alignment_refs_unknown);
+      const auto& layout = runner_->slots().layout(built.shape.stage);
+      ASSERT_EQ(built.state_alignments.size(), built.shape.segments.size() * layout.items.size());
+      std::size_t at = 0;
+      for (const auto& owner : built.shape.segments) {
+        (void)owner;
+        for (const auto& item : layout.items)
+          EXPECT_EQ(built.state_alignments[at++], std::gcd(base_alignment, item.offset));
+      }
+    }
+  };
+  check();
+  auto ran = Run(Shape(pl::Phase::kPrefill, {Seg(1, 0, 3, 1)}), {Tokens(3, 42)});
+  ASSERT_TRUE(ran) << ran.error().what;
+  ASSERT_FALSE(source_->built().back().measuring);
+  check();
+}
+
 }  // namespace

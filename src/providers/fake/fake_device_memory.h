@@ -66,6 +66,10 @@ class FakeDeviceMemory final : public VmmProvider {
   FakeDeviceMemory& operator=(FakeDeviceMemory&&) = delete;
 
   std::span<const AllocationClass> Classes() const override { return classes_; }
+  Bytes ReservationAlignment() const override {
+    const auto grain = Granularity().value();
+    return Bytes(grain & (~grain + 1));
+  }
 
   // The next call of `operation` fails with `error`. By default it changes
   // nothing; with `applied`, it does what it was asked and still reports

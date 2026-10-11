@@ -191,12 +191,23 @@ Native score admission uses optional operand strides, root-relative offsets and
 explicit root-allocation alignment guarantees. `GraphRootAlignments` owns those
 facts, the canonical graph digest and an exact numeric-root-to-semantic-binding
 seal: canonical digest alone deliberately ignores leaf declaration order.
-Rewrites, newly generated roots, hypothetical descriptors and absent facts return
-unknown and keep the primitive fallback. Binding independently checks actual
-pointer alignment, disjoint output and full operand intervals. The standalone
-fixtures supply allocator guarantees; component execution does not yet supply
-these facts or select this recipe. Wiring a component consumer also requires the
-separate execution-compatibility identity for kept/restored state.
+That exact-graph helper remains conservative across rewrites. The planner now
+forwards external leaf facts through authenticated per-pass tensor maps and
+semantic bindings, including pattern rounds and repeated decomposition. Equal
+shapes or canonical digests alone cannot lend an old root ID another allocation's
+promise. Hypothetical descriptors and absent facts remain unknown.
+
+The provider separately declares physical reservation-base alignment (unknown by
+default), as distinct from backing/offset granularity. Component execution passes
+the activation reservation's guarantee and exact state-root guarantees derived
+from the owned or borrowed region and item offset. Independently placed roots
+and actual staged inputs get the arena/placement guarantee; contained outputs
+stay unknown without a checked inner-offset contract. Commit-row inputs bind to
+saved buffers and do not inherit the arena promise, even while their legacy
+placement reservation remains. Final placement and actual binding recheck these
+promises; residency and full operand coverage remain independent requirements.
+No component emits the rounded score recipe yet. Wiring a new consumer still
+requires the separate execution-compatibility identity for kept/restored state.
 
 `StepContext::VisibleCells` declares an ordinary staged I32 input for each
 owner's completed positions-basis blocks. Counts use the owner's past and

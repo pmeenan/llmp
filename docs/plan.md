@@ -1693,6 +1693,22 @@ each is checked against the design as M3.6 proceeds.
                                           guards; enforce separate execution
                                           compatibility on kept/adopt/restore
                                           paths and prove exact native controls.
+                                          - [x] **G4b2b2b3a — physical facts:**
+                                                declare provider reservation
+                                                alignment, bind owned/borrowed
+                                                state facts and forward exact
+                                                leaf maps through planner passes;
+                                                audit placement and binding.
+                                                No new component consumer.
+                                          - [ ] **G4b2b2b3b — execution compatibility:**
+                                                enforce execution identity,
+                                                authenticated snapshots and
+                                                numerical-domain refusals before
+                                                any new recipe becomes reachable.
+                                          - [ ] **G4b2b2b3c — component and fusion:**
+                                                add the opt-in rounded-score
+                                                component and guarded full-mask
+                                                fusion; prove exact native controls.
                   - [ ] **G4b2c — full policy:** output-A and product forms,
                         mixed encodings, default policy, whole-artifact GPU
                         parity and row-invariant verify.

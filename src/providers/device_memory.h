@@ -128,6 +128,10 @@ class DeviceMemory {
   // The granularity of reservations and offsets: a multiple of every
   // class's granularity.
   virtual Bytes Granularity() const = 0;
+  // Immutable guarantee for the base of every successful reservation,
+  // independent of backing/offset granularity. Zero means unspecified.
+  // A nonzero value is a power of two; consumers recheck actual addresses.
+  virtual Bytes ReservationAlignment() const { return Bytes(); }
 
   virtual std::expected<ReservationId, Failure> Reserve(Bytes size) = 0;
   virtual std::expected<AddressRange, Failure> RangeOf(ReservationId reservation) const = 0;

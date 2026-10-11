@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <vector>
@@ -1632,6 +1633,121 @@ TEST(GgmlLowerDsv4Test, RoundedIndexScoreCapabilityAndActualLaunchShareEveryGeom
       EXPECT_FALSE(cap->accepts(query));
       output->data = k->data;
       EXPECT_FALSE(kg::CheckRoundedIndexScore(output));
+    }
+  }
+}
+
+TEST(GgmlLowerDsv4Test, ComponentPhysicalFactsAreSemanticAndBrokenBindingsRefuseEarly) {
+  Fixture f;
+  ASSERT_TRUE(f.Init());
+  auto spec = f.spec;
+  spec.stages.resize(1);
+  spec.stages[0].layers.resize(1);
+  spec.stages[0].taps.clear();
+  auto layout = co::StageLayout(spec, 0, 65536, 512);
+  ASSERT_TRUE(layout);
+  const pl::StepShape shape{
+      .segments = {{.slot = 3, .rows = 2, .past = 127, .read_cells = 256, .outputs = 2}}};
+  for (int mode = 0; mode < 5; ++mode) {
+    SCOPED_TRACE(mode);
+    bool lowered = false;
+    kn::Addresses addresses;
+    addresses.activation_alignment = mode == 4 ? 3 : 2U << 20;
+    addresses.state_alignment = [&](const ir::StateRef& ref) -> std::uint64_t {
+      const auto at = std::ranges::find_if(layout->items, [&](const auto& item) {
+        return item.layer == ref.layer && item.tensor == ref.tensor;
+      });
+      return at == layout->items.end() ? 0 : std::gcd(std::uint64_t{2} << 20, at->offset);
+    };
+    addresses.state = [&](const ir::StateRef& ref) -> std::uint64_t {
+      const auto at = std::ranges::find_if(layout->items, [&](const auto& item) {
+        return item.layer == ref.layer && item.tensor == ref.tensor;
+      });
+      return at == layout->items.end()
+                 ? 0
+                 : (std::uint64_t{1} << 40) + at->offset + (mode == 2 ? 4 : 0);
+    };
+    if (mode == 1 || mode == 3) {
+      addresses.activations = (std::uint64_t{1} << 42) + (mode == 3 ? 4 : 0);
+      addresses.activation_bytes = std::uint64_t{1} << 32;
+    }
+    auto source = en::ComponentStepSource::Create(
+        {.spec = &spec,
+         .bindings = {.tensors = f.target_source.tensors, .state = &*layout},
+         .policy = pl::Policy{},
+         .backend = {.registry = &f.registry,
+                     .device = {.device_class = "sm_121", .arch = 121},
+                     .written = kg::WrittenBytes,
+                     .within = kg::WithinRoot,
+                     .lower = [&](const kn::LowerInput& input)
+                         -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+                       lowered = true;
+                       std::size_t states = 0, activations = 0;
+                       for (const auto& fact : input.plan.root_alignments) {
+                         const auto& desc = input.plan.graph.tensor(fact.root);
+                         if (const auto* ref = std::get_if<ir::StateRef>(&desc.binding)) {
+                           EXPECT_EQ(fact.alignment, addresses.state_alignment(*ref));
+                           ++states;
+                         } else {
+                           EXPECT_EQ(fact.alignment, 256U);
+                           ++activations;
+                         }
+                       }
+                       EXPECT_GT(states, 0U);
+                       EXPECT_GT(activations, 0U);
+                       return std::unexpected("observed physical facts");
+                     }}});
+    ASSERT_TRUE(source) << source.error();
+    const auto key = (*source)->KeyBase();
+    auto built = (*source)->Build(shape, addresses);
+    ASSERT_FALSE(built);
+    EXPECT_EQ(lowered, mode < 2);
+    EXPECT_EQ((*source)->KeyBase(), key);
+    if (mode < 2)
+      EXPECT_EQ(built.error(), "observed physical facts");
+    else
+      EXPECT_NE(built.error().find("alignment"), std::string::npos);
+  }
+}
+
+TEST(GgmlLowerDsv4Test, ArenaFactsSelectRoundedScoreAndRejectBrokenPhysicalBase) {
+  using llmp::format::Encoding;
+  auto registry = Registry();
+  ir::Builder b;
+  const auto q = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({128, 64, 3})));
+  const auto k = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({128, 1, 256})));
+  const auto w = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64, 3})));
+  const auto counts = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+  b.Output(b.RoundedIndexScore(q, k, w, counts));
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+  for (const auto t : {q, k, w, counts})
+    step.inputs.push_back({.tensor = t, .kind = co::InputKind::kFeatures});
+  const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 3}}};
+  for (const auto alignment : {0U, 256U}) {
+    auto plan =
+        pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
+                 {.written = kg::WrittenBytes, .shape = &shape, .activation_alignment = alignment});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    const auto native = std::ranges::count_if(
+        plan->graph.nodes(), [](const auto& n) { return n.key.op == ir::Op::kRoundedIndexScore; });
+    EXPECT_EQ(native, alignment == 0 ? 0 : 1);
+    auto measured = kg::LowerStep(
+        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256}, registry,
+        Device());
+    ASSERT_TRUE(measured) << measured.error().detail;
+    if (alignment == 0) continue;
+    for (const std::uint64_t offset : {0U, 4U}) {
+      kn::Addresses addresses;
+      addresses.activations = (std::uint64_t{1} << 44) + offset;
+      addresses.activation_bytes = plan->placement.extent;
+      auto bound = kg::LowerStep(
+          {.plan = *plan, .step = step, .shape = shape, .addresses = addresses, .context = 256},
+          registry, Device());
+      EXPECT_EQ(bound.has_value(), offset == 0);
+      if (offset != 0 && !bound)
+        EXPECT_NE(bound.error().detail.find("alignment promise"), std::string::npos);
     }
   }
 }

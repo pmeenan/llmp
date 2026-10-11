@@ -223,4 +223,20 @@ TEST(CudaDeviceExecution, CopiesFollowTheirFences) {
   ASSERT_TRUE(memory->Free(reservation).has_value());
 }
 
+TEST(CudaDeviceMemory, ReservationAlignmentIsAnExplicitPhysicalGuarantee) {
+  auto memory = Open();
+  ASSERT_NE(memory, nullptr);
+  const auto alignment = memory->ReservationAlignment().value();
+  ASSERT_NE(alignment, 0U);
+  ASSERT_EQ(alignment & (alignment - 1), 0U);
+  for (const std::uint64_t units : {1U, 3U}) {
+    auto reservation = memory->Reserve(Bytes(units * memory->Granularity().value()));
+    ASSERT_TRUE(reservation);
+    auto range = memory->RangeOf(*reservation);
+    ASSERT_TRUE(range);
+    EXPECT_EQ(range->base % alignment, 0U);
+    EXPECT_TRUE(memory->Free(*reservation));
+  }
+}
+
 }  // namespace

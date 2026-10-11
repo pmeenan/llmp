@@ -345,8 +345,12 @@ infinite scores. An optional native rounded score uses the existing Lid score
 producer after a paid literal-tail initialization, with the original device
 arithmetic and grouping. Its capability requires authenticated operand strides
 and root alignment; unknown or unsupported metadata chooses this real fallback
-before lowering. Actual binding rechecks addresses and overlap. No component or
-mapping enables the native score yet, and the wider scalar remains an independent
+before lowering. Provider reservation alignment is a separate optional physical
+guarantee, forwarded through exact state bindings and authenticated graph passes.
+New independent activation roots use the declared arena and placement alignment;
+contained outputs, externally bound saved rows and hypothetical descriptors do
+not inherit it. Final placement and binding recheck promises, addresses and overlap.
+No component or mapping enables the native score yet, and the wider scalar remains an independent
 mathematical reference rather than a claim of universal native bit identity.
 
 ## The runners' shared skeleton

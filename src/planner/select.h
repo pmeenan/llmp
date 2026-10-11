@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -77,13 +78,37 @@ struct RootAlignmentFact {
 // constructor authenticates identity, not physical addresses or backing.
 RootAlignment GraphRootAlignments(const ir::Graph& graph, std::span<const RootAlignmentFact> facts);
 
+// Carries only authenticated external leaves through the exact tensor map.
+// Unchanged graphs also retain their exact root facts. Ambiguous, altered or
+// unmapped roots lose their facts; the old callback never sees borrowed IDs.
+RootAlignment ForwardRootAlignments(const ir::Graph& before, const ir::Graph& after,
+                                    std::span<const ir::TensorId> tensors,
+                                    const RootAlignment& facts);
+
+// Actual arena-base guarantee and the placement contract that will fund it.
+// Independent roots (including mapped staged leaves) get gcd(base, offset).
+// Contained outputs remain unknown; no inner-offset contract is implied.
+struct ActivationAlignment {
+  std::uint64_t base = 0;
+  std::uint64_t offset = 256;
+  std::optional<std::vector<ir::TensorId>> staged{};
+  std::function<ir::TensorId(const ir::Graph&, ir::TensorId)> within{};
+};
+
 // The registry, the device and the policy, as a pattern or selection asks
 // them about a node that exists or would.
 class SelectionView {
  public:
   SelectionView(const execution::Registry& registry, const DeviceFacts& device,
                 const Policy& policy, bool row_invariant, bool capturable,
-                StateSpans state_spans = {}, RootAlignment root_alignment = {});
+                StateSpans state_spans = {}, RootAlignment root_alignment = {},
+                ActivationAlignment activation = {});
+
+  // A rewrite's exact map, before the next round queries this view.
+  void Forward(const ir::Graph& before, const ir::Graph& after,
+               std::span<const ir::TensorId> tensors);
+  std::uint64_t Alignment(const ir::Graph& graph, ir::TensorId root) const;
+  std::vector<RootAlignmentFact> Alignments(const ir::Graph& graph) const;
 
   const execution::Registry& registry() const { return registry_; }
   const Policy& policy() const { return policy_; }
@@ -115,6 +140,7 @@ class SelectionView {
   bool capturable_ = false;
   StateSpans state_spans_{};
   RootAlignment root_alignment_{};
+  ActivationAlignment activation_{};
   std::vector<execution::MeasuredRank> ranks_;
 };
 

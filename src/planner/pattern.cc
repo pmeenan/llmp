@@ -1572,7 +1572,9 @@ std::expected<Rewritten, ir::VerifyError> ApplyPatterns(const ir::Graph& graph,
   if (!later) {
     return first;
   }
-  auto second = ApplyRound(first->graph, view, shape, state_spans, 1);
+  SelectionView next_view = view;
+  next_view.Forward(graph, first->graph, first->tensors);
+  auto second = ApplyRound(first->graph, next_view, shape, state_spans, 1);
   if (!second) {
     return second;
   }

@@ -183,6 +183,11 @@ class FakeStepSource final : public engine::StepSource {
   struct Built {
     planner::StepShape shape;
     bool measuring = false;
+    std::uint64_t activation_alignment = 0;
+    std::vector<std::uint64_t> state_alignments{};
+    bool bound_alignments_hold = true;
+    std::vector<std::uint64_t> borrowed_alignments{};
+    bool invalid_alignment_refs_unknown = true;
   };
   const std::vector<Built>& built() const { return built_; }
   // Runs queued by its programs (eager runs and captures' recordings

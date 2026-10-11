@@ -38,6 +38,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <string>
@@ -928,6 +929,27 @@ TEST_F(DecodingTest, AnAssistantDraftsFromTheTargetsStateBorrowedFrozen) {
     }
   }
   EXPECT_EQ(checked, 8U);
+  std::size_t alignment_checks = 0;
+  for (const auto& built : source_->built()) {
+    if (built.shape.stage != kAssistant) continue;
+    EXPECT_TRUE(built.bound_alignments_hold);
+    EXPECT_TRUE(built.invalid_alignment_refs_unknown);
+    ASSERT_FALSE(built.borrowed_alignments.empty());
+    const auto& borrowed = slots().layout(kAssistant).borrowed;
+    ASSERT_EQ(built.borrowed_alignments.size(), built.shape.segments.size() * borrowed.size());
+    std::size_t at = 0;
+    for (const auto& owner : built.shape.segments) {
+      (void)owner;
+      for (const auto& ref : borrowed) {
+        const auto* actual = md::BorrowedItem(slots().layout(0), ref);
+        ASSERT_NE(actual, nullptr);
+        EXPECT_EQ(built.borrowed_alignments[at++],
+                  std::gcd(built.activation_alignment, actual->offset));
+        ++alignment_checks;
+      }
+    }
+  }
+  EXPECT_GT(alignment_checks, 0U);
   // Its step without the borrow is refused.
   const std::vector<std::int32_t> token = {1};
   const std::array<en::SegmentWork, 1> work = {en::SegmentWork{.tokens = token, .bytes = {}}};

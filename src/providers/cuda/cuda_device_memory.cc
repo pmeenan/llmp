@@ -56,6 +56,7 @@ class CudaDeviceMemory final : public VmmProvider {
   CudaDeviceMemory& operator=(CudaDeviceMemory&&) = delete;
 
   std::span<const AllocationClass> Classes() const override { return classes_; }
+  Bytes ReservationAlignment() const override { return Granularity(); }
 
  protected:
   std::expected<std::uint64_t, Failure> DoReserve(Bytes size) override {

@@ -1758,5 +1758,138 @@ TEST(PlannerSelectionTest, RootAlignmentFactsFailClosedAcrossPatternAndExpansion
   EXPECT_EQ(facts(graph.Clone(), x), 256U);
 }
 
+TEST(PlannerSelectionTest, RootFactsForwardOnlyThroughAuthenticatedLeafMaps) {
+  const auto make = [](bool reverse, bool extra) {
+    ir::Builder b;
+    TensorId a, z;
+    if (reverse) {
+      z = b.State(F32({16}), {.tensor = 1});
+      a = b.State(F32({16}), {.tensor = 0});
+    } else {
+      a = b.State(F32({16}), {.tensor = 0});
+      z = b.State(F32({16}), {.tensor = 1});
+    }
+    const auto sum = b.Add(a, z);
+    b.Output(extra ? b.Unary(sum, ir::UnaryFn::kRelu) : sum);
+    return Finish(b);
+  };
+  const auto original = make(false, false), changed = make(true, true);
+  const auto facts = GraphRootAlignments(
+      original, std::array{RootAlignmentFact{{0}, 256}, RootAlignmentFact{{1}, 4},
+                           RootAlignmentFact{{2}, 256}});
+  const std::array map{TensorId{1}, TensorId{0}, TensorId{2}};
+  auto moved = ForwardRootAlignments(original, changed, map, facts);
+  ASSERT_TRUE(moved);
+  EXPECT_EQ(moved(changed, {0}), 4U);
+  EXPECT_EQ(moved(changed, {1}), 256U);
+  EXPECT_EQ(moved(changed, {2}), 0U);  // computed root cannot inherit old placement
+  EXPECT_EQ(moved(changed, {3}), 0U);
+  const std::array wrong{TensorId{0}, TensorId{1}, TensorId{2}};
+  auto rejected = ForwardRootAlignments(original, changed, wrong, facts);
+  EXPECT_EQ(rejected(changed, {0}), 0U);
+  EXPECT_EQ(rejected(changed, {1}), 0U);
+  const std::array duplicate{TensorId{1}, TensorId{1}, TensorId{2}};
+  rejected = ForwardRootAlignments(original, changed, duplicate, facts);
+  EXPECT_EQ(rejected(changed, {1}), 0U);
+  EXPECT_FALSE(ForwardRootAlignments(original, changed, std::span(map).first(2), facts));
+  EXPECT_EQ(moved(make(false, true), {0}), 0U);  // equal-shape root IDs differ again
+}
+
+TEST(PlannerSelectionTest, ActivationFactsFollowMappedStagingAndExcludeContainedRoots) {
+  ir::Builder b;
+  const auto x = b.Input(F32({16, 2}));
+  const auto not_staged = b.Input(F32({16}));
+  const auto n = b.RmsNorm(x, 1e-5F);
+  const auto output = b.Mul(n, not_staged);
+  b.Output(output);
+  auto graph = Finish(b);
+  const auto registry = Registry();
+  const Policy policy;
+  SelectionView view(registry, kDevice, policy, false, false, {}, {},
+                     {.base = 65536, .offset = 256, .staged = std::vector{x}});
+  EXPECT_EQ(view.Alignment(graph, x), 256U);
+  EXPECT_EQ(view.Alignment(graph, not_staged), 0U);
+  EXPECT_EQ(view.Alignment(graph, n), 256U);
+  const auto view_tensor = graph.root(output);
+  EXPECT_EQ(view.Alignment(graph, view_tensor), 256U);
+  auto rewritten = ApplyPatterns(graph, view);
+  ASSERT_TRUE(rewritten);
+  ASSERT_EQ(rewritten->applied.size(), 1U);
+  view.Forward(graph, rewritten->graph, rewritten->tensors);
+  EXPECT_EQ(view.Alignment(rewritten->graph, rewritten->tensors[x.v]), 256U);
+  EXPECT_EQ(view.Alignment(rewritten->graph, rewritten->tensors[not_staged.v]), 0U);
+  std::vector<TensorId> map;
+  auto expanded = ir::Expand(rewritten->graph, true, &map);
+  ASSERT_TRUE(expanded);
+  view.Forward(rewritten->graph, *expanded, map);
+  EXPECT_EQ(view.Alignment(*expanded, map[rewritten->tensors[x.v].v]), 256U);
+  for (const auto id : expanded->outputs())
+    EXPECT_EQ(view.Alignment(*expanded, expanded->root(id)), 256U);
+  SelectionView contained(registry, kDevice, policy, false, false, {}, {},
+                          {.base = 65536,
+                           .offset = 256,
+                           .staged = std::vector{x},
+                           .within = [n, output](const ir::Graph&, TensorId id) {
+                             return id == output ? n : TensorId{};
+                           }});
+  EXPECT_EQ(contained.Alignment(graph, output), 0U);
+  EXPECT_EQ(contained.Alignment(graph, n), 256U);
+  SelectionView unknown(registry, kDevice, policy, false, false);
+  EXPECT_EQ(unknown.Alignment(graph, x), 0U);
+  EXPECT_EQ(unknown.Alignment(graph, output), 0U);
+}
+
+TEST(PlannerTest, AlignmentFactsSurviveFallbackAndAreAuditedAgainstFinalPlacement) {
+  ir::Builder b;
+  const auto x = b.Input(F32({16, 2}));
+  const auto weight = b.Input(F32({16}));
+  b.Output(b.Fused(FusedKind::kRmsNormMul, std::array{x, weight}, ir::NormParams{.eps = 1e-5F})[0]);
+  auto graph = Finish(b);
+  auto registry = Without({"t.rms_norm_mul"});
+  auto plan = Plan(graph.Clone(), registry, kDevice, {}, {.activation_alignment = 65536});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  EXPECT_EQ(plan->decomposed, std::vector<std::string>{"fused.rms_norm_mul"});
+  EXPECT_FALSE(plan->root_alignments.empty());
+  for (const auto& fact : plan->root_alignments) EXPECT_EQ(fact.alignment, 256U);
+  auto unsupported = Plan(graph.Clone(), registry, kDevice, {}, {.activation_alignment = 3});
+  ASSERT_FALSE(unsupported);
+  EXPECT_EQ(unsupported.error().error, PlanError::kPlacement);
+  // A caller cannot claim a stronger guarantee than its actual offsets.
+  const auto too_strong = GraphRootAlignments(
+      graph, std::array{RootAlignmentFact{x, 65536}, RootAlignmentFact{weight, 65536}});
+  auto invalid = Plan(graph.Clone(), registry, kDevice, {}, {.root_alignment = too_strong});
+  ASSERT_FALSE(invalid);
+  EXPECT_EQ(invalid.error().error, PlanError::kPlacement);
+}
+
+TEST(PlannerTest, ExternalSaveInputsDoNotInheritTheArenaPromise) {
+  ir::Builder b;
+  const auto staged = b.Input(F32({16}));
+  const auto saved = b.Input(F32({16}));
+  b.Output(b.Add(staged, saved));
+  auto graph = Finish(b);
+  const auto registry = Registry();
+  auto plan = Plan(graph.Clone(), registry, kDevice, {},
+                   {.staged = std::vector{staged, saved},
+                    .activation_alignment = 65536,
+                    .alignment_staged = std::vector{staged}});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  EXPECT_TRUE(std::ranges::any_of(plan->root_alignments, [&](const auto& fact) {
+    return fact.root == plan->tensors[staged.v] && fact.alignment == 256;
+  }));
+  EXPECT_FALSE(std::ranges::any_of(plan->root_alignments, [&](const auto& fact) {
+    return fact.root == plan->tensors[saved.v];
+  }));
+  EXPECT_TRUE(std::ranges::any_of(plan->placement.offsets, [&](const auto& place) {
+    return place.first == plan->tensors[saved.v];  // legacy placement unchanged
+  }));
+  auto invalid = Plan(graph.Clone(), registry, kDevice, {},
+                      {.staged = std::vector{staged},
+                       .activation_alignment = 65536,
+                       .alignment_staged = std::vector{saved}});
+  ASSERT_FALSE(invalid);
+  EXPECT_EQ(invalid.error().error, PlanError::kPlacement);
+}
+
 }  // namespace
 }  // namespace llmp::planner

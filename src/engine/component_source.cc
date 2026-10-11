@@ -191,11 +191,53 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                   : components::BuildStep(*o_.spec, o_.stage, shape, o_.bindings,
                                           {.narrow = !planner::Disabled(policy_, "narrow_final")});
   if (!step) return std::unexpected(std::move(step.error()));
-  // Every input is staged but the cells' positions, which only masks read:
-  // a lowering builds them on the device or folds them into a host mask.
-  std::vector<ir::TensorId> staged;
+  // Keep the existing placement set. Cell positions are synthesized by
+  // masks; commit rows retain their legacy reserved place but are bound to
+  // external saved rows, so receive no arena alignment guarantee.
+  std::vector<ir::TensorId> staged, aligned_staged;
   for (const components::StepInput& input : step->inputs) {
     if (input.kind != components::InputKind::kCellPositions) staged.push_back(input.tensor);
+    if (input.kind != components::InputKind::kCellPositions &&
+        input.kind != components::InputKind::kCommitRows)
+      aligned_staged.push_back(input.tensor);
+  }
+  const auto power_of_two = [](std::uint64_t n) { return n != 0 && (n & (n - 1)) == 0; };
+  if (addresses.activation_alignment != 0 && !power_of_two(addresses.activation_alignment))
+    return std::unexpected("the activation reservation alignment is not a power of two");
+  if (!addresses.measuring() && addresses.activation_alignment != 0 &&
+      addresses.activations % addresses.activation_alignment != 0)
+    return std::unexpected("the activation base breaks its reservation alignment promise");
+  std::vector<std::pair<ir::TensorDesc, std::uint64_t>> state_facts;
+  if (addresses.state_alignment) {
+    for (const auto& node : step->graph.nodes()) {
+      if (node.key.op != ir::Op::kState) continue;
+      const auto& desc = step->graph.tensor(node.out[0]);
+      const auto* ref = std::get_if<ir::StateRef>(&desc.binding);
+      if (ref == nullptr) continue;
+      const auto alignment = addresses.state_alignment(*ref);
+      if (alignment == 0) continue;
+      if (!power_of_two(alignment))
+        return std::unexpected("a state reservation alignment is not a power of two");
+      const auto address = addresses.state ? addresses.state(*ref) : 0;
+      if (address != 0 && address % alignment != 0)
+        return std::unexpected("a state base breaks its reservation alignment promise");
+      state_facts.emplace_back(desc, alignment);
+    }
+  }
+  planner::RootAlignment root_alignment;
+  if (!state_facts.empty()) {
+    root_alignment = [facts = std::move(state_facts)](const ir::Graph& graph,
+                                                      ir::TensorId root) -> std::uint64_t {
+      if (!root.valid() || root.v >= graph.tensor_count()) return 0;
+      const auto& desc = graph.tensor(root);
+      if (desc.is_view() || graph.node(graph.producer(root)).key.op != ir::Op::kState) return 0;
+      for (const auto& [saved, alignment] : facts) {
+        if (desc.binding == saved.binding && desc.format == saved.format && desc.nb == saved.nb &&
+            desc.role == saved.role && desc.segment == saved.segment)
+          return alignment;
+      }
+      return 0;
+    };
   }
   const auto state_spans = StateSpans(shape, addresses);
   auto plan = planner::Plan(step->graph.Clone(), *o_.backend.registry, o_.backend.device, policy_,
@@ -206,7 +248,10 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                              .written = o_.backend.written,
                              .within = o_.backend.within,
                              .shape = &shape,
-                             .state_spans = state_spans});
+                             .state_spans = state_spans,
+                             .root_alignment = std::move(root_alignment),
+                             .activation_alignment = addresses.activation_alignment,
+                             .alignment_staged = std::move(aligned_staged)});
   if (!plan) {
     return std::unexpected(std::format("planning a step ({}): {}",
                                        planner::PlanErrorName(plan.error().error),

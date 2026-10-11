@@ -343,7 +343,42 @@ std::expected<std::vector<engine::CommitBuffer>, std::string> FakeStepSource::Co
 
 std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Build(
     const pl::StepShape& shape, const kn::Addresses& addresses) {
-  built_.push_back({.shape = shape, .measuring = addresses.measuring()});
+  Built observed{.shape = shape,
+                 .measuring = addresses.measuring(),
+                 .activation_alignment = addresses.activation_alignment};
+  if (!addresses.measuring() && addresses.activation_alignment != 0)
+    observed.bound_alignments_hold = addresses.activations % addresses.activation_alignment == 0;
+  if (shape.stage < options_.layouts.size() && addresses.state_alignment) {
+    for (std::uint8_t owner = 0; owner < shape.segments.size(); ++owner) {
+      for (const auto& item : options_.layouts[shape.stage].items) {
+        const ir::StateRef ref{.stage = shape.stage,
+                               .tensor = static_cast<std::uint16_t>(item.tensor),
+                               .layer = item.layer,
+                               .segment = owner};
+        const auto a = addresses.state_alignment(ref);
+        observed.state_alignments.push_back(a);
+        if (a != 0) observed.bound_alignments_hold &= addresses.state(ref) % a == 0;
+      }
+    }
+  }
+  if (shape.stage < options_.layouts.size() && addresses.state_alignment) {
+    for (std::uint8_t owner = 0; owner < shape.segments.size(); ++owner) {
+      for (const auto& item : options_.layouts[shape.stage].borrowed) {
+        const ir::StateRef ref{.stage = shape.stage,
+                               .tensor = static_cast<std::uint16_t>(item.tensor),
+                               .layer = item.layer,
+                               .segment = owner};
+        const auto a = addresses.state_alignment(ref);
+        observed.borrowed_alignments.push_back(a);
+        if (a != 0) observed.bound_alignments_hold &= addresses.state(ref) % a == 0;
+      }
+    }
+    observed.invalid_alignment_refs_unknown =
+        addresses.state_alignment({.stage = shape.stage, .tensor = 65535}) == 0 &&
+        addresses.state_alignment({.stage = shape.stage, .segment = ir::kJoinedSegment}) == 0 &&
+        addresses.state_alignment({.stage = 65535}) == 0;
+  }
+  built_.push_back(std::move(observed));
   if (options_.on_build) options_.on_build(shape, addresses.measuring());
   if (options_.refuse_build && options_.refuse_build(shape)) return Refuse("the fake refuses");
   if (shape.stage >= options_.layouts.size()) return Refuse("no such stage");

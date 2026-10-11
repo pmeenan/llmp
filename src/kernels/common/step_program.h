@@ -212,6 +212,10 @@ struct Addresses {
   std::uint64_t save_rows = 0;
   std::uint64_t activations = 0;
   std::uint64_t activation_bytes = 0;
+  // Physical reservation guarantees, identical for measurement and binding.
+  // Zero/absent is unknown; neither logical offsets nor placeholders prove it.
+  std::uint64_t activation_alignment = 0;
+  std::function<std::uint64_t(const ir::StateRef&)> state_alignment{};
   bool measuring() const { return activations == 0; }
 };
 

@@ -157,8 +157,12 @@ update this section as each slice lands):
   tails and authenticates alignment facts before native selection. Exact
   original-helper controls cover 462 native operand scenarios, pitches, tiles,
   row groups and changed-input replay; state reads retain the full declared key
-  closure. No component/default consumer is introduced. G4b2b2b3 requires the opt-in component/full-mask fusion
-  and separate execution compatibility for kept/adopt/restore paths. Output-A/
+  closure. No component/default consumer is introduced. G4b2b2b3a adds physical
+  reservation guarantees, exact owned/borrowed state facts and authenticated
+  planner-pass forwarding, with placement and actual-binding audits. It introduces
+  no new component recipe. G4b2b2b3b must enforce separate execution compatibility,
+  authenticated snapshots and numerical-domain refusals before G4b2b2b3c makes
+  an opt-in rounded-score component or full-mask fusion reachable. Output-A/
   products, mixed encodings and full policy remain G4b2c. G4c then
   binds the hash-routing IDs, compressor inputs and injection features and
   runs serving/state/quality/swap/1% controls; G4d deletes the M3 path. The

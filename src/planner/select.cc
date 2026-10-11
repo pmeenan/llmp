@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
 #include <span>
 #include <utility>
 #include <vector>
@@ -102,6 +103,57 @@ RootAlignment GraphRootAlignments(const ir::Graph& graph,
   };
 }
 
+namespace {
+
+bool PowerOfTwo(std::uint64_t value) { return value != 0 && (value & (value - 1)) == 0; }
+
+bool SameLeaf(const ir::Graph& before, ir::TensorId a, const ir::Graph& after, ir::TensorId b) {
+  if (!a.valid() || a.v >= before.tensor_count() || !b.valid() || b.v >= after.tensor_count())
+    return false;
+  const auto& x = before.tensor(a);
+  const auto& y = after.tensor(b);
+  const auto xo = before.node(before.producer(a)).key.op;
+  const auto yo = after.node(after.producer(b)).key.op;
+  if (!Leaf(xo) || xo != yo || x.is_view() || y.is_view() || x.binding != y.binding ||
+      x.role != y.role || x.format != y.format || x.nb != y.nb || x.segment != y.segment)
+    return false;
+  if (xo == Op::kInput) {
+    const auto ai = before.inputs(), bi = after.inputs();
+    return std::ranges::find(ai, a) - ai.begin() == std::ranges::find(bi, b) - bi.begin();
+  }
+  return true;
+}
+
+}  // namespace
+
+RootAlignment ForwardRootAlignments(const ir::Graph& before, const ir::Graph& after,
+                                    std::span<const ir::TensorId> tensors,
+                                    const RootAlignment& facts) {
+  if (!facts || tensors.size() != before.tensor_count()) return {};
+  const bool same = before.Digest() == after.Digest() && RootSeal(before) == RootSeal(after);
+  std::vector<std::uint32_t> uses(after.tensor_count());
+  for (const auto t : tensors)
+    if (t.valid() && t.v < uses.size()) ++uses[t.v];
+  std::vector<RootAlignmentFact> mapped;
+  for (std::uint32_t i = 0; i < tensors.size(); ++i) {
+    const ir::TensorId old{i}, next = tensors[i];
+    if (!next.valid() || next.v >= after.tensor_count() || uses[next.v] != 1 ||
+        before.tensor(old).is_view() || after.tensor(next).is_view() ||
+        (!(same && old == next) && !SameLeaf(before, old, after, next)))
+      continue;
+    const auto alignment = facts(before, old);
+    if (PowerOfTwo(alignment)) mapped.push_back({next, alignment});
+  }
+  const auto sealed = GraphRootAlignments(after, mapped);
+  // A semantic binding callback may independently authenticate this current
+  // graph (without hashing it on every query). Exact-ID callbacks return zero
+  // after a rewrite, then use the newly sealed map. No old IDs escape.
+  return [original = facts, sealed](const ir::Graph& graph, ir::TensorId root) {
+    const auto direct = original(graph, root);
+    return PowerOfTwo(direct) ? direct : sealed ? sealed(graph, root) : 0;
+  };
+}
+
 QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sources,
                        std::span<const ir::TensorDesc* const> outputs) {
   const ir::TensorDesc* s0 = At(sources, 0);
@@ -186,7 +238,8 @@ bool LaunchesNothing(ir::OpKey key) {
 
 SelectionView::SelectionView(const execution::Registry& registry, const DeviceFacts& device,
                              const Policy& policy, bool row_invariant, bool capturable,
-                             StateSpans state_spans, RootAlignment root_alignment)
+                             StateSpans state_spans, RootAlignment root_alignment,
+                             ActivationAlignment activation)
     : registry_(registry),
       device_(device),
       policy_(policy),
@@ -194,7 +247,48 @@ SelectionView::SelectionView(const execution::Registry& registry, const DeviceFa
       capturable_(capturable),
       state_spans_(std::move(state_spans)),
       root_alignment_(std::move(root_alignment)),
+      activation_(std::move(activation)),
       ranks_(RanksFor(policy, device.device_class)) {}
+
+void SelectionView::Forward(const ir::Graph& before, const ir::Graph& after,
+                            std::span<const ir::TensorId> tensors) {
+  root_alignment_ = ForwardRootAlignments(before, after, tensors, root_alignment_);
+  if (activation_.staged) {
+    std::vector<ir::TensorId> mapped;
+    for (const auto old : *activation_.staged) {
+      if (!old.valid() || old.v >= tensors.size()) continue;
+      const auto next = tensors[old.v];
+      if (SameLeaf(before, old, after, next) && std::ranges::count(tensors, next) == 1)
+        mapped.push_back(next);
+    }
+    activation_.staged = std::move(mapped);
+  }
+}
+
+std::uint64_t SelectionView::Alignment(const ir::Graph& graph, ir::TensorId root) const {
+  if (!root.valid() || root.v >= graph.tensor_count() || graph.tensor(root).is_view()) return 0;
+  const auto& t = graph.tensor(root);
+  const bool computed = t.role == ir::Role::kActivation || t.role == ir::Role::kOutput;
+  const bool staged = activation_.staged ? std::ranges::contains(*activation_.staged, root)
+                                         : std::ranges::contains(graph.inputs(), root);
+  if (computed || staged) {
+    if (activation_.within) {
+      const auto containing = activation_.within(graph, root);
+      if (containing.valid() && containing != root) return 0;
+    }
+    if (PowerOfTwo(activation_.base) && PowerOfTwo(activation_.offset))
+      return std::gcd(activation_.base, activation_.offset);
+  }
+  const auto value = root_alignment_ ? root_alignment_(graph, root) : 0;
+  return PowerOfTwo(value) ? value : 0;
+}
+
+std::vector<RootAlignmentFact> SelectionView::Alignments(const ir::Graph& graph) const {
+  std::vector<RootAlignmentFact> out;
+  for (std::uint32_t i = 0; i < graph.tensor_count(); ++i)
+    if (const auto a = Alignment(graph, {i}); a != 0) out.push_back({{i}, a});
+  return out;
+}
 
 std::vector<std::size_t> SelectionView::Candidates(ir::OpKey key,
                                                    std::span<const ir::TensorDesc* const> sources,
@@ -299,7 +393,7 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const
   }
   std::vector<std::uint64_t> alignments;
   const auto alignment = [&](ir::TensorId tensor) {
-    return root_alignment_ && tensor.valid() ? root_alignment_(graph, graph.root(tensor)) : 0;
+    return tensor.valid() ? Alignment(graph, graph.root(tensor)) : 0;
   };
   for (const auto tensor : node.sources()) alignments.push_back(alignment(tensor));
   for (const auto tensor : node.outputs()) alignments.push_back(alignment(tensor));

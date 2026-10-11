@@ -1718,6 +1718,18 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     t->data = result->data;
   }
   BindViews(out_.nodes);
+  if (!addresses.measuring()) {
+    for (const auto& fact : plan_.root_alignments) {
+      if (!fact.root.valid() || fact.root.v >= made_.size() || fact.alignment == 0 ||
+          (fact.alignment & (fact.alignment - 1)) != 0)
+        return Refused("a planned root alignment is malformed");
+      const auto* tensor = made_.at(fact.root.v);
+      if (tensor == nullptr && !needed_.at(p_.producer(fact.root).v)) continue;
+      if (tensor == nullptr || tensor->data == nullptr ||
+          reinterpret_cast<std::uintptr_t>(tensor->data) % fact.alignment != 0)
+        return Refused("a bound root breaks its physical alignment promise");
+    }
+  }
   for (const ggml_tensor* t : out_.nodes) {
     if (t->data == nullptr) {
       return Refused(std::format("{} {} ({}) [{}, {}, {}, {}] is not bound", ggml_op_desc(t),
