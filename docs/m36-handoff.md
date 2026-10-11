@@ -217,6 +217,29 @@ update this section as each slice lands):
   checked actual gradual/flush arithmetic and restoration of the original
   floating-point environment. This is target-libm evidence, with no
   cross-libm qualification.
+- **N3b1: owned GGUF Gemma 2/3/4 target normalization** is implemented in
+  `.claude/worktrees/m36-native-import` on `codex/m36-native-normalize`;
+  independent source review and adversarial challenge found no blocking
+  issue. Compiled source tables classify all keys and tensors, retain
+  independent byte-copy routes, and validate common component roles,
+  formats and shapes. Tied heads, Gemma 2/3's already-applied GGUF norm
+  fold, Gemma 4's integer layer lists, dense/MoE gates, shared rotary table
+  and rank-three expert formats are preserved. Gemma 4 adds no fold.
+  Quantization calibration provenance has the explicit `quantize.imatrix.`
+  auxiliary disposition; unknown quantization keys still refuse.
+  Allocation-free preflight bounds new metadata and work; no payload
+  allocation, publication, CLI or runtime path is added.
+  On Spark, 2026-10-11, checkpoint02 (`d0c1a9cc` source manifest) passed
+  70 host controls, including all 16 normalization cases, and four real
+  target GGUF normalizations: Gemma 2 2B, Gemma 3 4B QAT, Gemma 4 26B-A4B
+  and Gemma 4 31B. The model controls compare complete normalized specs
+  with the existing v0 profiles, formats and source routes. Raw XML/logs
+  were audited with zero failures/skips and source guards passed. The
+  earlier Gemma 2 provenance-key refusal remains recorded as the reason
+  for the explicit namespace correction. Final Spark checks passed: 2,516
+  native, 1,971 CPU and all 114 model tests, with no skips. Main build and integration checks passed. Assistants, Qwen/DeepSeek, raw
+  containers and remaining folds keep N3b open; writer/publication and
+  re-import/serving admission are N4/N5, not evidence from these checks.
 - **Model archive design** landed on `main` (`340e65c4`). This is the
   owner's direction, not part of the M3.6 plan proper:
   - `docs/model-archive.md`, with layout, manifest, catalog (meta-index)
@@ -316,7 +339,7 @@ Each `a` slice is about a day of CPU work. Each `b` slice is one to two slices p
 | N2a–e | Readers: GGUF; safetensors + `config.json` (ModelOpt NVFP4/MXFP8, AWQ/GPTQ, compressed-tensors); diffusers → D-089 composition; MLX; EXL3 | `src/import/readers/*`; parallel, disjoint |
 | N3 | Fold catalog and mapping application, reusing wave 3's tables | Partial: N3a implemented; N3b remains open |
 | N3a | Internal BF16-to-F32 `norm.plus_one` / `ssm.a_neg_exp` primitives and F32/MXFP8 `gdn.value_heads_tiled` permutation cursors | Reviewed primitive scope only; validation status above |
-| N3b | Source normalization and remaining folds: fused-QK splitting, ties, expert slicing, NVFP4 scale-atom relayout and the other migrated family/container mappings | Open; N3a does not select or apply mappings to a checkpoint |
+| N3b | Source normalization and remaining folds: fused-QK splitting, ties, expert slicing, NVFP4 scale-atom relayout and the other migrated family/container mappings | Open; N3b1 GGUF Gemma 2/3/4 targets complete and reviewed; 70 focused host + four actual targets, 2,516 native + 1,971 CPU + all 114 model tests passed, no skips; main build and integration checks passed |
 | N4 | Writer (deterministic, one rename), `llmp import` CLI, admission-gate harness; import from verified archive or staged source and record catalog import event | Public CLI → decision; native `llmp install` is M5 (D-114) |
 | N5 | Re-import every artifact; lossless-equivalence checks against v0 bytes; family gates; the owner-chosen MLX checkpoint | After G3/G4/G5 and Q execution paths and N3/N4; Qwen2 fixture correctness gate follows the protocol exception below |
 | N6 | Adversarial challenge rounds | |

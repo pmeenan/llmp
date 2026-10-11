@@ -43,20 +43,24 @@
 #include "artifact/composition.h"
 #include "artifact/format_map.h"
 #include "artifact/layout.h"
+#include "expected_error.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "import/checkpoint.h"
 #include "import/error.h"
+#include "import/normalize.h"
 #include "import/reader.h"
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
 #include "kernels/reference/decode.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
+#include "model/gemma4.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
+#include "spec/mappings/gemma4.h"
 #include "spec/spec.h"
 
 namespace llmp::import {
@@ -105,7 +109,7 @@ TEST_P(ImportGemmaTest, SourceGgufGivesTheV0ArtifactsSpec) {
   if (!Exists(gguf) || !Exists(path)) {
     GTEST_SKIP() << "no " << gguf << " or " << path;
   }
-  const auto checkpoint = ReadCheckpoint(gguf);
+  auto checkpoint = ReadCheckpoint(gguf);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
   EXPECT_EQ(checkpoint->container, "gguf");
   EXPECT_EQ(checkpoint->architecture, c.architecture);
@@ -152,6 +156,36 @@ TEST_P(ImportGemmaTest, SourceGgufGivesTheV0ArtifactsSpec) {
   EXPECT_EQ(*from_gguf, *from_v0);
   EXPECT_EQ(spec::ToJson(*from_gguf), spec::ToJson(*from_v0));
   RecordProperty("metadata_keys", static_cast<int>(checkpoint->metadata.size()));
+  const auto bound = NormalizationBound(*checkpoint);
+  ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
+  auto normalized = Normalize(std::move(*checkpoint), {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+  EXPECT_EQ(normalized->spec(), *from_v0);
+  ASSERT_EQ(normalized->canonical().tensors.size(), source.tensors.size());
+  ASSERT_EQ(normalized->routes().size(), source.tensors.size());
+  ASSERT_EQ(normalized->metadata().size(), normalized->source().metadata.size());
+  std::uint64_t payload = 0;
+  for (std::size_t i = 0; i < source.tensors.size(); ++i) {
+    const auto& actual = normalized->canonical().tensors[i];
+    EXPECT_EQ(actual.name, source.tensors[i].name);
+    EXPECT_EQ(actual.format, source.tensors[i].format);
+    EXPECT_EQ(actual.part, source.tensors[i].part);
+    const auto& route = normalized->routes()[i];
+    EXPECT_EQ(route.source_tensor, i);
+    EXPECT_EQ(route.extent, normalized->source().tensors[i].extent);
+    payload += route.extent.bytes;
+    auto cursor = normalized->CursorFor(i);
+    ASSERT_TRUE(cursor);
+    const auto copy = cursor->Next(route.extent.bytes);
+    ASSERT_TRUE(copy && *copy);
+    EXPECT_EQ((**copy).file, route.extent.file);
+    EXPECT_EQ((**copy).source_offset, route.extent.offset);
+    EXPECT_EQ((**copy).output_offset, 0U);
+    EXPECT_EQ((**copy).bytes, route.extent.bytes);
+    const auto end = cursor->Next(1);
+    EXPECT_TRUE(end && !*end);
+  }
+  EXPECT_EQ(payload, normalized->cost().payload_bytes);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -278,6 +312,32 @@ TEST_P(ImportV0FormatsTest, SourceFormatsAreTheArtifacts) {
     ASSERT_NE(found, by_name.end()) << t.name;
     EXPECT_EQ(found->second->format, t.format) << t.name;
     EXPECT_EQ(found->second->experts, t.experts) << t.name;
+  }
+  if (checkpoint->architecture == "gemma4") {
+    const auto& profile = c.name == "gemma4_26b" ? model::Gemma4_26BA4B() : model::Gemma4_31B();
+    const auto values = spec::mappings::Gemma4V0Values(profile);
+    ASSERT_TRUE(values) << test_support::Failed(values).value_or("");
+    const auto expected = spec::SynthesizeV0(*artifact, spec::mappings::Gemma4Mapping(), *values);
+    ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
+    const auto bound = NormalizationBound(*checkpoint);
+    ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
+    auto normalized = Normalize(*checkpoint, {bound->metadata_bytes, bound->work_units});
+    ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+    EXPECT_EQ(normalized->spec(), *expected);
+    EXPECT_TRUE(normalized->applied_folds().empty());
+    ASSERT_EQ(normalized->routes().size(), checkpoint->tensors.size());
+    std::uint64_t payload = 0;
+    for (std::size_t i = 0; i < checkpoint->tensors.size(); ++i) {
+      const auto& source = checkpoint->tensors[i];
+      const auto& canonical = normalized->canonical().tensors[i];
+      EXPECT_EQ(canonical.name, source.name);
+      EXPECT_EQ(canonical.format, source.format);
+      EXPECT_EQ(canonical.experts, source.experts);
+      EXPECT_EQ(normalized->routes()[i].extent, source.extent);
+      EXPECT_EQ(normalized->routes()[i].source_tensor, i);
+      payload += source.extent.bytes;
+    }
+    EXPECT_EQ(normalized->cost().payload_bytes, payload);
   }
   RecordProperty("v0_tensors", static_cast<int>(v0->tensors.size()));
   RecordProperty("source_tensors", static_cast<int>(checkpoint->tensors.size()));

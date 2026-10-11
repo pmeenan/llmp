@@ -1818,6 +1818,18 @@ each is checked against the design as M3.6 proceeds.
             import remain N3b/N4.
       - [ ] **N3b — source normalization and remaining folds:** declarative
             mappings and transforms for every migrated family/container.
+            - [x] **N3b1 — owned GGUF Gemma 2/3/4 target normalization:**
+                  implemented and independently reviewed with exhaustive
+                  key/tensor classification, tied heads, per-layer lists,
+                  dense/MoE roles, byte-preserving routes and common
+                  component validation. Focused native checks passed:
+                  70 host controls and four real target profiles (Gemma 2
+                  2B, Gemma 3 4B QAT, Gemma 4 26B-A4B and 31B), no skips.
+                  Final Spark checks passed: 2,516 native, 1,971 CPU and
+                  all 114 model tests, with no skips. Main build and integration checks passed.
+                  Gemma 2/3's GGUF norm fold is asserted already applied;
+                  Gemma 4 adds no fold. Assistants, Qwen/DeepSeek, other
+                  containers and remaining transforms stay open in N3b.
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
             catalog import events.

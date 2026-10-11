@@ -1282,6 +1282,11 @@ add_executable(import_transforms_test import_transforms_test.cc)
 target_link_libraries(import_transforms_test PRIVATE llmp_import llmp_base)
 llmp_gtest(import_transforms_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(import_normalize_test import_normalize_test.cc)
+target_link_libraries(import_normalize_test PRIVATE llmp_import llmp_model llmp_json llmp_base)
+llmp_gtest(import_normalize_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_DATA=${CMAKE_CURRENT_SOURCE_DIR}/data")
+
 # The readers on the current models' checkpoints: the Gemma 2 and 3 source
 # GGUFs' specs equal to their v0 artifacts', the split GGUFs, Qwen3.8's
 # ModelOpt checkpoint, Qwen-Image's pipeline against its v0 components,

@@ -1851,6 +1851,45 @@ the bound) at 0.090 and 0.084 relative RMS, and the shared expert's and a
 full-attention q_proj's MXFP8 and routed expert 7's NVFP4 agree at 0.095,
 0.089 and 0.124 relative RMS (`DecodesLikeTheNativeCheckpoint`; test
 bounds: one step, and 0.15).
+**Owned source normalization** (`import/normalize.h`, N3b1). Compiled
+`(container, architecture)` tables select the existing Gemma 2, Gemma 3 and
+Gemma 4 target GGUF mappings. A move-owned plan classifies every metadata
+key, owns every canonical tensor and copy route, and validates the common
+component contracts. Gemma 2/3's `norm.plus_one` is asserted already applied
+by GGUF, never executed again; Gemma 4 declares no fold. An absent output
+weight binds the embedding through the existing mapping without inventing
+or copying a second payload.
+
+Unknown tensors or model keys, duplicate aliases, invalid scalar or
+per-layer list types, unsupported container/family pairs, inconsistent
+formats or file extents, and overlaps through physical file aliases refuse.
+Only declared `general.`, `tokenizer.` and `quantize.imatrix.` metadata
+namespaces are retained as auxiliary data. Gemma 4 uses the same mapping's
+mutually exclusive dense/MoE slots, local/global layer rules, tied global
+K/V and shared rotary table. Expert gate/up and down arrays retain their
+whole source encodings and rank-three geometry; this path neither repacks
+nor dequantizes them. Gemma 2's 46-layer and Gemma 3's 62-layer variants
+remain refused because their alternate query scale is not yet mapped.
+
+`NormalizationBound` checks the closed input domain without new heap
+allocations; the caller must cover its checked incremental storage and work
+bounds before construction. The source checkpoint remains separately owned
+and funded. Copy cursors describe source byte ranges; they neither read
+payloads nor publish artifacts.
+
+Focused native checks passed on Spark on 2026-10-11: 70 host controls,
+including 16 normalization cases and complete 288/444/658/833-tensor
+inventories, plus the real GGUF Gemma 2 2B, Gemma 3 4B QAT, Gemma 4 26B-A4B
+and Gemma 4 31B source/artifact comparisons. Each real case compares the
+normalized spec with its existing v0 profile and checks complete tensor
+formats and source routes. Raw results had no failures or skips; the
+independent source review and adversarial challenge were clean. Final Spark
+checks passed: 2,516 native, 1,971 CPU and all 114 model tests, with no skips.
+Main build and integration checks passed. This covers normalization, not
+artifact publication or serving. Assistants, Qwen/DeepSeek, other containers
+and remaining transforms keep N3b open; writer and admission work remain
+N4/N5.
+
 **Import transform primitives** (`import/transforms.h`). The historical
 ModelOpt import's `norm.plus_one` and `ssm.a_neg_exp` convert explicitly
 selected BF16 scalars to F32 using binary64 arithmetic and nearest-even
