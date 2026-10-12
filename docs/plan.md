@@ -1867,6 +1867,16 @@ each is checked against the design as M3.6 proceeds.
                                                       changed-input capture pass. Full source
                                                       GPU/model admission and fusion remain
                                                       open ([evidence](experiments/m36-dsv4-rounded-consumer/README.md)).
+                                                - [x] **G4b2b2b3c2 — mapped attention source execution:**
+                                                      execute a bounded synthetic mapped
+                                                      attention prefix through the actual
+                                                      owned source/lower callback; 320 finite
+                                                      head values and 376832 state bytes
+                                                      match eager/capture across changed
+                                                      tokens. Main native build, 59 host
+                                                      controls and one GPU case pass.
+                                                      Full model admission/fusion remains
+                                                      open; no family quality/speed claim.
                   - [ ] **G4b2c — full policy:** output-A and product forms,
                         mixed encodings and default policy; original-reference
                         quality, all selected contributions and same-implementation

@@ -40,25 +40,24 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
-The next N4b6b slice passes full native main build, eight helper controls and
-both actual selected-expert grouped GPU cases, including changed-routing replay.
-This test-only owned operation does not add the production routing continuation.
-The supplemental base-lease prerequisite is being implemented separately;
-full ModelRunner and native ModelOpt admission remain open.
+Main through `7777848d` includes split NVFP4 paged rows, checked route/part
+helpers and bounded selected-expert grouped execution. Full native main build,
+eight helper controls and both actual grouped GPU cases pass, including repeated
+contributions and changed-routing replay. Production mid-step routing and native
+ModelOpt admission remain open. The supplemental base-lease prerequisite is
+reviewed; its native checks and the substantive routed continuation follow.
 
-Main through `9137cebf` includes the checked grouped helpers. The next shared
-phase-admission correction passes the full native build and 60 affected host
-controls: scoring and decode use their actual declared modes, while compound
-prompt permission remains unchanged. Qwen50 arithmetic qualification proceeds
-separately; no family quality or serving claim follows from this bug fix.
+The shared phase-admission correction landed in `d8aa6388`, with a full native
+build and 60 affected host controls: scoring and decode use their actual declared
+modes, while compound prompt permission remains unchanged. Qwen50 arithmetic
+qualification proceeds separately; no serving claim follows from this bug fix.
 
-Main through `922d4f63` also includes split NVFP4 paged rows and the default-off
-bounded DeepSeek rounded indexer consumer. The next N4b6a slice adds checked
-route inversion and exact multipart expert descriptors: main full native build
-and all eight affected host controls pass. These helpers submit no GPU work.
-N4b6b selected closure/lease/capture execution and the shared ModelRunner
-mid-step routing continuation remain open separately. See the
-[grouped foundation report](experiments/m36-native-grouped-foundation/README.md).
+The next DeepSeek slice passes full native main build, 59 affected host controls
+and one actual bounded mapped attention-source GPU case. It executes the literal
+owned source/lower callback, verifies 320 finite head values and 376832 state bytes
+through changed-token eager/capture replay. The default-off policy is unchanged;
+full model admission, fusion and family quality/speed gates remain open. See the
+[consumer report](experiments/m36-dsv4-rounded-consumer/README.md).
 
 Main through `0d127ac0` includes the explicitly tuned BF16/F32 vector-product
 capability, all four EXL3 profiles' original-model scoring and shared lifecycle
@@ -119,12 +118,13 @@ Current parallel slices: Qwen50 screens ordinary joined execution against
 three narrowly tuned BF16/F32 products using secondary target-only likelihood
 and matched timing. Native split-row paging now passes its bounded shared-runner
 foundation: main native build, 117 focused host controls and two tiny GPU cases,
-including changed-ID capture replay and multipart refusals. Products, expert
-worklists and native ModelOpt target admission remain open. DeepSeek's default-off
+including changed-ID capture replay and multipart refusals. Production native expert continuation and native ModelOpt target admission
+remain open. DeepSeek's default-off
 rounded consumer has separate real component/source host controls and a passing
 declared-backend synthetic GPU corridor. Main integration passes a full native
 build, 193 focused host controls and the same one-case GPU corridor on Spark B.
-Full source GPU/model admission and fusion remain open. Root corrected lazy framework inputs that accidentally
+The bounded mapped attention source now passes actual execution/replay; full
+model admission and fusion remain open. Root corrected lazy framework inputs that accidentally
 reset an owner's graph-builder context; main native build and 162 focused
 controls pass on Spark. The fix carries no parity policy.
 Each slice receives its own scoped review and checks before landing.

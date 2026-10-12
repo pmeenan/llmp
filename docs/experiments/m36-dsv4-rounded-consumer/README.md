@@ -40,8 +40,9 @@ entries. Counts cross completion boundaries and reach the real capacity64 while
 completion and checks completed retirement before freeing resources.
 
 The evidence is deliberately split: the actual GPU corridor is not a full
-`ComponentStepSource` model execution. Full source GPU/model admission, kept
-model continuation, full-mask fusion and family quality/speed gates remain open.
+`ComponentStepSource` model execution. The bounded mapped attention source now executes as described below. Full
+model admission, kept model continuation, full-mask fusion and family
+quality/speed gates remain open.
 Main integration on Spark B passes its full native build and193 focused
 host controls, followed by the same one-case GPU corridor in one supervised
 second, with no failures/skips. The host set includes the17 real component and
@@ -83,3 +84,52 @@ and every max/OOM event was zero; observed cgroup peak was206000128 bytes.
 | `deepseek-rounded-consumer-main01/results/result.json` | `7293855ae0621ca42e36d94d622de63621cf4480b242d08f4918d54a43985f7b` |
 | `deepseek-rounded-consumer-main-gpu01/results/result.json` | `76dd41975fed4aa0c00e7fb7b4cc9c7c86f642c906d38d1f5fe6313b656601b0` |
 | `deepseek-rounded-consumer-main-gpu01/results/models.xml` | `b8a80f95ed94c8ac6db54bd2a6d992de3da1691428bbfd5f81906aafff7b8148` |
+
+
+## Bounded mapped attention source execution — 2026-10-12
+
+A separate tiny synthetic mapping now executes the actual owned
+`ComponentStepSource::Build` and its literal backend lower callback. It retains
+one layer's declared attention prefix (embedding, HC mix, compressed attention,
+HC combine and output); the unrelated FFN/routing components are deliberately
+excluded from this authored synthetic spec. This proves the source seam, not a
+complete DeepSeek model or production ModelRunner admission.
+
+The real mapped source uses one score owner with four rows, context 257/read 256,
+64-wide hidden state, eight 256-wide heads, ratio4 compression and a 128×64
+indexer. Its bound program must contain the actual rounded score, visible top-k
+and selected mask implementations. Both changed-token revisions execute eagerly
+and through the same retained recording. All 320 output values are finite and
+match their same-implementation eager results; all 376832 initialized state bytes
+also match. No external quantized logits or router IDs govern acceptance.
+The earlier three-operation corridor supplies separate score/mask oracle checks;
+this source fixture does not claim an independent full-pipeline numerical oracle.
+
+Main's full native build and 59 affected host controls (17 components, 13 execution
+contracts and 29 lowering cases) pass on Spark B. The one actual GPU case passes
+in one supervised second with no failures or skips, source/recipe/binary guards
+intact, zero memory events and no compute process remaining. The final program
+has 232 primitive nodes/tensors and 184 bound steps, with 1022464 authored weight
+bytes. These observations establish no family quality or speed result.
+
+The source-specific construction ceiling is 203973120 bytes within a 256MiB host
+inventory, funded before spec/graph construction. Direct device ownership remains
+192MiB, including the 64MiB packed weights/state/activation allocation, 16MiB pool
+and bounded cuBLAS workspace; pinned staging is 1MiB. Process/cache confinement
+remains 4GiB with zero swap, pre-run 10GiB and post-run 6GiB physical availability.
+Observed cgroup peak is 422531072 bytes, not total CUDA occupancy. Complete source,
+backend, stream, allocations and pinning remain owned through retirement.
+
+The cold private build was stopped intentionally after 51 seconds to use warm
+main validation. Main's first build refused the mixed string-name initializer;
+its first actual source case then correctly refused the native score witness
+because the fixture omitted the index-cache state's existing alignment fact.
+An explicit string-view array and actual binding-derived state alignment fixed
+these fixture omissions; no production predicate or numerical recipe changed.
+All failed/stopped receipts remain preserved outside Git.
+
+| Mapped source main receipt | SHA-256 |
+| --- | --- |
+| `deepseek-source-execution-main03/results/result.json` | `6cb708d3bb2e6d8bf5eee0f5d527393e2bdade4074dd1b27dd09817e2a98e2df` |
+| `deepseek-source-execution-main-gpu02/results/result.json` | `4c3290478c093a2dcd793f292a479e04a6e7b01fffd3cacf681b2b98baa9ccb8` |
+| `deepseek-source-execution-main-gpu02/results/models.xml` | `59a839dd6d7047667aecb5dba865df0ef6b5bb4d5edaf860397a666ee1cb9c10` |

@@ -27,6 +27,8 @@
 
 #include "base/bytes.h"
 #include "components/step.h"
+#include "dsv4_fixture.h"
+#include "engine/component_source.h"
 #include "execution/registry.h"
 #include "ir/builder.h"
 #include "kernels/ggml/cublas.h"
@@ -47,6 +49,7 @@
 #include "platform/host_probe.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_runtime.h"
+#include "spec/mappings/dsv4.h"
 #include "tests/support/dsv4_score_original.h"
 
 namespace {
@@ -1939,6 +1942,409 @@ TEST(GgmlRoundedConsumerGpu, DeclaredCountsSelectOneFullMaskAcrossChangedCapture
   RecordProperty("completed_count_capacity", 64);
   RecordProperty("raw_mask_bits_checked", 192);
   RecordProperty("full_mask_elements_checked", 6336);
+}
+
+// Actual mapped source execution, deliberately excluding FFN/routing and model admission.
+namespace mapped_csa {
+namespace en = llmp::engine;
+namespace md = llmp::model;
+namespace sp = llmp::spec;
+namespace fx = llmp::test_support::dsv4;
+// Fixed one-layer, one-owner source inventory (external funding derivation).
+// These are source-specific construction ceilings, not the global IR limits.
+constexpr std::uint64_t kNodes = 2048, kTensors = 8192;
+constexpr std::uint64_t kDescriptors = kTensors + 16 + 16 * kNodes;
+constexpr std::uint64_t kGraphs = 4 * 3 * (kNodes * 480 + kTensors * 192);
+constexpr std::uint64_t kWorksets = 4096 * (kNodes + kTensors);
+constexpr std::uint64_t kNative = kDescriptors * (512 + 1024 + 32);
+constexpr std::uint64_t kRetained = 32ULL << 20, kMisc = 32ULL << 20;
+constexpr std::uint64_t kHost = 256ULL << 20;
+static_assert(kGraphs + kWorksets + kNative + kRetained + kMisc <= kHost);
+static_assert(sizeof(ir::Node) + 96 <= 480 && sizeof(ir::TensorDesc) <= 192);
+constexpr std::uint64_t kPacked = 64ULL << 20, kWeights = 16ULL << 20;
+constexpr std::uint64_t kStateOffset = kWeights, kActivationOffset = 32ULL << 20;
+constexpr std::uint64_t kActivationBytes = kPacked - kActivationOffset;
+constexpr std::uint64_t kStateReadback = 512ULL << 10;
+struct Owner : rounded_corridor::Owner {
+  sp::Source tensors;
+  sp::ModelSpec spec;
+  md::StateLayoutDerived layout;
+  std::unique_ptr<en::ComponentStepSource> source;
+  std::map<ir::WeightRef, std::pair<llmp::format::PartRole, std::uint64_t>> weight_offsets;
+  std::uint64_t weight_bytes = 0, packed = 0;
+  std::array<std::uint32_t, 160> baseline{};
+  std::vector<std::byte> state_baseline;
+};
+struct Retire {
+  void operator()(Owner* owner) const {
+    if (!owner) return;
+    if (!owner->Finish()) {
+      ADD_FAILURE() << "unknown mapped-source completion; complete owner retained";
+      return;
+    }
+    owner->captured.reset();
+    owner->program.reset();
+    owner->source.reset();  // Release execution metadata while its backend is alive.
+    if (!owner->Close()) {
+      ADD_FAILURE() << "unknown mapped-source retirement; complete owner retained";
+      return;
+    }
+    delete owner;
+  }
+};
+std::uint64_t Bytes(const ir::TensorDesc& t) {
+  if (!ir::IsContiguous(t) || t.is_view()) return 0;
+  return t.nb[3] * t.ne(3);
+}
+void Describe(Owner& life, const pl::StepShape& shape) {
+  auto p = md::Dsv4Flash();
+  p.name = "synthetic-csa-source";
+  p.layers = 1;
+  p.width = 64;
+  p.hc = 4;
+  p.heads = 8;
+  p.head_dim = 256;
+  p.rope_dims = 8;
+  p.q_lora = 32;
+  p.o_lora = 16;
+  p.o_groups = 2;
+  p.window = 6;
+  p.experts = 8;
+  p.experts_used = 2;
+  p.expert_ffn = 32;
+  p.hash_layers = 0;
+  p.sinkhorn_iterations = 3;
+  p.indexer_heads = 64;
+  p.indexer_head_dim = 128;
+  p.indexer_top_k = 3;
+  p.vocab = 40;
+  p.yarn_original_context = 64;
+  p.compress_rope_base = 1000;
+  p.rope_scale = 4;
+  p.compress_ratios = {4};
+  life.tensors =
+      fx::SourceOf("deepseek4", fx::Resources(p, fx::kF16Types), sp::mappings::Dsv4Mapping());
+  auto values = sp::mappings::Dsv4V0Values(p);
+  ASSERT_TRUE(values) << values.error();
+  auto spec = sp::Synthesize(sp::mappings::Dsv4Mapping(), life.tensors, *values);
+  ASSERT_TRUE(spec) << spec.error();
+  auto& stage = spec->stages.at(0);
+  ASSERT_EQ(stage.layers.size(), 1U);
+  ASSERT_EQ(stage.layers[0].components.size(), 6U);
+  ASSERT_EQ(stage.layers[0].components[0].kind, "hc.mix");
+  ASSERT_EQ(stage.layers[0].components[1].kind, "attention.mqa");
+  ASSERT_EQ(stage.layers[0].components[2].kind, "hc.combine");
+  stage.layers[0].components.resize(3);  // One declared synthetic attention pipeline.
+  ASSERT_TRUE(stage.side.empty());
+  ASSERT_TRUE(stage.taps.empty());
+  ASSERT_TRUE(sp::Validate(*spec));
+  life.spec = std::move(*spec);
+  auto layout = co::StageLayout(life.spec, 0, 257, 4);
+  ASSERT_TRUE(layout) << layout.error();
+  ASSERT_LE(layout->items.size(), 32U);
+  ASSERT_LE(layout->bytes, kStateReadback);
+  life.layout = std::move(*layout);
+  auto step =
+      co::BuildStep(life.spec, 0, shape, {.tensors = life.tensors.tensors, .state = &life.layout},
+                    {.rounded_indexer = true});
+  ASSERT_TRUE(step) << step.error();
+  ASSERT_LE(step->graph.nodes().size(), kNodes);
+  ASSERT_LE(step->graph.tensor_count(), kTensors);
+  ASSERT_LE(step->weights.size(), 64U);
+  ASSERT_LE(step->inputs.size(), 128U);
+  for (const auto& weight : step->weights) {
+    ASSERT_FALSE(weight.ref.expert_array);
+    ASSERT_EQ(weight.parts.size(), 1U);
+    const auto bytes = Bytes(step->graph.tensor(weight.tensor));
+    ASSERT_GT(bytes, 0U);
+    ASSERT_LE(bytes, rounded_corridor::kPinned);
+    const auto offset = (life.weight_bytes + 255) & ~std::uint64_t{255};
+    ASSERT_LE(offset, kWeights);
+    ASSERT_LE(bytes, kWeights - offset);
+    ASSERT_TRUE(
+        life.weight_offsets.emplace(weight.ref, std::pair{weight.parts.front().second, offset})
+            .second);
+    life.weight_bytes = offset + bytes;
+  }
+  life.step = std::make_unique<co::StepGraph>(std::move(*step));
+  life.state_baseline.resize(life.layout.bytes);
+}
+}  // namespace mapped_csa
+
+TEST(GgmlRoundedConsumerGpu, RealMappedSourceBuildsAndExecutesItsAttentionPipeline) {
+  namespace mc = mapped_csa;
+  namespace pr = llmp::providers;
+  namespace en = llmp::engine;
+  const auto available = llmp::platform::AvailableMemoryBytes();
+  ASSERT_TRUE(available);
+  ASSERT_GE(*available, mc::kHost + rounded_corridor::kDevice + (6ULL << 30));
+  std::unique_ptr<mc::Owner, mc::Retire> life(new mc::Owner);
+  const pl::StepShape shape{.phase = pl::Phase::kScore,
+                            .segments = {{.rows = 4, .past = 0, .read_cells = 256, .outputs = 4}},
+                            .read_align = 256};
+  ASSERT_LE(ggml_tensor_overhead(), 512U);
+  mc::Describe(*life, shape);
+  ASSERT_FALSE(HasFatalFailure());
+  auto execution = pr::cuda::OpenDeviceExecution(0);
+  ASSERT_TRUE(execution);
+  life->execution = std::move(*execution);
+  auto stream = life->execution->CreateStream();
+  ASSERT_TRUE(stream);
+  life->stream = *stream;
+  life->streaming = true;
+  auto facts = pr::QueryDeviceFacts(0);
+  ASSERT_TRUE(facts);
+  const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
+  ASSERT_LE(workspace.value(), rounded_corridor::kDevice - rounded_corridor::kPool - mc::kPacked);
+  const auto workspace_address = life->Allocate(workspace.value());
+  ASSERT_NE(workspace_address, 0U);
+  auto cublas = kg::CublasHandle::Create(0, *life->execution, life->stream,
+                                         {.base = workspace_address, .size = workspace});
+  ASSERT_TRUE(cublas);
+  life->cublas = std::move(*cublas);
+  auto backend = kg::GgmlBackend::Create(0, *life->execution, life->stream, nullptr,
+                                         {.lower = {.index_scratch_limit = 1U << 20}});
+  ASSERT_TRUE(backend);
+  life->backend = std::move(*backend);
+  auto* owner = life.get();
+  ASSERT_TRUE(life->backend->Declare(
+      {}, workspace.value(),
+      [owner](std::uint64_t bytes) {
+        if (bytes > (1U << 20) - owner->metadata) return false;
+        owner->metadata += bytes;
+        return true;
+      },
+      [owner](std::uint64_t bytes) {
+        EXPECT_LE(bytes, owner->metadata);
+        owner->metadata -= bytes;
+      }));
+  ASSERT_TRUE(life->backend->LendCublas(life->cublas.get()));
+  ASSERT_TRUE(life->backend->Backend().owner->Ready());
+  const auto pool = life->Allocate(rounded_corridor::kPool);
+  ASSERT_NE(pool, 0U);
+  auto launch =
+      life->backend->Launch({.base = pool, .size = llmp::base::Bytes(rounded_corridor::kPool)});
+  ASSERT_TRUE(launch);
+  life->launch = std::move(*launch);
+  life->packed = life->Allocate(mc::kPacked);
+  ASSERT_NE(life->packed, 0U);
+  life->activation = life->packed + mc::kActivationOffset;
+  auto pinned = pr::AllocatePinned(rounded_corridor::kPinned);
+  ASSERT_TRUE(pinned);
+  life->pinned = *pinned;
+  auto submission = life->execution->Submission(life->stream);
+  ASSERT_TRUE(submission);
+  for (const auto& weight : life->step->weights) {
+    const auto& desc = life->step->graph.tensor(weight.tensor);
+    const auto bytes = mc::Bytes(desc);
+    const auto& name = weight.parts.front().first;
+    const bool norm = name.find("norm") != std::string::npos;
+    if (desc.format.encoding == Encoding::kF32) {
+      auto* data = static_cast<float*>(life->pinned);
+      for (std::size_t i = 0; i < bytes / 4; ++i)
+        data[i] = norm ? 1.0F : static_cast<float>(static_cast<int>(i % 7) - 3) / 128.0F;
+    } else {
+      ASSERT_EQ(desc.format.encoding, Encoding::kF16);
+      auto* data = static_cast<std::uint16_t*>(life->pinned);
+      for (std::size_t i = 0; i < bytes / 2; ++i)
+        data[i] = static_cast<std::uint16_t>(0x2000U + (i % 29) * 16U);
+    }
+    ASSERT_TRUE(life->Copy(
+        *submission,
+        reinterpret_cast<void*>(life->packed + life->weight_offsets.at(weight.ref).second),
+        life->pinned, bytes, pr::CopyKind::kHostToDevice));
+    ASSERT_TRUE(life->Finish());
+  }
+  auto domain = en::NumericalDomain::Create({{.stage = 0,
+                                              .name = life->spec.stages.front().name,
+                                              .uses = {en::NumericalUse::kScore},
+                                              .phases = {{.phase = pl::Phase::kScore,
+                                                          .max_owners = 1,
+                                                          .max_owner_rows = 4,
+                                                          .max_total_rows = 4}}}});
+  ASSERT_TRUE(domain) << domain.error();
+  auto source = en::ComponentStepSource::Create(
+      {.spec = &life->spec,
+       .bindings = {.tensors = life->tensors.tensors, .state = &life->layout},
+       .bound_digest = life->spec.Digest(),
+       .slots = 1,
+       .policy = pl::Policy{.enabled = {"rounded_indexer"}},
+       .backend = life->backend->Backend(),
+       .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))});
+  ASSERT_TRUE(source) << source.error();
+  life->source = std::move(*source);
+  ASSERT_TRUE(life->source->PrepareExecution());
+  ASSERT_TRUE(life->source->CheckExecutionUse(en::NumericalUse::kScore));
+  ASSERT_FALSE(life->source->CheckExecutionUse(en::NumericalUse::kSpeculative));
+  auto identity = life->source->ExecutionIdentity();
+  ASSERT_TRUE(identity && identity->has_value());
+  const auto state_address = [owner](const ir::StateRef& ref) -> std::uint64_t {
+    if (ref.stage != 0 || ref.segment != 0) return 0;
+    const auto at = std::ranges::find_if(owner->layout.items, [&](const auto& item) {
+      return item.layer == ref.layer && item.tensor == ref.tensor;
+    });
+    return at == owner->layout.items.end() ? 0 : owner->packed + mc::kStateOffset + at->offset;
+  };
+  const kn::Addresses addresses{
+      .weight = [owner](const ir::WeightRef& ref, llmp::format::PartRole role) -> std::uint64_t {
+        const auto at = owner->weight_offsets.find(ref);
+        return at == owner->weight_offsets.end() || at->second.first != role
+                   ? 0
+                   : owner->packed + at->second.second;
+      },
+      .weight_rows = {},
+      .state = state_address,
+      .save = {},
+      .activations = life->activation,
+      .activation_bytes = mc::kActivationBytes,
+      .activation_alignment = 256,
+      .state_alignment = [state_address](const ir::StateRef& ref) -> std::uint64_t {
+        const auto address = state_address(ref);
+        return address != 0 ? std::gcd(std::uint64_t{256}, address) : 0;
+      }};
+  auto made = life->source->Build(shape, addresses);  // The literal owned lower callback.
+  ASSERT_TRUE(made) << made.error();
+  life->program = std::move(*made);
+  ASSERT_LE(life->program->host_bytes(), mc::kRetained);
+  ASSERT_LE(life->program->scratch_bytes(), mc::kActivationBytes);
+  ASSERT_LE(life->program->pool_bytes(), rounded_corridor::kPool);
+  ASSERT_LE(life->program->launches(), 4096U);
+  ASSERT_TRUE(life->program->capturable());
+  ASSERT_TRUE(life->program->Bind(*life->launch));
+  const auto* bound = life->program->bound();
+  ASSERT_NE(bound, nullptr);
+  for (auto expected : std::array<std::string_view, 3>{
+           kg::kRoundedIndexScoreName, kg::kVisibleTopKName, kg::kSelectedMaskName}) {
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < bound->size(); ++i) count += bound->at(i).name == expected;
+    ASSERT_EQ(count, 1U) << expected;
+  }
+  ASSERT_EQ(life->program->outputs().size(), 1U);
+  ASSERT_EQ(life->program->outputs().front().bytes, 160U * sizeof(float));
+  for (std::uint32_t revision = 0; revision < 2; ++revision) {
+    const std::array<std::int32_t, 4> tokens{1 + static_cast<int>(revision), 3, 5, 7};
+    for (unsigned pass = 0; pass < 2; ++pass) {
+      ASSERT_TRUE(life->Finish());
+      std::memset(life->pinned, 0, life->layout.bytes);
+      ASSERT_TRUE(life->Copy(*submission, reinterpret_cast<void*>(life->packed + mc::kStateOffset),
+                             life->pinned, life->layout.bytes, pr::CopyKind::kHostToDevice));
+      ASSERT_TRUE(life->Finish());
+      for (const auto& slot : life->program->inputs()) {
+        ASSERT_LE(slot.bytes, rounded_corridor::kPinned);
+        if (slot.kind == kn::InputKind::kMask) {
+          // Same typed cell-position semantics as ModelRunner's host stager.
+          ASSERT_EQ(slot.segment, 0U);
+          ASSERT_FALSE(slot.ahead);
+          ASSERT_FALSE(slot.cells.frozen);
+          co::StepInput cells{.kind = co::InputKind::kCellPositions,
+                              .segment = slot.segment,
+                              .cells = {.capacity = slot.cells.capacity,
+                                        .ring = slot.cells.ring,
+                                        .frozen = slot.cells.frozen,
+                                        .fixed = slot.cells.fixed,
+                                        .block = slot.cells.block,
+                                        .per_row = slot.cells.per_row,
+                                        .first_row = slot.cells.first_row,
+                                        .positions = slot.cells.positions,
+                                        .recent = slot.cells.recent},
+                              .read = slot.read};
+          auto held = co::InputValues(cells, shape, {});
+          ASSERT_TRUE(held) << held.error();
+          ASSERT_EQ(held->size(), slot.read);
+          ASSERT_GE(slot.mask_rows, 4U);
+          ASSERT_EQ(slot.bytes, slot.read * slot.mask_rows * sizeof(std::uint16_t));
+          auto* mask = static_cast<std::uint16_t*>(life->pinned);
+          std::fill_n(mask, slot.bytes / sizeof(std::uint16_t), 0xfc00U);
+          for (std::uint32_t row = 0; row < 4; ++row) {
+            const std::int64_t position = shape.segments.front().past + row;
+            for (std::uint64_t cell = 0; cell < slot.read; ++cell)
+              if ((*held)[cell] >= 0 && (*held)[cell] <= position &&
+                  (slot.window == 0 || position - (*held)[cell] < slot.window))
+                mask[row * slot.read + cell] = 0;
+          }
+          ASSERT_TRUE(life->Copy(*submission, reinterpret_cast<void*>(slot.device_address),
+                                 life->pinned, slot.bytes, pr::CopyKind::kHostToDevice));
+          ASSERT_TRUE(life->Finish());
+          continue;
+        }
+        const auto in = std::ranges::find(life->step->inputs, slot.tensor, &co::StepInput::tensor);
+        ASSERT_NE(in, life->step->inputs.end());
+        ASSERT_LE(slot.bytes, rounded_corridor::kPinned);
+        const auto encoding = life->step->graph.tensor(in->tensor).format.encoding;
+        if (in->kind == co::InputKind::kHadamard) {
+          const auto values = co::HadamardValues(in->read);
+          ASSERT_EQ(slot.bytes, values.size() * sizeof(float));
+          std::memcpy(life->pinned, values.data(), slot.bytes);
+        } else {
+          auto values = co::InputValues(*in, shape, tokens);
+          ASSERT_TRUE(values) << values.error();
+          if (encoding == Encoding::kI64) {
+            ASSERT_EQ(slot.bytes, values->size() * 8);
+            std::memcpy(life->pinned, values->data(), slot.bytes);
+          } else {
+            ASSERT_EQ(encoding, Encoding::kI32);
+            ASSERT_EQ(slot.bytes, values->size() * 4);
+            auto* out = static_cast<std::int32_t*>(life->pinned);
+            for (std::size_t i = 0; i < values->size(); ++i) {
+              ASSERT_GE((*values)[i], std::numeric_limits<std::int32_t>::min());
+              ASSERT_LE((*values)[i], std::numeric_limits<std::int32_t>::max());
+              out[i] = static_cast<std::int32_t>((*values)[i]);
+            }
+          }
+        }
+        ASSERT_TRUE(life->Copy(*submission, reinterpret_cast<void*>(slot.device_address),
+                               life->pinned, slot.bytes, pr::CopyKind::kHostToDevice));
+        ASSERT_TRUE(life->Finish());
+      }
+      if (pass == 0) {
+        ASSERT_TRUE(life->program->Run(*life->launch, *submission));
+      } else {
+        if (!life->captured) {
+          auto recorded = life->program->Record(*life->launch, *submission, [&] {
+            return life->program->Run(*life->launch, *submission);
+          });
+          ASSERT_TRUE(recorded);
+          ASSERT_GT((*recorded)->nodes(), 0U);
+          ASSERT_LE((*recorded)->nodes(), 4096U);
+          life->captured = std::move(*recorded);
+        }
+        ASSERT_TRUE(life->launch->Launch(*submission, *life->captured));
+      }
+      ASSERT_TRUE(life->Finish());
+      const auto& output = life->program->outputs().front();
+      ASSERT_TRUE(life->Copy(*submission, life->pinned,
+                             reinterpret_cast<void*>(output.device_address), output.bytes,
+                             pr::CopyKind::kDeviceToHost));
+      ASSERT_TRUE(life->Finish());
+      const auto* rows = static_cast<const std::uint32_t*>(life->pinned);
+      for (std::size_t i = 0; i < 160; ++i) {
+        ASSERT_TRUE(std::isfinite(std::bit_cast<float>(rows[i])));
+        if (pass == 0)
+          life->baseline[i] = rows[i];
+        else
+          ASSERT_EQ(rows[i], life->baseline[i]);
+      }
+      ASSERT_TRUE(life->Copy(*submission, life->pinned,
+                             reinterpret_cast<void*>(life->packed + mc::kStateOffset),
+                             life->layout.bytes, pr::CopyKind::kDeviceToHost));
+      ASSERT_TRUE(life->Finish());
+      if (pass == 0)
+        std::memcpy(life->state_baseline.data(), life->pinned, life->layout.bytes);
+      else
+        ASSERT_EQ(std::memcmp(life->state_baseline.data(), life->pinned, life->layout.bytes), 0);
+    }
+  }
+  EXPECT_EQ(life->source->ExecutionIdentity(), identity);
+  RecordProperty("source_rows_compared", 8);
+  RecordProperty("source_head_values_compared", 320);
+  RecordProperty("source_state_bytes", std::to_string(life->layout.bytes));
+  RecordProperty("source_programs", 1);
+  RecordProperty("source_primitive_nodes", std::to_string(life->step->graph.nodes().size()));
+  RecordProperty("source_primitive_tensors", std::to_string(life->step->graph.tensor_count()));
+  RecordProperty("source_bound_steps", std::to_string(bound->size()));
+  RecordProperty("source_weight_bytes", std::to_string(life->weight_bytes));
+  RecordProperty("source_host_inventory", std::to_string(mc::kHost));
+  RecordProperty("source_device_inventory", std::to_string(rounded_corridor::kDevice));
 }
 
 }  // namespace

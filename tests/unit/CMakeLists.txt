@@ -1246,7 +1246,7 @@ if(LLMP_CUDA)
   target_include_directories(ggml_lower_dsv4_gpu_test SYSTEM PRIVATE
       "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(ggml_lower_dsv4_gpu_test PRIVATE llmp_ggml_kernels llmp_planner
-                                                        llmp_components llmp_device_runtime llmp_platform)
+                                                        llmp_components llmp_device_runtime llmp_platform llmp_engine_core)
   llmp_gpu_gtest(ggml_lower_dsv4_gpu_test DISCRETE ALL)
 endif()
 add_executable(ggml_lower_qwen38_test ggml_lower_qwen38_test.cc)

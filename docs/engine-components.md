@@ -219,9 +219,12 @@ Default component emission remains unchanged.
 
 The [bounded consumer evidence](experiments/m36-dsv4-rounded-consumer/README.md)
 separates real component/source admission host controls from a small declared
-backend GPU corridor with changed-input capture replay. Full
-`ComponentStepSource` GPU/model admission, full-mask fusion and family quality,
-state and speed qualification remain open.
+backend GPU corridor with changed-input capture replay. A bounded synthetic
+mapped attention prefix also passes actual `ComponentStepSource` construction,
+its literal owned lower callback, eager execution and retained replay: 320 finite
+output values and 376832 initialized state bytes match same-implementation
+results. Full model admission, full-mask fusion and family quality, state and
+speed qualification remain open.
 
 `StepContext::VisibleCells` declares an ordinary staged I32 input for each
 owner's completed positions-basis blocks. Counts use the owner's past and
