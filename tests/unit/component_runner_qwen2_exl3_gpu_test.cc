@@ -4,6 +4,8 @@
 // Actual approved EXL3 artifact, one sealed held-out 145-row reconstruction
 // prefill, with a separate control for its 16 decode suffix steps. The oracle is produced
 // by the legacy native implementation and sealed before this candidate runs.
+// Separate same-implementation controls create their own uninterrupted reference
+// and exercise checkpoint/spill continuation for both approved G fixtures.
 // This diagnostic is not the historical1570-linear or750-statistic TierC gate.
 #include <fcntl.h>
 #include <gtest/gtest.h>
@@ -13,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -225,6 +228,14 @@ constexpr std::size_t kTokenLimit = 1040 * 8;
 constexpr std::size_t kOracleBytes = std::size_t{145} * 151936 * sizeof(float);
 constexpr std::size_t kFullOracleBytes = std::size_t{161} * 151936 * sizeof(float);
 constexpr std::uint64_t kFullRuntimePlans = 2 * kRuntimePlans;
+constexpr std::uint64_t kStateCopyLimit = 16 * kMiB;
+constexpr std::uint64_t kStateCopies = 2 * kStateCopyLimit;
+constexpr std::uint64_t kStateMetadata = kMiB;
+static_assert(sizeof(en::SlotLifecycle::Range) <= 32);
+// Three persistent range vectors plus temporary returned/copy lists and growth;
+// two1024-entry generation capacities and fixed owner/report bookkeeping.
+static_assert(12 * 512 * 32 + 2 * 1024 * 16 + 64 * 1024 <= kStateMetadata);
+static_assert(kStateCopyLimit <= kOracleBytes);
 constexpr std::uint64_t kFullMetadataOwners = kMetadataOwners + kProgramHost;
 constexpr std::uint64_t kFullObservationOwners =
     kObservationOwners + kFullOracleBytes - kOracleBytes;
@@ -289,7 +300,8 @@ en::Status NativeReservation(const kn::LowerInput& input) {
 
 // Same fixed plan-name/report inventory as the FP16 scorer. CorpusScore owns
 // and charges its additional bounded IDs/history/output/row buffers separately.
-static_assert(kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners + 8 * kMiB <=
+static_assert(kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners + 8 * kMiB +
+                  kStateMetadata <=
               kHostAllowance);
 
 struct Lifetime {
@@ -312,7 +324,87 @@ struct Lifetime {
   std::unique_ptr<ts::CorpusScore> corpus_scorer;
   std::array<ts::CorpusTargetScore, 256> corpus_scores{};
   std::size_t corpus_score_count = 0;
+  void* saved_state = nullptr;
+  void* state_readback = nullptr;
+  std::vector<llmp::catalog::ExtentId> state_copy_extents;
+  std::vector<en::SlotLifecycle::Range> saved_pages, saved_footprint, final_pages;
+  std::uint32_t saved_positions = 0;
+  std::uint64_t saved_bytes = 0, final_bytes = 0;
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> weight_generations;
 };
+
+// A baseline prefix may be reused only after all its output rows were compared.
+// The suffix reference remains live through the end of both restore controls.
+bool CanStoreFinalState(std::uint32_t compared_prefix, std::uint64_t bytes) {
+  return compared_prefix == 145 && bytes > 0 && bytes <= kStateCopyLimit && bytes <= kOracleBytes;
+}
+
+en::Status SaveState(Lifetime& life, bool checkpoint) {
+  auto& slots = life.runner->slots();
+  if (slots.stages() != 1 || slots.layout(0).bytes > kStateCopyLimit)
+    return std::unexpected("EXL3 state exceeds paid single-stage copy bound");
+  life.saved_positions = slots.positions(0);
+  life.saved_footprint = slots.live(0, 0).used_ranges();
+  if (checkpoint) {
+    auto pages = slots.CheckpointRanges(0, life.saved_positions);
+    if (!pages) return std::unexpected(pages.error());
+    life.saved_pages = std::move(*pages);
+  } else {
+    life.saved_pages = life.saved_footprint;
+  }
+  if (life.saved_pages.empty() || life.saved_pages.size() > 512 ||
+      life.saved_footprint.size() > 512)
+    return std::unexpected("EXL3 state range inventory exceeds its bound");
+  life.saved_bytes = 0;
+  for (const auto& range : life.saved_pages) {
+    if (range.region != 0 || range.bytes == 0 || range.bytes > kStateCopyLimit - life.saved_bytes)
+      return std::unexpected("EXL3 state copy bytes exceed their bound");
+    life.saved_bytes += range.bytes;
+  }
+  if (!life.saved_state) {
+    const auto occupied = life.node.catalog().OccupancyOf(life.node.domain()).Total().value();
+    if (occupied > kDomainCap || kStateCopies > kDomainCap - occupied)
+      return std::unexpected("EXL3 state buffers exceed checked domain");
+    auto saved = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
+    if (!saved) return std::unexpected(saved.error());
+    life.saved_state = *saved;
+    auto readback = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
+    if (!readback) return std::unexpected(readback.error());
+    life.state_readback = *readback;
+  }
+  return slots.CopyState(0, life.saved_state, life.saved_pages, true);
+}
+
+bool SameRanges(std::span<const en::SlotLifecycle::Range> a,
+                std::span<const en::SlotLifecycle::Range> b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i)
+    if (a[i].region != b[i].region || a[i].offset != b[i].offset || a[i].bytes != b[i].bytes)
+      return false;
+  return true;
+}
+
+en::Status CheckSavedState(Lifetime& life) {
+  auto& slots = life.runner->slots();
+  if (slots.positions(0) != life.saved_positions || slots.spilled(0) || slots.restoring(0) ||
+      !SameRanges(slots.live(0, 0).used_ranges(), life.saved_footprint))
+    return std::unexpected("EXL3 restored state counters or footprint differ");
+  if (auto copied = slots.CopyState(0, life.state_readback, life.saved_pages, true); !copied)
+    return copied;
+  if (std::memcmp(life.saved_state, life.state_readback,
+                  static_cast<std::size_t>(life.saved_bytes)) != 0)
+    return std::unexpected("EXL3 restored state bytes differ");
+  return {};
+}
+
+TEST(ComponentRunnerExl3Inputs, FinalStateStorageRequiresConsumedPrefixAndBoundedBytes) {
+  EXPECT_FALSE(CanStoreFinalState(0, 1));
+  EXPECT_FALSE(CanStoreFinalState(144, 1));
+  EXPECT_FALSE(CanStoreFinalState(146, 1));
+  EXPECT_FALSE(CanStoreFinalState(145, 0));
+  EXPECT_FALSE(CanStoreFinalState(145, kStateCopyLimit + 1));
+  EXPECT_TRUE(CanStoreFinalState(145, kStateCopyLimit));
+}
 
 // Covers assertion returns and every setup failure too. Teardown is once;
 // any refusal retains the complete graph of owners, including the node and
@@ -368,8 +460,9 @@ TEST(ComponentRunnerExl3Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading)
 
 // Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
-void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
-  ASSERT_FALSE(mixed_rate && !corpus);
+void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool lifecycle = false) {
+  ASSERT_FALSE(mixed_rate && !corpus && !lifecycle);
+  ASSERT_FALSE(lifecycle && (!full || corpus));
   std::uint32_t token_rows = full ? 161 : 145;
   const auto oracle_bytes = full ? kFullOracleBytes : kOracleBytes;
   const auto runtime_plans = (full || corpus) ? kFullRuntimePlans : kRuntimePlans;
@@ -377,9 +470,9 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
   const auto oracle_path = Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE" : "LLMP_EXL3_SCREEN_ORACLE");
   const auto oracle_hash =
       Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE_SHA256" : "LLMP_EXL3_SCREEN_ORACLE_SHA256");
-  if (ids_path.empty() || (!corpus && (oracle_path.empty() || oracle_hash.empty())))
+  if (ids_path.empty() || (!corpus && !lifecycle && (oracle_path.empty() || oracle_hash.empty())))
     GTEST_SKIP() << "sealed legacy EXL3 IDs and oracle required";
-  if (!corpus) {
+  if (!corpus && !lifecycle) {
     ASSERT_EQ(oracle_hash.size(), 64U);
     ASSERT_TRUE(std::ranges::all_of(
         oracle_hash, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
@@ -427,10 +520,15 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
     auto prefix = HeldOutPrefix(life->tokens_bytes, token_rows);
     ASSERT_TRUE(prefix.has_value()) << prefix.error();
     life->tokens = std::move(*prefix);
-    auto oracle_read = Read(oracle_path, oracle_bytes, true);
-    ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
-    life->oracle = std::move(*oracle_read);
-    ASSERT_EQ(Hash(life->oracle), oracle_hash);
+    if (lifecycle) {
+      // The same allocation holds the uninterrupted candidate reference.
+      life->oracle.resize(kFullOracleBytes);
+    } else {
+      auto oracle_read = Read(oracle_path, oracle_bytes, true);
+      ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
+      life->oracle = std::move(*oracle_read);
+      ASSERT_EQ(Hash(life->oracle), oracle_hash);
+    }
   }
   auto& tokens = life->tokens;
   const auto& oracle = life->oracle;
@@ -487,7 +585,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
   life->source.emplace(std::move(*bound_source));
   auto& source = life->source;
   ASSERT_LE(source->tensors.size(), 1024U);
-  if (corpus) {
+  if (corpus || lifecycle) {
     // Count each logical product once. Every physical part retains the source
     // encoding; the normal binding/lowering verifies its exact extent and role.
     std::array<std::uint32_t, 9> rates{};
@@ -554,6 +652,17 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
   ASSERT_TRUE(derived.has_value()) << derived.error();
   life->layout.emplace(std::move(*derived));
   auto& layout = life->layout;
+  auto bound_identity = spec->Digest();
+  if (lifecycle) {
+    const std::array<std::string_view, 1> artifacts{artifact->id()};
+    auto bound = sp::BoundDigest(*spec, artifacts);
+    ASSERT_TRUE(bound.has_value()) << bound.error();
+    bound_identity = *bound;
+    ASSERT_LE(layout->bytes, kStateCopyLimit);
+    testing::Test::RecordProperty("lifecycle_bound_model", llmp::base::ToHex(bound_identity));
+    life->corpus_plans[0].rows = 145;
+    life->corpus_plans[1].rows = 1;
+  }
   auto& shapes = life->shapes;
   if (corpus) {
     for (std::uint32_t past = 0; past < token_rows; past += 7) {
@@ -620,15 +729,34 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
         return std::unexpected("program exceeds paid retained-plan bound");
       return program;
     };
-    if (corpus) {
-      auto guarded = ts::GuardCorpusLower(std::move(checked_backend.lower), profile.vocab);
-      checked_backend.lower = [held = life.get(),
+    if (corpus || lifecycle) {
+      auto guarded = std::move(checked_backend.lower);
+      if (corpus) guarded = ts::GuardCorpusLower(std::move(guarded), profile.vocab);
+      checked_backend.lower = [held = life.get(), lifecycle, vocabulary = profile.vocab,
                                guarded = std::move(guarded)](const kn::LowerInput& input)
           -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
         auto program = guarded(input);
-        if (!program || input.addresses.measuring()) return program;
+        if (!program) return program;
+        if (lifecycle) {
+          const auto head = input.step.logits;
+          if (!head.valid() || head.v >= input.step.graph.tensor_count() ||
+              input.step.greedy.valid() || input.step.features.valid() ||
+              input.shape.segments.size() != 1 || input.shape.outputs() != input.shape.rows())
+            return std::unexpected("lifecycle requires one complete target head");
+          const auto& desc = input.step.graph.tensor(head);
+          const auto outputs = (*program)->outputs();
+          if (desc.format.encoding != llmp::format::Encoding::kF32 ||
+              desc.shape() != llmp::ir::ShapeOf({vocabulary, input.shape.rows()}) ||
+              !llmp::ir::IsContiguous(desc) || outputs.size() != 1 ||
+              outputs.front().tensor != head || outputs.front().segment != 0 ||
+              outputs.front().features ||
+              outputs.front().bytes !=
+                  std::uint64_t{vocabulary} * input.shape.rows() * sizeof(float))
+            return std::unexpected("lifecycle lowered head identity or geometry differs");
+        }
+        if (input.addresses.measuring()) return program;
         const auto rows = input.shape.rows();
-        auto* record = &held->corpus_plans[rows == 7 ? 0U : 1U];
+        auto* record = &held->corpus_plans[rows == held->corpus_plans[0].rows ? 0U : 1U];
         if (record->rows != rows ||
             (*program)->host_bytes() > kProgramHost - sizeof(ts::CorpusProgram))
           return std::unexpected("corpus exceeded measured shape or retained program bound");
@@ -639,7 +767,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
         {.spec = &*spec,
          .stage = 0,
          .bindings = {.tensors = source->tensors, .state = &*layout},
-         .bound_digest = spec->Digest(),
+         .bound_digest = bound_identity,
          .mapping = &mapping,
          .values = life->values,
          .slots = 1,
@@ -690,7 +818,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
     config.slots = {.model = "qwen2-exl3-shared-screen",
                     .slots = 1,
                     .stages = {{.name = "target", .layout = *layout}},
-                    .spec = spec->Digest(),
+                    .spec = bound_identity,
                     .read_align = 256,
                     .spill_place = {},
                     .spill_directory = spill,
@@ -735,8 +863,11 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
     const auto weights_bytes = paged->extents().size() * en::kPagedExtent;
     if (weights_bytes > kDomainCap - fixed || runtime_plans > kDomainCap - fixed - weights_bytes ||
         corpus_charge > kDomainCap - fixed - weights_bytes - runtime_plans ||
-        node.StateCapacity() >
-            (kDomainCap - fixed - weights_bytes - runtime_plans - corpus_charge) / 4)
+        (lifecycle ? kStateCopies : 0) >
+            kDomainCap - fixed - weights_bytes - runtime_plans - corpus_charge ||
+        node.StateCapacity() > (kDomainCap - fixed - weights_bytes - runtime_plans - corpus_charge -
+                                (lifecycle ? kStateCopies : 0)) /
+                                   4)
       return std::unexpected("weights and state exceed the checked domain");
     if (auto x = node.Start(llmp::base::Bytes(kDomainCap)); !x) return x;
     if (auto x = runner->Register(); !x) return x;
@@ -816,6 +947,137 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
       testing::Test::RecordProperty("corpus_selected_programs", report.str());
       return {};
     }
+    if (lifecycle) {
+      if (paged->extents().size() > 1024)
+        return std::unexpected("EXL3 immutable weight witness bound");
+      std::uint32_t compared_rows = 0, executed_steps = 0;
+      const auto run_step = [&](const pl::StepShape& shape, bool baseline) -> en::Status {
+        const auto& segment = shape.segments.front();
+        const std::vector<en::SegmentWork> work{
+            {.tokens = std::span(tokens).subspan(segment.past, segment.rows), .bytes = {}}};
+        const auto result = runner->RunStep(
+            {.shape = shape, .work = work, .step_bytes = {}, .advance = true, .ahead = {}});
+        if (!result) return std::unexpected(result.error().what);
+        if (result->outputs.size() != 1 ||
+            result->outputs.front().size() != segment.rows * row_bytes)
+          return std::unexpected("EXL3 lifecycle output geometry differs");
+        const auto& got = result->outputs.front();
+        for (std::size_t i = 0; i < got.size(); i += sizeof(float)) {
+          float value = 0;
+          std::memcpy(&value, got.data() + i, sizeof(value));
+          if (!std::isfinite(value)) return std::unexpected("EXL3 lifecycle nonfinite logit");
+        }
+        char* expected = life->oracle.data() + segment.past * row_bytes;
+        if (baseline) {
+          std::memcpy(expected, got.data(), got.size());
+        } else {
+          if (std::memcmp(expected, got.data(), got.size()) != 0)
+            return std::unexpected("EXL3 lifecycle differs from uninterrupted candidate");
+          compared_rows += segment.rows;
+        }
+        if (runner->slots().positions(0) != segment.past + segment.rows)
+          return std::unexpected("EXL3 lifecycle position differs");
+        ++executed_steps;
+        return {};
+      };
+      return node.WithRequest(
+          0, runner->slots().execution(), "EXL3 same-plan state control", [&]() -> en::Status {
+            for (const auto& shape : shapes)
+              if (auto x = run_step(shape, true); !x) return x;
+            if (auto x = SaveState(*life, false); !x) return x;
+            if (life->saved_positions != 161) return std::unexpected("baseline state position");
+            life->final_pages = life->saved_pages;
+            life->final_bytes = life->saved_bytes;
+            for (const auto id : paged->extents()) {
+              const auto extent = node.catalog().Describe(id);
+              if (!extent || extent->state != llmp::catalog::ExtentState::kResident)
+                return std::unexpected("baseline weight not resident");
+              life->weight_generations.emplace_back(extent->content_generation,
+                                                    extent->backing_generation);
+            }
+            if (auto x = runner->slots().Clear(0); !x) return x;
+            auto& slots = runner->slots();
+            if (slots.positions(0) || slots.spilled(0) || slots.restoring(0) ||
+                slots.verify_pending(0) || slots.borrowed(0))
+              return std::unexpected("EXL3 lifecycle clear incomplete");
+            for (const auto& shape : shapes) {
+              const auto past = shape.segments.front().past;
+              if (past == 153) {
+                if (auto x = slots.CopyState(0, life->state_readback, life->saved_pages, true); !x)
+                  return x;
+                if (std::memcmp(life->saved_state, life->state_readback,
+                                static_cast<std::size_t>(life->saved_bytes)) == 0)
+                  return std::unexpected("EXL3 checkpoint saw no changed state");
+                if (auto x = slots.PrepareRestore(0, life->saved_positions, life->saved_footprint,
+                                                  slots.kept_layout_id());
+                    !x)
+                  return x;
+                if (!slots.restoring(0)) return std::unexpected("EXL3 checkpoint not preparing");
+                if (auto x = slots.CopyState(0, life->saved_state, life->saved_pages, false); !x)
+                  return x;
+                if (auto x = slots.CompleteRestore(0, life->saved_positions); !x) return x;
+                if (auto x = CheckSavedState(*life); !x) return x;
+                testing::Test::RecordProperty("checkpoint_bytes_restored",
+                                              std::to_string(life->saved_bytes));
+                for (std::uint32_t replay = 145; replay < 153; ++replay)
+                  if (auto x = run_step(Shape(replay, 1), false); !x) return x;
+              }
+              if (past == 157) {
+                if (auto x = SaveState(*life, false); !x) return x;
+                if (auto x = slots.Spill(0); !x) return x;
+                if (!slots.spilled(0) || !slots.kept_whole(0))
+                  return std::unexpected("EXL3 spill did not retain whole state");
+                if (auto x = slots.Restore(0); !x) return x;
+                if (auto x = CheckSavedState(*life); !x) return x;
+                testing::Test::RecordProperty("spill_bytes_restored",
+                                              std::to_string(life->saved_bytes));
+              }
+              if (auto x = run_step(shape, false); !x) return x;
+              if (past == 0) {
+                if (!CanStoreFinalState(compared_rows, life->final_bytes))
+                  return std::unexpected("EXL3 baseline state cannot reuse live oracle bytes");
+                std::memcpy(life->oracle.data(), life->saved_state,
+                            static_cast<std::size_t>(life->final_bytes));
+                if (auto x = SaveState(*life, true); !x) return x;
+                if (life->saved_positions != 145)
+                  return std::unexpected("EXL3 checkpoint position");
+              }
+            }
+            if (slots.positions(0) != 161 || compared_rows != 169 || executed_steps != 42 ||
+                !SameRanges(slots.live(0, 0).used_ranges(), life->final_pages))
+              return std::unexpected("EXL3 lifecycle final inventory differs");
+            if (auto x = slots.CopyState(0, life->state_readback, life->final_pages, true); !x)
+              return x;
+            if (std::memcmp(life->oracle.data(), life->state_readback,
+                            static_cast<std::size_t>(life->final_bytes)) != 0)
+              return std::unexpected("EXL3 final state differs from uninterrupted candidate");
+            for (std::size_t i = 0; i < paged->extents().size(); ++i) {
+              const auto extent = node.catalog().Describe(paged->extents()[i]);
+              if (!extent || extent->state != llmp::catalog::ExtentState::kResident ||
+                  life->weight_generations[i] !=
+                      std::pair{extent->content_generation, extent->backing_generation})
+                return std::unexpected("EXL3 weight identity changed across state operations");
+            }
+            std::ostringstream report;
+            for (const auto& record : life->corpus_plans) {
+              if (record.implementations.empty() || record.runs != (record.rows == 145 ? 2U : 40U))
+                return std::unexpected("EXL3 lifecycle selected execution inventory differs");
+              report << "rows=" << record.rows
+                     << " bound_plan=" << llmp::base::ToHex(record.identity)
+                     << " run_or_record=" << record.runs << '\n';
+              for (const auto& name : record.implementations) report << name << '\n';
+            }
+            testing::Test::RecordProperty("lifecycle_selected_programs", report.str());
+            testing::Test::RecordProperty("lifecycle_compared_rows", "169");
+            testing::Test::RecordProperty("lifecycle_executed_steps", "42");
+            testing::Test::RecordProperty("lifecycle_final_positions", "161");
+            testing::Test::RecordProperty("lifecycle_final_state_bytes",
+                                          std::to_string(life->final_bytes));
+            testing::Test::RecordProperty("lifecycle_immutable_weight_extents",
+                                          std::to_string(paged->extents().size()));
+            return {};
+          });
+    }
     std::uint32_t completed_steps = 0;
     std::uint32_t compared_rows = 0;
     return node.WithRequest(
@@ -864,5 +1126,11 @@ TEST(ComponentRunnerExl3Gpu, Full161TrajectoryMatchesSealedLegacy) { RunControl(
 TEST(ComponentRunnerExl3Gpu, FixedTeacherCorpusScoresEveryTarget) { RunControl(false, true); }
 TEST(ComponentRunnerExl3Gpu, MixedRate45GFixedTeacherCorpusScoresEveryTarget) {
   RunControl(false, true, true);
+}
+TEST(ComponentRunnerExl3Gpu, SameImplementation40GCheckpointSpillContinuation) {
+  RunControl(true, false, false, true);
+}
+TEST(ComponentRunnerExl3Gpu, SameImplementation45GCheckpointSpillContinuation) {
+  RunControl(true, false, true, true);
 }
 }  // namespace

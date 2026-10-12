@@ -251,5 +251,162 @@
       "7/1 chunks differ from FP16 8/3 and original eager/no-cache arithmetic",
       "no new performance, O-profile, lifecycle, Tier C or deletion claim"
     ]
+  },
+  "G5c4": {
+    "date": "2026-10-12",
+    "scope": "both approved EXL3 G fixtures, same-implementation checkpoint/spill continuation at fixed145+16 schedule",
+    "host": "spark",
+    "ids_sha256": "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c",
+    "teacher_file_ids": 1040,
+    "used_teacher_ids": 161,
+    "comparison": "all output and initialized state bytes exact to the same candidate uninterrupted reference; no cross-library oracle",
+    "focused": {
+      "native_build": "PASS",
+      "input_cases": 3,
+      "selected_cases": 6,
+      "failures": 0,
+      "skips": 0
+    },
+    "actual": {
+      "40g": {
+        "result_sha256": "2d05d11852a731da781380031aed3d9528bf7b408eb7c90300006ab3e8f46294",
+        "status": "PASS",
+        "raw_cases": 1,
+        "failures": 0,
+        "skips": 0,
+        "witnesses": {
+          "corpus_artifact_id": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+          "corpus_exl3_rates": "4:168,8:1",
+          "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+          "lifecycle_bound_model": "e96d1a031714920f601970ede6847811d0d8ef8750c49f902f949bdc5d6a3e12",
+          "checkpoint_bytes_restored": "6291456",
+          "spill_bytes_restored": "6291456",
+          "lifecycle_compared_rows": "169",
+          "lifecycle_executed_steps": "42",
+          "lifecycle_final_positions": "161",
+          "lifecycle_final_state_bytes": "6291456",
+          "lifecycle_immutable_weight_extents": "292"
+        },
+        "selected_programs": {
+          "145": {
+            "identity": "483f3be09037c201718387cc62201ed399c69b2da526bbd09da12caf533abd49",
+            "run_or_record": 2,
+            "implementation_count": 681
+          },
+          "1": {
+            "identity": "710b48aa1138f2f02eeca11a6326f618f4bd11b4680cd04dc7bbf9ef879e7f62",
+            "run_or_record": 40,
+            "implementation_count": 657
+          }
+        },
+        "memory_peak_observed": 943190016,
+        "compute_processes_after": 0,
+        "all_guards": "PASS"
+      },
+      "45g": {
+        "result_sha256": "96cbec081fe7cdaf933623829fc9883ad85d83fcd1a5c66db37d5bf6e2fff1ff",
+        "status": "PASS",
+        "raw_cases": 1,
+        "failures": 0,
+        "skips": 0,
+        "witnesses": {
+          "corpus_artifact_id": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+          "corpus_exl3_rates": "4:42,5:118,6:8,8:1",
+          "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+          "lifecycle_bound_model": "673a3c6a28834c16271773fa42c48cd44617447558537edb8307d330498950ce",
+          "checkpoint_bytes_restored": "6291456",
+          "spill_bytes_restored": "6291456",
+          "lifecycle_compared_rows": "169",
+          "lifecycle_executed_steps": "42",
+          "lifecycle_final_positions": "161",
+          "lifecycle_final_state_bytes": "6291456",
+          "lifecycle_immutable_weight_extents": "302"
+        },
+        "selected_programs": {
+          "145": {
+            "identity": "af36bc9fe7e38635c551f08b5a6427a73a4106b8fd5b42d2d22804d4a14f8935",
+            "run_or_record": 2,
+            "implementation_count": 681
+          },
+          "1": {
+            "identity": "3800159b2c781bbf11c6b65075757124dd19e1b8213c9583ffde868aa7440234",
+            "run_or_record": 40,
+            "implementation_count": 657
+          }
+        },
+        "memory_peak_observed": 943714304,
+        "compute_processes_after": 0,
+        "all_guards": "PASS"
+      }
+    },
+    "funding": {
+      "host_allowance_bytes": 4294967296,
+      "domain_bytes": 8589934592,
+      "physical_margin_bytes": 6442450944,
+      "single_reference_buffer_bytes": 97846784,
+      "additional_pinned_state_bytes": 33554432,
+      "state_metadata_bound_bytes": 1048576,
+      "plan_report_bound_bytes": 8388608,
+      "external_host_cache_cap_bytes": 10737418240,
+      "zero_swap": true,
+      "memory_peak_scope": "process and page cache; not total device occupancy"
+    },
+    "main_integration": {
+      "native_build": "PASS",
+      "focused_cases": 9,
+      "failures": 0,
+      "skips": 0,
+      "build_result_sha256": "29161b1e8050d19015bd3621e400d9104d4e0f5f97b12880206bbe1407cb70f9",
+      "actual": {
+        "40g": {
+          "result_sha256": "ddbe4e485ecb995824c1f8ffe564f0f90c5df1ac7c1f7ba7abc4cfa1b3605617",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "witnesses": {
+            "corpus_artifact_id": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+            "corpus_exl3_rates": "4:168,8:1",
+            "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+            "lifecycle_bound_model": "e96d1a031714920f601970ede6847811d0d8ef8750c49f902f949bdc5d6a3e12",
+            "checkpoint_bytes_restored": "6291456",
+            "spill_bytes_restored": "6291456",
+            "lifecycle_compared_rows": "169",
+            "lifecycle_executed_steps": "42",
+            "lifecycle_final_positions": "161",
+            "lifecycle_final_state_bytes": "6291456",
+            "lifecycle_immutable_weight_extents": "292"
+          },
+          "all_guards": "PASS",
+          "compute_processes_after": 0
+        },
+        "45g": {
+          "result_sha256": "35276f571952561fcaa3cb95bd73c6f1c4585610b970661384988ede071529bf",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "witnesses": {
+            "corpus_artifact_id": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+            "corpus_exl3_rates": "4:42,5:118,6:8,8:1",
+            "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+            "lifecycle_bound_model": "673a3c6a28834c16271773fa42c48cd44617447558537edb8307d330498950ce",
+            "checkpoint_bytes_restored": "6291456",
+            "spill_bytes_restored": "6291456",
+            "lifecycle_compared_rows": "169",
+            "lifecycle_executed_steps": "42",
+            "lifecycle_final_positions": "161",
+            "lifecycle_final_state_bytes": "6291456",
+            "lifecycle_immutable_weight_extents": "302"
+          },
+          "all_guards": "PASS",
+          "compute_processes_after": 0
+        }
+      }
+    },
+    "remaining": [
+      "kept-state/restart",
+      "weight eviction/relocation",
+      "broader shapes/profiles and historical Tier C",
+      "performance and legacy deletion"
+    ]
   }
 }

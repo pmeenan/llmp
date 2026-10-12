@@ -37,7 +37,8 @@ checks the separate physical margin before construction.
 The actual screen took 964 ms; this is functional evidence, not a speed gate.
 That reconstruction screen alone does not qualify packed products, other
 profiles or lifecycle behavior; the later bounded packed screen is below.
-Historical Tier C, spill/restore/kept-state and deletion remain open.
+Historical Tier C, broader lifecycle behavior and deletion remain open;
+the bounded same-implementation checkpoint/spill control is recorded below.
 
 On 2026-10-12, G5b2a extended the shared 4.0-bpw G control to the
 complete 145-token prefill and 16 one-row suffix steps. A fresh native
@@ -109,4 +110,41 @@ passed, with zero compute processes left afterward. Main then built natively
 and passed the same eight affected controls plus both the 4.0- and 4.5-bpw G
 scoring cases, again with zero failures or skips and all guards passing.
 O profiles, broader packed shapes,
-Tier C, EXL3 state/spill/restore/kept-state and legacy deletion remain open.
+Tier C, broader EXL3 lifecycle behavior and legacy deletion remain open.
+
+## Same-implementation checkpoint/spill continuation (G5c4)
+
+Both approved G fixtures now pass a bounded state control through the same
+shared runner. Each case first runs the fixed 145-row prefill and 16 scalar
+suffix steps uninterrupted, retaining its own full-vocabulary output reference.
+After clearing state, a second evaluation compares all 161 rows. A checkpoint
+at 145 is restored after eight real decode writes; replaying those eight rows
+also matches exactly. Spill/restore at 157 preserves the complete used state,
+and the final state at 161 matches the uninterrupted run byte for byte.
+
+Each fixture compares 169 full-vocabulary rows in total, executes 42 steps,
+and restores/compares 6,291,456 bytes at each state check. The 40G case retains
+292 immutable weight extents; 45G retains 302. Both record artifact-bound model
+identity and actual selected plan identities/names: the 145-row plan runs twice
+and the scalar plan runs 40 times. There is no external quantized-library output
+oracle and no change to arithmetic or production dispatch.
+
+One 97,846,784-byte output buffer holds the uninterrupted reference. Only after
+the second prefill has compared all 145 rows can its retired prefix bytes store
+the final-state reference; the still-live suffix rows remain untouched. Two
+16-MiB pinned state-copy buffers are included explicitly in the pre-Start
+8-GiB domain inequality and remain owned through completion. The original
+4-GiB host allowance covers the bounded metadata and plan records, and the
+separate 6-GiB physical margin remains. Unknown retirement retains the complete
+owner graph. The external 10-GiB zero-swap process/cache cap is unchanged.
+
+Spark A passed the native target build, three input controls and six selected
+controls, followed by both actual lifecycle cases with zero failures or skips.
+All source, input, recipe and binary guards passed, and no compute processes
+remained after either case. Observed process/cache peaks were 943,190,016 bytes
+(40G) and 943,714,304 bytes (45G); these are not total device occupancy.
+Main built natively and passed the same nine affected controls and both
+lifecycle cases, with all guards passing and zero failures or skips. This
+qualifies only the stated same-implementation
+checkpoint/spill continuation; kept-state/restart, eviction/relocation,
+broader shapes/profiles, Tier C, performance and deletion remain open.

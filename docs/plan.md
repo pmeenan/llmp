@@ -1875,6 +1875,18 @@ each is checked against the design as M3.6 proceeds.
                   checkpoint state before writes. All full-vocabulary rows match.
                   Address relocation, kept-state/restart and EXL3 remain open
                   ([evidence](experiments/m36-qwen2/README.md)).
+            - [x] **G5c4 — EXL3 same-implementation checkpoint/spill:** both
+                  approved G fixtures create an uninterrupted 161-row reference
+                  with their own selected programs, then compare all 161 rows
+                  plus eight rewind/replay rows exactly. Checkpoint at 145,
+                  spill/restore at 157 and final state at 161 each preserve
+                  6,291,456 initialized state bytes, with unchanged weights
+                  and recorded plan identities. Nine focused controls and both
+                  actual cases pass without skips; main builds and passes the
+                  same nine checks and both lifecycle cases
+                  ([evidence](experiments/m36-exl3-selected/README.md)).
+                  Kept-state/restart, relocation/eviction, broader shapes,
+                  Tier C and deletion remain open.
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,
