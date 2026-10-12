@@ -65,6 +65,9 @@ struct ComponentSourceOptions {
   // Require graph-capture-safe implementations. Uncaptured callers may
   // opt out; their runner must disable graph capture too.
   bool require_capture = true;
+  // Diagnostic validation only, after the real backend lowers both measuring
+  // and bound plans. No callback means the ordinary path is unchanged.
+  kernels::ProgramValidator validate_program{};
 };
 
 class ComponentStepSource final : public StepSource {

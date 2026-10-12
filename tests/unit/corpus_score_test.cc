@@ -367,6 +367,19 @@ TEST_F(CorpusRunner, UnknownRunIsTerminalAndWholeOwnerRetires) {
   EXPECT_EQ(life->source->built().size(), count);
 }
 
+TEST_F(CorpusRunner, BuildRefusalReportsActualSlotRowsAndSourceReason) {
+  Make();
+  ASSERT_NE(life->scorer, nullptr);
+  life->source->options().refuse_build = [](const pl::StepShape&) { return true; };
+  auto result = life->scorer->Step();
+  ASSERT_FALSE(result);
+  EXPECT_NE(result.error().find("slot=2 past=0 rows=3 kept=0 bytes=0 position=0"),
+            std::string::npos);
+  EXPECT_NE(result.error().find("the fake refuses"), std::string::npos);
+  EXPECT_FALSE(life->scorer->complete());
+  EXPECT_FALSE(life->scorer->Step());
+}
+
 TEST_F(CorpusRunner, AdmissionRefusalLeavesSlotsAndCallerIdsUntouched) {
   const auto before = life->node.host_charged();
   auto score =
@@ -439,6 +452,81 @@ TEST_F(CorpusRunner, SynchronousSinkCancellationCannotBecomeSuccessfulCompletion
   EXPECT_FALSE(life->scorer->Step());
   EXPECT_EQ(life->source->built().size(), built);
   EXPECT_EQ(life->score_count, 1U);
+}
+
+TEST_F(CorpusRunner, FiniteRowSinkIncludesTerminalRowsAndActualOwnerCoordinates) {
+  std::array<std::uint32_t, 2> positions{};
+  auto made = ts::CorpusScore::Make(
+      life->node, *life->runner, *life->composer, Documents(), {kVocabulary, 3}, {},
+      [&](std::uint32_t document, std::uint32_t slot, std::uint32_t position,
+          std::span<const float> row) -> en::Status {
+        if (document >= 2) return std::unexpected("unexpected document");
+        const auto docs = Documents();
+        EXPECT_EQ(slot, docs[document].slot);
+        EXPECT_EQ(position, positions[document]++);
+        EXPECT_EQ(row.size(), kVocabulary);
+        const auto chosen = ts::FakeLogit(docs[document].tokens[position],
+                                          static_cast<std::int32_t>(position), kVocabulary);
+        for (std::size_t i = 0; i < row.size(); ++i)
+          EXPECT_EQ(row[i], static_cast<std::int32_t>(i) == chosen ? 1.0F : 0.0F);
+        return {};
+      });
+  ASSERT_TRUE(made);
+  life->scorer = std::move(*made);
+  for (int i = 0; i < 3; ++i) ASSERT_TRUE(life->scorer->Step());
+  EXPECT_TRUE(life->scorer->complete());
+  EXPECT_EQ(positions, (std::array<std::uint32_t, 2>{7, 4}));
+  EXPECT_EQ(life->scorer->result().inputs, 11U);
+  EXPECT_EQ(life->scorer->result().targets, 9U);
+}
+
+TEST_F(CorpusRunner, RowSinkCancellationStopsBeforeNllAndCannotPublishCompletion) {
+  std::uint32_t observed = 0, losses = 0;
+  auto made = ts::CorpusScore::Make(
+      life->node, *life->runner, *life->composer, Documents(), {kVocabulary, 8},
+      [&](const ts::CorpusTargetScore&) -> en::Status {
+        ++losses;
+        return {};
+      },
+      [&](std::uint32_t, std::uint32_t, std::uint32_t, std::span<const float>) -> en::Status {
+        ++observed;
+        life->scorer->Cancel();
+        return {};
+      });
+  ASSERT_TRUE(made);
+  life->scorer = std::move(*made);
+  EXPECT_FALSE(life->scorer->Step());
+  EXPECT_FALSE(life->scorer->complete());
+  EXPECT_EQ(observed, 1U);
+  EXPECT_EQ(losses, 0U);
+  EXPECT_EQ(life->scorer->result().inputs, 0U);
+  const auto built = life->source->built().size();
+  EXPECT_FALSE(life->scorer->Step());
+  EXPECT_EQ(life->source->built().size(), built);
+}
+
+TEST_F(CorpusRunner, RowSinkRefusalIsTerminalIncludingTheUnscoredLastRow) {
+  std::uint32_t observed = 0;
+  auto docs = Documents();
+  auto made = ts::CorpusScore::Make(life->node, *life->runner, *life->composer,
+                                    std::span(docs).first(1), {kVocabulary, 8}, {},
+                                    [&](std::uint32_t, std::uint32_t, std::uint32_t position,
+                                        std::span<const float>) -> en::Status {
+                                      ++observed;
+                                      if (position == 6)
+                                        return std::unexpected("terminal row witness refused");
+                                      return {};
+                                    });
+  ASSERT_TRUE(made);
+  life->scorer = std::move(*made);
+  auto result = life->scorer->Step();
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), "terminal row witness refused");
+  EXPECT_FALSE(life->scorer->complete());
+  EXPECT_EQ(observed, 7U);
+  EXPECT_EQ(life->scorer->result().targets, 6U);
+  EXPECT_FALSE(life->scorer->Step());
+  EXPECT_EQ(observed, 7U);
 }
 
 }  // namespace

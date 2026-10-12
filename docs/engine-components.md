@@ -1314,6 +1314,22 @@ This source/plan/state integration does not grant joined repeat-pending
 capability or prove the complete future/companion admission closure. Those
 controls and family quality, state, swap and matched 1% gates remain necessary.
 
+Internal diagnostics may validate the real lowerer's unchanged program through
+an optional synchronous read-only callback. It runs after both measurement and
+bound lowering, can refuse, and cannot replace the backend, selected program or
+required owner declaration. The installing harness prepays and retains its
+metadata through complete retirement. Test scoring also supports a synchronous
+finite-row witness, including the last unscored row; sink refusal or cancellation
+is terminal before further scoring or successful completion.
+
+The internal Qwen target-only scoring envelope requires the actual sole target
+stage, four slots, context 512, chunk two, read alignment 256, no drafter or
+speculation, and its exact owned numerical domain. Setup additionally measures
+full-head score shapes for the joined cohort and each fallback owner. This
+does not enable ordinary serving, MTP, automatic tuning or a new numerical
+default. Its bounded [secondary quality/state screen](experiments/m36-numerical-audit/qwen-joined-score.md)
+remains separate from original-reference and migration qualification.
+
 ### The model spec
 
 A model is a spec in its artifact's manifest, written by the importer and

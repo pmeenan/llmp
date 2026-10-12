@@ -48,12 +48,18 @@ ModelOpt admission remain open. The supplemental base-lease prerequisite landed 
 145 focused host controls, including cancellation and unknown-retirement cases.
 The substantive routed continuation is being implemented independently.
 
-The generic reserved-weight alignment carry passes main native build and
+The generic reserved-weight alignment landed in `b9833111` and passes main native build and
 108 focused host controls. It provides actual checked physical facts without
 installing tuning. The [Qwen secondary screen](experiments/m36-numerical-audit/qwen-joined-score.md)
 records 4.56% lower perplexity on 128 targets and no clear short-screen timing
 separation. Actual decode continuation, broader quality and serving gates
 remain open; the original unquantized reference is still missing.
+
+The shared real-program validator, full-head row witness and closed target-only
+scoring factory pass main native build and 127 focused host controls. They
+activate no numerical policy or ordinary serving domain. A narrow private
+Qwen51 actual Plain decode continuation and same-candidate checkpoint/spill
+control is independently reviewed and awaiting its focused build/execution.
 
 The shared phase-admission correction landed in `d8aa6388`, with a full native
 build and 60 affected host controls: scoring and decode use their actual declared

@@ -41,6 +41,7 @@
 #include <format>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <print>
 #include <set>
@@ -1671,6 +1672,88 @@ TEST(GgmlLowerQwen38Test, FastCapabilitiesPreserveTheOperationsParameters) {
     q.params = std::as_bytes(std::span(&pooled, 1));
     EXPECT_FALSE(pool->accepts(q));
   }
+}
+
+// The validator sees the actual unchanged lower result in both address modes.
+// A refusal destroys an unsubmitted program; it never provides a replacement.
+class ValidationProgram final : public kn::StepProgram {
+ public:
+  explicit ValidationProgram(std::uint32_t& destroyed) : destroyed_(destroyed) {}
+  ~ValidationProgram() override { ++destroyed_; }
+  std::uint64_t scratch_bytes() const override { return 0; }
+  std::uint64_t host_bytes() const override { return sizeof(*this); }
+  std::uint64_t launches() const override { return 0; }
+  std::span<const kn::InputSlot> inputs() const override { return {}; }
+  std::span<const kn::OutputSlot> outputs() const override { return {}; }
+  std::span<const kn::TensorUse> tensors() const override { return {}; }
+  std::expected<void, kn::StepFailure> Bind(kn::StepLaunch&) override { return {}; }
+  std::expected<void, kn::StepFailure> Run(kn::StepLaunch&,
+                                           llmp::providers::NativeStream) const override {
+    return std::unexpected(kn::StepFailure{.detail = "validation control never executes"});
+  }
+
+ private:
+  std::uint32_t& destroyed_;
+};
+
+TEST(GgmlLowerQwen38Test, ReadOnlyValidationSeesRealProgramAndRefusesBothAddressModes) {
+  const auto& im = ImportOf(fx::Form::kCutlass);
+  auto registry = PlanningRegistry();
+  std::uint32_t lowers = 0, validations = 0, destroyed = 0;
+  bool refuse = false, lower_refuses = false;
+  const kn::StepProgram* produced = nullptr;
+  kn::Addresses addresses{};
+  pl::StepShape shape{.phase = pl::Phase::kScore,
+                      .segments = {{.rows = 2, .read_cells = 256, .outputs = 2}}};
+  auto source = llmp::engine::ComponentStepSource::Create(
+      {.spec = &*im.spec,
+       .bindings = {.tensors = im.source.tensors, .state = &im.layouts.front()},
+       .slots = 1,
+       .policy = im.policy,
+       .backend = {.registry = &registry,
+                   .device = Gb10(),
+                   .written = kg::WrittenBytes,
+                   .lower = [&](const kn::LowerInput&)
+                       -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+                     ++lowers;
+                     if (lower_refuses) return std::unexpected("real lower refused");
+                     auto result = std::make_unique<ValidationProgram>(destroyed);
+                     produced = result.get();
+                     return result;
+                   }},
+       .validate_program = [&](const kn::LowerInput& input,
+                               const kn::StepProgram& program) -> std::expected<void, std::string> {
+         ++validations;
+         EXPECT_EQ(&program, produced);
+         EXPECT_EQ(input.addresses.activations, addresses.activations);
+         EXPECT_EQ(input.shape, shape);
+         EXPECT_EQ(input.step.graph.tensor(input.step.logits).shape().ne[0],
+                   md::Qwen38Flash().vocab);
+         if (refuse) return std::unexpected("full-head observer refused");
+         return {};
+       }});
+  ASSERT_TRUE(source) << (source ? "" : source.error());
+  for (const auto base : {std::uint64_t{0}, std::uint64_t{1} << 42U}) {
+    addresses.activations = base;
+    refuse = false;
+    {
+      auto accepted = (*source)->Build(shape, addresses);
+      ASSERT_TRUE(accepted) << (accepted ? "" : accepted.error());
+      EXPECT_EQ(accepted->get(), produced);
+    }
+    refuse = true;
+    auto rejected = (*source)->Build(shape, addresses);
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error(), "full-head observer refused");
+  }
+  EXPECT_EQ(lowers, 4U);
+  EXPECT_EQ(validations, 4U);
+  EXPECT_EQ(destroyed, 4U);
+  lower_refuses = true;
+  auto rejected = (*source)->Build(shape, addresses);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error(), "real lower refused");
+  EXPECT_EQ(validations, 4U);
 }
 
 // Actual component emission and selection, with synthetic reserved addresses:

@@ -529,6 +529,92 @@ TEST(Qwen38EngineServingGpu, BadPaymentAndSlotCountRefuseBeforeModelEffects) {
   }
 }
 
+// No provider open or artifact read on malformed envelopes. The positive
+// request reaches ordinary artifact authentication rather than claiming success.
+TEST(Qwen38EngineServingGpu, JoinedScoringRequiresExactOwnedTargetEnvelope) {
+  en::PagedNode node{{}};
+  cfg::ModelEntry entry;
+  entry.name = "missing";
+  entry.artifact = std::string(64, '0');
+  rt::ModelSettings original;
+  original.architecture = "qwen4exp";
+  original.max_slots.value = 4;
+  original.context.value = 512;
+  original.prefill_chunk.value = 2;
+  original.wave_read_align.value = 256;
+  original.speculation.value = false;
+  en::NumericalStage target{.stage = 0,
+                            .name = "target",
+                            .uses = {en::NumericalUse::kDecode, en::NumericalUse::kScore},
+                            .phases = {{.phase = llmp::planner::Phase::kPrefill,
+                                        .max_owners = 4,
+                                        .max_owner_rows = 2,
+                                        .max_total_rows = 8},
+                                       {.phase = llmp::planner::Phase::kDecode,
+                                        .max_owners = 4,
+                                        .max_owner_rows = 1,
+                                        .max_total_rows = 4},
+                                       {.phase = llmp::planner::Phase::kScore,
+                                        .max_owners = 4,
+                                        .max_owner_rows = 2,
+                                        .max_total_rows = 8}}};
+  for (int mutation = 0; mutation < 12; ++mutation) {
+    SCOPED_TRACE(mutation);
+    auto settings = original;
+    auto declared = target;
+    auto model = entry;
+    rt::ComponentBuildOptions options{.target_policy = std::nullopt, .diagnostic_solo = true};
+    switch (mutation) {
+      case 1:
+        settings.max_slots.value = 3;
+        break;
+      case 2:
+        settings.context.value = 513;
+        break;
+      case 3:
+        settings.prefill_chunk.value = 8;
+        break;
+      case 4:
+        settings.wave_read_align.value = 512;
+        break;
+      case 5:
+        settings.speculation.value = true;
+        break;
+      case 6:
+        model.drafter = std::string(64, '1');
+        break;
+      case 7:
+        declared.name = "other";
+        break;
+      case 8:
+        declared.phases.back().max_owner_rows = 3;
+        break;
+      case 9:
+        declared.phases.back().row_invariant = true;
+        break;
+      case 10:
+        options.diagnostic_solo = false;
+        break;
+      default:
+        break;
+    }
+    if (mutation != 11) {
+      auto domain = en::NumericalDomain::Create({std::move(declared)});
+      ASSERT_TRUE(domain);
+      options.execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain));
+    }
+    auto build = rt::ComponentLlmBuild(node, "/nonexistent-qwen-scoring-control", model, 0,
+                                       std::move(options));
+    auto result = build(settings);
+    ASSERT_FALSE(result);
+    if (mutation == 0)
+      EXPECT_NE(result.error().find("artifact"), std::string::npos);
+    else
+      EXPECT_EQ(result.error(),
+                "the Qwen component qualification requires exactly one configured slot");
+  }
+}
+
 TEST(Qwen38EngineServingGpu, NativeMtpDepthTwoFullLogits) { Screen(kCutlass, true, true, 2); }
 TEST(Qwen38EngineServingGpu, NativeMtpDefaultTokenSchedule) { Screen(kCutlass, true, false, 3); }
 TEST(Qwen38EngineServingGpu, NativeGgmlExpertsPlain) { Screen(kGgml, false, true, 2); }

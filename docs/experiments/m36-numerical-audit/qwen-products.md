@@ -243,3 +243,40 @@ retains the completed private diagnostic's measurements and limitations.
 Raw evidence remains outside Git in the coordination root's
 `weight-alignment-current-main07/results`. Family admission and migration gates
 remain open.
+
+## Shared quality witnesses — 2026-10-12
+
+The optional synchronous program validator sees the actual backend lowerer's
+unchanged result in both measurement and bound modes. It may refuse, but cannot
+replace the backend, program or required owned declaration. Caller-captured
+metadata remains separately prepaid and retained through complete retirement.
+The shared test scorer also supports borrowed complete finite vocabulary rows,
+including a terminal input's row with no next target. Actual document, owner and
+input-position coordinates are checked. Row refusal or cancellation is terminal
+before further loss scoring or successful completion; retained hashes and reports
+are caller-paid. These interfaces introduce no alternative execution engine.
+
+The internal factory admits the exact owned target-only Qwen diagnostic envelope:
+four slots, context 512, chunk two, read alignment 256, no drafter/speculation and
+one actual target stage. Setup retains its ordinary six prefill/decode classes
+and additionally measures ten full-head score shapes for the cohort and each
+fallback owner. No policy, typed tuning pins, production serving envelope or
+ordinary runtime route is enabled. The completed private
+[secondary screen](qwen-joined-score.md) used these same interfaces; its model
+and state observations remain private-source evidence, not a final-main GPU run.
+
+Root's full native main build passes on Spark A, followed by 127 focused host
+controls: ModelRunner 54, GgmlLowerQwen38 13, CorpusScore 16, Decoding 29,
+ExecutionContract 13 and two plain factory-refusal controls. The last two run
+from a GPU-labeled binary but open no provider or GPU and read no artifact
+payload: the positive envelope deliberately reaches authentication of a
+nonexistent artifact and refuses. All raw cases and source/recipe/binary guards
+pass with no failures or skips. No model inference or timing repeats ran.
+
+- Main build/host receipt SHA-256: `f28379ea8cc524b727b286683481c2dfdf7dd9f2286a15fe92d5ead0dd1be433`.
+- Reviewed current source carry SHA-256: `d8ac1134cfb8445b7681b865e8d02bd7d7047f1c4af6bb5e1f4c9954d3ac1f75`.
+- Current carry/recipe review SHA-256: `71083beb5b423c5863ba204771aa901e0e1d7ace18b327d464cc60b4b7fb77fb`.
+
+Raw evidence remains outside Git under `qwen-scoring-seams-current-main04/results`
+in the coordination root. Real decode continuation, original-reference quality,
+long-context, MTP, serving and matched 1% migration qualification remain open.

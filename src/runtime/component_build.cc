@@ -187,6 +187,35 @@ EngineLlmParts::ChatSlice ChatSliceOf(std::string_view architecture) {
 // transaction's (docs/experiments/gemma-assistant-throughput).
 constexpr std::uint32_t kAssistantDepth = 3;
 
+// Closed internal scoring experiment, not a serving route. A non-null domain
+// alone is not authority to lift the ordinary single-owner diagnostic bound.
+bool JoinedScoreEnvelope(const ModelSettings& settings, std::string_view drafter,
+                         const ComponentBuildOptions& options) {
+  if (!options.diagnostic_solo || !options.execution_domain || !drafter.empty() ||
+      settings.speculation.value || settings.max_slots.value != 4 ||
+      settings.context.value != 512 || settings.prefill_chunk.value != 2 ||
+      settings.wave_read_align.value != 256)
+    return false;
+  const auto stages = options.execution_domain->stages();
+  constexpr std::array uses{engine::NumericalUse::kDecode, engine::NumericalUse::kScore};
+  if (stages.size() != 1 || stages[0].stage != 0 || stages[0].name != "target" ||
+      !std::ranges::equal(stages[0].uses, uses))
+    return false;
+  constexpr std::array phases{engine::NumericalPhase{.phase = planner::Phase::kPrefill,
+                                                     .max_owners = 4,
+                                                     .max_owner_rows = 2,
+                                                     .max_total_rows = 8},
+                              engine::NumericalPhase{.phase = planner::Phase::kDecode,
+                                                     .max_owners = 4,
+                                                     .max_owner_rows = 1,
+                                                     .max_total_rows = 4},
+                              engine::NumericalPhase{.phase = planner::Phase::kScore,
+                                                     .max_owners = 4,
+                                                     .max_owner_rows = 2,
+                                                     .max_total_rows = 8}};
+  return std::ranges::equal(stages[0].phases, phases);
+}
+
 }  // namespace
 
 bool OnComponentEngine(std::string_view architecture) {
@@ -201,7 +230,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
     const bool solo = settings.architecture == "qwen4exp";
-    if (solo && (!options.diagnostic_solo || settings.max_slots.value != 1))
+    const bool joined_score = solo && JoinedScoreEnvelope(settings, drafter_id, options);
+    if (solo && (!options.diagnostic_solo || (settings.max_slots.value != 1 && !joined_score)))
       return Error("the Qwen component qualification requires exactly one configured slot");
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
@@ -298,6 +328,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       hold->spec = std::move(*synthesized);
     }
     for (const spec::Source& s : hold->sources) hold->tables.emplace_back(s.tensors);
+    if (joined_score &&
+        (hold->spec.stages.size() != 1 || hold->spec.stages.front().name != "target"))
+      return Error("joined scoring requires the actual single target stage");
     if (auto valid = components::ValidateSpec(hold->spec, hold->tables); !valid) {
       return Error(valid.error());
     }
@@ -345,6 +378,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     if (composition.prompts_alone) caps->join_prefill = false;
     if (composition.owners_alone) caps->max_segments = 1;
+    if (joined_score && caps->max_segments < 4)
+      return Error("the actual component capability cannot join the scoring cohort");
     // A verify's rows: the anchor and every draft.
     const std::uint32_t verify_rows = speculate ? depth + 1 : 0;
     const std::uint32_t read_align = solo ? settings.wave_read_align.value : 256;
@@ -395,6 +430,23 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
             add(shape(1, planner::Phase::kDraft, owners, rows, 1, true));
             add(shape(1, planner::Phase::kDraft, owners, rows, 0, false));
           }
+        }
+      }
+    }
+    if (joined_score) {
+      // Full-head scored shapes are additional to ordinary prefill/decode
+      // measurements. Include each real fallback slot, not just owner zero.
+      for (const std::uint32_t rows : {1U, 2U}) {
+        auto scored = shape(0, planner::Phase::kScore, 4, rows, rows, false);
+        for (auto& segment : scored.segments) {
+          segment.past = 256 - rows;
+          segment.read_cells = 256;
+        }
+        setup.push_back(scored);
+        for (const auto& segment : scored.segments) {
+          auto single = scored;
+          single.segments = {segment};
+          setup.push_back(std::move(single));
         }
       }
     }
@@ -515,7 +567,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
            .slots = slots,
            .policy = stage == 0 ? target_policy : std::nullopt,
            .backend = hold->backend->Backend(),
-           .execution_domain = options.execution_domain});
+           .execution_domain = options.execution_domain,
+           .validate_program = options.validate_program});
       if (!made) return Error(made.error());
       sources.push_back(std::move(*made));
     }

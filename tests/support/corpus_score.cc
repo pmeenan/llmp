@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <format>
 #include <limits>
 #include <utility>
 
@@ -56,7 +57,8 @@ std::expected<std::uint64_t, std::string> CorpusScore::Bound(
 
 std::expected<std::unique_ptr<CorpusScore>, std::string> CorpusScore::Make(
     engine::PagedNode& node, engine::ModelRunner& runner, const engine::WaveComposer& composer,
-    std::span<const CorpusDocument> documents, CorpusScoreLimits limits, CorpusScoreSink sink) {
+    std::span<const CorpusDocument> documents, CorpusScoreLimits limits, CorpusScoreSink sink,
+    CorpusRowSink row_sink) {
   auto bound = Bound(documents, limits);
   if (!bound) return std::unexpected(bound.error());
   if (runner.slots().stages() != 1) return Error("corpus scorer requires a target-only runner");
@@ -84,6 +86,7 @@ std::expected<std::unique_ptr<CorpusScore>, std::string> CorpusScore::Make(
   if (!decoder) return std::unexpected(decoder.error());
   out->decoder_.emplace(std::move(*decoder));
   out->sink_ = std::move(sink);
+  out->row_sink_ = std::move(row_sink);
   return out;
 }
 CorpusScore::~CorpusScore() {
@@ -144,7 +147,13 @@ std::expected<bool, std::string> CorpusScore::Step() {
     if (out.refusal || out.discarded || !out.joined.empty() || !out.tokens.empty() ||
         out.kept != rows || out.outputs.size() != rows * limits_.vocabulary * sizeof(float) ||
         runner_.slots().positions(d.slot) != d.cursor + rows)
-      return Error("corpus execution refused or returned incomplete full heads/state progress");
+      return std::unexpected(
+          std::format("corpus execution refused/incomplete: slot={} past={} rows={} "
+                      "kept={} bytes={} "
+                      "position={} discarded={} joined={} tokens={} refusal={}",
+                      d.slot, d.cursor, rows, out.kept, out.outputs.size(),
+                      runner_.slots().positions(d.slot), out.discarded, out.joined.size(),
+                      out.tokens.size(), out.refusal ? out.refusal->what.substr(0, 1024) : "none"));
   }
   for (std::size_t i = 0; i < count; ++i) {
     auto& d = documents_[indexes[i]];
@@ -158,6 +167,12 @@ std::expected<bool, std::string> CorpusScore::Step() {
       if (std::ranges::any_of(row, [](float v) { return !std::isfinite(v); }))
         return Error("corpus execution returned nonfinite vocabulary logits");
       const std::uint64_t next = d.cursor + r + 1;
+      if (row_sink_) {
+        const auto observed = row_sink_(static_cast<std::uint32_t>(indexes[i]), d.slot,
+                                        static_cast<std::uint32_t>(next - 1), row);
+        if (!observed) return std::unexpected(observed.error());
+        if (canceled_) return Error("corpus scorer canceled by its synchronous row sink");
+      }
       if (next < d.size) {
         auto nll = Nll(row, tokens_[d.offset + next]);
         if (!nll) return std::unexpected(nll.error());

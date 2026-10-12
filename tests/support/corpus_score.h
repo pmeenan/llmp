@@ -99,6 +99,12 @@ struct CorpusTargetScore {
 // terminal. Captured owners must outlive the scorer, including uncertain retirement.
 using CorpusScoreSink = std::function<engine::Status(const CorpusTargetScore&)>;
 
+// Optional same-plan state/replay witness over a completed finite host row,
+// including the terminal row with no next target. Zero-based input position;
+// spans expire on callback return. Retained hashes/report storage are caller-paid.
+using CorpusRowSink = std::function<engine::Status(std::uint32_t document, std::uint32_t slot,
+                                                   std::uint32_t position, std::span<const float>)>;
+
 struct CorpusScoreResult {
   std::uint64_t inputs = 0, targets = 0, steps = 0;
   double total_nll = 0;
@@ -131,7 +137,7 @@ class CorpusScore {
                                                          CorpusScoreLimits);
   static std::expected<std::unique_ptr<CorpusScore>, std::string> Make(
       engine::PagedNode&, engine::ModelRunner&, const engine::WaveComposer&,
-      std::span<const CorpusDocument>, CorpusScoreLimits, CorpusScoreSink = {});
+      std::span<const CorpusDocument>, CorpusScoreLimits, CorpusScoreSink = {}, CorpusRowSink = {});
   ~CorpusScore();
   CorpusScore(const CorpusScore&) = delete;
   CorpusScore& operator=(const CorpusScore&) = delete;
@@ -164,6 +170,7 @@ class CorpusScore {
   std::optional<engine::DecodingOrchestrator> decoder_;
   CorpusScoreResult result_{};
   CorpusScoreSink sink_;
+  CorpusRowSink row_sink_;
   double compensation_ = 0;
   bool failed_ = false, complete_ = false, canceled_ = false;
 };

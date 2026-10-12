@@ -45,6 +45,12 @@ struct LowerInput {
 using LowerFunction =
     std::function<std::expected<std::unique_ptr<StepProgram>, std::string>(const LowerInput&)>;
 
+// Optional synchronous validation of the actual lowerer's unchanged result.
+// It cannot supply a program or alter backend selection. The installing caller
+// prepays and retains captured metadata; input references expire on return.
+using ProgramValidator =
+    std::function<std::expected<void, std::string>(const LowerInput&, const StepProgram&)>;
+
 class BackendOwner;
 
 struct StepBackend {

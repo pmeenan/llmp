@@ -469,7 +469,14 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                                   .addresses = addresses,
                                   .context = o_.bindings.state->context,
                                   .state_spans = state_spans};
-  return Backend().lower(input);
+  auto lowered = Backend().lower(input);
+  if (!lowered) return lowered;
+  if (!*lowered) return std::unexpected("the backend returned no step program");
+  if (o_.validate_program) {
+    auto valid = o_.validate_program(input, **lowered);
+    if (!valid) return std::unexpected(valid.error());
+  }
+  return lowered;
 }
 
 std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::Create(

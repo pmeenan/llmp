@@ -1710,6 +1710,14 @@ each is checked against the design as M3.6 proceeds.
                                     including eleven valid/invalid/no-tuning modes.
                                     No arithmetic or tuning policy is activated
                                     ([evidence](experiments/m36-numerical-audit/qwen-products.md#checked-weight-alignment--2026-10-12)).
+                              - [x] **G3c2b1g — real-program and full-head witnesses:**
+                                    validate the actual lowerer's unchanged program
+                                    and stream finite full-head rows with exact
+                                    document/owner/position coordinates. Admit only
+                                    the closed target-only diagnostic factory domain,
+                                    measuring all fallback score shapes. Main native
+                                    build and 127 focused controls pass; no tuning or
+                                    serving default changes ([evidence](experiments/m36-numerical-audit/qwen-products.md#shared-quality-witnesses--2026-10-12)).
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%

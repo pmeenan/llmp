@@ -21,6 +21,7 @@
 #include "config/node_config.h"
 #include "engine/execution_contract.h"
 #include "engine/paged_node.h"
+#include "kernels/common/lower.h"
 #include "runtime/engine_llm.h"
 
 namespace llmp::runtime {
@@ -37,7 +38,8 @@ bool OnComponentEngine(std::string_view architecture);
 struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
   // Internal qualification only; Qwen remains off in OnComponentEngine.
-  // Refuses any actual slot count other than one before opening artifacts.
+  // Other slot counts refuse before opening artifacts, except the closed
+  // target-only C4 scoring envelope with its exact owned execution domain.
   bool diagnostic_solo = false;
   bool prefill_lookahead = true;
   bool prepare_state = true;
@@ -50,6 +52,9 @@ struct ComponentBuildOptions {
   // Paid once in the node catalog, before declaration construction. The build
   // retains it across retries; no host-floor/pre-Start counter is authority.
   std::uint64_t execution_metadata_bytes = 1U << 20;
+  // Read-only diagnostic validation of the real source's lowering. Captures
+  // are part of the harness's prepaid lifetime, never an alternate backend.
+  kernels::ProgramValidator validate_program{};
 };
 
 // The parts of `entry`'s model (its artifact and drafter in `store`), made
