@@ -1,6 +1,6 @@
 {
   "date": "2026-10-11",
-  "scope": "N4b1 approved Gemma2 native v1 admission only",
+  "scope": "Completed N4b1 Gemma2 and N4b2 approved Gemma3/4 native target qualification",
   "host": "spark",
   "artifact": "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076",
   "checks": [
@@ -55,8 +55,225 @@
   ],
   "review": "production01 clean; unpaid external metadata parse removed and finite full rows added in02; independent followup clean",
   "remaining": [
-    "other native v1 profiles and drafter compositions",
+    "native v1 profiles beyond the four declared Gemma targets and drafter compositions",
     "N4 remaining transforms/admission",
     "N5 all-artifact qualification"
-  ]
+  ],
+  "n4b2": {
+    "status": "complete: publications, actual serving, final combined regression and main integration passed",
+    "host": "spark",
+    "focused_host": {
+      "run": "n4b2-focused01",
+      "passed": 44,
+      "failed": 0,
+      "skipped": 0
+    },
+    "publications": [
+      {
+        "profile": "gemma3",
+        "artifact_id": "634bc193468f5968ac142c2e5547f72777b182f3f694873075d7a50660f46626",
+        "source_sha256": "ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a",
+        "spec_sha256": "0f0346b9626697e65fb5ec0ba2506b34af86eb8e0e52000a53ff1b03722741fb",
+        "tensors": 444,
+        "resources": 444,
+        "expert_arrays": 0,
+        "expert_slices": 0,
+        "groups": 36,
+        "shards": 1,
+        "checked_chunks": 1226,
+        "compared_bytes": 2519539712,
+        "zero_padding_bytes": 73728,
+        "published_file_bytes": 2526416112,
+        "physical_required_including_margin": 18473934784,
+        "source_file_bytes": 2526080992,
+        "source_plus_output_page_cache_bound_bytes": 5589032896,
+        "receipt_sha256": "1a7db27471bc1e7294d3d4f833800d956398877bb54921e35a1a493e2cfaf09f",
+        "run": "native-gemma3-publication01",
+        "result": "PASS"
+      },
+      {
+        "profile": "gemma26",
+        "artifact_id": "f0f72ab3d6c733d15472ceeecd05fdf200c266101c537bd3253548fc38559ab7",
+        "source_sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+        "spec_sha256": "2284f647e55684479768e12f91ae0b88b13c8dc855f84c4aff1e37a06d028290",
+        "tensors": 658,
+        "resources": 598,
+        "expert_arrays": 60,
+        "expert_slices": 7680,
+        "groups": 3873,
+        "shards": 4,
+        "checked_chunks": 9060,
+        "compared_bytes": 16931716216,
+        "zero_padding_bytes": 7889800,
+        "published_file_bytes": 16958251347,
+        "physical_required_including_margin": 47316856256,
+        "source_file_bytes": 16947541728,
+        "source_plus_output_page_cache_bound_bytes": 34431954368,
+        "receipt_sha256": "e46b97453f9b5fdfe447f9b1597aaab2f0f29fa78e259a0905c93562fa11308d",
+        "run": "native-gemma26-publication01",
+        "result": "PASS"
+      },
+      {
+        "profile": "gemma31",
+        "artifact_id": "4d9a255ab47519b8061fcbc38bb5e72b9008d8e3538aad5edf0e7530fa82adc8",
+        "source_sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575",
+        "spec_sha256": "f511d74ed438866558034d5f6366ab270bb975b8bde3b75f35f8e6c669951bff",
+        "tensors": 833,
+        "resources": 833,
+        "expert_arrays": 0,
+        "expert_slices": 0,
+        "groups": 63,
+        "shards": 5,
+        "checked_chunks": 9011,
+        "compared_bytes": 18807134448,
+        "zero_padding_bytes": 186128,
+        "published_file_bytes": 18824131885,
+        "physical_required_including_margin": 51067713408,
+        "source_file_bytes": 18822970304,
+        "source_plus_output_page_cache_bound_bytes": 38182811520,
+        "receipt_sha256": "7ed304673609e82b431b7acfdbcdccb29be89312b51b8442b06046b42813dc4b",
+        "run": "native-gemma31-publication01",
+        "result": "PASS"
+      }
+    ],
+    "serving": [
+      {
+        "profile": "gemma3",
+        "xml_sha256": "9c3fc5cfd8430c18a08393ba6e0b5c298010a3dd3c70b168869cc104009b8f69",
+        "vocabulary": 262208,
+        "run": "n4b2-fixture06-gemma3",
+        "artifact_id": "634bc193468f5968ac142c2e5547f72777b182f3f694873075d7a50660f46626",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "pre_guards": "PASS",
+        "post_guards": "PASS",
+        "binary_sha256": "5619f8bdb262bfacb56093efdbefb8c0500d03bf5e46ccc5927c11334229c3f0",
+        "full_vocabulary_rows": 24,
+        "owners": 2,
+        "prompt_tokens_per_owner": 7,
+        "generated_tokens_per_owner": 4,
+        "joined_decode_waves_per_arm": 3,
+        "joined_decode_units_per_arm": 6,
+        "actual_decode_steps_per_arm": 3,
+        "joined_prefill": true,
+        "default_prefill": 128
+      },
+      {
+        "profile": "gemma26",
+        "xml_sha256": "08f1a2acf450920172d6985c23960f85910e33b4385cec08bd4e252d286c34ad",
+        "vocabulary": 262144,
+        "run": "n4b2-fixture06-gemma26",
+        "artifact_id": "f0f72ab3d6c733d15472ceeecd05fdf200c266101c537bd3253548fc38559ab7",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "pre_guards": "PASS",
+        "post_guards": "PASS",
+        "binary_sha256": "5619f8bdb262bfacb56093efdbefb8c0500d03bf5e46ccc5927c11334229c3f0",
+        "full_vocabulary_rows": 24,
+        "owners": 2,
+        "prompt_tokens_per_owner": 7,
+        "generated_tokens_per_owner": 4,
+        "joined_decode_waves_per_arm": 3,
+        "joined_decode_units_per_arm": 6,
+        "actual_decode_steps_per_arm": 3,
+        "joined_prefill": false,
+        "default_prefill": 1024
+      },
+      {
+        "profile": "gemma31",
+        "xml_sha256": "80f3df74b3bfb751cbbca6a0305909c39c63359d37e8577e63174a8c400ddf61",
+        "vocabulary": 262144,
+        "run": "n4b2-fixture06-gemma31",
+        "artifact_id": "4d9a255ab47519b8061fcbc38bb5e72b9008d8e3538aad5edf0e7530fa82adc8",
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "pre_guards": "PASS",
+        "post_guards": "PASS",
+        "binary_sha256": "5619f8bdb262bfacb56093efdbefb8c0500d03bf5e46ccc5927c11334229c3f0",
+        "full_vocabulary_rows": 24,
+        "owners": 2,
+        "prompt_tokens_per_owner": 7,
+        "generated_tokens_per_owner": 4,
+        "joined_decode_waves_per_arm": 3,
+        "joined_decode_units_per_arm": 6,
+        "actual_decode_steps_per_arm": 3,
+        "joined_prefill": false,
+        "default_prefill": 256
+      }
+    ],
+    "fixture_budget_bytes": {
+      "node_execution_cap": 34359738368,
+      "retained_results_before_open": 33554432,
+      "spill_page_cache_before_open": 4294967296
+    },
+    "publication_bound_bytes": {
+      "host_import_workspace": 6442450944,
+      "free_memory_margin": 6442450944,
+      "source_plus_output_page_cache": "2 * pinned source file bytes + 512 MiB"
+    },
+    "final_combined_regression": {
+      "status": "PASS",
+      "host": "spark",
+      "source_files": 2452,
+      "native": {
+        "passed": 2567,
+        "raw_gtest_arms": 2557,
+        "failed": 0,
+        "skipped": 0
+      },
+      "cpu": {
+        "passed": 2012,
+        "raw_gtest_arms": 1994,
+        "failed": 0,
+        "skipped": 0
+      },
+      "models_timing": {
+        "passed": 135,
+        "raw_gtest_arms": 182,
+        "failed": 0,
+        "skipped": 0
+      },
+      "format_boundaries_headers_reuse": "PASS",
+      "source_recipe_guards": "PASS",
+      "model_binary_guards": "PASS",
+      "runs": [
+        "n4b2-final-shared",
+        "n4b2-final-models"
+      ]
+    },
+    "main_integration": {
+      "status": "PASS",
+      "host": "spark",
+      "source_files": 2452,
+      "native_build": "PASS",
+      "focused_host": {
+        "passed": 74,
+        "failed": 0,
+        "skipped": 0
+      },
+      "actual_gemma": {
+        "ctest_entries": 1,
+        "raw_gtest_arms": 3,
+        "failed": 0,
+        "skipped": 0
+      },
+      "format_boundaries_headers_reuse": "PASS",
+      "source_recipe_binary_guards": "PASS",
+      "binary_sha256": "70f106e2d948837f29e8b01497381167e72fb56f17625bd407ce612e99b65327",
+      "models_xml_sha256": "636d6d57e541419a81e08d1ff49a0ef645cbe7e0c43dc6842bf5bc9ee8216b56",
+      "runs": [
+        "m36-n4b2-main-shared02",
+        "m36-n4b2-main-models02"
+      ]
+    },
+    "limitations": [
+      "two owners/context4096/short7-token prompts only",
+      "no assistant/composition or other native domain admission",
+      "no all-shape or performance qualification",
+      "N4 and N5 remain open"
+    ]
+  }
 }

@@ -211,6 +211,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("resolved architecture differs from the opened artifact");
     auto hold = std::make_shared<ComponentHold>();
     std::optional<model::Qwen38Binding> qwen;
+    std::optional<spec::PolicyRule> stored_policy;
     std::expected<spec::ModelSpec, std::string> synthesized;
     if (stored) {
       auto admitted = ReadComponentAdmission(*artifact);
@@ -218,6 +219,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (settings.context.value == 0 ||
           settings.context.value > admitted->model.stages.front().context)
         return Error("resolved context exceeds the admitted stored spec");
+      auto policy = ComponentAdmissionPolicy(
+          admitted->model, admitted->source, artifact->sources(),
+          {.context = settings.context.value, .slots = settings.max_slots.value});
+      if (!policy) return Error(policy.error());
+      stored_policy = *policy;
       synthesized = std::move(admitted->model);
       hold->sources.push_back(std::move(admitted->source));
     } else {
@@ -328,9 +334,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // The recipe for this serving envelope, and how it composes steps.
     spec::PolicyRule composition;
     if (stored) {
-      auto rule = ComponentAdmissionPolicy(*mapping, {.context = context, .slots = slots});
-      if (!rule) return Error(rule.error());
-      composition = *rule;
+      composition = *stored_policy;
     } else {
       auto rule = spec::DefaultRule(*mapping, hold->values, {.context = context, .slots = slots});
       if (!rule) return Error(rule.error());

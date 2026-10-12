@@ -1915,22 +1915,31 @@ artifact publication or serving. Assistants, Qwen/DeepSeek, other containers
 and remaining transforms keep N3b open; writer and admission work remain
 N4/N5.
 
-**Stored-spec runtime admission** (`runtime/component_admission.h`, N4b1
-candidate, actual short control passed). Registration and component construction use the same closed
-check over `StoredSpec` and `SourceOf`. The initial declaration covers the
-approved Gemma 2 2B Q8_0 source only: copy-only native tensors, F32 norms,
-tied embedding/output, complete component parameters and the existing
-`norm.plus_one` assertion must agree with its declarative mapping. Profile
-constants provide an approval oracle; execution consumes the stored spec
-unchanged. The mapping's unconditional policy needs no legacy checkpoint-key
-bag. Context comes from the admitted spec, and its ordinary one/two-owner
-limits remain. Bound plan and kept-state identities include the native
-artifact ID through the existing bound-spec digest. No legacy representation
-is fabricated. Unknown v1 identities and drafter compositions are refused;
-v0 synthesis remains until N5. Focused host refusal controls and the actual v0/v1 full-logit, initialized-state
-and spill-continuation check passed with zero skips. Full regression and main
-integration checks remain pending for this candidate; N4 and the N5 family
-gates remain open.
+**Stored-spec runtime admission** (`runtime/component_admission.h`).
+Registration and component construction use the same closed check over
+`StoredSpec` and `SourceOf`. N4b1 qualified the approved Gemma 2 2B Q8_0
+source: copy-only native tensors, F32 norms, tied embedding/output, complete
+component parameters and the existing `norm.plus_one` assertion agree with
+its mapping. Execution consumes the stored spec unchanged; no legacy
+representation is fabricated. Bound plan and kept-state identities include
+the native artifact ID through the bound-spec digest. N4b1 passed 31 focused
+host controls, the actual v0/v1 comparison, final 2,544 native, 1,999 CPU and
+131 model/timing tests, quality gates and main build/integration checks.
+
+N4b2 adds only the three approved Gemma 3/4 target GGUFs,
+using exact source and tensor inventories, stored-spec equality and
+authenticated profile facts for Gemma 4's gated policies. Native expert slabs
+use `TensorFormat` geometry directly. Its 44 focused host controls, three
+complete copy-only publications and all three actual v0/v1 comparisons passed
+with zero failures or skips. Each comparison checks 24 full vocabulary rows,
+tokens/history, complete initialized state and spill/restore continuation.
+Gemma 4 retains prompts-alone and its default prefill sizes; all three targets
+execute three actual joined two-owner decode waves per arm. Other native
+identities and drafter compositions remain refused; v0 synthesis remains
+until N5. Final combined regression passed, as did the main native build,
+74 integration controls, all three actual comparisons and quality gates.
+N4 and N5 remain open. See the
+[admission record](experiments/m36-native-v1-admission/README.md).
 
 **Import transform primitives** (`import/transforms.h`). The historical
 ModelOpt import's `norm.plus_one` and `ssm.a_neg_exp` convert explicitly

@@ -13,6 +13,7 @@
 
 #include "artifact/representation.h"
 #include "engine/support.h"
+#include "format/tensor_format.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"  // GgmlTypeOf
 
@@ -59,33 +60,68 @@ std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& a
   const auto arrays = artifact.expert_arrays();
   out.places.assign(artifact.groups().size(), GroupPlace::kDevice);
   out.pitch.assign(arrays.size(), 0);
-  std::map<std::uint32_t, std::vector<std::pair<std::uint32_t, std::string_view>>> layers;
-  for (std::uint32_t i = 0; i < arrays.size(); ++i) {
-    layers[arrays[i].layer].emplace_back(i, arrays[i].repr.type);
-  }
+  std::map<std::uint32_t, std::vector<std::uint32_t>> layers;
+  for (std::uint32_t i = 0; i < arrays.size(); ++i) layers[arrays[i].layer].push_back(i);
+  if (alignment == 0) return Error("expert slab alignment is zero");
   std::vector<bool> covered(artifact.groups().size(), false);
   for (const auto& [layer, list] : layers) {
-    auto slab = ExpertSlab(artifact, list, arrays[list.front().first].count, alignment, layer);
-    if (!slab) return std::unexpected(slab.error());
-    std::uint64_t quantum = alignment;
-    for (const auto& [index, type] : list) {
-      if (arrays[index].count != slab->count) {
-        return Error(std::format("layer {}'s expert arrays differ in their experts", layer));
+    std::uint64_t unit = 16, quantum = alignment;
+    const auto& first = arrays[list.front()];
+    for (const auto index : list) {
+      const auto& array = arrays[index];
+      if (array.first_group != first.first_group || array.count != first.count)
+        return Error(std::format("layer {}'s expert arrays differ in groups or experts", layer));
+      std::uint64_t element_bytes = 0, block_bytes = 0;
+      if (artifact.format_version() == 1) {
+        // Native descriptors are authoritative. Never populate or consult the
+        // absent legacy Representation of a v1 expert array.
+        if (!array.format || !format::Validate(*array.format) ||
+            array.part != format::PartRole::kData || array.format->shape.rank != 2 ||
+            (array.format->layout != format::Layout::kGgmlBlocks &&
+             array.format->layout != format::Layout::kDense))
+          return Error("native expert slab needs a valid GGML-compatible data slice");
+        const auto& info = format::Info(array.format->encoding);
+        if (!info.ggml) return Error("native expert slice has no GGML block geometry");
+        element_bytes = block_bytes = info.ggml->block_bytes;
+      } else {
+        auto type = kernels::ggml::GgmlTypeOf(array.repr.type);
+        if (!type) return Error(type.error().detail);
+        const auto* info = artifact::FindGgmlType(array.repr.type);
+        if (!info) return Error("legacy expert slice has unknown GGML block geometry");
+        element_bytes = static_cast<std::uint64_t>(ggml_type_size(*type));
+        block_bytes = info->block_bytes;
       }
-      const auto* info = artifact::FindGgmlType(type);
-      if (info == nullptr)
-        return Error(std::format("layer {}'s experts have type {}", layer, type));
-      quantum = std::lcm(quantum, std::uint64_t{info->block_bytes});
+      const auto combine = [](std::uint64_t current,
+                              std::uint64_t block) -> std::optional<std::uint64_t> {
+        if (block == 0 ||
+            current / std::gcd(current, block) > std::numeric_limits<std::uint64_t>::max() / block)
+          return std::nullopt;
+        return std::lcm(current, block);
+      };
+      const auto next_unit = combine(unit, element_bytes),
+                 next_quantum = combine(quantum, block_bytes);
+      if (!next_unit || !next_quantum) return Error("expert slab block alignment overflows");
+      unit = *next_unit;
+      quantum = *next_quantum;
     }
-    if (slab->stride > std::numeric_limits<std::uint64_t>::max() - (quantum - 1)) {
+    const auto g = first.first_group;
+    if (g >= artifact.groups().size() || first.count > artifact.groups().size() - g)
+      return Error(std::format("layer {}'s expert arrays name missing groups", layer));
+    const auto stored = artifact.groups()[g].stored.value();
+    if (stored > std::numeric_limits<std::uint64_t>::max() - (unit - 1))
+      return Error("expert slab stored size overflows");
+    const auto stride = Round(stored, unit);
+    if (stride > std::numeric_limits<std::uint64_t>::max() - (quantum - 1))
       return Error(std::format("layer {}'s expert pitch overflows", layer));
+    const SlabSpec slab{.first_group = g,
+                        .count = first.count,
+                        .stride = Round(stride, quantum),
+                        .alignment = alignment};
+    for (const auto index : list) out.pitch[index] = slab.stride;
+    for (std::uint32_t e = 0; e < slab.count; ++e) {
+      if (slab.first_group + e < covered.size()) covered[slab.first_group + e] = true;
     }
-    slab->stride = Round(slab->stride, quantum);
-    for (const auto& [index, type] : list) out.pitch[index] = slab->stride;
-    for (std::uint32_t e = 0; e < slab->count; ++e) {
-      if (slab->first_group + e < covered.size()) covered[slab->first_group + e] = true;
-    }
-    out.slabs.push_back(*slab);
+    out.slabs.push_back(slab);
   }
   for (std::size_t g = 0; g < out.places.size(); ++g) {
     if (artifact.groups()[g].kind != artifact::GroupKind::kExpert) continue;

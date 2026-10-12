@@ -364,6 +364,11 @@ if(LLMP_CUDA)
   target_link_libraries(gemma_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
   llmp_gpu_gtest(gemma_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  # Native v1 admission: approved Gemma3/26/31, compared with pinned v0 imports.
+  add_executable(gemma_native_v1_serving_gpu_test gemma_native_v1_serving_gpu_test.cc)
+  target_link_libraries(gemma_native_v1_serving_gpu_test PRIVATE llmp_runtime_serving)
+  llmp_gpu_gtest(gemma_native_v1_serving_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Weight files across real switches between Gemma 2 and Gemma 3: only the
   # resident model's shards open (engine/paged_node.h SetActive).
   add_executable(weight_files_serving_gpu_test weight_files_serving_gpu_test.cc)
@@ -1249,6 +1254,12 @@ llmp_gtest(components_state_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
 # The Gemma 2 and Gemma 3 components end to end on the installed artifacts,
 # by the reference executor, against the served model (the server over the
 # shared engine).
+if(LLMP_CUDA)
+  add_executable(expert_slab_test expert_slab_test.cc)
+  target_link_libraries(expert_slab_test PRIVATE llmp_engine llmp_test_artifact_writer)
+  llmp_gtest(expert_slab_test TEST_PREFIX unit. PROPERTIES LABELS unit
+               ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+endif()
 if(LLMP_CUDA)
   add_executable(components_models_gpu_test components_models_gpu_test.cc)
   target_link_libraries(components_models_gpu_test PRIVATE llmp_runtime_serving llmp_components

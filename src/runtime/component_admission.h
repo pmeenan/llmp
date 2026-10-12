@@ -15,11 +15,15 @@
 #include "spec/mapping.h"
 #include "spec/spec.h"
 
+namespace llmp::model {
+struct Gemma4Profile;
+}
 namespace llmp::runtime {
 
 struct ComponentAdmission {
   spec::ModelSpec model;
   spec::Source source;
+  const model::Gemma4Profile* gemma_profile = nullptr;
 };
 
 // The same closed check used by artifact admission, exposed over values for
@@ -33,10 +37,11 @@ std::expected<void, std::string> CheckComponentAdmission(const spec::ModelSpec& 
 std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
     const artifact::Artifact& artifact);
 
-// A stored spec has no legacy checkpoint-key bag. Only approved mappings
-// whose policy is independent of that bag are supported by this first slice.
+// Recheck the complete declaration before selecting the approved mapping's
+// recipe from its proved profile facts and the requested execution envelope.
 std::expected<spec::PolicyRule, std::string> ComponentAdmissionPolicy(
-    const spec::Mapping& mapping, const spec::Envelope& envelope);
+    const spec::ModelSpec& model, const spec::Source& source,
+    std::span<const artifact::Source> origins, const spec::Envelope& envelope);
 
 }  // namespace llmp::runtime
 #endif  // LLMP_RUNTIME_COMPONENT_ADMISSION_H_

@@ -394,6 +394,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     auto admitted = ReadComponentAdmission(target);
     if (!admitted) return Error(admitted.error());
     declared_context = admitted->model.stages.front().context;
+    facts.gemma_profile = admitted->gemma_profile;
   } else if (facts.architecture == "gemma4") {
     auto profile = ApprovedGemmaProfile(target);
     if (!profile) return std::unexpected(profile.error());

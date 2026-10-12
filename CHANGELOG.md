@@ -28,9 +28,14 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   4.0-bpw reconstruction fixture matches a native 145-row reference exactly;
   remaining execution profiles and lifecycle gates stay open.
 
+- Add closed native-v1 admission declarations for the approved Gemma 3 QAT
+  and Gemma 4 target profiles, with exact tensor inventories and native expert
+  block geometry. All three published artifacts match v0 full logits, tokens,
+  initialized state and spill continuation, including joined decoding.
 - Admit the approved native v1 Gemma 2 Q8_0 artifact through its stored
   component spec and native tensor formats. Full logits, tokens, initialized
-  state and spill continuation match v0; other v1 profiles remain refused.
+  state and spill continuation match v0. Native identities beyond the four
+  declared Gemma targets and drafter compositions remain refused.
 
 - Shared-component specs for the Qwen2.5-0.5B FP16 and approved EXL3
   fixtures. The shared runner reproduces the FP16 fixture’s frozen fused

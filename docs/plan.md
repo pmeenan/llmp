@@ -1879,8 +1879,22 @@ each is checked against the design as M3.6 proceeds.
                   and spill-continuation comparison passed with zero skips.
                   Final regression passed 2,544 native, 1,999 CPU and all 131 model/timing
                   tests with zero skips; quality gates passed. Main built and passed
-                  31 integration checks and quality gates. Other v1
-                  identities and drafter compositions remain refused.
+                  31 integration checks and quality gates. This historical
+                  qualification covers Gemma 2; the three-target extension follows.
+            - [x] **N4b2 — approved Gemma 3/4 native target admission:**
+                  exact source and native tensor inventories for
+                  Gemma 3 4B QAT, Gemma 4 26B-A4B and 31B, stored-spec equality,
+                  profile-gated policy and native expert slab geometry. Host
+                  controls (44) and all three complete copy-only publications
+                  passed. Actual v0/v1 serving passed for each target: 24 full
+                  vocabulary rows, tokens/history, initialized state and
+                  spill/restore continuation, with three joined two-owner decode
+                  waves per arm. Gemma 4 keeps prompts-alone and its defaults.
+                  Final Spark checks passed 2,567 native, 2,012 CPU and all 135
+                  model/timing tests (182 raw GoogleTest cases), with zero failures
+                  or skips; quality gates passed. Main build, 74 integration controls,
+                  all three actual comparisons and quality gates passed;
+                  unsupported identities and drafter compositions stay closed.
             Applied folds, remaining normalized domains and runtime import
             admission remain open in N4; N5's all-artifact re-import and serving
             qualification remain separate.
