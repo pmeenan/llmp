@@ -6,7 +6,7 @@
 N4b6a provides checked CPU worklist inversion and multipart descriptor geometry.
 The isolated helper build and all eight focused host controls pass. Main also
 passes the full native build and the same eight controls, with zero failures or
-skips. Independent whole-source challenge is clean. No GPU or model was executed.
+skips. Independent whole-source challenge is clean. That helper slice ran no GPU or model.
 
 ## Contracts
 
@@ -64,11 +64,69 @@ no device work and are not yet called by the production engine.
 Raw results remain outside Git in `native-grouped-foundation-main01/results`
 under the M3.6 coordination scratch root.
 
+## Owned grouped execution — 2026-10-12
+
+The test-only `PreparedGrouped` consumes an ordinary tiny v1 artifact with four
+NVFP4-split experts, padded part pitches and stacked2 tensor scales. It runs the
+existing `MoeRoute`, waits for complete route data, validates and inverts it, then
+materializes only the selected expert closure. Each product job holds the real
+scheduler lease and rechecks current content/backing generations, the prepared
+epoch, workspace and launch identity. No production kernel, selection policy,
+ModelRunner interface or family admission changes in this slice.
+
+Two actual Spark-A GPU cases cover token-row and original-routed-slot inputs.
+Each case checks all 288 output values against an independent representable
+oracle across three routing/activation revisions, including repeated experts.
+Each records three completed route jobs, three product jobs, one capture and two
+launches of that retained capture. The first closure excludes an unused expert;
+invalid IDs, stale tokens and a stale local backing receipt refuse before new
+product effects. Both cases passed with zero failures or skips; all source,
+recipe and binary guards passed, no GPU process remained and all memory-event
+counters were zero. This is operation correctness, not a model quality or speed
+measurement and not a cross-library bit-equality gate.
+
+The fixed test budget is a 256 MiB managed node plus a prepaid 16 MiB host metadata
+allowance (8 MiB charged for this inventory), 4 KiB catalog-accounted pinned
+staging and bounded source/file-cache storage. A 10 GiB process/cache cgroup cap
+and 6 GiB available physical margin surround the case; the cgroup is not a total
+CUDA occupancy limit. Complete source, provider, graph, staging, workspace and
+weights ownership is retained on unknown retirement. No owner overlaps another
+case unless the first completed teardown successfully.
+
+- Isolated compile/list-only receipt SHA-256: `9fa0a1cb4bf4bb47613c3ebf0baf446d7c6953f1d1da077b53e78544caf75cc8`.
+- Actual two-case receipt SHA-256: `2bd9349894a15e621577a9310b28491b85bb0e2e07ffad8c7cf7c7801fce0d59`.
+- Executed binary SHA-256: `724b50da6af6995b6ced557fe70f41b81c5540d02a1fec6c2eb858c1ab3b60f1`.
+- Whole source/funding review SHA-256: `c699d98518581dbb14bbf4ac75ae8256eaef645868be195bdfbe721412e68524`.
+- GPU recipe review SHA-256: `abc5bc7ed9c273da47d13cb4bd9791e179b3c73a18d95b0eb781b37a16aac903`.
+
+The actual observed process/cache peak was 211,628,032 bytes. Raw XML, log and
+receipt remain outside Git in `native-grouped-prepared-gpu01/results` under the
+M3.6 coordination scratch root. No broad suite or model inference ran.
+
+## Owned operation main integration — 2026-10-12
+
+Root carried the exact two reviewed source paths onto `d8aa6388`. Spark-A
+passes the full native build and all eight helper host controls in ten seconds.
+The separate installed exclusive job passes both actual GPU cases in one second,
+with all 576 output values checked and the same complete route, selected-only
+residency and changed-routing capture witnesses. Source, recipe and binary
+guards pass, no GPU process remains and all memory-event counters are zero.
+The observed process/cache peak is 212,557,824 bytes.
+
+- Full native build and eight host controls receipt SHA-256: `85bf2992650f676784e77fa15ced383d2ac71b80754482330c738f967095eca4`.
+- Actual two-case main receipt SHA-256: `40057a00ffff10f2f013431693caede5187fd76cfc0d73be6019e4ea5c373b19`.
+- Main binary SHA-256: `7f6d8d60c681f3bce64f4e665f60e8d715e485eed4ccab34da844d5257d1204e`.
+- Main GPU recipe review SHA-256: `046ea632b7bfe6f119e174b0d6d4a36cf23714b49d87613cbbbfe61a99d9a1f0`.
+
+Raw evidence remains outside Git in `native-grouped-prepared-main01/results`
+and `native-grouped-prepared-main-gpu01/results` under the coordination root.
+No additional source payloads or full-model checks ran.
+
 ## Remaining scope
 
-N4b6b is open: a bounded owned operation must derive descriptors from actual
-source bindings, acquire only selected expert closures, preserve current leases
-and preparation epochs, and prove eager/captured execution with changed routing.
-The shared ModelRunner mid-step routing/admission continuation is also open;
-these helpers do not add it. Native ModelOpt target admission and full-model
-qualification remain open. This evidence makes no speed or model-quality claim.
+N4b6b's bounded owned operation controls are complete. The shared
+ModelRunner mid-step routing/admission continuation remains open: production
+still needs base-lease-preserving supplemental admission, explicit completed
+routing segments and source-selected grouped binding. These tests do not provide
+that interface. Native ModelOpt target admission and full-model qualification
+remain open. This evidence makes no speed or model-quality claim.

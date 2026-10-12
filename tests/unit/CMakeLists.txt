@@ -812,6 +812,13 @@ if(LLMP_CUDA)
   # D-108): every decoder under every template against the CPU reference
   # decode and an F64 product, row invariance, refusals and the
   # registry's declarations; on the GB10 and the discrete GPUs (D-082).
+  add_executable(grouped_prepared_gpu_test grouped_prepared_gpu_test.cc)
+  target_link_libraries(grouped_prepared_gpu_test PRIVATE llmp_decode_kernels llmp_engine
+                                                        llmp_test_artifact_writer)
+  llmp_gpu_gtest(grouped_prepared_gpu_test
+                DISCRETE PreparedGroupedGpu.TokenRowsUseOnlySelectedExpertsAndReplayChangedRouting
+                         PreparedGroupedGpu.RoutedRowsPreserveOriginalSlotsAndRepeatedContributions)
+
   add_executable(grouped_binding_test grouped_binding_test.cc)
   target_link_libraries(grouped_binding_test PRIVATE llmp_decode_kernels)
   llmp_gtest(grouped_binding_test TEST_PREFIX unit. PROPERTIES LABELS unit)

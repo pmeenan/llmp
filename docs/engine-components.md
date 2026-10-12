@@ -1570,9 +1570,12 @@ pitch, retains stacked scales, and initializes descriptors even for empty expert
 intervals. Both helpers validate before writing their retained outputs; their
 bounds describe storage the caller must fund before allocating it. They acquire
 no leases and provide no source or residency authority. Main passes the full
-native build and all eight affected host controls. Owned grouped GPU execution
-and the runner's
-mid-step routing/admission continuation remain separate work
+native build and all eight affected host controls. A bounded test-only owned
+operation now executes the existing grouped decoder under actual selected-expert
+leases: both input bases, repeated contributions and changed-routing capture
+replay pass on the isolated source and main. The full native main build and
+eight helper controls also pass. The production
+runner's mid-step routing/admission continuation remains separate work
 ([evidence](experiments/m36-native-grouped-foundation/README.md)).
 
 The common step program binds approved EXL3 selected operations with authenticated

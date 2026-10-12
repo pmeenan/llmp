@@ -40,6 +40,12 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
+The next N4b6b slice passes full native main build, eight helper controls and
+both actual selected-expert grouped GPU cases, including changed-routing replay.
+This test-only owned operation does not add the production routing continuation.
+The supplemental base-lease prerequisite is being implemented separately;
+full ModelRunner and native ModelOpt admission remain open.
+
 Main through `9137cebf` includes the checked grouped helpers. The next shared
 phase-admission correction passes the full native build and 60 affected host
 controls: scoring and decode use their actual declared modes, while compound

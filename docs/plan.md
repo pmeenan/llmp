@@ -2271,9 +2271,12 @@ each is checked against the design as M3.6 proceeds.
                   eight focused host cases and full native main build on Spark,
                   with independent source challenge clean
                   ([evidence](experiments/m36-native-grouped-foundation/README.md)).
-            - [ ] **N4b6b — owned grouped operation execution:** connect those
+            - [x] **N4b6b — owned grouped operation execution:** connect those
                   helpers to an actual selected-expert closure with current
                   leases, bounded preparation and completed capture replay.
+                  Both bounded synthetic GPU cases pass on the isolated source
+                  and main (288 output values each), with full native main
+                  build and all eight helper controls passing.
                   A shared ModelRunner mid-step routing/admission continuation
                   and native ModelOpt target admission remain open separately.
             The remaining fold catalog, normalized publication domains and
