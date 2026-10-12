@@ -88,5 +88,76 @@
     "other execution profiles and packed paths",
     "historical Tier C and lifecycle controls",
     "legacy deletion"
-  ]
+  ],
+  "G5b2a": {
+    "date": "2026-10-12",
+    "scope": "4.0-bpw G full145+16 suffix trajectory only",
+    "host": "spark",
+    "source_test_sha256": "3687dff1e52cdf935538688727adc0dd427139a9f742c28c568fefb866eaf458",
+    "native_reference": {
+      "run": "m36-g5b2a-reference03",
+      "status": "PASS",
+      "phases": 17,
+      "evaluations": 1,
+      "prefill_rows": 145,
+      "suffix_rows": 16,
+      "prefill_sha256": "ea491bc54c1259dc935cd6131fc3684033b0974490048b6a214dd35b5da1710d",
+      "trajectory_sha256": "17f007a66fa3dd5e09afc7b1b1b51b2c441feba67b80f8876f96e1fcfdd4186e",
+      "binary_sha256": "31a392d9ca5b47be8a610856b26dbc06f3359840ebffa9f880804d99a4b1c530",
+      "region_bytes": 103301376,
+      "ggml_pool_bytes": 1607936
+    },
+    "focused": {
+      "run": "m36-g5b2a-shared02c",
+      "native_build": "PASS",
+      "admission_inputs": 2,
+      "selected_operations": 6,
+      "component_state_lifecycle": 30,
+      "quality": "PASS",
+      "failed": 0,
+      "skipped": 0
+    },
+    "actual": {
+      "run": "m36-g5b2a-gpu04b",
+      "raw_cases": 2,
+      "failed": 0,
+      "skipped": 0,
+      "properties": {
+        "Reconstruction145MatchesSealedLegacy": {
+          "completed_steps": "1",
+          "compared_rows": "145",
+          "completed_positions": "145"
+        },
+        "Full161TrajectoryMatchesSealedLegacy": {
+          "completed_steps": "17",
+          "compared_rows": "161",
+          "completed_positions": "161"
+        }
+      },
+      "full_trajectory_f32": 24461696,
+      "full_trajectory_bytes": 97846784,
+      "comparison": "all F32 bits exact",
+      "combined_cap_bytes": 17179869184,
+      "zero_swap": true,
+      "memory_peak_observed": 909299712,
+      "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+      "binary_sha256": "d8f35eb15cadd60cb3213946cc00a7add2e73e530da9831d438fd61291952c50",
+      "memory_peak_measurement_scope": "cgroup memory.peak for confined process; not total device occupancy"
+    },
+    "funding": {
+      "host_allowance_bytes": 4294967296,
+      "full_source_host_bound_bytes": 4109194928,
+      "domain_bytes": 8589934592,
+      "separate_physical_margin_bytes": 6442450944,
+      "shape_keys": 2
+    },
+    "all_pre_post_guards": "PASS",
+    "full_unrelated_regression": "deferred under M3.6 incremental check policy",
+    "remaining": [
+      "other profiles and packed execution",
+      "historical Tier C",
+      "model lifecycle/kept-state",
+      "performance migration gate and legacy deletion"
+    ]
+  }
 }

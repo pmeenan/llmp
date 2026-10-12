@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Actual approved EXL3 artifact, one sealed held-out 145-row reconstruction
-// prefill through the shared engine. The external oracle is freshly produced
+// prefill, with a separate control for its 16 decode suffix steps. The oracle is produced
 // by the legacy native implementation and sealed before this candidate runs.
 // This diagnostic is not the historical1570-linear or750-statistic TierC gate.
 #include <fcntl.h>
@@ -220,20 +220,30 @@ static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners <= kHost
 constexpr std::uint64_t kDomainCap = std::uint64_t{8} << 30U;
 constexpr std::size_t kTokenLimit = 1040 * 8;
 constexpr std::size_t kOracleBytes = std::size_t{145} * 151936 * sizeof(float);
+constexpr std::size_t kFullOracleBytes = std::size_t{161} * 151936 * sizeof(float);
+constexpr std::uint64_t kFullRuntimePlans = 2 * kRuntimePlans;
+constexpr std::uint64_t kFullMetadataOwners = kMetadataOwners + kProgramHost;
+constexpr std::uint64_t kFullObservationOwners =
+    kObservationOwners + kFullOracleBytes - kOracleBytes;
+static_assert(kFullMetadataOwners <= 1024 * kMiB);
+static_assert(kFullObservationOwners <= 768 * kMiB);
+static_assert(kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners <= kHostAllowance);
 
-std::expected<std::vector<std::int32_t>, std::string> HeldOutPrefix(const std::string& bytes) {
+std::expected<std::vector<std::int32_t>, std::string> HeldOutPrefix(const std::string& bytes,
+                                                                    std::size_t count = 145) {
   // Identical full-file authority to benchmarks/exl3_common.cc::LoadIds.
   if (bytes.size() != kTokenLimit ||
       Hash(bytes) != "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c")
     return std::unexpected("not the sealed legacy held-out IDs");
   std::vector<std::int32_t> tokens;
-  tokens.reserve(145);
+  if (count != 145 && count != 161) return std::unexpected("unpaid EXL3 trajectory length");
+  tokens.reserve(count);
   for (std::size_t i = 0; i < 1040; ++i) {
     std::uint64_t id = 0;
     for (std::size_t b = 0; b < 8; ++b)
       id |= static_cast<std::uint64_t>(static_cast<unsigned char>(bytes[i * 8 + b])) << (8 * b);
     if (id >= 151936) return std::unexpected("held-out ID is outside the vocabulary");
-    if (i < 145) tokens.push_back(static_cast<std::int32_t>(id));
+    if (i < count) tokens.push_back(static_cast<std::int32_t>(id));
   }
   return tokens;
 }
@@ -345,10 +355,14 @@ TEST(ComponentRunnerExl3Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading)
 
 // Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
-TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) {
+void RunControl(bool full) {
+  const std::size_t token_rows = full ? 161 : 145;
+  const auto oracle_bytes = full ? kFullOracleBytes : kOracleBytes;
+  const auto runtime_plans = full ? kFullRuntimePlans : kRuntimePlans;
   const auto ids_path = Env("LLMP_EXL3_SCREEN_IDS");
-  const auto oracle_path = Env("LLMP_EXL3_SCREEN_ORACLE");
-  const auto oracle_hash = Env("LLMP_EXL3_SCREEN_ORACLE_SHA256");
+  const auto oracle_path = Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE" : "LLMP_EXL3_SCREEN_ORACLE");
+  const auto oracle_hash =
+      Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE_SHA256" : "LLMP_EXL3_SCREEN_ORACLE_SHA256");
   if (ids_path.empty() || oracle_path.empty() || oracle_hash.empty())
     GTEST_SKIP() << "sealed legacy EXL3 IDs and oracle required";
   ASSERT_EQ(oracle_hash.size(), 64U);
@@ -374,22 +388,22 @@ TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) {
   ASSERT_TRUE(payment.has_value());
   ASSERT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), occupied + kHostAllowance);
   // Both arms authenticate the same complete1040-ID file. The legacy
-  // trajectory uses its first161 IDs; this prefill compares the first145.
+  // trajectory uses its first161 IDs; the original prefill compares first145.
   auto ids_read = Read(ids_path, kTokenLimit, true);
   ASSERT_TRUE(ids_read.has_value()) << ids_read.error();
   life->tokens_bytes = std::move(*ids_read);
-  auto prefix = HeldOutPrefix(life->tokens_bytes);
+  auto prefix = HeldOutPrefix(life->tokens_bytes, token_rows);
   ASSERT_TRUE(prefix.has_value()) << prefix.error();
   life->tokens = std::move(*prefix);
   auto& tokens = life->tokens;
-  auto oracle_read = Read(oracle_path, kOracleBytes, true);
+  auto oracle_read = Read(oracle_path, oracle_bytes, true);
   ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
   life->oracle = std::move(*oracle_read);
   const auto& oracle = life->oracle;
   ASSERT_EQ(Hash(oracle), oracle_hash);
   const auto& profile = llmp::model::Qwen25Instruct05BExl3();
   const std::size_t row_bytes = std::size_t{profile.vocab} * sizeof(float);
-  ASSERT_EQ(oracle.size(), 145U * row_bytes);
+  ASSERT_EQ(oracle.size(), token_rows * row_bytes);
   std::string store = Env("LLMP_EXL3_FIXTURE_STORE");
   if (store.empty()) store = Env("HOME") + "/.local/share/llmp/artifact-layout-20260922/installed";
   constexpr auto artifact_id = "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4";
@@ -461,6 +475,8 @@ TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) {
   auto& layout = life->layout;
   auto& shapes = life->shapes;
   shapes.push_back(Shape(0, 145));
+  if (full)
+    for (std::uint32_t past = 145; past < 161; ++past) shapes.push_back(Shape(past, 1));
   auto& resource = life->resource;
   auto built_step =
       co::BuildStep(*spec, 0, shapes.front(), {.tensors = source->tensors, .state = &*layout});
@@ -524,10 +540,24 @@ TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) {
          .backend = std::move(checked_backend),
          .require_capture = false});
     if (!component) return std::unexpected(component.error());
-    if (shapes.size() != 1 || shapes.front() != Shape(0, 145))
-      return std::unexpected("shape exceeds the single paid prefill key");
-    const auto parameters = (*component)->ShapeParameters(shapes.front());
-    if (parameters.size() > 1024) return std::unexpected("shape parameters exceed paid metadata");
+    // Both canonical shape keys and every position's baked parameters
+    // are authenticated before Setup, which can allocate native programs.
+    if (shapes.size() != (full ? 17U : 1U) || shapes.front() != Shape(0, 145))
+      return std::unexpected("EXL3 trajectory exceeds its paid shape inventory");
+    const auto prefill_parameters = (*component)->ShapeParameters(shapes.front());
+    if (prefill_parameters.size() > 1024)
+      return std::unexpected("shape parameters exceed paid metadata");
+    if (full) {
+      const auto decode = Shape(145, 1);
+      const auto decode_parameters = (*component)->ShapeParameters(decode);
+      if (decode == shapes.front() || decode_parameters.size() > 1024)
+        return std::unexpected("EXL3 decode key exceeds paid metadata");
+      for (std::size_t i = 1; i < shapes.size(); ++i) {
+        if (shapes[i].segments.front().past != 144 + i || shapes[i] != decode ||
+            (*component)->ShapeParameters(shapes[i]) != decode_parameters)
+          return std::unexpected("EXL3 suffix changes the paid decode key");
+      }
+    }
     en::RunnerConfig config;
     config.graphs = false;
     config.slots = {.model = "qwen2-exl3-shared-screen",
@@ -542,7 +572,8 @@ TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) {
     std::vector<en::GroupPlace> places(paged->artifact().groups().size(), en::GroupPlace::kDevice);
     config.weights.push_back(
         {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
-    config.setup_shapes = shapes;
+    config.setup_shapes = {shapes.front()};
+    if (full) config.setup_shapes.push_back(shapes[1]);
     config.launch =
         [held = life.get()]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return held->kernel->backend->Launch(
@@ -576,14 +607,16 @@ TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) {
     if (paged->extents().size() > (kDomainCap - fixed) / en::kPagedExtent)
       return std::unexpected("weight extents exceed the checked domain");
     const auto weights_bytes = paged->extents().size() * en::kPagedExtent;
-    if (weights_bytes > kDomainCap - fixed || kRuntimePlans > kDomainCap - fixed - weights_bytes ||
-        node.StateCapacity() > (kDomainCap - fixed - weights_bytes - kRuntimePlans) / 4)
+    if (weights_bytes > kDomainCap - fixed || runtime_plans > kDomainCap - fixed - weights_bytes ||
+        node.StateCapacity() > (kDomainCap - fixed - weights_bytes - runtime_plans) / 4)
       return std::unexpected("weights and state exceed the checked domain");
     if (auto x = node.Start(llmp::base::Bytes(kDomainCap)); !x) return x;
     if (auto x = runner->Register(); !x) return x;
     if (auto x = runner->Bind(); !x) return x;
     node.Run();
     if (auto x = runner->slots().SelectSlots(std::vector<std::uint32_t>{0}); !x) return x;
+    std::uint32_t completed_steps = 0;
+    std::uint32_t compared_rows = 0;
     return node.WithRequest(
         0, runner->slots().execution(), "EXL3 reconstruction comparison", [&]() -> en::Status {
           for (const auto& shape : shapes) {
@@ -604,7 +637,18 @@ TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) {
             EXPECT_EQ(different, 0U) << "past=" << segment.past << " rows=" << segment.rows;
             if (different != 0)
               return std::unexpected("EXL3 shared logits differ from sealed legacy");
+            if (runner->slots().positions(0) != segment.past + segment.rows)
+              return std::unexpected("EXL3 completed positions differ from the trajectory");
+            ++completed_steps;
+            compared_rows += segment.rows;
           }
+          if (completed_steps != (full ? 17U : 1U) || compared_rows != token_rows ||
+              runner->slots().positions(0) != token_rows)
+            return std::unexpected("EXL3 complete trajectory witnesses differ");
+          ::testing::Test::RecordProperty("completed_steps", std::to_string(completed_steps));
+          ::testing::Test::RecordProperty("compared_rows", std::to_string(compared_rows));
+          ::testing::Test::RecordProperty("completed_positions",
+                                          std::to_string(runner->slots().positions(0)));
           return {};
         });
   }();
@@ -614,4 +658,6 @@ TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) {
   // whole Lifetime, not only the runner and its kernel resources.
   life.reset();
 }
+TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) { RunControl(false); }
+TEST(ComponentRunnerExl3Gpu, Full161TrajectoryMatchesSealedLegacy) { RunControl(true); }
 }  // namespace

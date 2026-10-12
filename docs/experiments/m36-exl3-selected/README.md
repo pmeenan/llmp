@@ -35,9 +35,28 @@ The candidate prepays its 4-GiB host inventory within its 8-GiB domain and
 checks the separate physical margin before construction.
 
 The actual screen took 964 ms; this is functional evidence, not a speed gate.
-It does not qualify the shared suffix, packed-product execution, O variants,
+It does not qualify packed-product execution, O variants,
 4.5-bpw fixture, historical Tier C, spill/restore/kept-state or deletion. Those
 remain open in G5b/G5c/G5d.
+
+On 2026-10-12, G5b2a extended the shared 4.0-bpw G control to the
+complete 145-token prefill and 16 one-row suffix steps. A fresh native
+reference completed all 17 phases using the same original 1,040 IDs and
+approved typed plan. The shared runner matched all 161 full-vocabulary rows
+bit for bit: 24,461,696 F32 values, or 97,846,784 bytes. The original
+145-row control also passed. Both cases verify completed positions and
+step/row counts; setup measures only the two distinct shape keys.
+
+The full control retains the same 4-GiB host allowance and 8-GiB domain
+with the separate 6-GiB physical margin. Its source-derived host bound is
+4,109,194,928 bytes, including the second native program and the larger
+oracle. Native build, two input/admission controls, six selected-operation
+controls, 30 component/state/lifecycle checks and the quality gates passed.
+Both actual model cases passed with zero failures or skips under a 16-GiB
+zero-swap process limit. These are functional checks; other profiles, packed
+execution, historical Tier C and model lifecycle controls remain open.
+The unrelated full regression suites were deferred under the M3.6
+incremental check policy.
 
 Final regression on the frozen checkpoint17 passed: Spark A completed 2,554
 native and 2,003 CPU CTest cases plus format, boundary, header and REUSE gates.

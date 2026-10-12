@@ -1799,6 +1799,14 @@ each is checked against the design as M3.6 proceeds.
                   or skips; quality gates passed. Main built and passed 91
                   focused integration checks and the quality gates. Other
                   profiles, packed execution and lifecycle gates stay open.
+            - [x] **G5b2a — full 4.0-bpw G suffix trajectory:** the shared
+                  runner matches all 161 full-vocabulary rows of the original
+                  145-token prefill and 16 decode steps, bit for bit against a
+                  fresh native reference. The original 145-row control and
+                  38 focused input, selected-operation and state/lifecycle
+                  checks also pass, with zero skips; native build and quality
+                  gates pass ([evidence](experiments/m36-exl3-selected/README.md)).
+                  Other profiles, packed execution and Tier C remain open.
       - [ ] **G5c — execution controls:** run FP16 and both EXL3 fixtures
             through the shared runner; pass the FP16 bridge / EXL3 Tier C
             correctness controls and state, spill, restore and kept-state
