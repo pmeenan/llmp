@@ -28,6 +28,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Run the active swap and speculation benchmarks' FP16 comparison through
+  the shared component engine, with explicit host memory limits and one
+  setup compilation per shape class. Historical standalone paging modes
+  are refused by this adapter.
+
 - Route the closed native ModelOpt target through `llmp import` using the
   existing authenticated writer and archive flow. Actual CLI checks cover
   metadata-budget refusal and complete pinned-target publication; runtime

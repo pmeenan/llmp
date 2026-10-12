@@ -3,6 +3,11 @@
 
 #include "fp16_common.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -17,20 +22,11 @@
 #include <utility>
 
 #include "base/sha256.h"
-#include "ggml.h"
-#include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/qwen2_graph.h"
-#include "kernels/ggml/tensors.h"
-#include "model/qwen2.h"
 
 namespace llmp::benchmarks {
 namespace {
 
-namespace kg = kernels::ggml;
-
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
-
-std::uint64_t Address(const void* pointer) { return reinterpret_cast<std::uintptr_t>(pointer); }
 
 }  // namespace
 
@@ -38,17 +34,39 @@ std::expected<Trajectory, std::string> LoadTrajectory(std::string_view name,
                                                       const std::filesystem::path& tokens) {
   Trajectory t;
   t.name = std::string(name);
-  std::ifstream file(tokens, std::ios::binary);
-  if (!file) {
-    return Error(std::format("cannot read {}", tokens.string()));
+  struct File {
+    int fd;
+    ~File() {
+      if (fd >= 0) (void)::close(fd);
+    }
+  } file{::open(tokens.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW)};
+  struct stat metadata{};
+  if (file.fd < 0 || ::fstat(file.fd, &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+      metadata.st_size <= 0 || metadata.st_size > 1040 * 8)
+    return Error("trajectory must be a bounded regular fixture file");
+  std::string bytes(static_cast<std::size_t>(metadata.st_size), '\0');
+  std::size_t used = 0;
+  while (used < bytes.size()) {
+    const auto read = ::read(file.fd, bytes.data() + used, bytes.size() - used);
+    if (read < 0 && errno == EINTR) continue;
+    if (read <= 0) return Error("trajectory changed during its bounded read");
+    used += static_cast<std::size_t>(read);
   }
-  const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  char extra = 0;
+  ssize_t tail = 0;
+  do {
+    tail = ::read(file.fd, &extra, 1);
+  } while (tail < 0 && errno == EINTR);
+  if (tail != 0) return Error("trajectory changed during its bounded read");
   if (name == "control") {
     std::istringstream in(bytes);
     std::int64_t id = 0;
     while (in >> id) {
+      if (id < 0 || id >= 151936 || t.tokens.size() == 76)
+        return Error("control token is outside its fixed fixture domain");
       t.tokens.push_back(static_cast<std::int32_t>(id));
     }
+    if (!in.eof()) return Error("control contains malformed token text");
     if (t.tokens.size() != 76) {
       return Error(std::format("control has 76 tokens, not {}", t.tokens.size()));
     }
@@ -77,6 +95,7 @@ std::expected<Trajectory, std::string> LoadTrajectory(std::string_view name,
       for (int b = 7; b >= 0; --b) {
         id = (id << 8U) | static_cast<unsigned char>(bytes[(i * 8) + static_cast<std::size_t>(b)]);
       }
+      if (id >= 151936) return Error("heldout token is outside its fixed fixture domain");
       t.tokens.push_back(static_cast<std::int32_t>(id));
     }
     t.cells = 1024;
@@ -85,99 +104,6 @@ std::expected<Trajectory, std::string> LoadTrajectory(std::string_view name,
     return Error("the trajectory is control or heldout");
   }
   return t;
-}
-
-std::expected<ChunkGraph, std::string> PlanChunk(const model::Qwen2Profile& profile,
-                                                 const model::Qwen2Binding& binding,
-                                                 const ChunkMemory& memory, std::uint32_t cells,
-                                                 std::uint32_t rows, std::uint32_t n_kv,
-                                                 bool fusion, const kg::DeviceChoices& choices) {
-  ChunkGraph out;
-  auto arena = kg::TensorArena::Create(kg::Qwen2GraphTensors(profile));
-  if (!arena) {
-    return Error(arena.error().detail);
-  }
-  out.arena.emplace(std::move(*arena));
-  auto graph =
-      kg::BuildQwen2Graph(*out.arena, profile, {.rows = rows, .n_kv = n_kv, .cells = cells});
-  if (!graph) {
-    return Error(graph.error().detail);
-  }
-  out.graph = std::move(*graph);
-  kg::Qwen2Graph& g = out.graph;
-  const auto bind = [&](ggml_tensor* t, std::uint32_t resource) {
-    kg::TensorArena::Bind(t, memory.weight(resource));
-  };
-  const std::uint64_t layer_cache = std::uint64_t{profile.kv_width()} * cells * 2;
-  for (std::uint32_t il = 0; il < profile.layers; ++il) {
-    const auto& b = binding.layers[il];
-    auto& l = g.layers[il];
-    bind(l.attn_norm, b.attn_norm);
-    bind(l.q, b.q);
-    bind(l.q_bias, b.q_bias);
-    bind(l.k, b.k);
-    bind(l.k_bias, b.k_bias);
-    bind(l.v, b.v);
-    bind(l.v_bias, b.v_bias);
-    bind(l.out, b.out);
-    bind(l.ffn_norm, b.ffn_norm);
-    bind(l.gate, b.gate);
-    bind(l.up, b.up);
-    bind(l.down, b.down);
-    kg::TensorArena::Bind(l.k_cache, memory.kv + (std::uint64_t{2} * il * layer_cache));
-    kg::TensorArena::Bind(l.v_cache, memory.kv + (((std::uint64_t{2} * il) + 1) * layer_cache));
-  }
-  bind(g.output_norm, binding.output_norm);
-  bind(g.output, binding.output);
-
-  // First pass: every computed tensor at its own address.
-  constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
-  for (ggml_tensor* input : g.inputs()) {
-    kg::TensorArena::Bind(input, kDistinct - (std::uint64_t{1} << 40U));
-  }
-  kg::BindDistinct(g.nodes, kDistinct);
-  auto first = kg::PlanGraph(g.nodes, fusion, choices);
-  if (!first) {
-    return Error(first.error().detail);
-  }
-  auto inputs = g.inputs();
-  auto placement = kg::PlaceActivations(g.nodes, *first, inputs, 128);
-  if (!placement) {
-    return Error(placement.error().detail);
-  }
-  out.placement = std::move(*placement);
-  if (memory.activations == 0) {  // measuring only
-    out.plan = std::move(*first);
-    return out;
-  }
-  if (out.placement.extent > memory.activation_bytes) {
-    return Error("the activations exceed their region");
-  }
-  for (const auto& [tensor, offset] : out.placement.offsets) {
-    kg::TensorArena::Bind(tensor, memory.activations + offset);
-  }
-  kg::BindViews(g.nodes);
-  auto second = kg::PlanGraph(g.nodes, fusion, choices);
-  if (!second) {
-    return Error(second.error().detail);
-  }
-  if (!kg::SamePlan(*first, *second)) {
-    return Error("the plan changed once the activations were placed");
-  }
-  out.plan = std::move(*second);
-  // 128-byte alignment of every tensor bound (the recording sees no
-  // addresses).
-  for (const ggml_tensor* t : g.nodes) {
-    for (const ggml_tensor* src : t->src) {
-      if (src != nullptr && src->view_src == nullptr && Address(src->data) % 128 != 0) {
-        return Error(std::format("{} is not 128-byte aligned", src->name));
-      }
-    }
-    if (t->view_src == nullptr && Address(t->data) % 128 != 0) {
-      return Error(std::format("node {} is not 128-byte aligned", ggml_op_desc(t)));
-    }
-  }
-  return out;
 }
 
 }  // namespace llmp::benchmarks

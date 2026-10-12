@@ -1290,6 +1290,11 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(component_runner_qwen2_exl3_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+  add_executable(fp16_benchmark_gpu_test fp16_benchmark_gpu_test.cc)
+  target_link_libraries(fp16_benchmark_gpu_test PRIVATE llmp_paged_runners llmp_base)
+  llmp_gpu_gtest(fp16_benchmark_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
   add_executable(component_runner_qwen2_gpu_test component_runner_qwen2_gpu_test.cc)
   target_link_libraries(component_runner_qwen2_gpu_test PRIVATE llmp_corpus_score llmp_engine llmp_ggml_kernels
                                                                 llmp_components llmp_spec

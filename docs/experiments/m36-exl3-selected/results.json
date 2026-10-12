@@ -1893,5 +1893,48 @@
     ],
     "integration_source_sha256": "3d7d4cdbdbe3a246790c70e33600ecbd29e931a7b729a757dab42052ebf6cd30",
     "integration_source_difference": "Only the explicit256-ID cases use a separate environment input/hash pair; former43-ID cases retain their original names."
+  },
+  "fp16_shared_benchmark_adapter": {
+    "status": "PASS",
+    "host": "spark",
+    "full_native_build": "PASS",
+    "native_result_sha256": "ff0841da862c401d7d0958640966376058291b6032dc0d203f52c47d630cf5d5",
+    "actual_result_sha256": "401485f067345ae5944d9a7c790685d5b69320b78aa9e60e012c2c287f4474d0",
+    "binary_sha256": "af64e90d0fd6184ffd49acd738d24a4cc2dc3701f488507d555b12ce507ea5b5",
+    "binary_bytes": 190979144,
+    "raw_cases": 3,
+    "raw_failures": 0,
+    "raw_skips": 0,
+    "tests": {
+      "SharedControlRepeatsAndReloadsWeights": {
+        "last_result_sha256": "51260a6794f0a672e61a6a94d4b64e026524e8e4c550e76aa88a9e7f30214f9d",
+        "compared_rows": "76",
+        "evaluations": "3",
+        "weight_reload": "1",
+        "weight_extents": "490"
+      },
+      "SharedHeldoutRepeatsAndReloadsWeights": {
+        "last_result_sha256": "99a812b19a2269dbf961075beebf82b51da5cd3781c9f9b777ad06ab1f875560",
+        "compared_rows": "577",
+        "evaluations": "3",
+        "weight_reload": "1",
+        "weight_extents": "490"
+      },
+      "InsufficientHostAllowanceRefusesBeforeConstruction": {}
+    },
+    "host_envelope_bytes": {
+      "control": 6442450944,
+      "heldout": 12884901888
+    },
+    "native_catalog_cap_bytes": {
+      "control": 8589934592,
+      "heldout": 17179869184
+    },
+    "process_cache_cap_bytes": 17179869184,
+    "physical_margin_bytes": 6442450944,
+    "observed_process_cache_peak_bytes": 2173374464,
+    "same_selected_implementation_only": true,
+    "external_quantized_oracle_used": false,
+    "scope": "Active swap/spec benchmark API over ComponentStepSource and ModelRunner; no serving or matched speed claim."
   }
 }

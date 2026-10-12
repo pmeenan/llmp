@@ -3,1147 +3,463 @@
 
 #include "fp16_runner.h"
 
-#include <cuda_runtime.h>
-#include <fcntl.h>
-#include <unistd.h>
-
 #include <algorithm>
-#include <atomic>
+#include <array>
 #include <bit>
-#include <cerrno>
-#include <charconv>
-#include <chrono>
+#include <cmath>
 #include <cstring>
 #include <expected>
 #include <format>
 #include <fstream>
-#include <initializer_list>
+#include <limits>
+#include <map>
 #include <optional>
-#include <print>
 #include <span>
-#include <string>
-#include <system_error>
 #include <utility>
 
-#include "artifact/layout.h"
+#include "base/bytes.h"
 #include "base/sha256.h"
-#include "ggml.h"
-#include "kernels/ggml/executor.h"
-#include "kernels/ggml/graph_plan.h"
-#include "kernels/ggml/implementations.h"
-#include "paging_cases.h"
-#include "plan_record.h"
-#include "providers/direct_reader.h"
-#include "scheduler/commands.h"
-#include "scheduler/scheduler.h"
+#include "components/step.h"
+#include "engine/component_source.h"
+#include "engine/model_runner.h"
+#include "engine/paged_weights.h"
+#include "kernels/ggml/cublas.h"
+#include "kernels/ggml/step_program.h"
+#include "model/qwen2.h"
+#include "planner/pattern.h"
+#include "platform/host_probe.h"
+#include "providers/device_probe.h"
+#include "spec/mapping.h"
+#include "spec/mappings/qwen2.h"
 
 namespace llmp::benchmarks {
-
 namespace {
-
-namespace kg = llmp::kernels::ggml;
-namespace sc = llmp::scheduler;
-namespace ts = llmp::test_support;
-using base::Bytes;
-using catalog::ExtentId;
-using catalog::MemoryClass;
-using catalog::Recovery;
-using providers::BackingKind;
+namespace en = engine;
+namespace kg = kernels::ggml;
+namespace pl = planner;
 using Status = test_support::Status;
+constexpr std::uint64_t kMiB = 1ULL << 20U;
+// Reuse the shared fixture's bounded artifact/spec owners and seven-graph
+// compiler envelope. This adapter measures only five classes, without native
+// oracle storage. Charges precede construction, and compiler storage is released
+// only after synchronous setup/bind or a completed step.
+constexpr std::uint64_t kMetadata = 1024 * kMiB;
+constexpr std::uint64_t kCompiler = 3072 * kMiB;
+constexpr std::uint32_t kVocabulary = 151936;
+constexpr std::uint64_t kControlEnvelope = 6144 * kMiB;
+constexpr std::uint64_t kHeldoutEnvelope = 12288 * kMiB;
+constexpr std::uint64_t kControlResults = 1024 * kMiB;
+constexpr std::uint64_t kHeldoutResults = 6144 * kMiB;
+constexpr std::uint64_t kProgram = 64 * kMiB;
+constexpr std::uint64_t kLaunches = 4096;
+constexpr std::uint64_t kRuntime = 5 * (kProgram + kLaunches * en::kGraphNodeHostBytes);
+static_assert(kMetadata + kCompiler + kHeldoutResults + kRuntime +
+                  3 * std::uint64_t{512} * kVocabulary * sizeof(float) <=
+              kHeldoutEnvelope);
 
-constexpr std::uint64_t kExtent = test_support::kPagedExtent;
+std::unexpected<std::string> Error(std::string text) { return std::unexpected(std::move(text)); }
 
-std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
-
-Status Cuda(cudaError_t result, std::string_view what) {
-  if (result != cudaSuccess) {
-    return Error(std::format("{}: {}", what, cudaGetErrorString(result)));
+class TemporaryCharge {
+ public:
+  TemporaryCharge(std::uint64_t& used, std::uint64_t limit, std::uint64_t bytes)
+      : used_(used), bytes_(bytes) {
+    held_ = used <= limit && bytes <= limit - used;
+    if (held_) used_ += bytes;
   }
-  return {};
-}
-
-void* Pointer(std::uint64_t address) {
-  return reinterpret_cast<void*>(address);  // NOLINT(performance-no-int-to-ptr)
-}
-
-std::uint64_t Address(const void* pointer) { return reinterpret_cast<std::uintptr_t>(pointer); }
-
-double Seconds(std::chrono::steady_clock::duration d) {
-  return std::chrono::duration<double>(d).count();
-}
-
-// Each load, with the requests its reads took and the chunks they carried
-// (BP-P1).
-std::string LoadsJson(std::span<const ts::LoadStats> stats) {
-  std::string loads;
-  for (const ts::LoadStats& load : stats) {
-    loads +=
-        std::format(R"({}{{"what":"{}","extents":{},"seconds":{:.6f},"requests":{},"pieces":{}}})",
-                    loads.empty() ? "" : ",", load.what, load.extents, load.seconds, load.requests,
-                    load.pieces);
+  ~TemporaryCharge() {
+    if (held_) used_ -= bytes_;
   }
-  return loads;
-}
+  bool held() const { return held_; }
 
+ private:
+  std::uint64_t& used_;
+  std::uint64_t bytes_;
+  bool held_ = false;
+};
+
+pl::StepShape Shape(std::uint32_t past, std::uint32_t rows, std::uint32_t cells) {
+  return {.phase = rows == 1 ? pl::Phase::kDecode : pl::Phase::kPrefill,
+          .segments = {{.slot = 0,
+                        .rows = rows,
+                        .past = past,
+                        .read_cells = model::PaddedKv(past + rows, cells),
+                        .outputs = rows}},
+          .read_align = 256};
+}
 }  // namespace
 
-std::uint64_t Fp16Runner::WeightAddress(std::uint32_t resource) const {
-  const auto& r = artifact_->resources()[resource];
-  return weights_base_.at(place_) + group_region_[r.group] + r.offset.value();
+struct Fp16Runner::State {
+  State(test_support::PagedNode& n, const Fp16Options& o, int owner_id, std::uint32_t stream_id,
+        bool record)
+      : node(n), options(o), owner(owner_id), stream(stream_id), recording(record) {}
+  en::PagedNode& node;
+  const Fp16Options& options;
+  int owner;
+  std::uint32_t stream;
+  bool recording;
+  bool entered = false;
+  bool bound = false;
+  bool released = false;
+  catalog::ExtentId host_envelope{};
+  std::uint64_t host_used = 0;
+  std::uint64_t host_limit = 0;
+  std::uint64_t result_limit = 0;
+  std::uint64_t result_charge = 0;
+  std::vector<pl::StepShape> keys;
+  Trajectory trajectory;
+  std::vector<spec::SourceValue> values;
+  std::optional<spec::Source> source;
+  std::optional<spec::ModelSpec> specification;
+  std::optional<model::StateLayoutDerived> layout;
+  std::map<ir::WeightRef, std::uint32_t> resources;
+  std::unique_ptr<kg::GgmlBackend> backend;
+  std::unique_ptr<kg::CublasHandle> cublas;
+  std::unique_ptr<en::ModelRunner> runner;
+  catalog::Closure nothing;
+  std::string artifact_id;
+  std::chrono::steady_clock::time_point first_done;
+};
+
+Fp16Runner::Fp16Runner(test_support::PagedNode& node, const Fp16Options& options, int owner,
+                       std::uint32_t stream, test_support::Recording* recording,
+                       std::string& /*record*/)
+    : state_(std::make_unique<State>(node, options, owner, stream, recording != nullptr)) {}
+
+Fp16Runner::~Fp16Runner() {
+  if (state_->entered && !state_->released) {
+    // Active benchmark callers abort without stack teardown when node retirement
+    // is uncertain. Preserve borrowers if another caller violates that protocol.
+    (void)state_.release();
+    return;
+  }
+  if (state_->host_envelope.valid()) {
+    // Outputs are owned by the caller, whose results precede this adapter in
+    // destruction order. Release never refunds their enclosing host payment.
+    (void)state_->node.catalog().ReleasePinned(state_->host_envelope);
+    (void)state_->node.catalog().RemoveExtent(state_->host_envelope);
+  }
 }
 
-std::vector<ExtentId> Fp16Runner::weights() const {
-  std::vector<ExtentId> all = device_weights_;
-  all.insert(all.end(), table_extents_.begin(), table_extents_.end());
-  return all;
-}
-
-std::uint64_t Fp16Runner::weight_read_bytes() const {
-  std::uint64_t bytes = 0;
-  const auto groups = artifact_->groups();
-  for (const auto& group : groups) {
-    bytes += group.stored.value();
+Status Fp16Runner::Setup() {
+  auto& s = *state_;
+  const auto& o = s.options;
+  if (s.entered || s.released || s.host_envelope.valid())
+    return Error("FP16 benchmark setup is not repeatable");
+  if (s.recording || o.restores != 0 || o.relocate || o.load_only != 0 || o.weights_host ||
+      o.premapped || o.partial || !o.spill.empty() || o.shared_embeddings)
+    return Error("historical BP-P modes require their retired legacy protocol");
+  // Harness nodes do not charge their counted host heap by default. Pay the
+  // complete bounded adapter envelope explicitly without changing node policy;
+  // active callers already include pinned occupancy in their Start budgets.
+  const bool heldout = o.trajectory == "heldout";
+  s.host_limit = heldout ? kHeldoutEnvelope : kControlEnvelope;
+  s.result_limit = heldout ? kHeldoutResults : kControlResults;
+  if (o.host_allowance < s.host_limit) return Error("FP16 host allowance is insufficient");
+  const auto available = platform::AvailableMemoryBytes();
+  const auto occupied = s.node.catalog().OccupancyOf(s.node.domain()).Total().value();
+  constexpr std::uint64_t margin = 6144 * kMiB;
+  if (!available || *available < s.host_limit + margin ||
+      occupied > *available - s.host_limit - margin)
+    return Error("FP16 setup lacks physical headroom for its paid envelope");
+  auto paid = s.node.catalog().AddExtent({.domain = s.node.domain(),
+                                          .memory_class = catalog::MemoryClass::kRuntime,
+                                          .recovery = catalog::Recovery::kPinned,
+                                          .size = base::Bytes(s.host_limit),
+                                          .content = {}},
+                                         true);
+  if (!paid) return Error("FP16 host envelope cannot be cataloged");
+  s.host_envelope = *paid;
+  s.host_used = kMetadata + kRuntime;
+  TemporaryCharge compiler(s.host_used, s.host_limit, kCompiler);
+  if (!compiler.held()) return Error("FP16 construction exceeds host admission");
+  auto trajectory = LoadTrajectory(o.trajectory, o.tokens);
+  if (!trajectory) return Error(trajectory.error());
+  s.trajectory = std::move(*trajectory);
+  if (s.trajectory.cells > 1024 || s.trajectory.tokens.size() > 577 ||
+      s.trajectory.chunks.empty() || s.trajectory.chunks.size() > 64 ||
+      std::ranges::any_of(s.trajectory.tokens,
+                          [](auto id) { return id < 0 || id >= static_cast<int>(kVocabulary); }))
+    return Error("FP16 trajectory exceeds the fixed fixture domain");
+  auto weights = std::make_unique<en::PagedWeights>();
+  if (auto opened = weights->Open(o.artifact); !opened) return opened;
+  const auto& artifact = weights->artifact();
+  const auto& profile = model::Qwen25Instruct05B();
+  if (auto checked = model::BindQwen2(profile, artifact); !checked) return Error(checked.error());
+  const auto& mapping = spec::mappings::Qwen2Mapping();
+  auto values = spec::mappings::Qwen2V0Values(profile);
+  if (!values) return Error(values.error());
+  s.values = std::move(*values);
+  auto source = spec::SourceOfV0(artifact, &mapping);
+  if (!source) return Error(source.error());
+  if (source->tensors.size() > 512 || std::ranges::any_of(source->tensors, [](const auto& tensor) {
+        return tensor.name.size() > 128;
+      }))
+    return Error("FP16 prepared tensor metadata exceeds its fixed bound");
+  s.source.emplace(std::move(*source));
+  auto specification = spec::Synthesize(mapping, *s.source, s.values);
+  if (!specification) return Error(specification.error());
+  s.specification.emplace(std::move(*specification));
+  if (s.specification->stages.size() != 1 || s.specification->stages.front().layers.size() != 24)
+    return Error("FP16 benchmark requires the approved single-stage fixture");
+  const auto max_rows = *std::ranges::max_element(s.trajectory.chunks);
+  auto layout = components::StageLayout(*s.specification, 0, s.trajectory.cells, max_rows);
+  if (!layout) return Error(layout.error());
+  s.layout.emplace(std::move(*layout));
+  std::vector<pl::StepShape> shapes;
+  std::uint32_t past = 0;
+  for (const auto rows : s.trajectory.chunks) {
+    if (rows == 0 || rows > 512 || past > s.trajectory.tokens.size() ||
+        rows > s.trajectory.tokens.size() - past)
+      return Error("FP16 chunk does not fit its authenticated trajectory");
+    shapes.push_back(Shape(past, rows, s.trajectory.cells));
+    past += rows;
   }
-  if (!table_extents_.empty()) {
-    bytes += groups[artifact_->resources()[binding_.token_embd].group].stored.value();
+  if (past != s.trajectory.tokens.size()) return Error("FP16 chunks omit trajectory rows");
+  auto step = components::BuildStep(*s.specification, 0, shapes.front(),
+                                    {.tensors = s.source->tensors, .state = &*s.layout});
+  if (!step) return Error(step.error());
+  if (step->weights.size() > 512 || step->graph.nodes().size() > 4096)
+    return Error("FP16 primitive step exceeds its fixed inventory");
+  for (const auto& weight : step->weights) {
+    if (weight.parts.size() != 1) return Error("FP16 benchmark requires one part per weight");
+    const auto found = artifact.FindResource(weight.parts.front().first);
+    if (!found) return Error("FP16 step refers to an absent prepared resource");
+    s.resources.emplace(weight.ref, *found);
   }
-  return bytes;
-}
-
-std::vector<ExtentId> Fp16Runner::managed_extents() const {
-  std::vector<ExtentId> all = weights();
-  if (o_.spill == "managed") {
-    // Its backing is the VMM lane's to release: written back and evicted.
-    all.insert(all.end(), kv_.extents.begin(), kv_.extents.end());
+  auto backend = kg::GgmlBackend::Create(0, s.node.execution(), s.node.stream(s.stream), nullptr);
+  if (!backend) return Error(backend.error());
+  s.backend = std::move(*backend);
+  std::optional<pl::Policy> policy;
+  if (!o.fusion) {
+    policy.emplace();
+    for (const auto& pattern : pl::Patterns()) policy->disabled.emplace_back(pattern.name);
+    pl::Canonicalize(*policy);
   }
-  return all;
-}
-
-// The weights' places, and an extent per chunk (and per host table chunk).
-Status Fp16Runner::ReserveWeights() {
-  auto& memory = node_.memory();
-  const auto groups = artifact_->groups();
-  group_region_.resize(groups.size());
-  chunk_extents_.resize(groups.size());
-  for (std::size_t g = 0; g < groups.size(); ++g) {
-    group_region_[g] = weights_bytes_;
-    weights_bytes_ += std::uint64_t{groups[g].chunks} * kExtent;
-    stored_bytes_ += groups[g].stored.value();
-  }
-  for (std::size_t which = 0; which < weights_.size(); ++which) {
-    if (which > 0 && o_.load_only > 0) {
-      break;  // nothing relocates
+  auto checked_backend = s.backend->Backend();
+  const auto lower = checked_backend.lower;
+  checked_backend.lower = [&s, lower](const kernels::LowerInput& input)
+      -> std::expected<std::unique_ptr<kernels::StepProgram>, std::string> {
+    if (std::ranges::find(s.keys, input.shape) == s.keys.end())
+      return Error("FP16 program is outside its measured plan classes");
+    auto program = lower(input);
+    if (!program) return program;
+    if ((*program)->host_bytes() > kProgram || (*program)->launches() > kLaunches)
+      return Error("FP16 program exceeds its paid retained-plan bound");
+    return program;
+  };
+  auto component = en::ComponentStepSource::Create(
+      {.spec = &*s.specification,
+       .stage = 0,
+       .bindings = {.tensors = s.source->tensors, .state = &*s.layout},
+       .bound_digest = s.specification->Digest(),
+       .mapping = &mapping,
+       .values = s.values,
+       .slots = 1,
+       .policy = std::move(policy),
+       .backend = std::move(checked_backend)});
+  if (!component) return Error(component.error());
+  // Measure one representative of each actual plan class. Runtime positions
+  // remain data; refuse a position-dependent class instead of under-measuring.
+  auto& keys = s.keys;
+  std::vector<std::vector<std::uint64_t>> parameters;
+  const auto paid_keys = s.trajectory.name == "heldout" ? 5U : 2U;
+  for (const auto& shape : shapes) {
+    const auto found = std::ranges::find(keys, shape);
+    auto current = (*component)->ShapeParameters(shape);
+    if (found == keys.end()) {
+      if (keys.size() == paid_keys) return Error("FP16 shape exceeds its paid plan classes");
+      keys.push_back(shape);
+      parameters.push_back(std::move(current));
+    } else if (parameters[static_cast<std::size_t>(found - keys.begin())] != current) {
+      return Error("FP16 position changes its measured plan class");
     }
-    auto reservation = memory.Reserve(Bytes(weights_bytes_));
-    if (!reservation) {
-      return Error(std::format("reserving the weights: {}", reservation.error().detail));
-    }
-    weights_.at(which) = *reservation;
-    weights_base_.at(which) = memory.RangeOf(*reservation).value().base;
   }
-  // The artifact's identity orders victim ties (catalog.h ContentKey).
-  for (std::size_t i = 0; i < id_.size() && (2 * i) + 1 < artifact_->id().size(); ++i) {
-    (void)std::from_chars(artifact_->id().data() + (2 * i), artifact_->id().data() + (2 * i) + 2,
-                          id_.at(i), 16);
-  }
-  for (std::uint32_t g = 0; g < groups.size(); ++g) {
-    for (std::uint32_t c = 0; c < groups[g].chunks; ++c) {
-      auto extent =
-          node_.catalog().AddExtent({.domain = node_.domain(),
-                                     .memory_class = MemoryClass::kWeights,
-                                     .recovery = Recovery::kFromArtifact,
-                                     .size = Bytes(kExtent),
-                                     .content = {.artifact = id_, .group = g, .chunk = c}});
-      if (!extent) {
-        return Error("cataloging a weight chunk");
-      }
-      chunk_extents_[g].push_back(*extent);
-      device_weights_.push_back(*extent);
-    }
-  }
-  if (o_.premapped) {
-    // Every extent's backing, mapped once for the whole run.
-    const std::size_t allocation_class =
-        o_.weights_host ? node_.host_class() : node_.device_class();
-    for (std::uint64_t at = 0; at < weights_bytes_; at += kExtent) {
-      auto backing = memory.Create(allocation_class, Bytes(kExtent));
-      if (!backing || !memory.Map(weights_[0], Bytes(at), *backing)) {
-        return Error("premapping the weights");
-      }
-      premapped_.push_back(*backing);
-    }
-    if (!memory.SetAccess(weights_[0], Bytes(0), Bytes(weights_bytes_),
-                          providers::Access::kReadWrite)) {
-      return Error("access to the premapped weights");
-    }
-  }
-  if (o_.shared_embeddings) {
-    return {};  // one copy of the table, in device VMM (BP-P3)
-  }
-  // The token table's host copy: its group's chunks again, read directly
-  // into host VMM the CPU maps.
-  const std::uint32_t table_group = artifact_->resources()[binding_.token_embd].group;
-  auto host = memory.Reserve(Bytes(std::uint64_t{groups[table_group].chunks} * kExtent));
-  if (!host) {
-    return Error(std::format("reserving the host table: {}", host.error().detail));
-  }
-  table_ = *host;
-  table_base_ = memory.RangeOf(*host).value().base;
-  for (std::uint32_t c = 0; c < groups[table_group].chunks; ++c) {
-    auto extent =
-        node_.catalog().AddExtent({.domain = node_.domain(),
-                                   .memory_class = MemoryClass::kWeights,
-                                   .recovery = Recovery::kFromArtifact,
-                                   .size = Bytes(kExtent),
-                                   .content = {.artifact = id_, .group = table_group, .chunk = c}});
-    if (!extent) {
-      return Error("cataloging a host table chunk");
-    }
-    table_extents_.push_back(*extent);
-  }
-  return {};
+  if (keys.size() != paid_keys) return Error("FP16 trajectory has an unexpected plan inventory");
+  s.artifact_id = artifact.id();
+  en::PagedWeights* paged = weights.get();
+  en::RunnerConfig config;
+  config.slots = {.model = std::format("benchmark-fp16-{}", s.owner),
+                  .slots = 1,
+                  .stages = {{.name = "target", .layout = *s.layout}},
+                  .spec = s.specification->Digest(),
+                  .read_align = 256,
+                  .spill_place = {},
+                  .spill_directory = o.out / "shared-state",
+                  .invalidate = {},
+                  .drop_plans = {}};
+  std::vector<en::GroupPlace> places(artifact.groups().size(), en::GroupPlace::kDevice);
+  config.weights.push_back(
+      {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
+  config.setup_shapes = keys;
+  const auto facts = providers::QueryDeviceFacts(0);
+  if (!facts) return Error("FP16 backend device facts are unavailable");
+  const auto cublas_bytes =
+      kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
+  config.kernel_memory.push_back({.name = "FP16 benchmark cuBLAS", .bytes = cublas_bytes});
+  config.prepare = [&s, cublas_bytes](std::span<const std::uint64_t> bases) -> Status {
+    if (bases.size() != 1) return Error("FP16 cuBLAS workspace is not mapped");
+    auto handle =
+        kg::CublasHandle::Create(0, s.node.execution(), s.node.stream(s.stream),
+                                 {.base = bases.front(), .size = base::Bytes(cublas_bytes)});
+    if (!handle) return Error(handle.error().detail);
+    s.cublas = std::move(*handle);
+    return s.backend->LendCublas(s.cublas.get());
+  };
+  config.retire = [&s] {
+    s.backend->LaunchReleased();
+    s.cublas.reset();
+  };
+  config.launch = [&s]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
+    return s.backend->Launch(
+        {.base = s.node.pool().base, .size = base::Bytes(s.node.pool().bytes)});
+  };
+  config.weight_address = [&s, paged](const ir::WeightRef& weight, format::PartRole) {
+    const auto found = s.resources.find(weight);
+    return found == s.resources.end() ? 0 : paged->resource_address(found->second);
+  };
+  auto runner =
+      en::ModelRunner::Create(s.node, std::move(config), std::move(*component), s.owner, s.stream);
+  if (!runner) return Error(runner.error());
+  s.runner = std::move(*runner);
+  s.entered = true;
+  return s.runner->Setup();
 }
 
 Status Fp16Runner::Register() {
-  if (!o_.shared_embeddings) {
-    const std::uint32_t table_group = artifact_->resources()[binding_.token_embd].group;
-    for (std::uint32_t c = 0; c < table_extents_.size(); ++c) {
-      const auto range =
-          artifact::ChunkRangeOf(artifact_->layout(), {.group = table_group, .chunk = c});
-      if (!range) {
-        return Error("the table's chunk range");
-      }
-      const std::uint64_t address = table_base_ + (std::uint64_t{c} * kExtent);
-      auto set = node_.scheduler().SetSource(
-          table_extents_[c],
-          sc::PageSource{.read = {.fd = shards_.at(range->shard).get(),
-                                  .offset = range->file_offset.value(),
-                                  // NOLINTNEXTLINE(performance-no-int-to-ptr): host VMM, CPU-mapped
-                                  .memory = reinterpret_cast<std::byte*>(address),
-                                  .length = range->length.value()},
-                         .landed = false,
-                         .destination = 0,
-                         .backing = sc::BackingPlace{.reservation = table_,
-                                                     .offset = Bytes(std::uint64_t{c} * kExtent),
-                                                     .size = Bytes(kExtent),
-                                                     .allocation_class = node_.host_class()}});
-      if (!set) {
-        return Error(std::format("the table's source: {}", sc::ToString(set.error())));
-      }
-      node_.AddSpan({.base = address,
-                     .size = kExtent,
-                     .extent = table_extents_[c],
-                     .memory_class = MemoryClass::kWeights,
-                     .device = false,
-                     .owner = owner_});
-    }
-  }
-  if (auto r = Place(0); !r) {
-    return r;
-  }
-  if (!o_.spill.empty()) {
-    return RegisterCache();
-  }
-  return {};
-}
-
-// Registers every device weight chunk's source at place `which`.
-Status Fp16Runner::Place(std::size_t which) {
-  const auto groups = artifact_->groups();
-  node_.EraseSpans([&](const ts::Span& span) {
-    return span.owner == owner_ && span.memory_class == MemoryClass::kWeights && span.device;
-  });
-  for (std::uint32_t g = 0; g < groups.size(); ++g) {
-    for (std::uint32_t c = 0; c < groups[g].chunks; ++c) {
-      const auto range = artifact::ChunkRangeOf(artifact_->layout(), {.group = g, .chunk = c});
-      if (!range) {
-        return Error("a chunk's range");
-      }
-      const std::uint64_t offset = group_region_[g] + (std::uint64_t{c} * kExtent);
-      const std::uint64_t address = weights_base_.at(which) + offset;
-      const ExtentId extent = chunk_extents_[g][c];
-      std::optional<sc::BackingPlace> backing;
-      if (!o_.premapped) {
-        backing = sc::BackingPlace{
-            .reservation = weights_.at(which),
-            .offset = Bytes(offset),
-            .size = Bytes(kExtent),
-            .allocation_class = o_.weights_host ? node_.host_class() : node_.device_class()};
-      }
-      auto set = node_.scheduler().SetSource(
-          extent,
-          sc::PageSource{
-              .read = {.fd = shards_.at(range->shard).get(),
-                       .offset = range->file_offset.value(),
-                       // In place, for --weights host (D-034).
-                       // NOLINTNEXTLINE(performance-no-int-to-ptr)
-                       .memory = o_.weights_host ? reinterpret_cast<std::byte*>(address) : nullptr,
-                       .length = range->length.value()},
-              .landed = !o_.weights_host,
-              .destination = o_.weights_host ? 0 : address,
-              .backing = backing});
-      if (!set) {
-        return Error(std::format("a chunk's source: {}", sc::ToString(set.error())));
-      }
-      node_.AddSpan({.base = address,
-                     .size = kExtent,
-                     .extent = extent,
-                     .memory_class = MemoryClass::kWeights,
-                     .device = !o_.weights_host,
-                     .owner = owner_});
-    }
-  }
-  node_.SortSpans();
-  place_ = which;
-  return {};
-}
-
-// BP-A1's in-process check: every tensor the chunk's plan binds lies in
-// cataloged, resident extents of device memory of one class, and each has
-// the class it should: weights, the cache (live state) or the activations
-// (scratch).
-void Fp16Runner::Check(const kg::Qwen2Graph& graph) {
-  const auto expect = [&](const ggml_tensor* t, MemoryClass memory_class) {
-    ++coverage_.tensors;
-    const std::optional<MemoryClass> covered =
-        node_.Covered(Address(t->data), ggml_nbytes(t), owner_);
-    if (covered) {
-      ++coverage_.by_class.at(static_cast<std::size_t>(*covered));
-    }
-    if (covered != memory_class) {
-      if (coverage_.violations++ == 0) {
-        coverage_.first =
-            std::format("{} ({} bytes at {:#x})", t->name, ggml_nbytes(t), Address(t->data));
-      }
-    }
-  };
-  const auto kind_of = [&](const ggml_tensor* t) {
-    const ggml_tensor* base = t->view_src != nullptr ? t->view_src : t;
-    for (const auto& layer : graph.layers) {
-      if (base == layer.k_cache || base == layer.v_cache) {
-        return MemoryClass::kLiveState;
-      }
-    }
-    // The other leaves are the weights; everything computed, and the
-    // inputs, live in the activations.
-    const auto inputs = graph.inputs();
-    return base->op == GGML_OP_NONE && std::ranges::find(inputs, base) == inputs.end()
-               ? MemoryClass::kWeights
-               : MemoryClass::kScratch;
-  };
-  for (const ggml_tensor* node : graph.nodes) {
-    expect(node, kind_of(node));
-    for (const ggml_tensor* src : node->src) {
-      if (src != nullptr) {
-        expect(src, kind_of(src));
-      }
-    }
-  }
-}
-
-Status Fp16Runner::Job(const catalog::Closure& closure, sc::DeviceJob job, std::string_view what) {
-  return node_.Job(closure, std::move(job), what, stream_);
-}
-
-// ------------------------------------------------------------------ setup
-
-Status Fp16Runner::Setup() {
-  auto trajectory = LoadTrajectory(o_.trajectory, o_.tokens);
-  if (!trajectory) {
-    return std::unexpected(trajectory.error());
-  }
-  t_ = std::move(*trajectory);
-  auto artifact = artifact::Artifact::Open(o_.artifact);
-  if (!artifact) {
-    return Error(std::format("the artifact was refused: {}", artifact.error().reason));
-  }
-  artifact_ = std::make_unique<artifact::Artifact>(std::move(*artifact));
-  auto binding = model::BindQwen2(profile_, *artifact_);
-  if (!binding) {
-    return std::unexpected(binding.error());
-  }
-  binding_ = std::move(*binding);
-  for (std::uint32_t s = 0; s < artifact_->shards().size(); ++s) {
-    auto fd = artifact_->OpenShardForDirectRead(s);
-    if (!fd) {
-      return Error(std::format("shard {} cannot be opened for direct reads", s));
-    }
-    shards_.push_back(std::move(*fd));
-  }
-
-  // Measure every chunk's activations, scratch and inputs on a context with
-  // no workspace, as rung 3 does; the node sizes the workspace for the
-  // largest.
-  auto measure = kg::LaunchContext::Create(0, node_.execution(), node_.stream(stream_),
-                                           {.base = 0, .size = Bytes(0)});
-  if (!measure) {
-    return Error(measure.error().detail);
-  }
-  const std::uint64_t layer_cache = std::uint64_t{profile_.kv_width()} * t_.cells * 2;
-  const std::uint64_t kv_bytes = layer_cache * 2 * profile_.layers;
-  kv_used_ = kv_bytes;
-  {
-    const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
-    const ChunkMemory placeless{.weight = [](std::uint32_t) { return std::uint64_t{1} << 44U; },
-                                .kv = std::uint64_t{1} << 45U,
-                                .activations = 0,
-                                .activation_bytes = 0};
-    std::uint32_t n_past = 0;
-    for (const std::uint32_t rows : t_.chunks) {
-      const std::uint32_t n_kv = model::PaddedKv(n_past + rows, t_.cells);
-      auto planned =
-          PlanChunk(profile_, binding_, placeless, t_.cells, rows, n_kv, o_.fusion, choices);
-      if (!planned) {
-        return Error(std::format("chunk at {}: {}", n_past, planned.error()));
-      }
-      most_activations_ = std::max(most_activations_, planned->placement.extent);
-      auto scratch = kg::PlanScratch(**measure, planned->plan);
-      if (!scratch) {
-        return Error(scratch.error().detail);
-      }
-      most_scratch_ = std::max(most_scratch_, *scratch);
-      std::uint64_t inputs = 0;
-      for (const ggml_tensor* input : planned->graph.inputs()) {
-        inputs += RoundUp(ggml_nbytes(input), 128);
-      }
-      input_bytes_ = std::max(input_bytes_, inputs);
-      most_rows_ = std::max(most_rows_, rows);
-      n_past += rows;
-    }
-  }
-  measure->reset();
-  int major = 0;
-  int minor = 0;
-  (void)cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);
-  (void)cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0);
-  cublas_bytes_ = kg::CublasHandle::UpstreamWorkspace((100 * major) + (10 * minor)).value();
-  if (auto r = node_.MapResident(kv_, "the FP16 cache", kv_bytes, BackingKind::kDevice,
-                                 MemoryClass::kLiveState, Recovery::kPreserve, owner_);
-      !r) {
-    return r;
-  }
-  if (auto r =
-          node_.MapResident(workspace_, "the cuBLAS workspace", cublas_bytes_, BackingKind::kDevice,
-                            MemoryClass::kRuntime, Recovery::kPinned, owner_);
-      !r) {
-    return r;
-  }
-  logits_bytes_ = std::uint64_t{most_rows_} * profile_.vocab * sizeof(float);
-  auto inputs = node_.Pinned(input_bytes_, owner_, staging_);
-  auto logits = node_.Pinned(logits_bytes_, owner_, staging_);
-  if (!inputs || !logits) {
-    return std::unexpected(!inputs ? inputs.error() : logits.error());
-  }
-  inputs_ = *inputs;
-  logits_ = *logits;
-  if (o_.shared_embeddings) {
-    rows_bytes_ = std::uint64_t{most_rows_} * profile_.width * 2;
-    auto rows = node_.Pinned(rows_bytes_, owner_, staging_);
-    if (!rows) {
-      return std::unexpected(rows.error());
-    }
-    rows_ = *rows;
-  }
-  return ReserveWeights();
+  if (!state_->runner || state_->released) return Error("FP16 benchmark is not set up");
+  return state_->runner->Register();
 }
 
 Status Fp16Runner::Bind() {
-  auto& catalog = node_.catalog();
-  if (o_.shared_embeddings) {
-    // What a gather leases: the device table's chunks and the row staging.
-    std::vector<ExtentId> gather =
-        chunk_extents_.at(artifact_->resources()[binding_.token_embd].group);
-    gather.push_back(staging_.back());
-    gather_ = catalog.ClosureOfExtents(gather).value();
-  }
-  // What a chunk leases: every weight (both copies of the table), the
-  // cache, the activations, the scratch, the workspace and the staging.
-  std::vector<ExtentId> all = weights();
-  for (const ts::Mapped* mapped : std::initializer_list<const ts::Mapped*>{
-           &kv_, &node_.activations(), &node_.pool(), &workspace_}) {
-    all.insert(all.end(), mapped->extents.begin(), mapped->extents.end());
-  }
-  all.insert(all.end(), staging_.begin(), staging_.end());
-  everything_ = catalog.ClosureOfExtents(all).value();
-  cache_ = catalog.ClosureOfExtents(kv_.extents).value();
-
-  auto launch =
-      kg::LaunchContext::Create(0, node_.execution(), node_.stream(stream_),
-                                {.base = node_.pool().base, .size = Bytes(most_scratch_)});
-  if (!launch) {
-    return Error(launch.error().detail);
-  }
-  launch_ = std::move(*launch);
-  auto registry = execution::Registry::Create(kg::Implementations());
-  if (!registry) {
-    return Error(registry.error().detail);
-  }
-  registry_ = std::make_unique<execution::Registry>(std::move(*registry));
+  auto& s = *state_;
+  if (!s.runner || s.bound || s.released) return Error("FP16 benchmark bind is not available");
+  TemporaryCharge compiler(s.host_used, s.host_limit, kCompiler);
+  if (!compiler.held()) return Error("FP16 bind exceeds host admission");
+  if (auto bound = s.runner->Bind(); !bound) return bound;
+  s.bound = true;
   return {};
 }
-
-// ------------------------------------------------------------------ evaluating
 
 Status Fp16Runner::Evaluate(int evaluation, std::vector<float>& result) {
-  // A fresh cache, as the bridge's new context has: a job on the compute
-  // stream, leasing the cache.
-  const std::uint64_t kv_bytes = kv_used_;
-  const std::uint64_t kv = kv_.base;
-  if (auto cleared = Job(
-          cache_,
-          [kv, kv_bytes](providers::NativeStream stream) {
-            return cudaMemsetAsync(Pointer(kv), 0, kv_bytes,
-                                   static_cast<cudaStream_t>(stream.handle)) == cudaSuccess
-                       ? sc::JobResult::kQueued
-                       : sc::JobResult::kUnknown;
-          },
-          "clearing the cache");
-      !cleared) {
-    return cleared;
-  }
-  const ts::Mapped& activations = node_.activations();
-  result.clear();
-  result.reserve(t_.tokens.size() * profile_.vocab);
-  std::uint32_t n_past = 0;
-  for (std::size_t k = 0; k < t_.chunks.size(); ++k) {
-    const std::uint32_t rows = t_.chunks[k];
-    auto inputs = model::Qwen2ChunkInputs(profile_, t_.cells, n_past, rows);
-    if (!inputs) {
-      return std::unexpected(inputs.error());
+  auto& s = *state_;
+  if (!s.bound || s.released || evaluation < 1) return Error("FP16 benchmark is not ready");
+  const auto count = s.trajectory.tokens.size() * std::uint64_t{kVocabulary};
+  const auto bytes = count * sizeof(float);
+  if (result.capacity() > count || bytes > s.result_limit / 2 ||
+      s.result_charge > s.result_limit - 2 * bytes || s.host_used > s.host_limit - 2 * bytes)
+    return Error("FP16 externally retained output exceeds its admitted domain");
+  // Callers retain complete evaluations. Their bytes and allocation growth stay
+  // paid until adapter destruction; failed attempts consume the same allowance.
+  s.result_charge += 2 * bytes;
+  s.host_used += 2 * bytes;
+  const auto max_rows = *std::ranges::max_element(s.trajectory.chunks);
+  const auto step_outputs = 3 * std::uint64_t{max_rows} * kVocabulary * sizeof(float);
+  TemporaryCharge compiler(s.host_used, s.host_limit, kCompiler + step_outputs);
+  if (!compiler.held()) return Error("FP16 step exceeds host admission");
+  result.resize(static_cast<std::size_t>(count));
+  auto& slots = s.runner->slots();
+  return s.node.WithRequest(s.stream, slots.execution(), "shared FP16 benchmark", [&]() -> Status {
+    if (auto selected = slots.SelectSlots(std::vector<std::uint32_t>{0}); !selected)
+      return selected;
+    if (auto cleared = slots.Clear(0); !cleared) return cleared;
+    std::uint32_t past = 0;
+    for (const auto rows : s.trajectory.chunks) {
+      const auto tokens = std::span(s.trajectory.tokens).subspan(past, rows);
+      const std::array work{en::SegmentWork{.tokens = tokens}};
+      auto completed = s.runner->RunStep(
+          {.shape = Shape(past, rows, s.trajectory.cells), .work = work, .ahead = {}});
+      if (!completed) return Error(completed.error().what);
+      if (completed->outputs.size() != 1 ||
+          completed->outputs.front().size() != std::uint64_t{rows} * kVocabulary * sizeof(float))
+        return Error("FP16 benchmark returned incomplete full heads");
+      std::memcpy(result.data() + std::uint64_t{past} * kVocabulary,
+                  completed->outputs.front().data(), completed->outputs.front().size());
+      if (past == 0) s.first_done = std::chrono::steady_clock::now();
+      past += rows;
     }
-    const ChunkMemory memory{
-        .weight = [this](std::uint32_t resource) { return WeightAddress(resource); },
-        .kv = kv_.base,
-        .activations = activations.base,
-        .activation_bytes = most_activations_};
-    auto planned = PlanChunk(profile_, binding_, memory, t_.cells, rows, inputs->n_kv, o_.fusion,
-                             kg::DeviceChoicesOf(*launch_));
-    if (!planned) {
-      return Error(std::format("chunk {}: {}", k, planned.error()));
-    }
-    const bool calls_cublas = std::ranges::any_of(
-        planned->plan.steps, [](const auto& s) { return s.implementation == kg::kMulMatCublas; });
-    if (calls_cublas && !cublas_) {
-      // The bridge creates its handle here, lazily: a job on the compute
-      // stream, leasing the workspace and scratch it lends.
-      std::vector<ExtentId> lent = workspace_.extents;
-      lent.insert(lent.end(), node_.pool().extents.begin(), node_.pool().extents.end());
-      Status made;
-      if (auto created = Job(
-              node_.catalog().ClosureOfExtents(lent).value(),
-              [this, &made](providers::NativeStream) {
-                launch_.reset();
-                auto handle = kg::CublasHandle::Create(
-                    0, node_.execution(), node_.stream(stream_),
-                    {.base = workspace_.base, .size = Bytes(cublas_bytes_)});
-                if (!handle) {
-                  made = Error(handle.error().detail);
-                  return sc::JobResult::kNotStarted;
-                }
-                cublas_ = std::move(*handle);
-                auto relaunch = kg::LaunchContext::Create(
-                    0, node_.execution(), node_.stream(stream_),
-                    {.base = node_.pool().base, .size = Bytes(most_scratch_)}, cublas_.get());
-                if (!relaunch) {
-                  made = Error(relaunch.error().detail);
-                  return sc::JobResult::kNotStarted;
-                }
-                launch_ = std::move(*relaunch);
-                return sc::JobResult::kQueued;
-              },
-              "creating the cuBLAS handle");
-          !created || !made) {
-        return !made ? made : created;
-      }
-      // The plan's device choices follow the new context.
-      planned = PlanChunk(profile_, binding_, memory, t_.cells, rows, inputs->n_kv, o_.fusion,
-                          kg::DeviceChoicesOf(*launch_));
-      if (!planned) {
-        return Error(std::format("chunk {}: {}", k, planned.error()));
-      }
-    }
-    auto bound = kg::BoundGraph::Bind(*registry_, planned->plan);
-    if (!bound) {
-      return Error(std::format("chunk {}: {}", k, bound.error().detail));
-    }
-    auto step_scratch = kg::PlanScratch(*launch_, planned->plan);
-    if (!step_scratch) {
-      return Error(step_scratch.error().detail);
-    }
-    Check(planned->graph);
-    const std::uint64_t chunk_logits = std::uint64_t{rows} * profile_.vocab * sizeof(float);
-    Status ran;
-    const std::span<const std::int32_t> tokens = std::span(t_.tokens).subspan(n_past, rows);
-    std::span<const std::uint16_t> host_table;
-    std::vector<float> gathered;
-    if (o_.shared_embeddings) {
-      // BP-P3's shared arm: the rows come from the device table.
-      if (auto r = GatherRows(tokens, gathered); !r) {
-        return r;
-      }
-    } else {
-      const auto& table = artifact_->resources()[binding_.token_embd];
-      host_table =
-          std::span(reinterpret_cast<const std::uint16_t*>(  // NOLINT(performance-no-int-to-ptr)
-                        table_base_ + table.offset.value()),
-                    std::size_t{profile_.vocab} * profile_.width);
-    }
-    launch_->ResetScratchPeak();
-    auto job = [&, rows, chunk = static_cast<int>(k),
-                n_past](providers::NativeStream native) -> sc::JobResult {
-      if (recording_ != nullptr) {
-        for (const auto& event : recording_->Take()) {
-          record_ += test_support::EventLine(event);
-        }
-        record_ += test_support::ChunkLine(
-            {.evaluation = evaluation, .chunk = chunk, .rows = rows, .n_past = n_past});
-      }
-      // The embedding rows, from the host table this job's lease holds (or
-      // gathered from the device table before it).
-      std::vector<float> embd = gathered;
-      if (!o_.shared_embeddings) {
-        embd.assign(std::size_t{rows} * profile_.width, 0.0F);
-        if (auto r = model::EmbedRows(host_table, profile_.width, profile_.vocab, tokens, embd);
-            !r) {
-          ran = std::unexpected(r.error());
-          return sc::JobResult::kNotStarted;
-        }
-      }
-      auto* const stream = static_cast<cudaStream_t>(native.handle);
-      const kg::Qwen2Graph& g = planned->graph;
-      const std::array<std::pair<ggml_tensor*, const void*>, 6> sources = {
-          {{g.embd, embd.data()},
-           {g.positions, inputs->positions.data()},
-           {g.k_idxs, inputs->k_idxs.data()},
-           {g.v_idxs, inputs->v_idxs.data()},
-           {g.mask, inputs->mask.data()},
-           {g.out_ids, inputs->out_ids.data()}}};
-      std::uint64_t staged = 0;
-      for (const auto& [tensor, source] : sources) {
-        auto* at = static_cast<std::byte*>(inputs_) + staged;
-        std::memcpy(at, source, ggml_nbytes(tensor));
-        if (auto r = Cuda(cudaMemcpyAsync(tensor->data, at, ggml_nbytes(tensor),
-                                          cudaMemcpyHostToDevice, stream),
-                          "an input copy");
-            !r) {
-          ran = r;
-          return sc::JobResult::kUnknown;  // a runtime error, even the first: its effect is unknown
-        }
-        staged += RoundUp(ggml_nbytes(tensor), 128);
-      }
-      if (auto r = bound->Run(*launch_); !r) {
-        ran = Error(std::format("chunk {}: {}", chunk, r.error().detail));
-        return r.error().error == kg::KernelError::kUnknown ? sc::JobResult::kUnknown
-                                                            : sc::JobResult::kFailed;
-      }
-      if (auto r = Cuda(cudaMemcpyAsync(logits_, g.logits->data, chunk_logits,
-                                        cudaMemcpyDeviceToHost, stream),
-                        "the logits copy");
-          !r) {
-        ran = r;
-        return sc::JobResult::kUnknown;
-      }
-      if (recording_ != nullptr) {
-        for (const auto& event : recording_->Take()) {
-          record_ += test_support::EventLine(event);
-        }
-        record_ += test_support::EndChunkLine();
-      }
-      return sc::JobResult::kQueued;
-    };
-    if (auto r = Job(everything_, std::move(job), "a chunk"); !r || !ran) {
-      return !ran ? ran : Error(std::format("chunk {}: {}", k, r.error()));
-    }
-    if (launch_->faulted()) {
-      return Error(std::format("chunk {}: the launch context faulted", k));
-    }
-    // The job's fence has completed: the logits are in.
-    const auto* values = static_cast<const float*>(logits_);
-    result.insert(result.end(), values, values + (chunk_logits / sizeof(float)));
-    if (k == 0) {
-      first_chunk_done_ = std::chrono::steady_clock::now();
-    }
-    // The chunk shape's guaranteed bound against what it reached.
-    Peak& peak = peaks_[rows];
-    ++peak.chunks;
-    peak.activations_bound = std::max(peak.activations_bound, planned->placement.extent);
-    peak.scratch_bound = std::max(peak.scratch_bound, *step_scratch);
-    peak.scratch_seen = std::max(peak.scratch_seen, launch_->scratch_peak().value());
-    const auto reach = [&](const ggml_tensor* t) {
-      const std::uint64_t at = t != nullptr ? Address(t->data) : 0;
-      if (at >= activations.base && at < activations.base + activations.bytes) {
-        peak.activations_seen =
-            std::max(peak.activations_seen, at + ggml_nbytes(t) - activations.base);
-      }
-    };
-    for (const ggml_tensor* node : planned->graph.nodes) {
-      reach(node);
-      for (const ggml_tensor* src : node->src) {
-        reach(src);
-      }
-    }
-    n_past += rows;
-    const int partial_at = o_.partial ? 3 + o_.restores : -1;
-    const int spill_at = o_.spill.empty() ? -1 : 3 + o_.restores + (o_.partial ? 1 : 0);
-    if (evaluation > 2 && evaluation <= 2 + o_.restores && n_past == t_.restore_after) {
-      if (auto r = Restore(evaluation); !r) {
-        return r;
-      }
-    }
-    if (evaluation == partial_at && n_past == t_.restore_after) {
-      if (auto r = Partial(); !r) {
-        return r;
-      }
-    }
-    if (evaluation == spill_at && (k == 0 || n_past == t_.restore_after + 8)) {
-      if (auto r = Spill(k == 0 ? "after the first prefill chunk" : "mid-decode"); !r) {
-        return r;
-      }
-    }
-  }
-  return {};
-}
-
-// BP-P2: each partial eviction in turn, at the restore point.
-Status Fp16Runner::Partial() {
-  auto& memory = node_.memory();
-  auto& catalog = node_.catalog();
-  const std::string layer =
-      std::format("blk.{}.", profile_.layers / 2);  // a middle layer's resources
-  const auto cases = PartialCases(*artifact_, layer, false);
-  for (const auto& partial : cases) {
-    std::vector<ExtentId> extents;
-    extents.reserve(partial.chunks.size());
-    for (const auto& [group, chunk] : partial.chunks) {
-      extents.push_back(chunk_extents_.at(group).at(chunk));
-    }
-    const std::size_t backings = memory.backings();
-    const auto start = std::chrono::steady_clock::now();
-    if (auto r = node_.Evict(extents); !r) {
-      return r;
-    }
-    const double evicted = Seconds(std::chrono::steady_clock::now() - start);
-    std::size_t resident = 0;
-    for (const ExtentId extent : device_weights_) {
-      resident += catalog.Describe(extent).value().state == catalog::ExtentState::kResident ? 1 : 0;
-    }
-    if (resident + extents.size() != device_weights_.size() ||
-        memory.backings() + extents.size() != backings) {
-      return Error(std::format("partial eviction '{}' did not evict exactly its {} extents",
-                               partial.name, extents.size()));
-    }
-    // An incomplete closure refuses the launch: nothing may run.
-    std::atomic<bool> ran{false};
-    ts::Done refused;
-    const Status submitted =
-        node_.Post(std::make_unique<ts::LaunchOnlyProgram>(refused, everything_, ran, stream_),
-                   refused, "a launch over an incomplete closure");
-    if (submitted || ran.load() ||
-        refused.error.load() != static_cast<int>(sc::WorkError::kNotResident)) {
-      return Error(
-          std::format("partial eviction '{}': a launch over an incomplete closure was "
-                      "not refused before it ran",
-                      partial.name));
-    }
-    ++refusals_;
-    events_.push_back(PagingEvent{.what = "partial eviction",
-                                  .extents = extents.size(),
-                                  .seconds = evicted,
-                                  .detail = partial.name});
-    // Only the missing extents page in; the next chunk binds against them.
-    if (auto r = node_.Load(extents, std::format("partial restore: {}", partial.name), loads_);
-        !r) {
-      return r;
-    }
-  }
-  return {};
-}
-
-// BP-P4: the cache written back through the zone and evicted, then
-// restored; its bytes before and after must match.
-Status Fp16Runner::Spill(std::string_view where) {
-  auto& memory = node_.memory();
-  std::vector<std::byte> before;
-  if (auto r = Snapshot(before); !r) {
-    return r;
-  }
-  const std::size_t backings = memory.backings();
-  auto start = std::chrono::steady_clock::now();
-  if (auto r = node_.Evict(kv_.extents); !r) {
-    return r;
-  }
-  events_.push_back(PagingEvent{.what = "state write-back",
-                                .extents = kv_.extents.size(),
-                                .seconds = Seconds(std::chrono::steady_clock::now() - start),
-                                .detail = std::string(where)});
-  for (const ExtentId extent : kv_.extents) {
-    const auto view = node_.catalog().Describe(extent).value();
-    if (view.state != catalog::ExtentState::kNonresident || !view.preserved) {
-      return Error("the cache is not nonresident and preserved after its write-back");
-    }
-  }
-  const bool managed = o_.spill == "managed";
-  if (memory.backings() + (managed ? kv_.extents.size() : 0) != backings) {
-    return Error("the write-back did not release (managed) or keep (premapped) the backing");
-  }
-  if (!managed) {
-    // Poisoned while nonresident: the restore must bring back every byte.
-    if (auto r = Cuda(cudaMemset(Pointer(kv_.base), 0xff, kv_.bytes), "poisoning the cache"); !r) {
-      return r;
-    }
-    if (auto r = Cuda(cudaDeviceSynchronize(), "poisoning the cache"); !r) {
-      return r;
-    }
-  }
-  start = std::chrono::steady_clock::now();
-  if (auto r = node_.Load(kv_.extents, std::format("state restore ({})", where), loads_); !r) {
-    return r;
-  }
-  events_.push_back(PagingEvent{.what = "state restore",
-                                .extents = kv_.extents.size(),
-                                .seconds = Seconds(std::chrono::steady_clock::now() - start),
-                                .detail = std::string(where)});
-  std::vector<std::byte> after;
-  if (auto r = Snapshot(after); !r) {
-    return r;
-  }
-  for (std::size_t i = 0; i < before.size(); ++i) {
-    kv_mismatches_ += before[i] != after.at(i) ? 1 : 0;
-  }
-  return {};
-}
-
-// The cache's bytes, copied to the host by a job that leases it.
-Status Fp16Runner::Snapshot(std::vector<std::byte>& out) {
-  const std::uint64_t kv = kv_.base;
-  const std::uint64_t bytes = kv_used_;
-  void* copy = kv_copy_;
-  if (auto r = Job(
-          cache_,
-          [kv, bytes, copy](providers::NativeStream stream) {
-            return cudaMemcpyAsync(copy, Pointer(kv), bytes, cudaMemcpyDeviceToHost,
-                                   static_cast<cudaStream_t>(stream.handle)) == cudaSuccess
-                       ? sc::JobResult::kQueued
-                       : sc::JobResult::kUnknown;
-          },
-          "copying the cache out");
-      !r) {
-    return r;
-  }
-  const auto* bytes_in = static_cast<const std::byte*>(kv_copy_);
-  out.assign(bytes_in, bytes_in + bytes);
-  return {};
-}
-
-// BP-P3's shared arm: a chunk's embedding rows copied from the device
-// table to pinned staging by a job leasing both, then widened on the host
-// as the bridge's CPU lookup widens them.
-Status Fp16Runner::GatherRows(std::span<const std::int32_t> tokens, std::vector<float>& embd) {
-  const std::uint64_t row_bytes = std::uint64_t{profile_.width} * 2;
-  const std::uint64_t table = WeightAddress(binding_.token_embd);
-  for (const std::int32_t token : tokens) {
-    if (token < 0 || std::cmp_greater_equal(token, profile_.vocab)) {
-      return Error(std::format("token {} is outside the vocabulary", token));
-    }
-  }
-  void* rows = rows_;
-  if (auto r = Job(
-          gather_,
-          [&, rows](providers::NativeStream stream) {
-            for (std::size_t i = 0; i < tokens.size(); ++i) {
-              if (cudaMemcpyAsync(
-                      static_cast<std::byte*>(rows) + (i * row_bytes),
-                      Pointer(table + (static_cast<std::uint64_t>(tokens[i]) * row_bytes)),
-                      row_bytes, cudaMemcpyDeviceToHost,
-                      static_cast<cudaStream_t>(stream.handle)) != cudaSuccess) {
-                return sc::JobResult::kUnknown;  // a runtime error, even the first
-              }
-            }
-            return sc::JobResult::kQueued;
-          },
-          "gathering the embedding rows");
-      !r) {
-    return r;
-  }
-  std::vector<std::int32_t> local(tokens.size());
-  for (std::size_t i = 0; i < local.size(); ++i) {
-    local[i] = static_cast<std::int32_t>(i);
-  }
-  embd.assign(tokens.size() * profile_.width, 0.0F);
-  return model::EmbedRows(
-      std::span(static_cast<const std::uint16_t*>(rows_), tokens.size() * profile_.width),
-      profile_.width, static_cast<std::uint32_t>(tokens.size()), local, embd);
-}
-
-// --spill: the cache's write-back places, one 2 MiB range of an unnamed
-// direct-I/O file per extent, with its backing managed (released on
-// eviction) or kept mapped (premapped).
-Status Fp16Runner::RegisterCache() {
-  std::filesystem::create_directories(o_.out);
-  spill_fd_ = ::open(o_.out.c_str(), O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
-  if (spill_fd_ < 0) {
-    return Error(std::format("the spill file in {}: {}", o_.out.string(),
-                             std::generic_category().message(errno)));
-  }
-  if (auto r = Cuda(cudaMallocHost(&kv_copy_, kv_used_), "the cache's host copy"); !r) {
-    return r;
-  }
-  const bool managed = o_.spill == "managed";
-  for (std::size_t i = 0; i < kv_.extents.size(); ++i) {
-    std::optional<sc::BackingPlace> backing;
-    if (managed) {
-      backing = sc::BackingPlace{.reservation = kv_.reservation,
-                                 .offset = Bytes(i * kExtent),
-                                 .size = Bytes(kExtent),
-                                 .allocation_class = node_.device_class()};
-    }
-    auto set = node_.scheduler().SetSource(
-        kv_.extents[i],
-        sc::PageSource{
-            .read = {.fd = spill_fd_, .offset = i * kExtent, .memory = nullptr, .length = kExtent},
-            .landed = true,
-            .destination = kv_.base + (i * kExtent),
-            .backing = backing,
-            .write_back = true});
-    if (!set) {
-      return Error(std::format("the cache's write-back place: {}", sc::ToString(set.error())));
-    }
-  }
-  if (managed) {
-    kv_.backings.clear();  // the VMM lane releases them on eviction (D-033)
-  }
-  return {};
-}
-
-// Rung 5: every weight extent evicted, its backing released, then paged
-// back in through the zone (and, with relocate, every second time at the
-// other place).
-Status Fp16Runner::Restore(int evaluation) {
-  auto& memory = node_.memory();
-  const std::vector<ExtentId> all = weights();
-  const std::size_t backings = memory.backings();
-  if (auto r = node_.Evict(all); !r) {
-    return r;
-  }
-  for (const ExtentId extent : all) {
-    if (node_.catalog().Describe(extent).value().state != catalog::ExtentState::kNonresident) {
-      return Error("a weight extent is still resident after the eviction");
-    }
-  }
-  if (memory.backings() + all.size() != backings) {
-    return Error("the eviction did not release every weight's backing");
-  }
-  if (o_.relocate && evaluation % 2 == 0) {
-    // On the scheduler thread: it owns the sources.
-    if (auto r = node_.Call([this] { return Place(1 - place_); }, "relocating the weights"); !r) {
-      return r;
-    }
-  }
-  if (auto r =
-          node_.Load(device_weights_, std::format("restore {} (device)", evaluation - 2), loads_);
-      !r) {
-    return r;
-  }
-  return node_.Load(table_extents_, std::format("restore {} (host table)", evaluation - 2), loads_);
+    if (slots.positions(0) != s.trajectory.tokens.size() ||
+        std::ranges::any_of(result, [](float value) { return !std::isfinite(value); }))
+      return Error("FP16 benchmark did not complete its finite full trajectory");
+    return {};
+  });
 }
 
 Status Fp16Runner::RunAlone() {
-  if (o_.load_only > 0) {
-    for (int i = 1; i <= o_.load_only; ++i) {
-      if (auto r = node_.Load(device_weights_, std::format("load {}", i), loads_); !r) {
-        return r;
-      }
-      if (auto r = node_.Evict(device_weights_); !r) {
-        return r;
-      }
-    }
-    return WriteLoads();
-  }
-  if (auto r = node_.Load(device_weights_, "initial (device)", loads_); !r) {
-    return r;
-  }
-  if (auto r = node_.Load(table_extents_, "initial (host table)", loads_); !r) {
-    return r;
-  }
-  const int evaluations = 2 + o_.restores + (o_.partial ? 1 : 0) + (o_.spill.empty() ? 0 : 1);
-  std::vector<std::vector<float>> results(static_cast<std::size_t>(evaluations));
-  for (int e = 1; e <= evaluations; ++e) {
-    if (auto r = Evaluate(e, results[static_cast<std::size_t>(e - 1)]); !r) {
-      return r;
-    }
-  }
+  std::vector<test_support::LoadStats> log;
+  if (auto loaded = state_->node.Load(weights(), "shared FP16 weights", log); !loaded)
+    return loaded;
+  std::vector<std::vector<float>> results(2);
+  for (int i = 0; i < 2; ++i)
+    if (auto evaluated = Evaluate(i + 1, results[static_cast<std::size_t>(i)]); !evaluated)
+      return evaluated;
   return Write(results);
 }
 
-Status Fp16Runner::WriteLoads() {
-  const std::string loads = LoadsJson(loads_);
-  std::uint64_t bytes = 0;
-  for (const auto& group : artifact_->groups()) {
-    bytes += group.stored.value();
-  }
-  std::filesystem::create_directories(o_.out);
-  std::ofstream file(o_.out / "loads.json");
-  file << std::format(
-              R"({{"weights":"{}","backing":"{}","lanes":"{}","extents":{},"read_bytes":{},)"
-              R"("zone_slots":{},"depth":{},"coalesce":{},"loads":[{}]}})",
-              o_.weights_host ? "host" : "device", o_.premapped ? "premapped" : "managed",
-              node_.inline_lanes() ? "inline" : "threads", device_weights_.size(), bytes,
-              node_.slots(), test_support::kPagedDepth, node_.coalesce() ? "true" : "false", loads)
-       << "\n";
-  std::println("wrote {}", o_.out.string());
-  return {};
-}
-
 Status Fp16Runner::Write(const std::vector<std::vector<float>>& results) {
-  const std::vector<float>& first = results.front();
-  std::string differences;
-  std::size_t differing_total = 0;
-  for (std::size_t e = 1; e < results.size(); ++e) {
-    std::size_t differing = results[e].size() == first.size() ? 0 : first.size();
-    for (std::size_t i = 0; i < std::min(first.size(), results[e].size()); ++i) {
-      differing +=
-          std::bit_cast<std::uint32_t>(first[i]) != std::bit_cast<std::uint32_t>(results[e][i]);
-    }
-    differences += std::format("{}{}", differences.empty() ? "" : ",", differing);
-    differing_total += differing;
+  if (results.empty()) return Error("FP16 benchmark has no completed results");
+  const auto expected = state_->trajectory.tokens.size() * std::uint64_t{kVocabulary};
+  for (const auto& result : results) {
+    if (result.size() != expected) return Error("FP16 comparison has incomplete results");
+    for (std::size_t i = 0; i < result.size(); ++i)
+      if (std::bit_cast<std::uint32_t>(result[i]) !=
+          std::bit_cast<std::uint32_t>(results.front()[i]))
+        return Error("same shared FP16 implementation changed across evaluations");
   }
   base::Sha256 hash;
-  hash.Update(std::as_bytes(std::span(first)));
-  const std::string digest = base::ToHex(hash.Finish());
-  std::filesystem::create_directories(o_.out);
-  {
-    std::ofstream raw(o_.out / "logits.f32le", std::ios::binary);
-    raw.write(reinterpret_cast<const char*>(first.data()),
-              static_cast<std::streamsize>(first.size() * sizeof(float)));
-    if (!raw) {
-      return Error("the logits could not be written");
-    }
-  }
-  const std::string loads = LoadsJson(loads_);
-  std::string by_class;
-  for (std::size_t c = 0; c < coverage_.by_class.size(); ++c) {
-    by_class += std::format("{}{}", c == 0 ? "" : ",", coverage_.by_class.at(c));
-  }
-  std::string chunks;
-  for (const std::uint32_t c : t_.chunks) {
-    chunks += std::format("{}{}", chunks.empty() ? "" : ",", c);
-  }
-  std::uint64_t device_bytes = 0;
-  std::uint64_t table_bytes = 0;
-  const auto groups = artifact_->groups();
-  for (std::uint32_t g = 0; g < groups.size(); ++g) {
-    device_bytes += groups[g].stored.value();
-    if (g == artifact_->resources()[binding_.token_embd].group) {
-      table_bytes = groups[g].stored.value();
-    }
-  }
-  const std::string summary = std::format(
-      R"({{"trajectory":"{}","fusion":{},"lanes":"{}","tokens":{},"chunks":[{}],"cells":{},)"
-      R"("evaluations":{},"restores":{},"restore_after":{},"relocate":{},"logits_sha256":"{}",)"
-      R"("bit_differences_from_first":[{}],"artifact":"{}","device_weight_extents":{},)"
-      R"("device_weight_read_bytes":{},"host_table_extents":{},"host_table_read_bytes":{},)"
-      R"("weights_backing_bytes":{},"stored_bytes":{},"zone_slots":{},"zone_bytes":{},)"
-      R"("kv_bytes":{},"activations":{},"scratch":{},"cublas_workspace":{},"loads":[{}],)"
-      R"("coverage":{{"tensors":{},"violations":{},"first":"{}","by_class":[{}]}}}})",
-      t_.name, o_.fusion ? "true" : "false", node_.inline_lanes() ? "inline" : "threads",
-      t_.tokens.size(), chunks, t_.cells, results.size(), o_.restores, t_.restore_after,
-      o_.relocate ? "true" : "false", digest, differences, artifact_->id(), device_weights_.size(),
-      device_bytes, table_extents_.size(), table_bytes, device_weights_.size() * kExtent,
-      stored_bytes_, node_.slots(), node_.zone().bytes, kv_.bytes, node_.activations().bytes,
-      node_.pool().bytes, workspace_.bytes, loads, coverage_.tensors, coverage_.violations,
-      coverage_.first, by_class);
-  // BP-P2, BP-P4 and BP-P3's runs, and each chunk shape's bound against
-  // its peak.
-  std::string events;
-  for (const PagingEvent& event : events_) {
-    events += std::format(R"({}{{"what":"{}","extents":{},"seconds":{:.6f},"detail":"{}"}})",
-                          events.empty() ? "" : ",", event.what, event.extents, event.seconds,
-                          event.detail);
-  }
-  std::string peaks;
-  bool within = true;
-  for (const auto& [rows, peak] : peaks_) {
-    within = within && peak.activations_seen <= peak.activations_bound &&
-             peak.scratch_seen <= peak.scratch_bound;
-    peaks +=
-        std::format(R"({}{{"rows":{},"chunks":{},"activations_bound":{},"activations_seen":{},)"
-                    R"("scratch_bound":{},"scratch_seen":{}}})",
-                    peaks.empty() ? "" : ",", rows, peak.chunks, peak.activations_bound,
-                    peak.activations_seen, peak.scratch_bound, peak.scratch_seen);
-  }
-  {
-    std::ofstream file(o_.out / "paging.json");
-    file << std::format(R"({{"partial":{},"spill":"{}","embeddings":"{}","refused_launches":{},)"
-                        R"("kv_bytes_differing":{},"events":[{}],"peaks":[{}]}})",
-                        o_.partial ? "true" : "false", o_.spill,
-                        o_.shared_embeddings ? "shared" : "duplicated", refusals_, kv_mismatches_,
-                        events, peaks)
-         << "\n";
-  }
-  {
-    std::ofstream file(o_.out / "summary.json");
-    file << summary << "\n";
-  }
-  std::println("wrote {}", o_.out.string());
-  if (kv_mismatches_ != 0) {
-    return Error(std::format("{} bytes of the cache differ after its restore", kv_mismatches_));
-  }
-  if (!within) {
-    return Error("a chunk reached past its guaranteed bound (paging.json)");
-  }
-  if (coverage_.violations != 0) {
-    return Error(
-        std::format("{} bound tensors lie outside cataloged extents of their class; "
-                    "first: {}",
-                    coverage_.violations, coverage_.first));
-  }
-  if (differing_total != 0) {
-    return Error(std::format("a later evaluation differs from the first: [{}]", differences));
-  }
-  return {};
+  hash.Update(std::as_bytes(std::span(results.front())));
+  std::error_code error;
+  std::filesystem::create_directories(state_->options.out, error);
+  if (error) return Error("FP16 result directory is unavailable");
+  std::ofstream raw(state_->options.out / "logits.f32le", std::ios::binary);
+  raw.write(reinterpret_cast<const char*>(results.front().data()),
+            static_cast<std::streamsize>(results.front().size() * sizeof(float)));
+  if (!raw) return Error("FP16 results could not be written");
+  std::ofstream summary(state_->options.out / "summary.json");
+  summary << std::format(
+      "{{\"execution\":\"shared-components\",\"trajectory\":\"{}\","
+      "\"artifact\":\"{}\",\"tokens\":{},\"evaluations\":{},"
+      "\"logits_sha256\":\"{}\",\"legacy_protocol\":false}}\n",
+      state_->trajectory.name, state_->artifact_id, state_->trajectory.tokens.size(),
+      results.size(), base::ToHex(hash.Finish()));
+  return summary ? Status{} : Error("FP16 summary could not be written");
 }
 
+std::uint64_t Fp16Runner::activations_needed() const {
+  return state_->runner ? state_->runner->activations_needed() : 0;
+}
+std::uint64_t Fp16Runner::pool_needed() const {
+  return state_->runner ? state_->runner->pool_needed() : 0;
+}
+std::chrono::steady_clock::time_point Fp16Runner::first_chunk_done() const {
+  return state_->first_done;
+}
+const catalog::Closure& Fp16Runner::everything() const {
+  return state_->runner ? state_->runner->slots().execution() : state_->nothing;
+}
+std::vector<catalog::ExtentId> Fp16Runner::weights() const {
+  return state_->runner ? state_->runner->weights() : std::vector<catalog::ExtentId>{};
+}
+std::uint64_t Fp16Runner::weight_read_bytes() const {
+  return state_->runner ? state_->runner->weight_read_bytes() : 0;
+}
+const Trajectory& Fp16Runner::trajectory() const { return state_->trajectory; }
+std::uint32_t Fp16Runner::stream() const { return state_->stream; }
+const catalog::Closure& Fp16Runner::fence_closure() const {
+  return state_->runner ? state_->runner->fence_closure() : state_->nothing;
+}
+std::vector<catalog::ExtentId> Fp16Runner::managed_extents() const {
+  return state_->runner ? state_->runner->managed_extents() : std::vector<catalog::ExtentId>{};
+}
 Status Fp16Runner::Release() {
-  if (released_) {
-    return {};
+  auto& s = *state_;
+  if (s.released) return {};
+  if (s.runner) {
+    if (auto released = s.runner->Release(); !released) return released;
   }
-  released_ = true;
-  std::vector<std::string> problems;
-  launch_.reset();
-  cublas_.reset();
-  auto& memory = node_.memory();
-  for (ts::Mapped* mapped : {&kv_, &workspace_}) {
-    if (!ts::ReleaseMapped(memory, *mapped)) {
-      problems.push_back(std::format("{} could not be released", mapped->name));
-    }
-  }
-  if (!premapped_.empty()) {
-    bool released =
-        memory.Unmap(weights_[0], Bytes(0), Bytes(premapped_.size() * kExtent)).has_value();
-    for (const auto backing : premapped_) {
-      released = memory.Release(backing).has_value() && released;
-    }
-    if (!released) {
-      problems.emplace_back("the premapped weights could not be released");
-    }
-  }
-  for (const providers::ReservationId reservation : {weights_[0], weights_[1], table_}) {
-    if (reservation.valid() && !memory.Free(reservation)) {
-      problems.emplace_back("a weights reservation still has mappings");
-    }
-  }
-  (void)cudaFreeHost(kv_copy_);
-  if (spill_fd_ >= 0) {
-    (void)::close(spill_fd_);  // unnamed: nothing outlives the process
-  }
-  if (problems.empty()) {
-    return {};
-  }
-  std::string all;
-  for (const std::string& problem : problems) {
-    all += (all.empty() ? "" : "; ") + problem;
-  }
-  return Error(all);
+  s.backend.reset();
+  s.cublas.reset();
+  s.released = true;
+  return {};
 }
 
 }  // namespace llmp::benchmarks

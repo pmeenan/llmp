@@ -390,3 +390,37 @@ actual cases. Every per-target NLL and selected-plan receipt equals the isolated
 run. Main process/cache peaks range from 276,647,936 to 278,220,800 bytes;
 format, header and license checks pass. Earlier checkpoint/spill/kept/reload
 evidence is reused without rerunning those cases.
+
+
+## Active FP16 benchmark adapter
+
+The FP16 comparison used by the active swap and speculation benchmarks now
+uses `ComponentStepSource` and `ModelRunner` with the current Qwen2 mapping,
+including its selected fused attention. It returns the same full-vocabulary
+row order, weight closures and first-chunk completion time through the existing
+benchmark helper API. Metadata, backend/cuBLAS, compiler plans and completion
+remain owned by the shared runner's lifetime. Setup measures two control or
+five heldout classes once; positions remain runtime data.
+
+The adapter pays a pinned host envelope before construction: 6 GiB for control
+or 12 GiB for heldout, including temporary compilation, retained programs and
+caller-owned result growth. Local limits enforce that inventory before and
+after the node starts. Existing benchmark budgets include this pinned occupancy;
+the node's global host policy stays unchanged. Full results remain paid until
+the caller releases them and destroys the adapter. Unproven retirement keeps
+the complete owner. Historical BP-P flags and launcher recording are explicitly
+refused rather than emulated by another family executor.
+
+Main passed a full native build and the insufficient-host-allowance refusal
+control, then all three actual checks without failures or skips. The 76-row
+control and 577-row heldout trajectories each execute three times and compare
+all heads against their own first execution, with all 490 weight extents evicted
+and reloaded before the third. The refusal control uses absent input paths and
+an unopened node to verify that insufficient host inventory stops construction.
+All source, binary, input and recipe guards pass, no compute process remains,
+and all memory events are zero. The observed process/cache peak is 2,173,374,464
+bytes under the existing 16-GiB zero-swap confinement; this is not device
+occupancy. The unchanged mapping reuses its earlier original-reference quality
+and state evidence. No external quantized-library bit agreement, serving
+qualification or matched speed result is claimed. Legacy standalone executor
+and graph deletion remains the following slice.

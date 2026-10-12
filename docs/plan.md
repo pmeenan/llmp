@@ -1995,6 +1995,17 @@ each is checked against the design as M3.6 proceeds.
                   history, broader shapes and deletion remain open.
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
+            - [x] **G5d1 — active FP16 benchmark adapter:** move the swap
+                  and speculation harnesses' FP16 comparison to the shared
+                  component source/runner. Keep full control/heldout heads,
+                  same-implementation repeats and weight reloads; retire the
+                  separate graph executor. Explicit host inventory and distinct
+                  setup classes replace implicit accounting and repeated
+                  compilation. Main passes a full native build and three actual
+                  controls (76/577 rows, three evaluations, complete 490-extent
+                  weight reload, and pre-construction host refusal), without
+                  failures or skips. No serving or speed claim
+                  ([evidence](experiments/m36-exl3-selected/README.md#active-fp16-benchmark-adapter)).
 - [ ] **Native importer** (D-109): container readers for GGUF,
       safetensors with `config.json`, diffusers pipelines (Qwen-Image's
       components, composed under D-089), MLX and EXL3; architecture mappings
