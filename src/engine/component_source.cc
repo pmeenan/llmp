@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "engine/graph_plan.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "planner/plan.h"
@@ -384,85 +385,19 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
         input.kind != components::InputKind::kCommitRows)
       aligned_staged.push_back(input.tensor);
   }
-  const auto power_of_two = [](std::uint64_t n) { return n != 0 && (n & (n - 1)) == 0; };
-  if (addresses.activation_alignment != 0 && !power_of_two(addresses.activation_alignment))
-    return std::unexpected("the activation reservation alignment is not a power of two");
-  if (!addresses.measuring() && addresses.activation_alignment != 0 &&
-      addresses.activations % addresses.activation_alignment != 0)
-    return std::unexpected("the activation base breaks its reservation alignment promise");
-  std::vector<std::pair<ir::TensorDesc, std::uint64_t>> physical_facts;
-  if (addresses.state_alignment) {
-    for (const auto& node : step->graph.nodes()) {
-      if (node.key.op != ir::Op::kState) continue;
-      const auto& desc = step->graph.tensor(node.out[0]);
-      const auto* ref = std::get_if<ir::StateRef>(&desc.binding);
-      if (ref == nullptr) continue;
-      const auto alignment = addresses.state_alignment(*ref);
-      if (alignment == 0) continue;
-      if (!power_of_two(alignment))
-        return std::unexpected("a state reservation alignment is not a power of two");
-      const auto address = addresses.state ? addresses.state(*ref) : 0;
-      if (address != 0 && address % alignment != 0)
-        return std::unexpected("a state base breaks its reservation alignment promise");
-      physical_facts.emplace_back(desc, alignment);
-    }
-  }
-  if (addresses.weight_alignment) {
-    for (const auto& weight : step->weights) {
-      // A multipart logical root has no single physical address. Its parts
-      // remain unknown here; no first-part alignment is promoted to the root.
-      if (weight.parts.size() != 1) continue;
-      const auto& desc = step->graph.tensor(weight.tensor);
-      const auto parts = format::PartsOf(desc.format);
-      if (!parts || parts->size() != 1 || (*parts)[0].role != weight.parts[0].second)
-        return std::unexpected("a weight alignment does not name its single format part");
-      const auto part = weight.parts[0].second;
-      const auto alignment = addresses.weight_alignment(weight.ref, part);
-      if (alignment == 0) continue;
-      if (!power_of_two(alignment))
-        return std::unexpected("a weight reservation alignment is not a power of two");
-      const auto address = addresses.weight ? addresses.weight(weight.ref, part) : 0;
-      if (address == 0 || address % alignment != 0)
-        return std::unexpected("a weight base breaks its reservation alignment promise");
-      physical_facts.emplace_back(desc, alignment);
-    }
-  }
-  planner::RootAlignment root_alignment;
-  if (!physical_facts.empty()) {
-    root_alignment = [facts = std::move(physical_facts)](const ir::Graph& graph,
-                                                         ir::TensorId root) -> std::uint64_t {
-      if (!root.valid() || root.v >= graph.tensor_count()) return 0;
-      const auto& desc = graph.tensor(root);
-      const auto op = graph.node(graph.producer(root)).key.op;
-      if (desc.is_view() || (op != ir::Op::kState && op != ir::Op::kWeight)) return 0;
-      // Exact semantic leaf identity survives authorized rewrites. The format
-      // also fixes the single part checked above; no unrelated binding gains it.
-      for (const auto& [saved, alignment] : facts) {
-        if (desc.binding == saved.binding && desc.format == saved.format && desc.nb == saved.nb &&
-            desc.role == saved.role && desc.segment == saved.segment)
-          return alignment;
-      }
-      return 0;
-    };
-  }
   const auto state_spans = StateSpans(shape, addresses);
-  auto plan = planner::Plan(step->graph.Clone(), *Backend().registry, Backend().device, policy_,
-                            {.row_invariant = shape.row_invariant,
-                             .capturable = o_.require_capture,
-                             .staged = std::move(staged),
-                             .on_stream = Backend().on_stream,
-                             .written = Backend().written,
-                             .within = Backend().within,
-                             .shape = &shape,
-                             .state_spans = state_spans,
-                             .root_alignment = std::move(root_alignment),
-                             .activation_alignment = addresses.activation_alignment,
-                             .alignment_staged = std::move(aligned_staged)});
-  if (!plan) {
-    return std::unexpected(std::format("planning a step ({}): {}",
-                                       planner::PlanErrorName(plan.error().error),
-                                       plan.error().detail));
-  }
+  const GraphBuildIO io{step->graph, step->graph.inputs(), step->graph.outputs(), step->weights};
+  auto plan = PlanComponentGraph(io, Backend(), policy_, addresses,
+                                 {.row_invariant = shape.row_invariant,
+                                  .capturable = o_.require_capture,
+                                  .staged = std::move(staged),
+                                  .on_stream = Backend().on_stream,
+                                  .written = Backend().written,
+                                  .within = Backend().within,
+                                  .shape = &shape,
+                                  .state_spans = state_spans,
+                                  .alignment_staged = std::move(aligned_staged)});
+  if (!plan) return std::unexpected(std::move(plan.error()));
   const kernels::LowerInput input{.plan = *plan,
                                   .step = *step,
                                   .shape = shape,

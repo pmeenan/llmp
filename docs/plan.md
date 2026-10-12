@@ -2422,6 +2422,15 @@ each is checked against the design as M3.6 proceeds.
             (2026-10-12). Whole-stage conditioning, image
             GPU lowering and pipeline qualification remain open. No mandatory
             host row expansion or legacy intermediate-rounding gate.
+      - [x] **Q1c — typed spatial graph composition:** the shared
+            component-to-plan path consumes explicit image geometry, nearest2
+            upsampling and channel-changing `conv.spatial` fragments. Source
+            weight encodings and owner-specific dimensions remain intact.
+            Main native build and all 239 affected host cases pass on Spark B
+            (2026-10-12), including three new spatial and 45 planner controls;
+            source quality checks pass. No new token phase or production
+            executor. Actual spatial `StepProgram` lowering, whole-pipeline
+            wiring and image qualification remain open.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

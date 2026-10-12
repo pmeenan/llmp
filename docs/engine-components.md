@@ -851,6 +851,26 @@ conditioning on device: this row-shaped arithmetic contract does not require
 CPU expansion or extra host traffic. Legacy BF16 intermediate rounding is not
 imposed; source weights remain encoded in their producer.
 
+The spatial graph foundation uses typed WHCN graph ports instead of token
+rows or a new execution phase. `BuildSpatialStep` composes the catalog's
+`upsample.nearest` (factor two) and `conv.spatial` (1x1 or 3x3, unit stride/dilation,
+explicit zero padding and bias), including different input/output channel
+counts and ragged owner geometry. F32/BF16 weights retain their source formats;
+activations are F32 without a forced intermediate-rounding policy. Its
+synchronous, paid graph owner retains complete input/output dimensions and
+uses the common native binding visitor for role ownership.
+
+`PlanComponentGraph` is the same graph/fact-to-plan helper now used by the
+existing `ComponentStepSource`; it retains actual physical alignment facts,
+separate placement/alignment input sets and tensor rewrite mappings. The
+spatial host controls use that helper and the existing CPU reference executor.
+They add no alternate production dispatcher or backend declaration. Main native
+build and all 239 affected host cases pass on Spark B (2026-10-12), including
+the three spatial controls and 45 planner controls. Source quality checks and
+the existing mapped DeepSeek source execution control also pass. Actual image
+lowering through the shared `StepProgram`, whole VAE/timestep composition and
+family qualification remain open.
+
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a
 definition's `row_local` false; `attention.dense`, whose `narrows` says it

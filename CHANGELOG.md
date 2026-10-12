@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Add source-preserving spatial component graphs for nearest upsampling and
+  channel-changing convolution through the shared planner, with checked owner
+  geometry and host reference controls; image execution remains separate.
+
 - Prepay stored-component binding construction and reuse validated role/part
   locations in admitted native Gemma builds, removing discovery-only setup
   graphs while retaining real setup measurement and existing admission limits.

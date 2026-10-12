@@ -102,6 +102,7 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
                                                   "attention.mqa",
                                                   "attention.qsa",
                                                   "attention.qsa",
+                                                  "conv.spatial",
                                                   "embedding.inject",
                                                   "embedding.mtp",
                                                   "embedding.mtp",
@@ -120,7 +121,8 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
                                                   "residual.ple",
                                                   "scale.learned",
                                                   "side.hash",
-                                                  "side.ngram"}));
+                                                  "side.ngram",
+                                                  "upsample.nearest"}));
   EXPECT_EQ(Find("attention.dense", 2), nullptr);
   EXPECT_EQ(Find("attention.sparse", 1), nullptr);
   EXPECT_EQ(RoleIndex(*Find("ffn.glu", 1), "down"), 3);

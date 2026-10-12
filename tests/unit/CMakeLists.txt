@@ -1147,6 +1147,13 @@ target_link_libraries(components_test PRIVATE llmp_components llmp_reference_ker
 llmp_gtest(components_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
+# Typed spatial component fragments use the common planner and CPU reference;
+# no token phase or separate execution backend is introduced.
+add_executable(components_spatial_test components_spatial_test.cc)
+target_link_libraries(components_spatial_test PRIVATE llmp_engine_core llmp_components
+                     llmp_reference_kernels llmp_fake_device_backend llmp_test_expected)
+llmp_gtest(components_spatial_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The Qwen3.8 components (hyper-connections, Gated DeltaNet, QSA, the n-gram
 # embedding, the MoE's hyper-connection form, the MTP drafter's input)
 # against their references, verify saves and commits, the qwen4exp and

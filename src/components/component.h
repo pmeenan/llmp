@@ -59,6 +59,7 @@
 namespace llmp::components {
 
 struct ComponentDef;
+struct SpatialOps;
 class StepContext;
 
 // ---------------------------------------------------------------- parameters
@@ -400,6 +401,9 @@ struct ComponentDef {
   // An output head: whether an instance reads only the step's output rows;
   // null: it does. A head of every row (a drafter's) has none to narrow to.
   bool (*gathers)(const Instance& instance) = nullptr;
+  // Explicit spatial construction, without a token StepContext. Null for
+  // ordinary stream components; the spatial builder checks the full chain.
+  const SpatialOps* spatial = nullptr;
   std::expected<FragmentOut, std::string> (*emit)(Fragment& fragment) = nullptr;
   std::expected<void, std::string> (*reference)(RefIO& io) = nullptr;
   // A side input's source (side_source): the rows of its table the step

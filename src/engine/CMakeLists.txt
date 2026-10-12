@@ -33,7 +33,7 @@
 add_library(llmp_engine_core STATIC paged_node.cc paged_weights.cc live_state.cc checkpoint_file.cc
                                       request_cohort.cc slot_lifecycle.cc ple_rows.cc runner_memory.cc
                                       plan_account.cc coverage.cc step_runs.cc model_runner.cc
-                                      wave_composer.cc prefill.cc decoding.cc component_source.cc
+                                      wave_composer.cc prefill.cc decoding.cc component_source.cc graph_plan.cc
                                       draft_progress.cc draft_companions.cc execution_contract.cc
                                       supplemental_run.cc model_runner_routed.cc)
 target_include_directories(llmp_engine_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
