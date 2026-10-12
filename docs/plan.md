@@ -1429,6 +1429,10 @@ each is checked against the design as M3.6 proceeds.
             is bounded, without a quality gate.
       - [ ] Broader fixed corpus and original-reference comparisons; production-phase,
             speculation, context and cohort controls for chosen candidates.
+      - [x] First Qwen2 fused-attention recovery screen: actual selected attention,
+            aligned natural smoke losses and four fresh-fixture ABBA cases pass.
+            Timing includes setup/I/O and baseline drift; no quality, serving-speed
+            or production-adoption gate follows ([observation](experiments/m36-original-qwen2/README.md)).
       - [ ] Evaluate numerical recovery candidates and retire dominated recipe
             machinery after functional, quality and matched-speed qualification.
 - [ ] **Format layer** (D-108): encodings named independently of kernel

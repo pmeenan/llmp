@@ -141,3 +141,42 @@ postguards and zero surviving compute processes. Main package
 `corpus-exl3-main-models02` result SHA-256 values are
 `96f950f32cce70a5d1aba59cb95fbd3643940fbe1f63b46e664688959fb323c4` (FP16)
 and `2f801e20c41d7811df2425fc86b38aa4c2742c940f1d588e27c7818f7336df4e` (EXL3).
+
+## First fused-attention recovery screen
+
+The first recovery candidate changes only Qwen2 FP16's attention policy from
+explicit scores to the existing fused attention implementation. Same weights,
+F16 KV, scaling, masks and positional semantics remain. Both eight/three-row
+shape classes select 24 `ggml.flash_attn_ext.vec` entries; each compiled plan
+has 120 fewer implementation entries (462 versus 582 for the fused policy,
+485 versus 605 for the unfused policy). These are not physical launch counts.
+All 42 target coordinates pass both policies. Mean NLL is 6.543232205157303,
+perplexity 694.527810394539: +0.0002681550526109078 nats/target and approximately
++0.02682% perplexity versus the native explicit-attention smoke. This tiny
+observation establishes neither an acceptance threshold nor a quality loss.
+
+On `spark-b`, four fresh fused-policy fixtures ran in fixed A–B–B–A order:
+
+| Ordinal | Attention | Fixture wall seconds | Process wall seconds |
+| --- | --- | ---: | ---: |
+| 1 | Explicit | 0.610 | 0.821343601 |
+| 2 | Fused | 0.552 | 0.769069588 |
+| 3 | Fused | 0.554 | 0.771502679 |
+| 4 | Explicit | 0.562 | 0.771518138 |
+
+Fixture wall includes setup, weight I/O, scoring and retirement. Process wall
+also includes startup and exit-observation polling. OS cache was warm and
+uncontrolled; source/binary/library guards outside the timed interval also
+influence cache state. Baseline drift of 0.048 seconds makes these short samples
+insufficient for steady-state inference, a statistical speed claim or the matched
+1% migration gate. No repeated timing batch or production adoption follows.
+Broader natural-language and same-implementation state controls remain open.
+
+Four raw cases pass without skips or failures; every sample reproduces its own
+previously observed target losses, and source/input/binary/library guards and
+retirement pass. The first relocated-binary attempt correctly refused the system
+cuBLAS version before scoring. The correction gives both immutable binaries the
+same pinned 13.8.0 libraries and checks actual loader resolution; arithmetic and
+version refusal remain unchanged. Complete timing recipe/result package is
+external `qwen2-attention-abba-models02`, result SHA-256
+`d9eef72b6feccb0a1cc3bb42022ff30e60f6451967189426fd2a54866ff080f6`.
