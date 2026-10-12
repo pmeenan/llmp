@@ -6,7 +6,7 @@ diff --git a/llmp/CMakeLists.txt b/llmp/CMakeLists.txt
 new file mode 100644
 --- /dev/null
 +++ b/llmp/CMakeLists.txt
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,121 @@
 +# SPDX-FileCopyrightText: 2026 llmpalooza contributors
 +# SPDX-License-Identifier: Apache-2.0
 +
@@ -90,6 +90,7 @@ new file mode 100644
 +    "${cuda}/binbcast.cu"
 +    "${cuda}/clamp.cu"
 +    "${cuda}/concat.cu"
++    "${cuda}/conv2d.cu"
 +    "${cuda}/convert.cu"
 +    "${cuda}/cpy.cu"
 +    "${cuda}/dsv4-hc.cu"
@@ -115,6 +116,7 @@ new file mode 100644
 +    "${cuda}/topk-moe.cu"
 +    "${cuda}/moe-weighted-reduction.cu"
 +    "${cuda}/unary.cu"
++    "${cuda}/upscale.cu"
 +    ${instances})
 +  target_include_directories(llmp_ggml_cuda PUBLIC "${cuda}")
 +  # Public: llmpalooza's launchers check a weight type against the same list.

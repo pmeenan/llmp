@@ -206,21 +206,22 @@ struct Lifetime {
   bool teardown_attempted = false;
 
   Status Validate(const kn::LowerInput& in, const kn::StepProgram& program) {
+    if (!in.token) return std::unexpected("token source metadata is required");
     // This callback runs after Lower and before Bind, including measurement.
     // A real launch's BoundPlan does not exist at this point.
-    if (in.shape.stage != 0 || in.shape.segments.size() != 1 || program.routed() ||
+    if (in.token->shape.stage != 0 || in.token->shape.segments.size() != 1 || program.routed() ||
         in.plan.steps.empty() || program.launches() == 0)
       return std::unexpected("the target did not lower to its ordinary owned full-step program");
     std::uint32_t products = 0, arrays = 0, hash_inputs = 0;
-    for (const auto& weight : in.step.weights)
+    for (const auto& weight : in.token->step.weights)
       if (weight.ref.expert_array) ++arrays;
     for (const auto& input : program.inputs())
       if (input.kind == kn::InputKind::kSideRows) ++hash_inputs;
-    for (const auto& n : in.step.graph.nodes()) {
+    for (const auto& n : in.token->step.graph.nodes()) {
       if (n.key.op != llmp::ir::Op::kMatMulId) continue;
       ++products;
-      const auto& a = in.step.graph.tensor(n.src[0]);
-      const auto& selected_ids = in.step.graph.tensor(n.src[2]);
+      const auto& a = in.token->step.graph.tensor(n.src[0]);
+      const auto& selected_ids = in.token->step.graph.tensor(n.src[2]);
       if (a.shape().ne[2] != 256 || selected_ids.shape().ne[0] != 6)
         return std::unexpected(
             "an expert product omits the declared expert or selected-slot domain");
@@ -228,16 +229,17 @@ struct Lifetime {
     // BuildStep's backwards liveness keeps the final attention's state writes
     // but omits its unread output and stateless FFN on a solo no-head chunk.
     // This fixture has no companion injection or feature tap retaining that FFN.
-    const bool headed = in.shape.segments.front().outputs != 0;
+    const bool headed = in.token->shape.segments.front().outputs != 0;
     const std::uint32_t expected_products = 3U * (headed ? 43U : 42U);
     if (arrays != expected_products || products != expected_products || hash_inputs != 3)
       return std::unexpected(std::format(
           "target live domain differs: arrays={} products={} hash_inputs={} expected_products={} "
           "expected_hash_inputs=3 rows={} outputs={}",
-          arrays, products, hash_inputs, expected_products, in.shape.segments.front().rows,
-          in.shape.segments.front().outputs));
+          arrays, products, hash_inputs, expected_products, in.token->shape.segments.front().rows,
+          in.token->shape.segments.front().outputs));
     ++programs;
-    if (in.step.logits.valid() && in.step.graph.tensor(in.step.logits).shape().ne[0] == kVocab)
+    if (in.token->step.logits.valid() &&
+        in.token->step.graph.tensor(in.token->step.logits).shape().ne[0] == kVocab)
       ++full_programs;
     // Record the actual lowered selection, then bind its registry indices to
     // the immutable execution identity after Setup. This is not a BoundPlan

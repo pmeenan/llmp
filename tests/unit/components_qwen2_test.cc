@@ -217,8 +217,7 @@ TEST(ComponentsQwen2, Fp16ActualShapesSelectAndLowerThroughTheSharedGgmlBackend)
         pl::Plan(step->graph.Clone(), *registry, {.device_class = "sm_121", .arch = 121}, *policy,
                  {.staged = staged, .written = &kg::WrittenBytes, .shape = &shape});
     ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    const llmp::kernels::LowerInput input{
-        .plan = *plan, .step = *step, .shape = shape, .addresses = addresses, .context = 2048};
+    const llmp::kernels::LowerInput input{*plan, *step, shape, addresses, 2048};
     for (const bool masks : {false, true}) {
       auto lowered = kg::LowerStep(input, *registry, choices, {.device_masks = masks});
       ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
@@ -276,8 +275,7 @@ TEST(ComponentsQwen2, Fp16FloatFusionsAreSelectedOnlyForOneColumn) {
         pl::Plan(step->graph.Clone(), *registry, {.device_class = "sm_121", .arch = 121}, *policy,
                  {.staged = staged, .written = &kg::WrittenBytes, .shape = &shape});
     ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    const llmp::kernels::LowerInput input{
-        .plan = *plan, .step = *step, .shape = shape, .addresses = addresses, .context = 2048};
+    const llmp::kernels::LowerInput input{*plan, *step, shape, addresses, 2048};
     for (const bool masks : {false, true}) {
       auto lowered = kg::LowerStep(input, *registry, choices, {.device_masks = masks});
       ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;

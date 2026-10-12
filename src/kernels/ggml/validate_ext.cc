@@ -514,6 +514,49 @@ std::expected<void, KernelFailure> CheckUnary(const ggml_tensor* node) {
   return CheckElementwise(node, node->op, kIntElements);
 }
 
+namespace {
+bool SpatialF32(const ggml_tensor* t) {
+  // Upstream upscale converts strides to int and multiplies its four int
+  // extents before widening. The common domain bounds complete byte spans.
+  return IsF32(t) && Bound(t) && AllSane({t}) && !AnyEmpty({t}) && Packed(t) && Aligned(t, 4) &&
+         Current(t) && ggml_nbytes(t) <= kInt32Max - 256;
+}
+}  // namespace
+
+std::expected<void, KernelFailure> CheckConv2dF32(const ggml_tensor* node) {
+  if (node == nullptr || node->op != GGML_OP_CONV_2D || !SpatialF32(node) ||
+      !SpatialF32(node->src[0]) || !SpatialF32(node->src[1]))
+    return Rejected("direct spatial convolution requires bounded contiguous F32 operands");
+  const auto* w = node->src[0];
+  const auto* x = node->src[1];
+  const auto* p = node->op_params;
+  if ((w->ne[0] != 1 && w->ne[0] != 3) || w->ne[1] != w->ne[0] || p[0] != 1 || p[1] != 1 ||
+      p[2] < 0 || p[2] > 1 || p[3] != p[2] || p[4] != 1 || p[5] != 1 ||
+      !std::ranges::all_of(std::span(node->op_params).subspan(6), [](auto v) { return v == 0; }) ||
+      x->ne[0] + 2 * p[2] < w->ne[0] || x->ne[1] + 2 * p[3] < w->ne[1] ||
+      node->ne[0] != x->ne[0] + 2 * p[2] - w->ne[0] + 1 ||
+      node->ne[1] != x->ne[1] + 2 * p[3] - w->ne[1] + 1 || x->ne[2] != w->ne[2] ||
+      node->ne[2] != w->ne[3] || node->ne[3] != x->ne[3] || !Disjoint(node, w, false) ||
+      !Disjoint(node, x, false))
+    return Rejected("direct spatial convolution geometry, parameters or output alias differ");
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckUpsampleNearest(const ggml_tensor* node) {
+  if (node == nullptr || node->op != GGML_OP_UPSCALE || !SpatialF32(node) ||
+      !SpatialF32(node->src[0]))
+    return Rejected("nearest upsampling requires bounded contiguous F32 operands");
+  const auto* x = node->src[0];
+  // upscale_f32 converts all four output coordinates to float, including C/N.
+  if (!std::ranges::all_of(node->ne, [](auto axis) { return axis <= (1LL << 24U); }) ||
+      node->op_params[0] != GGML_SCALE_MODE_NEAREST ||
+      !std::ranges::all_of(std::span(node->op_params).subspan(1), [](auto v) { return v == 0; }) ||
+      node->ne[0] != 2 * x->ne[0] || node->ne[1] != 2 * x->ne[1] || node->ne[2] != x->ne[2] ||
+      node->ne[3] != x->ne[3] || !Disjoint(node, x, false))
+    return Rejected("nearest upsampling must double only width and height without aliasing");
+  return {};
+}
+
 std::expected<void, KernelFailure> CheckScale(const ggml_tensor* node) {
   // A grid-stride loop over 64-bit indices (scale.cu).
   return CheckElementwise(node, GGML_OP_SCALE, std::numeric_limits<std::int64_t>::max());

@@ -476,12 +476,12 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
              program.routed()->pinned_bytes() > held->route_groups * 16 * 1024)
            return Error("actual lowered program exceeded paid routed domain");
          std::size_t attention = 0;
-         for (const auto& op : input.step.graph.nodes()) {
+         for (const auto& op : input.token->step.graph.nodes()) {
            if (op.key != ir::Primitive(ir::Op::kAttention)) continue;
            if (op.nsrc < 3) return Error("attention operand count");
-           const auto& query = input.step.graph.tensor(op.src[0]);
-           const auto& key = input.step.graph.tensor(op.src[1]);
-           const auto& value = input.step.graph.tensor(op.src[2]);
+           const auto& query = input.token->step.graph.tensor(op.src[0]);
+           const auto& key = input.token->step.graph.tensor(op.src[1]);
+           const auto& value = input.token->step.graph.tensor(op.src[2]);
            if (query.ne(0) != kHead || key.ne(0) != kHead || value.ne(0) != kHead ||
                query.format.encoding != fmt::Encoding::kF32 ||
                key.format.encoding != fmt::Encoding::kF16 ||

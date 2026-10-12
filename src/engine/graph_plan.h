@@ -8,22 +8,13 @@
 #include <span>
 #include <string>
 
-#include "components/step.h"
+#include "components/graph_io.h"
 #include "kernels/common/lower.h"
 #include "planner/plan.h"
 
 namespace llmp::engine {
 
-// Borrowed typed interface, valid only during the synchronous planning call.
-// TensorDesc owns each port's format, strides and owner segment. Primitive IDs
-// remain authoritative; StepPlan::tensors maps them through later rewrites.
-// This is graph metadata, not execution or backend authority.
-struct GraphBuildIO {
-  const ir::Graph& graph;
-  std::span<const ir::TensorId> inputs;
-  std::span<const ir::TensorId> outputs;
-  std::span<const components::StepWeight> weights;
-};
+using GraphBuildIO = components::GraphBuildIO;
 
 // The common component graph-to-plan path. The caller retains the real backend
 // owner and pays graph/planner metadata. No lowering, device call, binding or
@@ -33,6 +24,15 @@ struct GraphBuildIO {
 std::expected<planner::StepPlan, std::string> PlanComponentGraph(
     const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
     const kernels::Addresses& addresses, planner::PlanOptions options = {});
+
+// The same plan, real backend lower and read-only validator path for token and
+// spatial component graphs. The caller retains and pays the effective backend
+// owner and graph lifetime; this helper supplies no execution authority.
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
+    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
+    const kernels::Addresses& addresses, planner::PlanOptions options,
+    std::optional<kernels::TokenLowerInput> token = std::nullopt,
+    const kernels::ProgramValidator& validate = {});
 
 }  // namespace llmp::engine
 #endif  // LLMP_ENGINE_GRAPH_PLAN_H_

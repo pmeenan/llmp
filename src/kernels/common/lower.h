@@ -18,10 +18,12 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
-#include "components/step.h"
+#include "components/graph_io.h"
 #include "execution/registry.h"
 #include "kernels/common/step_program.h"
 #include "planner/plan.h"
@@ -30,16 +32,32 @@
 
 namespace llmp::kernels {
 
-// One step to lower: its plan, the primitive step it was planned from
-// (BuildStep's graph and interface: the plan's `from` and `tensors` relate
-// the two), its shape, the addresses it binds and the stage's context.
-struct LowerInput {
-  const planner::StepPlan& plan;
+// Optional token/state metadata. Spatial ports never fabricate a StepShape.
+struct TokenLowerInput {
   const components::StepGraph& step;
   const planner::StepShape& shape;
-  const Addresses& addresses;
   std::uint32_t context = 0;
   planner::StateSpans state_spans{};
+};
+
+// One shared typed graph-to-program interface. Every borrowed object lives
+// through the synchronous lower/validator call; programs retain only their
+// owned descriptors and existing backend/completion authority.
+struct LowerInput {
+  const planner::StepPlan& plan;
+  components::GraphBuildIO io;
+  const Addresses& addresses;
+  std::optional<TokenLowerInput> token;
+
+  LowerInput(const planner::StepPlan& p, components::GraphBuildIO graph_io, const Addresses& a,
+             std::optional<TokenLowerInput> tokens = std::nullopt)
+      : plan(p), io(graph_io), addresses(a), token(tokens) {}
+  // Preserve the existing token construction contract without a second lowerer.
+  LowerInput(const planner::StepPlan& p, const components::StepGraph& step,
+             const planner::StepShape& shape, const Addresses& a, std::uint32_t context = 0,
+             planner::StateSpans state_spans = {})
+      : LowerInput(p, components::GraphIO(step), a,
+                   TokenLowerInput{step, shape, context, std::move(state_spans)}) {}
 };
 
 using LowerFunction =

@@ -131,7 +131,7 @@ class Lowering {
       : in_(in),
         plan_(in.plan),
         p_(in.plan.graph),
-        g_(in.step.graph),
+        g_(in.io.graph),
         registry_(registry),
         device_(device),
         options_(options) {}
@@ -316,6 +316,7 @@ class Lowering {
 };
 
 std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
+  if (!in_.token) return {};
   // Inferred tables must retain their staged/MaskBuild values. A name or
   // declaration is not a proof once another node overwrites its bytes.
   std::set<TensorId> overwritten;
@@ -348,31 +349,32 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
       return false;
     const ir::TensorDesc& td = p_.tensor(t);
     const ir::TensorDesc& root = p_.tensor(p_.root(t));
-    if (root.shape().ne != ir::ShapeOf({4ULL * in_.shape.rows()}).ne ||
+    if (root.shape().ne != ir::ShapeOf({4ULL * in_.token->shape.rows()}).ne ||
         root.format.encoding != Encoding::kI32 || !ir::IsContiguous(root) || td.nb[0] != 4) {
       return false;
     }
     if (whole) return !td.is_view() && t == p_.root(t);
-    if (segment >= in_.shape.segments.size()) return false;
-    const std::uint64_t rows = in_.shape.segments[segment].rows;
+    if (segment >= in_.token->shape.segments.size()) return false;
+    const std::uint64_t rows = in_.token->shape.segments[segment].rows;
     std::uint64_t first = 0;
-    for (std::size_t s = 0; s < segment; ++s) first += in_.shape.segments[s].rows;
+    for (std::size_t s = 0; s < segment; ++s) first += in_.token->shape.segments[s].rows;
     return td.view_offset == 4 * first && td.ne(0) == (td.is_view() ? rows : 4 * rows) &&
            td.ne(1) == 1 && td.ne(2) == 1 && td.ne(3) == 1 &&
-           (td.is_view() || in_.shape.segments.size() == 1);
+           (td.is_view() || in_.token->shape.segments.size() == 1);
   };
   const auto plain_positions = [&](TensorId t, std::uint8_t segment) {
     const co::StepInput* in = input(t);
     if (in == nullptr || in->kind != co::InputKind::kPositions || in->sections != 1 ||
-        in->segment != ir::kJoinedSegment || segment >= in_.shape.segments.size())
+        in->segment != ir::kJoinedSegment || segment >= in_.token->shape.segments.size())
       return false;
     const ir::TensorDesc& td = p_.tensor(t);
     const ir::TensorDesc& root = p_.tensor(p_.root(t));
     std::uint64_t first = 0;
-    for (std::size_t s = 0; s < segment; ++s) first += in_.shape.segments[s].rows;
-    return td.shape().ne == ir::ShapeOf({in_.shape.segments[segment].rows}).ne &&
-           root.shape().ne == ir::ShapeOf({in_.shape.rows()}).ne && td.view_offset == first * 4 &&
-           td.nb[0] == 4 && root.format.encoding == Encoding::kI32 && ir::IsContiguous(root);
+    for (std::size_t s = 0; s < segment; ++s) first += in_.token->shape.segments[s].rows;
+    return td.shape().ne == ir::ShapeOf({in_.token->shape.segments[segment].rows}).ne &&
+           root.shape().ne == ir::ShapeOf({in_.token->shape.rows()}).ne &&
+           td.view_offset == first * 4 && td.nb[0] == 4 && root.format.encoding == Encoding::kI32 &&
+           ir::IsContiguous(root);
   };
   // The latest write to a root, including writes through aliases. This
   // prevents a different in-place operation from being mistaken for the
@@ -406,8 +408,8 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
            write->src[2] == p_.root(write->src[2]) &&
            p_.tensor(write->src[2]).format.encoding == Encoding::kI64 &&
            p_.tensor(write->src[2]).shape().ne ==
-               ir::ShapeOf({in_.shape.segments[segment].rows}).ne &&
-           p_.tensor(write->src[1]).ne(1) == in_.shape.segments[segment].rows;
+               ir::ShapeOf({in_.token->shape.segments[segment].rows}).ne &&
+           p_.tensor(write->src[1]).ne(1) == in_.token->shape.segments[segment].rows;
   };
   const auto mask = [&](TensorId t, std::uint8_t segment, std::uint64_t count,
                         std::uint64_t capacity, std::uint32_t block, Encoding encoding) {
@@ -422,7 +424,7 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
            m.src[1] == p_.root(m.src[1]) &&
            p_.tensor(m.src[1]).shape().ne == ir::ShapeOf({count}).ne &&
            plain_positions(m.src[0], segment) && td.format.encoding == encoding &&
-           td.ne(0) == count && td.ne(1) >= in_.shape.segments[segment].rows;
+           td.ne(0) == count && td.ne(1) >= in_.token->shape.segments[segment].rows;
   };
   for (std::uint32_t k = 0; k < p_.nodes().size(); ++k) {
     const NodeId id{k};
@@ -450,7 +452,7 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
             out.format.encoding != Encoding::kF16) {
           return Refused("a compressed or ahead mask requires its typed owner positions and cells");
         }
-        const auto& segment = in_.shape.segments[held->segment];
+        const auto& segment = in_.token->shape.segments[held->segment];
         if (std::uint64_t{segment.past} + segment.rows >
                 static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) ||
             out.shape().ne != ir::ShapeOf({held->read, Round(segment.rows, 32)}).ne) {
@@ -476,10 +478,11 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
           p_.tensor(n.src[1]).format.encoding != Encoding::kI32 ||
           p_.tensor(n.src[1]).shape().ne != ir::ShapeOf({out.ne(0)}).ne ||
           !ir::IsContiguous(p_.tensor(n.src[1])) || !plain_positions(n.src[0], held->segment) ||
-          std::uint64_t{in_.shape.segments[held->segment].past} +
-                  in_.shape.segments[held->segment].rows >
+          std::uint64_t{in_.token->shape.segments[held->segment].past} +
+                  in_.token->shape.segments[held->segment].rows >
               held->cells.capacity ||
-          out.shape().ne != ir::ShapeOf({out.ne(0), in_.shape.segments[held->segment].rows}).ne ||
+          out.shape().ne !=
+              ir::ShapeOf({out.ne(0), in_.token->shape.segments[held->segment].rows}).ne ||
           out.format.encoding != Encoding::kF16) {
         return Refused("an exact device mask requires typed joined positions for its owner");
       }
@@ -488,7 +491,7 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
       // Unrelated declarations must never select a mask's positions.
       TensorId candidate{};
       std::size_t multi = 0;
-      for (const co::StepInput& in : in_.step.inputs) {
+      for (const co::StepInput& in : in_.token->step.inputs) {
         if (in.kind != co::InputKind::kPositions || in.sections <= 1) continue;
         ++multi;
         const TensorId t = plan_.tensors.at(in.tensor.v);
@@ -502,23 +505,24 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
       const auto* reads = input(n.src[4]);
       const auto owner = p_.tensor(n.out[0]).segment;
       if (reads == nullptr || reads->kind != co::InputKind::kPoolReads || reads->segment != owner ||
-          owner >= in_.shape.segments.size() || reads->ratio != p.ratio ||
+          owner >= in_.token->shape.segments.size() || reads->ratio != p.ratio ||
           reads->overlap != p.overlap || n.src[4] != p_.root(n.src[4]) ||
           reads->ring != p_.tensor(n.src[0]).ne(1) ||
-          p_.tensor(n.src[2]).ne(1) != in_.shape.segments[owner].rows) {
+          p_.tensor(n.src[2]).ne(1) != in_.token->shape.segments[owner].rows) {
         return Refused("a compressor requires its owner's typed bounded pool reads");
       }
     }
     if (n.key == ir::Fused(FusedKind::kRmsNormMulRope) && Selected(id) == kQsaPrepName) {
       if (!positions(n.src[2], ir::kJoinedSegment, true) ||
-          p_.tensor(n.src[0]).ne(2) != in_.shape.rows()) {
+          p_.tensor(n.src[0]).ne(2) != in_.token->shape.rows()) {
         return Refused("QSA prep requires typed replicated position sections for its rows");
       }
     }
     if (n.key != ir::Fused(FusedKind::kQsaPool) && n.key != ir::Fused(FusedKind::kQsaAttention))
       continue;
     const std::uint8_t segment = p_.tensor(n.out[0]).segment;
-    if (segment >= in_.shape.segments.size()) return Refused("QSA requires one declared owner");
+    if (segment >= in_.token->shape.segments.size())
+      return Refused("QSA requires one declared owner");
     if (n.key == ir::Fused(FusedKind::kQsaPool)) {
       const auto pp = n.Params<ir::QsaPoolParams>();
       const ir::TensorDesc& raw = p_.tensor(n.src[0]);
@@ -634,15 +638,17 @@ std::expected<void, KernelFailure> Lowering::Index() {
   for (const planner::Selected& s : plan_.steps) {
     for (const NodeId id : s.nodes) impl_of_.at(id.v) = s.implementation;
   }
-  for (const co::StepInput& input : in_.step.inputs) {
-    if (!input.tensor.valid() || input.tensor.v >= g_.tensor_count() ||
-        g_.node(g_.producer(input.tensor)).key != ir::Primitive(Op::kInput) ||
-        g_.tensor(input.tensor).is_view() || !inputs_.emplace(input.tensor.v, &input).second) {
-      return Refused("the staging interface requires unique input leaves");
+  if (in_.token)
+    for (const co::StepInput& input : in_.token->step.inputs) {
+      if (!input.tensor.valid() || input.tensor.v >= g_.tensor_count() ||
+          g_.node(g_.producer(input.tensor)).key != ir::Primitive(Op::kInput) ||
+          g_.tensor(input.tensor).is_view() || !inputs_.emplace(input.tensor.v, &input).second) {
+        return Refused("the staging interface requires unique input leaves");
+      }
     }
-  }
-  for (const co::StepWeight& w : in_.step.weights) weights_[w.tensor.v] = &w;
-  for (const co::StepState& s : in_.step.state) state_[s.tensor.v] = &s;
+  for (const co::StepWeight& w : in_.io.weights) weights_[w.tensor.v] = &w;
+  if (in_.token)
+    for (const co::StepState& s : in_.token->step.state) state_[s.tensor.v] = &s;
   for (std::size_t a = 0; a < plan_.applied.size(); ++a) {
     for (const NodeId made : plan_.applied[a].made) applied_[made.v] = a;
   }
@@ -739,6 +745,16 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
   for (std::size_t i = 0; i < 4; ++i) ne.at(i) = static_cast<std::int64_t>(d.ne(i));
   const int rank = std::max<int>(1, d.shape().rank);
   if (n.key.op == Op::kInput) {
+    if (!in_.token) {
+      if (!std::ranges::contains(in_.io.inputs, prim) || d.is_view() ||
+          d.segment == ir::kJoinedSegment)
+        return Refused("a spatial input is not an exact owned graph port");
+      ggml_tensor* t = ggml_new_tensor(c_, *type, rank, ne.data());
+      input_leaves_.emplace_back(
+          t, InputSlot{.tensor = prim, .segment = d.segment, .kind = InputKind::kStepBytes});
+      out_.leaves.push_back({.tensor = t, .primitive = prim});
+      return t;
+    }
     const auto at = inputs_.find(prim.v);
     if (at == inputs_.end()) return Refused("an input the step does not list");
     const co::StepInput& input = *at->second;
@@ -793,11 +809,11 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         return t;
       }
       case co::InputKind::kVisibleCells: {
-        if (input.segment >= in_.shape.segments.size() || d.segment != input.segment ||
+        if (input.segment >= in_.token->shape.segments.size() || d.segment != input.segment ||
             d.format.encoding != Encoding::kI32 ||
-            d.shape().ne != ir::ShapeOf({in_.shape.segments[input.segment].rows}).ne)
+            d.shape().ne != ir::ShapeOf({in_.token->shape.segments[input.segment].rows}).ne)
           return Refused("visible counts disagree with their owner rows");
-        const auto values = co::InputValues(input, in_.shape, {});
+        const auto values = co::InputValues(input, in_.token->shape, {});
         if (!values) return Refused(values.error());
         slot.kind = InputKind::kVisibleCells;
         slot.cells = {
@@ -824,7 +840,7 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         constexpr auto max = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
         if (input.read != 0 || input.sections != 1 ||
             (phases ? input.segment != ir::kJoinedSegment
-                    : input.segment >= in_.shape.segments.size()) ||
+                    : input.segment >= in_.token->shape.segments.size()) ||
             cells.capacity > max || input.ring != cells.capacity || cells.frozen || cells.fixed ||
             cells.per_row || cells.first_row != 0 ||
             (kept ? input.ratio != 0 || input.overlap : input.ratio == 0 || input.ratio > max) ||
@@ -838,9 +854,9 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
             (phases && input.overlap)) {
           return Refused("a compressor input has invalid typed metadata");
         }
-        std::uint64_t count = in_.shape.rows();
+        std::uint64_t count = in_.token->shape.rows();
         if (!phases) {
-          const auto& segment = in_.shape.segments[input.segment];
+          const auto& segment = in_.token->shape.segments[input.segment];
           if (std::uint64_t{segment.past} + segment.rows > max ||
               (pool && cells.capacity + segment.rows > max))
             return Refused("a compressor input exceeds I32 positions or rows");
@@ -853,7 +869,7 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         // request an allocation larger than the tensor the planner placed.
         if (d.shape().ne != ir::ShapeOf({count}).ne)
           return Refused("a compressor input disagrees with its typed geometry");
-        const auto values = co::InputValues(input, in_.shape, {});
+        const auto values = co::InputValues(input, in_.token->shape, {});
         const bool wide =
             input.kind == co::InputKind::kKeptCells || input.kind == co::InputKind::kBlockCells;
         if (!values || d.shape().ne != ir::ShapeOf({values ? values->size() : 0}).ne ||
@@ -917,8 +933,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         if (input.cells.fixed || input.cells.block != 0) {
           return Refused("a tap's cells of fixed or block state");
         }
-        if (input.segment >= in_.shape.segments.size() || outputs == 0 ||
-            outputs != in_.shape.segments[input.segment].outputs) {
+        if (input.segment >= in_.token->shape.segments.size() || outputs == 0 ||
+            outputs != in_.token->shape.segments[input.segment].outputs) {
           return Refused("a tap's cells of no segment's outputs");
         }
         slot.kind = InputKind::kStoreCells;
@@ -1167,15 +1183,15 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Mask(const ir::Graph& graph
     ggml_tensor* mask = CausalRingMask(
         c_, positions, static_cast<std::int64_t>(out.ne(0)),
         to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
-        to_int(cells.cells.capacity), to_int(window), to_int(in_.context), CausalMaskRows::kPad32,
-        GGML_TYPE_F16, ahead ? MaskPolicy::kBlock : MaskPolicy::kFrozen);
+        to_int(cells.cells.capacity), to_int(window), to_int(in_.token->context),
+        CausalMaskRows::kPad32, GGML_TYPE_F16, ahead ? MaskPolicy::kBlock : MaskPolicy::kFrozen);
     if (ahead && !Gemma4MaskFits(mask))
       return Refused("an ahead mask exceeds the device block mask's geometry");
     return mask;
   }
   return Gemma4Mask(c_, positions, static_cast<std::int64_t>(out.ne(0)),
                     to_int(rows.view_offset / sizeof(std::int32_t)), to_int(rows.ne(0)),
-                    to_int(cells.cells.capacity), to_int(window), to_int(in_.context));
+                    to_int(cells.cells.capacity), to_int(window), to_int(in_.token->context));
 }
 
 std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph, const ir::Node& n,
@@ -1247,6 +1263,11 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
     case Op::kPrepare:
       if (out.format.encoding != Encoding::kQ8_1) return Refused("a preparation not into Q8_1");
       return QuantizeQ8(c_, s[0]);
+    case Op::kUpsample:
+      if (n.Params<ir::UpsampleParams>().factor != 2 || s[0] == nullptr ||
+          s[0]->type != GGML_TYPE_F32 || !ggml_is_contiguous(s[0]))
+        return Refused("spatial upsampling needs contiguous F32 nearest2 input");
+      return ggml_upscale(c_, s[0], 2, GGML_SCALE_MODE_NEAREST);
     case Op::kRmsNorm:
       return ggml_rms_norm(c_, s[0], n.Params<ir::NormParams>().eps);
     case Op::kAdd:
@@ -1670,7 +1691,7 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
             operand.side_rows_component = at->second->component;
         } else if (producer.key == ir::Primitive(Op::kWeight) && in_.addresses.weight_rows) {
           const auto at = weights_.find(original.v);
-          if (at != weights_.end() && at->second->ref.stage == in_.shape.stage &&
+          if (at != weights_.end() && at->second->ref.stage == in_.token->shape.stage &&
               in_.addresses.weight_rows(at->second->ref) != 0)
             operand.paged_weight = at->second->ref;
         }
@@ -1762,6 +1783,39 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
       bool special = false;
       if (auto made = MakeSpecial(id, n, special); !made || special) return made;
       break;
+    }
+    case Op::kConv2d: {
+      if (n.nsrc != 3 || n.nout != 1 || Selected(id) != "ggml.conv2d.f32")
+        return Refused("spatial convolution needs its selected F32 implementation");
+      auto* kernel = made_.at(n.src[0].v);
+      auto* input = made_.at(n.src[1].v);
+      auto* bias = made_.at(n.src[2].v);
+      if (kernel == nullptr || input == nullptr || bias == nullptr)
+        return Refused("spatial convolution operands were not made");
+      const auto params = n.Params<ir::Conv2dParams>();
+      if (kernel->type != GGML_TYPE_F32 || input->type != GGML_TYPE_F32 ||
+          bias->type != GGML_TYPE_F32 || !ggml_is_contiguous(kernel) ||
+          !ggml_is_contiguous(input) || !ggml_is_contiguous(bias) ||
+          kernel->ne[2] != input->ne[2] || ggml_nelements(bias) != kernel->ne[3] ||
+          params.stride != 1 || params.dilation != 1 || params.padding > 1 ||
+          (kernel->ne[0] != 1 && kernel->ne[0] != 3) || kernel->ne[1] != kernel->ne[0] ||
+          input->ne[0] + 2 * params.padding < kernel->ne[0] ||
+          input->ne[1] + 2 * params.padding < kernel->ne[1])
+        return Refused("spatial convolution cannot build these physical operands");
+      auto* conv = ggml_conv_2d_direct(c_, kernel, input, 1, 1, static_cast<int>(params.padding),
+                                       static_cast<int>(params.padding), 1, 1);
+      auto* broadcast = ggml_reshape_4d(c_, bias, 1, 1, kernel->ne[3], 1);
+      auto* result = ggml_add(c_, conv, broadcast);
+      if (auto valid = Matches(p_.tensor(n.out[0]), result, "spatial convolution"); !valid)
+        return valid;
+      Node(conv, id);
+      Node(broadcast, id);
+      Node(result, id);
+      made_.at(n.out[0].v) = result;
+      // The bias add reads/writes the same per-element activation. This is
+      // ordinary checked Add in-place storage, not an elided convolution.
+      elided_.emplace_back(conv, result);
+      return {};
     }
     case Op::kRoute:
       return MakeRoute(id, n);
@@ -1867,7 +1921,7 @@ std::expected<void, KernelFailure> Lowering::Bind() {
       if (region != state_regions.end() && !s->borrowed && !s->tap) {
         const std::array query{
             planner::StateCellSlice{.ref = s->ref, .cells = static_cast<std::uint64_t>(t->ne[1])}};
-        const auto fact = in_.state_spans(query);
+        const auto fact = in_.token->state_spans(query);
         if (!fact || fact->region_bytes != region->second.second ||
             fact->bank.range.bytes != ggml_nbytes(t) ||
             fact->bank.range.offset > fact->region_bytes ||
@@ -1881,7 +1935,7 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     TensorArena::Bind(t, bound);
   }
   for (const auto& bank : state_banks_) {
-    const auto again = in_.state_spans(bank.slices);
+    const auto again = in_.token->state_spans(bank.slices);
     if (!again || again->region_bytes != bank.fact.region_bytes ||
         again->bank.range.offset != bank.fact.bank.range.offset ||
         again->bank.range.bytes != bank.fact.bank.range.bytes ||
@@ -2005,8 +2059,9 @@ std::expected<void, KernelFailure> Lowering::Bind() {
 // heuristic. Only a final, unprepared HC corridor with one selected row per
 // owner may inherit scalar-column arithmetic when the input wave is multirow.
 std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
+  if (!in_.token) return {};
   if (!plan_.owner_rows_policy_enabled || plan_.owner_row_invariant ||
-      in_.shape.segments.size() < 2)
+      in_.token->shape.segments.size() < 2)
     return {};
   struct GraphCheck {
     const ir::Graph& graph;
@@ -2066,7 +2121,7 @@ std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
     const auto* ref = std::get_if<ir::WeightRef>(&g_.tensor(a).binding);
     if (!ref) return false;
     const co::StepWeight* found = nullptr;
-    for (const auto& w : in_.step.weights) {
+    for (const auto& w : in_.io.weights) {
       if (w.tensor != a) continue;
       if (found || w.ref != *ref || w.parts.size() != 1 ||
           w.parts[0].second != format::PartRole::kData)
@@ -2098,11 +2153,11 @@ std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
     gather = &rows;
   }
   if (!fold) return {};
-  const auto count = in_.shape.segments.size();
+  const auto count = in_.token->shape.segments.size();
   std::uint64_t rows = 0, outputs = 0;
   bool one_per_owner = true;
   std::array<bool, 256> slots{};
-  for (const auto& s : in_.shape.segments) {
+  for (const auto& s : in_.token->shape.segments) {
     if (s.rows == 0 || s.outputs > s.rows || slots[s.slot])
       return Refused("selected HC: invalid or duplicate selected owner");
     slots[s.slot] = true;
@@ -2130,7 +2185,7 @@ std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
       !planned.Dense(prep->out[0], Encoding::kBF16, ir::ShapeOf({hw, outputs})))
     return Refused("selected HC: selected layout or preparation differs");
   const co::StepInput* indices = nullptr;
-  for (const auto& input : in_.step.inputs) {
+  for (const auto& input : in_.token->step.inputs) {
     if (input.kind != co::InputKind::kOutputRows) continue;
     if (indices || mapped(input.tensor) != gather->src[1] ||
         !same_leaf(input.tensor, gather->src[1], Op::kInput) ||
@@ -2141,7 +2196,7 @@ std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
     indices = &input;
   }
   if (!indices) return Refused("selected HC: missing typed output-row authority");
-  if (std::ranges::count(in_.step.inputs, indices->tensor, &co::StepInput::tensor) != 1)
+  if (std::ranges::count(in_.token->step.inputs, indices->tensor, &co::StepInput::tensor) != 1)
     return Refused("selected HC: ambiguous typed input binding");
   // Authenticate the original gather as well as the rewritten descriptors
   // before classifying a valid multi-output wave as an ordinary HC recipe.
@@ -2320,7 +2375,12 @@ std::expected<void, KernelFailure> Lowering::CheckSelectedHcRecipe(const GraphPl
 }
 
 std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
-  const auto& proof = in_.step.owner_products;
+  if (!in_.token) {
+    if (!plan_.owner_products.empty() || plan_.owner_digest != base::Sha256Digest{})
+      return Refused("owner-product proof requires token metadata");
+    return {};
+  }
+  const auto& proof = in_.token->step.owner_products;
   const auto products = proof.products();
   if (products.empty()) {
     if (!plan_.owner_products.empty() || plan_.owner_digest != base::Sha256Digest{})
@@ -2328,8 +2388,8 @@ std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
     return {};
   }
   if (plan_.owner_digest != proof.digest() || proof.graph_digest() != co::OwnerGraphIdentity(g_) ||
-      plan_.tensors.size() != g_.tensor_count() || in_.shape.segments.empty() ||
-      in_.shape.segments.size() > co::kMaxSegments)
+      plan_.tensors.size() != g_.tensor_count() || in_.token->shape.segments.empty() ||
+      in_.token->shape.segments.size() > co::kMaxSegments)
     return Refused("owner products: proof, shape or original graph differs");
   const auto mapped = [&](TensorId t) {
     return t.valid() && t.v < plan_.tensors.size() ? plan_.tensors[t.v] : TensorId{};
@@ -2337,7 +2397,7 @@ std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
   const auto valid = [&](TensorId t) { return t.valid() && t.v < p_.tensor_count(); };
   std::vector<co::SegmentRows> segments;
   std::uint64_t first = 0;
-  for (const auto& s : in_.shape.segments) {
+  for (const auto& s : in_.token->shape.segments) {
     if (first > std::numeric_limits<std::uint32_t>::max())
       return Refused("owner products: row partition overflow");
     segments.push_back({.slot = s.slot,
@@ -2348,7 +2408,7 @@ std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
   }
   std::vector<TensorId> requests;
   for (const auto& p : products) requests.push_back(p.output);
-  auto repeated = co::ProveOwnerProducts(g_, in_.step.inputs, segments, requests);
+  auto repeated = co::ProveOwnerProducts(g_, in_.token->step.inputs, segments, requests);
   if (!repeated || repeated->digest() != proof.digest())
     return Refused("owner products: typed inputs or owner partition differ");
 
@@ -2363,7 +2423,7 @@ std::expected<void, KernelFailure> Lowering::CheckOwnerProducts() {
   std::vector<bool> dependency(g_.tensor_count(), false);
   std::vector<const co::StepWeight*> weights(g_.tensor_count());
   std::vector<bool> duplicate_weights(g_.tensor_count(), false);
-  for (const auto& w : in_.step.weights) {
+  for (const auto& w : in_.io.weights) {
     if (!w.tensor.valid() || w.tensor.v >= weights.size()) continue;
     if (weights[w.tensor.v] != nullptr) duplicate_weights[w.tensor.v] = true;
     weights[w.tensor.v] = &w;
@@ -2804,51 +2864,69 @@ std::expected<void, KernelFailure> Lowering::Slots() {
     slot.bytes = ggml_nbytes(t);
     out_.inputs.push_back(slot);
   }
-  // Each owner's own outputs: its token, or its rows of the logits.
-  const planner::StepShape& shape = in_.shape;
-  const bool greedy = in_.step.greedy.valid();
-  const TensorId result = greedy ? in_.step.greedy : in_.step.logits;
-  if (result.valid() && shape.outputs() != 0) {
-    const TensorId planned = plan_.tensors.at(result.v);
-    const ggml_tensor* t = planned.valid() ? made_.at(planned.v) : nullptr;
-    if (t == nullptr || t->data == nullptr) return Refused("the step's result was not made");
-    const std::uint64_t row = greedy ? sizeof(std::int32_t) : t->nb[1];
-    if (static_cast<std::uint64_t>(greedy ? t->ne[0] : t->ne[1]) != shape.outputs()) {
-      return Refused("the step's result does not hold its outputs");
-    }
-    std::uint64_t first = 0;
-    for (std::size_t i = 0; i < shape.segments.size(); ++i) {
-      const std::uint32_t n = shape.segments[i].outputs;
-      if (n == 0) continue;
+  if (!in_.token) {
+    for (const TensorId result : in_.io.outputs) {
+      const TensorId planned = plan_.tensors.at(result.v);
+      const ggml_tensor* t = planned.valid() ? made_.at(planned.v) : nullptr;
+      if (t == nullptr || t->data == nullptr || !ggml_is_contiguous(t))
+        return Refused("a spatial result was not made as a complete contiguous port");
+      const auto& desc = g_.tensor(result);
+      if (desc.segment == ir::kJoinedSegment)
+        return Refused("a spatial result has no individual owner");
+      if (auto valid = Matches(desc, t, "spatial output"); !valid) return valid;
       out_.outputs.push_back(
-          {.device_address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(t->data)) +
-                             (first * row),
-           .bytes = n * row,
+          {.device_address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(t->data)),
+           .bytes = ggml_nbytes(t),
            .tensor = result,
-           .segment = static_cast<std::uint8_t>(i)});
-      first += n;
+           .segment = desc.segment});
     }
-  }
-  // A drafter head's next features, each owner's rows after its logits.
-  if (in_.step.features.valid() && shape.outputs() != 0) {
-    const TensorId planned = plan_.tensors.at(in_.step.features.v);
-    const ggml_tensor* t = planned.valid() ? made_.at(planned.v) : nullptr;
-    if (t == nullptr || t->data == nullptr || !ggml_is_contiguous(t) ||
-        static_cast<std::uint64_t>(t->ne[1]) != shape.outputs()) {
-      return Refused("the step's features were not made whole");
+  } else {
+    // Each owner's own outputs: its token, or its rows of the logits.
+    const planner::StepShape& shape = in_.token->shape;
+    const bool greedy = in_.token->step.greedy.valid();
+    const TensorId result = greedy ? in_.token->step.greedy : in_.token->step.logits;
+    if (result.valid() && shape.outputs() != 0) {
+      const TensorId planned = plan_.tensors.at(result.v);
+      const ggml_tensor* t = planned.valid() ? made_.at(planned.v) : nullptr;
+      if (t == nullptr || t->data == nullptr) return Refused("the step's result was not made");
+      const std::uint64_t row = greedy ? sizeof(std::int32_t) : t->nb[1];
+      if (static_cast<std::uint64_t>(greedy ? t->ne[0] : t->ne[1]) != shape.outputs()) {
+        return Refused("the step's result does not hold its outputs");
+      }
+      std::uint64_t first = 0;
+      for (std::size_t i = 0; i < shape.segments.size(); ++i) {
+        const std::uint32_t n = shape.segments[i].outputs;
+        if (n == 0) continue;
+        out_.outputs.push_back({.device_address = static_cast<std::uint64_t>(
+                                                      reinterpret_cast<std::uintptr_t>(t->data)) +
+                                                  (first * row),
+                                .bytes = n * row,
+                                .tensor = result,
+                                .segment = static_cast<std::uint8_t>(i)});
+        first += n;
+      }
     }
-    std::uint64_t first = 0;
-    for (std::size_t i = 0; i < shape.segments.size(); ++i) {
-      const std::uint32_t n = shape.segments[i].outputs;
-      if (n == 0) continue;
-      out_.outputs.push_back(
-          {.device_address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(t->data)) +
-                             (first * t->nb[1]),
-           .bytes = n * t->nb[1],
-           .tensor = in_.step.features,
-           .segment = static_cast<std::uint8_t>(i),
-           .features = true});
-      first += n;
+    // A drafter head's next features, each owner's rows after its logits.
+    if (in_.token->step.features.valid() && shape.outputs() != 0) {
+      const TensorId planned = plan_.tensors.at(in_.token->step.features.v);
+      const ggml_tensor* t = planned.valid() ? made_.at(planned.v) : nullptr;
+      if (t == nullptr || t->data == nullptr || !ggml_is_contiguous(t) ||
+          static_cast<std::uint64_t>(t->ne[1]) != shape.outputs()) {
+        return Refused("the step's features were not made whole");
+      }
+      std::uint64_t first = 0;
+      for (std::size_t i = 0; i < shape.segments.size(); ++i) {
+        const std::uint32_t n = shape.segments[i].outputs;
+        if (n == 0) continue;
+        out_.outputs.push_back({.device_address = static_cast<std::uint64_t>(
+                                                      reinterpret_cast<std::uintptr_t>(t->data)) +
+                                                  (first * t->nb[1]),
+                                .bytes = n * t->nb[1],
+                                .tensor = in_.token->step.features,
+                                .segment = static_cast<std::uint8_t>(i),
+                                .features = true});
+        first += n;
+      }
     }
   }
   // Every tensor the steps touch, by the role of its storage.
@@ -2999,10 +3077,11 @@ void Lowering::Needed() {
   for (const TensorId t : p_.outputs()) need(t);
   for (const TensorId t : p_.keep()) need(t);
   // A verify's saves and the rows they are stored at (MakeSaves).
-  for (const co::CommitSave& s : in_.step.saves) {
-    need(plan_.tensors.at(s.tensor.v));
-    if (s.rows.valid()) need(plan_.tensors.at(s.rows.v));
-  }
+  if (in_.token)
+    for (const co::CommitSave& s : in_.token->step.saves) {
+      need(plan_.tensors.at(s.tensor.v));
+      if (s.rows.valid()) need(plan_.tensors.at(s.rows.v));
+    }
   for (std::uint32_t i = 0; i < p_.nodes().size(); ++i) {
     const ir::Node& n = p_.nodes()[i];
     bool writes = false;
@@ -3253,10 +3332,10 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     case FusedKind::kStateBankAttention: {
       const auto p = n.Params<ir::AttnParams>();
       const auto slices = planner::StateBankSlices(p_, n.src[1], n.src[2]);
-      if (!slices || !in_.state_spans || p.sparse_any ||
+      if (!slices || !in_.token->state_spans || p.sparse_any ||
           p.n_kv_max > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
         return Refused("a state-bank attention without a supported span proof");
-      const auto fact = in_.state_spans(*slices);
+      const auto fact = in_.token->state_spans(*slices);
       const std::uint64_t raw_bytes = desc(1).ne(2) * desc(1).nb[2];
       const std::uint64_t bytes = raw_bytes + desc(2).ne(2) * desc(2).nb[2];
       if (!fact || fact->bank.encoding != Encoding::kF16 ||
@@ -3270,8 +3349,9 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
         const auto prim = primitive_.at(root.v);
         const auto item = state_.find(prim.v);
         if (!prim.valid() || item == state_.end() || item->second->borrowed || item->second->tap ||
-            item->second->ref != (*slices)[i].ref || (*slices)[i].ref.stage != in_.shape.stage ||
-            (*slices)[i].ref.segment >= in_.shape.segments.size())
+            item->second->ref != (*slices)[i].ref ||
+            (*slices)[i].ref.stage != in_.token->shape.stage ||
+            (*slices)[i].ref.segment >= in_.token->shape.segments.size())
           return Refused("a state-bank operand is not this owner's owned StepState");
         roots[i] = made_.at(root.v);
       }
@@ -3708,7 +3788,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
 // A verify's saves (StepGraph::saves): each stored into its buffer at the
 // caller's address, at its rows (qwen38_graph.cc's Save).
 std::expected<void, KernelFailure> Lowering::MakeSaves() {
-  for (const co::CommitSave& s : in_.step.saves) {
+  if (!in_.token) return {};
+  for (const co::CommitSave& s : in_.token->step.saves) {
     const TensorId planned = plan_.tensors.at(s.tensor.v);
     const TensorId rows_input = s.rows.valid() ? plan_.tensors.at(s.rows.v) : TensorId{};
     ggml_tensor* src = planned.valid() ? made_.at(planned.v) : nullptr;
@@ -3751,8 +3832,8 @@ std::expected<void, KernelFailure> Lowering::MakeSaves() {
 std::expected<void, KernelFailure> Lowering::MakeRouting() {
   if (in_.addresses.expert_part) {
     out_.weight_reads.emplace();
-    out_.weight_reads->reserve(in_.step.weights.size());
-    for (const auto& w : in_.step.weights)
+    out_.weight_reads->reserve(in_.io.weights.size());
+    for (const auto& w : in_.io.weights)
       out_.weight_reads->push_back({w.ref, g_.tensor(w.tensor).format, w.parts, false});
   }
   std::size_t products = 0;
@@ -3821,7 +3902,7 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
       return Refused("routed group products interleave across continuation boundaries");
   // Bind every primitive reader to its own real Route and effective lowered IDs.
   // A weight reused by several groups retains explicit membership in each.
-  for (const auto& weight : in_.step.weights) {
+  for (const auto& weight : in_.io.weights) {
     std::size_t readers = 0, selected_readers = 0;
     for (const auto& group : groups)
       for (const auto index : group.calls)
@@ -4026,6 +4107,31 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
 }
 
 std::expected<LoweredStep, KernelFailure> Lowering::Run() {
+  if (!std::ranges::equal(in_.io.inputs, g_.inputs()) ||
+      !std::ranges::equal(in_.io.outputs, g_.outputs()))
+    return Refused("lowering needs the graph's exact typed ports");
+  if (in_.token && &in_.token->step.graph != &g_)
+    return Refused("token metadata belongs to another graph");
+  if (!in_.token) {
+    // First stateless physical domain. No token/state operation can enter a
+    // branch that interprets a StepShape, synthesized inputs or state spans.
+    const auto supported = [](const ir::Node& n) {
+      if (n.key != ir::Primitive(n.key.op)) return false;
+      switch (n.key.op) {
+        case Op::kInput:
+        case Op::kWeight:
+        case Op::kConv2d:
+        case Op::kUpsample:
+        case Op::kView:
+        case Op::kReshape:
+          return true;
+        default:
+          return false;
+      }
+    };
+    if (!std::ranges::all_of(g_.nodes(), supported) || !std::ranges::all_of(p_.nodes(), supported))
+      return Refused("this stateless GGML domain supports spatial convolution and upsampling");
+  }
   if (auto checked = CheckSelectedHc(); !checked) return std::unexpected(checked.error());
   if (auto checked = CheckOwnerProducts(); !checked) return std::unexpected(checked.error());
   if (auto indexed = Index(); !indexed) return std::unexpected(indexed.error());
@@ -4054,6 +4160,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     if (n.key == ir::Primitive(Op::kFill)) ++tensors;
     // ggml.convert owns a destination root and returns its cpy view.
     if (n.key == ir::Primitive(Op::kConvert)) ++tensors;
+    if (n.key == ir::Primitive(Op::kConv2d)) tensors += 2;
     if (n.key == ir::Primitive(Op::kExpertReduce) && n.nsrc >= 1) {
       tensors += 3 + (2 * p_.tensor(n.src[0]).ne(1));
     }
@@ -4062,7 +4169,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
                    ? 8
                    : 0;
   }
-  tensors += 4 * in_.step.saves.size();
+  if (in_.token) tensors += 4 * in_.token->step.saves.size();
   auto arena = TensorArena::Create(tensors);
   if (!arena) return std::unexpected(arena.error());
   out_.arena.emplace(std::move(*arena));

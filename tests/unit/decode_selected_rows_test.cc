@@ -220,9 +220,8 @@ TEST(DecodeSelectedRows, LoweringRequiresTheDirectSideInputAndPagedComponent) {
                                   },
                                   .state = {},
                                   .save = {}};
-    auto lowered = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = addresses, .context = kContext},
-        *registry, {}, {.selected_source = source->get()});
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses, kContext}, *registry, {},
+                                 {.selected_source = source->get()});
     if (bad == 0) {
       ASSERT_TRUE(lowered) << lowered.error().detail;
       ASSERT_EQ(lowered->selected.size(), 1U);
@@ -323,8 +322,7 @@ class RowsSource final : public en::StepSource {
           plan->steps.empty() ? std::string_view{"none"}
                               : backend.registry->at(plan->steps.front().implementation).name));
     ++builds;
-    return backend_.Lower(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = addresses, .context = kContext});
+    return backend_.Lower({*plan, step, shape, addresses, kContext});
   }
   std::size_t builds = 0;
 

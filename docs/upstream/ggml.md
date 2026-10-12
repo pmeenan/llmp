@@ -26,6 +26,16 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## Shared spatial build subset
+
+The owned build subset also compiles the pin's unchanged `conv2d.cu` and
+`upscale.cu`. Shared typed spatial graphs select direct F32 convolution and
+nearest upsampling through llmpalooza's existing registry, lowering and launch
+context. No GGML backend dispatcher, new upstream pin or intermediate BF16
+conversion is introduced. Physical validators reject unsupported source
+encodings, strides, parameters and aliases. This is a local build integration;
+there is no upstream kernel modification or measured speed claim.
+
 ## Equal-width partial native owner attention
 
 - **Status:** Llmpalooza opt-in derivative, not an upstream submission. C5 model

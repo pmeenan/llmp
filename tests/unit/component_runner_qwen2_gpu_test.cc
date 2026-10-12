@@ -243,10 +243,10 @@ static_assert(kInheritedCompiler + kHeldoutMetadataOwners + kHeldoutObservationO
 
 en::Status NativeReservation(const kn::LowerInput& input) {
   const auto& p = input.plan.graph;
-  const auto& g = input.step.graph;
-  if (input.shape.stage != 0 || input.step.inputs.size() > 256 ||
-      input.step.weights.size() > 4096 || input.step.state.size() > 4096 ||
-      !input.step.saves.empty())
+  const auto& g = input.token->step.graph;
+  if (input.token->shape.stage != 0 || input.token->step.inputs.size() > 256 ||
+      input.token->step.weights.size() > 4096 || input.token->step.state.size() > 4096 ||
+      !input.token->step.saves.empty())
     return std::unexpected("screen bindings exceed paid single-stage inventory");
   std::uint64_t descriptors = p.tensor_count() + 16;
   for (const auto& applied : input.plan.applied)
@@ -716,12 +716,12 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
           -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
         auto program = guarded(input);
         if (!program || input.addresses.measuring()) return program;
-        const auto rows = input.shape.rows();
+        const auto rows = input.token->shape.rows();
         auto* record = &held->corpus_plans[rows == 8U ? 0U : 1U];
         if (same_plan) {
           const auto found =
               std::find_if(held->recorded_shapes.begin(), held->recorded_shapes.end(),
-                           [&](const auto& key) { return key && *key == input.shape; });
+                           [&](const auto& key) { return key && *key == input.token->shape; });
           if (found == held->recorded_shapes.end())
             return std::unexpected("same-plan program has an unrecorded shape/read class");
           record = &held->corpus_plans[static_cast<std::size_t>(

@@ -1253,6 +1253,11 @@ llmp_gtest(ggml_owner_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The GGML lowering (kernels/ggml/lower.h) of the Gemma 2 and Gemma 3 steps
 # at every setup shape (every profile builds the lowering).
+add_executable(ggml_spatial_test ggml_spatial_test.cc)
+target_link_libraries(ggml_spatial_test PRIVATE llmp_ggml_tensors llmp_engine_core llmp_components
+                                               llmp_spec llmp_model)
+llmp_gtest(ggml_spatial_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(ggml_lower_test ggml_lower_test.cc)
 target_link_libraries(ggml_lower_test PRIVATE llmp_ggml_tensors llmp_planner llmp_components
                                               llmp_spec llmp_model llmp_artifact llmp_json)
@@ -1315,6 +1320,11 @@ if(LLMP_CUDA)
   target_link_libraries(expert_slab_test PRIVATE llmp_engine llmp_test_artifact_writer)
   llmp_gtest(expert_slab_test TEST_PREFIX unit. PROPERTIES LABELS unit
                ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+endif()
+if(LLMP_CUDA)
+  add_executable(image_spatial_gpu_test image_spatial_gpu_test.cc)
+  target_link_libraries(image_spatial_gpu_test PRIVATE llmp_engine llmp_components llmp_spec)
+  llmp_gpu_gtest(image_spatial_gpu_test MODELS)
 endif()
 if(LLMP_CUDA)
   add_executable(components_models_gpu_test components_models_gpu_test.cc)

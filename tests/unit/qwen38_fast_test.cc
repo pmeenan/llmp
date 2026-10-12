@@ -2031,15 +2031,13 @@ struct Environment {
                             .save = {},
                             .activation_bytes = kActivation,
                             .activation_alignment = 256};
-    auto measure =
-        backend->Lower({.plan = *p.plan, .step = p.step, .shape = p.shape, .addresses = addresses});
+    auto measure = backend->Lower({*p.plan, p.step, p.shape, addresses});
     ASSERT_TRUE(measure) << (measure ? "" : measure.error());
     ASSERT_LE((*measure)->scratch_bytes(), kActivation);
     ASSERT_LE((*measure)->pool_bytes(), kPool);
     ASSERT_LE((*measure)->host_bytes(), 1U << 20);
     addresses.activations = p.activation;
-    auto bound =
-        backend->Lower({.plan = *p.plan, .step = p.step, .shape = p.shape, .addresses = addresses});
+    auto bound = backend->Lower({*p.plan, p.step, p.shape, addresses});
     ASSERT_TRUE(bound) << (bound ? "" : bound.error());
     p.program = std::move(*bound);
     ASSERT_EQ(p.program->scratch_bytes(), (*measure)->scratch_bytes());

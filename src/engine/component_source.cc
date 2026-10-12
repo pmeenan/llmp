@@ -459,31 +459,19 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   }
   const auto state_spans = StateSpans(shape, addresses);
   const GraphBuildIO io{step->graph, step->graph.inputs(), step->graph.outputs(), step->weights};
-  auto plan = PlanComponentGraph(io, Backend(), policy_, addresses,
-                                 {.row_invariant = shape.row_invariant,
-                                  .capturable = o_.require_capture,
-                                  .staged = std::move(staged),
-                                  .on_stream = Backend().on_stream,
-                                  .written = Backend().written,
-                                  .within = Backend().within,
-                                  .shape = &shape,
-                                  .state_spans = state_spans,
-                                  .alignment_staged = std::move(aligned_staged)});
-  if (!plan) return std::unexpected(std::move(plan.error()));
-  const kernels::LowerInput input{.plan = *plan,
-                                  .step = *step,
-                                  .shape = shape,
-                                  .addresses = addresses,
-                                  .context = o_.bindings.state->context,
-                                  .state_spans = state_spans};
-  auto lowered = Backend().lower(input);
-  if (!lowered) return lowered;
-  if (!*lowered) return std::unexpected("the backend returned no step program");
-  if (o_.validate_program) {
-    auto valid = o_.validate_program(input, **lowered);
-    if (!valid) return std::unexpected(valid.error());
-  }
-  return lowered;
+  return BuildComponentProgram(
+      io, Backend(), policy_, addresses,
+      {.row_invariant = shape.row_invariant,
+       .capturable = o_.require_capture,
+       .staged = std::move(staged),
+       .on_stream = Backend().on_stream,
+       .written = Backend().written,
+       .within = Backend().within,
+       .shape = &shape,
+       .state_spans = state_spans,
+       .alignment_staged = std::move(aligned_staged)},
+      kernels::TokenLowerInput{*step, shape, o_.bindings.state->context, state_spans},
+      o_.validate_program);
 }
 
 std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::Create(

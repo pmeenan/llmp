@@ -305,13 +305,7 @@ TEST(GgmlLowerDsv4Test, DirectBankFormulaRequiresProofAndF32OutputForNativeSelec
                                                "ggml.state_bank_attention";
                                       }),
                 native ? 1 : 0);
-      auto lowered = kg::LowerStep({.plan = *plan,
-                                    .step = step,
-                                    .shape = shape,
-                                    .addresses = {},
-                                    .context = 512,
-                                    .state_spans = facts},
-                                   registry, Device());
+      auto lowered = kg::LowerStep({*plan, step, shape, {}, 512, facts}, registry, Device());
       ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
       EXPECT_EQ(std::ranges::any_of(lowered->nodes,
                                     [](const auto* node) { return node->op == GGML_OP_CONCAT; }),
@@ -403,13 +397,7 @@ TEST(GgmlLowerDsv4Test, StateBanksBindLayoutSpansAndRefusePointerOrFactDrift) {
       if (fact && mode == 3 && slices.size() == 2 && queries++ != 0) ++fact->bank.range.offset;
       return fact;
     };
-    auto lower = kg::LowerStep({.plan = *plan,
-                                .step = step,
-                                .shape = shape,
-                                .addresses = addresses,
-                                .context = 512,
-                                .state_spans = current},
-                               registry, Device());
+    auto lower = kg::LowerStep({*plan, step, shape, addresses, 512, current}, registry, Device());
     if (mode >= 2) {
       ASSERT_FALSE(lower);
       EXPECT_NE(lower.error().detail.find(mode == 2 ? "pointers" : "changed"), std::string::npos);
@@ -434,9 +422,7 @@ TEST(GgmlLowerDsv4Test, StateBanksBindLayoutSpansAndRefusePointerOrFactDrift) {
                {.staged = std::vector{q}, .written = kg::WrittenBytes, .shape = &shape});
   ASSERT_TRUE(primitive);
   EXPECT_TRUE(primitive->applied.empty());
-  auto fallback = kg::LowerStep(
-      {.plan = *primitive, .step = step, .shape = shape, .addresses = {}, .context = 512}, registry,
-      Device());
+  auto fallback = kg::LowerStep({*primitive, step, shape, {}, 512}, registry, Device());
   ASSERT_TRUE(fallback) << (fallback ? "" : fallback.error().detail);
   EXPECT_TRUE(std::ranges::any_of(fallback->nodes,
                                   [](const auto* node) { return node->op == GGML_OP_CONCAT; }));
@@ -492,7 +478,7 @@ TEST(GgmlLowerDsv4Test, ComponentSourcesForwardBankLayoutFactsAndRejectMissingBi
              .lower = [&](const kn::LowerInput& in)
                  -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
                reached = true;
-               if (!in.state_spans) return std::unexpected("missing state-span callback");
+               if (!in.token->state_spans) return std::unexpected("missing state-span callback");
                std::optional<kg::LoweredStep> measured;
                if (mode == 0) {
                  auto lowered = kg::LowerStep(in, f.registry, Device());
@@ -502,17 +488,18 @@ TEST(GgmlLowerDsv4Test, ComponentSourcesForwardBankLayoutFactsAndRejectMissingBi
                }
                std::array<bool, 2> owners{};
                std::size_t pairs = 0;
-               for (const auto& node : in.step.graph.nodes()) {
+               for (const auto& node : in.token->step.graph.nodes()) {
                  if (node.key != ir::Primitive(ir::Op::kConcat)) continue;
-                 const auto slices = pl::StateBankSlices(in.step.graph, node.src[0], node.src[1]);
+                 const auto slices =
+                     pl::StateBankSlices(in.token->step.graph, node.src[0], node.src[1]);
                  if (!slices) continue;
                  ++pairs;
                  owners.at(slices->front().ref.segment) = true;
-                 const auto fact = in.state_spans(*slices);
+                 const auto fact = in.token->state_spans(*slices);
                  EXPECT_EQ(fact.has_value(), mode <= 1);
                  if (fact) {
-                   const auto& raw = in.step.graph.tensor(node.src[0]);
-                   const auto& compressed = in.step.graph.tensor(node.src[1]);
+                   const auto& raw = in.token->step.graph.tensor(node.src[0]);
+                   const auto& compressed = in.token->step.graph.tensor(node.src[1]);
                    EXPECT_EQ(fact->region_bytes, layout.bytes);
                    EXPECT_EQ(fact->bank.range.bytes, (raw.ne(2) + compressed.ne(2)) * raw.nb[2]);
                    const std::array requested{md::StateSlice{.layer = slices->front().ref.layer,
@@ -541,7 +528,7 @@ TEST(GgmlLowerDsv4Test, ComponentSourcesForwardBankLayoutFactsAndRejectMissingBi
                      EXPECT_GE(covered, fact->bank.range.offset + fact->bank.range.bytes);
                    }
                    if (measured) {
-                     const auto root = in.step.graph.root(node.src[0]);
+                     const auto root = in.token->step.graph.root(node.src[0]);
                      const auto leaf = std::ranges::find_if(
                          measured->leaves,
                          [&](const auto& leaf) { return leaf.primitive == root; });
@@ -558,13 +545,13 @@ TEST(GgmlLowerDsv4Test, ComponentSourcesForwardBankLayoutFactsAndRejectMissingBi
                  }
                  auto bad = *slices;
                  bad[1].ref.segment ^= 1;
-                 EXPECT_FALSE(in.state_spans(bad));
+                 EXPECT_FALSE(in.token->state_spans(bad));
                  bad = *slices;
                  ++bad[1].ref.stage;
-                 EXPECT_FALSE(in.state_spans(bad));
+                 EXPECT_FALSE(in.token->state_spans(bad));
                  bad = *slices;
                  bad[0].ref.segment = bad[1].ref.segment = 2;
-                 EXPECT_FALSE(in.state_spans(bad));
+                 EXPECT_FALSE(in.token->state_spans(bad));
                }
                EXPECT_GT(pairs, 0U);
                EXPECT_TRUE(owners[0]);
@@ -643,9 +630,8 @@ TEST(GgmlLowerDsv4Test, PrimitiveTargetAndDraftStepsLowerWithTypedInputs) {
                            {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
       ASSERT_TRUE(plan) << plan.error().detail;
       for (const bool device_masks : {false, true}) {
-        auto lowered = kg::LowerStep(
-            {.plan = *plan, .step = *step, .shape = shape, .addresses = {}, .context = 65536},
-            registry, Device(), {.device_masks = device_masks});
+        auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, registry, Device(),
+                                     {.device_masks = device_masks});
         ASSERT_TRUE(lowered) << lowered.error().detail;
         for (const auto* node : lowered->nodes) {
           std::expected<void, kg::KernelFailure> valid;
@@ -739,9 +725,7 @@ TEST(GgmlLowerDsv4Test, OptInLocalFormsLowerActualTargetAndDraftFragments) {
       const auto count = std::ranges::count_if(
           plan->applied, [&](const auto& applied) { return applied.pattern == form; });
       EXPECT_GT(count, 0) << "the actual component fragment must select its local form";
-      auto lowered = kg::LowerStep(
-          {.plan = *plan, .step = *step, .shape = shape, .addresses = {}, .context = 65536},
-          f.registry, Device());
+      auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, f.registry, Device());
       ASSERT_TRUE(lowered) << lowered.error().detail;
       // LowerStep calls the actual CheckDsv4* launch validators, including
       // packed carry copies and the disjoint HC post/norm output pair.
@@ -804,9 +788,7 @@ TEST(GgmlLowerDsv4Test, RoundedIndexScoreUsesFundedPrimitiveRoundTripWithoutNati
     EXPECT_LE(offsets[i] + *bytes, plan->placement.extent);
   }
   EXPECT_NE(offsets[0], offsets[1]) << "widening reads the half root while writing its F32 root";
-  auto lowered =
-      kg::LowerStep({.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256},
-                    registry, Device());
+  auto lowered = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
   ASSERT_TRUE(lowered) << lowered.error().detail;
   int native_prefixes = 0, copies = 0;
   for (const auto* node : lowered->nodes) {
@@ -928,9 +910,7 @@ TEST(GgmlLowerDsv4Test, ConvertChainsBudgetEveryDestinationAndCopyView) {
       pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
                {.staged = std::vector{input}, .written = kg::WrittenBytes, .shape = &shape});
   ASSERT_TRUE(plan) << plan.error().detail;
-  auto lowered =
-      kg::LowerStep({.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256},
-                    registry, Device());
+  auto lowered = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
   ASSERT_TRUE(lowered) << lowered.error().detail;
   EXPECT_EQ(lowered->plan.steps.size(), 18U);
   for (const auto& operation : lowered->plan.steps) {
@@ -958,9 +938,7 @@ TEST(GgmlLowerDsv4Test, FillGraphsBudgetEveryShapeAndResultDescriptor) {
   auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
                        {.written = kg::WrittenBytes, .shape = &shape});
   ASSERT_TRUE(plan) << plan.error().detail;
-  auto lowered =
-      kg::LowerStep({.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256},
-                    registry, Device());
+  auto lowered = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
   ASSERT_TRUE(lowered) << lowered.error().detail;
   ASSERT_EQ(lowered->plan.steps.size(), 18U);
   for (const auto& operation : lowered->plan.steps) {
@@ -1004,16 +982,14 @@ TEST(GgmlLowerDsv4Test, DeviceAheadMasksRefuseUnsupportedBlockGeometry) {
         pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
                  {.staged = std::vector{positions}, .written = kg::WrittenBytes, .shape = &shape});
     ASSERT_TRUE(plan) << plan.error().detail;
-    auto device = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 65536}, registry,
-        Device(), {.device_masks = true});
+    auto device =
+        kg::LowerStep({*plan, step, shape, {}, 65536}, registry, Device(), {.device_masks = true});
     const bool supported = read == 256 && window == 128;
     EXPECT_EQ(device.has_value(), supported);
     if (!device)
       EXPECT_NE(device.error().detail.find("device block mask's geometry"), std::string::npos);
-    auto host = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 65536}, registry,
-        Device(), {.device_masks = false});
+    auto host =
+        kg::LowerStep({*plan, step, shape, {}, 65536}, registry, Device(), {.device_masks = false});
     EXPECT_TRUE(host) << host.error().detail;
   }
 }
@@ -1053,9 +1029,7 @@ TEST(GgmlLowerDsv4Test, FusedCompressorRequiresGeneratedReadsForItsExactOwnerGeo
     auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121}, {},
                          {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
     ASSERT_TRUE(plan) << plan.error().detail;
-    auto lowered = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 65536}, registry,
-        Device());
+    auto lowered = kg::LowerStep({*plan, step, shape, {}, 65536}, registry, Device());
     EXPECT_EQ(lowered.has_value(), mutation == 0);
     if (!lowered)
       EXPECT_NE(lowered.error().detail.find("typed bounded pool reads"), std::string::npos);
@@ -1097,9 +1071,7 @@ TEST(GgmlLowerDsv4Test, StridedHcPostBoundariesRetainThePrimitiveFallback) {
                          policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
     ASSERT_TRUE(plan) << plan.error().detail;
     EXPECT_TRUE(plan->applied.empty());
-    auto lowered = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 65536}, registry,
-        Device());
+    auto lowered = kg::LowerStep({*plan, step, shape, {}, 65536}, registry, Device());
     ASSERT_TRUE(lowered) << lowered.error().detail;
   }
 }
@@ -1256,9 +1228,7 @@ TEST(GgmlLowerDsv4Test, ExactPrimitivesLowerWithTypedOwnerCountsAndRefuseMalform
                        {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
   ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
   const auto lower = [&] {
-    return kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 1024}, registry,
-        Device());
+    return kg::LowerStep({*plan, step, shape, {}, 1024}, registry, Device());
   };
   auto lowered = lower();
   ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
@@ -1325,9 +1295,7 @@ TEST(GgmlLowerDsv4Test, ExactPrimitivesLowerRefusesCountsFromAnotherEqualRowOwne
                        {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
   ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
   const auto lower = [&] {
-    return kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 1024}, registry,
-        Device());
+    return kg::LowerStep({*plan, step, shape, {}, 1024}, registry, Device());
   };
   ASSERT_TRUE(lower());
   ASSERT_EQ(step.inputs.size(), 1U);
@@ -1422,9 +1390,7 @@ TEST(GgmlLowerDsv4Test, RejectsMalformedCompressorInputsAndMaskMetadata) {
         at->cells.block = 0;
         break;
     }
-    auto lowered = kg::LowerStep(
-        {.plan = *plan, .step = *step, .shape = shape, .addresses = {}, .context = 65536},
-        f.registry, Device());
+    auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, f.registry, Device());
     EXPECT_FALSE(lowered);
     *at = original;
   }
@@ -1516,9 +1482,7 @@ TEST(GgmlLowerDsv4Test, RoundedIndexScoreRequiresAuthenticatedRootFactsAndExactN
       return node.key == ir::Primitive(ir::Op::kRoundedIndexScore);
     });
     EXPECT_EQ(native, form == 0 ? 1 : 0);
-    auto lowered = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256}, registry,
-        Device());
+    auto lowered = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
     ASSERT_TRUE(lowered) << lowered.error().detail;
     const auto custom = std::ranges::count_if(lowered->nodes, [](const auto* node) {
       return kg::LlmpOpOf(node) == kg::LlmpOp::kRoundedIndexScore;
@@ -1532,9 +1496,7 @@ TEST(GgmlLowerDsv4Test, RoundedIndexScoreRequiresAuthenticatedRootFactsAndExactN
                             .save = {},
                             .activations = (std::uint64_t{1} << 44) + 4,
                             .activation_bytes = plan->placement.extent};
-    auto rebound = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = bad, .context = 256}, registry,
-        Device());
+    auto rebound = kg::LowerStep({*plan, step, shape, bad, 256}, registry, Device());
     EXPECT_FALSE(rebound);
   }
 }
@@ -1733,18 +1695,14 @@ TEST(GgmlLowerDsv4Test, ArenaFactsSelectRoundedScoreAndRejectBrokenPhysicalBase)
     const auto native = std::ranges::count_if(
         plan->graph.nodes(), [](const auto& n) { return n.key.op == ir::Op::kRoundedIndexScore; });
     EXPECT_EQ(native, alignment == 0 ? 0 : 1);
-    auto measured = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = {}, .context = 256}, registry,
-        Device());
+    auto measured = kg::LowerStep({*plan, step, shape, {}, 256}, registry, Device());
     ASSERT_TRUE(measured) << measured.error().detail;
     if (alignment == 0) continue;
     for (const std::uint64_t offset : {0U, 4U}) {
       kn::Addresses addresses;
       addresses.activations = (std::uint64_t{1} << 44) + offset;
       addresses.activation_bytes = plan->placement.extent;
-      auto bound = kg::LowerStep(
-          {.plan = *plan, .step = step, .shape = shape, .addresses = addresses, .context = 256},
-          registry, Device());
+      auto bound = kg::LowerStep({*plan, step, shape, addresses, 256}, registry, Device());
       EXPECT_EQ(bound.has_value(), offset == 0);
       if (offset != 0 && !bound)
         EXPECT_NE(bound.error().detail.find("alignment promise"), std::string::npos);

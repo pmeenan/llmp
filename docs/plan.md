@@ -2455,8 +2455,19 @@ each is checked against the design as M3.6 proceeds.
             Main native build and all 239 affected host cases pass on Spark B
             (2026-10-12), including three new spatial and 45 planner controls;
             source quality checks pass. No new token phase or production
-            executor. Actual spatial `StepProgram` lowering, whole-pipeline
-            wiring and image qualification remain open.
+            executor. Whole-pipeline wiring and image qualification remain open.
+      - [x] **Q3a — shared spatial execution:** typed graph ports and optional
+            token metadata use the existing planner, `StepProgram`, `StepRuns`
+            and owned completion/capture path. The full main Spark A native build,
+            129 affected host controls and one actual F32 VAE-span screen pass
+            (2026-10-12); source quality checks pass. The actual decoder
+            prefix and a reduced nearest2/resample span cover 4,737,024 finite
+            outputs and two eager/capture/replay paths each. This physical
+            convolution implementation supports F32 source weights; BF16 remains
+            unsupported here without changing the catalog's source formats.
+            Whole VAE/flow/timestep composition, original-image quality,
+            comparative speed and serving remain open
+            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

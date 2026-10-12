@@ -658,10 +658,10 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
     auto backend = source->backend->Backend();
     const auto lower = backend.lower;
     backend.lower = [&](const kn::LowerInput& input) {
-      if (!input.addresses.measuring() && input.shape.phase == pl::Phase::kVerify) {
-        for (const auto& save : input.step.saves) {
-          for (std::size_t segment = 0; segment < input.shape.segments.size(); ++segment) {
-            saves[{save.layer, save.what, input.shape.segments[segment].slot}] =
+      if (!input.addresses.measuring() && input.token->shape.phase == pl::Phase::kVerify) {
+        for (const auto& save : input.token->step.saves) {
+          for (std::size_t segment = 0; segment < input.token->shape.segments.size(); ++segment) {
+            saves[{save.layer, save.what, input.token->shape.segments[segment].slot}] =
                 input.addresses.save(save.layer, save.component, save.what,
                                      static_cast<std::uint8_t>(segment));
           }
@@ -1483,18 +1483,20 @@ void MtpLowered(const Target& t, const fs::path& scratch, std::span<const MtpRec
       const auto lower = own_backend.lower;
       own_backend.lower = [&, lower](const kn::LowerInput& input)
           -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
-        if (refuse_target && input.shape.stage == 0 && input.shape.phase == pl::Phase::kPrefill)
+        if (refuse_target && input.token->shape.stage == 0 &&
+            input.token->shape.phase == pl::Phase::kPrefill)
           return std::unexpected("injected clean target planning refusal");
         auto program = lower(input);
         if (!program) return std::unexpected(program.error());
-        const bool head = input.shape.stage == 1 && input.shape.phase == pl::Phase::kDraft &&
-                          std::ranges::any_of(input.shape.segments, [](const auto& segment) {
+        const bool head = input.token->shape.stage == 1 &&
+                          input.token->shape.phase == pl::Phase::kDraft &&
+                          std::ranges::any_of(input.token->shape.segments, [](const auto& segment) {
                             return segment.want_head && segment.outputs != 0;
                           });
         std::uint32_t owners = 0;
         bool catch_up = false;
         if (head)
-          for (const auto& segment : input.shape.segments) {
+          for (const auto& segment : input.token->shape.segments) {
             owners |= 1U << segment.slot;
             catch_up |= segment.rows > 1;
           }

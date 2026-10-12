@@ -270,10 +270,10 @@ std::expected<std::vector<std::int32_t>, std::string> HeldOutPrefix(const std::s
 
 en::Status NativeReservation(const kn::LowerInput& input) {
   const auto& p = input.plan.graph;
-  const auto& g = input.step.graph;
-  if (input.shape.stage != 0 || p.nodes().size() > 4096 || p.tensor_count() > 16384 ||
-      input.step.inputs.size() > 256 || input.step.weights.size() > 4096 ||
-      input.step.state.size() > 4096 || !input.step.saves.empty())
+  const auto& g = input.token->step.graph;
+  if (input.token->shape.stage != 0 || p.nodes().size() > 4096 || p.tensor_count() > 16384 ||
+      input.token->step.inputs.size() > 256 || input.token->step.weights.size() > 4096 ||
+      input.token->step.state.size() > 4096 || !input.token->step.saves.empty())
     return std::unexpected("screen bindings exceed paid single-stage inventory");
   std::uint64_t descriptors = p.tensor_count() + 16;
   for (const auto& applied : input.plan.applied)
@@ -1207,23 +1207,24 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
         auto program = guarded(input);
         if (!program) return program;
         if (lifecycle) {
-          const auto head = input.step.logits;
-          if (!head.valid() || head.v >= input.step.graph.tensor_count() ||
-              input.step.greedy.valid() || input.step.features.valid() ||
-              input.shape.segments.size() != 1 || input.shape.outputs() != input.shape.rows())
+          const auto head = input.token->step.logits;
+          if (!head.valid() || head.v >= input.token->step.graph.tensor_count() ||
+              input.token->step.greedy.valid() || input.token->step.features.valid() ||
+              input.token->shape.segments.size() != 1 ||
+              input.token->shape.outputs() != input.token->shape.rows())
             return std::unexpected("lifecycle requires one complete target head");
-          const auto& desc = input.step.graph.tensor(head);
+          const auto& desc = input.token->step.graph.tensor(head);
           const auto outputs = (*program)->outputs();
           if (desc.format.encoding != llmp::format::Encoding::kF32 ||
-              desc.shape() != llmp::ir::ShapeOf({vocabulary, input.shape.rows()}) ||
+              desc.shape() != llmp::ir::ShapeOf({vocabulary, input.token->shape.rows()}) ||
               !llmp::ir::IsContiguous(desc) || outputs.size() != 1 ||
               outputs.front().tensor != head || outputs.front().segment != 0 ||
               outputs.front().features ||
               outputs.front().bytes !=
-                  std::uint64_t{vocabulary} * input.shape.rows() * sizeof(float))
+                  std::uint64_t{vocabulary} * input.token->shape.rows() * sizeof(float))
             return std::unexpected("lifecycle lowered head identity or geometry differs");
         }
-        const auto rows = input.shape.rows();
+        const auto rows = input.token->shape.rows();
         if (held->kept) {
           if (!registry || (rows != 145 && rows != 1))
             return std::unexpected("kept planned recipe has unexpected shape or registry");

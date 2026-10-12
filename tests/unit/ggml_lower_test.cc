@@ -359,11 +359,7 @@ Lowered Lower(Ir& ir_, const Case& c, const Cells& state, bool device_masks,
   out.step.emplace(std::move(*step));
   out.plan.emplace(std::move(*plan));
   const kn::Addresses addresses{};  // a measurement: placeholder addresses
-  const kn::LowerInput input{.plan = *out.plan,
-                             .step = *out.step,
-                             .shape = shape,
-                             .addresses = addresses,
-                             .context = ir_.layout->context};
+  const kn::LowerInput input{*out.plan, *out.step, shape, addresses, ir_.layout->context};
   auto lowered = kg::LowerStep(input, ir_.registry, Device(), {.device_masks = device_masks});
   EXPECT_TRUE(lowered.has_value()) << (lowered ? "" : lowered.error().detail);
   if (!lowered) return out;
@@ -499,8 +495,7 @@ TEST(GgmlLowerTest, FusedExpansionWaitsForComputedNormScale) {
       EXPECT_EQ(registry.at(plan->steps[1].implementation).name, kg::kRmsNormMulFused);
       const pl::StepShape shape{};
       const kn::Addresses addresses{};
-      const kn::LowerInput input{
-          .plan = *plan, .step = step, .shape = shape, .addresses = addresses};
+      const kn::LowerInput input{*plan, step, shape, addresses};
       auto lowered = kg::LowerStep(input, registry, Device());
       ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
       ASSERT_EQ(lowered->plan.steps.size(), 2U);
@@ -575,7 +570,7 @@ TEST(GgmlLowerTest, Bf16LogParameterHasTransientPlacementAndStrictLowering) {
       .weight_rows = {},
       .state = {},
       .save = {}};
-  const kn::LowerInput input{.plan = *plan, .step = step, .shape = shape, .addresses = addresses};
+  const kn::LowerInput input{*plan, step, shape, addresses};
   const auto lowered = kg::LowerStep(input, registry, Device());
   ASSERT_TRUE(lowered) << lowered.error().detail;
   ASSERT_EQ(lowered->plan.steps.size(), 3U);
@@ -655,7 +650,7 @@ TEST(GgmlLowerTest, Bf16NormOffsetHasTransientPlacementAndStrictLowering) {
       .weight_rows = {},
       .state = {},
       .save = {}};
-  const kn::LowerInput input{.plan = *plan, .step = step, .shape = shape, .addresses = addresses};
+  const kn::LowerInput input{*plan, step, shape, addresses};
   const auto lowered = kg::LowerStep(input, registry, Device());
   ASSERT_TRUE(lowered) << lowered.error().detail;
   ASSERT_EQ(lowered->plan.steps.size(), 2U);
@@ -741,8 +736,7 @@ TEST(GgmlLowerTest, RopeStoreUsesReadOperandStandInWithoutAliasingRetainedRotati
           .activations = measuring ? 0 : reinterpret_cast<std::uintptr_t>(activation.data()),
           .activation_bytes = activation.size()};
       const pl::StepShape shape{};
-      const kn::LowerInput input{
-          .plan = *plan, .step = step, .shape = shape, .addresses = addresses};
+      const kn::LowerInput input{*plan, step, shape, addresses};
       auto lowered = kg::LowerStep(input, registry, Device());
       ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
       const auto rotation = std::ranges::find_if(
@@ -799,8 +793,7 @@ TEST(GgmlLowerTest, RefusesASelectionPlanGraphDoesNotMake) {
                        {.staged = staged, .written = &kg::WrittenBytes});
   ASSERT_TRUE(plan.has_value());
   const kn::Addresses addresses{};
-  const kn::LowerInput input{
-      .plan = *plan, .step = *step, .shape = shape, .addresses = addresses, .context = 8192};
+  const kn::LowerInput input{*plan, *step, shape, addresses, 8192};
   // Unfused, the two run as PlanGraph's one step of both launchers.
   ASSERT_TRUE(kg::LowerStep(input, ir_.registry, Device()).has_value());
   kg::DeviceChoices fusing = Device();

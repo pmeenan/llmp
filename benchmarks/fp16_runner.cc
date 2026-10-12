@@ -239,7 +239,7 @@ Status Fp16Runner::Setup() {
   const auto lower = checked_backend.lower;
   checked_backend.lower = [&s, lower](const kernels::LowerInput& input)
       -> std::expected<std::unique_ptr<kernels::StepProgram>, std::string> {
-    if (std::ranges::find(s.keys, input.shape) == s.keys.end())
+    if (std::ranges::find(s.keys, input.token->shape) == s.keys.end())
       return Error("FP16 program is outside its measured plan classes");
     auto program = lower(input);
     if (!program) return program;

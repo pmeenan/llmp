@@ -1,0 +1,152 @@
+{
+  "evidence": {
+    "source_manifest": {
+      "scratch_path": "image-execution-source05/manifest.json",
+      "sha256": "098692ef907da4c8511f1c5943295656ed4625e01acb9b93312a457f4c22bd7d"
+    },
+    "fixture_manifest": {
+      "scratch_path": "image-execution-vae-fixture02/manifest.json",
+      "sha256": "6be3ed95bdbb372364252b6f18fc587bb973bafce0231d3b3024a0cf2ecb4393"
+    },
+    "host_result": {
+      "scratch_path": "image-execution-focused04/result.json",
+      "sha256": "707f33f1da05f952921fcc5fcaecd26e90bac655ff49a9d5cd678e2ea0969002"
+    },
+    "build_result": {
+      "scratch_path": "image-execution-vae-build02/result.json",
+      "sha256": "e8f7413003e237fd96ef944490f98f59dcbd7d342df9bf2e6327f17905e8049c"
+    },
+    "wrapper_manifest": {
+      "scratch_path": "image-execution-vae-models01/manifest.json",
+      "sha256": "ac01d9498393f30c988f2b1ff2acd2ef0c1a4087d1799567189111346fd125a5"
+    },
+    "actual_result": {
+      "scratch_path": "image-execution-vae-models01/result.json",
+      "sha256": "9038c364087a7a8c1e77d7eebc06c76d22f70aac08878b9fed8897c0b8aa5522"
+    },
+    "actual_xml": {
+      "scratch_path": "image-execution-vae-models01/model-0.xml",
+      "sha256": "6cbd8ace37852e6da45f19d8f0fd36b98b947b3825d6693593b820974ab91919"
+    },
+    "actual_log": {
+      "scratch_path": "image-execution-vae-models01/model-0.log",
+      "sha256": "3b13750b330c469d075ca5b246bc4516178249ad65937baa1bfa345a42edc95c"
+    }
+  },
+  "actual": {
+    "cases": [
+      {
+        "case": "ImageSpatialGpuTest.ActualF32VaePartsUseSharedTypedProgramsAndCompletedReplay",
+        "status": "PASS",
+        "fixture_seconds": "2.7",
+        "properties": {
+          "span0_max_error": "1.1809659108408255e-06",
+          "span0_rms_error": "9.0871781596587031e-08",
+          "span0_enclosure": "0.0018622070022278321",
+          "span1_max_error": "1.3665311648480838e-05",
+          "span1_rms_error": "1.3866630128825131e-06",
+          "span1_enclosure": "0.05607674926568447",
+          "actual_source_bytes": "5662592",
+          "selected_pages": "5",
+          "complete_output_values": "4737024",
+          "eager": "2",
+          "captured": "2",
+          "replayed": "2",
+          "capture_refused": "0",
+          "source_part0_sha": "199d45b1bd11867c7007b4f938682dc0da385cd73669180fa8d5fddedffeb843",
+          "source_part1_sha": "39767c993fc4c04f9108ebdd776e19720644111d4e6464b4059eec006c28485a",
+          "source_part2_sha": "afbc8fd669fa0961b341b844b2ba5627b6afede0235cff61c7a5a73e7fc477c1",
+          "source_part3_sha": "be806af216eaf03407ddf9e1eec3fa5fcf5e51aa545200bceb4c6f85272238a9",
+          "source_part4_sha": "4a413f05c36cd699db430efc665e9ad576f21b44b3dae187c31f5c2d7b6feb68",
+          "source_part5_sha": "2928f75eb5b324305f8176f26d280171ec00867548129199a32a8519a10c1cf4",
+          "span0_plan": "6f021c30ccc8ea6538ac48c6935400ec65166f30b679ed2b54f7c289e54934bd",
+          "span0_implementations": "ggml.conv2d.f32,ggml.add,ggml.conv2d.f32,ggml.add,",
+          "span0_parameters": "23450664584167756,1,1,0,64,64,64,1,64,64,1152,1,",
+          "span0_input_sha": "47e41ca68d861ac2eaf2e58d025180523eda63b201b6c5c2d0c04373979cf13f",
+          "span0_sha": "a2ea225d6772a28d9b9b23abfef8fbe51653bbd06ef178d7950b29e0e472d477",
+          "span0_step0_ns": "14149741",
+          "span0_step1_ns": "11586266",
+          "span0_step2_ns": "10957196",
+          "span1_plan": "5d987e7bc7a34528d26889c7fff3a2df0186b3ab43329b17272130feb0e699e9",
+          "span1_implementations": "ggml.upsample.nearest,ggml.conv2d.f32,ggml.add,",
+          "span1_parameters": "23450664584167756,1,1,0,4,4,288,1,8,8,288,1,",
+          "span1_input_sha": "a595bf8330cdec3c7afbbb4e0ed37ab84be69df58ffca04493a3c73d928a0ea4",
+          "span1_sha": "95a8c30e28e33595b72d666abb1e1aebadbf575d36663a23862ae1f842bba92f",
+          "span1_step0_ns": "756765",
+          "span1_step1_ns": "329215",
+          "span1_step2_ns": "320430"
+        }
+      }
+    ],
+    "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+    "memory_peak_process_cache_bytes": 293462016,
+    "pre_guards": "PASS",
+    "status": "PASS",
+    "scope": "Actual stored F32 VAE prefix and reduced nearest/conv through shared typed programs, full finite CPU-reference enclosure and same-selected capture/replay. Synthetic input, no full image pipeline, original image quality, comparative speed or serving claim.",
+    "post_guards": "PASS",
+    "compute_pids_after": 0,
+    "native_child_retired": true
+  },
+  "main_integration": {
+    "base": "b8d156d0",
+    "native_recipe_sha256": "728f3d4394f76c6cfcd168bd93e9d40b3c8ce85e34be6f0d06b44d116515b242",
+    "actual_recipe_manifest_sha256": "4b3c6ebde23fd66644d8c94d810bf60d1a57a280a2e65bb507b95a77057eef15",
+    "native_host_cases": 129,
+    "native_host_binaries": 12,
+    "actual": {
+      "cases": [
+        {
+          "case": "ImageSpatialGpuTest.ActualF32VaePartsUseSharedTypedProgramsAndCompletedReplay",
+          "status": "PASS",
+          "fixture_seconds": "2.693",
+          "properties": {
+            "span0_max_error": "1.1809659108408255e-06",
+            "span0_rms_error": "9.0871781596587031e-08",
+            "span0_enclosure": "0.0018622070022278321",
+            "span1_max_error": "1.3665311648480838e-05",
+            "span1_rms_error": "1.3866630128825131e-06",
+            "span1_enclosure": "0.05607674926568447",
+            "actual_source_bytes": "5662592",
+            "selected_pages": "5",
+            "complete_output_values": "4737024",
+            "eager": "2",
+            "captured": "2",
+            "replayed": "2",
+            "capture_refused": "0",
+            "source_part0_sha": "199d45b1bd11867c7007b4f938682dc0da385cd73669180fa8d5fddedffeb843",
+            "source_part1_sha": "39767c993fc4c04f9108ebdd776e19720644111d4e6464b4059eec006c28485a",
+            "source_part2_sha": "afbc8fd669fa0961b341b844b2ba5627b6afede0235cff61c7a5a73e7fc477c1",
+            "source_part3_sha": "be806af216eaf03407ddf9e1eec3fa5fcf5e51aa545200bceb4c6f85272238a9",
+            "source_part4_sha": "4a413f05c36cd699db430efc665e9ad576f21b44b3dae187c31f5c2d7b6feb68",
+            "source_part5_sha": "2928f75eb5b324305f8176f26d280171ec00867548129199a32a8519a10c1cf4",
+            "span0_plan": "7cb56f516dbce2dcd4a3cdfdedb2d2b97c555512f3ac235bc631e96eeed0de9c",
+            "span0_implementations": "ggml.conv2d.f32,ggml.add,ggml.conv2d.f32,ggml.add,",
+            "span0_parameters": "23450664584167756,1,1,0,64,64,64,1,64,64,1152,1,",
+            "span0_input_sha": "47e41ca68d861ac2eaf2e58d025180523eda63b201b6c5c2d0c04373979cf13f",
+            "span0_sha": "a2ea225d6772a28d9b9b23abfef8fbe51653bbd06ef178d7950b29e0e472d477",
+            "span0_step0_ns": "14214447",
+            "span0_step1_ns": "11586520",
+            "span0_step2_ns": "11032522",
+            "span1_plan": "912c7cbecad8d4f767077daddb3b890d54076e17dd66c8ff35763452a0ccbdfa",
+            "span1_implementations": "ggml.upsample.nearest,ggml.conv2d.f32,ggml.add,",
+            "span1_parameters": "23450664584167756,1,1,0,4,4,288,1,8,8,288,1,",
+            "span1_input_sha": "a595bf8330cdec3c7afbbb4e0ed37ab84be69df58ffca04493a3c73d928a0ea4",
+            "span1_sha": "95a8c30e28e33595b72d666abb1e1aebadbf575d36663a23862ae1f842bba92f",
+            "span1_step0_ns": "783293",
+            "span1_step1_ns": "334782",
+            "span1_step2_ns": "324862"
+          }
+        }
+      ],
+      "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+      "memory_peak_process_cache_bytes": 292986880,
+      "pre_guards": "PASS",
+      "status": "PASS",
+      "scope": "Main actual stored F32 VAE prefix and reduced nearest/conv through shared typed programs, full finite CPU-reference enclosure and same-selected capture/replay. Synthetic input, no full image pipeline, original image quality, comparative speed or serving claim.",
+      "post_guards": "PASS",
+      "compute_pids_after": 0,
+      "native_child_retired": true
+    },
+    "scope": "Same two spatial spans, complete arithmetic enclosures and same-selected capture/replay; no whole-pipeline quality/performance/serving claim."
+  }
+}

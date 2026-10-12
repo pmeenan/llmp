@@ -110,7 +110,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 135> kKernels = {{
+constexpr std::array<Kernel::Entry, 137> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -495,6 +495,18 @@ constexpr std::array<Kernel::Entry, 135> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckBinary(n[0], GGML_OP_DIV); },
      .run = [](LaunchContext& launch, Nodes n) { return Div(launch, n[0]); }},
+    {.name = "ggml.conv2d.f32",
+     .operation = execution::Operation::kConv2d,
+     .variant = "ggml_cuda_op_conv2d direct F32 WHCN; unchanged pinned launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckConv2dF32(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Conv2dF32(launch, n[0]); }},
+    {.name = "ggml.upsample.nearest",
+     .operation = execution::Operation::kUpsample,
+     .variant = "ggml_cuda_op_upscale nearest2 WHCN; unchanged pinned launch configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckUpsampleNearest(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return UpsampleNearest(launch, n[0]); }},
     {.name = "ggml.scale",
      .operation = execution::Operation::kScale,
      .variant = "ggml_cuda_op_scale: scale_f32; upstream launch configuration",

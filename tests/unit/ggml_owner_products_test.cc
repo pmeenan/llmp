@@ -132,8 +132,7 @@ void Plan(Fixture& f, const ex::Registry& registry, bool fuse_preparation = fals
 auto Lower(const Fixture& f, const ex::Registry& registry,
            const kg::DeviceChoices& device = Device(),
            const llmp::kernels::Addresses& addresses = {}) {
-  return kg::LowerStep({.plan = *f.plan, .step = f.step, .shape = f.shape, .addresses = addresses},
-                       registry, device);
+  return kg::LowerStep({*f.plan, f.step, f.shape, addresses}, registry, device);
 }
 std::size_t Count(const kg::LoweredStep& p, std::string_view implementation) {
   return static_cast<std::size_t>(

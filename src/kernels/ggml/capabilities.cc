@@ -20,6 +20,7 @@
 #include "execution/registry.h"
 #include "format/encoding.h"
 #include "format/layout.h"
+#include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_qhead.h"
@@ -90,6 +91,14 @@ using Rule = ex::OperandRule;
 constexpr std::array<Rule, 1> kF32In = {{{.operand = 0, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kF32Binary = {{{.operand = 0, .encodings = kF32, .layouts = kDense},
                                              {.operand = 1, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 4> kSpatialConvRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kSpatialUpRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kAddRules = {
     {{.operand = 0, .encodings = kF32F16, .layouts = kDense},
      {.operand = 1, .encodings = kF32F16, .layouts = kDense}}};
@@ -1070,6 +1079,45 @@ bool AcceptsGetRowsExt(const ex::CapabilityQuery& q) {
          out->ne[0] == rows->ne[0] && out->ne[1] == ids->ne[0] && out->ne[2] == ids->ne[1] &&
          out->ne[3] == ids->ne[2];
 }
+bool SpatialPackedF32(const ex::OperandFormat* operand) {
+  if (operand == nullptr || operand->encoding != Encoding::kF32 ||
+      operand->layout != Layout::kDense || !operand->memory)
+    return false;
+  std::uint64_t bytes = 4;
+  for (std::size_t d = 0; d < 4; ++d) {
+    if (operand->ne[d] == 0 || operand->memory->nb[d] != bytes ||
+        __builtin_mul_overflow(bytes, operand->ne[d], &bytes) ||
+        bytes > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) - 256)
+      return false;
+  }
+  return true;
+}
+bool AcceptsSpatialConv(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::Conv2dParams>(q);
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, 1);
+  const auto* b = Operand(q, 2);
+  const auto* o = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || !p || p->stride != 1 || p->dilation != 1 || p->padding > 1 ||
+      !SpatialPackedF32(w) || !SpatialPackedF32(x) || !SpatialPackedF32(b) || !SpatialPackedF32(o))
+    return false;
+  return (w->ne[0] == 1 || w->ne[0] == 3) && w->ne[1] == w->ne[0] && w->ne[2] == x->ne[2] &&
+         b->ne == ir::ShapeOf({w->ne[3]}).ne && x->ne[0] + 2 * p->padding >= w->ne[0] &&
+         x->ne[1] + 2 * p->padding >= w->ne[1] &&
+         o->ne == ir::ShapeOf({x->ne[0] + 2 * p->padding - w->ne[0] + 1,
+                               x->ne[1] + 2 * p->padding - w->ne[1] + 1, w->ne[3], x->ne[3]})
+                      .ne;
+}
+bool AcceptsSpatialUp(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::UpsampleParams>(q);
+  const auto* x = Operand(q, 0);
+  const auto* o = Operand(q, ex::kOutputOperand);
+  return Built(q) && p && p->factor == 2 && SpatialPackedF32(x) && SpatialPackedF32(o) &&
+         // upscale_f32 converts every output coordinate to float before dividing.
+         // Keep all axis indices exactly representable, including unchanged C/N.
+         std::ranges::all_of(o->ne, [](auto axis) { return axis <= (1ULL << 24U); }) &&
+         o->ne == ir::ShapeOf({2 * x->ne[0], 2 * x->ne[1], x->ne[2], x->ne[3]}).ne;
+}
 bool AcceptsAny(const ex::CapabilityQuery& q) { return Built(q); }
 bool AcceptsPrepared(const ex::CapabilityQuery& q) { return Built(q) && Routed(q); }
 
@@ -1147,6 +1195,7 @@ constexpr std::string_view kVecQDenseName = "llmp.vecq.dense";
 constexpr std::string_view kVecQGluName = "llmp.vecq.glu";
 constexpr std::string_view kVecQExpertsName = "llmp.vecq.experts";
 constexpr std::string_view kVecQExpertsGluName = "llmp.vecq.experts_glu";
+constexpr std::array<std::string_view, 2> kSpatialConvSteps = {"ggml.conv2d.f32", "ggml.add"};
 constexpr std::array<std::string_view, 2> kMxfp8GemmSteps = {kMxfp8SwizzleName, kMxfp8GemmName};
 constexpr std::array<std::string_view, 2> kQsaAttentionSteps = {kQsaTopKName, kQsaAttnName};
 // A padded window's copy and concatenation, then the convolution.
@@ -1177,6 +1226,12 @@ const std::array kEntries = {
           Cap(P(Op::kGetRows), kFloatTable, &AcceptsAny, true, {}, 1), kBuilt},
     Entry{"ggml.get_rows.ext", Operation::kGetRows,
           Cap(P(Op::kGetRows), {}, &AcceptsGetRowsExt, true), kBuilt},
+    Entry{"ggml.conv2d.f32", Operation::kConv2d,
+          Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsSpatialConv, false, {}, 0, {}, 0,
+              kSpatialConvSteps),
+          kBuilt},
+    Entry{"ggml.upsample.nearest", Operation::kUpsample,
+          Cap(P(Op::kUpsample), kSpatialUpRules, &AcceptsSpatialUp, false), kBuilt},
     Entry{"ggml.scale", Operation::kScale, Cap(P(Op::kScale), kF32In, &AcceptsAny, true), kBuilt},
     Entry{"ggml.add", Operation::kAdd, Cap(P(Op::kAdd), kAddRules, &AcceptsAdd, true), kBuilt},
     Entry{"ggml.mul", Operation::kMul, Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true), kBuilt},

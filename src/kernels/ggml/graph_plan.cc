@@ -626,6 +626,12 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       case GGML_OP_DIV:
         add(Operation::kDiv, kDivName, i, {node}, 1);
         break;
+      case GGML_OP_CONV_2D:
+        add(Operation::kConv2d, "ggml.conv2d.f32", i, {node}, 1);
+        break;
+      case GGML_OP_UPSCALE:
+        add(Operation::kUpsample, "ggml.upsample.nearest", i, {node}, 1);
+        break;
       case GGML_OP_SCALE:
         add(Operation::kScale, kScaleName, i, {node}, 1);
         break;

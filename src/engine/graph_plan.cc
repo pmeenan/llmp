@@ -97,4 +97,26 @@ std::expected<planner::StepPlan, std::string> PlanComponentGraph(
   return std::move(*plan);
 }
 
+std::expected<std::unique_ptr<kernels::StepProgram>, std::string> BuildComponentProgram(
+    const GraphBuildIO& io, const kernels::StepBackend& backend, const planner::Policy& policy,
+    const kernels::Addresses& addresses, planner::PlanOptions options,
+    std::optional<kernels::TokenLowerInput> token, const kernels::ProgramValidator& validate) {
+  if (!backend.lower) return std::unexpected("a component graph needs a backend lowerer");
+  if (token && (&token->step.graph != &io.graph || options.shape != &token->shape))
+    return std::unexpected("token lowering metadata differs from the planned graph or shape");
+  if (!token && (options.shape != nullptr || options.state_spans))
+    return std::unexpected("a spatial graph cannot borrow token shape or state facts");
+  auto plan = PlanComponentGraph(io, backend, policy, addresses, std::move(options));
+  if (!plan) return std::unexpected(std::move(plan.error()));
+  const kernels::LowerInput input{*plan, io, addresses, token};
+  auto lowered = backend.lower(input);
+  if (!lowered) return lowered;
+  if (!*lowered) return std::unexpected("the backend returned no step program");
+  if (validate) {
+    auto valid = validate(input, **lowered);
+    if (!valid) return std::unexpected(valid.error());
+  }
+  return lowered;
+}
+
 }  // namespace llmp::engine

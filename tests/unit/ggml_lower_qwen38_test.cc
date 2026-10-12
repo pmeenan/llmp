@@ -1060,11 +1060,7 @@ Lowered Lower(const Import& im, const Case& c, const Legacy& legacy, const ex::R
   out.step.emplace(std::move(*step));
   out.plan.emplace(std::move(*plan));
   const kn::Addresses addresses{};
-  const kn::LowerInput input{.plan = *out.plan,
-                             .step = *out.step,
-                             .shape = shape,
-                             .addresses = addresses,
-                             .context = kContext};
+  const kn::LowerInput input{*out.plan, *out.step, shape, addresses, kContext};
   auto lowered =
       kg::LowerStep(input, registry, Device(),
                     {.device_masks = true,
@@ -1497,11 +1493,7 @@ TEST(GgmlLowerQwen38Test, CommitsOfKeptRowsLower) {
                               .shape = &kept});
         ASSERT_TRUE(plan.has_value()) << plan.error().detail;
         const kn::Addresses addresses{};
-        const kn::LowerInput input{.plan = *plan,
-                                   .step = *commit,
-                                   .shape = kept,
-                                   .addresses = addresses,
-                                   .context = kContext};
+        const kn::LowerInput input{*plan, *commit, kept, addresses, kContext};
         auto lowered = kg::LowerStep(input, registry, Device(), {.device_masks = true});
         ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
         std::size_t steps = 0, stores = 0;
@@ -1600,7 +1592,7 @@ TEST(GgmlLowerQwen38Test, KeptNormResultsAreNotReplacedByPreparedRows) {
     ASSERT_TRUE(plan.has_value()) << plan.error().detail;
     const pl::StepShape shape{};
     const kn::Addresses addresses{};
-    const kn::LowerInput input{.plan = *plan, .step = step, .shape = shape, .addresses = addresses};
+    const kn::LowerInput input{*plan, step, shape, addresses};
     auto lowered = kg::LowerStep(input, registry, Device());
     ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
     std::size_t separate = 0;
@@ -1726,8 +1718,8 @@ TEST(GgmlLowerQwen38Test, ReadOnlyValidationSeesRealProgramAndRefusesBothAddress
          ++validations;
          EXPECT_EQ(&program, produced);
          EXPECT_EQ(input.addresses.activations, addresses.activations);
-         EXPECT_EQ(input.shape, shape);
-         EXPECT_EQ(input.step.graph.tensor(input.step.logits).shape().ne[0],
+         EXPECT_EQ(input.token->shape, shape);
+         EXPECT_EQ(input.token->step.graph.tensor(input.token->step.logits).shape().ne[0],
                    md::Qwen38Flash().vocab);
          if (refuse) return std::unexpected("full-head observer refused");
          return {};

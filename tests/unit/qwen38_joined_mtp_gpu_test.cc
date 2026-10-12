@@ -351,9 +351,10 @@ en::Status SetUp(Lifetime& life) {
       .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))};
   options.validate_program = [&life](const kn::LowerInput& in,
                                      const kn::StepProgram& program) -> en::Status {
-    const auto& shape = in.shape;
-    if (shape.stage > 1 || shape.segments.size() > 2 || in.context != 512 ||
-        in.step.saves.size() > kSaves)
+    if (!in.token) return std::unexpected("token source metadata is required");
+    const auto& shape = in.token->shape;
+    if (shape.stage > 1 || shape.segments.size() > 2 || in.token->context != 512 ||
+        in.token->step.saves.size() > kSaves)
       return std::unexpected("actual lowered source escapes paid owner/stage domain");
     if (shape.phase == pl::Phase::kCommit) return {};
     std::array<bool, 2> seen{};
@@ -363,10 +364,11 @@ en::Status SetUp(Lifetime& life) {
         return std::unexpected("duplicate or foreign head owner");
       const auto& own = shape.segments[output.segment];
       if (own.greedy) continue;  // factory separately measures ordinary device-token variants
-      if (!own.want_head || !in.step.logits.valid() || output.tensor != in.step.logits)
+      if (!own.want_head || !in.token->step.logits.valid() ||
+          output.tensor != in.token->step.logits)
         return std::unexpected("full head is not the source's actual logits");
       const auto width = shape.stage ? life.draft_width : kVocabulary;
-      const auto& tensor = in.step.graph.tensor(in.step.logits);
+      const auto& tensor = in.token->step.graph.tensor(in.token->step.logits);
       if (tensor.format.encoding != llmp::format::Encoding::kF32 || tensor.shape().ne[0] != width ||
           output.bytes != std::uint64_t{width} * own.outputs * sizeof(float))
         return std::unexpected("actual full-head geometry differs");

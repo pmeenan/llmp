@@ -21,6 +21,7 @@
 #include "clamp.cuh"
 #include "common.cuh"
 #include "concat.cuh"
+#include "conv2d.cuh"
 #include "dsv4-hc.cuh"
 #include "fill.cuh"
 #include "fwht.cuh"
@@ -37,6 +38,7 @@
 #include "sumrows.cuh"
 #include "top-k.cuh"
 #include "unary.cuh"
+#include "upscale.cuh"
 
 // PlanTopK sizes the paths of a build without CUB (patches/ggml/0001).
 #if defined(GGML_CUDA_USE_CUB)
@@ -120,6 +122,13 @@ std::expected<void, KernelFailure> MulMatHadamard(LaunchContext& launch, ggml_te
 std::expected<void, KernelFailure> Unary(LaunchContext& launch, ggml_tensor* node) {
   auto checked = CheckUnary(node);
   return RunChecked(launch, node, checked, checked ? UnaryLauncher(node) : nullptr);
+}
+
+std::expected<void, KernelFailure> Conv2dF32(LaunchContext& launch, ggml_tensor* node) {
+  return RunChecked(launch, node, CheckConv2dF32(node), &ggml_cuda_op_conv2d);
+}
+std::expected<void, KernelFailure> UpsampleNearest(LaunchContext& launch, ggml_tensor* node) {
+  return RunChecked(launch, node, CheckUpsampleNearest(node), &ggml_cuda_op_upscale);
 }
 
 std::expected<void, KernelFailure> Scale(LaunchContext& launch, ggml_tensor* node) {

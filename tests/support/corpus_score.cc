@@ -206,8 +206,9 @@ std::expected<bool, std::string> CorpusScore::Step() {
 
 namespace {
 engine::Status CheckCorpusStep(const kernels::LowerInput& input, std::uint32_t vocabulary) {
-  const auto& shape = input.shape;
-  const auto& step = input.step;
+  if (!input.token) return Error("corpus lowering requires token metadata");
+  const auto& shape = input.token->shape;
+  const auto& step = input.token->step;
   if (shape.stage != 0 || shape.phase != planner::Phase::kScore || !vocabulary ||
       vocabulary > 1048576 || shape.segments.empty() ||
       shape.segments.size() > CorpusScore::kMaxDocuments || !step.logits.valid() ||
@@ -229,13 +230,13 @@ engine::Status CheckCorpusStep(const kernels::LowerInput& input, std::uint32_t v
 engine::Status CheckCorpusHead(const kernels::LowerInput& input,
                                const kernels::StepProgram& program, std::uint32_t vocabulary) {
   if (auto valid = CheckCorpusStep(input, vocabulary); !valid) return valid;
-  const auto& shape = input.shape;
+  const auto& shape = input.token->shape;
   if (program.outputs().size() != shape.segments.size())
     return Error("corpus lower must return exactly one head per owner");
   std::array<const kernels::OutputSlot*, CorpusScore::kMaxDocuments> outputs{};
   for (const auto& out : program.outputs()) {
     if (out.segment >= shape.segments.size() || out.features || outputs[out.segment] ||
-        out.tensor != input.step.logits)
+        out.tensor != input.token->step.logits)
       return Error("corpus lower returned another tensor/joined/duplicate/feature output");
     outputs[out.segment] = &out;
   }

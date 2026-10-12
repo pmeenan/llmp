@@ -867,9 +867,27 @@ spatial host controls use that helper and the existing CPU reference executor.
 They add no alternate production dispatcher or backend declaration. Main native
 build and all 239 affected host cases pass on Spark B (2026-10-12), including
 the three spatial controls and 45 planner controls. Source quality checks and
-the existing mapped DeepSeek source execution control also pass. Actual image
-lowering through the shared `StepProgram`, whole VAE/timestep composition and
-family qualification remain open.
+the existing mapped DeepSeek source execution control also pass.
+
+The next execution slice passes typed `GraphBuildIO` ports through the existing
+`LowerInput`, with token/state metadata present only for token callers. The common
+`BuildComponentProgram` path retains real backend selection and the read-only
+validator. Spatial lowering reuses `PlanAndCompare`, the owned GGML backend,
+`StepProgram` and `StepRuns`; it introduces no image-family dispatcher or fake
+token shape. Existing pinned F32 convolution and nearest2 kernels consume actual
+source VAE parts without mandatory legacy BF16 intermediate casts. BF16 weights
+remain valid in the logical component contract but unsupported by this selected
+physical convolution implementation. Nearest output coordinates are bounded to
+exact F32 integer representation before dispatch.
+
+The full main Spark A native build and 129 affected host controls pass, followed by
+one actual VAE-span case: the decoder prefix at its real 64x64 geometry and a
+reduced 288-channel nearest/resample span. All 4,737,024 outputs are finite and
+within the predeclared CPU-reference arithmetic enclosures; both spans complete
+eager execution, capture and same-selected replay. Source quality checks also pass. Whole VAE/flow/timestep composition, original-image quality, matched
+speed and pipeline serving remain open; this screen does not establish a winning
+whole-pipeline arithmetic policy. See the
+[scoped report](experiments/m36-shared-spatial-execution/README.md).
 
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a

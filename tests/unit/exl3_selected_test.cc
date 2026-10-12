@@ -238,8 +238,7 @@ TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation)
       continue;
     }
     ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    const llmp::kernels::LowerInput input{
-        .plan = *plan, .step = *step, .shape = shape, .addresses = addresses, .context = 2048};
+    const llmp::kernels::LowerInput input{*plan, *step, shape, addresses, 2048};
     auto lowered = kg::LowerStep(input, *registry, choices, {.selected_source = native->get()});
     ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
     EXPECT_EQ(lowered->selected.size(),

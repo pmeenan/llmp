@@ -234,9 +234,8 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
                                   .save = {},
                                   .activations = Allocate(plan->placement.extent),
                                   .activation_bytes = plan->placement.extent};
-    auto result = kg::LowerStep(
-        {.plan = *plan, .step = step, .shape = shape, .addresses = addresses, .context = 65536},
-        choices, kg::DeviceChoicesOf(*launch));
+    auto result = kg::LowerStep({*plan, step, shape, addresses, 65536}, choices,
+                                kg::DeviceChoicesOf(*launch));
     EXPECT_TRUE(result) << (result ? "" : result.error().detail);
     if (!result) return nullptr;
     lowered.push_back(std::make_unique<kg::LoweredStep>(std::move(*result)));
@@ -267,13 +266,8 @@ class GgmlLowerDsv4Gpu : public ::testing::Test {
               enabled ? shape.segments.size() : 0U);
     addresses.activations = Allocate(plan->placement.extent);
     addresses.activation_bytes = plan->placement.extent;
-    auto result = kg::LowerStep({.plan = *plan,
-                                 .step = step,
-                                 .shape = shape,
-                                 .addresses = addresses,
-                                 .context = 512,
-                                 .state_spans = facts},
-                                *registry, kg::DeviceChoicesOf(*launch));
+    auto result = kg::LowerStep({*plan, step, shape, addresses, 512, facts}, *registry,
+                                kg::DeviceChoicesOf(*launch));
     EXPECT_TRUE(result) << (result ? "" : result.error().detail);
     if (!result) return nullptr;
     lowered.push_back(std::make_unique<kg::LoweredStep>(std::move(*result)));
@@ -1823,11 +1817,7 @@ TEST(GgmlRoundedConsumerGpu, DeclaredCountsSelectOneFullMaskAcrossChangedCapture
                                 .activations = life->activation,
                                 .activation_bytes = rc::kActivation,
                                 .activation_alignment = 256};
-  auto made = native.lower({.plan = *life->plan,
-                            .step = *life->step,
-                            .shape = shape,
-                            .addresses = addresses,
-                            .context = 257});
+  auto made = native.lower({*life->plan, *life->step, shape, addresses, 257});
   ASSERT_TRUE(made);
   life->program = std::move(*made);
   ASSERT_LE(life->program->host_bytes(), 1U << 20);

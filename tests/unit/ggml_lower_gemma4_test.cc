@@ -337,11 +337,7 @@ Lowered Lower(Ir& ir_, std::uint16_t stage, const pl::StepShape& shape, bool dev
   out.step.emplace(std::move(*step));
   out.plan.emplace(std::move(*plan));
   const kn::Addresses addresses{};
-  const kn::LowerInput input{.plan = *out.plan,
-                             .step = *out.step,
-                             .shape = shape,
-                             .addresses = addresses,
-                             .context = ir_.context};
+  const kn::LowerInput input{*out.plan, *out.step, shape, addresses, ir_.context};
   auto lowered = kg::LowerStep(input, ir_.registry, Device(),
                                {.device_masks = device_masks, .frozen_host_masks = true});
   EXPECT_TRUE(lowered.has_value()) << (lowered ? "" : lowered.error().detail);

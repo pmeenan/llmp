@@ -121,12 +121,14 @@ TEST(CorpusScore, GuardedLowerRejectsTypedNarrowedAndMisownedHeadsBeforeExecutio
         ++calls;
         auto program = std::make_unique<HeadProgram>();
         constexpr std::uint64_t bytes = kVocabulary * sizeof(float);
-        program->slots = {
-            {{.device_address = 4096, .bytes = bytes, .tensor = in.step.logits, .segment = 0},
-             {.device_address = 4096 + bytes,
-              .bytes = bytes,
-              .tensor = in.step.logits,
-              .segment = 1}}};
+        program->slots = {{{.device_address = 4096,
+                            .bytes = bytes,
+                            .tensor = in.token->step.logits,
+                            .segment = 0},
+                           {.device_address = 4096 + bytes,
+                            .bytes = bytes,
+                            .tensor = in.token->step.logits,
+                            .segment = 1}}};
         switch (fault) {
           case 1:
             program->slots[1].bytes -= sizeof(float);

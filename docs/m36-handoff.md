@@ -49,8 +49,8 @@ artifact assembler and actual-width/selected-ID draft sampling. See the
 Original-reference quality, durable old/new persistence, production serving and
 the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
-snapshot continuation on Spark B. The first actual spatial-image screen passes
-privately; its reviewed shared lowering is awaiting main integration checks.
+snapshot continuation on Spark B. The actual spatial-image screen passes
+on main after full native build, 129 affected host controls and source checks.
 Neither result closes its whole-family migration gate.
 
 G4c1 qualifies the closed DeepSeek target factory at context 3072/chunk 512:
@@ -562,11 +562,17 @@ these fixtures where applicable.
   reference executor. Main native build and all 239 affected host cases pass
   on Spark B (2026-10-12), including three spatial and 45 planner controls;
   source quality checks pass. This adds no standalone executor or token phase.
+  Q3a's shared spatial lowering now passes a full main Spark A native build and
+  129 host controls plus one actual VAE-span screen: 4,737,024 finite outputs,
+  two eager executions, two captures and two same-selected replays. It reuses
+  existing F32 kernels, actual source parts, the owned backend and common
+  completion path; the selected physical convolution does not support BF16.
+  Source quality checks pass; see the
+  [bounded report](experiments/m36-shared-spatial-execution/README.md).
   Whole-stage timestep conditioning remains open; these contracts permit future
   per-owner broadcast on device without requiring CPU row expansion.
-  Flow-step and whole-VAE composition, 3-axis rope, bidirectional attention,
-  spatial `StepProgram` GPU lowering and `EngineImage`
-  remain open. Qualify numerical choices rather than imposing the legacy
+  Flow-step and whole-VAE composition, 3-axis rope, bidirectional attention and
+  `EngineImage` remain open. Qualify numerical choices rather than imposing the legacy
   pipeline's rounding recipe; retire `qwen_image_runner.*` and `pipeline.cc`
   roles after their shared replacements pass.
 - **T-slices, structural techniques.** One per row of `engine-components.md`'s retired table: format layer T04/T11/T58/T95; wave composer T15/T16/T20/T29/T59/T64/T88; patterns T10/T31/T56/T86/T92 (+T09/T41/T57 adoption); prefill T23/T26/T55/T93; state T67; decoding T39/T45/T81; components T22/T69/T54/T71/T72/T61; planner T96; pager T68. Adopt where qualified comparisons improve speed, quality, reuse, simplicity or resource cost.

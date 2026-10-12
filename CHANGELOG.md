@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Run typed spatial convolution and nearest upsampling through the shared
+  StepProgram and completion/capture path using existing F32 kernels and source
+  VAE parts. The bounded main screen passes.
+  Whole-image quality, comparative speed and pipeline serving remain separate.
+
 - Execute the complete prepared DeepSeek target through the shared component
   engine in a bounded diagnostic, with real hash/compressor inputs and snapshot
   continuation. Reuse already-funded graph-reader space and retain state-only
@@ -20,7 +25,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - Add source-preserving spatial component graphs for nearest upsampling and
   channel-changing convolution through the shared planner, with checked owner
-  geometry and host reference controls; image execution remains separate.
+  geometry and host reference controls; whole-pipeline execution remains separate.
 
 - Prepay stored-component binding construction and reuse validated role/part
   locations in admitted native Gemma builds, removing discovery-only setup
