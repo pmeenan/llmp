@@ -1990,6 +1990,20 @@ source, recipe and selected model-binary guards (2026-10-11). This foundation
 does not establish a checkpoint's source head order, apply a source transform,
 normalize a model, publish an artifact or admit a runtime profile.
 
+The bounded part-route executor (`import/route.h`) applies checked copies,
+head-permutation cursors and historical scalar folds with constant metadata,
+caller-funded workspace and sink-acknowledged coverage. Cancellation, failure,
+reentry and moved-from cursors refuse further writes. The existing writer
+uses this executor only for its copy routes. Independent review, 44 focused
+controls and isolated checks (2,581 native and 2,026 CPU tests) passed with
+zero failures or skips and quality gates. Combined checks passed 2,587 native
+and 2,032 CPU cases; main build, 44 integration controls and all 135 model/timing
+cases (182 raw GoogleTest runs) passed with zero failures or skips. Source,
+recipe and model-binary guards and quality gates passed (2026-10-12).
+ModelOpt/MLX mappings, multipart/gather normalization,
+source head-order authority and new publication/admission remain open. This
+helper does not authorize resident BF16 expansion.
+
 The native copy-only writer (`import/writer.h`) consumes owned normalized
 plans and records their specs in v1 artifacts. `llmp import` streams and
 verifies ordinary or archived sources, including exact parsed-prefix

@@ -20,6 +20,7 @@
 #include "base/gguf.h"
 #include "base/json.h"
 #include "components/step.h"
+#include "import/route.h"
 #include "import/stream.h"
 #include "platform/lock_file.h"
 #include "platform/sockets.h"
@@ -124,8 +125,12 @@ struct Shard {
 };
 struct Copy {
   std::uint32_t file = 0, shard = 0;
-  std::uint64_t source = 0, output = 0, bytes = 0, written = 0;
+  std::uint64_t source = 0, output = 0, bytes = 0;
+  std::optional<PartRouteExecution> route{};
 };
+// The existing paid8192B per expanded member includes this constant-size
+// cursor, without materializing a list of transform runs.
+static_assert(sizeof(Copy) <= 256);
 struct Layout {
   std::vector<Group> groups{};
   std::vector<Shard> shards{};
@@ -296,8 +301,12 @@ std::expected<Layout, Error> Place(const NormalizedPlan& plan, std::uint64_t fun
       auto copy = cursor->Next(m.bytes);
       if (!copy || !*copy || (**copy).bytes != m.bytes || (**copy).output_offset != input_offset)
         return Bad("an output slice does not match its source cursor", Rule::kConfig);
-      out.copies.push_back(
-          {(**copy).file, g.shard, (**copy).source_offset, target, (**copy).bytes, 0});
+      auto route_plan = PartRoutePlan::Copy((**copy).bytes);
+      if (!route_plan) return std::unexpected(route_plan.error());
+      auto execution = route_plan->Start();
+      if (!execution) return std::unexpected(execution.error());
+      out.copies.push_back({(**copy).file, g.shard, (**copy).source_offset, target, (**copy).bytes,
+                            std::move(*execution)});
     }
     pad(g.offset + g.stored);
   }
@@ -438,17 +447,20 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                 if (!output.valid()) return Bad("cannot reopen a staging shard");
                 output_shard = c.shard;
               }
-              if (first - c.source != c.written) return Bad("copy progress is not contiguous");
               const auto piece = bytes.subspan(static_cast<std::size_t>(first - at),
                                                static_cast<std::size_t>(last - first));
-              if (auto ok =
-                      Write(output.get(),
-                            layout->shards[c.shard].header.size() + c.output + c.written, piece);
+              if (!c.route) return Bad("copy route lacks its checked cursor");
+              if (auto ok = c.route->Consume(
+                      first - c.source, piece,
+                      [&](std::uint64_t offset, std::span<const std::byte> payload) {
+                        return Write(output.get(),
+                                     layout->shards[c.shard].header.size() + c.output + offset,
+                                     payload);
+                      });
                   !ok)
                 return ok;
-              c.written += piece.size();
             }
-            if (c.written == c.bytes) next_copy = i + 1;
+            if (c.route && c.route->Finish()) next_copy = i + 1;
           }
           return {};
         },
@@ -478,7 +490,8 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
   }
   output = FD();
   for (const auto& copy : layout->copies)
-    if (copy.written != copy.bytes) return Bad("a source stream left an output range unwritten");
+    if (!copy.route || !copy.route->Finish())
+      return Bad("a source stream left an output range unwritten");
 
   std::vector<std::string> chunks, groups, resources, arrays, shards, transformations;
   std::vector<std::byte> buffer(artifact::kChunkBytes);

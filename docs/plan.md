@@ -1887,6 +1887,19 @@ each is checked against the design as M3.6 proceeds.
                   source, recipe and selected model-binary guards passed.
                   No source head-order authority, checkpoint normalization,
                   publication or runtime admission is established by this foundation.
+            - [x] **N3b2d — bounded streaming part-route execution:**
+                  checked copies, per-part head permutation and historical
+                  scalar-fold streams with caller-funded workspace and exact
+                  sink-acknowledged coverage. Existing writer copy routes
+                  use the executor. Independent review, 44 focused controls,
+                  2,581 isolated native and 2,026 CPU tests and quality gates
+                  passed with no failures or skips. Combined checks passed
+                  2,587 native and 2,032 CPU cases; main build, 44 integration
+                  controls and all 135 model/timing cases (182 raw GoogleTest
+                  runs) passed with zero failures or skips. Source, recipe,
+                  model-binary guards and quality gates passed. Source mappings, gathers,
+                  head-order authority, normalization and new publication/
+                  runtime admission remain open.
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
             catalog import events.

@@ -1331,6 +1331,10 @@ llmp_gtest(import_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 # Import-time BF16 folds and complete multipart value-head permutations.
+add_executable(import_route_test import_route_test.cc)
+target_link_libraries(import_route_test PRIVATE llmp_import)
+llmp_gtest(import_route_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(import_transforms_test import_transforms_test.cc)
 target_link_libraries(import_transforms_test PRIVATE llmp_import llmp_base)
 llmp_gtest(import_transforms_test TEST_PREFIX unit. PROPERTIES LABELS unit)

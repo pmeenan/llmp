@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Native artifact copies check complete source coverage and acknowledged
+  output writes before publication.
+
 - Archive downloads now enforce one writer through atomic NAS ownership (D-115,
   checkpoint writer protocol 2, tools version 2). Remove periodic partial
   pathname checks that stalled transfers on SMB; keep inline hash
