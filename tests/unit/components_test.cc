@@ -112,6 +112,7 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
                                                   "hc.combine",
                                                   "hc.mix",
                                                   "head.linear",
+                                                  "norm.channel",
                                                   "norm.rms",
                                                   "residual.hc",
                                                   "residual.ple",
@@ -748,6 +749,122 @@ TEST(ComponentsTest, FeedForwardNormEmbeddingAndHeadMatchTheirReferences) {
         {.shape = {.segments = {Seg(0, 3, 0, 256, 1, true), Seg(1, 2, 7, 256, 1, true)}}}};
     Compare(*head, hf, {}, greedy, 1e-5);
   }
+}
+
+// The F32 component normalizes channels independently for every pixel/owner.
+TEST(ComponentsTest, ChannelNormMatchesScalarAcrossOwnersAndSourceEncodings) {
+  const std::vector<Step> rows{
+      {.shape = {.segments = {Seg(0, 3, 0, 256, 3), Seg(1, 2, 7, 256, 2)}}},
+      {.shape = {.segments = {Seg(1, 1, 9, 256, 1)}}},
+  };
+  for (const bool silu : {false, true}) {
+    const auto component = C("norm.channel", {P("silu", ParamValue(silu))});
+    auto in = MakeInstance(component, kFacts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(in.has_value()) << in.error();
+    EXPECT_TRUE(in->def->row_local);
+    EXPECT_EQ(in->def->state, nullptr);
+    for (const auto encoding : {Encoding::kF32, Encoding::kBF16}) {
+      const std::array formats{ir::Dense(encoding, ir::ShapeOf({kWidth}))};
+      Compare(*in, formats, {}, rows, 1e-5);
+    }
+  }
+}
+
+TEST(ComponentsTest, ChannelNormUsesClampedL2AndF32Output) {
+  const StageFacts facts{.width = 2, .context = 256};
+  const auto component = C("norm.channel", {});
+  auto in = MakeInstance(component, facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in.has_value()) << in.error();
+  const planner::StepShape shape{.segments = {Seg(0, 2, 0, 256, 2), Seg(1, 1, 0, 256, 1)}};
+  const std::array formats{Vector(2)};
+  auto graph = BuildComponent(*in, shape, formats, {});
+  ASSERT_TRUE(graph.has_value()) << graph.error();
+  EXPECT_TRUE(graph->step.state.empty());
+  EXPECT_EQ(graph->step.graph.tensor(graph->stream_out).format.encoding, Encoding::kF32);
+  EXPECT_EQ(
+      std::ranges::count_if(graph->step.graph.nodes(),
+                            [](const auto& n) { return n.key == ir::Primitive(ir::Op::kL2Norm); }),
+      1);
+  EXPECT_EQ(
+      std::ranges::count_if(graph->step.graph.nodes(),
+                            [](const auto& n) { return n.key == ir::Primitive(ir::Op::kConvert); }),
+      0);
+  auto exec = ref::Executor::Create(graph->step.graph);
+  ASSERT_TRUE(exec.has_value()) << exec.error().detail;
+  const std::array input{0.0F, 0.0F, 3e-14F, 4e-14F, 3.0F, 4.0F};
+  const std::array gamma{2.0F, -1.0F};
+  ASSERT_TRUE(exec->BindValues(graph->stream_in, input));
+  ASSERT_TRUE(exec->BindValues(graph->weights[0], gamma));
+  ASSERT_TRUE(exec->Run());
+  auto out = exec->Values(graph->stream_out);
+  ASSERT_TRUE(out.has_value());
+  const double scale = static_cast<float>(std::sqrt(2.0));
+  const std::array expected{0.0, 0.0, 0.06 * scale, -0.04 * scale, 1.2 * scale, -0.8 * scale};
+  ASSERT_EQ(out->size(), expected.size());
+  for (std::size_t i = 0; i < expected.size(); ++i) EXPECT_NEAR((*out)[i], expected[i], 2e-7) << i;
+  RefIO io{.instance = &*in};
+  io.segments = {{.rows = 2}, {.rows = 1}};
+  io.stream.assign(input.begin(), input.end());
+  io.weights.resize(1);
+  io.weights[0].assign(gamma.begin(), gamma.end());
+  ASSERT_TRUE(in->def->reference(io));
+  for (std::size_t i = 0; i < expected.size(); ++i)
+    EXPECT_NEAR(io.stream[i], expected[i], 2e-7) << i;
+  io.weights[0].pop_back();
+  EXPECT_FALSE(in->def->reference(io));
+}
+
+TEST(ComponentsTest, ChannelNormRefusesInvalidParametersAndWeightShapes) {
+  const StageFacts facts{.width = 2, .context = 256};
+  EXPECT_FALSE(MakeInstance(C("norm.channel", {P("eps", R(0.0))}), facts, Site::kLayer, 0, 1));
+  EXPECT_FALSE(MakeInstance(C("norm.channel", {P("eps", R(-1.0))}), facts, Site::kLayer, 0, 1));
+  EXPECT_FALSE(MakeInstance(C("norm.channel", {P("silu", I(1))}), facts, Site::kLayer, 0, 1));
+  const auto component = C("norm.channel", {});
+  auto in = MakeInstance(component, facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in.has_value());
+  const planner::StepShape shape{.segments = {Seg(0, 1, 0, 256, 1)}};
+  EXPECT_FALSE(BuildComponent(*in, shape, std::array{Vector(3)}, {}));
+  EXPECT_FALSE(
+      BuildComponent(*in, shape, std::array{ir::Dense(Encoding::kF16, ir::ShapeOf({2}))}, {}));
+  auto wide = facts;
+  wide.width = kMaxStreamWidth + 1;
+  EXPECT_FALSE(MakeInstance(C("norm.channel", {}), wide, Site::kLayer, 0, 1));
+  wide = facts;
+  wide.streams = 2;
+  EXPECT_FALSE(MakeInstance(C("norm.channel", {}), wide, Site::kLayer, 0, 1));
+}
+
+TEST(ComponentsTest, ChannelNormBuildsInACompleteStatelessSpec) {
+  spec::Stage stage{.name = "target", .context = 256};
+  stage.stream.width = 2;
+  stage.embedding = C("embedding.token", {});
+  stage.embedding->weights = {{.role = "table", .tensor = "tokens"}};
+  stage.heads.final_norm = C("norm.channel", {});
+  stage.heads.final_norm->weights = {{.role = "weight", .tensor = "gamma"}};
+  stage.heads.output = C("head.linear", {});
+  stage.heads.output->weights = {{.role = "weight", .tensor = "tokens"}};
+  spec::ModelSpec model_spec{.stages = {stage}};
+  std::vector<spec::SourceTensor> tensors{
+      {.name = "gamma", .format = Vector(2)},
+      {.name = "tokens", .format = Matrix(Encoding::kF32, 2, 4)},
+  };
+  const std::array<std::span<const spec::SourceTensor>, 1> tables{tensors};
+  ASSERT_TRUE(ValidateSpec(model_spec, tables));
+  const auto layout = StageLayout(model_spec, 0, 256, 3, kExtent);
+  ASSERT_TRUE(layout.has_value()) << layout.error();
+  EXPECT_TRUE(layout->items.empty());
+  const planner::StepShape shape{.segments = {Seg(0, 2, 0, 256, 1), Seg(1, 1, 0, 256, 1)}};
+  auto step = BuildStep(model_spec, 0, shape, {.tensors = tensors, .state = &*layout});
+  ASSERT_TRUE(step.has_value()) << step.error();
+  EXPECT_EQ(step->graph.tensor(step->logits).format.encoding, Encoding::kF32);
+  EXPECT_EQ(step->graph.tensor(step->logits).shape().ne[1], 2U);
+  EXPECT_TRUE(step->state.empty());
+  const auto digest = model_spec.Digest();
+  model_spec.stages[0].heads.final_norm->params = {P("silu", ParamValue(true))};
+  EXPECT_NE(model_spec.Digest(), digest);
+  ASSERT_TRUE(ValidateSpec(model_spec, tables));
+  tensors[0].format = Vector(3);
+  EXPECT_FALSE(ValidateSpec(model_spec, tables));
 }
 
 // ---------------------------------------------------------------- the step

@@ -33,6 +33,7 @@ namespace llmp::components::defs {
 
 const ComponentDef& EmbeddingToken();
 const ComponentDef& EmbeddingProjected();
+const ComponentDef& NormChannel();
 const ComponentDef& NormRms();
 const ComponentDef& ScaleLearned();
 const ComponentDef& AttentionDense();

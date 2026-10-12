@@ -494,7 +494,15 @@ these fixtures where applicable.
 
 #### Waves 5 to 7
 
-- **Q1–Q3, Qwen-Image.** Components (adaLN, gated residual, conv2d, channel norm, upsample, flow-match step, 3-axis rope, bidirectional attention) with a rounding-policy parameter; `kernels/image/lower.*` as per-op implementations; `EngineImage`; delete `qwen_image_runner.*` and `pipeline.cc` roles.
+- **Q1–Q3, Qwen-Image.** Q1a's shared stateless `norm.channel` component is
+  complete: source-encoded F32/BF16 scales, clamped L2 normalization and
+  optional SiLU with F32 arithmetic, without a legacy rounding gate. Main
+  native build and all 96 affected host cases pass on Spark B (2026-10-12).
+  Remaining components (adaLN, gated residual, conv2d, upsample, flow-match
+  step, 3-axis rope, bidirectional attention), GPU lowering and `EngineImage`
+  remain open. Qualify numerical choices rather than imposing the legacy
+  pipeline's rounding recipe; retire `qwen_image_runner.*` and `pipeline.cc`
+  roles after their shared replacements pass.
 - **T-slices, structural techniques.** One per row of `engine-components.md`'s retired table: format layer T04/T11/T58/T95; wave composer T15/T16/T20/T29/T59/T64/T88; patterns T10/T31/T56/T86/T92 (+T09/T41/T57 adoption); prefill T23/T26/T55/T93; state T67; decoding T39/T45/T81; components T22/T69/T54/T71/T72/T61; planner T96; pager T68. Adopt where qualified comparisons improve speed, quality, reuse, simplicity or resource cost.
 - **K1, state encodings run.** A lossy KV encoding as a per-alias setting (public config key → D-entry), plus the long-context quality report.
 - **R1, re-keying cleanup.** Remove `ModelKeySpec::architectures` (replaced by spec capability predicates); remove `RunnerContextCeiling` (from components' position limits); `ArtifactFactsOf` from the spec. The layout-ID bump itself already lands per family through `KeptLayoutId`.

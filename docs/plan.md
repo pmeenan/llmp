@@ -2357,7 +2357,14 @@ each is checked against the design as M3.6 proceeds.
       Qwen-Image and N3/N4;
       K1's lossy-state work covers every migrated LLM, including Qwen2 once
       G5 has supplied its shared execution path.
-- [ ] **Qwen-Image-2.1 onto the shared blocks**, with its rounding policy.
+- [ ] **Qwen-Image-2.1 onto the shared blocks**, with qualified numerical choices.
+      - [x] **Q1a — channel-normalization component:** stateless shared
+            channel L2 normalization, learned scaling and optional SiLU;
+            independent scalar and primitive-graph controls, F32 arithmetic
+            without a legacy rounding gate. Main native build and all 96
+            affected host cases pass on Spark B (2026-10-12), including four
+            new channel-normalization controls. Image GPU lowering,
+            pipeline wiring and family qualification remain open.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

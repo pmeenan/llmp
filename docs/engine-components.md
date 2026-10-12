@@ -826,6 +826,15 @@ sandwich, GELU-tanh or SiLU) and `head.linear` (the output rows, the
 product, the stage's final softcap as scale, tanh, scale, and the
 host-greedy argmax on a greedy step).
 
+The Q1 image foundation adds stateless `norm.channel`: channels occupy the
+shared stream width and each pixel is one independent row. It emits
+`L2Norm(x, eps) * sqrt(channels) * weight`, optionally followed by SiLU;
+the denominator is `max(sqrt(sum(x*x)), eps)`, with default `eps=1e-12`.
+F32/BF16 learned scales remain source-encoded and widen only as transient
+operands. Output and intermediate arithmetic are F32; no legacy BF16
+rounding policy is imposed. This catalog/CPU-IR foundation does not install
+image GPU lowering, select a serving recipe or qualify the image pipeline.
+
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a
 definition's `row_local` false; `attention.dense`, whose `narrows` says it

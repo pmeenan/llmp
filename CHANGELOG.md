@@ -36,6 +36,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Add a shared channel-normalization component with learned scaling and optional
+  SiLU, using F32 arithmetic. This CPU/IR foundation does not activate image
+  serving or GPU lowering.
+
 - Enable native GGUF normalization and the existing `llmp import` writer path
   for the supported Qwen3.8 Flash-Next target profile, preserving encoded
   tensors and source n-gram constants. Place side n-gram weights in row-table
