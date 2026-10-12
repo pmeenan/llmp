@@ -615,6 +615,60 @@ TEST(Qwen38EngineServingGpu, JoinedScoringRequiresExactOwnedTargetEnvelope) {
   }
 }
 
+// Only the complete semantic declaration reaches the existing artifact opener.
+// No provider/model payload or GPU is touched by these early negatives.
+TEST(Qwen38EngineServingGpu, JoinedMtpRequiresOwnedWholeCompositionBeforeArtifacts) {
+  en::PagedNode node{{}};
+  cfg::ModelEntry entry;
+  entry.name = "missing";
+  entry.artifact = std::string(64, '0');
+  entry.drafter = std::string(64, '1');
+  rt::ModelSettings original;
+  original.architecture = "qwen4exp";
+  original.max_slots.value = 2;
+  original.context.value = 512;
+  original.prefill_chunk.value = 16;
+  original.draft_rows.value = 2;
+  original.speculation.value = true;
+  for (int mutation = 0; mutation != 7; ++mutation) {
+    auto settings = original;
+    auto model = entry;
+    std::vector<en::NumericalStage> stages;
+    for (std::uint16_t stage = 0; stage != 2; ++stage)
+      stages.push_back(
+          {.stage = stage,
+           .name = stage == 0 ? "target" : "mtp",
+           .uses = {en::NumericalUse::kPromptCompanions, en::NumericalUse::kSpeculative,
+                    en::NumericalUse::kJoinedRepeatPending},
+           .phases = {{.phase = llmp::planner::Phase::kDraft,
+                       .max_owners = 2,
+                       .max_owner_rows = 16,
+                       .max_total_rows = 32}}});
+    // Actual phase/layout eligibility is checked by the real source seal;
+    // the factory's first guard checks operation scope before opening files.
+    if (mutation == 1) stages[1].uses.pop_back();
+    if (mutation == 2) stages.pop_back();
+    if (mutation == 3) settings.speculation.value = false;
+    if (mutation == 4) model.drafter.reset();
+    if (mutation == 5) settings.draft_rows.value = 0;
+    auto domain = en::NumericalDomain::Create(std::move(stages));
+    ASSERT_TRUE(domain);
+    rt::ComponentBuildOptions options{
+        .target_policy = std::nullopt,
+        .diagnostic_solo = mutation != 6,
+        .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))};
+    auto build = rt::ComponentLlmBuild(node, "/nonexistent-joined-mtp-control", model, 0,
+                                       std::move(options));
+    auto result = build(settings);
+    ASSERT_FALSE(result);
+    if (mutation == 0)
+      EXPECT_NE(result.error().find("artifact"), std::string::npos);
+    else
+      EXPECT_EQ(result.error(),
+                "the Qwen component qualification requires exactly one configured slot");
+  }
+}
+
 TEST(Qwen38EngineServingGpu, NativeMtpDepthTwoFullLogits) { Screen(kCutlass, true, true, 2); }
 TEST(Qwen38EngineServingGpu, NativeMtpDefaultTokenSchedule) { Screen(kCutlass, true, false, 3); }
 TEST(Qwen38EngineServingGpu, NativeGgmlExpertsPlain) { Screen(kGgml, false, true, 2); }

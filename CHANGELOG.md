@@ -49,6 +49,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- An internal joined target/MTP diagnostic requires a prepared, complete source
+  composition and explicit numerical-domain permission before owner state can
+  change. Ordinary Qwen serving admission remains unchanged.
+
 - Shared `norm.adaptive` and `residual.gated` component fragments express
   scale-only adaptive LayerNorm and tanh-gated residuals using explicit dynamic
   conditioning and the saved original stream. This CPU/IR foundation does not

@@ -1360,9 +1360,15 @@ retain the launch generation, so recycled addresses cannot revive old work.
 The existing paid runtime/workspace and completion rules still apply,
 including retention after unknown retirement. The initial declaration covers
 ordinary GGML/cuBLAS; selected EXL3 and image providers remain outside it.
-This source/plan/state integration does not grant joined repeat-pending
-capability or prove the complete future/companion admission closure. Those
-controls and family quality, state, swap and matched 1% gates remain necessary.
+Joined repeat-pending execution additionally requires an explicit semantic use
+in the immutable numerical domain and a prepared whole target/drafter source
+composition. The actual stage specs, holding artifact tables, layouts, replayable
+draft progress and physical phase bounds must agree before the source grants
+that capability. An internal factory diagnostic consumes this permission;
+ordinary serving admission remains unchanged. Its two-owner unequal-pending
+fixture passes full-head, checkpoint/spill recovery and changed-input capture
+checks ([evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md)). Family
+quality, old/new persistence, swap and matched 1% gates remain necessary.
 
 Internal diagnostics may validate the real lowerer's unchanged program through
 an optional synchronous read-only callback. It runs after both measurement and
@@ -2381,9 +2387,14 @@ owner/unit permits and checkpoints cover their bounded backward replay
 tail. Version 1 contracts coexist with the opt-in version 2 MTP embedding
 and replayable QSA contract; default mappings and serving remain unchanged.
 The shared runner derives side-row IDs from authenticated token history
-before admission, with explicit rows authoritative. Native component sources
-remain unqualified for multi-owner repeat-pending execution; the shared
-entry points refuse it before state mutation. Joined arithmetic and routing
+before admission, with explicit rows authoritative. Ordinary native component sources
+refuse multi-owner repeat-pending execution before state mutation. An internal
+owned target/MTP domain now accepts it only with complete source composition,
+replayable state and explicit mode/backend permission. The actual two-owner
+unequal-pending screen passes complete finite heads, checkpoint/spill restoration
+and changed-input capture replay. Draft sampling uses the installed head width
+and immutable selected-token mapping; v0 multipart row tables reconstruct their
+logical format through the shared artifact assembler. Joined arithmetic and routing
 qualification is a required follow-on before serving recipes or migration gates: original-model
 quality is primary, legacy comparisons diagnose differences, and state
 restoration must reproduce the same selected implementation. The bounded
@@ -2398,9 +2409,10 @@ dispatch instrumentation. The cleaned correction also passed a model-free
 `hc.mix` regression through the canonical output-row producer and normal
 `StepProgram`: complete mixed outputs, ragged owners and changed-input replays
 of the same recorded program. This component-only test is separate from the
-full-vocabulary diagnostic and does not cover target/drafter state. Joined
-state, full continuation replay,
-persistence and admission remain open under G3c2b1b2. See
+full-vocabulary diagnostic and does not cover target/drafter state. The bounded owned-domain
+[joined state/replay screen](experiments/m36-numerical-audit/qwen-joined-mtp.md)
+passes; original-model quality, durable old/new persistence, production admission
+and full-family gates remain open under G3c2b1b2. See
 [the selected-HC evidence](experiments/m36-selected-owner-hc/README.md) and
 [the model runner](engine.md#the-model-runner) for the state, completion and
 checked numerical scope.

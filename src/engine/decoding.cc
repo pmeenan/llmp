@@ -37,6 +37,30 @@ void Place(DecodeOutcome& out, WaveOutcome& ran) {
 
 }  // namespace
 
+std::expected<std::uint32_t, std::string> DrafterHeadRows(const DrafterSpec& drafter,
+                                                          std::uint32_t target_vocabulary) {
+  if (target_vocabulary == 0 || target_vocabulary > std::uint32_t{INT32_MAX})
+    return Error("a drafter head has no supported target vocabulary");
+  const auto rows = drafter.head_rows ? drafter.head_rows : target_vocabulary;
+  if (rows > target_vocabulary ||
+      (drafter.head_ids && !drafter.head_ids->empty() && drafter.head_ids->size() != rows))
+    return Error("a drafter head width differs from its source vocabulary map");
+  return rows;
+}
+
+std::expected<std::int32_t, std::string> DrafterHeadToken(const DrafterSpec& drafter,
+                                                          std::uint32_t row,
+                                                          std::uint32_t target_vocabulary) {
+  auto rows = DrafterHeadRows(drafter, target_vocabulary);
+  if (!rows) return Error(rows.error());
+  if (row >= *rows) return Error("a draft head row is out of range");
+  if (!drafter.head_ids || drafter.head_ids->empty()) return static_cast<std::int32_t>(row);
+  const auto token = drafter.head_ids->at(row);
+  if (token < 0 || std::cmp_greater_equal(token, target_vocabulary))
+    return Error("a selected draft head token is outside the target vocabulary");
+  return token;
+}
+
 std::uint32_t DecodingMode::verify_rows() const {
   std::uint32_t rows = 0;
   for (const DrafterSpec& d : drafters) {

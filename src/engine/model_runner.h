@@ -194,6 +194,9 @@ struct RunnerConfig {
     format::TensorFormat format;
     format::PartRole part = format::PartRole::kData;
     std::uint64_t rows_per_token = 0;
+    // Complete logical v0 assembly, including non-row tensor scales. Empty
+    // retains ordinary resources whose recorded format already is logical.
+    std::vector<std::pair<format::PartRole, std::uint32_t>> source_parts{};
   };
   std::vector<RowTable> row_tables;
   // Explicit routed execution support. The weak owner names the caller's
@@ -213,6 +216,10 @@ struct RunnerConfig {
   // recurrent state), per slot; unset or empty: none.
   std::function<LiveState::Commit(std::uint32_t slot, std::size_t stage)> commit;
 };
+
+// Source validation with fixed part scratch, before row-table storage is created.
+Status CheckRowTableSource(const RunnerConfig::RowTable& table, std::uint32_t version,
+                           std::span<const artifact::Resource> resources);
 
 // Where a segment's rows read their feature (a drafter's rows: the step
 // program's kFeatures input, components/step.h kFeatures), copied on the

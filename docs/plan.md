@@ -1673,6 +1673,22 @@ each is checked against the design as M3.6 proceeds.
                                           replay, old/new persistence and bounded
                                           admission. The G3c2b1b parent remains
                                           open after the selected-HC correction.
+                                          The owned target/MTP diagnostic now
+                                          carries explicit joined-repeat-pending
+                                          source eligibility and a two-owner
+                                          unequal-pending recovery/capture test.
+                                          Main native build and 306 affected host
+                                          controls pass; the actual two-owner
+                                          target/MTP screen passes 13 units,
+                                          132 finite heads, checkpoint/spill
+                                          restoration and changed-input capture
+                                          replay (2026-10-12). The source accepts
+                                          complete v0 multipart row tables through
+                                          the shared artifact assembler, and draft
+                                          heads use their actual selected width.
+                                          Original-model quality, durable old/new
+                                          persistence and serving admission remain
+                                          open ([evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md)).
                               - [x] **G3c2b1c — inactive accurate dense-product
                                     capability:** expose the existing joined
                                     BF16-weight/F32-input vector kernel through

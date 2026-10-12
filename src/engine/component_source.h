@@ -60,7 +60,8 @@ struct ComponentSourceOptions {
   std::optional<planner::Policy> policy{};
   kernels::StepBackend backend{};
   // Required whole composition; every staged source names the same immutable
-  // domain. Requires a real backend owner. Does not enable joined draft work.
+  // domain. Requires a real backend owner. Joined pending replay additionally
+  // requires its explicit use and complete compatible composition layouts.
   std::shared_ptr<const NumericalDomain> execution_domain{};
   // Require graph-capture-safe implementations. Uncaptured callers may
   // opt out; their runner must disable graph capture too.
@@ -83,6 +84,7 @@ class ComponentStepSource final : public StepSource {
   Status CheckExecutionShape(const planner::StepShape& shape) const override;
   std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override;
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
+  bool JoinedRepeatPending(std::uint16_t stage) const override;
   bool UsesSideRows(std::uint16_t stage) const override;
   Status SideRows(std::uint16_t stage, std::uint16_t component,
                   std::span<const std::int32_t> history, std::uint32_t position,

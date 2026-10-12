@@ -69,6 +69,8 @@ struct ComponentHold {
   std::vector<model::StateLayoutDerived> layouts;  // by stage
   std::vector<const model::StateLayoutDerived*> stages;
   std::vector<spec::SourceValue> values, drafter_values;
+  std::shared_ptr<const std::vector<std::int32_t>> draft_head_ids;
+  std::uint32_t draft_head_rows = 0;
   // Each weight's place: its holding stage's artifact, whether it is
   // an expert array, and its resource's or array's index.
   using Place = ComponentWeightPlace;
@@ -215,6 +217,23 @@ bool JoinedScoreEnvelope(const ModelSettings& settings, std::string_view drafter
   return std::ranges::equal(stages[0].phases, phases);
 }
 
+// Internal composed diagnostic only. The actual source seal additionally
+// validates every stage/layout/phase and binds real prepared backend owners.
+// Ordinary Server admission remains single-owner until qualification closes.
+bool JoinedMtpEnvelope(const ModelSettings& settings, std::string_view drafter,
+                       const ComponentBuildOptions& options) {
+  if (!options.diagnostic_solo || !options.execution_domain || drafter.empty() ||
+      !settings.speculation.value || settings.max_slots.value < 2 ||
+      settings.max_slots.value > Llm::kMaxBranches || !settings.context.value ||
+      !settings.prefill_chunk.value || !settings.draft_rows.value)
+    return false;
+  const auto& domain = *options.execution_domain;
+  return domain.stages().size() == 2 &&
+         domain.CheckMode(engine::NumericalUse::kJoinedRepeatPending).has_value() &&
+         domain.CheckMode(engine::NumericalUse::kSpeculative).has_value() &&
+         domain.CheckMode(engine::NumericalUse::kPromptCompanions).has_value();
+}
+
 }  // namespace
 
 bool OnComponentEngine(std::string_view architecture) {
@@ -231,7 +250,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
     const bool solo = settings.architecture == "qwen4exp";
     const bool joined_score = solo && JoinedScoreEnvelope(settings, drafter_id, options);
-    if (solo && (!options.diagnostic_solo || (settings.max_slots.value != 1 && !joined_score)))
+    const bool joined_mtp = solo && JoinedMtpEnvelope(settings, drafter_id, options);
+    if (solo && (!options.diagnostic_solo ||
+                 (settings.max_slots.value != 1 && !joined_score && !joined_mtp)))
       return Error("the Qwen component qualification requires exactly one configured slot");
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
@@ -331,6 +352,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           if (!ids) return Error(ids.error());
           if (auto valid = model::CheckQwen38DraftIds(*ids, model::Qwen38Flash().vocab); !valid)
             return Error(valid.error());
+          const auto width = std::min<std::size_t>(settings.draft_vocab.value, ids->size());
+          if (width == 0) return Error("a selected draft head needs a positive source row count");
+          ids->resize(width);
+          hold->draft_head_ids = std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
         }
         drafter_mapping = &spec::mappings::Qwen38MtpReplayMapping();
         dvalues = spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), *binding);
@@ -339,8 +364,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
             if (value.key == "qwen4exp-mtp.draft_vocab") {
               const auto rows = binding->selected_head() ? binding->draft_output.ne.at(1)
                                                          : model::Qwen38Flash().vocab;
-              value.value = static_cast<std::int64_t>(
+              hold->draft_head_rows = static_cast<std::uint32_t>(
                   std::min<std::uint64_t>(settings.draft_vocab.value, rows));
+              value.value = static_cast<std::int64_t>(hold->draft_head_rows);
             }
       } else
         dvalues = DrafterV0Values(*artifact, *drafter);
@@ -357,6 +383,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       hold->spec = std::move(*synthesized);
     }
     for (const spec::Source& s : hold->sources) hold->tables.emplace_back(s.tensors);
+    if (joined_mtp && hold->spec.stages.size() != options.execution_domain->stages().size())
+      return Error("joined MTP requires every actual source stage");
     if (joined_score &&
         (hold->spec.stages.size() != 1 || hold->spec.stages.front().name != "target"))
       return Error("joined scoring requires the actual single target stage");
@@ -524,12 +552,20 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
             if (weight.ref.expert_array)
               hold->pitch[weight.ref] = placements.at(weight.ref.stage).pitch.at(*found);
             if (solo && weight.ref.stage == 0 && !weight.ref.expert_array &&
-                *found == qwen->ple_table.index)
+                *found == qwen->ple_table.index) {
               row_table = {.weight = weight.ref,
                            .resource = *found,
                            .format = step->graph.tensor(weight.tensor).format,
                            .part = role,
                            .rows_per_token = model::Qwen38Flash().ple_heads()};
+              if (weight.parts.size() > format::PartList::kMax)
+                return Error("a row table exceeds its format part inventory");
+              for (const auto& [part_name, part_role] : weight.parts) {
+                const auto part_resource = a.FindResource(part_name);
+                if (!part_resource) return Error("a row table source part is absent");
+                row_table->source_parts.emplace_back(part_role, *part_resource);
+              }
+            }
           }
         }
         if (s.stage == 0 && step->logits.valid() && logit_width == 0) {
@@ -664,7 +700,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                   .adaptive = solo && depth >= 3,
                                   .depth_cost = solo ? settings.depth_cost_ratio.value : 1.16,
                                   .device_tokens = solo,
-                                  .draft_before_limit = solo}},
+                                  .draft_before_limit = solo,
+                                  .head_ids = hold->draft_head_ids,
+                                  .head_rows = hold->draft_head_rows}},
                     .combine = engine::DecodingMode::Drafters::kCascade,
                     .row_invariant = false};
     }

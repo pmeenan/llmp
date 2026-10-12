@@ -39,7 +39,8 @@ struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
   // Internal qualification only; Qwen remains off in OnComponentEngine.
   // Other slot counts refuse before opening artifacts, except the closed
-  // target-only C4 scoring envelope with its exact owned execution domain.
+  // target-only C4 scoring envelope or a declared repeat-pending composition
+  // with its exact owned execution domain. Server admission stays unchanged.
   bool diagnostic_solo = false;
   bool prefill_lookahead = true;
   bool prepare_state = true;

@@ -623,6 +623,12 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
                    .format = step->graph.tensor(w.tensor).format,
                    .part = role,
                    .rows_per_token = md::Qwen38Flash().ple_heads()};
+          for (const auto& [part_name, part_role] : w.parts) {
+            const auto part_resource = t.artifact.FindResource(part_name);
+            EXPECT_TRUE(part_resource) << part_name;
+            if (!part_resource) return out;
+            table->source_parts.emplace_back(part_role, *part_resource);
+          }
         }
       }
     }
@@ -1440,12 +1446,18 @@ void MtpLowered(const Target& t, const fs::path& scratch, std::span<const MtpRec
         places[{weight.ref, role}] = {weight.ref.stage, weight.ref.expert_array, *found};
         if (weight.ref.expert_array) pitch[weight.ref] = placements[weight.ref.stage].pitch[*found];
         if (weight.ref.stage == 0 && !weight.ref.expert_array &&
-            *found == t.binding.ple_table.index)
+            *found == t.binding.ple_table.index) {
           table = {.weight = weight.ref,
                    .resource = *found,
                    .format = step->graph.tensor(weight.tensor).format,
                    .part = role,
                    .rows_per_token = md::Qwen38Flash().ple_heads()};
+          for (const auto& [part_name, part_role] : weight.parts) {
+            const auto part_resource = a.FindResource(part_name);
+            ASSERT_TRUE(part_resource) << part_name;
+            table->source_parts.emplace_back(part_role, *part_resource);
+          }
+        }
       }
   }
   ASSERT_TRUE(table);

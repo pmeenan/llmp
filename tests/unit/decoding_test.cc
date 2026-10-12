@@ -77,6 +77,54 @@ constexpr std::uint32_t kChunk = 64;
 constexpr std::uint32_t kVerifyRows = 8;
 constexpr std::int32_t kFill = -7;
 constexpr std::uint32_t kAll = std::numeric_limits<std::uint32_t>::max();
+
+TEST(DrafterHeadTest, SourceRowsUseImmutableSelectedVocabulary) {
+  en::DrafterSpec drafter;
+  drafter.head_ids = std::make_shared<const std::vector<std::int32_t>>(
+      std::initializer_list<std::int32_t>{913, 7, 602});
+  drafter.head_rows = 3;
+  auto retained = drafter;
+  drafter.head_ids.reset();
+  const auto first = en::DrafterHeadToken(retained, 0, 1000);
+  const auto last = en::DrafterHeadToken(retained, 2, 1000);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(last);
+  EXPECT_EQ(*first, 913);
+  EXPECT_EQ(*last, 602);
+  EXPECT_FALSE(en::DrafterHeadToken(retained, 3, 1000));
+  EXPECT_FALSE(en::DrafterHeadToken(retained, 0, 600));
+}
+
+TEST(DrafterHeadTest, OrdinaryHeadRetainsIdentityAndBounds) {
+  en::DrafterSpec drafter;
+  const auto ordinary = en::DrafterHeadToken(drafter, 17, 32);
+  ASSERT_TRUE(ordinary);
+  EXPECT_EQ(*ordinary, 17);
+  EXPECT_FALSE(en::DrafterHeadToken(drafter, 32, 32));
+  EXPECT_FALSE(en::DrafterHeadToken(drafter, 0, 0));
+  drafter.head_ids = std::make_shared<const std::vector<std::int32_t>>();
+  EXPECT_EQ(en::DrafterHeadToken(drafter, 17, 32).value_or(-1), 17);
+  drafter.head_rows = 8;
+  EXPECT_EQ(en::DrafterHeadRows(drafter, 32).value_or(0), 8U);
+  EXPECT_EQ(en::DrafterHeadToken(drafter, 7, 32).value_or(-1), 7);
+  EXPECT_FALSE(en::DrafterHeadToken(drafter, 8, 32));
+  drafter.head_rows = 33;
+  EXPECT_FALSE(en::DrafterHeadRows(drafter, 32));
+}
+
+TEST(DrafterHeadTest, RefusesInvalidMappedTokenAndDomain) {
+  en::DrafterSpec drafter;
+  drafter.head_ids = std::make_shared<const std::vector<std::int32_t>>(
+      std::initializer_list<std::int32_t>{-1, 32, 7});
+  drafter.head_rows = 2;
+  EXPECT_FALSE(en::DrafterHeadRows(drafter, 32));
+  drafter.head_rows = 3;
+  EXPECT_FALSE(en::DrafterHeadToken(drafter, 0, 32));
+  EXPECT_FALSE(en::DrafterHeadToken(drafter, 1, 32));
+  EXPECT_FALSE(en::DrafterHeadToken(drafter, 2, 2));
+  EXPECT_FALSE(en::DrafterHeadToken(drafter, 0, UINT32_MAX));
+}
+
 // The stages.
 constexpr std::uint16_t kMtp = 1, kBlock = 2, kAssistant = 3;
 

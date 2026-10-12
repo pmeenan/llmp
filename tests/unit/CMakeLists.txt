@@ -1368,6 +1368,13 @@ if(LLMP_CUDA)
                                                                  llmp_artifact)
   llmp_gpu_gtest(component_runner_gemma4_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  # Owned joined target/MTP state and changed-input capture qualification.
+  add_executable(qwen38_joined_mtp_gpu_test qwen38_joined_mtp_gpu_test.cc)
+  target_link_libraries(qwen38_joined_mtp_gpu_test PRIVATE llmp_corpus_score
+    llmp_engine_core llmp_runtime_serving llmp_components llmp_spec llmp_artifact)
+  llmp_gpu_gtest(qwen38_joined_mtp_gpu_test MODELS
+    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
   # The same on the Qwen3.8 imports (ModelOpt's two expert layouts, a
   # GGUF quantization's) against today's runner's fast form, one at a time.
   add_executable(component_runner_qwen38_gpu_test component_runner_qwen38_gpu_test.cc)

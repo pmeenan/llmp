@@ -40,6 +40,16 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
+The reviewed owned Qwen target/MTP joined execution foundation passes main native
+build and 306 affected host controls, then the actual two-owner screen on Spark B:
+13 units, 132 finite heads, checkpoint/spill restoration and changed-input capture
+replay. It includes complete v0 row-table reconstruction through the existing
+artifact assembler and actual-width/selected-ID draft sampling. See the
+[joined MTP report](experiments/m36-numerical-audit/qwen-joined-mtp.md).
+Original-reference quality, durable old/new persistence, production serving and
+the family speed/swap gate remain open. DeepSeek target and actual spatial-image
+execution are in flight; neither has passed its full actual screen yet.
+
 Main through `7e0bf848` includes split NVFP4 paged rows, checked route/part
 helpers and bounded selected-expert grouped execution. Full native main build,
 eight helper controls and both actual grouped GPU cases pass, including repeated

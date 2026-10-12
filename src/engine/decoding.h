@@ -64,6 +64,7 @@
 #include <expected>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -114,7 +115,25 @@ struct DrafterSpec {
   // Run the complete requested autoregressive pass count before truncating
   // the verify at the reply boundary. Refused unless this is the sole drafter.
   bool draft_before_limit = false;
+  // Source-row -> target-token IDs for a selected head. Its source factory
+  // validates the complete table against the holding artifact and vocabulary
+  // before publishing this immutable owner. Absent/empty means ordinary rows.
+  // Device-token outputs have already applied it and must not be mapped twice.
+  std::shared_ptr<const std::vector<std::int32_t>> head_ids{};
+  // Actual emitted F32 row width, independently of whether its IDs are
+  // selected or an ordinary prefix. Zero preserves the ordinary full head.
+  std::uint32_t head_rows = 0;
 };
+
+// Check the source-declared width/map relationship before reading head rows.
+std::expected<std::uint32_t, std::string> DrafterHeadRows(const DrafterSpec& drafter,
+                                                          std::uint32_t target_vocabulary);
+
+// Translate a completed F32 head's selected row, refusing a missing local row
+// or a mapped token outside the actual target vocabulary before it is emitted.
+std::expected<std::int32_t, std::string> DrafterHeadToken(const DrafterSpec& drafter,
+                                                          std::uint32_t row,
+                                                          std::uint32_t target_vocabulary);
 
 struct DecodingMode {
   enum class Kind : std::uint8_t { kPlain, kSampled, kScored, kSpeculative, kBlockDiffusion };

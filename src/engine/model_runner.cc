@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "artifact/format_map.h"
 #include "components/step.h"
 #include "engine/prefill_lookahead.h"
 #include "engine/support.h"
@@ -193,6 +194,40 @@ std::expected<void, std::string> WriteComputed(const kn::InputSlot& in, const pl
 }
 
 }  // namespace
+
+Status CheckRowTableSource(const RunnerConfig::RowTable& table, std::uint32_t version,
+                           std::span<const artifact::Resource> resources) {
+  if (table.resource >= resources.size()) return Error("a row table's resource");
+  const auto& resource = resources[table.resource];
+  if (version == 1 || table.source_parts.empty()) {
+    if ((version != 0 && version != 1) || !table.source_parts.empty() || !resource.format ||
+        *resource.format != table.format || resource.part != table.part)
+      return Error("a row table's format or part differs from its source resource");
+    return {};
+  }
+  if (version != 0 || table.source_parts.size() > format::PartList::kMax)
+    return Error("a row table's source assembly exceeds its format parts");
+  std::array<artifact::V0Part, format::PartList::kMax> parts{};
+  bool matched = false;
+  for (std::size_t i = 0; i < table.source_parts.size(); ++i) {
+    const auto [role, index] = table.source_parts[i];
+    if (index >= resources.size()) return Error("a row table's source part is absent");
+    for (std::size_t j = 0; j < i; ++j)
+      if (table.source_parts[j].first == role || table.source_parts[j].second == index)
+        return Error("a row table repeats a source part or resource");
+    const auto& source = resources[index];
+    if (source.repr.bytes != source.bytes.value())
+      return Error("a row table's source part extent differs from its representation");
+    parts[i] = {.role = role, .rep = &source.repr};
+    if (index == table.resource && role == table.part) matched = true;
+  }
+  const auto assembled =
+      artifact::Assemble(table.format.encoding, table.format.layout,
+                         std::span(parts).first(table.source_parts.size()), table.format.stacked);
+  if (!matched || !assembled || *assembled != table.format)
+    return Error("a row table's complete source assembly differs from its logical format");
+  return {};
+}
 
 SlotLifecycleOptions ModelRunner::LifecycleOptions(ModelRunner* self,
                                                    SlotLifecycleOptions options) {
@@ -932,7 +967,8 @@ Status ModelRunner::SetupRowTables() {
       return Error("a row table requires a row-addressable format part");
     for (const auto& other : config_.row_tables) {
       if (other.weight != config.weight) continue;
-      if (other.format != config.format || other.rows_per_token != config.rows_per_token)
+      if (other.format != config.format || other.rows_per_token != config.rows_per_token ||
+          other.source_parts != config.source_parts)
         return Error("a row table's parts disagree on logical geometry");
     }
     for (const auto& part : parts->parts()) {
@@ -946,8 +982,9 @@ Status ModelRunner::SetupRowTables() {
     const auto& artifact = weights.weights->artifact();
     if (config.resource >= artifact.resources().size()) return Error("a row table's resource");
     const auto& resource = artifact.resources()[config.resource];
-    if (!resource.format || *resource.format != config.format || resource.part != config.part)
-      return Error("a row table's format or part differs from its source resource");
+    if (auto valid = CheckRowTableSource(config, artifact.format_version(), artifact.resources());
+        !valid)
+      return valid;
     const auto part = parts->Find(config.part);
     if (!part || part->bytes != resource.bytes.value() || resource.group >= weights.places.size() ||
         weights.places[resource.group] != GroupPlace::kNone)

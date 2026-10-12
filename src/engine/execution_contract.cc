@@ -103,6 +103,7 @@ bool Known(NumericalUse use) {
     case NumericalUse::kPromptCompanions:
     case NumericalUse::kSpeculative:
     case NumericalUse::kBlock:
+    case NumericalUse::kJoinedRepeatPending:
       return true;
   }
   return false;

@@ -452,7 +452,11 @@ en::DecodingPolicy EngineLlm::Policy() {
           return Error("a draft returned a token outside the target vocabulary");
       return tokens;
     }
-    const std::size_t row_bytes = std::size_t{logit_width_} * sizeof(float);
+    const auto& drafter_spec = drafter_specs_[drafter];
+    auto checked_width = en::DrafterHeadRows(drafter_spec, logit_width_);
+    if (!checked_width) return Error(checked_width.error());
+    const std::size_t width = *checked_width;
+    const std::size_t row_bytes = width * sizeof(float);
     const std::size_t rows =
         row_bytes == 0 ? 0 : std::min<std::size_t>(outputs.size() / row_bytes, want);
     if (rows == 0) {
@@ -462,8 +466,11 @@ en::DecodingPolicy EngineLlm::Policy() {
     std::vector<std::int32_t> proposed;
     for (std::size_t i = 0; i < rows; ++i) {
       const auto row =
-          std::span(reinterpret_cast<const float*>(outputs.data() + (i * row_bytes)), logit_width_);
-      proposed.push_back(Argmax(row));
+          std::span(reinterpret_cast<const float*>(outputs.data() + (i * row_bytes)), width);
+      auto token =
+          en::DrafterHeadToken(drafter_spec, static_cast<std::uint32_t>(Argmax(row)), logit_width_);
+      if (!token) return Error(token.error());
+      proposed.push_back(*token);
     }
     return proposed;
   };

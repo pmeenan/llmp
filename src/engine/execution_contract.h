@@ -59,6 +59,9 @@ enum class NumericalUse : std::uint8_t {
   kPromptCompanions,
   kSpeculative,
   kBlock,
+  // Whole-composition permission for replaying pending drafter rows with
+  // multiple owners. Component sources additionally validate actual layouts.
+  kJoinedRepeatPending,
 };
 
 struct NumericalPhase {
