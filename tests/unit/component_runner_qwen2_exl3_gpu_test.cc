@@ -368,7 +368,8 @@ TEST(ComponentRunnerExl3Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading)
 
 // Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
-void RunControl(bool full, bool corpus = false) {
+void RunControl(bool full, bool corpus = false, bool mixed_rate = false) {
+  ASSERT_FALSE(mixed_rate && !corpus);
   std::uint32_t token_rows = full ? 161 : 145;
   const auto oracle_bytes = full ? kFullOracleBytes : kOracleBytes;
   const auto runtime_plans = (full || corpus) ? kFullRuntimePlans : kRuntimePlans;
@@ -446,7 +447,9 @@ void RunControl(bool full, bool corpus = false) {
   if (!corpus) ASSERT_EQ(oracle.size(), token_rows * row_bytes);
   std::string store = Env("LLMP_EXL3_FIXTURE_STORE");
   if (store.empty()) store = Env("HOME") + "/.local/share/llmp/artifact-layout-20260922/installed";
-  constexpr auto artifact_id = "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4";
+  const auto artifact_id = mixed_rate
+                               ? "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a"
+                               : "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4";
   const fs::path root = fs::path(store) / artifact_id;
   if (!fs::is_directory(root)) GTEST_SKIP() << "fixture not installed: " << root;
   // These pure filesystem bounds precede both artifact parser calls. The
@@ -484,6 +487,44 @@ void RunControl(bool full, bool corpus = false) {
   life->source.emplace(std::move(*bound_source));
   auto& source = life->source;
   ASSERT_LE(source->tensors.size(), 1024U);
+  if (corpus) {
+    // Count each logical product once. Every physical part retains the source
+    // encoding; the normal binding/lowering verifies its exact extent and role.
+    std::array<std::uint32_t, 9> rates{};
+    std::array<std::uint32_t, 4> parts{};
+    for (const auto& tensor : source->tensors) {
+      if (tensor.format.encoding != llmp::format::Encoding::kExl3Trellis) continue;
+      const auto bits = tensor.format.params.k_bits;
+      ASSERT_LT(bits, rates.size());
+      switch (tensor.part) {
+        case llmp::format::PartRole::kCodes:
+          ++rates[bits];
+          ++parts[0];
+          break;
+        case llmp::format::PartRole::kInputSigns:
+          ++parts[1];
+          break;
+        case llmp::format::PartRole::kOutputSigns:
+          ++parts[2];
+          break;
+        case llmp::format::PartRole::kCodebookMarker:
+          ++parts[3];
+          break;
+        default:
+          FAIL() << "unexpected EXL3 physical weight part";
+      }
+    }
+    const std::array<std::uint32_t, 9> expected =
+        mixed_rate ? std::array<std::uint32_t, 9>{0, 0, 0, 0, 42, 118, 8, 0, 1}
+                   : std::array<std::uint32_t, 9>{0, 0, 0, 0, 168, 0, 0, 0, 1};
+    ASSERT_EQ(rates, expected);
+    ASSERT_EQ(parts, (std::array<std::uint32_t, 4>{169, 169, 169, 169}));
+    testing::Test::RecordProperty("corpus_artifact_id", artifact_id);
+    testing::Test::RecordProperty("corpus_exl3_rates",
+                                  mixed_rate ? "4:42,5:118,6:8,8:1" : "4:168,8:1");
+    testing::Test::RecordProperty("corpus_exl3_parts",
+                                  "codes:169,input_signs:169,output_signs:169,marker:169");
+  }
   for (const auto& tensor : source->tensors) ASSERT_LE(tensor.name.size(), 128U);
   auto synthesized = sp::Synthesize(mapping, *source, life->values);
   ASSERT_TRUE(synthesized.has_value()) << synthesized.error();
@@ -553,7 +594,9 @@ void RunControl(bool full, bool corpus = false) {
   const auto ran = [&]() -> en::Status {
     entered.push_back(kernel.get());
     if (auto x = kernel->resources->OpenCublas("EXL3 shared cuBLAS workspace"); !x) return x;
-    auto selected = llmp::kernels::exl3::SelectedSource(llmp::kernels::exl3::FrozenCache::k40G);
+    auto selected =
+        llmp::kernels::exl3::SelectedSource(mixed_rate ? llmp::kernels::exl3::FrozenCache::k45G
+                                                       : llmp::kernels::exl3::FrozenCache::k40G);
     if (!selected) return std::unexpected(selected.error());
     auto backend = kg::GgmlBackend::Create(
         0, node.execution(), node.stream(0), &kernel->resources->cublas(),
@@ -750,13 +793,22 @@ void RunControl(bool full, bool corpus = false) {
       report.clear();
       report << std::setprecision(17) << result.total_nll;
       testing::Test::RecordProperty("corpus_total_nll", report.str());
-      testing::Test::RecordProperty("corpus_policy", "existing-exl3-40g");
+      testing::Test::RecordProperty("corpus_policy",
+                                    mixed_rate ? "existing-exl3-45g" : "existing-exl3-40g");
       report.str("");
       report.clear();
       for (const auto& plan : life->corpus_plans) {
         if (!plan.rows) continue;
         if (!plan.runs || plan.implementations.empty())
           return std::unexpected("corpus selected program never entered execution");
+        if (mixed_rate &&
+            (std::ranges::count(plan.implementations, "exl3.pinned.45g.linear.gemm") != 121 ||
+             std::ranges::count(plan.implementations, "exl3.pinned.45g.multi_linear.mgemm") != 24 ||
+             std::ranges::count(plan.implementations, "exl3.pinned.45g.bias_add") != 72 ||
+             std::ranges::count_if(plan.implementations, [](const std::string& name) {
+               return name.starts_with("exl3.");
+             }) != 217))
+          return std::unexpected("mixed-rate corpus selected packed inventory differs");
         report << "rows=" << plan.rows << " bound_plan=" << llmp::base::ToHex(plan.identity)
                << " run_or_record=" << plan.runs << '\n';
         for (const auto& name : plan.implementations) report << name << '\n';
@@ -810,4 +862,7 @@ void RunControl(bool full, bool corpus = false) {
 TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) { RunControl(false); }
 TEST(ComponentRunnerExl3Gpu, Full161TrajectoryMatchesSealedLegacy) { RunControl(true); }
 TEST(ComponentRunnerExl3Gpu, FixedTeacherCorpusScoresEveryTarget) { RunControl(false, true); }
+TEST(ComponentRunnerExl3Gpu, MixedRate45GFixedTeacherCorpusScoresEveryTarget) {
+  RunControl(false, true, true);
+}
 }  // namespace

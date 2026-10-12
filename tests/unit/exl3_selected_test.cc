@@ -406,7 +406,7 @@ TEST(Exl3SelectedTest, AllProfilesCoverPackedPairsGemvAndReconstructionBoundarie
     const auto facts = (*source)->Tuning(121);
     const std::span<const Problem> problems =
         forty ? std::span<const Problem>(problems40) : std::span<const Problem>(problems45);
-    for (const auto rows : {1, 8, 9, 16, 32, 33, 144, 145, 1023, 1024}) {
+    for (const auto rows : {1, 7, 8, 9, 16, 32, 33, 144, 145, 1023, 1024}) {
       for (const auto problem : problems) {
         SCOPED_TRACE(std::format("{} rows={} k={} n={} bits={}", profile, rows, problem.k,
                                  problem.n, problem.bits));

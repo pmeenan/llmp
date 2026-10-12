@@ -85,7 +85,7 @@
     "prefill_oracle_sha256": "ea491bc54c1259dc935cd6131fc3684033b0974490048b6a214dd35b5da1710d"
   },
   "remaining": [
-    "other execution profiles and packed paths",
+    "O execution profiles and broader packed shapes",
     "historical Tier C and lifecycle controls",
     "legacy deletion"
   ],
@@ -158,6 +158,98 @@
       "historical Tier C",
       "model lifecycle/kept-state",
       "performance migration gate and legacy deletion"
+    ]
+  },
+  "G5b2b": {
+    "date": "2026-10-12",
+    "scope": "approved mixed-rate 4.5-bpw G, natural43 common scorer only",
+    "host": "spark",
+    "artifact": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+    "source": {
+      "repository": "blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.5bpw",
+      "revision": "030d3a4173c5a3e27e3c27dd7f6ab0fc00636d00",
+      "code_products_by_bits": {
+        "4": 42,
+        "5": 118,
+        "6": 8,
+        "8": 1
+      },
+      "physical_parts": 676
+    },
+    "teacher_ids_sha256": "1b1c01818993d60cad3b4046c2ba22c24d81af32434fc65977a3faf12a4a9e40",
+    "original_result_sha256": "f2280c7afcaa4b139d398aa9338d5a9b5d1c6278b23bc199427dc371d3ba6771",
+    "focused": {
+      "run": "m36-g5b2b-45g-focused01",
+      "native_build": "PASS",
+      "input_cases": 2,
+      "selected_cases": 6,
+      "failures": 0,
+      "skips": 0
+    },
+    "actual": {
+      "run": "g5b2b-45g-models01",
+      "result_sha256": "e7073dc48cbc1bacb3aad4348247141ba30b4bd9ab0a913b62ade438412765a2",
+      "status": "PASS",
+      "cases": 1,
+      "failures": 0,
+      "skips": 0,
+      "teacher_ids": 43,
+      "targets": 42,
+      "chunk_rows": 7,
+      "shape_rows": [
+        7,
+        1
+      ],
+      "sum_nll": 273.63540787177186,
+      "mean_nll": 6.515128758851711,
+      "perplexity": 675.2809043195413,
+      "selected_per_program": {
+        "linear_gemm": 121,
+        "paired_mgemm": 24,
+        "bias_add": 72
+      },
+      "program_identities": {
+        "7": "3800159b2c781bbf11c6b65075757124dd19e1b8213c9583ffde868aa7440234",
+        "1": "3800159b2c781bbf11c6b65075757124dd19e1b8213c9583ffde868aa7440234"
+      },
+      "memory_peak_observed": 276840448,
+      "memory_peak_scope": "confined process and page cache; not total GPU occupancy",
+      "compute_processes_after": 0,
+      "all_guards": "PASS"
+    },
+    "main_integration": {
+      "native_build": "PASS",
+      "focused_cases": 8,
+      "failures": 0,
+      "skips": 0,
+      "build_result_sha256": "c538353b31534e90634b5061324e9d9b03b94e7f34be2bbecaa7781f49e5f7e9",
+      "model_replays": {
+        "40g": {
+          "result_sha256": "5b0c42422d3c316fb9b1f77aad9502341fc20b89e5f3f329088404f564cad1b2",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "targets": 42,
+          "mean_nll": 6.458775094111763,
+          "compute_processes_after": 0,
+          "guards": "PASS"
+        },
+        "45g": {
+          "result_sha256": "836da17bfadc00533df38de5410597eca89e9e8affebabd5880e374edc96992c",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "targets": 42,
+          "mean_nll": 6.515128758851711,
+          "compute_processes_after": 0,
+          "guards": "PASS"
+        }
+      }
+    },
+    "limitations": [
+      "42-target smoke, not corpus-wide quality qualification",
+      "7/1 chunks differ from FP16 8/3 and original eager/no-cache arithmetic",
+      "no new performance, O-profile, lifecycle, Tier C or deletion claim"
     ]
   }
 }

@@ -1839,6 +1839,17 @@ each is checked against the design as M3.6 proceeds.
                   checks also pass, with zero skips; native build and quality
                   gates pass ([evidence](experiments/m36-exl3-selected/README.md)).
                   Other profiles, packed execution and Tier C remain open.
+            - [x] **G5b2b — mixed-rate 4.5-bpw G scoring screen:** the
+                  shared runner executes the approved packed 4/5/6/8-bit
+                  products and all 24 paired gate/up products on the same
+                  authenticated 43 teacher IDs as the original BF16 reference.
+                  Both 7-row and 1-row plans select the pinned G implementations;
+                  all 42 next-token scores are finite. Eight focused controls
+                  and the actual case pass without skips. Main builds and passes
+                  all eight checks plus both EXL3 scoring cases
+                  ([evidence](experiments/m36-exl3-selected/README.md)). This
+                  small primary-reference observation adds no quality threshold,
+                  performance, O-profile, Tier C or lifecycle qualification.
       - [ ] **G5c — execution controls:** run FP16 and both EXL3 fixtures
             through the shared runner; pass the FP16 bridge / EXL3 Tier C
             correctness controls and state, spill, restore and kept-state

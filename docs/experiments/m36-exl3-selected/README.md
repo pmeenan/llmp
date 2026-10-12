@@ -35,9 +35,9 @@ The candidate prepays its 4-GiB host inventory within its 8-GiB domain and
 checks the separate physical margin before construction.
 
 The actual screen took 964 ms; this is functional evidence, not a speed gate.
-It does not qualify packed-product execution, O variants,
-4.5-bpw fixture, historical Tier C, spill/restore/kept-state or deletion. Those
-remain open in G5b/G5c/G5d.
+That reconstruction screen alone does not qualify packed products, other
+profiles or lifecycle behavior; the later bounded packed screen is below.
+Historical Tier C, spill/restore/kept-state and deletion remain open.
 
 On 2026-10-12, G5b2a extended the shared 4.0-bpw G control to the
 complete 145-token prefill and 16 one-row suffix steps. A fresh native
@@ -53,8 +53,9 @@ with the separate 6-GiB physical margin. Its source-derived host bound is
 oracle. Native build, two input/admission controls, six selected-operation
 controls, 30 component/state/lifecycle checks and the quality gates passed.
 Both actual model cases passed with zero failures or skips under a 16-GiB
-zero-swap process limit. These are functional checks; other profiles, packed
-execution, historical Tier C and model lifecycle controls remain open.
+zero-swap process limit. These historical checks cover reconstruction. The bounded packed scoring
+screen below adds execution evidence; historical Tier C and model lifecycle
+controls remain open.
 The unrelated full regression suites were deferred under the M3.6
 incremental check policy.
 
@@ -69,3 +70,43 @@ integration checks and the quality gates, with zero failures or skips.
 Source, recipe, input and binary guards passed before and after each job.
 [results.json](results.json) records the aggregate evidence; raw data remain
 in external scratch until the milestone closes.
+
+## Bounded mixed-rate 4.5-bpw G scoring screen (G5b2b)
+
+On 2026-10-12, the second approved EXL3 fixture completed the common shared
+scorer on the same authenticated 43 teacher IDs as the
+[original BF16 reference](../m36-original-qwen2/README.md). The fixed artifact
+`00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a`
+contains 169 logical products: 42 at 4 bits, 118 at 5 bits, eight at 6 bits and
+one at 8 bits. All 676 code/sign/marker parts remain in their source encoding.
+Both selected programs use 121 packed linear GEMMs, 24 paired gate/up MGEMMs
+and 72 bias operations from the authenticated 4.5 G profile. No kernel,
+tuning fact, arithmetic policy or production dispatch default changed.
+
+The existing 7/1 schedule consumes six seven-row chunks and one final row.
+The common scorer evaluates all 42 next-token targets using full-vocabulary
+double logsumexp and retains bounded per-position NLLs. All logits are finite;
+complete tokenizer JSON bytes match the original source. This matches the
+teacher histories and target coordinates, while the FP16 scorer uses 8/3 and
+the original BF16 evaluator uses its declared eager/no-cache recipe.
+
+| Recipe | Targets | Mean NLL | Perplexity |
+| --- | ---: | ---: | ---: |
+| Original BF16, eager/no cache | 42 | 6.496176475891133 | 662.6033037486249 |
+| Shared EXL3 4.5-bpw G | 42 | 6.515128758851711 | 675.2809043195413 |
+
+This short observation is neither a corpus-wide quality gate nor a causal
+comparison of quantization alone. No equality to quantized-library logits is
+required. The existing 4-GiB host inventory, 8-GiB native domain, separate
+6-GiB physical margin and complete-lifetime retirement remain unchanged.
+The external process/cache cap is 10 GiB with zero swap; observed cgroup peak
+was 276,840,448 bytes, which is not total GPU occupancy.
+
+Spark A built the two affected targets and passed two input controls plus six
+selected-operation controls, then passed the one actual scoring case. All raw
+cases had zero failures or skips; source, binary, recipe and input guards
+passed, with zero compute processes left afterward. Main then built natively
+and passed the same eight affected controls plus both the 4.0- and 4.5-bpw G
+scoring cases, again with zero failures or skips and all guards passing.
+O profiles, broader packed shapes,
+Tier C, EXL3 state/spill/restore/kept-state and legacy deletion remain open.
