@@ -1859,6 +1859,18 @@ each is checked against the design as M3.6 proceeds.
                   integration checks and the quality gates.
                   MLX source normalization, norm/head-order authentication,
                   publication and runtime admission remain open.
+            - [x] **N3b2c — encoding-preserving BF16 head permutation:**
+                  generic dense BF16 rank-one/two support in the
+                  existing bounded grouped-to-tiled copy plan. Synthetic full
+                  payload controls cover vectors, prefixed rows, reshaped
+                  convolution rows and columns, with byte coverage and refusal
+                  guards. Independent review and final main checks passed:
+                  2,576 native, 2,021 CPU and 135 model/timing cases
+                  (182 raw GoogleTest runs), with zero failures or skips.
+                  Format, boundary, header and REUSE gates passed;
+                  source, recipe and selected model-binary guards passed.
+                  No source head-order authority, checkpoint normalization,
+                  publication or runtime admission is established by this foundation.
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
             catalog import events.

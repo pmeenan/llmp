@@ -63,9 +63,9 @@ class HeadPermutationCursor {
 };
 
 // Grouped-to-tiled heads: destination j*K+g receives source g*(V/K)+j.
-// Only dense F32 or split MXFP8 (codes AND block scales), unstacked, rank
+// Only dense F32/BF16 or split MXFP8 (codes AND block scales), unstacked, rank
 // 1 or 2. Rows are rank 2, with unchanged prefix/suffix; columns cover a
-// whole row (rank-1 F32 is one row). Column MXFP8 heads are whole 32-value
+// whole row (rank-1 dense input is one row). Column MXFP8 heads are whole 32-value
 // blocks. Neither format, shape nor any payload byte changes.
 class HeadPermutationPlan {
  public:

@@ -169,7 +169,7 @@ TEST(ImportTransformsTest, ScalarChunksKeepTheirMeaningAndGuardBytes) {
 
 format::TensorFormat Matrix(Encoding encoding, std::uint64_t columns, std::uint64_t rows) {
   return {.encoding = encoding,
-          .layout = encoding == Encoding::kF32 ? Layout::kDense : Layout::kSplit,
+          .layout = encoding == Encoding::kMxfp8 ? Layout::kSplit : Layout::kDense,
           .shape = {.ne = {columns, rows, 1, 1}, .rank = 2}};
 }
 
@@ -183,11 +183,12 @@ void CheckPermutation(const HeadPermutationPlan& plan, HeadAxis axis, std::uint6
     const auto row_bytes = format::RowBytes(plan.format(), part.role);
     ASSERT_TRUE(row_bytes.has_value());
     const auto n = static_cast<std::size_t>(part.bytes);
-    ASSERT_LE(n, 65536U);
+    ASSERT_LE(n, 131072U);
     std::vector<std::byte> source(n);
     for (std::size_t i = 0; i < n; ++i) {
       source[i] = static_cast<std::byte>((i * 7 + pi * 19) % 251);
     }
+    const auto original_source = source;
     std::vector<std::byte> expected(n);
     for (std::uint64_t dst = 0; dst < part.bytes; ++dst) {
       std::uint64_t src = dst;
@@ -212,7 +213,8 @@ void CheckPermutation(const HeadPermutationPlan& plan, HeadAxis axis, std::uint6
       auto cursor = plan.CursorFor(part.role);
       ASSERT_TRUE(cursor.has_value());
       EXPECT_FALSE(cursor->Next(0).has_value());
-      std::vector<std::byte> result(n);
+      std::vector<std::byte> guarded(n + 2, std::byte{0x6B});
+      auto result = std::span(guarded).subspan(1, n);
       std::vector<bool> written(n, false);
       std::uint64_t consumed = 0;
       for (;;) {
@@ -238,7 +240,10 @@ void CheckPermutation(const HeadPermutationPlan& plan, HeadAxis axis, std::uint6
       }
       EXPECT_EQ(consumed, part.bytes);
       EXPECT_TRUE(std::ranges::all_of(written, [](bool v) { return v; }));
-      EXPECT_EQ(result, expected);
+      EXPECT_TRUE(std::ranges::equal(result, expected));
+      EXPECT_EQ(guarded.front(), std::byte{0x6B});
+      EXPECT_EQ(guarded.back(), std::byte{0x6B});
+      EXPECT_EQ(source, original_source);
       auto end = cursor->Next(maximum);
       ASSERT_TRUE(end.has_value());
       EXPECT_FALSE(end->has_value());
@@ -265,6 +270,93 @@ TEST(ImportTransformsTest, HeadRowsAndColumnsMoveCompletePairedParts) {
   ASSERT_TRUE(plan.has_value());
   CheckPermutation(*plan, HeadAxis::kColumns, 2, 6, 1, 0);
   EXPECT_FALSE(plan->CursorFor(PartRole::kBlockScales).has_value());
+}
+
+TEST(ImportTransformsTest, Bf16HeadsPreserveCompleteRolePayloads) {
+  // The six layouts cover scalar-head parameters, QKV's unchanged Q/K prefix,
+  // gate rows, an already descriptor-reshaped convolution, and output columns.
+  // The plan only describes byte movement; it neither reshapes nor casts data.
+  struct Role {
+    std::uint64_t columns, rows, width, first;
+    HeadAxis axis;
+    bool vector;
+  };
+  const std::array roles{Role{48, 1, 1, 0, HeadAxis::kColumns, true},
+                         Role{1, 48, 1, 0, HeadAxis::kRows, false},
+                         Role{3, 10242, 128, 4096, HeadAxis::kRows, false},
+                         Role{3, 6144, 128, 0, HeadAxis::kRows, false},
+                         Role{4, 10240, 128, 4096, HeadAxis::kRows, false},
+                         Role{6144, 3, 128, 0, HeadAxis::kColumns, false}};
+  for (const auto& role : roles) {
+    auto format = Matrix(Encoding::kBF16, role.columns, role.rows);
+    if (role.vector) format.shape.rank = 1;
+    auto plan = HeadPermutationPlan::Make(format, role.axis, 16, 48, role.width, role.first);
+    ASSERT_TRUE(plan.has_value());
+    EXPECT_EQ(plan->format(), format);
+    ASSERT_EQ(plan->parts().size(), 1U);
+    EXPECT_EQ(plan->parts()[0].role, PartRole::kData);
+    EXPECT_EQ(plan->parts()[0].bytes, 2 * role.columns * role.rows);
+    CheckPermutation(*plan, role.axis, 16, 48, role.width, role.first);
+    for (const auto absent : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale})
+      EXPECT_FALSE(plan->CursorFor(absent).has_value());
+  }
+}
+
+TEST(ImportTransformsTest, Bf16HeadRefusalsLeaveSourceAndCursorUnchanged) {
+  const auto format = Matrix(Encoding::kBF16, 7, 17);
+  auto plan = HeadPermutationPlan::Make(format, HeadAxis::kRows, 2, 6, 2, 3);
+  ASSERT_TRUE(plan.has_value());
+  auto cursor = plan->CursorFor(PartRole::kData);
+  auto control = plan->CursorFor(PartRole::kData);
+  ASSERT_TRUE(cursor.has_value());
+  ASSERT_TRUE(control.has_value());
+  for (unsigned i = 0; i < 20; ++i) {
+    // Refuse both before and after partial progress, including odd-byte cuts.
+    EXPECT_FALSE(cursor->Next(0).has_value());
+    auto actual = cursor->Next(13);
+    auto expected = control->Next(13);
+    ASSERT_TRUE(actual.has_value());
+    ASSERT_TRUE(expected.has_value());
+    ASSERT_EQ(actual->has_value(), expected->has_value());
+    if (!*actual) break;
+    EXPECT_EQ((**actual).source, (**expected).source);
+    EXPECT_EQ((**actual).destination, (**expected).destination);
+    EXPECT_EQ((**actual).bytes, (**expected).bytes);
+    EXPECT_EQ((**actual).part, (**expected).part);
+  }
+  const auto refuse = [](format::TensorFormat candidate, HeadAxis axis, std::uint64_t keys,
+                         std::uint64_t heads, std::uint64_t width, std::uint64_t first = 0) {
+    const auto original = candidate;
+    EXPECT_FALSE(HeadPermutationPlan::Make(candidate, axis, keys, heads, width, first).has_value());
+    EXPECT_EQ(candidate, original);
+  };
+  refuse(format, HeadAxis::kRows, 0, 6, 2);
+  refuse(format, HeadAxis::kRows, 4, 6, 2);
+  refuse(format, HeadAxis::kRows, 2, 6, 0);
+  refuse(format, HeadAxis::kRows, 2, 6, 2, 6);
+  refuse(format, HeadAxis::kColumns, 2, 6, 1);
+  refuse(format, static_cast<HeadAxis>(255), 2, 6, 2);
+  refuse(format, HeadAxis::kRows, 2, 6, std::numeric_limits<std::uint64_t>::max());
+  auto bad = format;
+  bad.shape.rank = 1;
+  bad.shape.ne[1] = 1;
+  refuse(bad, HeadAxis::kRows, 2, 6, 1);
+  bad = format;
+  bad.shape.rank = 3;
+  bad.shape.ne[2] = 2;
+  refuse(bad, HeadAxis::kRows, 2, 6, 1);
+  bad = format;
+  bad.stacked = 2;
+  refuse(bad, HeadAxis::kRows, 2, 6, 1);
+  bad = format;
+  bad.layout = Layout::kSplit;
+  refuse(bad, HeadAxis::kRows, 2, 6, 1);
+  bad = format;
+  bad.params.tensor_scale = true;
+  refuse(bad, HeadAxis::kRows, 2, 6, 1);
+  bad = format;
+  bad.shape.ne[0] = std::numeric_limits<std::uint64_t>::max() / 2 + 1;
+  refuse(bad, HeadAxis::kRows, 2, 6, 1);
 }
 
 TEST(ImportTransformsTest, HeadFactoryRefusesUnprovablePermutations) {

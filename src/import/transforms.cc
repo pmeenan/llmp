@@ -158,14 +158,14 @@ std::expected<HeadPermutationPlan, Error> HeadPermutationPlan::Make(
   using format::Layout;
   using format::PartRole;
   const auto parts = format::PartsOf(format);
+  const bool dense = format.encoding == Encoding::kF32 || format.encoding == Encoding::kBF16;
   if (!parts || format.stacked != 1 || format.shape.rank < 1 || format.shape.rank > 2 ||
-      !((format.encoding == Encoding::kF32 && format.layout == Layout::kDense) ||
+      !((dense && format.layout == Layout::kDense) ||
         (format.encoding == Encoding::kMxfp8 && format.layout == Layout::kSplit &&
          !format.params.tensor_scale))) {
-    return Refuse("head permutation needs unstacked dense F32 or split MXFP8");
+    return Refuse("head permutation needs unstacked dense F32/BF16 or split MXFP8");
   }
-  if ((format.encoding == Encoding::kF32 &&
-       (parts->size() != 1 || !parts->Find(PartRole::kData))) ||
+  if ((dense && (parts->size() != 1 || !parts->Find(PartRole::kData))) ||
       (format.encoding == Encoding::kMxfp8 &&
        (parts->size() != 2 || !parts->Find(PartRole::kCodes) ||
         !parts->Find(PartRole::kBlockScales)))) {

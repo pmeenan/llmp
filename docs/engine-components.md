@@ -1960,6 +1960,17 @@ head blocks move together without changing the encoding or any byte.
 Each part has its own cursor so either can arrive first. Cursor
 exhaustion describes complete copy ranges, not successful writes;
 the writer must track that separately. No new fold identity is added.
+N3b2c extends only this plan to dense BF16 rank-one/two
+parameters, preserving their two-byte source encoding. The same per-part
+cursor describes complete byte movement; it neither computes values nor
+allocates a promoted weight copy. Convolution singleton removal is a separate
+caller-owned descriptor reshape. Synthetic complete payload and refusal
+controls and independent review passed. Final main checks passed 2,576 native,
+2,021 CPU and 135 model/timing cases (182 raw GoogleTest runs), with zero
+failures or skips. Format, boundary, header and REUSE gates passed, as did
+source, recipe and selected model-binary guards (2026-10-11). This foundation
+does not establish a checkpoint's source head order, apply a source transform,
+normalize a model, publish an artifact or admit a runtime profile.
 
 The native copy-only writer (`import/writer.h`) consumes owned normalized
 plans and records their specs in v1 artifacts. `llmp import` streams and
