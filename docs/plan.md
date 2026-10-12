@@ -1961,6 +1961,18 @@ each is checked against the design as M3.6 proceeds.
                   ([evidence](experiments/m36-exl3-selected/README.md)).
                   Process restart/crash recovery, serving history, weight
                   eviction/relocation, broader shapes and deletion remain open.
+            - [x] **G5c8 — EXL3 four-profile weight reload and kept continuation:**
+                  40G/45G/40O/45O evict all 292/302 immutable weight extents
+                  between completed requests, reload at unchanged addresses,
+                  and retain both selected programs. All 798 resource addresses,
+                  content generations and 6,291,456 initialized state bytes
+                  survive before continuation. Fresh-owner adoption at 157 then
+                  completes all 161 compared rows and final state against each
+                  candidate's uninterrupted reference. Fourteen focused controls
+                  and all four actual cases pass on main, with no failures or
+                  skips ([evidence](experiments/m36-exl3-selected/README.md)).
+                  Actual address relocation, process restart/crash, serving
+                  history, broader shapes and deletion remain open.
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,

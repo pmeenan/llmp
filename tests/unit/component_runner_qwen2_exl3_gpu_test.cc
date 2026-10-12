@@ -311,6 +311,20 @@ static_assert(kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners 
               kHostAllowance);
 
 namespace kept = llmp::runtime::kept;
+using SelectedProfile = llmp::kernels::exl3::FrozenCache;
+constexpr std::string_view ProfileName(SelectedProfile profile) {
+  switch (profile) {
+    case SelectedProfile::k40G:
+      return "40g";
+    case SelectedProfile::k45G:
+      return "45g";
+    case SelectedProfile::k40O:
+      return "40o";
+    case SelectedProfile::k45O:
+      return "45o";
+  }
+  return {};
+}
 struct KeptRestart {
   // Transferred only after successful teardown; never a second oracle allocation.
   std::string oracle, record_sha, layout, binary_sha, seal;
@@ -326,6 +340,25 @@ static_assert(sizeof(kept::Extent) <= 64 && sizeof(en::SlotLifecycle::Range) <= 
 constexpr std::size_t kKeptRecordLimit = 8192;
 constexpr std::uint64_t kKeptMetadata = 512 * 1024;
 static_assert(12 * 512 * 32 + 2 * 1024 * 16 + 64 * 1024 + kKeptMetadata <= kStateMetadata);
+// Address witnesses and the retained PagedWeights list coexist with Evict's
+// by-value list (moved into EvictProgram, not copied again). Generation storage
+// is already in the old state allowance. 4 KiB covers vector/receipt objects,
+// two recipe strings and fixed program bookkeeping; no per-extent text report.
+constexpr std::uint64_t kReloadMetadata = 64 * 1024;
+static_assert(sizeof(llmp::catalog::ExtentId) == 8);
+static_assert(4096 * sizeof(std::uint64_t) + 2 * 1024 * sizeof(llmp::catalog::ExtentId) + 4096 <=
+              kReloadMetadata);
+static_assert(12 * 512 * 32 + 2 * 1024 * 16 + 64 * 1024 + kKeptMetadata + kReloadMetadata <=
+              kStateMetadata);
+
+bool ReloadInventoryFits(std::size_t resources, std::size_t extents, std::size_t extent_capacity) {
+  return resources > 0 && resources <= 4096 && extents > 0 && extents <= 1024 &&
+         extent_capacity >= extents && extent_capacity <= 1024;
+}
+bool ReloadGenerationMatches(std::pair<std::uint64_t, std::uint64_t> before,
+                             std::pair<std::uint64_t, std::uint64_t> after) {
+  return after.first == before.first && after.second > before.second;
+}
 static_assert(2 * kStateCopyLimit <= kOracleBytes);
 
 // A complete owned in-process receipt, separate from the durable v2 record.
@@ -390,6 +423,13 @@ struct Lifetime {
   std::vector<std::pair<std::uint64_t, std::uint64_t>> weight_generations;
   std::shared_ptr<KeptRestart> kept;
   std::array<std::string, 2> planned_recipes;
+  SelectedProfile selected_profile = SelectedProfile::k40G;
+  // Retained across request retirement, including any unknown completion.
+  std::vector<std::uint64_t> reload_addresses;
+  std::array<std::string, 2> reload_recipes;
+  std::uint64_t reload_backings = 0, programs_created = 0, reload_programs = 0,
+                reload_state_bytes = 0;
+  bool reload_verified = false;
   bool kept_resume = false, kept_completed = false;
   int kept_dir = -1;
   ~Lifetime() {
@@ -477,7 +517,9 @@ std::string ActualRecipe(const ts::CorpusPlanRecord& record) {
 class KeptProgram final : public kn::StepProgram {
  public:
   KeptProgram(std::unique_ptr<kn::StepProgram> inner, ts::CorpusPlanRecord& record, Lifetime& life)
-      : inner_(std::move(inner), record), record_(record), life_(life) {}
+      : inner_(std::move(inner), record), record_(record), life_(life) {
+    ++life_.programs_created;
+  }
   std::uint64_t scratch_bytes() const override { return inner_.scratch_bytes(); }
   std::uint64_t pool_bytes() const override { return inner_.pool_bytes(); }
   std::uint64_t host_bytes() const override { return inner_.host_bytes() + sizeof(*this); }
@@ -492,6 +534,11 @@ class KeptProgram final : public kn::StepProgram {
   }
   std::expected<void, kn::StepFailure> Bind(kn::StepLaunch& launch) override {
     if (auto result = inner_.Bind(launch); !result) return result;
+    if (life_.reload_verified &&
+        (life_.programs_created != life_.reload_programs ||
+         ActualRecipe(record_) != life_.reload_recipes[record_.rows == 145 ? 0 : 1]))
+      return std::unexpected(
+          kn::StepFailure{.detail = "reload changed its retained selected program"});
     if (life_.kept_resume && (life_.kept->seal != KeptSeal(*life_.kept) || record_.rows != 1 ||
                               ActualRecipe(record_) != life_.kept->actual_plans[1]))
       return std::unexpected(kn::StepFailure{.detail = "kept execution recipe differs"});
@@ -526,19 +573,22 @@ std::string PlannedRecipe(const kn::LowerInput& input, const llmp::execution::Re
   return llmp::base::ToHex(hash.Finish());
 }
 
-kept::Identity KeptIdentity(const Lifetime& life, bool mixed_rate) {
+kept::Identity KeptIdentity(const Lifetime& life, SelectedProfile profile) {
   const auto& build = llmp::base::GetBuildInfo();
   return {.build = std::string(build.version) + ":" + std::string(build.commit) + ":" +
-                   life.kept->binary_sha + (mixed_rate ? ":45o:" : ":40o:") +
+                   life.kept->binary_sha + ":" + std::string(ProfileName(profile)) + ":" +
                    life.planned_recipes[0] + ":" + life.planned_recipes[1],
           .artifact = life.artifact->id(),
           .drafter = {},
           .layout = life.runner->slots().kept_layout_id()};
 }
 
-en::Status ReportKeptPlans(const Lifetime& life, bool mixed_rate, bool resumed) {
+en::Status ReportKeptPlans(const Lifetime& life, bool resumed) {
   std::ostringstream report;
-  const std::string prefix = mixed_rate ? "exl3.pinned.45o." : "exl3.pinned.40o.";
+  const auto profile = life.selected_profile;
+  const bool mixed_rate = profile == SelectedProfile::k45G || profile == SelectedProfile::k45O;
+  const bool optimized = profile == SelectedProfile::k40O || profile == SelectedProfile::k45O;
+  const std::string prefix = "exl3.pinned." + std::string(ProfileName(profile)) + ".";
   for (const auto& record : life.corpus_plans) {
     if (resumed && record.rows == 145) {
       if (record.runs != 0) return std::unexpected("fresh kept owner executed a prefill");
@@ -555,8 +605,9 @@ en::Status ReportKeptPlans(const Lifetime& life, bool mixed_rate, bool resumed) 
     if (record.rows == 145) {
       if (count("linear.reconstruct") != 169 || count("bias_add") != 72 || total != 241)
         return std::unexpected("kept reconstruction recipe differs");
-    } else if (record.rows != 1 || count("linear.gemv") != (mixed_rate ? 14 : 120) ||
-               count("linear.gemm") != (mixed_rate ? 107 : 1) ||
+    } else if (record.rows != 1 ||
+               count("linear.gemv") != (optimized ? (mixed_rate ? 14 : 120) : 0) ||
+               count("linear.gemm") != (optimized ? (mixed_rate ? 107 : 1) : 121) ||
                count("multi_linear.mgemm") != 24 || count("bias_add") != 72 || total != 217) {
       return std::unexpected("kept scalar recipe differs");
     }
@@ -567,7 +618,7 @@ en::Status ReportKeptPlans(const Lifetime& life, bool mixed_rate, bool resumed) 
   testing::Test::RecordProperty(resumed ? "kept_resumed_programs" : "kept_predecessor_programs",
                                 report.str());
   testing::Test::RecordProperty(resumed ? "kept_resumed_recipe" : "kept_predecessor_recipe",
-                                KeptIdentity(life, mixed_rate).build);
+                                KeptIdentity(life, life.selected_profile).build);
   return {};
 }
 
@@ -614,7 +665,7 @@ en::Status CheckKeptFile(Lifetime& life, const kept::Record& record, bool sync) 
   return {};
 }
 
-en::Status PublishKept(Lifetime& life, bool mixed_rate) {
+en::Status PublishKept(Lifetime& life) {
   auto& slots = life.runner->slots();
   auto& receipt = *life.kept;
   if (slots.positions(0) != 157 || !slots.spilled(0) || !slots.kept_whole(0) ||
@@ -628,7 +679,7 @@ en::Status PublishKept(Lifetime& life, bool mixed_rate) {
   record.version = kept::kStageFilesVersion;
   if (life.planned_recipes[0].size() != 64 || life.planned_recipes[1].size() != 64)
     return std::unexpected("kept setup did not measure both recipes");
-  record.identity = KeptIdentity(life, mixed_rate);
+  record.identity = KeptIdentity(life, life.selected_profile);
   if (record.identity.build.size() > 1024 || record.identity.layout.size() > 1024)
     return std::unexpected("kept identity exceeds metadata allowance");
   record.regions = {slots.layout(0).bytes};
@@ -670,8 +721,7 @@ en::Status PublishKept(Lifetime& life, bool mixed_rate) {
   return {};
 }
 
-std::expected<std::vector<en::SlotLifecycle::Range>, std::string> ReadKept(Lifetime& life,
-                                                                           bool mixed_rate) {
+std::expected<std::vector<en::SlotLifecycle::Range>, std::string> ReadKept(Lifetime& life) {
   auto text = llmp::platform::ReadPrivateFile(life.kept_dir, "slot-0.record", kKeptRecordLimit);
   if (!text || Hash(*text) != life.kept->record_sha ||
       llmp::base::json::ParseWorkingBytes(*text) > 256 * 1024)
@@ -680,7 +730,7 @@ std::expected<std::vector<en::SlotLifecycle::Range>, std::string> ReadKept(Lifet
   if (!record) return std::unexpected(record.error());
   auto& slots = life.runner->slots();
   const kept::Expected expected{.version = kept::kStageFilesVersion,
-                                .identity = KeptIdentity(life, mixed_rate),
+                                .identity = KeptIdentity(life, life.selected_profile),
                                 .slot = 0,
                                 .regions = {slots.layout(0).bytes},
                                 .layouts = {slots.layout(0).bytes},
@@ -699,7 +749,14 @@ std::expected<std::vector<en::SlotLifecycle::Range>, std::string> ReadKept(Lifet
                                           .generation = life.kept->file->generation})
     return std::unexpected("kept record differs from admitted complete footprint");
   auto wrong = expected;
-  wrong.identity = KeptIdentity(life, !mixed_rate);
+  const bool mixed_profile = life.selected_profile == SelectedProfile::k45G ||
+                             life.selected_profile == SelectedProfile::k45O;
+  const auto other_profile =
+      mixed_profile ? (life.selected_profile == SelectedProfile::k45G ? SelectedProfile::k45O
+                                                                      : SelectedProfile::k45G)
+                    : (life.selected_profile == SelectedProfile::k40G ? SelectedProfile::k40O
+                                                                      : SelectedProfile::k40G);
+  wrong.identity = KeptIdentity(life, other_profile);
   if (kept::Check(*record, wrong)) return std::unexpected("kept record accepted another profile");
   wrong = expected;
   wrong.identity.build += ":wrong-plan";
@@ -803,13 +860,30 @@ TEST(ComponentRunnerExl3Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading)
   EXPECT_FALSE(HeldOutPrefix(std::string(kTokenLimit, '\0')));
 }
 
+TEST(ComponentRunnerExl3Inputs, ReloadWitnessRefusesUnpaidOrChangedIdentity) {
+  EXPECT_TRUE(ReloadInventoryFits(4096, 1024, 1024));
+  EXPECT_FALSE(ReloadInventoryFits(4097, 1024, 1024));
+  EXPECT_FALSE(ReloadInventoryFits(4096, 1025, 1025));
+  EXPECT_FALSE(ReloadInventoryFits(1, 1, 1025));
+  EXPECT_FALSE(ReloadInventoryFits(1, 2, 1));
+  EXPECT_FALSE(ReloadInventoryFits(0, 1, 1));
+  EXPECT_TRUE(ReloadGenerationMatches({7, 3}, {7, 4}));
+  EXPECT_FALSE(ReloadGenerationMatches({7, 3}, {8, 4}));
+  EXPECT_FALSE(ReloadGenerationMatches({7, 3}, {7, 3}));
+  EXPECT_FALSE(ReloadGenerationMatches({7, 3}, {7, 2}));
+  EXPECT_FALSE(ReloadGenerationMatches({7, UINT64_MAX}, {7, 0}));
+  EXPECT_NE(ProfileName(SelectedProfile::k40G), ProfileName(SelectedProfile::k40O));
+  EXPECT_NE(ProfileName(SelectedProfile::k45G), ProfileName(SelectedProfile::k45O));
+}
+
 // Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
 void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool lifecycle = false,
                 bool optimized = false, std::shared_ptr<KeptRestart> kept_restart = {},
-                bool kept_resume = false) {
+                bool kept_resume = false, bool reload_weights = false) {
+  ASSERT_FALSE(reload_weights && !kept_restart);
   ASSERT_FALSE(optimized && !corpus && !lifecycle);
-  ASSERT_FALSE(kept_restart && (!lifecycle || !optimized));
+  ASSERT_FALSE(kept_restart && !lifecycle);
   ASSERT_FALSE(kept_resume && (!kept_restart || !kept_restart->retired));
   if (kept_resume) ASSERT_EQ(kept_restart->seal, KeptSeal(*kept_restart));
   ASSERT_FALSE(mixed_rate && !corpus && !lifecycle);
@@ -834,6 +908,8 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   Owner life(new Lifetime);
   life->kept = std::move(kept_restart);
   life->kept_resume = kept_resume;
+  life->selected_profile = optimized ? (mixed_rate ? SelectedProfile::k45O : SelectedProfile::k40O)
+                                     : (mixed_rate ? SelectedProfile::k45G : SelectedProfile::k40G);
   auto& node = life->node;
   node.SetHostFloor(0);
   const auto opened_node = node.Open();
@@ -1055,7 +1131,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   const fs::path spill = fs::path(scratch) / "qwen2-exl3-screen";
   fs::create_directories(spill);
   if (life->kept) {
-    const auto directory = spill / (mixed_rate ? "kept-45o" : "kept-40o");
+    const auto directory = spill / ("kept-" + std::string(ProfileName(life->selected_profile)));
     auto opened_directory = llmp::platform::OpenPrivateDirectory(-1, directory.c_str());
     ASSERT_TRUE(opened_directory.has_value());
     life->kept_dir = *opened_directory;
@@ -1090,6 +1166,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
                                                   : llmp::kernels::exl3::FrozenCache::k40O)
                        : mixed_rate ? llmp::kernels::exl3::FrozenCache::k45G
                                     : llmp::kernels::exl3::FrozenCache::k40G;
+    life->selected_profile = cache;
     auto selected = llmp::kernels::exl3::SelectedSource(cache, gemv);
     if (!selected) return std::unexpected(selected.error());
     auto backend = kg::GgmlBackend::Create(
@@ -1407,122 +1484,214 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
       };
       if (life->kept) {
         auto& proof = *life->kept;
-        return node.WithRequest(
-            0, runner->slots().execution(), "EXL3 fresh-owner kept control", [&]() -> en::Status {
-              auto& slots = runner->slots();
-              const auto empty = [&]() {
-                return slots.positions(0) == 0 && !slots.spilled(0) && !slots.restoring(0) &&
-                       !slots.borrowed(0) && slots.used_bytes(0) == 0;
-              };
-              constexpr std::array<std::uint32_t, 1> singleton{0};
-              if (life->kept_resume) {
-                // Adopt requires an idle slot, even within a live node request.
-                // Setup has submitted no model work and owns no state backing.
-                if (auto x = slots.SelectSlots({}); !x) return x;
-                if (slots.held(0)) return std::unexpected("fresh kept slot is still held");
-                if (!proof.retired || !empty() || !slots.kept_state().empty() ||
-                    slots.live(0, 0).spill_identity() != proof.file ||
-                    slots.kept_layout_id() != proof.layout ||
-                    life->planned_recipes[0].size() != 64 || life->planned_recipes[1].size() != 64)
-                  return std::unexpected("kept owner was not freshly and identically opened");
-                if (auto x = StateBuffers(*life); !x) return x;
-                auto footprint = ReadKept(*life, mixed_rate);
-                if (!footprint) return std::unexpected(footprint.error());
-                if (slots.Adopt(0, 157, *footprint, "wrong-layout") || !empty())
-                  return std::unexpected("kept wrong-layout refusal changed the fresh slot");
-                auto short_footprint = *footprint;
-                short_footprint.pop_back();
-                if (slots.Adopt(0, 157, short_footprint, proof.layout) || !empty())
-                  return std::unexpected(
-                      "kept incomplete-footprint refusal changed the fresh slot");
-                if (auto x = slots.Adopt(0, 157, *footprint, proof.layout); !x) return x;
-                if (slots.positions(0) != 157 || !slots.spilled(0) || !slots.adopted(0) ||
-                    slots.used_bytes(0) != 0)
-                  return std::unexpected("kept adoption did not remain unread and spilled");
-                if (auto x = slots.SelectSlots(singleton); !x) return x;
-                if (auto x = slots.Restore(0); !x) return x;
-                if (auto x = SaveState(*life, false); !x) return x;
-                if (life->saved_positions != 157 || life->saved_bytes != proof.saved_bytes ||
-                    !SameRanges(life->saved_pages, *footprint) ||
-                    std::memcmp(life->saved_state, life->oracle.data() + kStateCopyLimit,
-                                static_cast<std::size_t>(proof.saved_bytes)) != 0)
-                  return std::unexpected("kept restored full state differs from its predecessor");
-                for (std::uint32_t past = 157; past < 161; ++past)
-                  if (auto x = run_step(Shape(past, 1), false); !x) return x;
-                if (auto x = SaveState(*life, false); !x) return x;
-                if (slots.positions(0) != 161 || compared_rows != 4 || executed_steps != 4 ||
-                    life->saved_bytes != proof.final_bytes ||
-                    !SameRanges(life->saved_pages, proof.final_pages) ||
-                    std::memcmp(life->saved_state, life->oracle.data(),
-                                static_cast<std::size_t>(proof.final_bytes)) != 0)
-                  return std::unexpected("kept continuation differs from uninterrupted state");
-                if (auto x = ReportKeptPlans(*life, mixed_rate, true); !x) return x;
-                life->kept_completed = true;  // Published only by a successful final teardown.
-                testing::Test::RecordProperty("kept_compared_rows", "161");
-                testing::Test::RecordProperty("kept_executed_steps", "34");
-                testing::Test::RecordProperty("kept_final_positions", "161");
-                testing::Test::RecordProperty("kept_restored_bytes",
-                                              std::to_string(proof.saved_bytes));
-                testing::Test::RecordProperty("kept_final_state_bytes",
-                                              std::to_string(proof.final_bytes));
-              } else {
-                for (const auto& shape : shapes)
-                  if (auto x = run_step(shape, true); !x) return x;
-                if (auto x = SaveState(*life, false); !x) return x;
-                if (life->saved_positions != 161) return std::unexpected("kept baseline position");
-                proof.final_pages = life->saved_pages;
-                proof.final_bytes = life->saved_bytes;
-                for (const auto id : paged->extents()) {
-                  const auto extent = node.catalog().Describe(id);
-                  if (!extent || extent->state != llmp::catalog::ExtentState::kResident)
-                    return std::unexpected("kept baseline weight not resident");
-                  life->weight_generations.emplace_back(extent->content_generation,
-                                                        extent->backing_generation);
-                }
-                if (auto x = slots.Clear(0); !x) return x;
-                // All baseline work and copies completed before dropping its lease.
-                if (auto x = slots.SelectSlots({}); !x) return x;
-                if (slots.held(0)) return std::unexpected("cleared kept slot is still held");
-                if (!empty() || slots.kept_state().empty() ||
-                    slots.Adopt(0, 161, proof.final_pages, slots.kept_layout_id()) || !empty())
-                  return std::unexpected("kept adoption accepted cleared retained backing");
-                if (auto x = slots.SelectSlots(singleton); !x) return x;
-                for (const auto& shape : shapes) {
-                  const auto past = shape.segments.front().past;
-                  if (past == 157) break;
-                  if (auto x = run_step(shape, false); !x) return x;
-                  if (past == 0) {
-                    if (!CanStoreFinalState(compared_rows, proof.final_bytes))
-                      return std::unexpected("kept final state would overwrite live oracle rows");
-                    std::memcpy(life->oracle.data(), life->saved_state,
-                                static_cast<std::size_t>(proof.final_bytes));
-                  }
-                }
-                if (slots.positions(0) != 157 || compared_rows != 157 || executed_steps != 30)
-                  return std::unexpected("kept predecessor complete execution inventory differs");
-                if (auto x = SaveState(*life, false); !x) return x;
-                proof.saved_bytes = life->saved_bytes;
-                if (!CanStoreKeptSnapshots(compared_rows, proof.final_bytes, proof.saved_bytes))
-                  return std::unexpected("kept snapshots exceed retired disjoint prefix");
-                std::memcpy(life->oracle.data() + kStateCopyLimit, life->saved_state,
-                            static_cast<std::size_t>(proof.saved_bytes));
-                if (auto x = slots.Spill(0); !x) return x;
-                for (std::size_t i = 0; i < paged->extents().size(); ++i) {
-                  const auto extent = node.catalog().Describe(paged->extents()[i]);
-                  if (!extent || extent->state != llmp::catalog::ExtentState::kResident ||
-                      life->weight_generations[i] !=
-                          std::pair{extent->content_generation, extent->backing_generation})
-                    return std::unexpected("kept predecessor weight identity changed");
-                }
-                if (auto x = ReportKeptPlans(*life, mixed_rate, false); !x) return x;
-                for (std::size_t i = 0; i < proof.actual_plans.size(); ++i)
-                  proof.actual_plans[i] = ActualRecipe(life->corpus_plans[i]);
-                if (auto x = PublishKept(*life, mixed_rate); !x) return x;
-                testing::Test::RecordProperty("kept_predecessor_steps", "30");
-                testing::Test::RecordProperty("kept_predecessor_compared_rows", "157");
-                testing::Test::RecordProperty("kept_immutable_weight_extents",
-                                              std::to_string(paged->extents().size()));
+        bool after_reload = false;
+        const auto kept_work = [&]() -> en::Status {
+          auto& slots = runner->slots();
+          const auto empty = [&]() {
+            return slots.positions(0) == 0 && !slots.spilled(0) && !slots.restoring(0) &&
+                   !slots.borrowed(0) && slots.used_bytes(0) == 0;
+          };
+          constexpr std::array<std::uint32_t, 1> singleton{0};
+          if (life->kept_resume) {
+            // Adopt requires an idle slot, even within a live node request.
+            // Setup has submitted no model work and owns no state backing.
+            if (auto x = slots.SelectSlots({}); !x) return x;
+            if (slots.held(0)) return std::unexpected("fresh kept slot is still held");
+            if (!proof.retired || !empty() || !slots.kept_state().empty() ||
+                slots.live(0, 0).spill_identity() != proof.file ||
+                slots.kept_layout_id() != proof.layout || life->planned_recipes[0].size() != 64 ||
+                life->planned_recipes[1].size() != 64)
+              return std::unexpected("kept owner was not freshly and identically opened");
+            if (auto x = StateBuffers(*life); !x) return x;
+            auto footprint = ReadKept(*life);
+            if (!footprint) return std::unexpected(footprint.error());
+            if (slots.Adopt(0, 157, *footprint, "wrong-layout") || !empty())
+              return std::unexpected("kept wrong-layout refusal changed the fresh slot");
+            auto short_footprint = *footprint;
+            short_footprint.pop_back();
+            if (slots.Adopt(0, 157, short_footprint, proof.layout) || !empty())
+              return std::unexpected("kept incomplete-footprint refusal changed the fresh slot");
+            if (auto x = slots.Adopt(0, 157, *footprint, proof.layout); !x) return x;
+            if (slots.positions(0) != 157 || !slots.spilled(0) || !slots.adopted(0) ||
+                slots.used_bytes(0) != 0)
+              return std::unexpected("kept adoption did not remain unread and spilled");
+            if (auto x = slots.SelectSlots(singleton); !x) return x;
+            if (auto x = slots.Restore(0); !x) return x;
+            if (auto x = SaveState(*life, false); !x) return x;
+            if (life->saved_positions != 157 || life->saved_bytes != proof.saved_bytes ||
+                !SameRanges(life->saved_pages, *footprint) ||
+                std::memcmp(life->saved_state, life->oracle.data() + kStateCopyLimit,
+                            static_cast<std::size_t>(proof.saved_bytes)) != 0)
+              return std::unexpected("kept restored full state differs from its predecessor");
+            for (std::uint32_t past = 157; past < 161; ++past)
+              if (auto x = run_step(Shape(past, 1), false); !x) return x;
+            if (auto x = SaveState(*life, false); !x) return x;
+            if (slots.positions(0) != 161 || compared_rows != 4 || executed_steps != 4 ||
+                life->saved_bytes != proof.final_bytes ||
+                !SameRanges(life->saved_pages, proof.final_pages) ||
+                std::memcmp(life->saved_state, life->oracle.data(),
+                            static_cast<std::size_t>(proof.final_bytes)) != 0)
+              return std::unexpected("kept continuation differs from uninterrupted state");
+            if (auto x = ReportKeptPlans(*life, true); !x) return x;
+            life->kept_completed = true;  // Published only by a successful final teardown.
+            testing::Test::RecordProperty("kept_compared_rows", "161");
+            testing::Test::RecordProperty("kept_executed_steps", "34");
+            testing::Test::RecordProperty("kept_final_positions", "161");
+            testing::Test::RecordProperty("kept_restored_bytes", std::to_string(proof.saved_bytes));
+            testing::Test::RecordProperty("kept_final_state_bytes",
+                                          std::to_string(proof.final_bytes));
+          } else {
+            if (!after_reload) {
+              for (const auto& shape : shapes)
+                if (auto x = run_step(shape, true); !x) return x;
+              if (auto x = SaveState(*life, false); !x) return x;
+              if (life->saved_positions != 161) return std::unexpected("kept baseline position");
+              proof.final_pages = life->saved_pages;
+              proof.final_bytes = life->saved_bytes;
+              for (const auto id : paged->extents()) {
+                const auto extent = node.catalog().Describe(id);
+                if (!extent || extent->state != llmp::catalog::ExtentState::kResident)
+                  return std::unexpected("kept baseline weight not resident");
+                life->weight_generations.emplace_back(extent->content_generation,
+                                                      extent->backing_generation);
               }
+              if (auto x = slots.Clear(0); !x) return x;
+              // All baseline work and copies completed before dropping its lease.
+              if (auto x = slots.SelectSlots({}); !x) return x;
+              if (slots.held(0)) return std::unexpected("cleared kept slot is still held");
+              if (!empty() || slots.kept_state().empty() ||
+                  slots.Adopt(0, 161, proof.final_pages, slots.kept_layout_id()) || !empty())
+                return std::unexpected("kept adoption accepted cleared retained backing");
+              if (auto x = slots.SelectSlots(singleton); !x) return x;
+            }
+            for (const auto& shape : shapes) {
+              const auto past = shape.segments.front().past;
+              if (after_reload && past == 0) continue;
+              if (past == 157) break;
+              if (auto x = run_step(shape, false); !x) return x;
+              if (past == 0) {
+                if (!CanStoreFinalState(compared_rows, proof.final_bytes))
+                  return std::unexpected("kept final state would overwrite live oracle rows");
+                std::memcpy(life->oracle.data(), life->saved_state,
+                            static_cast<std::size_t>(proof.final_bytes));
+                if (reload_weights) {
+                  // The complete145 snapshot remains pinned until reload is
+                  // checked before any following scalar operation.
+                  if (auto x = SaveState(*life, false); !x) return x;
+                  return {};
+                }
+              }
+            }
+            if (slots.positions(0) != 157 || compared_rows != 157 || executed_steps != 30)
+              return std::unexpected("kept predecessor complete execution inventory differs");
+            if (auto x = SaveState(*life, false); !x) return x;
+            proof.saved_bytes = life->saved_bytes;
+            if (!CanStoreKeptSnapshots(compared_rows, proof.final_bytes, proof.saved_bytes))
+              return std::unexpected("kept snapshots exceed retired disjoint prefix");
+            std::memcpy(life->oracle.data() + kStateCopyLimit, life->saved_state,
+                        static_cast<std::size_t>(proof.saved_bytes));
+            if (auto x = slots.Spill(0); !x) return x;
+            for (std::size_t i = 0; i < paged->extents().size(); ++i) {
+              const auto extent = node.catalog().Describe(paged->extents()[i]);
+              if (!extent || extent->state != llmp::catalog::ExtentState::kResident ||
+                  life->weight_generations[i] !=
+                      std::pair{extent->content_generation, extent->backing_generation})
+                return std::unexpected("kept predecessor weight identity changed");
+            }
+            if (auto x = ReportKeptPlans(*life, false); !x) return x;
+            for (std::size_t i = 0; i < proof.actual_plans.size(); ++i)
+              proof.actual_plans[i] = ActualRecipe(life->corpus_plans[i]);
+            if (auto x = PublishKept(*life); !x) return x;
+            testing::Test::RecordProperty("kept_predecessor_steps", "30");
+            testing::Test::RecordProperty("kept_predecessor_compared_rows", "157");
+            testing::Test::RecordProperty("kept_immutable_weight_extents",
+                                          std::to_string(paged->extents().size()));
+          }
+          return {};
+        };
+        if (auto x = node.WithRequest(0, runner->slots().execution(),
+                                      "EXL3 fresh-owner kept control", kept_work);
+            !x)
+          return x;
+        if (!reload_weights || life->kept_resume) return {};
+        // A real completed EndRequest released the immutable closure. Dropping
+        // slot selection inside kept_work would not establish this condition.
+        if (node.InRequest(0) || runner->slots().positions(0) != 145 || compared_rows != 145 ||
+            executed_steps != 18 || life->saved_positions != 145 ||
+            !ReloadInventoryFits(artifact->resources().size(), paged->extents().size(),
+                                 paged->extents().capacity()))
+          return std::unexpected("reload boundary or metadata inventory differs");
+        life->reload_addresses.resize(artifact->resources().size());
+        if (life->reload_addresses.capacity() > 4096)
+          return std::unexpected("reload address capacity exceeds payment");
+        for (std::size_t i = 0; i < life->reload_addresses.size(); ++i)
+          life->reload_addresses[i] = paged->resource_address(static_cast<std::uint32_t>(i));
+        life->reload_backings = node.memory().backings();
+        for (std::size_t i = 0; i < paged->extents().size(); ++i) {
+          const auto extent = node.catalog().Describe(paged->extents()[i]);
+          if (!extent || extent->state != llmp::catalog::ExtentState::kResident ||
+              extent->leases != 0 || extent->registrations != 0 ||
+              life->weight_generations[i] !=
+                  std::pair{extent->content_generation, extent->backing_generation})
+            return std::unexpected("reload begins with held or changed weight backing");
+        }
+        for (std::size_t i = 0; i < life->reload_recipes.size(); ++i)
+          life->reload_recipes[i] = ActualRecipe(life->corpus_plans[i]);
+        life->reload_programs = life->programs_created;
+        life->reload_state_bytes = life->saved_bytes;
+        if (life->reload_programs != 2)
+          return std::unexpected("reload expected exactly two retained programs");
+        if (auto x = node.Evict(paged->extents()); !x) return x;
+        if (node.memory().backings() + paged->extents().size() != life->reload_backings)
+          return std::unexpected("reload did not release every immutable backing");
+        for (const auto id : paged->extents()) {
+          const auto extent = node.catalog().Describe(id);
+          if (!extent || extent->state != llmp::catalog::ExtentState::kNonresident ||
+              extent->leases != 0 || extent->registrations != 0)
+            return std::unexpected("reload left a resident or held weight");
+        }
+        return node.WithRequest(
+            0, runner->slots().execution(), "EXL3 weight reload continuation", [&]() -> en::Status {
+              if (node.memory().backings() != life->reload_backings)
+                return std::unexpected("reload backing count differs");
+              for (std::size_t i = 0; i < paged->extents().size(); ++i) {
+                const auto extent = node.catalog().Describe(paged->extents()[i]);
+                if (!extent || extent->state != llmp::catalog::ExtentState::kResident ||
+                    !ReloadGenerationMatches(
+                        life->weight_generations[i],
+                        {extent->content_generation, extent->backing_generation}))
+                  return std::unexpected("reload content or advanced backing generation differs");
+                // Subsequent kept/spill checks require this exact new backing, not
+                // stale pre-eviction generations and not unbounded further changes.
+                life->weight_generations[i] = {extent->content_generation,
+                                               extent->backing_generation};
+              }
+              if (auto x = runner->slots().CheckPlaces(); !x) return x;
+              llmp::base::Sha256 addresses;
+              for (std::size_t i = 0; i < life->reload_addresses.size(); ++i) {
+                const auto address = paged->resource_address(static_cast<std::uint32_t>(i));
+                if (address != life->reload_addresses[i])
+                  return std::unexpected("reload changed an immutable resource address");
+                addresses.Update(std::as_bytes(std::span(&address, 1)));
+              }
+              if (auto x = CheckSavedState(*life); !x) return x;
+              life->reload_verified = true;
+              after_reload = true;
+              if (auto x = kept_work(); !x) return x;
+              if (life->programs_created != life->reload_programs)
+                return std::unexpected("reload reconstructed a retained program");
+              testing::Test::RecordProperty("reload_weight_extents",
+                                            std::to_string(paged->extents().size()));
+              testing::Test::RecordProperty("reload_resource_addresses",
+                                            std::to_string(life->reload_addresses.size()));
+              testing::Test::RecordProperty("reload_address_sha256",
+                                            llmp::base::ToHex(addresses.Finish()));
+              testing::Test::RecordProperty("reload_unchanged_state_positions", "145");
+              testing::Test::RecordProperty("reload_unchanged_state_bytes",
+                                            std::to_string(life->reload_state_bytes));
+              testing::Test::RecordProperty("reload_retained_programs",
+                                            std::to_string(life->reload_programs));
+              testing::Test::RecordProperty("reload_count", "1");
               return {};
             });
       }
@@ -1737,4 +1906,20 @@ TEST(ComponentRunnerExl3Gpu, MixedRateOptimizedKeptStateAdoptsIntoFreshOwner) {
   ASSERT_FALSE(testing::Test::HasFailure());
   EXPECT_TRUE(proof->complete);
 }
+// One four-profile slice: unchanged-address backing reload plus fresh owner,
+// not a virtual-address relocation or an OS process restart.
+void RunReloadControl(bool mixed_rate, bool optimized) {
+  auto proof = std::make_shared<KeptRestart>();
+  RunControl(true, false, mixed_rate, true, optimized, proof, false, true);
+  ASSERT_FALSE(testing::Test::HasFailure());
+  ASSERT_TRUE(proof->retired);
+  ASSERT_EQ(proof->oracle.size(), kFullOracleBytes);
+  RunControl(true, false, mixed_rate, true, optimized, proof, true, true);
+  ASSERT_FALSE(testing::Test::HasFailure());
+  EXPECT_TRUE(proof->complete);
+}
+TEST(ComponentRunnerExl3Gpu, WeightReloadAndFreshOwner40G) { RunReloadControl(false, false); }
+TEST(ComponentRunnerExl3Gpu, WeightReloadAndFreshOwner45G) { RunReloadControl(true, false); }
+TEST(ComponentRunnerExl3Gpu, WeightReloadAndFreshOwner40O) { RunReloadControl(false, true); }
+TEST(ComponentRunnerExl3Gpu, WeightReloadAndFreshOwner45O) { RunReloadControl(true, true); }
 }  // namespace

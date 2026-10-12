@@ -292,3 +292,58 @@ result record; the selected recipes and full state controls pass unchanged.
 This proves serial fresh native ownership within one process, not process
 launch/crash recovery, serving-history restoration, broader shapes, performance
 or legacy deletion. It adds no quantized-library bit-equality adoption gate.
+
+## Four-profile weight reload and kept continuation (G5c8)
+
+All four approved execution profiles, 40G/45G/40O/45O, pass one combined
+weight-reload and fresh-owner control. The sole reference remains each
+candidate's uninterrupted 145-row prefill and 16 scalar steps on the existing
+sealed 1040-ID file's first 161 IDs. After comparing the repeated 145-row
+prefill, the fixture fully ends the request before evicting every immutable
+weight extent: 292 for each 40 profile and 302 for each 45 profile.
+
+Every extent becomes nonresident and the physical backing count drops by
+exactly that count. The next request reloads them with strictly advanced backing
+generations and unchanged content generations. All 798 artifact resource
+addresses remain unchanged; the authoritative placement check passes. Before
+any subsequent model write, all 6,291,456 initialized state bytes at position
+145 match the saved state. Both selected programs remain installed, with exact
+bound recipe checks before execution and no replacement program constructed.
+This is backing eviction/reload at the same virtual addresses, not relocation.
+
+The continuation reaches 157, publishes the same authenticated version 2 kept
+record, and destroys the predecessor only after successful retirement. A fresh
+owner independently checks the model, layout, executable and G/O profile's
+planned recipe, adopts the complete file into an empty lifecycle, and completes
+four scalar steps. Each case executes 34 steps and compares all 161 full output
+rows and the complete final state against its own uninterrupted reference.
+This also extends kept-file adoption coverage to both G profiles. Existing
+wrong-profile/plan/layout/footprint and retained-backing refusals remain.
+
+Each predecessor runs its 145-row program twice and scalar program 28 times;
+each successor runs the same scalar recipe four times. Prefill selects 169
+reconstructions and 72 bias operations. G scalar recipes use 121 GEMMs, 24 paired
+MGEMMs and 72 bias operations; 40O uses 120 GEMVs and one GEMM, while 45O uses
+14 GEMVs and 107 GEMMs, with the same paired/bias counts. Both O profiles
+retain all eight actual occupancy facts `[48,96,48,96,48,96,48,96]` and their
+launch-time validation; G does not claim an occupancy-based selection.
+
+The sole 97,846,784-byte reference and serially owned 32-MiB pinned state buffers
+are unchanged. Checked reload witnesses require at most 53,248 additional bytes
+inside a 64-KiB allowance; the complete state/kept/reload metadata upper bound is
+884,736 bytes within the existing 1 MiB. The 4-GiB host allowance, 8-GiB native
+domain, 6-GiB physical margin and 10-GiB zero-swap process/cache confinement remain.
+Unknown completion retains the complete owner and prevents its successor.
+
+Spark A built the affected targets and passed five input, six selected-operation
+and three kept-record controls, then all four actual cases, with zero failures
+or skips, all guards passing and no compute processes remaining. Observed
+process/cache peaks were 943,767,552 bytes (40G), 943,501,312 (45G), 943,005,696
+(40O) and 944,005,120 (45O); these are not total device occupancy. Main passed
+a full native build, the same 14 controls and all four actual cases, with zero
+failures or skips, all guards passing and no compute processes remaining. Main
+process/cache peaks were 943,267,840 (40G), 943,255,552 (45G), 943,747,072 (40O)
+and 943,742,976 bytes (45O). Actual address relocation, OS process restart/crash recovery,
+serving-history restoration, broader shapes and legacy deletion remain open.
+No corpus-quality or performance claim, or external quantized-library
+bit-equality adoption gate, is added.

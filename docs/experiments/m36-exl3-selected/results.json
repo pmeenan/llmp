@@ -1047,5 +1047,506 @@
       "broader batches/shapes and historical Tier C",
       "performance and legacy deletion"
     ]
+  },
+  "G5c8": {
+    "scope": "All four approved profiles: complete immutable-weight backing eviction/reload at unchanged virtual addresses, retained programs and fresh-owner kept continuation; same-candidate equality only",
+    "source_base": "ef1b786e",
+    "source_fixture_sha256": "2207b4f3d7b70123f4918f1e361dcf71aacc1f12c9383528af4ad9d889608bb7",
+    "binary_sha256": "84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793",
+    "checks": {
+      "native_result_sha256": "41c221cdfcc0a40b78e31c0d117c864882afa86b0e9e45ff65a8834b2a2eaf8e",
+      "cases": 14,
+      "failures": 0,
+      "skips": 0,
+      "all_guards": "PASS"
+    },
+    "authority": {
+      "teacher_file_ids": 1040,
+      "used_teacher_ids": 161,
+      "teacher_file_sha256": "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c",
+      "reference": "same candidate uninterrupted145+16; sole full-head oracle",
+      "record": "existing kept version2, complete file identity/extent hashes and model/layout/selected recipe/executable authority"
+    },
+    "actual": {
+      "40g": {
+        "result_sha256": "70a80ac9700af7c03f602647324e5b02314087146078802855b528ce8883dcb2",
+        "status": "PASS",
+        "cases": 1,
+        "failures": 0,
+        "skips": 0,
+        "witnesses": {
+          "corpus_artifact_id": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+          "corpus_exl3_rates": "4:168,8:1",
+          "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+          "lifecycle_bound_model": "e96d1a031714920f601970ede6847811d0d8ef8750c49f902f949bdc5d6a3e12",
+          "kept_predecessor_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:40g:2354e2ed72b5c775c98b277c73748e99d9aedf213a20541e3f1b3a970587ab23:96716da4fd5ae5cc321f789123ab0e613e91d1441c657ccb5f8896ce5ffc2f69",
+          "kept_record_sha256": "97f58430411a863893936d454c3628d51ace2edd58feee6efec6923939f44b8e",
+          "kept_layout": "llmp-state-v2:64a30ece8315ce69a06205e57136d1ac148eeae039e629fd47bee1537306c353",
+          "kept_predecessor_steps": "30",
+          "kept_predecessor_compared_rows": "157",
+          "kept_immutable_weight_extents": "292",
+          "reload_weight_extents": "292",
+          "reload_resource_addresses": "798",
+          "reload_address_sha256": "60127b3b72fc8f9af27ecf37abab8d737a3c4b8963db233d32e33aa48f4497b0",
+          "reload_unchanged_state_positions": "145",
+          "reload_unchanged_state_bytes": "6291456",
+          "reload_retained_programs": "2",
+          "reload_count": "1",
+          "kept_resumed_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:40g:2354e2ed72b5c775c98b277c73748e99d9aedf213a20541e3f1b3a970587ab23:96716da4fd5ae5cc321f789123ab0e613e91d1441c657ccb5f8896ce5ffc2f69",
+          "kept_compared_rows": "161",
+          "kept_executed_steps": "34",
+          "kept_final_positions": "161",
+          "kept_restored_bytes": "6291456",
+          "kept_final_state_bytes": "6291456"
+        },
+        "programs": {
+          "predecessor": {
+            "145": {
+              "identity": "483f3be09037c201718387cc62201ed399c69b2da526bbd09da12caf533abd49",
+              "run_or_record": 2,
+              "selected_counts": {
+                "exl3.pinned.40g.linear.reconstruct": 169,
+                "exl3.pinned.40g.bias_add": 72
+              }
+            },
+            "1": {
+              "identity": "710b48aa1138f2f02eeca11a6326f618f4bd11b4680cd04dc7bbf9ef879e7f62",
+              "run_or_record": 28,
+              "selected_counts": {
+                "exl3.pinned.40g.linear.gemm": 121,
+                "exl3.pinned.40g.bias_add": 72,
+                "exl3.pinned.40g.multi_linear.mgemm": 24
+              }
+            }
+          },
+          "resumed": {
+            "1": {
+              "identity": "710b48aa1138f2f02eeca11a6326f618f4bd11b4680cd04dc7bbf9ef879e7f62",
+              "run_or_record": 4,
+              "selected_counts": {
+                "exl3.pinned.40g.linear.gemm": 121,
+                "exl3.pinned.40g.bias_add": 72,
+                "exl3.pinned.40g.multi_linear.mgemm": 24
+              }
+            }
+          }
+        },
+        "memory_peak_observed": 943767552,
+        "compute_processes_after": 0,
+        "all_guards": "PASS"
+      },
+      "45g": {
+        "result_sha256": "b4edbbd3de0ad40e8135e4fd7fab487105fc14fe9ffebf23d16eccf9bb7f2bee",
+        "status": "PASS",
+        "cases": 1,
+        "failures": 0,
+        "skips": 0,
+        "witnesses": {
+          "corpus_artifact_id": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+          "corpus_exl3_rates": "4:42,5:118,6:8,8:1",
+          "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+          "lifecycle_bound_model": "673a3c6a28834c16271773fa42c48cd44617447558537edb8307d330498950ce",
+          "kept_predecessor_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:45g:fa7b74ebe421a0767656fab3175b40c16dffa8a54f7c5106ce1674ccee0836c0:f9cd90f844605447efe64af884ce996a6c0af5750606c1a019f97b4af67aba18",
+          "kept_record_sha256": "01b72d65bc8b751acde857a4963cc64fb2126405e9b3046628aebbbbd0427789",
+          "kept_layout": "llmp-state-v2:e4bd96eb7792576ce06c80fbe36201e136658ebc1d927c6e764e32c90848e5aa",
+          "kept_predecessor_steps": "30",
+          "kept_predecessor_compared_rows": "157",
+          "kept_immutable_weight_extents": "302",
+          "reload_weight_extents": "302",
+          "reload_resource_addresses": "798",
+          "reload_address_sha256": "8614921b77a234651de52df3b0f5fd78756d7830865bf84013380691eebe0dce",
+          "reload_unchanged_state_positions": "145",
+          "reload_unchanged_state_bytes": "6291456",
+          "reload_retained_programs": "2",
+          "reload_count": "1",
+          "kept_resumed_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:45g:fa7b74ebe421a0767656fab3175b40c16dffa8a54f7c5106ce1674ccee0836c0:f9cd90f844605447efe64af884ce996a6c0af5750606c1a019f97b4af67aba18",
+          "kept_compared_rows": "161",
+          "kept_executed_steps": "34",
+          "kept_final_positions": "161",
+          "kept_restored_bytes": "6291456",
+          "kept_final_state_bytes": "6291456"
+        },
+        "programs": {
+          "predecessor": {
+            "145": {
+              "identity": "af36bc9fe7e38635c551f08b5a6427a73a4106b8fd5b42d2d22804d4a14f8935",
+              "run_or_record": 2,
+              "selected_counts": {
+                "exl3.pinned.45g.linear.reconstruct": 169,
+                "exl3.pinned.45g.bias_add": 72
+              }
+            },
+            "1": {
+              "identity": "3800159b2c781bbf11c6b65075757124dd19e1b8213c9583ffde868aa7440234",
+              "run_or_record": 28,
+              "selected_counts": {
+                "exl3.pinned.45g.linear.gemm": 121,
+                "exl3.pinned.45g.bias_add": 72,
+                "exl3.pinned.45g.multi_linear.mgemm": 24
+              }
+            }
+          },
+          "resumed": {
+            "1": {
+              "identity": "3800159b2c781bbf11c6b65075757124dd19e1b8213c9583ffde868aa7440234",
+              "run_or_record": 4,
+              "selected_counts": {
+                "exl3.pinned.45g.linear.gemm": 121,
+                "exl3.pinned.45g.bias_add": 72,
+                "exl3.pinned.45g.multi_linear.mgemm": 24
+              }
+            }
+          }
+        },
+        "memory_peak_observed": 943501312,
+        "compute_processes_after": 0,
+        "all_guards": "PASS"
+      },
+      "40o": {
+        "result_sha256": "80ba14d5001fdef1084a4beeacc5912128756e98ca853b5b6bd61bf98ad9185f",
+        "status": "PASS",
+        "cases": 1,
+        "failures": 0,
+        "skips": 0,
+        "witnesses": {
+          "corpus_artifact_id": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+          "corpus_exl3_rates": "4:168,8:1",
+          "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+          "lifecycle_bound_model": "e96d1a031714920f601970ede6847811d0d8ef8750c49f902f949bdc5d6a3e12",
+          "corpus_gemv_capacity": "48\n96\n48\n96\n48\n96\n48\n96\n",
+          "kept_predecessor_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:40o:1f9bd75011569f2bf2526f203a5f15ce0e3964c7797bdcf9941b466c9412abd4:3a382d9808b8012360aa38427f9542e77cdc7562db084a544ea5187a24d21998",
+          "kept_record_sha256": "9efb4aa0342ff4d062e4e5a347e824e54710aa2b0762ad588582792c14f3cbbf",
+          "kept_layout": "llmp-state-v2:64a30ece8315ce69a06205e57136d1ac148eeae039e629fd47bee1537306c353",
+          "kept_predecessor_steps": "30",
+          "kept_predecessor_compared_rows": "157",
+          "kept_immutable_weight_extents": "292",
+          "reload_weight_extents": "292",
+          "reload_resource_addresses": "798",
+          "reload_address_sha256": "60127b3b72fc8f9af27ecf37abab8d737a3c4b8963db233d32e33aa48f4497b0",
+          "reload_unchanged_state_positions": "145",
+          "reload_unchanged_state_bytes": "6291456",
+          "reload_retained_programs": "2",
+          "reload_count": "1",
+          "kept_resumed_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:40o:1f9bd75011569f2bf2526f203a5f15ce0e3964c7797bdcf9941b466c9412abd4:3a382d9808b8012360aa38427f9542e77cdc7562db084a544ea5187a24d21998",
+          "kept_compared_rows": "161",
+          "kept_executed_steps": "34",
+          "kept_final_positions": "161",
+          "kept_restored_bytes": "6291456",
+          "kept_final_state_bytes": "6291456"
+        },
+        "programs": {
+          "predecessor": {
+            "145": {
+              "identity": "37bb2069adf19eacfe6b149d0c2905bf49a67e439d4e90e009816b8f47597b15",
+              "run_or_record": 2,
+              "selected_counts": {
+                "exl3.pinned.40o.linear.reconstruct": 169,
+                "exl3.pinned.40o.bias_add": 72
+              }
+            },
+            "1": {
+              "identity": "e928d57b6b878694b320bb6cf5328b0418e5be351419985aac761173482e312c",
+              "run_or_record": 28,
+              "selected_counts": {
+                "exl3.pinned.40o.linear.gemv": 120,
+                "exl3.pinned.40o.bias_add": 72,
+                "exl3.pinned.40o.multi_linear.mgemm": 24,
+                "exl3.pinned.40o.linear.gemm": 1
+              }
+            }
+          },
+          "resumed": {
+            "1": {
+              "identity": "e928d57b6b878694b320bb6cf5328b0418e5be351419985aac761173482e312c",
+              "run_or_record": 4,
+              "selected_counts": {
+                "exl3.pinned.40o.linear.gemv": 120,
+                "exl3.pinned.40o.bias_add": 72,
+                "exl3.pinned.40o.multi_linear.mgemm": 24,
+                "exl3.pinned.40o.linear.gemm": 1
+              }
+            }
+          }
+        },
+        "memory_peak_observed": 943005696,
+        "compute_processes_after": 0,
+        "all_guards": "PASS",
+        "gemv_capacity": {
+          "order": "output[F16,F32],rows[one,multiple],config[narrow,wide]",
+          "blocks": [
+            48,
+            96,
+            48,
+            96,
+            48,
+            96,
+            48,
+            96
+          ]
+        }
+      },
+      "45o": {
+        "result_sha256": "fd8c69835b04fbf56449f63376b72dc47e6ee7731bca5f9b4494a837ec271cb2",
+        "status": "PASS",
+        "cases": 1,
+        "failures": 0,
+        "skips": 0,
+        "witnesses": {
+          "corpus_artifact_id": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+          "corpus_exl3_rates": "4:42,5:118,6:8,8:1",
+          "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+          "lifecycle_bound_model": "673a3c6a28834c16271773fa42c48cd44617447558537edb8307d330498950ce",
+          "corpus_gemv_capacity": "48\n96\n48\n96\n48\n96\n48\n96\n",
+          "kept_predecessor_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:45o:2fedc186ea44c3c37b4cf44286825b3a376b7b074dfc2c30d97740b5e2660cee:85a59368ff5f1e93a51828236bc125a7936624d47564a8df881addc2d66af195",
+          "kept_record_sha256": "ad8cc87222b80f13d2d3beeea540501b3f396368c22b38d70eee17554428ea30",
+          "kept_layout": "llmp-state-v2:e4bd96eb7792576ce06c80fbe36201e136658ebc1d927c6e764e32c90848e5aa",
+          "kept_predecessor_steps": "30",
+          "kept_predecessor_compared_rows": "157",
+          "kept_immutable_weight_extents": "302",
+          "reload_weight_extents": "302",
+          "reload_resource_addresses": "798",
+          "reload_address_sha256": "8614921b77a234651de52df3b0f5fd78756d7830865bf84013380691eebe0dce",
+          "reload_unchanged_state_positions": "145",
+          "reload_unchanged_state_bytes": "6291456",
+          "reload_retained_programs": "2",
+          "reload_count": "1",
+          "kept_resumed_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:45o:2fedc186ea44c3c37b4cf44286825b3a376b7b074dfc2c30d97740b5e2660cee:85a59368ff5f1e93a51828236bc125a7936624d47564a8df881addc2d66af195",
+          "kept_compared_rows": "161",
+          "kept_executed_steps": "34",
+          "kept_final_positions": "161",
+          "kept_restored_bytes": "6291456",
+          "kept_final_state_bytes": "6291456"
+        },
+        "programs": {
+          "predecessor": {
+            "145": {
+              "identity": "7c90301766308e64ec3bb537008ef26e3ed89655a40acc136e0336a7fa368a7d",
+              "run_or_record": 2,
+              "selected_counts": {
+                "exl3.pinned.45o.linear.reconstruct": 169,
+                "exl3.pinned.45o.bias_add": 72
+              }
+            },
+            "1": {
+              "identity": "d2f56b48ec395b8cdea30f99d736a60540e933bd548410c0d7642c96c02138d3",
+              "run_or_record": 28,
+              "selected_counts": {
+                "exl3.pinned.45o.linear.gemm": 107,
+                "exl3.pinned.45o.bias_add": 72,
+                "exl3.pinned.45o.multi_linear.mgemm": 24,
+                "exl3.pinned.45o.linear.gemv": 14
+              }
+            }
+          },
+          "resumed": {
+            "1": {
+              "identity": "d2f56b48ec395b8cdea30f99d736a60540e933bd548410c0d7642c96c02138d3",
+              "run_or_record": 4,
+              "selected_counts": {
+                "exl3.pinned.45o.linear.gemm": 107,
+                "exl3.pinned.45o.bias_add": 72,
+                "exl3.pinned.45o.multi_linear.mgemm": 24,
+                "exl3.pinned.45o.linear.gemv": 14
+              }
+            }
+          }
+        },
+        "memory_peak_observed": 944005120,
+        "compute_processes_after": 0,
+        "all_guards": "PASS",
+        "gemv_capacity": {
+          "order": "output[F16,F32],rows[one,multiple],config[narrow,wide]",
+          "blocks": [
+            48,
+            96,
+            48,
+            96,
+            48,
+            96,
+            48,
+            96
+          ]
+        }
+      }
+    },
+    "funding": {
+      "oracle_bytes": 97846784,
+      "pinned_state_copy_bytes": 33554432,
+      "additional_reload_metadata_bound_bytes": 53248,
+      "reload_metadata_allowance_bytes": 65536,
+      "combined_state_metadata_bound_bytes": 884736,
+      "state_metadata_allowance_bytes": 1048576,
+      "host_allowance_bytes": 4294967296,
+      "native_domain_bytes": 8589934592,
+      "physical_margin_bytes": 6442450944,
+      "process_cache_cap_bytes": 10737418240
+    },
+    "main_integration": {
+      "status": "PASS",
+      "host": "spark",
+      "source_parent": "ef1b786e8a89a247014d68cd2187e9541a4a208f",
+      "native_build": "full spark-native --locked",
+      "focused_controls": {
+        "input": 5,
+        "selected": 6,
+        "kept_record": 3,
+        "failures": 0,
+        "skips": 0
+      },
+      "native_result_sha256": "db9a4453ac630a7231c61ecae46d6042802809c969b7905d7cd355fe9765ec3c",
+      "binary_sha256": "84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793",
+      "binary_bytes": 212574880,
+      "cases": {
+        "40g": {
+          "result_sha256": "c80c5d45ae0efb1afe10ad33cc005f75030f068bb659e726ca5a9635a1d5537e",
+          "status": "PASS",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "witnesses": {
+            "corpus_artifact_id": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+            "corpus_exl3_rates": "4:168,8:1",
+            "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+            "lifecycle_bound_model": "e96d1a031714920f601970ede6847811d0d8ef8750c49f902f949bdc5d6a3e12",
+            "kept_predecessor_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:40g:2354e2ed72b5c775c98b277c73748e99d9aedf213a20541e3f1b3a970587ab23:96716da4fd5ae5cc321f789123ab0e613e91d1441c657ccb5f8896ce5ffc2f69",
+            "kept_record_sha256": "741541343d4722b0214abeea2aa6deae781a19f64a6f5b2d20800f6955f6ab23",
+            "kept_layout": "llmp-state-v2:64a30ece8315ce69a06205e57136d1ac148eeae039e629fd47bee1537306c353",
+            "kept_predecessor_steps": "30",
+            "kept_predecessor_compared_rows": "157",
+            "kept_immutable_weight_extents": "292",
+            "reload_weight_extents": "292",
+            "reload_resource_addresses": "798",
+            "reload_address_sha256": "60127b3b72fc8f9af27ecf37abab8d737a3c4b8963db233d32e33aa48f4497b0",
+            "reload_unchanged_state_positions": "145",
+            "reload_unchanged_state_bytes": "6291456",
+            "reload_retained_programs": "2",
+            "reload_count": "1",
+            "kept_resumed_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:40g:2354e2ed72b5c775c98b277c73748e99d9aedf213a20541e3f1b3a970587ab23:96716da4fd5ae5cc321f789123ab0e613e91d1441c657ccb5f8896ce5ffc2f69",
+            "kept_compared_rows": "161",
+            "kept_executed_steps": "34",
+            "kept_final_positions": "161",
+            "kept_restored_bytes": "6291456",
+            "kept_final_state_bytes": "6291456"
+          },
+          "memory_peak_observed": 943267840,
+          "compute_processes_after": 0,
+          "all_guards": "PASS"
+        },
+        "45g": {
+          "result_sha256": "84bbb583a8ffe4c1071945a69f400ba0fb1bde8d68ffceb251f9b49fcd202c7e",
+          "status": "PASS",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "witnesses": {
+            "corpus_artifact_id": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+            "corpus_exl3_rates": "4:42,5:118,6:8,8:1",
+            "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+            "lifecycle_bound_model": "673a3c6a28834c16271773fa42c48cd44617447558537edb8307d330498950ce",
+            "kept_predecessor_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:45g:fa7b74ebe421a0767656fab3175b40c16dffa8a54f7c5106ce1674ccee0836c0:f9cd90f844605447efe64af884ce996a6c0af5750606c1a019f97b4af67aba18",
+            "kept_record_sha256": "8dee6d7bee903bc97fdd91e418e59351debca3e9d92a249b1696303781c90a6a",
+            "kept_layout": "llmp-state-v2:e4bd96eb7792576ce06c80fbe36201e136658ebc1d927c6e764e32c90848e5aa",
+            "kept_predecessor_steps": "30",
+            "kept_predecessor_compared_rows": "157",
+            "kept_immutable_weight_extents": "302",
+            "reload_weight_extents": "302",
+            "reload_resource_addresses": "798",
+            "reload_address_sha256": "8614921b77a234651de52df3b0f5fd78756d7830865bf84013380691eebe0dce",
+            "reload_unchanged_state_positions": "145",
+            "reload_unchanged_state_bytes": "6291456",
+            "reload_retained_programs": "2",
+            "reload_count": "1",
+            "kept_resumed_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:45g:fa7b74ebe421a0767656fab3175b40c16dffa8a54f7c5106ce1674ccee0836c0:f9cd90f844605447efe64af884ce996a6c0af5750606c1a019f97b4af67aba18",
+            "kept_compared_rows": "161",
+            "kept_executed_steps": "34",
+            "kept_final_positions": "161",
+            "kept_restored_bytes": "6291456",
+            "kept_final_state_bytes": "6291456"
+          },
+          "memory_peak_observed": 943255552,
+          "compute_processes_after": 0,
+          "all_guards": "PASS"
+        },
+        "40o": {
+          "result_sha256": "d1c00e13085e496e6155424861fbdf2f414dc5252b20f939e81a0c69ef097a2b",
+          "status": "PASS",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "witnesses": {
+            "corpus_artifact_id": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+            "corpus_exl3_rates": "4:168,8:1",
+            "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+            "lifecycle_bound_model": "e96d1a031714920f601970ede6847811d0d8ef8750c49f902f949bdc5d6a3e12",
+            "corpus_gemv_capacity": "48\n96\n48\n96\n48\n96\n48\n96\n",
+            "kept_predecessor_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:40o:1f9bd75011569f2bf2526f203a5f15ce0e3964c7797bdcf9941b466c9412abd4:3a382d9808b8012360aa38427f9542e77cdc7562db084a544ea5187a24d21998",
+            "kept_record_sha256": "a20358ee686283b264ec9550f85960788081dbc2d932593e24516008d9586f57",
+            "kept_layout": "llmp-state-v2:64a30ece8315ce69a06205e57136d1ac148eeae039e629fd47bee1537306c353",
+            "kept_predecessor_steps": "30",
+            "kept_predecessor_compared_rows": "157",
+            "kept_immutable_weight_extents": "292",
+            "reload_weight_extents": "292",
+            "reload_resource_addresses": "798",
+            "reload_address_sha256": "60127b3b72fc8f9af27ecf37abab8d737a3c4b8963db233d32e33aa48f4497b0",
+            "reload_unchanged_state_positions": "145",
+            "reload_unchanged_state_bytes": "6291456",
+            "reload_retained_programs": "2",
+            "reload_count": "1",
+            "kept_resumed_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:40o:1f9bd75011569f2bf2526f203a5f15ce0e3964c7797bdcf9941b466c9412abd4:3a382d9808b8012360aa38427f9542e77cdc7562db084a544ea5187a24d21998",
+            "kept_compared_rows": "161",
+            "kept_executed_steps": "34",
+            "kept_final_positions": "161",
+            "kept_restored_bytes": "6291456",
+            "kept_final_state_bytes": "6291456"
+          },
+          "memory_peak_observed": 943747072,
+          "compute_processes_after": 0,
+          "all_guards": "PASS"
+        },
+        "45o": {
+          "result_sha256": "a07d7a2922be21b13d9a6f603d0df9b3fc803073d5cdb7f04f2d299df52467fe",
+          "status": "PASS",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "witnesses": {
+            "corpus_artifact_id": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+            "corpus_exl3_rates": "4:42,5:118,6:8,8:1",
+            "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+            "lifecycle_bound_model": "673a3c6a28834c16271773fa42c48cd44617447558537edb8307d330498950ce",
+            "corpus_gemv_capacity": "48\n96\n48\n96\n48\n96\n48\n96\n",
+            "kept_predecessor_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:45o:2fedc186ea44c3c37b4cf44286825b3a376b7b074dfc2c30d97740b5e2660cee:85a59368ff5f1e93a51828236bc125a7936624d47564a8df881addc2d66af195",
+            "kept_record_sha256": "4a2740f45c9f7eba03689aa269a9b5ef5d29c7fbbe57c644e5b05e676c880721",
+            "kept_layout": "llmp-state-v2:e4bd96eb7792576ce06c80fbe36201e136658ebc1d927c6e764e32c90848e5aa",
+            "kept_predecessor_steps": "30",
+            "kept_predecessor_compared_rows": "157",
+            "kept_immutable_weight_extents": "302",
+            "reload_weight_extents": "302",
+            "reload_resource_addresses": "798",
+            "reload_address_sha256": "8614921b77a234651de52df3b0f5fd78756d7830865bf84013380691eebe0dce",
+            "reload_unchanged_state_positions": "145",
+            "reload_unchanged_state_bytes": "6291456",
+            "reload_retained_programs": "2",
+            "reload_count": "1",
+            "kept_resumed_recipe": "0.1.0-dev+unknown::84e597aede76b08f9e4212cd5cbe69028ca46411e6bb4c3b9f6696c9ea27b793:45o:2fedc186ea44c3c37b4cf44286825b3a376b7b074dfc2c30d97740b5e2660cee:85a59368ff5f1e93a51828236bc125a7936624d47564a8df881addc2d66af195",
+            "kept_compared_rows": "161",
+            "kept_executed_steps": "34",
+            "kept_final_positions": "161",
+            "kept_restored_bytes": "6291456",
+            "kept_final_state_bytes": "6291456"
+          },
+          "memory_peak_observed": 943742976,
+          "compute_processes_after": 0,
+          "all_guards": "PASS"
+        }
+      }
+    },
+    "remaining": [
+      "Actual virtual-address relocation",
+      "OS process restart/crash recovery",
+      "Serving history restoration",
+      "Broader batches/shapes",
+      "Tier C quality and legacy deletion"
+    ]
   }
 }
