@@ -1535,6 +1535,20 @@ resources, while a stacked format has one tensor-scale part ordered
 part, which the v1 index holds as one resource of the stacked format with
 part `tensor_scale` (D-113).
 
+The native split-row adapter connects only NVFP4 split `GetRows` to that
+same ordered step program. `ModelRunner` validates every row-addressable
+part against its artifact descriptor before table setup, and requires the
+same lookup-order slot map across parts before I/O or state admission.
+Codes and block scales remain compressed in bounded device row slots;
+the optional matrix scale follows the original format and stays resident.
+The adapter accepts only direct checked side-row inputs belonging to that
+paged component. Selected sources explicitly opt into capture; this decoder
+queues one existing kernel and retains the runner's stable allocations through
+completed replay. The bounded synthetic source, changed-ID eager/capture/replay
+and malformed-table controls pass on Spark. This is an operation foundation;
+native ModelOpt model admission and product/expert support remain open
+([evidence](experiments/m36-decode-templates/README.md#native-split-row-foundation--2026-10-12)).
+
 The common step program binds approved EXL3 selected operations with authenticated
 packed and reconstruction tuning facts. Both 4.0- and 4.5-bpw fixtures execute
 in G and O profiles; O uses actual occupancy facts checked again at launch.

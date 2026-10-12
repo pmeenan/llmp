@@ -2238,6 +2238,16 @@ each is checked against the design as M3.6 proceeds.
                   pinned target under the 8 GiB, zero-swap process/cache cap.
                   Runtime admission, MTP/vision import and migration
                   qualification remain separate.
+            - [x] **N4b5 — multipart native row execution foundation:**
+                  bind every row-addressable format part separately and
+                  require identical lookup-order slot maps before effects;
+                  execute split NVFP4 GetRows through the existing selected
+                  decoder and shared ModelRunner. Check a bounded synthetic
+                  table, changed/repeated/reordered IDs, refusals and completed
+                  capture replay. Main native build, 117 focused host controls
+                  and both tiny GPU cases pass ([evidence](experiments/m36-decode-templates/README.md#native-split-row-foundation--2026-10-12)).
+                  Products, expert worklists and native ModelOpt target
+                  admission remain separate.
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

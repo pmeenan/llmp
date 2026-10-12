@@ -979,6 +979,17 @@ if(LLMP_CUDA)
   target_link_libraries(exl3_tables_test PRIVATE llmp_exl3 llmp_exl3_cuda)
   llmp_gtest(exl3_tables_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+  add_executable(decode_selected_rows_test decode_selected_rows_test.cc)
+  target_link_libraries(decode_selected_rows_test PRIVATE llmp_decode_selected llmp_engine
+                                                         llmp_test_artifact_writer)
+  llmp_gpu_gtest(decode_selected_rows_test
+                DISCRETE DecodeSelectedRows.CompletePartsKeepOriginalLogicalShapeAndBoundedPhysicalSlots
+                         DecodeSelectedRows.MissingDuplicateGeometryAndUncheckedIdsRefuse
+                         DecodeSelectedRows.LoweringRequiresTheDirectSideInputAndPagedComponent
+                         DecodeSelectedRows.MisalignedOverlappingAndChangedPhysicalBindingsRefuse
+                         DecodeSelectedRowsGpu.PagedPartsRemapAndReplayChangedIdsWithoutGrowingWeights
+                         DecodeSelectedRowsGpu.IncompleteOrInconsistentTablePartsRefuseBeforePlanningOrReads)
+
   add_executable(exl3_selected_test exl3_selected_test.cc)
   target_link_libraries(exl3_selected_test PRIVATE llmp_exl3_selected llmp_model llmp_spec llmp_engine)
   # CUDA-linked descriptor controls: discover names from source without loading cuBLAS.

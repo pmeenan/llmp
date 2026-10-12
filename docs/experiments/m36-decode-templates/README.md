@@ -8,8 +8,9 @@ block decoder per encoding and layout under shared vector, GLU, matrix,
 grouped and rows templates. This records the first proof (Qwen3.8's
 native NVFP4 and MXFP8 tensors on the discrete `sm_86` target) and one
 matched speed comparison per template against the tuned GB10 kernel it
-would someday replace. The templates are not wired into any model; the
-comparison is a starting point for selection, not a decision.
+would someday replace. At that first comparison the templates were not wired
+into any model; the comparison is a starting point for selection, not a
+decision. The later bounded split-row integration is recorded below.
 
 ## The proof
 
@@ -92,3 +93,57 @@ was tuned.
 
 Raw logs stay on `spark-b` and the workstation's session scratch, not in
 Git.
+
+## Native split-row foundation — 2026-10-12
+
+The shared `ModelRunner` now validates and binds every row-addressable part of
+a native split NVFP4 table, requires identical lookup-order slot maps before
+effects, and keeps codes and block scales compressed in bounded device slots.
+The optional original tensor scale remains resident. A selected-operation
+adapter calls the existing decoder under the ordinary ordered step program.
+It accepts only the original paged weight and its direct checked side-row input.
+The GGML GetRows capability now matches its actual supported formats and bounds,
+so an unsupported native implementation cannot preempt this decoder.
+
+Selected sources default to capture refusal. This allocation-free decoder
+explicitly opts in; capture and replay retain the existing stream, launch
+generation and owner checks and refuse a faulted selected runtime. No new
+kernel arithmetic, widened resident representation or family-specific runner
+is introduced. Exact row checks protect source decoding, independently of
+another quantized engine's numerical recipe.
+
+On Spark A, main's full native build passed in81 seconds, followed by117
+focused host controls (four decoder descriptors,54 runner,12 execution-contract,
+seven general lowering,11 Qwen and29 DeepSeek cases), with no failures/skips.
+The two synthetic GPU cases passed in one supervised second: a32×9 split table
+with four bounded row slots executes changed, repeated and reordered IDs through
+eager, captured and replayed waves; all384 F32 values match an independent
+code/scale oracle. Invalid IDs refuse before effects, and six incomplete or
+inconsistent multipart configurations refuse before planning or reads.
+
+The fixture admits a256MiB node domain and16MiB metadata allowance before
+construction, charging8MiB for its fixed parser/compiler/result inventory.
+Its tiny fixed state occupies one managed extent. The wrapper confines
+process/cache memory to10GiB with zero swap and requires16GiB physical
+availability before execution and6GiB afterward. All pre/post source, recipe
+and binary guards passed; no compute PID remained and every max/OOM event was
+zero. Observed cgroup peak was217,829,376 bytes, not total device occupancy.
+
+Earlier failed attempts are preserved: a synthetic v1 spec missed its canonical
+trailing newline; the mixed registry selected an overbroad GGML capability; and
+a blanket selected-source capture refusal kept successful decoding eager.
+Their fixes retain the strict artifact reader and complete output/replay checks.
+One packaging attempt also failed before compilation because its source-map
+script named the wrong file. These failures are not passing execution evidence.
+
+This closes only the bounded row-operation foundation. Native ModelOpt target
+admission, products, expert worklists, model quality and matched serving speed
+remain open. It establishes no latency gain or new quality threshold. Raw
+logs/XML remain outside Git under `/tmp/llmp-m36-coordination/`.
+
+| Literal receipt | SHA-256 |
+| --- | --- |
+| `native-split-rows-main05/results/result.json` | `d8bf6a4fda0d9b9b0d411928c18e2d083d74d624bf6e3fdd37c799e1099d1046` |
+| `native-split-rows-main-gpu04/results/result.json` | `988ca4a431320370dd162f71b70c603c8e891c70d4ed950eb88f7884e587e3d2` |
+| `native-split-rows-main-gpu04/results/models.xml` | `9592b8aea7ee575b978a0de91d819f38fbe8f8fe3e6fe135eaa01d4655ab089a` |
+| source05 independent capture challenge | `63c67ff808606a56d13d250ae9df7c338bbb30d0e7b26fe3a8f49f0b3715febb` |

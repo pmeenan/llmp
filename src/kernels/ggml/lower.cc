@@ -1005,6 +1005,13 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
         return Refused("missing, duplicate or oversized selected weight part");
       part(extent.role, bytes(static_cast<std::int64_t>(extent.readable), 1, 1));
     }
+  } else if (options_.selected_source != nullptr && d.format.encoding == Encoding::kNvfp4 &&
+             d.format.layout == format::Layout::kSplit && matrices == 1 && !w.ref.expert_array &&
+             d.format.stacked == 1) {
+    part(format::PartRole::kCodes, bytes(k / 2, rows, 1));
+    part(format::PartRole::kBlockScales, bytes(k / 16, rows, 1));
+    if (d.format.params.tensor_scale)
+      part(format::PartRole::kTensorScale, ggml_new_tensor_1d(c_, GGML_TYPE_F32, 1));
   } else if (d.format.encoding == Encoding::kMxfp8 && d.format.layout == format::Layout::kSplit &&
              matrices == 1) {
     // E4M3 codes [k, n] and E8M0 scales [k / 32, n], each a byte.
@@ -1573,6 +1580,32 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
     SelectedOperand operand{
         .id = tensor, .desc = p_.tensor(tensor), .tensor = made_.at(tensor.v), .parts = {}};
     if (operand.tensor == nullptr) return Refused("a selected-source input was not made");
+    if (n.key == ir::Primitive(Op::kGetRows)) {
+      const auto& producer = p_.node(p_.producer(tensor));
+      bool unchanged = p_.root(tensor) == tensor;
+      for (const auto& node : p_.nodes()) {
+        if (node.key == ir::Primitive(Op::kCacheStore) && p_.root(node.src[0]) == tensor)
+          unchanged = false;
+        for (std::size_t output = 0; output < node.nout; ++output)
+          if (const auto alias = ir::AliasedSource(node.key, output);
+              alias && node.src.at(*alias).valid() && p_.root(node.src.at(*alias)) == tensor)
+            unchanged = false;
+      }
+      if (unchanged) {
+        const auto original = primitive_.at(tensor.v);
+        if (producer.key == ir::Primitive(Op::kInput)) {
+          const auto at = inputs_.find(original.v);
+          if (at != inputs_.end() && at->second->kind == co::InputKind::kSideRows &&
+              at->second->segment == ir::kJoinedSegment)
+            operand.side_rows_component = at->second->component;
+        } else if (producer.key == ir::Primitive(Op::kWeight) && in_.addresses.weight_rows) {
+          const auto at = weights_.find(original.v);
+          if (at != weights_.end() && at->second->ref.stage == in_.shape.stage &&
+              in_.addresses.weight_rows(at->second->ref) != 0)
+            operand.paged_weight = at->second->ref;
+        }
+      }
+    }
     const auto parts = parts_.find(tensor.v);
     if (parts != parts_.end()) {
       for (const auto& [role, part] : parts->second) {

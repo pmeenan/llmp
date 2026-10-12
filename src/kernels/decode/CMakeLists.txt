@@ -34,7 +34,7 @@ if(LLMP_CUDA)
   # file added here without being listed fails the next configure.
   set(module_files CMakeLists.txt decode_dense.cu decode_mixed.cu decode_mxfp8.cu decode_nvfp4.cu
                    decode_q8_0.cu decoders.cuh implementations.cc implementations.h launch.h
-                   module_digest.cmake operand.h products.cc products.h templates.cuh)
+                   module_digest.cmake operand.h products.cc products.h selected_rows.cc selected_rows.h templates.cuh)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")
   foreach(name IN LISTS present)
@@ -54,4 +54,8 @@ if(LLMP_CUDA)
     COMMENT "Hashing the decode module's sources for its implementation identities (D-053)"
     VERBATIM)
   target_sources(llmp_decode_kernels PRIVATE "${module_digest}")
+  # One optional operation source for the ordinary shared ordered program.
+  add_library(llmp_decode_selected STATIC selected_rows.cc)
+  target_link_libraries(llmp_decode_selected PUBLIC llmp_decode_kernels llmp_ggml_kernels
+                                               PRIVATE llmp_warnings)
 endif()

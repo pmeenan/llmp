@@ -1045,6 +1045,31 @@ bool AcceptsVecQRouted(const ex::CapabilityQuery& q) {
   const std::uint64_t used = Ne(q, q.op == ir::Fused(FusedKind::kMatMulIdGlu) ? 3 : 2, 0);
   return VecQ(q) && q.rows >= 1 && used >= 1 && q.rows * used <= 64;
 }
+// validate_ext.cc CheckGetRowsExt: GGML's decoder has no NVFP4 or
+// multipart split case. Do not let this generic native rung preempt an
+// actually supported selected-source decoder.
+bool AcceptsGetRowsExt(const ex::CapabilityQuery& q) {
+  const auto* rows = Operand(q, 0);
+  const auto* ids = Operand(q, 1);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || rows == nullptr || ids == nullptr || out == nullptr ||
+      ids->encoding != Encoding::kI32 || ids->layout != Layout::kDense ||
+      out->layout != Layout::kDense)
+    return false;
+  for (const auto* operand : {rows, ids, out})
+    if (std::ranges::find(operand->ne, 0) != operand->ne.end()) return false;
+  if (ids->ne[0] > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) ||
+      ids->ne[1] > std::numeric_limits<std::uint32_t>::max() / ids->ne[2])
+    return false;
+  const bool quantized = rows->layout == Layout::kGgmlBlocks &&
+                         std::ranges::find(kQuantized, rows->encoding) != kQuantized.end();
+  const bool integers = rows->encoding == Encoding::kI32 && rows->layout == Layout::kDense &&
+                        out->encoding == Encoding::kI32;
+  return ((quantized && out->encoding == Encoding::kF32 && rows->ne[0] % 256 == 0) || integers) &&
+         rows->ne[2] == ids->ne[1] && rows->ne[3] == ids->ne[2] && ids->ne[3] == 1 &&
+         out->ne[0] == rows->ne[0] && out->ne[1] == ids->ne[0] && out->ne[2] == ids->ne[1] &&
+         out->ne[3] == ids->ne[2];
+}
 bool AcceptsAny(const ex::CapabilityQuery& q) { return Built(q); }
 bool AcceptsPrepared(const ex::CapabilityQuery& q) { return Built(q) && Routed(q); }
 
@@ -1150,8 +1175,8 @@ const std::array kEntries = {
     // Gathers, elementwise, norms.
     Entry{"ggml.get_rows", Operation::kGetRows,
           Cap(P(Op::kGetRows), kFloatTable, &AcceptsAny, true, {}, 1), kBuilt},
-    Entry{"ggml.get_rows.ext", Operation::kGetRows, Cap(P(Op::kGetRows), {}, &AcceptsAny, true),
-          kBuilt},
+    Entry{"ggml.get_rows.ext", Operation::kGetRows,
+          Cap(P(Op::kGetRows), {}, &AcceptsGetRowsExt, true), kBuilt},
     Entry{"ggml.scale", Operation::kScale, Cap(P(Op::kScale), kF32In, &AcceptsAny, true), kBuilt},
     Entry{"ggml.add", Operation::kAdd, Cap(P(Op::kAdd), kAddRules, &AcceptsAdd, true), kBuilt},
     Entry{"ggml.mul", Operation::kMul, Cap(P(Op::kMul), kF32Binary, &AcceptsAny, true), kBuilt},

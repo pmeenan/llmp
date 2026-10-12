@@ -828,13 +828,77 @@ Status ModelRunner::SetupCommits() {
 }
 
 Status ModelRunner::SetupRowTables() {
+  // Validate the complete multipart declaration before making any table's
+  // storage, landing or device slots. Matrix-wide scales remain ordinary weights.
+  for (const auto& config : config_.row_tables) {
+    if (config.weight.stage >= config_.weights.size() || config.weight.expert_array ||
+        config.rows_per_token == 0 || config.format.shape.rank != 2)
+      return Error("a row table's weights, shape or lookups");
+    const auto parts = format::PartsOf(config.format);
+    if (!parts || !format::RowBytes(config.format, config.part))
+      return Error("a row table requires a row-addressable format part");
+    for (const auto& other : config_.row_tables) {
+      if (other.weight != config.weight) continue;
+      if (other.format != config.format || other.rows_per_token != config.rows_per_token)
+        return Error("a row table's parts disagree on logical geometry");
+    }
+    for (const auto& part : parts->parts()) {
+      if (!format::RowBytes(config.format, part.role)) continue;
+      if (std::ranges::count_if(config_.row_tables, [&](const auto& other) {
+            return other.weight == config.weight && other.part == part.role;
+          }) != 1)
+        return Error("a row table has missing or duplicate row parts");
+    }
+    const auto& weights = config_.weights[config.weight.stage];
+    const auto& artifact = weights.weights->artifact();
+    if (config.resource >= artifact.resources().size()) return Error("a row table's resource");
+    const auto& resource = artifact.resources()[config.resource];
+    if (!resource.format || *resource.format != config.format || resource.part != config.part)
+      return Error("a row table's format or part differs from its source resource");
+    const auto part = parts->Find(config.part);
+    if (!part || part->bytes != resource.bytes.value() || resource.group >= weights.places.size() ||
+        weights.places[resource.group] != GroupPlace::kNone)
+      return Error("a row table's part extent or nonresident group");
+    for (std::uint32_t i = 0; i < artifact.resources().size(); ++i)
+      if (i != config.resource && artifact.resources()[i].group == resource.group)
+        return Error("a row-paged table shares its group with another resource");
+    const auto row_bytes = format::RowBytes(config.format, config.part);
+    if (!row_bytes || *row_bytes > std::numeric_limits<std::uint32_t>::max())
+      return Error("a row table's row size");
+    std::uint64_t capacity = 0;
+    for (const auto& shape : config_.setup_shapes) {
+      if (shape.stage != config.weight.stage) continue;
+      std::uint64_t count = 0;
+      if (__builtin_mul_overflow(std::uint64_t{shape.rows()}, config.rows_per_token, &count))
+        return Error("a row table's capacity overflows");
+      capacity = std::max(capacity, count);
+    }
+    if (capacity == 0 || capacity > std::numeric_limits<std::uint32_t>::max() / (2 * kPleBlock))
+      return Error("a row table's bounded landing exceeds its gather offsets");
+    const auto first =
+        artifact::ChunkRangeOf(artifact.layout(), {.group = resource.group, .chunk = 0});
+    if (!first) return Error("a row table's file range");
+    std::uint64_t offset = 0, end = 0;
+    if (__builtin_add_overflow(first->file_offset.value(), resource.offset.value(), &offset) ||
+        __builtin_add_overflow(first->file_offset.value(),
+                               artifact.groups()[resource.group].stored.value(), &end))
+      return Error("a row table's file range overflows");
+    const auto valid = PlanPleRows({.file_offset = offset,
+                                    .rows = config.format.shape.ne[1],
+                                    .row_bytes = *row_bytes,
+                                    .chunk_file_offset = first->file_offset.value(),
+                                    .file_bytes = end},
+                                   {}, PleLandingBound(capacity), capacity);
+    if (!valid) return Error(valid.error());
+  }
   for (const auto& config : config_.row_tables) {
     if (config.weight.stage >= config_.weights.size() || config.weight.expert_array ||
         config.rows_per_token == 0 || config.format.shape.rank != 2) {
       return Error("a row table's weights, shape or lookups");
     }
-    if (std::ranges::any_of(row_tables_,
-                            [&](const auto& t) { return t->config.weight == config.weight; })) {
+    if (std::ranges::any_of(row_tables_, [&](const auto& t) {
+          return t->config.weight == config.weight && t->config.part == config.part;
+        })) {
       return Error("a row table was declared twice");
     }
     auto& weights = config_.weights[config.weight.stage];
@@ -1310,6 +1374,14 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         auto plan =
             PlanPleRows(table->table, ids, PleLandingBound(table->capacity), table->capacity);
         if (!plan) return Refused(plan.error());
+        // One side-row input is staged from its first part's remap. Every
+        // other part must agree in lookup order, not just in its unique IDs.
+        for (const auto& prior : row_reads) {
+          if (prior.table->config.weight.stage == shape.stage &&
+              prior.table->config.weight.component == input.component &&
+              prior.plan.slots != plan->slots)
+            return Refused("a side table's parts disagree on row-slot mapping");
+        }
         row_reads.push_back({.table = table.get(), .plan = std::move(*plan)});
       }
     }

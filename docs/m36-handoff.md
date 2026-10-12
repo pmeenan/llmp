@@ -97,8 +97,13 @@ shared selection capability landed in `79dc643b`; keep the frozen 45 diagnostic 
 
 Current parallel slices: Qwen50 screens ordinary joined execution against
 three narrowly tuned BF16/F32 products using secondary target-only likelihood
-and matched timing. Native split-row paging uses the existing decoder through
-the shared runner. Root corrected lazy framework inputs that accidentally
+and matched timing. Native split-row paging now passes its bounded shared-runner
+foundation: main native build, 117 focused host controls and two tiny GPU cases,
+including changed-ID capture replay and multipart refusals. Products, expert
+worklists and native ModelOpt target admission remain open. DeepSeek's default-off
+rounded consumer has separate real component/source host controls and a passing
+declared-backend synthetic GPU corridor; root integration remains pending.
+Full source GPU/model admission and fusion remain open. Root corrected lazy framework inputs that accidentally
 reset an owner's graph-builder context; main native build and 162 focused
 controls pass on Spark. The fix carries no parity policy.
 Each slice receives its own scoped review and checks before landing.

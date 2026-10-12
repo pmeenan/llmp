@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -32,6 +33,10 @@ struct SelectedOperand {
   ir::TensorDesc desc{};
   ggml_tensor* tensor = nullptr;
   std::vector<SelectedPart> parts;
+  // Typed evidence from direct, unmodified shared-step leaves. Row adapters
+  // use both facts to tie device IDs to the runner's checked host slot map.
+  std::optional<std::uint16_t> side_rows_component{};
+  std::optional<ir::WeightRef> paged_weight{};
 };
 struct SelectedWorkspace {
   std::uint64_t base = 0;
@@ -51,6 +56,11 @@ class SelectedLaunch {
   const SelectedSource* owner() const { return owner_; }
   providers::NativeStream stream() const { return stream_; }
   virtual bool faulted() const = 0;
+  // Explicit opt-in only when every call queues capture-safe work on the owned
+  // stream, with stable borrowed buffers through completed replay. No allocation,
+  // host-dependent kernel preparation or synchronization may occur in capture.
+  // Captures retain the launch generation; a fault forbids capture and replay.
+  virtual bool capturable() const { return false; }
 
  private:
   const SelectedSource* owner_;

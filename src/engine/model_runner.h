@@ -180,7 +180,9 @@ struct RunnerConfig {
   // weights); unset: 0, for sources that bind none.
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight_address;
   // Tables whose rows are read into bounded device slots before a step.
-  // Their groups must contain only that resource and be placed kNone.
+  // All row-addressable parts of each weight must be declared exactly once.
+  // Their groups must contain only that resource and be placed kNone; a
+  // matrix-wide tensor scale stays resident through ordinary weight binding.
   struct RowTable {
     ir::WeightRef weight;
     std::uint32_t resource = 0;

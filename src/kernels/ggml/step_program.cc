@@ -182,8 +182,10 @@ std::expected<std::unique_ptr<Recorded>, StepFailure> GgmlStepLaunch::Capture(
       return std::unexpected(StepFailure{.detail = ready.error()});
   }
   if (auto same = SameStream(*launch_, stream); !same) return std::unexpected(same.error());
-  if (selected_)
+  if (selected_ && !selected_->capturable())
     return std::unexpected(StepFailure{.detail = "selected native source is not capturable"});
+  if (selected_ && selected_->faulted())
+    return std::unexpected(StepFailure{.detail = "selected native source has faulted"});
   auto captured = launch_->Capture([&](LaunchContext&) -> std::expected<void, KernelFailure> {
     auto recorded = body();
     if (!recorded) {
@@ -207,6 +209,8 @@ std::expected<void, StepFailure> GgmlStepLaunch::Launch(providers::NativeStream 
       return std::unexpected(StepFailure{.detail = ready.error()});
   }
   if (auto same = SameStream(*launch_, stream); !same) return same;
+  if (selected_ && selected_->faulted())
+    return std::unexpected(StepFailure{.detail = "selected native source has faulted"});
   if (recorded.owner() != this ||
       static_cast<const GgmlRecorded&>(recorded).generation() != generation_) {
     return std::unexpected(StepFailure{.detail = "another launch's recording"});
