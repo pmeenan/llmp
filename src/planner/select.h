@@ -21,7 +21,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -47,6 +49,28 @@ struct DeviceFacts {
   // Shapes implementations have tuning data for here (registry.h
   // TunedShape; their names point into the tuning record).
   std::vector<execution::TunedShape> tuned{};
+};
+
+// A source/backend's immutable copy of device facts, including the strings
+// TunedShape normally borrows. Bound is allocation-free; Create requires the
+// caller to have paid that bound before copying. The charge belongs to the
+// backend owner and remains live while any view is borrowed.
+class OwnedDeviceFacts {
+ public:
+  static std::expected<std::uint64_t, std::string> Bound(const DeviceFacts& facts);
+  static std::expected<OwnedDeviceFacts, std::string> Create(const DeviceFacts& facts,
+                                                             std::uint64_t paid_bytes);
+  OwnedDeviceFacts(OwnedDeviceFacts&&) noexcept;
+  OwnedDeviceFacts& operator=(OwnedDeviceFacts&&) noexcept;
+  OwnedDeviceFacts(const OwnedDeviceFacts&) = delete;
+  OwnedDeviceFacts& operator=(const OwnedDeviceFacts&) = delete;
+  ~OwnedDeviceFacts();
+  const DeviceFacts& facts() const;
+
+ private:
+  struct Storage;
+  explicit OwnedDeviceFacts(std::unique_ptr<Storage> storage);
+  std::unique_ptr<Storage> storage_;
 };
 
 struct QueryShape {

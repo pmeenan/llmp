@@ -30,6 +30,7 @@
 
 #include "base/sha256.h"
 #include "components/step.h"
+#include "engine/execution_contract.h"
 #include "engine/model_runner.h"
 #include "kernels/common/lower.h"
 #include "planner/policy.h"
@@ -58,6 +59,9 @@ struct ComponentSourceOptions {
   std::uint32_t slots = 0;
   std::optional<planner::Policy> policy{};
   kernels::StepBackend backend{};
+  // Required whole composition; every staged source names the same immutable
+  // domain. Requires a real backend owner. Does not enable joined draft work.
+  std::shared_ptr<const NumericalDomain> execution_domain{};
   // Require graph-capture-safe implementations. Uncaptured callers may
   // opt out; their runner must disable graph capture too.
   bool require_capture = true;
@@ -71,6 +75,10 @@ class ComponentStepSource final : public StepSource {
       ComponentSourceOptions options);
 
   planner::PlanKey KeyBase() const override;
+  Status PrepareExecution() override;
+  Status CheckExecutionUse(NumericalUse use) const override;
+  Status CheckExecutionShape(const planner::StepShape& shape) const override;
+  std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override;
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
   bool UsesSideRows(std::uint16_t stage) const override;
   Status SideRows(std::uint16_t stage, std::uint16_t component,
@@ -88,7 +96,15 @@ class ComponentStepSource final : public StepSource {
  private:
   ComponentStepSource(ComponentSourceOptions options, planner::Policy policy)
       : o_(std::move(options)), policy_(std::move(policy)) {}
+  friend class StagedStepSource;
+  struct ExecutionState;
+  static std::expected<std::shared_ptr<ExecutionState>, std::string> SealExecution(
+      std::span<ComponentStepSource* const> stages);
+  std::shared_ptr<ExecutionState> execution_{};
   ComponentSourceOptions o_;
+  const kernels::StepBackend& Backend() const {
+    return o_.backend.owner ? o_.backend.owner->backend() : o_.backend;
+  }
   planner::Policy policy_;
   std::vector<components::Instance> shaped_, side_;
   base::Sha256Digest layout_identity_{};
@@ -110,6 +126,10 @@ class StagedStepSource final : public StepSource {
       std::vector<std::unique_ptr<ComponentStepSource>> stages);
 
   planner::PlanKey KeyBase() const override { return key_; }
+  Status PrepareExecution() override;
+  Status CheckExecutionUse(NumericalUse use) const override;
+  Status CheckExecutionShape(const planner::StepShape& shape) const override;
+  std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override;
   std::vector<std::uint64_t> ShapeParameters(const planner::StepShape& shape) const override;
   bool JoinedRepeatPending(std::uint16_t stage) const override;
   bool UsesSideRows(std::uint16_t stage) const override;

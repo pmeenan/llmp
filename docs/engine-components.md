@@ -1235,13 +1235,53 @@ scalar policies, not measured CUDA recipes: the existing native IndexScore
 also rounds queries to F16. No Lid capability or changed TopK semantics
 is introduced by the bank form.
 
-Default policy, whole-artifact numerical parity and performance remain
-open. G4b2c ports output-A and the product policies and establishes
-whole-artifact parity after G4b2b2. The engine's binding of the hash rows
+Default policy, original-reference quality and performance remain open.
+G4b2c ports output-A and product policies after G4b2b2, preserving exact
+selected contributions and same-implementation state, rollback and replay.
+Legacy bit parity is historical diagnostic evidence, not the prospective
+acceptance rule; a blanket row-invariant verify recipe is not required. The engine's binding of the hash rows
 and injection's features, and its complete setup and state-lifecycle
 integration, are G4c's. Expert
 parallelism with as many experts as devices (`partition.cc`) is not
 reachable for DeepSeek on two Sparks (256 experts) and is left as it is.
+
+### Owned execution configuration
+
+A required component source retains the native backend's immutable device and
+explicit tuning facts. Tuning names are owned, and entries include physical
+rows, K, N and output encoding. They never replace operand, stride, alignment,
+selected-expert or capture checks. Ordinary sources keep their existing path;
+no tuning record or family policy is installed automatically.
+
+The declaration uses the qualified installation's compiled source/module/SDK
+and effective build recipes, actual device architecture, CUDA driver API and
+runtime versions, cuBLAS/Lt versions, and queried math, pointer, atomics and
+workspace settings. It assumes the qualified pinned installation and no hostile
+mutation of running code. Runtime versions alone do not authenticate an arbitrary
+installation. There is no runtime library hashing, loader-object attestation,
+selected-SASS extraction or recursive compiler-invocation prerequisite.
+
+Runner setup maps the paid workspace and prepares the real handle before
+publishing the source's identity or measuring plans. All stages, effective
+policies, domain, bound spec, layouts and capture requirements participate.
+Failed preparation publishes no partial staged identity. Plan cache lookup,
+opaque snapshots and kept restart compatibility retain that identity; changed
+required configuration refuses instead of becoming an absent legacy identity.
+Recorded and direct execution validate the same live backend, and a retired
+launch cannot be revived by recreating an equal configuration. Physical
+addresses remain live binding checks, outside durable identities.
+
+Configuration metadata uses an explicitly admitted, pinned node-catalog allowance
+before construction, independent of the pre-start host counter. Its bounded local
+usage is refunded after objects are destroyed; the full catalog payment stays
+through node retirement and is reused on setup retries. Bind and recordings also
+retain the launch generation, so recycled addresses cannot revive old work.
+The existing paid runtime/workspace and completion rules still apply,
+including retention after unknown retirement. The initial declaration covers
+ordinary GGML/cuBLAS; selected EXL3 and image providers remain outside it.
+This source/plan/state integration does not grant joined repeat-pending
+capability or prove the complete future/companion admission closure. Those
+controls and family quality, state, swap and matched 1% gates remain necessary.
 
 ### The model spec
 

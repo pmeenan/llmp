@@ -6,8 +6,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <numeric>
 #include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -18,6 +22,73 @@
 #include "planner/policy.h"
 
 namespace llmp::planner {
+
+struct OwnedDeviceFacts::Storage {
+  // Heap-stable Storage and a fully populated name vector precede the views.
+  // Moving OwnedDeviceFacts only moves this allocation's pointer.
+  std::vector<std::string> names;
+  DeviceFacts facts;
+};
+
+std::expected<std::uint64_t, std::string> OwnedDeviceFacts::Bound(const DeviceFacts& facts) {
+  if (facts.device_class.empty()) return std::unexpected("device facts have no class");
+  std::uint64_t bytes = sizeof(Storage) + sizeof(OwnedDeviceFacts);
+  const auto add = [&](std::uint64_t n) { return !__builtin_add_overflow(bytes, n, &bytes); };
+  // Account vector elements, all string payloads including terminators, and
+  // conservative per-allocation bookkeeping. No temporary payload copy.
+  constexpr std::uint64_t overhead = 64;
+  std::uint64_t entries = 0;
+  if (__builtin_mul_overflow(static_cast<std::uint64_t>(facts.tuned.size()),
+                             sizeof(execution::TunedShape) + sizeof(std::string) + overhead,
+                             &entries) ||
+      !add(entries) || !add(facts.device_class.size()) || !add(1 + 4 * overhead))
+    return std::unexpected("owned device facts byte bound overflows");
+  for (std::size_t i = 0; i < facts.tuned.size(); ++i) {
+    const auto& tune = facts.tuned[i];
+    if (tune.implementation.empty() || tune.rows == 0 || tune.k == 0 || tune.n == 0 ||
+        (tune.output_encoding &&
+         std::ranges::find(format::Encodings(), *tune.output_encoding, &format::EncodingInfo::id) ==
+             format::Encodings().end()))
+      return std::unexpected("owned device facts have an invalid tuning key");
+    for (std::size_t j = 0; j < i; ++j) {
+      const auto& before = facts.tuned[j];
+      if (before.implementation == tune.implementation && before.rows == tune.rows &&
+          before.k == tune.k && before.n == tune.n &&
+          before.output_encoding == tune.output_encoding)
+        return std::unexpected("owned device facts repeat a tuning key");
+    }
+    if (!add(tune.implementation.size()) || !add(1))
+      return std::unexpected("owned tuning name byte bound overflows");
+  }
+  return bytes;
+}
+
+std::expected<OwnedDeviceFacts, std::string> OwnedDeviceFacts::Create(const DeviceFacts& facts,
+                                                                      std::uint64_t paid_bytes) {
+  auto bound = Bound(facts);
+  if (!bound) return std::unexpected(bound.error());
+  if (*bound > paid_bytes) return std::unexpected("owned device facts were not funded");
+  auto storage = std::make_unique<Storage>();
+  storage->names.reserve(facts.tuned.size());
+  for (const auto& tune : facts.tuned) storage->names.emplace_back(tune.implementation);
+  storage->facts = {
+      .device_class = facts.device_class, .arch = facts.arch, .features = facts.features};
+  storage->facts.tuned.reserve(facts.tuned.size());
+  for (std::size_t i = 0; i < facts.tuned.size(); ++i) {
+    auto tune = facts.tuned[i];
+    tune.implementation = storage->names[i];
+    storage->facts.tuned.push_back(tune);
+  }
+  return OwnedDeviceFacts(std::move(storage));
+}
+
+OwnedDeviceFacts::OwnedDeviceFacts(std::unique_ptr<Storage> storage)
+    : storage_(std::move(storage)) {}
+OwnedDeviceFacts::OwnedDeviceFacts(OwnedDeviceFacts&&) noexcept = default;
+OwnedDeviceFacts& OwnedDeviceFacts::operator=(OwnedDeviceFacts&&) noexcept = default;
+OwnedDeviceFacts::~OwnedDeviceFacts() = default;
+const DeviceFacts& OwnedDeviceFacts::facts() const { return storage_->facts; }
+
 namespace {
 
 using ir::FusedKind;

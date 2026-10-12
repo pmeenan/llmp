@@ -1712,6 +1712,8 @@ struct Environment {
   std::unique_ptr<CublasHandle> cublas;
   std::unique_ptr<kg::GgmlBackend> backend;
   std::unique_ptr<kn::StepLaunch> launch;
+  const kg::GgmlStepLaunch* reused_launch = nullptr;
+  std::uint64_t reused_generation = 0;
   std::array<std::unique_ptr<Program>, 3> programs;
   std::array<std::uint64_t, 3> weights{};
   std::vector<std::pair<void*, std::uint64_t>> allocations;
@@ -1726,6 +1728,7 @@ struct Environment {
     ADD_FAILURE() << what;
     return false;
   }
+  std::uint64_t declaration_bytes = 0, pool_base = 0;
   bool Finish() {
     if (retained) return false;
     if (!stream_ready) return true;
@@ -1807,7 +1810,7 @@ struct Environment {
                 pr::CopyKind::kHostToDevice) &&
            Finish();
   }
-  void Open() {
+  void Open(bool declared = false) {
     auto opened = pr::cuda::OpenDeviceExecution(0);
     ASSERT_TRUE(opened);
     execution = std::move(*opened);
@@ -1830,11 +1833,34 @@ struct Environment {
         CublasHandle::Create(0, *execution, stream, {.base = cublas_base, .size = cublas_bytes});
     ASSERT_TRUE(handle) << (handle ? "" : handle.error().detail);
     cublas = std::move(*handle);
-    auto made_backend = kg::GgmlBackend::Create(0, *execution, stream, cublas.get(),
-                                                {.lower = {.index_scratch_limit = 1U << 20}});
+    auto made_backend =
+        kg::GgmlBackend::Create(0, *execution, stream, declared ? nullptr : cublas.get(),
+                                {.lower = {.index_scratch_limit = 1U << 20}});
     ASSERT_TRUE(made_backend) << (made_backend ? "" : made_backend.error());
     backend = std::move(*made_backend);
+    if (declared) {
+      const auto charge = [this](std::uint64_t bytes) {
+        constexpr std::uint64_t ceiling = 1U << 20;
+        if (bytes > ceiling - declaration_bytes) return false;
+        declaration_bytes += bytes;
+        return true;
+      };
+      const auto refund = [this](std::uint64_t bytes) {
+        EXPECT_LE(bytes, declaration_bytes);
+        declaration_bytes -= bytes;
+      };
+      // This allowance is inside the existing 64MiB whole host inventory;
+      // the fixed pinned payload plus 32MiB metadata still leave headroom.
+      ASSERT_TRUE(backend->Declare({}, cublas_bytes.value(), charge, refund));
+      auto owner = backend->Backend().owner;
+      ASSERT_NE(owner, nullptr);
+      EXPECT_FALSE(owner->Ready());
+      ASSERT_TRUE(backend->LendCublas(cublas.get()));
+      ASSERT_TRUE(owner->Ready());
+    }
+
     const auto pool = Allocate(kPool);
+    pool_base = pool;
     ASSERT_NE(pool, 0U);
     auto made_launch = backend->Launch({.base = pool, .size = Bytes(kPool)});
     ASSERT_TRUE(made_launch) << (made_launch ? "" : made_launch.error());
@@ -1964,7 +1990,8 @@ struct Environment {
     } else {
       ASSERT_EQ(id, p.step.inputs.end());
     }
-    const auto native = backend->Backend();
+    const auto table = backend->Backend();
+    const auto& native = table.owner ? table.owner->backend() : table;
     pl::Policy policy{.enabled = {"hc_prep", "owner_row_invariant"}, .disabled = {"rms_norm_mul"}};
     pl::Canonicalize(policy);
     std::vector<ir::TensorId> staged;
@@ -2224,6 +2251,67 @@ TEST_F(SelectedHcStepProgramTest, JoinedSelectedRowsMatchScalarProgramsAndReplay
   }
   ASSERT_TRUE(e.Finish());
 }
+
+TEST_F(SelectedHcStepProgramTest, OwnedBackendChecksPreparationAndRecordedReadiness) {
+  auto& e = *environment;
+  ASSERT_NO_FATAL_FAILURE(e.Open(true));
+  auto owner = e.backend->Backend().owner;
+  ASSERT_NE(owner, nullptr);
+  const auto identity = owner->Ready();
+  ASSERT_TRUE(identity);
+  const std::array rows{1U, 3U};
+  ASSERT_NO_FATAL_FAILURE(e.Build(0, rows, e.features, e.host_outputs));
+  ASSERT_NO_FATAL_FAILURE(e.Build(1, std::array{1U}, e.features, e.host_outputs + 2 * kW));
+  ASSERT_NO_FATAL_FAILURE(
+      e.Build(2, std::array{1U}, e.features + 3 * kRowBytes, e.host_outputs + 3 * kW));
+  for (int variant = 0; variant < 3; ++variant) ASSERT_NO_FATAL_FAILURE(e.Execute(variant, rows));
+  ASSERT_TRUE(e.Finish());
+  EXPECT_EQ(owner->Ready(), identity);
+  const auto native = e.execution->Submission(e.stream);
+  ASSERT_TRUE(native);
+  // No launch is attempted after invalidation, including the captured path
+  // which bypasses StepProgram::Run. All buffers remain alive until Close.
+  e.backend->LaunchReleased();
+  EXPECT_FALSE(owner->Ready());
+  EXPECT_FALSE(e.programs[0]->program->Run(*e.launch, *native));
+  EXPECT_FALSE(e.launch->Launch(*native, *e.programs[0]->graph));
+  EXPECT_GT(e.declaration_bytes, 0U);
+  ASSERT_TRUE(e.backend->LendCublas(e.cublas.get()));
+  EXPECT_EQ(owner->Ready(), identity);
+  auto replacement = e.backend->Launch({.base = e.pool_base + 256, .size = Bytes(kPool - 256)});
+  ASSERT_TRUE(replacement);
+  // Identical durable configuration cannot revive the old launch/recording.
+  EXPECT_FALSE(e.launch->Launch(*native, *e.programs[0]->graph));
+  EXPECT_FALSE(e.programs[0]->program->Run(*e.launch, *native));
+  EXPECT_FALSE(e.programs[0]->program->Run(**replacement, *native));
+  EXPECT_FALSE((*replacement)->Launch(*native, *e.programs[0]->graph));
+  ASSERT_TRUE(e.programs[0]->program->Bind(**replacement));
+  ASSERT_TRUE(e.programs[0]->program->Run(**replacement, *native));
+  ASSERT_TRUE(e.Finish());
+  replacement->reset();
+  e.backend->LaunchReleased();
+  ASSERT_TRUE(e.backend->LendCublas(e.cublas.get()));
+  // Deterministically reproduce allocator address reuse. The retired original
+  // launch's storage is reconstructed after a fence, with a distinct epoch.
+  // Callback state belongs to the complete heap environment on every exit.
+  auto context = LaunchContext::Create(0, *e.execution, e.stream,
+                                       {.base = e.pool_base, .size = Bytes(kPool)}, e.cublas.get());
+  ASSERT_TRUE(context);
+  auto* storage = static_cast<kg::GgmlStepLaunch*>(e.launch.release());
+  e.reused_launch = storage;
+  e.reused_generation = 2;
+  std::destroy_at(storage);
+  auto* reused =
+      std::construct_at(storage, std::move(*context), std::unique_ptr<kg::SelectedLaunch>{}, owner,
+                        &e.reused_launch, &e.reused_generation, e.reused_generation);
+  e.launch.reset(reused);
+  ASSERT_EQ(e.programs[0]->graph->owner(), e.launch.get());
+  EXPECT_FALSE(e.launch->Launch(*native, *e.programs[0]->graph));
+  owner.reset();
+  ASSERT_TRUE(e.Close());
+  EXPECT_EQ(e.declaration_bytes, 0U);
+}
+
 }  // namespace hc_step
 
 }  // namespace

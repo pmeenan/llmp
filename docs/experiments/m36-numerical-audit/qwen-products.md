@@ -139,3 +139,47 @@ stable on repetition, distinguish omitted/F16/F32 output, and reject unknown
 encodings. The root receipt is
 `50d6607cc2c562345566573244dbcd83d396c44c4348b9f0c4127a7cf1e4ed29`. These checks do not activate runtime tuning or qualify
 full-model quality, performance or serving.
+
+## Owned backend configuration
+
+The next shared slice owns the qualified native backend configuration before
+a required source can publish its execution identity. It retains typed tuning,
+actual device and cuBLAS/Lt settings, paid handle/workspace readiness and all
+stages' spec/layout/policy/domain in source, plan-cache, snapshot and kept-state
+compatibility. Failed preparation publishes no partial identity. Changed required
+configuration refuses; it cannot become an absent optional identity.
+
+Metadata has a bounded pinned allowance before node start and keeps one catalog
+payment across setup retries. Direct programs and captured recordings retain the
+launch generation, so replacement or recycled addresses cannot revive retired
+work. Uncertain completion still retains the complete owner. The newly shared
+FP16 adapter keeps its ordinary source and checked lowering; this slice does not
+promote that borrowed configuration to required sealed authority.
+
+The implementation uses the qualified pinned installation. Recursive runtime
+SDK/library byte attestation, loader scans and selected-SASS extraction were
+removed from the design; compiled provenance, real readiness and completion
+checks remain. This reduces prospective complexity without changing arithmetic
+or selecting a new family policy. Joined qualification and the matched 1% gate
+remain separate. Main passes the full native build and all 148 focused
+host/refusal cases, including funding limits/retry lifetime and required-source
+plan/snapshot/kept refusal before effects. One actual model-free control passes
+real handle preparation, capture with changed inputs, old-program refusal,
+shifted-pool rebind and deterministic same-address stale-record refusal. The
+FP16 adapter also passes all three existing controls; both full-result hashes
+and reload properties equal the previous shared runs. Source/recipe/binary
+guards pass, no compute process remains and all max/OOM events are zero.
+Final format, boundary, header and license checks pass.
+
+The synthetic check retains the existing 64-MiB host and 192-MiB device
+inventory, inside a 4-GiB zero-swap process/cache cap with the existing runtime
+allowance and physical margin. Its observed cgroup peak is 218,488,832 bytes;
+this is not device occupancy. The adapter retains its existing 16-GiB zero-swap
+cap and observes 2,174,857,216 bytes of process/cache occupancy. Neither fixture
+is a family quality or latency qualification.
+
+| Final main evidence | SHA-256 |
+| --- | --- |
+| Full native build and 148 focused controls | `b6737ccc0cdaa8ca4261de49e6cee08be8c0e02099cc69ccbc6351da517073b2` |
+| Actual model-free backend control | `4cac15cfe32f2ceebc3c08d40607a5208d6a99bbe1e6ed0a98f37e36ffa9aafe` |
+| Actual FP16 adapter controls | `4911d5a1e5f209127541e33f4c52db28b185749cd5d59da7e6f09d06757fd20b` |

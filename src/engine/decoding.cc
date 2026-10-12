@@ -98,6 +98,11 @@ DecodingOrchestrator::DecodingOrchestrator(ModelRunner& runner, const WaveCompos
 
 std::expected<DecodingOrchestrator, std::string> DecodingOrchestrator::Make(
     ModelRunner& runner, const WaveComposer& composer, DecodingMode mode, DecodingPolicy policy) {
+  const auto use = mode.kind == Kind::kSpeculative      ? NumericalUse::kSpeculative
+                   : mode.kind == Kind::kScored         ? NumericalUse::kScore
+                   : mode.kind == Kind::kBlockDiffusion ? NumericalUse::kBlock
+                                                        : NumericalUse::kDecode;
+  if (auto declared = runner.CheckExecutionUse(use); !declared) return Error(declared.error());
   const SlotLifecycle& slots = runner.slots();
   if (mode.kind == Kind::kBlockDiffusion) {
     return Error("block diffusion is a declared decoding mode, not built yet");
@@ -184,7 +189,12 @@ void DecodingOrchestrator::SetDepth(std::uint32_t slot, std::size_t drafter,
 }
 
 DecodeReport DecodingOrchestrator::Step(std::span<const DecodeWork> work) {
-  if (auto qualified = runner_->CheckOwners(work.size()); !qualified) {
+  const auto use = mode_.kind == Kind::kSpeculative ? NumericalUse::kSpeculative
+                   : mode_.kind == Kind::kScored    ? NumericalUse::kScore
+                                                    : NumericalUse::kDecode;
+  auto qualified = runner_->CheckExecutionUse(use);
+  if (qualified) qualified = runner_->CheckOwners(work.size());
+  if (!qualified) {
     DecodeReport report;
     report.outcomes.resize(work.size());
     for (auto& out : report.outcomes) out.refusal = Refusal(qualified.error());

@@ -24,9 +24,9 @@
 // the handle must outlive every context that borrows it; the stream must
 // outlive the handle. cuBLAS writes the workspace from the GEMMs it queues,
 // so the workspace stays mapped and charged until a fence after the last of
-// them has completed. cublasCreate may allocate memory of its own, and
-// cuBLAS may on first use of a kernel; the allocation census accounts for
-// both (BP-A1).
+// them has completed. cuBLAS creation and lazy kernel allocations remain in
+// the paid node runtime allowance and physical-memory checks. CUDA global
+// occupancy on unified memory is not a process allocation census.
 //
 // Destroying the handle is a blocking call: NVIDIA documents that
 // cublasDestroy synchronizes the device, so it belongs where the device is
@@ -40,6 +40,7 @@
 #include <memory>
 
 #include "base/bytes.h"
+#include "base/sha256.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/tensors.h"
 #include "providers/device_execution.h"
@@ -72,6 +73,12 @@ class CublasHandle {
   // created in made current for the call, as cuBLAS requires, and the
   // caller's restored. No launch context may still borrow it.
   ~CublasHandle();
+
+  // Queried once while the setup context is current, before a required
+  // source publishes its compatibility identity. Qualified SDK/install
+  // provenance supplies library build lineage; these are actual runtime
+  // versions and effective handle settings, not a file-byte attestation.
+  std::expected<base::Sha256Digest, KernelFailure> ConfigurationIdentity() const;
 
   cublasContext* native() const { return handle_; }
   int device() const { return device_; }

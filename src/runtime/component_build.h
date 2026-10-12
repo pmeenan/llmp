@@ -19,6 +19,7 @@
 #include <string_view>
 
 #include "config/node_config.h"
+#include "engine/execution_contract.h"
 #include "engine/paged_node.h"
 #include "runtime/engine_llm.h"
 
@@ -41,6 +42,14 @@ struct ComponentBuildOptions {
   bool prefill_lookahead = true;
   bool prepare_state = true;
   std::optional<bool> state_only_prefill{};
+  // Internal owned source qualification. No command/settings flag activates
+  // this. An explicit complete domain requires the real backend declaration;
+  // supplied tuning owns all names and never supplies provider device facts.
+  std::shared_ptr<const engine::NumericalDomain> execution_domain{};
+  std::shared_ptr<const planner::OwnedDeviceFacts> tuning{};
+  // Paid once in the node catalog, before declaration construction. The build
+  // retains it across retries; no host-floor/pre-Start counter is authority.
+  std::uint64_t execution_metadata_bytes = 1U << 20;
 };
 
 // The parts of `entry`'s model (its artifact and drafter in `store`), made

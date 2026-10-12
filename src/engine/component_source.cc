@@ -4,6 +4,7 @@
 #include "engine/component_source.h"
 
 #include <algorithm>
+#include <array>
 #include <format>
 #include <utility>
 #include <vector>
@@ -15,10 +16,19 @@ namespace llmp::engine {
 
 std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSource::Create(
     ComponentSourceOptions options) {
+  if (options.backend.owner) {
+    auto owner = options.backend.owner;
+    // Retain just the owned table, avoiding another allocation/copy of its
+    // device/tuning vectors. Caller-supplied copied fields have no authority.
+    options.backend = {.owner = std::move(owner)};
+  }
+  if (static_cast<bool>(options.backend.owner) != static_cast<bool>(options.execution_domain))
+    return std::unexpected("a required source needs both its backend owner and complete domain");
   if (options.spec == nullptr || options.bindings.state == nullptr) {
     return std::unexpected("a component step source needs its spec and state layout");
   }
-  if (options.backend.registry == nullptr || !options.backend.lower) {
+  const auto& backend = options.backend.owner ? options.backend.owner->backend() : options.backend;
+  if (backend.registry == nullptr || !backend.lower) {
     return std::unexpected("a component step source needs a kernel source");
   }
   planner::Policy policy;
@@ -69,8 +79,146 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   return source;
 }
 
+struct ComponentStepSource::ExecutionState {
+  std::vector<std::shared_ptr<const kernels::BackendOwner>> owners;
+  std::vector<execution::BackendDeclaration> declarations;
+  base::Sha256Digest identity{};
+};
+
+std::expected<std::shared_ptr<ComponentStepSource::ExecutionState>, std::string>
+ComponentStepSource::SealExecution(std::span<ComponentStepSource* const> stages) {
+  if (stages.empty()) return std::unexpected("an execution composition has no stages");
+  const auto& domain = stages.front()->o_.execution_domain;
+  if (!domain) {
+    for (const auto* stage : stages)
+      if (stage->o_.execution_domain || stage->o_.backend.owner)
+        return std::unexpected("a required execution composition omits a stage");
+    return std::shared_ptr<ExecutionState>{};
+  }
+  if (domain->stages().size() != stages.size() ||
+      stages.front()->o_.spec->stages.size() != stages.size())
+    return std::unexpected("a required execution composition must include every source stage");
+  std::uint64_t bytes = sizeof(ExecutionState) + 512;
+  const auto add = [&](std::uint64_t n) { return !__builtin_add_overflow(bytes, n, &bytes); };
+  const auto text = [&](std::string_view value) {
+    std::uint64_t n = 0;
+    return !__builtin_add_overflow(static_cast<std::uint64_t>(value.size()),
+                                   sizeof(std::string) + std::uint64_t{128}, &n) &&
+           !__builtin_mul_overflow(n, std::uint64_t{4}, &n) && add(n);
+  };
+  // Count all new copies and canonical text/hash construction before making
+  // StageExecutionInput/ExecutionContract. The domain and policies supplied
+  // by the caller already belong to their existing source allowance.
+  for (std::size_t i = 0; i < stages.size(); ++i) {
+    const auto* stage = stages[i];
+    if (!stage || stage->o_.stage != i || !stage->o_.backend.owner || !stage->o_.execution_domain ||
+        stage->o_.execution_domain->identity() != domain->identity() ||
+        stage->o_.spec->stages.size() != stages.size() ||
+        stage->o_.spec->stages[i].name != domain->stages()[i].name)
+      return std::unexpected("required source stages disagree or lack their backend owner");
+    if (stage->execution_) return std::unexpected("an execution source cannot be prepared twice");
+    auto bound = planner::OwnedDeviceFacts::Bound(stage->Backend().device);
+    if (!bound || !add(*bound) || !add(sizeof(StageExecutionInput) + 1024) ||
+        !text(domain->stages()[i].name))
+      return std::unexpected("execution metadata bound overflows");
+    for (const auto& name : stage->policy_.enabled)
+      if (!text(name)) return std::unexpected("execution policy bound overflows");
+    for (const auto& name : stage->policy_.disabled)
+      if (!text(name)) return std::unexpected("execution policy bound overflows");
+    for (const auto& rank : stage->policy_.ranks)
+      if (!text(rank.device_class) || !text(rank.implementation) || !add(sizeof(rank) + 128))
+        return std::unexpected("execution rank bound overflows");
+    const auto& declared = domain->stages()[i];
+    // Known unique enums bound the vectors to the finite enum inventory.
+    if (!add(declared.phases.size() * (sizeof(NumericalPhase) + 64)) ||
+        !add(declared.uses.size() * (sizeof(NumericalUse) + 64)))
+      return std::unexpected("execution domain bound overflows");
+  }
+  const auto funder = stages.front()->o_.backend.owner;
+  if (!funder->Charge(bytes)) return std::unexpected("execution metadata was not funded");
+  auto state =
+      std::shared_ptr<ExecutionState>(new ExecutionState, [funder, bytes](ExecutionState* value) {
+        delete value;
+        funder->Release(bytes);
+      });
+  state->owners.reserve(stages.size());
+  state->owners.push_back(funder);
+  state->declarations.reserve(stages.size());
+  std::vector<StageExecutionInput> inputs;
+  inputs.reserve(stages.size());
+  for (std::size_t i = 0; i < stages.size(); ++i) {
+    const auto* stage = stages[i];
+    const auto& backend = stage->Backend();
+    auto actual = stage->o_.backend.owner->Ready();
+    if (!actual) return std::unexpected(actual.error());
+    if (i != 0) state->owners.push_back(stage->o_.backend.owner);
+    state->declarations.push_back(*actual);
+    const auto key = planner::KeyOf(stage->o_.bound_digest, {}, stage->policy_);
+    inputs.push_back({.stage = stage->o_.stage,
+                      .name = domain->stages()[i].name,
+                      .policy = stage->policy_,
+                      .patterns = key.patterns,
+                      .registry = backend.registry,
+                      .device = backend.device,
+                      .backend = *actual});
+  }
+  auto contract = ExecutionContract::Create(*domain, inputs);
+  if (!contract) return std::unexpected(contract.error());
+  base::Sha256 hash;
+  hash.Update("llmp-component-execution-v2");
+  hash.Update(std::as_bytes(std::span(contract->identity())));
+  for (const auto* stage : stages) {
+    hash.Update(std::as_bytes(std::span(stage->o_.bound_digest)));
+    hash.Update(std::as_bytes(std::span(stage->layout_identity_)));
+    hash.Update(
+        std::format("{}:{}:{};", stage->o_.stage, stage->o_.slots, stage->o_.require_capture));
+  }
+  state->identity = hash.Finish();
+  return state;
+}
+
+Status ComponentStepSource::PrepareExecution() {
+  const std::array<ComponentStepSource*, 1> sources{this};
+  auto sealed = SealExecution(sources);
+  if (!sealed) return std::unexpected(sealed.error());
+  execution_ = std::move(*sealed);
+  return {};
+}
+
+std::expected<std::optional<base::Sha256Digest>, std::string>
+ComponentStepSource::ExecutionIdentity() const {
+  if (!o_.execution_domain) return std::optional<base::Sha256Digest>{};
+  if (!execution_) return std::unexpected("the required execution source is not prepared");
+  for (std::size_t i = 0; i < execution_->owners.size(); ++i) {
+    auto actual = execution_->owners[i]->Ready();
+    if (!actual) return std::unexpected(actual.error());
+    if (*actual != execution_->declarations[i])
+      return std::unexpected("the execution backend changed after preparation");
+  }
+  return std::optional{execution_->identity};
+}
+
+Status ComponentStepSource::CheckExecutionUse(NumericalUse use) const {
+  if (!o_.execution_domain) return {};
+  if (auto identity = ExecutionIdentity(); !identity) return std::unexpected(identity.error());
+  return o_.execution_domain->CheckMode(use);
+}
+
+Status ComponentStepSource::CheckExecutionShape(const planner::StepShape& shape) const {
+  if (!o_.execution_domain) return {};
+  if (auto identity = ExecutionIdentity(); !identity) return std::unexpected(identity.error());
+  return o_.execution_domain->CheckShape(shape);
+}
+
 planner::PlanKey ComponentStepSource::KeyBase() const {
-  return planner::KeyOf(o_.bound_digest, {}, policy_);
+  auto key = planner::KeyOf(o_.bound_digest, {}, policy_);
+  if (execution_) {
+    base::Sha256 hash;
+    hash.Update(std::as_bytes(std::span(key.patterns)));
+    hash.Update(std::as_bytes(std::span(execution_->identity)));
+    key.patterns = hash.Finish();
+  }
+  return key;
 }
 
 std::vector<std::uint64_t> ComponentStepSource::ShapeParameters(
@@ -181,6 +329,7 @@ std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::Commi
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepSource::Build(
     const planner::StepShape& shape, const kernels::Addresses& addresses) {
+  if (auto checked = CheckExecutionShape(shape); !checked) return std::unexpected(checked.error());
   if (shape.stage != o_.stage) {
     return std::unexpected(
         std::format("a step of stage {} from stage {}'s source", shape.stage, o_.stage));
@@ -241,13 +390,13 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
     };
   }
   const auto state_spans = StateSpans(shape, addresses);
-  auto plan = planner::Plan(step->graph.Clone(), *o_.backend.registry, o_.backend.device, policy_,
+  auto plan = planner::Plan(step->graph.Clone(), *Backend().registry, Backend().device, policy_,
                             {.row_invariant = shape.row_invariant,
                              .capturable = o_.require_capture,
                              .staged = std::move(staged),
-                             .on_stream = o_.backend.on_stream,
-                             .written = o_.backend.written,
-                             .within = o_.backend.within,
+                             .on_stream = Backend().on_stream,
+                             .written = Backend().written,
+                             .within = Backend().within,
                              .shape = &shape,
                              .state_spans = state_spans,
                              .root_alignment = std::move(root_alignment),
@@ -264,7 +413,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                                   .addresses = addresses,
                                   .context = o_.bindings.state->context,
                                   .state_spans = state_spans};
-  return o_.backend.lower(input);
+  return Backend().lower(input);
 }
 
 std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::Create(
@@ -286,6 +435,51 @@ std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::
   key.patterns = patterns.Finish();
   key.policy = policies.Finish();
   return std::unique_ptr<StagedStepSource>(new StagedStepSource(std::move(stages), key));
+}
+
+Status StagedStepSource::PrepareExecution() {
+  if (!stages_.front()->o_.execution_domain) {
+    for (const auto& stage : stages_)
+      if (stage->o_.execution_domain || stage->o_.backend.owner)
+        return std::unexpected("a required execution composition omits a stage");
+    return {};
+  }
+  const auto funder = stages_.front()->o_.backend.owner;
+  std::uint64_t temporary = 0;
+  if (__builtin_mul_overflow(static_cast<std::uint64_t>(stages_.size()),
+                             sizeof(ComponentStepSource*), &temporary) ||
+      __builtin_add_overflow(temporary, std::uint64_t{128}, &temporary) || !funder ||
+      !funder->Charge(temporary))
+    return std::unexpected("execution composition pointers were not funded");
+  std::vector<ComponentStepSource*> views;
+  views.reserve(stages_.size());
+  for (const auto& stage : stages_) views.push_back(stage.get());
+  auto sealed = ComponentStepSource::SealExecution(views);
+  decltype(views){}.swap(views);
+  funder->Release(temporary);
+  if (!sealed) return std::unexpected(sealed.error());
+  for (auto& stage : stages_) stage->execution_ = *sealed;
+  if (*sealed) {
+    base::Sha256 hash;
+    hash.Update(std::as_bytes(std::span(key_.patterns)));
+    hash.Update(std::as_bytes(std::span((*sealed)->identity)));
+    key_.patterns = hash.Finish();
+  }
+  return {};
+}
+
+std::expected<std::optional<base::Sha256Digest>, std::string> StagedStepSource::ExecutionIdentity()
+    const {
+  return stages_.front()->ExecutionIdentity();
+}
+
+Status StagedStepSource::CheckExecutionUse(NumericalUse use) const {
+  return stages_.front()->CheckExecutionUse(use);
+}
+
+Status StagedStepSource::CheckExecutionShape(const planner::StepShape& shape) const {
+  if (shape.stage >= stages_.size()) return std::unexpected("execution shape names no stage");
+  return stages_[shape.stage]->CheckExecutionShape(shape);
 }
 
 std::vector<std::uint64_t> StagedStepSource::ShapeParameters(

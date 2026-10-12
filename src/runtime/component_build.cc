@@ -36,9 +36,11 @@
 #include "planner/policy.h"
 #include "planner/step_shape.h"
 #include "platform/direct_io.h"
+#include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_admission.h"
 #include "runtime/gemma_profile.h"
+#include "runtime/memory_guard.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/serving_support.h"
@@ -195,8 +197,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                               const config::ModelEntry& entry, int index,
                               ComponentBuildOptions options) {
   return [&node, store = std::move(store), id = entry.artifact.value_or(""),
-          drafter_id = entry.drafter.value_or(""), index, options = std::move(options)](
-             const ModelSettings& settings) -> std::expected<EngineLlmParts, std::string> {
+          drafter_id = entry.drafter.value_or(""), index, options = std::move(options),
+          metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
+             const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
     const bool solo = settings.architecture == "qwen4exp";
     if (solo && (!options.diagnostic_solo || settings.max_slots.value != 1))
       return Error("the Qwen component qualification requires exactly one configured slot");
@@ -462,6 +465,32 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                    }}});
     if (!backend) return Error(backend.error());
     hold->backend = std::move(*backend);
+    const providers::DeviceFacts facts =
+        providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
+    const std::uint64_t cublas_bytes =
+        kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
+            .value();
+    if (options.tuning && !options.execution_domain)
+      return Error("explicit tuning requires a declared execution source");
+    if (options.execution_domain) {
+      if (!metadata) {
+        auto admitted = engine::ExecutionMetadataAllowance::Admit(
+            node.catalog(), node.domain(), options.execution_metadata_bytes,
+            platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+        if (!admitted) return Error(admitted.error());
+        metadata = std::move(*admitted);
+      }
+      const auto tuning =
+          options.tuning ? std::span<const execution::TunedShape>(options.tuning->facts().tuned)
+                         : std::span<const execution::TunedShape>{};
+      if (auto declared = hold->backend->Declare(
+              tuning, cublas_bytes,
+              [metadata](std::uint64_t bytes) { return metadata->Charge(bytes); },
+              [metadata](std::uint64_t bytes) { metadata->Release(bytes); });
+          !declared)
+        return Error(declared.error());
+    }
+
     // A harness's matched recipe in place of the target's mapping's.
     std::optional<planner::Policy> target_policy;
     if (stored || options.target_policy) {
@@ -485,7 +514,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                 : std::span<const spec::SourceValue>(hold->drafter_values),
            .slots = slots,
            .policy = stage == 0 ? target_policy : std::nullopt,
-           .backend = hold->backend->Backend()});
+           .backend = hold->backend->Backend(),
+           .execution_domain = options.execution_domain});
       if (!made) return Error(made.error());
       sources.push_back(std::move(*made));
     }
@@ -545,11 +575,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     parts.config.setup_shapes = std::move(setup);
     // cuBLAS on the model's stream over the runner's workspace (D-053: the
     // engine's handle, never one GGML makes).
-    const providers::DeviceFacts facts =
-        providers::QueryDeviceFacts(0).value_or(providers::DeviceFacts{});
-    const std::uint64_t cublas_bytes =
-        kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
-            .value();
     parts.config.kernel_memory.push_back(
         {.name = std::format("{} cuBLAS workspace", settings.name), .bytes = cublas_bytes});
     parts.config.prepare =

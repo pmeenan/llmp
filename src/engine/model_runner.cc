@@ -299,6 +299,8 @@ Status ModelRunner::CheckOwners(std::size_t owners) const {
 }
 
 std::expected<void, std::string> ModelRunner::CheckShape(const pl::StepShape& shape) const {
+  if (auto identity = source_->ExecutionIdentity(); !identity) return Error(identity.error());
+  if (auto qualified = source_->CheckExecutionShape(shape); !qualified) return qualified;
   if (shape.segments.empty()) return Error("a step has no segments");
   if (auto qualified = CheckOwners(shape.segments.size()); !qualified) return qualified;
   if (shape.stage >= slots_.stages()) return Error("a step names no stage");
@@ -501,6 +503,7 @@ Status ModelRunner::Setup() {
     prepared_ = true;
     if (auto prepared = config_.prepare(bases); !prepared) return Error(prepared.error());
   }
+  if (auto prepared = source_->PrepareExecution(); !prepared) return prepared;
   std::uint64_t activations = 0, pool = 0, inputs = 0, outputs = 0;
   std::vector<std::uint64_t> carry(slots_.stages(), 0);
   for (const pl::StepShape& shape : config_.setup_shapes) {
@@ -1079,6 +1082,7 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
 
 std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Planned(
     const pl::StepShape& shape) {
+  if (auto identity = source_->ExecutionIdentity(); !identity) return Error(identity.error());
   if (Plans::Entry* found = plans_.Find(KeyOf(shape)); found != nullptr) return found;
   const auto started = std::chrono::steady_clock::now();
   auto program = source_->Build(shape, AddressesFor(shape, false));

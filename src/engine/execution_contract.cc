@@ -15,6 +15,38 @@
 #include "format/encoding.h"
 
 namespace llmp::engine {
+
+std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string>
+ExecutionMetadataAllowance::Admit(catalog::Catalog& catalog, catalog::DomainId domain,
+                                  std::uint64_t bytes, std::uint64_t available,
+                                  std::uint64_t margin) {
+  // Includes this owner/control block and the pinned catalog extent's metadata.
+  constexpr std::uint64_t overhead = sizeof(ExecutionMetadataAllowance) + 512;
+  if (bytes <= overhead || margin == 0 || bytes > available || margin > available - bytes)
+    return std::unexpected("execution metadata allowance lacks paid physical headroom");
+  auto extent = catalog.AddExtent({.domain = domain,
+                                   .memory_class = catalog::MemoryClass::kRuntime,
+                                   .recovery = catalog::Recovery::kPinned,
+                                   .size = base::Bytes(bytes),
+                                   .content = {}},
+                                  true);
+  if (!extent) return std::unexpected("execution metadata allowance could not be cataloged");
+  return std::shared_ptr<ExecutionMetadataAllowance>(
+      new ExecutionMetadataAllowance(bytes - overhead));
+}
+
+bool ExecutionMetadataAllowance::Charge(std::uint64_t bytes) {
+  if (bytes > capacity_ - used_) return false;
+  used_ += bytes;
+  return true;
+}
+
+void ExecutionMetadataAllowance::Release(std::uint64_t bytes) {
+  // Releases are paired by the immutable metadata owner; an over-release must
+  // not invent capacity on a malformed caller path.
+  if (bytes <= used_) used_ -= bytes;
+}
+
 namespace {
 
 // Explicit little-endian scalars and length-prefixed bytes; no structure

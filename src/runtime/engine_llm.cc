@@ -52,7 +52,9 @@ EngineLlm::EngineLlm(en::PagedNode& node, const config::ModelEntry& entry,
 EngineLlm::~EngineLlm() = default;
 
 Status EngineLlm::Built() const {
-  return runner_ != nullptr && composer_ && plain_ ? Status{} : Error(name_ + " is not set up");
+  if (!runner_ || !composer_ || !plain_) return Error(name_ + " is not set up");
+  if (auto identity = ExecutionIdentity(); !identity) return Error(identity.error());
+  return {};
 }
 
 // ------------------------------------------------------------------ its life
@@ -139,6 +141,9 @@ Status EngineLlm::Setup() {
   if (!runner) return Error(std::format("model {}: {}", name_, runner.error()));
   runner_ = std::move(*runner);
   if (auto set = runner_->Setup(); !set) return set;
+  auto identity = runner_->ExecutionIdentity();
+  if (!identity) return Error(identity.error());
+  execution_identity_ = *identity;
   // The settings' context and chunk, as the target's layout holds them.
   const model::StateLayoutDerived& layout = runner_->slots().layout(0);
   context_ = std::min(context_, layout.context);
@@ -349,6 +354,15 @@ std::uint32_t EngineLlm::StepTokenBoundFor(const Branch& /*branch*/, std::uint32
 }
 
 // ------------------------------------------------------------- D-105
+
+std::expected<std::optional<base::Sha256Digest>, std::string> EngineLlm::ExecutionIdentity() const {
+  if (!runner_) return std::unexpected("the execution source is not set up");
+  auto actual = runner_->ExecutionIdentity();
+  if (!actual) return std::unexpected(actual.error());
+  if (*actual != execution_identity_)
+    return std::unexpected("the execution identity changed after setup");
+  return execution_identity_;
+}
 
 std::string EngineLlm::KeptLayout() const {
   return runner_ ? runner_->slots().kept_layout_id() : std::string();

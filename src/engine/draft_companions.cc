@@ -240,6 +240,14 @@ WaveReport RunPromptWave(ModelRunner& runner, const WaveComposer& composer,
   bool companions = false;
   for (std::size_t s = 1; s < runner.slots().stages(); ++s)
     companions |= runner.slots().progress(0, s) != nullptr;
+  if (auto qualified = runner.CheckExecutionUse(companions ? NumericalUse::kPromptCompanions
+                                                           : NumericalUse::kPrompt);
+      !qualified) {
+    WaveReport report;
+    report.outcomes.resize(pending.size());
+    for (auto& out : report.outcomes) out.refusal = StepRefusal{.what = qualified.error()};
+    return report;
+  }
   std::vector<SegmentWork> inputs(work.begin(), work.end());
   if (histories.size() == inputs.size())
     for (std::size_t i = 0; i < inputs.size(); ++i) inputs[i].history = histories[i];

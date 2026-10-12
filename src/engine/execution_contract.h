@@ -3,27 +3,52 @@
 
 // Immutable execution compatibility and numerical qualification. Neither is a
 // model spec identity, a request shape/cache key, nor permission to read state.
-// These are owned value types, not an enforcement or production qualification
-// API. A future source must separately own authoritative backend declarations
-// and admit complete operations before use. This header contains no vendor types.
+// These are owned value types. ComponentStepSource composes them from owned
+// backend declarations; complete operation admission and numerical evidence
+// remain separate requirements. This header contains no vendor types.
 
 #ifndef LLMP_ENGINE_EXECUTION_CONTRACT_H_
 #define LLMP_ENGINE_EXECUTION_CONTRACT_H_
 
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/sha256.h"
+#include "catalog/catalog.h"
 #include "execution/registry.h"
 #include "planner/policy.h"
 #include "planner/select.h"
 #include "planner/step_shape.h"
 
 namespace llmp::engine {
+
+// Fixed pre-start host payment for the backend and its source declarations.
+// Admission pins the entire allowance in the node catalog before allocating
+// this owner. Local charges never exceed it, including temporary construction.
+// The pinned extent stays charged until the node is destroyed: borrower
+// destruction must not mutate a running scheduler's catalog. A build retains
+// and reuses one owner across failed/retried setup, rather than admitting again.
+class ExecutionMetadataAllowance {
+ public:
+  static std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string> Admit(
+      catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes,
+      std::uint64_t available, std::uint64_t margin);
+  ExecutionMetadataAllowance(const ExecutionMetadataAllowance&) = delete;
+  ExecutionMetadataAllowance& operator=(const ExecutionMetadataAllowance&) = delete;
+  bool Charge(std::uint64_t bytes);
+  void Release(std::uint64_t bytes);
+  std::uint64_t used() const { return used_; }
+  std::uint64_t capacity() const { return capacity_; }
+
+ private:
+  explicit ExecutionMetadataAllowance(std::uint64_t capacity) : capacity_(capacity) {}
+  std::uint64_t capacity_ = 0, used_ = 0;
+};
 
 enum class NumericalUse : std::uint8_t {
   kPrompt,
@@ -77,16 +102,10 @@ class NumericalDomain {
   base::Sha256Digest identity_{};
 };
 
-// Populated by the backend from actual immutable configuration, never from a
-// caller-selected compatibility string or a callback address. All three seals
-// must be known: source + arithmetic/launch recipe, actual compiler/host flags
-// and SM images, and lowering/selector/library configuration. Their production
-// constructors and compile-command authentication are a separate prerequisite.
-struct BackendExecutionDeclaration {
-  base::Sha256Digest recipe{};
-  base::Sha256Digest build{};
-  base::Sha256Digest selection{};
-};
+// Producer authority belongs to the actual backend owner. The qualified
+// build/install receipt and actual immutable runtime configuration define
+// compatibility; this value does not perform runtime code attestation.
+using BackendExecutionDeclaration = execution::BackendDeclaration;
 
 // Borrowed only during Create; nothing in the finished object retains a span,
 // registry pointer, tuning string_view, callback or caller-owned configuration.

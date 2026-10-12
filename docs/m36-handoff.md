@@ -40,23 +40,23 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
-Main through `50d93d33` includes the explicitly tuned BF16/F32 vector-product
+Main through `0d127ac0` includes the explicitly tuned BF16/F32 vector-product
 capability, all four EXL3 profiles' original-model scoring and shared lifecycle
 controls, and the active FP16 benchmark adapter over shared components. The
-following reviewed slice retires both legacy fixture executor families and
-closes bounded G5 migration. Original-reference quality and same-implementation
+legacy fixture executors have been retired and bounded G5 migration is
+complete. Original-reference quality and same-implementation
 state checks replace cross-library bit equality as its prospective gate; the
 fixtures remain unserved with no speed baseline. Details and final integration
 evidence live in [the G5 report](experiments/m36-exl3-selected/README.md).
 
 Qwen49 owns preparation and source/launch compatibility in
-`.claude/worktrees/m36-owned-backend`. Its first reviewed build passes 145
-focused controls on Spark B. Two real corrections are in progress: fund metadata
-before node start and bind programs/recordings to stable launch generations.
-The backend design has dropped recursive runtime SDK/library byte attestation;
-pinned provenance, actual backend readiness and execution identities remain.
-No new numerical selection or joined-serving quality/speed qualification is
-claimed by this ownership slice.
+`.claude/worktrees/m36-owned-backend`. Main passes a full native build and
+148 focused host/refusal controls, one actual synthetic backend control and
+three existing FP16 adapter controls. Metadata is funded before node start;
+programs/recordings bind stable launch generations. The design avoids recursive
+SDK/library byte attestation and retains qualified provenance, actual readiness
+and execution identities. No numerical selection or joined-serving quality/speed
+qualification follows. See [the source integration proof](experiments/m36-numerical-audit/qwen-products.md#owned-backend-configuration).
 
 The owner requested a [retrospective numerical audit](experiments/m36-numerical-audit/README.md)
 and original-unquantized quality as the primary reference. Stop adding

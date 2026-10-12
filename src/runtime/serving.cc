@@ -2301,6 +2301,14 @@ Status Server::PrepareKept() {
     auto& l = static_cast<Llm&>(*m);
     const auto entry = std::ranges::find(config_.models, l.name(), &config::ModelEntry::name);
     const std::string artifact = entry != config_.models.end() ? entry->artifact.value_or("") : "";
+    auto execution = l.ExecutionIdentity();
+    if (!execution) {
+      Log(std::format("model {}: kept execution identity unavailable: {}", l.name(),
+                      execution.error()));
+      continue;
+    }
+    const std::string model_build =
+        *execution ? build + ";execution-v1=" + base::ToHex(**execution) : build;
     const std::string layout = l.KeptLayout();
     if (!kept::ValidDirectoryName(artifact) || layout.empty()) {
       Log(
@@ -2334,7 +2342,7 @@ Status Server::PrepareKept() {
     }
     const std::size_t index = keeper_->AddModel(*dir);
     const kept::Identity identity{
-        .build = build,
+        .build = model_build,
         .artifact = artifact,
         .drafter = l.speculative() && entry->drafter ? *entry->drafter : std::string(),
         .layout = layout};

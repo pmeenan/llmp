@@ -154,6 +154,8 @@ struct FakeSourceOptions {
   std::shared_ptr<std::vector<std::vector<std::byte>>> seen_inputs =
       std::make_shared<std::vector<std::vector<std::byte>>>();
   base::Sha256Digest spec{};
+  std::function<std::expected<std::optional<base::Sha256Digest>, std::string>()>
+      execution_identity{};
 };
 
 class FakeStepSource final : public engine::StepSource {
@@ -162,6 +164,11 @@ class FakeStepSource final : public engine::StepSource {
   // switch exercises the production default's unqualified boundary.
   explicit FakeStepSource(FakeSourceOptions options, bool joined_repeat_pending = true)
       : options_(std::move(options)), joined_repeat_pending_(joined_repeat_pending) {}
+  std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override {
+    return options_.execution_identity
+               ? options_.execution_identity()
+               : std::expected<std::optional<base::Sha256Digest>, std::string>{std::nullopt};
+  }
   bool JoinedRepeatPending(std::uint16_t /*stage*/) const override {
     return joined_repeat_pending_;
   }

@@ -1683,6 +1683,18 @@ each is checked against the design as M3.6 proceeds.
                                     [replays46/47](experiments/m36-numerical-audit/qwen-products.md)
                                     measure local error and paired path timing,
                                     not original-model quality or serving gates.
+                              - [x] **G3c2b1d — owned backend configuration:**
+                                    immutable qualified build/runtime and tuning
+                                    declarations, paid preparation before source
+                                    identity, and source/plan/snapshot/kept bindings.
+                                    Explicit pre-start metadata allowance and
+                                    stable launch generations protect retries and
+                                    stale direct/captured work. Main passes the full
+                                    native build, 148 focused host/refusal controls,
+                                    one model-free native backend control and the
+                                    three existing FP16 adapter controls. No new
+                                    numerical policy or joined capability follows
+                                    ([evidence](experiments/m36-numerical-audit/qwen-products.md#owned-backend-configuration)).
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%
@@ -1813,10 +1825,13 @@ each is checked against the design as M3.6 proceeds.
                                                       No production declaration or
                                                       numerical admission consumer yet.
                                                 - [ ] **G4b2b2b3b2 — backend declaration:**
-                                                      authenticate the full execution
-                                                      build/invocation closure and actual
-                                                      late-bound resources before a
-                                                      production identity is available.
+                                                      own qualified build/runtime and
+                                                      immutable tuning declarations; bind
+                                                      actual paid handle/workspace readiness
+                                                      through source, plan, snapshot and kept
+                                                      identity. Full operation admission is
+                                                      separate; no recursive invocation or
+                                                      runtime loader-attestation prerequisite.
                                                 - [ ] **G4b2b2b3b3 — admission enforcement:**
                                                       bind source/plan/kept identities;
                                                       enforce owned whole-operation and
@@ -1827,8 +1842,9 @@ each is checked against the design as M3.6 proceeds.
                                                 component and guarded full-mask
                                                 fusion; prove exact native controls.
                   - [ ] **G4b2c — full policy:** output-A and product forms,
-                        mixed encodings, default policy, whole-artifact GPU
-                        parity and row-invariant verify.
+                        mixed encodings and default policy; original-reference
+                        quality, exact selected contributions and same-selected
+                        state/verify correctness, without mandatory legacy bits.
             - [ ] **G4c — serving and gate:** bind hash-routing IDs with
                   expert-count checks, compressor inputs and injection
                   features with one drafter slot per target slot; pass the

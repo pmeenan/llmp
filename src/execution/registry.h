@@ -53,6 +53,17 @@ namespace llmp::execution {
 
 // The operations the implementations cover (kernels/ggml/ops.h,
 // kernels/exl3/linear.h and launch.h).
+// Compatibility values produced by an owned backend under the qualified
+// build/install boundary. Values alone do not authenticate their producer.
+// recipe: implementation/source/launch provenance; build: qualified build;
+// selection: actual immutable device/library/math configuration.
+struct BackendDeclaration {
+  base::Sha256Digest recipe{};
+  base::Sha256Digest build{};
+  base::Sha256Digest selection{};
+  bool operator==(const BackendDeclaration&) const = default;
+};
+
 enum class Operation : std::uint8_t {
   kRmsNorm,     // rows scaled to unit root mean square
   kRmsNormMul,  // the same, then scaled by a weight

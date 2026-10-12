@@ -188,6 +188,7 @@ class EngineLlm final : public Llm {
   bool CompatiblePrefill(std::uint32_t past, std::uint32_t rows, std::uint32_t peer_past,
                          std::uint32_t peer_rows) const override;
   std::string KeptLayout() const override;
+  std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override;
   std::uint32_t KeptVersion() const override { return kept::kStageFilesVersion; }
   std::vector<std::uint64_t> KeptRegions() const override;
   std::vector<std::uint64_t> KeptLayouts() const override;
@@ -377,6 +378,7 @@ class EngineLlm final : public Llm {
   // Declared before the runner, so it outlives it (EngineLlmParts::keep).
   std::shared_ptr<void> keep_;
   std::unique_ptr<engine::ModelRunner> runner_;
+  std::optional<base::Sha256Digest> execution_identity_{};
   std::optional<engine::WaveComposer> composer_;
   std::optional<engine::DecodingOrchestrator> plain_;
   std::optional<engine::DecodingOrchestrator> speculative_;

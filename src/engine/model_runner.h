@@ -52,6 +52,7 @@
 
 #include "catalog/catalog.h"
 #include "engine/coverage.h"
+#include "engine/execution_contract.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "engine/plan_account.h"
@@ -92,6 +93,14 @@ class StepSource {
   // the pattern set, the policy, the partition); the runner sets the shape.
   // Asked once, at Bind.
   virtual planner::PlanKey KeyBase() const = 0;
+  // After paid kernel prepare, before measuring any source shape. Required
+  // sources publish one immutable whole-composition identity here.
+  virtual Status PrepareExecution() { return {}; }
+  virtual Status CheckExecutionUse(NumericalUse) const { return {}; }
+  virtual Status CheckExecutionShape(const planner::StepShape&) const { return {}; }
+  virtual std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const {
+    return std::optional<base::Sha256Digest>{};
+  }
   // Only baked graph dimensions that depend on positions; empty when
   // positions affect input data alone. Pure, also called by lookahead.
   virtual std::vector<std::uint64_t> ShapeParameters(const planner::StepShape&) const { return {}; }
@@ -331,6 +340,10 @@ class ModelRunner final : public PagedModel {
   std::uint64_t activations_needed() const { return activations_needed_; }
   std::uint64_t pool_needed() const { return pool_needed_; }
   std::uint64_t host_input_bytes() const { return host_input_bytes_; }
+  Status CheckExecutionUse(NumericalUse use) const { return source_->CheckExecutionUse(use); }
+  std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const {
+    return source_->ExecutionIdentity();
+  }
   std::uint64_t plan_floor_bytes() const { return plan_floor_bytes_; }
 
   SlotLifecycle& slots() { return slots_; }

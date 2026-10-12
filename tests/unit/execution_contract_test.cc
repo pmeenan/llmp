@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "engine/component_source.h"
 #include "expected_error.h"
 
 namespace {
@@ -231,6 +232,244 @@ TEST(ExecutionContractTest, MissingAndMalformedBackendFactsNeverBecomeLegacyPerm
   refused([](auto& in) { in.reservation_alignment = 3; });
   refused([](auto& in) { in.placement_alignment = 0; });
   refused([](auto& in) { in.device.tuned = {{"unknown", 1, 128, 256}}; });
+}
+
+TEST(OwnedDeviceFactsTest, CallerMutationAndMovesCannotChangeRetainedTuning) {
+  std::string name = "small";
+  pl::DeviceFacts input{.device_class = "sm_121",
+                        .arch = 121,
+                        .features = ex::kBf16Mma,
+                        .tuned = {{name, 8, 2560, 512, llmp::format::Encoding::kF32}}};
+  auto bytes = pl::OwnedDeviceFacts::Bound(input);
+  ASSERT_TRUE(bytes) << Failed(bytes).value_or("");
+  EXPECT_FALSE(pl::OwnedDeviceFacts::Create(input, *bytes - 1));
+  auto owned = pl::OwnedDeviceFacts::Create(input, *bytes);
+  ASSERT_TRUE(owned) << Failed(owned).value_or("");
+  name.assign(200, 'x');
+  input.tuned.clear();
+  input.device_class = "other";
+  const auto* retained = owned->facts().tuned.front().implementation.data();
+  auto moved = std::move(*owned);
+  EXPECT_EQ(moved.facts().device_class, "sm_121");
+  ASSERT_EQ(moved.facts().tuned.size(), 1);
+  EXPECT_EQ(moved.facts().tuned.front().implementation, "small");
+  EXPECT_EQ(moved.facts().tuned.front().implementation.data(), retained);
+  EXPECT_EQ(moved.facts().tuned.front().output_encoding, llmp::format::Encoding::kF32);
+}
+
+TEST(OwnedDeviceFactsTest, DuplicateAndUnknownOutputKeysRefuseBeforeCopy) {
+  pl::DeviceFacts input{.device_class = "sm_121",
+                        .arch = 121,
+                        .tuned = {{"native.product", 8, 2560, 512, llmp::format::Encoding::kF32}}};
+  input.tuned.push_back(input.tuned.front());
+  EXPECT_FALSE(pl::OwnedDeviceFacts::Bound(input));
+  input.tuned.pop_back();
+  input.tuned.front().output_encoding = static_cast<llmp::format::Encoding>(65535);
+  EXPECT_FALSE(pl::OwnedDeviceFacts::Bound(input));
+  input.tuned.front().output_encoding.reset();
+  EXPECT_TRUE(pl::OwnedDeviceFacts::Bound(input));
+  input.tuned.front().rows = 0;
+  EXPECT_FALSE(pl::OwnedDeviceFacts::Bound(input));
+}
+
+// Test backend authority: production sources receive the real backend's owned
+// declaration. Its mutable controls let failures occur at the setup boundary.
+struct DeclaredFakeBackend final : llmp::kernels::BackendOwner {
+  explicit DeclaredFakeBackend(const ex::Registry& registry) {
+    table.registry = &registry;
+    table.device = {.device_class = "fake", .arch = 121};
+    table.lower = [](const llmp::kernels::LowerInput&)
+        -> std::expected<std::unique_ptr<llmp::kernels::StepProgram>, std::string> {
+      return std::unexpected("fake lowering not used by identity controls");
+    };
+  }
+  const llmp::kernels::StepBackend& backend() const override { return table; }
+  bool Charge(std::uint64_t bytes) const override {
+    if (allowance) return allowance->Charge(bytes);
+    if (bytes > ceiling - paid) return false;
+    paid += bytes;
+    return true;
+  }
+  void Release(std::uint64_t bytes) const override {
+    if (allowance) {
+      allowance->Release(bytes);
+      return;
+    }
+    EXPECT_LE(bytes, paid);
+    paid -= bytes;
+  }
+  std::expected<ex::BackendDeclaration, std::string> Ready() const override {
+    ++queries;
+    if (!ready) return std::unexpected("fake backend is unprepared");
+    return declaration;
+  }
+  std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
+  llmp::kernels::StepBackend table;
+  ex::BackendDeclaration declaration{Seal("recipe"), Seal("build"), Seal("config")};
+  mutable std::uint64_t paid = 0, queries = 0;
+  std::uint64_t ceiling = 1U << 20;
+  bool ready = true;
+};
+
+struct SourceIdentityTest : ::testing::Test {
+  void SetUp() override {
+    auto made = ex::Registry::Create({Implementation()});
+    ASSERT_TRUE(made);
+    registry = std::make_unique<ex::Registry>(std::move(*made));
+    spec.stages = {{.name = "target", .stream = {.width = 8}},
+                   {.name = "companion", .stream = {.width = 8}}};
+    auto declared = en::NumericalDomain::Create({Stage(0, "target"), Stage(1, "companion")});
+    ASSERT_TRUE(declared);
+    domain = std::make_shared<const en::NumericalDomain>(std::move(*declared));
+    for (auto& owner : owners) owner = std::make_shared<DeclaredFakeBackend>(*registry);
+  }
+  std::expected<std::unique_ptr<en::ComponentStepSource>, std::string> Source(std::uint16_t stage) {
+    auto table = owners[stage]->backend();
+    table.owner = owners[stage];
+    // A copied table cannot override the authority returned by its owner.
+    table.device.device_class = "caller forged this copy";
+    table.registry = nullptr;
+    return en::ComponentStepSource::Create({.spec = &spec,
+                                            .stage = stage,
+                                            .bindings = {.state = &layout},
+                                            .bound_digest = spec.Digest(),
+                                            .slots = 2,
+                                            .policy = pl::Policy{},
+                                            .backend = std::move(table),
+                                            .execution_domain = domain});
+  }
+  std::expected<std::unique_ptr<en::StagedStepSource>, std::string> Composition() {
+    std::vector<std::unique_ptr<en::ComponentStepSource>> sources;
+    for (std::uint16_t i = 0; i < 2; ++i) {
+      auto source = Source(i);
+      if (!source) return std::unexpected(source.error());
+      sources.push_back(std::move(*source));
+    }
+    return en::StagedStepSource::Create(std::move(sources));
+  }
+  std::unique_ptr<ex::Registry> registry;
+  llmp::spec::ModelSpec spec;
+  llmp::model::StateLayoutDerived layout{};
+  std::shared_ptr<const en::NumericalDomain> domain;
+  std::array<std::shared_ptr<DeclaredFakeBackend>, 2> owners;
+};
+
+TEST(ExecutionMetadataAllowanceTest, RefusesBeforeCatalogOrAllocationWithoutHeadroom) {
+  llmp::catalog::Catalog catalog;
+  const auto domain = catalog.AddDomain("test");
+  constexpr std::uint64_t bytes = 1U << 20, margin = 6ULL << 30;
+  EXPECT_FALSE(en::ExecutionMetadataAllowance::Admit(catalog, domain, 0, bytes + margin, margin));
+  EXPECT_FALSE(en::ExecutionMetadataAllowance::Admit(catalog, domain, bytes, 0, margin));
+  EXPECT_FALSE(
+      en::ExecutionMetadataAllowance::Admit(catalog, domain, bytes, bytes + margin - 1, margin));
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 0U);
+  auto admitted =
+      en::ExecutionMetadataAllowance::Admit(catalog, domain, bytes, bytes + margin, margin);
+  ASSERT_TRUE(admitted);
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), bytes);
+  EXPECT_LT((*admitted)->capacity(), bytes);
+  EXPECT_FALSE((*admitted)->Charge(bytes));
+  EXPECT_TRUE((*admitted)->Charge((*admitted)->capacity()));
+  EXPECT_FALSE((*admitted)->Charge(1));
+  (*admitted)->Release((*admitted)->capacity() + 1);
+  EXPECT_FALSE((*admitted)->Charge(1));
+  (*admitted)->Release((*admitted)->capacity());
+  EXPECT_EQ((*admitted)->used(), 0U);
+  admitted->reset();
+  // Node-lifetime payment, not a callback into a potentially live scheduler.
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), bytes);
+}
+
+TEST_F(SourceIdentityTest, ProductionAllowanceRejectsConstructionAndFundsRetryOnlyOnce) {
+  llmp::catalog::Catalog catalog;
+  const auto node = catalog.AddDomain("test");
+  constexpr std::uint64_t bytes = 1U << 20, margin = 6ULL << 30;
+  auto admitted =
+      en::ExecutionMetadataAllowance::Admit(catalog, node, bytes, bytes + margin, margin);
+  ASSERT_TRUE(admitted);
+  owners[0]->allowance = *admitted;
+  auto source = Composition();
+  ASSERT_TRUE(source);
+  const auto capacity = (*admitted)->capacity();
+  ASSERT_TRUE((*admitted)->Charge(capacity));
+  EXPECT_FALSE((*source)->PrepareExecution());
+  EXPECT_EQ(owners[0]->queries, 0U);
+  EXPECT_FALSE((*source)->stage(0).ExecutionIdentity());
+  EXPECT_FALSE((*source)->stage(1).ExecutionIdentity());
+  (*admitted)->Release(capacity);
+  ASSERT_TRUE((*source)->PrepareExecution());
+  EXPECT_GT((*admitted)->used(), 0U);
+  EXPECT_EQ(catalog.OccupancyOf(node).Total().value(), bytes);
+  source->reset();
+  EXPECT_EQ((*admitted)->used(), 0U);
+  source = Composition();
+  ASSERT_TRUE(source && (*source)->PrepareExecution());
+  EXPECT_EQ(catalog.OccupancyOf(node).Total().value(), bytes);
+  source->reset();
+  EXPECT_EQ((*admitted)->used(), 0U);
+}
+
+TEST_F(SourceIdentityTest, FailedCompanionOrPaymentCannotPublishPartialIdentity) {
+  auto source = Composition();
+  ASSERT_TRUE(source) << Failed(source).value_or("");
+  EXPECT_FALSE((*source)->ExecutionIdentity());
+  const auto key = (*source)->KeyBase();
+  owners[0]->ceiling = 0;
+  EXPECT_FALSE((*source)->PrepareExecution());
+  EXPECT_EQ(owners[0]->queries, 0U);
+  EXPECT_EQ(owners[0]->paid, 0U);
+  owners[0]->ceiling = 1U << 20;
+  owners[1]->ready = false;
+  EXPECT_FALSE((*source)->PrepareExecution());
+  EXPECT_EQ(owners[0]->paid, 0U);
+  EXPECT_FALSE((*source)->stage(0).ExecutionIdentity());
+  EXPECT_FALSE((*source)->stage(1).ExecutionIdentity());
+  EXPECT_EQ((*source)->KeyBase(), key);
+  owners[1]->ready = true;
+  ASSERT_TRUE((*source)->PrepareExecution());
+  EXPECT_GT(owners[0]->paid, 0U);
+  auto identity = (*source)->ExecutionIdentity();
+  ASSERT_TRUE(identity && identity->has_value());
+  EXPECT_NE((*source)->KeyBase().patterns, key.patterns);
+  EXPECT_FALSE((*source)->PrepareExecution());
+  EXPECT_EQ((*source)->ExecutionIdentity(), identity);
+  source->reset();
+  EXPECT_EQ(owners[0]->paid, 0U);
+}
+
+TEST_F(SourceIdentityTest, CompleteSourceScopesShapeModeAndCompanionConfiguration) {
+  auto source = Composition();
+  ASSERT_TRUE(source);
+  ASSERT_TRUE((*source)->PrepareExecution());
+  auto identity = (*source)->ExecutionIdentity();
+  ASSERT_TRUE(identity && identity->has_value());
+  EXPECT_TRUE((*source)->CheckExecutionShape(Shape()));
+  EXPECT_TRUE((*source)->CheckExecutionUse(en::NumericalUse::kPrompt));
+  EXPECT_FALSE((*source)->CheckExecutionUse(en::NumericalUse::kSpeculative));
+  auto wide = Shape();
+  wide.segments.front().rows = 513;
+  EXPECT_FALSE((*source)->CheckExecutionShape(wide));
+  const auto saved = owners[1]->declaration;
+  owners[1]->declaration.selection = Seal("changed companion config");
+  EXPECT_FALSE((*source)->ExecutionIdentity());
+  EXPECT_FALSE((*source)->CheckExecutionShape(Shape()));
+  EXPECT_FALSE((*source)->Build(Shape(), {}));
+  owners[1]->declaration = saved;
+  EXPECT_EQ((*source)->ExecutionIdentity(), identity);
+  owners[1]->ready = false;
+  EXPECT_FALSE((*source)->CheckExecutionUse(en::NumericalUse::kPrompt));
+}
+
+TEST_F(SourceIdentityTest, OmittingACompanionOrMisnamingItsDomainRefuses) {
+  auto target = Source(0);
+  ASSERT_TRUE(target);
+  EXPECT_FALSE((*target)->PrepareExecution());
+  EXPECT_EQ(owners[0]->paid, 0U);
+  spec.stages[1].name = "another companion";
+  auto both = Composition();
+  ASSERT_TRUE(both);
+  EXPECT_FALSE((*both)->PrepareExecution());
+  EXPECT_EQ(owners[0]->paid, 0U);
 }
 
 }  // namespace

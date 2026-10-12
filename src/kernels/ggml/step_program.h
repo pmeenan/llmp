@@ -21,7 +21,9 @@
 
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
+#include <span>
 #include <string>
 
 #include "execution/registry.h"
@@ -40,8 +42,17 @@ class CublasHandle;
 class GgmlStepLaunch final : public kernels::StepLaunch {
  public:
   explicit GgmlStepLaunch(std::unique_ptr<LaunchContext> launch,
-                          std::unique_ptr<SelectedLaunch> selected = {})
-      : launch_(std::move(launch)), selected_(std::move(selected)) {}
+                          std::unique_ptr<SelectedLaunch> selected = {},
+                          std::shared_ptr<const kernels::BackendOwner> owner = {},
+                          const GgmlStepLaunch* const* active = nullptr,
+                          const std::uint64_t* current_generation = nullptr,
+                          std::uint64_t generation = 0)
+      : launch_(std::move(launch)),
+        selected_(std::move(selected)),
+        owner_(std::move(owner)),
+        active_(active),
+        current_generation_(current_generation),
+        generation_(generation) {}
   SelectedLaunch* selected() const { return selected_.get(); }
   LaunchContext& context() const { return *launch_; }
 
@@ -56,6 +67,10 @@ class GgmlStepLaunch final : public kernels::StepLaunch {
  private:
   std::unique_ptr<LaunchContext> launch_;
   std::unique_ptr<SelectedLaunch> selected_;
+  std::shared_ptr<const kernels::BackendOwner> owner_;
+  const GgmlStepLaunch* const* active_ = nullptr;
+  const std::uint64_t* current_generation_ = nullptr;
+  std::uint64_t generation_ = 0;
 };
 
 struct GgmlBackendOptions {
@@ -78,6 +93,15 @@ class GgmlBackend {
   GgmlBackend& operator=(GgmlBackend&&) = delete;
   ~GgmlBackend();
 
+  // Opt-in immutable configuration for a required shared source. The caller
+  // pays counted metadata before it is allocated; the backend retains its
+  // charge through all source/program borrowers. No tuning is installed by
+  // ordinary Create. Call before plans/launches or lending the setup handle.
+  std::expected<void, std::string> Declare(std::span<const execution::TunedShape> tuning,
+                                           std::uint64_t cublas_workspace_bytes,
+                                           std::function<bool(std::uint64_t)> charge,
+                                           std::function<void(std::uint64_t)> release);
+
   const execution::Registry& registry() const { return *registry_; }
   // The registry, the device's facts, the cuBLAS products on the stream,
   // the prepared inputs' padded rows and the lowering, for a step source.
@@ -94,7 +118,7 @@ class GgmlBackend {
       LaunchContext::Workspace pool);
   // The runner destroyed the launch (its Release): nothing binds to it
   // after, and another may be made.
-  void LaunchReleased() { launch_ = nullptr; }
+  void LaunchReleased();
 
   // A planned step as a program (Backend().lower).
   std::expected<std::unique_ptr<kernels::StepProgram>, std::string> Lower(
@@ -103,6 +127,11 @@ class GgmlBackend {
  private:
   GgmlBackend(int device, providers::DeviceExecution& execution, providers::StreamId stream,
               CublasHandle* cublas, GgmlBackendOptions options);
+
+  struct Declaration;
+  std::shared_ptr<Declaration> declaration_{};
+  kernels::StepBackend PlainBackend();
+  std::expected<void, std::string> PrepareDeclaration();
 
   int device_;
   providers::DeviceExecution& execution_;
@@ -113,6 +142,7 @@ class GgmlBackend {
   std::unique_ptr<LaunchContext> measuring_;
   planner::DeviceFacts facts_{};
   const GgmlStepLaunch* launch_ = nullptr;  // the one Launch made
+  std::uint64_t launch_generation_ = 0;
 };
 
 }  // namespace llmp::kernels::ggml

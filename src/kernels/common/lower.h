@@ -45,6 +45,8 @@ struct LowerInput {
 using LowerFunction =
     std::function<std::expected<std::unique_ptr<StepProgram>, std::string>(const LowerInput&)>;
 
+class BackendOwner;
+
 struct StepBackend {
   // Outlives every plan made over it.
   const execution::Registry* registry = nullptr;
@@ -56,6 +58,27 @@ struct StepBackend {
   planner::RootBytesOf written{};
   planner::RootWithin within{};
   LowerFunction lower{};
+  // Required sources retain this owner and obtain the effective table by const
+  // reference from it. Fields above may be empty; a caller-modified copy is
+  // not the owner's authority.
+  std::shared_ptr<const BackendOwner> owner{};
+};
+
+// Immutable effective backend/configuration. The real kernel backend creates
+// its production owner; fake owners are test backends only. The table excludes
+// its own shared_ptr to avoid a cycle. All referenced runtime resources keep
+// their existing backend/launch completion-aware lifetime.
+class BackendOwner {
+ public:
+  virtual ~BackendOwner() = default;
+  virtual const StepBackend& backend() const = 0;
+  // Source/contract metadata uses the same refusal-capable owner allowance.
+  // Called only on the driver before constructing or dropping that metadata.
+  virtual bool Charge(std::uint64_t bytes) const = 0;
+  virtual void Release(std::uint64_t bytes) const = 0;
+  // Unprepared or faulted is an error, never an absent legacy declaration.
+  // First successful preparation freezes the value; later changes refuse.
+  virtual std::expected<execution::BackendDeclaration, std::string> Ready() const = 0;
 };
 
 }  // namespace llmp::kernels

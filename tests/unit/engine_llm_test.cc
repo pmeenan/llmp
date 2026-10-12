@@ -221,6 +221,7 @@ class EngineLlmTest : public ::testing::Test {
       o.logits = kWidth;
       o.features = native_outputs_;
       o.spec = spec_;
+      o.execution_identity = [this] { return execution_identity_; };
       auto source = std::make_unique<ts::FakeStepSource>(std::move(o));
       source_ = source.get();
       parts.config.slots = {.model = "ignored",
@@ -396,6 +397,8 @@ class EngineLlmTest : public ::testing::Test {
   std::unique_ptr<en::PagedNode> node_;
   std::unique_ptr<rt::EngineLlm> llm_;
   ts::FakeStepSource* source_ = nullptr;
+  std::expected<std::optional<llmp::base::Sha256Digest>, std::string> execution_identity_{
+      std::nullopt};
   bool native_outputs_ = false;
   bool kept_progress_ = false;
   bool save_checkpoints_ = true;  // Llm::set_turn_checkpoints at Start
@@ -458,6 +461,49 @@ TEST_F(EngineLlmTest, OpaqueSnapshotRestoresCapturedBytesAndHistoryWithOneCharge
   continued.insert(continued.end(), next.begin(), next.end());
   ASSERT_TRUE(branch.Generate(logits, options, generated));
   EXPECT_EQ(generated.tokens, Chain(continued, 4));
+  Close();
+}
+
+TEST_F(EngineLlmTest, RequiredExecutionIdentityRefusesBeforeSnapshotEffects) {
+  const auto original = llmp::base::Sha256().Update(std::string_view("owned fake recipe")).Finish();
+  execution_identity_ = std::optional{original};
+  Start(false, false);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  std::vector<float> logits;
+  ASSERT_TRUE(branch.Prefill(Prompt(9, 2), logits));
+  rt::SnapshotStore store(*node_, 8 * kExtent);
+  auto saved = branch.CaptureState(store);
+  ASSERT_TRUE(saved) << Failed(saved).value_or("");
+  auto digest = store.Digest(*saved);
+  ASSERT_TRUE(digest);
+  const auto history = branch.history();
+  const auto position = llm_->runner().slots().positions(0);
+  const auto capacity = store.capacity();
+  for (int mutation = 0; mutation < 3; ++mutation) {
+    SCOPED_TRACE(mutation);
+    if (mutation == 0) {
+      auto changed = original;
+      changed[0] ^= 1;
+      execution_identity_ = std::optional{changed};
+    } else if (mutation == 1) {
+      execution_identity_ = std::nullopt;
+    } else {
+      execution_identity_ = std::unexpected("backend is not ready");
+    }
+    EXPECT_FALSE(llm_->ExecutionIdentity());
+    EXPECT_FALSE(branch.CaptureState(store));
+    EXPECT_FALSE(branch.RestoreState(store, *saved));
+    EXPECT_EQ(branch.history(), history);
+    EXPECT_EQ(llm_->runner().slots().positions(0), position);
+    EXPECT_EQ(store.capacity(), capacity);
+    EXPECT_EQ(store.Digest(*saved), digest);
+  }
+  execution_identity_ = std::optional{original};
+  ASSERT_TRUE(branch.RestoreState(store, *saved));
+  auto repeated = branch.CaptureState(store);
+  ASSERT_TRUE(repeated);
+  EXPECT_EQ(store.Digest(*repeated), digest);
   Close();
 }
 

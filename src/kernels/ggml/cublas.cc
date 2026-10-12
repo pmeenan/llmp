@@ -149,6 +149,36 @@ CublasHandle::CublasHandle(cublasContext* handle, CUctx_st* owner, int device,
       native_stream_(native_stream),
       workspace_(workspace) {}
 
+std::expected<base::Sha256Digest, KernelFailure> CublasHandle::ConfigurationIdentity() const {
+  if (auto checked = CheckLibrary(); !checked) return std::unexpected(checked.error());
+  int runtime = 0;
+  int driver = 0;
+  int version = 0;
+  cublasMath_t math{};
+  cublasPointerMode_t pointer{};
+  cublasAtomicsMode_t atomics{};
+  cudaStream_t stream = nullptr;
+  CUcontext context = nullptr;
+  int device = -1;
+  if (cudaRuntimeGetVersion(&runtime) != cudaSuccess ||
+      cudaDriverGetVersion(&driver) != cudaSuccess || runtime <= 0 || driver <= 0 ||
+      cublasGetVersion(handle_, &version) != CUBLAS_STATUS_SUCCESS ||
+      cublasGetMathMode(handle_, &math) != CUBLAS_STATUS_SUCCESS ||
+      cublasGetPointerMode(handle_, &pointer) != CUBLAS_STATUS_SUCCESS ||
+      cublasGetAtomicsMode(handle_, &atomics) != CUBLAS_STATUS_SUCCESS ||
+      cublasGetStream(handle_, &stream) != CUBLAS_STATUS_SUCCESS ||
+      cuCtxGetCurrent(&context) != CUDA_SUCCESS || cudaGetDevice(&device) != cudaSuccess ||
+      context != owner_ || device != device_ || stream != native_stream_.handle ||
+      math != CUBLAS_TF32_TENSOR_OP_MATH || pointer != CUBLAS_POINTER_MODE_HOST ||
+      (atomics != CUBLAS_ATOMICS_ALLOWED && atomics != CUBLAS_ATOMICS_NOT_ALLOWED))
+    return Rejected("the actual cuBLAS configuration is unavailable or foreign");
+  base::Sha256 hash;
+  hash.Update(std::format("llmp-cublas-config-v1:{}:{}:{}:{}:{}:{}:{}:{}", runtime, driver, version,
+                          cublasLtGetVersion(), static_cast<int>(math), static_cast<int>(pointer),
+                          static_cast<int>(atomics), workspace_.size.value()));
+  return hash.Finish();
+}
+
 CublasHandle::~CublasHandle() {
   base::Check(borrowers_ == 0, "no launch context still borrows a cuBLAS handle being destroyed");
   // cuBLAS destroys a handle in the context it was created in. If that
