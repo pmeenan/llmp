@@ -994,6 +994,17 @@ if(LLMP_CUDA)
   target_link_libraries(exl3_tables_test PRIVATE llmp_exl3 llmp_exl3_cuda)
   llmp_gtest(exl3_tables_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+  add_executable(decode_selected_grouped_test decode_selected_grouped_test.cc)
+  target_link_libraries(decode_selected_grouped_test PRIVATE llmp_decode_selected)
+  llmp_gtest(decode_selected_grouped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+  add_executable(routed_component_gpu_test routed_component_gpu_test.cc)
+  target_link_libraries(routed_component_gpu_test PRIVATE llmp_decode_selected llmp_engine
+                                                         llmp_test_artifact_writer)
+  llmp_gpu_gtest(routed_component_gpu_test
+                DISCRETE RoutedComponentGpu.RealSharedStepDiscoversOnlySelectedExpertsAndReplaysChangedRoutes
+                         RoutedComponentGpu.MissingOwnerAndMisboundOrdinaryReaderRefuseBeforeAdmission
+                         RoutedComponentGpu.OwnedBackendSealsAdapterIdentityAndRejectsLaterSubstitution)
+
   add_executable(decode_selected_rows_test decode_selected_rows_test.cc)
   target_link_libraries(decode_selected_rows_test PRIVATE llmp_decode_selected llmp_engine
                                                          llmp_test_artifact_writer)

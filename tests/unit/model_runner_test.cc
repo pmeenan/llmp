@@ -65,6 +65,119 @@ constexpr std::uint64_t kExtent = en::kPagedExtent;
 constexpr std::uint32_t kContext = 1024;
 constexpr std::uint32_t kSlots = 3;
 
+// These guards must run before any copy, program call or whole-graph launch.
+// A retained routed recording alone must not be mistaken for an ordinary graph.
+class RoutedGuardProgram final : public kn::StepProgram, public kn::RoutedProgram {
+ public:
+  bool expose_route = true;
+  mutable unsigned calls = 0;
+  std::uint64_t scratch_bytes() const override { return 0; }
+  std::uint64_t host_bytes() const override { return 0; }
+  std::uint64_t launches() const override { return 0; }
+  std::span<const kn::InputSlot> inputs() const override { return {}; }
+  std::span<const kn::OutputSlot> outputs() const override { return {}; }
+  std::span<const kn::TensorUse> tensors() const override { return {}; }
+  kn::RoutedProgram* routed() override { return expose_route ? this : nullptr; }
+  const kn::RoutedProgram* routed() const override { return expose_route ? this : nullptr; }
+  std::expected<void, kn::StepFailure> Bind(kn::StepLaunch&) override { return {}; }
+  std::expected<void, kn::StepFailure> Run(kn::StepLaunch&,
+                                           llmp::providers::NativeStream) const override {
+    ++calls;
+    return {};
+  }
+  std::span<const kn::RoutedWeight> weights() const override { return {}; }
+  const kn::RoutedLayout& layout() const override { return layout_; }
+  const llmp::base::Sha256Digest& graph_identity() const override { return identity_; }
+  std::expected<void, kn::StepFailure> Prefix(const kn::RoutedAccess&, kn::StepLaunch&,
+                                              llmp::providers::NativeStream) override {
+    ++calls;
+    return {};
+  }
+  std::expected<void, kn::StepFailure> Prepare(const kn::RoutedAccess&,
+                                               std::span<std::byte>) override {
+    ++calls;
+    return {};
+  }
+  std::expected<void, kn::StepFailure> Continue(const kn::RoutedAccess&, kn::StepLaunch&,
+                                                llmp::providers::NativeStream) override {
+    ++calls;
+    return {};
+  }
+  std::expected<std::unique_ptr<kn::RoutedRecording>, kn::StepFailure> RecordSegment(
+      const kn::RoutedAccess&, kn::StepLaunch&, llmp::providers::NativeStream, bool,
+      const kn::StepLaunch::Body&) override {
+    ++calls;
+    return std::unexpected(kn::StepFailure{.detail = "unexpected routed recording"});
+  }
+  std::expected<void, kn::StepFailure> ReplaySegment(const kn::RoutedAccess&, kn::StepLaunch&,
+                                                     llmp::providers::NativeStream, bool,
+                                                     const kn::RoutedRecording&) override {
+    ++calls;
+    return {};
+  }
+
+ private:
+  kn::RoutedLayout layout_;
+  llmp::base::Sha256Digest identity_{};
+};
+class GuardRoutedRecording final : public kn::RoutedRecording {
+ public:
+  explicit GuardRoutedRecording(RoutedGuardProgram& program) : program_(program) {}
+  const kn::RoutedProgram* owner() const override { return &program_; }
+  bool continuation() const override { return false; }
+  std::size_t nodes() const override { return 0; }
+  double capture_seconds() const override { return 0; }
+  double instantiate_seconds() const override { return 0; }
+  std::expected<void, kn::StepFailure> Replay(const kn::RoutedAccess&, kn::StepLaunch&,
+                                              llmp::providers::NativeStream) const override {
+    ++program_.calls;
+    return {};
+  }
+
+ private:
+  RoutedGuardProgram& program_;
+};
+TEST(StepRuns, OrdinaryQueueAndCaptureRefuseRoutedProgramsAndRetainedSegmentsBeforeEffects) {
+  RoutedGuardProgram program;
+  for (bool graphs : {false, true}) {
+    en::StepRuns steps(graphs);
+    kn::RecordingLaunch launch;
+    steps.SetLaunch(&launch);
+    for (unsigned mode = 0; mode < 3; ++mode) {
+      program.expose_route = mode != 2;
+      en::StepPlanRuns runs;
+      if (mode != 0) runs.routed_graphs[0] = std::make_unique<GuardRoutedRecording>(program);
+      const auto* retained = runs.routed_graphs[0].get();
+      en::GraphStats stats;
+      unsigned between = 0;
+      for (bool capture : {false, true}) {
+        const auto queued = steps.Queue(runs, {},
+                                        [&](auto) {
+                                          ++between;
+                                          return true;
+                                        },
+                                        program, {}, capture, stats, {});
+        ASSERT_FALSE(queued.result);
+        EXPECT_EQ(queued.result.error().error, kn::StepError::kRejected);
+        EXPECT_EQ(queued.result.error().detail,
+                  "ordinary queue refuses routed programs or recordings");
+        EXPECT_FALSE(queued.before);
+      }
+      const auto ahead = steps.CaptureAhead(runs, {}, program, {}, stats, {});
+      ASSERT_FALSE(ahead);
+      EXPECT_EQ(ahead.error().error, kn::StepError::kRejected);
+      EXPECT_EQ(ahead.error().detail, "ordinary capture refuses routed programs or recordings");
+      EXPECT_EQ(runs.routed_graphs[0].get(), retained);
+      EXPECT_EQ(runs.graph, nullptr);
+      EXPECT_EQ(runs.eager_runs, 0U);
+      EXPECT_EQ(program.calls, 0U);
+      EXPECT_EQ(between, 0U);
+      EXPECT_EQ(launch.captures(), 0U);
+      EXPECT_EQ(launch.launches(), 0U);
+    }
+  }
+}
+
 // The pinned-memory API promises no direct-I/O block alignment. Force the fake's
 // allowed 256-byte alignment to prove that the shared allocation owns both
 // its exact charged backing and the distinct 4 KiB landing view.

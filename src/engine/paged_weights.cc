@@ -438,6 +438,39 @@ std::vector<ExtentId> PagedWeights::ExtentsWhere(
   return out;
 }
 
+std::expected<std::size_t, std::string> PagedWeights::ExtentsTouching(
+    std::uint64_t address, std::uint64_t bytes, std::span<catalog::ExtentId> destination) const {
+  std::uint64_t end = 0;
+  if (address == 0 || bytes == 0 || __builtin_add_overflow(address, bytes, &end) ||
+      sources_.size() != extents_.size())
+    return Error("a weight interval is empty or overflows");
+  // Pages are disjoint by Reserve. Count their exact intersection; no hole in
+  // an unplaced group or a host reservation may be treated as a device page.
+  std::uint64_t covered = 0;
+  std::size_t count = 0;
+  for (const Source& source : sources_) {
+    if (source.host) continue;
+    std::uint64_t page_end = 0;
+    if (__builtin_add_overflow(source.address, kExtent, &page_end))
+      return Error("a reserved weight page overflows");
+    const auto lo = std::max(address, source.address);
+    const auto hi = std::min(end, page_end);
+    if (lo >= hi) continue;
+    if (__builtin_add_overflow(covered, hi - lo, &covered))
+      return Error("a weight interval coverage overflows");
+    ++count;
+  }
+  if (covered != bytes || count > destination.size())
+    return Error("a weight interval is not completely placed or its output is too small");
+  std::size_t next = 0;
+  for (std::size_t i = 0; i < sources_.size(); ++i) {
+    const Source& source = sources_[i];
+    if (!source.host && source.address < end && address < source.address + kExtent)
+      destination[next++] = extents_[i];
+  }
+  return next;
+}
+
 std::vector<PagedWeights::Range> PagedWeights::Unwritten() const {
   std::vector<Range> out;
   for (const Source& s : sources_) {

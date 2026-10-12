@@ -35,7 +35,7 @@ add_library(llmp_engine_core STATIC paged_node.cc paged_weights.cc live_state.cc
                                       plan_account.cc coverage.cc step_runs.cc model_runner.cc
                                       wave_composer.cc prefill.cc decoding.cc component_source.cc
                                       draft_progress.cc draft_companions.cc execution_contract.cc
-                                      supplemental_run.cc)
+                                      supplemental_run.cc model_runner_routed.cc)
 target_include_directories(llmp_engine_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_engine_core PUBLIC llmp_scheduler llmp_memory llmp_storage
                                               llmp_device_memory llmp_artifact llmp_model

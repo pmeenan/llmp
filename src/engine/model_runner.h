@@ -65,6 +65,7 @@
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
+#include "kernels/common/routed_program.h"
 #include "kernels/common/step_program.h"
 #include "memory/reclaim.h"
 #include "planner/step_shape.h"
@@ -191,6 +192,12 @@ struct RunnerConfig {
     std::uint64_t rows_per_token = 0;
   };
   std::vector<RowTable> row_tables;
+  // Explicit routed execution support. The weak owner names the caller's
+  // complete node/source/runner environment; it grants lifetime, not source
+  // or residency authority. A step locks it before effects and retains it on
+  // uncertain retirement. Metadata uses an admitted catalog allowance.
+  std::weak_ptr<const void> routed_owner;
+  std::shared_ptr<ExecutionMetadataAllowance> routed_metadata;
   // Speculation: the most rows a verify takes (0: none; no snapshot is
   // mapped and a verify is refused). Setup maps each slot's stages'
   // snapshots, sized by model::VerifySaveBound, for the stages a target's
@@ -464,6 +471,22 @@ class ModelRunner final : public PagedModel {
                                                     const std::function<void()>& transfer);
   std::expected<Copies, std::string> OutputCopies(const kernels::StepProgram& program) const;
   std::vector<catalog::ExtentId> weight_extents() const;
+  struct RoutedState;
+  struct RoutedFlight;
+  Status BeginRouted(kernels::StepProgram& program, StepPlanRuns& runs, const Copies& inputs,
+                     const Copies& outputs, const Copies& carries, bool capture);
+  void ForgetUnstartedRouted();
+  StepQueued QueueRoutedPrefix(providers::NativeStream native);
+  Status ContinueRouted(RunPath& path);
+  Status MeasureRouting(const kernels::StepProgram& program);
+  Status FinishRoutingSetup();
+  std::uint64_t RoutedPinnedBytes() const;
+  Status CheckRouting(const kernels::StepProgram& program) const;
+  Status CheckRoutingSource() const;
+  Status CheckRoutedWeightBindings(std::span<const kernels::RoutedWeight> reads) const;
+  std::vector<catalog::ExtentId> base_weight_extents() const;
+  std::shared_ptr<RoutedState> routed_;
+  std::shared_ptr<RoutedFlight> routed_flight_;
   // Whether a target's verify saves in, or commits, a slot's stage.
   bool Verifies(std::uint32_t slot, std::size_t stage) const;
   // The cells an owner of `past` positions and `rows` rows reads alone on

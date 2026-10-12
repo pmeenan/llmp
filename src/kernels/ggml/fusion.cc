@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -252,13 +253,39 @@ std::expected<std::vector<ggml_tensor*>, KernelFailure> GraphOrder(
   return nodes;
 }
 
-bool FusionMemoryClear(GraphNodes graph, std::size_t index, std::size_t count, std::size_t output) {
+namespace {
+// SET_ROWS src[2] names its write destination, not an extra read operand.
+// GGML flattens the destination view onto its root. Only this exact, current
+// alias may be ignored by the RoPE store's overlap screen.
+bool CurrentStoreDestination(const ggml_tensor* store) {
+  if (store == nullptr || store->op != GGML_OP_SET_ROWS) return false;
+  const auto* cache = store->src[2];
+  if (cache == nullptr || cache->data == nullptr || store->data != cache->data ||
+      store->type != cache->type || !ggml_are_same_shape(store, cache) ||
+      !ggml_are_same_stride(store, cache))
+    return false;
+  const auto* root = cache->view_src != nullptr ? cache->view_src : cache;
+  const std::size_t offset = cache->view_src != nullptr ? cache->view_offs : 0;
+  if (root->view_src != nullptr || root->data == nullptr || store->view_src != root ||
+      store->view_offs != offset || ggml_is_empty(root) || ggml_is_empty(cache))
+    return false;
+  const auto address = reinterpret_cast<std::uintptr_t>(root->data);
+  const auto bytes = ggml_nbytes(root);
+  return bytes <= std::numeric_limits<std::uintptr_t>::max() - address && offset <= bytes &&
+         ggml_nbytes(cache) <= bytes - offset &&
+         reinterpret_cast<std::uintptr_t>(cache->data) == address + offset;
+}
+
+bool MemoryClear(GraphNodes graph, std::size_t index, std::size_t count, std::size_t output,
+                 bool destination_edge) {
   if (!InGraph(graph, index, count) || output >= graph.size()) {
     return false;
   }
   const ggml_tensor* dst = graph[output];
   for (std::size_t j = index; j < index + count; ++j) {
-    for (const ggml_tensor* src : graph[j]->src) {
+    for (std::size_t edge = 0; edge < GGML_MAX_SRC; ++edge) {
+      const ggml_tensor* src = graph[j]->src[edge];
+      if (destination_edge && j == output && edge == 2) continue;
       if (src == nullptr || src->op == GGML_OP_NONE || !Overlaps(dst, src)) {
         continue;
       }
@@ -269,6 +296,16 @@ bool FusionMemoryClear(GraphNodes graph, std::size_t index, std::size_t count, s
     }
   }
   return true;
+}
+
+bool RopeMemoryClear(GraphNodes graph, std::size_t index) {
+  return InGraph(graph, index, 3) && CurrentStoreDestination(graph[index + 2]) &&
+         MemoryClear(graph, index, 3, index + 2, true);
+}
+}  // namespace
+
+bool FusionMemoryClear(GraphNodes graph, std::size_t index, std::size_t count, std::size_t output) {
+  return MemoryClear(graph, index, count, output, false);
 }
 
 std::optional<MulMatGluNodes> MulMatGluFusionAt(GraphNodes graph, std::size_t index,
@@ -312,8 +349,7 @@ std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_
   ggml_tensor* rope = graph[index];
   ggml_tensor* view = graph[index + 1];
   ggml_tensor* set_rows = graph[index + 2];
-  if (!ShouldFuseRopeSetRows(rope, view, set_rows) ||
-      !FusionMemoryClear(graph, index, 3, index + 2)) {
+  if (!ShouldFuseRopeSetRows(rope, view, set_rows) || !RopeMemoryClear(graph, index)) {
     return std::nullopt;
   }
   return RopeSetRowsNodes{.rope = rope, .view = view, .set_rows = set_rows};
@@ -332,7 +368,7 @@ std::optional<RopeSetRowsNodes> RopeQuantStoreFusionAt(GraphNodes graph, std::si
       rope->src[0] == nullptr || rope->src[0]->ne[3] != 1 || !KvQuantType(set_rows->type) ||
       set_rows->src[1] == nullptr || set_rows->src[1]->type != GGML_TYPE_I64 ||
       !ggml_is_contiguous(view) || view->ne[0] != rope->ne[0] * rope->ne[1] ||
-      rope->op_params[2] != GGML_ROPE_TYPE_NEOX || !FusionMemoryClear(graph, index, 3, index + 2)) {
+      rope->op_params[2] != GGML_ROPE_TYPE_NEOX || !RopeMemoryClear(graph, index)) {
     return std::nullopt;
   }
   return RopeSetRowsNodes{.rope = rope, .view = view, .set_rows = set_rows};

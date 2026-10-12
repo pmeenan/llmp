@@ -37,6 +37,7 @@ struct SelectedOperand {
   // use both facts to tie device IDs to the runner's checked host slot map.
   std::optional<std::uint16_t> side_rows_component{};
   std::optional<ir::WeightRef> paged_weight{};
+  std::optional<ir::WeightRef> expert_weight{};
 };
 struct SelectedWorkspace {
   std::uint64_t base = 0;
@@ -74,6 +75,14 @@ class BoundSelectedCall {
   virtual ~BoundSelectedCall() = default;
   virtual std::expected<void, KernelFailure> Run(providers::NativeStream stream) const = 0;
 };
+struct SelectedRoute {
+  ggml_tensor* ids = nullptr;
+  ir::WeightRef weight;
+  format::TensorFormat format;
+};
+struct SelectedRouteBuffers {
+  std::uint64_t offsets = 0, tokens = 0, slots = 0, descriptors = 0;
+};
 class SelectedCall {
  public:
   explicit SelectedCall(const SelectedSource* owner) : owner_(owner) {}
@@ -84,6 +93,14 @@ class SelectedCall {
   // descriptors which the shared arena already counts.
   virtual std::uint64_t host_bytes() const = 0;
   virtual std::uint64_t launches() const = 0;
+  virtual std::optional<SelectedRoute> route() const { return {}; }
+  virtual std::uint64_t route_descriptor_bytes() const { return 0; }
+  virtual std::expected<void, KernelFailure> RouteBuffers(SelectedRouteBuffers) {
+    return std::unexpected(KernelFailure{.detail = "this call has no routed dependency"});
+  }
+  virtual std::expected<void, KernelFailure> StageDescriptors(std::span<std::byte>) const {
+    return std::unexpected(KernelFailure{.detail = "this call has no expert descriptors"});
+  }
   virtual std::expected<std::unique_ptr<BoundSelectedCall>, KernelFailure> Bind(
       const execution::Implementation&, SelectedLaunch&, SelectedWorkspace) const = 0;
 
@@ -100,6 +117,10 @@ class SelectedSource {
   virtual std::vector<execution::Implementation> Implementations() const = 0;
   virtual std::vector<execution::TunedShape> Tuning(std::uint32_t arch) const = 0;
   virtual bool Owns(std::string_view implementation) const = 0;
+  // Required only by an owned declared backend. This binds immutable adapter
+  // format/layout, execution preparation and source-read authority in addition
+  // to the registry's implementation/build identities. Default is unqualified.
+  virtual std::optional<base::Sha256Digest> ExecutionIdentity() const { return {}; }
   // Persistent bytes (e.g. cooperative lock slots), separate from the pool
   // scratch shared serially with GGML. Both bounds are 256-byte aligned.
   virtual std::uint64_t persistent_bytes() const = 0;

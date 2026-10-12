@@ -29,9 +29,12 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "format/encoding.h"
 #include "ir/graph.h"
@@ -44,6 +47,7 @@ class BoundPlan;
 namespace llmp::kernels {
 
 class StepLaunch;
+class RoutedProgram;
 
 // Why queueing, binding or recording failed: refused with nothing queued
 // (the step may be retried or run otherwise), or of unknown effect
@@ -195,6 +199,11 @@ struct TensorUse {
 // reference (its segment names the shape's segment, so the owner's slot),
 // and the activations' range. Activations at 0 mean a placeless
 // measurement: the program reports what it needs but never runs.
+struct ExpertPartBinding {
+  std::uint64_t address = 0, bytes = 0, pitch = 0;
+  format::TensorFormat format;
+  format::PartRole role = format::PartRole::kData;
+};
 struct Addresses {
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight;
   // A row-paged weight's device slot capacity, replacing its on-disk row
@@ -216,6 +225,8 @@ struct Addresses {
   // Zero/absent is unknown; neither logical offsets nor placeholders prove it.
   std::uint64_t activation_alignment = 0;
   std::function<std::uint64_t(const ir::StateRef&)> state_alignment{};
+  // Exact opened artifact slice/slab binding, never inferred from packed size.
+  std::function<std::optional<ExpertPartBinding>(std::uint16_t, std::string_view)> expert_part{};
   // A single-part weight's actual reserved address, by its complete binding.
   // This promise is available before measurement; zero means unknown.
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight_alignment{};
@@ -269,6 +280,16 @@ class StepLaunch {
   virtual bool faulted() const { return false; }
 };
 
+// Complete primitive weight-read inventory emitted by the lowering. A
+// dynamic entry has only the exact selected routed readers proved there.
+struct RoutedWeight {
+  ir::WeightRef ref;
+  format::TensorFormat format;
+  std::vector<std::pair<std::string, format::PartRole>> parts;
+  bool dynamic = false;
+  bool operator==(const RoutedWeight&) const = default;
+};
+
 class StepProgram {
  public:
   StepProgram() = default;
@@ -296,6 +317,12 @@ class StepProgram {
   // recorded, ahead or beside a run, and Position gives it each step's
   // positions before its run. Asked once, when it is cached.
   virtual bool capturable() const { return true; }
+  // Absent means no source authority, not an empty set of reads. Required
+  // for every cached shape of a source using dynamic weight exclusions.
+  virtual std::optional<std::span<const RoutedWeight>> weight_reads() const { return {}; }
+  // Non-null: whole Run/Record refuse; only the owned routed continuation runs.
+  virtual RoutedProgram* routed() { return nullptr; }
+  virtual const RoutedProgram* routed() const { return nullptr; }
 
   // Once, before its first run, on the driver after the current job (a
   // plan built ahead is bound on its installation): its implementations

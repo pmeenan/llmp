@@ -9,7 +9,8 @@
 //
 // Each gate takes a graph's nodes in GGML's execution order (GraphOrder
 // gives the order ggml_build_forward_expand records) over tensors bound to
-// llmpalooza memory, and a node index, and reproduces ggml_cuda_try_fuse's
+// llmpalooza memory, and a node index. Except for the destination-edge extension
+// below, these reproduce ggml_cuda_try_fuse's
 // conditions for its pattern at llama.cpp b29c606e2: the operations and
 // edges, uses confined to the fused nodes (counted as GGML's graph counts
 // them, over every node listed), no output flags on elided nodes, and for
@@ -17,7 +18,9 @@
 // elided intermediate. Where upstream measures a tensor's bytes through
 // its CUDA buffer type, the gates measure them as that buffer type does,
 // from the tensor alone: tensors over llmpalooza memory carry no buffer, so
-// none counts as a constant weight either.
+// none counts as a constant weight either. The RoPE-store gates additionally
+// recognize an exact, current SET_ROWS destination-view edge as the write
+// destination; other overlapping inputs still follow the checks above.
 //
 // The gates take a node list rather than GGML's graph object because
 // ggml_new_graph_custom sizes that object with pointer arithmetic on a null
@@ -29,8 +32,9 @@
 // must show that no pattern llmpalooza does not implement applies. For a
 // matrix product the gate+GLU pattern comes before the bias pattern. The
 // two MMVF gates leave out the one condition that needs the device, its
-// MMVF selection (ops.h MulMatVecFusible). A gate that matches says what
-// upstream would do; the fused implementation's own checks (validate.h)
+// MMVF selection (ops.h MulMatVecFusible). A gate that matches identifies
+// the shared supported pattern, including that extension; the fused
+// implementation's own checks (validate.h)
 // may still refuse the nodes, and then no plan reproduces upstream's.
 // Every profile builds these.
 

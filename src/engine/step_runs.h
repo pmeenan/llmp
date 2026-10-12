@@ -25,6 +25,7 @@
 #ifndef LLMP_ENGINE_STEP_RUNS_H_
 #define LLMP_ENGINE_STEP_RUNS_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -34,6 +35,7 @@
 #include <string>
 
 #include "engine/run_stats.h"
+#include "kernels/common/routed_program.h"
 #include "kernels/common/step_program.h"
 #include "providers/device_execution.h"
 
@@ -49,20 +51,26 @@ struct StepPlanRuns {
   // ahead, while a capture beside a run (which may succeed) still may be.
   bool ahead_refused = false;
   std::unique_ptr<kernels::Recorded> graph;
+  std::array<std::unique_ptr<kernels::RoutedRecording>, 2> routed_graphs;
   Copies copies;
+  Copies routed_outputs;
   double seconds = 0;                // its capture and instantiation: what capturing it again costs
   std::uint64_t measured_bytes = 0;  // the device's free memory it took
 
-  bool has_graph() const { return graph != nullptr; }
+  bool has_graph() const {
+    return graph != nullptr || routed_graphs[0] != nullptr || routed_graphs[1] != nullptr;
+  }
   // With graphs on: no graph yet, none refused, and one run launch by
   // launch first (D-090: a shape is captured on its second run).
   bool CaptureDue(bool graphs) const {
-    return graphs && graph == nullptr && !uncapturable && eager_runs > 0;
+    return graphs && !has_graph() && !uncapturable && eager_runs > 0;
   }
   // Destroys the recording, only between jobs (nothing in flight replays it).
   void DropGraph() {
     graph.reset();
+    for (auto& segment : routed_graphs) segment.reset();
     copies.clear();
+    routed_outputs.clear();
   }
 };
 
@@ -127,6 +135,14 @@ class StepRuns {
                    const std::function<bool(providers::NativeStream)>& between,
                    const kernels::StepProgram& program, std::span<const RunCopy> outputs,
                    bool capture, GraphStats& stats, providers::NativeStream native) const;
+  // One part of an owned dependency-discovery step. Prefix copies host inputs
+  // and the complete route readback; continuation copies final outputs. Only
+  // ModelRunner can supply its fresh access token. Both recordings stay in the
+  // same plan account; an ordinary whole-step recording is never used here.
+  StepQueued QueueRouted(StepPlanRuns& runs, const kernels::RoutedAccess& access,
+                         kernels::RoutedProgram& program, bool continuation, const Copies& inputs,
+                         std::span<const RunCopy> outputs, std::span<std::byte> route_staging,
+                         bool capture, GraphStats& stats, providers::NativeStream native) const;
   // Records `runs`' graph of `program` without running it, beside work
   // already queued on `native`: the plan's next run replays it. A refusal
   // (false) sets ahead_refused only; only a fault (kUnknown) is an error.

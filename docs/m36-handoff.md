@@ -43,10 +43,15 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 Main through `7e0bf848` includes split NVFP4 paged rows, checked route/part
 helpers and bounded selected-expert grouped execution. Full native main build,
 eight helper controls and both actual grouped GPU cases pass, including repeated
-contributions and changed-routing replay. Production mid-step routing and native
-ModelOpt admission remain open. The supplemental base-lease prerequisite landed in `ccd5a556` and passes full native main build and
+contributions and changed-routing replay. Native ModelOpt admission remains open. The supplemental base-lease prerequisite landed in `ccd5a556` and passes full native main build and
 145 focused host controls, including cancellation and unknown-retirement cases.
-The substantive routed continuation is being implemented independently.
+N4b6d now passes its bounded real shared routed-step foundation: full native
+main build, 101 routed host controls, 34 fusion/validation controls and three GPU
+cases. The fixture executes 288 complete outputs across eager/captured/replayed
+steps, selected-only residency and state frontier 9. This does not qualify
+production native expert/model admission or a full family. N4b6e ordered groups
+are reviewed in source02 but await main build and actual execution
+([evidence](experiments/m36-native-grouped-foundation/README.md#shared-routed-step--2026-10-12)).
 
 The generic reserved-weight alignment landed in `b9833111` and passes main native build and
 108 focused host controls. It provides actual checked physical facts without
@@ -67,8 +72,8 @@ Qwen52 extends the same pre-fixed four passages to 1,016 targets. One fresh
 A/C pair passes all input/head/program controls; aggregate PPL improves 0.64%,
 but the new 888 targets improve only 0.057%, with two documents regressing.
 Most gain comes from the old prefix. This mixed secondary observation adopts
-no policy and warrants no further context/timing run by itself. The routed
-continuation is in execution checks. Native GGUF target normalization passes
+no policy and warrants no further context/timing run by itself. The bounded one-group routed
+continuation passes; ordered-group execution remains pending. Native GGUF target normalization passes
 a full native build, 103 affected host controls and one real-header-only case:
 all 1,224 encoded routes are preserved, without payload traversal, hashing or
 publication. The bounded reader prefixes can include bytes beyond the headers.
@@ -144,8 +149,10 @@ Current parallel slices: Qwen50 screens ordinary joined execution against
 three narrowly tuned BF16/F32 products using secondary target-only likelihood
 and matched timing. Native split-row paging now passes its bounded shared-runner
 foundation: main native build, 117 focused host controls and two tiny GPU cases,
-including changed-ID capture replay and multipart refusals. Production native expert continuation and native ModelOpt target admission
-remain open. DeepSeek's default-off
+including changed-ID capture replay and multipart refusals. N4b6d also passes
+the bounded one-group native expert continuation on a real ComponentStepSource.
+N4b6e's reviewed ordered-group extension awaits main checks; production native
+expert/model admission and full-family quality/performance remain open. DeepSeek's default-off
 rounded consumer has separate real component/source host controls and a passing
 declared-backend synthetic GPU corridor. Main integration passes a full native
 build, 193 focused host controls and the same one-case GPU corridor on Spark B.

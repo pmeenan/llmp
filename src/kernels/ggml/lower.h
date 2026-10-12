@@ -66,6 +66,7 @@
 #include "ggml.h"
 #include "ir/graph.h"
 #include "kernels/common/lower.h"
+#include "kernels/common/routed_program.h"
 #include "kernels/common/step_program.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/selected_operation.h"
@@ -110,6 +111,14 @@ struct SavedLeaf {
   std::uint8_t segment = 0;
 };
 
+struct LoweredRouting {
+  kernels::RoutedLayout layout;
+  std::vector<kernels::RoutedCopy> uploads;
+  std::vector<std::pair<std::size_t, std::uint64_t>> descriptors;  // selected index, pinned offset
+  ggml_tensor* preparation = nullptr;
+  std::size_t cut = 0;
+  base::Sha256Digest graph_identity{};
+};
 struct LoweredStep {
   std::optional<TensorArena> arena;  // owns every tensor below
   std::vector<ggml_tensor*> nodes;   // computed nodes and views, in execution order
@@ -123,6 +132,8 @@ struct LoweredStep {
   std::vector<TensorUse> tensors;
   std::uint64_t extent = 0;  // the activations' (the IR placement's)
   bool measuring = false;    // placeless: never bound to run
+  std::optional<LoweredRouting> routing{};
+  std::optional<std::vector<kernels::RoutedWeight>> weight_reads{};
 };
 
 // The bytes the module writes for a root of `graph` beyond the tensor's

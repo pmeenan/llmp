@@ -67,6 +67,15 @@ class BoundGraph {
   bool has_lanes() const { return !regions_.empty(); }
 
  private:
+  friend class GgmlStepProgram;
+  static std::expected<BoundGraph, KernelFailure> BindImpl(const execution::Registry&,
+                                                           const GraphPlan&,
+                                                           std::span<const SelectedNode>,
+                                                           SelectedLaunch*, SelectedWorkspace,
+                                                           bool);
+  std::expected<void, KernelFailure> RunRange(LaunchContext&, std::size_t first,
+                                              std::size_t end) const;
+  bool routed_ = false;
   struct Step {
     std::variant<Kernel, RmsNormMulKernel, std::unique_ptr<BoundSelectedCall>> kernel;
     std::vector<ggml_tensor*> nodes;

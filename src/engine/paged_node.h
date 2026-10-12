@@ -126,6 +126,7 @@
 namespace llmp::engine {
 
 class LiveState;
+class ModelRunner;
 class SupplementalRun;
 class ExecutionMetadataAllowance;
 
@@ -741,6 +742,7 @@ class PagedNode {
 
  private:
   friend class LiveState;
+  friend class ModelRunner;
   struct WeightFile {
     int owner = kShared;
     scheduler::FileId id;

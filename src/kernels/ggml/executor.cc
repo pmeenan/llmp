@@ -193,6 +193,13 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
                                                           std::span<const SelectedNode> selected,
                                                           SelectedLaunch* native,
                                                           SelectedWorkspace scratch) {
+  return BindImpl(registry, plan, selected, native, scratch, false);
+}
+
+std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
+    const execution::Registry& registry, const GraphPlan& plan,
+    std::span<const SelectedNode> selected, SelectedLaunch* native, SelectedWorkspace scratch,
+    bool routed) {
   const std::vector<execution::Choice> choices = plan.Choices();
   const auto built = execution::Plan::Build(registry, choices);
   if (!built) {
@@ -221,6 +228,8 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
                               ? std::ranges::find(selected, planned.nodes[0], &SelectedNode::tensor)
                               : selected.end();
     if (external != selected.end()) {
+      if (external->call->route() && !routed)
+        return Rejected("routed selected calls require a segmented owned program");
       if (native == nullptr || native->owner() != external->call->owner() || planned.lane != 0 ||
           external->implementation != &implementation || !plan.regions.empty())
         return Rejected("a selected-source call has foreign binding or concurrent lanes");
@@ -270,7 +279,9 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
     steps.push_back({.kernel = *kernel, .nodes = planned.nodes, .lane = planned.lane});
     if (cached == wrappers.end()) wrappers.emplace_back(&implementation, steps.size() - 1);
   }
-  return BoundGraph(std::move(*bound), std::move(steps), plan.regions);
+  BoundGraph result(std::move(*bound), std::move(steps), plan.regions);
+  result.routed_ = routed;
+  return result;
 }
 
 std::expected<void, KernelFailure> BoundGraph::RunStep(LaunchContext& launch, std::size_t i) const {
@@ -291,6 +302,7 @@ std::expected<void, KernelFailure> BoundGraph::RunStep(LaunchContext& launch, st
 }
 
 std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const {
+  if (routed_) return Rejected("routed graph cannot run through the whole-step entry");
   if (!regions_.empty() && launch.lanes() >= kMaxLanes) {
     return RunLanes(launch);
   }
@@ -299,6 +311,15 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
       return r;
     }
   }
+  return {};
+}
+
+std::expected<void, KernelFailure> BoundGraph::RunRange(LaunchContext& launch, std::size_t first,
+                                                        std::size_t end) const {
+  if (!routed_ || !regions_.empty() || first > end || end > steps_.size())
+    return Rejected("invalid owned routed segment");
+  for (auto i = first; i != end; ++i)
+    if (auto r = RunStep(launch, i); !r) return r;
   return {};
 }
 

@@ -1201,4 +1201,52 @@ TEST_F(GgmlFusionTest, TheRopeGateFusesTheKWriteUnlessItOverlapsTheInput) {
   EXPECT_FALSE(RopeSetRowsFusionAt(q_graph, IndexOf(q_graph, q_rope)).has_value());
 }
 
+TEST_F(GgmlFusionTest, RopeStoreAcceptsOnlyItsExactCurrentDestinationView) {
+  constexpr std::int64_t kRows = 4;
+  auto* cache_root = Typed(GGML_TYPE_F16, kKvWidth, kCells);
+  auto* cache = ggml_view_2d(context(), cache_root, kKvWidth, kCells / 2, cache_root->nb[1],
+                             cache_root->nb[1]);
+  auto* k = Bound(ggml_add(context(), F32(kKvWidth, kRows), F32(kKvWidth)));
+  auto* positions = Typed(GGML_TYPE_I32, kRows);
+  auto* rope = Bound(ggml_rope_ext(context(), ggml_reshape_3d(context(), k, kHead, kKvHeads, kRows),
+                                   positions, nullptr, static_cast<int>(kHead), GGML_ROPE_TYPE_NEOX,
+                                   32768, 1000000.0F, 1.0F, 0.0F, 1.0F, 32.0F, 1.0F));
+  auto* view = ggml_view_2d(context(), rope, kKvWidth, kRows, rope->nb[2], 0);
+  auto* ids = Typed(GGML_TYPE_I64, kRows);
+  auto* store = ggml_set_rows(context(), cache, view, ids);
+  // All external operands are already available; this is the consecutive
+  // physical fusion window, including the source-backed offset cache view.
+  const std::array graph{rope, view, store};
+  EXPECT_TRUE(RopeSetRowsFusionAt(graph, 0));
+  EXPECT_TRUE(CheckRopeSetRows(rope, store));
+  EXPECT_FALSE(FusionMemoryClear(graph, 0, 3, 2));  // Generic rule is unchanged.
+  const auto original = *store;
+  store->data = static_cast<std::byte*>(store->data) + 2;
+  EXPECT_FALSE(RopeSetRowsFusionAt(graph, 0));
+  *store = original;
+  store->view_offs += 2;
+  EXPECT_FALSE(RopeSetRowsFusionAt(graph, 0));
+  *store = original;
+  store->view_src = cache;
+  EXPECT_FALSE(RopeSetRowsFusionAt(graph, 0));
+  *store = original;
+  store->nb[1] += 2;
+  EXPECT_FALSE(RopeSetRowsFusionAt(graph, 0));
+  *store = original;
+  store->src[2] = cache_root;
+  EXPECT_FALSE(RopeSetRowsFusionAt(graph, 0));
+  *store = original;
+  const auto old_root = cache_root->data;
+  TensorArena::Bind(cache_root, reinterpret_cast<std::uintptr_t>(old_root) + 256);
+  EXPECT_FALSE(RopeSetRowsFusionAt(graph, 0));
+  TensorArena::Bind(cache_root, reinterpret_cast<std::uintptr_t>(old_root));
+  // A legitimate cache alias is not permission to overlap a real operand.
+  const auto old_positions = positions->data;
+  TensorArena::Bind(positions, reinterpret_cast<std::uintptr_t>(store->data));
+  Rejected(CheckRopeSetRows(rope, store));
+  TensorArena::Bind(positions, reinterpret_cast<std::uintptr_t>(old_positions));
+  EXPECT_TRUE(RopeSetRowsFusionAt(graph, 0));
+  EXPECT_TRUE(CheckRopeSetRows(rope, store));
+}
+
 }  // namespace

@@ -1646,6 +1646,23 @@ and prevents continuation or teardown. Existing ordinary steps remain subset-onl
 This is the lease prerequisite, not the routed ModelRunner continuation or a new
 reclaim policy. Full native main build and 145 focused host controls pass.
 
+One real shared routed step now connects these pieces. Complete source/read declarations bind the selected backend
+identity, actual multipart addresses and every cached shape before dynamic pages
+can leave the base closure; ordinary readers and shared physical pages remain in
+it. A completed prefix yields the full route, then supplemental admission holds
+only the selected part pages through continuation. Segmented recordings require
+fresh route validation and admission each replay; ordinary whole-step entry
+points reject routed programs. Whole-plan activation placement remains intact.
+The first implementation supports one group and refuses routed lookahead.
+Full native main build, 101 routed host controls, 34 fusion/validation controls
+and three GPU cases pass without skips. The real attention/MoE fixture checks
+288 complete output values across eager execution, capture and changed-route
+replay, selected-only residency and state frontier 9. RoPE/cache-store fusion
+remains enabled, and exact dynamic part descriptors defer residency until their
+selected closure is admitted. Ordered groups, family admission, full-model
+quality and speed remain open
+([evidence](experiments/m36-native-grouped-foundation/README.md#shared-routed-step--2026-10-12)).
+
 The common step program binds approved EXL3 selected operations with authenticated
 packed and reconstruction tuning facts. Both 4.0- and 4.5-bpw fixtures execute
 in G and O profiles; O uses actual occupancy facts checked again at launch.

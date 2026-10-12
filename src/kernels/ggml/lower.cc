@@ -172,6 +172,7 @@ class Lowering {
   std::expected<void, KernelFailure> Matches(const ir::TensorDesc& want, const ggml_tensor* got,
                                              std::string_view what) const;
   std::expected<void, KernelFailure> Bind();
+  std::expected<void, KernelFailure> MakeRouting();
   std::expected<void, KernelFailure> PlanAndCompare();
   std::expected<void, KernelFailure> CheckSelectedHc();
   std::expected<void, KernelFailure> BindSelectedHc();
@@ -275,7 +276,14 @@ class Lowering {
   std::vector<std::pair<ggml_tensor*, InputSlot>> input_leaves_;
   // A fused implementation's intermediates, which it never writes, and the
   // result whose place they take.
-  std::vector<std::pair<ggml_tensor*, ggml_tensor*>> elided_;
+  struct Elided {
+    ggml_tensor* tensor;
+    ggml_tensor* result;
+    // Only RopeStore: the fused launcher never accesses the RoPE output.
+    bool read_only_operand = false;
+  };
+  static_assert(sizeof(Elided) <= 32);
+  std::vector<Elided> elided_;
   // A planned tensor bound through another GGML tensor: a view's root (the
   // fused routing's ids, a view of its whole sort).
   std::map<std::uint32_t, ggml_tensor*> placed_root_;
@@ -1006,6 +1014,38 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
       part(extent.role, bytes(static_cast<std::int64_t>(extent.readable), 1, 1));
     }
   } else if (options_.selected_source != nullptr && d.format.encoding == Encoding::kNvfp4 &&
+             d.format.layout == format::Layout::kSplit && w.ref.expert_array) {
+    if (!in_.addresses.expert_part) return Refused("split expert parts have no source binding");
+    auto one = d.format;
+    one.shape.rank = 2;
+    one.shape.ne[2] = one.shape.ne[3] = 1;
+    const auto extents = format::PartsOf(one);
+    if (!extents || extents->size() != w.parts.size() || matrices <= 0)
+      return Refused("split expert parts are incomplete");
+    for (const auto& e : extents->parts()) {
+      const auto named = std::ranges::find(w.parts, e.role, [](const auto& p) { return p.second; });
+      if (named == w.parts.end() ||
+          std::ranges::count_if(w.parts, [&](const auto& p) { return p.second == e.role; }) != 1)
+        return Refused("split expert part is missing or duplicated");
+      const auto binding = in_.addresses.expert_part(w.ref.stage, named->first);
+      std::uint64_t part_bytes = 0;
+      if (!binding || binding->format != one || binding->role != e.role ||
+          binding->pitch < e.readable || binding->pitch > INT64_MAX ||
+          __builtin_mul_overflow(static_cast<std::uint64_t>(matrices - 1), binding->pitch,
+                                 &part_bytes) ||
+          __builtin_add_overflow(part_bytes, e.readable, &part_bytes) ||
+          part_bytes != binding->bytes || part_bytes > INT64_MAX || e.readable > INT64_MAX)
+        return Refused("split expert source format, pitch or complete extent differs");
+      auto* t = part_bytes == 0
+                    ? nullptr
+                    : ggml_new_tensor_2d(c_, GGML_TYPE_I8, static_cast<std::int64_t>(e.readable),
+                                         matrices);
+      if (!t) return Refused("empty split expert part");
+      t->nb[1] = binding->pitch;
+      t->nb[2] = t->nb[3] = part_bytes;
+      part(e.role, t);
+    }
+  } else if (options_.selected_source != nullptr && d.format.encoding == Encoding::kNvfp4 &&
              d.format.layout == format::Layout::kSplit && matrices == 1 && !w.ref.expert_array &&
              d.format.stacked == 1) {
     part(format::PartRole::kCodes, bytes(k / 2, rows, 1));
@@ -1424,9 +1464,39 @@ std::expected<void, KernelFailure> Lowering::MakeFused(NodeId id, const ir::Node
     if (made_.at(n.out.at(k).v) == nullptr) return Refused("a fused node's result was not made");
   }
   if (result == nullptr) return Refused("a fused node with no result");
+  if (n.key.fused == FusedKind::kRopeStore) {
+    // The IR matcher permits reshape/view chains. The existing launcher names
+    // exactly ROPE, VIEW, SET_ROWS; collapse only this closed, unwritten chain.
+    auto* view = result->src[0];
+    if (result->op != GGML_OP_SET_ROWS || view == nullptr || view->view_src == nullptr ||
+        view->view_src->op != GGML_OP_ROPE || view->view_offs != 0 || !ggml_is_contiguous(view))
+      return Refused("a fused rope-store lacks its whole flattened rotation view");
+    auto* rotation = view->view_src;
+    for (const auto& [tensor, prim] : made) {
+      if (tensor == result || tensor == rotation || tensor == view) continue;
+      if (plan_.tensors.at(prim.v).valid() || tensor->view_src != rotation ||
+          tensor->view_offs != 0 || (tensor->op != GGML_OP_RESHAPE && tensor->op != GGML_OP_VIEW))
+        return Refused("a fused rope-store has a retained or non-view intermediate");
+    }
+    view->op = GGML_OP_VIEW;
+    view->src[0] = rotation;
+    std::erase_if(out_.nodes, [&](const ggml_tensor* tensor) {
+      return tensor != result && tensor != rotation && tensor != view &&
+             std::ranges::any_of(made, [&](const auto& entry) { return entry.first == tensor; });
+    });
+  }
   for (const auto& [t, prim] : made) {
     if (!plan_.tensors.at(prim.v).valid() && t->view_src == nullptr) {
-      elided_.emplace_back(t, result);
+      if (n.key.fused == FusedKind::kRopeStore) {
+        if (t->op != GGML_OP_ROPE || t->src[0] != made_.at(n.src[0].v))
+          return Refused("a fused rope-store has an unexpected unwritten intermediate");
+        // Both rope-store launchers read src[0] and write the cache directly.
+        // The eliminated F32 output has no activation placement, and must not
+        // masquerade as an F32 allocation over the retained F16/quantized cache.
+        elided_.emplace_back(t, t->src[0], true);
+      } else {
+        elided_.emplace_back(t, result);
+      }
     }
   }
   return {};
@@ -1605,6 +1675,13 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
             operand.paged_weight = at->second->ref;
         }
       }
+    }
+    if (n.key == ir::Primitive(Op::kMatMulId) && i == 0 &&
+        p_.node(p_.producer(tensor)).key == ir::Primitive(Op::kWeight) &&
+        p_.root(tensor) == tensor) {
+      const auto at = weights_.find(primitive_.at(tensor.v).v);
+      if (at != weights_.end() && at->second->ref.expert_array)
+        operand.expert_weight = at->second->ref;
     }
     const auto parts = parts_.find(tensor.v);
     if (parts != parts_.end()) {
@@ -1823,7 +1900,19 @@ std::expected<void, KernelFailure> Lowering::Bind() {
     TensorArena::Bind(bank.tensor, raw);
   }
   for (const auto& [t, w, role] : part_leaves_) {
-    const std::uint64_t address = addresses.weight ? addresses.weight(w->ref, role) : 0;
+    std::uint64_t address = addresses.weight ? addresses.weight(w->ref, role) : 0;
+    if (w->ref.expert_array && addresses.expert_part) {
+      const auto named = std::ranges::find(w->parts, role, [](const auto& p) { return p.second; });
+      if (named != w->parts.end()) {
+        const auto binding = addresses.expert_part(w->ref.stage, named->first);
+        if (binding && binding->format.encoding == Encoding::kNvfp4 &&
+            binding->format.layout == format::Layout::kSplit) {
+          if (address != 0 && address != binding->address)
+            return Refused("split source binding differs from the ordinary weight address");
+          address = binding->address;
+        }
+      }
+    }
     if (address == 0 && !addresses.measuring()) return Refused("a weight's part has no address");
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
   }
@@ -1857,7 +1946,28 @@ std::expected<void, KernelFailure> Lowering::Bind() {
       return Refused("an intermediate's result is not placed");
     in.t->data = static_cast<char*>(r->data) + in.offset;
   }
-  for (const auto& [t, result] : elided_) {
+  for (const auto& [t, result, read_only_operand] : elided_) {
+    if (read_only_operand) {
+      // Sources may be views, whose data is refreshed by BindViews only below.
+      // Resolve their actual bound root without inventing a new allocation.
+      const ggml_tensor* root = result;
+      std::uint64_t offset = 0;
+      while (root->view_src != nullptr) {
+        if (__builtin_add_overflow(offset, static_cast<std::uint64_t>(root->view_offs), &offset))
+          return Refused("a fused rope-store operand offset overflows");
+        root = root->view_src;
+      }
+      const auto operand_base =
+          static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(root->data));
+      std::uint64_t address = 0;
+      if (t->op != GGML_OP_ROPE || t->src[0] != result || operand_base == 0 ||
+          offset > ggml_nbytes(root) || ggml_nbytes(result) > ggml_nbytes(root) - offset ||
+          ggml_nbytes(t) > ggml_nbytes(result) ||
+          __builtin_add_overflow(operand_base, offset, &address))
+        return Refused("a fused rope-store operand has no bounded source address");
+      TensorArena::Bind(t, address);
+      continue;
+    }
     const ggml_tensor* root = result;
     while (root->view_src != nullptr) root = root->view_src;
     if (state_tensors_.contains(root) || weight_tensors_.contains(root) || root->data == nullptr) {
@@ -2744,6 +2854,21 @@ std::expected<void, KernelFailure> Lowering::Slots() {
   // Every tensor the steps touch, by the role of its storage.
   std::set<std::tuple<std::uint64_t, std::uint64_t, ir::Role>> seen;
   const auto use = [&](const ggml_tensor* t) {
+    // A selected-only part descriptor names an entire pitched expert array,
+    // but no operation reads that entire span. MakeRouting has authenticated
+    // every reader and selected call before this exact leaf-identity check.
+    // Actual part reservations and selected residency are checked by the
+    // runner; ordinary aliases and all other tensor uses stay covered here.
+    if (out_.routing && out_.weight_reads) {
+      for (const auto& [part_tensor, weight, role] : part_leaves_) {
+        if (part_tensor != t) continue;
+        const auto read = std::ranges::find(*out_.weight_reads, weight->ref, &RoutedWeight::ref);
+        if (read != out_.weight_reads->end() && read->dynamic &&
+            std::ranges::count_if(read->parts,
+                                  [&](const auto& part) { return part.second == role; }) == 1)
+          return;
+      }
+    }
     const ggml_tensor* root = t;
     while (root->view_src != nullptr) root = root->view_src;
     const ir::Role role = state_tensors_.contains(root)    ? ir::Role::kState
@@ -3623,6 +3748,178 @@ std::expected<void, KernelFailure> Lowering::MakeSaves() {
   return {};
 }
 
+std::expected<void, KernelFailure> Lowering::MakeRouting() {
+  if (in_.addresses.expert_part) {
+    out_.weight_reads.emplace();
+    out_.weight_reads->reserve(in_.step.weights.size());
+    for (const auto& w : in_.step.weights)
+      out_.weight_reads->push_back({w.ref, g_.tensor(w.tensor).format, w.parts, false});
+  }
+  std::vector<std::size_t> calls;
+  std::optional<SelectedRoute> first;
+  for (std::size_t i = 0; i != out_.selected.size(); ++i) {
+    const auto route = out_.selected[i].call->route();
+    if (!route) continue;
+    if (calls.size() == 16) return Refused("a routed group exceeds its bounded product inventory");
+    if (first &&
+        (route->ids != first->ids || route->format.shape.ne[2] != first->format.shape.ne[2]))
+      return Refused("this program supports one exact routed dependency group");
+    if (!first) first = route;
+    calls.push_back(i);
+  }
+  if (!first) return {};
+  if (!out_.plan.regions.empty()) return Refused("routed boundaries cannot cross lane regions");
+  auto* ids = first->ids;
+  if (!ids || ids->type != GGML_TYPE_I32 || ids->ne[0] <= 0 || ids->ne[1] <= 0 || ids->ne[2] != 1 ||
+      ids->ne[3] != 1 || ids->nb[0] != sizeof(std::int32_t) ||
+      ids->nb[1] % sizeof(std::int32_t) != 0 ||
+      ids->nb[1] / sizeof(std::int32_t) > static_cast<std::uint64_t>(INT32_MAX) ||
+      static_cast<std::uint64_t>(ids->ne[0]) > ids->nb[1] / sizeof(std::int32_t))
+    return Refused("routed IDs lack a complete pitched-row producer");
+  const GroupedRouteShape shape{first->format.shape.ne[2], static_cast<std::uint64_t>(ids->ne[0]),
+                                static_cast<std::uint64_t>(ids->ne[1]), 1};
+  const auto size = GroupedRouteBound(shape);
+  if (!size) return Refused("routed worklist geometry exceeds its checked domain");
+  LoweredRouting result;
+  result.layout.shape = shape;
+  result.graph_identity = g_.Digest();
+  result.cut = out_.plan.steps.size();
+  for (const auto index : calls) {
+    const auto* marker = out_.selected[index].tensor;
+    bool found = false;
+    for (std::size_t i = 0; i != out_.plan.steps.size(); ++i) {
+      const auto& s = out_.plan.steps[i];
+      if (!std::ranges::contains(s.nodes, marker)) continue;
+      if (found || s.nodes.size() != 1 || s.lane != 0)
+        return Refused("routed product lacks one selected ordered operation");
+      found = true;
+      result.cut = std::min(result.cut, i);
+    }
+    if (!found) return Refused("routed product is absent from the selected plan");
+  }
+  // Complete primitive reader proof, before source pages can be excluded. A
+  // view, alias writer or ordinary reader of a dynamic root is not admitted.
+  std::optional<TensorId> original_ids;
+  for (const auto& w : in_.step.weights) {
+    std::size_t products = 0;
+    for (const auto index : calls)
+      if (out_.selected[index].call->route()->weight == w.ref) ++products;
+    const bool dynamic = products != 0;
+    if (dynamic) {
+      std::size_t readers = 0;
+      for (const auto& n : g_.nodes())
+        for (std::size_t i = 0; i != n.nsrc; ++i) {
+          if (!n.src[i].valid() || g_.root(n.src[i]) != w.tensor) continue;
+          if (i != 0 || n.src[i] != w.tensor || n.key != ir::Primitive(Op::kMatMulId) ||
+              n.nsrc != 3)
+            return Refused("dynamic expert weight has an undeclared ordinary or alias reader");
+          const auto input = n.src[2];
+          const auto& producer = g_.node(g_.producer(input));
+          if (producer.key != ir::Primitive(Op::kRoute) || producer.out[0] != input ||
+              (original_ids && *original_ids != input))
+            return Refused("dynamic experts do not share the actual router IDs output");
+          original_ids = input;
+          ++readers;
+        }
+      if (readers != products)
+        return Refused("dynamic expert reader inventory changed during planning");
+    }
+    if (!out_.weight_reads) return Refused("routed weights lack actual source-part binding");
+    const auto read = std::ranges::find(*out_.weight_reads, w.ref, &RoutedWeight::ref);
+    if (read == out_.weight_reads->end()) return Refused("routed weight inventory is incomplete");
+    read->dynamic = dynamic;
+  }
+  if (!original_ids) return Refused("routed selection lacks primitive source authority");
+  for (const auto& n : g_.nodes()) {
+    if (n.key == ir::Primitive(Op::kCacheStore) && g_.root(n.src[0]) == *original_ids)
+      return Refused("routed IDs are overwritten");
+    for (std::size_t o = 0; o != n.nout; ++o)
+      if (const auto alias = ir::AliasedSource(n.key, o);
+          alias && n.src[*alias].valid() && g_.root(n.src[*alias]) == *original_ids)
+        return Refused("routed IDs have an alias writer");
+  }
+  const auto E = shape.experts, P = size->pairs;
+  const moe::RouteLayout layout{static_cast<std::int64_t>(E), static_cast<std::int64_t>(P),
+                                static_cast<std::int64_t>((shape.tokens + 63) / 64)};
+  std::uint64_t host = 0, device = Round(out_.extent, 256);
+  // GroupedRouteBound limits all arrays to signed I32 indexing; the additional
+  // descriptors are at most16*4096*the decoder ABI. The checked aggregate bound
+  // also covers alignment and every existing activation byte.
+  const auto reserve = [](std::uint64_t& cursor,
+                          std::uint64_t bytes) -> std::optional<std::uint64_t> {
+    if (bytes > (1ULL << 40) || cursor > (1ULL << 40) - Round(bytes, 256)) return {};
+    const auto at = cursor;
+    cursor += Round(bytes, 256);
+    return at;
+  };
+  const auto base = in_.addresses.measuring() ? kDistinct : in_.addresses.activations;
+  const auto route_at = reserve(device, static_cast<std::uint64_t>(layout.ints()) * 4);
+  if (!route_at || base > UINT64_MAX - device) return Refused("routed workspace overflow");
+  result.preparation = MoeRoute(c_, ids, static_cast<std::int64_t>(E));
+  TensorArena::Bind(result.preparation, base + *route_at);
+  if (auto checked = CheckMoeRoute(result.preparation); !checked) return checked;
+  const auto read = [&](std::uint64_t from, std::uint64_t bytes, std::uint64_t& offset) -> bool {
+    const auto at = reserve(host, bytes);
+    if (!at) return false;
+    offset = *at;
+    result.layout.readback.push_back({from, *at, bytes});
+    return true;
+  };
+  auto& r = result.layout;
+  const auto prepared = base + *route_at;
+  const auto id_address = reinterpret_cast<std::uintptr_t>(ids->data);
+  const auto id_row = shape.used * sizeof(std::int32_t);
+  std::uint64_t id_extent = 0;
+  if (__builtin_mul_overflow(shape.tokens - 1, static_cast<std::uint64_t>(ids->nb[1]),
+                             &id_extent) ||
+      __builtin_add_overflow(id_extent, id_row, &id_extent) || id_extent > ggml_nbytes(ids) ||
+      id_extent > UINT64_MAX - id_address)
+    return Refused("routed IDs source extent overflow");
+  if (!read(id_address, P * 4, r.ids)) return Refused("routed IDs readback overflow");
+  if (shape.tokens > 1 && ids->nb[1] != id_row) {
+    auto& copy = r.readback.back();
+    copy.bytes = id_row;
+    copy.rows = shape.tokens;
+    copy.device_stride = ids->nb[1];
+  }
+  if (!read(prepared + static_cast<std::uint64_t>(layout.offsets()) * 4, (E + 1) * 4, r.offsets) ||
+      !read(prepared + static_cast<std::uint64_t>(layout.position()) * 4, P * 4, r.position) ||
+      !read(prepared + static_cast<std::uint64_t>(layout.token()) * 4, P * 4, r.token) ||
+      !read(prepared + static_cast<std::uint64_t>(layout.expert()) * 4, P * 4, r.expert))
+    return Refused("routed readback extent overflow");
+  SelectedRouteBuffers buffers;
+  const auto uploaded = [&](std::uint64_t bytes, std::uint64_t& h, std::uint64_t& d) -> bool {
+    const auto at = reserve(host, bytes), to = reserve(device, bytes);
+    if (!at || !to || base > UINT64_MAX - device) return false;
+    h = *at;
+    d = base + *to;
+    result.uploads.push_back({d, h, bytes});
+    return true;
+  };
+  if (!uploaded((E + 1) * 4, r.work_offsets, buffers.offsets) ||
+      !uploaded(P * 4, r.work_tokens, buffers.tokens) ||
+      !uploaded(P * 4, r.work_slots, buffers.slots))
+    return Refused("routed worklist workspace overflow");
+  const auto seen = reserve(host, P);
+  if (!seen) return Refused("routed validation scratch overflow");
+  r.seen = *seen;
+  for (const auto index : calls) {
+    auto& call = *out_.selected[index].call;
+    std::uint64_t at = 0;
+    if (!uploaded(call.route_descriptor_bytes(), at, buffers.descriptors))
+      return Refused("routed descriptors overflow");
+    if (auto bound = call.RouteBuffers(buffers); !bound) return bound;
+    result.descriptors.emplace_back(index, at);
+  }
+  r.host_bytes = host;
+  if (!in_.addresses.measuring() && device > in_.addresses.activation_bytes)
+    return Refused("routed workspace exceeds the paid activation placement");
+  out_.tensors.push_back({base + out_.extent, device - out_.extent, ir::Role::kActivation, false});
+  out_.extent = device;
+  out_.routing.emplace(std::move(result));
+  return {};
+}
+
 std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   if (auto checked = CheckSelectedHc(); !checked) return std::unexpected(checked.error());
   if (auto checked = CheckOwnerProducts(); !checked) return std::unexpected(checked.error());
@@ -3709,8 +4006,9 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     }
     if (!valid) return std::unexpected(valid.error());
   }
-  if (auto slots = Slots(); !slots) return std::unexpected(slots.error());
   out_.extent = plan_.placement.extent;
+  if (auto routed = MakeRouting(); !routed) return std::unexpected(routed.error());
+  if (auto slots = Slots(); !slots) return std::unexpected(slots.error());
   out_.measuring = in_.addresses.measuring();
   return std::move(out_);
 }

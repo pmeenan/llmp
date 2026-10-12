@@ -383,6 +383,49 @@ pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
   return key;
 }
 
+Status ModelRunner::CheckRoutedWeightBindings(std::span<const kn::RoutedWeight> reads) const {
+  const auto addresses = AddressesFor(config_.setup_shapes.front(), true);
+  for (const auto& w : reads) {
+    if (w.ref.stage >= config_.weights.size()) return Error("foreign routed weight stage");
+    const auto& weights = *config_.weights[w.ref.stage].weights;
+    const auto& artifact = weights.artifact();
+    for (const auto& [name, role] : w.parts) {
+      if (w.ref.expert_array) {
+        auto matrix = w.format;
+        if (matrix.shape.rank != 3) return Error("expert source rank changed");
+        matrix.shape.rank = 2;
+        matrix.shape.ne[2] = 1;
+        const auto array = artifact.FindExpertArray(name);
+        const auto part =
+            addresses.expert_part ? addresses.expert_part(w.ref.stage, name) : std::nullopt;
+        if (!array || !part || part->format != matrix || part->role != role ||
+            artifact.expert_arrays()[*array].count != w.format.shape.ne[2])
+          return Error("actual expert binding differs from its source inventory");
+        const auto callback = addresses.weight(w.ref, role);
+        if (callback != 0 && callback != part->address)
+          return Error("expert callback aliases a different source part");
+      } else {
+        const auto resource = artifact.FindResource(name);
+        if (!resource) return Error("ordinary reader names no source resource");
+        const auto& r = artifact.resources()[*resource];
+        if (!r.format || *r.format != w.format || r.part != role)
+          return Error("ordinary reader format differs from its source resource");
+        auto expected = weights.resource_address(*resource);
+        if (r.rows && weights.group_address(r.group) == 0) {
+          expected = 0;
+          for (const auto& table : row_tables_)
+            if (table->config.weight == w.ref && table->config.resource == *resource &&
+                table->config.part == role)
+              expected = table->slots.base;
+        }
+        if (expected == 0 || addresses.weight(w.ref, role) != expected)
+          return Error("ordinary callback aliases a different source resource");
+      }
+    }
+  }
+  return {};
+}
+
 kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuring) const {
   std::vector<std::uint8_t> owners;
   owners.reserve(shape.segments.size());
@@ -407,6 +450,45 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
       return 0;
     };
   }
+  if (config_.routed_metadata)
+    a.expert_part = [this](std::uint16_t stage,
+                           std::string_view name) -> std::optional<kn::ExpertPartBinding> {
+      if (stage >= config_.weights.size()) return std::nullopt;
+      const PagedWeights& weights = *config_.weights[stage].weights;
+      const auto index = weights.artifact().FindExpertArray(name);
+      if (!index) return std::nullopt;
+      const auto& array = weights.artifact().expert_arrays()[*index];
+      if (!array.format || array.count == 0 || array.readable.value() == 0) return std::nullopt;
+      const std::uint64_t base = weights.array_address(*index);
+      if (base == 0) return std::nullopt;
+      std::uint64_t pitch = array.readable.value();
+      if (array.count > 1) {
+        const auto next = weights.group_address(array.first_group + 1);
+        const auto first = weights.group_address(array.first_group);
+        if (next <= first) return std::nullopt;
+        pitch = next - first;
+      }
+      if (pitch < array.readable.value()) return std::nullopt;
+      for (std::uint32_t e = 0; e < array.count; ++e) {
+        std::uint64_t offset = 0, expected = 0, actual = 0;
+        if (__builtin_mul_overflow(std::uint64_t{e}, pitch, &offset) ||
+            __builtin_add_overflow(base, offset, &expected) ||
+            __builtin_add_overflow(weights.group_address(array.first_group + e),
+                                   array.group_offset.value(), &actual) ||
+            actual != expected)
+          return std::nullopt;
+      }
+      std::uint64_t bytes = 0, end = 0;
+      if (__builtin_mul_overflow(std::uint64_t{array.count - 1}, pitch, &bytes) ||
+          __builtin_add_overflow(bytes, array.readable.value(), &bytes) ||
+          __builtin_add_overflow(base, bytes, &end))
+        return std::nullopt;
+      return kn::ExpertPartBinding{.address = base,
+                                   .bytes = bytes,
+                                   .pitch = pitch,
+                                   .format = *array.format,
+                                   .role = array.part};
+    };
   // Only the state the step's stage may write (Admit's rule, which a
   // verify's saves and a failed step's quarantine follow): a target's step
   // binds the target's state and the drafters' tensors it writes
@@ -520,6 +602,7 @@ Status ModelRunner::Setup() {
     auto program = source_->Build(shape, AddressesFor(shape, true));
     if (!program) return Error(std::format("measuring a step: {}", program.error()));
     const kn::StepProgram& p = **program;
+    if (auto routed = MeasureRouting(p); !routed) return routed;
     activations = std::max(activations, p.scratch_bytes());
     pool = std::max(pool, p.pool_bytes());
     std::uint64_t in = 0, out = 0;
@@ -547,6 +630,7 @@ Status ModelRunner::Setup() {
           .segments = {{.rows = keep, .read_cells = slots_.context(stage), .want_head = false}}};
       auto p = source_->Build(shape, AddressesFor(shape, true));
       if (!p) return Error(std::format("measuring a commit: {}", p.error()));
+      if (auto routed = MeasureRouting(**p); !routed) return routed;
       activations = std::max(activations, (*p)->scratch_bytes());
       pool = std::max(pool, (*p)->pool_bytes());
       std::uint64_t bytes = 0;
@@ -555,6 +639,7 @@ Status ModelRunner::Setup() {
       plan_floor_bytes_ = std::max(plan_floor_bytes_, (*p)->host_bytes());
     }
   }
+  if (auto routed = FinishRoutingSetup(); !routed) return routed;
   if (commit_inputs != 0) {
     commit_staging_stride_ = Round(commit_inputs, 256);
     auto staging = memory_.Pinned(commit_staging_stride_ * slots_.slots() * slots_.stages());
@@ -567,7 +652,8 @@ Status ModelRunner::Setup() {
   pool_needed_ = pool == 0 ? 0 : Round(pool + pool / 4, kPagedExtent);
   inputs_staging_bytes_ = Round(std::max<std::uint64_t>(inputs + inputs / 4, 256), 256);
   outputs_staging_bytes_ = Round(std::max<std::uint64_t>(outputs + outputs / 4, 256), 256);
-  host_input_bytes_ = Round(inputs_staging_bytes_ + outputs_staging_bytes_, kPagedExtent);
+  host_input_bytes_ =
+      Round(inputs_staging_bytes_ + outputs_staging_bytes_ + RoutedPinnedBytes(), kPagedExtent);
   auto in = memory_.Pinned(inputs_staging_bytes_);
   if (!in) return Error(in.error());
   auto out = memory_.Pinned(outputs_staging_bytes_);
@@ -1060,7 +1146,8 @@ Status ModelRunner::Bind() {
   plans_.set_account(&account_);
   key_base_ = source_->KeyBase();
   key_base_.shape = {};
-  std::vector<catalog::ExtentId> shared = weight_extents();
+  if (auto current = CheckRoutingSource(); !current) return current;
+  std::vector<catalog::ExtentId> shared = base_weight_extents();
   for (const Mapped* mapped : {&node_.activations(), &node_.pool()}) {
     shared.insert(shared.end(), mapped->extents.begin(), mapped->extents.end());
   }
@@ -1076,6 +1163,9 @@ Status ModelRunner::Bind() {
 Status ModelRunner::Release() {
   if (released_) return {};
   released_ = true;
+  // Release's existing contract is node teardown after successful drain and
+  // stream fences. Only that proof may break a retained routed-owner cycle.
+  routed_flight_.reset();
   // The recordings name the launch and the memory: they go first (D-090).
   DropPlans();
   launch_.reset();
@@ -1098,7 +1188,9 @@ Status ModelRunner::Release() {
 
 // --------------------------------------------------------------------- plans
 
-void ModelRunner::DropPlans() { plans_.Clear(); }
+void ModelRunner::DropPlans() {
+  if (!routed_flight_) plans_.Clear();
+}
 
 void ModelRunner::ReclaimCandidates(std::uint32_t owner, bool running,
                                     std::vector<memory::ReclaimCandidate>& out) {
@@ -1108,7 +1200,7 @@ void ModelRunner::ReclaimCandidates(std::uint32_t owner, bool running,
 }
 
 std::uint64_t ModelRunner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
-  if (released_ || slots_.faulted()) return 0;
+  if (released_ || slots_.faulted() || routed_flight_) return 0;
   std::array<PlanCacheBase*, 1> caches{&plans_};
   return ReclaimPlan(caches, kind, id);
 }
@@ -1118,6 +1210,7 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
     const std::function<void()>& transfer) {
   if (planned == nullptr || planned->program == nullptr) return Error("no program to install");
   kn::StepProgram& program = *planned->program;
+  if (auto routed = CheckRouting(program); !routed) return Error(routed.error());
   if (!planned->bound) {
     if (auto bound = program.Bind(*launch_); !bound) {
       return Error(std::format("binding a step: {}", bound.error().detail));
@@ -1154,6 +1247,7 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
 std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Planned(
     const pl::StepShape& shape) {
   if (auto identity = source_->ExecutionIdentity(); !identity) return Error(identity.error());
+  if (auto current = CheckRoutingSource(); !current) return Error(current.error());
   if (Plans::Entry* found = plans_.Find(KeyOf(shape)); found != nullptr) return found;
   const auto started = std::chrono::steady_clock::now();
   auto program = source_->Build(shape, AddressesFor(shape, false));
@@ -1254,6 +1348,10 @@ const ModelRunner::CompanionStep* ModelRunner::CompanionFor(std::uint32_t slot,
 }
 
 std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& request) {
+  if (routed_flight_) return Refused("a routed step retains unproven effects", false);
+  if (routed_ && (request.ahead.build || request.ahead.capture_ahead || request.ahead.prepare ||
+                  request.ahead.shapes[0] || request.ahead.shapes[1]))
+    return Refused("routed continuation does not admit asynchronous lookahead");
   if (!bound_ || released_) return Refused("the model runner is not bound");
   const pl::StepShape& shape = request.shape;
   if (auto checked = CheckShape(shape); !checked) return Refused(checked.error());
@@ -1441,7 +1539,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     row_reads = std::move(*reads);
   }
   Plans::Entry& entry = **entry_of;
-  const kn::StepProgram& program = *entry.planned->program;
+  kn::StepProgram& program = *entry.planned->program;
 
   // Inputs, staged by slot.
   const auto fill = [&](std::size_t index,
@@ -1723,6 +1821,12 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
 
+  if (auto begin = BeginRouted(program, runs, *copies, *outputs, *carries, capture); !begin)
+    return Refused(begin.error(), slots_.FinishPreparations().has_value());
+  struct RoutedCleanup {
+    ModelRunner& runner;
+    ~RoutedCleanup() { runner.ForgetUnstartedRouted(); }
+  } routed_cleanup{*this};
   // What the step writes, recorded before the job (incremental spill).
   for (const pl::Segment& s : shape.segments) {
     if (auto recorded = slots_.RecordWrite(s.slot, s.past); !recorded) {
@@ -1767,7 +1871,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
   std::string failure;
-  const auto posted = node_.Job(
+  auto posted = node_.Job(
       slots_.execution(),
       [&](providers::NativeStream native) {
         // What the owners' states owe (a verify's restore and commit)
@@ -1850,8 +1954,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
           }
           saves_queued = true;
         }
-        const StepQueued q =
-            runs_.Queue(runs, *copies, {}, program, *outputs, capture, graph_stats_, native);
+        const StepQueued q = program.routed() ? QueueRoutedPrefix(native)
+                                              : runs_.Queue(runs, *copies, {}, program, *outputs,
+                                                            capture, graph_stats_, native);
         wrote = wrote || q.before || q.result.has_value();
         report.path = q.path;
         if (!q.result) {
@@ -1861,16 +1966,17 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
                  : wrote || saves_queued ? sc::JobResult::kFailed
                                          : sc::JobResult::kNotStarted;
         }
-        for (const auto& [to, from, bytes] : *carries) {
-          if (const providers::DeviceStatus copied =
-                  providers::CopyAsync(native, support::Pointer(to), support::Pointer(from), bytes,
-                                       providers::CopyKind::kDeviceToDevice);
-              !copied.ok()) {
-            failure = std::format("a step's carried features: {}", copied.text());
-            unknown = true;
-            return sc::JobResult::kUnknown;
+        if (!program.routed())
+          for (const auto& [to, from, bytes] : *carries) {
+            if (const providers::DeviceStatus copied =
+                    providers::CopyAsync(native, support::Pointer(to), support::Pointer(from),
+                                         bytes, providers::CopyKind::kDeviceToDevice);
+                !copied.ok()) {
+              failure = std::format("a step's carried features: {}", copied.text());
+              unknown = true;
+              return sc::JobResult::kUnknown;
+            }
           }
-        }
         if (upcoming != nullptr) {
           auto captured =
               runs_.CaptureAhead(upcoming->runs[0], upcoming_copies, *upcoming->planned->program,
@@ -1886,6 +1992,13 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         return sc::JobResult::kQueued;
       },
       "a model step", stream_, meanwhile);
+  if (program.routed() && posted && failure.empty() && !launch_->faulted()) {
+    if (auto continued = ContinueRouted(report.path); !continued) {
+      failure = continued.error();
+      unknown = true;  // prefix effects exist; no completion inferred from refusal
+      posted = Error(continued.error());
+    }
+  }
   // The job retired: every optional preparation drained before anything
   // else touches the state.
   const Status preparation = slots_.FinishPreparations();

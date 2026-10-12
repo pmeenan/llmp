@@ -167,9 +167,87 @@ Raw failed and successful evidence stays outside Git in the coordination root's
 
 ## Remaining scope
 
-N4b6b's bounded owned operation controls are complete. The shared
-ModelRunner mid-step routing/admission continuation remains open: production
-still needs explicit completed routing segments and source-selected grouped
-binding over the now-checked supplemental admission prerequisite. These tests do not provide
-that interface. Native ModelOpt target admission and full-model qualification
-remain open. This evidence makes no speed or model-quality claim.
+N4b6b's bounded owned operation controls, N4b6c's supplemental lease
+prerequisite and N4b6d's one-group shared routed step are complete. N4b6e's
+ordered-group extension remains pending. Native ModelOpt target admission
+and full-model qualification remain open. Existing operation evidence makes no
+speed or model-quality claim.
+
+## Shared routed step — 2026-10-12
+
+N4b6d connects one actual `ComponentStepSource` step to a completed routing
+prefix and selected-expert continuation. The bounded fixture includes embedding,
+shared dense attention with F16 KV state, MoE and a head. Direct NVFP4-split
+`MatMulId` operands use the existing grouped decoder; stacked gate/up scales,
+per-part padded pitches, repeated contributions and original routed slots remain
+explicit. No kernel arithmetic or family numerical policy changes.
+
+Lowering keeps the original whole-plan placement and checks every reader of the
+routed weights. The runner binds complete read declarations to the effective
+backend identity, source cache keys and actual opened artifact bindings before
+excluding pages. Ordinary readers and shared pages stay in the base closure.
+After prefix completion, all five route arrays are validated; a scheduler-minted
+selected closure protects descriptor upload and continuation under the original
+request lease. Every capture replay repeats that validation/admission with a
+fresh epoch. Ordinary whole-step Run, Record and Queue cannot bypass the segment
+contract. Unknown completion retains the entire flight and blocks continuation
+and plan eviction; successful explicit teardown is required to release it.
+
+The fixed fixture admits 384 MiB host metadata before construction, including a
+256 MiB compiler inventory (derived upper bound 206,595,584 bytes), 64 MiB owner
+allowance and up to 32 MiB overlapping plans/graphs. The managed node is 512 MiB;
+program activations and pool each cap at 32 MiB, route staging at 16 KiB and state
+layout at 128 KiB (two 32 KiB F16 banks with D64 attention). Five weight pages plus a slab read slot use at most 12 MiB +
+8 KiB within the existing 16 MiB weight/read allowance. Actual confinement uses a
+10 GiB process/cache cap, zero swap and 6 GiB additional physical margin, not a
+total CUDA-device allocation guarantee. The first teardown failure retains its
+owner and prevents another fixture domain; repeated teardown is not proof.
+
+Full native main build and 135 host controls pass: 101 routed/lowering/owner
+controls plus 34 fusion/validation controls. All three GPU cases pass without
+failures or skips. The real step executes eager/captured/replayed revisions with
+repeated and changed expert IDs, checking 288 complete output values against
+independent scalar arithmetic, selected-page residency, one retained program,
+three completed steps and state frontier 9. The other cases check pre-admission
+missing-owner/misbound-source refusals and immutable selected-source declarations.
+Six exact dynamic part descriptors defer residency; ordinary weights retain
+their eager coverage checks. F16 attention-state writes execute, but the zero
+attention-output projection means there is no independent full attention-state
+byte oracle. The existing absolute 2e-5 plus relative 2e-3 tolerance permits the
+decoded BF16 MMA arithmetic; it is neither a cross-library bit gate nor a corpus
+quality threshold.
+
+The final corrections preserve RoPE/cache-store fusion. Elided RoPE metadata
+borrows its actual read operand, while an externally retained rotation remains
+materialized. The matcher accepts only the verified current destination-cache
+view edge, retaining all real operand-disjointness checks. Lowering authenticates
+the complete selected-only reader inventory before omitting exact multipart
+leaves from eager coverage. Catalog ownership is checked for each actual expert
+part slice; padding and unselected experts do not become resident requirements.
+Selected pages still require fresh scheduler admission before continuation.
+
+Main evidence (2026-10-12), with raw files retained outside Git:
+
+- `native-grouped-runner-main12/result.json`: full native build and all 135 host
+  cases PASS; SHA-256 `b8167587a4bc55f2ecba908e59fde804b8f247d5938f92c477d10e778875256a`.
+- `native-grouped-runner-gpu05/result.json`: all three cases PASS, unchanged
+  pre/post source and binary guards, zero remaining compute processes and zero
+  memory-event counters; SHA-256
+  `9e1651e53fc480b2df49a004537ec1077adbcce41484803c3e8c5f897b7ae947`.
+- Shared source-map SHA-256:
+  `d6103609fc5af377f96acf6b24f6a89befe33abd2dc8145dd2ddbdd52caee060`.
+  Executed binary: 204,105,576 bytes, SHA-256
+  `a8503ac467819a4fe9d7d3eed21d791c2112dfa89ef67189c6459392e44d7aa0`.
+  Observed process/cache accounting peak: 288,223,232 bytes; this is not a
+  total opaque CUDA-device allocation measurement.
+
+Final `native-grouped-runner-quality03` completes with exit 0: formatting for
+25 C++ paths, 20 boundary checks, 2,213 headers and REUSE 6.2.0 pass. Its literal
+supervisor status and log are retained alongside the guarded source export.
+
+This first implementation permits one routing group and refuses routed lookahead.
+Multiple ordered groups, actual model admission, original-model quality and speed
+remain open. Page lookup currently scans all pages per expert/part; the small
+fixture does not qualify 512-expert, 48-layer scaling. Existing supplemental fake
+controls cover cancellation and unknown retirement; whole-runner failure injection
+is not claimed. No new import or real-model payload read is needed for this proof.

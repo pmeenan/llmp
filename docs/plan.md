@@ -2347,6 +2347,25 @@ each is checked against the design as M3.6 proceeds.
                   retirement cases. Production routed ModelRunner integration
                   and native ModelOpt target admission remain separate
                   ([evidence](experiments/m36-native-grouped-foundation/README.md#supplemental-selected-closure--2026-10-12)).
+            - [x] **N4b6d — one shared routed ModelRunner step:** connect a
+                  completed routing prefix, checked native split expert bindings
+                  and supplemental selected closure to the original step's
+                  continuation. Preserve the base lease, whole-plan placement,
+                  fresh routing on capture replay and complete ownership on
+                  uncertain completion. Full native main build, 101 routed host
+                  and 34 fusion/validation controls, and all three GPU cases pass
+                  without skips. The bounded real ComponentStepSource fixture
+                  checks 288 complete outputs across three steps, selected-only
+                  residency and state frontier 9; this is not full-model quality
+                  or performance qualification
+                  ([evidence](experiments/m36-native-grouped-foundation/README.md#shared-routed-step--2026-10-12)).
+            - [ ] **N4b6e — ordered routed groups:** extend the same whole-plan
+                  placement and complete owner through multiple ordered router
+                  boundaries, with fresh selected closure admission per group
+                  and final-only output/carry publication. The bounded two-group
+                  implementation is reviewed; native build and actual execution
+                  remain pending. Family admission and full-model qualification
+                  remain separate.
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

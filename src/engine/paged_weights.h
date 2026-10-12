@@ -177,6 +177,11 @@ class PagedWeights {
   // host; a slab page's group is its layer's first).
   std::vector<catalog::ExtentId> ExtentsWhere(
       const std::function<bool(std::uint32_t group, bool host)>& which) const;
+  // Exact reserved device pages touched by a consumed byte interval. The
+  // caller supplies paid storage; failure leaves it untouched. This is source
+  // geometry only, not residency or current-generation permission.
+  std::expected<std::size_t, std::string> ExtentsTouching(
+      std::uint64_t address, std::uint64_t bytes, std::span<catalog::ExtentId> destination) const;
   std::uint64_t read_bytes() const { return read_bytes_; }  // one full load reads
   std::uint64_t slab_padding() const { return slab_padding_; }
   std::uint64_t bytes() const { return bytes_; }            // the device reservation
