@@ -28,6 +28,7 @@
 #include "engine/paged_weights.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
+#include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
@@ -46,6 +47,7 @@
 #include "runtime/prefill.h"
 #include "runtime/serving_support.h"
 #include "spec/mapping.h"
+#include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -61,7 +63,28 @@ using serving_support::kExtent;
 namespace fs = std::filesystem;
 namespace ja = llmp::artifact;
 
+// The fixed target's current hard-cap compiler and simultaneous factory
+// inventory is sealed with its diagnostic. This charge is separate from the
+// backend declaration allowance and from all mapped runtime/device storage.
+constexpr std::uint64_t kDsv4ConstructionBytes = std::uint64_t{4} << 30U;
+// Reader maps use only the remaining space inside the already paid compiler
+// ceiling. Other lower metadata includes the current descriptor arena and
+// owner indexes, but excludes the old 32 MiB reader-map sub-budget.
+constexpr std::uint64_t kDsv4CompilerBytes = 2776629248ULL;
+constexpr std::uint64_t kDsv4OtherLowerBytes = 2279950224ULL - 33554432ULL + 92274688ULL;
+static_assert(kDsv4OtherLowerBytes < kDsv4CompilerBytes);
+constexpr std::uint64_t kDsv4ReaderScratchBytes = kDsv4CompilerBytes - kDsv4OtherLowerBytes;
+constexpr std::string_view kDsv4DiagnosticArtifact =
+    "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
+struct ConstructionCharge {
+  std::shared_ptr<engine::ExecutionMetadataAllowance> allowance;
+  std::uint64_t bytes = 0;
+  ~ConstructionCharge() { allowance->Release(bytes); }
+};
+
 struct ComponentHold {
+  // First: refund only after all graph, binding and backend owners die.
+  std::shared_ptr<ConstructionCharge> construction;
   std::unique_ptr<StoredBindingPayment> stored_payment;
   spec::ModelSpec spec;
   std::vector<spec::Source> sources;  // by artifact: the target's, the drafter's
@@ -87,18 +110,13 @@ static_assert(sizeof(ComponentHold) <= 4096);  // StoredBindingBytes fixed owner
 // shard descriptor. The synchronous direct read retires before its aligned
 // stack window is reused. Shape/type and exact byte count precede allocation.
 template <class T>
-std::expected<std::vector<T>, std::string> RecipeIntegers(const ja::Artifact& artifact,
-                                                          const model::Qwen38Tensor& tensor,
-                                                          std::uint32_t maximum,
-                                                          std::string_view type) {
-  const bool vector = type == "I64" && tensor.plain && tensor.ne.size() == 1;
-  const bool table = type == "I32" && !tensor.plain && tensor.ne.size() == 2 && tensor.ne[0] == 1;
-  if (tensor.type != type || (!vector && !table))
-    return Error("integer recipe metadata has an unsupported type or shape");
-  const auto count64 = tensor.ne[table ? 1 : 0];
-  if (count64 == 0 || count64 > maximum) return Error("integer recipe metadata exceeds its bound");
+std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const ja::Artifact& artifact,
+                                                              std::uint32_t resource,
+                                                              std::uint64_t count64) {
+  if (count64 == 0 || count64 > std::numeric_limits<std::size_t>::max() / sizeof(T))
+    return Error("integer recipe metadata exceeds its addressable extent");
   const auto count = static_cast<std::size_t>(count64);
-  auto place = artifact.ResourcePlacement(tensor.index);
+  auto place = artifact.ResourcePlacement(resource);
   if (!place || place->bytes.value() != count * sizeof(T))
     return Error("integer recipe metadata has an inconsistent byte count");
   const auto& group = artifact.groups()[place->group];
@@ -123,6 +141,39 @@ std::expected<std::vector<T>, std::string> RecipeIntegers(const ja::Artifact& ar
   return out;
 }
 
+template <class T>
+std::expected<std::vector<T>, std::string> RecipeIntegers(const ja::Artifact& artifact,
+                                                          const model::Qwen38Tensor& tensor,
+                                                          std::uint32_t maximum,
+                                                          std::string_view type) {
+  const bool vector = type == "I64" && tensor.plain && tensor.ne.size() == 1;
+  const bool table = type == "I32" && !tensor.plain && tensor.ne.size() == 2 && tensor.ne[0] == 1;
+  if (tensor.type != type || (!vector && !table))
+    return Error("integer recipe metadata has an unsupported type or shape");
+  const auto count = tensor.ne[table ? 1 : 0];
+  if (count == 0 || count > maximum) return Error("integer recipe metadata exceeds its bound");
+  return ReadRecipeIntegers<T>(artifact, tensor.index, count);
+}
+
+std::expected<void, std::string> CheckHashTables(const ja::Artifact& artifact,
+                                                 const model::Dsv4Binding& binding) {
+  const auto& profile = model::Dsv4Flash();
+  for (std::uint32_t layer = 0; layer < profile.hash_layers; ++layer) {
+    const auto& tensor = binding.layers.at(layer).tid2eid;
+    if (tensor.type != "I32" || tensor.ne.size() != 2 || tensor.ne[0] != profile.experts_used ||
+        tensor.ne[1] != profile.vocab)
+      return Error("hash-routing source is not the bound expert-by-token table");
+    // Serial reads: one complete table at a time, under the construction
+    // allowance. The source table remains encoded; no result cache is kept.
+    auto table = ReadRecipeIntegers<std::int32_t>(
+        artifact, tensor.index, std::uint64_t{profile.experts_used} * profile.vocab);
+    if (!table) return Error(table.error());
+    if (auto valid = model::CheckDsv4HashRouting(profile, *table); !valid)
+      return Error(valid.error());
+  }
+  return {};
+}
+
 std::expected<model::Qwen38PleHash, std::string> RecipeHash(const ja::Artifact& artifact,
                                                             const model::Qwen38Binding& binding) {
   const auto& p = model::Qwen38Flash();
@@ -143,6 +194,12 @@ std::expected<model::Qwen38PleHash, std::string> RecipeHash(const ja::Artifact& 
 // tensors bind.
 std::expected<std::vector<spec::SourceValue>, std::string> V0Values(std::string_view architecture,
                                                                     const ja::Artifact& artifact) {
+  if (architecture == "deepseek4") {
+    auto binding = model::BindDsv4(model::Dsv4Flash(), artifact);
+    if (!binding) return Error(binding.error());
+    if (auto checked = CheckHashTables(artifact, *binding); !checked) return Error(checked.error());
+    return spec::mappings::Dsv4V0Values(model::Dsv4Flash());
+  }
   if (architecture == "gemma2") return spec::mappings::Gemma2V0Values(model::Gemma2_2B());
   if (architecture == "gemma3") return spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
   if (architecture == "gemma4") {
@@ -187,6 +244,22 @@ EngineLlmParts::ChatSlice ChatSliceOf(std::string_view architecture) {
 // A Gemma 4 assistant's depth: three drafts a unit at most, its qualified
 // transaction's (docs/experiments/gemma-assistant-throughput).
 constexpr std::uint32_t kAssistantDepth = 3;
+
+bool DeepSeekDomain(const ComponentBuildOptions& options) {
+  if (!options.execution_domain) return false;
+  const auto stages = options.execution_domain->stages();
+  constexpr std::array uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode};
+  constexpr std::array phases{engine::NumericalPhase{.phase = planner::Phase::kPrefill,
+                                                     .max_owners = 1,
+                                                     .max_owner_rows = 512,
+                                                     .max_total_rows = 512},
+                              engine::NumericalPhase{.phase = planner::Phase::kDecode,
+                                                     .max_owners = 1,
+                                                     .max_owner_rows = 1,
+                                                     .max_total_rows = 1}};
+  return stages.size() == 1 && stages[0].stage == 0 && stages[0].name == "target" &&
+         std::ranges::equal(stages[0].uses, uses) && std::ranges::equal(stages[0].phases, phases);
+}
 
 // Closed internal scoring experiment, not a serving route. A non-null domain
 // alone is not authority to lift the ordinary single-owner diagnostic bound.
@@ -249,6 +322,23 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           stored_metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
     const bool solo = settings.architecture == "qwen4exp";
+    const bool deepseek = settings.architecture == "deepseek4";
+    if (deepseek &&
+        (!options.diagnostic_solo || !DeepSeekDomain(options) || !options.construction_metadata ||
+         options.target_policy || settings.max_slots.value != 1 || settings.context.value != 3072 ||
+         settings.prefill_chunk.value != 512 || settings.speculation.value || !drafter_id.empty() ||
+         id != kDsv4DiagnosticArtifact))
+      return Error("the DeepSeek target bridge requires its paid single-owner diagnostic envelope");
+    std::shared_ptr<ConstructionCharge> construction;
+    if (deepseek) {
+      if (ggml_tensor_overhead() > 512)
+        return Error("DeepSeek native descriptor ABI exceeds its construction inventory");
+      if (!options.construction_metadata->Charge(kDsv4ConstructionBytes))
+        return Error("DeepSeek component construction exceeds its admitted metadata allowance");
+      construction = std::make_shared<ConstructionCharge>();
+      construction->allowance = options.construction_metadata;
+      construction->bytes = kDsv4ConstructionBytes;
+    }
     const bool joined_score = solo && JoinedScoreEnvelope(settings, drafter_id, options);
     const bool joined_mtp = solo && JoinedMtpEnvelope(settings, drafter_id, options);
     if (solo && (!options.diagnostic_solo ||
@@ -257,6 +347,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
     const bool stored = artifact->format_version() == 1;
+    if (deepseek && stored)
+      return Error("the DeepSeek target bridge requires its prepared v0 source");
     if (stored && !drafter_id.empty())
       return Error("native v1 component admission has no qualified drafter composition");
     const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
@@ -288,6 +380,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       stored_payment = std::move(*paid);
     }
     auto hold = std::make_shared<ComponentHold>();
+    hold->construction = std::move(construction);
     hold->stored_payment = std::move(stored_payment);
     std::optional<StoredComponentBindings> stored_bindings;
     std::optional<model::Qwen38Binding> qwen;
@@ -589,6 +682,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                    // positions before the rows); the device's are made
                    // anyway.
                    .frozen_host_masks = true,
+                   .index_scratch_limit = deepseek ? kDsv4ReaderScratchBytes
+                                                   : std::numeric_limits<std::uint64_t>::max(),
                    .expert_stride = [held](const ir::WeightRef& ref) -> std::uint64_t {
                      const auto at = held->pitch.find(ref);
                      return at == held->pitch.end() ? 0 : at->second;
@@ -752,6 +847,14 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                      .capture_ahead = composition.capture_ahead,
                      .prepare_ahead = true,
                      .state_only = true};
+    if (deepseek) {
+      // Closed first target screen: serial completed chunks, with no extra
+      // future program owners; normal prefill/decode execution is unchanged.
+      parts.prefill.lookahead = 0;
+      parts.prefill.capture_ahead = false;
+      parts.prefill.prepare_ahead = false;
+      parts.prefill.state_only = false;
+    }
     if (solo) {
       parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
       parts.prefill.prepare_ahead = options.prepare_state;

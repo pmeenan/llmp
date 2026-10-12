@@ -41,14 +41,27 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 ## Current direction, 2026-10-12
 
 The reviewed owned Qwen target/MTP joined execution foundation passes main native
-build and 306 affected host controls, then the actual two-owner screen on Spark B:
+build and 305 affected host controls, then the actual two-owner screen on Spark B:
 13 units, 132 finite heads, checkpoint/spill restoration and changed-input capture
 replay. It includes complete v0 row-table reconstruction through the existing
 artifact assembler and actual-width/selected-ID draft sampling. See the
 [joined MTP report](experiments/m36-numerical-audit/qwen-joined-mtp.md).
 Original-reference quality, durable old/new persistence, production serving and
-the family speed/swap gate remain open. DeepSeek target and actual spatial-image
-execution are in flight; neither has passed its full actual screen yet.
+the family speed/swap gate remain open. The full DeepSeek target screen now
+passes main native build, 307 affected host controls and actual finite-head /
+snapshot continuation on Spark B. The first actual spatial-image screen passes
+privately; its reviewed shared lowering is awaiting main integration checks.
+Neither result closes its whole-family migration gate.
+
+G4c1 qualifies the closed DeepSeek target factory at context 3072/chunk 512:
+18 finite complete head rows, nine restored rows and completed frontier 2568.
+Actual setup pays 106,614,572,256 bytes under the unchanged 110 GiB cap and
+6 GiB physical margin. The reader reuses already-funded compiler space, and
+no-head prefill skips dead final expert products while keeping all persistent
+state writes. The actual case passes in 28.516 seconds including setup/storage;
+this is not a throughput result. DSpark's composed execution is in development;
+original-reference quality, persistence, production serving and matched family
+speed/swap gates remain open. See [the target report](experiments/m36-dsv4-target/README.md).
 
 Main through `7e0bf848` includes split NVFP4 paged rows, checked route/part
 helpers and bounded selected-expert grouped execution. Full native main build,

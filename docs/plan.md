@@ -1948,6 +1948,16 @@ each is checked against the design as M3.6 proceeds.
                   expert-count checks, compressor inputs and injection
                   features with one drafter slot per target slot; pass the
                   family state, quality, swap and matched 1% controls.
+                  - [x] **G4c1 — full target factory execution screen:**
+                        the fixed prepared GGUF executes through ComponentLlmBuild,
+                        EngineLlm and ModelRunner with real hash/compressor inputs
+                        and the ordinary complete expert closure. Main native build
+                        and 307 affected host controls pass; 18 finite complete
+                        head rows and nine snapshot-restored rows pass at frontier
+                        2568 on Spark B. The unchanged 110 GiB cap and 6 GiB
+                        physical margin admit actual setup. DSpark, original-model
+                        quality, serving, swap and matched speed remain open
+                        ([evidence](experiments/m36-dsv4-target/README.md)).
             - [ ] **G4d — deletion:** remove DeepSeek V4's M3 runner, plans,
                   graph builders, bindings and serving class after G4c.
 - [x] **Migrate Qwen2 FP16 and EXL3 fixtures** (required by the exit criteria).

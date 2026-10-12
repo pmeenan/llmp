@@ -173,8 +173,13 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
   std::optional<detail::GraphReadIndex> reads;
   if (NeedsGraphReadIndex(fusion, device)) {
     const auto index_bytes = detail::GraphReadIndex::ScratchBytes(graph, keep);
-    if (!index_bytes || *index_bytes > index_scratch_limit)
-      return Rejected("graph reader index exceeds its host scratch allowance");
+    if (!index_bytes)
+      return Rejected("graph reader index has invalid or overflowing occurrence geometry");
+    if (*index_bytes > index_scratch_limit)
+      return Rejected(
+          std::format("graph reader index requires {} bytes, exceeds its host scratch allowance {} "
+                      "(nodes {}, kept {})",
+                      *index_bytes, index_scratch_limit, graph.size(), keep.size()));
     reads.emplace(graph, keep);
   }
   GraphPlan plan;

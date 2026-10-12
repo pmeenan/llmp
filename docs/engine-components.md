@@ -1317,6 +1317,21 @@ integration, are G4c's. Expert
 parallelism with as many experts as devices (`partition.cc`) is not
 reachable for DeepSeek on two Sparks (256 experts) and is left as it is.
 
+G4c1 now executes the complete fixed prepared DeepSeek target through the
+shared component factory, EngineLlm and ModelRunner, including checked token-hash
+rows and the actual compressor inputs. Construction is prepaid before parsing;
+the reader uses unused space in the existing compiler allowance rather than
+adding another charge. State-only prefill retains all persistent state writes
+and omits the dead final expert products (126 live expert arrays versus 129
+with a head), without forcing work to match another implementation.
+
+The Spark B screen passes 18 finite complete heads and nine snapshot-restored
+rows at frontier 2568, with actual setup below the unchanged 110 GiB cap and
+6 GiB physical margin. Full native build and 307 affected host controls pass.
+It uses ordinary full expert residency, not selected-only admission. DSpark,
+original-reference quality, durable restart, production serving and the family
+speed/swap gates remain open ([target evidence](experiments/m36-dsv4-target/README.md)).
+
 ### Owned execution configuration
 
 A required component source retains the native backend's immutable device and

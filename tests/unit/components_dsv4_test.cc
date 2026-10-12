@@ -992,6 +992,60 @@ TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
   EXPECT_EQ(drafted->bytes, ring->bytes);
 }
 
+// The serving target is not the composed spec above: with no taps or
+// injection, its final stateless FFN is dead on intermediate prompt chunks.
+TEST(ComponentsDsv4Test, SoloNoHeadPrefillKeepsStateWithoutFinalExpertProducts) {
+  const auto& profile = md::Dsv4Flash();
+  auto source = fx::SourceOf("deepseek4", fx::Resources(profile), spec::mappings::Dsv4Mapping());
+  auto values = spec::mappings::Dsv4V0Values(profile);
+  ASSERT_TRUE(values.has_value()) << (values ? "" : values.error());
+  auto target_spec = spec::Synthesize(spec::mappings::Dsv4Mapping(), source, *values);
+  ASSERT_TRUE(target_spec.has_value()) << (target_spec ? "" : target_spec.error());
+  ASSERT_EQ(target_spec->stages.size(), 1U);
+  ASSERT_TRUE(target_spec->stages[0].taps.empty());
+  auto layout = StageLayout(*target_spec, 0, 3072, 512);
+  ASSERT_TRUE(layout.has_value()) << (layout ? "" : layout.error());
+  const Bindings bindings{.tensors = source.tensors, .state = &*layout};
+  for (const std::uint32_t outputs : {0U, 1U}) {
+    SCOPED_TRACE(outputs);
+    auto segment = Seg(0, 512, 0, 512, outputs);
+    segment.want_head = outputs != 0;
+    const planner::StepShape shape{.phase = planner::Phase::kPrefill, .segments = {segment}};
+    auto step = BuildStep(*target_spec, 0, shape, bindings);
+    ASSERT_TRUE(step.has_value()) << (step ? "" : step.error());
+    std::vector<std::uint32_t> arrays(profile.layers, 0);
+    std::uint32_t products = 0, hash_inputs = 0;
+    for (const auto& weight : step->weights) {
+      if (!weight.ref.expert_array) continue;
+      ASSERT_LT(weight.ref.layer, arrays.size());
+      ++arrays[weight.ref.layer];
+    }
+    for (const auto& node : step->graph.nodes()) {
+      if (node.key.op != ir::Op::kMatMulId) continue;
+      ++products;
+      EXPECT_EQ(step->graph.tensor(node.src[0]).shape().ne[2], profile.experts);
+      EXPECT_EQ(step->graph.tensor(node.src[2]).shape().ne[0], profile.experts_used);
+    }
+    for (const auto& input : step->inputs)
+      if (input.kind == InputKind::kSideRows) ++hash_inputs;
+    for (std::uint32_t layer = 0; layer < profile.layers; ++layer)
+      EXPECT_EQ(arrays[layer], outputs != 0 || layer + 1 < profile.layers ? 3U : 0U) << layer;
+    EXPECT_EQ(products, 3U * (profile.layers - (outputs == 0 ? 1U : 0U)));
+    EXPECT_EQ(hash_inputs, profile.hash_layers);
+    EXPECT_EQ(step->logits.valid(), outputs != 0);
+    EXPECT_TRUE(CheckStateWrites(*step, 0));
+    // Every declared persistent target state tensor is still written, including
+    // the last layer's window/compressor stores; no fake head retains dead work.
+    std::vector<bool> written(layout->items.size(), false);
+    for (const auto& state : step->state) {
+      ASSERT_EQ(state.ref.stage, 0U);
+      ASSERT_LT(state.item, written.size());
+      written[state.item] = written[state.item] || state.written;
+    }
+    EXPECT_TRUE(std::ranges::all_of(written, [](bool value) { return value; }));
+  }
+}
+
 // Every step kind of the composed spec builds: the target's prefill (its
 // injection), joined decodes and a verify, a state-only chunk; the
 // drafter's draft blocks.

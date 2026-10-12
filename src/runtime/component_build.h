@@ -14,6 +14,7 @@
 #define LLMP_RUNTIME_COMPONENT_BUILD_H_
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,11 +38,16 @@ bool OnComponentEngine(std::string_view architecture);
 // (planner/policy.h), in place of its mapping's default.
 struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
-  // Internal qualification only; Qwen remains off in OnComponentEngine.
+  // Internal qualification only; Qwen and DeepSeek remain off in OnComponentEngine.
   // Other slot counts refuse before opening artifacts, except the closed
   // target-only C4 scoring envelope or a declared repeat-pending composition
   // with its exact owned execution domain. Server admission stays unchanged.
   bool diagnostic_solo = false;
+  // Complete catalog-backed construction allowance for the closed DeepSeek
+  // diagnostic. Admitted by its owner before constructing EngineLlm; the
+  // factory charges before reading/parsing its prepared source and retains
+  // the charge with every returned source/plan borrower. Not a paid flag.
+  std::shared_ptr<engine::ExecutionMetadataAllowance> construction_metadata{};
   bool prefill_lookahead = true;
   bool prepare_state = true;
   std::optional<bool> state_only_prefill{};

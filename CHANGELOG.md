@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Execute the complete prepared DeepSeek target through the shared component
+  engine in a bounded diagnostic, with real hash/compressor inputs and snapshot
+  continuation. Reuse already-funded graph-reader space and retain state-only
+  prefill's omitted final expert products; ordinary serving remains unopted.
+
 - Add source-preserving spatial component graphs for nearest upsampling and
   channel-changing convolution through the shared planner, with checked owner
   geometry and host reference controls; image execution remains separate.

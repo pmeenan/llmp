@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/check.h"
@@ -385,7 +386,13 @@ TEST_F(GemmaMoeFusion, ReaderIndexAllowanceRefusesGrowthBeforePlanningAndReusesT
   ASSERT_TRUE(allowance);
   kg::DeviceChoices choices;
   choices.fuse_gemma_route = true;
-  EXPECT_FALSE(kg::PlanGraph(n, false, choices, keep, *allowance - 1));
+  const auto underpaid = kg::PlanGraph(n, false, choices, keep, *allowance - 1);
+  ASSERT_FALSE(underpaid);
+  EXPECT_NE(underpaid.error().detail.find(std::to_string(*allowance)), std::string::npos);
+  EXPECT_NE(underpaid.error().detail.find(std::to_string(*allowance - 1)), std::string::npos);
+  EXPECT_NE(underpaid.error().detail.find("nodes " + std::to_string(n.size())), std::string::npos);
+  EXPECT_NE(underpaid.error().detail.find("kept " + std::to_string(keep.size())),
+            std::string::npos);
   auto exact = kg::PlanGraph(n, false, choices, keep, *allowance);
   auto default_plan = kg::PlanGraph(n, false, choices, keep);
   ASSERT_TRUE(exact);
