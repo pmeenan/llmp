@@ -920,6 +920,10 @@ void StepContext::SetComponent(std::uint16_t component) { component_ = component
 ir::TensorId StepContext::Input(InputKind kind, std::uint8_t segment,
                                 const format::TensorFormat& format, const CellKey& cells,
                                 std::uint64_t read, std::string_view name) {
+  // Cached and newly emitted framework inputs must leave the caller's
+  // component and row ownership identical. Otherwise a first lazy input
+  // silently makes the remainder of an owner's fragment joined.
+  const auto context = b_.context();
   b_.SetComponent(kFrameworkComponent);
   if (segment == ir::kJoinedSegment) {
     b_.SetJoined();
@@ -927,8 +931,7 @@ ir::TensorId StepContext::Input(InputKind kind, std::uint8_t segment,
     b_.SetOwner(segment);
   }
   const ir::TensorId id = b_.Input(format, name);
-  b_.SetJoined();
-  b_.SetComponent(component_);
+  b_.SetContext(context);
   inputs_.push_back({.tensor = id, .kind = kind, .segment = segment, .cells = cells, .read = read});
   return id;
 }

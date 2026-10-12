@@ -485,6 +485,45 @@ TEST(ComponentsDsv4Test, WindowAttentionMatchesItsReference) {
   }
 }
 
+TEST(ComponentsDsv4Test, FirstAndCachedCompressorAssembliesKeepTheirOwner) {
+  auto in = MakeInstance(
+      Mqa("ring", 4,
+          {P("overlap", B(true)), P("indexer", B(true)), P("indexer_heads", I(kIndexHeads)),
+           P("index_dim", I(kIndexDim)), P("top_k", I(3))}),
+      kFacts, Site::kLayer, 2, 18);
+  ASSERT_TRUE(in) << (in ? "" : in.error());
+  const std::array<std::uint64_t, 7> cells{16, 32, 8, 8, 32, 8, 8};
+  auto built =
+      BuildComponent(*in, MqaSteps(16).front().shape, MqaFormats(Encoding::kF32, 2), cells);
+  ASSERT_TRUE(built) << (built ? "" : built.error());
+  const auto& graph = built->step.graph;
+  std::size_t pools = 0;
+  for (const auto& pool : graph.nodes()) {
+    if (pool.key != ir::Primitive(ir::Op::kPool)) continue;
+    ++pools;
+    ASSERT_EQ(pool.batch, ir::Batch::kPerOwner);
+    const auto owner = graph.tensor(pool.out[0]).segment;
+    ASSERT_LT(owner, 2U);
+    std::set<ir::TensorId> seen;
+    const auto check = [&](ir::TensorId t, auto&& self) -> void {
+      if (!t.valid() || !seen.insert(t).second) return;
+      const auto& n = graph.node(graph.producer(t));
+      if (n.key == ir::Primitive(ir::Op::kInput)) return;
+      EXPECT_EQ(n.component, pool.component);
+      EXPECT_EQ(n.batch, pool.batch) << ir::OpKeyName(n.key);
+      EXPECT_EQ(graph.tensor(t).segment, owner) << ir::OpKeyName(n.key);
+      // Explicit compressor boundary: [saved ring | current projections].
+      // The projections themselves are intentionally joined products.
+      if (n.key == ir::Primitive(ir::Op::kConcat) &&
+          graph.tensor(graph.root(n.src[0])).role == ir::Role::kState)
+        return;
+      for (const auto source : n.sources()) self(source, self);
+    };
+    for (const auto source : pool.sources()) check(source, check);
+  }
+  EXPECT_EQ(pools, 4U);  // main + indexer, each of two owners
+}
+
 TEST(ComponentsDsv4Test, CompressedSparseAttentionMatchesItsReference) {
   // CSA: overlapping blocks of 4 and the lightning indexer's best 3.
   auto in = MakeInstance(

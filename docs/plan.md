@@ -1750,6 +1750,14 @@ each is checked against the design as M3.6 proceeds.
                         pooling, full-carry HC pre and flat-norm HC post;
                         prove guarded fallback and existing-kernel operand
                         execution without changing the default policy.
+                  - [x] **G4b2a1 — lazy input ownership:** preserve the
+                        caller's graph-builder component and owner when creating
+                        framework inputs; prove cold/cache equivalence and all
+                        four main/indexer compressor assemblies. This changes
+                        metadata correctness, not arithmetic recipes. Main
+                        native build and 162 focused IR/component/planner/state
+                        controls pass on Spark; no whole-model run is required
+                        to prove this graph metadata invariant.
                   - [ ] **G4b2b — indexer and sparse banks:** prove their
                         ownership, backing and execution contracts.
                         - [x] **G4b2b1 — state banks:** derive and bind

@@ -818,6 +818,46 @@ std::size_t Count(const ir::Graph& g, ir::Op op) {
       std::ranges::count_if(g.nodes(), [op](const ir::Node& n) { return n.key.op == op; }));
 }
 
+TEST(ComponentsTest, LazyFrameworkInputsPreserveCallerContextOnMissAndHit) {
+  for (const bool joined : {false, true}) {
+    ir::Builder b;
+    StepContext ctx(b, {{.slot = 0, .rows = 8}, {.slot = 1, .first_row = 8, .rows = 8}}, false);
+    ctx.SetComponent(7);
+    b.SetComponent(7);
+    if (joined)
+      b.SetJoined();
+    else
+      b.SetOwner(1);
+    const auto context = b.context();
+    const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({8, 16})));
+    const CellKey ring{.capacity = 8, .ring = true, .recent = true};
+    std::array<ir::TensorId, 2> reads{}, phases{}, outputs{};
+    for (std::size_t i = 0; i < 2; ++i) {
+      // Cold PoolReads used to reset this owner's following computation;
+      // its cache hit did not. PositionPhases has a joined input declaration.
+      reads[i] = ctx.PoolReads(1, ring, 4, true);
+      EXPECT_EQ(b.context(), context);
+      phases[i] = ctx.PositionPhases(4);
+      EXPECT_EQ(b.context(), context);
+      outputs[i] = b.Scale(x, 2.0F);
+      b.Output(outputs[i]);
+    }
+    EXPECT_EQ(reads[0], reads[1]);
+    EXPECT_EQ(phases[0], phases[1]);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+    EXPECT_EQ(graph->tensor(reads[0]).segment, 1);
+    EXPECT_EQ(graph->tensor(phases[0]).segment, ir::kJoinedSegment);
+    EXPECT_EQ(graph->node(graph->producer(reads[0])).component, kFrameworkComponent);
+    for (const auto output : outputs) {
+      const auto& node = graph->node(graph->producer(output));
+      EXPECT_EQ(node.component, context.component);
+      EXPECT_EQ(node.batch, context.batch);
+      EXPECT_EQ(graph->tensor(output).segment, context.segment);
+    }
+  }
+}
+
 TEST(ComponentsTest, AheadAndExactMasksAreIndependentForFrozenAndOwnedCells) {
   ir::Builder b;
   StepContext ctx(b, {{.slot = 0, .rows = 3, .past = 7, .read_cells = 16}}, false);

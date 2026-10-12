@@ -135,6 +135,31 @@ Final deletion checks preserve observed token losses and same-implementation
 repeat/reload outputs. This is a measured quality comparison and a complexity
 reduction; it adds no serving-speed claim.
 
+## Follow-up ownership and complexity review
+
+Current-main inspection confirms that the router/PLE preservation requests
+from pending Qwen41/45 were never landed. The older MTP owner-product contract
+is separate: removing it merely because those experiments split products would
+change an unqualified execution domain. Qwen50 instead starts with ordinary
+joined target-only products and measures narrowly tuned existing alternatives.
+
+The owned backend configuration now binds paid preparation, compiled-source
+provenance, immutable tuning and actual library/device readiness through source,
+plan and retained-state identity. It avoids recursive compiler/SDK/library byte
+attestation and loader inspection. No measured speed gain follows from that
+complexity reduction alone.
+
+The review also found a real cold/cache inconsistency in shared framework-input
+creation: a first input reset its caller's computation to joined ownership,
+whereas a cached input retained that caller's context. The four-path shared fix preserves caller component/batch/segment; its
+independent review is clean. Main native build and 162 focused IR, component,
+planner and state controls pass on Spark, including cold/cache and four actual
+main/indexer compressor assemblies. This metadata invariant is independent
+of external numerical equality. DeepSeek's pending
+DS53/53b reduction-preservation recipes remain unapplied; the next numerical
+consumer should use ordinary shared preparation and explicit supported domains,
+with quality and speed deciding its recipe.
+
 ## Audit provenance
 
 Frozen external packages, all under `/tmp/llmp-m36-coordination/`, retain the

@@ -95,6 +95,14 @@ owner input synthetically. Neither screen establishes original-model quality
 or serving latency, and no blanket policy replacement follows. The minimal
 shared selection capability landed in `79dc643b`; keep the frozen 45 diagnostic arm.
 
+Current parallel slices: Qwen50 screens ordinary joined execution against
+three narrowly tuned BF16/F32 products using secondary target-only likelihood
+and matched timing. Native split-row paging uses the existing decoder through
+the shared runner. Root corrected lazy framework inputs that accidentally
+reset an owner's graph-builder context; main native build and 162 focused
+controls pass on Spark. The fix carries no parity policy.
+Each slice receives its own scoped review and checks before landing.
+
 Both Sparks are available for parallel development/checks; actual GPU jobs
 remain exclusive on their host. Do not continue the old parity-only loop.
 

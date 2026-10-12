@@ -63,6 +63,18 @@ class Builder {
   ~Builder() = default;
 
   // ---- context and state
+  struct Context {
+    std::uint16_t component = 0;
+    Batch batch = Batch::kJoined;
+    std::uint8_t segment = kJoinedSegment;
+    bool operator==(const Context&) const = default;
+  };
+  Context context() const { return {component_, batch_, segment_}; }
+  void SetContext(Context context) {
+    component_ = context.component;
+    batch_ = context.batch;
+    segment_ = context.segment;
+  }
   void SetComponent(std::uint16_t component) { component_ = component; }
   void SetOwner(std::uint8_t segment) {
     batch_ = Batch::kPerOwner;
