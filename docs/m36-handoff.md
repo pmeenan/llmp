@@ -100,6 +100,10 @@ owned source/lower callback, verifies 320 finite head values and 376832 state by
 through changed-token eager/capture replay. The default-off policy is unchanged;
 full model admission, fusion and family quality/speed gates remain open. See the
 [consumer report](experiments/m36-dsv4-rounded-consumer/README.md).
+The shared owned-backend declaration also closes G4b2b2b3b2; its existing DS
+consumer uses the same prepared owner and source/plan/snapshot/kept identity
+machinery. Whole-operation admission, DSpark and complete-model kept/state,
+quality and speed gates remain open.
 
 Main through `0d127ac0` includes the explicitly tuned BF16/F32 vector-product
 capability, all four EXL3 profiles' original-model scoring and shared lifecycle

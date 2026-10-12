@@ -1878,7 +1878,7 @@ each is checked against the design as M3.6 proceeds.
                                                       preserve legacy raw API behavior.
                                                       No production declaration or
                                                       numerical admission consumer yet.
-                                                - [ ] **G4b2b2b3b2 — backend declaration:**
+                                                - [x] **G4b2b2b3b2 — backend declaration:**
                                                       own qualified build/runtime and
                                                       immutable tuning declarations; bind
                                                       actual paid handle/workspace readiness
@@ -1886,6 +1886,16 @@ each is checked against the design as M3.6 proceeds.
                                                       identity. Full operation admission is
                                                       separate; no recursive invocation or
                                                       runtime loader-attestation prerequisite.
+                                                      Complete through the shared owned-backend
+                                                      configuration and its actual mapped DS
+                                                      attention-source consumer: main native
+                                                      build, 59 host controls and one GPU case
+                                                      pass, comparing 320 complete head values
+                                                      and 376,832 initialized state bytes
+                                                      ([evidence](experiments/m36-dsv4-rounded-consumer/README.md#bounded-mapped-attention-source-execution--2026-10-12)).
+                                                      Whole-operation admission, DSpark and
+                                                      full-model kept/state/quality/speed gates
+                                                      remain separate.
                                                 - [ ] **G4b2b2b3b3 — admission enforcement:**
                                                       bind source/plan/kept identities;
                                                       enforce owned whole-operation and
