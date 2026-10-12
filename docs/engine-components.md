@@ -1581,6 +1581,16 @@ eight helper controls also pass. The production
 runner's mid-step routing/admission continuation remains separate work
 ([evidence](experiments/m36-native-grouped-foundation/README.md)).
 
+Supplemental selected closures now use the ordinary scheduler while retaining
+an existing request's base lease. Admission validates the whole closure before
+file opens or page-in; materialization and device submission recheck current
+catalog facts. A funded owner retains the closure, complete caller payload and
+external request counter until its own task and all selected page-ins positively
+retire. Failed work cancels the request; unknown completion retains its resources
+and prevents continuation or teardown. Existing ordinary steps remain subset-only.
+This is the lease prerequisite, not the routed ModelRunner continuation or a new
+reclaim policy. Full native main build and 145 focused host controls pass.
+
 The common step program binds approved EXL3 selected operations with authenticated
 packed and reconstruction tuning facts. Both 4.0- and 4.5-bpw fixtures execute
 in G and O profiles; O uses actual occupancy facts checked again at launch.

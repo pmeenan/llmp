@@ -34,6 +34,7 @@
 #include "base/bytes.h"
 #include "base/wake.h"
 #include "catalog/catalog.h"
+#include "engine/supplemental_run.h"
 #include "expected_error.h"
 #include "paged_programs.h"
 #include "providers/device_execution.h"
@@ -1011,6 +1012,220 @@ TEST_F(HeldLeaseTest, ThreadedStepsLoseNoSignalAndASwapWaitsForTheEnd) {
   EXPECT_EQ(Leases(0) + Leases(1), 0U);
   EXPECT_EQ(scheduler_->stats().held_operations, static_cast<std::uint64_t>(kSteps));
   EXPECT_EQ(execution_.fences(), 0U);
+}
+
+// The actual supplemental ticket used by PagedNode, over real scheduler/fake
+// providers. No model runner or new kernel is involved in these controls.
+TEST_F(HeldLeaseTest, SupplementalKeepsBaseWhileMaterializingAndLeasingSelected) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request request;
+  Open(request, 0);
+  const auto selected = ModelClosure(1);
+  std::atomic<int> runs{0};
+  auto payload = std::make_shared<int>(7);
+  std::weak_ptr<int> weak = payload;
+  auto ticket = en::SupplementalRun::Create(
+      catalog_, domain_, request.channel, request.done, selected,
+      [&](llmp::providers::NativeStream) {
+        EXPECT_EQ(Leases(0), kPerModel);
+        EXPECT_EQ(Leases(1), kPerModel);
+        ++runs;
+        return sc::JobResult::kQueued;
+      },
+      0, payload, *allowance);
+  ASSERT_TRUE(ticket) << ticket.error();
+  payload.reset();
+  EXPECT_FALSE(weak.expired());
+  EXPECT_EQ(request.channel.external->load(), 1U);
+  EXPECT_EQ(Resident(1), 0U);  // construction is not materialization
+  EXPECT_EQ(Leases(0), kPerModel);
+  ASSERT_TRUE(Run((*ticket)->Program(), (*ticket)->done()));
+  EXPECT_EQ(runs.load(), 1);
+  EXPECT_EQ(Resident(1), kPerModel);
+  EXPECT_EQ(Leases(1), 0U);
+  EXPECT_EQ(Leases(0), kPerModel);
+  auto retired = (*ticket)->Retire(*scheduler_);
+  ASSERT_TRUE(retired && *retired);
+  EXPECT_FALSE((*ticket)->Program());  // cannot offer one ticket twice
+  ticket->reset();
+  EXPECT_TRUE(weak.expired());
+  EXPECT_EQ(request.channel.external->load(), 0U);
+  EXPECT_EQ((*allowance)->used(), 0U);
+  End(request);
+}
+
+TEST_F(HeldLeaseTest, SupplementalRejectsWholeMalformedClosureBeforeEffects) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request request;
+  Open(request, 0);
+  auto original = ModelClosure(1);
+  std::atomic<int> runs{0};
+  const auto reads = scheduler_->loads();
+  for (unsigned kind = 0; kind < 5; ++kind) {
+    auto bad = original;
+    if (kind == 0) ++bad.extents.back().second;  // valid first entry, stale tail
+    if (kind == 1) bad.extents.push_back(bad.extents.back());
+    if (kind == 2) std::swap(bad.extents.front(), bad.extents.back());
+    if (kind == 3) bad.extents.clear();
+    const auto domain = kind == 4 ? catalog_.AddDomain("other") : domain_;
+    auto refused =
+        en::SupplementalRun::Create(catalog_, domain, request.channel, request.done, bad,
+                                    Counting(runs), 0, std::make_shared<int>(0), *allowance);
+    EXPECT_FALSE(refused) << kind;
+    EXPECT_EQ(request.channel.external->load(), 0U);
+    EXPECT_EQ((*allowance)->used(), 0U);
+    EXPECT_EQ(Resident(1), 0U);
+    EXPECT_EQ(scheduler_->loads(), reads);
+    EXPECT_EQ(runs.load(), 0);
+  }
+  End(request);
+}
+
+TEST_F(HeldLeaseTest, SupplementalPaymentAndCounterOverflowRefuseWithoutTakingOwnership) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request request;
+  Open(request, 0);
+  const auto selected = ModelClosure(1);
+  auto cost = en::SupplementalRun::Bound(selected.extents.size());
+  ASSERT_TRUE(cost);
+  ASSERT_TRUE((*allowance)->Charge((*allowance)->capacity() - *cost + 1));
+  const auto before = (*allowance)->used();
+  std::atomic<int> runs{0};
+  auto payload = std::make_shared<int>(0);
+  EXPECT_FALSE(en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done,
+                                           selected, Counting(runs), 0, payload, *allowance));
+  EXPECT_EQ((*allowance)->used(), before);
+  EXPECT_EQ(payload.use_count(), 1);
+  EXPECT_EQ(request.channel.external->load(), 0U);
+  (*allowance)->Release(before);
+  request.channel.external->store(UINT32_MAX);
+  EXPECT_FALSE(en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done,
+                                           selected, Counting(runs), 0, payload, *allowance));
+  EXPECT_EQ(request.channel.external->load(), UINT32_MAX);
+  EXPECT_EQ((*allowance)->used(), 0U);
+  EXPECT_EQ(payload.use_count(), 1);
+  request.channel.external->store(0);
+  End(request);
+}
+
+TEST_F(HeldLeaseTest, SupplementalCancellationWaitsForTheActualQueuedFence) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request request;
+  Open(request, 0);
+  const auto selected = ModelClosure(1);
+  ts::Done loaded;
+  ASSERT_TRUE(Run(std::make_unique<ts::RunProgram>(loaded, selected, sc::DeviceJob{}), loaded));
+  std::atomic<int> runs{0};
+  auto ticket =
+      en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done, selected,
+                                  Counting(runs), 0, std::make_shared<int>(0), *allowance);
+  ASSERT_TRUE(ticket);
+  const auto tag = ++request_;
+  ASSERT_TRUE(scheduler_->Start(tag, (*ticket)->Program()));
+  Settle(false);
+  ASSERT_EQ(runs.load(), 1);
+  ASSERT_FALSE((*ticket)->done().gone.load());
+  ASSERT_TRUE(scheduler_->Cancel(request.tag));
+  ASSERT_TRUE(scheduler_->Cancel(tag));
+  Settle(false);
+  EXPECT_EQ(Leases(0), kPerModel);
+  EXPECT_EQ(Leases(1), kPerModel);
+  auto pending = (*ticket)->Retire(*scheduler_);
+  ASSERT_TRUE(pending);
+  EXPECT_FALSE(*pending);
+  EXPECT_EQ(request.channel.external->load(), 1U);
+  Settle();
+  ASSERT_TRUE((*ticket)->done().gone.load());
+  auto retired = (*ticket)->Retire(*scheduler_);
+  ASSERT_TRUE(retired && *retired);
+  ticket->reset();
+  Settle();
+  EXPECT_EQ(Leases(0), 0U);
+  EXPECT_EQ(Leases(1), 0U);
+  EXPECT_EQ((*allowance)->used(), 0U);
+}
+
+TEST_F(HeldLeaseTest, SupplementalGoneDoesNotRetireWithdrawnMaterialization) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request request;
+  Open(request, 0);
+  std::atomic<int> runs{0};
+  auto ticket =
+      en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done, ModelClosure(1),
+                                  Counting(runs), 0, std::make_shared<int>(0), *allowance);
+  ASSERT_TRUE(ticket);
+  const auto tag = ++request_;
+  ASSERT_TRUE(scheduler_->Start(tag, (*ticket)->Program()));
+  (void)scheduler_->Turn();  // submit page-ins, do not drive their lanes
+  ASSERT_GT(scheduler_->loads(), 0U);
+  ASSERT_TRUE(scheduler_->Cancel(tag));
+  (void)scheduler_->Turn();
+  ASSERT_TRUE((*ticket)->done().gone.load());
+  auto pending = (*ticket)->Retire(*scheduler_);
+  ASSERT_TRUE(pending);
+  EXPECT_FALSE(*pending);
+  EXPECT_EQ(request.channel.external->load(), 1U);
+  EXPECT_GT((*allowance)->used(), 0U);
+  EXPECT_EQ(runs.load(), 0);
+  Settle();
+  auto retired = (*ticket)->Retire(*scheduler_);
+  ASSERT_TRUE(retired && *retired);
+  ticket->reset();
+  EXPECT_EQ(request.channel.external->load(), 0U);
+  End(request);
+}
+
+TEST_F(HeldLeaseTest, SupplementalUnknownCompletionRetainsBothLeasesAndCompletePayload) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request& request = unproven_request_;
+  Open(request, 0);
+  const auto selected = ModelClosure(1);
+  ts::Done loaded;
+  ASSERT_TRUE(Run(std::make_unique<ts::RunProgram>(loaded, selected, sc::DeviceJob{}), loaded));
+  auto payload = std::make_shared<int>(42);
+  std::weak_ptr<int> weak = payload;
+  auto ticket = en::SupplementalRun::Create(
+      catalog_, domain_, request.channel, request.done, selected,
+      [payload](llmp::providers::NativeStream) {
+        ++*payload;
+        return sc::JobResult::kQueued;
+      },
+      0, payload, *allowance);
+  ASSERT_TRUE(ticket);
+  payload.reset();
+  ASSERT_TRUE(scheduler_->Start(++request_, (*ticket)->Program()));
+  Settle(false);
+  execution_.FailNextQuery(ProviderError::kUnknown);
+  Settle(false);
+  ASSERT_EQ(scheduler_->fault(), sc::Fault::kUnproven);
+  auto pending = (*ticket)->Retire(*scheduler_);
+  ASSERT_TRUE(pending);
+  EXPECT_FALSE(*pending);
+  End(request);
+  EXPECT_EQ(Leases(0), kPerModel);
+  EXPECT_EQ(Leases(1), kPerModel);
+  EXPECT_EQ(request.channel.external->load(), 1U);
+  ticket->reset();  // not a completion certificate; retained State owns payload
+  EXPECT_FALSE(weak.expired());
+  EXPECT_GT((*allowance)->used(), 0U);
 }
 
 }  // namespace

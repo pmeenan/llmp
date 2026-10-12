@@ -2289,6 +2289,16 @@ each is checked against the design as M3.6 proceeds.
                   build and all eight helper controls passing.
                   A shared ModelRunner mid-step routing/admission continuation
                   and native ModelOpt target admission remain open separately.
+            - [x] **N4b6c — base-lease-preserving selected closure:** expose
+                  supplemental admission through the ordinary scheduler while
+                  the original request lease remains held. Retain the complete
+                  payload until both device work and scoped page-ins positively
+                  retire; unknown completion prevents continuation and teardown.
+                  Full native main build and 145 focused host controls pass,
+                  including six new malformed-input, funding, cancellation and
+                  retirement cases. Production routed ModelRunner integration
+                  and native ModelOpt target admission remain separate
+                  ([evidence](experiments/m36-native-grouped-foundation/README.md#supplemental-selected-closure--2026-10-12)).
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

@@ -40,19 +40,20 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
-Main through `7777848d` includes split NVFP4 paged rows, checked route/part
+Main through `7e0bf848` includes split NVFP4 paged rows, checked route/part
 helpers and bounded selected-expert grouped execution. Full native main build,
 eight helper controls and both actual grouped GPU cases pass, including repeated
 contributions and changed-routing replay. Production mid-step routing and native
-ModelOpt admission remain open. The supplemental base-lease prerequisite is
-reviewed; its native checks and the substantive routed continuation follow.
+ModelOpt admission remain open. The supplemental base-lease prerequisite passes full native main build and
+145 focused host controls, including cancellation and unknown-retirement cases.
+The substantive routed continuation is being implemented independently.
 
 The shared phase-admission correction landed in `d8aa6388`, with a full native
 build and 60 affected host controls: scoring and decode use their actual declared
 modes, while compound prompt permission remains unchanged. Qwen50 arithmetic
 qualification proceeds separately; no serving claim follows from this bug fix.
 
-The next DeepSeek slice passes full native main build, 59 affected host controls
+The bounded DeepSeek slice landed in `7e0bf848` and passes full native main build, 59 affected host controls
 and one actual bounded mapped attention-source GPU case. It executes the literal
 owned source/lower callback, verifies 320 finite head values and 376832 state bytes
 through changed-token eager/capture replay. The default-off policy is unchanged;

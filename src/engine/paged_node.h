@@ -126,6 +126,8 @@
 namespace llmp::engine {
 
 class LiveState;
+class SupplementalRun;
+class ExecutionMetadataAllowance;
 
 using Status = std::expected<void, std::string>;
 
@@ -425,7 +427,7 @@ class StagingLifetime {
 
 class PagedNode {
  public:
-  explicit PagedNode(NodeSettings settings) : settings_(settings) {}
+  explicit PagedNode(NodeSettings settings);
   PagedNode(const PagedNode&) = delete;
   PagedNode& operator=(const PagedNode&) = delete;
   PagedNode(PagedNode&&) = delete;
@@ -657,6 +659,22 @@ class PagedNode {
   // dispatch GPU work or change the closure. Inline lanes skip it.
   Status Job(const catalog::Closure& closure, scheduler::DeviceJob job, std::string_view what,
              std::uint32_t stream, const std::function<void()>& meanwhile = {});
+  // Explicit dependency-discovery continuation. The request's original lease
+  // stays held while the scheduler materializes and leases `selected` for this
+  // job. Complete payload/source ownership and admitted metadata are mandatory;
+  // neither grants closure authority. Admission needs SupplementalRun::Bound
+  // plus 4096 bytes for the initial control, with a label of at most 256 bytes.
+  // No implicit request refresh is performed.
+  // Any post-submission failure ends normal continuation. Unknown retirement
+  // retains the entire payload and base lease until FinishSupplemental proves
+  // the scoped page-ins and submitted operation have ended.
+  Status SupplementalJob(const catalog::Closure& selected, scheduler::DeviceJob job,
+                         std::shared_ptr<const void> payload,
+                         std::shared_ptr<ExecutionMetadataAllowance> allowance,
+                         std::string_view what, std::uint32_t stream);
+  // Retirement only, never success of the failed work. A refusal leaves the
+  // pending owner linked; callers must retain their complete node environment.
+  Status FinishSupplemental();
   // Opens a request on `stream` (the header's Requests): returns once its
   // task holds its lease on `closure` (copied). Refused if one is open
   // there already.
@@ -740,6 +758,10 @@ class PagedNode {
   // Driver-owned intrusive list. TearDown drains these tickets before model
   // extents or sources can be released; each LiveState owns its stable ticket.
   LiveState* preparing_state_ = nullptr;
+  std::unique_ptr<SupplementalRun> supplemental_;
+  // Scheduler control only: unlike page-in entry points, no file opens precede
+  // validation of a supplemental closure. Uses the normal control queue.
+  Status CallMetadata(std::function<Status()> call, std::string_view what);
   // A request open on a stream: its task's channel and ProgramDone, and a
   // sorted copy of its closure.
   Status MapRegion(Mapped& mapped, std::string name, std::uint64_t bytes,

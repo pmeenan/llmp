@@ -21,6 +21,7 @@
 
 #include "base/bounded_queue.h"
 #include "engine/live_state.h"
+#include "engine/supplemental_run.h"
 #include "engine/support.h"
 #include "memory/materialize.h"
 #include "memory/reclaim.h"
@@ -327,6 +328,8 @@ std::size_t CountingStorage::Harvest(std::span<providers::IoCompletion> out, boo
   }
   return produced;
 }
+
+PagedNode::PagedNode(NodeSettings settings) : settings_(settings) {}
 
 PagedNode::~PagedNode() {
   if (staging_lifetime_) staging_lifetime_->live_ = false;
@@ -1202,6 +1205,7 @@ std::expected<sc::SchedulerStats, std::string> PagedNode::Stats() {
 
 Status PagedNode::Job(const catalog::Closure& closure, sc::DeviceJob job, std::string_view what,
                       std::uint32_t stream, const std::function<void()>& meanwhile) {
+  if (supplemental_) return Error("a supplemental operation has not proven retirement");
   if (job_active_) return Error("a device job cannot recursively dispatch another job");
   job_active_ = true;
   struct ActiveJob {
@@ -1232,6 +1236,112 @@ Status PagedNode::Job(const catalog::Closure& closure, sc::DeviceJob job, std::s
     Note(stream, called, timing);
   }
   return posted;
+}
+
+Status PagedNode::CallMetadata(std::function<Status()> call, std::string_view what) {
+  if (!scheduler_) return Error("metadata control needs a started node");
+  Done done;
+  auto program = std::make_unique<CallProgram>(done, std::move(call));
+  const auto request = ++request_;
+  if (threads_.empty()) {
+    if (!scheduler_->Start(request, std::move(program), 1))
+      return Error("metadata control was not admitted");
+  } else {
+    sc::Control control =
+        sc::StartRequest{.request = request, .priority = 1, .program = std::move(program)};
+    // Normal scheduler control admission; deliberately no SyncWeightFiles.
+    // NOLINTNEXTLINE(bugprone-use-after-move): a refused post leaves control untouched
+    while (scheduler_->Post(std::move(control)) == base::PushResult::kFull)
+      std::this_thread::yield();
+  }
+  return Await(done, what, request);
+}
+
+Status PagedNode::SupplementalJob(const catalog::Closure& selected, sc::DeviceJob job,
+                                  std::shared_ptr<const void> payload,
+                                  std::shared_ptr<ExecutionMetadataAllowance> allowance,
+                                  std::string_view what, std::uint32_t stream) {
+  if (job_active_ || supplemental_ || torn_down_ || stream >= streams_.size())
+    return Error("supplemental work has an invalid stream, overlapping job or unretired operation");
+  const auto found = requests_.find(stream);
+  if (found == requests_.end() || found->second->cancelled || found->second->unproven ||
+      found->second->done.gone.load())
+    return Error("supplemental work requires a live request");
+  auto& open = *found->second;
+  // Pay the preflight control before allocating it. The retained operation
+  // charges its own Bound inside that control; this fixed overlap is separate.
+  constexpr std::uint64_t control_bytes = 4096;
+  if (what.size() > 256 || !allowance || !allowance->Charge(control_bytes))
+    return Error("supplemental metadata control was not funded or its label is too long");
+  struct ControlCharge {
+    std::shared_ptr<ExecutionMetadataAllowance> allowance;
+    ~ControlCharge() { allowance->Release(control_bytes); }
+  } control_charge{allowance};
+  job_active_ = true;
+  struct ActiveJob {
+    bool& flag;
+    ~ActiveJob() { flag = false; }
+  } active{job_active_};
+  Timing timing;
+  const auto called = std::chrono::steady_clock::now();
+  auto prepared = CallMetadata(
+      [&]() -> Status {
+        auto made = SupplementalRun::Create(catalog_, domain_, open.channel, open.done, selected,
+                                            Timed(std::move(job), stream, timing), stream,
+                                            std::move(payload), std::move(allowance));
+        if (!made) return Error(made.error());
+        supplemental_ = std::move(*made);
+        return {};
+      },
+      "validating supplemental closure before file or device effects");
+  if (!prepared) {
+    // The control may have completed creation just before its waiter cancelled.
+    // No program was offered, so destruction safely returns its counter/payment.
+    supplemental_.reset();
+    return prepared;
+  }
+  if (auto files = SyncWeightFiles(); !files) {
+    supplemental_.reset();  // no selected materialization or launch was offered
+    return files;
+  }
+  auto ran = Post(supplemental_->Program(), supplemental_->done(), what);
+  if (!ran) open.cancelled = true;
+  bool retired = false;
+  auto proof = CallMetadata(
+      [&]() -> Status {
+        auto ended = supplemental_->Retire(*scheduler_);
+        if (!ended) return Error(ended.error());
+        retired = *ended;
+        return {};
+      },
+      "checking supplemental operation retirement");
+  if (!proof || !retired) {
+    open.unproven = true;
+    return Error("supplemental completion is unproven; complete payload and base lease retained");
+  }
+  supplemental_.reset();
+  wake_.Signal();
+  if (ran) Note(stream, called, timing);
+  return ran;
+}
+
+Status PagedNode::FinishSupplemental() {
+  if (!supplemental_) return {};
+  if (job_active_) return Error("supplemental retirement cannot overlap a job");
+  bool retired = false;
+  auto proof = CallMetadata(
+      [&]() -> Status {
+        auto ended = supplemental_->Retire(*scheduler_);
+        if (!ended) return Error(ended.error());
+        retired = *ended;
+        return {};
+      },
+      "draining supplemental ownership");
+  if (!proof || !retired)
+    return Error("supplemental operations or page-ins have not proven retirement");
+  supplemental_.reset();
+  wake_.Signal();
+  return {};
 }
 
 sc::DeviceJob PagedNode::Timed(sc::DeviceJob job, std::uint32_t stream, Timing& timing) {
@@ -1301,6 +1411,7 @@ void PagedNode::Signal(std::uint64_t request) {
 
 Status PagedNode::BeginRequest(std::uint32_t stream, const catalog::Closure& closure,
                                std::string_view what) {
+  if (supplemental_) return Error("an unretired supplemental operation blocks new requests");
   if (requests_.contains(stream)) {
     return Error(std::format("{}: a request is open on stream {} already", what, stream));
   }
@@ -1377,6 +1488,8 @@ Status PagedNode::RefreshRequest(std::uint32_t stream, const catalog::Closure& c
 Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,
                        sc::DeviceJob job, std::string_view what,
                        const std::function<void()>& meanwhile) {
+  if (open.unproven || open.cancelled || open.done.gone.load())
+    return Ended(stream, what, "the request cannot continue after failed work");
   // Within the request's lease, exactly: the same entries, or each an
   // extent it holds at the contents it recorded (a whole model's closure
   // compares equal at a fraction of the search's cost).
@@ -1791,6 +1904,7 @@ Status PagedNode::Call(std::function<Status()> call, std::string_view what) {
 Status PagedNode::Acquire(const catalog::Closure& closure, AcquireReport& report,
                           std::string_view what, bool* over_budget) {
   if (over_budget != nullptr) *over_budget = false;
+  if (supplemental_) return Error("an unretired supplemental operation blocks acquisition");
   if (job_active_) return Error("an acquisition cannot run while a device job is in flight");
   if (auto files = SyncWeightFiles(); !files) return files;
   // The shared workspace is never a victim, whether or not the closure
@@ -1874,6 +1988,9 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     return {};
   }
   if (job_active_) return Error("node teardown cannot overlap a device job");
+  // Before torn_down_ or any source/device release. False work status or gone
+  // alone must never free a withdrawn materialization's payload owner.
+  if (auto drained = FinishSupplemental(); !drained) return drained;
   std::vector<std::string> problems;
   // A withdrawn acquisition can be gone before its page-ins retire. Keep
   // the complete LiveState owner and node alive on an unproven scoped drain.

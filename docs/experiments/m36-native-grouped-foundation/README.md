@@ -122,11 +122,54 @@ Raw evidence remains outside Git in `native-grouped-prepared-main01/results`
 and `native-grouped-prepared-main-gpu01/results` under the coordination root.
 No additional source payloads or full-model checks ran.
 
+## Supplemental selected closure — 2026-10-12
+
+N4b6c adds `PagedNode::SupplementalJob` over the ordinary scheduler. The
+original request lease stays held while selected extents materialize and receive
+their own lease. Whole-closure validation runs before file opens or page-in;
+ordinary `Job` and `Step` retain their subset-only contract. This prerequisite
+uses current scheduler capacity and adds no victim selection or reclaim policy.
+
+The admitted owner retains immutable closure/ID copies, the complete caller
+payload, metadata charge and request external counter. A `gone` observation alone
+is insufficient: offered work must positively retire its own task and every
+selected page-in before releasing ownership. Failed but retired work cancels the
+request. Unknown completion retains the complete owner and both lease domains,
+preventing continuation and teardown. Payload retention conveys lifetime, never
+source or residency authority. At most one supplemental operation is pending per
+node. Retained control funding is 4096 + 256 bytes per selected extent, with a
+separate 4096-byte wrapper allowance; caller payload/job funding remains separate.
+
+Six fake-provider cases exercise the actual scheduler path: selected-only
+materialization while the base lease stays held; whole malformed-closure refusal;
+insufficient funding and counter overflow; cancellation with a queued fence;
+`gone` preceding withdrawn page-in retirement; and unknown completion retaining
+both leases and the complete payload. No arithmetic or numerical policy changes.
+
+Main's full native build passes on Spark A. All 145 affected host controls pass:
+HeldLease 21, Scheduler 29, LiveStateFake 36, ModelRunner 54 and WeightFiles 5.
+The first build exposed an incomplete-type destructor instantiation from the
+inline `PagedNode` constructor; moving that same constructor out of line fixed
+it and received a narrow independent review. The subsequent build and first
+140 controls passed; WeightFiles initially refused setup because the direct
+launcher omitted its existing artifact-corpus environment. A separately reviewed
+completion receipt authenticates those unchanged results and runs only the
+missing five with the correct environment. No GPU or model inference ran.
+
+- Original build/140-control receipt SHA-256: `4c30b4d3856ffec41f15d2d16e7e7faed3e2445b6b47ea325f689107f3d154a3` (literal status FAIL from missing fixture environment).
+- Five-control completion receipt SHA-256: `b9da62ef5af933410a940ed619dc5cbd63bae86ed2bc2cc290e25e64d76fd2d9` (PASS; unchanged source and binary guards).
+- Whole-source independent challenge SHA-256: `40e2ca7a7b7ea4fd40a2702017f1446b91e969edb94fe995f6c511f51f26c303`.
+- Constructor correction review SHA-256: `c3c8d9df2d1584679b1bcb0f58515298af073a7792aa97ba4d436bb046b3e756`.
+- Narrow completion recipe review SHA-256: `b5f94b144bb8416207b14b0e5bdc72407f080535897661a57a98e30d539c222a`.
+
+Raw failed and successful evidence stays outside Git in the coordination root's
+`native-supplemental-closure-main01`, `main02` and `main03` packages.
+
 ## Remaining scope
 
 N4b6b's bounded owned operation controls are complete. The shared
 ModelRunner mid-step routing/admission continuation remains open: production
-still needs base-lease-preserving supplemental admission, explicit completed
-routing segments and source-selected grouped binding. These tests do not provide
+still needs explicit completed routing segments and source-selected grouped
+binding over the now-checked supplemental admission prerequisite. These tests do not provide
 that interface. Native ModelOpt target admission and full-model qualification
 remain open. This evidence makes no speed or model-quality claim.

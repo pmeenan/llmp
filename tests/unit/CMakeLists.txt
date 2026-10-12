@@ -169,7 +169,7 @@ llmp_gtest(acquire_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # refused and swaps waiting while it is held, release at its end or after a
 # cancelled request's step drains, and kept for good when a step is unproven.
 add_executable(held_lease_test held_lease_test.cc)
-target_link_libraries(held_lease_test PRIVATE llmp_paged_programs llmp_scheduler
+target_link_libraries(held_lease_test PRIVATE llmp_paged_programs llmp_scheduler llmp_engine_core
                                                llmp_fake_providers)
 llmp_gtest(held_lease_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
