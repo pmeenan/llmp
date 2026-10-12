@@ -85,7 +85,7 @@
     "prefill_oracle_sha256": "ea491bc54c1259dc935cd6131fc3684033b0974490048b6a214dd35b5da1710d"
   },
   "remaining": [
-    "broader packed shapes and O lifecycle controls",
+    "broader packed shapes and lifecycle controls",
     "historical Tier C and remaining lifecycle controls",
     "performance and legacy deletion"
   ],
@@ -574,6 +574,183 @@
       "42-target smoke, not corpus-wide quality qualification",
       "no kernel/tuning/default-policy change or speed claim",
       "broader O shapes/lifecycle remain open"
+    ]
+  },
+  "G5c6": {
+    "date": "2026-10-12",
+    "scope": "both approved EXL3 O profiles, same-implementation checkpoint/spill at fixed145+16 schedule",
+    "host": "spark",
+    "ids_sha256": "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c",
+    "teacher_file_ids": 1040,
+    "used_teacher_ids": 161,
+    "comparison": "all output and initialized state bytes exact to the same candidate uninterrupted reference; no cross-library oracle",
+    "focused": {
+      "native_build": "PASS",
+      "input_cases": 3,
+      "selected_cases": 6,
+      "failures": 0,
+      "skips": 0
+    },
+    "actual": {
+      "40o": {
+        "result_sha256": "89639586a1dfa952192e1adbd516e18953c934253888cfc5efb0321a7b5545dd",
+        "status": "PASS",
+        "cases": 1,
+        "failures": 0,
+        "skips": 0,
+        "witnesses": {
+          "corpus_artifact_id": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+          "corpus_exl3_rates": "4:168,8:1",
+          "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+          "lifecycle_bound_model": "e96d1a031714920f601970ede6847811d0d8ef8750c49f902f949bdc5d6a3e12",
+          "checkpoint_bytes_restored": "6291456",
+          "spill_bytes_restored": "6291456",
+          "lifecycle_compared_rows": "169",
+          "lifecycle_executed_steps": "42",
+          "lifecycle_final_positions": "161",
+          "lifecycle_final_state_bytes": "6291456",
+          "lifecycle_immutable_weight_extents": "292"
+        },
+        "gemv_capacity": {
+          "order": "output[F16,F32],rows[one,multiple],config[narrow,wide]",
+          "blocks": [
+            48,
+            96,
+            48,
+            96,
+            48,
+            96,
+            48,
+            96
+          ]
+        },
+        "programs": {
+          "145": {
+            "identity": "37bb2069adf19eacfe6b149d0c2905bf49a67e439d4e90e009816b8f47597b15",
+            "run_or_record": 2,
+            "selected_counts": {
+              "exl3.pinned.40o.linear.reconstruct": 169,
+              "exl3.pinned.40o.bias_add": 72
+            }
+          },
+          "1": {
+            "identity": "e928d57b6b878694b320bb6cf5328b0418e5be351419985aac761173482e312c",
+            "run_or_record": 40,
+            "selected_counts": {
+              "exl3.pinned.40o.linear.gemv": 120,
+              "exl3.pinned.40o.bias_add": 72,
+              "exl3.pinned.40o.multi_linear.mgemm": 24,
+              "exl3.pinned.40o.linear.gemm": 1
+            }
+          }
+        },
+        "memory_peak_observed": 944017408,
+        "compute_processes_after": 0,
+        "all_guards": "PASS"
+      },
+      "45o": {
+        "result_sha256": "c43d122981e997e20aee0479ef67475addebb1600471d0c5e7e9de69659c7a80",
+        "status": "PASS",
+        "cases": 1,
+        "failures": 0,
+        "skips": 0,
+        "witnesses": {
+          "corpus_artifact_id": "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a",
+          "corpus_exl3_rates": "4:42,5:118,6:8,8:1",
+          "corpus_exl3_parts": "codes:169,input_signs:169,output_signs:169,marker:169",
+          "lifecycle_bound_model": "673a3c6a28834c16271773fa42c48cd44617447558537edb8307d330498950ce",
+          "checkpoint_bytes_restored": "6291456",
+          "spill_bytes_restored": "6291456",
+          "lifecycle_compared_rows": "169",
+          "lifecycle_executed_steps": "42",
+          "lifecycle_final_positions": "161",
+          "lifecycle_final_state_bytes": "6291456",
+          "lifecycle_immutable_weight_extents": "302"
+        },
+        "gemv_capacity": {
+          "order": "output[F16,F32],rows[one,multiple],config[narrow,wide]",
+          "blocks": [
+            48,
+            96,
+            48,
+            96,
+            48,
+            96,
+            48,
+            96
+          ]
+        },
+        "programs": {
+          "145": {
+            "identity": "7c90301766308e64ec3bb537008ef26e3ed89655a40acc136e0336a7fa368a7d",
+            "run_or_record": 2,
+            "selected_counts": {
+              "exl3.pinned.45o.linear.reconstruct": 169,
+              "exl3.pinned.45o.bias_add": 72
+            }
+          },
+          "1": {
+            "identity": "d2f56b48ec395b8cdea30f99d736a60540e933bd548410c0d7642c96c02138d3",
+            "run_or_record": 40,
+            "selected_counts": {
+              "exl3.pinned.45o.linear.gemm": 107,
+              "exl3.pinned.45o.bias_add": 72,
+              "exl3.pinned.45o.multi_linear.mgemm": 24,
+              "exl3.pinned.45o.linear.gemv": 14
+            }
+          }
+        },
+        "memory_peak_observed": 944025600,
+        "compute_processes_after": 0,
+        "all_guards": "PASS"
+      }
+    },
+    "funding": {
+      "host_allowance_bytes": 4294967296,
+      "domain_bytes": 8589934592,
+      "physical_margin_bytes": 6442450944,
+      "single_reference_buffer_bytes": 97846784,
+      "additional_pinned_state_bytes": 33554432,
+      "state_metadata_bound_bytes": 1048576,
+      "plan_report_bound_bytes": 8388608,
+      "external_host_cache_cap_bytes": 10737418240,
+      "zero_swap": true,
+      "memory_peak_scope": "process and page cache; not total device occupancy"
+    },
+    "main_integration": {
+      "status": "PASS",
+      "native_result_sha256": "72be42f78d8e9afb1409c1742d7a6b4b627a9b4097f45b85c6bc5197f785e9f9",
+      "native_cases": 9,
+      "binary_sha256": "1099af5753ef7b6412fb1791511aa89424b096c75d4b567bee516b39dce1754c",
+      "binary_bytes": 210284832,
+      "actual": {
+        "40o": {
+          "status": "PASS",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "result_sha256": "d52f858d9e1990d969316996d7fa3b7a6a036d8400f842c9bd086c1fd55d3ab2",
+          "all_guards": "PASS",
+          "compute_processes_after": 0,
+          "binary_sha256": "1099af5753ef7b6412fb1791511aa89424b096c75d4b567bee516b39dce1754c"
+        },
+        "45o": {
+          "status": "PASS",
+          "cases": 1,
+          "failures": 0,
+          "skips": 0,
+          "result_sha256": "d3a6f5f1f4bf7930ba6f39804bd9543803b3c26a954e1d95f2ce1e1db95e2e06",
+          "all_guards": "PASS",
+          "compute_processes_after": 0,
+          "binary_sha256": "1099af5753ef7b6412fb1791511aa89424b096c75d4b567bee516b39dce1754c"
+        }
+      }
+    },
+    "remaining": [
+      "kept-state/restart",
+      "weight eviction/relocation",
+      "broader batches/shapes and historical Tier C",
+      "performance and legacy deletion"
     ]
   }
 }

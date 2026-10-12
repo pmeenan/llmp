@@ -462,7 +462,7 @@ TEST(ComponentRunnerExl3Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading)
 // cannot change the legacy chunk's matrix shapes.
 void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool lifecycle = false,
                 bool optimized = false) {
-  ASSERT_FALSE(optimized && (!corpus || lifecycle));
+  ASSERT_FALSE(optimized && !corpus && !lifecycle);
   ASSERT_FALSE(mixed_rate && !corpus && !lifecycle);
   ASSERT_FALSE(lifecycle && (!full || corpus));
   std::uint32_t token_rows = full ? 161 : 145;
@@ -1092,6 +1092,28 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
             for (const auto& record : life->corpus_plans) {
               if (record.implementations.empty() || record.runs != (record.rows == 145 ? 2U : 40U))
                 return std::unexpected("EXL3 lifecycle selected execution inventory differs");
+              if (optimized) {
+                const std::string prefix = mixed_rate ? "exl3.pinned.45o." : "exl3.pinned.40o.";
+                const auto count = [&](const char* operation) {
+                  return std::ranges::count(record.implementations, prefix + operation);
+                };
+                const auto selected_count = std::ranges::count_if(
+                    record.implementations,
+                    [](const std::string& name) { return name.starts_with("exl3."); });
+                if (record.rows == 145) {
+                  if (count("linear.reconstruct") != 169 || count("bias_add") != 72 ||
+                      selected_count != 241)
+                    return std::unexpected("EXL3 O lifecycle reconstruction inventory differs");
+                } else if (record.rows == 1) {
+                  if (count("linear.gemv") != (mixed_rate ? 14 : 120) ||
+                      count("linear.gemm") != (mixed_rate ? 107 : 1) ||
+                      count("multi_linear.mgemm") != 24 || count("bias_add") != 72 ||
+                      selected_count != 217)
+                    return std::unexpected("EXL3 O lifecycle scalar inventory differs");
+                } else {
+                  return std::unexpected("EXL3 O lifecycle unexpected selected rows");
+                }
+              }
               report << "rows=" << record.rows
                      << " bound_plan=" << llmp::base::ToHex(record.identity)
                      << " run_or_record=" << record.runs << '\n';
@@ -1168,5 +1190,11 @@ TEST(ComponentRunnerExl3Gpu, Optimized40OFixedTeacherCorpusScoresEveryTarget) {
 }
 TEST(ComponentRunnerExl3Gpu, Optimized45OFixedTeacherCorpusScoresEveryTarget) {
   RunControl(false, true, true, false, true);
+}
+TEST(ComponentRunnerExl3Gpu, SameImplementation40OCheckpointSpillContinuation) {
+  RunControl(true, false, false, true, true);
+}
+TEST(ComponentRunnerExl3Gpu, SameImplementation45OCheckpointSpillContinuation) {
+  RunControl(true, false, true, true, true);
 }
 }  // namespace

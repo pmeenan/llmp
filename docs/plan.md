@@ -1922,6 +1922,17 @@ each is checked against the design as M3.6 proceeds.
                   ([quality](experiments/m36-original-qwen2/README.md),
                   [state](experiments/m36-qwen2/README.md)). F16 conversion
                   lineage, restart/relocation and serving qualification remain open.
+            - [x] **G5c6 — EXL3 O checkpoint/spill continuation:** both
+                  approved O profiles use the same uninterrupted 161-row control
+                  and paid buffers as G5c4. All 169 compared rows and 6,291,456
+                  initialized state bytes match each profile's own reference
+                  after checkpoint rewind/replay and spill/restore. Actual
+                  occupancy facts and reconstruction/scalar selected operations
+                  are recorded with unchanged 292/302 weight extents. Nine
+                  focused controls and both actual cases pass on main without skips
+                  ([evidence](experiments/m36-exl3-selected/README.md)).
+                  Kept-state/restart, eviction/relocation, broader shapes,
+                  Tier C, performance and deletion remain open.
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,

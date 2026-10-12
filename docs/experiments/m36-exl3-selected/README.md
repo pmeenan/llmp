@@ -211,3 +211,35 @@ then built natively and passed the same nine controls and the scoring case,
 with identical scores and occupancy facts, zero failures/skips, all guards
 passing and no compute processes left. Broader shapes, O lifecycle, Tier C,
 performance and legacy deletion remain open.
+
+## O-profile same-implementation checkpoint/spill continuation (G5c6)
+
+Both approved O profiles pass the same G5c4 state control without new buffers
+or arithmetic. Each uninterrupted 145-row prefill plus 16 scalar steps supplies
+its own full-vocabulary reference. The second evaluation compares all 161
+rows, rewinds from 153 to the checkpoint at 145 and replays eight rows, then
+spills/restores at 157 and finishes at 161. Each case compares 169 output rows
+and 6,291,456 initialized state bytes at each checkpoint, spill and final-state
+check. The 40O/45O cases preserve 292/302 immutable weight extents and record
+the artifact-bound model identity; this is no-eviction evidence.
+
+Both 145-row plans run twice and select 169 reconstruction operations plus
+72 bias operations. Scalar plans run 40 times: 40O selects 120 GEMVs and one
+GEMM, while 45O selects 14 GEMVs and 107 GEMMs; both also select 24 paired
+MGEMMs and 72 bias operations. All eight actual occupancy facts are
+`[48,96,48,96,48,96,48,96]`, in the order above, and are rechecked at launch.
+The exact comparisons use the same candidate's uninterrupted output and state,
+not an external quantized-library oracle.
+
+The sole 97,846,784-byte reference buffer, its retired-prefix reuse, two
+16-MiB pinned state-copy buffers, 4-GiB host allowance, checked 8-GiB native
+domain, 6-GiB physical margin and complete-owner retirement are unchanged.
+Spark A built and passed three input and six selected controls, followed by
+both actual lifecycle cases, with zero failures/skips, all guards passing and
+no compute processes left. Observed process/cache peaks under the 10-GiB
+zero-swap cap were 944,017,408 bytes for 40O and 944,025,600 for 45O; these do
+not measure total device occupancy. Main also built and passed all nine
+focused controls and both actual O cases with zero failures/skips, all guards
+passing and no compute processes left; its binary matches the author binary.
+Kept-state/restart, eviction/relocation, broader batches/shapes, Tier C,
+performance and legacy deletion remain open.
