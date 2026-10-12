@@ -2017,6 +2017,30 @@ failures or skips. Source, recipe and model-binary guards and quality gates
 passed (2026-10-12). Geometry validation does not authorize a source mapping,
 authenticate checkpoint bytes, publish an artifact or admit a model.
 
+A separate closed ModelOpt target normalizer (`import/modelopt_qwen38.h`)
+uses an owned indexed part plan. It validates the complete source set with
+finite role/index grammars, including explicitly classified MTP, vision and
+activation-scale entries, and reads exactly 280 bytes of pinned PLE semantic
+parameters. Canonical parts bind through a native declarative Qwen3.8 mapping
+and the shared component validator. Numeric gathers preserve split NVFP4
+expert matrices and the ngram table; one inherited table scale remains one
+part, and expert tensor scales bind to the weight role exactly once. Dense
+BF16 parameters remain BF16 with explicit transient norm/log-A computation;
+the plan describes byte-preserving BF16 and MXFP8 head permutations. Only the planned
+head-order transform contributes a fold; historical converter assertions and
+execution policies are absent. Unknown roles, indices, part coverage, source
+formats or configurations refuse normalization. This API produces an owned
+plan, not a published artifact or runtime admission. Independent challenge, 26 main focused controls, 2,599 native and
+2,044 CPU checks, all 136 model/timing cases (183 raw GoogleTest runs) and
+quality gates passed with zero failures or skips (2026-10-12). The confined
+actual-source metadata control produced 1,886 canonical parts over 1,212
+logical outputs; it read only the 280 semantic bytes, so whole payload
+authentication and execution of the planned transforms remain publication
+work. The bounded
+[source inventory](experiments/m36-modelopt-normalization/source-inventory.json)
+records all 139 observed descriptor patterns and the separate semantic receipts;
+its diagnostic categories alone do not qualify the mapping.
+
 The native copy-only writer (`import/writer.h`) consumes owned normalized
 plans and records their specs in v1 artifacts. `llmp import` streams and
 verifies ordinary or archived sources, including exact parsed-prefix

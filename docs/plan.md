@@ -1911,6 +1911,20 @@ each is checked against the design as M3.6 proceeds.
                   with zero failures or skips. Source, recipe, model-binary
                   guards and quality gates passed. Source mapping authority,
                   byte authentication, publication and admission remain separate.
+            - [x] **N3b2f — closed native ModelOpt target normalization:**
+                  owned indexed multipart assembly and a finite source mapping
+                  for the pinned Qwen3.8 ModelOpt target. Preserve BF16,
+                  split MXFP8/NVFP4 and embedded expert scales; derive numeric
+                  expert/ngram gathers and byte-preserving head permutations.
+                  Validate all source roles, excluded auxiliary entries,
+                  configuration and the 280-byte semantic input against a
+                  complete component spec under prepaid metadata bounds.
+                  Independent challenge, 26 main focused controls, confined
+                  actual-source metadata normalization, 2,599 native and
+                  2,044 CPU checks, all 136 model/timing cases (183 raw
+                  GoogleTest runs) and quality gates passed with zero failures
+                  or skips (2026-10-12). Publication, MTP/vision import, runtime admission
+                  and migration gates remain separate.
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
             catalog import events.

@@ -432,6 +432,65 @@ constexpr Mapping kMapping{
     .v0_assembly = kAssembly,
 };
 
+// Native normalization binds source-preserving split parts to the same
+// shared roles. Embedded per-matrix scales are not projection multipliers.
+constexpr auto kNativeTensors = [] {
+  // Four legacy CUTLASS alternatives are replaced by four native split-part
+  // rules. Keeping both down-scale alternatives would bind one role twice.
+  std::array<TensorRule, kTensors.size()> rules{};
+  std::size_t next = 0;
+  for (auto rule : kTensors) {
+    if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes" ||
+        rule.pattern == "blk.{layer}.ffn_gate_up_exps.scales" ||
+        rule.pattern == "blk.{layer}.ffn_down_exps.codes" ||
+        rule.pattern == "blk.{layer}.ffn_down_exps.scales")
+      continue;
+    if (rule.pattern == "per_layer_token_embd.weight" ||
+        rule.pattern == "blk.{layer}.ffn_gate_exps.weight" ||
+        rule.pattern == "blk.{layer}.ffn_up_exps.weight" ||
+        rule.pattern == "blk.{layer}.ffn_down_exps.weight") {
+      rule.part = PartRole::kCodes;
+      rule.any_part = false;
+    }
+    if (rule.role == "gate_scale" || rule.role == "up_scale" || rule.role == "down_scale") {
+      rule.role = rule.role == "gate_scale" ? "gate_experts"
+                  : rule.role == "up_scale" ? "up_experts"
+                                            : "down_experts";
+      rule.part = PartRole::kTensorScale;
+      rule.experts = true;
+    }
+    rules[next++] = rule;
+  }
+  rules[next++] = Scales("per_layer_token_embd.weight_scale", "ngram", "table");
+  for (const auto& [pattern, role] : std::array<std::pair<std::string_view, std::string_view>, 3>{
+           {{"blk.{layer}.ffn_gate_exps.weight_scale", "gate_experts"},
+            {"blk.{layer}.ffn_up_exps.weight_scale", "up_experts"},
+            {"blk.{layer}.ffn_down_exps.weight_scale", "down_experts"}}}) {
+    auto rule = Scales(pattern, "moe", role);
+    rule.experts = true;
+    rules[next++] = rule;
+  }
+  return rules;
+}();
+constexpr auto kNativeParams = [] {
+  std::array<ParamRule, kParams.size() + 6> params{};
+  std::ranges::copy(kParams, params.begin());
+  std::size_t i = kParams.size();
+  for (std::string_view slot : {"attn_mix", "ffn_mix", "output_mix", "attention", "ple"})
+    params[i++] = Flag(slot, "norm_zero_centered", true);
+  params[i] = Flag("linear", "a_log", true);
+  return params;
+}();
+constexpr auto kNativeMapping = [] {
+  auto mapping = kMapping;
+  mapping.tensors = kNativeTensors;
+  mapping.params = kNativeParams;
+  mapping.folds = {};
+  mapping.policies = {};
+  mapping.v0_assembly = {};
+  return mapping;
+}();
+
 // ------------------------------------------------------------ qwen4exp-mtp
 
 constexpr std::string_view kDraftRows = "qwen4exp-mtp.draft_head_rows";
@@ -635,6 +694,7 @@ void BlockValues(std::vector<SourceValue>& out, const std::string& p, const mode
 }  // namespace
 
 const Mapping& Qwen38Mapping() { return kMapping; }
+const Mapping& Qwen38NativeMapping() { return kNativeMapping; }
 const Mapping& Qwen38MtpMapping() { return kMtpMapping; }
 const Mapping& Qwen38MtpReplayMapping() { return kMtpReplayMapping; }
 

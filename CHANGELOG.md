@@ -24,6 +24,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Prepare owned native ModelOpt target normalization plans, preserving source
+  weight encodings through multipart gathers and head permutations. Publication
+  and runtime admission remain separate.
+
 - Keep declared small component parameters in BF16 and widen them in paid
   execution workspace. Explicit logarithmic GDN A uses transient arithmetic.
   Optional zero-centered norm parameters add one in F32 workspace and reject

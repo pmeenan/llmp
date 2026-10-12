@@ -77,6 +77,9 @@ namespace llmp::spec::mappings {
 inline constexpr std::uint64_t kQwen38DraftVocab = 65536;
 
 const Mapping& Qwen38Mapping();
+// Native source-encoded target parts. No historical converter fold assertions
+// or execution-policy eligibility; normalization proves the head permutation.
+const Mapping& Qwen38NativeMapping();
 const Mapping& Qwen38MtpMapping();
 // Same numerical recipe, with the durable repeat-pending position contract.
 // Explicit opt-in; existing v1 artifacts/specs keep their original identity.
