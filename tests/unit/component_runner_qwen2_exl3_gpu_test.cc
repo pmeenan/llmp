@@ -460,7 +460,9 @@ TEST(ComponentRunnerExl3Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading)
 
 // Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
-void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool lifecycle = false) {
+void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool lifecycle = false,
+                bool optimized = false) {
+  ASSERT_FALSE(optimized && (!corpus || mixed_rate || lifecycle));
   ASSERT_FALSE(mixed_rate && !corpus && !lifecycle);
   ASSERT_FALSE(lifecycle && (!full || corpus));
   std::uint32_t token_rows = full ? 161 : 145;
@@ -703,9 +705,21 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   const auto ran = [&]() -> en::Status {
     entered.push_back(kernel.get());
     if (auto x = kernel->resources->OpenCublas("EXL3 shared cuBLAS workspace"); !x) return x;
-    auto selected =
-        llmp::kernels::exl3::SelectedSource(mixed_rate ? llmp::kernels::exl3::FrozenCache::k45G
-                                                       : llmp::kernels::exl3::FrozenCache::k40G);
+    std::optional<llmp::kernels::exl3::GemvCapacity> gemv;
+    if (optimized) {
+      auto queried = llmp::kernels::exl3::QueryGemvCapacity(0);
+      if (!queried) return std::unexpected(queried.error());
+      gemv = *queried;
+      std::ostringstream receipt;
+      for (const auto& output : gemv->blocks)
+        for (const auto& rows : output)
+          for (const auto blocks : rows) receipt << blocks << '\n';
+      testing::Test::RecordProperty("corpus_gemv_capacity", receipt.str());
+    }
+    const auto cache = optimized    ? llmp::kernels::exl3::FrozenCache::k40O
+                       : mixed_rate ? llmp::kernels::exl3::FrozenCache::k45G
+                                    : llmp::kernels::exl3::FrozenCache::k40G;
+    auto selected = llmp::kernels::exl3::SelectedSource(cache, gemv);
     if (!selected) return std::unexpected(selected.error());
     auto backend = kg::GgmlBackend::Create(
         0, node.execution(), node.stream(0), &kernel->resources->cublas(),
@@ -924,14 +938,24 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
       report.clear();
       report << std::setprecision(17) << result.total_nll;
       testing::Test::RecordProperty("corpus_total_nll", report.str());
-      testing::Test::RecordProperty("corpus_policy",
-                                    mixed_rate ? "existing-exl3-45g" : "existing-exl3-40g");
+      testing::Test::RecordProperty("corpus_policy", optimized    ? "existing-exl3-40o"
+                                                     : mixed_rate ? "existing-exl3-45g"
+                                                                  : "existing-exl3-40g");
       report.str("");
       report.clear();
       for (const auto& plan : life->corpus_plans) {
         if (!plan.rows) continue;
         if (!plan.runs || plan.implementations.empty())
           return std::unexpected("corpus selected program never entered execution");
+        if (optimized &&
+            (std::ranges::count(plan.implementations, "exl3.pinned.40o.linear.gemv") != 120 ||
+             std::ranges::count(plan.implementations, "exl3.pinned.40o.linear.gemm") != 1 ||
+             std::ranges::count(plan.implementations, "exl3.pinned.40o.multi_linear.mgemm") != 24 ||
+             std::ranges::count(plan.implementations, "exl3.pinned.40o.bias_add") != 72 ||
+             std::ranges::count_if(plan.implementations, [](const std::string& name) {
+               return name.starts_with("exl3.");
+             }) != 217))
+          return std::unexpected("optimized corpus selected GEMV inventory differs");
         if (mixed_rate &&
             (std::ranges::count(plan.implementations, "exl3.pinned.45g.linear.gemm") != 121 ||
              std::ranges::count(plan.implementations, "exl3.pinned.45g.multi_linear.mgemm") != 24 ||
@@ -1132,5 +1156,8 @@ TEST(ComponentRunnerExl3Gpu, SameImplementation40GCheckpointSpillContinuation) {
 }
 TEST(ComponentRunnerExl3Gpu, SameImplementation45GCheckpointSpillContinuation) {
   RunControl(true, false, true, true);
+}
+TEST(ComponentRunnerExl3Gpu, Optimized40OFixedTeacherCorpusScoresEveryTarget) {
+  RunControl(false, true, false, false, true);
 }
 }  // namespace

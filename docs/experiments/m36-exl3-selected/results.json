@@ -85,9 +85,9 @@
     "prefill_oracle_sha256": "ea491bc54c1259dc935cd6131fc3684033b0974490048b6a214dd35b5da1710d"
   },
   "remaining": [
-    "O execution profiles and broader packed shapes",
-    "historical Tier C and lifecycle controls",
-    "legacy deletion"
+    "4.5-bpw O execution and broader packed shapes",
+    "historical Tier C and remaining lifecycle controls",
+    "performance and legacy deletion"
   ],
   "G5b2a": {
     "date": "2026-10-12",
@@ -407,6 +407,86 @@
       "weight eviction/relocation",
       "broader shapes/profiles and historical Tier C",
       "performance and legacy deletion"
+    ]
+  },
+  "G5b2c": {
+    "date": "2026-10-12",
+    "scope": "4.0-bpw O selected GEMV common scoring, natural43 only",
+    "host": "spark",
+    "artifact": "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4",
+    "teacher_ids_sha256": "1b1c01818993d60cad3b4046c2ba22c24d81af32434fc65977a3faf12a4a9e40",
+    "original_result_sha256": "f2280c7afcaa4b139d398aa9338d5a9b5d1c6278b23bc199427dc371d3ba6771",
+    "focused": {
+      "native_build": "PASS",
+      "input_cases": 3,
+      "selected_cases": 6,
+      "failures": 0,
+      "skips": 0
+    },
+    "actual": {
+      "result_sha256": "4f802073430580198565a5bc50398a5e990361b44df2da4b20df63fb31560dfa",
+      "status": "PASS",
+      "cases": 1,
+      "failures": 0,
+      "skips": 0,
+      "teacher_ids": 43,
+      "targets": 42,
+      "chunk_rows": 7,
+      "shape_rows": [
+        7,
+        1
+      ],
+      "sum_nll": 271.1901034966847,
+      "mean_nll": 6.45690722611154,
+      "perplexity": 637.0876384616802,
+      "gemv_capacity": {
+        "order": "output[F16,F32],rows[one,multiple],config[narrow,wide]",
+        "blocks": [
+          48,
+          96,
+          48,
+          96,
+          48,
+          96,
+          48,
+          96
+        ]
+      },
+      "selected_per_program": {
+        "linear_gemv": 120,
+        "linear_gemm": 1,
+        "paired_mgemm": 24,
+        "bias_add": 72
+      },
+      "program_identities": {
+        "7": "e928d57b6b878694b320bb6cf5328b0418e5be351419985aac761173482e312c",
+        "1": "e928d57b6b878694b320bb6cf5328b0418e5be351419985aac761173482e312c"
+      },
+      "memory_peak_observed": 276574208,
+      "memory_peak_scope": "process and page cache; not total GPU occupancy",
+      "compute_processes_after": 0,
+      "all_guards": "PASS"
+    },
+    "main_integration": {
+      "native_build": "PASS",
+      "focused_result_sha256": "1885d31dedba49491387eaf0f1be7fe9bff063f97779ed42421e2ffde82db5f5",
+      "input_cases": 3,
+      "selected_cases": 6,
+      "actual_result_sha256": "d3af15f2c31cc1226a6a00e184526f5f8071fbfbe855de9a943d7a40d68667fb",
+      "actual_cases": 1,
+      "failures": 0,
+      "skips": 0,
+      "binary_sha256": "3cad759baf76232be4525fa83295a99fd688212d50fd737f09e899075b3477ec",
+      "targets": 42,
+      "sum_nll": 271.1901034966847,
+      "mean_nll": 6.45690722611154,
+      "compute_processes_after": 0,
+      "all_guards": "PASS"
+    },
+    "limitations": [
+      "42-target smoke, not corpus-wide quality qualification",
+      "no kernel/tuning/default-policy change or speed claim",
+      "4.5-bpw O and broader shapes/lifecycle remain open"
     ]
   }
 }

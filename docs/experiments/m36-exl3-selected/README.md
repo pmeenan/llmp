@@ -148,3 +148,35 @@ lifecycle cases, with all guards passing and zero failures or skips. This
 qualifies only the stated same-implementation
 checkpoint/spill continuation; kept-state/restart, eviction/relocation,
 broader shapes/profiles, Tier C, performance and deletion remain open.
+
+## Bounded 4.0-bpw O GEMV scoring screen (G5b2c)
+
+The existing 4.0-bpw O profile now completes the common scorer on the same
+43 authenticated teacher IDs and 7/1 chunks as the G profile. Before creating
+the selected source, the fixture queries all eight native GEMV occupancy facts;
+the source validates those facts and rechecks them when it creates the launch.
+The observed counts are `[48,96,48,96,48,96,48,96]`, ordered by output
+F16/F32, one/multiple rows, and narrow/wide configuration. Each actual program
+records 120 four-bit GEMVs, one eight-bit head GEMM, 24 paired gate/up MGEMMs
+and 72 bias operations. The original artifact and all physical weight parts
+are unchanged; no tuning, kernel or production default changed.
+
+All 42 next-token scores are finite. Mean NLL is 6.45690722611154 and
+perplexity 637.0876384616802, compared with original BF16's 6.496176475891133
+and 662.6033037486249 on the same teacher histories and target coordinates.
+This short sample is a primary-reference observation, not a broader quality
+qualification. The original uses its declared eager/no-cache recipe; no
+quantized-library bit equality or speed gate is imposed here.
+
+Spark A built the affected targets and passed three input controls plus six
+selected-operation controls, then passed the one actual scoring case. Every
+raw case had zero failures or skips, all source/input/recipe/binary guards
+passed, and no compute processes remained afterward. The complete Lifetime,
+4-GiB host allowance, checked 8-GiB native domain and 6-GiB physical margin are
+unchanged. Observed 10-GiB zero-swap process/cache peak was 276,574,208 bytes;
+this does not measure total GPU occupancy. Main then built natively and
+passed the same nine controls and the one actual scoring case, with identical
+scores and occupancy facts, zero failures/skips, all guards passing and no
+compute processes left afterward.
+The 4.5-bpw O profile, broader shapes, O lifecycle coverage, Tier C,
+performance and legacy deletion remain open.
