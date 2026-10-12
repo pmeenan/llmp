@@ -117,6 +117,8 @@ class DraftProgressLedger {
   // After replacement admission succeeds, before copying any new bytes.
   // A pre-admission refusal leaves the completed mirror untouched.
   std::expected<Transition, std::string> BeginReplacement();
+  // The exact pending replacement; this never authorizes execution.
+  bool Replacing(Transition ticket) const;
   // Only after actual materialization + the leased D2H control read retire.
   Status RestoreCompleted(Transition ticket, const model::DraftProgressWords& words,
                           std::uint32_t positions);

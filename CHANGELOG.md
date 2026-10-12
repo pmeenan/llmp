@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Restore adopted component prefixes before reuse when drafter progress is
+  still on disk, avoiding needless prompt recomputation. Execution waits for
+  successful hydration.
+
 - Native artifact copies check complete source coverage and acknowledged
   output writes before publication.
 

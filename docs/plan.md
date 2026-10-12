@@ -1629,23 +1629,27 @@ each is checked against the design as M3.6 proceeds.
                   - [ ] **G3c2b — joined lowering, serving and gate:**
                         qualify joined MTP arithmetic before serving and the
                         cohort gates.
-                        - [ ] **G3c2b1 — joined arithmetic:** preserve each
-                              owner's physical product widths and numerical
-                              selectors across joined MTP steps, including
-                              expanded streams and unequal pending ranges;
-                              prove exact heads, state and changed-input
-                              capture replay against the legacy joined recipe
-                              before qualifying joined repeat-pending work.
+                        - [ ] **G3c2b1 — joined arithmetic:** qualify shared
+                              arithmetic and routing for joined MTP steps,
+                              including expanded streams and unequal pending
+                              ranges. Use original-model quality as the primary
+                              reference, with missing evidence explicit; retain
+                              legacy comparisons as secondary diagnostics.
+                              Preserve owner coverage and every selected expert
+                              contribution; prove same-implementation state
+                              restoration and changed-input capture replay.
                               - [x] **G3c2b1a — default-off owner products:**
                                     typed physical-column proof, per-owner
                                     primitive rewrite and bound native-recipe
                                     audit; structural and descriptor controls.
                                     No source/runtime opt-in or numerical/
                                     persistence qualification.
-                              - [ ] **G3c2b1b — native qualification:** exact
-                                    joined heads/state and changed-input replay,
-                                    old/new persistence and bounded admission
-                                    before enabling repeat-pending execution.
+                              - [ ] **G3c2b1b — native qualification:** qualify
+                                    joined full-head quality and routing,
+                                    same-implementation state and changed-input
+                                    replay, old/new persistence and bounded
+                                    admission before enabling repeat-pending
+                                    execution.
                                     - [x] **G3c2b1b1 — selected-HC recipe
                                           correction:** keep source policy
                                           default-off; prove actual selected-row
@@ -1661,9 +1665,9 @@ each is checked against the design as M3.6 proceeds.
                                           joined state and runtime admission
                                           remain outside this correction.
                                     - [ ] **G3c2b1b2 — remaining joined
-                                          qualification:** prove exact joined
-                                          heads/state, changed-input replay,
-                                          old/new persistence and bounded
+                                          qualification:** prove joined quality,
+                                          same-implementation state, changed-input
+                                          replay, old/new persistence and bounded
                                           admission. The G3c2b1b parent remains
                                           open after the selected-HC correction.
                         - [ ] **G3c2b2 — serving and gate:** compose the
@@ -1678,6 +1682,18 @@ each is checked against the design as M3.6 proceeds.
                                     checks pass (2026-10-11).
                                     Joined execution and the family gates
                                     remain G3c2b1b2 and G3c2b2.
+                              - [x] **G3c2b2b — cold kept-state hydration:**
+                                    preserve an adopted prefix while its drafter
+                                    progress awaits restoration. Permit reuse
+                                    and selection only for valid cold tickets;
+                                    execution still requires completed hydration.
+                                    Native build and 77 focused host/fake controls
+                                    pass on Spark B (2026-10-12), including partial
+                                    restore capacity refusal/retry without
+                                    recomputation
+                                    and independent restoration of two cold peers.
+                                    Actual joined arithmetic and family gates
+                                    remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.

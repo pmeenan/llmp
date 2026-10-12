@@ -23,6 +23,10 @@ bool DraftProgressLedger::Current(Transition ticket) const {
   return ticket.owner_ == this && ticket.epoch_ == epoch_;
 }
 
+bool DraftProgressLedger::Replacing(Transition ticket) const {
+  return state_ == State::kReplacing && Current(ticket);
+}
+
 DraftProgressLedger::Transition DraftProgressLedger::Ticket() const {
   Transition ticket;
   ticket.owner_ = this;

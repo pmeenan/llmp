@@ -189,6 +189,7 @@ TEST(DraftProgressLedgerTest, ReplacementDoesNotExposeARecordUntilCompletedHydra
   corrupt[2] = -1;
   EXPECT_FALSE(ledger.RestoreCompleted(*restore, corrupt, 10));
   EXPECT_EQ(ledger.state(), Ledger::State::kQuarantined);
+  EXPECT_FALSE(ledger.Replacing(*restore));
   EXPECT_FALSE(ledger.settled());
 }
 
@@ -224,10 +225,13 @@ TEST(DraftProgressLedgerTest, TerminalCompletionsCannotActOnLaterSamePositionTra
   ASSERT_TRUE(ledger.RestoreCompleted(*old_restore, kOld, 10));
   auto new_restore = ledger.BeginReplacement();
   ASSERT_TRUE(new_restore) << llmp::test_support::Failed(new_restore).value_or("");
+  EXPECT_FALSE(ledger.Replacing(*old_restore));
+  EXPECT_TRUE(ledger.Replacing(*new_restore));
   EXPECT_FALSE(ledger.RestoreCompleted(*old_restore, kOld, 10));
   EXPECT_EQ(ledger.state(), Ledger::State::kReplacing);
   auto peer_restore = peer.BeginReplacement();
   ASSERT_TRUE(peer_restore) << llmp::test_support::Failed(peer_restore).value_or("");
+  EXPECT_FALSE(ledger.Replacing(*peer_restore));
   EXPECT_FALSE(ledger.RestoreCompleted(*peer_restore, kOld, 10));
   ASSERT_TRUE(ledger.RestoreCompleted(*new_restore, kOld, 10));
 

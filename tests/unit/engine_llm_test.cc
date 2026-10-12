@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -198,7 +199,23 @@ class EngineLlmTest : public ::testing::Test {
                -> std::expected<rt::EngineLlmParts, std::string> {
       EXPECT_EQ(settings.context.value, kContext);
       rt::EngineLlmParts parts;
-      const std::vector<en::StageState> stages = StageStates(drafters);
+      std::vector<en::StageState> stages = StageStates(drafters);
+      if (kept_progress_) {
+        stages.resize(2);
+        const Layers layers{{0,
+                             {.tensors = {C{.name = "kv", .cell_bytes = 256, .replayable = true},
+                                          C{.name = "streams",
+                                            .kind = md::StateKind::kFeatures,
+                                            .encoding = md::Encoding::kF32,
+                                            .cell_bytes = 256,
+                                            .cells = md::CellRule::kPerRow,
+                                            .window_or_ratio = 1,
+                                            .rollback = md::Rollback::kSnapshot,
+                                            .target_writes = true},
+                                          md::DraftProgressControl(
+                                              "progress", md::DraftRelation::kTokenAfterCache)}}}};
+        stages[1].layout = md::Layout(layers, kContext, kChunk).value();
+      }
       ts::FakeSourceOptions o;
       for (const auto& s : stages) o.layouts.push_back(s.layout);
       o.logits = kWidth;
@@ -219,7 +236,8 @@ class EngineLlmTest : public ::testing::Test {
       if (drafters) {
         parts.config.setup_shapes.push_back(Wide(0, pl::Phase::kVerify, kVerifyRows, 256));
         parts.config.setup_shapes.push_back(Wide(kMtp, pl::Phase::kDraft, kChunk, 512));
-        parts.config.setup_shapes.push_back(Wide(kBlock, pl::Phase::kDraft, kVerifyRows, 256));
+        if (!kept_progress_)
+          parts.config.setup_shapes.push_back(Wide(kBlock, pl::Phase::kDraft, kVerifyRows, 256));
       }
       parts.config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
         return std::make_unique<kn::RecordingLaunch>();
@@ -350,6 +368,27 @@ class EngineLlmTest : public ::testing::Test {
     return prompt;
   }
 
+  std::vector<std::byte> NativeImage(std::uint32_t owner) const {
+    std::vector<std::byte> image;
+    const auto append = [&](const void* data, std::size_t bytes) {
+      const auto* first = static_cast<const std::byte*>(data);
+      image.insert(image.end(), first, first + bytes);
+    };
+    const auto& slots = llm_->runner().slots();
+    const auto positions = slots.positions(owner);
+    append(&positions, sizeof(positions));
+    for (std::size_t stage = 0; stage < slots.stages(); ++stage) {
+      const auto& live = slots.live(owner, stage);
+      for (const auto& range : live.used_ranges()) {
+        append(&range.region, sizeof(range.region));
+        append(&range.offset, sizeof(range.offset));
+        append(&range.bytes, sizeof(range.bytes));
+        append(reinterpret_cast<const void*>(live.base(range.region) + range.offset), range.bytes);
+      }
+    }
+    return image;
+  }
+
   fs::path root_;
   llmp::config::RuntimeRoles roles_;
   llmp::config::ModelEntry entry_;
@@ -358,6 +397,7 @@ class EngineLlmTest : public ::testing::Test {
   std::unique_ptr<rt::EngineLlm> llm_;
   ts::FakeStepSource* source_ = nullptr;
   bool native_outputs_ = false;
+  bool kept_progress_ = false;
   bool save_checkpoints_ = true;  // Llm::set_turn_checkpoints at Start
 };
 
@@ -887,6 +927,123 @@ TEST_F(EngineLlmTest, RecoveryKeepsTheSpilledConversationAndForgetsTheRest) {
   const auto fresh = Prompt(40, 21);
   const Turned again = Turn(0, fresh, 5);
   EXPECT_EQ(again.out.tokens, Chain(fresh, 5));
+}
+
+// Cold repeat-pending metadata is restorable but cannot execute until its
+// exact disk-backed progress record and initialized state have hydrated.
+TEST_F(EngineLlmTest, AdoptedRepeatPendingHydratesWithoutRecomputingItsPrefix) {
+  kept_progress_ = true;
+  native_outputs_ = true;
+  save_checkpoints_ = false;
+  const fs::path directory = root_ / "repeat-kept";
+  auto opened = pf::OpenPrivateDirectory(-1, directory.c_str());
+  ASSERT_TRUE(opened.has_value());
+  const int dir = *opened;
+  kept::Identity identity{.build = "test build", .artifact = "abcdef", .drafter = "", .layout = ""};
+  std::vector<std::int32_t> history;
+  std::vector<std::byte> image;
+  llmp::base::Sha256Digest digest{};
+  {
+    rt::StateKeeper keeper(1, {});
+    const auto model = keeper.AddModel(::dup(dir));
+    Start(true, true, [&](rt::EngineLlm& llm) {
+      identity.layout = llm.KeptLayout();
+      llm.set_kept(
+          {.keeper = &keeper, .model = model, .directory = dir, .identity = identity, .adopt = {}});
+    });
+    const auto turn = Turn(0, Prompt(17, 6), 8);
+    ASSERT_EQ(turn.out.tokens.size(), 8U);
+    ASSERT_GT(turn.out.drafted, 0U);
+    auto& branch = BranchAt(0);
+    Open({&branch});
+    {
+      rt::SnapshotStore store(*node_, 8 * kExtent);
+      auto captured = branch.CaptureState(store);
+      ASSERT_TRUE(captured) << Failed(captured).value_or("");
+      auto value = store.Digest(*captured);
+      ASSERT_TRUE(value) << Failed(value).value_or("");
+      digest = *value;
+      image = NativeImage(0);
+    }
+    Close();
+    history = branch.history();
+    ASSERT_TRUE(llm_->SpillIdle(branch));
+    ASSERT_TRUE(keeper.Drain(rt::Clock::now() + std::chrono::seconds(30)));
+    ASSERT_TRUE(keeper.Kept(model, 0));
+    llm_->PreserveKeptFiles();
+    Stop();
+  }
+  auto text = pf::ReadPrivateFile(dir, "slot-0.record", kept::kMostRecordBytes);
+  ASSERT_TRUE(text.has_value());
+  auto record = kept::Decode(*text);
+  ASSERT_TRUE(record) << Failed(record).value_or("");
+  ASSERT_EQ(rt::VerifyKeptState(dir, *record), "");
+  rt::StateKeeper keeper(1, {});
+  const auto model = keeper.AddModel(::dup(dir));
+  Start(true, true, [&](rt::EngineLlm& llm) {
+    EXPECT_EQ(llm.KeptLayout(), identity.layout);
+    std::vector<kept::FileId> ids;
+    for (const auto& file : record->files) ids.push_back(file.id);
+    llm.set_kept({.keeper = &keeper,
+                  .model = model,
+                  .directory = dir,
+                  .identity = identity,
+                  .adopt = {0},
+                  .files = {ids}});
+  });
+  auto& branch = BranchAt(0);
+  rt::MemoryCharge charge;
+  ASSERT_TRUE(llm_->Adopt(branch, *record, charge));
+  EXPECT_EQ(branch.history(), history);
+  EXPECT_TRUE(llm_->runner().slots().restorable(0));
+  EXPECT_FALSE(llm_->runner().slots().usable(0));
+  EXPECT_FALSE(llm_->runner().slots().CheckActive(0));
+  const auto executed = source_->executed();
+  Open({&branch});
+  // Leave room for the target page alone. A refused second-stage hydrate
+  // must retain its cold record and history, then resume after room returns.
+  const auto occupied = node_->catalog().OccupancyOf(node_->domain()).Total().value();
+  ASSERT_GT(node_->budget().value(), occupied + kExtent);
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto pad = node_->Pinned(node_->budget().value() - occupied - kExtent, 0, staging);
+  ASSERT_TRUE(pad) << Failed(pad).value_or("");
+  auto opened_prompt = branch.BeginPrompt(history, 0, false, true);
+  ASSERT_TRUE(opened_prompt) << Failed(opened_prompt).value_or("");
+  auto prompt = std::move(*opened_prompt);
+  const auto first = prompt->NextUnit();
+  ASSERT_TRUE(first) << Failed(first).value_or("");
+  ASSERT_EQ(first->phase, rt::Llm::PromptSession::Phase::kReuse);
+  EXPECT_FALSE(prompt->Advance({}, true));
+  EXPECT_TRUE(prompt->refused());
+  EXPECT_FALSE(prompt->done());
+  EXPECT_EQ(branch.history(), history);
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_TRUE(llm_->runner().slots().state_refused(0));
+  EXPECT_TRUE(llm_->runner().slots().restorable(0));
+  EXPECT_FALSE(llm_->runner().slots().usable(0));
+  EXPECT_FALSE(llm_->runner().slots().live(0, 0).used_ranges().empty());
+  EXPECT_TRUE(llm_->runner().slots().live(0, 1).used_ranges().empty());
+  ASSERT_TRUE(node_->FreePinned(*pad));
+  ASSERT_TRUE(prompt->Advance({}, true));
+  ASSERT_TRUE(prompt->done()) << "a kept prefix must not fall back to model recomputation";
+  EXPECT_EQ(prompt->reused(), history.size());
+  ASSERT_TRUE(prompt->Finish());
+  prompt.reset();
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_FALSE(branch.spilled());
+  EXPECT_FALSE(llm_->runner().slots().restorable(0));
+  EXPECT_TRUE(llm_->runner().slots().usable(0));
+  EXPECT_EQ(NativeImage(0), image);
+  {
+    rt::SnapshotStore store(*node_, 8 * kExtent);
+    auto captured = branch.CaptureState(store);
+    ASSERT_TRUE(captured) << Failed(captured).value_or("");
+    EXPECT_EQ(store.Digest(*captured), digest);
+  }
+  EXPECT_EQ(source_->executed(), executed);
+  Close();
+  Stop();
+  ::close(dir);
 }
 
 // Kept across a restart (D-105) with a spill file a stage (record version

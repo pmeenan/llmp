@@ -217,6 +217,9 @@ class SlotLifecycle {
   void ForgetRefusal(std::uint32_t slot);
   // No stage quarantined, the cohort healthy, no restore pending.
   bool usable(std::uint32_t slot) const;
+  // A healthy spilled prefix may be hydrated, including a kept adoption's
+  // exact pending progress replacement. It is still not execution-ready.
+  bool restorable(std::uint32_t slot) const;
   // The request open on the stream leases its state now.
   bool held(std::uint32_t slot) const;
   // D-105: its spill files hold all of its state, settled, as written last

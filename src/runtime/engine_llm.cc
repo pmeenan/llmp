@@ -990,7 +990,10 @@ Status EngineLlm::ClearStateFor(Branch& branch) {
 }
 
 bool EngineLlm::StateUsableFor(const Branch& branch) const {
-  return runner_ && runner_->slots().usable(Slot(branch));
+  // Prefix reuse includes healthy kept state that still needs hydration.
+  // Execution guards continue to reject its pending progress replacement.
+  return runner_ &&
+         (runner_->slots().usable(Slot(branch)) || runner_->slots().restorable(Slot(branch)));
 }
 
 bool EngineLlm::StateRefusedFor(const Branch& branch) const {

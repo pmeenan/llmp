@@ -778,10 +778,9 @@ class KeptDraftCompanionsTest : public DraftCompanionsTest {
     kept_dir_ = *directory;
     const auto scratch = config.slots.spill_directory;
     config.slots.spill_place = [this, scratch](std::uint32_t slot, std::uint32_t stage) {
-      return slot == 0 ? en::LiveState::SpillPlace{.directory = scratch,
-                                                   .dir = kept_dir_,
-                                                   .name = std::format("stage-{}", stage)}
-                       : en::LiveState::SpillPlace{.directory = scratch, .name = {}};
+      return en::LiveState::SpillPlace{.directory = scratch,
+                                       .dir = kept_dir_,
+                                       .name = std::format("slot-{}-stage-{}", slot, stage)};
     };
   }
   void TearDown() override {
@@ -793,24 +792,33 @@ class KeptDraftCompanionsTest : public DraftCompanionsTest {
 
 TEST_F(KeptDraftCompanionsTest, ANewRunnerHydratesPendingProgressBeforeAdoptedStateCanRun) {
   Prefill(0, 7);
-  const std::array owners{0U};
+  Prefill(1, 7);
+  const std::array owners{0U, 1U};
   auto decoder = Decoder();
-  ASSERT_FALSE(Decode(decoder, owners).outcomes[0].refusal);
-  ASSERT_TRUE(slots().Settle(0));
-  const auto original = slots().progress(0, 1)->completed();
-  const auto saved = Save(0);
-  ASSERT_TRUE(slots().Spill(0));
-  ASSERT_TRUE(slots().kept_whole(0));
-  std::vector<llmp::platform::FileIdentity> identities;
-  for (std::size_t stage = 0; stage < slots().stages(); ++stage) {
-    ASSERT_TRUE(slots().live(0, stage).spill_identity());
-    identities.push_back(*slots().live(0, stage).spill_identity());
+  const auto decoded = Decode(decoder, owners);
+  ASSERT_EQ(decoded.outcomes.size(), owners.size());
+  for (const auto& outcome : decoded.outcomes) ASSERT_FALSE(outcome.refusal);
+  std::array<md::DraftProgress, 2> original;
+  std::array<Checkpoint, 2> saved;
+  std::array<std::vector<llmp::platform::FileIdentity>, 2> identities;
+  for (const auto owner : owners) {
+    ASSERT_TRUE(slots().Settle(owner));
+    original[owner] = slots().progress(owner, 1)->completed();
+    saved[owner] = Save(owner);
+    ASSERT_NE(saved[owner].host, nullptr);
+    ASSERT_TRUE(slots().Spill(owner));
+    ASSERT_TRUE(slots().kept_whole(owner));
+    for (std::size_t stage = 0; stage < slots().stages(); ++stage) {
+      ASSERT_TRUE(slots().live(owner, stage).spill_identity());
+      identities[owner].push_back(*slots().live(owner, stage).spill_identity());
+    }
   }
   en::PagedNode restarted_node{
       en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent}};
   ASSERT_TRUE(restarted_node.Open());
   const auto fixed = restarted_node.catalog().OccupancyOf(restarted_node.domain()).Total().value();
   auto source = std::make_unique<ts::FakeStepSource>(source_->options());
+  const auto* observed_source = source.get();
   en::RunnerConfig config;
   config.slots = {.model = "Repeat",
                   .slots = 2,
@@ -820,12 +828,11 @@ TEST_F(KeptDraftCompanionsTest, ANewRunnerHydratesPendingProgressBeforeAdoptedSt
                   .invalidate = {},
                   .drop_plans = {}};
   config.slots.spill_place = [&](std::uint32_t slot, std::uint32_t stage) {
-    return slot == 0 ? en::LiveState::SpillPlace{.directory = kept_path_,
-                                                 .dir = kept_dir_,
-                                                 .name = std::format("stage-{}", stage),
-                                                 .keep = true,
-                                                 .expect = identities[stage]}
-                     : en::LiveState::SpillPlace{.directory = kept_path_, .name = {}};
+    return en::LiveState::SpillPlace{.directory = kept_path_,
+                                     .dir = kept_dir_,
+                                     .name = std::format("slot-{}-stage-{}", slot, stage),
+                                     .keep = true,
+                                     .expect = identities[slot][stage]};
   };
   for (const auto& built : source_->built())
     if (built.measuring) config.setup_shapes.push_back(built.shape);
@@ -847,16 +854,41 @@ TEST_F(KeptDraftCompanionsTest, ANewRunnerHydratesPendingProgressBeforeAdoptedSt
     restarted_node.Run();
     if (auto x = restarted->Bind(); !x) return x;
     auto& state = restarted->slots();
-    if (auto x = state.Adopt(0, 10, saved.footprint, slots().kept_layout_id()); !x) return x;
-    EXPECT_FALSE(state.usable(0));
-    EXPECT_FALSE(state.kept_whole(0));
-    EXPECT_FALSE(state.BeginDraftUnit(0, 1));
-    EXPECT_EQ(state.progress(0, 1)->completed(), md::DraftProgress{});
-    if (auto x = state.Restore(0); !x) return x;
-    EXPECT_EQ(state.progress(0, 1)->completed(), original);
-    EXPECT_TRUE(state.usable(0));
-    EXPECT_TRUE(state.kept_whole(0));
-    if (auto x = state.SelectSlots(owners); !x) return x;
+    for (const auto owner : owners) {
+      if (auto x = state.Adopt(owner, 10, saved[owner].footprint, slots().kept_layout_id()); !x)
+        return x;
+      EXPECT_FALSE(state.usable(owner));
+      EXPECT_TRUE(state.restorable(owner));
+      EXPECT_FALSE(state.CheckActive(owner));
+      EXPECT_FALSE(state.kept_whole(owner));
+      EXPECT_FALSE(state.BeginDraftUnit(owner, 1));
+      EXPECT_EQ(state.progress(owner, 1)->completed(), md::DraftProgress{});
+    }
+    const auto executed = observed_source->executed();
+    for (const auto owner : owners) {
+      // A singleton request may leave the other adopted owner cold.
+      const std::array selected{owner};
+      if (auto x = state.SelectSlots(selected); !x) return x;
+      if (auto x = state.Restore(owner); !x) return x;
+      EXPECT_EQ(state.progress(owner, 1)->completed(), original[owner]);
+      EXPECT_FALSE(state.restorable(owner));
+      EXPECT_TRUE(state.usable(owner));
+      EXPECT_TRUE(state.kept_whole(owner));
+      EXPECT_EQ(observed_source->executed(), executed);
+      for (std::uint32_t peer = owner + 1; peer < owners.size(); ++peer) {
+        EXPECT_TRUE(state.spilled(peer));
+        EXPECT_TRUE(state.restorable(peer));
+        EXPECT_FALSE(state.usable(peer));
+        EXPECT_FALSE(state.CheckActive(peer));
+        EXPECT_EQ(state.positions(peer), 10U);
+        EXPECT_EQ(state.progress(peer, 1)->completed(), md::DraftProgress{});
+        EXPECT_EQ(state.progress(peer, 1)->state(), en::DraftProgressLedger::State::kReplacing);
+        for (std::size_t stage = 0; stage < state.stages(); ++stage)
+          EXPECT_TRUE(state.live(peer, stage).used_ranges().empty());
+      }
+    }
+    const std::array first{0U};
+    if (auto x = state.SelectSlots(first); !x) return x;
     md::Batching caps;
     auto composer = en::WaveComposer::For(caps, state);
     if (!composer) return std::unexpected(composer.error());
@@ -891,7 +923,7 @@ TEST_F(KeptDraftCompanionsTest, ANewRunnerHydratesPendingProgressBeforeAdoptedSt
                                                         : "resumed unit was not discarded");
     EXPECT_TRUE(saw);
     EXPECT_TRUE(report.outcomes[0].discarded);
-    EXPECT_EQ(state.progress(0, 1)->completed(), original);
+    EXPECT_EQ(state.progress(0, 1)->completed(), original[0]);
     return {};
   }();
   EXPECT_TRUE(run) << ts::Failed(run).value_or("");

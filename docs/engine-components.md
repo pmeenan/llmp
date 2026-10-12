@@ -2134,8 +2134,10 @@ and replayable QSA contract; default mappings and serving remain unchanged.
 The shared runner derives side-row IDs from authenticated token history
 before admission, with explicit rows authoritative. Native component sources
 remain unqualified for multi-owner repeat-pending execution; the shared
-entry points refuse it before state mutation. Exact joined arithmetic is a
-required follow-on before serving recipes or migration gates. The bounded
+entry points refuse it before state mutation. Joined arithmetic and routing
+qualification is a required follow-on before serving recipes or migration gates: original-model
+quality is primary, legacy comparisons diagnose differences, and state
+restoration must reproduce the same selected implementation. The bounded
 selected-HC recipe screen (G3c2b1b1) is evidence for a default-off native
 recipe correction only: its 09c report found equal K1/K3 head inputs and logits
 across all 47,172 vocabulary logits per owner, while its four K3 products had equal
@@ -2183,6 +2185,17 @@ backend: prompts, joined prompt and generation waves, greedy device
 choice, speculation with two cascaded drafters, spill and restore, a turn
 checkpoint's restore, recovery, and a restart adopting a version 2 record
 while refusing a version 1 one.
+
+**Cold kept-state hydration (G3c2b2b).** An adopted prefix may be eligible
+for reuse before its repeat-pending drafter progress has been read from disk.
+That eligibility requires the current owner's replacement ticket and no
+active restore, borrow, verification or owed work. The adapter hydrates the
+saved state before execution; execution readiness remains separate from
+reuse eligibility. A partial restore capacity refusal preserves the prefix
+and ticket for retry. Native build and 77 focused host/fake controls pass on Spark B,
+including complete state/hash preservation without extra model steps and
+independent restoration of cold peers. These controls do not qualify GPU
+arithmetic, served performance or the joined-family gates.
 
 **Qwen3.8 sole-owner serving (G3c2b2a).** An internal, default-off diagnostic
 route composes native Cutlass and GGML experts, GGUF and the native MTP replay

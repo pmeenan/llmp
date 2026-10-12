@@ -395,6 +395,17 @@ bool SlotLifecycle::usable(std::uint32_t slot) const {
   const Slot& s = slots_.at(slot);
   return Usable(s) && !s.restoring && !ProgressBusy(s);
 }
+bool SlotLifecycle::restorable(std::uint32_t slot) const {
+  const Slot& s = slots_.at(slot);
+  if (!s.spilled || s.positions == 0 || !Usable(s) || s.restoring || Borrowed(s) ||
+      verify_pending(slot) || owed(slot))
+    return false;
+  return std::ranges::all_of(s.stages, [](const Stage& stage) {
+    if (stage.restore_ticket)
+      return stage.progress && stage.progress->Replacing(*stage.restore_ticket);
+    return !stage.progress || stage.progress->settled();
+  });
+}
 bool SlotLifecycle::held(std::uint32_t slot) const {
   return cohort_.IsActive(slot) && node_.InRequest(stream_);
 }
@@ -573,7 +584,10 @@ Status SlotLifecycle::SelectSlots(std::span<const std::uint32_t> slots) {
   if (!mask) return std::unexpected(mask.error());
   for (const Slot& slot : slots_) {
     if ((*mask & (SlotMask{1} << slot.index)) != 0) continue;
-    if (slot.restoring || Borrowed(slot) || verify_pending(slot.index) || ProgressBusy(slot)) {
+    // A cold kept peer owns only its hydration ticket, not active work.
+    // It may remain unselected until that peer's own request restores it.
+    if (slot.restoring || Borrowed(slot) || verify_pending(slot.index) ||
+        (ProgressBusy(slot) && !restorable(slot.index))) {
       return Refuse(std::format(
           "selection cannot drop slot {}: a restore, borrow or verify still needs it", slot.index));
     }
