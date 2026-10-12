@@ -1275,6 +1275,15 @@ rows, K, N and output encoding. They never replace operand, stride, alignment,
 selected-expert or capture checks. Ordinary sources keep their existing path;
 no tuning record or family policy is installed automatically.
 
+Component planning receives conservative alignment facts for single-part weights
+from their actual nonzero virtual reservation addresses, keyed by the complete
+weight binding and part role. The source checks power-of-two alignment and
+address divisibility in both measurement and bound lowering, and preserves
+semantic root identity through rewrites. Multipart logical roots remain unknown.
+These facts do not select a numerical policy: the joined BF16 vector capability
+still requires an explicit matching physical-shape and F32-output tuning record;
+ordinary untuned products retain their existing selection.
+
 The declaration uses the qualified installation's compiled source/module/SDK
 and effective build recipes, actual device architecture, CUDA driver API and
 runtime versions, cuBLAS/Lt versions, and queried math, pointer, atomics and

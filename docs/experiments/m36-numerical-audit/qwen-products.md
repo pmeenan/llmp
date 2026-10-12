@@ -210,3 +210,36 @@ Raw evidence remains outside Git under `qwen-phase-admission-root-main01`
 and `qwen-phase-admission-root-main02/results` in the coordination scratch root.
 This correction does not adopt Qwen50 arithmetic or establish model quality,
 state or speed qualification.
+
+## Checked weight alignment — 2026-10-12
+
+The shared runner now supplies actual single-part weight reservation alignment
+by complete WeightRef/part role, capped by the provider's reservation promise.
+Component preparation validates power-of-two, nonzero-address and divisibility
+promises before lowering, and forwards only matching semantic root facts.
+Multipart logical roots remain unknown. Measurement uses actual reservations,
+not placeholders. The physical lowerer rechecks the selected binding.
+
+Valid facts alone do not activate the explicitly tuned BF16/F32/F32 product.
+An actual component/planner/lower host control covers eleven modes: valid
+measurement and bound facts; missing facts; malformed or misaligned promises;
+unrelated WeightRef or part role; zero addresses in both modes; and valid facts
+with no tuning or wrong-output-type tuning. Unknown facts select ordinary
+products; invalid promises refuse before the lower callback. No arithmetic,
+capability predicate, owner policy, fusion setting or tuning pins change.
+
+Root's warm main native build passes on Spark B, followed by all 108 affected
+host controls: ModelRunner 54, GgmlLowerQwen38 12, GgmlLowerDsv4 29 and
+ExecutionContract 13. The eleven modes execute inside one named Qwen control;
+they are not eleven independent test cases. Source, recipe and binary guards
+pass with no failures or skips. No new GPU inference was necessary for this
+source-fact carry. The separate [joined scoring report](qwen-joined-score.md)
+retains the completed private diagnostic's measurements and limitations.
+
+- Main build/host receipt SHA-256: `7a87eccda7a89b9861cad245e72f6c6350fe89895d4c229cedad9b2bf8e8b17b`.
+- Final source review SHA-256: `36a8419e5ef97d36bc8a0a3a78e16a2ee0895e5477303288bf42821612652479`.
+- Current carry/recipe review SHA-256: `7bd58d7d6a35bfcb34ca57927090d13eca1e30f9165bef98411485b8e00a7d18`.
+
+Raw evidence remains outside Git in the coordination root's
+`weight-alignment-current-main07/results`. Family admission and migration gates
+remain open.

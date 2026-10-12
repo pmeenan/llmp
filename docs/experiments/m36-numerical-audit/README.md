@@ -29,6 +29,14 @@ cost of owner-width splitting and the precision cost of ordinary joined
 BF16 matrix products. Existing joined MMVF avoids that activation contraction,
 with a measured speed tradeoff; neither replay is full-model qualification.
 
+A later [target-only joined scoring screen](qwen-joined-score.md) uses the real
+owned backend and records lower secondary same-artifact loss with three
+explicit physical8 tuning keys. Its short fresh-process bookend shows no clear
+timing separation. Same-candidate short state controls pass; original-reference,
+long-context, MTP and serving migration qualifications remain open. The generic
+reserved-weight alignment fix supplies checked physical facts and does not
+activate those experimental policy choices.
+
 ## Candidates and evidence
 
 | Work | What the audit established | Next decision |

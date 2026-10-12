@@ -440,6 +440,13 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
   };
   const auto alignment = node_.memory().ReservationAlignment().value();
   a.activation_alignment = alignment;
+  // Setup reserves ordinary weights and row-table slots before measurement.
+  // These are real stable reservation addresses, never lowering placeholders.
+  a.weight_alignment = [weight = a.weight, alignment](const ir::WeightRef& ref,
+                                                      format::PartRole part) -> std::uint64_t {
+    const auto address = weight(ref, part);
+    return address != 0 && alignment != 0 ? std::gcd(alignment, address) : 0;
+  };
   a.state_alignment = [state_place, alignment](const ir::StateRef& ref) -> std::uint64_t {
     const auto [base, offset] = state_place(ref);
     return base != 0 && alignment != 0 ? std::gcd(alignment, offset) : 0;

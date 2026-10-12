@@ -51,6 +51,7 @@
 #include <vector>
 
 #include "components/step.h"
+#include "engine/component_source.h"
 #include "execution/registry.h"
 #include "format/encoding.h"
 #include "ggml.h"
@@ -1669,6 +1670,127 @@ TEST(GgmlLowerQwen38Test, FastCapabilitiesPreserveTheOperationsParameters) {
     pooled.rope = norm.rope;
     q.params = std::as_bytes(std::span(&pooled, 1));
     EXPECT_FALSE(pool->accepts(q));
+  }
+}
+
+// Actual component emission and selection, with synthetic reserved addresses:
+// no model payload, device allocation or dispatch is needed to prove eligibility.
+TEST(GgmlLowerQwen38Test, ReservedWeightFactsSelectTypedProductsAndRejectBrokenPromises) {
+  const auto& im = ImportOf(fx::Form::kCutlass);
+  auto spec = *im.spec;
+  spec.stages.front().layers.resize(md::Qwen38Flash().ple_layer + 1);
+  auto layout = co::StageLayout(spec, 0, kContext, kMaxRows, kExtent);
+  ASSERT_TRUE(layout) << layout.error();
+  auto policy = im.policy;
+  ASSERT_EQ(std::erase(policy.enabled, "owner_row_invariant"), 1U);
+  policy.disabled.emplace_back("owner_row_invariant");
+  pl::Canonicalize(policy);
+  auto device = Gb10();
+  for (const auto n : {512U, 2560U, 10240U})
+    device.tuned.push_back({.implementation = kg::kMulMatVecFRows,
+                            .rows = 8,
+                            .k = 2560,
+                            .n = n,
+                            .output_encoding = llmp::format::Encoding::kF32});
+  const auto registry = PlanningRegistry();
+  pl::StepShape shape{.phase = pl::Phase::kScore, .segments = {}, .read_align = 256};
+  for (std::uint8_t owner = 0; owner < 4; ++owner)
+    shape.segments.push_back({.slot = owner, .rows = 2, .read_cells = 256, .outputs = 2});
+  // Positive measuring/bound; unknown; malformed; broken binding; unrelated
+  // WeightRef; wrong PartRole; zero actual address in either mode; and valid
+  // facts without tuning or with a mismatched output-typed tuning record.
+  // No negative changes the selection predicate.
+  for (int mode = 0; mode < 11; ++mode) {
+    SCOPED_TRACE(mode);
+    auto selected_device = device;
+    if (mode == 9) selected_device.tuned.clear();
+    if (mode == 10)
+      for (auto& tune : selected_device.tuned) tune.output_encoding = llmp::format::Encoding::kF16;
+    bool lowered = false;
+    std::map<std::pair<ir::WeightRef, llmp::format::PartRole>, std::uint64_t> bases;
+    kn::Addresses addresses{};
+    addresses.activation_alignment = kExtent;
+    addresses.weight = [&](const ir::WeightRef& ref, llmp::format::PartRole part) {
+      if (mode == 7 || mode == 8) return std::uint64_t{0};
+      const auto key = std::pair{ref, part};
+      auto [at, inserted] = bases.emplace(key, 0);
+      if (inserted) at->second = (std::uint64_t{1} << 45) + bases.size() * (std::uint64_t{1} << 32);
+      return at->second + (mode == 4 ? 2U : 0U);
+    };
+    if (mode != 2) {
+      addresses.weight_alignment = [&](const ir::WeightRef& ref, llmp::format::PartRole part) {
+        if (mode == 5 && ref.stage != 99) return std::uint64_t{0};
+        if (mode == 6 && part != llmp::format::PartRole::kBlockScales) return std::uint64_t{0};
+        return mode == 3 ? std::uint64_t{3} : kExtent;
+      };
+    }
+    addresses.state = [](const ir::StateRef& ref) {
+      return (std::uint64_t{1} << 52) + std::uint64_t{ref.segment} * (std::uint64_t{1} << 38) +
+             std::uint64_t{ref.layer} * (std::uint64_t{1} << 32) +
+             std::uint64_t{ref.tensor} * (std::uint64_t{1} << 26);
+    };
+    if (mode == 1 || mode == 8) {
+      addresses.activations = std::uint64_t{1} << 58;
+      addresses.activation_bytes = std::uint64_t{1} << 32;
+    }
+    auto source = llmp::engine::ComponentStepSource::Create(
+        {.spec = &spec,
+         .bindings = {.tensors = im.source.tensors, .state = &*layout},
+         .slots = 4,
+         .policy = policy,
+         .backend = {
+             .registry = &registry,
+             .device = selected_device,
+             .written = kg::WrittenBytes,
+             .within = kg::WithinRoot,
+             .lower = [&](const kn::LowerInput& input)
+                 -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+               lowered = true;
+               std::set<std::uint64_t> selected_widths;
+               for (const auto& selected : input.plan.steps) {
+                 if (registry.at(selected.implementation).name != kg::kMulMatVecFRows) continue;
+                 for (const auto id : selected.nodes) {
+                   const auto& node = input.plan.graph.node(id);
+                   EXPECT_EQ(node.key, ir::Primitive(ir::Op::kMatMul));
+                   const auto& weight = input.plan.graph.tensor(node.src[0]);
+                   const auto& x = input.plan.graph.tensor(node.src[1]);
+                   const auto& y = input.plan.graph.tensor(node.out[0]);
+                   EXPECT_EQ(weight.format.encoding, llmp::format::Encoding::kBF16);
+                   EXPECT_EQ(x.format.encoding, llmp::format::Encoding::kF32);
+                   EXPECT_EQ(y.format.encoding, llmp::format::Encoding::kF32);
+                   EXPECT_EQ(x.ne(1), 8U);
+                   EXPECT_EQ(weight.ne(0), 2560U);
+                   EXPECT_EQ(node.Params<ir::ProductParams>().accumulate, ir::Accumulate::kDefault);
+                   selected_widths.insert(weight.ne(1));
+                 }
+               }
+               const std::set<std::uint64_t> expected =
+                   mode < 2 ? std::set<std::uint64_t>{512, 2560, 10240} : std::set<std::uint64_t>{};
+               EXPECT_EQ(selected_widths, expected);
+               auto physical = kg::LowerStep(
+                   input, registry, Device(),
+                   {.expert_stride = [&](const ir::WeightRef& ref) -> std::uint64_t {
+                     return ref.stage == 0 && ref.expert_array && ref.layer < im.stride.size()
+                                ? im.stride[ref.layer]
+                                : 0;
+                   }});
+               EXPECT_TRUE(physical) << (physical ? "" : physical.error().detail);
+               if (physical) {
+                 const auto count = std::ranges::count_if(
+                     physical->plan.steps,
+                     [](const auto& step) { return step.implementation == kg::kMulMatVecFRows; });
+                 EXPECT_EQ(count, mode < 2 ? md::Qwen38Flash().ple_layer + 3 : 0);
+               }
+               return std::unexpected("observed reserved-weight selection");
+             }}});
+    ASSERT_TRUE(source) << source.error();
+    auto result = (*source)->Build(shape, addresses);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(lowered, mode != 3 && mode != 4 && mode != 7 && mode != 8);
+    if (mode == 3 || mode == 4 || mode == 7 || mode == 8)
+      EXPECT_NE(result.error().find("alignment"), std::string::npos);
+    else
+      EXPECT_EQ(result.error(), "observed reserved-weight selection");
   }
 }
 

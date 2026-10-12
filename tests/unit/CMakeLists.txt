@@ -1252,7 +1252,7 @@ endif()
 add_executable(ggml_lower_qwen38_test ggml_lower_qwen38_test.cc)
 target_link_libraries(ggml_lower_qwen38_test PRIVATE llmp_ggml_tensors llmp_planner
                                                      llmp_components llmp_spec llmp_model
-                                                     llmp_artifact llmp_json)
+                                                     llmp_artifact llmp_json llmp_engine_core)
 llmp_gtest(ggml_lower_qwen38_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The components' state contracts through the shared slot lifecycle on the

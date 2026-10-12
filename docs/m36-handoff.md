@@ -44,9 +44,16 @@ Main through `7e0bf848` includes split NVFP4 paged rows, checked route/part
 helpers and bounded selected-expert grouped execution. Full native main build,
 eight helper controls and both actual grouped GPU cases pass, including repeated
 contributions and changed-routing replay. Production mid-step routing and native
-ModelOpt admission remain open. The supplemental base-lease prerequisite passes full native main build and
+ModelOpt admission remain open. The supplemental base-lease prerequisite landed in `ccd5a556` and passes full native main build and
 145 focused host controls, including cancellation and unknown-retirement cases.
 The substantive routed continuation is being implemented independently.
+
+The generic reserved-weight alignment carry passes main native build and
+108 focused host controls. It provides actual checked physical facts without
+installing tuning. The [Qwen secondary screen](experiments/m36-numerical-audit/qwen-joined-score.md)
+records 4.56% lower perplexity on 128 targets and no clear short-screen timing
+separation. Actual decode continuation, broader quality and serving gates
+remain open; the original unquantized reference is still missing.
 
 The shared phase-admission correction landed in `d8aa6388`, with a full native
 build and 60 affected host controls: scoring and decode use their actual declared

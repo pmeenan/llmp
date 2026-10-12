@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Carry checked reserved-weight alignment into component planning, so explicitly
+  tuned supported products can be selected without inventing physical facts.
+  Unknown facts retain ordinary selection; invalid promises refuse before
+  lowering. No tuning policy is installed.
+
 - Admit shared teacher-forced scoring and ordinary decode by their actual
   numerical mode, preserving the separate companion-execution permission.
 

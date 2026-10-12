@@ -1701,6 +1701,15 @@ each is checked against the design as M3.6 proceeds.
                                     permissions. Main native build and all 60
                                     affected host controls pass; arithmetic
                                     qualification remains separate ([evidence](experiments/m36-numerical-audit/qwen-products.md#shared-phase-admission-correction--2026-10-12)).
+                              - [x] **G3c2b1f — checked weight reservation facts:**
+                                    carry actual single-part reserved-address
+                                    alignment through shared measurement, planning
+                                    and lowering. Unknown facts preserve ordinary
+                                    selection; invalid promises refuse. Full native
+                                    main build and 108 focused host controls pass,
+                                    including eleven valid/invalid/no-tuning modes.
+                                    No arithmetic or tuning policy is activated
+                                    ([evidence](experiments/m36-numerical-audit/qwen-products.md#checked-weight-alignment--2026-10-12)).
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%

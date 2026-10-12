@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "planner/plan.h"
 
@@ -389,7 +390,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   if (!addresses.measuring() && addresses.activation_alignment != 0 &&
       addresses.activations % addresses.activation_alignment != 0)
     return std::unexpected("the activation base breaks its reservation alignment promise");
-  std::vector<std::pair<ir::TensorDesc, std::uint64_t>> state_facts;
+  std::vector<std::pair<ir::TensorDesc, std::uint64_t>> physical_facts;
   if (addresses.state_alignment) {
     for (const auto& node : step->graph.nodes()) {
       if (node.key.op != ir::Op::kState) continue;
@@ -403,16 +404,39 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
       const auto address = addresses.state ? addresses.state(*ref) : 0;
       if (address != 0 && address % alignment != 0)
         return std::unexpected("a state base breaks its reservation alignment promise");
-      state_facts.emplace_back(desc, alignment);
+      physical_facts.emplace_back(desc, alignment);
+    }
+  }
+  if (addresses.weight_alignment) {
+    for (const auto& weight : step->weights) {
+      // A multipart logical root has no single physical address. Its parts
+      // remain unknown here; no first-part alignment is promoted to the root.
+      if (weight.parts.size() != 1) continue;
+      const auto& desc = step->graph.tensor(weight.tensor);
+      const auto parts = format::PartsOf(desc.format);
+      if (!parts || parts->size() != 1 || (*parts)[0].role != weight.parts[0].second)
+        return std::unexpected("a weight alignment does not name its single format part");
+      const auto part = weight.parts[0].second;
+      const auto alignment = addresses.weight_alignment(weight.ref, part);
+      if (alignment == 0) continue;
+      if (!power_of_two(alignment))
+        return std::unexpected("a weight reservation alignment is not a power of two");
+      const auto address = addresses.weight ? addresses.weight(weight.ref, part) : 0;
+      if (address == 0 || address % alignment != 0)
+        return std::unexpected("a weight base breaks its reservation alignment promise");
+      physical_facts.emplace_back(desc, alignment);
     }
   }
   planner::RootAlignment root_alignment;
-  if (!state_facts.empty()) {
-    root_alignment = [facts = std::move(state_facts)](const ir::Graph& graph,
-                                                      ir::TensorId root) -> std::uint64_t {
+  if (!physical_facts.empty()) {
+    root_alignment = [facts = std::move(physical_facts)](const ir::Graph& graph,
+                                                         ir::TensorId root) -> std::uint64_t {
       if (!root.valid() || root.v >= graph.tensor_count()) return 0;
       const auto& desc = graph.tensor(root);
-      if (desc.is_view() || graph.node(graph.producer(root)).key.op != ir::Op::kState) return 0;
+      const auto op = graph.node(graph.producer(root)).key.op;
+      if (desc.is_view() || (op != ir::Op::kState && op != ir::Op::kWeight)) return 0;
+      // Exact semantic leaf identity survives authorized rewrites. The format
+      // also fixes the single part checked above; no unrelated binding gains it.
       for (const auto& [saved, alignment] : facts) {
         if (desc.binding == saved.binding && desc.format == saved.format && desc.nb == saved.nb &&
             desc.role == saved.role && desc.segment == saved.segment)

@@ -216,6 +216,9 @@ struct Addresses {
   // Zero/absent is unknown; neither logical offsets nor placeholders prove it.
   std::uint64_t activation_alignment = 0;
   std::function<std::uint64_t(const ir::StateRef&)> state_alignment{};
+  // A single-part weight's actual reserved address, by its complete binding.
+  // This promise is available before measurement; zero means unknown.
+  std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight_alignment{};
   bool measuring() const { return activations == 0; }
 };
 
