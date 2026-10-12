@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +45,7 @@
 
 #include "base/sha256.h"
 #include "components/component.h"
+#include "components/defs.h"
 #include "components/step.h"
 #include "format/encoding.h"
 #include "ir/graph.h"
@@ -1555,4 +1557,225 @@ TEST(ComponentsQwen38Test, ReadsReachAnyEarlierStageAndAreRefusedOtherwise) {
 }
 
 }  // namespace
+}  // namespace llmp::components
+
+namespace llmp::components {
+namespace {
+
+std::vector<ParameterCase> ZeroCenteredCases() {
+  auto cases = ParameterCases();
+  std::erase_if(cases, [](const auto& c) { return c.component.kind == "attention.gdn"; });
+  for (auto& c : cases) {
+    if (c.component.kind == "residual.ple") c.tiny = {2, 3, 4};
+    for (const auto role : c.tiny) c.ranges[role] = {-0.25F, 0.25F};
+  }
+  auto head = cases.front();
+  head.site = Site::kFinalNorm;
+  head.component.params.push_back(P("inject", B(false)));
+  head.component.params.push_back(P("features", B(true)));
+  std::ranges::sort(head.component.params, {}, &Param::name);
+  cases.push_back(std::move(head));
+  auto split = cases[1];
+  split.component = Qsa("split");
+  split.formats = QsaFormats(Encoding::kF32);
+  cases.push_back(std::move(split));
+  auto repeat = cases[3];
+  repeat.component.version = 2;
+  repeat.component.params.push_back(P("token_offset", I(1)));
+  std::ranges::sort(repeat.component.params, {}, &Param::name);
+  repeat.cells.push_back(1);
+  cases.push_back(std::move(repeat));
+  return cases;
+}
+ComponentRef RawNorm(ComponentRef component, bool enabled) {
+  component.params.push_back(P("norm_zero_centered", B(enabled)));
+  std::ranges::sort(component.params, {}, &Param::name);
+  return component;
+}
+
+TEST(ComponentsQwen38Test, ZeroCenteredNormsRejectFoldContradictionsAndKeepDefaultGraphs) {
+  for (const auto& c : ZeroCenteredCases()) {
+    SCOPED_TRACE(c.component.kind);
+    EXPECT_FALSE(MakeInstance(RawNorm(c.component, true), c.facts, c.site, 0, 1));
+    const auto old = MakeInstance(c.component, c.facts, c.site, 0, 1);
+    const auto unchanged = MakeInstance(RawNorm(c.component, false), c.facts, c.site, 0, 1);
+    ASSERT_TRUE(old);
+    ASSERT_TRUE(unchanged);
+    for (const auto& step : RowSteps()) {
+      auto a = BuildComponent(*old, step.shape, c.formats, c.cells, c.lone.inputs);
+      auto b = BuildComponent(*unchanged, step.shape, c.formats, c.cells, c.lone.inputs);
+      ASSERT_TRUE(a) << a.error();
+      ASSERT_TRUE(b) << b.error();
+      EXPECT_EQ(a->step.graph.Digest(), b->step.graph.Digest());
+    }
+  }
+  auto facts = kHcFacts;
+  facts.folds = {};
+  EXPECT_FALSE(
+      MakeInstance(C("hc.mix", {P("eps", R(1e-6)), P("hc_eps", R(1e-6)), P("mix", N("sinkhorn")),
+                                P("iterations", I(2)), P("norm_zero_centered", B(true))}),
+                   facts, Site::kLayer, 0, 1));
+  // GDN's norm is not zero-centered in the approved raw source. This option
+  // is not part of that component contract, rather than being ignored.
+  EXPECT_FALSE(MakeInstance(RawNorm(Gdn(), true), kFacts, Site::kLayer, 0, 1));
+  auto mtp =
+      C("embedding.mtp", {P("eps", R(1e-6)), P("tap", N("streams")), P("token_offset", I(1))});
+  mtp.version = 2;
+  EXPECT_FALSE(MakeInstance(RawNorm(mtp, true), kHcFacts, Site::kEmbedding, 0, 1));
+  EXPECT_TRUE(MakeInstance(RawNorm(mtp, true), facts, Site::kEmbedding, 0, 1));
+}
+
+TEST(ComponentsQwen38Test, RawNormsKeepSourceBytesAndOneJoinedOffsetPerRole) {
+  for (auto c : ZeroCenteredCases()) {
+    SCOPED_TRACE(c.component.kind);
+    auto facts = c.facts;
+    facts.folds = {};
+    const auto in = MakeInstance(RawNorm(c.component, true), facts, c.site, 0, 1);
+    ASSERT_TRUE(in) << in.error();
+    for (const auto encoding : {Encoding::kBF16, Encoding::kF32}) {
+      for (auto role : c.tiny) c.formats[role].encoding = encoding;
+      const auto g = BuildComponent(*in, RowSteps()[0].shape, c.formats, c.cells, c.lone.inputs);
+      ASSERT_TRUE(g) << g.error();
+      if (encoding == Encoding::kBF16) CheckNativeParameters(*g, c.tiny);
+      for (const auto role : c.tiny) {
+        const auto leaf = g->weights.at(role);
+        EXPECT_EQ(g->step.graph.tensor(leaf).format.encoding, encoding);
+        std::size_t offsets = 0;
+        for (const auto& node : g->step.graph.nodes()) {
+          if (node.key != ir::Primitive(ir::Op::kScale)) continue;
+          const auto param = node.Params<ir::ScaleParams>();
+          if (param.scale != 1.0F || param.bias != 1.0F) continue;
+          const auto& producer = g->step.graph.node(g->step.graph.producer(node.src[0]));
+          const auto source =
+              producer.key == ir::Primitive(ir::Op::kConvert) ? producer.src[0] : node.src[0];
+          if (source != leaf) continue;
+          ++offsets;
+          const auto& value = g->step.graph.tensor(node.out[0]);
+          EXPECT_EQ(node.batch, ir::Batch::kJoined);
+          EXPECT_EQ(value.format.encoding, Encoding::kF32);
+          EXPECT_EQ(value.role, ir::Role::kActivation);
+          EXPECT_EQ(value.segment, ir::kJoinedSegment);
+          EXPECT_EQ(value.shape(), g->step.graph.tensor(leaf).shape());
+          EXPECT_TRUE(std::holds_alternative<std::monostate>(value.binding));
+        }
+        EXPECT_EQ(offsets, 1U) << role;
+      }
+    }
+  }
+}
+
+TEST(ComponentsQwen38Test, RawNormBf16AndF32MatchIndependentReferencesAcrossOwners) {
+  for (auto c : ZeroCenteredCases()) {
+    SCOPED_TRACE(c.component.kind);
+    auto facts = c.facts;
+    facts.folds = {};
+    const auto in = MakeInstance(RawNorm(c.component, true), facts, c.site, 0, 1);
+    ASSERT_TRUE(in) << in.error();
+    for (const auto encoding : {Encoding::kBF16, Encoding::kF32}) {
+      for (auto role : c.tiny) c.formats[role].encoding = encoding;
+      Compare(*in, c.formats, c.cells, RowSteps(), kTolerance,
+              c.component.kind == "attention.qsa" ? kF16State : kTolerance, c.lone, c.ranges);
+    }
+  }
+}
+
+TEST(ComponentsQwen38Test, RawNormOffsetRoundsOnceToF32WithoutBf16Roundtrip) {
+  auto c = ZeroCenteredCases().front();
+  auto facts = c.facts;
+  facts.folds = {};
+  const auto in = MakeInstance(RawNorm(c.component, true), facts, c.site, 0, 1);
+  ASSERT_TRUE(in);
+  const std::array samples{-1.0F,   -0.0F,    0.0F,       0x1p-9F,     0x1p-24F,
+                           0x1p24F, -0x1p24F, 1.0078125F, -0.99609375F};
+  for (const auto encoding : {Encoding::kBF16, Encoding::kF32}) {
+    c.formats[0].encoding = encoding;
+    auto built = BuildComponent(*in, RowSteps()[0].shape, c.formats, {}, c.lone.inputs);
+    ASSERT_TRUE(built) << built.error();
+    const auto& graph = built->step.graph;
+    auto exec = ref::Executor::Create(graph);
+    ASSERT_TRUE(exec) << exec.error().detail;
+    for (const auto& node : graph.nodes()) {
+      if (node.key != ir::Primitive(ir::Op::kInput) && node.key != ir::Primitive(ir::Op::kWeight))
+        continue;
+      const auto leaf = node.out[0];
+      const auto& tensor = graph.tensor(leaf);
+      std::vector<float> values(ir::Elements(tensor.shape()), 0.0F);
+      if (leaf == built->weights[0])
+        for (std::size_t i = 0; i < values.size(); ++i) values[i] = samples[i % samples.size()];
+      ASSERT_TRUE(exec->BindValues(leaf, values));
+    }
+    ASSERT_TRUE(exec->Run());
+    const auto source = exec->Values(built->weights[0]);
+    ASSERT_TRUE(source);
+    bool found = false;
+    for (const auto& node : graph.nodes()) {
+      if (node.key != ir::Primitive(ir::Op::kScale)) continue;
+      const auto param = node.Params<ir::ScaleParams>();
+      if (param.scale != 1.0F || param.bias != 1.0F) continue;
+      auto got = exec->Values(node.out[0]);
+      ASSERT_TRUE(got);
+      ASSERT_EQ(got->size(), source->size());
+      for (std::size_t i = 0; i < got->size(); ++i) {
+        const float expected = (*source)[i] + 1.0F;
+        EXPECT_EQ(std::bit_cast<std::uint32_t>((*got)[i]), std::bit_cast<std::uint32_t>(expected));
+      }
+      found = true;
+    }
+    EXPECT_TRUE(found);
+  }
+}
+
+}  // namespace
+
+namespace {
+TEST(ComponentsQwen38Test, ParameterCacheSeparatesRawAndOffsetWithoutAnotherCast) {
+  auto facts = kHcFacts;
+  facts.folds = {};
+  const auto in =
+      MakeInstance(RawNorm(ZeroCenteredCases().front().component, true), facts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(in);
+  for (const bool offset_first : {false, true}) {
+    ir::Builder b;
+    const auto weight =
+        b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({4})), {.component = 1, .role = 0});
+    StepContext context(
+        b, {{.rows = 1, .outputs = 1}, {.slot = 1, .first_row = 1, .rows = 1, .outputs = 1}},
+        false);
+    Fragment fragment{.b = b, .instance = *in, .step = context, .weight = [&](std::uint16_t role) {
+                        EXPECT_EQ(role, 0);
+                        return weight;
+                      }};
+    defs::F32Parameters<1> parameters(fragment);
+    b.SetOwner(1);
+    const auto first = offset_first ? parameters.Norm(0) : parameters.Get(0);
+    const auto second = offset_first ? parameters.Get(0) : parameters.Norm(0);
+    EXPECT_EQ(b.segment(), 1);
+    EXPECT_NE(first, second);
+    const auto plain = parameters.Get(0);
+    const auto shifted = parameters.Norm(0);
+    EXPECT_EQ(offset_first ? first : second, shifted);
+    EXPECT_EQ(offset_first ? second : first, plain);
+    b.Output(plain);
+    b.Output(shifted);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    EXPECT_EQ(
+        std::ranges::count_if(
+            graph->nodes(), [](const auto& n) { return n.key == ir::Primitive(ir::Op::kConvert); }),
+        1);
+    auto exec = ref::Executor::Create(*graph);
+    ASSERT_TRUE(exec);
+    const std::array raw{-1.0F, 0.0F, 0x1p-9F, 1.0F};
+    ASSERT_TRUE(exec->BindValues(weight, raw));
+    ASSERT_TRUE(exec->Run());
+    const auto a = exec->Values(plain);
+    const auto z = exec->Values(shifted);
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(z);
+    EXPECT_EQ(*a, (std::vector<float>{-1.0F, 0.0F, 0x1p-9F, 1.0F}));
+    EXPECT_EQ(*z, (std::vector<float>{0.0F, 1.0F, 1.0F + 0x1p-9F, 2.0F}));
+  }
+}
+}  // namespace
+
 }  // namespace llmp::components

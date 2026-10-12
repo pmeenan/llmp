@@ -79,6 +79,7 @@ constexpr std::array<std::string_view, 2> kIndexers{"fused", "split"};
 constexpr std::array<std::string_view, 2> kRollbacks{"snapshot", "truncate"};
 
 constexpr std::array kParams{
+    kNormZeroCentered,
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "heads", .type = ParamType::kInt, .least = 1, .most = 1024},
     ParamSpec{.name = "kv_heads", .type = ParamType::kInt, .least = 1, .most = 1024},
@@ -164,6 +165,8 @@ Dims DimsOf(const Instance& in) {
 }
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
+  if (NormOffsetContradictsFold(in))
+    return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const Dims d = DimsOf(in);
   if (d.heads % d.kvh != 0) return std::unexpected("heads are not a multiple of kv_heads");
   if (in.params.Ints("rope_sections").size() != 4) return std::unexpected("four rope sections");
@@ -265,7 +268,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   F32Parameters<kRoles.size()> parameters(f);
   const auto w = [&](std::uint16_t role) {
     return role == kQNorm || role == kKNorm || role == kIndexerQNorm || role == kIndexerKNorm
-               ? parameters.Get(role)
+               ? parameters.Norm(role)
                : f.Weight(role);
   };
   const ir::TensorId x = f.stream;
@@ -516,8 +519,15 @@ std::expected<void, std::string> Reference(RefIO& io) {
       io.state_cells.size() != 4) {
     return std::unexpected("qsa reference: a stream or state of another shape");
   }
+  std::array<std::vector<float>, kRoles.size()> adjusted;
+  if (in.params.Flag("norm_zero_centered")) {
+    for (const auto role : {kQNorm, kKNorm, kIndexerQNorm, kIndexerKNorm}) {
+      adjusted[role] = io.weights.at(role);
+      for (float& value : adjusted[role]) value += 1.0F;
+    }
+  }
   const auto weight = [&](std::uint16_t role) {
-    return std::span<const float>(io.weights.at(role));
+    return std::span<const float>(adjusted[role].empty() ? io.weights.at(role) : adjusted[role]);
   };
   std::vector<double> raw;
   std::vector<double> iq;

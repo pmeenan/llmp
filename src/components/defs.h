@@ -9,6 +9,7 @@
 #ifndef LLMP_COMPONENTS_DEFS_H_
 #define LLMP_COMPONENTS_DEFS_H_
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -66,36 +67,67 @@ inline ir::TensorId NormScale(ir::Builder& b, ir::TensorId weight) {
              : b.Convert(weight, format::Encoding::kF32);
 }
 
+// Explicit source convention for the norm roles a component declares. A
+// recorded fold already changed those bytes; applying the offset again is invalid.
+inline constexpr ParamSpec kNormZeroCentered{.name = "norm_zero_centered",
+                                             .type = ParamType::kBool,
+                                             .required = false,
+                                             .least = 0,
+                                             .most = 1,
+                                             .fallback = 0};
+inline bool NormOffsetContradictsFold(const Instance& in) {
+  return in.params.Flag("norm_zero_centered") &&
+         std::ranges::find(in.stage.folds, "norm.plus_one") != in.stage.folds.end();
+}
+enum class ParameterTransform : std::uint8_t { kNone, kNegativeExp, kPlusOne };
+inline ParameterTransform NormTransform(const Instance& in) {
+  return in.params.Flag("norm_zero_centered") ? ParameterTransform::kPlusOne
+                                              : ParameterTransform::kNone;
+}
+
 // Tiny parameter roles remain immutable source-encoded weight leaves. Cache
 // only their transient graph results, lazily at the original Weight call site:
 // eager leaf creation would change existing F32 graph identities. Joined casts
 // are shared across owners, then the caller's emission context is restored.
-// Callers validate F32/BF16 role encodings before emitting the fragment and
-// use one fixed transformation for each role throughout that fragment.
+// Callers validate F32/BF16 role encodings before emitting the fragment.
+// The widened operand is shared, but each transform has a distinct cache
+// entry: a raw lookup cannot return a previously offset or exponentiated value.
 template <std::size_t Roles>
 class F32Parameters {
  public:
   explicit F32Parameters(Fragment& fragment) : f_(fragment) {}
   ir::TensorId Get(std::uint16_t role, bool negative_exp = false) {
+    return Transformed(role,
+                       negative_exp ? ParameterTransform::kNegativeExp : ParameterTransform::kNone);
+  }
+  ir::TensorId Norm(std::uint16_t role) { return Transformed(role, NormTransform(f_.instance)); }
+
+ private:
+  ir::TensorId Transformed(std::uint16_t role, ParameterTransform transform) {
     const ir::TensorId weight = f_.Weight(role);
-    if (f_.b.tensor(weight).format.encoding == format::Encoding::kF32 && !negative_exp)
+    if (f_.b.tensor(weight).format.encoding == format::Encoding::kF32 &&
+        transform == ParameterTransform::kNone)
       return weight;
-    if (converted_.at(role).valid()) return converted_[role];
+    const auto index = static_cast<std::size_t>(transform);
+    if (results_.at(role).at(index).valid()) return results_[role][index];
     const auto segment = f_.b.segment();
     f_.b.SetJoined();
-    ir::TensorId value = NormScale(f_.b, weight);
-    if (negative_exp) value = f_.b.Unary(f_.b.Unary(value, ir::UnaryFn::kExp), ir::UnaryFn::kNeg);
+    auto& plain = results_[role][static_cast<std::size_t>(ParameterTransform::kNone)];
+    if (!plain.valid()) plain = NormScale(f_.b, weight);
+    ir::TensorId value = plain;
+    if (transform == ParameterTransform::kNegativeExp)
+      value = f_.b.Unary(f_.b.Unary(value, ir::UnaryFn::kExp), ir::UnaryFn::kNeg);
+    if (transform == ParameterTransform::kPlusOne) value = f_.b.Scale(value, 1.0F, 1.0F);
     if (segment == ir::kJoinedSegment)
       f_.b.SetJoined();
     else
       f_.b.SetOwner(segment);
-    converted_[role] = value;
+    results_[role][index] = value;
     return value;
   }
 
- private:
   Fragment& f_;
-  std::array<ir::TensorId, Roles> converted_{};
+  std::array<std::array<ir::TensorId, 3>, Roles> results_{};
 };
 
 // A product whose rounding is part of the component's arithmetic. Request

@@ -178,6 +178,7 @@ std::expected<void, std::string> NgramReference(RefIO& io) {
 // --------------------------------------------------------------- residual.ple
 
 constexpr std::array kPleParams{
+    kNormZeroCentered,
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     // The side input it reads (spec.h SideInput; its width is the key and
     // value products' input's).
@@ -214,6 +215,8 @@ PleDims PleDimsOf(const Instance& in) {
 std::string_view PleInput(const Instance& in) { return in.params.Name("input"); }
 
 std::expected<std::vector<RoleShape>, std::string> PleShapes(const Instance& in) {
+  if (NormOffsetContradictsFold(in))
+    return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const PleDims d = PleDimsOf(in);
   if (d.hc < 2) return std::unexpected("an n-gram block in a stage of one stream");
   return std::vector<RoleShape>{Role(kKey, {0, d.hw()}),   Role(kValue, {0, d.width}),
@@ -257,7 +260,7 @@ std::expected<FragmentOut, std::string> PleEmit(Fragment& f) {
   const auto grouped = [&](ir::TensorId x, std::uint16_t role) {
     ir::TensorId t = b.RmsNorm(b.Reshape(x, Shape({d.width, d.hc, rows})), d.eps);
     t = b.Reshape(t, Shape({hw, rows}));
-    t = b.Mul(t, parameters.Get(role));
+    t = b.Mul(t, parameters.Norm(role));
     return b.Reshape(t, Shape({d.width, d.hc, rows}));
   };
   // The convolution's histories first (their stores read them first).
@@ -364,8 +367,15 @@ std::expected<void, std::string> PleReference(RefIO& io) {
   if (side == 0 || io.side.size() != side * rows || io.residual.size() != hw * rows) {
     return std::unexpected("ple reference: side input or streams");
   }
+  std::array<std::vector<float>, kPleRoles.size()> adjusted;
+  if (in.params.Flag("norm_zero_centered")) {
+    for (const auto role : {kNormKey, kNormQuery, kNormConv}) {
+      adjusted[role] = io.weights.at(role);
+      for (float& value : adjusted[role]) value += 1.0F;
+    }
+  }
   const auto weight = [&](std::uint16_t role) {
-    return std::span<const float>(io.weights.at(role));
+    return std::span<const float>(adjusted[role].empty() ? io.weights.at(role) : adjusted[role]);
   };
   const auto grouped = [&](std::vector<double> x, std::uint16_t role) {
     RmsRows(x, d.width, d.eps, {});
@@ -432,12 +442,14 @@ constexpr std::array kMtpParams{
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     // The tap of its target it reads (a spec read of that name).
     ParamSpec{.name = "tap", .type = ParamType::kName},
+    kNormZeroCentered,
 };
 // Version 2 declares the cache/token relation and repeatable progress;
 // version 1 retains its original layout and orchestration contract.
 constexpr std::array kMtpRepeatParams{
     kMtpParams[0],
     kMtpParams[1],
+    kNormZeroCentered,
     ParamSpec{.name = "token_offset", .type = ParamType::kInt, .least = 0, .most = 1},
 };
 
@@ -449,6 +461,8 @@ constexpr std::array kMtpRoles{
 };
 
 std::expected<std::vector<RoleShape>, std::string> MtpShapes(const Instance& in) {
+  if (NormOffsetContradictsFold(in))
+    return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const std::uint64_t w = in.stage.width;
   const std::uint64_t hc = in.stage.streams;
   if (hc < 2) return std::unexpected("an MTP drafter's input in a stage of one stream");
@@ -488,11 +502,11 @@ std::expected<FragmentOut, std::string> MtpEmit(Fragment& f) {
   ir::TensorId e = b.GetRows(table, tokens);
   const ir::TensorId fc_embd = f.Weight(kFcEmbd);
   e = b.RmsNorm(e, eps);
-  e = b.Mul(e, parameters.Get(kNormEmbd));
+  e = b.Mul(e, parameters.Norm(kNormEmbd));
   e = b.MatMul(fc_embd, e);
   const ir::TensorId hidden = f.step.Features(w * hc);
   ir::TensorId h = b.RmsNorm(hidden, eps);
-  h = b.Mul(h, parameters.Get(kNormHidden));
+  h = b.Mul(h, parameters.Norm(kNormHidden));
   const ir::TensorId fc_hidden = f.Weight(kFcHidden);
   h = b.Reshape(h, Shape({w, hc * rows}));
   h = b.MatMul(fc_hidden, h);
@@ -512,8 +526,15 @@ std::expected<void, std::string> MtpReference(RefIO& io) {
   if (io.tokens.size() != rows || io.features.size() != w * hc * rows) {
     return std::unexpected("mtp embedding reference: tokens or features");
   }
+  std::array<std::vector<float>, kMtpRoles.size()> adjusted;
+  if (in.params.Flag("norm_zero_centered")) {
+    for (const auto role : {kNormEmbd, kNormHidden}) {
+      adjusted[role] = io.weights.at(role);
+      for (float& value : adjusted[role]) value += 1.0F;
+    }
+  }
   const auto weight = [&](std::uint16_t role) {
-    return std::span<const float>(io.weights.at(role));
+    return std::span<const float>(adjusted[role].empty() ? io.weights.at(role) : adjusted[role]);
   };
   std::vector<double> e(w * rows);
   const std::uint64_t vocab = weight(kTable).size() / w;

@@ -142,6 +142,7 @@ constexpr ParamSpec MixFlag(std::string_view name, double fallback) {
           .fallback = fallback};
 }
 constexpr std::array kMixParams{
+    kNormZeroCentered,
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     // The sigmoid mix's gate's low rank.
     ParamSpec{
@@ -179,6 +180,10 @@ constexpr std::array<std::string_view, 4> kMixPatterns{"hc_mix", "hc_prep", "dsv
                                                        "rms_norm_mul"};
 
 std::expected<std::vector<RoleShape>, std::string> MixShapes(const Instance& in) {
+  if (NormOffsetContradictsFold(in))
+    return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
+  if (Sinkhorn(in) && in.params.Flag("norm_zero_centered"))
+    return std::unexpected("zero-centered norms require the sigmoid mix");
   if (auto ok = Streams(in); !ok) return std::unexpected(ok.error());
   const std::uint64_t hc = in.stage.streams;
   const std::uint64_t hw = in.stage.width * hc;
@@ -340,7 +345,7 @@ std::expected<FragmentOut, std::string> MixEmit(Fragment& f) {
   const std::uint64_t rows = Desc(b, x).ne(2);
   ir::TensorId xn = b.RmsNorm(x, eps);
   xn = b.Reshape(xn, Shape({w * hc, rows}));
-  xn = b.Mul(xn, parameters.Get(kMixNorm));
+  xn = b.Mul(xn, parameters.Norm(kMixNorm));
   ir::TensorId lo = b.MatMul(f.Weight(kMixDown), xn);
   lo = b.Unary(b.Scale(lo, inv), ir::UnaryFn::kSilu);
   const ir::TensorId gate = b.Unary(b.MatMul(f.Weight(kMixUp), lo), ir::UnaryFn::kSigmoid);
@@ -495,7 +500,10 @@ std::expected<void, std::string> MixReference(RefIO& io) {
     x = io.residual;
   }
   const std::uint64_t rows = x.size() / hw;
-  const std::vector<double> xn = MixNormed(x, w, in.params.Real("eps"), io.weights.at(kMixNorm));
+  std::vector<float> norm = io.weights.at(kMixNorm);
+  if (in.params.Flag("norm_zero_centered"))
+    for (float& value : norm) value += 1.0F;
+  const std::vector<double> xn = MixNormed(x, w, in.params.Real("eps"), norm);
   std::vector<double> lo = Product(io.weights.at(kMixDown), hw, rank, xn);
   for (double& v : lo) v = Silu(v / static_cast<double>(hc));
   const std::vector<double> gate = Product(io.weights.at(kMixUp), rank, hw, lo);

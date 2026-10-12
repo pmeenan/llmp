@@ -1859,6 +1859,22 @@ each is checked against the design as M3.6 proceeds.
                   integration checks and the quality gates.
                   MLX source normalization, norm/head-order authentication,
                   publication and runtime admission remain open.
+            - [x] **N3b2b — explicit zero-centered component norms:**
+                  optional norm offsets for sigmoid HC, QSA/indexer, PLE
+                  and MTP compute source-plus-one in paid F32 workspace,
+                  preserving F32/BF16 resident bytes and default graph order.
+                  Contradictory applied folds, Sinkhorn and GDN are refused.
+                  Independent review, 36 focused native controls and all ten
+                  historical F32 graph digests passed. Isolated final checks
+                  passed 2,567 native and 2,016 CPU cases with zero failures
+                  or skips, plus quality gates. Final main checks passed
+                  2,582 native and 2,027 CPU cases, 36 integration controls,
+                  and 135 model/timing cases (182 raw GoogleTest runs), all
+                  with zero failures or skips. Source, recipe and model-binary
+                  guards and the quality gates passed.
+                  This component foundation does not establish source
+                  normalization, converter/head-order authority, publication
+                  or runtime admission.
             - [x] **N3b2c — encoding-preserving BF16 head permutation:**
                   generic dense BF16 rank-one/two support in the
                   existing bounded grouped-to-tiled copy plan. Synthetic full

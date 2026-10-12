@@ -23,6 +23,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - Keep declared small component parameters in BF16 and widen them in paid
   execution workspace. Explicit logarithmic GDN A uses transient arithmetic.
+  Optional zero-centered norm parameters add one in F32 workspace and reject
+  an already-applied offset fold, preserving resident encodings and default
+  graphs.
 
 - Bind approved EXL3 operations through the shared step program. The
   4.0-bpw reconstruction fixture matches a native 145-row reference exactly;

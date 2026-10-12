@@ -997,13 +997,31 @@ placement: E BF16 source elements remain 2E resident bytes, while their
 conversion produces 4E logical transient bytes before placement alignment.
 Logarithmic A uses ordinary F32 exp/neg operations there too.
 No converted value becomes a resident weight or a persistent decoded cache.
+The optional `norm_zero_centered` parameter adds one in F32 to the sigmoid
+HC mixing norm (including the final head), all four QSA/indexer norms,
+PLE's key/query/convolution norms, and the two MTP input norms. It defaults
+false; true refuses an already-recorded `norm.plus_one` fold and is not
+supported by Sinkhorn or GDN. Each affected role lazily shares its widening
+and one joined F32 scale-bias result; raw and transformed cache entries are
+distinct. The offset adds 4E logical transient bytes before placement
+alignment; BF16 additionally needs its 4E widening, with no resident growth
+or BF16 roundtrip. This is a component operand contract, not ModelOpt
+normalization, publication, runtime admission or matched GPU evidence.
 Existing F32/default graphs retain their lazy weight lookup order. This
 component contract does not authenticate any MLX converter convention or
 admit an MLX artifact; source normalization, norm/head-order authentication
-and its gate remain separate. Focused native checks passed 24 component and
-six structural lowering controls, with no skips; ten historical F32 graph
-digests match the unchanged parent. These are scalar-reference and structural
+and its gate remain separate. Initial BF16/logarithmic-A native checks passed
+24 component and six structural lowering controls, with no skips; ten
+historical F32 graph digests match the unchanged parent. These are scalar-reference and structural
 lowering results, not new GPU arithmetic or MLX execution evidence.
+N3b2b's zero-centered norm checks passed independent review, 36 focused
+native controls, and the unchanged ten historical F32 graph digests. Its
+isolated final checks passed 2,567 native and 2,016 CPU cases with zero
+failures or skips, plus format, boundary, header and REUSE gates. Final main
+checks passed 2,582 native and 2,027 CPU cases, 36 integration controls and
+135 model/timing cases (182 raw GoogleTest runs), with zero failures or skips.
+Source, recipe and model-binary guards passed, as did the quality gates.
+These regression checks do not extend source or GPU arithmetic qualification.
 
 `ffn.moe` gains placement `none` with the router over the stream itself
 (`router_input` `stream`), per-expert projection scales (gate, up and down
