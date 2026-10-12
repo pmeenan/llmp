@@ -178,5 +178,36 @@ this does not measure total GPU occupancy. Main then built natively and
 passed the same nine controls and the one actual scoring case, with identical
 scores and occupancy facts, zero failures/skips, all guards passing and no
 compute processes left afterward.
-The 4.5-bpw O profile, broader shapes, O lifecycle coverage, Tier C,
+Broader shapes, O lifecycle coverage, Tier C, performance and legacy
+deletion remain open.
+
+## Bounded mixed-rate 4.5-bpw O scoring screen (G5b2d)
+
+The approved 4.5-bpw artifact now executes the same natural43 common-scorer
+control through the existing O profile. Its 169 logical products retain all
+676 code/sign/marker parts: 42 products at 4 bits, 118 at 5 bits, eight at
+6 bits and the head at 8 bits. Of the four-bit products, 28 gate/up members
+use 14 paired MGEMMs; the remaining 14 down products use GEMV. Each actual
+7/1-row plan records 14 GEMVs, 107 GEMMs, 24 paired MGEMMs and 72 bias
+operations. All eight queried occupancy facts are `[48,96,48,96,48,96,48,96]`
+in the order recorded above and are rechecked at launch. No tuning, kernel,
+weight encoding or production default changes.
+
+All 42 full-vocabulary next-token scores are finite. Mean NLL is
+6.5150540137704605 and perplexity 675.2304322797728 against original BF16's
+6.496176475891133 and 662.6033037486249 on identical teacher histories and
+target coordinates. The candidate uses 7/1 chunks; the original uses its
+recorded eager/no-cache recipe. This short primary-reference observation is
+not broader quality qualification, a speed result or a quantized-library
+bit-equality gate.
+
+Spark A built the affected targets and passed three input plus six selected
+controls and the one actual scoring case, with zero failures/skips and all
+source/input/recipe/binary guards passing. No compute processes remained.
+The same complete Lifetime, 4-GiB host allowance, checked 8-GiB native domain
+and 6-GiB physical margin apply. Observed process/cache peak under the
+10-GiB zero-swap cap was 277,135,360 bytes, not total GPU occupancy. Main
+then built natively and passed the same nine controls and the scoring case,
+with identical scores and occupancy facts, zero failures/skips, all guards
+passing and no compute processes left. Broader shapes, O lifecycle, Tier C,
 performance and legacy deletion remain open.

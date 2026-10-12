@@ -1860,7 +1860,18 @@ each is checked against the design as M3.6 proceeds.
                   and passes the same nine controls and scoring case
                   ([evidence](experiments/m36-exl3-selected/README.md)).
                   This short primary-reference observation adds no speed or
-                  broad quality claim. The 4.5-bpw O profile remains open.
+                  broad quality claim. Broader O shapes and lifecycle remain open.
+            - [x] **G5b2d — mixed-rate 4.5-bpw O scoring screen:** the same
+                  shared scorer executes all 169 products/676 source parts on
+                  the original 43 teacher IDs and 7/1 chunks. Each actual plan
+                  records 14 GEMVs, 107 GEMMs, 24 paired MGEMMs and 72 bias
+                  operations, with all eight occupancy facts checked at launch.
+                  All 42 full-vocabulary scores are finite; nine focused
+                  controls and the actual case pass without skips. Main builds
+                  and passes the same nine controls and scoring case
+                  ([evidence](experiments/m36-exl3-selected/README.md)).
+                  No tuning, kernel or production default changes; broader
+                  quality, performance and O lifecycle controls remain open.
       - [ ] **G5c — execution controls:** run FP16 and both EXL3 fixtures
             through the shared runner; pass the FP16 bridge / EXL3 Tier C
             correctness controls and state, spill, restore and kept-state
