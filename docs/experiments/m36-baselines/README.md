@@ -369,6 +369,20 @@ P=64) to be compared with this number.
 
 ## Quality controls
 
+**Prospective addendum, owner 2026-10-12.** Original unquantized weights are
+the primary reference for numerical improvements; quantized library results
+remain secondary diagnostic controls. The tables and historical verdicts
+below are frozen observations, including their exact claims. Changed bits
+alone do not fail a prospective candidate or require unfusing, extra rounding
+or owner serialization. Keep the same teacher IDs/history and full-vocabulary
+NLL/perplexity, fix reference provenance, coverage and acceptance bounds before
+qualification, and retain existing behavioral controls. Old tolerance budgets
+do not automatically apply to a new original-precision oracle. Record missing
+primary evidence honestly; no new quality pass is asserted here. Exact
+same-implementation continuation/restore, source integrity, selected-expert
+execution and the matched 1% timing protocol remain unchanged. See the
+[audit and recovery protocol](../m36-numerical-audit/README.md).
+
 **Runtime-level control** (`speed_gate.py quality`): each LLM family
 served twice by the frozen runtime. Both processes gave identical scores
 and identical greedy replies, so a migrated family is compared with these

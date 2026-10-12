@@ -50,10 +50,17 @@ The previously recorded M3.5 milestone pin is v0.6.6/cb2ebf0540f42604e2759b2ddef
 (still upstream HEAD on 2026-10-06), with no matching dense Gemma 4 31B CUDA
 GB10/GGUF recipe.
 
-Keep the same-format correctness oracle. TensorFold can fill that role
-when the checkpoint representation and execution semantics match. A
-different quantization is a speed/memory comparator, with its quality
-measured separately; it cannot establish same-format token agreement.
+Use the original unquantized model as the primary quality reference for
+prospective numerical improvements (owner, 2026-10-12; D-107). Authenticate
+weights/conversion, tokenizer, configuration and reference arithmetic; freeze
+coverage and acceptance bounds before qualification. Keep same-format engines,
+including applicable TensorFold recipes, as secondary compatibility and
+numerical diagnostics. A different quantization needs its own measured quality
+and cannot establish same-format agreement. Missing original-reference support
+is explicit; dequantized quantized weights are not the original model. Changed
+bits alone do not justify disabling a faster qualified fusion. Historical pins,
+verdicts and optional exact-mode contracts remain intact. The
+[M3.6 audit](experiments/m36-numerical-audit/README.md) records current gaps.
 For an applicable TensorFold configuration, meeting the older oracle's
 speed alone does not establish competitiveness: also report the matched
 TensorFold performance and any remaining gap. A gap requires further work

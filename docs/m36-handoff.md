@@ -38,7 +38,30 @@ on both Sparks, candidate installs under `~/.local/share/llmp/m36-candidates/`,
 checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 `spark-job --gpu` jobs, never beside a build on that host.
 
-## State on 2026-10-10
+## Current direction, 2026-10-12
+
+Main through `50a2b720` also contains the native ModelOpt CLI import dispatch
+(`d9681846`), FP16 checkpoint/spill/heldout/repeated-weight-eviction controls
+(`6f774eaf`, `21eec4e6`, `bbec08ea`) and the complete 145+16 EXL3 trajectory
+(`50a2b720`). Their plan parents remain open; these are bounded completed slices.
+
+The owner requested a [retrospective numerical audit](experiments/m36-numerical-audit/README.md)
+and original-unquantized quality as the primary reference. Stop adding
+legacy-rounding corrections solely to satisfy strict diagnostic screens.
+Qwen45 and DS52 completed strict diagnostics with numerical differences;
+DS53/53b remains unapplied/unbuilt. Preserve their raw evidence and unmerged
+worktrees. Ordinary joined head/product kernels are recovery candidates,
+not yet quality/performance-qualified defaults. Exact source/selection safety
+and same-implementation restore controls remain. The matched 1% gate stands.
+
+Next: one bounded shared teacher-forced scorer, authenticate the available
+Qwen2 FP16 anchor, and compare small reversible numerical candidates by
+quality and matched speed. Qwen/DeepSeek original BF16 execution is missing
+from inspected evidence; label current quantized comparisons secondary.
+Both Sparks are available for parallel development/checks; actual GPU jobs
+remain exclusive on their host. Do not continue the old parity-only loop.
+
+## State on 2026-10-10 (historical)
 
 On `main`: format layer, engine core, IR and planner, partitioning, spec and
 mappings; Gemma 2 and 3 served on the shared engine and their M3 code deleted

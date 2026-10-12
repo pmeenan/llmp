@@ -2404,7 +2404,8 @@ the format ladder is what keeps every model running on a new platform.
 - **Per-component tests** on the fake backend: state contracts (spill,
   restore, snapshot, rollback), batching joins, partition equivalence.
 - **Per-model controls** keep running on the Sparks: quality against the
-  same-format oracle, state and swap controls, matched speed.
+  original source-precision model, secondary same-format comparisons, state
+  and swap controls, matched speed. Reference availability is recorded.
 
 ## Migration and its gate
 
@@ -2417,10 +2418,17 @@ baseline:
   matched bookends that resolve 1%: alternating old and new binaries on the
   same host, repeated until the spread is well under the gap judged, with
   the protocol fixed before the first run.
-- **Quality**: equal or better against the same-format oracle and the
-  family's existing quality controls. Bit-identity with the old code is not
-  required; where op order is unchanged it is expected and its loss is
-  investigated.
+- **Quality**: compare the candidate and migrated baseline to the same
+  original unquantized model for prospective numerical improvements (owner,
+  2026-10-12); candidate quality must be equal or better, with the family's
+  existing behavioral controls and secondary same-format diagnostics.
+  Freeze reference provenance, coverage and acceptance bounds before new
+  qualification; disclose missing primary evidence. Bit-identity with the
+  old code is not required. Investigate unexpected differences without
+  imposing its reduction order, rounding or kernel choice. Within one
+  selected implementation, continuation/restore remains exact. See the
+  [retrospective audit](experiments/m36-numerical-audit/README.md); historical
+  results and the speed protocol remain unchanged.
 - **Memory, swap and state**: the existing controls pass unchanged.
 
 Owner answers that shape the migration's work (2026-10-08, 2026-10-09):
@@ -2429,7 +2437,9 @@ Owner answers that shape the migration's work (2026-10-08, 2026-10-09):
   selection (bit-identity is expected where op order is unchanged);
   default-off diagnostic options and benchmark-only probes tied to deleted
   runners are retired, not ported, unless the production recipe, a gate or the
-  swap table uses them.
+  swap table uses them. This establishes an initial comparison arm, not a
+  permanent arithmetic constraint: the owner's 2026-10-12 clarification
+  permits better qualified fusion/kernel choices without reproducing old bits.
 - "N drafters" means both a cascade (drafter *i* extends drafter *i*−1's
   proposal, one verify) and a per-unit choice among alternatives, picked by
   the alias's policy or adaptive logic (D-068); fake-backend tests cover both

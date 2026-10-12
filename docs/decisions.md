@@ -617,6 +617,21 @@ new models, families and quants as easy as possible".
   the old code is not required. New models afterwards target 1–2% of the
   best competing engine, faster where possible.
 
+**Owner clarification, 2026-10-12.** The original unquantized model is the
+primary quality reference for prospective numerical improvements. Compare
+candidate and migrated baseline to the same original reference; quantized
+outputs need not equal original logits. Another
+library's quantized implementation is a secondary compatibility/diagnostic
+control, not an obligation to reproduce its rounding. Select the fastest
+qualified implementation; do not unfuse, serialize owner products, force a
+legacy kernel or add rounding solely to recover its bits. Declared source
+precision and IR semantics, actual selected-expert execution, memory and
+same-implementation state/restore contracts still hold. Freeze new quality
+coverage and bounds before qualification; missing original-reference evidence
+is explicit, and historical references/results are not silently rebased.
+The [retrospective audit](experiments/m36-numerical-audit/README.md) records
+candidate improvements and evidence limits. The matched 1% speed gate stands.
+
 **Context.** On 2026-10-08, about 35.5k lines were family-specific against
 8.3k of shared skeleton; Gemma2's and Gemma3's runners differed by about 100 lines
 and had drifted apart; slot-lifecycle methods were 80–99% alike across
@@ -2857,6 +2872,11 @@ The machinery around development was holding it back.
   quality or the sampling distribution; trades of quality for speed are
   quality/performance modes, a runtime flag per model alias, off by
   default (the deferred quality/performance-modes item).
+  *Owner clarification, 2026-10-12:* D-107's
+  [original-model quality clarification](experiments/m36-numerical-audit/README.md)
+  governs prospective numerical improvements. Existing bounds below remain
+  historical controls, not automatically the acceptance budget for a new
+  original-precision oracle. Same-implementation restore determinism stands.
 - **The tie-aware greedy rule (the owner, 2026-10-03; refined after
   review the same day).** The fixed-history greedy control no longer fails
   on a few near-tie flips. It is judged against the model's pinned

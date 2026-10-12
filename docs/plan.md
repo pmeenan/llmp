@@ -2057,9 +2057,13 @@ each is checked against the design as M3.6 proceeds.
   decode, solo and at its qualified cohorts, and Qwen-Image's generation
   latency, are no more than 1% slower at worst under the fixed protocol,
   and preferably at least as fast.
-- **Quality and state:** each model's quality controls against its
-  same-format oracle are equal or better; exact state, continuation, spill,
-  restore and kept-state controls pass; the M3 swap table and the Gemma
+- **Quality and state:** prospective numerical improvements are judged
+  against the original unquantized model (owner, 2026-10-12), with frozen
+  reference provenance/coverage/bounds, existing behavioral controls and
+  secondary same-format diagnostics. Missing primary evidence is explicit;
+  historical completed gates are not reclassified. Exact same-implementation
+  state, continuation, spill, restore and kept-state controls pass; the M3
+  swap table and the Gemma
   near-8K switch controls pass within their bounds; peak memory is no
   higher than the baseline's.
 - **Formats:** Qwen3.8's NVFP4 and MXFP8 tensors, read from its
