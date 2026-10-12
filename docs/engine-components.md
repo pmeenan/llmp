@@ -1653,15 +1653,22 @@ it. A completed prefix yields the full route, then supplemental admission holds
 only the selected part pages through continuation. Segmented recordings require
 fresh route validation and admission each replay; ordinary whole-step entry
 points reject routed programs. Whole-plan activation placement remains intact.
-The first implementation supports one group and refuses routed lookahead.
-Full native main build, 101 routed host controls, 34 fusion/validation controls
-and three GPU cases pass without skips. The real attention/MoE fixture checks
-288 complete output values across eager execution, capture and changed-route
-replay, selected-only residency and state frontier 9. RoPE/cache-store fusion
-remains enabled, and exact dynamic part descriptors defer residency until their
-selected closure is admitted. Ordered groups, family admission, full-model
-quality and speed remain open
-([evidence](experiments/m36-native-grouped-foundation/README.md#shared-routed-step--2026-10-12)).
+Ordered routed groups use G+1 segments in that same whole-plan placement; G is
+bounded by actual selected products and steps, not a family-specific group cap.
+Each group owns a stable paid route slice. Positive completion precedes fresh
+route validation and selected-closure admission for the next segment; only the
+final segment publishes outputs and carries. Captures bind group ordinal,
+route epoch and backend Bind generation. Unknown work retains the complete
+flight and prevents continuation; routed lookahead remains refused.
+
+Full native main build, 104 routed host controls, 34 fusion/validation controls
+and four GPU cases pass without skips. The new two-group attention/MoE fixture
+checks 288 complete outputs and 36 actual routed IDs across eager, capture and
+changed-route replay, with nine completed segments and state frontier 9.
+RoPE/cache-store fusion remains enabled, while selected-only part residency is
+admitted separately from ordinary/shared-page base coverage. Family admission,
+full-model quality, speed and large-inventory page-lookup scaling remain open
+([evidence](experiments/m36-native-grouped-foundation/README.md#ordered-routed-groups--2026-10-12)).
 
 The common step program binds approved EXL3 selected operations with authenticated
 packed and reconstruction tuning facts. Both 4.0- and 4.5-bpw fixtures execute

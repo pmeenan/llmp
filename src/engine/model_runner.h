@@ -70,6 +70,10 @@
 #include "memory/reclaim.h"
 #include "planner/step_shape.h"
 
+namespace llmp::test_support {
+class RoutedComponentInspection;
+}
+
 namespace llmp::engine {
 
 // What the runner asks for a step program: one virtual call per plan miss
@@ -406,6 +410,7 @@ class ModelRunner final : public PagedModel {
   std::string report_json() const;
 
  private:
+  friend class llmp::test_support::RoutedComponentInspection;
   friend class PromptCompanions;
   friend class DecodingOrchestrator;
   struct AuthorizedDraft {
@@ -476,6 +481,11 @@ class ModelRunner final : public PagedModel {
   Status BeginRouted(kernels::StepProgram& program, StepPlanRuns& runs, const Copies& inputs,
                      const Copies& outputs, const Copies& carries, bool capture);
   void ForgetUnstartedRouted();
+  void ForgetCompletedRouting();
+  // Private test-support observation of already completed retained host copies.
+  // This grants no routed access token or execution authority.
+  std::expected<std::pair<std::uint64_t, std::span<const std::int32_t>>, std::string>
+  CompletedRoute(const kernels::RoutedProgram&, std::size_t group) const;
   StepQueued QueueRoutedPrefix(providers::NativeStream native);
   Status ContinueRouted(RunPath& path);
   Status MeasureRouting(const kernels::StepProgram& program);

@@ -2359,13 +2359,16 @@ each is checked against the design as M3.6 proceeds.
                   residency and state frontier 9; this is not full-model quality
                   or performance qualification
                   ([evidence](experiments/m36-native-grouped-foundation/README.md#shared-routed-step--2026-10-12)).
-            - [ ] **N4b6e — ordered routed groups:** extend the same whole-plan
+            - [x] **N4b6e — ordered routed groups:** extend the same whole-plan
                   placement and complete owner through multiple ordered router
                   boundaries, with fresh selected closure admission per group
-                  and final-only output/carry publication. The bounded two-group
-                  implementation is reviewed; native build and actual execution
-                  remain pending. Family admission and full-model qualification
-                  remain separate.
+                  and final-only output/carry publication. Full native main build,
+                  104 routed and 34 fusion/validation host controls, and all four
+                  GPU cases pass without skips. The two-group fixture checks
+                  288 outputs, 36 actual routed IDs, nine completed segments and
+                  state frontier 9 across eager/captured/replayed steps. Family
+                  admission and full-model quality/performance remain separate
+                  ([evidence](experiments/m36-native-grouped-foundation/README.md#ordered-routed-groups--2026-10-12)).
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

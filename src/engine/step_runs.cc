@@ -103,16 +103,21 @@ std::expected<void, kn::StepFailure> StepRuns::Record(
 }
 
 StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& access,
-                                 kn::RoutedProgram& program, bool continuation,
-                                 const Copies& inputs, std::span<const RunCopy> outputs,
+                                 kn::RoutedProgram& program, const Copies& inputs,
+                                 std::span<const RunCopy> outputs,
                                  std::span<std::byte> route_staging, bool capture,
                                  GraphStats& stats, providers::NativeStream native) const {
   StepQueued result;
-  const auto index = continuation ? 1U : 0U;
+  const auto index = access.segment();
+  if (index > program.groups() || runs.routed_graphs.size() != program.groups() + 1 ||
+      (index != program.groups() && !outputs.empty())) {
+    result.result = std::unexpected(kn::StepFailure{.detail = "routed segment inventory differs"});
+    return result;
+  }
   auto& recording = runs.routed_graphs[index];
   const auto body = [&]() -> std::expected<void, kn::StepFailure> {
     result.before = true;  // conservative once the first launch/copy is attempted
-    if (!continuation) {
+    if (index == 0) {
       for (const auto& [to, bytes, at] : inputs) {
         if (at > staging_bytes_ || bytes > staging_bytes_ - at)
           return std::unexpected(Unknown("routed input staging changed"));
@@ -120,8 +125,12 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
                                                providers::CopyKind::kHostToDevice);
         if (!copy.ok()) return std::unexpected(Unknown(copy.text()));
       }
-      if (auto prefix = program.Prefix(access, *launch_, native); !prefix) return prefix;
-      for (const auto& copy : program.layout().readback) {
+    } else if (!inputs.empty()) {
+      return std::unexpected(Unknown("intermediate segment supplied original input copies"));
+    }
+    if (auto ran = program.RunSegment(access, *launch_, native); !ran) return ran;
+    if (index < program.groups()) {
+      for (const auto& copy : program.layout(index).readback) {
         std::uint64_t host_bytes = 0, device_last = 0;
         if (copy.rows == 0 || copy.bytes == 0 ||
             (copy.rows > 1 && copy.device_stride < copy.bytes) ||
@@ -140,7 +149,6 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
         }
       }
     } else {
-      if (auto tail = program.Continue(access, *launch_, native); !tail) return tail;
       for (const auto& [to, from, bytes] : outputs) {
         const auto copied = providers::CopyAsync(native, Pointer(to), Pointer(from), bytes,
                                                  providers::CopyKind::kDeviceToHost);
@@ -152,14 +160,14 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
   if (graphs_ && recording) {
     result.before = true;
     result.path = RunPath::kReplayed;
-    result.result = program.ReplaySegment(access, *launch_, native, continuation, *recording);
+    result.result = program.ReplaySegment(access, *launch_, native, *recording);
     return result;
   }
   if (capture && !runs.uncapturable) {
     const auto free_before =
         providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
     (void)base::Pulse();
-    auto captured = program.RecordSegment(access, *launch_, native, continuation, body);
+    auto captured = program.RecordSegment(access, *launch_, native, body);
     (void)base::Pulse();
     const auto free_after =
         providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
@@ -175,7 +183,7 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
       recording = std::move(*captured);
       result.path = RunPath::kCaptured;
       result.before = true;
-      result.result = program.ReplaySegment(access, *launch_, native, continuation, *recording);
+      result.result = program.ReplaySegment(access, *launch_, native, *recording);
       return result;
     }
     if (captured.error().error == kn::StepError::kUnknown) {
@@ -232,7 +240,7 @@ std::expected<bool, kn::StepFailure> StepRuns::CaptureInto(
 std::expected<bool, kn::StepFailure> StepRuns::CaptureAhead(
     StepPlanRuns& runs, const Copies& inputs, const kn::StepProgram& program,
     std::span<const RunCopy> outputs, GraphStats& stats, providers::NativeStream native) const {
-  if (program.routed() || runs.routed_graphs[0] || runs.routed_graphs[1])
+  if (program.routed() || runs.has_routed_graph())
     return std::unexpected(
         kn::StepFailure{.detail = "ordinary capture refuses routed programs or recordings"});
   if (!graphs_ || launch_ == nullptr || runs.has_graph() || runs.uncapturable ||
@@ -254,7 +262,7 @@ StepQueued StepRuns::Queue(StepPlanRuns& runs, const Copies& inputs,
                            const kn::StepProgram& program, std::span<const RunCopy> outputs,
                            bool capture, GraphStats& stats, providers::NativeStream native) const {
   StepQueued q;
-  if (program.routed() || runs.routed_graphs[0] || runs.routed_graphs[1]) {
+  if (program.routed() || runs.has_routed_graph()) {
     q.result = std::unexpected(
         kn::StepFailure{.detail = "ordinary queue refuses routed programs or recordings"});
     return q;

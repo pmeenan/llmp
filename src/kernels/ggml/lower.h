@@ -57,6 +57,7 @@
 #include <expected>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -75,6 +76,8 @@
 namespace llmp::kernels::ggml {
 
 struct LowerOptions {
+  // Actual backend allowance; used before allocating ordered routed metadata.
+  std::shared_ptr<const kernels::BackendOwner> routed_funder{};
   // kMaskBuild on the device (llmp.gemma4.mask), or built on the host.
   bool device_masks = true;
   // Optional build-time source for operations the IR planner selected.
@@ -113,6 +116,7 @@ struct SavedLeaf {
 
 struct LoweredRouting {
   kernels::RoutedLayout layout;
+  std::vector<std::size_t> members;
   std::vector<kernels::RoutedCopy> uploads;
   std::vector<std::pair<std::size_t, std::uint64_t>> descriptors;  // selected index, pinned offset
   ggml_tensor* preparation = nullptr;
@@ -132,7 +136,11 @@ struct LoweredStep {
   std::vector<TensorUse> tensors;
   std::uint64_t extent = 0;  // the activations' (the IR placement's)
   bool measuring = false;    // placeless: never bound to run
-  std::optional<LoweredRouting> routing{};
+  // Payment outlives the routed vectors (members are destroyed in reverse).
+  std::shared_ptr<const void> routing_payment{};
+  std::vector<LoweredRouting> routing{};
+  base::Sha256Digest routing_identity{};
+  std::uint64_t routed_pinned_bytes = 0;
   std::optional<std::vector<kernels::RoutedWeight>> weight_reads{};
 };
 

@@ -51,15 +51,18 @@ struct StepPlanRuns {
   // ahead, while a capture beside a run (which may succeed) still may be.
   bool ahead_refused = false;
   std::unique_ptr<kernels::Recorded> graph;
-  std::array<std::unique_ptr<kernels::RoutedRecording>, 2> routed_graphs;
+  std::vector<std::unique_ptr<kernels::RoutedRecording>> routed_graphs;
   Copies copies;
   Copies routed_outputs;
   double seconds = 0;                // its capture and instantiation: what capturing it again costs
   std::uint64_t measured_bytes = 0;  // the device's free memory it took
 
-  bool has_graph() const {
-    return graph != nullptr || routed_graphs[0] != nullptr || routed_graphs[1] != nullptr;
+  bool has_routed_graph() const {
+    for (const auto& recording : routed_graphs)
+      if (recording) return true;
+    return false;
   }
+  bool has_graph() const { return graph != nullptr || has_routed_graph(); }
   // With graphs on: no graph yet, none refused, and one run launch by
   // launch first (D-090: a shape is captured on its second run).
   bool CaptureDue(bool graphs) const {
@@ -140,7 +143,7 @@ class StepRuns {
   // ModelRunner can supply its fresh access token. Both recordings stay in the
   // same plan account; an ordinary whole-step recording is never used here.
   StepQueued QueueRouted(StepPlanRuns& runs, const kernels::RoutedAccess& access,
-                         kernels::RoutedProgram& program, bool continuation, const Copies& inputs,
+                         kernels::RoutedProgram& program, const Copies& inputs,
                          std::span<const RunCopy> outputs, std::span<std::byte> route_staging,
                          bool capture, GraphStats& stats, providers::NativeStream native) const;
   // Records `runs`' graph of `program` without running it, beside work

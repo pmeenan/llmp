@@ -86,10 +86,14 @@ class RoutedGuardProgram final : public kn::StepProgram, public kn::RoutedProgra
     return {};
   }
   std::span<const kn::RoutedWeight> weights() const override { return {}; }
-  const kn::RoutedLayout& layout() const override { return layout_; }
+  std::size_t groups() const override { return 1; }
+  const kn::RoutedLayout& layout(std::size_t = 0) const override { return layout_; }
+  std::span<const std::size_t> members(std::size_t) const override { return {}; }
+  std::uint64_t pinned_bytes() const override { return 0; }
+  const llmp::base::Sha256Digest& routing_identity() const override { return identity_; }
   const llmp::base::Sha256Digest& graph_identity() const override { return identity_; }
-  std::expected<void, kn::StepFailure> Prefix(const kn::RoutedAccess&, kn::StepLaunch&,
-                                              llmp::providers::NativeStream) override {
+  std::expected<void, kn::StepFailure> RunSegment(const kn::RoutedAccess&, kn::StepLaunch&,
+                                                  llmp::providers::NativeStream) override {
     ++calls;
     return {};
   }
@@ -98,19 +102,18 @@ class RoutedGuardProgram final : public kn::StepProgram, public kn::RoutedProgra
     ++calls;
     return {};
   }
-  std::expected<void, kn::StepFailure> Continue(const kn::RoutedAccess&, kn::StepLaunch&,
-                                                llmp::providers::NativeStream) override {
+  std::expected<void, kn::StepFailure> CompleteSegment(const kn::RoutedAccess&) override {
     ++calls;
     return {};
   }
   std::expected<std::unique_ptr<kn::RoutedRecording>, kn::StepFailure> RecordSegment(
-      const kn::RoutedAccess&, kn::StepLaunch&, llmp::providers::NativeStream, bool,
+      const kn::RoutedAccess&, kn::StepLaunch&, llmp::providers::NativeStream,
       const kn::StepLaunch::Body&) override {
     ++calls;
     return std::unexpected(kn::StepFailure{.detail = "unexpected routed recording"});
   }
   std::expected<void, kn::StepFailure> ReplaySegment(const kn::RoutedAccess&, kn::StepLaunch&,
-                                                     llmp::providers::NativeStream, bool,
+                                                     llmp::providers::NativeStream,
                                                      const kn::RoutedRecording&) override {
     ++calls;
     return {};
@@ -124,7 +127,7 @@ class GuardRoutedRecording final : public kn::RoutedRecording {
  public:
   explicit GuardRoutedRecording(RoutedGuardProgram& program) : program_(program) {}
   const kn::RoutedProgram* owner() const override { return &program_; }
-  bool continuation() const override { return false; }
+  std::size_t segment() const override { return 0; }
   std::size_t nodes() const override { return 0; }
   double capture_seconds() const override { return 0; }
   double instantiate_seconds() const override { return 0; }
@@ -137,6 +140,54 @@ class GuardRoutedRecording final : public kn::RoutedRecording {
  private:
   RoutedGuardProgram& program_;
 };
+TEST(StepRuns, OrderedRouteProgressRequiresActualCompletionAndFreshPreparation) {
+  kn::RoutedProgress progress;
+  EXPECT_FALSE(progress.Start(0, 2));
+  EXPECT_FALSE(progress.Start(1, 0));
+  ASSERT_TRUE(progress.Start(1, 2));
+  // Recording may check readiness repeatedly, but supplies no completion.
+  EXPECT_TRUE(progress.Ready(1, 0));
+  EXPECT_TRUE(progress.Ready(1, 0));
+  EXPECT_FALSE(progress.Complete(1, 0));
+  EXPECT_FALSE(progress.Prepared(1, 0));
+  EXPECT_FALSE(progress.Ready(1, 1));
+  ASSERT_TRUE(progress.Submit(1, 0));
+  EXPECT_FALSE(progress.Submit(1, 0));
+  EXPECT_FALSE(progress.Complete(1, 1));
+  ASSERT_TRUE(progress.Complete(1, 0));
+  EXPECT_FALSE(progress.Complete(1, 0));
+  EXPECT_FALSE(progress.Prepared(1, 1));
+  ASSERT_TRUE(progress.Prepared(1, 0));
+  ASSERT_TRUE(progress.Submit(1, 1));
+  ASSERT_TRUE(progress.Complete(1, 1));
+  EXPECT_FALSE(progress.Ready(1, 2));
+  ASSERT_TRUE(progress.Prepared(1, 1));
+  ASSERT_TRUE(progress.Submit(1, 2));
+  ASSERT_TRUE(progress.Complete(1, 2));
+  EXPECT_FALSE(progress.Ready(1, 2));
+  EXPECT_FALSE(progress.Start(1, 2));
+  ASSERT_TRUE(progress.Start(2, 2));
+  EXPECT_FALSE(progress.Ready(1, 0));
+  EXPECT_TRUE(progress.Ready(2, 0));
+}
+
+TEST(StepRuns, UnknownSecondSegmentCannotAdvanceOrRestartRouteProgress) {
+  kn::RoutedProgress progress;
+  ASSERT_TRUE(progress.Start(1, 2));
+  ASSERT_TRUE(progress.Submit(1, 0));
+  ASSERT_TRUE(progress.Complete(1, 0));
+  ASSERT_TRUE(progress.Prepared(1, 0));
+  ASSERT_TRUE(progress.Submit(1, 1));
+  // A failed/unknown job is not a completion certificate. This fake protocol
+  // control deliberately withholds Complete; it injects no GPU failure.
+  EXPECT_TRUE(progress.awaiting());
+  EXPECT_FALSE(progress.Prepared(1, 1));
+  EXPECT_FALSE(progress.Ready(1, 2));
+  EXPECT_FALSE(progress.Start(2, 2));
+  EXPECT_FALSE(progress.Complete(2, 1));
+  EXPECT_TRUE(progress.awaiting());
+}
+
 TEST(StepRuns, OrdinaryQueueAndCaptureRefuseRoutedProgramsAndRetainedSegmentsBeforeEffects) {
   RoutedGuardProgram program;
   for (bool graphs : {false, true}) {
@@ -146,6 +197,7 @@ TEST(StepRuns, OrdinaryQueueAndCaptureRefuseRoutedProgramsAndRetainedSegmentsBef
     for (unsigned mode = 0; mode < 3; ++mode) {
       program.expose_route = mode != 2;
       en::StepPlanRuns runs;
+      runs.routed_graphs.resize(2);
       if (mode != 0) runs.routed_graphs[0] = std::make_unique<GuardRoutedRecording>(program);
       const auto* retained = runs.routed_graphs[0].get();
       en::GraphStats stats;

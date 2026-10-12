@@ -168,8 +168,8 @@ Raw failed and successful evidence stays outside Git in the coordination root's
 ## Remaining scope
 
 N4b6b's bounded owned operation controls, N4b6c's supplemental lease
-prerequisite and N4b6d's one-group shared routed step are complete. N4b6e's
-ordered-group extension remains pending. Native ModelOpt target admission
+prerequisite, N4b6d's one-group shared routed step and N4b6e's ordered-group
+extension are complete. Native ModelOpt target admission
 and full-model qualification remain open. Existing operation evidence makes no
 speed or model-quality claim.
 
@@ -245,9 +245,80 @@ Final `native-grouped-runner-quality03` completes with exit 0: formatting for
 25 C++ paths, 20 boundary checks, 2,213 headers and REUSE 6.2.0 pass. Its literal
 supervisor status and log are retained alongside the guarded source export.
 
-This first implementation permits one routing group and refuses routed lookahead.
-Multiple ordered groups, actual model admission, original-model quality and speed
-remain open. Page lookup currently scans all pages per expert/part; the small
+This initial one-group proof is extended by N4b6e below; routed lookahead
+remains refused. Actual model admission, original-model quality and speed remain
+open. Page lookup currently scans all pages per expert/part; the small
 fixture does not qualify 512-expert, 48-layer scaling. Existing supplemental fake
 controls cover cancellation and unknown retirement; whole-runner failure injection
 is not claimed. No new import or real-model payload read is needed for this proof.
+
+## Ordered routed groups — 2026-10-12
+
+N4b6e extends the same shared step to G ordered routing groups and G+1 segments,
+with group/product counts derived from the actual selected plan. All segments
+retain the original whole-plan placement and source/execution/cache identity.
+Each group has a stable paid pinned slice. Its completed router output is fully
+validated before acquiring its current selected closure under the still-held
+base request. Capture construction does not count as completion; ordinal,
+epoch and Bind-generation checks govern replay. Intermediate segments copy only
+the next route; only the last publishes final outputs and carries. Unknown
+completion retains the complete flight and quarantines state. Ordinary whole-step
+entry points still refuse routed programs.
+
+The new real ComponentStepSource fixture has two nonuniform width-32 MoEs after
+D64 attention. The second router consumes the first group's actual output;
+revisions change both selected sets while preserving repeated contributions.
+All 288 full outputs pass the same independent scalar tolerance as N4b6d. A
+private test-only friend inspects 36 actual IDs from completed retained pinned
+slices, with current epochs; it grants no launch authority. Nine segments across
+three eager/captured/replayed steps complete, one program is retained, 12 exact
+part descriptors defer residency, and the state frontier reaches 9. Each group
+requires fresh selected-page admission; ordinary/shared-page coverage remains
+held. This is F16 state execution/frontier evidence, not an independent full
+attention-state byte oracle: the attention output projection remains zero.
+
+Three additional host cases check ordered completion/preparation, unknown
+second-segment sequencing and real supplemental-scheduler behavior after a
+successful first group. Underpayment refuses before the later launch; unknown
+completion retains the base and selected leases, external counter and complete
+payload. The injected failures use fake providers; full-runner GPU fault
+injection is not claimed. Existing one-group and malformed-source cases pass
+unchanged. No kernel arithmetic or numerical policy changed.
+
+The fixed two-group fixture prepays 576 MiB catalog metadata, including a
+384 MiB compiler allowance (derived bound 340,812,288 bytes), a 96 MiB complete
+owner allowance and 64 MiB overlapping program/graph accounts. Its managed node
+is 1 GiB; activation and pool each cap at 64 MiB. Nine weight pages plus the
+slab read slot use at most 20 MiB + 8 KiB within a 32 MiB allowance. F16 cache
+payload is 65,536 bytes, state layout stays within 128 KiB, and four times actual
+state capacity is included before start. Two stable route slices total at most
+32 KiB. Generic group metadata is charged before allocation using actual
+selected-product counts; no model-specific count cap is introduced. Existing
+serial complete-owner retirement remains mandatory. The actual job uses a
+10 GiB process/cache cap, zero swap and a 6 GiB physical-margin check, not a
+total opaque CUDA-device allocation cap.
+
+Main evidence (raw retained outside Git):
+
+- `native-grouped-ordered-main01/result.json`: full native build, 104 routed
+  host controls plus 34 fusion/validation controls, no failures or skips;
+  SHA-256 `a34963ec04a9137e0eea6c14985170051af9b58f218baa07bb1f65f5cf4430e7`.
+- `native-grouped-ordered-gpu01/result.json`: all four cases PASS, unchanged
+  source/binary guards, zero remaining compute processes and zero memory-event
+  counters; SHA-256
+  `9550430b58a7a4fb43f1cbdb19fd6dca430496d67081764e28409def07fb5e2f`.
+- Matching source-map SHA-256:
+  `27a5ff34c9bf5ece498298391d8d2e170fb5fae556c560ef39de16736f665347`.
+  Executed binary: 204,695,792 bytes, SHA-256
+  `b66ab7139c42d8ddd2ee32c90dd5cc1a4da48c52cb33c850011ae70a92169b12`.
+  Observed process/cache accounting peak is 313,475,072 bytes, not total opaque
+  device occupancy.
+- `native-grouped-ordered-quality01` literal supervisor status/log: exit 0,
+  format 12 paths, nine boundary checks, 2,213 headers and REUSE 6.2.0 PASS.
+
+Native model admission, original-model quality, serving and performance gates
+remain open. The bounded two-group proof does not qualify full 48-layer or
+512-expert execution. Page inventory still uses full source scans; no page index,
+fully-resident bypass, new import or real-model payload traversal is part of this
+slice. CPU cost, memory traffic and reuse improvements may be useful independently
+of model latency, but none is measured or claimed by these correctness controls.

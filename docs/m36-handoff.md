@@ -50,8 +50,12 @@ main build, 101 routed host controls, 34 fusion/validation controls and three GP
 cases. The fixture executes 288 complete outputs across eager/captured/replayed
 steps, selected-only residency and state frontier 9. This does not qualify
 production native expert/model admission or a full family. N4b6e ordered groups
-are reviewed in source02 but await main build and actual execution
-([evidence](experiments/m36-native-grouped-foundation/README.md#shared-routed-step--2026-10-12)).
+now pass full native main build, 104 routed plus 34 fusion/validation host
+controls and four GPU cases. The two-group step checks 288 full outputs and
+36 actual routed IDs across nine completed segments, with final-only output
+publication and fresh selected admission per group. Native model admission,
+full-family quality/performance and inventory scaling remain open
+([evidence](experiments/m36-native-grouped-foundation/README.md#ordered-routed-groups--2026-10-12)).
 
 The generic reserved-weight alignment landed in `b9833111` and passes main native build and
 108 focused host controls. It provides actual checked physical facts without
@@ -73,7 +77,7 @@ A/C pair passes all input/head/program controls; aggregate PPL improves 0.64%,
 but the new 888 targets improve only 0.057%, with two documents regressing.
 Most gain comes from the old prefix. This mixed secondary observation adopts
 no policy and warrants no further context/timing run by itself. The bounded one-group routed
-continuation passes; ordered-group execution remains pending. Native GGUF target normalization passes
+continuation passes; ordered-group execution now passes its bounded two-group controls. Native GGUF target normalization passes
 a full native build, 103 affected host controls and one real-header-only case:
 all 1,224 encoded routes are preserved, without payload traversal, hashing or
 publication. The bounded reader prefixes can include bytes beyond the headers.
@@ -151,8 +155,9 @@ and matched timing. Native split-row paging now passes its bounded shared-runner
 foundation: main native build, 117 focused host controls and two tiny GPU cases,
 including changed-ID capture replay and multipart refusals. N4b6d also passes
 the bounded one-group native expert continuation on a real ComponentStepSource.
-N4b6e's reviewed ordered-group extension awaits main checks; production native
-expert/model admission and full-family quality/performance remain open. DeepSeek's default-off
+N4b6e's ordered-group extension also passes main native and bounded two-group
+execution; production native expert/model admission and full-family
+quality/performance remain open. DeepSeek's default-off
 rounded consumer has separate real component/source host controls and a passing
 declared-backend synthetic GPU corridor. Main integration passes a full native
 build, 193 focused host controls and the same one-case GPU corridor on Spark B.

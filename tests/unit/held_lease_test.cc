@@ -1228,4 +1228,66 @@ TEST_F(HeldLeaseTest, SupplementalUnknownCompletionRetainsBothLeasesAndCompleteP
   EXPECT_GT((*allowance)->used(), 0U);
 }
 
+// Real supplemental tickets, scheduler and fake completion providers. This
+// exercises the ordered owner's lease/error seam, not injected GPU failure.
+TEST_F(HeldLeaseTest, LaterSupplementalUnderpaymentAndUnknownCompletionKeepTheBaseOwner) {
+  namespace en = llmp::engine;
+  auto allowance = en::ExecutionMetadataAllowance::Admit(catalog_, domain_, 65536, 131072, 65536);
+  ASSERT_TRUE(allowance);
+  Build(8);
+  Request& request = unproven_request_;
+  Open(request, 0);
+  const auto selected = ModelClosure(1);
+  auto payload = std::make_shared<int>(0);
+  std::weak_ptr<int> weak = payload;
+  const auto job = [this, counter = payload.get()](llmp::providers::NativeStream) {
+    EXPECT_EQ(Leases(0), kPerModel);
+    EXPECT_EQ(Leases(1), kPerModel);
+    ++*counter;
+    return sc::JobResult::kQueued;
+  };
+  auto first = en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done,
+                                           selected, job, 0, payload, *allowance);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(Run((*first)->Program(), (*first)->done()));
+  const auto retired = (*first)->Retire(*scheduler_);
+  ASSERT_TRUE(retired && *retired);
+  first->reset();
+  EXPECT_EQ(*payload, 1);
+  EXPECT_EQ(Leases(0), kPerModel);
+  EXPECT_EQ(Leases(1), 0U);
+  EXPECT_EQ(request.channel.external->load(), 0U);
+  const auto cost = en::SupplementalRun::Bound(selected.extents.size());
+  ASSERT_TRUE(cost);
+  const auto occupied = (*allowance)->capacity() - *cost + 1;
+  ASSERT_TRUE((*allowance)->Charge(occupied));
+  const auto reads = scheduler_->loads();
+  EXPECT_FALSE(en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done,
+                                           selected, job, 0, payload, *allowance));
+  EXPECT_EQ(*payload, 1);
+  EXPECT_EQ(scheduler_->loads(), reads);
+  EXPECT_EQ(Leases(0), kPerModel);
+  EXPECT_EQ(request.channel.external->load(), 0U);
+  (*allowance)->Release(occupied);
+  auto second = en::SupplementalRun::Create(catalog_, domain_, request.channel, request.done,
+                                            selected, job, 0, payload, *allowance);
+  ASSERT_TRUE(second);
+  ASSERT_TRUE(scheduler_->Start(++request_, (*second)->Program()));
+  Settle(false);
+  execution_.FailNextQuery(ProviderError::kUnknown);
+  Settle(false);
+  ASSERT_EQ(scheduler_->fault(), sc::Fault::kUnproven);
+  auto pending = (*second)->Retire(*scheduler_);
+  ASSERT_TRUE(pending);
+  EXPECT_FALSE(*pending);
+  End(request);
+  EXPECT_EQ(Leases(0), kPerModel);
+  EXPECT_EQ(Leases(1), kPerModel);
+  EXPECT_EQ(request.channel.external->load(), 1U);
+  second->reset();
+  payload.reset();
+  EXPECT_FALSE(weak.expired());
+  EXPECT_GT((*allowance)->used(), 0U);
+}
+
 }  // namespace

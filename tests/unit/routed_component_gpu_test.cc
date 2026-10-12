@@ -34,6 +34,16 @@
 #include "providers/device_runtime.h"
 #include "spec/stored.h"
 
+namespace llmp::test_support {
+class RoutedComponentInspection {
+ public:
+  static auto Completed(const engine::ModelRunner& runner, const kernels::RoutedProgram& program,
+                        std::size_t group) {
+    return runner.CompletedRoute(program, group);
+  }
+};
+}  // namespace llmp::test_support
+
 namespace {
 namespace en = llmp::engine;
 namespace co = llmp::components;
@@ -86,7 +96,7 @@ sp::Param P(std::string name, sp::ParamValue value) { return {std::move(name), s
 sp::ComponentRef C(std::string name, std::vector<sp::Param> params) {
   return {.kind = std::move(name), .version = 1, .params = std::move(params), .weights = {}};
 }
-sp::ModelSpec Spec() {
+sp::ModelSpec Spec(bool ordered = false) {
   auto attention = C(
       "attention.dense",
       {P("placement", std::string("pre")), P("eps", 1e-6), P("heads", std::int64_t{1}),
@@ -118,7 +128,11 @@ sp::ModelSpec Spec() {
   stage.stream.width = kWidth;
   stage.embedding = C("embedding.token", {P("scale", 1.0)});
   stage.embedding->weights = {{.role = "table", .tensor = "embedding"}};
+  auto second = moe;
+  if (ordered)
+    for (auto& weight : second.weights) weight.tensor = "second." + weight.tensor;
   stage.layers = {{.components = {std::move(attention), std::move(moe)}}};
+  if (ordered) stage.layers.push_back({.components = {std::move(second)}});
   stage.heads.output = C("head.linear", {});
   stage.heads.output->weights = {{.role = "weight", .tensor = "head"}};
   sp::ModelSpec spec{.stages = {std::move(stage)}};
@@ -128,17 +142,23 @@ sp::ModelSpec Spec() {
 float Router(std::size_t expert, std::size_t col) {
   return col == expert ? 4.F : col == (expert ^ 1U) ? 2.F : 0.F;
 }
-std::filesystem::path Artifact(const std::filesystem::path& root, const sp::ModelSpec& spec) {
+std::filesystem::path Artifact(const std::filesystem::path& root, const sp::ModelSpec& spec,
+                               bool ordered = false) {
   ts::V1Plan plan;
   plan.expert_count = kExperts;
   plan.spec = sp::ToJson(spec);
   ts::V1Group base{.kind = llmp::artifact::GroupKind::kGlobal};
   std::uint64_t offset = 0;
-  for (const std::string name :
-       {"embedding", "head", "attention.norm", "attention.q", "attention.k", "attention.v",
-        "attention.output", "moe.router", "moe.gate", "moe.up", "moe.down"}) {
-    const auto format = name == "attention.norm"     ? Dense(kWidth)
-                        : name == "moe.router"       ? Dense(kWidth, kExperts)
+  std::vector<std::string> names{"embedding",   "head",        "attention.norm",   "attention.q",
+                                 "attention.k", "attention.v", "attention.output", "moe.router",
+                                 "moe.gate",    "moe.up",      "moe.down"};
+  if (ordered)
+    for (const auto* name : {"moe.router", "moe.gate", "moe.up", "moe.down"})
+      names.push_back(std::string("second.") + name);
+  for (const std::string& name : names) {
+    const auto format = name == "attention.norm" ? Dense(kWidth)
+                        : (name == "moe.router" || name == "second.moe.router")
+                            ? Dense(kWidth, kExperts)
                         : name == "attention.output" ? Dense(kHead, kWidth)
                         : name == "attention.q" || name == "attention.k" || name == "attention.v"
                             ? Dense(kWidth, kHead)
@@ -149,7 +169,8 @@ std::filesystem::path Artifact(const std::filesystem::path& root, const sp::Mode
       return {};
     base.resources.push_back({.name = name, .format = format, .offset = offset});
     const auto stride = en::support::Round((*parts)[0].readable, 4096);
-    if (__builtin_add_overflow(offset, stride, &offset) || offset > 64 * 1024) return {};
+    if (__builtin_add_overflow(offset, stride, &offset) || offset > (ordered ? 128 : 64) * 1024)
+      return {};
   }
   plan.groups.push_back(base);
   plan.groups.push_back({.kind = llmp::artifact::GroupKind::kExpert,
@@ -182,10 +203,16 @@ std::filesystem::path Artifact(const std::filesystem::path& root, const sp::Mode
                                      .format = Dense(64),
                                      .offset = en::kPagedExtent - 256}},
                          .new_shard = true});
+  if (ordered) {
+    auto second = plan.groups.back();
+    second.layer = 1;
+    for (auto& array : second.arrays) array.name = "second." + array.name;
+    plan.groups.push_back(std::move(second));
+  }
   auto files = ts::Render(plan);
-  if (files.shards.size() != 2) return {};
+  if (files.shards.size() != (ordered ? 3U : 2U)) return {};
   std::size_t chunk = 0;
-  for (std::size_t shard = 0; shard != 2; ++shard) {
+  for (std::size_t shard = 0; shard != files.shards.size(); ++shard) {
     auto& bytes = files.shards[shard];
     std::uint64_t header = 0;
     if (bytes.size() < sizeof(header)) return {};
@@ -212,6 +239,7 @@ std::filesystem::path Artifact(const std::filesystem::path& root, const sp::Mode
                 resource.name == "attention.k" || resource.name == "attention.v")
               value = n == col ? 1.F : 0.F;
             if (resource.name == "moe.router") value = Router(n, col);
+            if (resource.name == "second.moe.router") value = col == (n + 2) % 4 ? 65536.F : 0.F;
             std::memcpy(bytes.data() + at + (n * cols + col) * sizeof(float), &value,
                         sizeof(value));
           }
@@ -222,12 +250,17 @@ std::filesystem::path Artifact(const std::filesystem::path& root, const sp::Mode
         auto* data = bytes.data() + begin + e * en::kPagedExtent;
         std::fill_n(data, 1024, static_cast<char>(0x11));
         std::fill_n(data + 1024, 128, static_cast<char>(0x38));
-        const std::array<float, 2> scale{static_cast<float>(e + 1) / 16.F,
-                                         static_cast<float>(e + 1) / 32.F};
+        const std::array<float, 2> scale =
+            ordered
+                ? (shard == 1 ? std::array{1.F / 16.F, 1.F / 32.F} : std::array{1024.F, 512.F})
+                : std::array{static_cast<float>(e + 1) / 16.F, static_cast<float>(e + 1) / 32.F};
         std::memcpy(data + 1280, scale.data(), sizeof(scale));
-        std::fill_n(data + 1536, 512, static_cast<char>(0x11));
+        if (ordered)
+          std::fill_n(data + 1536 + e * 16, 16, static_cast<char>(0x11));
+        else
+          std::fill_n(data + 1536, 512, static_cast<char>(0x11));
         std::fill_n(data + 2048, 64, static_cast<char>(0x38));
-        const float down = 1.F / 32.F;
+        const float down = ordered && shard == 2 ? 16.F : 1.F / 32.F;
         std::memcpy(data + 2304, &down, 4);
       }
     }
@@ -258,7 +291,33 @@ class KernelOwner final : public en::PagedModel {
   std::unique_ptr<kg::GgmlBackend> backend;
   ca::Closure empty;
 };
+struct FixtureLimits {
+  std::uint64_t domain = kDomain, metadata = kMetadata, compiler = kCompiler, owner = kOwner;
+  std::uint64_t nodes = kNodes, tensors = kTensors, program = kProgram, launches = kLaunches;
+  std::uint64_t workspace = 32 * kMiB, weight_reads = 8 * en::kPagedExtent;
+  std::size_t weights = 16;
+};
+constexpr FixtureLimits kOrderedLimits{.domain = 1024 * kMiB,
+                                       .metadata = 576 * kMiB,
+                                       .compiler = 384 * kMiB,
+                                       .owner = 96 * kMiB,
+                                       .nodes = 4096,
+                                       .tensors = 16384,
+                                       .program = 16 * kMiB,
+                                       .launches = 1024,
+                                       .workspace = 64 * kMiB,
+                                       .weight_reads = 16 * en::kPagedExtent,
+                                       .weights = 32};
+static_assert(12 * (4096 * 480ULL + 16384 * 192ULL) + 4096 * (4096 + 16384ULL) +
+                  (16384 + 16 + 16 * 4096ULL) * (512 + 1024 + 32) + 64 * kMiB <
+              kOrderedLimits.compiler);
+static_assert(kOrderedLimits.compiler + kOrderedLimits.owner +
+                  2 * (kOrderedLimits.program + kOrderedLimits.launches * en::kGraphNodeHostBytes) <
+              kOrderedLimits.metadata);
 struct Lifetime {
+  bool ordered = false;
+  FixtureLimits limits;
+  std::uint32_t route_groups = 1;
   en::PagedNode node{{.compute_streams = 1, .slots = 1, .slot_bytes = en::kSlabSlotBytes}};
   std::shared_ptr<en::ExecutionMetadataAllowance> paid;
   std::unique_ptr<KernelOwner> kernel;
@@ -268,7 +327,7 @@ struct Lifetime {
   sp::Source source;
   md::StateLayoutDerived layout;
   std::map<std::pair<ir::WeightRef, Role>, std::uint32_t> resources;
-  std::array<ca::ExtentId, kExperts> experts{};
+  std::array<ca::ExtentId, 2 * kExperts> experts{};
   ca::ExtentId base{};
   const kn::StepProgram* program = nullptr;
   kn::StepLaunch* launch = nullptr;
@@ -316,7 +375,12 @@ struct Retire {
   }
 };
 
-en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0) {
+en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0,
+                        bool ordered = false) {
+  life->ordered = ordered;
+  life->route_groups = ordered ? 2U : 1U;
+  if (ordered) life->limits = kOrderedLimits;
+  const auto& limits = life->limits;
   if (retirement_blocked) return Error("a prior complete owner has unknown retirement");
   auto& node = life->node;
   const auto available = llmp::platform::AvailableMemoryBytes();
@@ -324,16 +388,16 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
   if (auto r = node.Open(); !r) return r;
   life->opened = true;
   node.SetHostFloor(0);
-  auto paid = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), kMetadata,
+  auto paid = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), limits.metadata,
                                                     *available, 6ULL << 30);
   if (!paid) return Error(paid.error());
   life->paid = *paid;
-  if (!life->paid->Charge(kCompiler + kOwner)) return Error("preconstruction payment");
+  if (!life->paid->Charge(limits.compiler + limits.owner)) return Error("preconstruction payment");
   life->root = std::filesystem::path("scratch") / "routed-component";
-  life->spec = Spec();
+  life->spec = Spec(ordered);
   if (auto r = sp::Validate(life->spec); !r) return Error(r.error());
   auto weights = std::make_unique<en::PagedWeights>();
-  const auto path = Artifact(life->root, life->spec);
+  const auto path = Artifact(life->root, life->spec, ordered);
   if (path.empty()) return Error("artifact construction geometry");
   if (auto r = weights->Open(path); !r) return r;
   life->weights = weights.get();
@@ -351,8 +415,8 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
   auto step = co::BuildStep(life->spec, 0, Shape(),
                             {.tensors = life->source.tensors, .state = &life->layout});
   if (!step) return Error(step.error());
-  if (step->graph.nodes().size() > kNodes || step->graph.tensor_count() > kTensors ||
-      step->weights.size() > 16)
+  if (step->graph.nodes().size() > limits.nodes || step->graph.tensor_count() > limits.tensors ||
+      step->weights.size() > limits.weights)
     return Error("fixed primitive inventory");
   for (const auto& weight : step->weights) {
     if (weight.ref.expert_array) continue;
@@ -404,10 +468,12 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
        .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain)),
        .validate_program = [held](const kn::LowerInput& input,
                                   const kn::StepProgram& program) -> en::Status {
-         if (input.plan.graph.nodes().size() > kNodes ||
-             input.plan.graph.tensor_count() > kTensors || !program.routed() ||
-             !program.weight_reads() || program.host_bytes() > kProgram ||
-             program.launches() > kLaunches || program.routed()->layout().host_bytes > 16 * 1024)
+         if (input.plan.graph.nodes().size() > held->limits.nodes ||
+             input.plan.graph.tensor_count() > held->limits.tensors || !program.routed() ||
+             !program.weight_reads() || program.host_bytes() > held->limits.program ||
+             program.launches() > held->limits.launches ||
+             program.routed()->groups() != held->route_groups ||
+             program.routed()->pinned_bytes() > held->route_groups * 16 * 1024)
            return Error("actual lowered program exceeded paid routed domain");
          std::size_t attention = 0;
          for (const auto& op : input.step.graph.nodes()) {
@@ -424,20 +490,23 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
            ++attention;
          }
          if (attention != 1) return Error("actual attention operation inventory");
-         const auto& route = program.routed()->layout().shape;
-         if (route.experts != kExperts || route.used != kUsed || route.tokens != kRows)
-           return Error("actual route geometry differs");
-         const auto& readback = program.routed()->layout().readback;
-         if (readback.size() != 5 || readback[0].rows != kRows ||
-             readback[0].bytes != kUsed * sizeof(std::int32_t) ||
-             readback[0].device_stride != kExperts * sizeof(std::int32_t))
-           return Error("actual top-k IDs did not retain their source row pitch");
+         for (std::size_t group = 0; group != held->route_groups; ++group) {
+           const auto& route = program.routed()->layout(group).shape;
+           if (route.experts != kExperts || route.used != kUsed || route.tokens != kRows)
+             return Error("actual route geometry differs");
+           const auto& readback = program.routed()->layout(group).readback;
+           if (readback.size() != 5 || readback[0].rows != kRows ||
+               readback[0].bytes != kUsed * sizeof(std::int32_t) ||
+               readback[0].device_stride != kExperts * sizeof(std::int32_t))
+             return Error("actual top-k IDs did not retain their source row pitch");
+         }
          std::size_t selected = 0;
          for (const auto& op : input.plan.steps)
            if (held->kernel->backend->registry().at(op.implementation).name ==
                "llmp.decode.grouped.nvfp4.split")
              ++selected;
-         if (selected != 2) return Error("real plan did not select both native split products");
+         if (selected != 2 * held->route_groups)
+           return Error("real plan did not select both native split products");
          std::size_t deferred = 0;
          for (const auto& read : *program.weight_reads()) {
            if (!read.dynamic) continue;
@@ -451,9 +520,9 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
              ++deferred;
            }
          }
-         if (deferred != 6 || std::ranges::none_of(program.tensors(), [](const auto& use) {
-               return use.role == ir::Role::kWeight;
-             }))
+         if (deferred != 6 * held->route_groups ||
+             std::ranges::none_of(program.tensors(),
+                                  [](const auto& use) { return use.role == ir::Role::kWeight; }))
            return Error("deferred versus ordinary coverage inventory differs");
          if (input.addresses.measuring())
            ++held->measured;
@@ -475,21 +544,26 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
                   .invalidate = {},
                   .drop_plans = {}};
   const auto groups = weights->artifact().groups();
-  if (groups.size() != 1 + kExperts || groups[0].kind != llmp::artifact::GroupKind::kGlobal ||
-      groups[0].chunks != 1)
+  if (groups.size() != 1 + life->route_groups * kExperts ||
+      groups[0].kind != llmp::artifact::GroupKind::kGlobal || groups[0].chunks != 1)
     return Error("fixed ordinary/expert group inventory");
   std::vector<en::GroupPlace> places(groups.size(), en::GroupPlace::kNone);
   places[0] = en::GroupPlace::kDevice;
-  for (std::uint32_t e = 0; e < kExperts; ++e)
+  for (std::uint32_t e = 0; e < life->route_groups * kExperts; ++e)
     if (groups[1 + e].kind != llmp::artifact::GroupKind::kExpert ||
         groups[1 + e].stored.value() != en::kPagedExtent || groups[1 + e].chunks != 1)
       return Error("fixed expert slab stored geometry");
   // One source-derived slab, not dense placement of expert groups. Each actual
   // stored group is exactly one page; all consumed part offsets are 256-aligned.
-  const en::SlabSpec slab{
-      .first_group = 1, .count = kExperts, .stride = groups[1].stored.value(), .alignment = 256};
+  std::vector<en::SlabSpec> slabs;
+  slabs.reserve(life->route_groups);
+  for (std::uint32_t group = 0; group != life->route_groups; ++group)
+    slabs.push_back({.first_group = 1 + group * kExperts,
+                     .count = kExperts,
+                     .stride = groups[1 + group * kExperts].stored.value(),
+                     .alignment = 256});
   config.weights.push_back(
-      {.weights = std::move(weights), .places = std::move(places), .slabs = {slab}});
+      {.weights = std::move(weights), .places = std::move(places), .slabs = std::move(slabs)});
   config.setup_shapes = {Shape()};
   config.routed_metadata = life->paid;
   if (malformed != 1) config.routed_owner = life;
@@ -516,23 +590,23 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
   const auto activation = life->runner->activations_needed();
   const auto pool = std::max(en::kPagedExtent, life->runner->pool_needed());
   const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-  if (activation > 32 * kMiB || pool > 32 * kMiB || fixed > kDomain ||
-      activation + pool + 4 * node.StateCapacity() + 8 * en::kPagedExtent +
-              2 * (kProgram + kLaunches * en::kGraphNodeHostBytes) >
-          kDomain - fixed)
+  if (activation > limits.workspace || pool > limits.workspace || fixed > limits.domain ||
+      activation + pool + 4 * node.StateCapacity() + limits.weight_reads +
+              2 * (limits.program + limits.launches * en::kGraphNodeHostBytes) >
+          limits.domain - fixed)
     return Error("complete workspace/weights/state/recording budget");
   if (auto r = node.MapWorkspace(activation, pool); !r) return r;
   std::array<ca::ExtentId, 16> pages{};
   auto count = life->weights->ExtentsTouching(life->weights->group_address(0), 4096, pages);
   if (!count || *count != 1) return Error("base page inventory");
   life->base = pages[0];
-  for (std::uint32_t e = 0; e != kExperts; ++e) {
+  for (std::uint32_t e = 0; e != life->route_groups * kExperts; ++e) {
     count = life->weights->ExtentsTouching(life->weights->group_address(1 + e), en::kPagedExtent,
                                            pages);
     if (!count || *count != 1) return Error("separate expert page inventory");
     life->experts[e] = pages[0];
   }
-  if (auto r = node.Start(Bytes(kDomain)); !r) return r;
+  if (auto r = node.Start(Bytes(limits.domain)); !r) return r;
   if (auto r = life->runner->Register(); !r) return r;
   if (auto r = life->runner->Bind(); !r) return r;
   node.Run();
@@ -619,8 +693,8 @@ TEST(RoutedComponentGpu, RealSharedStepDiscoversOnlySelectedExpertsAndReplaysCha
           if (!residency) return residency;
           // The supplemental lease has retired, but the base request remains.
           // Removing these pages forces fresh backing under retained captures.
-          if (auto evicted =
-                  life->node.Evict(std::vector(life->experts.begin(), life->experts.end()));
+          if (auto evicted = life->node.Evict(
+                  std::vector(life->experts.begin(), life->experts.begin() + kExperts));
               !evicted)
             return evicted;
           if (!life->node.InRequest(0)) return Error("selected eviction ended base request");
@@ -652,6 +726,131 @@ TEST(RoutedComponentGpu, RealSharedStepDiscoversOnlySelectedExpertsAndReplaysCha
   const auto retired = RetireLifetime(*life);
   ASSERT_TRUE(retired) << llmp::test_support::Failed(retired).value_or("");
   life->opened = false;
+}
+
+std::expected<std::vector<double>, std::string> OrderedOracle(
+    std::span<const std::int32_t> tokens) {
+  if (tokens.size() != kRows) return std::unexpected("ordered oracle token extent");
+  std::vector<double> x(tokens.size() * kWidth);
+  for (std::size_t row = 0; row != tokens.size(); ++row) {
+    if (tokens[row] < 0 || tokens[row] >= 4) return std::unexpected("ordered oracle token range");
+    x[row * kWidth + static_cast<std::uint32_t>(tokens[row])] = 1;
+  }
+  for (unsigned group = 0; group != 2; ++group) {
+    std::vector<float> router(kWidth * kExperts), gate(kWidth * 2 * kWidth * kExperts),
+        down(kWidth * kWidth * kExperts);
+    for (std::size_t e = 0; e != kExperts; ++e) {
+      for (std::size_t k = 0; k != kWidth; ++k)
+        router[e * kWidth + k] = group == 0 ? Router(e, k) : k == (e + 2) % 4 ? 65536.F : 0.F;
+      for (std::size_t n = 0; n != 2 * kWidth; ++n)
+        for (std::size_t k = 0; k != kWidth; ++k)
+          gate[(e * 2 * kWidth + n) * kWidth + k] =
+              group == 0 ? 0.5F / (n < kWidth ? 16.F : 32.F) : 0.5F * (n < kWidth ? 1024.F : 512.F);
+      for (std::size_t k = 0; k != kWidth; ++k)
+        down[(e * kWidth + e) * kWidth + k] = group == 0 ? 0.5F / 32.F : 8.F;
+    }
+    const auto route = co::moe::RouterReference(
+        x, kWidth, router, {},
+        {.experts = kExperts, .used = kUsed, .normalize = true, .rms_input = false});
+    x = co::moe::ExpertsReference(
+        x, route, gate, {}, down, {},
+        {.width = kWidth, .hidden = kWidth, .stacked = true, .kind = ir::GluKind::kSwiGlu});
+  }
+  return x;
+}
+
+TEST(RoutedComponentGpu, TwoOrderedGroupsReacquireChangedRoutesBeforeFinalOutputs) {
+  std::shared_ptr<Lifetime> life(new Lifetime, Retire{});
+  const TeardownGuard retirement{life};
+  const auto setup = SetupFixture(life, 0, true);
+  ASSERT_TRUE(setup) << llmp::test_support::Failed(setup).value_or("");
+  const auto completed = life->node.WithRequest(
+      0, life->runner->slots().execution(), "two ordered routed groups", [&]() -> en::Status {
+        const std::array<std::array<std::int32_t, kRows>, 3> input{
+            {{0, 0, 1}, {2, 2, 3}, {1, 0, 1}}};
+        constexpr std::array path{en::RunPath::kEager, en::RunPath::kCaptured,
+                                  en::RunPath::kReplayed};
+        constexpr std::int32_t wanted[3][2][6] = {{{0, 1, 0, 1, 1, 0}, {2, 3, 2, 3, 3, 2}},
+                                                  {{2, 3, 2, 3, 3, 2}, {0, 1, 0, 1, 1, 0}},
+                                                  {{1, 0, 0, 1, 1, 0}, {3, 2, 2, 3, 3, 2}}};
+        for (std::size_t turn = 0; turn != input.size(); ++turn) {
+          const en::SegmentWork work{.tokens = input[turn]};
+          auto ran =
+              life->runner->RunStep({.shape = Shape(static_cast<std::uint32_t>(turn * kRows)),
+                                     .work = std::span(&work, 1),
+                                     .ahead = {}});
+          if (!ran) return Error(ran.error().what);
+          if (ran->path != path[turn] || ran->outputs.size() != 1 ||
+              ran->outputs[0].size() != kRows * kWidth * sizeof(float))
+            return Error("ordered step path or final output coverage");
+          if (!life->program || !life->program->routed() || life->program->routed()->groups() != 2)
+            return Error("actual two-group program disappeared");
+          for (std::size_t group = 0; group != 2; ++group) {
+            // No device read after scratch reuse: the runner copied each actual
+            // route at its completed boundary into its stable, retained slice.
+            const auto actual = llmp::test_support::RoutedComponentInspection::Completed(
+                *life->runner, *life->program->routed(), group);
+            if (!actual || actual->first != turn + 1 ||
+                !std::ranges::equal(actual->second, wanted[turn][group]))
+              return Error("completed actual group IDs or epoch differ");
+          }
+          if (llmp::test_support::RoutedComponentInspection::Completed(*life->runner,
+                                                                       *life->program->routed(), 2))
+            return Error("out-of-range group inspection accepted");
+          const auto expected = OrderedOracle(input[turn]);
+          if (!expected || expected->size() != kRows * kWidth)
+            return Error("ordered scalar oracle extent");
+          for (std::size_t i = 0; i != expected->size(); ++i) {
+            float actual = 0;
+            std::memcpy(&actual, ran->outputs[0].data() + i * sizeof(float), sizeof(float));
+            if (!std::isfinite(actual) ||
+                std::abs(actual - (*expected)[i]) > 2e-5 + 2e-3 * std::abs((*expected)[i]))
+              return Error("complete ordered output differs from scalar component oracle");
+          }
+          const auto residency = life->node.Call(
+              [&]() -> en::Status {
+                const auto base = life->node.catalog().Describe(life->base);
+                if (!base || base->state != ca::ExtentState::kResident || base->leases == 0)
+                  return Error("ordered base lease lost");
+                const auto evict_base = life->node.catalog().BeginEvict(life->base);
+                if (evict_base || evict_base.error() != ca::CatalogError::kHeld)
+                  return Error("ordered base became evictable");
+                for (std::size_t group = 0; group != 2; ++group)
+                  for (std::size_t expert = 0; expert != kExperts; ++expert) {
+                    const bool lower_pair = (turn != 1) == (group == 0);
+                    const bool selected = lower_pair ? expert < 2 : expert >= 2;
+                    const auto page =
+                        life->node.catalog().Describe(life->experts[group * kExperts + expert]);
+                    if (!page || (page->state == ca::ExtentState::kResident) != selected)
+                      return Error("per-group selected-only residency differs");
+                  }
+                return {};
+              },
+              "ordered selected residency");
+          if (!residency) return residency;
+          if (auto evicted =
+                  life->node.Evict(std::vector(life->experts.begin(), life->experts.end()));
+              !evicted)
+            return evicted;
+          if (!life->node.InRequest(0)) return Error("ordered eviction ended base request");
+        }
+        if (life->runner->slots().positions(0) != 9 || life->measured != 1 || life->builds != 1 ||
+            life->runner->plans().size() != 1)
+          return Error("ordered state/cache frontier");
+        return {};
+      });
+  ASSERT_TRUE(completed) << llmp::test_support::Failed(completed).value_or("");
+  RecordProperty("full_output_values", 288);
+  RecordProperty("completed_steps", 3);
+  RecordProperty("ordered_groups_per_step", 2);
+  RecordProperty("completed_segments", 9);
+  RecordProperty("actual_route_ids_compared", 36);
+  RecordProperty("selected_experts_per_group", 2);
+  RecordProperty("retained_programs", 1);
+  RecordProperty("state_frontier", 9);
+  RecordProperty("deferred_part_descriptors", 12);
+  const auto retired = RetireLifetime(*life);
+  ASSERT_TRUE(retired) << llmp::test_support::Failed(retired).value_or("");
 }
 
 TEST(RoutedComponentGpu, MissingOwnerAndMisboundOrdinaryReaderRefuseBeforeAdmission) {

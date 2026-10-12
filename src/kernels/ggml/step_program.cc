@@ -95,15 +95,20 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
         for (const auto& part : w.parts) selected_host_ += part.first.capacity() + 1;
       }
     }
-    if (lowered_.routing) {
-      const auto& r = *lowered_.routing;
-      selected_host_ += sizeof(LoweredRouting) + r.layout.readback.capacity() * sizeof(RoutedCopy) +
-                        r.uploads.capacity() * sizeof(RoutedCopy) +
-                        r.descriptors.capacity() * sizeof(decltype(r.descriptors)::value_type);
-      // Preparation, complete route readback, all worklist/descriptor uploads,
-      // and two opaque segment owners are accounted in the graph plan charge.
-      launches_ += 3 + r.uploads.size();
-      for (const auto& copy : r.layout.readback) launches_ += copy.rows;
+    if (!lowered_.routing.empty()) {
+      selected_host_ +=
+          lowered_.routing.capacity() * sizeof(LoweredRouting) +
+          2 * (lowered_.routing.size() + 1) * sizeof(std::unique_ptr<RoutedRecording>);
+      for (const auto& r : lowered_.routing) {
+        selected_host_ += r.members.capacity() * sizeof(std::size_t) +
+                          r.layout.readback.capacity() * sizeof(RoutedCopy) +
+                          r.uploads.capacity() * sizeof(RoutedCopy) +
+                          r.descriptors.capacity() * sizeof(decltype(r.descriptors)::value_type);
+        // Preparation, complete route readback, all worklist/descriptor uploads,
+        // and two opaque segment owners are accounted in the graph plan charge.
+        launches_ += 3 + r.uploads.size();
+        for (const auto& copy : r.layout.readback) launches_ += copy.rows;
+      }
     }
   }
 
@@ -155,7 +160,7 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
     }
     auto bound = BoundGraph::BindImpl(registry_, plan, lowered_.selected, (*launch_)->selected(),
                                       {context.workspace().base, context.scratch_size(0).value()},
-                                      lowered_.routing.has_value());
+                                      !lowered_.routing.empty());
     if (!bound) return std::unexpected(Failure(bound.error()));
     bound_.emplace(std::move(*bound));
     bound_generation_ = *generation_;
@@ -164,7 +169,7 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
 
   std::expected<void, StepFailure> Run(StepLaunch& launch,
                                        providers::NativeStream stream) const override {
-    if (lowered_.routing)
+    if (!lowered_.routing.empty())
       return std::unexpected(StepFailure{.detail = "routed program refuses whole-step Run"});
     if (owner_) {
       if (auto ready = owner_->Ready(); !ready)
@@ -184,23 +189,33 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
     if (!lowered_.weight_reads) return {};
     return std::span<const RoutedWeight>(*lowered_.weight_reads);
   }
-  RoutedProgram* routed() override { return lowered_.routing ? this : nullptr; }
-  const RoutedProgram* routed() const override { return lowered_.routing ? this : nullptr; }
+  RoutedProgram* routed() override { return !lowered_.routing.empty() ? this : nullptr; }
+  const RoutedProgram* routed() const override {
+    return !lowered_.routing.empty() ? this : nullptr;
+  }
   std::span<const RoutedWeight> weights() const override { return *lowered_.weight_reads; }
-  const RoutedLayout& layout() const override { return lowered_.routing->layout; }
+  std::size_t groups() const override { return lowered_.routing.size(); }
+  const RoutedLayout& layout(std::size_t group = 0) const override {
+    return lowered_.routing.at(group).layout;
+  }
+  std::span<const std::size_t> members(std::size_t group) const override {
+    return lowered_.routing.at(group).members;
+  }
+  std::uint64_t pinned_bytes() const override { return lowered_.routed_pinned_bytes; }
+  const base::Sha256Digest& routing_identity() const override { return lowered_.routing_identity; }
   const base::Sha256Digest& graph_identity() const override {
-    return lowered_.routing->graph_identity;
+    return lowered_.routing.front().graph_identity;
   }
   std::expected<std::unique_ptr<Recorded>, StepFailure> Record(
       StepLaunch& launch, providers::NativeStream stream,
       const StepLaunch::Body& body) const override {
-    if (lowered_.routing)
+    if (!lowered_.routing.empty())
       return std::unexpected(StepFailure{.detail = "routed program refuses whole-step Record"});
     return launch.Capture(stream, body);
   }
   std::expected<void, StepFailure> Current(StepLaunch& launch,
                                            providers::NativeStream stream) const {
-    if (!lowered_.routing || !bound_ || *launch_ == nullptr || &launch != *launch_ ||
+    if (lowered_.routing.empty() || !bound_ || *launch_ == nullptr || &launch != *launch_ ||
         bound_generation_ != *generation_ || launch.faulted())
       return std::unexpected(
           StepFailure{.detail = "routed program has no current healthy binding"});
@@ -209,31 +224,66 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
         return std::unexpected(StepFailure{.detail = ready.error()});
     return SameStream((*launch_)->context(), stream);
   }
-  std::expected<void, StepFailure> Prefix(const RoutedAccess& access, StepLaunch& launch,
-                                          providers::NativeStream stream) override {
-    if (!access.Names(this, access.epoch()) || access.epoch() < route_epoch_)
-      return std::unexpected(StepFailure{.detail = "stale routed prefix access"});
+  std::expected<void, StepFailure> Access(const RoutedAccess& access) {
+    if (!access.Names(this, access.epoch()) || access.segment() > groups())
+      return std::unexpected(StepFailure{.detail = "foreign routed segment access"});
+    if (access.segment() == 0 && access.epoch() > progress_.epoch()) {
+      if (!progress_.Start(access.epoch(), groups()))
+        return std::unexpected(StepFailure{.detail = "previous routed segment remains unretired"});
+      pinned_ = {};
+    }
+    if (!progress_.Ready(access.epoch(), access.segment()))
+      return std::unexpected(StepFailure{.detail = "routed segment is out of order or unprepared"});
+    return {};
+  }
+  std::expected<void, StepFailure> RunSegment(const RoutedAccess& access, StepLaunch& launch,
+                                              providers::NativeStream stream) override {
     if (auto current = Current(launch, stream); !current) return current;
-    route_epoch_ = access.epoch();
-    prepared_epoch_ = 0;
-    pinned_ = {};
+    if (auto valid = Access(access); !valid) return valid;
+    const auto segment = access.segment();
+    if (!recording_ && !progress_.Submit(access.epoch(), segment))
+      return std::unexpected(StepFailure{.detail = "routed segment was already submitted"});
+    if (segment != 0) {
+      const auto& previous = lowered_.routing[segment - 1];
+      if (pinned_.size() != previous.layout.host_bytes)
+        return std::unexpected(StepFailure{.detail = "continuation lost its prepared staging"});
+      for (const auto& copy : previous.uploads) {
+        auto copied = providers::CopyAsync(stream, reinterpret_cast<void*>(copy.device),
+                                           pinned_.data() + copy.host_offset, copy.bytes,
+                                           providers::CopyKind::kHostToDevice);
+        if (!copied.ok())
+          return std::unexpected(
+              StepFailure{.error = StepError::kUnknown, .detail = copied.text()});
+      }
+    }
+    const auto begin = segment == 0 ? 0 : lowered_.routing[segment - 1].cut;
+    const auto end =
+        segment == groups() ? lowered_.plan.steps.size() : lowered_.routing[segment].cut;
     auto& context = (*launch_)->context();
-    if (auto prefix = bound_->RunRange(context, 0, lowered_.routing->cut); !prefix)
-      return std::unexpected(Failure(prefix.error()));
-    if (auto route = RunMoeRoute(context, lowered_.routing->preparation); !route)
-      return std::unexpected(Failure(route.error()));
+    if (auto ran = bound_->RunRange(context, begin, end); !ran)
+      return std::unexpected(Failure(ran.error()));
+    if (segment < groups())
+      if (auto route = RunMoeRoute(context, lowered_.routing[segment].preparation); !route)
+        return std::unexpected(Failure(route.error()));
+    return {};
+  }
+  std::expected<void, StepFailure> CompleteSegment(const RoutedAccess& access) override {
+    if (!access.Names(this, progress_.epoch()) || recording_ ||
+        !progress_.Complete(access.epoch(), access.segment()))
+      return std::unexpected(StepFailure{.detail = "routed completion is stale or out of order"});
+    pinned_ = {};
     return {};
   }
   std::expected<void, StepFailure> Prepare(const RoutedAccess& access,
                                            std::span<std::byte> pinned) override {
-    prepared_epoch_ = 0;
     pinned_ = {};
-    if (!lowered_.routing || !access.Names(this, route_epoch_) ||
-        pinned.size() != layout().host_bytes ||
+    const auto group = access.segment();
+    if (group >= groups() || !access.Names(this, progress_.epoch()) ||
+        !progress_.CanPrepare(access.epoch(), group) || pinned.size() != layout(group).host_bytes ||
         reinterpret_cast<std::uintptr_t>(pinned.data()) % 256)
       return std::unexpected(
           StepFailure{.detail = "routed preparation lost its completed epoch or staging"});
-    const auto& r = layout();
+    const auto& r = layout(group);
     const auto E = r.shape.experts, P = r.shape.used * r.shape.tokens;
     const auto ints = [&](std::uint64_t offset, std::uint64_t count) {
       return std::span(reinterpret_cast<std::int32_t*>(pinned.data() + offset), count);
@@ -249,7 +299,7 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
     if (!valid)
       return std::unexpected(
           StepFailure{.detail = "actual router IDs or route bijection are invalid"});
-    for (const auto& [index, offset] : lowered_.routing->descriptors) {
+    for (const auto& [index, offset] : lowered_.routing[group].descriptors) {
       const auto& call = *lowered_.selected[index].call;
       if (auto staged =
               call.StageDescriptors(pinned.subspan(offset, call.route_descriptor_bytes()));
@@ -257,54 +307,29 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
         return std::unexpected(Failure(staged.error()));
     }
     pinned_ = pinned;
-    prepared_epoch_ = route_epoch_;
-    return {};
-  }
-  std::expected<void, StepFailure> Continue(const RoutedAccess& access, StepLaunch& launch,
-                                            providers::NativeStream stream) override {
-    if (!access.Names(this, prepared_epoch_) || prepared_epoch_ != route_epoch_ || pinned_.empty())
-      return std::unexpected(StepFailure{.detail = "continuation has no current prepared route"});
-    if (auto current = Current(launch, stream); !current) return current;
-    for (const auto& copy : lowered_.routing->uploads) {
-      auto r = providers::CopyAsync(stream, reinterpret_cast<void*>(copy.device),
-                                    pinned_.data() + copy.host_offset, copy.bytes,
-                                    providers::CopyKind::kHostToDevice);
-      if (!r.ok())
-        return std::unexpected(StepFailure{.error = StepError::kUnknown, .detail = r.text()});
-    }
-    if (auto ran = bound_->RunRange((*launch_)->context(), lowered_.routing->cut,
-                                    lowered_.plan.steps.size());
-        !ran)
-      return std::unexpected(Failure(ran.error()));
+    if (!progress_.Prepared(access.epoch(), group))
+      return std::unexpected(StepFailure{.detail = "routed preparation order changed"});
     return {};
   }
   class SegmentRecording final : public RoutedRecording {
    public:
-    SegmentRecording(GgmlStepProgram& owner, std::uint64_t generation, bool continuation,
+    SegmentRecording(GgmlStepProgram& owner, std::uint64_t generation, std::size_t segment,
                      CapturedGraph graph)
-        : owner_(owner),
-          generation_(generation),
-          continuation_(continuation),
-          graph_(std::move(graph)) {}
+        : owner_(owner), generation_(generation), segment_(segment), graph_(std::move(graph)) {}
     const RoutedProgram* owner() const override { return &owner_; }
-    bool continuation() const override { return continuation_; }
+    std::size_t segment() const override { return segment_; }
     std::size_t nodes() const override { return graph_.nodes(); }
     double capture_seconds() const override { return graph_.capture_seconds(); }
     double instantiate_seconds() const override { return graph_.instantiate_seconds(); }
     std::expected<void, StepFailure> Replay(const RoutedAccess& access, StepLaunch& launch,
                                             providers::NativeStream stream) const override {
       if (auto current = owner_.Current(launch, stream); !current) return current;
-      if (owner_.bound_generation_ != generation_ || !access.Names(&owner_, access.epoch()) ||
-          access.epoch() < owner_.route_epoch_ ||
-          (continuation_ && (!access.Names(&owner_, owner_.prepared_epoch_) ||
-                             owner_.prepared_epoch_ != owner_.route_epoch_)))
+      if (owner_.bound_generation_ != generation_ || access.segment() != segment_)
         return std::unexpected(
-            StepFailure{.detail = "routed recording owner, binding or preparation changed"});
-      if (!continuation_) {
-        owner_.route_epoch_ = access.epoch();
-        owner_.prepared_epoch_ = 0;
-        owner_.pinned_ = {};
-      }
+            StepFailure{.detail = "routed recording binding or ordinal changed"});
+      if (auto valid = owner_.Access(access); !valid) return valid;
+      if (!owner_.progress_.Submit(access.epoch(), segment_))
+        return std::unexpected(StepFailure{.detail = "routed recording already submitted"});
       if (auto ran = (*owner_.launch_)->context().Launch(graph_); !ran)
         return std::unexpected(Failure(ran.error()));
       return {};
@@ -313,16 +338,16 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
    private:
     GgmlStepProgram& owner_;
     std::uint64_t generation_;
-    bool continuation_;
+    std::size_t segment_;
     CapturedGraph graph_;
   };
   std::expected<std::unique_ptr<RoutedRecording>, StepFailure> RecordSegment(
       const RoutedAccess& access, StepLaunch& launch, providers::NativeStream stream,
-      bool continuation, const StepLaunch::Body& body) override {
+      const StepLaunch::Body& body) override {
     if (auto current = Current(launch, stream); !current) return std::unexpected(current.error());
-    if (!access.Names(this, access.epoch()) || access.epoch() < route_epoch_ ||
-        (continuation && !access.Names(this, prepared_epoch_)))
-      return std::unexpected(StepFailure{.detail = "routed recording has no current access"});
+    if (auto valid = Access(access); !valid) return std::unexpected(valid.error());
+    if (recording_) return std::unexpected(StepFailure{.detail = "nested routed recording"});
+    recording_ = true;
     auto captured =
         (*launch_)->context().Capture([&](LaunchContext&) -> std::expected<void, KernelFailure> {
           const auto result = body();
@@ -333,20 +358,22 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
                 .detail = result.error().detail});
           return {};
         });
+    recording_ = false;
     if (!captured) return std::unexpected(Failure(captured.error()));
-    return std::make_unique<SegmentRecording>(*this, bound_generation_, continuation,
+    return std::make_unique<SegmentRecording>(*this, bound_generation_, access.segment(),
                                               std::move(*captured));
   }
   std::expected<void, StepFailure> ReplaySegment(const RoutedAccess& access, StepLaunch& launch,
-                                                 providers::NativeStream stream, bool continuation,
+                                                 providers::NativeStream stream,
                                                  const RoutedRecording& recorded) override {
-    if (recorded.owner() != this || recorded.continuation() != continuation)
+    if (recorded.owner() != this || recorded.segment() != access.segment())
       return std::unexpected(StepFailure{.detail = "foreign routed recording or segment"});
     return recorded.Replay(access, launch, stream);
   }
 
  private:
-  std::uint64_t route_epoch_ = 0, prepared_epoch_ = 0;
+  RoutedProgress progress_;
+  bool recording_ = false;
   std::span<std::byte> pinned_{};
   const GgmlStepLaunch* const* launch_;
   const std::uint64_t* generation_;
@@ -672,7 +699,9 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::L
   if (declaration_) {
     if (auto ready = declaration_->Ready(); !ready) return std::unexpected(ready.error());
   }
-  auto lowered = LowerStep(input, *registry_, DeviceChoicesOf(*measuring_), options_.lower);
+  auto options = options_.lower;
+  options.routed_funder = declaration_;
+  auto lowered = LowerStep(input, *registry_, DeviceChoicesOf(*measuring_), options);
   if (!lowered) return std::unexpected(lowered.error().detail);
   auto pool = PlanScratchOn(*measuring_, lowered->plan, false);
   if (!pool) return std::unexpected(pool.error().detail);

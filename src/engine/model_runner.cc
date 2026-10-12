@@ -1189,7 +1189,10 @@ Status ModelRunner::Release() {
 // --------------------------------------------------------------------- plans
 
 void ModelRunner::DropPlans() {
-  if (!routed_flight_) plans_.Clear();
+  if (!routed_flight_) {
+    ForgetCompletedRouting();
+    plans_.Clear();
+  }
 }
 
 void ModelRunner::ReclaimCandidates(std::uint32_t owner, bool running,
@@ -1202,6 +1205,7 @@ void ModelRunner::ReclaimCandidates(std::uint32_t owner, bool running,
 std::uint64_t ModelRunner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
   if (released_ || slots_.faulted() || routed_flight_) return 0;
   std::array<PlanCacheBase*, 1> caches{&plans_};
+  ForgetCompletedRouting();
   return ReclaimPlan(caches, kind, id);
 }
 
@@ -1238,6 +1242,7 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
   const std::uint64_t launches = program.launches();
   planned->positioned = !program.capturable();
   if (transfer) transfer();
+  ForgetCompletedRouting();
   Plans::Entry& entry = plans_.Add(KeyOf(shape), std::move(planned), host, launches, seconds);
   // Never recorded: no capture beside a run, on its first run or ahead.
   if (entry.planned->positioned) entry.runs[0].uncapturable = true;

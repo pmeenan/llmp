@@ -66,10 +66,12 @@ struct ModelRunner::RoutedState {
   base::Sha256Digest execution{};
   planner::PlanKey source_key;
   std::vector<kn::RoutedWeight> weights;
+  std::vector<base::Sha256Digest> signatures;
   std::vector<catalog::ExtentId> pages, temporary, excluded;
   std::vector<std::uint8_t> roles;
   void* pinned = nullptr;
   std::uint64_t pinned_bytes = 0, epoch = 0;
+  const kn::RoutedProgram* completed_program = nullptr;
   bool finalized = false;
   ~RoutedState() { allowance->Release(charge); }
 };
@@ -114,6 +116,10 @@ Status ModelRunner::MeasureRouting(const kn::StepProgram& program) {
     if (source_key.parameters.size() > (UINT64_MAX - bytes) / 32 ||
         !add(source_key.parameters.size() * 32))
       return Error("routed source key bound overflow");
+    if (config_.setup_shapes.empty() ||
+        config_.setup_shapes.size() > (UINT64_MAX - bytes) / (4 * sizeof(base::Sha256Digest)) ||
+        !add(config_.setup_shapes.size() * (4 * sizeof(base::Sha256Digest))))
+      return Error("routed shape signature inventory overflow");
     if (!config_.routed_metadata->Charge(bytes))
       return Error("routed metadata allowance exhausted");
     auto state = std::make_shared<RoutedState>();
@@ -123,6 +129,7 @@ Status ModelRunner::MeasureRouting(const kn::StepProgram& program) {
     state->source_key = source_key;
     state->source_key.shape = {};
     state->weights.assign(reads->begin(), reads->end());
+    state->signatures.reserve(config_.setup_shapes.size());
     state->pages.reserve(static_cast<std::size_t>(pages));
     for (const auto& stage : config_.weights)
       state->pages.insert(state->pages.end(), stage.weights->extents().begin(),
@@ -146,10 +153,26 @@ Status ModelRunner::MeasureRouting(const kn::StepProgram& program) {
     }
   }
   if (const auto* route = program.routed()) {
-    const auto& layout = route->layout();
-    if (!kn::GroupedRouteBound(layout.shape) || layout.host_bytes == 0)
-      return Error("routed preparation has invalid bounded storage");
-    routed_->pinned_bytes = std::max(routed_->pinned_bytes, layout.host_bytes);
+    if (route->groups() == 0 || route->groups() == SIZE_MAX)
+      return Error("routed preparation has no representable group inventory");
+    std::uint64_t total = 0;
+    for (std::size_t g = 0; g != route->groups(); ++g) {
+      const auto& layout = route->layout(g);
+      if (!kn::GroupedRouteBound(layout.shape) || layout.host_bytes == 0 ||
+          layout.host_bytes % 256 != 0 || layout.host_offset != total ||
+          __builtin_add_overflow(total, layout.host_bytes, &total) || route->members(g).empty())
+        return Error("routed preparation has invalid bounded storage or membership");
+      for (const auto member : route->members(g))
+        if (member >= route->weights().size() || !route->weights()[member].dynamic)
+          return Error("routed group refers to an undeclared dynamic weight");
+    }
+    if (total != route->pinned_bytes()) return Error("routed pinned sum differs");
+    if (!std::ranges::contains(routed_->signatures, route->routing_identity())) {
+      if (routed_->signatures.size() == config_.setup_shapes.size())
+        return Error("routed shape signatures exceed their prepaid inventory");
+      routed_->signatures.push_back(route->routing_identity());
+    }
+    routed_->pinned_bytes = std::max(routed_->pinned_bytes, total);
   }
   return {};
 }
@@ -263,8 +286,9 @@ Status ModelRunner::CheckRouting(const kn::StepProgram& program) const {
     }
   }
   if (const auto* route = program.routed();
-      route && route->layout().host_bytes > routed_->pinned_bytes)
-    return Error("routed program exceeds measured preparation storage");
+      route && (route->pinned_bytes() > routed_->pinned_bytes ||
+                !std::ranges::contains(routed_->signatures, route->routing_identity())))
+    return Error("routed program changed its measured group identity or preparation storage");
   return {};
 }
 
@@ -315,6 +339,7 @@ Status ModelRunner::BeginRouted(kn::StepProgram& program, StepPlanRuns& runs, co
     return Error("routed flight page metadata overflows");
   bytes += routed_->pages.size() * 128;
   if (!routed_->allowance->Charge(bytes)) return Error("routed flight metadata was not admitted");
+  routed_->completed_program = nullptr;
   const kn::RoutedAccess access(program.routed(), ++routed_->epoch);
   auto flight = std::make_shared<RoutedFlight>(access);
   flight->owner = std::move(owner);
@@ -327,12 +352,39 @@ Status ModelRunner::BeginRouted(kn::StepProgram& program, StepPlanRuns& runs, co
   flight->outputs = outputs;
   flight->carries = carries;
   flight->selected.reserve(routed_->pages.size());
+  const auto slots = flight->program->groups() + 1;
+  if (!runs.routed_graphs.empty() && runs.routed_graphs.size() != slots)
+    return Error("routed recording inventory changed for this cached program");
+  // The program's host account includes these retained recording slots.
+  runs.routed_graphs.resize(slots);
   // Copies retained by recordings are the actual immutable staging layout,
   // distinct from the newly prepared routing values at those same addresses.
   runs.copies = inputs;
   runs.routed_outputs = outputs;
   routed_flight_ = std::move(flight);
   return {};
+}
+
+void ModelRunner::ForgetCompletedRouting() {
+  if (routed_) routed_->completed_program = nullptr;
+}
+
+std::expected<std::pair<std::uint64_t, std::span<const std::int32_t>>, std::string>
+ModelRunner::CompletedRoute(const kn::RoutedProgram& program, std::size_t group) const {
+  if (!routed_ || routed_flight_ || routed_->completed_program != &program || routed_->epoch == 0 ||
+      group >= program.groups() || !routed_->pinned)
+    return std::unexpected("no completed current route to inspect");
+  const auto& layout = program.layout(group);
+  std::uint64_t count = 0, bytes = 0, offset = 0;
+  if (__builtin_mul_overflow(layout.shape.used, layout.shape.tokens, &count) ||
+      __builtin_mul_overflow(count, std::uint64_t{sizeof(std::int32_t)}, &bytes) ||
+      __builtin_add_overflow(layout.host_offset, layout.ids, &offset) ||
+      offset % alignof(std::int32_t) || offset > routed_->pinned_bytes ||
+      bytes > routed_->pinned_bytes - offset)
+    return std::unexpected("completed route inspection extent mismatch");
+  const auto* ids = reinterpret_cast<const std::int32_t*>(
+      static_cast<const std::byte*>(routed_->pinned) + offset);
+  return std::pair{routed_->epoch, std::span<const std::int32_t>(ids, count)};
 }
 
 void ModelRunner::ForgetUnstartedRouted() {
@@ -345,7 +397,7 @@ StepQueued ModelRunner::QueueRoutedPrefix(providers::NativeStream native) {
   flight->started = true;
   const auto bytes = flight->program->layout().host_bytes;
   flight->prefix = runs_.QueueRouted(
-      *flight->runs, flight->access, *flight->program, false, flight->inputs, {},
+      *flight->runs, flight->access, *flight->program, flight->inputs, {},
       {static_cast<std::byte*>(routed_->pinned), bytes}, flight->capture, graph_stats_, native);
   flight->unknown =
       !flight->prefix.result && flight->prefix.result.error().error == kn::StepError::kUnknown;
@@ -357,91 +409,112 @@ Status ModelRunner::ContinueRouted(RunPath& path) {
   if (!flight || !flight->started || !flight->prefix.result || flight->unknown)
     return Error("routed prefix has not completed successfully");
   if (auto current = CheckRoutingSource(); !current) return current;
-  const auto& layout = flight->program->layout();
-  auto pinned = std::span(static_cast<std::byte*>(routed_->pinned), layout.host_bytes);
-  if (auto prepared = flight->program->Prepare(flight->access, pinned); !prepared)
-    return Error(prepared.error().detail);
-  // Prepare proved the complete offsets/bijection and every actual ID, not a
-  // caller-supplied count or a prior route's same-address worklist.
-  const auto offsets =
-      std::span(reinterpret_cast<const std::int32_t*>(pinned.data() + layout.work_offsets),
-                static_cast<std::size_t>(layout.shape.experts + 1));
-  std::ranges::fill(routed_->roles, 0);
-  for (const auto& weight : flight->program->weights()) {
-    if (!weight.dynamic) continue;
-    for (std::uint32_t e = 0; e < layout.shape.experts; ++e) {
-      if (offsets[e] == offsets[e + 1]) continue;
-      for (const auto& [name, role] : weight.parts) {
-        (void)role;
-        if (auto found = PartPages(
-                *config_.weights[weight.ref.stage].weights, name, e, routed_->temporary,
-                [&](catalog::ExtentId id) -> Status {
-                  const auto page = std::ranges::lower_bound(routed_->pages, id);
-                  if (page == routed_->pages.end() || *page != id)
-                    return Error("foreign selected page");
-                  routed_->roles[static_cast<std::size_t>(page - routed_->pages.begin())] = 1;
-                  return {};
-                });
-            !found)
-          return found;
+  if (auto complete = flight->program->CompleteSegment(flight->access); !complete)
+    return Error(complete.error().detail);
+  bool all_replayed = flight->prefix.path == RunPath::kReplayed;
+  bool any_captured = flight->prefix.path == RunPath::kCaptured;
+  for (std::size_t group = 0; group != flight->program->groups(); ++group) {
+    if (auto current = CheckRoutingSource(); !current) return current;
+    const auto& layout = flight->program->layout(group);
+    flight->access = kn::RoutedAccess(flight->program, flight->access.epoch(), group);
+    auto pinned =
+        std::span(static_cast<std::byte*>(routed_->pinned) + layout.host_offset, layout.host_bytes);
+    if (auto prepared = flight->program->Prepare(flight->access, pinned); !prepared)
+      return Error(prepared.error().detail);
+    // Prepare proved the complete offsets/bijection and every actual ID, not a
+    // caller-supplied count or a prior route's same-address worklist.
+    const auto offsets =
+        std::span(reinterpret_cast<const std::int32_t*>(pinned.data() + layout.work_offsets),
+                  static_cast<std::size_t>(layout.shape.experts + 1));
+    std::ranges::fill(routed_->roles, 0);
+    for (const auto member : flight->program->members(group)) {
+      const auto& weight = flight->program->weights()[member];
+      for (std::uint32_t e = 0; e < layout.shape.experts; ++e) {
+        if (offsets[e] == offsets[e + 1]) continue;
+        for (const auto& [name, role] : weight.parts) {
+          (void)role;
+          if (auto found = PartPages(
+                  *config_.weights[weight.ref.stage].weights, name, e, routed_->temporary,
+                  [&](catalog::ExtentId id) -> Status {
+                    const auto page = std::ranges::lower_bound(routed_->pages, id);
+                    if (page == routed_->pages.end() || *page != id)
+                      return Error("foreign selected page");
+                    routed_->roles[static_cast<std::size_t>(page - routed_->pages.begin())] = 1;
+                    return {};
+                  });
+              !found)
+            return found;
+        }
       }
     }
-  }
-  for (std::size_t i = 0; i < routed_->pages.size(); ++i)
-    if (routed_->roles[i] != 0) flight->selected.push_back(routed_->pages[i]);
-  if (flight->selected.empty()) return Error("routed group has no selected weight source");
-  // Only the scheduler's catalog thread mints current content generations.
-  // SupplementalJob then materializes/leases this exact closure under the
-  // still-held base request before invoking the captured payload below.
-  if (auto closure = node_.CallMetadata(
-          [this, flight]() -> Status {
-            auto checked = node_.catalog().ClosureOfExtents(flight->selected);
-            if (!checked) return Error("selected source closure is not current");
-            flight->closure = std::move(*checked);
-            return {};
-          },
-          "binding routed selected closure");
-      !closure)
-    return closure;
-  const auto posted = node_.SupplementalJob(
-      flight->closure,
-      [this, flight](providers::NativeStream native) {
-        flight->continuation = runs_.QueueRouted(
-            *flight->runs, flight->access, *flight->program, true, {}, flight->outputs,
-            {static_cast<std::byte*>(flight->state->pinned), flight->program->layout().host_bytes},
-            flight->capture, graph_stats_, native);
-        if (!flight->continuation.result) {
-          flight->unknown = flight->continuation.result.error().error == kn::StepError::kUnknown;
-          return flight->unknown ? scheduler::JobResult::kUnknown : scheduler::JobResult::kFailed;
-        }
-        for (const auto& [to, from, bytes] : flight->carries) {
-          const auto copied = providers::CopyAsync(native, Pointer(to), Pointer(from), bytes,
-                                                   providers::CopyKind::kDeviceToDevice);
-          if (!copied.ok()) {
-            flight->unknown = true;
-            flight->continuation.result = std::unexpected(
-                kn::StepFailure{.error = kn::StepError::kUnknown, .detail = copied.text()});
-            return scheduler::JobResult::kUnknown;
+    flight->selected.clear();
+    flight->closure = {};
+    for (std::size_t i = 0; i < routed_->pages.size(); ++i)
+      if (routed_->roles[i] != 0) flight->selected.push_back(routed_->pages[i]);
+    if (flight->selected.empty()) return Error("routed group has no selected weight source");
+    // Only the scheduler's catalog thread mints current content generations.
+    // SupplementalJob then materializes/leases this exact closure under the
+    // still-held base request before invoking the captured payload below.
+    if (auto closure = node_.CallMetadata(
+            [this, flight]() -> Status {
+              auto checked = node_.catalog().ClosureOfExtents(flight->selected);
+              if (!checked) return Error("selected source closure is not current");
+              flight->closure = std::move(*checked);
+              return {};
+            },
+            "binding routed selected closure");
+        !closure)
+      return closure;
+    const auto segment = group + 1;
+    flight->access = kn::RoutedAccess(flight->program, flight->access.epoch(), segment);
+    const bool final = segment == flight->program->groups();
+    const auto posted = node_.SupplementalJob(
+        flight->closure,
+        [this, flight, segment, final](providers::NativeStream native) {
+          const auto next_staging =
+              final ? std::span<std::byte>{}
+                    : std::span(static_cast<std::byte*>(flight->state->pinned) +
+                                    flight->program->layout(segment).host_offset,
+                                flight->program->layout(segment).host_bytes);
+          flight->continuation = runs_.QueueRouted(
+              *flight->runs, flight->access, *flight->program, {},
+              final ? std::span<const RunCopy>(flight->outputs) : std::span<const RunCopy>{},
+              next_staging, flight->capture, graph_stats_, native);
+          if (!flight->continuation.result) {
+            flight->unknown = flight->continuation.result.error().error == kn::StepError::kUnknown;
+            return flight->unknown ? scheduler::JobResult::kUnknown : scheduler::JobResult::kFailed;
           }
-        }
-        return scheduler::JobResult::kQueued;
-      },
-      flight, routed_->allowance, "routed selected continuation", stream_);
-  if (!posted || flight->unknown || !flight->continuation.result || launch_->faulted()) {
-    // No false inference from an error to retirement. The retained flight
-    // keeps the complete caller owner, plan, source, pinned data and launch.
-    return Error(!posted                        ? posted.error()
-                 : !flight->continuation.result ? flight->continuation.result.error().detail
-                                                : "routed continuation faulted");
+          if (final)
+            for (const auto& [to, from, bytes] : flight->carries) {
+              const auto copied = providers::CopyAsync(native, Pointer(to), Pointer(from), bytes,
+                                                       providers::CopyKind::kDeviceToDevice);
+              if (!copied.ok()) {
+                flight->unknown = true;
+                flight->continuation.result = std::unexpected(
+                    kn::StepFailure{.error = kn::StepError::kUnknown, .detail = copied.text()});
+                return scheduler::JobResult::kUnknown;
+              }
+            }
+          return scheduler::JobResult::kQueued;
+        },
+        flight, routed_->allowance, "routed selected continuation", stream_);
+    if (!posted || flight->unknown || !flight->continuation.result || launch_->faulted()) {
+      // No false inference from an error to retirement. The retained flight
+      // keeps the complete caller owner, plan, source, pinned data and launch.
+      return Error(!posted                        ? posted.error()
+                   : !flight->continuation.result ? flight->continuation.result.error().detail
+                                                  : "routed continuation faulted");
+    }
+    // SupplementalJob success includes actual work and page-in retirement;
+    // neither queue success nor graph construction advances the ordinal.
+    if (auto complete = flight->program->CompleteSegment(flight->access); !complete)
+      return Error(complete.error().detail);
+    all_replayed = all_replayed && flight->continuation.path == RunPath::kReplayed;
+    any_captured = any_captured || flight->continuation.path == RunPath::kCaptured;
   }
-  if (flight->prefix.path == RunPath::kReplayed && flight->continuation.path == RunPath::kReplayed)
-    path = RunPath::kReplayed;
-  else if (flight->prefix.path == RunPath::kCaptured ||
-           flight->continuation.path == RunPath::kCaptured)
-    path = RunPath::kCaptured;
-  else
-    path = RunPath::kEager;
+  path = all_replayed ? RunPath::kReplayed : any_captured ? RunPath::kCaptured : RunPath::kEager;
   ++flight->runs->eager_runs;
+  routed_->completed_program = flight->program;
   routed_flight_.reset();
   return {};
 }

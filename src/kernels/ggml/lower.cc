@@ -2859,7 +2859,7 @@ std::expected<void, KernelFailure> Lowering::Slots() {
     // every reader and selected call before this exact leaf-identity check.
     // Actual part reservations and selected residency are checked by the
     // runner; ordinary aliases and all other tensor uses stay covered here.
-    if (out_.routing && out_.weight_reads) {
+    if (!out_.routing.empty() && out_.weight_reads) {
       for (const auto& [part_tensor, weight, role] : part_leaves_) {
         if (part_tensor != t) continue;
         const auto read = std::ranges::find(*out_.weight_reads, weight->ref, &RoutedWeight::ref);
@@ -3755,168 +3755,273 @@ std::expected<void, KernelFailure> Lowering::MakeRouting() {
     for (const auto& w : in_.step.weights)
       out_.weight_reads->push_back({w.ref, g_.tensor(w.tensor).format, w.parts, false});
   }
-  std::vector<std::size_t> calls;
-  std::optional<SelectedRoute> first;
-  for (std::size_t i = 0; i != out_.selected.size(); ++i) {
-    const auto route = out_.selected[i].call->route();
+  std::size_t products = 0;
+  for (const auto& selected : out_.selected)
+    if (selected.call->route()) ++products;
+  if (products == 0) return {};
+  if (products > out_.plan.steps.size() || products == SIZE_MAX || !options_.routed_funder ||
+      !out_.plan.regions.empty())
+    return Refused("routed products need funded ordered steps without lane regions");
+  struct Group {
+    ggml_tensor* ids = nullptr;
+    std::vector<std::size_t> calls;
+    std::size_t cut = 0, last = 0;
+    TensorId original{};
+  };
+  // Count before allocating. At most one group per selected product, total
+  // call/member entries <= products. 4096 covers each group object, fixed
+  // copy arrays, call/member vectors and temporary/retained overlap.
+  static_assert(sizeof(LoweredRouting) + sizeof(Group) + 16 * sizeof(RoutedCopy) +
+                    8 * sizeof(std::size_t) + 2 * sizeof(std::pair<std::size_t, std::uint64_t>) +
+                    4 * sizeof(std::unique_ptr<RoutedRecording>) + 1024 <
+                4096);
+  std::uint64_t charge = 0;
+  if (__builtin_mul_overflow(static_cast<std::uint64_t>(products), std::uint64_t{4096}, &charge) ||
+      __builtin_add_overflow(charge, std::uint64_t{4096}, &charge) || charge > SIZE_MAX ||
+      !options_.routed_funder->Charge(charge))
+    return Refused("ordered routed metadata was not admitted");
+  out_.routing_payment = std::shared_ptr<const void>(
+      new std::byte{}, [owner = options_.routed_funder, charge](const void* token) {
+        delete static_cast<const std::byte*>(token);
+        owner->Release(charge);
+      });
+  std::vector<Group> groups;
+  groups.reserve(products);
+  out_.routing.reserve(products);
+  for (std::size_t index = 0; index != out_.selected.size(); ++index) {
+    const auto route = out_.selected[index].call->route();
     if (!route) continue;
-    if (calls.size() == 16) return Refused("a routed group exceeds its bounded product inventory");
-    if (first &&
-        (route->ids != first->ids || route->format.shape.ne[2] != first->format.shape.ne[2]))
-      return Refused("this program supports one exact routed dependency group");
-    if (!first) first = route;
-    calls.push_back(i);
-  }
-  if (!first) return {};
-  if (!out_.plan.regions.empty()) return Refused("routed boundaries cannot cross lane regions");
-  auto* ids = first->ids;
-  if (!ids || ids->type != GGML_TYPE_I32 || ids->ne[0] <= 0 || ids->ne[1] <= 0 || ids->ne[2] != 1 ||
-      ids->ne[3] != 1 || ids->nb[0] != sizeof(std::int32_t) ||
-      ids->nb[1] % sizeof(std::int32_t) != 0 ||
-      ids->nb[1] / sizeof(std::int32_t) > static_cast<std::uint64_t>(INT32_MAX) ||
-      static_cast<std::uint64_t>(ids->ne[0]) > ids->nb[1] / sizeof(std::int32_t))
-    return Refused("routed IDs lack a complete pitched-row producer");
-  const GroupedRouteShape shape{first->format.shape.ne[2], static_cast<std::uint64_t>(ids->ne[0]),
-                                static_cast<std::uint64_t>(ids->ne[1]), 1};
-  const auto size = GroupedRouteBound(shape);
-  if (!size) return Refused("routed worklist geometry exceeds its checked domain");
-  LoweredRouting result;
-  result.layout.shape = shape;
-  result.graph_identity = g_.Digest();
-  result.cut = out_.plan.steps.size();
-  for (const auto index : calls) {
+    auto group = std::ranges::find(groups, route->ids, &Group::ids);
+    if (group == groups.end()) {
+      std::size_t count = 0;
+      for (const auto& selected : out_.selected)
+        if (const auto member = selected.call->route(); member && member->ids == route->ids)
+          ++count;
+      groups.push_back({.ids = route->ids, .calls = {}, .cut = out_.plan.steps.size()});
+      group = groups.end() - 1;
+      group->calls.reserve(count);
+    }
+    group->calls.push_back(index);
     const auto* marker = out_.selected[index].tensor;
     bool found = false;
-    for (std::size_t i = 0; i != out_.plan.steps.size(); ++i) {
-      const auto& s = out_.plan.steps[i];
-      if (!std::ranges::contains(s.nodes, marker)) continue;
-      if (found || s.nodes.size() != 1 || s.lane != 0)
+    for (std::size_t step = 0; step != out_.plan.steps.size(); ++step) {
+      const auto& operation = out_.plan.steps[step];
+      if (!std::ranges::contains(operation.nodes, marker)) continue;
+      if (found || operation.nodes.size() != 1 || operation.lane != 0)
         return Refused("routed product lacks one selected ordered operation");
       found = true;
-      result.cut = std::min(result.cut, i);
+      group->cut = std::min(group->cut, step);
+      group->last = std::max(group->last, step);
     }
     if (!found) return Refused("routed product is absent from the selected plan");
   }
-  // Complete primitive reader proof, before source pages can be excluded. A
-  // view, alias writer or ordinary reader of a dynamic root is not admitted.
-  std::optional<TensorId> original_ids;
-  for (const auto& w : in_.step.weights) {
-    std::size_t products = 0;
-    for (const auto index : calls)
-      if (out_.selected[index].call->route()->weight == w.ref) ++products;
-    const bool dynamic = products != 0;
-    if (dynamic) {
-      std::size_t readers = 0;
-      for (const auto& n : g_.nodes())
-        for (std::size_t i = 0; i != n.nsrc; ++i) {
-          if (!n.src[i].valid() || g_.root(n.src[i]) != w.tensor) continue;
-          if (i != 0 || n.src[i] != w.tensor || n.key != ir::Primitive(Op::kMatMulId) ||
-              n.nsrc != 3)
+  std::ranges::sort(groups, {}, &Group::cut);
+  for (std::size_t g = 1; g != groups.size(); ++g)
+    if (groups[g - 1].last >= groups[g].cut)
+      return Refused("routed group products interleave across continuation boundaries");
+  // Bind every primitive reader to its own real Route and effective lowered IDs.
+  // A weight reused by several groups retains explicit membership in each.
+  for (const auto& weight : in_.step.weights) {
+    std::size_t readers = 0, selected_readers = 0;
+    for (const auto& group : groups)
+      for (const auto index : group.calls)
+        if (out_.selected[index].call->route()->weight == weight.ref) ++selected_readers;
+    if (selected_readers != 0) {
+      for (const auto& node : g_.nodes())
+        for (std::size_t i = 0; i != node.nsrc; ++i) {
+          if (!node.src[i].valid() || g_.root(node.src[i]) != weight.tensor) continue;
+          if (i != 0 || node.src[i] != weight.tensor || node.key != ir::Primitive(Op::kMatMulId) ||
+              node.nsrc != 3)
             return Refused("dynamic expert weight has an undeclared ordinary or alias reader");
-          const auto input = n.src[2];
+          const auto input = node.src[2];
           const auto& producer = g_.node(g_.producer(input));
-          if (producer.key != ir::Primitive(Op::kRoute) || producer.out[0] != input ||
-              (original_ids && *original_ids != input))
-            return Refused("dynamic experts do not share the actual router IDs output");
-          original_ids = input;
+          if (producer.key != ir::Primitive(Op::kRoute) || producer.out[0] != input)
+            return Refused("dynamic experts lack their original router IDs output");
+          const auto planned = plan_.tensors.at(input.v);
+          if (!planned.valid()) return Refused("router IDs lost their planned mapping");
+          auto group = std::ranges::find(groups, made_.at(planned.v), &Group::ids);
+          if (group == groups.end() || (group->original.valid() && group->original != input))
+            return Refused("router IDs changed their actual group identity");
+          group->original = input;
+          std::size_t matching = 0;
+          for (const auto index : group->calls)
+            if (out_.selected[index].call->route()->weight == weight.ref) ++matching;
+          if (matching == 0) return Refused("routed reader omitted its group membership");
           ++readers;
         }
-      if (readers != products)
+      if (readers != selected_readers)
         return Refused("dynamic expert reader inventory changed during planning");
+      for (const auto& group : groups) {
+        std::size_t actual_count = 0, selected_count = 0;
+        for (const auto& node : g_.nodes()) {
+          if (node.key != ir::Primitive(Op::kMatMulId) || node.nsrc != 3 ||
+              node.src[0] != weight.tensor)
+            continue;
+          const auto planned = plan_.tensors.at(node.src[2].v);
+          if (planned.valid() && made_.at(planned.v) == group.ids) ++actual_count;
+        }
+        for (const auto index : group.calls)
+          if (out_.selected[index].call->route()->weight == weight.ref) ++selected_count;
+        if (actual_count != selected_count)
+          return Refused("one routed group's exact weight readers changed during planning");
+      }
     }
     if (!out_.weight_reads) return Refused("routed weights lack actual source-part binding");
-    const auto read = std::ranges::find(*out_.weight_reads, w.ref, &RoutedWeight::ref);
+    const auto read = std::ranges::find(*out_.weight_reads, weight.ref, &RoutedWeight::ref);
     if (read == out_.weight_reads->end()) return Refused("routed weight inventory is incomplete");
-    read->dynamic = dynamic;
+    read->dynamic = selected_readers != 0;
   }
-  if (!original_ids) return Refused("routed selection lacks primitive source authority");
-  for (const auto& n : g_.nodes()) {
-    if (n.key == ir::Primitive(Op::kCacheStore) && g_.root(n.src[0]) == *original_ids)
-      return Refused("routed IDs are overwritten");
-    for (std::size_t o = 0; o != n.nout; ++o)
-      if (const auto alias = ir::AliasedSource(n.key, o);
-          alias && n.src[*alias].valid() && g_.root(n.src[*alias]) == *original_ids)
-        return Refused("routed IDs have an alias writer");
+  for (const auto& group : groups) {
+    if (!group.original.valid()) return Refused("routed group lacks primitive source authority");
+    for (const auto& node : g_.nodes()) {
+      if (node.key == ir::Primitive(Op::kCacheStore) && g_.root(node.src[0]) == group.original)
+        return Refused("routed IDs are overwritten");
+      for (std::size_t o = 0; o != node.nout; ++o)
+        if (const auto alias = ir::AliasedSource(node.key, o);
+            alias && node.src[*alias].valid() && g_.root(node.src[*alias]) == group.original)
+          return Refused("routed IDs have an alias writer");
+    }
   }
-  const auto E = shape.experts, P = size->pairs;
-  const moe::RouteLayout layout{static_cast<std::int64_t>(E), static_cast<std::int64_t>(P),
-                                static_cast<std::int64_t>((shape.tokens + 63) / 64)};
-  std::uint64_t host = 0, device = Round(out_.extent, 256);
-  // GroupedRouteBound limits all arrays to signed I32 indexing; the additional
-  // descriptors are at most16*4096*the decoder ABI. The checked aggregate bound
-  // also covers alignment and every existing activation byte.
-  const auto reserve = [](std::uint64_t& cursor,
-                          std::uint64_t bytes) -> std::optional<std::uint64_t> {
-    if (bytes > (1ULL << 40) || cursor > (1ULL << 40) - Round(bytes, 256)) return {};
-    const auto at = cursor;
-    cursor += Round(bytes, 256);
-    return at;
-  };
+  std::uint64_t device = Round(out_.extent, 256);
+  base::Sha256 identity;
+  const auto graph = g_.Digest();
+  identity.Update(std::as_bytes(std::span(graph)));
+  identity.Update("ordered-routed-groups-v1");
+  for (const auto& group : groups) {
+    const auto first = out_.selected[group.calls.front()].call->route();
+    auto* ids = group.ids;
+    if (!ids || ids->type != GGML_TYPE_I32 || ids->ne[0] <= 0 || ids->ne[1] <= 0 ||
+        ids->ne[2] != 1 || ids->ne[3] != 1 || ids->nb[0] != sizeof(std::int32_t) ||
+        ids->nb[1] % sizeof(std::int32_t) != 0 ||
+        ids->nb[1] / sizeof(std::int32_t) > static_cast<std::uint64_t>(INT32_MAX) ||
+        static_cast<std::uint64_t>(ids->ne[0]) > ids->nb[1] / sizeof(std::int32_t))
+      return Refused("routed IDs lack a complete pitched-row producer");
+    const GroupedRouteShape shape{first->format.shape.ne[2], static_cast<std::uint64_t>(ids->ne[0]),
+                                  static_cast<std::uint64_t>(ids->ne[1]), 1};
+    const auto size = GroupedRouteBound(shape);
+    if (!size) return Refused("routed worklist geometry exceeds its checked domain");
+    LoweredRouting result;
+    result.layout.shape = shape;
+    result.graph_identity = graph;
+    result.cut = group.cut;
+    result.members.reserve(group.calls.size());
+    result.descriptors.reserve(group.calls.size());
+    result.uploads.reserve(3 + group.calls.size());
+    result.layout.readback.reserve(5);
+    identity.Update(std::format("{}:{}:{}:{}:{}:{};", group.original.v, group.cut, group.last,
+                                shape.experts, shape.used, shape.tokens));
+    for (const auto index : group.calls) {
+      const auto route = out_.selected[index].call->route();
+      if (route->format.shape.ne[2] != shape.experts)
+        return Refused("one route group changes its expert count");
+      const auto weight = std::ranges::find(*out_.weight_reads, route->weight, &RoutedWeight::ref);
+      if (weight == out_.weight_reads->end()) return Refused("routed weight disappeared");
+      const auto member = static_cast<std::size_t>(weight - out_.weight_reads->begin());
+      if (!std::ranges::contains(result.members, member)) result.members.push_back(member);
+      identity.Update(std::format("{}:{};", index, member));
+    }
+    const auto E = shape.experts, P = size->pairs;
+    const moe::RouteLayout layout{static_cast<std::int64_t>(E), static_cast<std::int64_t>(P),
+                                  static_cast<std::int64_t>((shape.tokens + 63) / 64)};
+    std::uint64_t host = 0;
+    // Every group retains the existing signed-index route bound. The aggregate
+    // checked placement includes all groups and their actual selected calls.
+    const auto reserve = [](std::uint64_t& cursor,
+                            std::uint64_t bytes) -> std::optional<std::uint64_t> {
+      if (bytes > (1ULL << 40) || cursor > (1ULL << 40) - Round(bytes, 256)) return {};
+      const auto at = cursor;
+      cursor += Round(bytes, 256);
+      return at;
+    };
+    const auto base = in_.addresses.measuring() ? kDistinct : in_.addresses.activations;
+    const auto route_at = reserve(device, static_cast<std::uint64_t>(layout.ints()) * 4);
+    if (!route_at || base > UINT64_MAX - device) return Refused("routed workspace overflow");
+    result.preparation = MoeRoute(c_, ids, static_cast<std::int64_t>(E));
+    TensorArena::Bind(result.preparation, base + *route_at);
+    if (auto checked = CheckMoeRoute(result.preparation); !checked) return checked;
+    const auto read = [&](std::uint64_t from, std::uint64_t bytes, std::uint64_t& offset) -> bool {
+      const auto at = reserve(host, bytes);
+      if (!at) return false;
+      offset = *at;
+      result.layout.readback.push_back({from, *at, bytes});
+      return true;
+    };
+    auto& r = result.layout;
+    const auto prepared = base + *route_at;
+    const auto id_address = reinterpret_cast<std::uintptr_t>(ids->data);
+    const auto id_row = shape.used * sizeof(std::int32_t);
+    std::uint64_t id_extent = 0;
+    if (__builtin_mul_overflow(shape.tokens - 1, static_cast<std::uint64_t>(ids->nb[1]),
+                               &id_extent) ||
+        __builtin_add_overflow(id_extent, id_row, &id_extent) || id_extent > ggml_nbytes(ids) ||
+        id_extent > UINT64_MAX - id_address)
+      return Refused("routed IDs source extent overflow");
+    if (id_address < base || id_address - base > out_.extent ||
+        id_extent > out_.extent - (id_address - base))
+      return Refused("actual routed IDs escaped the placed activation extent");
+    if (!read(id_address, P * 4, r.ids)) return Refused("routed IDs readback overflow");
+    if (shape.tokens > 1 && ids->nb[1] != id_row) {
+      auto& copy = r.readback.back();
+      copy.bytes = id_row;
+      copy.rows = shape.tokens;
+      copy.device_stride = ids->nb[1];
+    }
+    if (!read(prepared + static_cast<std::uint64_t>(layout.offsets()) * 4, (E + 1) * 4,
+              r.offsets) ||
+        !read(prepared + static_cast<std::uint64_t>(layout.position()) * 4, P * 4, r.position) ||
+        !read(prepared + static_cast<std::uint64_t>(layout.token()) * 4, P * 4, r.token) ||
+        !read(prepared + static_cast<std::uint64_t>(layout.expert()) * 4, P * 4, r.expert))
+      return Refused("routed readback extent overflow");
+    SelectedRouteBuffers buffers;
+    const auto uploaded = [&](std::uint64_t bytes, std::uint64_t& h, std::uint64_t& d) -> bool {
+      const auto at = reserve(host, bytes), to = reserve(device, bytes);
+      if (!at || !to || base > UINT64_MAX - device) return false;
+      h = *at;
+      d = base + *to;
+      result.uploads.push_back({d, h, bytes});
+      return true;
+    };
+    if (!uploaded((E + 1) * 4, r.work_offsets, buffers.offsets) ||
+        !uploaded(P * 4, r.work_tokens, buffers.tokens) ||
+        !uploaded(P * 4, r.work_slots, buffers.slots))
+      return Refused("routed worklist workspace overflow");
+    const auto seen = reserve(host, P);
+    if (!seen) return Refused("routed validation scratch overflow");
+    r.seen = *seen;
+    for (const auto index : group.calls) {
+      auto& call = *out_.selected[index].call;
+      std::uint64_t at = 0;
+      if (!uploaded(call.route_descriptor_bytes(), at, buffers.descriptors))
+        return Refused("routed descriptors overflow");
+      if (auto bound = call.RouteBuffers(buffers); !bound) return bound;
+      result.descriptors.emplace_back(index, at);
+    }
+    r.host_bytes = host;
+    if (!in_.addresses.measuring() && device > in_.addresses.activation_bytes)
+      return Refused("routed workspace exceeds the paid activation placement");
+    result.layout.host_offset = out_.routed_pinned_bytes;
+    if (__builtin_add_overflow(out_.routed_pinned_bytes, host, &out_.routed_pinned_bytes) ||
+        out_.routed_pinned_bytes > (1ULL << 40))
+      return Refused("aggregate routed pinned storage overflow");
+    // Stable source-relative layout, not mutable process addresses. Measuring
+    // and bound plans must preserve every group slice and physical copy pitch.
+    identity.Update(std::format("{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{};", r.host_offset, r.host_bytes,
+                                r.ids, r.offsets, r.position, r.token, r.expert, r.work_offsets,
+                                r.work_tokens, r.work_slots, r.seen, ids->nb[1]));
+    for (const auto& copy : r.readback) {
+      identity.Update(std::format("r:{}:{}:{}:{}:{};", copy.device - base, copy.host_offset,
+                                  copy.bytes, copy.rows, copy.device_stride));
+    }
+    for (const auto& copy : result.uploads)
+      identity.Update(std::format("u:{}:{}:{};", copy.device - base, copy.host_offset, copy.bytes));
+    for (const auto& [index, offset] : result.descriptors)
+      identity.Update(std::format("d:{}:{};", index, offset));
+    out_.routing.push_back(std::move(result));
+  }
   const auto base = in_.addresses.measuring() ? kDistinct : in_.addresses.activations;
-  const auto route_at = reserve(device, static_cast<std::uint64_t>(layout.ints()) * 4);
-  if (!route_at || base > UINT64_MAX - device) return Refused("routed workspace overflow");
-  result.preparation = MoeRoute(c_, ids, static_cast<std::int64_t>(E));
-  TensorArena::Bind(result.preparation, base + *route_at);
-  if (auto checked = CheckMoeRoute(result.preparation); !checked) return checked;
-  const auto read = [&](std::uint64_t from, std::uint64_t bytes, std::uint64_t& offset) -> bool {
-    const auto at = reserve(host, bytes);
-    if (!at) return false;
-    offset = *at;
-    result.layout.readback.push_back({from, *at, bytes});
-    return true;
-  };
-  auto& r = result.layout;
-  const auto prepared = base + *route_at;
-  const auto id_address = reinterpret_cast<std::uintptr_t>(ids->data);
-  const auto id_row = shape.used * sizeof(std::int32_t);
-  std::uint64_t id_extent = 0;
-  if (__builtin_mul_overflow(shape.tokens - 1, static_cast<std::uint64_t>(ids->nb[1]),
-                             &id_extent) ||
-      __builtin_add_overflow(id_extent, id_row, &id_extent) || id_extent > ggml_nbytes(ids) ||
-      id_extent > UINT64_MAX - id_address)
-    return Refused("routed IDs source extent overflow");
-  if (!read(id_address, P * 4, r.ids)) return Refused("routed IDs readback overflow");
-  if (shape.tokens > 1 && ids->nb[1] != id_row) {
-    auto& copy = r.readback.back();
-    copy.bytes = id_row;
-    copy.rows = shape.tokens;
-    copy.device_stride = ids->nb[1];
-  }
-  if (!read(prepared + static_cast<std::uint64_t>(layout.offsets()) * 4, (E + 1) * 4, r.offsets) ||
-      !read(prepared + static_cast<std::uint64_t>(layout.position()) * 4, P * 4, r.position) ||
-      !read(prepared + static_cast<std::uint64_t>(layout.token()) * 4, P * 4, r.token) ||
-      !read(prepared + static_cast<std::uint64_t>(layout.expert()) * 4, P * 4, r.expert))
-    return Refused("routed readback extent overflow");
-  SelectedRouteBuffers buffers;
-  const auto uploaded = [&](std::uint64_t bytes, std::uint64_t& h, std::uint64_t& d) -> bool {
-    const auto at = reserve(host, bytes), to = reserve(device, bytes);
-    if (!at || !to || base > UINT64_MAX - device) return false;
-    h = *at;
-    d = base + *to;
-    result.uploads.push_back({d, h, bytes});
-    return true;
-  };
-  if (!uploaded((E + 1) * 4, r.work_offsets, buffers.offsets) ||
-      !uploaded(P * 4, r.work_tokens, buffers.tokens) ||
-      !uploaded(P * 4, r.work_slots, buffers.slots))
-    return Refused("routed worklist workspace overflow");
-  const auto seen = reserve(host, P);
-  if (!seen) return Refused("routed validation scratch overflow");
-  r.seen = *seen;
-  for (const auto index : calls) {
-    auto& call = *out_.selected[index].call;
-    std::uint64_t at = 0;
-    if (!uploaded(call.route_descriptor_bytes(), at, buffers.descriptors))
-      return Refused("routed descriptors overflow");
-    if (auto bound = call.RouteBuffers(buffers); !bound) return bound;
-    result.descriptors.emplace_back(index, at);
-  }
-  r.host_bytes = host;
-  if (!in_.addresses.measuring() && device > in_.addresses.activation_bytes)
-    return Refused("routed workspace exceeds the paid activation placement");
   out_.tensors.push_back({base + out_.extent, device - out_.extent, ir::Role::kActivation, false});
   out_.extent = device;
-  out_.routing.emplace(std::move(result));
+  out_.routing_identity = identity.Finish();
   return {};
 }
 
@@ -3938,6 +4043,12 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
   // weight's parts and a verify's saves.
   for (const ir::Node& n : p_.nodes()) {
     if (n.key == ir::Primitive(Op::kRoute)) tensors += 10;
+    // One completed-route descriptor per ordered group; the group count is
+    // bounded by actual MatMulId products, before any arena allocation.
+    if (n.key == ir::Primitive(Op::kMatMulId)) {
+      if (tensors == SIZE_MAX) return Refused("ordered route descriptor count overflow");
+      ++tensors;
+    }
     // A fill's shape tensor and ggml_fill's duplicated result both need
     // descriptors, although the shape tensor is no execution dependency.
     if (n.key == ir::Primitive(Op::kFill)) ++tensors;
