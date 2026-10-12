@@ -1898,6 +1898,19 @@ each is checked against the design as M3.6 proceeds.
                   ([evidence](experiments/m36-exl3-selected/README.md)).
                   Kept-state/restart, relocation/eviction, broader shapes,
                   Tier C and deletion remain open.
+            - [x] **G5c5 — FP16 shared-attention recovery:** select the existing
+                  fused attention operation instead of materialized scores for
+                  the fixture default. Four fixed natural passages provide 1,020
+                  original/baseline/candidate targets; the measured +0.003826683%
+                  candidate perplexity change versus native baseline is accepted
+                  prospectively as a fixture tradeoff, not a new quality threshold.
+                  Same-plan 76/577-row controls preserve exact heads, checkpoint,
+                  spill and two full weight reloads. Historical Bridge recipes
+                  remain explicit compatibility diagnostics. Final main passes
+                  six host and twelve actual controls with no failures/skips
+                  ([quality](experiments/m36-original-qwen2/README.md),
+                  [state](experiments/m36-qwen2/README.md)). F16 conversion
+                  lineage, restart/relocation and serving qualification remain open.
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,

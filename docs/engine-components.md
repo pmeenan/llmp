@@ -2421,9 +2421,13 @@ selected-plan recorder. FP16 uses eight-row chunks; the approved EXL3 tuning use
 seven-row chunks with explicit refusal for absent tuning. They are test support,
 not production linking or a completed model quality gate. The
 [original Qwen2 BF16 smoke](experiments/m36-original-qwen2/README.md) records
-an authenticated 43-token passage with 42 aligned original/shared losses and
-bounded per-target reports. Broader corpus and production-phase comparisons
-remain open; random-token trajectory fixtures are numerical stress controls,
+an authenticated 43-token smoke and four independent 256-token passages with
+1,020 aligned original/baseline/fused-attention targets and bounded per-target
+reports. The FP16 fixture adopts the observed small attention tradeoff with
+exact same-plan 76/577-row state controls. Final main integration passes six host
+controls and twelve actual historical/selected-state cases without failures or
+skips. General quality and serving qualification remain open; random-token
+trajectory fixtures are numerical stress controls,
 not language-model perplexity evidence.
 
 ## Migration and its gate

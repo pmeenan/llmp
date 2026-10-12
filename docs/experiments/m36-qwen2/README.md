@@ -12,7 +12,7 @@ correctness/lifecycle controls and G5d's deletion remain open. The first
 [shared EXL3 reconstruction screen](../m36-exl3-selected/README.md) now passes.
 
 The shared component additions preserve their existing defaults: optional
-Q/K/V bias, explicit scores with score scaling, and the EXL3 F16 rounding
+Q/K/V bias, selectable explicit scores with score scaling, and the EXL3 F16 rounding
 boundaries. EXL3 norm weights stay BF16 in resident storage and widen only
 as transient arithmetic requires. Its four weight parts retain explicit
 roles. The 21 approved reconstruction algorithm records publish 18 complete,
@@ -20,7 +20,12 @@ output-type-specific tuning facts at rows 145, 1023 and 1024 on sm_121;
 unpinned types, partial matrices and architectures are refused. These facts
 alone are not an EXL3 shared-engine execution proof.
 
-## Evidence
+The FP16 mapping now selects shared fused attention by default. The historical
+Bridge controls below explicitly select their original score-materialization
+recipe before spec/layout/graph identity; they remain executable compatibility
+diagnostics. Selected-default continuation uses its own uninterrupted reference.
+
+## Historical explicit-attention evidence
 
 On 2026-10-11, native Spark builds and focused controls passed. The final
 checkpoint's 32 host cases include actual-size FP16 planning/lowering,
@@ -150,6 +155,63 @@ The ten-case run used a 16 GiB zero-swap cgroup cap, observed memory peak
 1,665,028,096 bytes and no memory-limit or OOM events. This
 counter does not measure total catalog/device occupancy. Test source SHA-256:
 `8054a898c7b3340e01b7711ce444d3685b45d9d02f258a69587808f9e50097a9`.
+
+## Selected-default attention and same-plan state
+
+The FP16 fixture mapping disables explicit scores and selects the existing shared
+attention operation, with 24 Attention nodes and no materialized SoftMax nodes.
+Weights, F16 KV, masks, scale and positional semantics are unchanged. The bounded
+[original-model comparison](../m36-original-qwen2/README.md#expanded-attention-quality-and-same-implementation-state)
+records the accepted measured tradeoff; it does not claim original conversion
+lineage or general model-quality equivalence. No runtime option or common scorer
+API is added.
+
+Separate same-plan controls obtain their reference from a first uninterrupted
+pass, then compare every full-vocabulary F32 row exactly after state operations.
+The 76-row case compares 252 rows and restores 6,291,456 checkpoint/spill bytes.
+The 577-row case executes 16+17 prefill rows, singleton positions 33–48, 512 rows
+at past 49, then singleton positions 561–576. It compares 1,755 rows across three
+repeats, including eight rewind rows per repeat, and restores 12,582,912 bytes
+for both checkpoint and spill. Each case performs four evaluations, two full
+490-extent weight evictions and 980 restored-extent checks. First-pass references
+never undergo restore, spill or eviction.
+
+The heldout recorder binds five actual `(rows, read_cells, phase)` keys:
+`(16,256,prefill)`, `(17,256,prefill)`, `(1,256,decode)`,
+`(512,768,prefill)` and `(1,768,decode)`. All select 24 vector-attention entries.
+The implementation-sequence identity may be shared by different shapes; each key
+must retain its own recorded identity, and equal identities have equal ordered
+implementation lists. The sole 350,668,288-byte live oracle reuses the existing
+heldout allowance; five bounded records and at most 2 MiB of serialized metadata
+fit the paid 8 MiB report allowance. Existing 8 GiB host and 16 GiB native bounds
+and completion-aware ownership remain enforced.
+
+The native heldout case passed in 4.084 seconds with no failure/skip, all source,
+binary and library postguards passing, and no surviving GPU process. Host/cache
+peak was 1,487,286,272 bytes with no memory-limit or OOM events. Its wrapper first
+refused stale library timestamps, then exposed an inherited 8 MiB file limit
+that could not create the declared 12 MiB sparse state file. Those attempts
+remain failures. The corrected run completed, but its wrapper incorrectly
+required all five implementation-sequence identities to differ. A reviewed
+receipt-only audit corrected that metadata assumption against the completed raw
+case; no model was rerun and no numerical/state assertion changed. External
+`qwen2-attention-heldout-models03` retains the wrapper failure and native success;
+`qwen2-attention-heldout-receipt04/result.json`, SHA-256
+`bb86b5996e89f9b8cacb0fd40d55edcf1e45a389979cc53c4b0a8fb074027f41`, records the corrected audit.
+
+Final main integration subsequently passed six host controls (four mapping and
+two input controls) and all twelve model cases: ten historical explicit-score
+Bridge diagnostics plus the selected-default 76/577-row controls. Every case
+completed without failures or skips. The twelve-case wrapper applies the
+corrected 12 MiB spill-file limit and implementation-identity semantics; its
+pre/post source, binary, input and library guards passed with zero surviving GPU
+processes. The native process completed in 25.291 seconds; this is functional
+integration time, not a speed gate. Observed confined host/cache peak was
+1,719,799,808 bytes with no memory-limit or OOM events. External
+`qwen2-attention-main01/result.json` records the six host controls, SHA-256
+`d0319b0d64b4fc6a09fa59d0ef396964478f4a50bd5b9d04087ccee0dc86d703`;
+`qwen2-attention-main-models01/result.json` records the twelve model controls,
+SHA-256 `48689da6ccab1a04f59f91ea8d3828db674dd993c24ce6b0653bf9c54dcd8f78`.
 
 ## Remaining gate
 

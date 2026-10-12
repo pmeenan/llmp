@@ -146,8 +146,8 @@ TEST(ComponentsQwen2, BothEncodingsUseTheSharedCatalogAndPhysicalShapes) {
       }
       EXPECT_EQ(norm_scales, exl3 ? 49U : 0U);    // two norms per layer and final norm
       EXPECT_EQ(half_products, exl3 ? 73U : 0U);  // Q,K,V a layer and the head
-      EXPECT_EQ(attention, exl3 ? 24U : 0U);
-      EXPECT_EQ(softmax, exl3 ? 0U : 24U);
+      EXPECT_EQ(attention, 24U);
+      EXPECT_EQ(softmax, 0U);
       EXPECT_EQ(step->graph.tensor(step->logits).format.encoding, Encoding::kF32);
     }
   }

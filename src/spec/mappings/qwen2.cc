@@ -249,7 +249,7 @@ constexpr std::array kParams = {
     Real("attention", "rope_scale", 1.0),
     Flag("attention", "qkv_bias", true),
     Flag("attention", "scale_scores", true),
-    Flag("attention", "explicit_scores", true),
+    Flag("attention", "explicit_scores", false),
     Flag("attention", "f16_projections", false),
     Name("ffn", "placement", "pre"),
     FromKey("ffn", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),

@@ -6,7 +6,8 @@
 2026-10-12: the original checkpoint and shared FP16/EXL3 scorers completed
 one authenticated natural-language passage. This establishes a usable primary
 reference and aligned scoring, not a model-quality or migration-speed gate.
-No numerical recovery has been adopted.
+The expanded comparison below supports the fixture-only shared-attention
+recovery; serving qualification remains open.
 
 ## Inputs and reference
 
@@ -170,7 +171,8 @@ uncontrolled; source/binary/library guards outside the timed interval also
 influence cache state. Baseline drift of 0.048 seconds makes these short samples
 insufficient for steady-state inference, a statistical speed claim or the matched
 1% migration gate. No repeated timing batch or production adoption follows.
-Broader natural-language and same-implementation state controls remain open.
+The following expanded observation supplies broader natural-language and
+same-implementation state evidence; it does not add serving qualification.
 
 Four raw cases pass without skips or failures; every sample reproduces its own
 previously observed target losses, and source/input/binary/library guards and
@@ -180,3 +182,70 @@ same pinned 13.8.0 libraries and checks actual loader resolution; arithmetic and
 version refusal remain unchanged. Complete timing recipe/result package is
 external `qwen2-attention-abba-models02`, result SHA-256
 `d9eef72b6feccb0a1cc3bb42022ff30e60f6451967189426fd2a54866ff080f6`.
+
+## Expanded attention quality and same-implementation state
+
+Four fixed plaintext passages from the existing corpus each contain 256 teacher
+IDs and 255 next-token targets. Their offsets and UTF-8 prefixes were fixed
+before losses; all 544 used token meanings were authenticated against the pinned
+original tokenizer and native metadata, with no BOS or chat template. All 1,020
+target coordinates and finite full-head checks pass. The original reuses the
+same BF16 eager, no-cache implementation; native uses eight-row scored chunks
+and the same F16 weights/KV in both attention variants.
+
+| Passage | Original mean NLL / PPL | Explicit native mean NLL / PPL | Fused native mean NLL / PPL |
+| --- | ---: | ---: | ---: |
+| 0 | 4.293700862743 / 73.237007690 | 4.307084979640 / 74.223809366 | 4.306976343547 / 74.215746419 |
+| 1 | 4.414813022403 / 82.666382699 | 4.429080536632 / 83.854280514 | 4.429001769662 / 83.847675827 |
+| 2 | 5.156122288097 / 173.490403757 | 5.178525575600 / 177.421024161 | 5.178687686171 / 177.449788316 |
+| 3 | 4.793796888734 / 120.759007827 | 4.839954879144 / 126.463645453 | 4.840133236034 / 126.486203128 |
+| All 1,020 targets | 4.664608265494 / 106.124004644 | 4.688661492754 / 108.707576505 | 4.688699758853 / 108.711736399 |
+
+The fused variant improves two passages and worsens two: aggregate mean NLL is
+0.000038266099429 nats above the native baseline, or +0.003826683% perplexity.
+Original-to-native perplexity gaps are +2.434484% for explicit attention and
++2.438404% for fused attention. The official F16 artifact's conversion lineage
+is still unproved, and reference/native precision and cache arithmetic differ;
+these gaps cannot be attributed solely to attention. This bounded observation
+establishes neither a general quality threshold nor equal-or-better quality.
+After observing it, the owner accepted the small measured tradeoff prospectively
+for this unserved fixture's fused-attention default, subject to state and
+integration checks. No previous threshold or result is retroactively changed.
+
+All eight native scoring cases and the candidate 76-row state case pass with
+zero failures/skips. The 76-row case first records an uninterrupted reference,
+then compares 252 complete vocabulary rows across three repeated evaluations.
+Checkpoint rewind follows eight real writes; checkpoint and spill restore
+6,291,456 bytes each. Two full weight evictions reload 980 extents, requiring
+newer backing generations, unchanged content generations and restored state.
+Actual scored plans select 24
+`ggml.flash_attn_ext.vec` entries. The same selected implementation also passes
+the [577-row state control](../m36-qwen2/README.md#selected-default-attention-and-same-plan-state).
+There is no cross-recipe bit-identity requirement.
+
+The quality binary is the sealed qualification candidate; a later test-only
+change adds the 577-row control and bounded five-key recording. Its arithmetic
+and mapping remain unchanged. The quality run is not described as execution of
+that later binary. No repeat of the corpus or short timing sample was needed.
+The fixture has no speed baseline under G5; served-family migration retains its
+separate matched 1% gate.
+
+Original runs on Spark A and native on Spark B use their existing hard budgets,
+source/input/library guards and complete retirement. Native observed host/cache
+peak is 485,052,416 bytes with no memory events. Original Torch peak reserved is
+1,178,599,424 bytes; sampled global CUDA-used growth is 2,018,402,304 bytes,
+which is not attributable to this process alone. These different counters are
+not a memory-ratio measurement. Only bounded per-target losses are retained.
+
+Raw packages remain external: `qwen2-attention-qualification-models01` result
+SHA-256 `66b9a113e76d0077a4d7cf328c6a464063dce297eaebf1322d0424c0871f0d70`,
+and `qwen2-attention-qualification01/original01/reference/result.json`
+SHA-256 `6d6e5332b91a5aac1dae67d265be804bd43fca3f4c4c34ff98facea1ee177461`.
+
+Final main integration passed six host controls and all twelve actual model
+cases: ten explicit historical Bridge diagnostics and selected-default 76/577-row
+state controls. There were no failures/skips, all source/binary/input/library
+guards passed, and no GPU process survived. The existing 1,020-target quality
+results retain their original source and binary identities; they were not rerun.
+The main model receipt is `qwen2-attention-main-models01/result.json`, SHA-256
+`48689da6ccab1a04f59f91ea8d3828db674dd993c24ce6b0653bf9c54dcd8f78`.

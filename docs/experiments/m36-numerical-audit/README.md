@@ -105,8 +105,15 @@ They are not retrospectively relabeled quality failures or quality passes.
    after its safety responsibilities have been retained or retired.
 
 The [original Qwen2 BF16 smoke](../m36-original-qwen2/README.md) now supplies
-a complete authenticated original checkpoint and a tiny natural-language
-likelihood observation. The existing official F16 fixture remains a separate
+a complete authenticated original checkpoint and aligned natural-language
+likelihood observations. Qwen2 FP16 now removes explicit score materialization
+using the existing shared vector attention. The 1,020-target comparison records
+a +0.003826683% perplexity difference against the native baseline, accepted
+prospectively as a fixture-only tradeoff after observation; same-candidate
+76/577-row state controls pass. Final main checks pass six host controls and
+all ten historical plus two selected-default state cases, with no failures or
+skips and complete guards/retirement. This establishes no general quality threshold
+or serving speed claim. The existing official F16 fixture remains a separate
 publication with unproved original conversion lineage. Inspected Qwen3.8/DeepSeek
 stores currently provide quantized references, not authenticated original BF16
 execution. Qwen's catalog lists a possible approximately 354 GB

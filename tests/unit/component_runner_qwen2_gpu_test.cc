@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -29,6 +30,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <variant>
 #include <vector>
@@ -278,7 +280,12 @@ en::Status NativeReservation(const kn::LowerInput& input) {
 // Bounded metadata of the programs actually bound and entered. A completed
 // scorer run is required before these records are emitted as evidence.
 static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners + 8 * kMiB <=
-              kHostAllowance);  // Two selected-plan name arrays, output text and sink records.
+              kHostAllowance);  // Selected-plan name arrays, output text and sink records.
+constexpr std::size_t kPlanTextLimit = 2 * kMiB;
+constexpr std::uint64_t kPlanRecordsBound = 5 * 4096 * (sizeof(std::string) + 129);
+static_assert(kPlanRecordsBound + 2 * kPlanTextLimit + 128 * 1024 <= 8 * kMiB);
+static_assert(kInheritedCompiler + kHeldoutMetadataOwners + kHeldoutObservationOwners + 8 * kMiB <=
+              kHeldoutHostAllowance);
 
 struct Lifetime {
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
@@ -303,7 +310,9 @@ struct Lifetime {
   std::uint32_t saved_positions = 0;
   std::uint64_t saved_bytes = 0;
   std::uint64_t domain_cap = kDomainCap;
-  std::array<ts::CorpusPlanRecord, 2> corpus_plans{};
+  std::optional<llmp::base::Sha256Digest> checkpoint_reference;
+  std::array<ts::CorpusPlanRecord, 5> corpus_plans{};
+  std::array<std::optional<pl::StepShape>, 5> recorded_shapes{};
   std::optional<en::WaveComposer> corpus_composer;
   std::unique_ptr<ts::CorpusScore> corpus_scorer;
   std::array<ts::CorpusTargetScore, 256> corpus_scores{};
@@ -423,7 +432,9 @@ TEST(ComponentRunnerQwen2Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading
 // cannot change the legacy chunk's matrix shapes.
 class ComponentRunnerQwen2Gpu : public testing::TestWithParam<std::tuple<bool, bool, bool, bool>> {
 };
-void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool corpus = false) {
+void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool corpus = false,
+                     bool same_plan = false) {
+  ASSERT_FALSE(same_plan && (corpus || !full || !repeated));
   const auto domain_cap = heldout ? kHeldoutDomainCap : kDomainCap;
   const auto host_allowance = heldout ? kHeldoutHostAllowance : kHostAllowance;
   const auto runtime_plans = heldout ? kHeldoutRuntimePlans : kRuntimePlans;
@@ -431,12 +442,13 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   const auto checkpoint_positions = heldout ? 33U : 32U;
   const auto oracle_bytes = heldout ? kHeldoutOracleBytes : kOracleBytes;
   const std::string tokens_path =
-      Env(corpus ? "LLMP_QWEN2_CORPUS_IDS"
-                 : (heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS"));
+      Env((corpus || (same_plan && !heldout))
+              ? "LLMP_QWEN2_CORPUS_IDS"
+              : (heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS"));
   const std::string oracle_path = Env(
       heldout ? (fusion ? "LLMP_QWEN2_FP16_HELDOUT_ORACLE_F" : "LLMP_QWEN2_FP16_HELDOUT_ORACLE_U")
               : (fusion ? "LLMP_QWEN2_FP16_ORACLE_F" : "LLMP_QWEN2_FP16_ORACLE_U"));
-  if (tokens_path.empty() || (!corpus && oracle_path.empty()))
+  if (tokens_path.empty() || (!corpus && !same_plan && oracle_path.empty()))
     GTEST_SKIP() << "requires the frozen FP16 trajectory IDs and fused/unfused oracle";
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available.has_value()) << "unknown physical availability";
@@ -463,7 +475,7 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   ASSERT_TRUE(token_read.has_value()) << token_read.error();
   life->tokens_bytes = std::move(*token_read);
   auto& tokens = life->tokens;
-  if (corpus) {
+  if (corpus || (same_plan && !heldout)) {
     const auto seal = Env("LLMP_QWEN2_CORPUS_IDS_SHA256");
     ASSERT_EQ(seal.size(), 64U);
     ASSERT_EQ(Hash(life->tokens_bytes), seal);
@@ -471,6 +483,10 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
     token_rows = static_cast<std::uint32_t>(life->tokens_bytes.size() / 4);
     ASSERT_GE(token_rows, 2U);
     ASSERT_LE(token_rows, 256U);
+    if (same_plan) {
+      ASSERT_EQ(token_rows, 76U);
+      life->oracle.resize(kOracleBytes);  // Existing prepaid full-row buffer, filled by pass1.
+    }
     for (std::size_t i = 0; i < token_rows; ++i) {
       std::uint32_t id = 0;
       for (int byte = 3; byte >= 0; --byte)
@@ -497,15 +513,19 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
       for (std::int32_t id = 0; ids >> id;) tokens.push_back(id);
     }
     ASSERT_EQ(tokens.size(), token_rows);
-    auto oracle_read = Read(oracle_path, oracle_bytes, true);
-    ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
-    life->oracle = std::move(*oracle_read);
-    ASSERT_EQ(Hash(life->oracle),
-              heldout
-                  ? (fusion ? "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5"
+    if (same_plan) {
+      life->oracle.resize(oracle_bytes);  // Reuse the sole paid heldout oracle for pass1.
+    } else {
+      auto oracle_read = Read(oracle_path, oracle_bytes, true);
+      ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
+      life->oracle = std::move(*oracle_read);
+      ASSERT_EQ(
+          Hash(life->oracle),
+          heldout ? (fusion ? "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5"
                             : "69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0")
                   : (fusion ? "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571"
                             : "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1"));
+    }
   }
   const auto& oracle = life->oracle;
   const auto& profile = llmp::model::Qwen25Instruct05B();
@@ -556,6 +576,24 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   ASSERT_TRUE(synthesized.has_value()) << synthesized.error();
   life->spec.emplace(std::move(*synthesized));
   auto& spec = life->spec;
+  // Frozen Bridge files describe the historical explicit-attention recipe,
+  // independently of the selected production default. Never rewrite their oracle.
+  if (!corpus && !same_plan) {
+    std::uint32_t historical = 0;
+    for (auto& layer : spec->stages.front().layers)
+      for (auto& component : layer.components)
+        if (component.kind == "attention.dense")
+          for (auto& parameter : component.params)
+            if (parameter.name == "explicit_scores") {
+              ASSERT_TRUE(std::holds_alternative<bool>(parameter.value));
+              parameter.value = true;
+              ++historical;
+            }
+    ASSERT_EQ(historical, 24U);
+    testing::Test::RecordProperty("attention_recipe", "historical-explicit-scores");
+  } else {
+    testing::Test::RecordProperty("attention_recipe", "selected-mapping-default");
+  }
   ASSERT_EQ(spec->stages.size(), 1U);
   ASSERT_EQ(spec->stages.front().layers.size(), 24U);
   std::uint64_t components = 0, parameters = 0, weights_bound = 0;
@@ -603,6 +641,18 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
     shapes.push_back(shape_of(0, 32));
     for (std::uint32_t past = 32; past < (full ? 76U : 33U); ++past)
       shapes.push_back(shape_of(past, 1));
+  }
+  if (same_plan) {
+    std::size_t recorded = 0;
+    for (const auto& shape : shapes) {
+      const auto found = std::find_if(life->recorded_shapes.begin(), life->recorded_shapes.end(),
+                                      [&](const auto& key) { return key && *key == shape; });
+      if (found != life->recorded_shapes.end()) continue;
+      ASSERT_LT(recorded, life->recorded_shapes.size());
+      life->recorded_shapes[recorded] = shape;
+      life->corpus_plans[recorded++].rows = shape.rows();
+    }
+    ASSERT_EQ(recorded, heldout ? 5U : 2U);
   }
   auto& resource = life->resource;
   auto built_step =
@@ -658,15 +708,25 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
         return std::unexpected("program exceeds paid retained-plan bound");
       return program;
     };
-    if (corpus) {
-      auto guarded = ts::GuardCorpusLower(std::move(checked_backend.lower), profile.vocab);
-      checked_backend.lower = [held = life.get(),
+    if (corpus || same_plan) {
+      auto guarded = corpus ? ts::GuardCorpusLower(std::move(checked_backend.lower), profile.vocab)
+                            : std::move(checked_backend.lower);
+      checked_backend.lower = [held = life.get(), same_plan,
                                guarded = std::move(guarded)](const kn::LowerInput& input)
           -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
         auto program = guarded(input);
         if (!program || input.addresses.measuring()) return program;
         const auto rows = input.shape.rows();
-        auto* record = &held->corpus_plans[rows == 8 ? 0U : 1U];
+        auto* record = &held->corpus_plans[rows == 8U ? 0U : 1U];
+        if (same_plan) {
+          const auto found =
+              std::find_if(held->recorded_shapes.begin(), held->recorded_shapes.end(),
+                           [&](const auto& key) { return key && *key == input.shape; });
+          if (found == held->recorded_shapes.end())
+            return std::unexpected("same-plan program has an unrecorded shape/read class");
+          record = &held->corpus_plans[static_cast<std::size_t>(
+              std::distance(held->recorded_shapes.begin(), found))];
+        }
         if (record->rows != rows ||
             (*program)->host_bytes() > kProgramHost - sizeof(ts::CorpusProgram))
           return std::unexpected("corpus exceeded measured shape or retained program bound");
@@ -841,6 +901,7 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
     std::uint32_t restored_extents = 0;
     std::uint32_t evaluations = 0;
     std::uint64_t compared_rows = 0;
+    std::uint64_t reference_rows = 0;
     const auto evaluate = [&](std::uint32_t evaluation) -> en::Status {
       const auto run_step = [&](const pl::StepShape& shape) -> en::Status {
         const auto& segment = shape.segments.front();
@@ -853,13 +914,28 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
             result->outputs.front().size() != segment.rows * row_bytes)
           return std::unexpected("wrong output count or bytes");
         const auto& got = result->outputs.front();
-        compared_rows += segment.rows;
-        const char* expected = oracle.data() + segment.past * row_bytes;
-        std::size_t different = 0;
-        for (std::size_t i = 0; i < got.size(); i += sizeof(float))
-          different += std::memcmp(got.data() + i, expected + i, sizeof(float)) != 0;
-        EXPECT_EQ(different, 0U) << "past=" << segment.past << " rows=" << segment.rows;
-        if (different != 0) return std::unexpected("FP16 shared logits differ from frozen bridge");
+        for (std::size_t i = 0; i < got.size(); i += sizeof(float)) {
+          float value = 0;
+          std::memcpy(&value, got.data() + i, sizeof(value));
+          if (!std::isfinite(value)) return std::unexpected("nonfinite FP16 control head");
+        }
+        if (same_plan && evaluation == 1) {
+          if (segment.past != reference_rows)
+            return std::unexpected("live reference is not one uninterrupted ordered trajectory");
+          std::memcpy(life->oracle.data() + segment.past * row_bytes, got.data(), got.size());
+          reference_rows += segment.rows;
+        } else {
+          compared_rows += segment.rows;
+          const char* expected = oracle.data() + segment.past * row_bytes;
+          std::size_t different = 0;
+          for (std::size_t i = 0; i < got.size(); i += sizeof(float))
+            different += std::memcmp(got.data() + i, expected + i, sizeof(float)) != 0;
+          EXPECT_EQ(different, 0U) << "past=" << segment.past << " rows=" << segment.rows;
+          if (different != 0)
+            return std::unexpected(
+                same_plan ? "FP16 replay differs from uninterrupted same-plan reference"
+                          : "FP16 shared logits differ from frozen bridge");
+        }
         if (runner->slots().positions(0) != segment.past + segment.rows)
           return std::unexpected("FP16 completed positions differ from the control");
         return {};
@@ -882,7 +958,8 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
             restored_extents += static_cast<std::uint32_t>(paged->extents().size());
             reload_pending = false;
           }
-          if (full && shape.segments.front().past == checkpoint_positions + 8) {
+          if (full && (!same_plan || evaluation > 1) &&
+              shape.segments.front().past == checkpoint_positions + 8) {
             auto& slots = runner->slots();
             // Eight real decode writes must change the saved checkpoint pages.
             if (auto x = slots.CopyState(0, life->state_readback, life->saved_pages, true); !x)
@@ -906,7 +983,8 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
             for (std::uint32_t past = checkpoint_positions; past < checkpoint_positions + 8; ++past)
               if (auto x = run_step(shape_of(past, 1)); !x) return x;
           }
-          if (full && shape.segments.front().past == (heldout ? 49U : 48U)) {
+          if (full && (!same_plan || evaluation > 1) &&
+              shape.segments.front().past == (heldout ? 49U : 48U)) {
             if (auto x = SaveState(*life, false); !x) return x;
             auto& slots = runner->slots();
             if (auto x = slots.Spill(0); !x) return x;
@@ -923,6 +1001,21 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
             if (auto x = SaveState(*life, true); !x) return x;
             if (life->saved_positions != checkpoint_positions)
               return std::unexpected("FP16 checkpoint starts at the wrong completed position");
+            if (same_plan) {
+              llmp::base::Sha256 digest;
+              for (const auto& range : life->saved_pages) {
+                digest.Update(std::as_bytes(std::span(&range.region, 1)));
+                digest.Update(std::as_bytes(std::span(&range.offset, 1)));
+                digest.Update(std::as_bytes(std::span(&range.bytes, 1)));
+              }
+              digest.Update(std::span(static_cast<const std::byte*>(life->saved_state),
+                                      static_cast<std::size_t>(life->saved_bytes)));
+              const auto now = digest.Finish();
+              if (evaluation == 1)
+                life->checkpoint_reference = now;
+              else if (!life->checkpoint_reference || *life->checkpoint_reference != now)
+                return std::unexpected("same-plan checkpoint differs from uninterrupted pass");
+            }
           }
           return {};
         };
@@ -981,9 +1074,39 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
       if (!completed) return completed;
       ++evaluations;
     }
+    if (same_plan) {
+      if (reference_rows != token_rows) return std::unexpected("incomplete live reference");
+      testing::Test::RecordProperty("same_plan_reference_rows", std::to_string(reference_rows));
+      testing::Test::RecordProperty("same_plan_reference_sha256", Hash(life->oracle));
+      testing::Test::RecordProperty("same_plan_spec_sha256", llmp::base::ToHex(spec->Digest()));
+      std::string records;
+      records.reserve(kPlanTextLimit);
+      const auto append = [&](std::string_view value) {
+        if (value.size() > kPlanTextLimit - records.size()) return false;
+        records.append(value);
+        return true;
+      };
+      for (std::size_t i = 0; i < life->recorded_shapes.size(); ++i) {
+        const auto& shape = life->recorded_shapes[i];
+        if (!shape) continue;
+        const auto& plan = life->corpus_plans[i];
+        if (!plan.runs || plan.implementations.empty())
+          return std::unexpected("same-plan program never entered execution");
+        const auto header = "rows=" + std::to_string(plan.rows) +
+                            " read_cells=" + std::to_string(shape->segments.front().read_cells) +
+                            " phase=" + std::to_string(static_cast<unsigned>(shape->phase)) +
+                            " bound_plan=" + llmp::base::ToHex(plan.identity) +
+                            " run_or_record=" + std::to_string(plan.runs) + "\n";
+        if (!append(header)) return std::unexpected("same-plan report exceeds paid text bound");
+        for (const auto& name : plan.implementations)
+          if (!append(name) || !append("\n"))
+            return std::unexpected("same-plan report exceeds paid text bound");
+      }
+      testing::Test::RecordProperty("same_plan_selected_programs", records);
+    }
     if (repeated) {
       if (evaluations != 4 || evictions != 2 || restored_extents != 2 * kWeightExtents ||
-          compared_rows != 4 * (token_rows + 8U))
+          compared_rows != (same_plan ? 3U : 4U) * (token_rows + 8U))
         return std::unexpected("FP16 repeated control witnesses are incomplete");
       testing::Test::RecordProperty("evaluations", std::to_string(evaluations));
       testing::Test::RecordProperty("full_weight_evictions", std::to_string(evictions));
@@ -1001,6 +1124,12 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
 TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
   const auto [fusion, full, heldout, repeated] = GetParam();
   RunQwen2Control(fusion, full, heldout, repeated);
+}
+TEST(ComponentRunnerQwen2StateGpu, SamePlanCheckpointSpillAndEviction) {
+  RunQwen2Control(true, true, false, true, false, true);
+}
+TEST(ComponentRunnerQwen2StateGpu, SamePlanHeldoutCheckpointSpillAndEviction) {
+  RunQwen2Control(true, true, true, true, false, true);
 }
 class ComponentRunnerQwen2CorpusGpu : public testing::TestWithParam<bool> {};
 TEST_P(ComponentRunnerQwen2CorpusGpu, FixedTeacherCorpusScoresEveryTarget) {
