@@ -65,6 +65,8 @@ are not matched serving latency measurements.
 Follow-up source inspection also found inherited multiply/add rounding in
 `src/kernels/ggml/llmp_fused.cu`, whose header explicitly prevents contraction
 with `__fmul_rn`, and in `dsv4_hc_norm.cu` / `dsv4_weighted_reduce.cu`.
+`llmp_moe.cu` also forces multiplication rounding before expert accumulation
+and the shared-expert add, inherited from M3 commit `7cd1d01a`.
 These arithmetic expressions predate M3.6; its Qwen lowering reuses them.
 They are additional candidates for a fused alternative, rather than evidence
 that M3.6 newly disabled FMA. Their quality and speed tradeoffs are unmeasured;
