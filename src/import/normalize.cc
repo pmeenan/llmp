@@ -205,8 +205,15 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     if (!def || def->params.size() > 64 || def->roles.size() > 32)
       return Bad("component catalog exceeds normalization budget", ItemKind::kNone, kNoItem,
                  Rule::kUnsupported);
+    // The extended target's only state producers are these compiled catalog
+    // contracts (QSA four, GDN two, PLE one). Refuse a newly stateful kind
+    // before constructing Instances or allocating a StateContract.
+    if (t.extended_components && def->state && slot.kind != "attention.qsa" &&
+        slot.kind != "attention.gdn" && slot.kind != "residual.ple")
+      return Bad("component state producer is outside normalization budget");
     for (const auto& p : def->params) {
-      if (p.type == components::ParamType::kInts || p.type == components::ParamType::kReals)
+      if (p.type == components::ParamType::kReals ||
+          (p.type == components::ParamType::kInts && !t.extended_components))
         return Bad("component list defaults are outside normalization budget");
       if (p.name.size() > spec::kMaxText || p.choices.size() > 64)
         return Bad("component parameter names exceed normalization budget");
@@ -218,6 +225,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   Arithmetic a;
   std::uint64_t metadata_bytes = 0, layers = 0, width = 0, selected = 0;
   std::array<std::string_view, 64> selected_keys{};
+  std::array<const MetaValue*, 64> selected_values{};
   bool architecture = false;
   std::optional<std::int64_t> split_no, split_count, split_tensors;
   for (std::size_t i = 0; i < s.metadata.size(); ++i) {
@@ -240,7 +248,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
       for (std::size_t j = 0; j < selected; ++j)
         if (selected_keys[j] == key->canonical)
           return Bad("duplicate metadata aliases", ItemKind::kKey, i);
-      selected_keys[selected++] = key->canonical;
+      selected_keys[selected] = key->canonical;
+      selected_values[selected++] = &e.value;
       const auto* integer = std::get_if<std::int64_t>(&e.value);
       if (key->canonical == m.layer_count_key && integer && *integer > 0)
         layers = static_cast<std::uint64_t>(*integer);
@@ -273,6 +282,75 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         split_tensors = *integer;
     }
   }
+  // Borrow the already classified source values only during preflight. This
+  // preserves the common table's source aliases without constructing a map.
+  const auto value_for = [&](std::string_view key) -> const MetaValue* {
+    for (std::size_t i = 0; i < selected; ++i)
+      if (selected_keys[i] == key) return selected_values[i];
+    return nullptr;
+  };
+  const auto tensor_for = [&](std::string_view canonical) -> const Tensor* {
+    if (const auto* found = s.FindTensor(canonical)) return found;
+    for (const auto& alias : t.tensors)
+      if (alias.canonical == canonical)
+        if (const auto* found = s.FindTensor(alias.source)) return found;
+    return nullptr;
+  };
+  // Profile requirements are checked allocation-free, including required
+  // presence, before allocating mapping/synthesis/catalog validation.
+  for (const auto& rule : m.params) {
+    if (!rule.slot.empty()) continue;
+    const auto* value = value_for(rule.key);
+    if (!value) {
+      if (rule.optional) continue;
+      return Bad("required source profile key is absent");
+    }
+    bool equal = false;
+    if (const auto* i = std::get_if<std::int64_t>(value))
+      equal = (rule.type == spec::ValueType::kInt && *i == rule.value.integer) ||
+              (rule.type == spec::ValueType::kReal && static_cast<double>(*i) == rule.value.real);
+    if (const auto* d = std::get_if<double>(value))
+      equal = rule.type == spec::ValueType::kReal && *d == rule.value.real;
+    if (const auto* text = std::get_if<std::string>(value))
+      equal = rule.type == spec::ValueType::kString && *text == rule.value.text;
+    if (!equal) return Bad("source profile requirement disagrees");
+  }
+  std::size_t list_elements = 0;
+  for (const auto& rule : t.lists) {
+    const auto* value = value_for(rule.key);
+    const auto* list = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
+    if (!list || list->size() != rule.size ||
+        (!rule.exact.empty() && !std::ranges::equal(*list, rule.exact)))
+      return Bad("source integer-list profile requirement disagrees");
+    list_elements = std::max(list_elements, list->size());
+  }
+  for (const auto& rule : t.shapes) {
+    const auto* found = tensor_for(rule.name);
+    if (!found || !std::ranges::equal(found->dims, rule.shape))
+      return Bad("source profile tensor shape disagrees");
+  }
+  // The mapped side table uses signed I32 row IDs. Preserve arbitrary source
+  // hash constants, but refuse a range that cannot address its encoded table.
+  for (const auto& rule : t.row_indices) {
+    const auto* offsets_value = value_for(rule.offsets);
+    const auto* counts_value = value_for(rule.counts);
+    const auto* offsets =
+        offsets_value ? std::get_if<std::vector<std::int64_t>>(offsets_value) : nullptr;
+    const auto* counts =
+        counts_value ? std::get_if<std::vector<std::int64_t>>(counts_value) : nullptr;
+    const auto* tensor = tensor_for(rule.tensor);
+    if (!offsets || !counts || offsets->size() != counts->size() || !tensor ||
+        tensor->dims.size() != 2)
+      return Bad("source row-index metadata is incomplete");
+    const auto limit =
+        std::min<std::uint64_t>(tensor->dims[1], std::numeric_limits<std::int32_t>::max());
+    for (std::size_t i = 0; i < offsets->size(); ++i) {
+      const auto offset = (*offsets)[i], count = (*counts)[i];
+      if (offset < 0 || count <= 0 || static_cast<std::uint64_t>(offset) > limit ||
+          static_cast<std::uint64_t>(count) > limit - static_cast<std::uint64_t>(offset))
+        return Bad("source row-index range exceeds the encoded table");
+    }
+  }
   if (!architecture || layers == 0 || layers > kLayerLimit || width == 0 ||
       width > components::kMaxStreamWidth)
     return Bad("source layer count or width is outside component bounds", ItemKind::kNone, kNoItem,
@@ -281,8 +359,23 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     const auto key = Classify(t, s.metadata[i].key);
     if (key->kind != MetadataClass::kSelected) continue;
     const auto* list = std::get_if<std::vector<std::int64_t>>(&s.metadata[i].value);
-    if (list && list->size() != layers)
+    if (!list) continue;
+    const bool per_layer =
+        key->canonical == m.layer_flags_key || std::ranges::any_of(m.params, [&](const auto& p) {
+          return p.key == key->canonical && p.per_layer;
+        });
+    if (per_layer && list->size() != layers)
       return Bad("selected layer list does not cover every layer", ItemKind::kKey, i);
+    if (t.extended_components &&
+        std::ranges::none_of(t.lists, [&](const auto& rule) { return rule.key == key->canonical; }))
+      return Bad("selected list has no compiled storage/domain bound", ItemKind::kKey, i);
+    for (const auto& slot : m.slots) {
+      if (slot.layers_key != key->canonical) continue;
+      for (std::size_t j = 0; j < list->size(); ++j)
+        if ((*list)[j] < 0 || static_cast<std::uint64_t>((*list)[j]) >= layers ||
+            (j && (*list)[j - 1] >= (*list)[j]))
+          return Bad("layer selector is not ordered unique in-range layers", ItemKind::kKey, i);
+    }
   }
   if ((split_no && *split_no != 0) ||
       (split_count &&
@@ -322,6 +415,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         !std::ranges::equal(tensor.dims,
                             std::span(tensor.format.shape.ne).first(tensor.dims.size())))
       return Bad("tensor is not a complete GGUF data part", ItemKind::kTensor, i);
+    if (!t.encodings.empty() && !std::ranges::contains(t.encodings, tensor.format.encoding))
+      return Bad("tensor encoding is outside this source domain", ItemKind::kTensor, i);
     const auto& encoding = format::Info(tensor.format.encoding);
     const auto layout = !encoding.quantized                       ? format::Layout::kDense
                         : encoding.id == format::Encoding::kNvfp4 ? format::Layout::kGgmlNvfp4Blocks
@@ -354,6 +449,10 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   // Owned selected lists plus overlapping ParamValue copies in Synthesis::Param.
   // Per-layer extraction leaves scalars in components, not retained layer lists.
   charge(a.Mul(68, V(layers, 8)));
+  // Params::Of's absent optional list default is empty (params.cc). Present
+  // lists can coexist in source values, synthesis, validated Instances and
+  // temporary parameter values; conservatively fund all 64 per component.
+  if (t.extended_components) charge(a.Mul(a.Mul(a.Mul(4, C), 64), V(list_elements, 8)));
   charge(a.Add(a.Add(a.Mul(2, Tree(T)), Str(T)), Tree(64)));
   charge(a.Add(a.Mul(8, Tree(1024)), a.Mul(4, Str(1024))));
   charge(a.Add(a.Add(V(layers, 32), V(C, 256)), a.Add(layers * 64, Str(C))));
@@ -361,16 +460,17 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   charge(a.Mul(C, a.Add(V(32, 160), a.Mul(3, Str(32)))));
   charge(a.Add(a.Add(V(layers, 32), V(C, 256)), a.Add(layers * 64, a.Mul(3, V(C, 8)))));
   charge(a.Mul(C, a.Add(a.Add(V(64, 128), a.Mul(3, Str(64))), V(64, 32))));
-  charge(a.Add(a.Add(V(2 * layers, 256), a.Mul(2, Str(2 * layers))), V(2, 256)));
+  const auto contracts = t.extended_components ? a.Mul(4, C) : a.Mul(2, layers);
+  charge(a.Add(a.Add(V(contracts, 256), a.Mul(2, Str(contracts))), V(4, 256)));
   charge(a.Add(a.Mul(6, V(32, 256)), a.Mul(4, Str(32))));
   charge(64 * 256 + 16 * 8192);
   // Three classification scans plus selected-key duplicate, width and constraint
-  // scans total at most 1024 bounded key comparisons per metadata entry.
+  // scans total at most 2048 bounded key comparisons per metadata entry.
   std::uint64_t work = metadata_bytes;
   const auto effort = [&](std::uint64_t n) { work = a.Add(work, n); };
-  effort(a.Mul(a.Mul(M, 1024), kMaxKeyBytes));
+  effort(a.Mul(a.Mul(M, 2048), kMaxKeyBytes));
   effort(a.Mul(a.Mul(maximum, T), 256));
-  effort(a.Mul(a.Mul(a.Mul(C, 64), 64), 256));
+  effort(a.Mul(a.Mul(a.Mul(C, 64), 128), 256));
   effort(a.Mul(a.Mul(4 * T, static_cast<std::uint64_t>(std::bit_width(T))), 512));
   effort(a.Mul(a.Mul(F, F), 4096));
   effort(a.Mul(a.Mul(C, 64), a.Mul(layers, 8)));

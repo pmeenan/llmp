@@ -31,6 +31,19 @@ struct ScalarRequirement {
   std::string_view key{};
   std::int64_t reject_equal = 0;
 };
+struct ListRequirement {
+  std::string_view key{};
+  std::size_t size = 0;
+  std::span<const std::int64_t> exact{};  // absent: retain the source values
+};
+struct TensorShapeRequirement {
+  std::string_view name{};
+  std::span<const std::uint64_t> shape{};
+};
+struct RowIndexRequirement {
+  std::string_view offsets{}, counts{}, tensor{};
+  bool operator==(const RowIndexRequirement&) const = default;
+};
 struct AuxiliaryNamespace {
   std::string_view prefix{};  // literal, dot-terminated; metadata only
   std::string_view reason{};
@@ -45,6 +58,12 @@ struct SourceMapping {
   std::span<const AuxiliaryNamespace> auxiliary{};
   std::span<const ScalarRequirement> requirements{};
   RouteOperation route = RouteOperation::kCopyPart;
+  std::span<const ListRequirement> lists{};
+  std::span<const format::Encoding> encodings{};
+  // Compiled bounded side/mixing and integer-list component domain.
+  bool extended_components = false;
+  std::span<const TensorShapeRequirement> shapes{};
+  std::span<const RowIndexRequirement> row_indices{};
 };
 
 const SourceMapping* FindSourceMapping(std::string_view container, std::string_view architecture);
@@ -54,7 +73,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& mapping);
 
 namespace normalization_detail {
 inline constexpr std::uint32_t kLayerLimit = 1024;
-inline constexpr std::size_t kRuleLimit = 32;
+inline constexpr std::size_t kRuleLimit = 64;
 // Bits for the accepted source scalar and layer-list alternatives. Int and Real intersect
 // when one key supplies both; a bool is never an integer.
 inline constexpr std::uint8_t kInteger = 1, kReal = 2, kFlag = 4, kText = 8, kIntegers = 16;

@@ -2026,7 +2026,8 @@ full-attention q_proj's MXFP8 and routed expert 7's NVFP4 agree at 0.095,
 bounds: one step, and 0.15).
 **Owned source normalization** (`import/normalize.h`, N3b1). Compiled
 `(container, architecture)` tables select the existing Gemma 2, Gemma 3 and
-Gemma 4 target GGUF mappings. A move-owned plan classifies every metadata
+Gemma 4 target GGUF mappings, plus the supported Qwen3.8 Flash-Next
+target GGUF profile. A move-owned plan classifies every metadata
 key, owns every canonical tensor and copy route, and validates the common
 component contracts. Gemma 2/3's `norm.plus_one` is asserted already applied
 by GGUF, never executed again; Gemma 4 declares no fold. An absent output
@@ -2059,9 +2060,25 @@ formats and source routes. Raw results had no failures or skips; the
 independent source review and adversarial challenge were clean. Final Spark
 checks passed: 2,516 native, 1,971 CPU and all 114 model tests, with no skips.
 Main build and integration checks passed. This covers normalization, not
-artifact publication or serving. Assistants, Qwen/DeepSeek, other containers
-and remaining transforms keep N3b open; writer and admission work remain
+artifact publication or serving. Assistants, other Qwen/DeepSeek domains,
+other containers and remaining transforms keep N3b open; writer and admission work remain
 N4/N5.
+
+The additional Qwen GGUF target table preserves all 1,224 encoded tensors
+of the supported 48-layer profile, including its side n-gram table, mixing,
+GDN/QSA state contracts and 512-expert arrays. Structural scalar/list checks
+and storage bounds precede synthesis. Source hash multipliers, offsets and
+vocabulary sizes are owned values, not generated constants or exact-value
+pins; row ranges must fit the encoded table and I32 lookup domain. The
+existing GGUF assertions for norm, SSM and GDN conversion are retained, with
+no new payload conversion or claim about a converter invocation. Registering
+this table makes the existing CLI normalization and common writer reachable.
+The common writer places `side.ngram` with row tables and still checks full
+source/destination coverage and its own funding before publication effects.
+[The bounded normalization and placement checks](experiments/m36-qwen-gguf-normalization/README.md)
+pass with a full native build, 103 affected host controls and one real-header
+normalization case. Actual full publication, admission and model qualification
+are separate.
 
 **Stored-spec runtime admission** (`runtime/component_admission.h`).
 Registration and component construction use the same closed check over
@@ -2197,7 +2214,7 @@ The 8 GiB, zero-swap run completed in 31 minutes, reached its memory cap
 and incurred no OOM kills. This API extension
 does not admit a runtime model or import MTP/vision components.
 
-The `llmp import` CLI retains the Gemma target GGUF path and dispatches
+The `llmp import` CLI uses the registered Gemma and supported Qwen target GGUF paths and dispatches
 safetensors sources declared as `qwen3_8_flash_next` with
 `modelopt MIXED_PRECISION` to the closed native ModelOpt target normalizer.
 That dispatch is not admission authority: the normalizer still validates the

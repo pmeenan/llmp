@@ -10,6 +10,7 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
 namespace nd = normalization_detail;
@@ -25,6 +26,34 @@ constexpr std::array kAuxiliary{
     AuxiliaryNamespace{"quantize.imatrix.", "source quantization calibration provenance"}};
 constexpr std::array kGemma2Requirements{ScalarRequirement{"gemma2.block_count", 46}};
 constexpr std::array kGemma3Requirements{ScalarRequirement{"gemma3.block_count", 62}};
+
+constexpr std::array<std::int64_t, 1> kPleLayers{1};
+constexpr std::array<std::int64_t, 4> kRopeSections{11, 11, 10, 0};
+constexpr auto kCompressRatios = [] {
+  std::array<std::int64_t, 48> out{};
+  for (std::size_t i = 3; i < out.size(); i += 4) out[i] = 4;
+  return out;
+}();
+constexpr std::array kQwenLists{
+    ListRequirement{"qwen4exp.ple.layers", 1, kPleLayers},
+    ListRequirement{"qwen4exp.rope.dimension_sections", 4, kRopeSections},
+    ListRequirement{"qwen4exp.attention.compress_ratios", 48, kCompressRatios},
+    ListRequirement{"qwen4exp.ple.layer_multipliers", 3},
+    ListRequirement{"qwen4exp.ple.head_offsets", 16},
+    ListRequirement{"qwen4exp.ple.head_vocab_sizes", 16}};
+constexpr std::array kQwenRows{RowIndexRequirement{
+    "qwen4exp.ple.head_offsets", "qwen4exp.ple.head_vocab_sizes", "per_layer_token_embd.weight"}};
+constexpr std::array kQwenEncodings{format::Encoding::kF32,    format::Encoding::kBF16,
+                                    format::Encoding::kQ6_K,   format::Encoding::kQ8_0,
+                                    format::Encoding::kIQ4_NL, format::Encoding::kIQ2_S,
+                                    format::Encoding::kIQ3_S};
+
+constexpr std::array<std::uint64_t, 2> kTokenShape{2560, 248320};
+constexpr std::array<std::uint64_t, 2> kNgramShape{160, 320001536};
+constexpr std::array kQwenShapes{
+    TensorShapeRequirement{"token_embd.weight", kTokenShape},
+    TensorShapeRequirement{"output.weight", kTokenShape},
+    TensorShapeRequirement{"per_layer_token_embd.weight", kNgramShape}};
 
 bool SameShape(std::string_view a, std::string_view b) {
   return (a.find(spec::kLayerField) == std::string_view::npos) ==
@@ -68,7 +97,15 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                                                .requirements = kGemma3Requirements},
                                  SourceMapping{.container = "gguf",
                                                .architecture = &spec::mappings::Gemma4Mapping(),
-                                               .auxiliary = kAuxiliary}};
+                                               .auxiliary = kAuxiliary},
+                                 SourceMapping{.container = "gguf",
+                                               .architecture = &spec::mappings::Qwen38GgufMapping(),
+                                               .auxiliary = kAuxiliary,
+                                               .lists = kQwenLists,
+                                               .encodings = kQwenEncodings,
+                                               .extended_components = true,
+                                               .shapes = kQwenShapes,
+                                               .row_indices = kQwenRows}};
   for (const auto& table : tables)
     if (container == table.container && architecture == table.architecture->architecture)
       return &table;
@@ -101,9 +138,12 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key) {
         add(kText);
         break;
       case spec::ValueType::kInts:
-        return 0;
+        add(kIntegers);
+        break;
     }
   }
+  for (const auto& slot : m.slots)
+    if (!slot.layers_key.empty() && key == slot.layers_key) add(kIntegers);
   for (const auto& rule : m.slots)
     if ((!rule.gate.empty() && key == rule.gate) ||
         (!rule.count_key.empty() && key == rule.count_key))
@@ -157,25 +197,46 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     return Invalid();
   const auto& m = *table.architecture;
   const auto* registered = FindSourceMapping(table.container, m.architecture);
-  if (!registered || registered->architecture != &m) return Invalid();
+  if (!registered || registered->architecture != &m ||
+      table.extended_components != registered->extended_components ||
+      table.lists.size() != registered->lists.size() ||
+      table.shapes.size() != registered->shapes.size() ||
+      !std::ranges::equal(table.row_indices, registered->row_indices) ||
+      !std::ranges::equal(table.encodings, registered->encodings))
+    return Invalid();
+  for (std::size_t i = 0; i < table.shapes.size(); ++i) {
+    const auto& a = table.shapes[i];
+    const auto& b = registered->shapes[i];
+    if (a.name != b.name || !std::ranges::equal(a.shape, b.shape)) return Invalid();
+  }
+  for (std::size_t i = 0; i < table.lists.size(); ++i) {
+    const auto& a = table.lists[i];
+    const auto& b = registered->lists[i];
+    if (a.key != b.key || a.size != b.size || a.size > 48 ||
+        !std::ranges::equal(a.exact, b.exact) || nd::KeyTypes(m, a.key) != nd::kIntegers)
+      return Invalid();
+  }
   for (const auto& required : registered->requirements) {
     bool found = false;
     for (const auto& rule : table.requirements)
       found |= rule.key == required.key && rule.reject_equal == required.reject_equal;
     if (!found) return Invalid();
   }
-  if (m.slots.empty() || m.slots.size() > 8 || m.tensors.size() > nd::kRuleLimit ||
-      m.params.size() > 64 || m.folds.size() > 8 || m.policies.size() > 8 || !m.reads.empty() ||
-      !m.v0_assembly.empty() || m.pipeline != spec::PipelineKind::kLlm ||
-      m.role != spec::StageRole::kTarget || !m.layer_type_key.empty() || !m.stage.empty() ||
-      !spec::IsSourceKey(m.layer_count_key))
+  if (m.slots.empty() || m.slots.size() > (table.extended_components ? 16U : 8U) ||
+      m.tensors.size() > nd::kRuleLimit || m.params.size() > 128 || m.folds.size() > 8 ||
+      m.policies.size() > 8 || !m.reads.empty() || !m.v0_assembly.empty() ||
+      m.pipeline != spec::PipelineKind::kLlm || m.role != spec::StageRole::kTarget ||
+      !m.layer_type_key.empty() || !m.stage.empty() || !spec::IsSourceKey(m.layer_count_key))
     return Invalid();
   for (const auto& slot : m.slots)
-    if (!slot.layers_key.empty() || !slot.count_key.empty() || slot.per_layer ||
-        slot.site == spec::Site::kSide || slot.site == spec::Site::kMixing)
+    if (!slot.count_key.empty() || slot.per_layer ||
+        (!table.extended_components &&
+         (!slot.layers_key.empty() || slot.site == spec::Site::kSide ||
+          slot.site == spec::Site::kMixing)))
       return Invalid();
   for (const auto& p : m.params)
-    if ((p.per_layer && p.type != spec::ValueType::kInt) || p.type == spec::ValueType::kInts)
+    if ((p.per_layer && p.type != spec::ValueType::kInt) ||
+        (!table.extended_components && p.type == spec::ValueType::kInts))
       return Invalid();
   for (const auto& r : m.tensors)
     if (!nd::Pattern(r.pattern) || r.target || r.any_part || r.unbound ||

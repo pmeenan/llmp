@@ -36,6 +36,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Enable native GGUF normalization and the existing `llmp import` writer path
+  for the supported Qwen3.8 Flash-Next target profile, preserving encoded
+  tensors and source n-gram constants. Place side n-gram weights in row-table
+  groups. Actual full publication and runtime admission remain separate.
+
 - Run the active swap and speculation benchmarks' FP16 comparison through
   the shared component engine, with explicit host memory limits and one
   setup compilation per shape class. Historical standalone paging modes

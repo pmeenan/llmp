@@ -3,6 +3,8 @@
 #ifndef LLMP_IMPORT_WRITER_H_
 #define LLMP_IMPORT_WRITER_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <optional>
@@ -34,5 +36,17 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                                                 const WriteOptions& options);
 std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
                                                 const WriteOptions& options);
+namespace publication_detail {
+// Internal metadata-only check of the exact placement/transfer planner used by
+// WriteArtifact. No file opens, payload reads, or publication effects. The
+// caller funds temporary layout metadata just as for publication.
+struct PlacementSummary {
+  std::uint64_t metadata_bytes = 0;
+  std::size_t copies = 0, destinations = 0, tables = 0, globals = 0;
+  std::size_t layers = 0, heads = 0, expert_groups = 0, row_tables = 0;
+};
+std::expected<PlacementSummary, Error> InspectPlacement(const NormalizedPlan& plan,
+                                                        std::uint64_t metadata_bytes);
+}  // namespace publication_detail
 }  // namespace llmp::import
 #endif  // LLMP_IMPORT_WRITER_H_

@@ -68,7 +68,10 @@ A/C pair passes all input/head/program controls; aggregate PPL improves 0.64%,
 but the new 888 targets improve only 0.057%, with two documents regressing.
 Most gain comes from the old prefix. This mixed secondary observation adopts
 no policy and warrants no further context/timing run by itself. The routed
-continuation and native GGUF target normalization are in source review.
+continuation is in execution checks. Native GGUF target normalization passes
+a full native build, 103 affected host controls and one real-header-only case:
+all 1,224 encoded routes are preserved, without payload traversal, hashing or
+publication. The bounded reader prefixes can include bytes beyond the headers.
 
 The shared phase-admission correction landed in `d8aa6388`, with a full native
 build and 60 affected host controls: scoring and decode use their actual declared

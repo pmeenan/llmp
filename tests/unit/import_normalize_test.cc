@@ -27,6 +27,8 @@
 #include "import/normalize.h"
 #include "import/readers/gguf.h"
 #include "import_fixtures.h"
+#include "qwen38_gguf_normalization_fixture.h"
+#include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
 namespace {
@@ -770,5 +772,162 @@ TEST(ImportNormalizeTest, ApprovedCompleteDescriptorInventoriesMatchExistingSpec
     }
   }
 }
+TEST(ImportNormalizeQwenTest, OwnsCompleteEncodedTargetAndAllSemanticLists) {
+  auto input = test_support::Qwen38GgufCheckpoint();
+  auto bound = NormalizationBound(input);
+  ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
+  EXPECT_LT(bound->metadata_bytes, std::uint64_t{512} << 20U);
+  EXPECT_EQ(bound->layers, 48U);
+  auto plan = Normalize(input, {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  ASSERT_EQ(plan->routes().size(), 1224U);
+  ASSERT_EQ(plan->spec().stages.size(), 1U);
+  EXPECT_EQ(plan->spec().stages[0].side.size(), 1U);
+  EXPECT_TRUE(plan->spec().stages[0].stream.mixing);
+  EXPECT_EQ(plan->spec().stages[0].layers.size(), 48U);
+  auto historical =
+      spec::Synthesize(spec::mappings::Qwen38Mapping(), plan->canonical(), plan->values());
+  ASSERT_TRUE(historical) << test_support::Failed(historical).value_or("");
+  EXPECT_EQ(plan->spec(), *historical);  // same existing GGUF interpretation/policies
+  std::set<Encoding> encodings;
+  std::uint64_t bytes = 0;
+  for (std::size_t i = 0; i < input.tensors.size(); ++i) {
+    EXPECT_EQ(plan->canonical().tensors[i].name, input.tensors[i].name);
+    EXPECT_EQ(plan->canonical().tensors[i].format, input.tensors[i].format);
+    EXPECT_EQ(plan->routes()[i].source_tensor, i);
+    EXPECT_EQ(plan->routes()[i].extent, input.tensors[i].extent);
+    auto cursor = plan->CursorFor(i);
+    ASSERT_TRUE(cursor);
+    auto next = cursor->Next(65536);
+    ASSERT_TRUE(next && *next);
+    EXPECT_EQ((*next)->source_offset, input.tensors[i].extent.offset);
+    EXPECT_EQ((*next)->bytes, std::min<std::uint64_t>(65536, input.tensors[i].extent.bytes));
+    bytes += input.tensors[i].extent.bytes;
+    encodings.insert(input.tensors[i].format.encoding);
+  }
+  EXPECT_EQ(encodings.size(), 7U);
+  EXPECT_EQ(bytes, bound->payload_bytes);
+  EXPECT_EQ(plan->applied_folds().size(), 3U);
+  auto contracts = components::StageContracts(plan->spec(), 0);
+  ASSERT_TRUE(contracts) << test_support::Failed(contracts).value_or("");
+  std::size_t count = 0;
+  for (const auto& [layer, state] : *contracts) {
+    EXPECT_LT(layer, 48U);
+    count += state.tensors.size();
+  }
+  EXPECT_EQ(count, 121U);
+  // Caller's metadata can disappear; both normalized values and synthesized
+  // side params own their lists, with no borrowed source views.
+  input.metadata.clear();
+  input.tensors.clear();
+  auto moved = std::move(*plan);
+  const auto value =
+      std::ranges::find(moved.values(), "qwen4exp.ple.head_offsets", &spec::SourceValue::key);
+  ASSERT_NE(value, moved.values().end());
+  const auto& offsets = std::get<std::vector<std::int64_t>>(value->value);
+  ASSERT_EQ(offsets.size(), 16U);
+  EXPECT_EQ(offsets.back(), 300001275);
+  EXPECT_TRUE(components::ValidateSpec(moved.spec(), moved.canonical().tensors));
+}
+
+TEST(ImportNormalizeQwenTest, PreservesDifferentValidSourceHashConstants) {
+  auto input = test_support::Qwen38GgufCheckpoint();
+  const std::vector<std::int64_t> multipliers{-7, 11, 19};
+  const std::vector<std::int64_t> offsets(16, 17), vocab(16, 101);
+  Value(input, "qwen4exp.ple.layer_multipliers", multipliers);
+  Value(input, "qwen4exp.ple.head_offsets", offsets);
+  Value(input, "qwen4exp.ple.head_vocab_sizes", vocab);
+  auto plan = Normalize(std::move(input), kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  for (const auto& [key, expected] :
+       std::array{std::pair{"qwen4exp.ple.layer_multipliers", multipliers},
+                  std::pair{"qwen4exp.ple.head_offsets", offsets},
+                  std::pair{"qwen4exp.ple.head_vocab_sizes", vocab}}) {
+    const auto value = std::ranges::find(plan->values(), key, &spec::SourceValue::key);
+    ASSERT_NE(value, plan->values().end());
+    EXPECT_EQ(std::get<std::vector<std::int64_t>>(value->value), expected);
+  }
+}
+
+TEST(ImportNormalizeQwenTest, ProfilePreflightHonorsExistingSourceAliases) {
+  auto input = test_support::Qwen38GgufCheckpoint();
+  const std::array keys{KeyAlias{"config.width", "qwen4exp.embedding_length"},
+                        KeyAlias{"config.offsets", "qwen4exp.ple.head_offsets"}};
+  const std::array tensors{TensorAlias{"words.weight", "token_embd.weight"},
+                           TensorAlias{"ngrams.weight", "per_layer_token_embd.weight"}};
+  for (const auto& alias : keys) {
+    auto found = std::ranges::find(input.metadata, alias.canonical, &MetaEntry::key);
+    ASSERT_NE(found, input.metadata.end());
+    found->key = alias.source;
+  }
+  Ordered(input);
+  for (const auto& alias : tensors) {
+    auto found = std::ranges::find(input.tensors, alias.canonical, &Tensor::name);
+    ASSERT_NE(found, input.tensors.end());
+    found->name = alias.source;
+  }
+  auto table = *FindSourceMapping("gguf", "qwen4exp");
+  table.keys = keys;
+  table.tensors = tensors;
+  ASSERT_TRUE(ValidateSourceMapping(table));
+  auto plan = nd::Build(std::move(input), table, kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  EXPECT_EQ(plan->routes().size(), 1224U);
+  EXPECT_EQ(plan->spec().stages[0].stream.width, 2560U);
+  EXPECT_TRUE(components::ValidateSpec(plan->spec(), plan->canonical().tensors));
+}
+
+TEST(ImportNormalizeQwenTest, RejectsUnfundedConstructionAndClosedProfileMutations) {
+  const auto input = test_support::Qwen38GgufCheckpoint();
+  const auto bound = NormalizationBound(input);
+  ASSERT_TRUE(bound);
+  EXPECT_FALSE(Normalize(input, {bound->metadata_bytes - 1, bound->work_units}));
+  EXPECT_FALSE(Normalize(input, {bound->metadata_bytes, bound->work_units - 1}));
+  for (int mode = 0; mode < 12; ++mode) {
+    SCOPED_TRACE(mode);
+    auto bad = input;
+    switch (mode) {
+      case 0:
+        Value(bad, "qwen4exp.ple.layers", std::vector<std::int64_t>{1, 1});
+        break;
+      case 1:
+        Value(bad, "qwen4exp.attention.compress_ratios", std::vector<std::int64_t>(47, 0));
+        break;
+      case 2:
+        Value(bad, "qwen4exp.rope.dimension_sections", std::vector<std::int64_t>{11, 11, 11, 0});
+        break;
+      case 3:
+        Value(bad, "qwen4exp.ple.head_offsets", std::vector<std::int64_t>(16, 320001536));
+        break;
+      case 4:
+        Value(bad, "llmp.qwen4exp.indexer", std::string("fused"));
+        break;
+      case 5:
+        Value(bad, "qwen4exp.attention.value_length", std::int64_t{128});
+        break;
+      case 6:
+        Value(bad, "qwen4exp.unknown_structure", std::int64_t{1});
+        break;
+      case 7:
+        bad.metadata.push_back(bad.metadata.back());
+        break;
+      case 8:
+        std::erase_if(bad.tensors,
+                      [](const auto& t) { return t.name == "blk.0.ffn_gate_inp.weight"; });
+        break;
+      case 9:
+        bad.tensors.push_back(bad.tensors.front());
+        break;
+      case 10:
+        bad.tensors.front().format.encoding = Encoding::kF16;
+        break;
+      case 11:
+        bad.tensors.front().dims[0] += 1;
+        break;
+    }
+    EXPECT_FALSE(Normalize(std::move(bad), kFunded));
+  }
+}
+
 }  // namespace
 }  // namespace llmp::import

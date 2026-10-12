@@ -159,6 +159,7 @@ struct SemanticCheck {
 static_assert(format::PartList::kMax <= 4);
 static_assert(sizeof(Copy) <= 256 && sizeof(Destination) <= 64 && sizeof(SemanticCheck) <= 256);
 struct Layout {
+  std::uint64_t metadata_bytes = 0;
   std::vector<Group> groups{};
   std::vector<Shard> shards{};
   // All route cursors borrow this stable allocation; destruction retires the
@@ -368,7 +369,11 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
   for (const auto& stage : plan.spec().stages) {
     if (stage.embedding) bind(*stage.embedding, {0, 0});
     if (stage.stream.mixing) bind(*stage.stream.mixing, {1, 0});
-    for (const auto& side : stage.side) bind(side.source, {1, 0});
+    for (const auto& side : stage.side) {
+      // Side n-gram inputs perform row lookup just like token embeddings.
+      // Keep the encoded table eligible for exact row-closure admission.
+      bind(side.source, {side.source.kind == "side.ngram" ? 0U : 1U, 0});
+    }
     for (std::size_t i = 0; i < stage.layers.size(); ++i)
       for (const auto& c : stage.layers[i].components) bind(c, {2, static_cast<std::uint32_t>(i)});
     if (stage.heads.final_norm) bind(*stage.heads.final_norm, {3, 0});
@@ -383,7 +388,7 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
     if (found == owners.end()) return Bad("a normalized tensor is unbound", Rule::kConfig);
     batches[found->second].push_back(static_cast<std::uint32_t>(i));
   }
-  Layout out;
+  Layout out{.metadata_bytes = bound};
   std::uint64_t total = 0, next_chunk = 0;
   for (auto& [key, indices] : batches) {
     std::ranges::sort(indices, [&](auto a, auto b) { return tensors[a].name < tensors[b].name; });
@@ -885,6 +890,33 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   return WriteResult{id, destination, false};
 }
 }  // namespace
+
+std::expected<publication_detail::PlacementSummary, Error> publication_detail::InspectPlacement(
+    const NormalizedPlan& plan, std::uint64_t metadata_bytes) {
+  auto layout = Place({.checkpoint = plan.source(),
+                       .canonical_source = plan.canonical(),
+                       .model_spec = plan.spec(),
+                       .payload = plan.cost().payload_bytes,
+                       .copy = &plan},
+                      metadata_bytes);
+  if (!layout) return std::unexpected(layout.error());
+  PlacementSummary out{.metadata_bytes = layout->metadata_bytes,
+                       .copies = layout->copies.size(),
+                       .destinations = layout->destinations.size()};
+  for (const auto& group : layout->groups) {
+    out.tables += group.kind == "table";
+    out.globals += group.kind == "global";
+    out.layers += group.kind == "layer";
+    out.heads += group.kind == "head";
+    out.expert_groups += group.kind == "expert";
+    if (group.kind == "table")
+      for (const auto& member : group.members)
+        out.row_tables +=
+            format::RowBytes(member.format, plan.canonical().tensors[member.tensor].part)
+                .has_value();
+  }
+  return out;
+}
 
 std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                                                 const WriteOptions& options) {

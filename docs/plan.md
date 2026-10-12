@@ -2224,6 +2224,17 @@ each is checked against the design as M3.6 proceeds.
                   GoogleTest runs) and quality gates passed with zero failures
                   or skips (2026-10-12). Publication, MTP/vision import, runtime admission
                   and migration gates remain separate.
+            - [x] **N3b2g — owned GGUF Qwen3.8 target normalization:**
+                  preserve all 1,224 source tensors in the supported target
+                  profile and seven encodings, source-owned n-gram lists and
+                  existing GGUF fold assertions. Validate complete component
+                  roles and prepaid construction; check common writer placement
+                  for row tables, mixing and all expert slices. Registering the
+                  mapping also enables the ordinary CLI writer path. Full native build, 103 affected host controls and one
+                  actual-header-only check pass on spark-b with no failures or
+                  skips (2026-10-12); full publication, runtime admission and
+                  migration remain open.
+                  [Scope and source evidence](experiments/m36-qwen-gguf-normalization/README.md).
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
             catalog import events.

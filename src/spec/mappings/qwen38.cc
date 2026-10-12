@@ -432,6 +432,78 @@ constexpr Mapping kMapping{
     .v0_assembly = kAssembly,
 };
 
+// Closed GGUF target projection: whole encoded data parts, split indexer,
+// source-owned PLE constants, and the existing GGUF planning semantics.
+constexpr bool GgufTensor(const TensorRule& r) {
+  return r.part == PartRole::kData && !r.unbound && !r.pattern.contains("weight_scale") &&
+         !r.pattern.contains("ffn_gate_up_exps") && !r.pattern.contains("indexer.qk_proj");
+}
+constexpr auto kGgufTensors = [] {
+  std::array<TensorRule, std::ranges::count_if(kTensors, GgufTensor)> out{};
+  std::size_t n = 0;
+  for (auto rule : kTensors) {
+    if (!GgufTensor(rule)) continue;
+    rule.any_part = false;
+    rule.optional = false;
+    out[n++] = rule;
+  }
+  return out;
+}();
+static_assert(kGgufTensors.size() == 47);
+constexpr std::array kGgufProfile = {
+    RequireInt("qwen4exp.block_count", 48, false),
+    RequireInt("qwen4exp.context_length", 262144, false),
+    RequireInt("qwen4exp.embedding_length", 2560, false),
+    RequireInt("qwen4exp.attention.head_count", 24, false),
+    RequireInt("qwen4exp.attention.head_count_kv", 2, false),
+    RequireInt("qwen4exp.attention.key_length", 256, false),
+    RequireInt("qwen4exp.attention.value_length", 256, false),
+    RequireInt("qwen4exp.rope.dimension_count", 64, false),
+    RequireInt("qwen4exp.expert_count", 512, false),
+    RequireInt("qwen4exp.expert_used_count", 10, false),
+    RequireInt("qwen4exp.expert_feed_forward_length", 640, false),
+    RequireInt("qwen4exp.expert_shared_feed_forward_length", 640, false),
+    RequireInt("qwen4exp.ssm.conv_kernel", 4, false),
+    RequireInt("qwen4exp.ssm.state_size", 128, false),
+    RequireInt("qwen4exp.ssm.group_count", 16, false),
+    RequireInt("qwen4exp.ssm.time_step_rank", 48, false),
+    RequireInt("qwen4exp.ssm.inner_size", 6144, false),
+    RequireInt("qwen4exp.hyper_connection.count", 4, false),
+    RequireInt("qwen4exp.hyper_connection.low_rank", 320, false),
+    RequireInt("qwen4exp.attention.indexer.head_count", 4, false),
+    RequireInt("qwen4exp.attention.indexer.key_length", 128, false),
+    RequireInt("qwen4exp.attention.indexer.top_k", 2048, false),
+    RequireInt("qwen4exp.ple.ngram_size", 3, false),
+    RequireInt("qwen4exp.ple.heads_per_ngram", 8, false),
+    RequireInt("qwen4exp.ple.conv_kernel", 4, false),
+    RequireInt("qwen4exp.ple.eos_token_id", 248044, false),
+    RequireInt("qwen4exp.ple.image_token_id", 248056, false),
+    RequireInt("qwen4exp.embedding_length_per_layer_input", 160, false),
+    ParamRule{.key = "qwen4exp.rope.freq_base", .type = kReal, .value = {.real = 10000000.0}},
+    ParamRule{.key = "qwen4exp.attention.layer_norm_rms_epsilon",
+              .type = kReal,
+              .value = {.real = static_cast<double>(1e-6F)}},
+};
+constexpr auto kGgufParams = [] {
+  constexpr auto count =
+      std::ranges::count_if(kParams, [](const auto& p) { return !p.key.starts_with("llmp."); });
+  std::array<ParamRule, count + kGgufProfile.size()> out{};
+  std::size_t n = 0;
+  for (const auto& p : kParams)
+    if (!p.key.starts_with("llmp.")) out[n++] = p;
+  for (const auto& p : kGgufProfile) out[n++] = p;
+  return out;
+}();
+constexpr auto kGgufMapping = [] {
+  auto m = kMapping;
+  m.tensors = kGgufTensors;
+  m.params = kGgufParams;
+  m.folds = std::span(kFolds).first(3);
+  m.policies = std::span(kPolicies).last(1);
+  m.v0_assembly = {};
+  return m;
+}();
+
 // Native normalization binds source-preserving split parts to the same
 // shared roles. Embedded per-matrix scales are not projection multipliers.
 constexpr auto kNativeTensors = [] {
@@ -694,6 +766,7 @@ void BlockValues(std::vector<SourceValue>& out, const std::string& p, const mode
 }  // namespace
 
 const Mapping& Qwen38Mapping() { return kMapping; }
+const Mapping& Qwen38GgufMapping() { return kGgufMapping; }
 const Mapping& Qwen38NativeMapping() { return kNativeMapping; }
 const Mapping& Qwen38MtpMapping() { return kMtpMapping; }
 const Mapping& Qwen38MtpReplayMapping() { return kMtpReplayMapping; }

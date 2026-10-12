@@ -24,6 +24,7 @@
 #include "import/writer.h"
 #include "import_fixtures.h"
 #include "part_publication_fixture.h"
+#include "qwen38_gguf_normalization_fixture.h"
 #include "spec/stored.h"
 
 namespace llmp::import {
@@ -944,5 +945,37 @@ TEST_F(ImportPartWriterTest, SemanticMutationAndUnfundedOrMalformedOwnersCannotP
         EXPECT_EQ(entry.path().filename(), ".staging");
   }
 }
+TEST_F(ImportWriterTest, QwenSideTablePlacementAndCompleteExpertCoverageAreFundedBeforeEffects) {
+  auto input = test_support::Qwen38GgufCheckpoint();
+  const auto cost = NormalizationBound(input);
+  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+  auto plan = Normalize(std::move(input), {cost->metadata_bytes, cost->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  constexpr std::uint64_t funding = std::uint64_t{2} << 30U;
+  const auto layout = publication_detail::InspectPlacement(*plan, funding);
+  ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
+  EXPECT_EQ(layout->copies, 1224U);
+  EXPECT_EQ(layout->destinations, 1224U + 48U * 3U * 511U);
+  EXPECT_EQ(layout->tables, 1U);
+  EXPECT_EQ(layout->row_tables, 2U);  // embedding plus side.ngram, unchanged encoding
+  EXPECT_EQ(layout->globals, 0U);     // residual.hc mixing has no weights
+  EXPECT_EQ(layout->layers, 48U);
+  EXPECT_EQ(layout->heads, 1U);
+  EXPECT_EQ(layout->expert_groups, 48U * 512U);
+  EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
+  const auto destination = dir_ / "qwen-unfunded";
+  auto written = WriteArtifact(
+      *plan, {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1});
+  EXPECT_FALSE(written);
+  EXPECT_FALSE(std::filesystem::exists(destination));
+  // With placement funded the synthetic source still cannot publish: it has
+  // no parsed file receipt. The writer refuses before creating a destination.
+  written = WriteArtifact(
+      *plan, {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes});
+  ASSERT_FALSE(written);
+  EXPECT_EQ(written.error().reason, "a parsed source lacks a valid identity receipt");
+  EXPECT_FALSE(std::filesystem::exists(destination));
+}
+
 }  // namespace
 }  // namespace llmp::import

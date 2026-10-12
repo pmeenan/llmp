@@ -13,7 +13,8 @@
 // quantized module and decodes within its quantization of the native
 // checkpoint's weights; and the safetensors reader leaves an MLX
 // checkpoint to its reader. Needs the model files (label `models`); each
-// case is skipped without its files.
+// legacy case is skipped without its files; the explicitly scheduled closed
+// Qwen header-normalization case refuses missing input.
 
 #include <fcntl.h>
 #include <gtest/gtest.h>
@@ -21,6 +22,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +45,7 @@
 #include "artifact/composition.h"
 #include "artifact/format_map.h"
 #include "artifact/layout.h"
+#include "base/sha256.h"
 #include "expected_error.h"
 #include "format/encoding.h"
 #include "format/layout.h"
@@ -57,6 +60,7 @@
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
+#include "qwen38_gguf_normalization_fixture.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
@@ -1078,6 +1082,63 @@ TEST(ImportMlxModelsTest, DecodesLikeTheNativeCheckpoint) {
   EXPECT_LT(se_rms, 0.15);
   EXPECT_LT(q_rms, 0.15);
   EXPECT_LT(ex_rms, 0.15);
+}
+
+TEST(ImportGgufModelsTest, NormalizesClosedQwen38TargetHeadersWithoutPayloadReads) {
+  // An explicitly scheduled source case must refuse missing input, not skip.
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): immutable launcher input
+  const char* selected = std::getenv("LLMP_TEST_QWEN38_GGUF");
+  const auto path =
+      selected != nullptr
+          ? std::filesystem::path(selected)
+          : Models() /
+                "reference-models/Q/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf";
+  ASSERT_TRUE(Exists(path));
+  auto source = ReadGguf(path);
+  ASSERT_TRUE(source) << test_support::Failed(source, &Error::ToString).value_or("");
+  ASSERT_EQ(source->files.size(), 3U);
+  EXPECT_EQ(source->files[0].bytes, 10946624U);
+  EXPECT_EQ(source->files[1].bytes, 49567921344ULL);
+  EXPECT_EQ(source->files[2].bytes, 32382955968ULL);
+  constexpr std::array<std::uint64_t, 3> header_bytes{10946618, 29604, 48297};
+  constexpr std::array<std::string_view, 3> header_hashes{
+      "7c1460a95eb2e95377c32b14deb92cf74fe504d4feb5a62a40d48f78e9e0dcb8",
+      "7744187256a32b79476b0c443b912a887160258793dddf86782608874b31de64",
+      "77ceba7e90d26ca4e93b4e39b96573e52d69022c32369c0cd0ed441f3eac4c0f"};
+  for (std::size_t i = 0; i < source->files.size(); ++i) {
+    EXPECT_EQ(source->files[i].parsed.bytes, header_bytes[i]);
+    EXPECT_EQ(base::ToHex(source->files[i].parsed.sha256), header_hashes[i]);
+  }
+  ASSERT_EQ(source->tensors.size(), 1224U);
+  const auto fixture = test_support::Qwen38GgufCheckpoint();
+  for (const auto& tensor : source->tensors) {
+    const auto* expected = fixture.FindTensor(tensor.name);
+    ASSERT_NE(expected, nullptr) << tensor.name;
+    EXPECT_EQ(tensor.format, expected->format) << tensor.name;
+    EXPECT_EQ(tensor.dims, expected->dims) << tensor.name;
+    EXPECT_EQ(tensor.experts, expected->experts) << tensor.name;
+  }
+  auto cost = NormalizationBound(*source);
+  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+  ASSERT_LT(cost->metadata_bytes, std::uint64_t{512} << 20U);
+  auto normalized = Normalize(std::move(*source), {cost->metadata_bytes, cost->work_units});
+  ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
+  ASSERT_EQ(normalized->routes().size(), 1224U);
+  for (std::size_t i = 0; i < normalized->routes().size(); ++i) {
+    EXPECT_EQ(normalized->routes()[i].source_tensor, i);
+    EXPECT_EQ(normalized->routes()[i].extent, normalized->source().tensors[i].extent);
+  }
+  std::size_t selected_keys = 0;
+  for (const auto& entry : normalized->metadata())
+    selected_keys += entry.classification == MetadataClass::kSelected;
+  EXPECT_EQ(normalized->spec().stages[0].side.size(), 1U);
+  EXPECT_EQ(normalized->applied_folds().size(), 3U);
+  RecordProperty("normalized_tensors", "1224");
+  RecordProperty("source_files", "3");
+  RecordProperty("selected_keys", std::to_string(selected_keys));
+  RecordProperty("normalization_metadata_bound", std::to_string(cost->metadata_bytes));
+  RecordProperty("source_payload_bytes", std::to_string(cost->payload_bytes));
+  RecordProperty("scope", "actual headers only; no payload hash, publication or execution");
 }
 
 }  // namespace

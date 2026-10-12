@@ -77,6 +77,8 @@ namespace llmp::spec::mappings {
 inline constexpr std::uint64_t kQwen38DraftVocab = 65536;
 
 const Mapping& Qwen38Mapping();
+// Closed, byte-preserving GGUF target normalization; no v0 assembly.
+const Mapping& Qwen38GgufMapping();
 // Native source-encoded target parts. No historical converter fold assertions
 // or execution-policy eligibility; normalization proves the head permutation.
 const Mapping& Qwen38NativeMapping();
