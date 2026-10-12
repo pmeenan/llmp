@@ -1979,6 +1979,24 @@ each is checked against the design as M3.6 proceeds.
                   8 GiB, zero-swap run completed in 31 minutes without OOM.
                   CLI source expansion, MTP/vision import, runtime admission
                   and migration qualification remain separate.
+            - [x] **N4b4 — closed native ModelOpt CLI dispatch:**
+                  route the existing import command's exact supported
+                  safetensors architecture/quantization combination through
+                  the closed normalizer and common writer/archive flow;
+                  unsupported source contracts refuse without fallback.
+                  Preserve Gemma dispatch, flags and metadata accounting.
+                  Independent challenge and main checks passed: 22 import
+                  integration controls, 2,602 native and 2,047 CPU checks,
+                  all 137 model/timing cases (184 raw GoogleTest runs) and
+                  quality gates, with zero failures or skips (2026-10-12).
+                  Confined actual CLI checks passed the 1 MiB normalization
+                  and 512 MiB writer funding refusals without store creation,
+                  followed by funded ordinary-source publication using the
+                  default 4 GiB metadata ceiling. All 38 complete source hashes,
+                  canonical bindings and 468 full permuted parts matched the
+                  pinned target under the 8 GiB, zero-swap process/cache cap.
+                  Runtime admission, MTP/vision import and migration
+                  qualification remain separate.
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

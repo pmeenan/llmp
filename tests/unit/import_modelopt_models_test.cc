@@ -22,6 +22,7 @@
 
 #include "artifact/artifact.h"
 #include "base/sha256.h"
+#include "cli/cli.h"
 #include "components/step.h"
 #include "import/modelopt_qwen38.h"
 #include "import/reader.h"
@@ -62,6 +63,34 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   const auto memory = platform::ReadMemoryPressure();
   ASSERT_TRUE(memory.available);
   ASSERT_GE(*memory.available, kCombined + kMargin);
+  // Exercise the real dispatcher without a redundant whole-payload write.
+  // A tiny budget must refuse normalization; a larger one reaches the owned
+  // plan but refuses the independently prepaid writer before store creation.
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): explicit read-only test configuration.
+  const char* cli_store = std::getenv("LLMP_TEST_MODELOPT_CLI_STORE");
+  ASSERT_NE(cli_store, nullptr);
+  ASSERT_FALSE(std::filesystem::exists(cli_store));
+  for (const auto& [mib, message] : std::array<std::pair<std::string_view, std::string_view>, 2>{
+           {{"1", "normalization exceeds the requested metadata budget"},
+            {"512", "artifact metadata has not been funded"}}}) {
+    const std::array<std::string_view, 6> args{"import",  configured,       "--store",
+                                               cli_store, "--metadata-mib", mib};
+    std::FILE* output = std::tmpfile();
+    std::FILE* error = std::tmpfile();
+    ASSERT_NE(output, nullptr);
+    ASSERT_NE(error, nullptr);
+    EXPECT_EQ(cli::Run(args, output, error), cli::kExitFailure);
+    EXPECT_EQ(std::ftell(output), 0);
+    std::rewind(error);
+    std::array<char, 1024> text{};
+    const auto count = std::fread(text.data(), 1, text.size(), error);
+    EXPECT_NE(std::string_view(text.data(), count).find(message), std::string_view::npos);
+    std::fclose(output);
+    std::fclose(error);
+    EXPECT_FALSE(std::filesystem::exists(cli_store));
+  }
+  RecordProperty("cli_normalization_unfunded_refused", true);
+  RecordProperty("cli_writer_unfunded_refused", true);
   auto source = ReadCheckpoint(configured);
   ASSERT_TRUE(source) << source.error().ToString();
   ASSERT_EQ(source->tensors.size(), 301730U);
@@ -375,23 +404,12 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   ASSERT_TRUE(source) << source.error().ToString();
   ASSERT_EQ(source->files.size(), kPublicationPins.size());
   ASSERT_EQ(source->tensors.size(), 301730U);
-  std::array<std::optional<base::Sha256Digest>, 38> expected{};
   std::uint64_t authenticated_source_bytes = 0;
   for (std::size_t i = 0; i < source->files.size(); ++i) {
     const auto& file = source->files[i];
     const auto pin = std::ranges::find(kPublicationPins, file.name, &PublicationPin::name);
     ASSERT_NE(pin, kPublicationPins.end());
     ASSERT_EQ(file.bytes, pin->bytes);
-    base::Sha256Digest hash{};
-    for (std::size_t byte = 0; byte < hash.size(); ++byte) {
-      unsigned value = 0;
-      const char* begin = pin->sha256.data() + 2 * byte;
-      const auto read = std::from_chars(begin, begin + 2, value, 16);
-      ASSERT_EQ(read.ec, std::errc{});
-      ASSERT_EQ(read.ptr, begin + 2);
-      hash[byte] = static_cast<std::uint8_t>(value);
-    }
-    expected[i] = hash;
     authenticated_source_bytes += file.bytes;
   }
   ASSERT_EQ(authenticated_source_bytes, 105872821791ULL);
@@ -429,12 +447,36 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
       plan->parts().source().tensors.size() * 32 + 3 * 256 + 288 * 8192 + 65536;
   ASSERT_LT(writer_bound, 3 * kGiB);
   ASSERT_FALSE(std::filesystem::exists(store));
-  auto written = WriteArtifact(*plan, {.store = store,
-                                       .build = "native-modelopt-publication-screen01",
-                                       .expected = expected,
-                                       .metadata_bytes = writer_bound});
-  ASSERT_TRUE(written) << written.error().ToString();
-  ASSERT_FALSE(written->reused);
+  // Qualify the actual ordinary-source CLI path with its default 4 GiB
+  // metadata budget. The independent oracle plan remains owned above; both
+  // plans fit the same prepaid combined process-and-file-cache domain.
+  ASSERT_LT(bound->metadata_bytes + writer_bound, 4 * kGiB);
+  const auto source_path = std::filesystem::path(configured).string();
+  const auto store_path = store.string();
+  const std::array<std::string_view, 4> args{"import", source_path, "--store", store_path};
+  std::FILE* output = std::tmpfile();
+  std::FILE* error = std::tmpfile();
+  ASSERT_NE(output, nullptr);
+  ASSERT_NE(error, nullptr);
+  const auto code = cli::Run(args, output, error);
+  std::rewind(output);
+  std::rewind(error);
+  std::array<char, 512> text{}, diagnostic{};
+  const auto count = std::fread(text.data(), 1, text.size(), output);
+  const auto errors = std::fread(diagnostic.data(), 1, diagnostic.size(), error);
+  std::fclose(output);
+  std::fclose(error);
+  ASSERT_EQ(code, cli::kExitOk) << std::string_view(diagnostic.data(), errors);
+  ASSERT_EQ(errors, 0U);
+  const std::string_view cli_receipt(text.data(), count);
+  ASSERT_EQ(cli_receipt.size(), 75U);
+  ASSERT_TRUE(cli_receipt.starts_with("published "));
+  ASSERT_EQ(cli_receipt.back(), '\n');
+  const std::string id(cli_receipt.substr(10, 64));
+  ASSERT_TRUE(std::ranges::all_of(
+      id, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
+  const auto written = std::expected<WriteResult, Error>(WriteResult{id, store / id, false});
+  RecordProperty("cli_funded_publication", true);
   std::size_t directories = 0;
   for (const auto& entry : std::filesystem::directory_iterator(store)) {
     ASSERT_TRUE(entry.is_directory());
@@ -518,7 +560,7 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   ASSERT_EQ(stored->folds().size(), 1U);
   EXPECT_EQ(stored->folds()[0].name, "gdn.value_heads_tiled");
   EXPECT_EQ(stored->folds()[0].tensors, folded);
-  // Successful WriteArtifact already performed full file and chunk Deep
+  // Successful CLI publication already performed full file and chunk Deep
   // readback plus StoredSpec/ValidateSpec before atomic publication. Do not
   // duplicate those multi-100GB passes here, or automatically republish for reuse.
   std::uint64_t published_bytes = 0;

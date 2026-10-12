@@ -24,6 +24,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Route the closed native ModelOpt target through `llmp import` using the
+  existing authenticated writer and archive flow. Actual CLI checks cover
+  metadata-budget refusal and complete pinned-target publication; runtime
+  admission remains separate.
+
 - Extend the native writer API to owned multipart normalization plans, with
   expert scatter, byte-preserving permutations and applied-fold receipts.
   The pinned native ModelOpt target passed complete source authentication

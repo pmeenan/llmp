@@ -1336,7 +1336,7 @@ target_link_libraries(import_modelopt_normalize_test PRIVATE llmp_import llmp_co
 llmp_gtest(import_modelopt_normalize_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(import_modelopt_models_test import_modelopt_models_test.cc)
-target_link_libraries(import_modelopt_models_test PRIVATE llmp_import llmp_components llmp_platform)
+target_link_libraries(import_modelopt_models_test PRIVATE llmp_cli llmp_import llmp_components llmp_platform)
 llmp_gtest(import_modelopt_models_test TEST_PREFIX unit. PROPERTIES LABELS models)
 
 add_executable(import_indexed_parts_test import_indexed_parts_test.cc)

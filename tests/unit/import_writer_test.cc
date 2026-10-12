@@ -17,6 +17,7 @@
 #include "import/archive_input.h"
 #include "import/modelopt_qwen38.h"
 #include "import/normalize.h"
+#include "import/reader.h"
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
 #include "import/stream.h"
@@ -567,6 +568,39 @@ TEST_F(ImportWriterTest, CliRequiresExplicitStoreAndValidFunding) {
   std::fclose(output);
   std::fclose(error);
 }
+TEST_F(ImportWriterTest, CliRefusesIncompleteModelOptWithoutPublishingOrFallingBack) {
+  Write(dir_ / "source/model.safetensors", fixtures::Shard({fixtures::E("weight", "F32", {4, 4})}));
+  Write(
+      dir_ / "source/config.json",
+      R"({"model_type":"qwen3_8_flash_next","quantization_config":{"quant_method":"modelopt","quant_algo":"MIXED_PRECISION","quantized_layers":{}}})");
+  auto input = ReadCheckpoint(dir_ / "source");
+  ASSERT_TRUE(input) << test_support::Failed(input, &Error::ToString).value_or("");
+  EXPECT_EQ(input->container, "safetensors");
+  EXPECT_EQ(input->architecture, "qwen3_8_flash_next");
+  EXPECT_EQ(input->quantization, "modelopt MIXED_PRECISION");
+  const std::string store = (dir_ / "never-created").string();
+  for (const auto& path : {dir_ / "source", dir_ / "source/model.safetensors"}) {
+    const std::string requested = path.string();
+    const std::array<std::string_view, 6> args{"import", requested,        "--store",
+                                               store,    "--metadata-mib", "512"};
+    std::FILE* output = std::tmpfile();
+    std::FILE* error = std::tmpfile();
+    ASSERT_NE(output, nullptr);
+    ASSERT_NE(error, nullptr);
+    EXPECT_EQ(cli::Run(args, output, error), cli::kExitFailure);
+    EXPECT_EQ(std::ftell(output), 0);
+    std::rewind(error);
+    std::array<char, 1024> text{};
+    const auto count = std::fread(text.data(), 1, text.size(), error);
+    EXPECT_NE(
+        std::string_view(text.data(), count).find("outside closed ModelOpt target source domain"),
+        std::string_view::npos);
+    std::fclose(output);
+    std::fclose(error);
+    EXPECT_FALSE(std::filesystem::exists(store));
+  }
+}
+
 TEST_F(ImportWriterTest, SafetensorsAndConfigReceiptsDescribeExactlyParsedBytes) {
   const auto shard = fixtures::Shard({fixtures::E("weight", "F32", {4, 4})});
   const std::string config = R"({"model_type":"test"})";

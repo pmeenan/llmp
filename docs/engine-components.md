@@ -2067,11 +2067,31 @@ The 8 GiB, zero-swap run completed in 31 minutes, reached its memory cap
 and incurred no OOM kills. This API extension
 does not admit a runtime model or import MTP/vision components.
 
-The `llmp import` CLI remains in the copy-only Gemma target GGUF domain.
-It verifies ordinary or archived sources, including exact parsed-prefix
-receipts; archived imports record independent catalog events after
-publication. See [the writer contract](artifact-format.md#native-writer)
-for that qualified copy-only path.
+The `llmp import` CLI retains the Gemma target GGUF path and dispatches
+safetensors sources declared as `qwen3_8_flash_next` with
+`modelopt MIXED_PRECISION` to the closed native ModelOpt target normalizer.
+That dispatch is not admission authority: the normalizer still validates the
+complete source contract and refuses unsupported inputs without falling back
+to another mapping. Existing flags, ordinary/archive source verification,
+parsed-prefix receipts, publication/reuse results and post-publication archive
+events use the same writer flow. The requested metadata ceiling covers both
+the owned plan and the writer, with reader storage bounded separately.
+
+Independent challenge and main checks passed 22 import integration controls,
+2,602 native, 2,047 CPU and all 137 model/timing cases (184 raw GoogleTest
+runs), with zero failures or skips; quality and source/recipe/binary guards
+passed (2026-10-12). Confined actual CLI checks refused normalization at
+1 MiB and writer funding at 512 MiB without creating a store. Funded ordinary
+CLI publication then used its default 4 GiB metadata ceiling: every one of the
+38 complete source hashes in the published receipts matched the fixed pins,
+all canonical bindings and expert geometry passed, and the independent oracle
+matched all 468 full permuted parts. Common writer readback verified every
+artifact file and chunk before publication. The same 8 GiB, zero-swap hard
+domain paid the process and file cache. This ordinary CLI proof checks the
+fixed source hashes after publication; archived input additionally enforces
+its supplied hashes during the source stream. No new ModelOpt archive event,
+runtime, MTP, vision or migration admission is established by this control.
+See [the writer contract](artifact-format.md#native-writer).
 
 Still to come: AWQ's and GPTQ's layouts, the complete fold catalog (MLX's and
 EXL3's sources need theirs: MLX's stacked experts and moved convolution

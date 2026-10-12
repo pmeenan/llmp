@@ -31,8 +31,9 @@ does not say otherwise.
 ## Native writer
 
 `llmp import SOURCE --store DIRECTORY [--metadata-mib N]` writes version 1
-from the native normalizer's closed source domain (currently Gemma 2, 3 and
-4 target GGUFs). It embeds `spec.json`, retains GGUF metadata, preserves
+from the native normalizer's closed source domains: Gemma 2, 3 and 4 target
+GGUFs, and the supported native ModelOpt target described below. It embeds
+`spec.json`, retains source metadata, preserves
 weight encodings and derives layer, row-table, head, global and expert groups
 from the spec's bindings. Source-converter folds stay in the spec; copying
 such bytes does not claim an importer-applied fold.
@@ -63,8 +64,18 @@ publication and verified reuse use the same path as copy-only plans.
 The pinned target passed actual publication on a Spark (2026-10-12): all
 38 source-file hashes authenticated, 103,797,070,596 weight bytes preserved,
 and all 25 files and 66,261 chunks verified. Every byte of all 468 permuted
-parts matched an independent destination-order oracle. This API does not
-expand the CLI's source domain or admit a runtime model.
+parts matched an independent destination-order oracle. The CLI selects this normalizer only for safetensors with architecture
+`qwen3_8_flash_next` and quantization `modelopt MIXED_PRECISION`; the complete
+source contract must then pass normalization. Rejection does not fall back to
+another mapping. Ordinary and archived inputs share the existing writer,
+verified-reuse and archive-event flow, with no new flags. This dispatch does
+not admit a runtime model. Actual CLI evidence covers metadata funding
+refusal at 1 MiB and 512 MiB without store creation and funded ordinary-source
+publication at the default 4 GiB metadata ceiling. Published receipts match
+all 38 pinned complete source hashes; all canonical bindings and the complete
+468-part permutation oracle passed under the 8 GiB, zero-swap hard domain.
+The ordinary-source control compares pins after publication; archive inputs
+also require their supplied hashes during streaming.
 
 The explicit metadata budget covers normalization plus writer working
 storage, excluding the container readers' bounded input storage. It is an

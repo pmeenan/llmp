@@ -11,6 +11,7 @@
 #include "base/build_info.h"
 #include "cli/cli.h"
 #include "import/archive_input.h"
+#include "import/modelopt_qwen38.h"
 #include "import/reader.h"
 #include "import/writer.h"
 
@@ -69,40 +70,60 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     if (!identities) return Failure(err, identities.error());
     expected = std::move(*identities);
   }
+  // Both owned plan kinds use the same publication and archive receipt path.
+  const auto publish = [&](const auto& plan, const import::Checkpoint& checkpoint,
+                           std::uint64_t used) {
+    const auto& info = base::GetBuildInfo();
+    const std::string build = info.commit.empty()
+                                  ? "unknown"
+                                  : std::string(info.commit) + (info.modified ? ".dirty" : "");
+    auto result = import::WriteArtifact(
+        plan,
+        {.store = store, .build = build, .expected = expected, .metadata_bytes = metadata - used});
+    if (!result) return Failure(err, result.error());
+    if (!Print(out,
+               std::format("{} {}\n", result->reused ? "verified" : "published", result->id))) {
+      Print(err, "llmp import: artifact published; cannot write result to standard output\n");
+      return kExitFailure;
+    }
+    if (*archive) {
+      auto opened = artifact::Artifact::Open(result->path);
+      if (!opened) {
+        Print(err,
+              "llmp import: artifact published, but it could not be reopened for catalog "
+              "recording\n");
+        return kExitFailure;
+      }
+      if (auto recorded = import::RecordArchiveImport(**archive, checkpoint, *opened); !recorded) {
+        Print(err, "llmp import: artifact published; catalog event failed: " +
+                       recorded.error().ToString() + '\n');
+        return kExitFailure;
+      }
+    }
+    return kExitOk;
+  };
+  const auto funded = [&](const import::NormalizationCost& bound) {
+    return bound.metadata_bytes <= metadata;
+  };
+  if (input->container == "safetensors" && input->architecture == "qwen3_8_flash_next" &&
+      input->quantization == "modelopt MIXED_PRECISION") {
+    auto bound = import::ModelOptTargetBound(*input);
+    if (!bound) return Failure(err, bound.error());
+    if (!funded(*bound))
+      return Failure(err, {.rule = import::Rule::kBounds,
+                           .reason = "normalization exceeds the requested metadata budget"});
+    auto plan = import::NormalizeModelOptTarget(std::move(*input),
+                                                {bound->metadata_bytes, bound->work_units});
+    if (!plan) return Failure(err, plan.error());
+    return publish(*plan, plan->parts().source(), bound->metadata_bytes);
+  }
   auto bound = import::NormalizationBound(*input);
   if (!bound) return Failure(err, bound.error());
-  if (bound->metadata_bytes > metadata)
+  if (!funded(*bound))
     return Failure(err, {.rule = import::Rule::kBounds,
                          .reason = "normalization exceeds the requested metadata budget"});
   auto plan = import::Normalize(std::move(*input), {bound->metadata_bytes, bound->work_units});
   if (!plan) return Failure(err, plan.error());
-  const auto& info = base::GetBuildInfo();
-  const std::string build =
-      info.commit.empty() ? "unknown" : std::string(info.commit) + (info.modified ? ".dirty" : "");
-  auto result = import::WriteArtifact(*plan, {.store = store,
-                                              .build = build,
-                                              .expected = expected,
-                                              .metadata_bytes = metadata - bound->metadata_bytes});
-  if (!result) return Failure(err, result.error());
-  if (!Print(out, std::format("{} {}\n", result->reused ? "verified" : "published", result->id))) {
-    Print(err, "llmp import: artifact published; cannot write result to standard output\n");
-    return kExitFailure;
-  }
-  if (*archive) {
-    auto opened = artifact::Artifact::Open(result->path);
-    if (!opened) {
-      Print(
-          err,
-          "llmp import: artifact published, but it could not be reopened for catalog recording\n");
-      return kExitFailure;
-    }
-    if (auto recorded = import::RecordArchiveImport(**archive, plan->source(), *opened);
-        !recorded) {
-      Print(err, "llmp import: artifact published; catalog event failed: " +
-                     recorded.error().ToString() + '\n');
-      return kExitFailure;
-    }
-  }
-  return kExitOk;
+  return publish(*plan, plan->source(), bound->metadata_bytes);
 }
 }  // namespace llmp::cli
