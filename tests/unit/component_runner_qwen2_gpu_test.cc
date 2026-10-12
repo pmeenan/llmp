@@ -169,6 +169,9 @@ pl::StepShape Shape(std::uint32_t past, std::uint32_t rows) {
 // reproduce Lowering::Run's descriptor reservation before TensorArena.
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
 constexpr std::uint64_t kHostAllowance = 4096 * kMiB;
+constexpr std::uint64_t kStateCopyLimit = 16 * kMiB;
+static_assert(sizeof(en::SlotLifecycle::Range) <= 24);
+constexpr std::uint64_t kStateMetadata = 3 * 4 * 512 * 24;
 constexpr std::uint64_t kProgramHost = 64 * kMiB;
 constexpr std::uint64_t kLaunches = 4096;
 constexpr std::uint64_t kRuntimePlans = 2 * (kProgramHost + kLaunches * en::kGraphNodeHostBytes);
@@ -208,7 +211,8 @@ constexpr std::uint64_t kObservationOwners =
     209977600 +                                       // one extra hard-cap IR graph envelope
     std::uint64_t{76} * 151936 * sizeof(float) +      // complete oracle
     3 * std::uint64_t{32} * 151936 * sizeof(float) +  // outputs, joined row copy, growth overlap
-    16 * kMiB;                                        // histories, script, headers, rounding
+    16 * kMiB +                                       // histories, script, headers, rounding
+    2 * kStateCopyLimit + kStateMetadata;             // state copies and bounded range lists
 static_assert(kInheritedCompiler <= 2560 * kMiB);
 static_assert(kMetadataOwners <= 1024 * kMiB);
 static_assert(kObservationOwners <= 512 * kMiB);
@@ -268,7 +272,69 @@ struct Lifetime {
   std::unique_ptr<KernelSource> kernel;
   std::unique_ptr<en::ModelRunner> runner;
   std::vector<en::PagedModel*> entered;
+  // Pinned buffers belong to node through teardown, including an uncertain copy.
+  void* saved_state = nullptr;
+  void* state_readback = nullptr;
+  std::vector<llmp::catalog::ExtentId> state_copy_extents;
+  std::vector<en::SlotLifecycle::Range> saved_pages, saved_footprint;
+  std::uint32_t saved_positions = 0;
+  std::uint64_t saved_bytes = 0;
 };
+
+en::Status SaveState(Lifetime& life, bool checkpoint) {
+  auto& slots = life.runner->slots();
+  if (slots.stages() != 1 || slots.layout(0).bytes > kStateCopyLimit)
+    return std::unexpected("FP16 state exceeds the paid single-stage copy bound");
+  life.saved_positions = slots.positions(0);
+  life.saved_footprint = slots.live(0, 0).used_ranges();
+  if (checkpoint) {
+    auto pages = slots.CheckpointRanges(0, life.saved_positions);
+    if (!pages) return std::unexpected(pages.error());
+    life.saved_pages = std::move(*pages);
+  } else {
+    life.saved_pages = life.saved_footprint;
+  }
+  if (life.saved_pages.empty() || life.saved_pages.size() > 512 ||
+      life.saved_footprint.size() > 512)
+    return std::unexpected("FP16 state copy range inventory exceeds its bound");
+  life.saved_bytes = 0;
+  for (const auto& range : life.saved_pages) {
+    if (range.region != 0 || range.bytes == 0 || range.bytes > kStateCopyLimit - life.saved_bytes)
+      return std::unexpected("FP16 state copy bytes exceed their bound");
+    life.saved_bytes += range.bytes;
+  }
+  if (!life.saved_state) {
+    const auto occupied = life.node.catalog().OccupancyOf(life.node.domain()).Total().value();
+    if (occupied > kDomainCap || 2 * kStateCopyLimit > kDomainCap - occupied)
+      return std::unexpected("FP16 state buffers exceed the checked domain");
+    auto saved = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
+    if (!saved) return std::unexpected(saved.error());
+    life.saved_state = *saved;
+    auto readback = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
+    if (!readback) return std::unexpected(readback.error());
+    life.state_readback = *readback;
+  }
+  return slots.CopyState(0, life.saved_state, life.saved_pages, true);
+}
+
+en::Status CheckSavedState(Lifetime& life) {
+  auto& slots = life.runner->slots();
+  const auto footprint = slots.live(0, 0).used_ranges();
+  if (slots.positions(0) != life.saved_positions || slots.spilled(0) || slots.restoring(0) ||
+      footprint.size() != life.saved_footprint.size())
+    return std::unexpected("FP16 restored state counters or footprint differ");
+  for (std::size_t i = 0; i < footprint.size(); ++i)
+    if (footprint[i].region != life.saved_footprint[i].region ||
+        footprint[i].offset != life.saved_footprint[i].offset ||
+        footprint[i].bytes != life.saved_footprint[i].bytes)
+      return std::unexpected("FP16 restored whole-extent footprint differs");
+  if (auto copied = slots.CopyState(0, life.state_readback, life.saved_pages, true); !copied)
+    return copied;
+  if (std::memcmp(life.saved_state, life.state_readback,
+                  static_cast<std::size_t>(life.saved_bytes)) != 0)
+    return std::unexpected("FP16 restored state bytes differ");
+  return {};
+}
 
 // Covers assertion returns and every setup failure too. Teardown is once;
 // any refusal retains the complete graph of owners, including the node and
@@ -572,7 +638,7 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
     if (auto x = runner->slots().SelectSlots(std::vector<std::uint32_t>{0}); !x) return x;
     return node.WithRequest(
         0, runner->slots().execution(), "FP16 bridge comparison", [&]() -> en::Status {
-          for (const auto& shape : shapes) {
+          const auto run_step = [&](const pl::StepShape& shape) -> en::Status {
             const auto& segment = shape.segments.front();
             const std::vector<en::SegmentWork> work{
                 {.tokens = std::span(tokens).subspan(segment.past, segment.rows), .bytes = {}}};
@@ -590,6 +656,50 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
             EXPECT_EQ(different, 0U) << "past=" << segment.past << " rows=" << segment.rows;
             if (different != 0)
               return std::unexpected("FP16 shared logits differ from frozen bridge");
+            if (runner->slots().positions(0) != segment.past + segment.rows)
+              return std::unexpected("FP16 completed positions differ from the control");
+            return {};
+          };
+          for (const auto& shape : shapes) {
+            if (full && shape.segments.front().past == 40) {
+              auto& slots = runner->slots();
+              // Eight real decode writes must change the saved checkpoint pages.
+              if (auto x = slots.CopyState(0, life->state_readback, life->saved_pages, true); !x)
+                return x;
+              if (std::memcmp(life->saved_state, life->state_readback,
+                              static_cast<std::size_t>(life->saved_bytes)) == 0)
+                return std::unexpected("FP16 checkpoint control made no changed state");
+              if (auto x = slots.PrepareRestore(0, life->saved_positions, life->saved_footprint,
+                                                slots.kept_layout_id());
+                  !x)
+                return x;
+              if (!slots.restoring(0))
+                return std::unexpected("FP16 checkpoint restore did not enter preparation");
+              if (auto x = slots.CopyState(0, life->saved_state, life->saved_pages, false); !x)
+                return x;
+              if (auto x = slots.CompleteRestore(0, life->saved_positions); !x) return x;
+              if (auto x = CheckSavedState(*life); !x) return x;
+              RecordProperty("checkpoint_bytes_restored", std::to_string(life->saved_bytes));
+              // The same frozen full-vocabulary rows must survive the rewind.
+              for (std::uint32_t past = 32; past < 40; ++past)
+                if (auto x = run_step(Shape(past, 1)); !x) return x;
+            }
+            if (full && shape.segments.front().past == 48) {
+              if (auto x = SaveState(*life, false); !x) return x;
+              auto& slots = runner->slots();
+              if (auto x = slots.Spill(0); !x) return x;
+              if (!slots.spilled(0) || !slots.kept_whole(0))
+                return std::unexpected("FP16 spill did not keep the whole state");
+              if (auto x = slots.Restore(0); !x) return x;
+              if (auto x = CheckSavedState(*life); !x) return x;
+              RecordProperty("spill_bytes_restored", std::to_string(life->saved_bytes));
+            }
+            if (auto x = run_step(shape); !x) return x;
+            if (full && shape.segments.front().past == 0) {
+              if (auto x = SaveState(*life, true); !x) return x;
+              if (life->saved_positions != 32)
+                return std::unexpected("FP16 checkpoint starts at the wrong completed position");
+            }
           }
           return {};
         });

@@ -1803,6 +1803,13 @@ each is checked against the design as M3.6 proceeds.
             through the shared runner; pass the FP16 bridge / EXL3 Tier C
             correctness controls and state, spill, restore and kept-state
             controls. This fixture slice has no serving or timing claim.
+            - [x] **G5c1 — FP16 checkpoint and spill continuation:** both
+                  fused and unfused full control trajectories restore checkpoint
+                  pages after eight decode writes, replay all eight full-vocabulary
+                  rows, and restore the complete used state after spill. Exact
+                  bytes, counters, footprints and remaining logits pass
+                  ([evidence](experiments/m36-qwen2/README.md)). Historical
+                  heldout, repeated/kept-state and EXL3 controls remain open.
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,

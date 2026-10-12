@@ -61,7 +61,7 @@ or silently substituted. Both full controls then passed.
 
 The harness pays a 4 GiB startup/compiler/result allowance before file
 reads or compiler allocation. Its checked named source inventory is
-3,713,099,440 bytes, including the 46,188,544-byte oracle, metadata/parser
+3,746,801,328 bytes, including the 46,188,544-byte oracle, metadata/parser
 owners and retained plans. The complete execution domain is capped at
 8 GiB, with the existing 6 GiB driver margin checked independently. Bounded
 reads precede allocations; only two authenticated shape/parameter keys may
@@ -69,11 +69,35 @@ enter the plan cache. One heap owner retains the node and every borrowed
 resource if teardown cannot prove retirement. This is a conservative
 source bound, not a measured memory peak.
 
+## FP16 checkpoint and spill continuation
+
+On 2026-10-12, the existing four controls passed on Spark B with zero failures
+or skips. Each full trajectory saves a checkpoint after the 32-row prefill,
+executes eight decode writes and requires the saved pages to have changed.
+It restores all 6,291,456 checkpoint bytes, counters and the complete used
+footprint, then replays all eight rows against the same frozen logits. At
+48 positions it spills and restores all 6,291,456 used state bytes, verifies
+bytes, counters and footprint, and continues the remaining control rows.
+Both fused and unfused full cases compare 84 rows: the original 76 plus the
+eight replayed rows. The two 33-row screen cases are unchanged.
+
+Completion-aware state copies use two bounded 16 MiB pinned buffers, retained
+by the node until retirement. The additional observation inventory is
+33,701,888 bytes, within the existing 4 GiB host allowance and 8 GiB execution
+domain. The actual four-arm run was confined to 8 GiB with zero swap and
+observed a 706,785,280-byte cgroup memory peak with no memory-limit or OOM
+events. These are
+state-copy and continuation equivalence controls for this one approved
+fixture, not independent historical state-oracle or restart-adoption proofs.
+The test source SHA-256 is
+`53537626bff77947b14c5532f5c1ac14745906ac37dfa004da4f4e72d1976dec`.
+
 ## Remaining gate
 
 The four cases above are screen/full evaluations of the same control
 trajectory. They are **not** the four historical [P2 arms](../backend-proof-p2/README.md),
 which are fused/unfused × control/heldout. The heldout trajectories, repeated
-state and spill/restore/kept controls still need the shared path. EXL3 must
+state and kept-state/restart controls remain open beyond the checkpoint and
+in-process spill controls above. EXL3 must
 pass its exact 1,570-linear and Tier C 750-case controls through the shared
 runner. Legacy execution remains until those controls pass.

@@ -137,7 +137,7 @@
   },
   "remaining": [
     "historical heldout FP16 fused and unfused trajectories",
-    "state/spill/restore/kept shared controls",
+    "historical repeated state and kept-state/restart shared controls",
     "EXL3 shared ordered operation execution",
     "EXL3 1570 exact linear controls and Tier C 750-case bounds",
     "legacy deletion after all controls"
@@ -178,5 +178,32 @@
       "tests/unit/execution_test.cc": "4a8092b8d22d8936d5ce37fd379954e56c7b7914e2f5cd490639f0b0c07dbbfa",
       "tests/unit/exl3_validate_test.cc": "067b00274b09c998074f46bc43712b08f8594643e6762ca8bd388d910d7803c3"
     }
+  },
+  "g5c1": {
+    "date": "2026-10-12",
+    "scope": "FP16 checkpoint and in-process spill continuation on the existing control trajectory",
+    "host": "spark-b",
+    "test_sha256": "53537626bff77947b14c5532f5c1ac14745906ac37dfa004da4f4e72d1976dec",
+    "model_cases": 4,
+    "failures": 0,
+    "skips": 0,
+    "checkpoint_saved_positions": 32,
+    "checkpoint_decode_writes_and_replayed_rows": 8,
+    "spill_positions": 48,
+    "checkpoint_bytes_restored_each_full_arm": 6291456,
+    "spill_bytes_restored_each_full_arm": 6291456,
+    "compared_rows_each_full_arm": 84,
+    "additional_observation_bound_bytes": 33701888,
+    "total_source_bound_bytes": 3746801328,
+    "execution_domain_cap_bytes": 8589934592,
+    "memory_swap_max_bytes": 0,
+    "observed_memory_peak_bytes": 706785280,
+    "memory_limit_events": 0,
+    "oom_events": 0,
+    "source_and_recipe_pre_post_guards": "PASS",
+    "independent_state_oracle": false,
+    "restart_adoption": false,
+    "remaining_parent_g5c": true,
+    "measurement_scope": "cgroup memory.peak, not total catalog/device physical occupancy"
   }
 }
