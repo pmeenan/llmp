@@ -2256,6 +2256,20 @@ each is checked against the design as M3.6 proceeds.
                   and both tiny GPU cases pass ([evidence](experiments/m36-decode-templates/README.md#native-split-row-foundation--2026-10-12)).
                   Products, expert worklists and native ModelOpt target
                   admission remain separate.
+            - [x] **N4b6a — completed-route and multipart descriptor helpers:**
+                  validate the complete route bijection and preserve original
+                  routed slots, including repeated expert contributions; bind
+                  all expert descriptors from exact part extents and padded
+                  pitches without expanding source encodings. Caller-sized
+                  storage and refusal-before-output-write controls pass:
+                  eight focused host cases and full native main build on Spark,
+                  with independent source challenge clean
+                  ([evidence](experiments/m36-native-grouped-foundation/README.md)).
+            - [ ] **N4b6b — owned grouped operation execution:** connect those
+                  helpers to an actual selected-expert closure with current
+                  leases, bounded preparation and completed capture replay.
+                  A shared ModelRunner mid-step routing/admission continuation
+                  and native ModelOpt target admission remain open separately.
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

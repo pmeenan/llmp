@@ -462,6 +462,10 @@ llmp_gtest(reference_decode_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The device decoders' geometry (kernels/decode/operand.h) against the
 # format layer's, in every profile.
+add_executable(grouped_worklist_test grouped_worklist_test.cc)
+target_link_libraries(grouped_worklist_test PRIVATE llmp_step_common)
+llmp_gtest(grouped_worklist_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(decode_test decode_test.cc)
 target_link_libraries(decode_test PRIVATE llmp_format)
 llmp_gtest(decode_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -808,6 +812,10 @@ if(LLMP_CUDA)
   # D-108): every decoder under every template against the CPU reference
   # decode and an F64 product, row invariance, refusals and the
   # registry's declarations; on the GB10 and the discrete GPUs (D-082).
+  add_executable(grouped_binding_test grouped_binding_test.cc)
+  target_link_libraries(grouped_binding_test PRIVATE llmp_decode_kernels)
+  llmp_gtest(grouped_binding_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
   add_executable(decode_gpu_test decode_gpu_test.cc)
   target_include_directories(decode_gpu_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")

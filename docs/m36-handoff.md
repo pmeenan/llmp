@@ -40,6 +40,14 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
+Main through `922d4f63` also includes split NVFP4 paged rows and the default-off
+bounded DeepSeek rounded indexer consumer. The next N4b6a slice adds checked
+route inversion and exact multipart expert descriptors: main full native build
+and all eight affected host controls pass. These helpers submit no GPU work.
+N4b6b selected closure/lease/capture execution and the shared ModelRunner
+mid-step routing continuation remain open separately. See the
+[grouped foundation report](experiments/m36-native-grouped-foundation/README.md).
+
 Main through `0d127ac0` includes the explicitly tuned BF16/F32 vector-product
 capability, all four EXL3 profiles' original-model scoring and shared lifecycle
 controls, and the active FP16 benchmark adapter over shared components. The

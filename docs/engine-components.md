@@ -1563,6 +1563,18 @@ and malformed-table controls pass on Spark. This is an operation foundation;
 native ModelOpt model admission and product/expert support remain open
 ([evidence](experiments/m36-decode-templates/README.md#native-split-row-foundation--2026-10-12)).
 
+The grouped-operation foundation validates a completed route into caller-owned
+worklist storage, preserving original routed-slot order and repeated expert
+contributions. Its descriptor helper checks every format part and per-expert
+pitch, retains stacked scales, and initializes descriptors even for empty expert
+intervals. Both helpers validate before writing their retained outputs; their
+bounds describe storage the caller must fund before allocating it. They acquire
+no leases and provide no source or residency authority. Main passes the full
+native build and all eight affected host controls. Owned grouped GPU execution
+and the runner's
+mid-step routing/admission continuation remain separate work
+([evidence](experiments/m36-native-grouped-foundation/README.md)).
+
 The common step program binds approved EXL3 selected operations with authenticated
 packed and reconstruction tuning facts. Both 4.0- and 4.5-bpw fixtures execute
 in G and O profiles; O uses actual occupancy facts checked again at launch.
