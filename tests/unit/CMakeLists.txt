@@ -1284,6 +1284,7 @@ if(LLMP_CUDA)
   # Real Qwen2 FP16 fixture on the shared runner against the frozen bridge.
   add_executable(component_runner_qwen2_exl3_gpu_test component_runner_qwen2_exl3_gpu_test.cc)
   target_link_libraries(component_runner_qwen2_exl3_gpu_test PRIVATE llmp_corpus_score llmp_engine llmp_exl3_selected
+                                                                     llmp_runtime
                                                                      llmp_components llmp_spec
                                                                      llmp_artifact)
   llmp_gpu_gtest(component_runner_qwen2_exl3_gpu_test MODELS

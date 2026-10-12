@@ -1949,6 +1949,18 @@ each is checked against the design as M3.6 proceeds.
                   ([evidence](experiments/m36-exl3-selected/README.md)).
                   Kept-state/restart, eviction/relocation, broader shapes,
                   Tier C, performance and deletion remain open.
+            - [x] **G5c7 — EXL3 O kept-file adoption into a fresh owner:** both
+                  approved O profiles publish authenticated v2 state at 157,
+                  destroy the first native owner after proven retirement, and
+                  adopt into a newly constructed empty owner. All 161 compared
+                  full heads and 6,291,456 initialized state bytes match each
+                  profile's uninterrupted reference. Model/layout/file identity,
+                  selected recipes and refusal controls are checked. Thirteen
+                  focused controls and both actual cases pass on main without
+                  failures or skips
+                  ([evidence](experiments/m36-exl3-selected/README.md)).
+                  Process restart/crash recovery, serving history, weight
+                  eviction/relocation, broader shapes and deletion remain open.
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,

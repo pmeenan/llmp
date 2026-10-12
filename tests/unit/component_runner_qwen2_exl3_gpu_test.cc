@@ -5,7 +5,9 @@
 // prefill, with a separate control for its 16 decode suffix steps. The oracle is produced
 // by the legacy native implementation and sealed before this candidate runs.
 // Separate same-implementation controls create their own uninterrupted reference
-// and exercise checkpoint/spill continuation for both approved G fixtures.
+// and exercise checkpoint/spill continuation for the approved G/O fixtures.
+// Kept controls retire one native owner, then adopt its authenticated v2 files
+// into a fresh owner in the same process; they do not simulate a process crash.
 // This diagnostic is not the historical1570-linear or750-statistic TierC gate.
 #include <fcntl.h>
 #include <gtest/gtest.h>
@@ -35,7 +37,9 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "base/build_info.h"
 #include "base/bytes.h"
+#include "base/json.h"
 #include "base/sha256.h"
 #include "components/step.h"
 #include "corpus_score.h"
@@ -53,6 +57,8 @@
 #include "model/qwen2_exl3.h"
 #include "planner/pattern.h"
 #include "platform/host_probe.h"
+#include "platform/kept_files.h"
+#include "runtime/kept_record.h"
 #include "runtime/memory_guard.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen2.h"
@@ -304,6 +310,57 @@ static_assert(kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners 
                   kStateMetadata <=
               kHostAllowance);
 
+namespace kept = llmp::runtime::kept;
+struct KeptRestart {
+  // Transferred only after successful teardown; never a second oracle allocation.
+  std::string oracle, record_sha, layout, binary_sha, seal;
+  std::optional<llmp::platform::FileIdentity> file;
+  std::vector<en::SlotLifecycle::Range> final_pages;
+  std::uint64_t final_bytes = 0, saved_bytes = 0;
+  std::array<std::string, 2> actual_plans;
+  bool prepared = false, retired = false, complete = false;
+};
+static_assert(sizeof(KeptRestart) <= 512);
+static_assert(sizeof(kept::Record) <= 512 && sizeof(kept::Expected) <= 512);
+static_assert(sizeof(kept::Extent) <= 64 && sizeof(en::SlotLifecycle::Range) <= 32);
+constexpr std::size_t kKeptRecordLimit = 8192;
+constexpr std::uint64_t kKeptMetadata = 512 * 1024;
+static_assert(12 * 512 * 32 + 2 * 1024 * 16 + 64 * 1024 + kKeptMetadata <= kStateMetadata);
+static_assert(2 * kStateCopyLimit <= kOracleBytes);
+
+// A complete owned in-process receipt, separate from the durable v2 record.
+// It binds the actual selected program evidence that Setup cannot obtain.
+std::string KeptSeal(const KeptRestart& proof) {
+  llmp::base::Sha256 hash;
+  hash.Update(proof.record_sha).Update(proof.layout).Update(proof.binary_sha);
+  for (const auto& plan : proof.actual_plans) hash.Update(plan);
+  hash.Update(std::to_string(proof.final_bytes))
+      .Update(":")
+      .Update(std::to_string(proof.saved_bytes))
+      .Update(":");
+  if (proof.file) {
+    hash.Update(std::to_string(proof.file->device))
+        .Update(":")
+        .Update(std::to_string(proof.file->inode))
+        .Update(":")
+        .Update(proof.file->generation ? std::to_string(*proof.file->generation) : "none");
+  }
+  for (const auto& range : proof.final_pages)
+    hash.Update(":")
+        .Update(std::to_string(range.region))
+        .Update(":")
+        .Update(std::to_string(range.offset))
+        .Update(":")
+        .Update(std::to_string(range.bytes));
+  return llmp::base::ToHex(hash.Finish());
+}
+
+bool CanStoreKeptSnapshots(std::uint32_t compared, std::uint64_t final_bytes,
+                           std::uint64_t saved_bytes) {
+  return compared >= 145 && compared <= 161 && final_bytes > 0 && saved_bytes > 0 &&
+         final_bytes <= kStateCopyLimit && saved_bytes <= kStateCopyLimit;
+}
+
 struct Lifetime {
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   std::string tokens_bytes, oracle;
@@ -331,12 +388,34 @@ struct Lifetime {
   std::uint32_t saved_positions = 0;
   std::uint64_t saved_bytes = 0, final_bytes = 0;
   std::vector<std::pair<std::uint64_t, std::uint64_t>> weight_generations;
+  std::shared_ptr<KeptRestart> kept;
+  std::array<std::string, 2> planned_recipes;
+  bool kept_resume = false, kept_completed = false;
+  int kept_dir = -1;
+  ~Lifetime() {
+    if (kept_dir >= 0) (void)::close(kept_dir);
+  }
 };
 
 // A baseline prefix may be reused only after all its output rows were compared.
 // The suffix reference remains live through the end of both restore controls.
 bool CanStoreFinalState(std::uint32_t compared_prefix, std::uint64_t bytes) {
   return compared_prefix == 145 && bytes > 0 && bytes <= kStateCopyLimit && bytes <= kOracleBytes;
+}
+
+en::Status StateBuffers(Lifetime& life) {
+  if (!life.saved_state) {
+    const auto occupied = life.node.catalog().OccupancyOf(life.node.domain()).Total().value();
+    if (occupied > kDomainCap || kStateCopies > kDomainCap - occupied)
+      return std::unexpected("EXL3 state buffers exceed checked domain");
+    auto saved = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
+    if (!saved) return std::unexpected(saved.error());
+    life.saved_state = *saved;
+    auto readback = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
+    if (!readback) return std::unexpected(readback.error());
+    life.state_readback = *readback;
+  }
+  return {};
 }
 
 en::Status SaveState(Lifetime& life, bool checkpoint) {
@@ -361,17 +440,7 @@ en::Status SaveState(Lifetime& life, bool checkpoint) {
       return std::unexpected("EXL3 state copy bytes exceed their bound");
     life.saved_bytes += range.bytes;
   }
-  if (!life.saved_state) {
-    const auto occupied = life.node.catalog().OccupancyOf(life.node.domain()).Total().value();
-    if (occupied > kDomainCap || kStateCopies > kDomainCap - occupied)
-      return std::unexpected("EXL3 state buffers exceed checked domain");
-    auto saved = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
-    if (!saved) return std::unexpected(saved.error());
-    life.saved_state = *saved;
-    auto readback = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
-    if (!readback) return std::unexpected(readback.error());
-    life.state_readback = *readback;
-  }
+  if (auto allocated = StateBuffers(life); !allocated) return allocated;
   return slots.CopyState(0, life.saved_state, life.saved_pages, true);
 }
 
@@ -397,6 +466,275 @@ en::Status CheckSavedState(Lifetime& life) {
   return {};
 }
 
+std::string ActualRecipe(const ts::CorpusPlanRecord& record) {
+  llmp::base::Sha256 hash;
+  hash.Update(llmp::base::ToHex(record.identity));
+  for (const auto& name : record.implementations) hash.Update(name).Update("\n");
+  return llmp::base::ToHex(hash.Finish());
+}
+
+// This guard is transparent except for refusing an unqualified recipe before Run.
+class KeptProgram final : public kn::StepProgram {
+ public:
+  KeptProgram(std::unique_ptr<kn::StepProgram> inner, ts::CorpusPlanRecord& record, Lifetime& life)
+      : inner_(std::move(inner), record), record_(record), life_(life) {}
+  std::uint64_t scratch_bytes() const override { return inner_.scratch_bytes(); }
+  std::uint64_t pool_bytes() const override { return inner_.pool_bytes(); }
+  std::uint64_t host_bytes() const override { return inner_.host_bytes() + sizeof(*this); }
+  std::uint64_t launches() const override { return inner_.launches(); }
+  std::span<const kn::InputSlot> inputs() const override { return inner_.inputs(); }
+  std::span<const kn::OutputSlot> outputs() const override { return inner_.outputs(); }
+  std::span<const kn::TensorUse> tensors() const override { return inner_.tensors(); }
+  const llmp::execution::BoundPlan* bound() const override { return inner_.bound(); }
+  bool capturable() const override { return inner_.capturable(); }
+  std::expected<void, kn::StepFailure> Position(std::span<const std::uint32_t> past) override {
+    return inner_.Position(past);
+  }
+  std::expected<void, kn::StepFailure> Bind(kn::StepLaunch& launch) override {
+    if (auto result = inner_.Bind(launch); !result) return result;
+    if (life_.kept_resume && (life_.kept->seal != KeptSeal(*life_.kept) || record_.rows != 1 ||
+                              ActualRecipe(record_) != life_.kept->actual_plans[1]))
+      return std::unexpected(kn::StepFailure{.detail = "kept execution recipe differs"});
+    return {};
+  }
+  std::expected<void, kn::StepFailure> Run(kn::StepLaunch& launch,
+                                           llmp::providers::NativeStream stream) const override {
+    return inner_.Run(launch, stream);
+  }
+
+ private:
+  ts::CorpusProgram inner_;
+  ts::CorpusPlanRecord& record_;
+  Lifetime& life_;
+};
+static_assert(sizeof(KeptProgram) < 1024);
+
+std::string PlannedRecipe(const kn::LowerInput& input, const llmp::execution::Registry& registry) {
+  llmp::base::Sha256 hash;
+  hash.Update(llmp::base::ToHex(input.plan.graph.Digest()));
+  for (const auto& selected : input.plan.steps) {
+    hash.Update(llmp::base::ToHex(registry.identity(selected.implementation)))
+        .Update(selected.group)
+        .Update("\n")
+        .Update(selected.batch)
+        .Update("\n")
+        .Update(std::to_string(selected.lane));
+    for (const auto single : selected.singles)
+      hash.Update(llmp::base::ToHex(registry.identity(single)));
+    for (const auto group : selected.single_groups) hash.Update(group).Update("\n");
+  }
+  return llmp::base::ToHex(hash.Finish());
+}
+
+kept::Identity KeptIdentity(const Lifetime& life, bool mixed_rate) {
+  const auto& build = llmp::base::GetBuildInfo();
+  return {.build = std::string(build.version) + ":" + std::string(build.commit) + ":" +
+                   life.kept->binary_sha + (mixed_rate ? ":45o:" : ":40o:") +
+                   life.planned_recipes[0] + ":" + life.planned_recipes[1],
+          .artifact = life.artifact->id(),
+          .drafter = {},
+          .layout = life.runner->slots().kept_layout_id()};
+}
+
+en::Status ReportKeptPlans(const Lifetime& life, bool mixed_rate, bool resumed) {
+  std::ostringstream report;
+  const std::string prefix = mixed_rate ? "exl3.pinned.45o." : "exl3.pinned.40o.";
+  for (const auto& record : life.corpus_plans) {
+    if (resumed && record.rows == 145) {
+      if (record.runs != 0) return std::unexpected("fresh kept owner executed a prefill");
+      continue;
+    }
+    const auto expected_runs = record.rows == 145 ? 2U : resumed ? 4U : 28U;
+    if (record.runs != expected_runs || record.implementations.empty())
+      return std::unexpected("kept actual recipe execution inventory differs");
+    const auto count = [&](const char* name) {
+      return std::ranges::count(record.implementations, prefix + name);
+    };
+    const auto total = std::ranges::count_if(
+        record.implementations, [](const std::string& name) { return name.starts_with("exl3."); });
+    if (record.rows == 145) {
+      if (count("linear.reconstruct") != 169 || count("bias_add") != 72 || total != 241)
+        return std::unexpected("kept reconstruction recipe differs");
+    } else if (record.rows != 1 || count("linear.gemv") != (mixed_rate ? 14 : 120) ||
+               count("linear.gemm") != (mixed_rate ? 107 : 1) ||
+               count("multi_linear.mgemm") != 24 || count("bias_add") != 72 || total != 217) {
+      return std::unexpected("kept scalar recipe differs");
+    }
+    report << "rows=" << record.rows << " bound_plan=" << llmp::base::ToHex(record.identity)
+           << " run_or_record=" << record.runs << '\n';
+    for (const auto& name : record.implementations) report << name << '\n';
+  }
+  testing::Test::RecordProperty(resumed ? "kept_resumed_programs" : "kept_predecessor_programs",
+                                report.str());
+  testing::Test::RecordProperty(resumed ? "kept_resumed_recipe" : "kept_predecessor_recipe",
+                                KeptIdentity(life, mixed_rate).build);
+  return {};
+}
+
+struct ClosedFile {
+  int fd;
+  ~ClosedFile() {
+    if (fd >= 0) (void)::close(fd);
+  }
+};
+
+en::Status CheckKeptFile(Lifetime& life, const kept::Record& record, bool sync) {
+  auto opened = llmp::platform::OpenPrivateFile(life.kept_dir, "slot-0.state", {.write = sync});
+  if (!opened) return std::unexpected("kept state file cannot reopen");
+  ClosedFile closed{opened->fd};
+  if (!life.kept->file || opened->identity != *life.kept->file || record.files.size() != 1 ||
+      opened->bytes != record.files[0].bytes || opened->bytes > kStateCopyLimit)
+    return std::unexpected("kept state file identity or extent differs");
+  if (sync && !llmp::platform::SyncFileData(opened->fd))
+    return std::unexpected("kept state data did not sync");
+  if (!life.state_readback || record.extents.empty() || record.extents.size() > 8)
+    return std::unexpected("kept file hash inventory exceeds paid bound");
+  std::uint64_t packed = 0;
+  for (const auto& extent : record.extents) {
+    const auto offset = std::uint64_t{extent.index} * en::kPagedExtent;
+    if (extent.region != 0 || offset > opened->bytes || en::kPagedExtent > opened->bytes - offset ||
+        en::kPagedExtent > kStateCopyLimit - packed)
+      return std::unexpected("kept file extent is outside the admitted range");
+    std::size_t read = 0;
+    while (read < en::kPagedExtent) {
+      const auto count = ::pread(opened->fd, static_cast<char*>(life.state_readback) + read,
+                                 en::kPagedExtent - read, static_cast<off_t>(offset + read));
+      if (count < 0 && errno == EINTR) continue;
+      if (count <= 0) return std::unexpected("kept file extent read failed");
+      read += static_cast<std::size_t>(count);
+    }
+    const auto bytes = std::span(static_cast<const std::byte*>(life.state_readback), read);
+    if (llmp::base::Sha256().Update(bytes).Finish() != extent.digest ||
+        std::memcmp(life.state_readback, life.oracle.data() + kStateCopyLimit + packed, read) != 0)
+      return std::unexpected("kept file bytes differ from completed state");
+    packed += read;
+  }
+  if (packed != life.kept->saved_bytes)
+    return std::unexpected("kept file hash did not cover complete saved state");
+  return {};
+}
+
+en::Status PublishKept(Lifetime& life, bool mixed_rate) {
+  auto& slots = life.runner->slots();
+  auto& receipt = *life.kept;
+  if (slots.positions(0) != 157 || !slots.spilled(0) || !slots.kept_whole(0) ||
+      life.saved_pages.empty() || life.saved_pages.size() > 8 ||
+      slots.layout(0).bytes > kStateCopyLimit || slots.layout(0).bytes % en::kPagedExtent != 0)
+    return std::unexpected("kept publication exceeds exact whole-extent domain");
+  receipt.file = slots.live(0, 0).spill_identity();
+  if (!receipt.file) return std::unexpected("kept spill did not use its named file");
+  receipt.layout = slots.kept_layout_id();
+  kept::Record record;
+  record.version = kept::kStageFilesVersion;
+  if (life.planned_recipes[0].size() != 64 || life.planned_recipes[1].size() != 64)
+    return std::unexpected("kept setup did not measure both recipes");
+  record.identity = KeptIdentity(life, mixed_rate);
+  if (record.identity.build.size() > 1024 || record.identity.layout.size() > 1024)
+    return std::unexpected("kept identity exceeds metadata allowance");
+  record.regions = {slots.layout(0).bytes};
+  record.files = {{.name = "slot-0.state",
+                   .id = {.device = receipt.file->device,
+                          .inode = receipt.file->inode,
+                          .generation = receipt.file->generation},
+                   .bytes = record.regions[0]}};
+  record.tokens.assign(life.tokens.begin(), life.tokens.begin() + 157);
+  record.cursor = 157;
+  record.used_unix_ms = 1;  // Fixed synthetic retention coordinate, not elapsed wall time.
+  std::uint64_t packed = 0;
+  for (const auto& range : life.saved_pages) {
+    if (range.region != 0 || range.offset % en::kPagedExtent || range.bytes != en::kPagedExtent ||
+        range.offset > record.regions[0] || range.bytes > record.regions[0] - range.offset ||
+        range.bytes > kStateCopyLimit - packed)
+      return std::unexpected("kept state is not the admitted whole-extent footprint");
+    record.extents.push_back(
+        {.region = 0,
+         .index = static_cast<std::uint32_t>(range.offset / en::kPagedExtent),
+         .digest = llmp::base::Sha256()
+                       .Update(std::span(static_cast<const std::byte*>(life.saved_state) + packed,
+                                         static_cast<std::size_t>(range.bytes)))
+                       .Finish()});
+    packed += range.bytes;
+  }
+  if (packed != receipt.saved_bytes) return std::unexpected("kept footprint byte count differs");
+  if (auto checked = CheckKeptFile(life, record, true); !checked) return checked;
+  const auto text = kept::Encode(record);
+  if (text.size() > kKeptRecordLimit || llmp::base::json::ParseWorkingBytes(text) > 256 * 1024)
+    return std::unexpected("kept record exceeds prepaid parse bound");
+  receipt.record_sha = Hash(text);
+  if (!llmp::platform::ReplacePrivateFile(life.kept_dir, "slot-0.record", text))
+    return std::unexpected("kept record publication failed");
+  receipt.seal = KeptSeal(receipt);
+  receipt.prepared = true;
+  testing::Test::RecordProperty("kept_record_sha256", receipt.record_sha);
+  testing::Test::RecordProperty("kept_layout", receipt.layout);
+  return {};
+}
+
+std::expected<std::vector<en::SlotLifecycle::Range>, std::string> ReadKept(Lifetime& life,
+                                                                           bool mixed_rate) {
+  auto text = llmp::platform::ReadPrivateFile(life.kept_dir, "slot-0.record", kKeptRecordLimit);
+  if (!text || Hash(*text) != life.kept->record_sha ||
+      llmp::base::json::ParseWorkingBytes(*text) > 256 * 1024)
+    return std::unexpected("kept record seal or parse bound differs");
+  auto record = kept::Decode(*text);
+  if (!record) return std::unexpected(record.error());
+  auto& slots = life.runner->slots();
+  const kept::Expected expected{.version = kept::kStageFilesVersion,
+                                .identity = KeptIdentity(life, mixed_rate),
+                                .slot = 0,
+                                .regions = {slots.layout(0).bytes},
+                                .layouts = {slots.layout(0).bytes},
+                                .context = slots.layout(0).context,
+                                .vocabulary = 151936,
+                                .now_unix_ms = 1,
+                                .retention_ms = 1};
+  if (auto checked = kept::Check(*record, expected); !checked)
+    return std::unexpected(checked.error());
+  if (record->tokens.size() != 157 || record->cursor != 157 || !record->decoding.empty() ||
+      !record->checkpoints.empty() || record->extents.empty() || record->extents.size() > 8 ||
+      !std::equal(record->tokens.begin(), record->tokens.end(), life.tokens.begin()) ||
+      record->files.size() != 1 || !life.kept->file ||
+      record->files[0].id != kept::FileId{.device = life.kept->file->device,
+                                          .inode = life.kept->file->inode,
+                                          .generation = life.kept->file->generation})
+    return std::unexpected("kept record differs from admitted complete footprint");
+  auto wrong = expected;
+  wrong.identity = KeptIdentity(life, !mixed_rate);
+  if (kept::Check(*record, wrong)) return std::unexpected("kept record accepted another profile");
+  wrong = expected;
+  wrong.identity.build += ":wrong-plan";
+  if (kept::Check(*record, wrong)) return std::unexpected("kept record accepted another plan");
+  if (auto checked = CheckKeptFile(life, *record, false); !checked)
+    return std::unexpected(checked.error());
+  std::vector<en::SlotLifecycle::Range> footprint;
+  for (const auto& extent : record->extents)
+    footprint.push_back({.region = extent.region,
+                         .offset = std::uint64_t{extent.index} * en::kPagedExtent,
+                         .bytes = en::kPagedExtent});
+  return footprint;
+}
+
+TEST(ComponentRunnerExl3Inputs, KeptSnapshotsAndRecipeReceiptRefuseChangedAuthority) {
+  EXPECT_FALSE(CanStoreKeptSnapshots(144, 1, 1));
+  EXPECT_FALSE(CanStoreKeptSnapshots(162, 1, 1));
+  EXPECT_FALSE(CanStoreKeptSnapshots(157, 0, 1));
+  EXPECT_FALSE(CanStoreKeptSnapshots(157, 1, 0));
+  EXPECT_FALSE(CanStoreKeptSnapshots(157, kStateCopyLimit + 1, 1));
+  EXPECT_FALSE(CanStoreKeptSnapshots(157, 1, kStateCopyLimit + 1));
+  EXPECT_TRUE(CanStoreKeptSnapshots(157, kStateCopyLimit, kStateCopyLimit));
+  KeptRestart receipt;
+  receipt.record_sha = std::string(64, 'a');
+  receipt.actual_plans = {std::string(64, 'b'), std::string(64, 'c')};
+  receipt.final_pages = {{.region = 0, .offset = 0, .bytes = en::kPagedExtent}};
+  const auto original = KeptSeal(receipt);
+  receipt.actual_plans[1][0] = 'd';
+  EXPECT_NE(KeptSeal(receipt), original);
+  receipt.actual_plans[1][0] = 'c';
+  EXPECT_EQ(KeptSeal(receipt), original);
+  receipt.final_pages[0].offset = en::kPagedExtent;
+  EXPECT_NE(KeptSeal(receipt), original);
+}
+
 TEST(ComponentRunnerExl3Inputs, FinalStateStorageRequiresConsumedPrefixAndBoundedBytes) {
   EXPECT_FALSE(CanStoreFinalState(0, 1));
   EXPECT_FALSE(CanStoreFinalState(144, 1));
@@ -414,7 +752,14 @@ struct Retire {
   void operator()(Lifetime* life) const {
     const auto retired = life->node.TearDown(life->entered);
     EXPECT_TRUE(retired.has_value()) << (retired ? "" : retired.error());
-    if (retired) delete life;
+    if (retired) {
+      if (life->kept && !life->kept_resume && life->kept->prepared) {
+        life->kept->oracle = std::move(life->oracle);
+        life->kept->retired = true;
+      }
+      if (life->kept && life->kept_resume && life->kept_completed) life->kept->complete = true;
+      delete life;
+    }
   }
 };
 using Owner = std::unique_ptr<Lifetime, Retire>;
@@ -461,8 +806,12 @@ TEST(ComponentRunnerExl3Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading)
 // Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
 void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool lifecycle = false,
-                bool optimized = false) {
+                bool optimized = false, std::shared_ptr<KeptRestart> kept_restart = {},
+                bool kept_resume = false) {
   ASSERT_FALSE(optimized && !corpus && !lifecycle);
+  ASSERT_FALSE(kept_restart && (!lifecycle || !optimized));
+  ASSERT_FALSE(kept_resume && (!kept_restart || !kept_restart->retired));
+  if (kept_resume) ASSERT_EQ(kept_restart->seal, KeptSeal(*kept_restart));
   ASSERT_FALSE(mixed_rate && !corpus && !lifecycle);
   ASSERT_FALSE(lifecycle && (!full || corpus));
   std::uint32_t token_rows = full ? 161 : 145;
@@ -483,6 +832,8 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   ASSERT_TRUE(available.has_value()) << "unknown physical availability";
   ASSERT_TRUE(FitsDomain(*available)) << "the complete domain and driver margin do not fit";
   Owner life(new Lifetime);
+  life->kept = std::move(kept_restart);
+  life->kept_resume = kept_resume;
   auto& node = life->node;
   node.SetHostFloor(0);
   const auto opened_node = node.Open();
@@ -524,7 +875,12 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
     life->tokens = std::move(*prefix);
     if (lifecycle) {
       // The same allocation holds the uninterrupted candidate reference.
-      life->oracle.resize(kFullOracleBytes);
+      if (life->kept_resume) {
+        ASSERT_EQ(life->kept->oracle.size(), kFullOracleBytes);
+        life->oracle = std::move(life->kept->oracle);
+      } else {
+        life->oracle.resize(kFullOracleBytes);
+      }
     } else {
       auto oracle_read = Read(oracle_path, oracle_bytes, true);
       ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
@@ -698,6 +1054,20 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   if (scratch.empty()) scratch = testing::TempDir();
   const fs::path spill = fs::path(scratch) / "qwen2-exl3-screen";
   fs::create_directories(spill);
+  if (life->kept) {
+    const auto directory = spill / (mixed_rate ? "kept-45o" : "kept-40o");
+    auto opened_directory = llmp::platform::OpenPrivateDirectory(-1, directory.c_str());
+    ASSERT_TRUE(opened_directory.has_value());
+    life->kept_dir = *opened_directory;
+    const auto binary_sha = Env("LLMP_EXL3_KEPT_BINARY_SHA256");
+    ASSERT_EQ(binary_sha.size(), 64U);
+    ASSERT_TRUE(std::ranges::all_of(
+        binary_sha, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
+    if (life->kept_resume)
+      ASSERT_EQ(binary_sha, life->kept->binary_sha);
+    else
+      life->kept->binary_sha = binary_sha;
+  }
   life->kernel = std::make_unique<KernelSource>(node);
   auto& kernel = life->kernel;
   auto& runner = life->runner;
@@ -747,7 +1117,8 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
     if (corpus || lifecycle) {
       auto guarded = std::move(checked_backend.lower);
       if (corpus) guarded = ts::GuardCorpusLower(std::move(guarded), profile.vocab);
-      checked_backend.lower = [held = life.get(), lifecycle, vocabulary = profile.vocab,
+      checked_backend.lower = [held = life.get(), registry = checked_backend.registry, lifecycle,
+                               vocabulary = profile.vocab,
                                guarded = std::move(guarded)](const kn::LowerInput& input)
           -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
         auto program = guarded(input);
@@ -769,12 +1140,24 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
                   std::uint64_t{vocabulary} * input.shape.rows() * sizeof(float))
             return std::unexpected("lifecycle lowered head identity or geometry differs");
         }
-        if (input.addresses.measuring()) return program;
         const auto rows = input.shape.rows();
+        if (held->kept) {
+          if (!registry || (rows != 145 && rows != 1))
+            return std::unexpected("kept planned recipe has unexpected shape or registry");
+          auto& saved = held->planned_recipes[rows == 145 ? 0U : 1U];
+          const auto recipe = PlannedRecipe(input, *registry);
+          if (input.addresses.measuring() && saved.empty())
+            saved = recipe;
+          else if (saved != recipe)
+            return std::unexpected("kept measured recipe differs before execution");
+        }
+        if (input.addresses.measuring()) return program;
         auto* record = &held->corpus_plans[rows == held->corpus_plans[0].rows ? 0U : 1U];
-        if (record->rows != rows ||
-            (*program)->host_bytes() > kProgramHost - sizeof(ts::CorpusProgram))
+        const auto wrapper_bytes =
+            sizeof(ts::CorpusProgram) + (held->kept ? sizeof(KeptProgram) : 0U);
+        if (record->rows != rows || (*program)->host_bytes() > kProgramHost - wrapper_bytes)
           return std::unexpected("corpus exceeded measured shape or retained program bound");
+        if (held->kept) return std::make_unique<KeptProgram>(std::move(*program), *record, *held);
         return std::make_unique<ts::CorpusProgram>(std::move(*program), *record);
       };
     }
@@ -842,6 +1225,18 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
     std::vector<en::GroupPlace> places(paged->artifact().groups().size(), en::GroupPlace::kDevice);
     config.weights.push_back(
         {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
+    if (life->kept) {
+      config.slots.spill_place = [held = life.get()](std::uint32_t slot, std::uint32_t stage) {
+        (void)slot;
+        (void)stage;
+        return en::LiveState::SpillPlace{
+            .directory = {},
+            .dir = held->kept_dir,
+            .name = "slot-0.state",
+            .keep = held->kept_resume,
+            .expect = held->kept_resume ? held->kept->file : std::nullopt};
+      };
+    }
     config.setup_shapes = keys;
     config.launch =
         [held = life.get()]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
@@ -1010,6 +1405,127 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
         ++executed_steps;
         return {};
       };
+      if (life->kept) {
+        auto& proof = *life->kept;
+        return node.WithRequest(
+            0, runner->slots().execution(), "EXL3 fresh-owner kept control", [&]() -> en::Status {
+              auto& slots = runner->slots();
+              const auto empty = [&]() {
+                return slots.positions(0) == 0 && !slots.spilled(0) && !slots.restoring(0) &&
+                       !slots.borrowed(0) && slots.used_bytes(0) == 0;
+              };
+              constexpr std::array<std::uint32_t, 1> singleton{0};
+              if (life->kept_resume) {
+                // Adopt requires an idle slot, even within a live node request.
+                // Setup has submitted no model work and owns no state backing.
+                if (auto x = slots.SelectSlots({}); !x) return x;
+                if (slots.held(0)) return std::unexpected("fresh kept slot is still held");
+                if (!proof.retired || !empty() || !slots.kept_state().empty() ||
+                    slots.live(0, 0).spill_identity() != proof.file ||
+                    slots.kept_layout_id() != proof.layout ||
+                    life->planned_recipes[0].size() != 64 || life->planned_recipes[1].size() != 64)
+                  return std::unexpected("kept owner was not freshly and identically opened");
+                if (auto x = StateBuffers(*life); !x) return x;
+                auto footprint = ReadKept(*life, mixed_rate);
+                if (!footprint) return std::unexpected(footprint.error());
+                if (slots.Adopt(0, 157, *footprint, "wrong-layout") || !empty())
+                  return std::unexpected("kept wrong-layout refusal changed the fresh slot");
+                auto short_footprint = *footprint;
+                short_footprint.pop_back();
+                if (slots.Adopt(0, 157, short_footprint, proof.layout) || !empty())
+                  return std::unexpected(
+                      "kept incomplete-footprint refusal changed the fresh slot");
+                if (auto x = slots.Adopt(0, 157, *footprint, proof.layout); !x) return x;
+                if (slots.positions(0) != 157 || !slots.spilled(0) || !slots.adopted(0) ||
+                    slots.used_bytes(0) != 0)
+                  return std::unexpected("kept adoption did not remain unread and spilled");
+                if (auto x = slots.SelectSlots(singleton); !x) return x;
+                if (auto x = slots.Restore(0); !x) return x;
+                if (auto x = SaveState(*life, false); !x) return x;
+                if (life->saved_positions != 157 || life->saved_bytes != proof.saved_bytes ||
+                    !SameRanges(life->saved_pages, *footprint) ||
+                    std::memcmp(life->saved_state, life->oracle.data() + kStateCopyLimit,
+                                static_cast<std::size_t>(proof.saved_bytes)) != 0)
+                  return std::unexpected("kept restored full state differs from its predecessor");
+                for (std::uint32_t past = 157; past < 161; ++past)
+                  if (auto x = run_step(Shape(past, 1), false); !x) return x;
+                if (auto x = SaveState(*life, false); !x) return x;
+                if (slots.positions(0) != 161 || compared_rows != 4 || executed_steps != 4 ||
+                    life->saved_bytes != proof.final_bytes ||
+                    !SameRanges(life->saved_pages, proof.final_pages) ||
+                    std::memcmp(life->saved_state, life->oracle.data(),
+                                static_cast<std::size_t>(proof.final_bytes)) != 0)
+                  return std::unexpected("kept continuation differs from uninterrupted state");
+                if (auto x = ReportKeptPlans(*life, mixed_rate, true); !x) return x;
+                life->kept_completed = true;  // Published only by a successful final teardown.
+                testing::Test::RecordProperty("kept_compared_rows", "161");
+                testing::Test::RecordProperty("kept_executed_steps", "34");
+                testing::Test::RecordProperty("kept_final_positions", "161");
+                testing::Test::RecordProperty("kept_restored_bytes",
+                                              std::to_string(proof.saved_bytes));
+                testing::Test::RecordProperty("kept_final_state_bytes",
+                                              std::to_string(proof.final_bytes));
+              } else {
+                for (const auto& shape : shapes)
+                  if (auto x = run_step(shape, true); !x) return x;
+                if (auto x = SaveState(*life, false); !x) return x;
+                if (life->saved_positions != 161) return std::unexpected("kept baseline position");
+                proof.final_pages = life->saved_pages;
+                proof.final_bytes = life->saved_bytes;
+                for (const auto id : paged->extents()) {
+                  const auto extent = node.catalog().Describe(id);
+                  if (!extent || extent->state != llmp::catalog::ExtentState::kResident)
+                    return std::unexpected("kept baseline weight not resident");
+                  life->weight_generations.emplace_back(extent->content_generation,
+                                                        extent->backing_generation);
+                }
+                if (auto x = slots.Clear(0); !x) return x;
+                // All baseline work and copies completed before dropping its lease.
+                if (auto x = slots.SelectSlots({}); !x) return x;
+                if (slots.held(0)) return std::unexpected("cleared kept slot is still held");
+                if (!empty() || slots.kept_state().empty() ||
+                    slots.Adopt(0, 161, proof.final_pages, slots.kept_layout_id()) || !empty())
+                  return std::unexpected("kept adoption accepted cleared retained backing");
+                if (auto x = slots.SelectSlots(singleton); !x) return x;
+                for (const auto& shape : shapes) {
+                  const auto past = shape.segments.front().past;
+                  if (past == 157) break;
+                  if (auto x = run_step(shape, false); !x) return x;
+                  if (past == 0) {
+                    if (!CanStoreFinalState(compared_rows, proof.final_bytes))
+                      return std::unexpected("kept final state would overwrite live oracle rows");
+                    std::memcpy(life->oracle.data(), life->saved_state,
+                                static_cast<std::size_t>(proof.final_bytes));
+                  }
+                }
+                if (slots.positions(0) != 157 || compared_rows != 157 || executed_steps != 30)
+                  return std::unexpected("kept predecessor complete execution inventory differs");
+                if (auto x = SaveState(*life, false); !x) return x;
+                proof.saved_bytes = life->saved_bytes;
+                if (!CanStoreKeptSnapshots(compared_rows, proof.final_bytes, proof.saved_bytes))
+                  return std::unexpected("kept snapshots exceed retired disjoint prefix");
+                std::memcpy(life->oracle.data() + kStateCopyLimit, life->saved_state,
+                            static_cast<std::size_t>(proof.saved_bytes));
+                if (auto x = slots.Spill(0); !x) return x;
+                for (std::size_t i = 0; i < paged->extents().size(); ++i) {
+                  const auto extent = node.catalog().Describe(paged->extents()[i]);
+                  if (!extent || extent->state != llmp::catalog::ExtentState::kResident ||
+                      life->weight_generations[i] !=
+                          std::pair{extent->content_generation, extent->backing_generation})
+                    return std::unexpected("kept predecessor weight identity changed");
+                }
+                if (auto x = ReportKeptPlans(*life, mixed_rate, false); !x) return x;
+                for (std::size_t i = 0; i < proof.actual_plans.size(); ++i)
+                  proof.actual_plans[i] = ActualRecipe(life->corpus_plans[i]);
+                if (auto x = PublishKept(*life, mixed_rate); !x) return x;
+                testing::Test::RecordProperty("kept_predecessor_steps", "30");
+                testing::Test::RecordProperty("kept_predecessor_compared_rows", "157");
+                testing::Test::RecordProperty("kept_immutable_weight_extents",
+                                              std::to_string(paged->extents().size()));
+              }
+              return {};
+            });
+      }
       return node.WithRequest(
           0, runner->slots().execution(), "EXL3 same-plan state control", [&]() -> en::Status {
             for (const auto& shape : shapes)
@@ -1167,6 +1683,10 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
           return {};
         });
   }();
+  if (!ran && life->kept) {
+    life->kept->prepared = false;
+    life->kept_completed = false;
+  }
   EXPECT_TRUE(ran.has_value()) << (ran ? "" : ran.error());
   EXPECT_EQ(node.host_overcharges(), 0U);
   // Retire also runs on every earlier ASSERT return. Failure retains the
@@ -1196,5 +1716,25 @@ TEST(ComponentRunnerExl3Gpu, SameImplementation40OCheckpointSpillContinuation) {
 }
 TEST(ComponentRunnerExl3Gpu, SameImplementation45OCheckpointSpillContinuation) {
   RunControl(true, false, true, true, true);
+}
+TEST(ComponentRunnerExl3Gpu, OptimizedKeptStateAdoptsIntoFreshOwner) {
+  auto proof = std::make_shared<KeptRestart>();
+  RunControl(true, false, false, true, true, proof);
+  ASSERT_FALSE(testing::Test::HasFailure());
+  ASSERT_TRUE(proof->retired);
+  ASSERT_EQ(proof->oracle.size(), kFullOracleBytes);
+  RunControl(true, false, false, true, true, proof, true);
+  ASSERT_FALSE(testing::Test::HasFailure());
+  EXPECT_TRUE(proof->complete);
+}
+TEST(ComponentRunnerExl3Gpu, MixedRateOptimizedKeptStateAdoptsIntoFreshOwner) {
+  auto proof = std::make_shared<KeptRestart>();
+  RunControl(true, false, true, true, true, proof);
+  ASSERT_FALSE(testing::Test::HasFailure());
+  ASSERT_TRUE(proof->retired);
+  ASSERT_EQ(proof->oracle.size(), kFullOracleBytes);
+  RunControl(true, false, true, true, true, proof, true);
+  ASSERT_FALSE(testing::Test::HasFailure());
+  EXPECT_TRUE(proof->complete);
 }
 }  // namespace

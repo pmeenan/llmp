@@ -40,10 +40,15 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
-Main through `50a2b720` also contains the native ModelOpt CLI import dispatch
-(`d9681846`), FP16 checkpoint/spill/heldout/repeated-weight-eviction controls
-(`6f774eaf`, `21eec4e6`, `bbec08ea`) and the complete 145+16 EXL3 trajectory
-(`50a2b720`). Their plan parents remain open; these are bounded completed slices.
+Main through `aa65d12e` includes the native ModelOpt CLI import dispatch,
+FP16 checkpoint/spill/heldout/repeated-weight-eviction controls, complete EXL3
+G/O trajectories and mixed-rate O execution. Both O profiles now pass the
+shared corpus scorer and same-implementation checkpoint/spill continuation
+(`6362d10d`). The cold kept-prefix hydration fix (`aa65d12e`) passes 77
+focused host/fake controls on main. G5c7's serial fresh-owner kept-file
+adoption passes the full native build, 13 focused controls and both actual
+cases on main; it is not an OS process restart.
+These are bounded slices; the migration parents and deletion gates remain open.
 
 The owner requested a [retrospective numerical audit](experiments/m36-numerical-audit/README.md)
 and original-unquantized quality as the primary reference. Stop adding
@@ -66,6 +71,22 @@ and performance remain open. Its existing official F16 artifact has no proved or
 conversion lineage. Compare small reversible candidates by quality and matched
 speed; Qwen3.8/DeepSeek original BF16 execution remains missing from inspected
 evidence, and their current quantized comparisons are secondary.
+The selected FP16 fixture now uses fused vector attention (`9b45ecc7`). Its
+1,020-target comparison to the original BF16 model records a +0.003826683%
+perplexity change versus the native baseline, accepted as a fixture-only
+tradeoff; same-implementation 76/577-row state controls and all ten historical
+controls pass. This is neither a general quality threshold nor a serving gate.
+
+Qwen46/47 bounded product screens have completed on Spark B. Ordinary joined
+BF16 tensor-core products contract F32 activations to BF16 internally; the
+existing joined vector launcher retains F32 activations and much smaller
+error against the stored-weight F64 product reference. The paired vector
+candidate is slower for router/value and slightly faster for PLE key than
+tensor cores in this small replay. Seven peer columns repeat one captured
+owner input synthetically. Neither screen establishes original-model quality
+or serving latency, and no blanket policy replacement follows. A minimal
+shared selection capability is next; keep the frozen 45 diagnostic arm.
+
 Both Sparks are available for parallel development/checks; actual GPU jobs
 remain exclusive on their host. Do not continue the old parity-only loop.
 

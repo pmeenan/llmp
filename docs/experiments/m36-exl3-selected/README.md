@@ -243,3 +243,52 @@ focused controls and both actual O cases with zero failures/skips, all guards
 passing and no compute processes left; its binary matches the author binary.
 Kept-state/restart, eviction/relocation, broader batches/shapes, Tier C,
 performance and legacy deletion remain open.
+
+## Kept files adopted by fresh O-profile owners (G5c7)
+
+Both approved O profiles now pass a bounded kept-file control. The first native
+owner executes an uninterrupted 145-row prefill plus 16 scalar steps. It clears
+and repeats through position 157, comparing every full head, then spills and
+atomically publishes an existing version 2 kept record. After successful
+teardown and destruction, a freshly constructed node/runner adopts the exact
+named file into an empty slot, restores all 6,291,456 initialized state bytes,
+and finishes the remaining four scalar steps. All 161 compared output rows and
+the complete final 161 state match the same candidate's uninterrupted reference.
+There are 34 executed steps: 30 in the predecessor and four in the fresh owner.
+
+Both owners independently synthesize the artifact-bound model, kept layout and
+145/1 selected recipes. The record binds those recipes, the 40O/45O profile and
+the checked executable identity. File identity, exact length and all initialized
+extent hashes are checked before adoption; the actual scalar bound plan and
+ordered implementation names are checked again before execution. Wrong profile,
+plan, layout and incomplete footprint refuse. The control also confirms that a
+cleared slot retaining backing cannot adopt the file. The predecessor preserves
+292/302 weight extents; this does not test weight relocation or eviction.
+
+The predecessor runs each 145-row reconstruction plan twice and its scalar plan
+28 times; the fresh owner runs only the same scalar plan four times. Both
+reconstruction plans select 169 reconstructions and 72 bias operations. Scalar
+40O uses 120 GEMVs and one GEMM; 45O uses 14 GEMVs and 107 GEMMs; both use 24 paired
+MGEMMs and 72 bias operations. Actual occupancy facts remain
+`[48,96,48,96,48,96,48,96]`, in the order recorded above.
+
+The sole 97,846,784-byte oracle transfers only after proven teardown. Two disjoint
+consumed-prefix ranges hold the 157 and 161 state snapshots, and the existing
+32-MiB pinned buffers are released before the fresh owner allocates its pair.
+A checked 512-KiB record/receipt inventory fits within the existing 1-MiB state
+metadata allowance. The 4-GiB host allowance, 8-GiB native domain, 6-GiB physical
+margin and 10-GiB zero-swap process/cache cap remain. Unknown retirement retains
+the complete owner and prevents starting its successor.
+
+Spark A built and passed four input, six selected-operation and three existing
+kept-record controls, then both actual cases, with zero failures/skips, all
+source/input/recipe/binary guards passing and no compute processes left.
+Observed process/cache peaks were 944,218,112 bytes for 40O and 943,742,976 for 45O;
+these do not measure total device occupancy. Main then built natively and
+passed all 13 focused controls and both actual cases, with zero failures/skips,
+all guards passing and no compute processes left. Its binary includes the
+independent cold-prefix hydration fix and is separately identified in the
+result record; the selected recipes and full state controls pass unchanged.
+This proves serial fresh native ownership within one process, not process
+launch/crash recovery, serving-history restoration, broader shapes, performance
+or legacy deletion. It adds no quantized-library bit-equality adoption gate.
