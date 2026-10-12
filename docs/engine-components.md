@@ -2416,8 +2416,9 @@ model/compiler/state/device funding remains the harness's responsibility.
 Ten host controls cover analytical NLL, ragged joined owners, invalid heads,
 admission refusal, sink refusal/cancellation and unknown retirement. A synchronous
 per-target sink supplies bounded document reports; the caller funds retained
-records. The Qwen2 FP16 control uses the real scored backend in eight-row
-chunks and records its selected implementations. It is test support,
+records. Qwen2 FP16 and EXL3 controls use the real scored backends and a common
+selected-plan recorder. FP16 uses eight-row chunks; the approved EXL3 tuning uses
+seven-row chunks with explicit refusal for absent tuning. They are test support,
 not production linking or a completed model quality gate. The
 [original Qwen2 BF16 smoke](experiments/m36-original-qwen2/README.md) records
 an authenticated 43-token passage with 42 aligned original/shared losses and

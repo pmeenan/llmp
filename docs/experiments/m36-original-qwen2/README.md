@@ -3,7 +3,7 @@
 
 # Original Qwen2 BF16 likelihood smoke
 
-2026-10-12: the original checkpoint and the shared FP16 scorer both completed
+2026-10-12: the original checkpoint and shared FP16/EXL3 scorers completed
 one authenticated natural-language passage. This establishes a usable primary
 reference and aligned scoring, not a model-quality or migration-speed gate.
 No numerical recovery has been adopted.
@@ -48,6 +48,17 @@ is reduced by stable double logsumexp. Row r predicts input[r+1]; the last row
 is finite-validated but unscored. All 42 global coordinates and target IDs are
 checked. Both actual bound shape classes and implementation names are recorded.
 
+EXL3 scoring reuses the same scorer and plan recorder with approved 4.0-bpw G
+artifact `6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4`.
+Its complete tokenizer JSON is byte-identical to the original (SHA-256
+`c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539`).
+The frozen EXL3 tuning supports seven-row and one-row steps, so this run uses
+7/7/7/7/7/7/1 with the same teacher histories and 42 target coordinates.
+An absent three-row tuning bucket explicitly refuses; no tuning, arithmetic or
+kernel changes were introduced to force the FP16 schedule. Each selected shape
+records 657 implementation entries, including existing EXL3 products and vector
+attention. Entries and successful run/record calls are not physical launch counts.
+
 ## Observation
 
 | Recipe | Targets | Mean NLL | Perplexity |
@@ -55,6 +66,7 @@ checked. Both actual bound shape classes and implementation names are recorded.
 | Original BF16, eager/no cache | 42 | 6.496176475891133 | 662.6033037486249 |
 | Shared official F16, existing unfused | 42 | 6.542964050104692 | 694.3415942215227 |
 | Shared official F16, existing fused | 42 | 6.542964050104692 | 694.3415942215227 |
+| Shared EXL3 4.0-bpw G, existing recipe | 42 | 6.458775094111763 | 638.2787461445553 |
 
 Each original case completed two forwards. The second repeated all full logits
 exactly; repeat parity is diagnostic, not an adoption requirement. A separate
@@ -69,6 +81,10 @@ threshold was assigned. The official F16 publication has no proved conversion
 lineage to these original BF16 weights; cache and arithmetic recipes also differ.
 The observation cannot attribute a quality difference to any one optimization,
 qualify broad language quality, or establish production-phase/context behavior.
+EXL3 has lower empirical loss than original BF16 on this sample; that is not
+a general quality improvement or a ranking of formats. Stored weights, native
+phase/cache arithmetic and chunk schedules differ, and 42 targets are insufficient
+for a broad quality conclusion.
 
 ## Execution and limits
 
@@ -110,3 +126,18 @@ to the builder and complete postguards/retirement. Main actual result SHA-256
 `1907f99d3162463c50e1989a494816d11294efa5963a42f9feb3c9248b6e4206`,
 external package `corpus-qwen2-models-main03`. The shared scorer additionally
 passes ten host controls and two input-bound controls on the builder.
+
+The EXL3 builder passes 20 affected host controls without skips and one actual
+scoring case with all source/input/binary guards and retirement checks passing.
+Observed host/cache peak is 276,508,672 bytes. Raw external package
+`corpus-exl3-models01` result SHA-256 is
+`ea90ebd0e0632945616e74ab7b7e5ae9430d2d50bff9b0cc0e0ecad35fd8f6a4`.
+This adds a common-scorer observation, not EXL3 serving, state or speed qualification.
+
+Main integrates the common recorder with a native build and 124 affected
+registrations passing without skips. Both FP16 policies and the EXL3 scorer
+then pass actual model replay with unchanged per-target losses, complete
+postguards and zero surviving compute processes. Main package
+`corpus-exl3-main-models02` result SHA-256 values are
+`96f950f32cce70a5d1aba59cb95fbd3643940fbe1f63b46e664688959fb323c4` (FP16)
+and `2f801e20c41d7811df2425fc86b38aa4c2742c940f1d588e27c7818f7336df4e` (EXL3).

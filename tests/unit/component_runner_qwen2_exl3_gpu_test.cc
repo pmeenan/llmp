@@ -19,6 +19,7 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
@@ -34,6 +35,7 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "components/step.h"
+#include "corpus_score.h"
 #include "engine/component_source.h"
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
@@ -61,6 +63,7 @@ namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace pl = llmp::planner;
 namespace sp = llmp::spec;
+namespace ts = llmp::test_support;
 
 std::string Env(const char* name) {
   const char* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
@@ -284,6 +287,11 @@ en::Status NativeReservation(const kn::LowerInput& input) {
   return {};
 }
 
+// Same fixed plan-name/report inventory as the FP16 scorer. CorpusScore owns
+// and charges its additional bounded IDs/history/output/row buffers separately.
+static_assert(kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners + 8 * kMiB <=
+              kHostAllowance);
+
 struct Lifetime {
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   std::string tokens_bytes, oracle;
@@ -299,6 +307,11 @@ struct Lifetime {
   std::unique_ptr<KernelSource> kernel;
   std::unique_ptr<en::ModelRunner> runner;
   std::vector<en::PagedModel*> entered;
+  std::array<ts::CorpusPlanRecord, 2> corpus_plans{};
+  std::optional<en::WaveComposer> corpus_composer;
+  std::unique_ptr<ts::CorpusScore> corpus_scorer;
+  std::array<ts::CorpusTargetScore, 256> corpus_scores{};
+  std::size_t corpus_score_count = 0;
 };
 
 // Covers assertion returns and every setup failure too. Teardown is once;
@@ -355,19 +368,21 @@ TEST(ComponentRunnerExl3Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading)
 
 // Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
-void RunControl(bool full) {
-  const std::size_t token_rows = full ? 161 : 145;
+void RunControl(bool full, bool corpus = false) {
+  std::uint32_t token_rows = full ? 161 : 145;
   const auto oracle_bytes = full ? kFullOracleBytes : kOracleBytes;
-  const auto runtime_plans = full ? kFullRuntimePlans : kRuntimePlans;
-  const auto ids_path = Env("LLMP_EXL3_SCREEN_IDS");
+  const auto runtime_plans = (full || corpus) ? kFullRuntimePlans : kRuntimePlans;
+  const auto ids_path = Env(corpus ? "LLMP_QWEN2_CORPUS_IDS" : "LLMP_EXL3_SCREEN_IDS");
   const auto oracle_path = Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE" : "LLMP_EXL3_SCREEN_ORACLE");
   const auto oracle_hash =
       Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE_SHA256" : "LLMP_EXL3_SCREEN_ORACLE_SHA256");
-  if (ids_path.empty() || oracle_path.empty() || oracle_hash.empty())
+  if (ids_path.empty() || (!corpus && (oracle_path.empty() || oracle_hash.empty())))
     GTEST_SKIP() << "sealed legacy EXL3 IDs and oracle required";
-  ASSERT_EQ(oracle_hash.size(), 64U);
-  ASSERT_TRUE(std::ranges::all_of(
-      oracle_hash, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
+  if (!corpus) {
+    ASSERT_EQ(oracle_hash.size(), 64U);
+    ASSERT_TRUE(std::ranges::all_of(
+        oracle_hash, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
+  }
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available.has_value()) << "unknown physical availability";
   ASSERT_TRUE(FitsDomain(*available)) << "the complete domain and driver margin do not fit";
@@ -387,23 +402,48 @@ void RunControl(bool full) {
                                true);
   ASSERT_TRUE(payment.has_value());
   ASSERT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), occupied + kHostAllowance);
-  // Both arms authenticate the same complete1040-ID file. The legacy
-  // trajectory uses its first161 IDs; the original prefill compares first145.
-  auto ids_read = Read(ids_path, kTokenLimit, true);
+  auto ids_read = Read(ids_path, corpus ? 1024 : kTokenLimit, !corpus);
   ASSERT_TRUE(ids_read.has_value()) << ids_read.error();
   life->tokens_bytes = std::move(*ids_read);
-  auto prefix = HeldOutPrefix(life->tokens_bytes, token_rows);
-  ASSERT_TRUE(prefix.has_value()) << prefix.error();
-  life->tokens = std::move(*prefix);
+  if (corpus) {
+    const auto seal = Env("LLMP_QWEN2_CORPUS_IDS_SHA256");
+    ASSERT_EQ(seal.size(), 64U);
+    ASSERT_EQ(Hash(life->tokens_bytes), seal);
+    ASSERT_EQ(life->tokens_bytes.size() % 4, 0U);
+    token_rows = static_cast<std::uint32_t>(life->tokens_bytes.size() / 4);
+    ASSERT_GE(token_rows, 2U);
+    ASSERT_LE(token_rows, 256U);
+    for (std::size_t i = 0; i < token_rows; ++i) {
+      std::uint32_t id = 0;
+      for (int byte = 3; byte >= 0; --byte)
+        id = (id << 8U) |
+             static_cast<unsigned char>(life->tokens_bytes[i * 4 + static_cast<std::size_t>(byte)]);
+      ASSERT_LT(id, 151936U);
+      life->tokens.push_back(static_cast<std::int32_t>(id));
+    }
+  } else {
+    // Preserve full-file authority and the historical quantized legacy control.
+    auto prefix = HeldOutPrefix(life->tokens_bytes, token_rows);
+    ASSERT_TRUE(prefix.has_value()) << prefix.error();
+    life->tokens = std::move(*prefix);
+    auto oracle_read = Read(oracle_path, oracle_bytes, true);
+    ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
+    life->oracle = std::move(*oracle_read);
+    ASSERT_EQ(Hash(life->oracle), oracle_hash);
+  }
   auto& tokens = life->tokens;
-  auto oracle_read = Read(oracle_path, oracle_bytes, true);
-  ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
-  life->oracle = std::move(*oracle_read);
   const auto& oracle = life->oracle;
-  ASSERT_EQ(Hash(oracle), oracle_hash);
   const auto& profile = llmp::model::Qwen25Instruct05BExl3();
   const std::size_t row_bytes = std::size_t{profile.vocab} * sizeof(float);
-  ASSERT_EQ(oracle.size(), token_rows * row_bytes);
+  std::uint64_t corpus_charge = 0;
+  if (corpus) {
+    const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = tokens}};
+    auto bound = ts::CorpusScore::Bound(documents, {profile.vocab, 7});
+    ASSERT_TRUE(bound.has_value()) << bound.error();
+    corpus_charge = *bound;
+    ASSERT_LE(corpus_charge, 21108224U);
+  }
+  if (!corpus) ASSERT_EQ(oracle.size(), token_rows * row_bytes);
   std::string store = Env("LLMP_EXL3_FIXTURE_STORE");
   if (store.empty()) store = Env("HOME") + "/.local/share/llmp/artifact-layout-20260922/installed";
   constexpr auto artifact_id = "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4";
@@ -474,9 +514,18 @@ void RunControl(bool full) {
   life->layout.emplace(std::move(*derived));
   auto& layout = life->layout;
   auto& shapes = life->shapes;
-  shapes.push_back(Shape(0, 145));
-  if (full)
-    for (std::uint32_t past = 145; past < 161; ++past) shapes.push_back(Shape(past, 1));
+  if (corpus) {
+    for (std::uint32_t past = 0; past < token_rows; past += 7) {
+      auto shape = Shape(past, std::min(7U, token_rows - past));
+      shape.phase = pl::Phase::kScore;
+      life->corpus_plans[shape.rows() == 7 ? 0U : 1U].rows = shape.rows();
+      shapes.push_back(std::move(shape));
+    }
+  } else {
+    shapes.push_back(Shape(0, 145));
+    if (full)
+      for (std::uint32_t past = 145; past < 161; ++past) shapes.push_back(Shape(past, 1));
+  }
   auto& resource = life->resource;
   auto built_step =
       co::BuildStep(*spec, 0, shapes.front(), {.tensors = source->tensors, .state = &*layout});
@@ -528,6 +577,21 @@ void RunControl(bool full) {
         return std::unexpected("program exceeds paid retained-plan bound");
       return program;
     };
+    if (corpus) {
+      auto guarded = ts::GuardCorpusLower(std::move(checked_backend.lower), profile.vocab);
+      checked_backend.lower = [held = life.get(),
+                               guarded = std::move(guarded)](const kn::LowerInput& input)
+          -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+        auto program = guarded(input);
+        if (!program || input.addresses.measuring()) return program;
+        const auto rows = input.shape.rows();
+        auto* record = &held->corpus_plans[rows == 7 ? 0U : 1U];
+        if (record->rows != rows ||
+            (*program)->host_bytes() > kProgramHost - sizeof(ts::CorpusProgram))
+          return std::unexpected("corpus exceeded measured shape or retained program bound");
+        return std::make_unique<ts::CorpusProgram>(std::move(*program), *record);
+      };
+    }
     auto component = en::ComponentStepSource::Create(
         {.spec = &*spec,
          .stage = 0,
@@ -540,23 +604,43 @@ void RunControl(bool full) {
          .backend = std::move(checked_backend),
          .require_capture = false});
     if (!component) return std::unexpected(component.error());
-    // Both canonical shape keys and every position's baked parameters
-    // are authenticated before Setup, which can allocate native programs.
-    if (shapes.size() != (full ? 17U : 1U) || shapes.front() != Shape(0, 145))
-      return std::unexpected("EXL3 trajectory exceeds its paid shape inventory");
-    const auto prefill_parameters = (*component)->ShapeParameters(shapes.front());
-    if (prefill_parameters.size() > 1024)
-      return std::unexpected("shape parameters exceed paid metadata");
-    if (full) {
-      const auto decode = Shape(145, 1);
-      const auto decode_parameters = (*component)->ShapeParameters(decode);
-      if (decode == shapes.front() || decode_parameters.size() > 1024)
-        return std::unexpected("EXL3 decode key exceeds paid metadata");
-      for (std::size_t i = 1; i < shapes.size(); ++i) {
-        if (shapes[i].segments.front().past != 144 + i || shapes[i] != decode ||
-            (*component)->ShapeParameters(shapes[i]) != decode_parameters)
-          return std::unexpected("EXL3 suffix changes the paid decode key");
+    std::vector<pl::StepShape> keys;
+    if (corpus) {
+      std::vector<std::vector<std::uint64_t>> parameters;
+      for (const auto& shape : shapes) {
+        const auto values = (*component)->ShapeParameters(shape);
+        if (values.size() > 1024) return std::unexpected("corpus shape parameter bound");
+        const auto found = std::find(keys.begin(), keys.end(), shape);
+        if (found == keys.end()) {
+          if (keys.size() == 2) return std::unexpected("corpus exceeds two paid score keys");
+          keys.push_back(shape);
+          parameters.push_back(values);
+        } else if (parameters[static_cast<std::size_t>(found - keys.begin())] != values) {
+          return std::unexpected("corpus position changes paid score key");
+        }
       }
+      if (keys.empty()) return std::unexpected("corpus has no score shape");
+    } else {
+      // Both canonical shape keys and every position's baked parameters
+      // are authenticated before Setup, which can allocate native programs.
+      if (shapes.size() != (full ? 17U : 1U) || shapes.front() != Shape(0, 145))
+        return std::unexpected("EXL3 trajectory exceeds its paid shape inventory");
+      const auto prefill_parameters = (*component)->ShapeParameters(shapes.front());
+      if (prefill_parameters.size() > 1024)
+        return std::unexpected("shape parameters exceed paid metadata");
+      if (full) {
+        const auto decode = Shape(145, 1);
+        const auto decode_parameters = (*component)->ShapeParameters(decode);
+        if (decode == shapes.front() || decode_parameters.size() > 1024)
+          return std::unexpected("EXL3 decode key exceeds paid metadata");
+        for (std::size_t i = 1; i < shapes.size(); ++i) {
+          if (shapes[i].segments.front().past != 144 + i || shapes[i] != decode ||
+              (*component)->ShapeParameters(shapes[i]) != decode_parameters)
+            return std::unexpected("EXL3 suffix changes the paid decode key");
+        }
+      }
+      keys = {shapes.front()};
+      if (full) keys.push_back(shapes[1]);
     }
     en::RunnerConfig config;
     config.graphs = false;
@@ -572,8 +656,7 @@ void RunControl(bool full) {
     std::vector<en::GroupPlace> places(paged->artifact().groups().size(), en::GroupPlace::kDevice);
     config.weights.push_back(
         {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
-    config.setup_shapes = {shapes.front()};
-    if (full) config.setup_shapes.push_back(shapes[1]);
+    config.setup_shapes = keys;
     config.launch =
         [held = life.get()]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return held->kernel->backend->Launch(
@@ -608,13 +691,79 @@ void RunControl(bool full) {
       return std::unexpected("weight extents exceed the checked domain");
     const auto weights_bytes = paged->extents().size() * en::kPagedExtent;
     if (weights_bytes > kDomainCap - fixed || runtime_plans > kDomainCap - fixed - weights_bytes ||
-        node.StateCapacity() > (kDomainCap - fixed - weights_bytes - runtime_plans) / 4)
+        corpus_charge > kDomainCap - fixed - weights_bytes - runtime_plans ||
+        node.StateCapacity() >
+            (kDomainCap - fixed - weights_bytes - runtime_plans - corpus_charge) / 4)
       return std::unexpected("weights and state exceed the checked domain");
     if (auto x = node.Start(llmp::base::Bytes(kDomainCap)); !x) return x;
     if (auto x = runner->Register(); !x) return x;
     if (auto x = runner->Bind(); !x) return x;
     node.Run();
     if (auto x = runner->slots().SelectSlots(std::vector<std::uint32_t>{0}); !x) return x;
+    if (corpus) {
+      llmp::model::Batching batching;
+      batching.max_segments = 1;
+      auto composer = en::WaveComposer::For(batching, runner->slots());
+      if (!composer) return std::unexpected(composer.error());
+      life->corpus_composer.emplace(std::move(*composer));
+      const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = tokens}};
+      auto scorer = ts::CorpusScore::Make(
+          node, *runner, *life->corpus_composer, documents, {profile.vocab, 7},
+          [held = life.get()](const ts::CorpusTargetScore& score) -> en::Status {
+            if (held->corpus_score_count == held->corpus_scores.size())
+              return std::unexpected("corpus NLL report exceeds prepaid rows");
+            held->corpus_scores[held->corpus_score_count++] = score;
+            return {};
+          });
+      if (!scorer) return std::unexpected(scorer.error());
+      life->corpus_scorer = std::move(*scorer);
+      auto scored = node.WithRequest(
+          0, runner->slots().execution(), "fixed teacher corpus", [&]() -> en::Status {
+            for (std::size_t i = 0; i < shapes.size(); ++i) {
+              auto done = life->corpus_scorer->Step();
+              if (!done) return std::unexpected(done.error());
+              if (*done != (i + 1 == shapes.size()))
+                return std::unexpected("corpus completion differs from fixed chunk schedule");
+            }
+            return {};
+          });
+      if (!scored) return scored;
+      const auto& result = life->corpus_scorer->result();
+      if (!life->corpus_scorer->complete() || result.inputs != token_rows ||
+          result.targets != token_rows - 1 || life->corpus_score_count != token_rows - 1 ||
+          result.steps != shapes.size() || runner->slots().positions(0) != token_rows)
+        return std::unexpected("corpus target coverage or state frontier differs");
+      std::ostringstream report;
+      report << std::setprecision(17);
+      for (std::size_t i = 0; i < life->corpus_score_count; ++i) {
+        const auto& score = life->corpus_scores[i];
+        if (score.document || score.slot || score.position != i + 1 ||
+            score.target != tokens[i + 1])
+          return std::unexpected("corpus NLL coordinates differ from fixed teacher IDs");
+        report << score.document << ',' << score.slot << ',' << score.position << ','
+               << score.target << ',' << score.nll << '\n';
+      }
+      testing::Test::RecordProperty("corpus_nll_rows", report.str());
+      testing::Test::RecordProperty("corpus_ids_sha256", Hash(life->tokens_bytes));
+      testing::Test::RecordProperty("corpus_targets", std::to_string(result.targets));
+      report.str("");
+      report.clear();
+      report << std::setprecision(17) << result.total_nll;
+      testing::Test::RecordProperty("corpus_total_nll", report.str());
+      testing::Test::RecordProperty("corpus_policy", "existing-exl3-40g");
+      report.str("");
+      report.clear();
+      for (const auto& plan : life->corpus_plans) {
+        if (!plan.rows) continue;
+        if (!plan.runs || plan.implementations.empty())
+          return std::unexpected("corpus selected program never entered execution");
+        report << "rows=" << plan.rows << " bound_plan=" << llmp::base::ToHex(plan.identity)
+               << " run_or_record=" << plan.runs << '\n';
+        for (const auto& name : plan.implementations) report << name << '\n';
+      }
+      testing::Test::RecordProperty("corpus_selected_programs", report.str());
+      return {};
+    }
     std::uint32_t completed_steps = 0;
     std::uint32_t compared_rows = 0;
     return node.WithRequest(
@@ -660,4 +809,5 @@ void RunControl(bool full) {
 }
 TEST(ComponentRunnerExl3Gpu, Reconstruction145MatchesSealedLegacy) { RunControl(false); }
 TEST(ComponentRunnerExl3Gpu, Full161TrajectoryMatchesSealedLegacy) { RunControl(true); }
+TEST(ComponentRunnerExl3Gpu, FixedTeacherCorpusScoresEveryTarget) { RunControl(false, true); }
 }  // namespace

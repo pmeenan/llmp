@@ -58,7 +58,10 @@ The bounded shared teacher-forced scorer landed in `a38b5ec0`; its real
 Qwen2 FP16 adapter passes main native integration and both natural-ID policies.
 The [original Qwen2 BF16 smoke](experiments/m36-original-qwen2/README.md)
 authenticates and executes revision `7ae557604adf67be50417f59c2c2f167def9a775`
-and aligns all 42 target losses on a 43-token natural passage. Broader quality
+and aligns all 42 target losses on a 43-token natural passage. The EXL3 G adapter
+also uses the common scorer and recorder, complete original-tokenizer identity
+and supported seven/one-row tuning; absent three-row tuning explicitly refuses.
+Broader quality
 and performance remain open. Its existing official F16 artifact has no proved original
 conversion lineage. Compare small reversible candidates by quality and matched
 speed; Qwen3.8/DeepSeek original BF16 execution remains missing from inspected

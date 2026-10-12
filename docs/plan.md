@@ -1421,6 +1421,12 @@ each is checked against the design as M3.6 proceeds.
             authenticated complete original weights and 43 natural token meanings,
             42 aligned target losses through original and shared FP16 recipes.
             This is a tiny observation, not a quality acceptance gate.
+      - [x] Real EXL3 4.0-bpw G scorer adapter: shared scorer/plan recorder,
+            complete original-tokenizer identity and all 42 natural targets.
+            Supported seven/one-row tuning is retained; missing three-row tuning
+            refuses. Main native build, 124 affected registrations and all three
+            FP16/EXL3 scoring cases pass without skips. Original-model observation
+            is bounded, without a quality gate.
       - [ ] Broader fixed corpus and original-reference comparisons; production-phase,
             speculation, context and cohort controls for chosen candidates.
       - [ ] Evaluate numerical recovery candidates and retire dominated recipe

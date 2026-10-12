@@ -277,61 +277,6 @@ en::Status NativeReservation(const kn::LowerInput& input) {
 
 // Bounded metadata of the programs actually bound and entered. A completed
 // scorer run is required before these records are emitted as evidence.
-struct CorpusPlanRecord {
-  std::uint32_t rows = 0;
-  llmp::base::Sha256Digest identity{};
-  std::vector<std::string> implementations;
-  std::uint64_t runs = 0;
-};
-class CorpusProgram final : public kn::StepProgram {
- public:
-  CorpusProgram(std::unique_ptr<kn::StepProgram> inner, CorpusPlanRecord& record)
-      : inner_(std::move(inner)), record_(record) {}
-  std::uint64_t scratch_bytes() const override { return inner_->scratch_bytes(); }
-  std::uint64_t pool_bytes() const override { return inner_->pool_bytes(); }
-  std::uint64_t host_bytes() const override { return inner_->host_bytes() + sizeof(*this); }
-  std::uint64_t launches() const override { return inner_->launches(); }
-  std::span<const kn::InputSlot> inputs() const override { return inner_->inputs(); }
-  std::span<const kn::OutputSlot> outputs() const override { return inner_->outputs(); }
-  std::span<const kn::TensorUse> tensors() const override { return inner_->tensors(); }
-  const llmp::execution::BoundPlan* bound() const override { return inner_->bound(); }
-  bool capturable() const override { return inner_->capturable(); }
-  std::expected<void, kn::StepFailure> Position(std::span<const std::uint32_t> past) override {
-    return inner_->Position(past);
-  }
-  std::expected<void, kn::StepFailure> Bind(kn::StepLaunch& launch) override {
-    auto result = inner_->Bind(launch);
-    if (!result) return result;
-    const auto* selected = inner_->bound();
-    if (!selected || !selected->size() || selected->size() > kLaunches)
-      return std::unexpected(kn::StepFailure{.detail = "corpus bound implementation inventory"});
-    if (!record_.implementations.empty()) {
-      if (record_.identity != selected->identity())
-        return std::unexpected(
-            kn::StepFailure{.detail = "corpus same-shape plan identity changed"});
-      return {};
-    }
-    record_.identity = selected->identity();
-    record_.implementations.reserve(selected->size());
-    for (std::size_t i = 0; i < selected->size(); ++i) {
-      const auto& implementation = selected->at(i);
-      if (implementation.name.size() > 128)
-        return std::unexpected(kn::StepFailure{.detail = "corpus implementation name bound"});
-      record_.implementations.push_back(implementation.name);
-    }
-    return {};
-  }
-  std::expected<void, kn::StepFailure> Run(kn::StepLaunch& launch,
-                                           llmp::providers::NativeStream stream) const override {
-    auto result = inner_->Run(launch, stream);
-    if (result) ++record_.runs;  // Includes recording; not a GPU timing/call counter.
-    return result;
-  }
-
- private:
-  std::unique_ptr<kn::StepProgram> inner_;
-  CorpusPlanRecord& record_;
-};
 static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners + 8 * kMiB <=
               kHostAllowance);  // Two selected-plan name arrays, output text and sink records.
 
@@ -358,7 +303,7 @@ struct Lifetime {
   std::uint32_t saved_positions = 0;
   std::uint64_t saved_bytes = 0;
   std::uint64_t domain_cap = kDomainCap;
-  std::array<CorpusPlanRecord, 2> corpus_plans{};
+  std::array<ts::CorpusPlanRecord, 2> corpus_plans{};
   std::optional<en::WaveComposer> corpus_composer;
   std::unique_ptr<ts::CorpusScore> corpus_scorer;
   std::array<ts::CorpusTargetScore, 256> corpus_scores{};
@@ -722,9 +667,10 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
         if (!program || input.addresses.measuring()) return program;
         const auto rows = input.shape.rows();
         auto* record = &held->corpus_plans[rows == 8 ? 0U : 1U];
-        if (record->rows != rows || (*program)->host_bytes() > kProgramHost - sizeof(CorpusProgram))
+        if (record->rows != rows ||
+            (*program)->host_bytes() > kProgramHost - sizeof(ts::CorpusProgram))
           return std::unexpected("corpus exceeded measured shape or retained program bound");
-        return std::make_unique<CorpusProgram>(std::move(*program), *record);
+        return std::make_unique<ts::CorpusProgram>(std::move(*program), *record);
       };
     }
     auto component = en::ComponentStepSource::Create(

@@ -12,11 +12,73 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "engine/decoding.h"
+#include "execution/registry.h"
 #include "kernels/common/lower.h"
 
 namespace llmp::test_support {
+
+// Transparent test-only plan recorder. The caller prepays the record storage
+// (up to4096 names of128 bytes) and retains it until device retirement.
+struct CorpusPlanRecord {
+  std::uint32_t rows = 0;
+  llmp::base::Sha256Digest identity{};
+  std::vector<std::string> implementations;
+  std::uint64_t runs = 0;
+};
+class CorpusProgram final : public kernels::StepProgram {
+ public:
+  CorpusProgram(std::unique_ptr<kernels::StepProgram> inner, CorpusPlanRecord& record)
+      : inner_(std::move(inner)), record_(record) {}
+  std::uint64_t scratch_bytes() const override { return inner_->scratch_bytes(); }
+  std::uint64_t pool_bytes() const override { return inner_->pool_bytes(); }
+  std::uint64_t host_bytes() const override { return inner_->host_bytes() + sizeof(*this); }
+  std::uint64_t launches() const override { return inner_->launches(); }
+  std::span<const kernels::InputSlot> inputs() const override { return inner_->inputs(); }
+  std::span<const kernels::OutputSlot> outputs() const override { return inner_->outputs(); }
+  std::span<const kernels::TensorUse> tensors() const override { return inner_->tensors(); }
+  const llmp::execution::BoundPlan* bound() const override { return inner_->bound(); }
+  bool capturable() const override { return inner_->capturable(); }
+  std::expected<void, kernels::StepFailure> Position(std::span<const std::uint32_t> past) override {
+    return inner_->Position(past);
+  }
+  std::expected<void, kernels::StepFailure> Bind(kernels::StepLaunch& launch) override {
+    auto result = inner_->Bind(launch);
+    if (!result) return result;
+    const auto* selected = inner_->bound();
+    if (!selected || !selected->size() || selected->size() > 4096)
+      return std::unexpected(
+          kernels::StepFailure{.detail = "corpus bound implementation inventory"});
+    if (!record_.implementations.empty()) {
+      if (record_.identity != selected->identity())
+        return std::unexpected(
+            kernels::StepFailure{.detail = "corpus same-shape plan identity changed"});
+      return {};
+    }
+    record_.identity = selected->identity();
+    record_.implementations.reserve(selected->size());
+    for (std::size_t i = 0; i < selected->size(); ++i) {
+      const auto& implementation = selected->at(i);
+      if (implementation.name.size() > 128)
+        return std::unexpected(kernels::StepFailure{.detail = "corpus implementation name bound"});
+      record_.implementations.push_back(implementation.name);
+    }
+    return {};
+  }
+  std::expected<void, kernels::StepFailure> Run(
+      kernels::StepLaunch& launch, llmp::providers::NativeStream stream) const override {
+    auto result = inner_->Run(launch, stream);
+    if (result) ++record_.runs;  // Includes recording; not a GPU timing/call counter.
+    return result;
+  }
+
+ private:
+  std::unique_ptr<kernels::StepProgram> inner_;
+  CorpusPlanRecord& record_;
+};
 
 // Fixed teacher IDs, one independent initially empty slot per document.
 // Bound/Make borrow this input only during the call; Make copies it after payment.

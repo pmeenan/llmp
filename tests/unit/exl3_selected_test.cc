@@ -210,9 +210,10 @@ TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation)
     return kg::MulMatPath::kCublas;
   };
   const llmp::kernels::Addresses addresses{};
-  for (const auto rows : {1U, 32U, 33U, 144U, 145U, 1023U, 1024U}) {
+  for (const auto rows : {1U, 3U, 7U, 8U, 32U, 33U, 144U, 145U, 1023U, 1024U}) {
     SCOPED_TRACE(rows);
-    const pl::StepShape shape{.segments = {{.slot = 0,
+    const pl::StepShape shape{.phase = (rows <= 8) ? pl::Phase::kScore : pl::Phase::kPrefill,
+                              .segments = {{.slot = 0,
                                             .rows = rows,
                                             .past = 0,
                                             .read_cells = (rows + 255U) / 256U * 256U,
@@ -229,6 +230,13 @@ TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation)
                   .written = &kg::WrittenBytes,
                   .within = &kg::WithinRoot,
                   .shape = &shape});
+    if (rows == 3) {
+      // The frozen G cache has no bucket4 fact for this required product.
+      // Refuse instead of manufacturing tuning for the natural43 tail.
+      ASSERT_FALSE(plan.has_value());
+      EXPECT_NE(plan.error().detail.find("mul_mat exl3_trellis[896,896"), std::string::npos);
+      continue;
+    }
     ASSERT_TRUE(plan.has_value()) << plan.error().detail;
     const llmp::kernels::LowerInput input{
         .plan = *plan, .step = *step, .shape = shape, .addresses = addresses, .context = 2048};
