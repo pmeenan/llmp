@@ -9,8 +9,7 @@
 // its shortfall needs, never the workspace (in the closure, or protected
 // when it is not); a closure that cannot fit is refused and evicts
 // nothing. The paged harnesses' node runs the same
-// program on the real providers (cuda_paged_node_test.cc,
-// benchmarks/alternate_paged.cc).
+// program on the real providers (cuda_paged_node_test.cc).
 
 #include <gtest/gtest.h>
 

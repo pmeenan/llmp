@@ -12,8 +12,7 @@
 // through the zone into device VMM; each model's job then copies every
 // weight extent through the shared workspace to pinned staging on its own
 // stream, and the bytes must be the file's. The occupancy never exceeds
-// the budget, and teardown leaves no backing. The real models alternate in
-// benchmarks/alternate_paged.cc.
+// the budget, and teardown leaves no backing.
 
 #include <cuda.h>
 #include <cuda_runtime.h>

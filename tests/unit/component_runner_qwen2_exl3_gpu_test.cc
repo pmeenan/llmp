@@ -251,7 +251,7 @@ static_assert(kInheritedCompiler + kFullMetadataOwners + kFullObservationOwners 
 
 std::expected<std::vector<std::int32_t>, std::string> HeldOutPrefix(const std::string& bytes,
                                                                     std::size_t count = 145) {
-  // Identical full-file authority to benchmarks/exl3_common.cc::LoadIds.
+  // Identical full-file authority to the historical EXL3 LoadIds helper.
   if (bytes.size() != kTokenLimit ||
       Hash(bytes) != "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c")
     return std::unexpected("not the sealed legacy held-out IDs");

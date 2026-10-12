@@ -40,15 +40,23 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
-Main through `aa65d12e` includes the native ModelOpt CLI import dispatch,
-FP16 checkpoint/spill/heldout/repeated-weight-eviction controls, complete EXL3
-G/O trajectories and mixed-rate O execution. Both O profiles now pass the
-shared corpus scorer and same-implementation checkpoint/spill continuation
-(`6362d10d`). The cold kept-prefix hydration fix (`aa65d12e`) passes 77
-focused host/fake controls on main. G5c7's serial fresh-owner kept-file
-adoption passes the full native build, 13 focused controls and both actual
-cases on main; it is not an OS process restart.
-These are bounded slices; the migration parents and deletion gates remain open.
+Main through `50d93d33` includes the explicitly tuned BF16/F32 vector-product
+capability, all four EXL3 profiles' original-model scoring and shared lifecycle
+controls, and the active FP16 benchmark adapter over shared components. The
+following reviewed slice retires both legacy fixture executor families and
+closes bounded G5 migration. Original-reference quality and same-implementation
+state checks replace cross-library bit equality as its prospective gate; the
+fixtures remain unserved with no speed baseline. Details and final integration
+evidence live in [the G5 report](experiments/m36-exl3-selected/README.md).
+
+Qwen49 owns preparation and source/launch compatibility in
+`.claude/worktrees/m36-owned-backend`. Its first reviewed build passes 145
+focused controls on Spark B. Two real corrections are in progress: fund metadata
+before node start and bind programs/recordings to stable launch generations.
+The backend design has dropped recursive runtime SDK/library byte attestation;
+pinned provenance, actual backend readiness and execution identities remain.
+No new numerical selection or joined-serving quality/speed qualification is
+claimed by this ownership slice.
 
 The owner requested a [retrospective numerical audit](experiments/m36-numerical-audit/README.md)
 and original-unquantized quality as the primary reference. Stop adding
@@ -84,8 +92,8 @@ error against the stored-weight F64 product reference. The paired vector
 candidate is slower for router/value and slightly faster for PLE key than
 tensor cores in this small replay. Seven peer columns repeat one captured
 owner input synthetically. Neither screen establishes original-model quality
-or serving latency, and no blanket policy replacement follows. A minimal
-shared selection capability is next; keep the frozen 45 diagnostic arm.
+or serving latency, and no blanket policy replacement follows. The minimal
+shared selection capability landed in `79dc643b`; keep the frozen 45 diagnostic arm.
 
 Both Sparks are available for parallel development/checks; actual GPU jobs
 remain exclusive on their host. Do not continue the old parity-only loop.

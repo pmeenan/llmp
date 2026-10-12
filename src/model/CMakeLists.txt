@@ -5,8 +5,8 @@
 # state representations and their capabilities, a request's live state
 # (state.h) and model contexts composed of components (context.h), as D-068
 # needs them expressed; and architecture adapters, so far Qwen2 dense
-# (qwen2.h) for backend-proof P2 and its EXL3 checkpoints and operation plan
-# (qwen2_exl3.h) for P3, and DeepSeek V4 Flash (dsv4.h) with its DSpark
+# (qwen2.h) and its immutable EXL3 source bindings (qwen2_exl3.h),
+# and DeepSeek V4 Flash (dsv4.h) with its DSpark
 # drafter (dspark.h), Qwen3.8 Flash Next (qwen38.h) and Qwen-Image-2.1
 # (qwen_image.h) for M3, and Gemma 4 profiles, bindings and bounded inputs
 # (gemma4.h) for M3.5, plus the approved Gemma 3 and Gemma 2 profiles and tensor bindings (gemma3.h,

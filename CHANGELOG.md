@@ -31,7 +31,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 - Run the active swap and speculation benchmarks' FP16 comparison through
   the shared component engine, with explicit host memory limits and one
   setup compilation per shape class. Historical standalone paging modes
-  are refused by this adapter.
+  are refused by this adapter. Retire the obsolete standalone FP16/EXL3
+  executors and family graph/phase builders; generic kernels and shared
+  execution controls remain.
 
 - Route the closed native ModelOpt target through `llmp import` using the
   existing authenticated writer and archive flow. Actual CLI checks cover

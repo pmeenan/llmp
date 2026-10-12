@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // BP-P2's partial evictions (docs/backend-proof.md, case matrix), shared
-// by the paged harnesses (fp16_paged.cc, exl3_paged.cc): each case names a
+// by the paged harness and its controls: each case names a
 // set of weight chunks, by group and group-relative chunk, taken from the
 // artifact's own placements, so the harness evicts exactly those extents
 // and the next phase's materialization must bring back only them.

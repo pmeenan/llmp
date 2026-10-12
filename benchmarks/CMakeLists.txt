@@ -134,18 +134,6 @@ if(LLMP_CUDA)
   target_link_options(llmp_ggml_vmm_bench PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # Backend-proof P2, rung 3: the FP16 fixture from its v0 artifact on
-  # cudaMalloc memory, recorded for the FP16 gate's plan comparison or read
-  # for the allocation census (docs/experiments/backend-proof-p2/). Links the
-  # launch recorder; finds the SDK's cuBLAS in build/<preset>/cublas.
-  add_executable(llmp_fp16_exec fp16_exec.cc)
-  target_include_directories(llmp_fp16_exec SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_fp16_exec PRIVATE llmp_ggml_kernels llmp_cuda_device_memory
-                                                 llmp_artifact llmp_model llmp_launch_recorder
-                                                 llmp_warnings)
-  target_link_options(llmp_fp16_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
   # llmp.vecq's launch configurations on DeepSeek V4 Flash's product shapes
   # (kernels/ggml/dsv4_fast.h; docs/experiments/dsv4-decode/).
   add_executable(llmp_vecq_bench vecq_bench.cc)
@@ -260,50 +248,28 @@ if(LLMP_CUDA)
   target_link_options(llmp_qwen38_mxfp8_tune PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # The paged harnesses' model runners: the FP16 fixture and an EXL3
-  # fixture, each a model on the engine's paged node
-  # (tests/support/paged_node.h), so one process can hold either or both
-  # (BP-S3), and the M3 harnesses' helpers (dsv4_common.h) over the engine's
-  # M3 runners (src/engine/, under their harness names in engine_names.h).
+  # The FP16 swap fixture and the M3 harnesses' helpers (dsv4_common.h)
+  # over the engine's M3 runners (src/engine/, under their harness names in engine_names.h).
   # Their binaries link the launch recorder themselves (an object library,
   # whose wrappers must be in the link).
-  add_library(llmp_paged_runners STATIC fp16_runner.cc fp16_common.cc exl3_runner.cc
-                                          exl3_common.cc dsv4_common.cc)
+  add_library(llmp_paged_runners STATIC fp16_runner.cc fp16_common.cc dsv4_common.cc)
   target_include_directories(llmp_paged_runners SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_include_directories(llmp_paged_runners PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(llmp_paged_runners PUBLIC llmp_paged_node llmp_engine
-                                                    llmp_exl3_qwen2 llmp_ggml_kernels
+                                                    llmp_ggml_kernels
                                                     llmp_scheduler llmp_cuda_device_memory
                                                     llmp_artifact llmp_model
                                                     llmp_plan_record llmp_storage
                                              PRIVATE llmp_warnings)
-
-  # Backend-proof P2, rungs 4 and 5: the same fixture paged into device VMM
-  # through the landing zone by the scheduler and its lanes, executed as
-  # device jobs under leases, evicted and restored
-  # (docs/experiments/backend-proof-p2/). Links the launch recorder.
-  add_executable(llmp_fp16_paged fp16_paged.cc)
-  target_link_libraries(llmp_fp16_paged PRIVATE llmp_paged_runners llmp_launch_recorder
-                                                  llmp_warnings)
-  target_link_options(llmp_fp16_paged PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # BP-S3: the FP16 fixture and an EXL3 fixture alternating on one paged
-  # node, under a budget that forces each to evict the other's weights
-  # (docs/experiments/backend-proof/). Links the launch recorder.
-  add_executable(llmp_alternate_paged alternate_paged.cc)
-  target_include_directories(llmp_alternate_paged SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_alternate_paged PRIVATE llmp_paged_runners llmp_launch_recorder
-                                                       llmp_warnings)
-  target_link_options(llmp_alternate_paged PRIVATE
-                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # M3's swap runner: DeepSeek V4 Flash and the FP16 fixture on one paged
   # node, full swaps A→B→A with each part timed, state spilled and restored
   # (docs/experiments/fast-swap/swap.md). A harness: it runs on the test
   # harness's paged node and links the launch recorder.
   add_executable(llmp_swap_runner swap_runner.cc)
+  target_include_directories(llmp_swap_runner SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(llmp_swap_runner PRIVATE llmp_paged_runners llmp_launch_recorder
                                                    llmp_tokenizer llmp_warnings)
   target_link_options(llmp_swap_runner PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
@@ -346,6 +312,8 @@ if(LLMP_CUDA)
   # checks and speed (docs/experiments/dspark/). A harness for now; it
   # links the native tokenizer and chat renderer.
   add_executable(llmp_spec_runner spec_runner.cc)
+  target_include_directories(llmp_spec_runner SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(llmp_spec_runner PRIVATE llmp_paged_runners llmp_launch_recorder
                                                    llmp_tokenizer llmp_chat llmp_sampling
                                                    llmp_warnings)
@@ -365,6 +333,8 @@ if(LLMP_CUDA)
   target_link_options(llmp_startup_measurement_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   add_executable(llmp_qwen38_spec qwen38_spec.cc)
+  target_include_directories(llmp_qwen38_spec SYSTEM PRIVATE
+                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(llmp_qwen38_spec PRIVATE llmp_paged_runners llmp_launch_recorder
                                                    llmp_tokenizer llmp_chat llmp_sampling
                                                    llmp_draft_vocab_contract
@@ -396,24 +366,6 @@ if(LLMP_CUDA)
                                                          llmp_artifact llmp_warnings)
   target_link_options(llmp_exl3_linear_sweep PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Backend-proof P3, the native EXL3 model: an EXL3 fixture through the
-  # native operation plan, for the plan gate, Tier E (operation level) and
-  # Tier C (docs/experiments/backend-proof-p3/). Links the launch recorder.
-  add_executable(llmp_exl3_exec exl3_exec.cc exl3_common.cc)
-  target_link_libraries(llmp_exl3_exec PRIVATE llmp_exl3_qwen2 llmp_cuda_device_memory
-                                                 llmp_artifact llmp_model
-                                                 llmp_launch_recorder llmp_warnings)
-  target_link_options(llmp_exl3_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Backend-proof P3, rungs 4 and 5 for EXL3: the same fixture paged into
-  # device VMM through the landing zone by the scheduler and its lanes,
-  # executed as device jobs under leases, evicted and restored
-  # (docs/experiments/backend-proof-p3/). Links the launch recorder.
-  add_executable(llmp_exl3_paged exl3_paged.cc)
-  target_link_libraries(llmp_exl3_paged PRIVATE llmp_paged_runners llmp_launch_recorder
-                                                  llmp_warnings)
-  target_link_options(llmp_exl3_paged PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # Why host VMM slowed BP-F1's products, and what the alternatives cost:
   # microkernels over each kind of memory, copies between them, and GGML

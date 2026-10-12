@@ -10,7 +10,7 @@
 // its lanes (the zone's copies on a copy lane of their own by default,
 // RE-029), and the workspace the models share. Model runners
 // (engine/dsv4_runner.h, qwen38_runner.h, qwen_image_runner.h; the
-// harnesses' benchmarks/fp16_runner.h, exl3_runner.h) register their memory
+// harnesses' benchmarks/fp16_runner.h) register their memory
 // and sources with it and post their work through it, so several models
 // share one catalog, one scheduler and one zone. llmp-runtime drives one
 // (runtime/serving.h), and so do the paged harnesses. CUDA builds only (the

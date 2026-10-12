@@ -1835,20 +1835,25 @@ each is checked against the design as M3.6 proceeds.
                   family state, quality, swap and matched 1% controls.
             - [ ] **G4d — deletion:** remove DeepSeek V4's M3 runner, plans,
                   graph builders, bindings and serving class after G4c.
-- [ ] **Migrate Qwen2 FP16 and EXL3 fixtures** (required by the exit criteria).
-      The existing EXL3 trellis format proof is not a shared-engine execution
-      migration. The fixtures are not served and have no speed baseline; their
-      gate is the existing correctness controls in the
-      [fixed protocol](experiments/m36-baselines/README.md#quality-controls).
+- [x] **Migrate Qwen2 FP16 and EXL3 fixtures** (required by the exit criteria).
+      The approved fixtures use shared components and selected operation
+      lowerings. They are unserved with no speed baseline. Original-model
+      corpus observations and same-implementation checkpoint/spill/kept/reload
+      controls qualify the bounded fixture scope; historical bridge/Tier C
+      comparisons remain recorded diagnostics. Changed virtual addresses,
+      OS-process restart/crash recovery and broader serving qualification are
+      future capabilities rather than claims of this fixture slice. The final
+      integrated legacy deletion build and affected controls pass.
       - [x] **G5a — components and mapping:** the approved FP16 and both
             EXL3 fixtures synthesize specs over the shared catalog; all three
             installed-artifact metadata controls pass. Shared FP16 execution
             matches the frozen fused and unfused 76-token control trajectories
             ([evidence](experiments/m36-qwen2/README.md)); historical heldout
             and lifecycle controls remain G5c's.
-      - [ ] **G5b — lowering:** implement shared GGML and EXL3 operation
+      - [x] **G5b — lowering:** implement shared GGML and EXL3 operation
             lowerings; supply and enforce approved EXL3 reconstruction tuning
-            facts and supported shapes.
+            facts and supported shapes. All four profiles have selected-source
+            and actual execution controls; final deletion integration passes.
             - [x] **G5b1 — selected operations and reconstruction screen:**
                   the shared step program binds approved EXL3 products and
                   pinned tuning facts. All 145 full-vocabulary rows of the
@@ -1901,10 +1906,12 @@ each is checked against the design as M3.6 proceeds.
                   ([evidence](experiments/m36-exl3-selected/README.md)).
                   No tuning, kernel or production default changes; broader
                   quality, performance and O lifecycle controls remain open.
-      - [ ] **G5c — execution controls:** run FP16 and both EXL3 fixtures
-            through the shared runner; pass the FP16 bridge / EXL3 Tier C
-            correctness controls and state, spill, restore and kept-state
-            controls. This fixture slice has no serving or timing claim.
+      - [x] **G5c — execution controls:** run FP16 and both EXL3 fixtures
+            through the shared runner, with original-model quality observations
+            and same-implementation state, spill, restore and kept-file controls.
+            Historical FP16 bridge / EXL3 Tier C bit comparisons remain evidence
+            for their source-era recipes. This fixture slice has no serving,
+            process-restart, changed-address or timing claim.
             Grouped primary-reference scoring also records all four EXL3 profiles
             on the existing four 256-token passages (1,020 targets per profile):
             14 focused controls and all 16 actual cases pass without skips,
@@ -1993,8 +2000,13 @@ each is checked against the design as M3.6 proceeds.
                   skips ([evidence](experiments/m36-exl3-selected/README.md)).
                   Actual address relocation, process restart/crash, serving
                   history, broader shapes and deletion remain open.
-      - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
-            path after G5c.
+      - [x] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
+            path after G5c. Both standalone executor families and graph/phase
+            builders are removed; generic kernels, immutable source bindings and
+            active swap/spec comparison consumers remain. The full native build,
+            30 focused host/refusal controls and eight actual affected checks
+            pass without failures or skips
+            ([evidence](experiments/m36-exl3-selected/README.md#legacy-executor-retirement)).
             - [x] **G5d1 — active FP16 benchmark adapter:** move the swap
                   and speculation harnesses' FP16 comparison to the shared
                   component source/runner. Keep full control/heldout heads,

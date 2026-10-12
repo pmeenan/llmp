@@ -22,8 +22,7 @@
 #                        Llmpalooza's instances of the rest,
 #                        llmp_exl3_kernels.h), built as the P0 reference
 #                        was. CUDA builds only.
-#   llmp_exl3_qwen2    one phase of the native EXL3 plan (qwen2.h), with
-#                        GGML's operations. CUDA builds only.
+#   llmp_exl3_selected per-operation lowerings for the shared component engine.
 add_library(llmp_exl3 STATIC upstream_gemv.cc validate.cc reconstruction_tuning.cc packed_tuning.cc)
 target_include_directories(llmp_exl3 PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_exl3 PUBLIC llmp_exl3_headers llmp_execution PRIVATE llmp_warnings)
@@ -73,7 +72,7 @@ if(LLMP_CUDA)
   # the GGML module does. A file added here without being listed fails the
   # next configure.
   set(module_files CMakeLists.txt implementations.cc implementations.h launch.cc launch.h
-                   launch_contract.h linear.cc linear.h module_digest.cmake qwen2.cc qwen2.h
+                   launch_contract.h linear.cc linear.h module_digest.cmake
                    recon_gemm.cc recon_gemm.h reconstruction_tuning.cc reconstruction_tuning.h upstream_gemv.cc upstream_gemv.h validate.cc
                    validate.h packed_tuning.cc packed_tuning.h selected_source.cc selected_source.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -102,11 +101,4 @@ if(LLMP_CUDA)
   target_link_libraries(llmp_exl3_selected PUBLIC llmp_exl3_kernels llmp_ggml_kernels
                                                  PRIVATE llmp_warnings)
 
-  # One phase of the native EXL3 plan (model/qwen2_exl3.h) under llmpalooza's
-  # dispatch: the module's linears and bias adds, and GGML's operations
-  # (kernels/ggml, the layer's module before this one), bound through the
-  # registry (qwen2.h).
-  add_library(llmp_exl3_qwen2 STATIC qwen2.cc)
-  target_link_libraries(llmp_exl3_qwen2 PUBLIC llmp_exl3_kernels llmp_ggml_kernels
-                                                 llmp_model PRIVATE llmp_warnings)
 endif()

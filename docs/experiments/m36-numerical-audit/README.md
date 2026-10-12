@@ -127,6 +127,14 @@ of a usable reference. Missing primary evidence stays explicit. Secondary
 comparisons and bounded operand/timing experiments can proceed without
 claiming original-model quality qualification or blocking unrelated work.
 
+The [four-profile EXL3 observations](../m36-exl3-selected/README.md#grouped-original-reference-observations)
+now cover 1,020 aligned targets per profile against that same original BF16
+model. The bounded fixture migration also removes about 8,400 lines of legacy
+FP16/EXL3 execution code, with the active benchmarks using shared components.
+Final deletion checks preserve observed token losses and same-implementation
+repeat/reload outputs. This is a measured quality comparison and a complexity
+reduction; it adds no serving-speed claim.
+
 ## Audit provenance
 
 Frozen external packages, all under `/tmp/llmp-m36-coordination/`, retain the

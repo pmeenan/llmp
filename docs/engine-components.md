@@ -742,7 +742,7 @@ what exists more than once today and becomes one component.
 | Norm placement | pre (Q2), sandwich pre/post with a layer output scale (G2–G4, Asst), inside the residual mix (Q38, DS), adaLN (Img) | inline per graph builder |
 | Rotation | NEOX (Gemma, Q2, Img text encoder), NORM pairs with YaRN (DS), interleaved multi-section, partial (Q38), proportional frequencies (G4 global), 3-axis complex (Img DiT); base and scaling per layer type | wrappers in `qwen2_graph`, `exl3/qwen2.cc`, `dsv4_graph`; literal bases in `gemma3_graph` |
 | QK norm and rotation, fused | G3, G4, Asst, Q38, DS, Img | four kernels: `ggml.rms_norm_mul_rope.fused`, `llmp.qsa.prep`, `llmp.dsv4.qhead`, `image.head_norm_rope.*` |
-| Dense attention | GQA with softcap (G2), sliding ring and global layers (G2–G4), tied K=V and V-norm (G4 global), MQA with sinks and window (DS), query-only reading the target's cache (Asst), small causal (Img text encoder), bidirectional FA2 (Img) | Q2's GGML and EXL3 builders differ; image attention separate |
+| Dense attention | GQA with softcap (G2), sliding ring and global layers (G2–G4), tied K=V and V-norm (G4 global), MQA with sinks and window (DS), query-only reading the target's cache (Asst), small causal (Img text encoder), bidirectional FA2 (Img) | Q2 uses shared component emission and per-operation GGML/EXL3 lowering; image attention separate |
 | Owner-root attention (joined requests reading their own caches) | G2 (two owners), G3 (2–12), G4 (rewrite pass) | inline in two builders plus Gemma 4's rewrite pass (now `planner/pattern.cc`) |
 | Masks | causal/ring producer (G2–G4, Q38, DS), noncausal block (DSp), host-built (Asst, Q2) | adapter per `*_plan.cc`; hand-written ring in the assistant plan |
 | Sparse attention with an indexer | QSA top-k over pooled blocks (Q38), lightning indexer top-512 (DS) | top-k masks in both builders |
@@ -1490,11 +1490,15 @@ resources, while a stacked format has one tensor-scale part ordered
 part, which the v1 index holds as one resource of the stacked format with
 part `tensor_scale` (D-113).
 
-The shared GGML step program also binds approved EXL3 selected operations
-with authenticated packed and reconstruction tuning facts. Its first 4.0-bpw
-G reconstruction prefill matches all 145 full-vocabulary rows of a native
-reference bit for bit; other paths and lifecycle controls remain open
-([evidence](experiments/m36-exl3-selected/README.md)).
+The common step program binds approved EXL3 selected operations with authenticated
+packed and reconstruction tuning facts. Both 4.0- and 4.5-bpw fixtures execute
+in G and O profiles; O uses actual occupancy facts checked again at launch.
+All four profiles have original-model corpus observations and same-implementation
+checkpoint, spill, kept-file adoption into a fresh owner, and weight backing
+reload controls ([evidence](experiments/m36-exl3-selected/README.md)). The legacy
+family phase planner and executor are removed; immutable source bindings,
+generic kernels and the linear sweep remain. These unserved fixtures have no
+speed qualification, OS-process restart or changed-virtual-address claim.
 
 **The EXL3 trellis (2026-10-09).** `kernels/reference` decodes the
 trellis as ExLlamaV3's pinned kernels define it: `exl3_dq.cuh`'s 16-bit

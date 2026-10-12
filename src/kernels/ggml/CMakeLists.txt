@@ -8,8 +8,7 @@
 #                        (tensors.h), the implementations' operand checks
 #                        (validate.h), upstream's fusion gates (fusion.h),
 #                        graph planning and activation placement
-#                        (graph_plan.h), the Qwen2 chunk graph
-#                        (qwen2_graph.h) and the DeepSeek V4 chunk graph
+#                        (graph_plan.h), the DeepSeek V4 chunk graph
 #                        (dsv4_graph.h), the module's capabilities
 #                        (capabilities.h) and the lowering of planned IR
 #                        steps (lower.h). Every profile.
@@ -39,7 +38,7 @@ else()
 endif()
 list(JOIN architectures "," architecture_text)
 add_library(llmp_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc llmp_ops.cc
-                                       qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
+                                       qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(llmp_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_sources(llmp_ggml_tensors PRIVATE dsv4_weighted_reduce.cc gemma_moe.cc)
@@ -197,7 +196,7 @@ if(LLMP_CUDA)
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
                    mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
-                   ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_commit.h qwen38_graph.cc
+                   ops_ext.h qwen38_commit.h qwen38_graph.cc
                    qwen38_graph.h tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h shared_q8.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"

@@ -522,17 +522,14 @@ add_executable(qwen2_test qwen2_test.cc)
 target_link_libraries(qwen2_test PRIVATE llmp_model)
 llmp_gtest(qwen2_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The EXL3 Qwen2 adapter and its native operation plan (model/qwen2_exl3.h):
-# binding synthetic resource lists, the recorded phase kinds, the order of
-# operations, placement and the launch digest, and the pinned regions.
+# Immutable EXL3 source profile and resource binding (model/qwen2_exl3.h).
 add_executable(qwen2_exl3_test qwen2_exl3_test.cc)
 target_link_libraries(qwen2_exl3_test PRIVATE llmp_model)
 llmp_gtest(qwen2_exl3_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The Qwen2 chunk graph, its plan with and without fusion, and activation
-# placement (kernels/ggml/qwen2_graph.h, graph_plan.h).
+# Generic graph planning, activation placement and lane/KV controls.
 add_executable(ggml_graph_test ggml_graph_test.cc)
-target_link_libraries(ggml_graph_test PRIVATE llmp_ggml_tensors llmp_model)
+target_link_libraries(ggml_graph_test PRIVATE llmp_ggml_tensors)
 llmp_gtest(ggml_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The DeepSeek V4 adapter: binding, state, chunk inputs, and its chunk graph's
@@ -1012,17 +1009,6 @@ if(LLMP_CUDA)
                             Exl3LinearTest.NoPackedKernelReadsOutsideItsOperandsAtTheFixturesShapes
                             Exl3LinearTest.TwoContextsAtTheCoresidentLimitBothComplete
                             Exl3ImplementationsTest.IdentitiesRecordTheLibraryAssertions)
-
-  # One phase of the native EXL3 plan (kernels/exl3/qwen2.h) over zeroed
-  # weights of the model's shapes: binding, refusals and a run.
-  add_executable(exl3_qwen2_test exl3_qwen2_test.cc)
-  target_link_libraries(exl3_qwen2_test PRIVATE llmp_exl3_qwen2 llmp_cuda_device_memory)
-  # On a discrete GPU too (`gpu-discrete`, D-082), all but the check of
-  # upstream's GEMV choice as the per-linear sweep saw it on a GB10.
-  llmp_gpu_gtest(exl3_qwen2_test
-                   DISCRETE Exl3Qwen2Test.APrefillAndAStepBindAndRunOnOneStream
-                            Exl3Qwen2Test.BindRefusesAMissingOrStaleImplementationAndShortMemory
-                            Exl3Qwen2Test.TablesWhoseRewriteFailedPartwayRefuseTheMultiGemm)
 
   # The EXL3 trellis through the format layer (D-108): the module's
   # capabilities and Candidates(), ExLlamaV3's reconstruction kernels

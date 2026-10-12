@@ -1936,5 +1936,193 @@
     "same_selected_implementation_only": true,
     "external_quantized_oracle_used": false,
     "scope": "Active swap/spec benchmark API over ComponentStepSource and ModelRunner; no serving or matched speed claim."
+  },
+  "legacy_executor_retirement": {
+    "status": "PASS",
+    "host": "spark",
+    "native_result_sha256": "e2a68dfd17be0be63bb65eda17eb8d3b51b1aab600df4e30d463fcf16dbf0d62",
+    "native_focused": {
+      "exl3_inputs": {
+        "cases": 5,
+        "failed": 0,
+        "skipped": 0
+      },
+      "selected": {
+        "cases": 6,
+        "failed": 0,
+        "skipped": 0
+      },
+      "binding": {
+        "cases": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "generic_graph": {
+        "cases": 16,
+        "failed": 0,
+        "skipped": 0
+      },
+      "refusal": {
+        "cases": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    "native_build_exit": 0,
+    "exl3_binary_sha256": "46dc7560e48ddb7e73d8ebe54454f694065a5be2075909377b474a1a8faf472c",
+    "fp16_binary_sha256": "ce565889cca7cd79419b09d10b110bd02da79c212dc79e79689a6187f56daf28",
+    "identity_binary_sha256": "3fc8cd1d4ba70a272386f217506b9889d0cf3e06306164b6793f59239fa99fb4",
+    "pre_guards": "PASS",
+    "post_guards": "PASS",
+    "preliminary_builds": [
+      {
+        "namespace": "g5-retirement-main01",
+        "status": "FAIL",
+        "seconds": 29,
+        "reason": "Active swap/spec benchmark CUDA runtime headers depended on retired EXL3 target."
+      },
+      {
+        "namespace": "g5-retirement-main02",
+        "status": "FAIL",
+        "seconds": 19,
+        "reason": "Active Qwen speculation CUDA driver header depended on retired EXL3 target."
+      }
+    ],
+    "scope": "Bounded unserved fixtures; no arithmetic/tuning, changed-address, process-restart, broader serving or speed qualification.",
+    "actual": {
+      "status": "PASS",
+      "raw_cases": 8,
+      "raw_failures": 0,
+      "raw_skips": 0,
+      "children": {
+        "40g-doc0": {
+          "raw_cases": 1,
+          "result_sha256": "847e86b05ed0bfb791f933ea04297f7ed183e562f22017a4aab990a3f275c0bf",
+          "observed_process_cache_peak_bytes": 276156416,
+          "all_guards": "PASS",
+          "remaining_compute_processes": 0,
+          "memory_events": {
+            "low": "0",
+            "high": "0",
+            "max": "0",
+            "oom": "0",
+            "oom_kill": "0",
+            "oom_group_kill": "0",
+            "sock_throttled": "0"
+          },
+          "mean_nll": 4.32200279993934,
+          "targets": 255,
+          "per_target_equal_previous_grouped_run": true
+        },
+        "45g-doc0": {
+          "raw_cases": 1,
+          "result_sha256": "adc49b8587ac14b5ada07e10ba0fdfaa0f16984b2cd2b3552ab4586c8b1762d0",
+          "observed_process_cache_peak_bytes": 277045248,
+          "all_guards": "PASS",
+          "remaining_compute_processes": 0,
+          "memory_events": {
+            "low": "0",
+            "high": "0",
+            "max": "0",
+            "oom": "0",
+            "oom_kill": "0",
+            "oom_group_kill": "0",
+            "sock_throttled": "0"
+          },
+          "mean_nll": 4.316930532778594,
+          "targets": 255,
+          "per_target_equal_previous_grouped_run": true
+        },
+        "40o-doc0": {
+          "raw_cases": 1,
+          "result_sha256": "55d97af476deef5ac645d03ad4468de012b5f6605c61623fe0979c91c0b292bc",
+          "observed_process_cache_peak_bytes": 277897216,
+          "all_guards": "PASS",
+          "remaining_compute_processes": 0,
+          "memory_events": {
+            "low": "0",
+            "high": "0",
+            "max": "0",
+            "oom": "0",
+            "oom_kill": "0",
+            "oom_group_kill": "0",
+            "sock_throttled": "0"
+          },
+          "mean_nll": 4.321513325725811,
+          "targets": 255,
+          "per_target_equal_previous_grouped_run": true
+        },
+        "45o-doc0": {
+          "raw_cases": 1,
+          "result_sha256": "a94445ee06ac9c30e76bde98c239de552610f3cb5e334c044028b8b16fd4f029",
+          "observed_process_cache_peak_bytes": 277475328,
+          "all_guards": "PASS",
+          "remaining_compute_processes": 0,
+          "memory_events": {
+            "low": "0",
+            "high": "0",
+            "max": "0",
+            "oom": "0",
+            "oom_kill": "0",
+            "oom_group_kill": "0",
+            "sock_throttled": "0"
+          },
+          "mean_nll": 4.317304349196956,
+          "targets": 255,
+          "per_target_equal_previous_grouped_run": true
+        },
+        "fp16": {
+          "raw_cases": 3,
+          "result_sha256": "b766c065c99690567438189d37bcf135c8ac330bc1d65504bb8c6dccf68ec4f4",
+          "observed_process_cache_peak_bytes": 2172686336,
+          "all_guards": "PASS",
+          "remaining_compute_processes": 0,
+          "memory_events": {
+            "low": "0",
+            "high": "0",
+            "max": "0",
+            "oom": "0",
+            "oom_kill": "0",
+            "oom_group_kill": "0",
+            "sock_throttled": "0"
+          },
+          "tests": {
+            "SharedControlRepeatsAndReloadsWeights": {
+              "last_result_sha256": "51260a6794f0a672e61a6a94d4b64e026524e8e4c550e76aa88a9e7f30214f9d",
+              "compared_rows": "76",
+              "evaluations": "3",
+              "weight_reload": "1",
+              "weight_extents": "490"
+            },
+            "SharedHeldoutRepeatsAndReloadsWeights": {
+              "last_result_sha256": "99a812b19a2269dbf961075beebf82b51da5cd3781c9f9b777ad06ab1f875560",
+              "compared_rows": "577",
+              "evaluations": "3",
+              "weight_reload": "1",
+              "weight_extents": "490"
+            },
+            "InsufficientHostAllowanceRefusesBeforeConstruction": {}
+          }
+        },
+        "identity": {
+          "raw_cases": 1,
+          "result_sha256": "9dda470036167b6f38ad59830bc8ad1d68f1a9578ac865ee0907427833e3dea8",
+          "observed_process_cache_peak_bytes": 134569984,
+          "all_guards": "PASS",
+          "remaining_compute_processes": 0,
+          "memory_events": {
+            "low": "0",
+            "high": "0",
+            "max": "0",
+            "oom": "0",
+            "oom_kill": "0",
+            "oom_group_kill": "0",
+            "sock_throttled": "0"
+          }
+        }
+      },
+      "aggregate_sha256": "037210295fd60c387283f53770e44b49d034f0d5486b7d4e3c1a395b88b02704"
+    },
+    "reviewed_recipe_seal_sha256": "efd5a9b93b11e5e188edacae7bcb51738e0bd4c72d8bba23d78cf7ea33e5ce63"
   }
 }

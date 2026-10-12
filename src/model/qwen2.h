@@ -18,9 +18,9 @@
 // harness-level model description, not a format: nothing here reads or
 // writes model metadata.
 //
-// The model layer holds no vendor or kernel-module types; the GGML graph
-// that computes a chunk is built from this adapter by the GGML kernel
-// module (kernels/ggml/qwen2_graph.h).
+// The model layer holds no vendor or kernel-module types. Shared component
+// mappings consume the immutable profile and resource binding; legacy input
+// formulas remain available to source and layout controls.
 
 #ifndef LLMP_MODEL_QWEN2_H_
 #define LLMP_MODEL_QWEN2_H_

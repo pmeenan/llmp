@@ -423,4 +423,39 @@ bytes under the existing 16-GiB zero-swap confinement; this is not device
 occupancy. The unchanged mapping reuses its earlier original-reference quality
 and state evidence. No external quantized-library bit agreement, serving
 qualification or matched speed result is claimed. Legacy standalone executor
-and graph deletion remains the following slice.
+and graph deletion is covered below.
+
+
+## Legacy executor retirement
+
+The Qwen2 FP16 and EXL3 fixture migration now removes the two standalone
+executor families, their graph/phase builders and obsolete family-builder
+tests. Generic operation kernels, graph planning, source bindings, EXL3 linear
+sweeps and active swap/spec benchmark comparisons remain. About 8,400 lines
+of duplicated execution code are removed. Sixteen generic graph controls,
+including a synthetic fusion-choice test, preserve generic planning coverage.
+Active benchmarks now declare their CUDA header dependency directly.
+
+Main passes the full native build and 30 focused controls: five EXL3 inputs,
+six selected-source controls, two immutable-binding controls, sixteen generic
+graph controls and one pre-construction host refusal. Eight actual affected
+checks also pass: all four EXL3 profiles score the first existing 256-token
+document; the three FP16 adapter checks repeat/reload both full trajectories
+and refuse insufficient inventory; the EXL3 module-identity control verifies
+the changed source inventory. No arithmetic or tuning changes accompany
+deletion, so earlier grouped original-reference and state evidence is reused.
+The two preliminary builds exposed missing direct CUDA header dependencies;
+those failed attempts remain recorded before the successful final build.
+
+These approved fixtures remain unserved with no speed baseline. Original-model
+quality observations and exact continuation within each selected implementation
+qualify their bounded migration scope. Historical bridge/Tier C bit comparisons
+remain historical diagnostics. Changed virtual addresses, OS-process
+restart/crash recovery and broader shape/serving qualification are not claimed.
+
+All final source/binary/input/recipe guards pass, no compute process remains,
+and confinement max/OOM events are zero. Every EXL3 per-target NLL equals
+the earlier grouped observation; both FP16 full-result hashes equal their
+earlier shared-adapter runs. Process/cache peaks remain below the existing
+10-GiB EXL3/identity and 16-GiB FP16 caps. Final format, boundary, header and
+license checks pass.
