@@ -62,6 +62,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
@@ -110,6 +111,25 @@ struct StageInstances {
 };
 std::expected<StageInstances, std::string> InstancesOf(const spec::ModelSpec& spec,
                                                        std::size_t stage);
+
+// Validated, conservative all-role inventory, without building a graph. Parts
+// borrow only for the synchronous visitor call. References use the same owner
+// resolver as BuildStep, including borrowed and injected stage weights.
+struct WeightBindingView {
+  ir::WeightRef ref;
+  std::uint32_t artifact = 0;
+  format::TensorFormat format;
+  std::span<const std::pair<std::string, format::PartRole>> parts;
+  std::uint64_t rows_per_token = 0;  // row-paged role; zero: ordinary residency
+  std::uint64_t head_rows = 0;       // actual output head's selected vocabulary
+  std::uint16_t use_stage = 0;
+  std::uint32_t use_component = 0;
+  std::uint16_t use_role = 0;
+};
+using WeightVisitor = std::function<std::expected<void, std::string>(const WeightBindingView&)>;
+std::expected<void, std::string> VisitWeightBindings(
+    const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
+    const WeightVisitor& visitor);
 
 // Where a step with a head narrows (Fragment::narrow): the (layer,
 // component) of the stage's last component that mixes rows, when it can

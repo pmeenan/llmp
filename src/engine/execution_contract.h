@@ -35,6 +35,8 @@ namespace llmp::engine {
 // and reuses one owner across failed/retried setup, rather than admitting again.
 class ExecutionMetadataAllowance {
  public:
+  // Catalog/control ownership in addition to usable local construction bytes.
+  static std::uint64_t OverheadBytes();
   static std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string> Admit(
       catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t bytes,
       std::uint64_t available, std::uint64_t margin);

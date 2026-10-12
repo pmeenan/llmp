@@ -2160,6 +2160,34 @@ until N5. Final combined regression passed, as did the main native build,
 N4 and N5 remain open. See the
 [admission record](experiments/m36-native-v1-admission/README.md).
 
+The stored-target binding extraction (N4b7) uses one owned
+`ReadStoredComponents` result: the stored spec, its native source, checked
+role/part locations, row tables and head width. The component catalog's role
+validation and owner resolver are shared with graph emission, including tied
+aliases and another stage's artifact. The factory prepays bounded construction
+from the opened metadata before parsing, retains the payment with the source,
+and moves the result into its real `ComponentStepSource`. Standalone admitted
+Gemma targets no longer build setup graphs solely to discover bindings; real
+setup measurement and backend qualification remain unchanged. Existing v0
+synthesis and the closed stored-target admission rules remain in force.
+
+The initial owned runtime result is a single target artifact. Row-paged roles
+must have their own resource group; native multipart expert slabs remain
+refused by the existing placement boundary. The tiny host control exercises
+actual planning, GGML lowering and `BoundGraph` checks over descriptor
+addresses; it does not dispatch GPU work or declare a prepared backend. This
+foundation does not qualify native ModelOpt/Qwen serving or multi-artifact
+composition, and the expected reduction in construction work is not a measured
+latency or memory result.
+
+Main validation: full native build and 191 affected host controls pass,
+including six new binder controls. The existing published Gemma 2, 3, 26 and 31
+execution cases pass their full-head, state and spill-continuation checks;
+the mapped DeepSeek source control also passes (320 head values and 376,832
+initialized state bytes). These checks use the existing artifacts, without
+republication or full payload hashing. No runtime numerical policy changed.
+The construction-work reduction is structural, not a measured speed claim.
+
 **Import transform primitives** (`import/transforms.h`). The historical
 ModelOpt import's `norm.plus_one` and `ssm.a_neg_exp` convert explicitly
 selected BF16 scalars to F32 using binary64 arithmetic and nearest-even

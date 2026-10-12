@@ -147,7 +147,7 @@ std::expected<void, std::string> CheckComponentAdmission(
   return {};
 }
 
-std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
+std::expected<void, std::string> CheckComponentArtifactAdmission(
     const artifact::Artifact& artifact) {
   if (artifact.format_version() != 1) return Refused("requires a native v1 artifact");
   const auto* profile = Approved(artifact.model().architecture, artifact.sources());
@@ -156,6 +156,14 @@ std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
       artifact.resources().size() != profile->tensors - profile->arrays ||
       artifact.expert_arrays().size() != profile->arrays)
     return Refused("the approved target requires its copy-only native tensor inventory");
+  return {};
+}
+
+std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
+    const artifact::Artifact& artifact) {
+  if (auto checked = CheckComponentArtifactAdmission(artifact); !checked)
+    return std::unexpected(checked.error());
+  const auto* profile = Approved(artifact.model().architecture, artifact.sources());
   auto model = spec::StoredSpec(artifact);
   if (!model) return Refused(model.error());
   auto source = spec::SourceOf(artifact);

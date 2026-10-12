@@ -1096,6 +1096,18 @@ add_executable(gemma4_assistant_artifact_test gemma4_assistant_artifact_test.cc)
 target_link_libraries(gemma4_assistant_artifact_test PRIVATE llmp_model llmp_artifact llmp_tokenizer)
 llmp_gtest(gemma4_assistant_artifact_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models")
 
+# Paid stored-v1 bindings; CUDA builds also bind real implementation descriptors
+# on the host, without provider setup, capture, model payload or GPU dispatch.
+add_executable(component_bindings_test component_bindings_test.cc)
+target_link_libraries(component_bindings_test PRIVATE llmp_runtime_llm llmp_components
+                                                     llmp_test_artifact_writer)
+if(LLMP_CUDA)
+  target_compile_definitions(component_bindings_test PRIVATE LLMP_BINDING_CUDA=1)
+  target_link_libraries(component_bindings_test PRIVATE llmp_ggml_kernels)
+endif()
+llmp_gtest(component_bindings_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 # Closed native-v1 admission over actual descriptor formats and stored specs.
 add_executable(component_admission_test component_admission_test.cc)
 target_link_libraries(component_admission_test PRIVATE llmp_runtime llmp_components llmp_json)

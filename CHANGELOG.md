@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Prepay stored-component binding construction and reuse validated role/part
+  locations in admitted native Gemma builds, removing discovery-only setup
+  graphs while retaining real setup measurement and existing admission limits.
+
 - Reduce selected-expert page lookup CPU work for complete device reservations
   without a persistent index. Keep the original fallback; the bounded screen
   records slower small dense and host-fallback cases alongside large-inventory

@@ -39,6 +39,7 @@
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_admission.h"
+#include "runtime/component_bindings.h"
 #include "runtime/gemma_profile.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_settings.h"
@@ -61,26 +62,24 @@ namespace fs = std::filesystem;
 namespace ja = llmp::artifact;
 
 struct ComponentHold {
+  std::unique_ptr<StoredBindingPayment> stored_payment;
   spec::ModelSpec spec;
   std::vector<spec::Source> sources;  // by artifact: the target's, the drafter's
   std::vector<std::span<const components::BoundTensor>> tables;
   std::vector<model::StateLayoutDerived> layouts;  // by stage
   std::vector<const model::StateLayoutDerived*> stages;
   std::vector<spec::SourceValue> values, drafter_values;
-  // Each weight's place: its artifact (the stage it names), whether it is
+  // Each weight's place: its holding stage's artifact, whether it is
   // an expert array, and its resource's or array's index.
-  struct Place {
-    std::uint16_t artifact = 0;
-    bool array = false;
-    std::uint32_t index = 0;
-  };
-  std::map<std::pair<ir::WeightRef, format::PartRole>, Place> place;
+  using Place = ComponentWeightPlace;
+  ComponentWeightPlaces place;
   std::map<ir::WeightRef, std::uint64_t> pitch;
   // Before the backend, whose launch borrows it (the runner's Release
   // destroys that launch, then retires the handle).
   std::unique_ptr<kernels::ggml::CublasHandle> cublas;
   std::unique_ptr<kernels::ggml::GgmlBackend> backend;
 };
+static_assert(sizeof(ComponentHold) <= 4096);  // StoredBindingBytes fixed owner inventory.
 
 // Small integer recipe metadata read through the artifact's authenticated
 // shard descriptor. The synchronous direct read retires before its aligned
@@ -227,7 +226,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                               ComponentBuildOptions options) {
   return [&node, store = std::move(store), id = entry.artifact.value_or(""),
           drafter_id = entry.drafter.value_or(""), index, options = std::move(options),
-          metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
+          metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{},
+          stored_metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
     const bool solo = settings.architecture == "qwen4exp";
     const bool joined_score = solo && JoinedScoreEnvelope(settings, drafter_id, options);
@@ -242,23 +242,52 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
     if (settings.architecture != artifact->model().architecture)
       return Error("resolved architecture differs from the opened artifact");
+    // Stored source construction is admitted before parsing/copying its spec,
+    // component parameters or role maps. Retain one catalog payment on retries.
+    std::unique_ptr<StoredBindingPayment> stored_payment;
+    if (stored) {
+      if (solo) return Error("native Qwen serving/diagnostic admission is not qualified");
+      if (auto admitted = CheckComponentArtifactAdmission(*artifact); !admitted)
+        return Error(admitted.error());
+      auto bytes = StoredBindingBytes(*artifact);
+      if (!bytes) return Error(bytes.error());
+      if (!stored_metadata) {
+        std::uint64_t total = 0;
+        if (__builtin_add_overflow(*bytes, engine::ExecutionMetadataAllowance::OverheadBytes(),
+                                   &total))
+          return Error("stored construction catalog payment overflows");
+        auto paid = engine::ExecutionMetadataAllowance::Admit(
+            node.catalog(), node.domain(), total, platform::AvailableMemoryBytes().value_or(0),
+            kUncountedMargin);
+        if (!paid) return Error(paid.error());
+        stored_metadata = std::move(*paid);
+      }
+      auto paid = StoredBindingPayment::Create(*artifact, stored_metadata);
+      if (!paid) return Error(paid.error());
+      stored_payment = std::move(*paid);
+    }
     auto hold = std::make_shared<ComponentHold>();
+    hold->stored_payment = std::move(stored_payment);
+    std::optional<StoredComponentBindings> stored_bindings;
     std::optional<model::Qwen38Binding> qwen;
     std::optional<spec::PolicyRule> stored_policy;
     std::expected<spec::ModelSpec, std::string> synthesized;
     if (stored) {
-      auto admitted = ReadComponentAdmission(*artifact);
-      if (!admitted) return Error(admitted.error());
+      auto bindings = ReadStoredComponents(*artifact, std::move(hold->stored_payment));
+      if (!bindings) return Error(bindings.error());
+      stored_bindings.emplace(std::move(*bindings));
       if (settings.context.value == 0 ||
-          settings.context.value > admitted->model.stages.front().context)
+          settings.context.value > stored_bindings->model.stages.front().context)
         return Error("resolved context exceeds the admitted stored spec");
       auto policy = ComponentAdmissionPolicy(
-          admitted->model, admitted->source, artifact->sources(),
+          stored_bindings->model, stored_bindings->source, artifact->sources(),
           {.context = settings.context.value, .slots = settings.max_slots.value});
       if (!policy) return Error(policy.error());
       stored_policy = *policy;
-      synthesized = std::move(admitted->model);
-      hold->sources.push_back(std::move(admitted->source));
+      hold->stored_payment = std::move(stored_bindings->payment);
+      synthesized = std::move(stored_bindings->model);
+      hold->sources.push_back(std::move(stored_bindings->source));
+      hold->place = std::move(stored_bindings->places);
     } else {
       std::expected<std::vector<spec::SourceValue>, std::string> values;
       if (solo) {
@@ -464,40 +493,53 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           engine::GroupPlace::kNone;
     std::optional<engine::RunnerConfig::RowTable> row_table;
     std::uint32_t logit_width = 0;
-    for (const planner::StepShape& s : setup) {
-      auto step = components::BuildStep(hold->spec, s.stage, s,
-                                        {.tensors = hold->tables.at(s.stage),
-                                         .state = &hold->layouts.at(s.stage),
-                                         .stages = hold->stages,
-                                         .artifacts = hold->tables},
-                                        {.narrow = true});
-      if (!step) return Error(step.error());
-      for (const components::StepWeight& weight : step->weights) {
-        const ja::Artifact& a = weight.ref.stage == 0 ? *artifact : *drafter;
-        for (const auto& [name, role] : weight.parts) {
-          const auto found =
-              weight.ref.expert_array ? a.FindExpertArray(name) : a.FindResource(name);
-          if (!found) return Error(std::format("no weight part holds {}", name));
-          hold->place[{weight.ref, role}] = {
-              .artifact = weight.ref.stage, .array = weight.ref.expert_array, .index = *found};
-          if (weight.ref.expert_array)
-            hold->pitch[weight.ref] = placements.at(weight.ref.stage).pitch.at(*found);
-          if (solo && weight.ref.stage == 0 && !weight.ref.expert_array &&
-              *found == qwen->ple_table.index)
-            row_table = {.weight = weight.ref,
-                         .resource = *found,
-                         .format = step->graph.tensor(weight.tensor).format,
-                         .part = role,
-                         .rows_per_token = model::Qwen38Flash().ple_heads()};
+    if (stored_bindings) {
+      logit_width = stored_bindings->logit_width;
+      for (const auto& [key, place] : hold->place)
+        if (place.array)
+          hold->pitch[key.first] = placements.at(place.artifact).pitch.at(place.index);
+      for (const auto& row : stored_bindings->rows)
+        placements.at(hold->spec.stages.at(row.weight.stage).artifact)
+            .places.at(artifact->resources()[row.resource].group) = engine::GroupPlace::kNone;
+    }
+    // v0 retains its established synthesis path. Stored v1 maps came from the
+    // validated component roles above; no discovery-only graphs are built.
+    if (!stored) {
+      for (const planner::StepShape& s : setup) {
+        auto step = components::BuildStep(hold->spec, s.stage, s,
+                                          {.tensors = hold->tables.at(s.stage),
+                                           .state = &hold->layouts.at(s.stage),
+                                           .stages = hold->stages,
+                                           .artifacts = hold->tables},
+                                          {.narrow = true});
+        if (!step) return Error(step.error());
+        for (const components::StepWeight& weight : step->weights) {
+          const ja::Artifact& a = weight.ref.stage == 0 ? *artifact : *drafter;
+          for (const auto& [name, role] : weight.parts) {
+            const auto found =
+                weight.ref.expert_array ? a.FindExpertArray(name) : a.FindResource(name);
+            if (!found) return Error(std::format("no weight part holds {}", name));
+            hold->place[{weight.ref, role}] = {
+                .artifact = weight.ref.stage, .array = weight.ref.expert_array, .index = *found};
+            if (weight.ref.expert_array)
+              hold->pitch[weight.ref] = placements.at(weight.ref.stage).pitch.at(*found);
+            if (solo && weight.ref.stage == 0 && !weight.ref.expert_array &&
+                *found == qwen->ple_table.index)
+              row_table = {.weight = weight.ref,
+                           .resource = *found,
+                           .format = step->graph.tensor(weight.tensor).format,
+                           .part = role,
+                           .rows_per_token = model::Qwen38Flash().ple_heads()};
+          }
         }
-      }
-      if (s.stage == 0 && step->logits.valid() && logit_width == 0) {
-        const std::uint64_t width = step->graph.tensor(step->logits).shape().ne[0];
-        if (width == 0 ||
-            width > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
-          return Error(std::format("the head's {} logits a row", width));
+        if (s.stage == 0 && step->logits.valid() && logit_width == 0) {
+          const std::uint64_t width = step->graph.tensor(step->logits).shape().ne[0];
+          if (width == 0 ||
+              width > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+            return Error(std::format("the head's {} logits a row", width));
+          }
+          logit_width = static_cast<std::uint32_t>(width);
         }
-        logit_width = static_cast<std::uint32_t>(width);
       }
     }
     if (logit_width == 0) return Error("the spec's target stage has no head");
@@ -556,7 +598,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto made = engine::ComponentStepSource::Create(
           {.spec = &hold->spec,
            .stage = stage,
-           .bindings = {.tensors = hold->tables.at(stage),
+           .bindings = {.tensors = hold->tables.at(hold->spec.stages.at(stage).artifact),
                         .state = &hold->layouts.at(stage),
                         .stages = hold->stages,
                         .artifacts = hold->tables},
@@ -597,6 +639,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     parts.config.weights.push_back({.weights = std::move(weights),
                                     .places = std::move(placements[0].places),
                                     .slabs = std::move(placements[0].slabs)});
+    if (stored_bindings) parts.config.row_tables = std::move(stored_bindings->rows);
     if (row_table) parts.config.row_tables.push_back(*row_table);
     if (solo)
       parts.config.capture_phases &= ~(1U << static_cast<unsigned>(planner::Phase::kPrefill));

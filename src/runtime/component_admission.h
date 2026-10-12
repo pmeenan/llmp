@@ -33,6 +33,10 @@ std::expected<void, std::string> CheckComponentAdmission(const spec::ModelSpec& 
                                                          const spec::Source& source,
                                                          std::span<const artifact::Source> origins);
 
+// Artifact-only prerequisite, before owned spec/source construction.
+std::expected<void, std::string> CheckComponentArtifactAdmission(
+    const artifact::Artifact& artifact);
+
 // v1 only. Reads StoredSpec and SourceOf; v0 retains its existing synthesis.
 std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
     const artifact::Artifact& artifact);

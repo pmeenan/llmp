@@ -423,6 +423,28 @@ std::expected<void, std::string> CheckRole(const Instance& in, const RoleShape& 
   return {};
 }
 
+std::expected<std::vector<std::optional<RoleFormat>>, std::string> CheckedRoleFormats(
+    const Instance& in, const TensorTables& tables) {
+  auto formats = RoleFormats(in, tables);
+  if (!formats) return std::unexpected(formats.error());
+  const auto shapes = in.def->shapes(in);
+  if (!shapes) return std::unexpected(shapes.error());
+  std::vector<bool> used(in.def->roles.size(), false);
+  for (const RoleShape& r : *shapes) {
+    used[r.role] = true;
+    const auto& f = (*formats)[r.role];
+    if (!f)
+      return Refused(
+          std::format("{} role {} is unbound", in.def->kind, in.def->roles[r.role].name));
+    if (auto checked = CheckRole(in, r, *f); !checked) return std::unexpected(checked.error());
+  }
+  for (std::size_t r = 0; r < used.size(); ++r)
+    if (!used[r] && (*formats)[r])
+      return Refused(std::format("{} binds role {}, which its parameters do not use", in.def->kind,
+                                 in.def->roles[r].name));
+  return formats;
+}
+
 model::Batching Tighter(model::Batching a, const model::Batching& b) {
   const auto least = [](std::uint32_t x, std::uint32_t y) {
     if (x == 0) return y;
@@ -804,27 +826,8 @@ std::expected<void, std::string> ValidateSpec(
     const TensorTables tables = TablesOf(spec, si, tensors, tensors[s.artifact]);
     for (const Instance* in : All(*instances)) {
       const std::string where = Where(s, in->site, in->layer);
-      auto formats = RoleFormats(*in, tables);
+      auto formats = CheckedRoleFormats(*in, tables);
       if (!formats) return Refused(std::format("{}: {}", where, formats.error()));
-      const auto shapes = in->def->shapes(*in);
-      std::vector<bool> used(in->def->roles.size(), false);
-      for (const RoleShape& r : *shapes) {
-        used[r.role] = true;
-        const auto& f = (*formats)[r.role];
-        if (!f) {
-          return Refused(std::format("{}: {} role {} is unbound", where, in->def->kind,
-                                     in->def->roles[r.role].name));
-        }
-        if (auto checked = CheckRole(*in, r, *f); !checked) {
-          return Refused(std::format("{}: {}", where, checked.error()));
-        }
-      }
-      for (std::size_t r = 0; r < used.size(); ++r) {
-        if (!used[r] && (*formats)[r]) {
-          return Refused(std::format("{}: {} binds role {}, which its parameters do not use", where,
-                                     in->def->kind, in->def->roles[r].name));
-        }
-      }
     }
     stages.push_back(std::move(*instances));
   }
@@ -1333,6 +1336,22 @@ std::expected<ir::WeightRef, std::string> OwnerRef(const spec::ModelSpec& spec, 
   return Refused(std::format("stage {} binds no {} of its own", spec.stages.at(owner).name, name));
 }
 
+std::expected<ir::WeightRef, std::string> ResolvedWeightRef(const spec::ModelSpec& spec,
+                                                            std::uint16_t at, const Instance& in,
+                                                            std::uint16_t role,
+                                                            const RoleFormat& format) {
+  if (!format.stage.empty()) {
+    const auto owner = StageIndex(spec, format.stage);
+    if (!owner) return Refused(std::format("no stage {}", format.stage));
+    return OwnerRef(spec, *owner, format.parts.front().first, format.parts.front().second);
+  }
+  return ir::WeightRef{.stage = at,
+                       .component = in.index,
+                       .role = role,
+                       .layer = in.layer,
+                       .expert_array = format.experts};
+}
+
 // A streams tap's value of the streams `x` [width, streams, rows]: them as
 // [width · streams, rows] (kStreams), or their mean (kStreamMean: each
 // row's streams added in order onto the first's view, then scaled).
@@ -1646,31 +1665,18 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
           const Flow& flow, std::span<const ir::TensorId> state, std::size_t tensors, bool needed,
           bool narrow, bool narrowed, const std::function<ir::TensorId(std::string_view)>& side)
       -> std::expected<FragmentOut, std::string> {
-    auto formats = RoleFormats(in, at_tables);
+    auto formats = CheckedRoleFormats(in, at_tables);
     if (!formats) return std::unexpected(formats.error());
-    const auto shapes = in.def->shapes(in);
     std::vector<ir::TensorId> leaves(in.def->roles.size());
     std::vector<bool> used(in.def->roles.size(), false);
     std::vector<std::optional<ir::WeightRef>> owners(in.def->roles.size());
-    for (const RoleShape& r : *shapes) {
-      const auto& f = (*formats)[r.role];
-      if (!f) return Refused(std::format("role {} is unbound", in.def->roles[r.role].name));
-      if (auto checked = CheckRole(in, r, *f); !checked) return std::unexpected(checked.error());
-      used[r.role] = true;
-      if (!f->stage.empty()) {
-        const auto owner = StageIndex(spec, f->stage);
-        if (!owner) return Refused(std::format("no stage {}", f->stage));
-        auto ref = OwnerRef(spec, *owner, f->parts.front().first, f->parts.front().second);
-        if (!ref) return std::unexpected(ref.error());
-        owners[r.role] = *ref;
-      } else if (at != stage) {
-        // Another stage's own tensor (an injecting drafter's).
-        owners[r.role] = ir::WeightRef{.stage = at,
-                                       .component = in.index,
-                                       .role = r.role,
-                                       .layer = in.layer,
-                                       .expert_array = f->experts};
-      }
+    for (std::size_t role = 0; role != formats->size(); ++role) {
+      if (!(*formats)[role]) continue;
+      used[role] = true;
+      auto ref =
+          ResolvedWeightRef(spec, at, in, static_cast<std::uint16_t>(role), *(*formats)[role]);
+      if (!ref) return std::unexpected(ref.error());
+      owners[role] = *ref;
     }
     sb.Begin(in);
     Fragment f{.b = sb.b(),
@@ -2396,6 +2402,48 @@ std::expected<std::vector<std::int64_t>, std::string> InputValues(
     }
   }
   return out;
+}
+
+std::expected<void, std::string> VisitWeightBindings(
+    const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
+    const WeightVisitor& visitor) {
+  if (!visitor) return Refused("weight inventory needs a visitor");
+  if (auto checked = ValidateSpec(spec, tensors); !checked) return checked;
+  for (std::uint16_t stage = 0; stage != spec.stages.size(); ++stage) {
+    auto instances = InstancesOf(spec, stage);
+    if (!instances) return std::unexpected(instances.error());
+    const auto tables = TablesOf(spec, stage, tensors, tensors[spec.stages[stage].artifact]);
+    for (const auto* in : All(*instances)) {
+      auto formats = CheckedRoleFormats(*in, tables);
+      if (!formats) return std::unexpected(formats.error());
+      for (std::size_t role = 0; role != formats->size(); ++role) {
+        const auto& f = (*formats)[role];
+        if (!f) continue;
+        auto ref = ResolvedWeightRef(spec, stage, *in, static_cast<std::uint16_t>(role), *f);
+        if (!ref) return std::unexpected(ref.error());
+        const bool rows = in->def->roles[role].rows_on_demand;
+        if (rows && !in->def->side_count) return Refused("row-paged role has no row count");
+        const auto selected_rows =
+            in->def->kind == "head.linear" && in->def->roles[role].name == "weight"
+                ? static_cast<std::uint64_t>(in->params.Int("rows"))
+                : 0;
+        const WeightBindingView binding{
+            .ref = *ref,
+            .artifact = spec.stages[ref->stage].artifact,
+            .format = f->format,
+            .parts = f->parts,
+            .rows_per_token = rows ? in->def->side_count(*in) : 0,
+            .head_rows = in->site == Site::kOutput && in->def->roles[role].name == "weight"
+                             ? (selected_rows ? selected_rows : f->format.shape.ne[1])
+                             : 0,
+            .use_stage = stage,
+            .use_component = in->index,
+            .use_role = static_cast<std::uint16_t>(role)};
+        if (auto result = visitor(binding); !result) return result;
+      }
+    }
+  }
+  return {};
 }
 
 }  // namespace llmp::components

@@ -2387,6 +2387,15 @@ each is checked against the design as M3.6 proceeds.
                   large-inventory selected-span savings with explicit small dense
                   and host-fallback regressions; no model-speed claim or new index
                   ([evidence](experiments/m36-native-grouped-foundation/README.md#ordinal-page-lookup-cpu-screen--2026-10-12)).
+            - [x] **N4b7 — paid consumable stored-spec bindings:** one prepaid
+                  spec/source and the shared role/owner visitor replace redundant
+                  binding-discovery graphs in admitted stored Gemma targets;
+                  actual setup measurement remains. Main native build and 191
+                  affected host controls, four existing published Gemma execution
+                  cases, and the mapped DeepSeek source case pass. Admission,
+                  native multipart expert placement and shared row-group ownership
+                  are not widened. Native Qwen/ModelOpt/MLX serving and family
+                  qualification remain open ([scope and checks](engine-components.md)).
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

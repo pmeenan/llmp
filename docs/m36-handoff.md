@@ -64,6 +64,16 @@ fallback regressions are explicitly accepted and reported. Only routed selected
 closure discovery calls this helper. It does not qualify model latency or close
 native admission ([results and tradeoffs](experiments/m36-native-grouped-foundation/README.md#ordinal-page-lookup-cpu-screen--2026-10-12)).
 
+N4b7 now consumes one prepaid stored spec/source and the shared component
+role/owner visitor in admitted native Gemma builds. Main full native build and
+191 affected host controls pass; the four existing published Gemma 2/3/26/31
+execution cases and mapped DeepSeek source case pass without new artifact
+publication or payload hashing. Real setup measurement and ordinary admission
+are unchanged. Native Qwen/ModelOpt/MLX serving, multipart expert placement,
+shared row-group ownership and full-family gates remain open. Source and map
+copies/discovery graphs removed here are a structural simplification, not a
+measured latency improvement.
+
 The generic reserved-weight alignment landed in `b9833111` and passes main native build and
 108 focused host controls. It provides actual checked physical facts without
 installing tuning. The [Qwen secondary screen](experiments/m36-numerical-audit/qwen-joined-score.md)

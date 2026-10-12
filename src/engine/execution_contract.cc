@@ -16,12 +16,16 @@
 
 namespace llmp::engine {
 
+std::uint64_t ExecutionMetadataAllowance::OverheadBytes() {
+  return sizeof(ExecutionMetadataAllowance) + 512;
+}
+
 std::expected<std::shared_ptr<ExecutionMetadataAllowance>, std::string>
 ExecutionMetadataAllowance::Admit(catalog::Catalog& catalog, catalog::DomainId domain,
                                   std::uint64_t bytes, std::uint64_t available,
                                   std::uint64_t margin) {
   // Includes this owner/control block and the pinned catalog extent's metadata.
-  constexpr std::uint64_t overhead = sizeof(ExecutionMetadataAllowance) + 512;
+  const auto overhead = OverheadBytes();
   if (bytes <= overhead || margin == 0 || bytes > available || margin > available - bytes)
     return std::unexpected("execution metadata allowance lacks paid physical headroom");
   auto extent = catalog.AddExtent({.domain = domain,
