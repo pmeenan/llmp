@@ -14,6 +14,10 @@
 #include "import/indexed_parts.h"
 #include "import/normalize.h"
 
+namespace llmp::test_support {
+class PartPublicationFixture;
+}
+
 namespace llmp::import {
 struct SemanticReceipt {
   std::uint32_t source = 0;
@@ -57,6 +61,7 @@ class ModelOptTargetPlan {
   NormalizationCost cost() const { return cost_; }
 
  private:
+  friend class llmp::test_support::PartPublicationFixture;
   friend std::expected<ModelOptTargetPlan, Error> NormalizeModelOptTarget(
       Checkpoint&& source, NormalizationLimits prepaid);
   ModelOptTargetPlan() = default;

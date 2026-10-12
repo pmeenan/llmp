@@ -1961,9 +1961,27 @@ each is checked against the design as M3.6 proceeds.
                   or skips; quality gates passed. Main build, 74 integration controls,
                   all three actual comparisons and quality gates passed;
                   unsupported identities and drafter compositions stay closed.
-            Applied folds, remaining normalized domains and runtime import
-            admission remain open in N4; N5's all-artifact re-import and serving
-            qualification remain separate.
+            - [x] **N4b3 — indexed-part publication foundation:**
+                  one native writer path for owned copy-only and closed ModelOpt
+                  plans, whole-member routing, multipart expert scatter and
+                  byte-preserving permutations. Prepaid metadata bounds,
+                  complete binding/output coverage and same-stream semantic
+                  reauthentication precede applied-fold receipts and verified
+                  durable publication. Independent challenge, 21 main integration
+                  controls, 2,601 native and 2,046 CPU checks, all 137
+                  model/timing cases (184 raw GoogleTest runs) and quality
+                  gates passed with zero failures or skips (2026-10-12).
+                  Actual publication authenticated all 38 source files
+                  (105,872,821,791 bytes), preserved 103,797,070,596 weight
+                  bytes and verified all 25 files and 66,261 chunks.
+                  All 468 permuted parts (2,153,140,992 bytes) matched
+                  an independent destination-order oracle. The confined
+                  8 GiB, zero-swap run completed in 31 minutes without OOM.
+                  CLI source expansion, MTP/vision import, runtime admission
+                  and migration qualification remain separate.
+            The remaining fold catalog, normalized publication domains and
+            runtime import admission remain open in N4; N5's all-artifact
+            re-import and serving qualification remain separate.
       - [ ] **N5 — re-import and admission gates:** every current artifact,
             lossless equivalence and qualified family execution.
 

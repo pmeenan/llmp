@@ -2034,19 +2034,44 @@ plan, not a published artifact or runtime admission. Independent challenge, 26 m
 2,044 CPU checks, all 136 model/timing cases (183 raw GoogleTest runs) and
 quality gates passed with zero failures or skips (2026-10-12). The confined
 actual-source metadata control produced 1,886 canonical parts over 1,212
-logical outputs; it read only the 280 semantic bytes, so whole payload
-authentication and execution of the planned transforms remain publication
-work. The bounded
+logical outputs; it read only the 280 semantic bytes. The writer qualification
+below separately establishes complete source authentication and execution of
+the planned transforms. The bounded
 [source inventory](experiments/m36-modelopt-normalization/source-inventory.json)
 records all 139 observed descriptor patterns and the separate semantic receipts;
 its diagnostic categories alone do not qualify the mapping.
 
-The native copy-only writer (`import/writer.h`) consumes owned normalized
-plans and records their specs in v1 artifacts. `llmp import` streams and
-verifies ordinary or archived sources, including exact parsed-prefix
+The native writer (`import/writer.h`) uses one placement and publication
+path for owned copy-only plans and closed ModelOpt indexed-part plans. It
+checks complete canonical bindings and destination coverage, streams each
+whole source member through its checked route, and scatters expert slices
+without decoding resident weights. Physical source order is independent of
+numeric destination order. Metadata funding covers member/cursor/placement
+storage before allocation or filesystem mutation. Semantic parameters are
+reauthenticated from the same source stream, alongside parsed-prefix and
+supplied whole-file digest checks. Planned fold indices become canonical
+applied-fold receipts only after all routes and source checks finish.
+Stored-spec validation, complete file/chunk readback, durable publication
+and verified reuse remain common to both inputs. All 21 focused host controls
+passed with zero failures or skips, including independent full-payload
+multipart/permutation/expert-scatter comparisons and malformed-owner,
+semantic-mutation and unpaid-work refusals. Final Spark checks passed
+2,601 native, 2,046 CPU and all 137 model/timing cases (184 raw GoogleTest
+runs), with zero failures or skips; main built and passed the 21 integration
+controls and quality gates (2026-10-12). Actual publication authenticated
+all 38 source files (105,872,821,791 bytes), preserving 103,797,070,596 weight
+bytes in 25 verified files and 66,261 chunks. An independent destination-order
+oracle compared every byte of all 468 permuted parts (2,153,140,992 bytes);
+complete source hashes and writer readback cover the remaining payload.
+The 8 GiB, zero-swap run completed in 31 minutes, reached its memory cap
+and incurred no OOM kills. This API extension
+does not admit a runtime model or import MTP/vision components.
+
+The `llmp import` CLI remains in the copy-only Gemma target GGUF domain.
+It verifies ordinary or archived sources, including exact parsed-prefix
 receipts; archived imports record independent catalog events after
-publication. Its current source domain is the normalizer's Gemma target
-GGUFs. See [the writer contract](artifact-format.md#native-writer).
+publication. See [the writer contract](artifact-format.md#native-writer)
+for that qualified copy-only path.
 
 Still to come: AWQ's and GPTQ's layouts, the complete fold catalog (MLX's and
 EXL3's sources need theirs: MLX's stacked experts and moved convolution

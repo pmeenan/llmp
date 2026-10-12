@@ -12,6 +12,7 @@
 #include "import/normalize.h"
 
 namespace llmp::import {
+class ModelOptTargetPlan;
 struct WriteOptions {
   std::filesystem::path store{};
   std::string build{};
@@ -25,11 +26,13 @@ struct WriteResult {
   std::filesystem::path path{};
   bool reused = false;
 };
-// Writes a copy-only normalized plan. Sources remain open one at a time,
+// Writes a privately owned normalized plan. Sources remain open one at a time,
 // payload working space is bounded, expert arrays become contiguous slices,
 // and a failed stream leaves no published artifact. Publication is serialized
 // within one store; an existing ID is fully verified before reuse.
 std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
+                                                const WriteOptions& options);
+std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
                                                 const WriteOptions& options);
 }  // namespace llmp::import
 #endif  // LLMP_IMPORT_WRITER_H_

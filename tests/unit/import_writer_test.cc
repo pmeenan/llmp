@@ -15,12 +15,14 @@
 #include "components/step.h"
 #include "expected_error.h"
 #include "import/archive_input.h"
+#include "import/modelopt_qwen38.h"
 #include "import/normalize.h"
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
 #include "import/stream.h"
 #include "import/writer.h"
 #include "import_fixtures.h"
+#include "part_publication_fixture.h"
 #include "spec/stored.h"
 
 namespace llmp::import {
@@ -583,6 +585,329 @@ TEST_F(ImportWriterTest, SafetensorsAndConfigReceiptsDescribeExactlyParsedBytes)
       EXPECT_EQ(file.parsed.sha256,
                 base::Sha256().Update(std::span(shard).first(file.parsed.bytes)).Finish());
     }
+  }
+}
+
+// The source adapter remains closed to full pinned ModelOpt geometry. These
+// private tiny products exercise only the shared publisher and component spec.
+struct PartCase {
+  ModelOptTargetPlan plan;
+  std::map<std::string, std::vector<std::byte>> expected;
+};
+class ImportPartWriterTest : public ImportWriterTest {
+ protected:
+  std::expected<PartCase, Error> Parts() {
+    auto tiny = TinyGemma4(true);
+    auto old_tensors = std::move(tiny.tensors);
+    tiny.tensors.clear();
+    tiny.files[0].bytes = 0;
+    for (const auto key : {"embedding_length", "expert_feed_forward_length"})
+      Value(tiny, "gemma4." + std::string(key), std::int64_t{32});
+    Value(tiny, "gemma4.feed_forward_length", std::int64_t{64});
+    for (const auto key :
+         {"attention.key_length", "attention.value_length", "attention.key_length_swa",
+          "attention.value_length_swa", "rope.dimension_count", "rope.dimension_count_swa"})
+      Value(tiny, "gemma4." + std::string(key), std::int64_t{16});
+    for (const auto& old : old_tensors) {
+      auto dims = old.dims;
+      for (std::size_t d = 0; d < dims.size(); ++d) {
+        const bool expert_count = (old.experts && d == 2) ||
+                                  (old.name.ends_with("ffn_gate_inp.weight") && d == 1) ||
+                                  old.name.ends_with("ffn_down_exps.scale");
+        if (expert_count) continue;
+        if (dims[d] == 8)
+          dims[d] = 32;
+        else if (dims[d] == 16)
+          dims[d] = 64;
+        else if (dims[d] == 4)
+          dims[d] = 16;
+        else if (old.name == "rope_freqs.weight")
+          dims[d] = 8;
+      }
+      auto format = old.format;
+      format.shape = *format::ShapeOf(dims);
+      const auto bytes = (*format::PartsOf(format))[0].bytes;
+      const auto at = (tiny.files[0].bytes + 31) / 32 * 32;
+      tiny.tensors.push_back({.name = old.name,
+                              .format = format,
+                              .experts = old.experts,
+                              .extent = {.offset = at, .bytes = bytes},
+                              .dtype = "F32",
+                              .dims = dims});
+      tiny.files[0].bytes = at + bytes;
+    }
+    Write(dir_ / "template/model.gguf", Gguf(tiny));
+    auto parsed = ReadGguf(dir_ / "template/model.gguf");
+    if (!parsed) return std::unexpected(parsed.error());
+    auto normalized = Normalize(std::move(*parsed), kFunded);
+    if (!normalized) return std::unexpected(normalized.error());
+    spec::Source canonical = normalized->canonical();
+    canonical.tensors.clear();
+    auto spec = normalized->spec();
+    Checkpoint source{
+        .container = "safetensors", .architecture = "gemma4", .files = {{.name = "weights.bin"}}};
+    std::vector<std::byte> bytes((1U << 20U) - 3, std::byte{0});
+    const std::string prefix = "part-v1\n";
+    std::copy(std::as_bytes(std::span(prefix)).begin(), std::as_bytes(std::span(prefix)).end(),
+              bytes.begin());
+    std::vector<TensorAssembly> outputs;
+    std::vector<SourceDisposition> dispositions;
+    std::vector<NormalizedPartBinding> bindings;
+    std::vector<PlannedPartFold> folds{{"gdn.value_heads_tiled", {}}};
+    std::map<std::string, std::vector<std::byte>> expected;
+    std::map<std::string, std::vector<std::pair<std::string, format::PartRole>>> names;
+    unsigned seed = 1;
+    const auto input = [&](const std::string& name, const format::TensorFormat& format,
+                           format::PartRole part, SourceDisposition disposition) {
+      const auto extent = format::PartsOf(format)->Find(part)->bytes;
+      const auto index = static_cast<std::uint32_t>(source.tensors.size());
+      source.tensors.push_back({.name = name,
+                                .format = format,
+                                .part = part,
+                                .extent = {.offset = bytes.size(), .bytes = extent}});
+      dispositions.push_back(disposition);
+      std::vector<std::byte> payload(static_cast<std::size_t>(extent));
+      for (std::size_t i = 0; i < payload.size(); ++i)
+        payload[i] = static_cast<std::byte>((seed * 13 + i * 29) % 251);
+      ++seed;
+      bytes.insert(bytes.end(), payload.begin(), payload.end());
+      bytes.insert(bytes.end(), 7, std::byte{0xB5});
+      return std::pair(index, std::move(payload));
+    };
+    // Put the permuted BF16 weight first physically so the 1 MiB source stream
+    // splits it after exactly 3 bytes, independently of numeric output order.
+    auto logical = normalized->canonical().tensors;
+    const auto query = std::ranges::find(logical, "blk.0.attn_q.weight", &spec::SourceTensor::name);
+    if (query == logical.end()) return std::unexpected(Error{.reason = "missing fixture query"});
+    std::rotate(logical.begin(), query, query + 1);
+    for (const auto& old : logical) {
+      auto format = old.format;
+      const bool permute = old.name == "blk.0.attn_q.weight";
+      const bool quant_experts = old.name == "blk.0.ffn_gate_up_exps.weight";
+      const bool quant_dense = old.name == "blk.0.ffn_gate.weight";
+      const bool quant_mx = old.name == "blk.0.ffn_up.weight";
+      if (permute) format.encoding = Encoding::kBF16;
+      if (quant_experts || quant_dense) {
+        format.encoding = Encoding::kNvfp4;
+        format.layout = format::Layout::kSplit;
+        format.params = {.tensor_scale = quant_dense};
+      }
+      if (quant_mx) {
+        format.encoding = Encoding::kMxfp8;
+        format.layout = format::Layout::kSplit;
+        format.params = {};
+      }
+      TensorAssembly assembly{.name = old.name, .format = format};
+      if (permute || quant_mx) {
+        auto permutation =
+            HeadPermutationPlan::Make(format, HeadAxis::kRows, 2, 4, format.shape.ne[1] / 4);
+        if (!permutation) return std::unexpected(permutation.error());
+        assembly.permutation = *permutation;
+        folds[0].outputs.push_back(static_cast<std::uint32_t>(outputs.size()));
+      }
+      const auto format_parts = format::PartsOf(format);
+      if (!format_parts) return std::unexpected(Error{.reason = "fixture part geometry"});
+      for (const auto& part : format_parts->parts()) {
+        const auto name = (quant_experts || quant_dense || quant_mx)
+                              ? old.name + "." + std::string(format::PartRoleName(part.role))
+                              : old.name;
+        bindings.push_back({static_cast<std::uint32_t>(outputs.size()), part.role});
+        canonical.tensors.push_back(
+            {.name = name, .format = format, .part = part.role, .experts = old.experts});
+        names[old.name].push_back({name, part.role});
+        PartAssembly member{.part = part.role,
+                            .kind = quant_dense && part.role == format::PartRole::kTensorScale
+                                        ? PartAssemblyKind::kSharedTensorScale
+                                        : PartAssemblyKind::kCopy};
+        auto& wanted = expected[name];
+        if (quant_experts) {
+          member.kind = PartAssemblyKind::kMatrices;
+          auto slice = format;
+          slice.shape.rank = 2;
+          slice.shape.ne[2] = 1;
+          std::array<std::vector<std::byte>, 4> payloads;
+          member.sources.resize(4);
+          // Physical source order is the reverse of the declared numeric gather.
+          for (std::uint32_t e = 4; e > 0; --e) {
+            auto [index, payload] =
+                input(name + ".expert" + std::to_string(e - 1), slice, part.role, {});
+            member.sources[e - 1] = index;
+            payloads[e - 1] = std::move(payload);
+          }
+          for (const auto& payload : payloads)
+            wanted.insert(wanted.end(), payload.begin(), payload.end());
+        } else if (quant_dense && part.role != format::PartRole::kTensorScale) {
+          // The one shared tensor scale belongs to a two-shard row gather;
+          // whole single-source copies use kCopy for every part.
+          member.kind = PartAssemblyKind::kRows;
+          auto slice = format;
+          slice.shape.ne[1] /= 2;
+          std::array<std::vector<std::byte>, 2> payloads;
+          member.sources.resize(2);
+          for (std::uint32_t shard = 2; shard > 0; --shard) {
+            auto [index, payload] =
+                input(name + ".row" + std::to_string(shard - 1), slice, part.role, {});
+            member.sources[shard - 1] = index;
+            payloads[shard - 1] = std::move(payload);
+          }
+          for (const auto& payload : payloads)
+            wanted.insert(wanted.end(), payload.begin(), payload.end());
+        } else {
+          auto [index, payload] = input(name, format, part.role, {});
+          member.sources.push_back(index);
+          wanted = std::move(payload);
+          if (permute || quant_mx) {
+            const auto original = wanted;
+            const auto head_bytes = wanted.size() / 4;
+            for (std::size_t destination = 0; destination < 4; ++destination) {
+              const auto source_head = (destination % 2) * 2 + destination / 2;
+              std::copy_n(original.begin() + static_cast<std::ptrdiff_t>(source_head * head_bytes),
+                          head_bytes,
+                          wanted.begin() + static_cast<std::ptrdiff_t>(destination * head_bytes));
+            }
+          }
+        }
+        assembly.parts.push_back(std::move(member));
+      }
+      outputs.push_back(std::move(assembly));
+    }
+    const auto rebind = [&](spec::ComponentRef& component) {
+      std::vector<spec::WeightBinding> weights;
+      for (const auto& binding : component.weights)
+        for (const auto& [name, part] : names.at(binding.tensor)) {
+          auto changed = binding;
+          changed.tensor = name;
+          changed.part = part;
+          weights.push_back(std::move(changed));
+        }
+      component.weights = std::move(weights);
+    };
+    for (auto& stage : spec.stages) {
+      stage.folds.push_back("gdn.value_heads_tiled");
+      if (stage.embedding) rebind(*stage.embedding);
+      if (stage.stream.mixing) rebind(*stage.stream.mixing);
+      for (auto& side : stage.side) rebind(side.source);
+      for (auto& layer : stage.layers)
+        for (auto& component : layer.components) rebind(component);
+      if (stage.heads.final_norm) rebind(*stage.heads.final_norm);
+      if (stage.heads.output) rebind(*stage.heads.output);
+      for (auto& component : stage.heads.mtp) rebind(component);
+    }
+    spec::Canonicalize(spec);
+    std::array<SemanticReceipt, 3> semantic{};
+    for (std::size_t i = 0; i < semantic.size(); ++i) {
+      const auto elements = i == 2 ? 66U : 2U;
+      const std::array<std::uint64_t, 1> ne{elements};
+      const format::TensorFormat format{.encoding = Encoding::kF32, .shape = *format::ShapeOf(ne)};
+      auto [index, payload] =
+          input("semantic." + std::to_string(i), format, format::PartRole::kData,
+                {.kind = SourceDispositionKind::kSemantic, .rule = 1});
+      semantic[i] = {index, source.tensors[index].extent, base::Sha256().Update(payload).Finish()};
+    }
+    Write(dir_ / "parts/weights.bin", bytes);
+    auto opened = OpenCheckpointFile(dir_ / "parts/weights.bin", 0);
+    if (!opened) return std::unexpected(opened.error());
+    source.files[0] = {.name = "weights.bin",
+                       .path = opened->path,
+                       .bytes = opened->bytes,
+                       .device = opened->device,
+                       .inode = opened->inode,
+                       .parsed = {prefix.size(), base::Sha256().Update(prefix).Finish()}};
+    auto cost = IndexedPartPlan::Bound(source, outputs);
+    if (!cost) return std::unexpected(cost.error());
+    auto parts = IndexedPartPlan::Make(std::move(source), outputs, dispositions, *cost);
+    if (!parts) return std::unexpected(parts.error());
+    return PartCase{test_support::PartPublicationFixture::Make(
+                        std::move(*parts), std::move(canonical), std::move(spec),
+                        std::move(bindings), semantic, std::move(folds)),
+                    std::move(expected)};
+  }
+};
+
+TEST_F(ImportPartWriterTest, PermutationMultipartAndWholeExpertScatterAreExact) {
+  auto fixture = Parts();
+  ASSERT_TRUE(fixture) << test_support::Failed(fixture, &Error::ToString).value_or("");
+  auto result = WriteArtifact(fixture->plan, Options());
+  ASSERT_TRUE(result) << test_support::Failed(result, &Error::ToString).value_or("");
+  auto opened = artifact::Artifact::Open(result->path);
+  ASSERT_TRUE(opened);
+  auto stored = spec::StoredSpec(*opened);
+  ASSERT_TRUE(stored);
+  EXPECT_EQ(*stored, fixture->plan.spec());
+  ASSERT_EQ(opened->folds().size(), 1U);
+  EXPECT_EQ(opened->folds()[0].name, "gdn.value_heads_tiled");
+  EXPECT_EQ(opened->folds()[0].tensors,
+            (std::vector<std::string>{"blk.0.attn_q.weight", "blk.0.ffn_up.weight.block_scales",
+                                      "blk.0.ffn_up.weight.codes"}));
+  std::size_t total = 0;
+  const auto compare = [&](std::string_view name, std::uint64_t offset,
+                           const artifact::Placement& place) {
+    const auto& group = opened->groups()[place.group];
+    const auto& shard = opened->shards()[group.shard];
+    auto file = OpenCheckpointFile(result->path / shard.path, 0);
+    ASSERT_TRUE(file);
+    std::vector<std::byte> actual(static_cast<std::size_t>(place.bytes.value()));
+    ASSERT_TRUE(ReadExactly(file->fd.get(),
+                            shard.data_offset.value() + group.offset.value() + place.offset.value(),
+                            actual, 0));
+    const auto& expected = fixture->expected.at(std::string(name));
+    ASSERT_LE(offset + actual.size(), expected.size());
+    EXPECT_TRUE(std::ranges::equal(
+        actual, std::span(expected).subspan(static_cast<std::size_t>(offset), actual.size())))
+        << name;
+    total += actual.size();
+  };
+  for (std::size_t i = 0; i < opened->resources().size(); ++i) {
+    auto placement = opened->ResourcePlacement(static_cast<std::uint32_t>(i));
+    ASSERT_TRUE(placement);
+    compare(opened->resources()[i].name, 0, *placement);
+  }
+  for (std::size_t i = 0; i < opened->expert_arrays().size(); ++i)
+    for (std::uint32_t expert = 0; expert < opened->expert_arrays()[i].count; ++expert) {
+      auto placement = opened->SlicePlacement(static_cast<std::uint32_t>(i), expert);
+      ASSERT_TRUE(placement);
+      compare(opened->expert_arrays()[i].name,
+              expert * opened->expert_arrays()[i].slice_bytes.value(), *placement);
+    }
+  std::size_t expected_bytes = 0;
+  for (const auto& [name, payload] : fixture->expected) expected_bytes += payload.size();
+  EXPECT_EQ(total, expected_bytes);
+  auto again = WriteArtifact(fixture->plan, Options());
+  ASSERT_TRUE(again);
+  EXPECT_TRUE(again->reused);
+  EXPECT_EQ(again->id, result->id);
+}
+TEST_F(ImportPartWriterTest, SemanticMutationAndUnfundedOrMalformedOwnersCannotPublish) {
+  for (const int mutation : {0, 1, 2, 3, 4, 5, 6}) {
+    SCOPED_TRACE(mutation);
+    auto fixture = Parts();
+    ASSERT_TRUE(fixture) << test_support::Failed(fixture, &Error::ToString).value_or("");
+    auto options = Options("bad" + std::to_string(mutation));
+    if (mutation == 0) options.metadata_bytes = 0;
+    if (mutation == 1) test_support::PartPublicationFixture::WrongBinding(fixture->plan);
+    if (mutation == 2) test_support::PartPublicationFixture::MissingSemantic(fixture->plan);
+    if (mutation == 3) test_support::PartPublicationFixture::WrongSpec(fixture->plan);
+    if (mutation == 5) test_support::PartPublicationFixture::WrongFoldStage(fixture->plan);
+    if (mutation == 6) test_support::PartPublicationFixture::DuplicateFoldOutput(fixture->plan);
+    if (mutation == 4) {
+      const auto& source = fixture->plan.parts().source();
+      const auto& receipt = fixture->plan.semantic()[0];
+      std::fstream file(source.files[receipt.extent.file].path,
+                        std::ios::in | std::ios::out | std::ios::binary);
+      ASSERT_TRUE(file);
+      file.seekg(static_cast<std::streamoff>(receipt.extent.offset));
+      const auto original = file.get();
+      ASSERT_NE(original, std::char_traits<char>::eof());
+      file.seekp(static_cast<std::streamoff>(receipt.extent.offset));
+      file.put(static_cast<char>(original ^ 1));
+      file.close();
+    }
+    const auto result = WriteArtifact(fixture->plan, options);
+    EXPECT_FALSE(result);
+    if (mutation != 4) EXPECT_FALSE(std::filesystem::exists(options.store));
+    if (std::filesystem::exists(options.store))
+      for (const auto& entry : std::filesystem::directory_iterator(options.store))
+        EXPECT_EQ(entry.path().filename(), ".staging");
   }
 }
 }  // namespace

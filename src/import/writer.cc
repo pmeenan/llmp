@@ -12,6 +12,7 @@
 #include <format>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <tuple>
 #include <vector>
@@ -20,6 +21,7 @@
 #include "base/gguf.h"
 #include "base/json.h"
 #include "components/step.h"
+#include "import/modelopt_qwen38.h"
 #include "import/route.h"
 #include "import/stream.h"
 #include "platform/lock_file.h"
@@ -123,18 +125,50 @@ struct Shard {
   std::string path{}, header{};
   std::uint64_t bytes = 0;
 };
+// Borrowed only from private owned normalization products. This type and its
+// construction stay inside the common writer; it is not normalization authority.
+struct PublicationView {
+  const Checkpoint& checkpoint;
+  const spec::Source& canonical_source;
+  const spec::ModelSpec& model_spec;
+  std::uint64_t payload = 0;
+  const NormalizedPlan* copy = nullptr;
+  const IndexedPartPlan* parts = nullptr;
+  std::span<const NormalizedPartBinding> bindings{};
+  std::span<const SemanticReceipt> semantic{};
+  std::span<const PlannedPartFold> planned_folds{};
+  const Checkpoint& source() const { return checkpoint; }
+  const spec::Source& canonical() const { return canonical_source; }
+  const spec::ModelSpec& spec() const { return model_spec; }
+  std::size_t members() const { return copy ? copy->routes().size() : parts->members().size(); }
+};
 struct Copy {
-  std::uint32_t file = 0, shard = 0;
-  std::uint64_t source = 0, output = 0, bytes = 0;
+  std::uint32_t file = 0, tensor = 0;
+  std::uint64_t source = 0, destination = 0, bytes = 0, output_bytes = 0;
   std::optional<PartRouteExecution> route{};
 };
-// The existing paid8192B per expanded member includes this constant-size
-// cursor, without materializing a list of transform runs.
-static_assert(sizeof(Copy) <= 256);
+struct Destination {
+  std::uint32_t tensor = 0, shard = 0;
+  std::uint64_t begin = 0, end = 0, output = 0;
+};
+struct SemanticCheck {
+  const SemanticReceipt* receipt = nullptr;
+  std::uint64_t received = 0;
+  base::Sha256 hash{};
+};
+static_assert(format::PartList::kMax <= 4);
+static_assert(sizeof(Copy) <= 256 && sizeof(Destination) <= 64 && sizeof(SemanticCheck) <= 256);
 struct Layout {
   std::vector<Group> groups{};
   std::vector<Shard> shards{};
+  // All route cursors borrow this stable allocation; destruction retires the
+  // cursors first. Serial source callbacks share it without payload retention.
+  std::vector<std::byte> workspace{};
   std::vector<Copy> copies{};
+  std::vector<Destination> destinations{};
+  std::vector<std::size_t> first_destination{};
+  std::vector<SemanticCheck> semantic{};
+  std::vector<artifact::AppliedFold> folds{};
   std::uint32_t experts = 0;
 };
 struct GroupKey {
@@ -142,28 +176,182 @@ struct GroupKey {
   std::uint32_t order = 0, layer = 0;
   auto operator<=>(const GroupKey&) const = default;
 };
-std::expected<Layout, Error> Place(const NormalizedPlan& plan, std::uint64_t funding) {
+std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout) {
+  const auto& source = plan.source();
+  const auto& tensors = plan.canonical().tensors;
+  const auto valid_extent = [&](const Extent& e) {
+    return e.file < source.files.size() && e.bytes != 0 && e.offset <= source.files[e.file].bytes &&
+           e.bytes <= source.files[e.file].bytes - e.offset;
+  };
+  std::map<std::pair<std::uint32_t, format::PartRole>, std::uint32_t> binding;
+  std::vector<std::uint8_t> used(source.tensors.size(), 0);
+  if (plan.parts) {
+    if (plan.bindings.size() != tensors.size() ||
+        plan.parts->dispositions().size() != source.tensors.size())
+      return Bad("part publication binding or disposition count", Rule::kConfig);
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      const auto& b = plan.bindings[i];
+      if (b.output >= plan.parts->outputs().size())
+        return Bad("part publication binding index", Rule::kConfig);
+      const auto& output = plan.parts->outputs()[b.output];
+      if (tensors[i].format != output.format || tensors[i].part != b.part ||
+          !output.parts.Find(b.part) ||
+          !binding.emplace(std::pair(b.output, b.part), static_cast<std::uint32_t>(i)).second)
+        return Bad("part publication binding geometry or duplicate", Rule::kConfig);
+    }
+    std::set<std::string_view> fold_names;
+    std::size_t folded_parts = 0;
+    for (const auto& receipt : plan.planned_folds) {
+      if (!spec::FindFold(receipt.fold) || !fold_names.insert(receipt.fold).second ||
+          receipt.outputs.empty())
+        return Bad("publication fold name or duplicate", Rule::kConfig);
+      for (const auto& stage : plan.spec().stages)
+        if (!std::ranges::contains(stage.folds, receipt.fold))
+          return Bad("publication fold absent from stage", Rule::kConfig);
+      artifact::AppliedFold fold{.name = receipt.fold, .tensors = {}};
+      std::set<std::uint32_t> folded_outputs;
+      for (const auto output : receipt.outputs) {
+        if (output >= plan.parts->outputs().size() || !folded_outputs.insert(output).second)
+          return Bad("publication fold output index or duplicate", Rule::kConfig);
+        for (const auto& part : plan.parts->outputs()[output].parts.parts()) {
+          const auto at = binding.find({output, part.role});
+          if (at == binding.end() || ++folded_parts > artifact::kMaxEntries)
+            return Bad("publication fold part coverage", Rule::kBounds);
+          fold.tensors.push_back(tensors[at->second].name);
+        }
+      }
+      std::ranges::sort(fold.tensors);
+      layout.folds.push_back(std::move(fold));
+    }
+    std::size_t required = 0;
+    for (const auto& output : plan.parts->outputs()) required += output.parts.size();
+    if (binding.size() != required)
+      return Bad("part publication omits an output part", Rule::kConfig);
+  }
+  layout.workspace.resize(65536);
+  layout.copies.reserve(plan.members());
+  const auto add = [&](std::uint32_t si, std::uint32_t ti, Extent extent, std::uint64_t destination,
+                       const PartRoutePlan& route) -> std::expected<void, Error> {
+    if (si >= source.tensors.size() || ti >= tensors.size() || used[si]++ != 0 ||
+        source.tensors[si].extent != extent || !valid_extent(extent) ||
+        route.input_bytes() != extent.bytes ||
+        (plan.parts && plan.parts->dispositions()[si].kind != SourceDispositionKind::kRouted))
+      return Bad("part publication source identity or duplicate", Rule::kConfig);
+    const auto parts = format::PartsOf(tensors[ti].format);
+    const auto part = parts ? parts->Find(tensors[ti].part) : std::nullopt;
+    if (!part || destination > part->bytes || route.output_bytes() > part->bytes - destination)
+      return Bad("part publication route destination bounds", Rule::kConfig);
+    auto cursor = route.Start(layout.workspace);
+    if (!cursor) return std::unexpected(cursor.error());
+    layout.copies.push_back({extent.file, ti, extent.offset, destination, extent.bytes,
+                             route.output_bytes(), std::move(*cursor)});
+    return {};
+  };
+  if (plan.copy) {
+    if (plan.copy->routes().size() != tensors.size())
+      return Bad("copy publication route count", Rule::kConfig);
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      const auto& route = plan.copy->routes()[i];
+      auto checked = PartRoutePlan::Copy(route.extent.bytes);
+      if (!checked) return std::unexpected(checked.error());
+      if (auto ok =
+              add(route.source_tensor, static_cast<std::uint32_t>(i), route.extent, 0, *checked);
+          !ok)
+        return ok;
+    }
+  } else {
+    for (const auto& member : plan.parts->members()) {
+      const auto at = binding.find({member.output, member.part});
+      if (at == binding.end()) return Bad("part publication member lacks binding", Rule::kConfig);
+      if (auto ok = add(member.source, at->second, member.extent, member.destination, member.route);
+          !ok)
+        return ok;
+    }
+    layout.semantic.reserve(plan.semantic.size());
+    for (const auto& receipt : plan.semantic) {
+      if (receipt.source >= source.tensors.size() || used[receipt.source]++ != 0 ||
+          source.tensors[receipt.source].extent != receipt.extent ||
+          !valid_extent(receipt.extent) ||
+          plan.parts->dispositions()[receipt.source].kind != SourceDispositionKind::kSemantic)
+        return Bad("semantic publication source receipt", Rule::kConfig);
+      layout.semantic.push_back({.receipt = &receipt});
+    }
+    for (std::size_t i = 0; i < used.size(); ++i) {
+      const auto kind = plan.parts->dispositions()[i].kind;
+      if (used[i] != (kind == SourceDispositionKind::kAuxiliary ? 0 : 1))
+        return Bad("part publication source disposition coverage", Rule::kConfig);
+    }
+  }
+  // Independent complete destination coverage. Whole route executions retain
+  // their own permutation/scalar state through every expert destination slice.
+  std::vector<std::size_t> order(layout.copies.size());
+  std::iota(order.begin(), order.end(), std::size_t{0});
+  std::ranges::sort(order, [&](auto a, auto b) {
+    const auto& x = layout.copies[a];
+    const auto& y = layout.copies[b];
+    return std::tie(x.tensor, x.destination) < std::tie(y.tensor, y.destination);
+  });
+  std::size_t next = 0;
+  for (std::size_t ti = 0; ti < tensors.size(); ++ti) {
+    const auto parts = format::PartsOf(tensors[ti].format);
+    const auto part = parts ? parts->Find(tensors[ti].part) : std::nullopt;
+    if (!part) return Bad("part publication output format", Rule::kConfig);
+    std::uint64_t at = 0;
+    while (next < order.size() && layout.copies[order[next]].tensor == ti) {
+      const auto& c = layout.copies[order[next++]];
+      if (c.destination != at || c.output_bytes > part->bytes - at)
+        return Bad("part publication output gap or overlap", Rule::kConfig);
+      at += c.output_bytes;
+    }
+    if (at != part->bytes) return Bad("part publication incomplete output", Rule::kConfig);
+  }
+  if (next != order.size()) return Bad("part publication extra output", Rule::kConfig);
+  std::ranges::sort(layout.copies, {}, [](const Copy& c) { return std::tie(c.file, c.source); });
+  std::ranges::sort(layout.semantic, {}, [](const SemanticCheck& c) {
+    return std::tie(c.receipt->extent.file, c.receipt->extent.offset);
+  });
+  return {};
+}
+std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t funding) {
   const auto& tensors = plan.canonical().tensors;
   if (tensors.empty() || tensors.size() > artifact::kMaxEntries ||
-      tensors.size() != plan.routes().size())
+      plan.source().tensors.size() > kMaxTensors || plan.source().files.empty() ||
+      plan.source().files.size() > 256 || plan.members() > kMaxTensors ||
+      plan.semantic.size() > plan.source().tensors.size() ||
+      plan.planned_folds.size() > spec::Folds().size())
     return Bad("invalid normalized output count", Rule::kBounds);
-  std::uint64_t expanded = 0;
+  std::uint64_t fold_outputs = 0;
+  for (const auto& fold : plan.planned_folds) {
+    if (fold.outputs.size() > artifact::kMaxEntries - fold_outputs)
+      return Bad("publication fold metadata exceeds cap", Rule::kBounds);
+    fold_outputs += fold.outputs.size();
+  }
+  std::uint64_t expanded = 0, output_bytes = 0;
   for (const auto& t : tensors) {
     const auto count = t.experts ? t.format.shape.ne[2] : 1;
     if (count > artifact::kMaxEntries - expanded)
       return Bad("expert expansion exceeds the artifact entry cap", Rule::kBounds);
     expanded += count;
+    const auto parts = format::PartsOf(t.format);
+    const auto part = parts ? parts->Find(t.part) : std::nullopt;
+    if (!part || part->bytes > kMaxOutput - output_bytes)
+      return Bad("normalized output byte bound", Rule::kBounds);
+    output_bytes += part->bytes;
   }
   // Explicit conservative storage ceiling includes JSON serialization, layout,
   // maps, parsed-prefix buffers, stream buffers and the artifact reader.
-  const std::uint64_t payload = plan.cost().payload_bytes;
+  const std::uint64_t payload = std::max(plan.payload, output_bytes);
   if (payload > kMaxOutput) return Bad("source payload exceeds output cap", Rule::kBounds);
   const std::uint64_t chunk_bound = payload / artifact::kChunkBytes + expanded * 2;
   if (chunk_bound > artifact::kMaxIndexBytes / 128)
     return Bad("output chunk metadata exceeds index cap", Rule::kBounds);
   const std::uint64_t bound = (std::uint64_t{256} << 20U) + expanded * 8192 + chunk_bound * 512 +
-                              plan.source().files.size() * 1024;
+                              plan.source().files.size() * 1024 + plan.members() * 512 +
+                              plan.source().tensors.size() * 32 + plan.semantic.size() * 256 +
+                              fold_outputs * 8192 + 65536;
   if (funding < bound) return Bad("artifact metadata has not been funded", Rule::kBounds);
+  if (!components::ValidateSpec(plan.spec(), tensors))
+    return Bad("publication spec does not bind canonical tensors", Rule::kConfig);
   std::map<std::string, GroupKey, std::less<>> owners;
   const auto bind = [&](const spec::ComponentRef& component, GroupKey key) {
     for (const auto& w : component.weights) {
@@ -231,7 +419,7 @@ std::expected<Layout, Error> Place(const NormalizedPlan& plan, std::uint64_t fun
         if (!parts) return Bad("an output format is invalid", Rule::kConfig);
         const auto part = parts->Find(t.part);
         if (!part) return Bad("an output format lacks its part", Rule::kConfig);
-        if (part->readable > kMaxOutput - g.used - 256)
+        if (g.used > kMaxOutput - 256 || part->readable > kMaxOutput - g.used - 256)
           return Bad("artifact output exceeds its byte cap", Rule::kBounds);
         const auto offset = Align(g.used, artifact::kMemberAlignment);
         g.members.push_back({i, expert, offset, part->bytes, part->readable, format});
@@ -281,32 +469,14 @@ std::expected<Layout, Error> Place(const NormalizedPlan& plan, std::uint64_t fun
     };
     for (const auto& m : g.members) {
       const auto& t = tensors[m.tensor];
-      const auto& route = plan.routes()[m.tensor];
       const auto target = g.offset + m.offset;
       pad(target);
       const auto view = artifact::ContainerViewOf(m.format, t.part, m.bytes);
       entry(g.shard, t.name + (m.expert ? "#" + N(*m.expert) : ""), view.dtype, view.shape, target,
             target + m.bytes);
       at = target + m.bytes;
-      const auto input_offset = m.expert ? *m.expert * m.bytes : 0;
-      if (input_offset > route.extent.bytes || m.bytes > route.extent.bytes - input_offset)
-        return Bad("an output slice is outside its copy route", Rule::kConfig);
-      auto cursor = plan.CursorFor(m.tensor);
-      if (!cursor) return std::unexpected(cursor.error());
-      if (input_offset != 0) {
-        auto skipped = cursor->Next(input_offset);
-        if (!skipped || !*skipped || (**skipped).bytes != input_offset)
-          return Bad("an expert slice cannot advance its source cursor", Rule::kConfig);
-      }
-      auto copy = cursor->Next(m.bytes);
-      if (!copy || !*copy || (**copy).bytes != m.bytes || (**copy).output_offset != input_offset)
-        return Bad("an output slice does not match its source cursor", Rule::kConfig);
-      auto route_plan = PartRoutePlan::Copy((**copy).bytes);
-      if (!route_plan) return std::unexpected(route_plan.error());
-      auto execution = route_plan->Start();
-      if (!execution) return std::unexpected(execution.error());
-      out.copies.push_back({(**copy).file, g.shard, (**copy).source_offset, target, (**copy).bytes,
-                            std::move(*execution)});
+      const auto begin = m.expert ? *m.expert * m.bytes : 0;
+      out.destinations.push_back({m.tensor, g.shard, begin, begin + m.bytes, target});
     }
     pad(g.offset + g.stored);
   }
@@ -319,8 +489,27 @@ std::expected<Layout, Error> Place(const NormalizedPlan& plan, std::uint64_t fun
     for (std::size_t i = 0; i < 8; ++i)
       shard.header[i] = static_cast<char>((size >> (8U * i)) & 255U);
   }
-  std::ranges::sort(out.copies, {},
-                    [](const Copy& c) { return std::tuple(c.file, c.source, c.shard, c.output); });
+  std::ranges::sort(out.destinations, {},
+                    [](const Destination& d) { return std::tie(d.tensor, d.begin); });
+  out.first_destination.resize(tensors.size() + 1);
+  std::size_t next = 0;
+  for (std::size_t i = 0; i < tensors.size(); ++i) {
+    out.first_destination[i] = next;
+    std::uint64_t end = 0;
+    while (next < out.destinations.size() && out.destinations[next].tensor == i) {
+      const auto& d = out.destinations[next++];
+      if (d.begin != end || d.end <= d.begin)
+        return Bad("publication destination overlap or gap", Rule::kConfig);
+      end = d.end;
+    }
+    const auto parts = format::PartsOf(tensors[i].format);
+    const auto part = parts ? parts->Find(tensors[i].part) : std::nullopt;
+    if (!part || end != part->bytes)
+      return Bad("publication expert slices do not cover the logical part", Rule::kConfig);
+  }
+  out.first_destination.back() = next;
+  if (next != out.destinations.size()) return Bad("publication extra destination", Rule::kConfig);
+  if (auto ok = Transfers(plan, out); !ok) return std::unexpected(ok.error());
   return out;
 }
 std::string FileJson(std::string_view path, std::string_view role, std::uint64_t bytes,
@@ -361,10 +550,9 @@ std::expected<void, Error> Deep(const fs::path& root, const artifact::Artifact& 
   }
   return {};
 }
-}  // namespace
 
-std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
-                                                const WriteOptions& options) {
+std::expected<WriteResult, Error> Publish(const PublicationView& plan,
+                                          const WriteOptions& options) {
   const auto& source = plan.source();
   if (options.store.empty() || !SafeName(options.build) ||
       (!options.expected.empty() && options.expected.size() != source.files.size()))
@@ -410,7 +598,7 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
   std::map<std::string, std::string> files;
   std::map<std::string, std::string> sources;
   std::uint64_t kept_bytes = 0;
-  std::size_t next_copy = 0;
+  std::size_t next_copy = 0, next_semantic = 0;
   FD output;
   std::optional<std::uint32_t> output_shard;
   for (std::size_t f = 0; f < source.files.size(); ++f) {
@@ -435,27 +623,65 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
             metadata.append(reinterpret_cast<const char*>(bytes.data()), count);
           }
           const auto end = at + bytes.size();
+          for (std::size_t si = next_semantic; si < layout->semantic.size(); ++si) {
+            auto& semantic = layout->semantic[si];
+            const auto& extent = semantic.receipt->extent;
+            if (extent.file != f || extent.offset >= end) break;
+            const auto first = std::max(at, extent.offset);
+            const auto last = std::min(end, extent.offset + extent.bytes);
+            if (first >= last) continue;
+            if (first - extent.offset != semantic.received)
+              return Bad("semantic source stream gap or duplicate", Rule::kConfig);
+            semantic.hash.Update(bytes.subspan(static_cast<std::size_t>(first - at),
+                                               static_cast<std::size_t>(last - first)));
+            semantic.received += last - first;
+            if (semantic.received == extent.bytes) next_semantic = si + 1;
+          }
           for (std::size_t i = next_copy; i < layout->copies.size(); ++i) {
             auto& c = layout->copies[i];
             if (c.file != f || c.source >= end) break;
             const auto first = std::max(c.source, at);
             const auto last = std::min(c.source + c.bytes, end);
             if (first < last) {
-              if (!output_shard || *output_shard != c.shard) {
-                output =
-                    FD(::open((job / layout->shards[c.shard].path).c_str(), O_RDWR | O_CLOEXEC));
-                if (!output.valid()) return Bad("cannot reopen a staging shard");
-                output_shard = c.shard;
-              }
               const auto piece = bytes.subspan(static_cast<std::size_t>(first - at),
                                                static_cast<std::size_t>(last - first));
               if (!c.route) return Bad("copy route lacks its checked cursor");
               if (auto ok = c.route->Consume(
                       first - c.source, piece,
-                      [&](std::uint64_t offset, std::span<const std::byte> payload) {
-                        return Write(output.get(),
-                                     layout->shards[c.shard].header.size() + c.output + offset,
-                                     payload);
+                      [&](std::uint64_t offset,
+                          std::span<const std::byte> payload) -> std::expected<void, Error> {
+                        if (offset > UINT64_MAX - c.destination)
+                          return Bad("publication scatter offset overflow", Rule::kBounds);
+                        auto destination = c.destination + offset;
+                        const auto first_target = layout->first_destination[c.tensor];
+                        const auto last_target = layout->first_destination[c.tensor + 1];
+                        auto targets = std::span(layout->destinations)
+                                           .subspan(first_target, last_target - first_target);
+                        auto found =
+                            std::ranges::upper_bound(targets, destination, {}, &Destination::end);
+                        while (!payload.empty()) {
+                          if (found == targets.end() || destination < found->begin ||
+                              destination >= found->end)
+                            return Bad("publication scatter outside destination", Rule::kBounds);
+                          const auto count = static_cast<std::size_t>(
+                              std::min<std::uint64_t>(payload.size(), found->end - destination));
+                          if (!output_shard || *output_shard != found->shard) {
+                            output = FD(::open((job / layout->shards[found->shard].path).c_str(),
+                                               O_RDWR | O_CLOEXEC));
+                            if (!output.valid()) return Bad("cannot reopen a staging shard");
+                            output_shard = found->shard;
+                          }
+                          if (auto ok = Write(output.get(),
+                                              layout->shards[found->shard].header.size() +
+                                                  found->output + destination - found->begin,
+                                              payload.first(count));
+                              !ok)
+                            return ok;
+                          destination += count;
+                          payload = payload.subspan(count);
+                          ++found;
+                        }
+                        return std::expected<void, Error>{};
                       });
                   !ok)
                 return ok;
@@ -492,6 +718,11 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
   for (const auto& copy : layout->copies)
     if (!copy.route || !copy.route->Finish())
       return Bad("a source stream left an output range unwritten");
+
+  for (auto& semantic : layout->semantic)
+    if (semantic.received != semantic.receipt->extent.bytes ||
+        semantic.hash.Finish() != semantic.receipt->sha256)
+      return Bad("semantic source bytes changed before publication", Rule::kConfig);
 
   std::vector<std::string> chunks, groups, resources, arrays, shards, transformations;
   std::vector<std::byte> buffer(artifact::kChunkBytes);
@@ -590,6 +821,14 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
   std::vector<std::string> file_list, source_list;
   for (const auto& [path, json] : files) file_list.push_back(json);
   for (const auto& [path, json] : sources) source_list.push_back(json);
+  // Only reached after all source streams, semantic receipts and whole route
+  // cursors completed. Historical source-converter folds emit no new record.
+  for (const auto& fold : layout->folds) {
+    std::vector<std::string> names;
+    for (const auto& name : fold.tensors) names.push_back(Q(name));
+    transformations.push_back(
+        O({{"kind", Q("fold")}, {"fold", Q(fold.name)}, {"tensors", A(names)}}));
+  }
   std::ranges::sort(transformations);
   const auto manifest = O({{"experimental", "true"},
                            {"files", A(file_list)},
@@ -644,5 +883,28 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
   if (auto ok = Sync(options.store); !ok)
     return Bad("artifact published; store directory durability sync failed");
   return WriteResult{id, destination, false};
+}
+}  // namespace
+
+std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
+                                                const WriteOptions& options) {
+  return Publish({.checkpoint = plan.source(),
+                  .canonical_source = plan.canonical(),
+                  .model_spec = plan.spec(),
+                  .payload = plan.cost().payload_bytes,
+                  .copy = &plan},
+                 options);
+}
+std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
+                                                const WriteOptions& options) {
+  return Publish({.checkpoint = plan.parts().source(),
+                  .canonical_source = plan.canonical(),
+                  .model_spec = plan.spec(),
+                  .payload = plan.cost().payload_bytes,
+                  .parts = &plan.parts(),
+                  .bindings = plan.bindings(),
+                  .semantic = plan.semantic(),
+                  .planned_folds = plan.planned_folds()},
+                 options);
 }
 }  // namespace llmp::import

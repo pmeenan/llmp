@@ -24,6 +24,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Extend the native writer API to owned multipart normalization plans, with
+  expert scatter, byte-preserving permutations and applied-fold receipts.
+  The pinned native ModelOpt target passed complete source authentication
+  and publication; runtime admission remains separate.
+
 - Prepare owned native ModelOpt target normalization plans, preserving source
   weight encodings through multipart gathers and head permutations. Publication
   and runtime admission remain separate.

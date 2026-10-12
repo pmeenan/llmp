@@ -1,0 +1,44 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+#ifndef LLMP_TESTS_SUPPORT_PART_PUBLICATION_FIXTURE_H_
+#define LLMP_TESTS_SUPPORT_PART_PUBLICATION_FIXTURE_H_
+#include <algorithm>
+#include <utility>
+
+#include "import/modelopt_qwen38.h"
+
+namespace llmp::test_support {
+// The production header grants this named fixture friendship, but its body is
+// confined to test support. No generic mutable publication view is exposed.
+class PartPublicationFixture {
+ public:
+  static import::ModelOptTargetPlan Make(import::IndexedPartPlan&& parts, spec::Source canonical,
+                                         spec::ModelSpec spec,
+                                         std::vector<import::NormalizedPartBinding> bindings,
+                                         std::array<import::SemanticReceipt, 3> semantic,
+                                         std::vector<import::PlannedPartFold> folds) {
+    import::ModelOptTargetPlan plan;
+    plan.parts_.emplace(std::move(parts));
+    plan.canonical_ = std::move(canonical);
+    plan.spec_ = std::move(spec);
+    plan.bindings_ = std::move(bindings);
+    plan.semantic_ = semantic;
+    plan.planned_folds_ = std::move(folds);
+    for (const auto& tensor : plan.canonical_.tensors)
+      plan.cost_.payload_bytes += format::PartsOf(tensor.format)->Find(tensor.part)->bytes;
+    return plan;
+  }
+  static void WrongBinding(import::ModelOptTargetPlan& plan) { ++plan.bindings_[0].output; }
+  static void MissingSemantic(import::ModelOptTargetPlan& plan) {
+    plan.semantic_[1] = plan.semantic_[0];
+  }
+  static void WrongFoldStage(import::ModelOptTargetPlan& plan) {
+    std::erase(plan.spec_.stages[0].folds, "gdn.value_heads_tiled");
+  }
+  static void DuplicateFoldOutput(import::ModelOptTargetPlan& plan) {
+    plan.planned_folds_[0].outputs.push_back(plan.planned_folds_[0].outputs[0]);
+  }
+  static void WrongSpec(import::ModelOptTargetPlan& plan) { plan.spec_.stages.clear(); }
+};
+}  // namespace llmp::test_support
+#endif  // LLMP_TESTS_SUPPORT_PART_PUBLICATION_FIXTURE_H_

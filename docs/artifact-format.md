@@ -52,6 +52,20 @@ serializes publication with `.staging/native-import.lock`; its incomplete
 private staging directories are never installed artifacts. It does not yet
 sweep directories left by a process killed without cleanup.
 
+The writer API also consumes closed native ModelOpt target multipart plans.
+It routes whole source members into canonical parts and contiguous expert
+slices, preserving the source encoding through numeric gathers and planned
+head permutations. Its metadata payment includes route cursors and all
+expanded expert placements. Semantic parameter receipts are checked again
+from the same authenticated source stream. Planned transformations become
+applied-fold receipts only after complete source and destination coverage;
+publication and verified reuse use the same path as copy-only plans.
+The pinned target passed actual publication on a Spark (2026-10-12): all
+38 source-file hashes authenticated, 103,797,070,596 weight bytes preserved,
+and all 25 files and 66,261 chunks verified. Every byte of all 468 permuted
+parts matched an independent destination-order oracle. This API does not
+expand the CLI's source domain or admit a runtime model.
+
 The explicit metadata budget covers normalization plus writer working
 storage, excluding the container readers' bounded input storage. It is an
 allocation ceiling, not process or runtime memory admission. Re-import and
