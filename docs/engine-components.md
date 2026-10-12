@@ -70,6 +70,11 @@ The owner's requirements (2026-10-08):
   implementation, and should be at least as fast; quality must be equal or
   better ([migration](#migration-and-its-gate)). New models later must be
   within 1–2% of the best competing engine, and faster where possible.
+- **Reuse, simplicity and resource cost also count** (owner, 2026-10-12).
+  At equal quality and speed, prefer a simpler shared implementation. A
+  measured reduction in CPU work or memory traffic can justify adoption
+  even when another bottleneck hides the end-to-end benefit; retain the
+  migration gates and distinguish resource savings from observed speedups.
 - **Weights stay compressed.** Resident weights never grow beyond their
   source encoding; when hardware lacks a format, execution gets slower,
   not bigger ([formats](#weight-and-state-formats)).
@@ -2612,6 +2617,12 @@ baseline:
   selected implementation, continuation/restore remains exact. See the
   [retrospective audit](experiments/m36-numerical-audit/README.md); historical
   results and the speed protocol remain unchanged.
+- **Reuse and resource cost**: equal quality and speed can justify a switch
+  when it increases code reuse or simplifies implementation. Measured CPU
+  time or memory-traffic savings can also justify a switch before they
+  improve end-to-end speed. Record these benefits separately; distinguish
+  measurements from derived byte counts and expected future gains. The
+  speed, quality, memory, swap and state gates still apply.
 - **Memory, swap and state**: the existing controls pass unchanged.
 
 Owner answers that shape the migration's work (2026-10-08, 2026-10-09):

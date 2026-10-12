@@ -120,8 +120,14 @@ They are not retrospectively relabeled quality failures or quality passes.
 4. First screen the smallest reversible candidate with a short quality and
    matched speed comparison. Expand only when a win or unresolved risk
    warrants it. Measure cold construction separately from steady execution.
-   Choose the fastest qualified implementation; remove dominated machinery
-   after its safety responsibilities have been retained or retired.
+   Evaluate quality, end-to-end speed, reuse, complexity, CPU cost and memory
+   traffic (owner, 2026-10-12). At equal quality and speed, increased reuse
+   or simpler code can justify a switch. Measured CPU or memory-traffic
+   savings can justify adoption even when another bottleneck hides their
+   latency benefit, within the existing migration gates. Report those
+   measurements separately from derived traffic counts or expected future
+   gains. Remove dominated machinery after its safety responsibilities have
+   been retained or retired.
 
 The [original Qwen2 BF16 smoke](../m36-original-qwen2/README.md) now supplies
 a complete authenticated original checkpoint and aligned natural-language

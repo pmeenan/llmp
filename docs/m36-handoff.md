@@ -246,8 +246,13 @@ update this section as each slice lands):
   arm's own outputs, full continuation/replay, old/new persistence and bounded
   admission. G3c2b1b and G3c2b1 remain open; native joined admission stays closed.
 
-  Required G3c2b1 preserves each owner's physical product widths and numerical
-  recipe and proves exact joined heads/state/capture against the legacy wave.
+  Required G3c2b1 qualifies joined MTP quality and routing against the original
+  model, with legacy comparisons as secondary diagnostics. Preserve source
+  bindings, owner coverage, every selected contribution and same-implementation
+  state restoration/capture. Choose kernel widths and arithmetic by quality,
+  measured speed, reuse, simplicity and resource cost. Equal quality/speed
+  with simpler shared code, or measured CPU/memory-traffic savings hidden by
+  another bottleneck, can justify a switch within the migration gates.
   G3c2b2 then composes native, GGUF and MTP serving and passes state, quality,
   swap and the matched 1% gate at every qualified cohort. G3d deletes the old
   path after those gates. G3c2b2a now has a reviewed sole-owner serving
@@ -490,7 +495,7 @@ these fixtures where applicable.
 #### Waves 5 to 7
 
 - **Q1–Q3, Qwen-Image.** Components (adaLN, gated residual, conv2d, channel norm, upsample, flow-match step, 3-axis rope, bidirectional attention) with a rounding-policy parameter; `kernels/image/lower.*` as per-op implementations; `EngineImage`; delete `qwen_image_runner.*` and `pipeline.cc` roles.
-- **T-slices, structural techniques.** One per row of `engine-components.md`'s retired table: format layer T04/T11/T58/T95; wave composer T15/T16/T20/T29/T59/T64/T88; patterns T10/T31/T56/T86/T92 (+T09/T41/T57 adoption); prefill T23/T26/T55/T93; state T67; decoding T39/T45/T81; components T22/T69/T54/T71/T72/T61; planner T96; pager T68. Each is adopted where its matched comparison gains.
+- **T-slices, structural techniques.** One per row of `engine-components.md`'s retired table: format layer T04/T11/T58/T95; wave composer T15/T16/T20/T29/T59/T64/T88; patterns T10/T31/T56/T86/T92 (+T09/T41/T57 adoption); prefill T23/T26/T55/T93; state T67; decoding T39/T45/T81; components T22/T69/T54/T71/T72/T61; planner T96; pager T68. Adopt where qualified comparisons improve speed, quality, reuse, simplicity or resource cost.
 - **K1, state encodings run.** A lossy KV encoding as a per-alias setting (public config key → D-entry), plus the long-context quality report.
 - **R1, re-keying cleanup.** Remove `ModelKeySpec::architectures` (replaced by spec capability predicates); remove `RunnerContextCeiling` (from components' position limits); `ArtifactFactsOf` from the spec. The layout-ID bump itself already lands per family through `KeptLayoutId`.
 

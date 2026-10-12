@@ -1433,8 +1433,11 @@ each is checked against the design as M3.6 proceeds.
             aligned natural smoke losses and four fresh-fixture ABBA cases pass.
             Timing includes setup/I/O and baseline drift; no quality, serving-speed
             or production-adoption gate follows ([observation](experiments/m36-original-qwen2/README.md)).
-      - [ ] Evaluate numerical recovery candidates and retire dominated recipe
-            machinery after functional, quality and matched-speed qualification.
+      - [ ] Evaluate recovery candidates for quality, speed, reuse, simplicity,
+            CPU cost and memory traffic. Equal quality/speed with greater reuse
+            or simpler code, or measured resource savings hidden by another
+            bottleneck, can justify a switch within the migration gates. Retire
+            dominated machinery after functional and quality qualification.
 - [ ] **Format layer** (D-108): encodings named independently of kernel
       libraries and layouts recorded separately; a block decoder per
       encoding on CUDA under shared vector, matrix and grouped templates;
@@ -2356,8 +2359,8 @@ each is checked against the design as M3.6 proceeds.
       G5 has supplied its shared execution path.
 - [ ] **Qwen-Image-2.1 onto the shared blocks**, with its rounding policy.
 - [ ] **Structural techniques land once**: each retired transfer technique
-      in its component, pattern or lifecycle piece, adopted where its
-      matched comparison gains.
+      in its component, pattern or lifecycle piece, adopted where qualified
+      comparisons improve speed, quality, reuse, simplicity or resource cost.
 - [ ] **Persisted state and settings:** kept-state layout IDs bumped and
       old kept state discarded (D-105); settings and calibration re-keyed
       from family to spec (D-103).
