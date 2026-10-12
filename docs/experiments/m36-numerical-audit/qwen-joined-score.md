@@ -96,3 +96,46 @@ re-audits every raw XML/log, guard, coordinate and same-arm result. Its
 corrected offline audit is PASS. No inference rerun or numerical acceptance
 change occurred. Independent final arithmetic/report review is
 `0767efc9caed9a2515f39c2ffc6931fff455a4f6aeb9c056c67e3ff71d56f410`.
+
+## Actual decode continuation — 2026-10-12
+
+The separate C-only Qwen51 control passes on Spark B in 15.629 seconds
+(installed exclusive job: 16 seconds). Four authenticated 33-token histories
+seed the actual target scorer; their terminal heads supply greedy anchors.
+Real Plain decoding then requests complete F32 vocabulary heads for eight
+four-owner steps. It checkpoints at position 37, restores and replays the next
+four steps, then restores again, spills/restores all owners and replays those
+four. All 32 reference heads are finite; 32 replayed full-head hashes and chosen
+tokens match exactly within C. Eight checkpoint restores and four spill restores
+pass, with positions 33 → 37 → 41. Restored initialized state is compared at 37;
+final state bytes at 41 are not independently saved or compared.
+
+The new actual four-owner Decode/read256 class independently passes source
+measurement, lowering, complete output-owner coverage, closure reservation and
+Bind. Decode/read512 supplies only a shape template. All 17 classes are measured
+before execution, with 8,432,673,280 bytes of derived construction/retention
+funding inside the unchanged 8 GiB host allowance. Five separately admitted
+state/readback buffers are reused. The actual Score4, Score8 and Decode4 programs
+each record 2,482 ordered implementation entries before execution; typed MMVF
+counts are 0, 50 and 0. Score4 and Decode4 have identical operation lists and
+operation-list identities, with distinct phase keys. No copied score program
+is used as decode. The seed's 128 losses reproduce prior C as provenance only.
+
+All source, recipe, binary and input guards pass, memory events are zero,
+no GPU process remains and the complete owner retires. The observed
+2,776,756,224-byte cgroup peak is host/process/cache usage, not total unified
+device occupancy. The private fixture remains outside main. This closes the
+short actual-decode/checkpoint/spill diagnostic, with no adoption, original-model
+quality, broader context/owner/MTP/swap or matched 1% qualification.
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Frozen fixture source manifest | `c3f3c528a60733e79d9fb3241d9d5cd8ac00c58f8af9864d8aa5717811684a37` |
+| Literal focused build receipt | `f59e94f60b6c27e590fcf2aca9b9a8f2dc4832ed51271c73a6eaddc49ad64d30` |
+| Native binary | `9bbca9a251afd059b66312d01b4c4289e9123353fbd566e1438ef2f6b322e340` |
+| Actual completion receipt | `cb3fd1db196fecc5477df9a197f7eb778b03c7eb10a0e47d38dfc8f3c30bc244` |
+| Independent raw/result audit | `32339e6ca74ff7599c745687d5bb3b7fb7788f0728b8587ac3ea54fc6a3f1ccb` |
+
+Raw evidence remains outside Git in `qwen-recovery51-decode-models01/actual`
+under the coordination root. Further work should address broader quality or an
+unqualified lifecycle/domain requirement; these short checks need no repeat.

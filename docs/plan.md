@@ -1718,6 +1718,14 @@ each is checked against the design as M3.6 proceeds.
                                     measuring all fallback score shapes. Main native
                                     build and 127 focused controls pass; no tuning or
                                     serving default changes ([evidence](experiments/m36-numerical-audit/qwen-products.md#shared-quality-witnesses--2026-10-12)).
+                              - [x] **G3c2b1h — short actual decode diagnostic:**
+                                    independently measure and execute the private
+                                    C4 Decode256 class; eight generated steps plus
+                                    checkpoint/spill replay pass with 32 reference
+                                    and 32 exact replay heads/tokens, eight checkpoint
+                                    and four spill restores. This closes only the
+                                    bounded diagnostic, with broader quality and
+                                    family gates open ([evidence](experiments/m36-numerical-audit/qwen-joined-score.md#actual-decode-continuation--2026-10-12)).
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%
