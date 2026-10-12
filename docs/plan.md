@@ -1814,8 +1814,16 @@ each is checked against the design as M3.6 proceeds.
                   modes match all 577 frozen full-vocabulary rows, including the
                   original 512-row prefill and suffix. Checkpoint rewind at 33,
                   eight replayed rows and spill continuation at 49 also pass.
-                  Shared repeats/weight eviction/relocation, kept-state/restart
-                  and EXL3 controls remain open ([evidence](experiments/m36-qwen2/README.md)).
+                  Weight relocation, kept-state/restart and EXL3 controls remain
+                  open ([evidence](experiments/m36-qwen2/README.md)).
+            - [x] **G5c3 — repeated FP16 execution and weight eviction:** both
+                  complete trajectories repeat four times in each fusion mode,
+                  clearing state between evaluations. Two full 490-extent weight
+                  evictions per case release all backing; reload advances backing
+                  generations and preserves content generations and complete
+                  checkpoint state before writes. All full-vocabulary rows match.
+                  Address relocation, kept-state/restart and EXL3 remain open
+                  ([evidence](experiments/m36-qwen2/README.md)).
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,

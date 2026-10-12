@@ -4,8 +4,9 @@
 // The real FP16 fixture through the shared model runner. External oracles
 // are the frozen P0 bridge's 76-row control and 577-row heldout outputs,
 // checked by their recorded hashes. Full controls also exercise checkpoint
-// rewind and in-process spill. EXL3, repeated eviction/relocation and kept
-// restart adoption remain separate gates.
+// rewind and in-process spill. Repeated controls also evict every weight
+// extent and reload its backing before continuing. EXL3, address relocation
+// and kept restart adoption remain separate gates.
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/stat.h>
@@ -405,11 +406,12 @@ TEST(ComponentRunnerQwen2Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading
   EXPECT_FALSE(Read(testing::TempDir(), kTokenLimit));
 }
 
-// (fusion, full trajectory). Every output row is requested so narrowing
+// (fusion, full trajectory, heldout, repeated). Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
-class ComponentRunnerQwen2Gpu : public testing::TestWithParam<std::tuple<bool, bool, bool>> {};
+class ComponentRunnerQwen2Gpu : public testing::TestWithParam<std::tuple<bool, bool, bool, bool>> {
+};
 TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
-  const auto [fusion, full, heldout] = GetParam();
+  const auto [fusion, full, heldout, repeated] = GetParam();
   const auto domain_cap = heldout ? kHeldoutDomainCap : kDomainCap;
   const auto host_allowance = heldout ? kHeldoutHostAllowance : kHostAllowance;
   const auto runtime_plans = heldout ? kHeldoutRuntimePlans : kRuntimePlans;
@@ -701,75 +703,173 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
     if (auto x = runner->Bind(); !x) return x;
     node.Run();
     if (auto x = runner->slots().SelectSlots(std::vector<std::uint32_t>{0}); !x) return x;
-    return node.WithRequest(
-        0, runner->slots().execution(), "FP16 bridge comparison", [&]() -> en::Status {
-          const auto run_step = [&](const pl::StepShape& shape) -> en::Status {
-            const auto& segment = shape.segments.front();
-            const std::vector<en::SegmentWork> work{
-                {.tokens = std::span(tokens).subspan(segment.past, segment.rows), .bytes = {}}};
-            const auto result = runner->RunStep(
-                {.shape = shape, .work = work, .step_bytes = {}, .advance = true, .ahead = {}});
-            if (!result) return std::unexpected(result.error().what);
-            if (result->outputs.size() != 1 ||
-                result->outputs.front().size() != segment.rows * row_bytes)
-              return std::unexpected("wrong output count or bytes");
-            const auto& got = result->outputs.front();
-            const char* expected = oracle.data() + segment.past * row_bytes;
-            std::size_t different = 0;
-            for (std::size_t i = 0; i < got.size(); i += sizeof(float))
-              different += std::memcmp(got.data() + i, expected + i, sizeof(float)) != 0;
-            EXPECT_EQ(different, 0U) << "past=" << segment.past << " rows=" << segment.rows;
-            if (different != 0)
-              return std::unexpected("FP16 shared logits differ from frozen bridge");
-            if (runner->slots().positions(0) != segment.past + segment.rows)
-              return std::unexpected("FP16 completed positions differ from the control");
-            return {};
-          };
-          for (const auto& shape : shapes) {
-            if (full && shape.segments.front().past == checkpoint_positions + 8) {
-              auto& slots = runner->slots();
-              // Eight real decode writes must change the saved checkpoint pages.
-              if (auto x = slots.CopyState(0, life->state_readback, life->saved_pages, true); !x)
-                return x;
-              if (std::memcmp(life->saved_state, life->state_readback,
-                              static_cast<std::size_t>(life->saved_bytes)) == 0)
-                return std::unexpected("FP16 checkpoint control made no changed state");
-              if (auto x = slots.PrepareRestore(0, life->saved_positions, life->saved_footprint,
-                                                slots.kept_layout_id());
-                  !x)
-                return x;
-              if (!slots.restoring(0))
-                return std::unexpected("FP16 checkpoint restore did not enter preparation");
-              if (auto x = slots.CopyState(0, life->saved_state, life->saved_pages, false); !x)
-                return x;
-              if (auto x = slots.CompleteRestore(0, life->saved_positions); !x) return x;
-              if (auto x = CheckSavedState(*life); !x) return x;
-              RecordProperty("checkpoint_bytes_restored", std::to_string(life->saved_bytes));
-              // The same frozen full-vocabulary rows must survive the rewind.
-              for (std::uint32_t past = checkpoint_positions; past < checkpoint_positions + 8;
-                   ++past)
-                if (auto x = run_step(shape_of(past, 1)); !x) return x;
+    // Only the repeated arms add this bounded generation inventory. The
+    // source-bound allowance includes 128 KiB for it and operation scratch.
+    constexpr std::size_t kWeightExtents = 490;
+    constexpr std::uint64_t kRepeatObservation = 128 * 1024;
+    static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners + kRepeatObservation <=
+                  kHostAllowance);
+    static_assert(kInheritedCompiler + kHeldoutMetadataOwners + kHeldoutObservationOwners +
+                      kRepeatObservation <=
+                  kHeldoutHostAllowance);
+    if (repeated && paged->extents().size() != kWeightExtents)
+      return std::unexpected("repeated fixture weight extent inventory differs");
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> generations;
+    if (repeated) generations.resize(kWeightExtents);
+    bool reload_pending = false;
+    std::size_t backing_before = 0;
+    std::uint32_t evictions = 0;
+    std::uint32_t restored_extents = 0;
+    std::uint32_t evaluations = 0;
+    std::uint64_t compared_rows = 0;
+    const auto evaluate = [&](std::uint32_t evaluation) -> en::Status {
+      const auto run_step = [&](const pl::StepShape& shape) -> en::Status {
+        const auto& segment = shape.segments.front();
+        const std::vector<en::SegmentWork> work{
+            {.tokens = std::span(tokens).subspan(segment.past, segment.rows), .bytes = {}}};
+        const auto result = runner->RunStep(
+            {.shape = shape, .work = work, .step_bytes = {}, .advance = true, .ahead = {}});
+        if (!result) return std::unexpected(result.error().what);
+        if (result->outputs.size() != 1 ||
+            result->outputs.front().size() != segment.rows * row_bytes)
+          return std::unexpected("wrong output count or bytes");
+        const auto& got = result->outputs.front();
+        compared_rows += segment.rows;
+        const char* expected = oracle.data() + segment.past * row_bytes;
+        std::size_t different = 0;
+        for (std::size_t i = 0; i < got.size(); i += sizeof(float))
+          different += std::memcmp(got.data() + i, expected + i, sizeof(float)) != 0;
+        EXPECT_EQ(different, 0U) << "past=" << segment.past << " rows=" << segment.rows;
+        if (different != 0) return std::unexpected("FP16 shared logits differ from frozen bridge");
+        if (runner->slots().positions(0) != segment.past + segment.rows)
+          return std::unexpected("FP16 completed positions differ from the control");
+        return {};
+      };
+      for (const auto& shape : shapes) {
+        const auto chunk = [&]() -> en::Status {
+          if (reload_pending) {
+            if (node.memory().backings() != backing_before)
+              return std::unexpected("full weight reload backing count differs");
+            for (std::size_t i = 0; i < paged->extents().size(); ++i) {
+              auto extent = node.catalog().Describe(paged->extents()[i]);
+              if (!extent || extent->state != llmp::catalog::ExtentState::kResident ||
+                  extent->backing_generation <= generations[i].first ||
+                  extent->content_generation != generations[i].second)
+                return std::unexpected("full weight reload generations differ");
             }
-            if (full && shape.segments.front().past == (heldout ? 49U : 48U)) {
-              if (auto x = SaveState(*life, false); !x) return x;
-              auto& slots = runner->slots();
-              if (auto x = slots.Spill(0); !x) return x;
-              if (!slots.spilled(0) || !slots.kept_whole(0))
-                return std::unexpected("FP16 spill did not keep the whole state");
-              if (auto x = slots.Restore(0); !x) return x;
-              if (auto x = CheckSavedState(*life); !x) return x;
-              RecordProperty("spill_bytes_restored", std::to_string(life->saved_bytes));
-            }
-            if (auto x = run_step(shape); !x) return x;
-            if (full &&
-                shape.segments.front().past + shape.segments.front().rows == checkpoint_positions) {
-              if (auto x = SaveState(*life, true); !x) return x;
-              if (life->saved_positions != checkpoint_positions)
-                return std::unexpected("FP16 checkpoint starts at the wrong completed position");
-            }
+            // Before any new decode write, the state still equals the
+            // complete checkpoint saved at the original restore point.
+            if (auto x = CheckSavedState(*life); !x) return x;
+            restored_extents += static_cast<std::uint32_t>(paged->extents().size());
+            reload_pending = false;
+          }
+          if (full && shape.segments.front().past == checkpoint_positions + 8) {
+            auto& slots = runner->slots();
+            // Eight real decode writes must change the saved checkpoint pages.
+            if (auto x = slots.CopyState(0, life->state_readback, life->saved_pages, true); !x)
+              return x;
+            if (std::memcmp(life->saved_state, life->state_readback,
+                            static_cast<std::size_t>(life->saved_bytes)) == 0)
+              return std::unexpected("FP16 checkpoint control made no changed state");
+            if (auto x = slots.PrepareRestore(0, life->saved_positions, life->saved_footprint,
+                                              slots.kept_layout_id());
+                !x)
+              return x;
+            if (!slots.restoring(0))
+              return std::unexpected("FP16 checkpoint restore did not enter preparation");
+            if (auto x = slots.CopyState(0, life->saved_state, life->saved_pages, false); !x)
+              return x;
+            if (auto x = slots.CompleteRestore(0, life->saved_positions); !x) return x;
+            if (auto x = CheckSavedState(*life); !x) return x;
+            RecordProperty("checkpoint_bytes_restored", std::to_string(life->saved_bytes));
+            // The same frozen full-vocabulary rows must survive the rewind.
+            for (std::uint32_t past = checkpoint_positions; past < checkpoint_positions + 8; ++past)
+              if (auto x = run_step(shape_of(past, 1)); !x) return x;
+          }
+          if (full && shape.segments.front().past == (heldout ? 49U : 48U)) {
+            if (auto x = SaveState(*life, false); !x) return x;
+            auto& slots = runner->slots();
+            if (auto x = slots.Spill(0); !x) return x;
+            if (!slots.spilled(0) || !slots.kept_whole(0))
+              return std::unexpected("FP16 spill did not keep the whole state");
+            if (auto x = slots.Restore(0); !x) return x;
+            if (auto x = CheckSavedState(*life); !x) return x;
+            RecordProperty("spill_bytes_restored", std::to_string(life->saved_bytes));
+          }
+          if (auto x = run_step(shape); !x) return x;
+          if (full &&
+              shape.segments.front().past + shape.segments.front().rows == checkpoint_positions) {
+            if (auto x = SaveState(*life, true); !x) return x;
+            if (life->saved_positions != checkpoint_positions)
+              return std::unexpected("FP16 checkpoint starts at the wrong completed position");
           }
           return {};
-        });
+        };
+        const auto completed = repeated ? node.WithRequest(0, runner->slots().execution(),
+                                                           "FP16 repeated chunk", chunk)
+                                        : chunk();
+        if (!completed) return completed;
+        if (repeated && evaluation > 2 &&
+            shape.segments.front().past + shape.segments.front().rows == checkpoint_positions) {
+          // The completed chunk's request has ended: no weight lease
+          // remains. State stays resident; only immutable weights leave.
+          backing_before = node.memory().backings();
+          for (std::size_t i = 0; i < paged->extents().size(); ++i) {
+            auto extent = node.catalog().Describe(paged->extents()[i]);
+            if (!extent || extent->state != llmp::catalog::ExtentState::kResident ||
+                extent->leases != 0 || extent->registrations != 0)
+              return std::unexpected("weight eviction begins with held or absent backing");
+            generations[i] = {extent->backing_generation, extent->content_generation};
+          }
+          if (auto x = node.Evict(paged->extents()); !x) return x;
+          if (node.memory().backings() + kWeightExtents != backing_before)
+            return std::unexpected("weight eviction did not release all backing");
+          for (const auto id : paged->extents()) {
+            auto extent = node.catalog().Describe(id);
+            if (!extent || extent->state != llmp::catalog::ExtentState::kNonresident ||
+                extent->leases != 0 || extent->registrations != 0)
+              return std::unexpected("weight extent remains resident or held after eviction");
+          }
+          ++evictions;
+          reload_pending = true;
+        }
+      }
+      if (reload_pending) return std::unexpected("evaluation ended before full weight reload");
+      return {};
+    };
+    const auto count = repeated ? 4U : 1U;
+    for (std::uint32_t evaluation = 1; evaluation <= count; ++evaluation) {
+      if (evaluation > 1) {
+        if (auto x = node.WithRequest(0, runner->slots().execution(), "clearing FP16 repeat",
+                                      [&]() { return runner->slots().Clear(0); });
+            !x)
+          return x;
+        const auto& slots = runner->slots();
+        if (slots.positions(0) != 0 || slots.spilled(0) || slots.restoring(0) ||
+            slots.verify_pending(0) || slots.borrowed(0))
+          return std::unexpected("FP16 repeat did not begin with cleared state");
+        life->saved_pages.clear();
+        life->saved_bytes = 0;
+        life->saved_positions = 0;
+        life->saved_footprint = {};
+      }
+      const auto completed =
+          repeated ? evaluate(evaluation)
+                   : node.WithRequest(0, runner->slots().execution(), "FP16 bridge comparison",
+                                      [&]() { return evaluate(evaluation); });
+      if (!completed) return completed;
+      ++evaluations;
+    }
+    if (repeated) {
+      if (evaluations != 4 || evictions != 2 || restored_extents != 2 * kWeightExtents ||
+          compared_rows != 4 * (token_rows + 8U))
+        return std::unexpected("FP16 repeated control witnesses are incomplete");
+      RecordProperty("evaluations", std::to_string(evaluations));
+      RecordProperty("full_weight_evictions", std::to_string(evictions));
+      RecordProperty("restored_weight_extents", std::to_string(restored_extents));
+      RecordProperty("compared_rows", std::to_string(compared_rows));
+    }
+    return {};
   }();
   EXPECT_TRUE(ran.has_value()) << (ran ? "" : ran.error());
   EXPECT_EQ(node.host_overcharges(), 0U);
@@ -779,12 +879,14 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
 }
 INSTANTIATE_TEST_SUITE_P(
     Bridge, ComponentRunnerQwen2Gpu,
-    testing::Values(std::tuple{false, false, false}, std::tuple{false, true, false},
-                    std::tuple{true, false, false}, std::tuple{true, true, false},
-                    std::tuple{false, true, true}, std::tuple{true, true, true}),
+    testing::Values(std::tuple{false, false, false, false}, std::tuple{false, true, false, false},
+                    std::tuple{true, false, false, false}, std::tuple{true, true, false, false},
+                    std::tuple{false, true, true, false}, std::tuple{true, true, true, false},
+                    std::tuple{false, true, false, true}, std::tuple{true, true, false, true},
+                    std::tuple{false, true, true, true}, std::tuple{true, true, true, true}),
     ([](const auto& info) {
-      const auto [fusion, full, heldout] = info.param;
-      return std::string(fusion ? "Fused" : "Unfused") +
+      const auto [fusion, full, heldout, repeated] = info.param;
+      return std::string(fusion ? "Fused" : "Unfused") + (repeated ? "Repeated" : "") +
              (heldout ? "Heldout" : (full ? "Full" : "Screen"));
     }));
 }  // namespace

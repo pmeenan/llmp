@@ -122,11 +122,40 @@ bytes and no memory-limit or OOM events. This counter does not measure total
 catalog/device occupancy. Test source SHA-256:
 `f38183d3d41138431f9a25043890c60bc33b1e536fc1c95ba0c01d2f60467ef1`.
 
+## Repeated FP16 execution and full weight eviction
+
+On 2026-10-12, all ten cases passed on Spark A with zero failures or skips.
+Four new cases repeat both complete trajectories in both fusion modes. Each
+performs four evaluations on the same shared runner, clearing state before
+evaluations two through four and repeating the checkpoint and spill controls.
+Every compared F32 logit remains exact against the same frozen oracles:
+336 full-vocabulary rows per repeated control case and 2,340 per repeated
+heldout case, including checkpoint replay.
+
+Evaluations three and four end the completed chunk's request after 32 control
+or 33 heldout positions, evict all 490 weight extents and require every
+extent to be nonresident and unheld. The physical backing count drops by
+exactly 490. The next request reloads every extent with an advanced backing
+generation and unchanged content generation; before another write, complete
+checkpoint bytes, positions and used footprint still match. Each case
+records two evictions and 980 restored weight extents. State remains resident
+at these weight-only eviction points.
+
+The added generation inventory and operation scratch have a 128 KiB source
+bound. Total checked host inventory is 3,746,932,400 bytes for control and
+5,530,543,280 for heldout, within the existing 4/8 GiB host allowances and
+8/16 GiB execution domains plus the separate 6 GiB driver margin. Evaluations
+reuse the same two/five plan keys, oracle and pinned state-copy buffers.
+The ten-case run used a 16 GiB zero-swap cgroup cap, observed memory peak
+1,665,028,096 bytes and no memory-limit or OOM events. This
+counter does not measure total catalog/device occupancy. Test source SHA-256:
+`8054a898c7b3340e01b7711ce444d3685b45d9d02f258a69587808f9e50097a9`.
+
 ## Remaining gate
 
-The shared controls now include the original control and heldout trajectories
-in both fusion modes. Historical [P2](../backend-proof-p2/README.md) also repeats
-each evaluation, evicts every weight and relocates restored weights; those
-shared controls and kept-state/restart adoption remain open. EXL3 must pass
+The shared controls now include the original control and heldout trajectories,
+repeated execution and full weight eviction/reload in both fusion modes.
+Historical [P2](../backend-proof-p2/README.md) also relocates restored weights;
+address relocation and kept-state/restart adoption remain open. EXL3 must pass
 its exact 1,570-linear and Tier C 750-case controls through the shared runner.
 Legacy execution remains until those controls pass.
