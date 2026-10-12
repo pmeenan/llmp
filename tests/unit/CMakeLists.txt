@@ -1290,7 +1290,7 @@ if(LLMP_CUDA)
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   add_executable(component_runner_qwen2_gpu_test component_runner_qwen2_gpu_test.cc)
-  target_link_libraries(component_runner_qwen2_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
+  target_link_libraries(component_runner_qwen2_gpu_test PRIVATE llmp_corpus_score llmp_engine llmp_ggml_kernels
                                                                 llmp_components llmp_spec
                                                                 llmp_artifact)
   llmp_gpu_gtest(component_runner_qwen2_gpu_test MODELS

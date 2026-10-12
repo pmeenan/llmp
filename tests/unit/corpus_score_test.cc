@@ -181,6 +181,8 @@ class CorpusRunner : public ::testing::Test {
     ts::FakeStepSource* source = nullptr;
     std::optional<en::WaveComposer> composer;
     std::unique_ptr<ts::CorpusScore> scorer;
+    std::array<ts::CorpusTargetScore, 16> scores{};
+    std::size_t score_count = 0;
   };
   std::unique_ptr<Lifetime> life;
   std::array<std::int32_t, 7> a{1, 4, 3, 7, 2, 11, 5};
@@ -335,4 +337,59 @@ TEST_F(CorpusRunner, CorpusOwnsIdsAndRejectsExternallyAdvancedSlot) {
   EXPECT_FALSE(life->scorer->Step());
   EXPECT_FALSE(life->scorer->complete());
 }
+TEST_F(CorpusRunner, SynchronousSinkReportsGlobalCoordinatesAndRefusalIsTerminal) {
+  auto* held = life.get();
+  auto made = ts::CorpusScore::Make(life->node, *life->runner, *life->composer, Documents(),
+                                    {kVocabulary, 3},
+                                    [held](const ts::CorpusTargetScore& score) -> en::Status {
+                                      if (held->score_count == 7)
+                                        return std::unexpected("report sink refused");
+                                      held->scores.at(held->score_count++) = score;
+                                      return {};
+                                    });
+  ASSERT_TRUE(made);
+  life->scorer = std::move(*made);
+  ASSERT_TRUE(life->scorer->Step());
+  ASSERT_EQ(life->score_count, 6U);
+  for (std::uint32_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(life->scores[i].document, 0U);
+    EXPECT_EQ(life->scores[i].slot, 2U);
+    EXPECT_EQ(life->scores[i].position, i + 1);
+    EXPECT_EQ(life->scores[i].target, a[i + 1]);
+    EXPECT_TRUE(std::isfinite(life->scores[i].nll));
+    EXPECT_EQ(life->scores[i + 3].document, 1U);
+    EXPECT_EQ(life->scores[i + 3].slot, 0U);
+    EXPECT_EQ(life->scores[i + 3].position, i + 1);
+    EXPECT_EQ(life->scores[i + 3].target, b[i + 1]);
+  }
+  EXPECT_FALSE(life->scorer->Step());
+  EXPECT_EQ(life->score_count, 7U);
+  EXPECT_EQ(life->scores[6].position, 4U);
+  EXPECT_EQ(life->scores[6].target, a[4]);
+  EXPECT_FALSE(life->scorer->complete());
+  EXPECT_FALSE(life->scorer->Step());
+  EXPECT_EQ(life->score_count, 7U);
+}
+
+TEST_F(CorpusRunner, SynchronousSinkCancellationCannotBecomeSuccessfulCompletion) {
+  auto* held = life.get();
+  auto made =
+      ts::CorpusScore::Make(life->node, *life->runner, *life->composer, Documents(),
+                            {kVocabulary, 8}, [held](const ts::CorpusTargetScore&) -> en::Status {
+                              ++held->score_count;
+                              held->scorer->Cancel();
+                              return {};
+                            });
+  ASSERT_TRUE(made);
+  life->scorer = std::move(*made);
+  EXPECT_FALSE(life->scorer->Step());
+  EXPECT_FALSE(life->scorer->complete());
+  EXPECT_EQ(life->score_count, 1U);
+  EXPECT_EQ(life->scorer->result().targets, 0U);
+  const auto built = life->source->built().size();
+  EXPECT_FALSE(life->scorer->Step());
+  EXPECT_EQ(life->source->built().size(), built);
+  EXPECT_EQ(life->score_count, 1U);
+}
+
 }  // namespace

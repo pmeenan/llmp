@@ -104,10 +104,12 @@ They are not retrospectively relabeled quality failures or quality passes.
    Choose the fastest qualified implementation; remove dominated machinery
    after its safety responsibilities have been retained or retired.
 
-The available Qwen2 FP16 fixture is the first source-precision anchor, subject
-to authenticating its checkpoint provenance and reference recipe. Inspected
-Qwen/DeepSeek stores currently provide quantized references, not authenticated
-original BF16 execution. Qwen's catalog lists a possible approximately 354 GB
+The [original Qwen2 BF16 smoke](../m36-original-qwen2/README.md) now supplies
+a complete authenticated original checkpoint and a tiny natural-language
+likelihood observation. The existing official F16 fixture remains a separate
+publication with unproved original conversion lineage. Inspected Qwen3.8/DeepSeek
+stores currently provide quantized references, not authenticated original BF16
+execution. Qwen's catalog lists a possible approximately 354 GB
 BF16 variant as absent; this is not an exhaustive filesystem search or proof
 of a usable reference. Missing primary evidence stays explicit. Secondary
 comparisons and bounded operand/timing experiments can proceed without

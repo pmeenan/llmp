@@ -56,7 +56,7 @@ std::expected<std::uint64_t, std::string> CorpusScore::Bound(
 
 std::expected<std::unique_ptr<CorpusScore>, std::string> CorpusScore::Make(
     engine::PagedNode& node, engine::ModelRunner& runner, const engine::WaveComposer& composer,
-    std::span<const CorpusDocument> documents, CorpusScoreLimits limits) {
+    std::span<const CorpusDocument> documents, CorpusScoreLimits limits, CorpusScoreSink sink) {
   auto bound = Bound(documents, limits);
   if (!bound) return std::unexpected(bound.error());
   if (runner.slots().stages() != 1) return Error("corpus scorer requires a target-only runner");
@@ -83,6 +83,7 @@ std::expected<std::unique_ptr<CorpusScore>, std::string> CorpusScore::Make(
       runner, composer, {.kind = engine::DecodingMode::Kind::kScored}, {});
   if (!decoder) return std::unexpected(decoder.error());
   out->decoder_.emplace(std::move(*decoder));
+  out->sink_ = std::move(sink);
   return out;
 }
 CorpusScore::~CorpusScore() {
@@ -92,7 +93,10 @@ CorpusScore::~CorpusScore() {
   node_.UnchargeHost(charge_);
 }
 void CorpusScore::Cancel() {
-  if (!complete_) failed_ = true;
+  if (!complete_) {
+    canceled_ = true;
+    failed_ = true;
+  }
 }
 
 std::expected<double, std::string> CorpusScore::Nll(std::span<const float> logits,
@@ -157,6 +161,15 @@ std::expected<bool, std::string> CorpusScore::Step() {
       if (next < d.size) {
         auto nll = Nll(row, tokens_[d.offset + next]);
         if (!nll) return std::unexpected(nll.error());
+        if (sink_) {
+          const auto emitted = sink_({.document = static_cast<std::uint32_t>(indexes[i]),
+                                      .slot = d.slot,
+                                      .position = static_cast<std::uint32_t>(next),
+                                      .target = tokens_[d.offset + next],
+                                      .nll = *nll});
+          if (!emitted) return std::unexpected(emitted.error());
+          if (canceled_) return Error("corpus scorer canceled by its synchronous sink");
+        }
         const double value = *nll - compensation_;
         const double sum = result_.total_nll + value;
         compensation_ = (sum - result_.total_nll) - value;

@@ -2413,12 +2413,17 @@ validates full F32 vocabulary heads and packed owner output ranges before
 execution, and counts each next-token target across chunk boundaries. Its
 finite host charge pays its IDs, copied histories, outputs and scratch;
 model/compiler/state/device funding remains the harness's responsibility.
-Eight host controls cover analytical NLL, ragged joined owners, invalid heads,
-admission refusal, cancellation and unknown retirement. It is test support,
-not production linking or a completed model quality gate. Original-reference
-provenance, natural corpus, document reports and production-phase comparisons
-remain separate work; random-token trajectory fixtures are numerical stress
-controls, not language-model perplexity evidence.
+Ten host controls cover analytical NLL, ragged joined owners, invalid heads,
+admission refusal, sink refusal/cancellation and unknown retirement. A synchronous
+per-target sink supplies bounded document reports; the caller funds retained
+records. The Qwen2 FP16 control uses the real scored backend in eight-row
+chunks and records its selected implementations. It is test support,
+not production linking or a completed model quality gate. The
+[original Qwen2 BF16 smoke](experiments/m36-original-qwen2/README.md) records
+an authenticated 43-token passage with 42 aligned original/shared losses and
+bounded per-target reports. Broader corpus and production-phase comparisons
+remain open; random-token trajectory fixtures are numerical stress controls,
+not language-model perplexity evidence.
 
 ## Migration and its gate
 

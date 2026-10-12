@@ -21,6 +21,7 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
@@ -36,6 +37,7 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "components/step.h"
+#include "corpus_score.h"
 #include "engine/component_source.h"
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
@@ -61,6 +63,7 @@ namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace pl = llmp::planner;
 namespace sp = llmp::spec;
+namespace ts = llmp::test_support;
 
 std::string Env(const char* name) {
   const char* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
@@ -272,6 +275,66 @@ en::Status NativeReservation(const kn::LowerInput& input) {
   return {};
 }
 
+// Bounded metadata of the programs actually bound and entered. A completed
+// scorer run is required before these records are emitted as evidence.
+struct CorpusPlanRecord {
+  std::uint32_t rows = 0;
+  llmp::base::Sha256Digest identity{};
+  std::vector<std::string> implementations;
+  std::uint64_t runs = 0;
+};
+class CorpusProgram final : public kn::StepProgram {
+ public:
+  CorpusProgram(std::unique_ptr<kn::StepProgram> inner, CorpusPlanRecord& record)
+      : inner_(std::move(inner)), record_(record) {}
+  std::uint64_t scratch_bytes() const override { return inner_->scratch_bytes(); }
+  std::uint64_t pool_bytes() const override { return inner_->pool_bytes(); }
+  std::uint64_t host_bytes() const override { return inner_->host_bytes() + sizeof(*this); }
+  std::uint64_t launches() const override { return inner_->launches(); }
+  std::span<const kn::InputSlot> inputs() const override { return inner_->inputs(); }
+  std::span<const kn::OutputSlot> outputs() const override { return inner_->outputs(); }
+  std::span<const kn::TensorUse> tensors() const override { return inner_->tensors(); }
+  const llmp::execution::BoundPlan* bound() const override { return inner_->bound(); }
+  bool capturable() const override { return inner_->capturable(); }
+  std::expected<void, kn::StepFailure> Position(std::span<const std::uint32_t> past) override {
+    return inner_->Position(past);
+  }
+  std::expected<void, kn::StepFailure> Bind(kn::StepLaunch& launch) override {
+    auto result = inner_->Bind(launch);
+    if (!result) return result;
+    const auto* selected = inner_->bound();
+    if (!selected || !selected->size() || selected->size() > kLaunches)
+      return std::unexpected(kn::StepFailure{.detail = "corpus bound implementation inventory"});
+    if (!record_.implementations.empty()) {
+      if (record_.identity != selected->identity())
+        return std::unexpected(
+            kn::StepFailure{.detail = "corpus same-shape plan identity changed"});
+      return {};
+    }
+    record_.identity = selected->identity();
+    record_.implementations.reserve(selected->size());
+    for (std::size_t i = 0; i < selected->size(); ++i) {
+      const auto& implementation = selected->at(i);
+      if (implementation.name.size() > 128)
+        return std::unexpected(kn::StepFailure{.detail = "corpus implementation name bound"});
+      record_.implementations.push_back(implementation.name);
+    }
+    return {};
+  }
+  std::expected<void, kn::StepFailure> Run(kn::StepLaunch& launch,
+                                           llmp::providers::NativeStream stream) const override {
+    auto result = inner_->Run(launch, stream);
+    if (result) ++record_.runs;  // Includes recording; not a GPU timing/call counter.
+    return result;
+  }
+
+ private:
+  std::unique_ptr<kn::StepProgram> inner_;
+  CorpusPlanRecord& record_;
+};
+static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners + 8 * kMiB <=
+              kHostAllowance);  // Two selected-plan name arrays, output text and sink records.
+
 struct Lifetime {
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   std::string tokens_bytes, oracle;
@@ -295,6 +358,11 @@ struct Lifetime {
   std::uint32_t saved_positions = 0;
   std::uint64_t saved_bytes = 0;
   std::uint64_t domain_cap = kDomainCap;
+  std::array<CorpusPlanRecord, 2> corpus_plans{};
+  std::optional<en::WaveComposer> corpus_composer;
+  std::unique_ptr<ts::CorpusScore> corpus_scorer;
+  std::array<ts::CorpusTargetScore, 256> corpus_scores{};
+  std::size_t corpus_score_count = 0;
 };
 
 en::Status SaveState(Lifetime& life, bool checkpoint) {
@@ -410,20 +478,20 @@ TEST(ComponentRunnerQwen2Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading
 // cannot change the legacy chunk's matrix shapes.
 class ComponentRunnerQwen2Gpu : public testing::TestWithParam<std::tuple<bool, bool, bool, bool>> {
 };
-TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
-  const auto [fusion, full, heldout, repeated] = GetParam();
+void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool corpus = false) {
   const auto domain_cap = heldout ? kHeldoutDomainCap : kDomainCap;
   const auto host_allowance = heldout ? kHeldoutHostAllowance : kHostAllowance;
   const auto runtime_plans = heldout ? kHeldoutRuntimePlans : kRuntimePlans;
-  const auto token_rows = heldout ? 577U : 76U;
+  std::uint32_t token_rows = heldout ? 577U : 76U;
   const auto checkpoint_positions = heldout ? 33U : 32U;
   const auto oracle_bytes = heldout ? kHeldoutOracleBytes : kOracleBytes;
   const std::string tokens_path =
-      Env(heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS");
+      Env(corpus ? "LLMP_QWEN2_CORPUS_IDS"
+                 : (heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS"));
   const std::string oracle_path = Env(
       heldout ? (fusion ? "LLMP_QWEN2_FP16_HELDOUT_ORACLE_F" : "LLMP_QWEN2_FP16_HELDOUT_ORACLE_U")
               : (fusion ? "LLMP_QWEN2_FP16_ORACLE_F" : "LLMP_QWEN2_FP16_ORACLE_U"));
-  if (tokens_path.empty() || oracle_path.empty())
+  if (tokens_path.empty() || (!corpus && oracle_path.empty()))
     GTEST_SKIP() << "requires the frozen FP16 trajectory IDs and fused/unfused oracle";
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available.has_value()) << "unknown physical availability";
@@ -449,37 +517,55 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
   auto token_read = Read(tokens_path, heldout ? 8320 : kTokenLimit, heldout);
   ASSERT_TRUE(token_read.has_value()) << token_read.error();
   life->tokens_bytes = std::move(*token_read);
-  ASSERT_EQ(Hash(life->tokens_bytes),
-            heldout ? "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c"
-                    : "37e46a2304b5ab5648d0f2b7fdb94224596ed690caaddc1726df27110b585e21");
   auto& tokens = life->tokens;
-  if (heldout) {
+  if (corpus) {
+    const auto seal = Env("LLMP_QWEN2_CORPUS_IDS_SHA256");
+    ASSERT_EQ(seal.size(), 64U);
+    ASSERT_EQ(Hash(life->tokens_bytes), seal);
+    ASSERT_EQ(life->tokens_bytes.size() % 4, 0U);
+    token_rows = static_cast<std::uint32_t>(life->tokens_bytes.size() / 4);
+    ASSERT_GE(token_rows, 2U);
+    ASSERT_LE(token_rows, 256U);
     for (std::size_t i = 0; i < token_rows; ++i) {
-      std::uint64_t id = 0;
-      for (int byte = 7; byte >= 0; --byte)
+      std::uint32_t id = 0;
+      for (int byte = 3; byte >= 0; --byte)
         id = (id << 8U) |
-             static_cast<unsigned char>(life->tokens_bytes[i * 8 + static_cast<std::size_t>(byte)]);
+             static_cast<unsigned char>(life->tokens_bytes[i * 4 + static_cast<std::size_t>(byte)]);
       ASSERT_LT(id, 151936U);
       tokens.push_back(static_cast<std::int32_t>(id));
     }
   } else {
-    std::istringstream ids(life->tokens_bytes);
-    for (std::int32_t id = 0; ids >> id;) tokens.push_back(id);
+    ASSERT_EQ(Hash(life->tokens_bytes),
+              heldout ? "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c"
+                      : "37e46a2304b5ab5648d0f2b7fdb94224596ed690caaddc1726df27110b585e21");
+    if (heldout) {
+      for (std::size_t i = 0; i < token_rows; ++i) {
+        std::uint64_t id = 0;
+        for (int byte = 7; byte >= 0; --byte)
+          id = (id << 8U) | static_cast<unsigned char>(
+                                life->tokens_bytes[i * 8 + static_cast<std::size_t>(byte)]);
+        ASSERT_LT(id, 151936U);
+        tokens.push_back(static_cast<std::int32_t>(id));
+      }
+    } else {
+      std::istringstream ids(life->tokens_bytes);
+      for (std::int32_t id = 0; ids >> id;) tokens.push_back(id);
+    }
+    ASSERT_EQ(tokens.size(), token_rows);
+    auto oracle_read = Read(oracle_path, oracle_bytes, true);
+    ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
+    life->oracle = std::move(*oracle_read);
+    ASSERT_EQ(Hash(life->oracle),
+              heldout
+                  ? (fusion ? "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5"
+                            : "69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0")
+                  : (fusion ? "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571"
+                            : "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1"));
   }
-  ASSERT_EQ(tokens.size(), token_rows);
-  auto oracle_read = Read(oracle_path, oracle_bytes, true);
-  ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
-  life->oracle = std::move(*oracle_read);
   const auto& oracle = life->oracle;
-  ASSERT_EQ(Hash(oracle),
-            heldout
-                ? (fusion ? "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5"
-                          : "69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0")
-                : (fusion ? "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571"
-                          : "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1"));
   const auto& profile = llmp::model::Qwen25Instruct05B();
   const std::size_t row_bytes = std::size_t{profile.vocab} * sizeof(float);
-  ASSERT_EQ(oracle.size(), token_rows * row_bytes);
+  if (!corpus) ASSERT_EQ(oracle.size(), token_rows * row_bytes);
   std::string store = Env("LLMP_EXL3_FIXTURE_STORE");
   if (store.empty()) store = Env("HOME") + "/.local/share/llmp/artifact-layout-20260922/installed";
   constexpr auto artifact_id = "b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073";
@@ -555,7 +641,14 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
     if (heldout) shape.segments.front().read_cells = llmp::model::PaddedKv(past + rows, 1024);
     return shape;
   };
-  if (heldout) {
+  if (corpus) {
+    for (std::uint32_t past = 0; past < token_rows; past += 8) {
+      auto shape = shape_of(past, std::min(8U, token_rows - past));
+      shape.phase = pl::Phase::kScore;
+      life->corpus_plans[shape.rows() == 8 ? 0U : 1U].rows = shape.rows();
+      shapes.push_back(std::move(shape));
+    }
+  } else if (heldout) {
     shapes.push_back(shape_of(0, 16));
     shapes.push_back(shape_of(16, 17));
     for (std::uint32_t past = 33; past < 49; ++past) shapes.push_back(shape_of(past, 1));
@@ -620,6 +713,20 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
         return std::unexpected("program exceeds paid retained-plan bound");
       return program;
     };
+    if (corpus) {
+      auto guarded = ts::GuardCorpusLower(std::move(checked_backend.lower), profile.vocab);
+      checked_backend.lower = [held = life.get(),
+                               guarded = std::move(guarded)](const kn::LowerInput& input)
+          -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
+        auto program = guarded(input);
+        if (!program || input.addresses.measuring()) return program;
+        const auto rows = input.shape.rows();
+        auto* record = &held->corpus_plans[rows == 8 ? 0U : 1U];
+        if (record->rows != rows || (*program)->host_bytes() > kProgramHost - sizeof(CorpusProgram))
+          return std::unexpected("corpus exceeded measured shape or retained program bound");
+        return std::make_unique<CorpusProgram>(std::move(*program), *record);
+      };
+    }
     auto component = en::ComponentStepSource::Create(
         {.spec = &*spec,
          .stage = 0,
@@ -648,7 +755,8 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
         return std::unexpected("position changes the paid plan key");
       }
     }
-    if (keys.size() != paid_keys) return std::unexpected("trajectory key inventory differs");
+    if ((!corpus && keys.size() != paid_keys) || keys.empty())
+      return std::unexpected("trajectory key inventory differs");
     en::RunnerConfig config;
     config.slots = {.model = "qwen2-fp16-shared",
                     .slots = 1,
@@ -703,6 +811,71 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
     if (auto x = runner->Bind(); !x) return x;
     node.Run();
     if (auto x = runner->slots().SelectSlots(std::vector<std::uint32_t>{0}); !x) return x;
+    if (corpus) {
+      llmp::model::Batching batching;
+      batching.max_segments = 1;
+      auto composer = en::WaveComposer::For(batching, runner->slots());
+      if (!composer) return std::unexpected(composer.error());
+      life->corpus_composer.emplace(std::move(*composer));
+      const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = tokens}};
+      auto scorer = ts::CorpusScore::Make(
+          node, *runner, *life->corpus_composer, documents, {profile.vocab, 8},
+          [held = life.get()](const ts::CorpusTargetScore& score) -> en::Status {
+            if (held->corpus_score_count == held->corpus_scores.size())
+              return std::unexpected("corpus NLL report exceeds prepaid rows");
+            held->corpus_scores[held->corpus_score_count++] = score;
+            return {};
+          });
+      if (!scorer) return std::unexpected(scorer.error());
+      life->corpus_scorer = std::move(*scorer);
+      auto scored = node.WithRequest(
+          0, runner->slots().execution(), "fixed teacher corpus", [&]() -> en::Status {
+            for (std::size_t i = 0; i < shapes.size(); ++i) {
+              auto done = life->corpus_scorer->Step();
+              if (!done) return std::unexpected(done.error());
+              if (*done != (i + 1 == shapes.size()))
+                return std::unexpected("corpus completion differs from fixed chunk schedule");
+            }
+            return {};
+          });
+      if (!scored) return scored;
+      const auto& result = life->corpus_scorer->result();
+      if (!life->corpus_scorer->complete() || result.inputs != token_rows ||
+          result.targets != token_rows - 1 || life->corpus_score_count != token_rows - 1 ||
+          result.steps != shapes.size() || runner->slots().positions(0) != token_rows)
+        return std::unexpected("corpus target coverage or state frontier differs");
+      std::ostringstream report;
+      report << std::setprecision(17);
+      for (std::size_t i = 0; i < life->corpus_score_count; ++i) {
+        const auto& score = life->corpus_scores[i];
+        if (score.document || score.slot || score.position != i + 1 ||
+            score.target != tokens[i + 1])
+          return std::unexpected("corpus NLL coordinates differ from fixed teacher IDs");
+        report << score.document << ',' << score.slot << ',' << score.position << ','
+               << score.target << ',' << score.nll << '\n';
+      }
+      testing::Test::RecordProperty("corpus_nll_rows", report.str());
+      testing::Test::RecordProperty("corpus_ids_sha256", Hash(life->tokens_bytes));
+      testing::Test::RecordProperty("corpus_targets", std::to_string(result.targets));
+      report.str("");
+      report.clear();
+      report << std::setprecision(17) << result.total_nll;
+      testing::Test::RecordProperty("corpus_total_nll", report.str());
+      testing::Test::RecordProperty("corpus_policy",
+                                    fusion ? "existing-fused" : "existing-unfused");
+      report.str("");
+      report.clear();
+      for (const auto& plan : life->corpus_plans) {
+        if (!plan.rows) continue;
+        if (!plan.runs || plan.implementations.empty())
+          return std::unexpected("corpus selected program never entered execution");
+        report << "rows=" << plan.rows << " bound_plan=" << llmp::base::ToHex(plan.identity)
+               << " run_or_record=" << plan.runs << '\n';
+        for (const auto& name : plan.implementations) report << name << '\n';
+      }
+      testing::Test::RecordProperty("corpus_selected_programs", report.str());
+      return {};
+    }
     // Only the repeated arms add this bounded generation inventory. The
     // source-bound allowance includes 128 KiB for it and operation scratch.
     constexpr std::size_t kWeightExtents = 490;
@@ -781,7 +954,8 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
               return x;
             if (auto x = slots.CompleteRestore(0, life->saved_positions); !x) return x;
             if (auto x = CheckSavedState(*life); !x) return x;
-            RecordProperty("checkpoint_bytes_restored", std::to_string(life->saved_bytes));
+            testing::Test::RecordProperty("checkpoint_bytes_restored",
+                                          std::to_string(life->saved_bytes));
             // The same frozen full-vocabulary rows must survive the rewind.
             for (std::uint32_t past = checkpoint_positions; past < checkpoint_positions + 8; ++past)
               if (auto x = run_step(shape_of(past, 1)); !x) return x;
@@ -794,7 +968,8 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
               return std::unexpected("FP16 spill did not keep the whole state");
             if (auto x = slots.Restore(0); !x) return x;
             if (auto x = CheckSavedState(*life); !x) return x;
-            RecordProperty("spill_bytes_restored", std::to_string(life->saved_bytes));
+            testing::Test::RecordProperty("spill_bytes_restored",
+                                          std::to_string(life->saved_bytes));
           }
           if (auto x = run_step(shape); !x) return x;
           if (full &&
@@ -864,10 +1039,10 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
       if (evaluations != 4 || evictions != 2 || restored_extents != 2 * kWeightExtents ||
           compared_rows != 4 * (token_rows + 8U))
         return std::unexpected("FP16 repeated control witnesses are incomplete");
-      RecordProperty("evaluations", std::to_string(evaluations));
-      RecordProperty("full_weight_evictions", std::to_string(evictions));
-      RecordProperty("restored_weight_extents", std::to_string(restored_extents));
-      RecordProperty("compared_rows", std::to_string(compared_rows));
+      testing::Test::RecordProperty("evaluations", std::to_string(evaluations));
+      testing::Test::RecordProperty("full_weight_evictions", std::to_string(evictions));
+      testing::Test::RecordProperty("restored_weight_extents", std::to_string(restored_extents));
+      testing::Test::RecordProperty("compared_rows", std::to_string(compared_rows));
     }
     return {};
   }();
@@ -877,6 +1052,16 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
   // whole Lifetime, not only the runner and its kernel resources.
   life.reset();
 }
+TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
+  const auto [fusion, full, heldout, repeated] = GetParam();
+  RunQwen2Control(fusion, full, heldout, repeated);
+}
+class ComponentRunnerQwen2CorpusGpu : public testing::TestWithParam<bool> {};
+TEST_P(ComponentRunnerQwen2CorpusGpu, FixedTeacherCorpusScoresEveryTarget) {
+  RunQwen2Control(GetParam(), false, false, false, true);
+}
+INSTANTIATE_TEST_SUITE_P(Corpus, ComponentRunnerQwen2CorpusGpu, testing::Bool(),
+                         [](const auto& info) { return info.param ? "Fused" : "Unfused"; });
 INSTANTIATE_TEST_SUITE_P(
     Bridge, ComponentRunnerQwen2Gpu,
     testing::Values(std::tuple{false, false, false, false}, std::tuple{false, true, false, false},

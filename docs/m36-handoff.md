@@ -54,10 +54,15 @@ worktrees. Ordinary joined head/product kernels are recovery candidates,
 not yet quality/performance-qualified defaults. Exact source/selection safety
 and same-implementation restore controls remain. The matched 1% gate stands.
 
-Next: one bounded shared teacher-forced scorer, authenticate the available
-Qwen2 FP16 anchor, and compare small reversible numerical candidates by
-quality and matched speed. Qwen/DeepSeek original BF16 execution is missing
-from inspected evidence; label current quantized comparisons secondary.
+The bounded shared teacher-forced scorer landed in `a38b5ec0`; its real
+Qwen2 FP16 adapter passes main native integration and both natural-ID policies.
+The [original Qwen2 BF16 smoke](experiments/m36-original-qwen2/README.md)
+authenticates and executes revision `7ae557604adf67be50417f59c2c2f167def9a775`
+and aligns all 42 target losses on a 43-token natural passage. Broader quality
+and performance remain open. Its existing official F16 artifact has no proved original
+conversion lineage. Compare small reversible candidates by quality and matched
+speed; Qwen3.8/DeepSeek original BF16 execution remains missing from inspected
+evidence, and their current quantized comparisons are secondary.
 Both Sparks are available for parallel development/checks; actual GPU jobs
 remain exclusive on their host. Do not continue the old parity-only loop.
 

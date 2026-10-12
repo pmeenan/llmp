@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -27,6 +28,15 @@ struct CorpusScoreLimits {
   std::uint32_t vocabulary = 0;
   std::uint32_t chunk_rows = 0;
 };
+struct CorpusTargetScore {
+  std::uint32_t document = 0, slot = 0, position = 0;
+  std::int32_t target = 0;
+  double nll = 0;
+};
+// Synchronous sink; caller owns and prepays any retained report. Failure is
+// terminal. Captured owners must outlive the scorer, including uncertain retirement.
+using CorpusScoreSink = std::function<engine::Status(const CorpusTargetScore&)>;
+
 struct CorpusScoreResult {
   std::uint64_t inputs = 0, targets = 0, steps = 0;
   double total_nll = 0;
@@ -59,7 +69,7 @@ class CorpusScore {
                                                          CorpusScoreLimits);
   static std::expected<std::unique_ptr<CorpusScore>, std::string> Make(
       engine::PagedNode&, engine::ModelRunner&, const engine::WaveComposer&,
-      std::span<const CorpusDocument>, CorpusScoreLimits);
+      std::span<const CorpusDocument>, CorpusScoreLimits, CorpusScoreSink = {});
   ~CorpusScore();
   CorpusScore(const CorpusScore&) = delete;
   CorpusScore& operator=(const CorpusScore&) = delete;
@@ -91,8 +101,9 @@ class CorpusScore {
   std::unique_ptr<float[]> row_;
   std::optional<engine::DecodingOrchestrator> decoder_;
   CorpusScoreResult result_{};
+  CorpusScoreSink sink_;
   double compensation_ = 0;
-  bool failed_ = false, complete_ = false;
+  bool failed_ = false, complete_ = false, canceled_ = false;
 };
 }  // namespace llmp::test_support
 #endif

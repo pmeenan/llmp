@@ -1411,10 +1411,17 @@ each is checked against the design as M3.6 proceeds.
             ([audit](experiments/m36-numerical-audit/README.md)).
       - [x] Shared target-only teacher-forced scorer foundation: paid finite
             IDs/outputs, global next-target alignment, full-vocabulary NLL and
-            guarded head/owner semantics; eight host controls pass. This is
+            guarded head/owner semantics; ten host controls pass. This is
             test support, without a real-model quality qualification.
-      - [ ] Fixed natural-language corpus/tokenizer provenance, original-reference
-            execution and bounded per-document reports; production-phase,
+      - [x] Real Qwen2 FP16 scorer adapter: bounded per-target reports through
+            the actual shared backend, selected implementation identities and
+            sink refusal/cancellation controls. Main native build, 114 affected
+            controls and both actual natural-ID policies pass without skips.
+      - [x] [Original Qwen2 BF16 likelihood smoke](experiments/m36-original-qwen2/README.md):
+            authenticated complete original weights and 43 natural token meanings,
+            42 aligned target losses through original and shared FP16 recipes.
+            This is a tiny observation, not a quality acceptance gate.
+      - [ ] Broader fixed corpus and original-reference comparisons; production-phase,
             speculation, context and cohort controls for chosen candidates.
       - [ ] Evaluate numerical recovery candidates and retire dominated recipe
             machinery after functional, quality and matched-speed qualification.
