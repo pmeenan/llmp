@@ -1900,6 +1900,17 @@ each is checked against the design as M3.6 proceeds.
                   model-binary guards and quality gates passed. Source mappings, gathers,
                   head-order authority, normalization and new publication/
                   runtime admission remain open.
+            - [x] **N3b2e — owned indexed multipart assembly:**
+                  prepaid indexed source ownership, complete dispositions,
+                  numeric expert/row gathers, shared tensor scales and
+                  encoding-preserving reshape/permutation routes. Eight
+                  full-payload and refusal controls, 2,595 native and 2,040
+                  CPU checks and quality gates passed with no failures or
+                  skips. Main build, eight integration controls and all
+                  135 model/timing cases (182 raw GoogleTest runs) passed
+                  with zero failures or skips. Source, recipe, model-binary
+                  guards and quality gates passed. Source mapping authority,
+                  byte authentication, publication and admission remain separate.
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
             catalog import events.

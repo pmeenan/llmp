@@ -2004,6 +2004,19 @@ ModelOpt/MLX mappings, multipart/gather normalization,
 source head-order authority and new publication/admission remain open. This
 helper does not authorize resident BF16 expansion.
 
+The owned indexed part plan (`import/indexed_parts.h`) checks complete source
+dispositions and multipart coverage before assembly. Numeric expert and row
+gathers retain physical source order separately from destination order;
+shared tensor scales, descriptor reshapes and encoding-preserving head
+permutations use the same checked routes. Allocation-free preflight charges
+new planner storage before taking checkpoint ownership. Eight full-payload
+and refusal controls, 2,595 native and 2,040 CPU cases and quality checks
+passed with zero failures or skips. Main build, eight integration controls
+and all 135 model/timing cases (182 raw GoogleTest runs) passed with zero
+failures or skips. Source, recipe and model-binary guards and quality gates
+passed (2026-10-12). Geometry validation does not authorize a source mapping,
+authenticate checkpoint bytes, publish an artifact or admit a model.
+
 The native copy-only writer (`import/writer.h`) consumes owned normalized
 plans and records their specs in v1 artifacts. `llmp import` streams and
 verifies ordinary or archived sources, including exact parsed-prefix
