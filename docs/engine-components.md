@@ -1236,11 +1236,16 @@ also rounds queries to F16. No Lid capability or changed TopK semantics
 is introduced by the bank form.
 
 Default policy, original-reference quality and performance remain open.
-G4b2c ports output-A and product policies after G4b2b2, preserving exact
-selected contributions and same-implementation state, rollback and replay.
+G4b2c ports output-A and product policies after G4b2b2, executing all selected
+contributions and preserving same-implementation state, rollback and replay.
 Legacy bit parity is historical diagnostic evidence, not the prospective
-acceptance rule; a blanket row-invariant verify recipe is not required. The engine's binding of the hash rows
-and injection's features, and its complete setup and state-lifecycle
+acceptance rule; a blanket row-invariant verify recipe is not required.
+Owner-safe verification protects each owner's inputs, selected contributions
+and state. Unfused/fused/legacy score comparisons describe numerical relations;
+they do not force one recipe solely to reproduce another's bits. Exact source
+representations, declared precision conversions, masks for the actually selected
+IDs and same-implementation restore controls remain required. The engine's
+binding of the hash rows and injection's features, and its complete setup and state-lifecycle
 integration, are G4c's. Expert
 parallelism with as many experts as devices (`partition.cc`) is not
 reachable for DeepSeek on two Sparks (256 experts) and is left as it is.

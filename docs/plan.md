@@ -1733,7 +1733,7 @@ each is checked against the design as M3.6 proceeds.
             [as built](engine-components.md#initial-catalog)), at parity
             with the reference-form builder's one-owner graphs but for the
             mixes' carries and the hash lookups' node order. The patterns,
-            the policy, the row-invariant verify and the lowering of the
+            the policy, owner-safe verification and the lowering of the
             new inputs are slice G4b's.
       - [ ] Wiring and the gate, then deletion of the old code.
             - [x] **G4b1 — shape contract and primitive lowering:** make the
@@ -1742,8 +1742,10 @@ each is checked against the design as M3.6 proceeds.
                   padding), align the MQA reference width, then prove focused
                   primitive lowering correctness for the new inputs.
             - [ ] **G4b2 — fast forms:** add patterns and default policy,
-                  then prove structural parity and GPU execution for the
-                  fast forms and row-invariant verify.
+                  then prove graph/source coverage and GPU execution for the
+                  fast forms and owner-safe verification. Numerical choices use
+                  original-model quality, measured speed and same-implementation
+                  state controls; external bit equality is diagnostic.
                   - [x] **G4b2a — local opt-in forms:** Q-head, compressor
                         pooling, full-carry HC pre and flat-norm HC post;
                         prove guarded fallback and existing-kernel operand
@@ -1776,9 +1778,9 @@ each is checked against the design as M3.6 proceeds.
                               - [ ] **G4b2b2b — score and fusion:** define
                                     rounded-query scoring with a real primitive
                                     fallback and recorded numerical relation;
-                                    expose one native score producer and prove
-                                    exact unfused/fused/legacy execution before
-                                    opting in the component recipe.
+                                    expose one native score producer and measure
+                                    unfused/fused/legacy numerical relations before
+                                    opting in a quality/performance-qualified recipe.
                                     - [x] **G4b2b2b1 — typed score and fallback:**
                                           define half-rounded query scoring
                                           with an independent wider reference;
@@ -1803,7 +1805,8 @@ each is checked against the design as M3.6 proceeds.
                                           full-mask fusion with observer/owner
                                           guards; enforce separate execution
                                           compatibility on kept/adopt/restore
-                                          paths and prove exact native controls.
+                                          paths; prove source, selection and lifetime
+                                          controls and measure numerical relations.
                                           - [x] **G4b2b2b3a — physical facts:**
                                                 declare provider reservation
                                                 alignment, bind owned/borrowed
@@ -1835,15 +1838,16 @@ each is checked against the design as M3.6 proceeds.
                                                 - [ ] **G4b2b2b3b3 — admission enforcement:**
                                                       bind source/plan/kept identities;
                                                       enforce owned whole-operation and
-                                                      exact-unit admission on all current,
+                                                      declared-unit admission on all current,
                                                       ahead, companion and restore paths.
                                           - [ ] **G4b2b2b3c — component and fusion:**
                                                 add the opt-in rounded-score
                                                 component and guarded full-mask
-                                                fusion; prove exact native controls.
+                                                fusion; prove source, selection and lifetime
+                                                controls, then evaluate quality and speed.
                   - [ ] **G4b2c — full policy:** output-A and product forms,
                         mixed encodings and default policy; original-reference
-                        quality, exact selected contributions and same-selected
+                        quality, all selected contributions and same-implementation
                         state/verify correctness, without mandatory legacy bits.
             - [ ] **G4c — serving and gate:** bind hash-routing IDs with
                   expert-count checks, compressor inputs and injection
