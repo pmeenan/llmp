@@ -366,6 +366,10 @@ class StepContext {
   // their state's commit replays instead of rewriting fixed state.
   planner::Phase phase() const { return phase_; }
   void SetPhase(planner::Phase phase) { phase_ = phase; }
+  // Real logical context, excluding padded/dummy compressed cells; zero
+  // keeps the ordinary indexer. BuildStep validates this bounded option.
+  void SetRoundedIndexerContext(std::uint32_t context) { rounded_indexer_context_ = context; }
+  std::uint32_t rounded_indexer_context() const { return rounded_indexer_context_; }
   // The component nodes are attributed to (step inputs: kFrameworkComponent).
   void SetComponent(std::uint16_t component);
   ir::TensorId Tokens();
@@ -460,6 +464,7 @@ class StepContext {
   std::uint32_t rows_ = 0;
   std::uint32_t outputs_ = 0;
   bool greedy_ = false;
+  std::uint32_t rounded_indexer_context_ = 0;
   planner::Phase phase_ = planner::Phase::kPrefill;
   std::uint16_t component_ = 0;
   ir::TensorId tokens_{}, positions_{}, output_rows_{}, features_{}, state_row_{};
@@ -576,6 +581,7 @@ struct StepOptions {
   bool narrow = true;
   // Internal compiler experiment, not execution qualification.
   bool owner_products = false;
+  bool rounded_indexer = false;
 };
 std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std::uint16_t stage,
                                                 const planner::StepShape& shape,

@@ -39,11 +39,14 @@
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/ggml/step_program.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
+#include "platform/host_probe.h"
 #include "providers/cuda/cuda_device_execution.h"
+#include "providers/device_runtime.h"
 #include "tests/support/dsv4_score_original.h"
 
 namespace {
@@ -1598,6 +1601,344 @@ TEST_F(GgmlLowerDsv4Gpu, NativeRoundedScoreLowersWithOwnedAlignedRootsAndRestage
         ASSERT_EQ(values[row * 256 + cell], want);
       }
   }
+}
+
+// A fixed synthetic corridor, separate from full ComponentStepSource admission.
+// Its real backend owner is prepared and retained through every captured use.
+namespace rounded_corridor {
+namespace pr = llmp::providers;
+constexpr std::uint64_t kHost = 64U << 20, kDevice = 192U << 20;
+constexpr std::uint64_t kActivation = 2U << 20, kPool = 16U << 20, kPinned = 1U << 20;
+static_assert(sizeof(ir::Node) <= 384 && sizeof(ir::TensorDesc) <= 192);
+struct Owner {
+  std::unique_ptr<pr::DeviceExecution> execution;
+  pr::StreamId stream{};
+  bool streaming = false, unknown = false;
+  std::unique_ptr<kg::CublasHandle> cublas;
+  std::unique_ptr<kg::GgmlBackend> backend;
+  std::unique_ptr<kn::StepLaunch> launch;
+  std::unique_ptr<co::StepGraph> step;
+  std::optional<pl::StepPlan> plan;
+  std::unique_ptr<kn::StepProgram> program;
+  std::unique_ptr<kn::Recorded> captured;
+  std::array<void*, 3> allocations{};
+  std::size_t allocation_count = 0;
+  std::uint64_t allocated = 0, metadata = 0, activation = 0;
+  void* pinned = nullptr;
+  bool Finish() {
+    if (unknown) return false;
+    if (!streaming) return true;
+    auto fence = execution->Record(stream);
+    if (!fence) {
+      unknown = true;
+      return false;
+    }
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    for (;;) {
+      auto state = execution->Query(*fence);
+      if (!state || std::chrono::steady_clock::now() >= until) {
+        unknown = true;
+        return false;
+      }
+      if (*state == pr::FenceState::kComplete) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    if (!execution->Release(*fence)) {
+      unknown = true;
+      return false;
+    }
+    return true;
+  }
+  bool Close() {
+    if (!Finish()) return false;
+    captured.reset();
+    program.reset();
+    plan.reset();
+    step.reset();
+    launch.reset();
+    if (backend) backend->LaunchReleased();
+    backend.reset();
+    cublas.reset();
+    if (streaming && !execution->DestroyStream(stream)) return false;
+    streaming = false;
+    for (auto& address : allocations) {
+      if (address && cudaFree(address) != cudaSuccess) return false;
+      address = nullptr;
+    }
+    if (pinned) {
+      pr::FreePinned(pinned);
+      pinned = nullptr;
+    }
+    execution.reset();
+    return true;
+  }
+  std::uint64_t Allocate(std::uint64_t bytes) {
+    if (!bytes || bytes > kDevice - allocated || allocation_count == allocations.size()) return 0;
+    void* address = nullptr;
+    if (cudaMalloc(&address, bytes) != cudaSuccess) return 0;
+    allocations[allocation_count++] = address;
+    allocated += bytes;
+    return reinterpret_cast<std::uintptr_t>(address);
+  }
+  bool Copy(pr::NativeStream native, void* to, const void* from, std::size_t bytes,
+            pr::CopyKind kind) {
+    if (pr::CopyAsync(native, to, from, bytes, kind).ok()) return true;
+    unknown = true;
+    return false;
+  }
+  std::uint64_t Address(ir::TensorId original, std::uint64_t bytes) const {
+    if (original.v >= plan->tensors.size()) return 0;
+    const auto mapped = plan->tensors[original.v];
+    const auto root = plan->graph.root(mapped);
+    const auto at = std::ranges::find(plan->placement.offsets, root,
+                                      &std::pair<ir::TensorId, std::uint64_t>::first);
+    if (at == plan->placement.offsets.end()) return 0;
+    const auto offset = at->second + plan->graph.tensor(mapped).view_offset;
+    if (offset > kActivation || bytes > kActivation - offset) return 0;
+    return activation + offset;
+  }
+};
+struct Retire {
+  void operator()(Owner* owner) const {
+    if (!owner) return;
+    if (!owner->Close()) {
+      ADD_FAILURE() << "unproved corridor retirement; whole owner retained";
+      return;
+    }
+    delete owner;
+  }
+};
+}  // namespace rounded_corridor
+
+TEST(GgmlRoundedConsumerGpu, DeclaredCountsSelectOneFullMaskAcrossChangedCapture) {
+  namespace rc = rounded_corridor;
+  namespace pr = llmp::providers;
+  const auto available = llmp::platform::AvailableMemoryBytes();
+  ASSERT_TRUE(available);
+  ASSERT_GE(*available, rc::kHost + rc::kDevice + (6ULL << 30));
+  ASSERT_LE(kg::Implementations().size(), 4096U);
+  // Fixed complete 64MiB host/192MiB device inventory is admitted before
+  // construction. The wrapper separately confines process/cache/runtime.
+  std::unique_ptr<rc::Owner, rc::Retire> life(new rc::Owner);
+  auto execution = pr::cuda::OpenDeviceExecution(0);
+  ASSERT_TRUE(execution);
+  life->execution = std::move(*execution);
+  auto stream = life->execution->CreateStream();
+  ASSERT_TRUE(stream);
+  life->stream = *stream;
+  life->streaming = true;
+  auto facts = pr::QueryDeviceFacts(0);
+  ASSERT_TRUE(facts);
+  const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
+  ASSERT_LE(workspace.value(), rc::kDevice - rc::kPool - rc::kActivation);
+  const auto cublas_address = life->Allocate(workspace.value());
+  ASSERT_NE(cublas_address, 0U);
+  auto cublas = kg::CublasHandle::Create(0, *life->execution, life->stream,
+                                         {.base = cublas_address, .size = workspace});
+  ASSERT_TRUE(cublas);
+  life->cublas = std::move(*cublas);
+  auto backend = kg::GgmlBackend::Create(0, *life->execution, life->stream, nullptr,
+                                         {.lower = {.index_scratch_limit = 1U << 20}});
+  ASSERT_TRUE(backend);
+  life->backend = std::move(*backend);
+  auto* owner = life.get();
+  ASSERT_TRUE(life->backend->Declare(
+      {}, workspace.value(),
+      [owner](std::uint64_t bytes) {
+        if (bytes > (1U << 20) - owner->metadata) return false;
+        owner->metadata += bytes;
+        return true;
+      },
+      [owner](std::uint64_t bytes) {
+        EXPECT_LE(bytes, owner->metadata);
+        owner->metadata -= bytes;
+      }));
+  ASSERT_FALSE(life->backend->Backend().owner->Ready());
+  ASSERT_TRUE(life->backend->LendCublas(life->cublas.get()));
+  const auto table = life->backend->Backend();
+  ASSERT_NE(table.owner, nullptr);
+  ASSERT_TRUE(table.owner->Ready());
+  const auto& native = table.owner->backend();
+  const auto pool = life->Allocate(rc::kPool);
+  ASSERT_NE(pool, 0U);
+  auto launch = life->backend->Launch({.base = pool, .size = llmp::base::Bytes(rc::kPool)});
+  ASSERT_TRUE(launch);
+  life->launch = std::move(*launch);
+  life->activation = life->Allocate(rc::kActivation);
+  ASSERT_NE(life->activation, 0U);
+  auto pinned = pr::AllocatePinned(rc::kPinned);
+  ASSERT_TRUE(pinned);
+  life->pinned = *pinned;
+  std::memset(life->pinned, 0, rc::kPinned);
+
+  ir::Builder b(32);
+  b.SetOwner(0);
+  co::StepContext context(b, {{.slot = 0, .rows = 4, .past = 2}}, false);
+  const auto q = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({128, 64, 4})));
+  const auto k = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({128, 1, 256})));
+  const auto w = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64, 4})));
+  const auto raw = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({8, 4})));
+  auto counts = context.VisibleCells(0, {.capacity = 257, .block = 4, .positions = true}, 256, 64);
+  ASSERT_TRUE(counts);
+  const auto scores = b.RoundedIndexScore(q, k, w, *counts);
+  const auto ids = b.VisibleTopK(scores, *counts, 2);
+  const auto mask = b.SelectedMask(raw, ids, {.raw_cells = 8, .cells = 256});
+  for (auto out : {scores, ids, mask}) b.Output(out);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  auto inputs = context.TakeInputs();
+  for (auto in : {q, k, w, raw})
+    inputs.push_back({.tensor = in, .kind = co::InputKind::kFeatures, .segment = 0});
+  life->step = std::make_unique<co::StepGraph>(co::StepGraph{
+      .graph = std::move(*graph), .inputs = std::move(inputs), .weights = {}, .state = {}});
+  const pl::StepShape shape{.segments = {{.rows = 4, .past = 2, .read_cells = 256}},
+                            .read_align = 256};
+  auto planned = pl::Plan(life->step->graph.Clone(), *native.registry, native.device, {},
+                          {.capturable = true,
+                           .on_stream = native.on_stream,
+                           .written = native.written,
+                           .within = native.within,
+                           .shape = &shape,
+                           .activation_alignment = 256});
+  ASSERT_TRUE(planned);
+  life->plan.emplace(std::move(*planned));
+  ASSERT_EQ(life->plan->steps.size(), 3U);
+  ASSERT_TRUE(life->plan->applied.empty());
+  ASSERT_TRUE(life->plan->decomposed.empty());
+  const std::array<std::string_view, 3> names{kg::kRoundedIndexScoreName, kg::kVisibleTopKName,
+                                              kg::kSelectedMaskName};
+  for (std::size_t i = 0; i < names.size(); ++i)
+    ASSERT_EQ(native.registry->at(life->plan->steps[i].implementation).name, names[i]);
+  // With these three undecomposed native nodes, Lowering::Run reserves
+  // tensor_count +16 (8+16), with no recipe/reduction/conversion extras.
+  ASSERT_EQ(life->plan->graph.tensor_count(), 8U);
+  ASSERT_LE(life->plan->placement.extent, rc::kActivation);
+  const kn::Addresses addresses{.weight = {},
+                                .weight_rows = {},
+                                .state = {},
+                                .save = {},
+                                .activations = life->activation,
+                                .activation_bytes = rc::kActivation,
+                                .activation_alignment = 256};
+  auto made = native.lower({.plan = *life->plan,
+                            .step = *life->step,
+                            .shape = shape,
+                            .addresses = addresses,
+                            .context = 257});
+  ASSERT_TRUE(made);
+  life->program = std::move(*made);
+  ASSERT_LE(life->program->host_bytes(), 1U << 20);
+  ASSERT_LE(life->program->pool_bytes(), rc::kPool);
+  ASSERT_EQ(life->program->launches(), 3U);
+  ASSERT_EQ(life->program->inputs().size(), 5U);
+  ASSERT_TRUE(life->program->Bind(*life->launch));
+  auto submission = life->execution->Submission(life->stream);
+  ASSERT_TRUE(submission);
+  auto* bytes = static_cast<std::byte*>(life->pinned);
+  auto* query = reinterpret_cast<float*>(bytes);
+  auto* keys = reinterpret_cast<std::uint16_t*>(bytes + 131072);
+  auto* weights = reinterpret_cast<float*>(bytes + 196608);
+  auto* raw_values = reinterpret_cast<std::uint16_t*>(bytes + 197632);
+  auto* count_values = reinterpret_cast<std::int32_t*>(bytes + 197696);
+  auto* score_values = reinterpret_cast<float*>(bytes + 198144);
+  auto* id_values = reinterpret_cast<std::int32_t*>(bytes + 202240);
+  auto* mask_values = reinterpret_cast<std::uint16_t*>(bytes + 202496);
+  static_assert(202496 + 264 * 4 * 2 < rc::kPinned);
+  const std::array<std::uint16_t, 8> literal{0, 0x8000, 0xfc00, 0x7c00, 1, 0x3c00, 0xbc00, 0x7e31};
+  const auto count_input = std::ranges::find(life->step->inputs, *counts, &co::StepInput::tensor);
+  ASSERT_NE(count_input, life->step->inputs.end());
+  for (std::uint32_t revision = 0; revision != 3; ++revision) {
+    ASSERT_TRUE(life->Finish());
+    auto current = shape;
+    current.segments[0].past = std::array{2U, 6U, 253U}[revision];
+    auto visible = co::InputValues(*count_input, current, {});
+    ASSERT_TRUE(visible);
+    ASSERT_EQ(visible->size(), 4U);
+    for (std::size_t row = 0; row != 4; ++row) {
+      query[row * 8192] = static_cast<float>(revision + 1);
+      weights[row * 64] = 2;
+      count_values[row] = static_cast<std::int32_t>((*visible)[row]);
+      for (std::size_t cell = 0; cell != 8; ++cell)
+        raw_values[row * 8 + cell] = literal[(cell + revision) % 8];
+    }
+    // Change the winning cell as well as completed counts between replays.
+    for (std::size_t cell = 0; cell != 256; ++cell)
+      keys[cell * 128] = cell == revision ? 0x4000 : 0x3c00;
+    const auto stage = [&] {
+      for (const auto& input : life->program->inputs()) {
+        const void* from = input.tensor == q         ? static_cast<void*>(query)
+                           : input.tensor == k       ? static_cast<void*>(keys)
+                           : input.tensor == w       ? static_cast<void*>(weights)
+                           : input.tensor == raw     ? static_cast<void*>(raw_values)
+                           : input.tensor == *counts ? static_cast<void*>(count_values)
+                                                     : nullptr;
+        ASSERT_NE(from, nullptr);
+        const std::uint64_t expected_bytes = input.tensor == q     ? 131072
+                                             : input.tensor == k   ? 65536
+                                             : input.tensor == w   ? 1024
+                                             : input.tensor == raw ? 64
+                                                                   : 16;
+        ASSERT_EQ(input.bytes, expected_bytes);
+        ASSERT_TRUE(life->Copy(*submission, reinterpret_cast<void*>(input.device_address), from,
+                               input.bytes, pr::CopyKind::kHostToDevice));
+      }
+      ASSERT_TRUE(life->Finish());
+    };
+    const auto check = [&] {
+      ASSERT_TRUE(life->Finish());
+      for (const auto [tensor, to, size] :
+           {std::tuple{scores, static_cast<void*>(score_values), std::uint64_t{4096}},
+            std::tuple{ids, static_cast<void*>(id_values), std::uint64_t{32}},
+            std::tuple{mask, static_cast<void*>(mask_values), std::uint64_t{2112}}}) {
+        const auto address = life->Address(tensor, size);
+        ASSERT_NE(address, 0U);
+        ASSERT_TRUE(life->Copy(*submission, to, reinterpret_cast<void*>(address), size,
+                               pr::CopyKind::kDeviceToHost));
+      }
+      ASSERT_TRUE(life->Finish());
+      for (std::size_t row = 0; row != 4; ++row) {
+        for (std::size_t cell = 0; cell != 256; ++cell)
+          if (cell < static_cast<std::size_t>(count_values[row]))
+            EXPECT_EQ(score_values[row * 256 + cell],
+                      static_cast<float>(2 * (revision + 1) * (cell == revision ? 2 : 1)));
+          else
+            EXPECT_EQ(std::bit_cast<std::uint32_t>(score_values[row * 256 + cell]), 0xff800000U);
+        const std::vector<float> actual(score_values + row * 256, score_values + (row + 1) * 256);
+        const auto selected = VisibleIds(actual, count_values[row], 2);
+        for (std::size_t i = 0; i != 2; ++i) EXPECT_EQ(id_values[row * 2 + i], selected[i]);
+        for (std::size_t cell = 0; cell != 8; ++cell)
+          EXPECT_EQ(mask_values[row * 264 + cell], raw_values[row * 8 + cell]);
+        for (std::int32_t cell = 0; cell != 256; ++cell) {
+          const bool chosen = id_values[row * 2] == cell || id_values[row * 2 + 1] == cell;
+          EXPECT_EQ(mask_values[row * 264 + 8 + static_cast<std::size_t>(cell)],
+                    chosen ? 0 : 0xfc00);
+        }
+      }
+    };
+    stage();
+    ASSERT_FALSE(::testing::Test::HasFatalFailure());
+    ASSERT_TRUE(life->program->Run(*life->launch, *submission));
+    check();
+    ASSERT_FALSE(::testing::Test::HasFailure());
+    if (!life->captured) {
+      auto captured = life->program->Record(*life->launch, *submission, [&] {
+        return life->program->Run(*life->launch, *submission);
+      });
+      ASSERT_TRUE(captured);
+      life->captured = std::move(*captured);
+      ASSERT_GT(life->captured->nodes(), 0U);
+      ASSERT_LE(life->captured->nodes(), 16U);
+    }
+    stage();
+    ASSERT_FALSE(::testing::Test::HasFatalFailure());
+    ASSERT_TRUE(life->launch->Launch(*submission, *life->captured));
+    check();
+    ASSERT_FALSE(::testing::Test::HasFailure());
+  }
+  RecordProperty("revisions", 3);
+  RecordProperty("completed_count_capacity", 64);
+  RecordProperty("raw_mask_bits_checked", 192);
+  RecordProperty("full_mask_elements_checked", 6336);
 }
 
 }  // namespace

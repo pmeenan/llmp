@@ -1446,6 +1446,7 @@ constexpr std::array kPatterns = {
     Pattern{
         .name = "owner_chained_masks", .kind = PatternKind::kOption, .parent = "owner_attention"},
     Pattern{.name = "narrow_final", .kind = PatternKind::kOption},
+    Pattern{.name = "rounded_indexer", .kind = PatternKind::kOption, .opt_in = true},
     // A step of several one-row owners retains scalar product arithmetic
     // (each owner's row what it is alone: today's Qwen3.8 waves;
     // StepPlan::owner_row_invariant). Opt-in.

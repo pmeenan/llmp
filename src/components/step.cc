@@ -1499,9 +1499,39 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   if (!instances) return std::unexpected(instances.error());
   if (!instances->embedding) return Refused("a stage without an embedding");
   const spec::Stage& self = spec.stages[stage];
+  if (options.rounded_indexer) {
+    if (stage != 0 || spec.stages.size() != 1 || self.role != spec::StageRole::kTarget ||
+        !self.reads.empty() || !self.taps.empty() || bindings.state == nullptr ||
+        !bindings.state->borrowed.empty() || bindings.state->context < 4 ||
+        bindings.state->context > 4096 || shape.segments.size() != 1 || shape.row_invariant ||
+        (shape.phase != planner::Phase::kPrefill && shape.phase != planner::Phase::kDecode &&
+         shape.phase != planner::Phase::kScore))
+      return Refused("rounded indexer requires one ordinary bounded target");
+    const auto& own = shape.segments.front();
+    if (own.slot != 0 || own.rows > 8 || own.past > bindings.state->context ||
+        own.rows > bindings.state->context - own.past || own.read_cells == 0 ||
+        own.read_cells > bindings.state->context)
+      return Refused("rounded indexer owner exceeds its admitted context or rows");
+    bool indexed = false;
+    for (const auto& layer : instances->layers) {
+      for (const auto& in : layer) {
+        if (in.def->kind != "attention.mqa") continue;
+        if (in.params.Name("cache") == "injected")
+          return Refused("rounded indexer does not admit injected attention");
+        if (!in.params.Flag("indexer")) continue;
+        indexed = true;
+        if (in.params.Int("ratio") != 4 || !in.params.Flag("overlap") ||
+            in.params.Int("index_dim") != 128 || in.params.Int("indexer_heads") != 64 ||
+            in.params.Int("top_k") <= 0 || in.params.Int("top_k") > 512)
+          return Refused("rounded indexer requires the bounded ratio-four CSA geometry");
+      }
+    }
+    if (!indexed) return Refused("rounded indexer policy names no indexed attention");
+  }
   StepBuilder sb(stage, shape);
   StepContext& ctx = sb.ctx();
   ctx.EnableOwnerProducts(options.owner_products);
+  if (options.rounded_indexer) ctx.SetRoundedIndexerContext(bindings.state->context);
   const bool head = ctx.outputs() > 0;
   if (head && !instances->output) return Refused("outputs from a stage without an output head");
   TensorTables tables{.own = bindings.tensors, .stages = {}};

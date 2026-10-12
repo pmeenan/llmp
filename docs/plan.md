@@ -1853,6 +1853,14 @@ each is checked against the design as M3.6 proceeds.
                                                 component and guarded full-mask
                                                 fusion; prove source, selection and lifetime
                                                 controls, then evaluate quality and speed.
+                                                - [x] **G4b2b2b3c1 — bounded consumer foundation:**
+                                                      default-off rounded score, actual-ID
+                                                      selection and one full mask; owned
+                                                      source/domain host admission controls
+                                                      and a paid declared-backend synthetic
+                                                      changed-input capture pass. Full source
+                                                      GPU/model admission and fusion remain
+                                                      open ([evidence](experiments/m36-dsv4-rounded-consumer/README.md)).
                   - [ ] **G4b2c — full policy:** output-A and product forms,
                         mixed encodings and default policy; original-reference
                         quality, all selected contributions and same-implementation

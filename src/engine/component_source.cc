@@ -58,6 +58,26 @@ std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSo
   if (auto valid = planner::Validate(policy); !valid) {
     return std::unexpected(std::format("the planning policy: {}", valid.error()));
   }
+  if (!planner::Disabled(policy, "rounded_indexer")) {
+    if (!options.backend.owner || !options.execution_domain || options.stage != 0 ||
+        options.slots != 1 || options.spec->stages.size() != 1 ||
+        options.execution_domain->stages().size() != 1 || options.bindings.state->context < 4 ||
+        options.bindings.state->context > 4096 || !options.bindings.state->borrowed.empty())
+      return std::unexpected("rounded indexer requires an owned single-target execution domain");
+    const auto& stage = options.execution_domain->stages().front();
+    if (stage.stage != 0 || stage.name != options.spec->stages.front().name)
+      return std::unexpected("rounded indexer domain names another target");
+    for (const auto use : stage.uses)
+      if (use != NumericalUse::kPrompt && use != NumericalUse::kDecode &&
+          use != NumericalUse::kScore)
+        return std::unexpected("rounded indexer does not admit companion or speculative modes");
+    for (const auto& phase : stage.phases)
+      if ((phase.phase != planner::Phase::kPrefill && phase.phase != planner::Phase::kDecode &&
+           phase.phase != planner::Phase::kScore) ||
+          phase.max_owners != 1 || phase.max_owner_rows > 8 || phase.max_total_rows > 8 ||
+          phase.row_invariant)
+        return std::unexpected("rounded indexer domain exceeds its bounded ordinary phases");
+  }
   auto instances = components::InstancesOf(*options.spec, options.stage);
   if (!instances) return std::unexpected(instances.error());
   auto source = std::unique_ptr<ComponentStepSource>(
@@ -207,7 +227,15 @@ Status ComponentStepSource::CheckExecutionUse(NumericalUse use) const {
 Status ComponentStepSource::CheckExecutionShape(const planner::StepShape& shape) const {
   if (!o_.execution_domain) return {};
   if (auto identity = ExecutionIdentity(); !identity) return std::unexpected(identity.error());
-  return o_.execution_domain->CheckShape(shape);
+  if (auto checked = o_.execution_domain->CheckShape(shape); !checked) return checked;
+  if (!planner::Disabled(policy_, "rounded_indexer")) {
+    const auto& own = shape.segments.front();  // CheckShape proved the bounded owner set.
+    if (own.slot != 0 || own.past > o_.bindings.state->context ||
+        own.rows > o_.bindings.state->context - own.past || own.read_cells == 0 ||
+        own.read_cells > o_.bindings.state->context)
+      return std::unexpected("rounded indexer owner exceeds its admitted context or rows");
+  }
+  return {};
 }
 
 planner::PlanKey ComponentStepSource::KeyBase() const {
@@ -300,6 +328,8 @@ Status ComponentStepSource::SideRows(std::uint16_t stage, std::uint16_t componen
 
 std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::CommitBuffers(
     std::uint16_t stage, std::uint32_t rows) const {
+  if (!planner::Disabled(policy_, "rounded_indexer"))
+    return std::unexpected("rounded indexer has no speculative commit buffers");
   if (stage != o_.stage || rows == 0 || rows > o_.bindings.state->context) {
     return std::unexpected("a commit buffer's stage or rows");
   }
@@ -338,8 +368,10 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   // narrow_final).
   auto step = shape.phase == planner::Phase::kCommit
                   ? components::BuildCommit(*o_.spec, o_.stage, shape, o_.bindings)
-                  : components::BuildStep(*o_.spec, o_.stage, shape, o_.bindings,
-                                          {.narrow = !planner::Disabled(policy_, "narrow_final")});
+                  : components::BuildStep(
+                        *o_.spec, o_.stage, shape, o_.bindings,
+                        {.narrow = !planner::Disabled(policy_, "narrow_final"),
+                         .rounded_indexer = !planner::Disabled(policy_, "rounded_indexer")});
   if (!step) return std::unexpected(std::move(step.error()));
   // Keep the existing placement set. Cell positions are synthesized by
   // masks; commit rows retain their legacy reserved place but are bound to

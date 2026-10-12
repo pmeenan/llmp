@@ -460,6 +460,76 @@ TEST_F(SourceIdentityTest, CompleteSourceScopesShapeModeAndCompanionConfiguratio
   EXPECT_FALSE((*source)->CheckExecutionUse(en::NumericalUse::kPrompt));
 }
 
+TEST_F(SourceIdentityTest, RoundedIndexerRequiresOwnedPreparedBoundedOrdinaryDomain) {
+  spec.stages.resize(1);
+  layout.context = 256;
+  layout.max_rows = 8;
+  auto stage = Stage(0, "target");
+  stage.uses.pop_back();  // No companion operation is being admitted.
+  for (auto& phase : stage.phases) {
+    phase.max_owners = 1;
+    phase.max_owner_rows = phase.phase == pl::Phase::kDecode ? 1 : 8;
+    phase.max_total_rows = phase.max_owner_rows;
+  }
+  const auto make = [&](const en::NumericalStage& declared, bool owner, bool rounded) {
+    auto domain_value = en::NumericalDomain::Create({declared});
+    EXPECT_TRUE(domain_value);
+    auto table = owners[0]->backend();
+    if (owner) table.owner = owners[0];
+    return en::ComponentStepSource::Create(
+        {.spec = &spec,
+         .bindings = {.state = &layout},
+         .bound_digest = spec.Digest(),
+         .slots = 1,
+         .policy = rounded ? pl::Policy{.enabled = {"rounded_indexer"}} : pl::Policy{},
+         .backend = std::move(table),
+         .execution_domain = owner && domain_value ? std::make_shared<const en::NumericalDomain>(
+                                                         std::move(*domain_value))
+                                                   : nullptr});
+  };
+  EXPECT_FALSE(make(stage, false, true));
+  for (int bad = 0; bad != 5; ++bad) {
+    auto changed = stage;
+    if (bad == 0) changed.uses.push_back(en::NumericalUse::kPromptCompanions);
+    if (bad == 1) changed.phases[0].max_owners = 2;
+    if (bad == 2) changed.phases[0].max_owner_rows = 9;
+    if (bad == 3) changed.phases[0].row_invariant = true;
+    if (bad == 4) changed.name = "another-target";
+    EXPECT_FALSE(make(changed, true, true));
+  }
+  auto opted = make(stage, true, true);
+  ASSERT_TRUE(opted) << Failed(opted).value_or("");
+  pl::StepShape shape{.segments = {{.rows = 4, .past = 2, .read_cells = 256}}};
+  EXPECT_FALSE((*opted)->CheckExecutionShape(shape));
+  owners[0]->ready = false;
+  EXPECT_FALSE((*opted)->PrepareExecution());
+  owners[0]->ready = true;
+  ASSERT_TRUE((*opted)->PrepareExecution());
+  EXPECT_TRUE((*opted)->CheckExecutionShape(shape));
+  for (auto use : {en::NumericalUse::kPrompt, en::NumericalUse::kDecode, en::NumericalUse::kScore})
+    EXPECT_TRUE((*opted)->CheckExecutionUse(use));
+  EXPECT_FALSE((*opted)->CheckExecutionUse(en::NumericalUse::kSpeculative));
+  EXPECT_FALSE((*opted)->CommitBuffers(0, 1));
+  for (int bad = 0; bad != 5; ++bad) {
+    auto changed = shape;
+    if (bad == 0) changed.phase = pl::Phase::kVerify;
+    if (bad == 1) changed.segments.front().slot = 1;
+    if (bad == 2) changed.segments.front().past = 255;
+    if (bad == 3) changed.segments.front().read_cells = 512;
+    if (bad == 4) changed.segments.front().rows = 9;
+    EXPECT_FALSE((*opted)->CheckExecutionShape(changed));
+    EXPECT_FALSE((*opted)->Build(changed, {}));
+  }
+  auto ordinary = make(stage, true, false);
+  ASSERT_TRUE(ordinary);
+  ASSERT_TRUE((*ordinary)->PrepareExecution());
+  EXPECT_NE((*ordinary)->KeyBase(), (*opted)->KeyBase());
+  EXPECT_NE((*ordinary)->ExecutionIdentity(), (*opted)->ExecutionIdentity());
+  // Existing snapshot/kept controls reject unequal execution identities before copying.
+  owners[0]->ready = false;
+  EXPECT_FALSE((*opted)->CheckExecutionShape(shape));
+}
+
 TEST_F(SourceIdentityTest, OmittingACompanionOrMisnamingItsDomainRefuses) {
   auto target = Source(0);
   ASSERT_TRUE(target);

@@ -479,7 +479,8 @@ class Emitter {
   ir::TensorId Query();
   ir::TensorId Key();
   ir::TensorId IndexerQueries();
-  std::expected<ir::TensorId, std::string> Selection(std::size_t s, ir::TensorId mask);
+  std::expected<ir::TensorId, std::string> Selection(std::size_t s, ir::TensorId mask,
+                                                     ir::TensorId raw = {});
   std::expected<ir::TensorId, std::string> Attend(std::size_t s);
   ir::TensorId Hadamard(ir::TensorId t, std::uint64_t n);
 
@@ -605,7 +606,8 @@ ir::TensorId Emitter::IndexerQueries() {
   return iq_;
 }
 
-std::expected<ir::TensorId, std::string> Emitter::Selection(std::size_t s, ir::TensorId mask) {
+std::expected<ir::TensorId, std::string> Emitter::Selection(std::size_t s, ir::TensorId mask,
+                                                            ir::TensorId raw) {
   const SegmentRows& seg = f_.step.segments()[s];
   const CellKey cells = KeyOf(s, kIndex);
   const std::uint64_t read = f_.step.ReadCells(s, cells);
@@ -614,7 +616,9 @@ std::expected<ir::TensorId, std::string> Emitter::Selection(std::size_t s, ir::T
   // build_top_k_mask: zeros stored at the selected cells of a -inf fill of
   // the mask's shape, the causal mask added (in GGML's order: the stored
   // zeros, the selection, then the fill they are stored into).
-  const ir::TensorId zeros = b_.Fill(Shape({1, top, seg.rows, 1}), 0.0F, Encoding::kF16);
+  const bool rounded = f_.step.rounded_indexer_context() != 0;
+  const ir::TensorId zeros =
+      rounded ? ir::TensorId{} : b_.Fill(Shape({1, top, seg.rows, 1}), 0.0F, Encoding::kF16);
   // The indexer's selection: its queries (every owner's rows) and head
   // weights, the scores over this owner's index cells, the best.
   b_.SetJoined();
@@ -636,6 +640,17 @@ std::expected<ir::TensorId, std::string> Emitter::Selection(std::size_t s, ir::T
   const format::Shape w_shape = Shape({d_.ih, seg.rows, 1, 1});
   const ir::TensorId weights = b_.View(iw_, w_shape, ViewStrides(wd.nb[0], wd.nb[1], 0, w_shape),
                                        std::uint64_t{seg.first_row} * wd.nb[1]);
+  if (rounded) {
+    // Completed blocks exclude the logical tail and all padding/dummy cells.
+    // The selected IDs belong to these scores, not to the ordinary TopK path.
+    auto counts = f_.step.VisibleCells(s, cells, read, f_.step.rounded_indexer_context() / 4);
+    if (!counts) return std::unexpected(counts.error());
+    const auto score = b_.RoundedIndexScore(q, keys, weights, *counts);
+    const auto best = b_.VisibleTopK(score, *counts, static_cast<std::uint32_t>(top));
+    return b_.SelectedMask(raw, best,
+                           {.raw_cells = static_cast<std::uint32_t>(Desc(b_, raw).ne(0)),
+                            .cells = static_cast<std::uint32_t>(read)});
+  }
   const ir::TensorId score = b_.IndexScore(q, keys, weights, mask);
   const ir::TensorId best = b_.Cont(b_.TopK(score, static_cast<std::uint32_t>(top)));
   const ir::TensorDesc bd = Desc(b_, best);
@@ -687,13 +702,22 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
     if (!compressed_mask) return std::unexpected(compressed_mask.error());
     ir::TensorId rows_mask = MaskRows(*compressed_mask, seg.rows);
     if (d_.indexer) {
-      auto selected = Selection(s, rows_mask);
+      auto selected =
+          Selection(s, rows_mask,
+                    f_.step.rounded_indexer_context() != 0 ? MaskRows(*window_mask, seg.rows)
+                                                           : ir::TensorId{});
       if (!selected) return std::unexpected(selected.error());
       rows_mask = *selected;
+      if (f_.step.rounded_indexer_context() != 0 &&
+          Desc(b_, rows_mask).ne(0) != window_read + compressed_read)
+        return std::unexpected("rounded indexer mask differs from the actual attention bank");
       n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window) +
                                             std::min(compressed_read, d_.top_k));
     }
-    mask = b_.Concat(MaskRows(*window_mask, seg.rows), rows_mask, 0);
+    // SelectedMask already includes the raw half in the same order as K/V.
+    mask = d_.indexer && f_.step.rounded_indexer_context() != 0
+               ? rows_mask
+               : b_.Concat(MaskRows(*window_mask, seg.rows), rows_mask, 0);
   }
   const ir::TensorId attention = b_.Attention(queries, keys, values, mask, f_.Weight(kSinks),
                                               {.scale = 1.0F / std::sqrt(static_cast<float>(d_.d)),

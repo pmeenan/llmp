@@ -75,6 +75,8 @@
 //                        Gemma 2 and 3 builders); disabled, in pairs, the
 //                        pairs then joined (Gemma 4's owner transform, at
 //                        most four owners)
+//   rounded_indexer      opt-in bounded CSA indexer recipe; the component
+//                        source requires an owned backend and explicit domain
 //   narrow_final         a step with a head narrows its last row-mixing
 //                        component to the output rows (components/step.h
 //                        BuildStep; the runners' frontier_head); disabled,

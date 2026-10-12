@@ -102,7 +102,8 @@ foundation: main native build, 117 focused host controls and two tiny GPU cases,
 including changed-ID capture replay and multipart refusals. Products, expert
 worklists and native ModelOpt target admission remain open. DeepSeek's default-off
 rounded consumer has separate real component/source host controls and a passing
-declared-backend synthetic GPU corridor; root integration remains pending.
+declared-backend synthetic GPU corridor. Main integration passes a full native
+build, 193 focused host controls and the same one-case GPU corridor on Spark B.
 Full source GPU/model admission and fusion remain open. Root corrected lazy framework inputs that accidentally
 reset an owner's graph-builder context; main native build and 162 focused
 controls pass on Spark. The fix carries no parity policy.

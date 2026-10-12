@@ -1091,6 +1091,78 @@ md::Dsv4Profile Tiny() {
   p.compress_ratios = {0, md::kDsv4CsaRatio, md::kDsv4HcaRatio, md::kDsv4CsaRatio};
   return p;
 }
+TEST(ComponentsDsv4Test, RoundedIndexerUsesCompletedCountsAndOneFullSelectedMask) {
+  auto profile = Tiny();
+  profile.layers = 1;
+  profile.hash_layers = 0;
+  profile.compress_ratios = {4};
+  profile.indexer_heads = 64;
+  profile.indexer_head_dim = 128;
+  auto source = fx::SourceOf("deepseek4", fx::Resources(profile, fx::kF16Types),
+                             spec::mappings::Dsv4Mapping());
+  auto values = spec::mappings::Dsv4V0Values(profile);
+  ASSERT_TRUE(values) << values.error();
+  auto spec = spec::Synthesize(spec::mappings::Dsv4Mapping(), source, *values);
+  ASSERT_TRUE(spec) << spec.error();
+  constexpr std::uint32_t kContext = 257;  // 64 complete blocks; padding is not capacity.
+  auto layout = StageLayout(*spec, 0, kContext, 8);
+  ASSERT_TRUE(layout) << layout.error();
+  const Bindings bindings{.tensors = source.tensors, .state = &*layout};
+  planner::StepShape shape{.segments = {Seg(0, 4, 2, 256, 4)}};
+  auto ordinary = BuildStep(*spec, 0, shape, bindings);
+  ASSERT_TRUE(ordinary) << ordinary.error();
+  auto rounded = BuildStep(*spec, 0, shape, bindings, {.rounded_indexer = true});
+  ASSERT_TRUE(rounded) << rounded.error();
+  auto after = BuildStep(*spec, 0, shape, bindings);
+  ASSERT_TRUE(after) << after.error();
+  EXPECT_EQ(ordinary->graph.Digest(), after->graph.Digest());
+  const auto count = [](const ir::Graph& graph, ir::Op op) {
+    return std::ranges::count_if(graph.nodes(),
+                                 [op](const auto& n) { return n.key == ir::Primitive(op); });
+  };
+  EXPECT_EQ(count(ordinary->graph, ir::Op::kIndexScore), 1);
+  EXPECT_EQ(count(ordinary->graph, ir::Op::kRoundedIndexScore), 0);
+  EXPECT_EQ(count(rounded->graph, ir::Op::kIndexScore), 0);
+  EXPECT_EQ(count(rounded->graph, ir::Op::kRoundedIndexScore), 1);
+  EXPECT_EQ(count(rounded->graph, ir::Op::kVisibleTopK), 1);
+  EXPECT_EQ(count(rounded->graph, ir::Op::kSelectedMask), 1);
+  const auto& graph = rounded->graph;
+  for (const auto& attention : graph.nodes()) {
+    if (attention.key != ir::Primitive(ir::Op::kAttention)) continue;
+    const auto& mask = graph.node(graph.producer(attention.src[3]));
+    ASSERT_EQ(mask.key, ir::Primitive(ir::Op::kSelectedMask));
+    const auto& selected = graph.node(graph.producer(mask.src[1]));
+    ASSERT_EQ(selected.key, ir::Primitive(ir::Op::kVisibleTopK));
+    const auto& score = graph.node(graph.producer(selected.src[0]));
+    ASSERT_EQ(score.key, ir::Primitive(ir::Op::kRoundedIndexScore));
+    EXPECT_EQ(score.src[3], selected.src[1]);
+    const auto at = std::ranges::find(rounded->inputs, score.src[3], &StepInput::tensor);
+    ASSERT_NE(at, rounded->inputs.end());
+    EXPECT_EQ(at->kind, InputKind::kVisibleCells);
+    EXPECT_EQ(at->visible_capacity, kContext / 4);
+    EXPECT_GT(at->read, at->visible_capacity);
+    EXPECT_EQ(InputValues(*at, shape, {}), (std::vector<std::int64_t>{0, 1, 1, 1}));
+    auto end = shape;
+    end.segments.front().past = 253;
+    EXPECT_EQ(InputValues(*at, end, {}), (std::vector<std::int64_t>{63, 63, 64, 64}));
+    const auto raw = graph.tensor(mask.src[0]).ne(0);
+    const auto compressed = graph.tensor(score.out[0]).ne(0);
+    EXPECT_EQ(graph.tensor(attention.src[3]).ne(0), raw + compressed);
+    EXPECT_EQ(graph.tensor(attention.src[1]).ne(1), raw + compressed);
+  }
+  for (auto phase : {planner::Phase::kVerify, planner::Phase::kCommit, planner::Phase::kDraft}) {
+    auto unsupported = shape;
+    unsupported.phase = phase;
+    EXPECT_FALSE(BuildStep(*spec, 0, unsupported, bindings, {.rounded_indexer = true}));
+  }
+  auto joined = shape;
+  joined.segments.push_back(Seg(1, 1, 0, 256, 1));
+  EXPECT_FALSE(BuildStep(*spec, 0, joined, bindings, {.rounded_indexer = true}));
+  auto beyond = shape;
+  beyond.segments.front().past = kContext - 1;
+  EXPECT_FALSE(BuildStep(*spec, 0, beyond, bindings, {.rounded_indexer = true}));
+}
+
 md::DsparkProfile TinyDrafter() {
   md::DsparkProfile d;
   d.name = "tiny-dspark";

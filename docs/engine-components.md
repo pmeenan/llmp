@@ -184,8 +184,9 @@ zero. The native recipe retains half query conversion, the device MMA reduction,
 and the compiled head reduction/FMA order. Its D-053 numerical relation to the
 wider scalar and ordinary products does not promise identical near-cutoff CPU
 selection; native standalone/fused equivalence is checked against a retained
-original producer. No new component recipe or whole-indexer fusion is registered;
-`IndexScore`, `TopK`, mqa@1 and mapping policies retain their definitions.
+original producer. No whole-indexer fusion is registered. `IndexScore`, `TopK` and default
+mapping policies retain their definitions; the opt-in component consumer below
+uses the separately declared rounded recipe.
 
 Native score admission uses optional operand strides, root-relative offsets and
 explicit root-allocation alignment guarantees. `GraphRootAlignments` owns those
@@ -206,8 +207,21 @@ stay unknown without a checked inner-offset contract. Commit-row inputs bind to
 saved buffers and do not inherit the arena promise, even while their legacy
 placement reservation remains. Final placement and actual binding recheck these
 promises; residency and full operand coverage remain independent requirements.
-No component emits the rounded score recipe yet. Wiring a new consumer still
-requires the separate execution-compatibility identity for kept/restored state.
+The default-off `rounded_indexer` policy now lets the bounded target component
+emit `RoundedIndexScore` → `VisibleTopK` → `SelectedMask`. Its one full mask
+preserves the raw window bits and adds only the compressed IDs actually selected
+from this candidate's scores, in the same raw/compressed order as the key bank.
+`ComponentStepSource` requires the real owned backend, prepared readiness and a
+complete single-target numerical domain before emission; actual mode/shape and
+cached-use checks enforce one owner, ordinary phases, at most eight rows and
+context 4–4096. The policy participates in existing source/plan/state identity.
+Default component emission remains unchanged.
+
+The [bounded consumer evidence](experiments/m36-dsv4-rounded-consumer/README.md)
+separates real component/source admission host controls from a small declared
+backend GPU corridor with changed-input capture replay. Full
+`ComponentStepSource` GPU/model admission, full-mask fusion and family quality,
+state and speed qualification remain open.
 
 `StepContext::VisibleCells` declares an ordinary staged I32 input for each
 owner's completed positions-basis blocks. Counts use the owner's past and
