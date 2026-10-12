@@ -1958,6 +1958,17 @@ each is checked against the design as M3.6 proceeds.
                         physical margin admit actual setup. DSpark, original-model
                         quality, serving, swap and matched speed remain open
                         ([evidence](experiments/m36-dsv4-target/README.md)).
+                  - [x] **G4c2 — composed DSpark execution screen:**
+                        the exact prepared target/companion execute through shared
+                        block drafting, injected features and combined snapshots.
+                        Main native build and 308 affected host controls pass;
+                        two continuations each complete seven steps, 17 required
+                        proposals and one accepted draft, with 18 finite complete
+                        target heads and nine restored rows at frontier 2568.
+                        Actual paid setup fits the unchanged 110 GiB cap and
+                        6 GiB physical margin. Draft-head finiteness, original
+                        quality, production serving and family speed/swap gates
+                        remain open ([evidence](experiments/m36-dsv4-target/dspark.md)).
             - [ ] **G4d — deletion:** remove DeepSeek V4's M3 runner, plans,
                   graph builders, bindings and serving class after G4c.
 - [x] **Migrate Qwen2 FP16 and EXL3 fixtures** (required by the exit criteria).

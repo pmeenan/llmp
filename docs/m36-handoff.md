@@ -59,9 +59,20 @@ Actual setup pays 106,614,572,256 bytes under the unchanged 110 GiB cap and
 6 GiB physical margin. The reader reuses already-funded compiler space, and
 no-head prefill skips dead final expert products while keeping all persistent
 state writes. The actual case passes in 28.516 seconds including setup/storage;
-this is not a throughput result. DSpark's composed execution is in development;
+this is not a throughput result. DSpark's composed execution now passes the bounded screen below;
 original-reference quality, persistence, production serving and matched family
 speed/swap gates remain open. See [the target report](experiments/m36-dsv4-target/README.md).
+
+G4c2 now passes complete composed target/DSpark execution on main: full native
+build, 308 affected host controls and the actual block-drafter/snapshot screen
+on Spark B. Each of two continuations completes seven steps, all 17 requested
+proposals and one accepted draft; 18 finite complete target heads and nine
+restored rows reach frontier 2568. Actual setup pays 117,595,233,088 bytes under
+the unchanged 110 GiB cap and preserves the 6 GiB physical margin. The case
+takes 35.309 seconds including setup/storage, not a speed qualification.
+Draft-head finiteness, original-model quality, durable persistence, selected-only
+expert paging, production serving and matched family speed/swap gates remain
+open ([report](experiments/m36-dsv4-target/dspark.md)).
 
 Main through `7e0bf848` includes split NVFP4 paged rows, checked route/part
 helpers and bounded selected-expert grouped execution. Full native main build,

@@ -28,6 +28,7 @@
 #include "engine/paged_weights.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
+#include "model/dspark.h"
 #include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
@@ -76,6 +77,8 @@ static_assert(kDsv4OtherLowerBytes < kDsv4CompilerBytes);
 constexpr std::uint64_t kDsv4ReaderScratchBytes = kDsv4CompilerBytes - kDsv4OtherLowerBytes;
 constexpr std::string_view kDsv4DiagnosticArtifact =
     "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
+constexpr std::string_view kDsparkDiagnosticArtifact =
+    "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
 struct ConstructionCharge {
   std::shared_ptr<engine::ExecutionMetadataAllowance> allowance;
   std::uint64_t bytes = 0;
@@ -216,6 +219,15 @@ std::expected<std::vector<spec::SourceValue>, std::string> V0Values(std::string_
 // to that profile.
 std::expected<std::vector<spec::SourceValue>, std::string> DrafterV0Values(
     const ja::Artifact& target, const ja::Artifact& drafter) {
+  if (drafter.model().architecture == "dflash" && target.model().architecture == "deepseek4") {
+    const auto& profile = model::Dsv4Flash();
+    auto target_binding = model::BindDsv4(profile, target);
+    if (!target_binding) return Error(target_binding.error());
+    const auto& companion = model::DsparkDeepSeekV4Flash();
+    if (auto bound = model::BindDspark(companion, drafter, profile, *target_binding); !bound)
+      return Error(bound.error());
+    return spec::mappings::DsparkV0Values(companion);
+  }
   if (drafter.model().architecture == "gemma4-assistant" &&
       target.model().architecture == "gemma4") {
     auto profile = ApprovedGemmaProfile(target);
@@ -245,7 +257,7 @@ EngineLlmParts::ChatSlice ChatSliceOf(std::string_view architecture) {
 // transaction's (docs/experiments/gemma-assistant-throughput).
 constexpr std::uint32_t kAssistantDepth = 3;
 
-bool DeepSeekDomain(const ComponentBuildOptions& options) {
+bool DeepSeekDomain(const ComponentBuildOptions& options, bool companion) {
   if (!options.execution_domain) return false;
   const auto stages = options.execution_domain->stages();
   constexpr std::array uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode};
@@ -257,8 +269,25 @@ bool DeepSeekDomain(const ComponentBuildOptions& options) {
                                                      .max_owners = 1,
                                                      .max_owner_rows = 1,
                                                      .max_total_rows = 1}};
-  return stages.size() == 1 && stages[0].stage == 0 && stages[0].name == "target" &&
-         std::ranges::equal(stages[0].uses, uses) && std::ranges::equal(stages[0].phases, phases);
+  if (!companion)
+    return stages.size() == 1 && stages[0].stage == 0 && stages[0].name == "target" &&
+           std::ranges::equal(stages[0].uses, uses) && std::ranges::equal(stages[0].phases, phases);
+  constexpr std::array composed_uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
+                                     engine::NumericalUse::kPromptCompanions,
+                                     engine::NumericalUse::kSpeculative};
+  constexpr std::array target_phases{phases[0], phases[1],
+                                     engine::NumericalPhase{.phase = planner::Phase::kVerify,
+                                                            .max_owners = 1,
+                                                            .max_owner_rows = 4,
+                                                            .max_total_rows = 4}};
+  constexpr std::array draft_phases{engine::NumericalPhase{
+      .phase = planner::Phase::kDraft, .max_owners = 1, .max_owner_rows = 3, .max_total_rows = 3}};
+  return stages.size() == 2 && stages[0].stage == 0 && stages[0].name == "target" &&
+         stages[1].stage == 1 && stages[1].name == "dspark" &&
+         std::ranges::equal(stages[0].uses, composed_uses) &&
+         std::ranges::equal(stages[1].uses, composed_uses) &&
+         std::ranges::equal(stages[0].phases, target_phases) &&
+         std::ranges::equal(stages[1].phases, draft_phases);
 }
 
 // Closed internal scoring experiment, not a serving route. A non-null domain
@@ -323,10 +352,13 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
     const bool solo = settings.architecture == "qwen4exp";
     const bool deepseek = settings.architecture == "deepseek4";
+    const bool dspark = deepseek && !drafter_id.empty();
     if (deepseek &&
-        (!options.diagnostic_solo || !DeepSeekDomain(options) || !options.construction_metadata ||
-         options.target_policy || settings.max_slots.value != 1 || settings.context.value != 3072 ||
-         settings.prefill_chunk.value != 512 || settings.speculation.value || !drafter_id.empty() ||
+        (!options.diagnostic_solo || !DeepSeekDomain(options, dspark) ||
+         !options.construction_metadata || options.target_policy || settings.max_slots.value != 1 ||
+         settings.context.value != 3072 || settings.prefill_chunk.value != 512 ||
+         settings.speculation.value != dspark ||
+         (dspark && (drafter_id != kDsparkDiagnosticArtifact || settings.draft_rows.value != 3)) ||
          id != kDsv4DiagnosticArtifact))
       return Error("the DeepSeek target bridge requires its paid single-owner diagnostic envelope");
     std::shared_ptr<ConstructionCharge> construction;
@@ -570,7 +602,14 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       for (const bool greedy : {false, true}) {
         add(shape(0, planner::Phase::kDecode, owners, 1, 1, greedy));
       }
-      if (speculate) {
+      if (speculate && dspark) {
+        // Block proposals produce every head, including short reply tails;
+        // every verify includes its anchor. No autoregressive catch-up pass.
+        for (std::uint32_t rows = 1; rows <= depth; ++rows)
+          add(shape(1, planner::Phase::kDraft, owners, rows, rows, false));
+        for (std::uint32_t rows = 1; rows <= verify_rows; ++rows)
+          add(shape(0, planner::Phase::kVerify, owners, rows, rows, false));
+      } else if (speculate) {
         for (const bool greedy : {false, true}) {
           add(shape(0, planner::Phase::kVerify, owners, verify_rows, verify_rows, greedy));
           add(shape(1, planner::Phase::kDraft, owners, 1, 1, solo && greedy));
@@ -786,12 +825,14 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       parts.config.max_verify_rows = verify_rows;
       parts.mode = {.kind = engine::DecodingMode::Kind::kSpeculative,
                     .drafters = {{.stage = 1,
-                                  .shape = engine::DrafterSpec::Shape::kAutoregressive,
+                                  .shape = dspark ? engine::DrafterSpec::Shape::kBlock
+                                                  : engine::DrafterSpec::Shape::kAutoregressive,
                                   .max_depth = depth,
                                   .catch_up = solo,
-                                  .borrows_target = !solo,
-                                  .anchored = !solo,
-                                  .features = true,
+                                  .fill = dspark ? model::DsparkDeepSeekV4Flash().mask_token : 0,
+                                  .borrows_target = !solo && !dspark,
+                                  .anchored = !solo && !dspark,
+                                  .features = !dspark,
                                   .adaptive = solo && depth >= 3,
                                   .depth_cost = solo ? settings.depth_cost_ratio.value : 1.16,
                                   .device_tokens = solo,

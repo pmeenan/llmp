@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Compose the prepared DeepSeek target and DSpark companion through shared
+  block drafting and injected features, checking complete proposals and combined
+  snapshot continuation within existing memory limits. Ordinary serving remains
+  unopted; draft-head quality and family qualification remain separate.
+
 - Run typed spatial convolution and nearest upsampling through the shared
   StepProgram and completion/capture path using existing F32 kernels and source
   VAE parts. The bounded main screen passes.

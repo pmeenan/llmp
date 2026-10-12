@@ -66,3 +66,7 @@ DSpark, original BF16 quality, durable restart, selected-only expert paging,
 production serving, throughput and matched family speed/swap gates remain open.
 The original source-precision model is absent from inspected local/NAS catalog
 evidence; quantized-library bit equality does not replace that reference.
+
+The separate [composed DSpark screen](dspark.md) now passes its bounded fit,
+complete-proposal and combined snapshot controls. It does not widen this
+target-only report's scope or close the remaining family gates.

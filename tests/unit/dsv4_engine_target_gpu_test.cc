@@ -56,11 +56,16 @@ constexpr std::uint64_t kConstructionExtent = kConstruction + 2 * kMiB;
 constexpr std::uint64_t kCaller = 32 * kMiB;
 constexpr std::uint64_t kWeights = 100032053248ULL;
 constexpr std::uint64_t kState = 480247808ULL;
+constexpr std::uint64_t kDsparkWeights = 10898898944ULL;
+constexpr std::uint64_t kDsparkState = 6291456ULL;
 constexpr std::uint64_t kSnapshot = kState + 2 * kMiB;
 constexpr std::uint32_t kContext = 3072, kChunk = 512, kPrefix = 2560, kTail = 8;
 constexpr std::uint32_t kVocab = 129280;
 constexpr std::string_view kArtifact =
     "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
+
+constexpr std::string_view kDsparkArtifact =
+    "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
 
 // Current compiler and fixed-source simultaneous ownership inventory. The
 // external funding table enumerates phases and source anchors; this is a
@@ -112,31 +117,61 @@ static_assert(4 * (131072ULL + 65536ULL) + 3 * 65536ULL * 32 + 65536 < kReaderSc
 constexpr std::uint64_t kArtifactParser =
     3 * 530000ULL * (24 + 4 + 4) + 16 * 530000ULL + 3 * 6 * kMiB;
 constexpr std::uint64_t kArtifacts =
-    4 * (3 * 1400ULL * 4096 + 3 * 12000ULL * 64 + 50000ULL * 32 + 3 * 4096ULL * 64);
+    4 * (3 * 1500ULL * 4096 + 3 * 12000ULL * 64 + 55000ULL * 32 + 3 * 4096ULL * 64);
 constexpr std::uint64_t kTokenizer =
     3 * 4 * 130000ULL * 32 + 3 * 2 * 6 * kMiB + 2 * 130000ULL * (64 + 3 * 8) + 3 * 16 * kMiB +
     750000ULL * (12 + 4 + 4 + 16) + 3 * 2 * 130000ULL * 16 + 2 * kMiB;
 constexpr std::uint64_t kCatalog = 55000ULL * (3 * 192 + 3 * 288 + 320 + 3 * 128 + 3 * 64 + 128);
 constexpr std::uint64_t kBindings =
-    6 * 1400ULL * 2048 + 3 * 4096ULL * 256 + 3 * 6 * kVocab * 4ULL + 4 * kMiB;
+    6 * 1500ULL * 2048 + 3 * 4096ULL * 256 + 3 * 6 * kVocab * 4ULL + 4 * kMiB;
 constexpr std::uint64_t kDirectory = 3 * 65536ULL * (32 + 2 * 256);
 static_assert(kCompiler + kArtifactParser + kArtifacts + kTokenizer + kCatalog + kBindings +
                   kDirectory + kCaller <=
               kConstruction);
 static_assert(2 * (kTail + 1) * kVocab * sizeof(float) + 4 * kMiB < kCaller);
 
-rt::ModelSettings Settings() {
+rt::ModelSettings Settings(bool companion = false) {
   rt::ModelSettings s;
-  s.name = "deepseek-component-target";
+  s.name = companion ? "deepseek-component-dspark" : "deepseek-component-target";
   s.architecture = "deepseek4";
   s.context.value = kContext;
   s.prefill_chunk.value = kChunk;
   s.max_slots.value = 1;
   s.wave_read_align.value = 256;
-  s.speculation.value = false;
+  s.speculation.value = companion;
+  if (companion) s.draft_rows.value = 3;
   return s;
 }
-std::expected<std::shared_ptr<const en::NumericalDomain>, std::string> Domain() {
+std::expected<std::shared_ptr<const en::NumericalDomain>, std::string> Domain(
+    bool companion = false) {
+  if (companion) {
+    const std::vector uses{en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
+                           en::NumericalUse::kPromptCompanions, en::NumericalUse::kSpeculative};
+    auto composed = en::NumericalDomain::Create({{.stage = 0,
+                                                  .name = "target",
+                                                  .uses = uses,
+                                                  .phases = {{.phase = pl::Phase::kPrefill,
+                                                              .max_owners = 1,
+                                                              .max_owner_rows = kChunk,
+                                                              .max_total_rows = kChunk},
+                                                             {.phase = pl::Phase::kDecode,
+                                                              .max_owners = 1,
+                                                              .max_owner_rows = 1,
+                                                              .max_total_rows = 1},
+                                                             {.phase = pl::Phase::kVerify,
+                                                              .max_owners = 1,
+                                                              .max_owner_rows = 4,
+                                                              .max_total_rows = 4}}},
+                                                 {.stage = 1,
+                                                  .name = "dspark",
+                                                  .uses = uses,
+                                                  .phases = {{.phase = pl::Phase::kDraft,
+                                                              .max_owners = 1,
+                                                              .max_owner_rows = 3,
+                                                              .max_total_rows = 3}}}});
+    if (!composed) return std::unexpected(composed.error());
+    return std::make_shared<const en::NumericalDomain>(std::move(*composed));
+  }
   auto d =
       en::NumericalDomain::Create({{.stage = 0,
                                     .name = "target",
@@ -189,6 +224,11 @@ Status Metadata(const fs::path& artifact) {
 }
 
 struct Lifetime {
+  explicit Lifetime(bool with_companion = false) : companion(with_companion) {}
+  bool companion;
+  std::uint64_t StateBytes() const { return kState + (companion ? kDsparkState : 0); }
+  std::uint64_t SnapshotBytes() const { return companion ? StateBytes() + 4 * kMiB : kSnapshot; }
+  std::uint64_t WeightBytes() const { return kWeights + (companion ? kDsparkWeights : 0); }
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   // Complete caller storage is prepaid with construction; local token memory
   // also enforces its own small limit before any history-vector growth.
@@ -201,6 +241,9 @@ struct Lifetime {
   std::vector<float> head;
   rt::Generation first, second;
   std::uint64_t programs = 0, full_programs = 0, footprint = 0, dynamic = 0;
+  std::uint64_t draft_programs = 0, injected_programs = 0;
+  std::uint64_t fixed_bytes = 0, activation_bytes = 0, pool_bytes = 0, input_bytes = 0,
+                plan_bytes = 0;
   llmp::base::Sha256 recipes;
   std::string restored_state_digest;
   bool teardown_attempted = false;
@@ -209,8 +252,8 @@ struct Lifetime {
     if (!in.token) return std::unexpected("token source metadata is required");
     // This callback runs after Lower and before Bind, including measurement.
     // A real launch's BoundPlan does not exist at this point.
-    if (in.token->shape.stage != 0 || in.token->shape.segments.size() != 1 || program.routed() ||
-        in.plan.steps.empty() || program.launches() == 0)
+    if (in.token->shape.stage > (companion ? 1 : 0) || in.token->shape.segments.size() != 1 ||
+        program.routed() || in.plan.steps.empty() || program.launches() == 0)
       return std::unexpected("the target did not lower to its ordinary owned full-step program");
     std::uint32_t products = 0, arrays = 0, hash_inputs = 0;
     for (const auto& weight : in.token->step.weights)
@@ -226,17 +269,27 @@ struct Lifetime {
         return std::unexpected(
             "an expert product omits the declared expert or selected-slot domain");
     }
-    // BuildStep's backwards liveness keeps the final attention's state writes
-    // but omits its unread output and stateless FFN on a solo no-head chunk.
-    // This fixture has no companion injection or feature tap retaining that FFN.
+    const bool drafting = in.token->shape.stage == 1;
     const bool headed = in.token->shape.segments.front().outputs != 0;
-    const std::uint32_t expected_products = 3U * (headed ? 43U : 42U);
-    if (arrays != expected_products || products != expected_products || hash_inputs != 3)
+    // Injected target taps retain the final FFN even on no-head prompt chunks.
+    const std::uint32_t expected = drafting ? 9U : (headed || companion ? 129U : 126U);
+    if (arrays != expected || products != expected || hash_inputs != (drafting ? 0U : 3U))
       return std::unexpected(std::format(
-          "target live domain differs: arrays={} products={} hash_inputs={} expected_products={} "
-          "expected_hash_inputs=3 rows={} outputs={}",
-          arrays, products, hash_inputs, expected_products, in.token->shape.segments.front().rows,
-          in.token->shape.segments.front().outputs));
+          "live expert domain differs: stage={} arrays={} products={} hash_inputs={} expected={} "
+          "rows={} outputs={}",
+          in.token->shape.stage, arrays, products, hash_inputs, expected,
+          in.token->shape.segments.front().rows, in.token->shape.segments.front().outputs));
+    if (companion) {
+      std::uint32_t injected = 0;
+      for (const auto& state : in.token->step.state)
+        if (state.ref.stage == 1 && state.written && state.tap) ++injected;
+      if (!drafting && injected != 3)
+        return std::unexpected("the real target graph lost a DSpark injection state write");
+      if (drafting)
+        ++draft_programs;
+      else
+        ++injected_programs;
+    }
     ++programs;
     if (in.token->step.logits.valid() &&
         in.token->step.graph.tensor(in.token->step.logits).shape().ne[0] == kVocab)
@@ -262,6 +315,18 @@ struct Lifetime {
 
   Status Run(const fs::path& store, const fs::path& scratch) {
     if (auto s = Metadata(store / kArtifact); !s) return s;
+    if (companion) {
+      const auto path = store / kDsparkArtifact;
+      if (auto s = File(path / "manifest.json", 1991, kDsparkArtifact); !s) return s;
+      if (auto s = File(path / "index.json", 500693,
+                        "437561ad6dd1e8d5fd3758be2a8eac52b8a1c81f6a1fb54b27e0b3badfeaa11c");
+          !s)
+        return s;
+      if (auto s = File(path / "meta/dspark-DeepSeek-V4-Flash-0731-Q8_0.kv.gguf", 5248193,
+                        "fcf6886653e8a64b70d51de8896febe2d69ae3dba8e300ed4684b518bbfcddff");
+          !s)
+        return s;
+    }
     const auto before = llmp::platform::AvailableMemoryBytes().value_or(0);
     if (auto s = rt::CheckStartupHostAllowance(kConstructionExtent, kCap, before); !s)
       return std::unexpected(std::format("{} (available_bytes={}, cap_bytes={}, margin_bytes={})",
@@ -272,11 +337,12 @@ struct Lifetime {
         llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
     if (!paid) return std::unexpected(paid.error());
     allowance = std::move(*paid);
-    auto domain = Domain();
+    auto domain = Domain(companion);
     if (!domain) return std::unexpected(domain.error());
     llmp::config::ModelEntry entry;
-    entry.name = Settings().name;
+    entry.name = Settings(companion).name;
     entry.artifact = std::string(kArtifact);
+    if (companion) entry.drafter = std::string(kDsparkArtifact);
     llmp::config::RuntimeRoles roles;
     roles.installed = store;
     roles.spill = scratch;
@@ -289,7 +355,8 @@ struct Lifetime {
          .validate_program = [this](const kn::LowerInput& in, const kn::StepProgram& program) {
            return Validate(in, program);
          }});
-    model = std::make_unique<rt::EngineLlm>(node, entry, Settings(), roles, 0, std::move(build));
+    model = std::make_unique<rt::EngineLlm>(node, entry, Settings(companion), roles, 0,
+                                            std::move(build));
     model->SetTokenMemory(tokens);
     model->set_turn_checkpoints(false);
     const auto setup = model->Setup();
@@ -300,11 +367,11 @@ struct Lifetime {
       return std::unexpected("the actual target has no complete execution identity after Setup");
     recipes.Update("llmp.ds.execution.v1");
     recipes.Update(std::as_bytes(std::span(**execution)));
-    if (model->logit_width() != kVocab || node.StateCapacity() != kState)
+    if (model->logit_width() != kVocab || node.StateCapacity() != StateBytes())
       return std::unexpected(
           "the actual target head or independently derived state layout differs");
     const auto weight_bytes = model->weights().size() * en::kPagedExtent;
-    if (weight_bytes != kWeights)
+    if (weight_bytes != WeightBytes())
       return std::unexpected("the actual full dense-plus-padded-expert closure differs");
     std::uint64_t left = kCap;
     const auto take = [&left](std::uint64_t bytes) {
@@ -314,10 +381,15 @@ struct Lifetime {
     };
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     const auto pool = std::max<std::uint64_t>(model->pool_needed(), en::kPagedExtent);
+    fixed_bytes = fixed;
+    activation_bytes = model->activations_needed();
+    pool_bytes = pool;
+    input_bytes = model->host_input_bytes();
+    plan_bytes = model->plan_floor_bytes();
     // Before physical workspace or weight admission: all current measured
     // storage plus page rounding, the complete weight closure, conservative
     // live/copy/spill state overlap, caller host staging and minimum plans.
-    if (!take(fixed) || !take(weight_bytes) || !take(4 * kSnapshot) ||
+    if (!take(fixed) || !take(weight_bytes) || !take(4 * SnapshotBytes()) ||
         !take(model->activations_needed()) || !take(pool) || !take(2 * en::kPagedExtent) ||
         !take(model->host_input_bytes()) || !take(model->plan_floor_bytes()))
       return std::unexpected("actual Setup storage exceeds the unchanged 110 GiB domain");
@@ -341,7 +413,8 @@ struct Lifetime {
     if (now == 0 || now < reserve || mapped > kCap)
       return std::unexpected("unknown or insufficient ordinary dynamic budget");
     dynamic = mapped + (now - reserve) / en::kPagedExtent * en::kPagedExtent;
-    if (auto s = rt::CheckDiagnosticBudgetCap(guard, dynamic, kCap, 4 * kSnapshot); !s) return s;
+    if (auto s = rt::CheckDiagnosticBudgetCap(guard, dynamic, kCap, 4 * SnapshotBytes()); !s)
+      return s;
     if (auto s = node.Start(llmp::base::Bytes(kCap)); !s) return s;
     if (auto s = model->Register(); !s) return s;
     if (auto s = model->Bind(); !s) return s;
@@ -355,8 +428,8 @@ struct Lifetime {
     if (auto s = model->PrepareDefaultRequest(); !s) return s;
     for (std::uint32_t i = 0; i < ids.size(); ++i)
       ids[i] = static_cast<std::int32_t>(100 + (i * 7919U + 17U) % 30000U);
-    prefix = std::make_unique<rt::SnapshotStore>(node, kSnapshot);
-    end = std::make_unique<rt::SnapshotStore>(node, kSnapshot);
+    prefix = std::make_unique<rt::SnapshotStore>(node, SnapshotBytes());
+    end = std::make_unique<rt::SnapshotStore>(node, SnapshotBytes());
     return node.WithRequest(
         0, model->request_closure(), "DeepSeek shared target and snapshot", [&]() -> Status {
           if (auto s = branch.Prefill(std::span(ids).first(kPrefix), head); !s) return s;
@@ -367,7 +440,36 @@ struct Lifetime {
           options.max_tokens = kTail + 1;
           options.stop = false;
           options.keep_logits = true;
-          if (auto s = branch.Generate(head, options, first); !s) return s;
+          const auto generate = [&](rt::Generation& generated) -> Status {
+            if (!companion) return branch.Generate(head, options, generated);
+            auto observed = options;
+            auto previous = model->counts();
+            std::size_t emitted = 0;
+            std::string failure;
+            // Existing synchronous per-completed-unit notification. A failed
+            // draft may fall back to plain verification in serving; this
+            // diagnostic requires every requested block to have contributed.
+            observed.on_tokens = [&](std::span<const std::int32_t> fresh) {
+              const auto current = model->counts();
+              const std::uint64_t expected =
+                  emitted == 0 ? 0 : std::min<std::uint64_t>(3, kTail + 1 - emitted - 1);
+              const std::uint64_t units = emitted == 0 ? 0 : 1;
+              if (fresh.empty() || emitted + fresh.size() > kTail + 1 ||
+                  current.drafted - previous.drafted != expected ||
+                  current.speculative_units - previous.speculative_units != units ||
+                  current.discarded != previous.discarded) {
+                failure = "a completed generation unit omitted its requested DSpark proposals";
+                return false;
+              }
+              emitted += fresh.size();
+              previous = current;
+              return true;
+            };
+            auto result = branch.Generate(head, observed, generated);
+            if (!failure.empty()) return std::unexpected(failure);
+            return result;
+          };
+          if (auto s = generate(first); !s) return s;
           if (auto s = Complete(first); !s) return s;
           auto completed = branch.CaptureState(*end);
           if (!completed) return std::unexpected(completed.error());
@@ -376,9 +478,10 @@ struct Lifetime {
           if (auto s = branch.RestoreState(*prefix, *saved); !s) return s;
           if (model->runner().slots().positions(0) != kPrefix || branch.history().size() != kPrefix)
             return std::unexpected("snapshot restore lost its actual prefix coordinate");
-          if (auto s = branch.Generate(head, options, second); !s) return s;
+          if (auto s = generate(second); !s) return s;
           if (auto s = Complete(second); !s) return s;
-          if (first.tokens != second.tokens)
+          if (first.tokens != second.tokens || first.steps != second.steps ||
+              first.drafted != second.drafted || first.accepted != second.accepted)
             return std::unexpected("same-implementation restored generation differs");
           for (std::size_t i = 0; i < first.logits.size(); ++i)
             if (std::memcmp(first.logits[i].data(), second.logits[i].data(),
@@ -400,11 +503,14 @@ struct Lifetime {
   }
   Status Complete(const rt::Generation& generated) const {
     if (generated.tokens.size() != kTail + 1 || generated.logits.size() != kTail + 1 ||
-        generated.steps != kTail || generated.stopped || generated.cancelled ||
+        (companion ? (generated.steps == 0 || generated.steps > kTail || generated.drafted == 0)
+                   : generated.steps != kTail) ||
+        generated.stopped || generated.cancelled ||
         !std::ranges::all_of(generated.tokens, [](std::int32_t id) {
           return id >= 0 && id < static_cast<std::int32_t>(kVocab);
         }))
-      return std::unexpected("the actual plain decode did not complete all eight steps");
+      return std::unexpected(
+          "the actual generation did not complete its bounded decode or draft/verify schedule");
     for (const auto& row : generated.logits)
       if (row.size() != kVocab ||
           !std::ranges::all_of(row, [](float x) { return std::isfinite(x); }))
@@ -479,6 +585,45 @@ TEST(Dsv4EngineTargetInputs, RejectsUnpaidOrDifferentEnvelopeBeforeArtifactRead)
   EXPECT_EQ((*admitted)->used(), 0U);
 }
 
+TEST(Dsv4EngineTargetInputs, RejectsUnpaidOrDifferentCompanionBeforeArtifactRead) {
+  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+  auto domain = Domain(true);
+  ASSERT_TRUE(domain) << Failed(domain).value_or("");
+  llmp::catalog::Catalog catalog;
+  const auto owner = catalog.AddDomain("closed DSpark diagnostic payment");
+  auto admitted = en::ExecutionMetadataAllowance::Admit(catalog, owner, kConstructionExtent,
+                                                        kConstructionExtent + rt::kUncountedMargin,
+                                                        rt::kUncountedMargin);
+  ASSERT_TRUE(admitted) << Failed(admitted).value_or("");
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    auto settings = Settings(true);
+    llmp::config::ModelEntry entry;
+    entry.name = settings.name;
+    entry.artifact = std::string(kArtifact);
+    entry.drafter = std::string(kDsparkArtifact);
+    rt::ComponentBuildOptions options{.target_policy = std::nullopt,
+                                      .diagnostic_solo = true,
+                                      .construction_metadata = mutation == 0 ? nullptr : *admitted,
+                                      .execution_domain = *domain};
+    if (mutation == 1) settings.draft_rows.value = 2;
+    if (mutation == 2) settings.speculation.value = false;
+    if (mutation == 3) settings.max_slots.value = 2;
+    if (mutation == 4) entry.drafter = std::string(kArtifact);
+    if (mutation == 5) options.target_policy = "";
+    if (mutation == 6) {
+      auto target_only = Domain();
+      ASSERT_TRUE(target_only) << Failed(target_only).value_or("");
+      options.execution_domain = *target_only;
+    }
+    auto build =
+        rt::ComponentLlmBuild(node, "/nonexistent-dspark-control", entry, 0, std::move(options));
+    auto parts = build(settings);
+    ASSERT_FALSE(parts);
+    EXPECT_NE(parts.error().find("paid single-owner diagnostic envelope"), std::string::npos);
+    EXPECT_EQ((*admitted)->used(), 0U);
+  }
+}
+
 TEST(Dsv4EngineTargetGpu, FullTargetFiniteHeadsAndSnapshotContinuation) {
   if (std::getenv("LLMP_RUN_DSV4_TARGET_BRIDGE") == nullptr)
     GTEST_SKIP() << "explicit bounded target diagnostic required";
@@ -508,6 +653,48 @@ TEST(Dsv4EngineTargetGpu, FullTargetFiniteHeadsAndSnapshotContinuation) {
   RecordProperty("state_layout_bytes", std::to_string(kState));
   RecordProperty("setup_paid_footprint_bytes", std::to_string(life->footprint));
   RecordProperty("ordinary_dynamic_budget_bytes", std::to_string(life->dynamic));
+  RecordProperty("restored_full_head_values", std::to_string(std::uint64_t{kTail + 1} * kVocab));
+  RecordProperty("completed_frontier", std::to_string(kPrefix + kTail));
+  RecordProperty("restored_initialized_state_sha256", life->restored_state_digest);
+  RecordProperty("selected_plan_receipt", llmp::base::ToHex(life->recipes.Finish()));
+}
+TEST(Dsv4EngineTargetGpu, TargetAndDsparkFiniteHeadsAndSnapshotContinuation) {
+  if (std::getenv("LLMP_RUN_DSPARK_SHARED_BRIDGE") == nullptr)
+    GTEST_SKIP() << "explicit bounded target plus DSpark diagnostic required";
+  const char* store = std::getenv("LLMP_DSV4_TARGET_STORE");
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
+  ASSERT_NE(store, nullptr);
+  ASSERT_NE(scratch, nullptr);
+  const fs::path out = fs::path(scratch) / "dsv4-engine-dspark";
+  std::error_code ec;
+  fs::create_directories(out, ec);
+  ASSERT_FALSE(ec) << ec.message();
+  auto life = std::make_unique<Lifetime>(true);
+  const auto result = life->Run(store, out);
+  const auto retired = life->Retire();
+  if (!retired) {
+    std::ignore = life.release();
+    FAIL() << Failed(retired).value_or("");
+  }
+  ASSERT_TRUE(result) << Failed(result).value_or("");
+  EXPECT_GT(life->draft_programs, 0U);
+  EXPECT_GT(life->injected_programs, 0U);
+  RecordProperty("target_artifact", std::string(kArtifact));
+  RecordProperty("drafter_artifact", std::string(kDsparkArtifact));
+  RecordProperty("setup_fixed_bytes", std::to_string(life->fixed_bytes));
+  RecordProperty("setup_activation_bytes", std::to_string(life->activation_bytes));
+  RecordProperty("setup_pool_bytes", std::to_string(life->pool_bytes));
+  RecordProperty("setup_host_input_bytes", std::to_string(life->input_bytes));
+  RecordProperty("setup_plan_floor_bytes", std::to_string(life->plan_bytes));
+  RecordProperty("source_weight_extent_bytes", std::to_string(life->WeightBytes()));
+  RecordProperty("state_layout_bytes", std::to_string(life->StateBytes()));
+  RecordProperty("setup_paid_footprint_bytes", std::to_string(life->footprint));
+  RecordProperty("ordinary_dynamic_budget_bytes", std::to_string(life->dynamic));
+  RecordProperty("draft_programs", std::to_string(life->draft_programs));
+  RecordProperty("injected_target_programs", std::to_string(life->injected_programs));
+  RecordProperty("generation_steps", std::to_string(life->first.steps));
+  RecordProperty("generation_proposed", std::to_string(life->first.drafted));
+  RecordProperty("generation_accepted", std::to_string(life->first.accepted));
   RecordProperty("restored_full_head_values", std::to_string(std::uint64_t{kTail + 1} * kVocab));
   RecordProperty("completed_frontier", std::to_string(kPrefix + kTail));
   RecordProperty("restored_initialized_state_sha256", life->restored_state_digest);

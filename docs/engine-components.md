@@ -1350,6 +1350,22 @@ It uses ordinary full expert residency, not selected-only admission. DSpark,
 original-reference quality, durable restart, production serving and the family
 speed/swap gates remain open ([target evidence](experiments/m36-dsv4-target/README.md)).
 
+G4c2 composes the fixed DSpark companion through the same factory and existing
+block-drafter policy. Actual target steps retain the three injection writes;
+the existing synchronous proposal counts require every requested block to
+complete, so falling back silently to plain decoding cannot pass the screen.
+The exact two-stage domain, depth three and short-tail shapes remain bounded.
+No observer, test-only orchestrator or alternate execution path is introduced.
+
+The full main native build and 308 affected host controls pass. Both actual
+snapshot continuations complete seven steps, 17 proposals and one accepted draft,
+with 18 finite complete target head rows and nine restored rows at frontier 2568.
+Measured setup pays 117,595,233,088 bytes, leaving 516,367,552 bytes below the
+unchanged 110 GiB cap; the 6 GiB physical margin also passes. This measures
+composed fit and continuation, not serving speed or original-model quality.
+Full draft-head finiteness, durable restart, selected-only paging, production
+serving and matched family gates remain open ([DSpark evidence](experiments/m36-dsv4-target/dspark.md)).
+
 ### Owned execution configuration
 
 A required component source retains the native backend's immutable device and
