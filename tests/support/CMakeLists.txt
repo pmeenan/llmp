@@ -74,6 +74,11 @@ target_include_directories(llmp_fake_step_source PUBLIC "${CMAKE_CURRENT_SOURCE_
 target_link_libraries(llmp_fake_step_source PUBLIC llmp_engine_core llmp_fake_providers
                       PRIVATE llmp_warnings)
 
+# Common bounded teacher-forced scoring over the shared runner.
+add_library(llmp_corpus_score STATIC corpus_score.cc)
+target_include_directories(llmp_corpus_score PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(llmp_corpus_score PUBLIC llmp_engine_core PRIVATE llmp_sampling llmp_warnings)
+
 # A test-only writer of v1 prepared artifacts and compositions
 # (artifact_writer.h, D-113), in every profile: the v1 reader's fixtures.
 add_library(llmp_test_artifact_writer STATIC artifact_writer.cc)
@@ -89,7 +94,7 @@ function(llmp_check_no_test_support)
   while(pending)
     list(POP_FRONT pending target)
     # Anywhere in the item, so that a generator expression cannot hide it.
-    if(target MATCHES "(^|[^A-Za-z0-9_])llmp_(test_expected|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners|fake_step_source|test_artifact_writer)([^A-Za-z0-9_]|$)")
+    if(target MATCHES "(^|[^A-Za-z0-9_])llmp_(test_expected|plan_record|plan_record_sample|launch_recorder|paged_programs|paged_node|paged_runners|fake_step_source|test_artifact_writer|corpus_score)([^A-Za-z0-9_]|$)")
       message(FATAL_ERROR "A production binary links the test support library: ${target}.")
     endif()
     if(target IN_LIST seen OR NOT TARGET "${target}")

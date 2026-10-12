@@ -45,6 +45,14 @@ Pending Qwen and DeepSeek edits are not landed on main. Diagnostic screen
 elapsed times include captures and expensive branch certification; they
 are not matched serving latency measurements.
 
+Follow-up source inspection also found inherited multiply/add rounding in
+`src/kernels/ggml/llmp_fused.cu`, whose header explicitly prevents contraction
+with `__fmul_rn`, and in `dsv4_hc_norm.cu` / `dsv4_weighted_reduce.cu`.
+These arithmetic expressions predate M3.6; its Qwen lowering reuses them.
+They are additional candidates for a fused alternative, rather than evidence
+that M3.6 newly disabled FMA. Their quality and speed tradeoffs are unmeasured;
+changing the approved operation recipe and comparing it comes before adoption.
+
 ## Safeguards that remain
 
 - Exact source bytes, layouts, hashes, imported permutations and artifact

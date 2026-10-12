@@ -2407,6 +2407,19 @@ the format ladder is what keeps every model running on a new platform.
   original source-precision model, secondary same-format comparisons, state
   and swap controls, matched speed. Reference availability is recorded.
 
+The common target-only corpus scoring foundation is
+`tests/support/corpus_score.{h,cc}`. It reuses the shared scored orchestrator,
+validates full F32 vocabulary heads and packed owner output ranges before
+execution, and counts each next-token target across chunk boundaries. Its
+finite host charge pays its IDs, copied histories, outputs and scratch;
+model/compiler/state/device funding remains the harness's responsibility.
+Eight host controls cover analytical NLL, ragged joined owners, invalid heads,
+admission refusal, cancellation and unknown retirement. It is test support,
+not production linking or a completed model quality gate. Original-reference
+provenance, natural corpus, document reports and production-phase comparisons
+remain separate work; random-token trajectory fixtures are numerical stress
+controls, not language-model perplexity evidence.
+
 ## Migration and its gate
 
 Each family moves to the new engine with its current implementation as the

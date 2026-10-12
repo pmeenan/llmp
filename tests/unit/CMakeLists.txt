@@ -1370,3 +1370,9 @@ llmp_gtest(import_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models"
 add_executable(import_writer_test import_writer_test.cc)
 target_link_libraries(import_writer_test PRIVATE llmp_cli llmp_import llmp_components llmp_spec llmp_artifact llmp_base)
 llmp_gtest(import_writer_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(corpus_score_test corpus_score_test.cc)
+target_link_libraries(corpus_score_test PRIVATE llmp_corpus_score llmp_fake_step_source
+                         llmp_fake_device_backend)
+llmp_gtest(corpus_score_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")

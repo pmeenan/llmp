@@ -1403,6 +1403,21 @@ each is checked against the design as M3.6 proceeds.
       fixes) holds DeepSeek's DSpark cohort rows and the swap table's
       Qwen3.8-as-A rows (its 32 rows all exact there, worst LLM-to-LLM
       8.494 s).
+- [ ] **Original-model quality and numerical recovery** (owner, 2026-10-12):
+      compare candidate and baseline to the same original source-precision
+      model; keep quantized engines as secondary controls and missing primary
+      evidence explicit. Preserve the 1% speed and same-implementation state gates.
+      - [x] Retrospective numerical-policy audit and prospective gate clarification
+            ([audit](experiments/m36-numerical-audit/README.md)).
+      - [x] Shared target-only teacher-forced scorer foundation: paid finite
+            IDs/outputs, global next-target alignment, full-vocabulary NLL and
+            guarded head/owner semantics; eight host controls pass. This is
+            test support, without a real-model quality qualification.
+      - [ ] Fixed natural-language corpus/tokenizer provenance, original-reference
+            execution and bounded per-document reports; production-phase,
+            speculation, context and cohort controls for chosen candidates.
+      - [ ] Evaluate numerical recovery candidates and retire dominated recipe
+            machinery after functional, quality and matched-speed qualification.
 - [ ] **Format layer** (D-108): encodings named independently of kernel
       libraries and layouts recorded separately; a block decoder per
       encoding on CUDA under shared vector, matrix and grouped templates;
