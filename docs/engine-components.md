@@ -835,6 +835,22 @@ operands. Output and intermediate arithmetic are F32; no legacy BF16
 rounding policy is imposed. This catalog/CPU-IR foundation does not install
 image GPU lowering, select a serving recipe or qualify the image pipeline.
 
+The next Q1 component pair is `norm.adaptive` and `residual.gated`. The first
+applies mean-subtracting LayerNorm with epsilon inside the variance, multiplies
+by `1 + scale` (no shift), and retains the original stream as a carry. The
+second adds `tanh(gate) * branch` to that saved stream. Both consume explicitly
+named, matching F32 conditioning rows through the existing side-input contract;
+no owner or row broadcasts are implicit. They introduce no weights, persistent
+state, opcode or runtime interface. Existing image timestep projections remain
+the source of dynamic modulation; they are not reclassified as static weights.
+The current slice qualifies only `BuildComponent` composition and independent
+scalar/primitive behavior. Main native build and all 99 affected host cases pass
+on Spark B (2026-10-12); whole-stage conditioning, image GPU lowering and pipeline
+admission remain open. Future wiring can broadcast per-owner
+conditioning on device: this row-shaped arithmetic contract does not require
+CPU expansion or extra host traffic. Legacy BF16 intermediate rounding is not
+imposed; source weights remain encoded in their producer.
+
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a
 definition's `row_local` false; `attention.dense`, whose `narrows` says it

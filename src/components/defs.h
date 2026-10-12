@@ -33,6 +33,7 @@ namespace llmp::components::defs {
 
 const ComponentDef& EmbeddingToken();
 const ComponentDef& EmbeddingProjected();
+const ComponentDef& NormAdaptive();
 const ComponentDef& NormChannel();
 const ComponentDef& NormRms();
 const ComponentDef& ScaleLearned();
@@ -41,6 +42,7 @@ const ComponentDef& AttentionBorrowed();
 const ComponentDef& FfnGlu();
 const ComponentDef& FfnMoe();
 const ComponentDef& HeadLinear();
+const ComponentDef& ResidualGated();
 const ComponentDef& ResidualHc();
 const ComponentDef& HcMix();
 const ComponentDef& HcCombine();

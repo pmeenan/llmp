@@ -112,8 +112,10 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
                                                   "hc.combine",
                                                   "hc.mix",
                                                   "head.linear",
+                                                  "norm.adaptive",
                                                   "norm.channel",
                                                   "norm.rms",
+                                                  "residual.gated",
                                                   "residual.hc",
                                                   "residual.ple",
                                                   "scale.learned",
@@ -766,6 +768,144 @@ TEST(ComponentsTest, ChannelNormMatchesScalarAcrossOwnersAndSourceEncodings) {
     for (const auto encoding : {Encoding::kF32, Encoding::kBF16}) {
       const std::array formats{ir::Dense(encoding, ir::ShapeOf({kWidth}))};
       Compare(*in, formats, {}, rows, 1e-5);
+    }
+  }
+}
+
+TEST(ComponentsTest, AdaptiveNormAndGatedResidualComposeWithTheOriginalCarry) {
+  const StageFacts facts{.width = 4, .context = 256};
+  const auto norm_ref = C("norm.adaptive", {P("side", N("scale"))});
+  const auto residual_ref = C("residual.gated", {P("side", N("gate"))});
+  auto norm = MakeInstance(norm_ref, facts, Site::kLayer, 0, 1);
+  auto residual = MakeInstance(residual_ref, facts, Site::kLayer, 0, 2);
+  ASSERT_TRUE(norm.has_value()) << norm.error();
+  ASSERT_TRUE(residual.has_value()) << residual.error();
+  const planner::StepShape shape{.segments = {Seg(3, 2, 0, 256, 2), Seg(7, 1, 0, 256, 1)}};
+  auto ng = BuildComponent(*norm, shape, {}, {}, {.side = 4});
+  auto rg = BuildComponent(*residual, shape, {}, {}, {.carry = 4, .side = 4});
+  ASSERT_TRUE(ng.has_value()) << ng.error();
+  ASSERT_TRUE(rg.has_value()) << rg.error();
+  EXPECT_EQ(ng->carry_out, ng->stream_in);
+  EXPECT_TRUE(ng->step.state.empty());
+  EXPECT_TRUE(rg->step.state.empty());
+  for (const auto* graph : {&ng->step.graph, &rg->step.graph}) {
+    EXPECT_EQ(
+        std::ranges::count_if(
+            graph->nodes(), [](const auto& n) { return n.key == ir::Primitive(ir::Op::kConvert); }),
+        0);
+  }
+  const std::array input{0.F, 0.F, 0.F, 0.F, 2.F, 2.F, 2.F, 2.F, -3.F, 1.F, 2.F, 4.F};
+  const std::array scales{0.F, 2.F, -1.F, .5F, -1.F, -1.F, -1.F, -1.F, 0.F, -1.F, 2.F, -.5F};
+  const std::array gates{0.F, 1.F, -1.F, 20.F, -20.F, 0.F, .25F, -.25F, 1.F, -1.F, 0.F, 20.F};
+  auto ne = ref::Executor::Create(ng->step.graph);
+  ASSERT_TRUE(ne.has_value());
+  ASSERT_TRUE(ne->BindValues(ng->stream_in, input));
+  ASSERT_TRUE(ne->BindValues(ng->side_in, scales));
+  ASSERT_TRUE(ne->Run());
+  auto normalized = ne->Values(ng->stream_out);
+  auto saved = ne->Values(ng->carry_out);
+  ASSERT_TRUE(normalized.has_value());
+  ASSERT_TRUE(saved.has_value());
+  EXPECT_EQ(*saved, (std::vector<float>(input.begin(), input.end())));
+  RefIO io{.instance = &*norm};
+  io.segments = {{.rows = 2}, {.rows = 1}};
+  io.stream.assign(input.begin(), input.end());
+  io.side.assign(scales.begin(), scales.end());
+  ASSERT_TRUE(norm->def->reference(io));
+  EXPECT_LT(Gap(*normalized, io.stream), 1e-6);
+  EXPECT_EQ(io.carry, (std::vector<double>(input.begin(), input.end())));
+  // A nontrivial intervening branch consumes the normalized stream. The
+  // residual must still read the original, not that stream or the branch.
+  std::vector<float> branch(normalized->size());
+  for (std::size_t i = 0; i < branch.size(); ++i) {
+    branch[i] = 2.F * (*normalized)[i] + .5F;
+    io.stream[i] = 2.0 * io.stream[i] + .5;
+  }
+  auto re = ref::Executor::Create(rg->step.graph);
+  ASSERT_TRUE(re.has_value());
+  ASSERT_TRUE(re->BindValues(rg->stream_in, branch));
+  ASSERT_TRUE(re->BindValues(rg->carry_in, *saved));
+  ASSERT_TRUE(re->BindValues(rg->side_in, gates));
+  ASSERT_TRUE(re->Run());
+  auto out = re->Values(rg->stream_out);
+  ASSERT_TRUE(out.has_value());
+  io.instance = &*residual;
+  io.side.assign(gates.begin(), gates.end());
+  ASSERT_TRUE(residual->def->reference(io));
+  EXPECT_LT(Gap(*out, io.stream), 1e-6);
+  EXPECT_EQ((*out)[0], input[0]);
+  EXPECT_EQ((*out)[5], input[5]);
+  EXPECT_EQ((*out)[10], input[10]);
+  EXPECT_NEAR((*out)[3], .5F, 1e-6);
+  EXPECT_NEAR((*out)[4], 1.5F, 1e-6);
+}
+
+TEST(ComponentsTest, AdaptiveBlocksRefuseMissingAndMismatchedOperands) {
+  const StageFacts facts{.width = 4, .context = 256};
+  const planner::StepShape shape{.segments = {Seg(0, 2, 0, 256, 2), Seg(1, 1, 0, 256, 1)}};
+  for (const std::string kind : {"norm.adaptive", "residual.gated"}) {
+    const auto component = C(kind, {P("side", N("condition"))});
+    auto in = MakeInstance(component, facts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(in.has_value());
+    EXPECT_FALSE(BuildComponent(*in, shape, {}, {}));
+    EXPECT_FALSE(BuildComponent(*in, shape, {}, {}, {.carry = 4, .side = 1}));
+    EXPECT_FALSE(BuildComponent(*in, shape, {}, {}, {.carry = 4, .side = 8}));
+    EXPECT_FALSE(BuildComponent(*in, shape, {}, {}, {.carry = 4, .side = 4, .side_ids = true}));
+    if (kind == "residual.gated") {
+      EXPECT_FALSE(BuildComponent(*in, shape, {}, {}, {.side = 4}));
+      EXPECT_FALSE(BuildComponent(*in, shape, {}, {}, {.carry = 1, .side = 4}));
+    }
+    EXPECT_FALSE(MakeInstance(C(kind, {}), facts, Site::kLayer, 0, 1));
+    EXPECT_FALSE(MakeInstance(C(kind, {P("side", N(""))}), facts, Site::kLayer, 0, 1));
+    EXPECT_FALSE(MakeInstance(component, {.width = 4, .streams = 2}, Site::kLayer, 0, 1));
+    EXPECT_FALSE(MakeInstance(component, facts, Site::kFinalNorm, 0, 1));
+    RefIO io{.instance = &*in};
+    io.segments = {{.rows = 3}};
+    io.stream.resize(12);
+    io.carry.resize(12);
+    io.side.resize(4);  // A single conditioning row must not silently broadcast.
+    const auto before = io.stream;
+    EXPECT_FALSE(in->def->reference(io));
+    EXPECT_EQ(io.stream, before);
+    io.side.resize(12);
+    io.carry.resize(4);
+    if (kind == "residual.gated") EXPECT_FALSE(in->def->reference(io));
+  }
+  EXPECT_FALSE(MakeInstance(C("norm.adaptive", {P("side", N("s")), P("eps", R(0))}), facts,
+                            Site::kLayer, 0, 1));
+}
+
+TEST(ComponentsTest, AdaptiveBlocksValidateExactOwnerRowsBeforeEmission) {
+  const StageFacts facts{.width = 4, .context = 256};
+  for (const std::string kind : {"norm.adaptive", "residual.gated"}) {
+    const auto component = C(kind, {P("side", N("s"))});
+    auto in = MakeInstance(component, facts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(in.has_value());
+    // Malformed side row count, malformed carry count, or a foreign owner.
+    for (int mode = 0; mode < 3; ++mode) {
+      if (kind == "norm.adaptive" && mode == 1) continue;
+      ir::Builder b;
+      StepContext ctx(b, {{.slot = 3, .rows = 2}, {.slot = 7, .first_row = 2, .rows = 1}}, false);
+      const auto stream = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4, 3})), "stream");
+      const auto carry =
+          b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4, mode == 1 ? 1U : 3U})), "carry");
+      if (mode == 2) b.SetOwner(0);
+      const auto side =
+          b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4, mode == 0 ? 1U : 3U})), "side");
+      b.SetJoined();
+      Fragment f{.b = b,
+                 .instance = *in,
+                 .step = ctx,
+                 .stream = stream,
+                 .weight = {},
+                 .state = {},
+                 .carry = carry,
+                 .side = [&](std::string_view) { return side; }};
+      const auto nodes = b.node_count();
+      const auto tensors = b.tensor_count();
+      EXPECT_FALSE(in->def->emit(f));
+      EXPECT_EQ(b.node_count(), nodes);
+      EXPECT_EQ(b.tensor_count(), tensors);
     }
   }
 }

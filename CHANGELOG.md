@@ -36,6 +36,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Shared `norm.adaptive` and `residual.gated` component fragments express
+  scale-only adaptive LayerNorm and tanh-gated residuals using explicit dynamic
+  conditioning and the saved original stream. This CPU/IR foundation does not
+  activate image GPU execution or pipeline conditioning.
+
 - Add a shared channel-normalization component with learned scaling and optional
   SiLU, using F32 arithmetic. This CPU/IR foundation does not activate image
   serving or GPU lowering.

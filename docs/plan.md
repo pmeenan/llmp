@@ -2365,6 +2365,14 @@ each is checked against the design as M3.6 proceeds.
             affected host cases pass on Spark B (2026-10-12), including four
             new channel-normalization controls. Image GPU lowering,
             pipeline wiring and family qualification remain open.
+      - [x] **Q1b — adaptive normalization and gated residual components:**
+            shared scale-only LayerNorm and tanh-gated residual with an explicit
+            saved pre-branch carry and matching per-owner conditioning rows.
+            CPU/IR `BuildComponent` composition and refusal controls pass review;
+            main native build and all 99 affected host cases pass on Spark B
+            (2026-10-12). Whole-stage conditioning, image
+            GPU lowering and pipeline qualification remain open. No mandatory
+            host row expansion or legacy intermediate-rounding gate.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

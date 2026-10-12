@@ -498,7 +498,12 @@ these fixtures where applicable.
   complete: source-encoded F32/BF16 scales, clamped L2 normalization and
   optional SiLU with F32 arithmetic, without a legacy rounding gate. Main
   native build and all 96 affected host cases pass on Spark B (2026-10-12).
-  Remaining components (adaLN, gated residual, conv2d, upsample, flow-match
+  Q1b's shared `norm.adaptive` and `residual.gated` fragments now preserve the
+  original carry and consume explicit dynamic conditioning with F32 arithmetic.
+  Main native build and all 99 affected host cases pass on Spark B (2026-10-12).
+  Whole-stage timestep conditioning remains open; these contracts permit future
+  per-owner broadcast on device without requiring CPU row expansion.
+  Remaining components (conv2d, upsample, flow-match
   step, 3-axis rope, bidirectional attention), GPU lowering and `EngineImage`
   remain open. Qualify numerical choices rather than imposing the legacy
   pipeline's rounding recipe; retire `qwen_image_runner.*` and `pipeline.cc`
