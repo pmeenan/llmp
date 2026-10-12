@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Admit shared teacher-forced scoring and ordinary decode by their actual
+  numerical mode, preserving the separate companion-execution permission.
+
 - Restore adopted component prefixes before reuse when drafter progress is
   still on disk, avoiding needless prompt recomputation. Execution waits for
   successful hydration.

@@ -183,3 +183,30 @@ is a family quality or latency qualification.
 | Full native build and 148 focused controls | `b6737ccc0cdaa8ca4261de49e6cee08be8c0e02099cc69ccbc6351da517073b2` |
 | Actual model-free backend control | `4cac15cfe32f2ceebc3c08d40607a5208d6a99bbe1e6ed0a98f37e36ffa9aafe` |
 | Actual FP16 adapter controls | `4911d5a1e5f209127541e33f4c52db28b185749cd5d59da7e6f09d06757fd20b` |
+
+## Shared phase admission correction — 2026-10-12
+
+A closed score/decode diagnostic source refused its first scoring wave before
+model arithmetic: the shared target-wave transport incorrectly required prompt
+permission for every phase. It now checks each actual pending phase before
+builds or state effects: prefill uses prompt permission, decode uses decode,
+and teacher-forced scoring uses score. Draft/verify target waves refuse.
+Companion execution retains its existing separate permission; companion
+prefill keeps the existing compound-only rule, while companion decode/score
+also require their own semantic mode. No domain or numerical policy widens.
+
+Root main passes the full native build and all 60 affected host controls
+(12 corpus, 19 companion, 29 decoding), with no failures or skips and all
+source/recipe guards passing. Three added controls cover score-only completion,
+mixed-phase refusal before effects and companion-permission refusal. The first
+root harness omitted its required scratch directory and failed at fixture setup;
+that failed receipt is retained. The corrected harness passed in seven seconds
+on the same source; the initial full build passed in 25 seconds.
+
+- Independent source review SHA-256: `050d5e4f8c7dea5797c0ba8a33b1724213047d1d72411a1dae89693192e3bc56`.
+- Main result receipt SHA-256: `4374b0467df394538255f623a3e4132e09e08390894902073d13818d153d6c64`.
+
+Raw evidence remains outside Git under `qwen-phase-admission-root-main01`
+and `qwen-phase-admission-root-main02/results` in the coordination scratch root.
+This correction does not adopt Qwen50 arithmetic or establish model quality,
+state or speed qualification.

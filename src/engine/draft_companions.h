@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Shared target chunks with declarative repeat-pending drafter companions.
+// Shared prefill/decode/scored target chunks with declarative repeat-pending
+// drafter companions. Decode and score require their own numerical-use
+// permissions. Prefill requires prompt permission without companions, or the
+// existing prompt-companion permission with them. That compound permission is
+// also required for decode/score whenever companions are active.
 // The history views contain every token from zero through each chunk's end;
 // they are required only for an opted-in owner. Publication follows all
 // pre/target/post work and its control copy's proven completion.

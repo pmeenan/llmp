@@ -13,6 +13,7 @@
 #include <memory>
 #include <vector>
 
+#include "engine/draft_companions.h"
 #include "expected_error.h"
 #include "fake_step_source.h"
 #include "ir/builder.h"
@@ -293,6 +294,54 @@ TEST_F(CorpusRunner, RaggedJoinedOwnersScoreEveryNextTargetAcrossChunkBoundaries
   EXPECT_EQ(life->runner->slots().positions(0), b.size());
   ASSERT_TRUE(life->scorer->Step());
   EXPECT_EQ(life->scorer->result().targets, 9U);
+}
+
+TEST_F(CorpusRunner, ScoreOnlyDomainRunsWithoutPromptPermission) {
+  life->source->options().check_execution_use = [](en::NumericalUse use) -> en::Status {
+    return use == en::NumericalUse::kScore ? en::Status{}
+                                           : std::unexpected("only scoring is declared");
+  };
+  Make();
+  ASSERT_NE(life->scorer, nullptr);
+  for (std::size_t step = 0; step < 3; ++step) {
+    auto result = life->scorer->Step();
+    ASSERT_TRUE(result) << ts::Failed(result).value_or("");
+    EXPECT_EQ(*result, step == 2);
+  }
+  EXPECT_EQ(life->scorer->result().targets, 9U);
+  EXPECT_EQ(life->runner->slots().positions(2), a.size());
+  EXPECT_EQ(life->runner->slots().positions(0), b.size());
+}
+
+TEST_F(CorpusRunner, ScoreOnlyDomainRejectsOtherOrMixedPhasesBeforeEffects) {
+  life->source->options().check_execution_use = [](en::NumericalUse use) -> en::Status {
+    return use == en::NumericalUse::kScore ? en::Status{}
+                                           : std::unexpected("only scoring is declared");
+  };
+  const auto builds = life->source->built().size();
+  const auto queued = life->source->queued();
+  const auto executed = life->source->executed();
+  std::array<en::PendingWork, 2> pending{
+      en::PendingWork{.slot = 0, .phase = pl::Phase::kScore, .rows = 1, .outputs = 1},
+      en::PendingWork{.slot = 2, .phase = pl::Phase::kScore, .rows = 1, .outputs = 1}};
+  const std::array<en::SegmentWork, 2> work{en::SegmentWork{.tokens = std::span(b).first(1)},
+                                            en::SegmentWork{.tokens = std::span(a).first(1)}};
+  const std::array<std::span<const std::int32_t>, 2> histories{b, a};
+  for (auto phase : {pl::Phase::kPrefill, pl::Phase::kDecode, pl::Phase::kVerify}) {
+    pending[1].phase = phase;  // A later owner must not leak an earlier scored unit.
+    auto result = en::RunPromptWave(*life->runner, *life->composer, pending, work, histories);
+    EXPECT_EQ(result.steps, 0U);
+    ASSERT_EQ(result.outcomes.size(), 2U);
+    for (const auto& outcome : result.outcomes) {
+      ASSERT_TRUE(outcome.refusal);
+      EXPECT_TRUE(outcome.refusal->clean);
+    }
+    EXPECT_EQ(life->source->built().size(), builds);
+    EXPECT_EQ(life->source->queued(), queued);
+    EXPECT_EQ(life->source->executed(), executed);
+    EXPECT_EQ(life->runner->slots().positions(0), 0U);
+    EXPECT_EQ(life->runner->slots().positions(2), 0U);
+  }
 }
 
 TEST_F(CorpusRunner, CancellationDoesNotAdvanceOrReportCompletion) {

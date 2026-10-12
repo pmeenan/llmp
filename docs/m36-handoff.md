@@ -40,6 +40,12 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
+Main through `9137cebf` includes the checked grouped helpers. The next shared
+phase-admission correction passes the full native build and 60 affected host
+controls: scoring and decode use their actual declared modes, while compound
+prompt permission remains unchanged. Qwen50 arithmetic qualification proceeds
+separately; no family quality or serving claim follows from this bug fix.
+
 Main through `922d4f63` also includes split NVFP4 paged rows and the default-off
 bounded DeepSeek rounded indexer consumer. The next N4b6a slice adds checked
 route inversion and exact multipart expert descriptors: main full native build

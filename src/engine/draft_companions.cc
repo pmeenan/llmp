@@ -10,6 +10,8 @@
 
 namespace llmp::engine {
 
+namespace pl = llmp::planner;
+
 // Only this helper grants temporary access to compound-owned state. Its
 // steps carry exact coordinates and owner/unit capabilities; arbitrary
 // public RunStep calls cannot enter an unfinished prompt operation.
@@ -240,9 +242,37 @@ WaveReport RunPromptWave(ModelRunner& runner, const WaveComposer& composer,
   bool companions = false;
   for (std::size_t s = 1; s < runner.slots().stages(); ++s)
     companions |= runner.slots().progress(0, s) != nullptr;
-  if (auto qualified = runner.CheckExecutionUse(companions ? NumericalUse::kPromptCompanions
-                                                           : NumericalUse::kPrompt);
-      !qualified) {
+  // This shared transport serves prefill, ordinary decode and literal scoring.
+  // Qualify every actual request phase before any companion or state effect.
+  // Companion prefill retains its existing compound permission; plain/scored
+  // decode also retains its own semantic permission at this direct entry.
+  const auto qualify = [&]() -> Status {
+    if (companions) {
+      auto allowed = runner.CheckExecutionUse(NumericalUse::kPromptCompanions);
+      if (!allowed) return allowed;
+    }
+    for (const auto& request : pending) {
+      NumericalUse use;
+      switch (request.phase) {
+        case pl::Phase::kPrefill:
+          if (companions) continue;
+          use = NumericalUse::kPrompt;
+          break;
+        case pl::Phase::kDecode:
+          use = NumericalUse::kDecode;
+          break;
+        case pl::Phase::kScore:
+          use = NumericalUse::kScore;
+          break;
+        default:
+          return std::unexpected("the target wave has no admitted semantic phase");
+      }
+      auto allowed = runner.CheckExecutionUse(use);
+      if (!allowed) return allowed;
+    }
+    return {};
+  };
+  if (auto qualified = qualify(); !qualified) {
     WaveReport report;
     report.outcomes.resize(pending.size());
     for (auto& out : report.outcomes) out.refusal = StepRefusal{.what = qualified.error()};

@@ -337,6 +337,30 @@ class UnqualifiedDraftCompanionsTest : public DraftCompanionsTest {
   }
 };
 
+TEST_F(DraftCompanionsTest, CompanionPermissionStillPrecedesAllEffects) {
+  source_->options().check_execution_use = [](en::NumericalUse use) -> en::Status {
+    return use == en::NumericalUse::kPromptCompanions
+               ? en::Status{std::unexpected("compound permission absent")}
+               : en::Status{};
+  };
+  const auto builds = source_->built().size();
+  const auto queued = source_->queued();
+  const auto executed = source_->executed();
+  const auto result = Prompt(std::array<std::uint32_t, 2>{0, 1}, 2);
+  EXPECT_EQ(result.steps, 0U);
+  ASSERT_EQ(result.outcomes.size(), 2U);
+  for (const auto& outcome : result.outcomes) {
+    ASSERT_TRUE(outcome.refusal);
+    EXPECT_EQ(outcome.refusal->what, "compound permission absent");
+    EXPECT_TRUE(outcome.refusal->clean);
+  }
+  EXPECT_EQ(source_->built().size(), builds);
+  EXPECT_EQ(source_->queued(), queued);
+  EXPECT_EQ(source_->executed(), executed);
+  EXPECT_EQ(slots().positions(0), 0U);
+  EXPECT_EQ(slots().positions(1), 0U);
+}
+
 TEST_F(UnqualifiedDraftCompanionsTest, DeclaredPolicyRefusesBeforeColdStateAdmission) {
   EXPECT_EQ(slots().progress(0, 1)->completed(), md::DraftProgress{});
   EXPECT_EQ(slots().used_bytes(0), 0U);

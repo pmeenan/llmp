@@ -1695,6 +1695,12 @@ each is checked against the design as M3.6 proceeds.
                                     three existing FP16 adapter controls. No new
                                     numerical policy or joined capability follows
                                     ([evidence](experiments/m36-numerical-audit/qwen-products.md#owned-backend-configuration)).
+                              - [x] **G3c2b1e — shared phase admission:**
+                                    qualify actual prefill/decode/score target
+                                    waves before effects, retaining compound
+                                    permissions. Main native build and all 60
+                                    affected host controls pass; arithmetic
+                                    qualification remains separate ([evidence](experiments/m36-numerical-audit/qwen-products.md#shared-phase-admission-correction--2026-10-12)).
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%

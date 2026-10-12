@@ -112,6 +112,7 @@ struct FakeSourceOptions {
   // program hooks are read when a program binds, records or runs, so a
   // test may change them between steps.
   std::function<bool(const planner::StepShape&)> refuse_build;
+  std::function<engine::Status(engine::NumericalUse)> check_execution_use;
   std::function<std::vector<std::uint64_t>(const planner::StepShape&)> shape_parameters;
   std::function<engine::Status(std::uint16_t, std::uint16_t, std::span<const std::int32_t>,
                                std::uint32_t, std::span<std::int32_t>)>
@@ -168,6 +169,9 @@ class FakeStepSource final : public engine::StepSource {
     return options_.execution_identity
                ? options_.execution_identity()
                : std::expected<std::optional<base::Sha256Digest>, std::string>{std::nullopt};
+  }
+  engine::Status CheckExecutionUse(engine::NumericalUse use) const override {
+    return options_.check_execution_use ? options_.check_execution_use(use) : engine::Status{};
   }
   bool JoinedRepeatPending(std::uint16_t /*stage*/) const override {
     return joined_repeat_pending_;
