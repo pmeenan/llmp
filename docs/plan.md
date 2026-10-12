@@ -2369,6 +2369,14 @@ each is checked against the design as M3.6 proceeds.
                   state frontier 9 across eager/captured/replayed steps. Family
                   admission and full-model quality/performance remain separate
                   ([evidence](experiments/m36-native-grouped-foundation/README.md#ordered-routed-groups--2026-10-12)).
+            - [x] **N4b6f — allocation-free page ordinal lookup:** derive selected
+                  multipart page ordinals from checked current device reservation
+                  geometry, retaining the original fallback and atomic output
+                  validation. Main native build/157 host controls and four routed
+                  GPU cases pass. A bounded same-host A/B/B/A CPU screen measures
+                  large-inventory selected-span savings with explicit small dense
+                  and host-fallback regressions; no model-speed claim or new index
+                  ([evidence](experiments/m36-native-grouped-foundation/README.md#ordinal-page-lookup-cpu-screen--2026-10-12)).
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

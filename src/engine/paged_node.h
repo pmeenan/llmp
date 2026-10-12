@@ -741,6 +741,7 @@ class PagedNode {
               void* host, std::uint64_t bytes, bool to_host, std::string_view what);
 
  private:
+  friend struct PagedWeightsTestAccess;
   friend class LiveState;
   friend class ModelRunner;
   struct WeightFile {

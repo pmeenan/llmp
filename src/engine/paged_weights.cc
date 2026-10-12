@@ -444,6 +444,45 @@ std::expected<std::size_t, std::string> PagedWeights::ExtentsTouching(
   if (address == 0 || bytes == 0 || __builtin_add_overflow(address, bytes, &end) ||
       sources_.size() != extents_.size())
     return Error("a weight interval is empty or overflows");
+  // Successful no-host Reserve appends every device page in reservation
+  // order. Derive ordinals from that existing geometry, never from ExtentIds.
+  // Release/retry/partial Reserve can leave old arrays: require the complete
+  // current reservation and each touched page, otherwise use the original scan.
+  std::uint64_t complete_bytes = 0, range_end = 0;
+  if (reservation_.valid() && host_bytes_ == 0 && !sources_.empty() && bytes_ != 0 &&
+      !__builtin_mul_overflow(static_cast<std::uint64_t>(sources_.size()), kExtent,
+                              &complete_bytes) &&
+      complete_bytes == bytes_ &&
+      !__builtin_add_overflow(sources_.front().address, bytes_, &range_end)) {
+    const auto base = sources_.front().address;
+    const auto current = [&](std::size_t index) {
+      const auto& source = sources_[index];
+      const auto& backing = source.source.backing;
+      const auto offset = static_cast<std::uint64_t>(index) * kExtent;
+      return !source.host && source.address == base + offset && backing &&
+             backing->reservation == reservation_ && backing->offset.value() == offset &&
+             backing->size.value() == kExtent;
+    };
+    if (base != 0 && current(0) && current(sources_.size() - 1) && address >= base &&
+        end <= range_end) {
+      const auto first = static_cast<std::size_t>((address - base) / kExtent);
+      const auto last = static_cast<std::size_t>((end - 1 - base) / kExtent);
+      const auto count = last - first + 1;
+      if (last < sources_.size() && count <= destination.size()) {
+        bool valid = true;
+        for (std::size_t i = first; i <= last; ++i) {
+          if (!current(i)) {
+            valid = false;
+            break;
+          }
+        }
+        if (valid) {
+          for (std::size_t i = 0; i < count; ++i) destination[i] = extents_[first + i];
+          return count;
+        }
+      }
+    }
+  }
   // Pages are disjoint by Reserve. Count their exact intersection; no hole in
   // an unplaced group or a host reservation may be treated as a device page.
   std::uint64_t covered = 0;

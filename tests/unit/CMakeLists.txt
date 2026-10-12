@@ -656,8 +656,17 @@ target_link_libraries(request_cohort_test PRIVATE llmp_engine_core llmp_fake_dev
 llmp_gtest(request_cohort_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(release_mapped_test release_mapped_test.cc)
-target_link_libraries(release_mapped_test PRIVATE llmp_engine_core llmp_fake_device_backend)
+target_link_libraries(release_mapped_test PRIVATE llmp_engine_core llmp_fake_device_backend
+                                                llmp_test_artifact_writer)
 llmp_gtest(release_mapped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# Same source, explicit measurement invocation only; never a CTest timing gate.
+add_executable(weights_ordinal_screen release_mapped_test.cc)
+target_compile_definitions(weights_ordinal_screen PRIVATE LLMP_WEIGHT_ORDINAL_SCREEN=1)
+target_link_libraries(weights_ordinal_screen PRIVATE llmp_engine_core llmp_fake_device_backend
+                      llmp_test_artifact_writer GTest::gmock_main llmp_test_expected llmp_warnings)
+llmp_test_executable(weights_ordinal_screen)
+
 
 add_executable(slab_layout_test slab_layout_test.cc)
 target_link_libraries(slab_layout_test PRIVATE llmp_engine_core llmp_fake_device_backend)

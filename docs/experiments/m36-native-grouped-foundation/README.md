@@ -322,3 +322,102 @@ remain open. The bounded two-group proof does not qualify full 48-layer or
 fully-resident bypass, new import or real-model payload traversal is part of this
 slice. CPU cost, memory traffic and reuse improvements may be useful independently
 of model latency, but none is measured or claimed by these correctness controls.
+
+## Ordinal page lookup CPU screen — 2026-10-12
+
+Adopt the allocation-free ordinal lookup for complete current device-only
+reservations. Its only production callers are the two `ExtentsTouching` calls
+in `model_runner_routed.cc` that derive selected multipart weight closures.
+Ordinary model execution does not call this helper. The change reuses existing
+reservation/source arrays, adds no persistent memory or index, and preserves
+page order, source ownership and scheduler residency admission. Host, partial,
+released/retried and otherwise ineligible inventories retain the original scan.
+Every touched entry is validated before any destination write.
+
+The measured benefit is CPU lookup cost for large inventories and small selected
+spans. Adoption accepts reproducible regressions elsewhere: at 64 pages with all
+64 touched, pooled median wall cost rises from 103.1 to 319.9 ns/lookup; host
+fallback rises from 55.8 to 129.4 ns at 64 pages and from 925.4 to 2,898.1 ns at
+1,024 pages. At 16,384 pages, host fallback is also slower. These are measured
+tradeoffs, not an unqualified speedup. No cause is assigned to compiler code
+layout, frequency or caches: those were not measured. Short process duration and
+timer precision limit generalization. The large selected-device CPU saving and
+zero added persistent memory justify this scoped change; no model-latency or
+migration speed-gate claim follows.
+
+A/B/B/A ran on Spark A, with A the actual prior helper and B the candidate.
+Both compiled source inventories contain 2,482 files and differ only in
+`src/engine/paged_weights.cc`; the test, inputs and output work are identical.
+Each fresh process runs twelve cells, one warmup and five recorded batches of
+256 successful lookups per cell. All four complete output checksums agree;
+every case has exactly 182 validated properties. Independent scan comparisons
+remain outside timing. Larger inventories are paid test metadata over fake
+virtual reservations: the 32 GiB address range has no payload backing or large
+artifact. Small real Open/Reserve controls separately cover lifecycle geometry.
+
+The following values are median [minimum–maximum] **nanoseconds per lookup**,
+computed from ten recorded batch values per arm (five in each of two processes).
+CPU and wall columns are separate. CPU output has a 1 microsecond reporting
+quantum per 256-call batch (about 3.9 ns/lookup), not that accuracy per call;
+steady-clock nanosecond units do not establish effective resolution. Zero values
+would remain visible and would not be used as ratio denominators.
+
+| Pages | Touched | Path | A wall | B wall | A CPU | B CPU |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 64 | 1 | device | 70.3 [69.6–71.2] | 19.8 [19.6–20.2] | 70.3 [70.3–74.2] | 19.5 [19.5–23.4] |
+| 64 | 8 | device | 74.1 [73.8–87.1] | 52.6 [52.5–95.4] | 74.2 [74.2–89.8] | 54.7 [50.8–97.7] |
+| 64 | 64 | device | 103.1 [100.5–105.4] | 319.9 [319.2–320.2] | 103.5 [101.6–109.4] | 320.3 [320.3–324.2] |
+| 64 | 1 | host fallback | 55.8 [55.5–55.9] | 129.4 [128.5–130.9] | 58.6 [54.7–58.6] | 130.9 [128.9–132.8] |
+| 1,024 | 1 | device | 1288.4 [1280.1–1296.7] | 20.0 [19.7–20.5] | 1289.1 [1281.2–1296.9] | 23.4 [19.5–23.4] |
+| 1,024 | 8 | device | 1280.6 [1273.6–1288.1] | 55.5 [55.1–56.1] | 1281.2 [1273.4–1289.1] | 58.6 [54.7–58.6] |
+| 1,024 | 64 | device | 1307.3 [1300.3–1317.2] | 322.1 [321.5–348.5] | 1308.6 [1300.8–1320.3] | 324.2 [324.2–351.6] |
+| 1,024 | 1 | host fallback | 925.4 [923.6–940.1] | 2898.1 [2885.5–2911.6] | 927.7 [921.9–941.4] | 2900.4 [2886.7–2914.1] |
+| 16,384 | 1 | device | 28109.4 [27407.8–28841.6] | 21.0 [20.0–26.9] | 28111.3 [27410.2–28843.8] | 23.4 [19.5–27.3] |
+| 16,384 | 8 | device | 28099.6 [27392.8–28862.1] | 27.9 [26.4–30.9] | 28101.6 [27394.5–28820.3] | 29.3 [27.3–31.2] |
+| 16,384 | 64 | device | 28140.4 [27424.6–28856.2] | 156.3 [150.3–163.1] | 28142.6 [27425.8–28859.4] | 158.2 [152.3–164.1] |
+| 16,384 | 1 | host fallback | 22224.7 [21859.0–22586.6] | 24562.4 [24359.9–24748.4] | 22226.6 [21863.3–22585.9] | 24562.5 [24359.4–24750.0] |
+
+[The compact aggregate](ordinal-cpu.json) retains per-process cell ranges and
+outer process observations. A1/A2 outer wall times are 0.2660/0.2662 seconds;
+B1/B2 are 0.1156/0.1156 seconds. Their process CPU times are
+0.2392/0.2277 and 0.0938/0.0932 seconds respectively. These include startup,
+validation and reporting and are not isolated helper timings. Both candidate
+processes reproduce the slower small dense and host-fallback cases. The combined
+screen took 0.7652 seconds under its fixed 60-second ceiling.
+
+Algorithmically the prior successful scan visits all P source records twice;
+the eligible ordinal path checks two endpoints and T touched records, then
+copies T IDs. These are source-derived loop counts, not measured bytes, cache
+misses or memory bandwidth. A fully resident execution bypass and broader
+inventory optimizations remain separate; no new numerical policy is installed.
+
+The native fixed metadata bound remains at most 12,845,056 bytes within its
+256 MiB envelope. The whole CPU job enforced a 1 GiB process/cache limit and
+zero swap; observed peak was 20,336,640 bytes, with no memory-limit/OOM events.
+Pre/post source, binary and recipe guards passed, all four child process groups
+retired, and no case failed or skipped. No GPU work occurs in this timing job;
+exclusive supervisor admission merely isolates the host.
+
+Main evidence, with raw logs/XML outside Git:
+
+- `paged-weight-ordinal-main02/result.json`: full native build and 157 affected
+  host cases PASS, including 19 release/mapping cases (five new controls), no
+  failures/skips. Receipt SHA-256
+  `bad9a9e6bbc0962cbd996c883cbbe9a4427d72aba7398cc50a4e8a8116132e80`.
+  The baseline `parent02` build also passes all 19 release/mapping controls.
+- `paged-weight-ordinal-gpu01/result.json`: all four routed cases PASS, source
+  guards unchanged, zero remaining compute processes and memory-event counters;
+  SHA-256 `fc034044b1ae615f128a1d52e610f80f2ce6c1fda5a07b05cd9a4b9aa70a80d2`.
+- `paged-weight-ordinal-cpu01/results/result.json`: four screened processes PASS;
+  SHA-256 `d307a2543713dee16c9c8177eb87b5f35543a1ef6e1f7d0d6b5fb85b5e8f0f6b`.
+  Candidate binary: 38,363,136 bytes,
+  `55c95415ff1d655b96618a20ce2fdd1147e828885aadf10e7e1de4380628aa16`;
+  baseline: 38,360,384 bytes,
+  `604886d86a2f9f8ce714567c214c2784650c55c20ca80f1d99d02b2874573327`.
+- Initial `main01`/`parent01` builds stopped at the test fixture's omitted
+  `PageSource.read` initializer. Those failed receipts remain preserved; no
+  timing or tests ran in them. Explicit empty initialization corrected the
+  warning without changing production behavior.
+
+Full-model quality, serving and performance qualification remain open. This
+screen neither executes model payloads nor changes accepted arithmetic.

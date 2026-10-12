@@ -57,6 +57,13 @@ publication and fresh selected admission per group. Native model admission,
 full-family quality/performance and inventory scaling remain open
 ([evidence](experiments/m36-native-grouped-foundation/README.md#ordered-routed-groups--2026-10-12)).
 
+N4b6f's allocation-free page ordinal lookup passes main native build, 157 host
+controls and four routed GPU cases. The same-host CPU screen supports the large
+selected-device inventory case without persistent memory; small dense and host
+fallback regressions are explicitly accepted and reported. Only routed selected
+closure discovery calls this helper. It does not qualify model latency or close
+native admission ([results and tradeoffs](experiments/m36-native-grouped-foundation/README.md#ordinal-page-lookup-cpu-screen--2026-10-12)).
+
 The generic reserved-weight alignment landed in `b9833111` and passes main native build and
 108 focused host controls. It provides actual checked physical facts without
 installing tuning. The [Qwen secondary screen](experiments/m36-numerical-audit/qwen-joined-score.md)

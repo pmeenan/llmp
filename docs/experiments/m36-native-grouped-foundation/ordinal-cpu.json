@@ -1,0 +1,1164 @@
+{
+  "scope": "CPU helper screen; no model latency or hardware traffic measurement",
+  "order": [
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline"
+  ],
+  "queries_per_batch": 256,
+  "recorded_batches_per_process": 5,
+  "processes": [
+    {
+      "ordinal": 1,
+      "arm": "baseline",
+      "wall_seconds": 0.26602157508023083,
+      "cpu_seconds": 0.239177,
+      "output_checksum": "1480609536"
+    },
+    {
+      "ordinal": 2,
+      "arm": "candidate",
+      "wall_seconds": 0.11555421794764698,
+      "cpu_seconds": 0.09384600000000001,
+      "output_checksum": "1480609536"
+    },
+    {
+      "ordinal": 3,
+      "arm": "candidate",
+      "wall_seconds": 0.11560077895410359,
+      "cpu_seconds": 0.09324499999999997,
+      "output_checksum": "1480609536"
+    },
+    {
+      "ordinal": 4,
+      "arm": "baseline",
+      "wall_seconds": 0.2661872550379485,
+      "cpu_seconds": 0.227696,
+      "output_checksum": "1480609536"
+    }
+  ],
+  "cells": [
+    {
+      "pages": 64,
+      "touched": 1,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 70.345703125,
+            "min": 69.62890625,
+            "max": 71.25
+          },
+          "cpu": {
+            "median": 70.3125,
+            "min": 70.3125,
+            "max": 74.21875
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 69.75,
+                "min": 69.62890625,
+                "max": 71.0
+              },
+              "cpu": {
+                "median": 70.3125,
+                "min": 70.3125,
+                "max": 74.21875
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 70.56640625,
+                "min": 70.0,
+                "max": 71.25
+              },
+              "cpu": {
+                "median": 70.3125,
+                "min": 70.3125,
+                "max": 74.21875
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 19.8125,
+            "min": 19.625,
+            "max": 20.1875
+          },
+          "cpu": {
+            "median": 19.53125,
+            "min": 19.53125,
+            "max": 23.4375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 19.8125,
+                "min": 19.75,
+                "max": 20.1875
+              },
+              "cpu": {
+                "median": 19.53125,
+                "min": 19.53125,
+                "max": 23.4375
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 19.8125,
+                "min": 19.625,
+                "max": 20.125
+              },
+              "cpu": {
+                "median": 19.53125,
+                "min": 19.53125,
+                "max": 23.4375
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 0.28164477885442984,
+      "candidate_over_baseline_cpu": 0.2777777777777778
+    },
+    {
+      "pages": 64,
+      "touched": 8,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 74.0625,
+            "min": 73.8125,
+            "max": 87.0625
+          },
+          "cpu": {
+            "median": 74.21875,
+            "min": 74.21875,
+            "max": 89.84375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 74.3125,
+                "min": 74.0625,
+                "max": 87.0625
+              },
+              "cpu": {
+                "median": 78.125,
+                "min": 74.21875,
+                "max": 89.84375
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 74.00390625,
+                "min": 73.8125,
+                "max": 74.0625
+              },
+              "cpu": {
+                "median": 74.21875,
+                "min": 74.21875,
+                "max": 78.125
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 52.595703125,
+            "min": 52.5,
+            "max": 95.375
+          },
+          "cpu": {
+            "median": 54.6875,
+            "min": 50.78125,
+            "max": 97.65625
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 52.62890625,
+                "min": 52.5625,
+                "max": 95.375
+              },
+              "cpu": {
+                "median": 54.6875,
+                "min": 54.6875,
+                "max": 97.65625
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 52.56640625,
+                "min": 52.5,
+                "max": 52.625
+              },
+              "cpu": {
+                "median": 54.6875,
+                "min": 50.78125,
+                "max": 54.6875
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 0.7101529535864979,
+      "candidate_over_baseline_cpu": 0.7368421052631579
+    },
+    {
+      "pages": 64,
+      "touched": 64,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 103.095703125,
+            "min": 100.5,
+            "max": 105.4375
+          },
+          "cpu": {
+            "median": 103.515625,
+            "min": 101.5625,
+            "max": 109.375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 105.3125,
+                "min": 105.25390625,
+                "max": 105.4375
+              },
+              "cpu": {
+                "median": 105.46875,
+                "min": 105.46875,
+                "max": 109.375
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 100.625,
+                "min": 100.5,
+                "max": 100.9375
+              },
+              "cpu": {
+                "median": 101.5625,
+                "min": 101.5625,
+                "max": 101.5625
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 319.908203125,
+            "min": 319.1875,
+            "max": 320.19140625
+          },
+          "cpu": {
+            "median": 320.3125,
+            "min": 320.3125,
+            "max": 324.21875
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 319.94140625,
+                "min": 319.87890625,
+                "max": 320.19140625
+              },
+              "cpu": {
+                "median": 320.3125,
+                "min": 320.3125,
+                "max": 324.21875
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 319.4375,
+                "min": 319.1875,
+                "max": 320.00390625
+              },
+              "cpu": {
+                "median": 320.3125,
+                "min": 320.3125,
+                "max": 320.3125
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 3.103021691768495,
+      "candidate_over_baseline_cpu": 3.0943396226415096
+    },
+    {
+      "pages": 64,
+      "touched": 1,
+      "host_interleaved": true,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 55.75,
+            "min": 55.5,
+            "max": 55.9375
+          },
+          "cpu": {
+            "median": 58.59375,
+            "min": 54.6875,
+            "max": 58.59375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 55.875,
+                "min": 55.5,
+                "max": 55.9375
+              },
+              "cpu": {
+                "median": 58.59375,
+                "min": 54.6875,
+                "max": 58.59375
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 55.69140625,
+                "min": 55.6875,
+                "max": 55.8125
+              },
+              "cpu": {
+                "median": 54.6875,
+                "min": 54.6875,
+                "max": 58.59375
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 129.408203125,
+            "min": 128.50390625,
+            "max": 130.875
+          },
+          "cpu": {
+            "median": 130.859375,
+            "min": 128.90625,
+            "max": 132.8125
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 130.375,
+                "min": 130.12890625,
+                "max": 130.875
+              },
+              "cpu": {
+                "median": 132.8125,
+                "min": 128.90625,
+                "max": 132.8125
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 128.625,
+                "min": 128.50390625,
+                "max": 128.6875
+              },
+              "cpu": {
+                "median": 128.90625,
+                "min": 128.90625,
+                "max": 132.8125
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 2.321223374439462,
+      "candidate_over_baseline_cpu": 2.2333333333333334
+    },
+    {
+      "pages": 1024,
+      "touched": 1,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 1288.3515625,
+            "min": 1280.07421875,
+            "max": 1296.6953125
+          },
+          "cpu": {
+            "median": 1289.0625,
+            "min": 1281.25,
+            "max": 1296.875
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 1289.5078125,
+                "min": 1286.2578125,
+                "max": 1296.6953125
+              },
+              "cpu": {
+                "median": 1289.0625,
+                "min": 1285.15625,
+                "max": 1296.875
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 1285.63671875,
+                "min": 1280.07421875,
+                "max": 1296.6328125
+              },
+              "cpu": {
+                "median": 1289.0625,
+                "min": 1281.25,
+                "max": 1296.875
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 20.03125,
+            "min": 19.6875,
+            "max": 20.5
+          },
+          "cpu": {
+            "median": 23.4375,
+            "min": 19.53125,
+            "max": 23.4375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 20.25,
+                "min": 19.9375,
+                "max": 20.5
+              },
+              "cpu": {
+                "median": 23.4375,
+                "min": 19.53125,
+                "max": 23.4375
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 19.875,
+                "min": 19.6875,
+                "max": 20.25
+              },
+              "cpu": {
+                "median": 19.53125,
+                "min": 19.53125,
+                "max": 23.4375
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 0.015547968879806438,
+      "candidate_over_baseline_cpu": 0.01818181818181818
+    },
+    {
+      "pages": 1024,
+      "touched": 8,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 1280.6328125,
+            "min": 1273.57421875,
+            "max": 1288.07421875
+          },
+          "cpu": {
+            "median": 1281.25,
+            "min": 1273.4375,
+            "max": 1289.0625
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 1281.9453125,
+                "min": 1279.88671875,
+                "max": 1285.26171875
+              },
+              "cpu": {
+                "median": 1285.15625,
+                "min": 1281.25,
+                "max": 1289.0625
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 1280.0703125,
+                "min": 1273.57421875,
+                "max": 1288.07421875
+              },
+              "cpu": {
+                "median": 1281.25,
+                "min": 1273.4375,
+                "max": 1289.0625
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 55.5,
+            "min": 55.0625,
+            "max": 56.0625
+          },
+          "cpu": {
+            "median": 58.59375,
+            "min": 54.6875,
+            "max": 58.59375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 55.25,
+                "min": 55.0625,
+                "max": 56.0625
+              },
+              "cpu": {
+                "median": 58.59375,
+                "min": 54.6875,
+                "max": 58.59375
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 55.625,
+                "min": 55.375,
+                "max": 55.8125
+              },
+              "cpu": {
+                "median": 58.59375,
+                "min": 54.6875,
+                "max": 58.59375
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 0.04333794937805406,
+      "candidate_over_baseline_cpu": 0.04573170731707317
+    },
+    {
+      "pages": 1024,
+      "touched": 64,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 1307.291015625,
+            "min": 1300.3203125,
+            "max": 1317.19921875
+          },
+          "cpu": {
+            "median": 1308.59375,
+            "min": 1300.78125,
+            "max": 1320.3125
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 1314.1953125,
+                "min": 1308.0703125,
+                "max": 1317.19921875
+              },
+              "cpu": {
+                "median": 1312.5,
+                "min": 1308.59375,
+                "max": 1320.3125
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 1301.6328125,
+                "min": 1300.3203125,
+                "max": 1306.51171875
+              },
+              "cpu": {
+                "median": 1304.6875,
+                "min": 1300.78125,
+                "max": 1308.59375
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 322.06640625,
+            "min": 321.50390625,
+            "max": 348.5
+          },
+          "cpu": {
+            "median": 324.21875,
+            "min": 324.21875,
+            "max": 351.5625
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 322.12890625,
+                "min": 321.87890625,
+                "max": 348.5
+              },
+              "cpu": {
+                "median": 324.21875,
+                "min": 324.21875,
+                "max": 351.5625
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 321.75390625,
+                "min": 321.50390625,
+                "max": 333.62890625
+              },
+              "cpu": {
+                "median": 324.21875,
+                "min": 324.21875,
+                "max": 335.9375
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 0.24636167647493848,
+      "candidate_over_baseline_cpu": 0.24776119402985075
+    },
+    {
+      "pages": 1024,
+      "touched": 1,
+      "host_interleaved": true,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 925.412109375,
+            "min": 923.5703125,
+            "max": 940.1328125
+          },
+          "cpu": {
+            "median": 927.734375,
+            "min": 921.875,
+            "max": 941.40625
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 928.00390625,
+                "min": 925.1328125,
+                "max": 935.4453125
+              },
+              "cpu": {
+                "median": 929.6875,
+                "min": 925.78125,
+                "max": 937.5
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 925.0078125,
+                "min": 923.5703125,
+                "max": 940.1328125
+              },
+              "cpu": {
+                "median": 925.78125,
+                "min": 921.875,
+                "max": 941.40625
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 2898.11328125,
+            "min": 2885.45703125,
+            "max": 2911.58203125
+          },
+          "cpu": {
+            "median": 2900.390625,
+            "min": 2886.71875,
+            "max": 2914.0625
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 2897.89453125,
+                "min": 2889.26953125,
+                "max": 2904.1484375
+              },
+              "cpu": {
+                "median": 2898.4375,
+                "min": 2890.625,
+                "max": 2906.25
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 2900.8359375,
+                "min": 2885.45703125,
+                "max": 2911.58203125
+              },
+              "cpu": {
+                "median": 2902.34375,
+                "min": 2886.71875,
+                "max": 2914.0625
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 3.131700192692867,
+      "candidate_over_baseline_cpu": 3.126315789473684
+    },
+    {
+      "pages": 16384,
+      "touched": 1,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 28109.39453125,
+            "min": 27407.82421875,
+            "max": 28841.6484375
+          },
+          "cpu": {
+            "median": 28111.328125,
+            "min": 27410.15625,
+            "max": 28843.75
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 28806.0234375,
+                "min": 28771.0234375,
+                "max": 28841.6484375
+              },
+              "cpu": {
+                "median": 28804.6875,
+                "min": 28773.4375,
+                "max": 28843.75
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 27434.57421875,
+                "min": 27407.82421875,
+                "max": 27447.765625
+              },
+              "cpu": {
+                "median": 27433.59375,
+                "min": 27410.15625,
+                "max": 27449.21875
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 21.03125,
+            "min": 20.0,
+            "max": 26.9375
+          },
+          "cpu": {
+            "median": 23.4375,
+            "min": 19.53125,
+            "max": 27.34375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 21.0,
+                "min": 20.0,
+                "max": 26.9375
+              },
+              "cpu": {
+                "median": 23.4375,
+                "min": 23.4375,
+                "max": 27.34375
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 21.0625,
+                "min": 20.1875,
+                "max": 23.8125
+              },
+              "cpu": {
+                "median": 23.4375,
+                "min": 19.53125,
+                "max": 27.34375
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 0.0007481929209332122,
+      "candidate_over_baseline_cpu": 0.0008337386229417078
+    },
+    {
+      "pages": 16384,
+      "touched": 8,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 28099.55078125,
+            "min": 27392.76171875,
+            "max": 28862.0859375
+          },
+          "cpu": {
+            "median": 28101.5625,
+            "min": 27394.53125,
+            "max": 28820.3125
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 28799.7109375,
+                "min": 28776.2734375,
+                "max": 28862.0859375
+              },
+              "cpu": {
+                "median": 28800.78125,
+                "min": 28777.34375,
+                "max": 28820.3125
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 27415.44921875,
+                "min": 27392.76171875,
+                "max": 27422.828125
+              },
+              "cpu": {
+                "median": 27417.96875,
+                "min": 27394.53125,
+                "max": 27425.78125
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 27.939453125,
+            "min": 26.4375,
+            "max": 30.875
+          },
+          "cpu": {
+            "median": 29.296875,
+            "min": 27.34375,
+            "max": 31.25
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 27.875,
+                "min": 26.4375,
+                "max": 28.9375
+              },
+              "cpu": {
+                "median": 27.34375,
+                "min": 27.34375,
+                "max": 31.25
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 27.94140625,
+                "min": 27.875,
+                "max": 30.875
+              },
+              "cpu": {
+                "median": 31.25,
+                "min": 27.34375,
+                "max": 31.25
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 0.0009943024834277127,
+      "candidate_over_baseline_cpu": 0.001042535446205171
+    },
+    {
+      "pages": 16384,
+      "touched": 64,
+      "host_interleaved": false,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 28140.390625,
+            "min": 27424.63671875,
+            "max": 28856.2109375
+          },
+          "cpu": {
+            "median": 28142.578125,
+            "min": 27425.78125,
+            "max": 28859.375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 28833.5234375,
+                "min": 28820.26953125,
+                "max": 28856.2109375
+              },
+              "cpu": {
+                "median": 28832.03125,
+                "min": 28820.3125,
+                "max": 28859.375
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 27433.63671875,
+                "min": 27424.63671875,
+                "max": 27460.51171875
+              },
+              "cpu": {
+                "median": 27433.59375,
+                "min": 27425.78125,
+                "max": 27464.84375
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 156.283203125,
+            "min": 150.3125,
+            "max": 163.12890625
+          },
+          "cpu": {
+            "median": 158.203125,
+            "min": 152.34375,
+            "max": 164.0625
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 155.19140625,
+                "min": 150.3125,
+                "max": 159.9375
+              },
+              "cpu": {
+                "median": 156.25,
+                "min": 152.34375,
+                "max": 160.15625
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 160.9375,
+                "min": 154.69140625,
+                "max": 163.12890625
+              },
+              "cpu": {
+                "median": 160.15625,
+                "min": 152.34375,
+                "max": 164.0625
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 0.005553697004694653,
+      "candidate_over_baseline_cpu": 0.005621486570893191
+    },
+    {
+      "pages": 16384,
+      "touched": 1,
+      "host_interleaved": true,
+      "units": "nanoseconds per lookup (batch divided by256)",
+      "arms": {
+        "baseline": {
+          "wall": {
+            "median": 22224.693359375,
+            "min": 21858.97265625,
+            "max": 22586.6015625
+          },
+          "cpu": {
+            "median": 22226.5625,
+            "min": 21863.28125,
+            "max": 22585.9375
+          },
+          "per_process": [
+            {
+              "process_ordinal": 1,
+              "wall": {
+                "median": 22546.1640625,
+                "min": 22528.2265625,
+                "max": 22586.6015625
+              },
+              "cpu": {
+                "median": 22546.875,
+                "min": 22531.25,
+                "max": 22585.9375
+              }
+            },
+            {
+              "process_ordinal": 4,
+              "wall": {
+                "median": 21879.03515625,
+                "min": 21858.97265625,
+                "max": 21921.16015625
+              },
+              "cpu": {
+                "median": 21882.8125,
+                "min": 21863.28125,
+                "max": 21921.875
+              }
+            }
+          ]
+        },
+        "candidate": {
+          "wall": {
+            "median": 24562.4296875,
+            "min": 24359.86328125,
+            "max": 24748.3671875
+          },
+          "cpu": {
+            "median": 24562.5,
+            "min": 24359.375,
+            "max": 24750.0
+          },
+          "per_process": [
+            {
+              "process_ordinal": 2,
+              "wall": {
+                "median": 24709.18359375,
+                "min": 24701.5546875,
+                "max": 24748.3671875
+              },
+              "cpu": {
+                "median": 24710.9375,
+                "min": 24703.125,
+                "max": 24750.0
+              }
+            },
+            {
+              "process_ordinal": 3,
+              "wall": {
+                "median": 24413.67578125,
+                "min": 24359.86328125,
+                "max": 24423.3046875
+              },
+              "cpu": {
+                "median": 24417.96875,
+                "min": 24359.375,
+                "max": 24421.875
+              }
+            }
+          ]
+        }
+      },
+      "candidate_over_baseline_wall": 1.105186437910464,
+      "candidate_over_baseline_cpu": 1.1050966608084358
+    }
+  ],
+  "guards": {
+    "pre": "PASS",
+    "post": "PASS",
+    "children_retired": true,
+    "cases": 4,
+    "failures": 0,
+    "skips": 0
+  },
+  "memory": {
+    "max": 1073741824,
+    "swap_max": 0,
+    "events_before": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "events_after": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "peak": 20336640
+  },
+  "combined_screen_seconds": 0.7652468499727547,
+  "receipt_sha256": "d307a2543713dee16c9c8177eb87b5f35543a1ef6e1f7d0d6b5fb85b5e8f0f6b",
+  "source_difference": "src/engine/paged_weights.cc",
+  "timer_limits": {
+    "inside_process_cpu": "std::clock / CLOCKS_PER_SEC, formatted to six decimal places; reported quantum 1 microsecond, not an accuracy guarantee",
+    "inside_wall": "std::chrono::steady_clock duration_cast nanoseconds; units do not imply 1 ns resolution",
+    "outer_wall": "Python monotonic",
+    "outer_cpu": "waited-child getrusage user+system; includes process startup, validation and reports",
+    "python_monotonic_resolution_seconds": 1e-09
+  }
+}
