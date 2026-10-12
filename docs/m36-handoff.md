@@ -63,6 +63,13 @@ checkpoint/spill replays: 32 reference and 32 exact replay heads/tokens, with
 eight checkpoint and four spill restores. Broader quality and family gates
 remain open; no experimental policy is adopted.
 
+Qwen52 extends the same pre-fixed four passages to 1,016 targets. One fresh
+A/C pair passes all input/head/program controls; aggregate PPL improves 0.64%,
+but the new 888 targets improve only 0.057%, with two documents regressing.
+Most gain comes from the old prefix. This mixed secondary observation adopts
+no policy and warrants no further context/timing run by itself. The routed
+continuation and native GGUF target normalization are in source review.
+
 The shared phase-admission correction landed in `d8aa6388`, with a full native
 build and 60 affected host controls: scoring and decode use their actual declared
 modes, while compound prompt permission remains unchanged. Qwen50 arithmetic

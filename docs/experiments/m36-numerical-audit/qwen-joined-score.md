@@ -3,10 +3,11 @@
 
 # Qwen3.8 joined scoring: bounded candidate screen
 
-The candidate warrants further qualification: it improves secondary
-same-artifact teacher loss on these 128 targets, while one A–C–C–A screen
-shows no clear timing separation. This is not an adoption or migration
-result. Original unquantized Qwen3.8 BF16 remains unavailable.
+The initial 128-target screen improved secondary same-artifact teacher loss
+without clear timing separation. The broader fixed 1,016-target comparison
+below finds a much smaller, mixed gain on new targets; this does not establish
+a general quality advantage or justify adoption. Original unquantized
+Qwen3.8 BF16 remains unavailable in the inspected environment.
 
 ## Policy and execution scope
 
@@ -139,3 +140,59 @@ quality, broader context/owner/MTP/swap or matched 1% qualification.
 Raw evidence remains outside Git in `qwen-recovery51-decode-models01/actual`
 under the coordination root. Further work should address broader quality or an
 unqualified lifecycle/domain requirement; these short checks need no repeat.
+
+
+## Broader fixed natural corpus — Qwen52
+
+The larger secondary comparison reduces aggregate perplexity by 0.64%, but the
+newly covered portion has only a small, mixed signal. The result does not
+establish a general quality advantage or justify adopting the experimental
+selection. Original Qwen BF16 execution remains unavailable.
+
+The same four authenticated texts, actual target tokenizer and a cutoff fixed
+before losses produce 255 inputs per document: 1,020 inputs and 1,016 targets.
+Native full counts are 263/258/264/259. The largest common odd UTF-8 source-prefix
+cutoff preserves the previous 132 input IDs; no passage is changed or selected
+after observing losses.
+
+| Coverage | Targets | A mean NLL | C mean NLL | Relative PPL change |
+| --- | ---: | ---: | ---: | ---: |
+| Complete corpus | 1,016 | 3.563363450261 | 3.556988278363 | −0.635489% |
+| Earlier prefix | 128 | 5.077858728615 | 5.031231524315 | −4.555686% |
+| New extension | 888 | 3.345057824552 | 3.344484747415 | −0.057291% |
+
+About 92.1% of the summed loss reduction comes from the previous 128 targets.
+The extension has 446 lower and 442 higher candidate losses; two documents
+improve and two worsen. Full-document PPL changes are +1.180709%, −4.467834%,
+−1.076589% and +1.948014%. Original-prefix losses reproduce the corresponding
+Qwen50 observations; this is post-run provenance, not an acceptance gate.
+
+One fresh A and one fresh C process complete in a 45-second Spark B job. Both
+use the same source, binary, artifact, histories and non-owner-row policy.
+The actual Score4 key retains all 2,482 implementation names and 51 dense
+physical descriptors. Score8 changes exactly 50 names from ordinary MMF to the
+existing tuned MMVF rows product; all other names and every descriptor field
+except the corresponding registry indices agree. All 1,016 target coordinates
+per arm are finite and complete; all 1,020 full input heads, including terminal
+unscored rows, pass. The 17 setup classes and funding remain unchanged.
+
+Both raw cases complete with no skips or failures, all source/recipe/binary
+guards pass, memory-limit/OOM events are zero and both complete owners retire
+with no remaining GPU process. Observed cgroup peak is 1,085,939,712 bytes,
+which is not complete unified/device occupancy. No new state-restoration,
+timing, original-reference quality, adoption or matched 1% gate is claimed.
+The limited extension signal warrants no additional context/timing run by itself.
+The diagnostic fixture remains outside main; production code is unchanged.
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Frozen source02 manifest | `2219bdb3738ac3b74f553dc76587bfba5cd6b4b2f501b993e7cbda015fad107f` |
+| Literal focused build receipt | `d6ceb6aee6f1bd5ab65f841d1cde15b42784c209296a63b3220cda1817a10699` |
+| Native binary | `1d5ad6a60513f5af686c8eb654fee2c64c34aeb6e09bca3378d0be18900c4818` |
+| Metadata preparation receipt | `862a48c42cea278bb49a6f9a3369d69dae51cf01a6b2925a9f2bcce598f431b0` |
+| Actual completion receipt | `92ad695820d1eb909d5d4336a57a7525d34b2fba5ca622c459b7743f904c535b` |
+| Independent raw/result review | `2c55233a5c329780fda2ed8f3e27f9420fa03c5c8b73a6edcca1bbc3534712ea` |
+
+Raw evidence remains outside Git in `qwen-recovery52-corpus-models01/actual`
+under the coordination root. Original-model, wider context/cohort/MTP,
+runtime admission and served migration qualification remain open.

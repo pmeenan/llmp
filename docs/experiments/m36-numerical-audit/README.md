@@ -35,7 +35,11 @@ explicit physical8 tuning keys. Its short fresh-process bookend shows no clear
 timing separation. Same-candidate short state controls pass; original-reference,
 long-context, MTP and serving migration qualifications remain open. The generic
 reserved-weight alignment fix supplies checked physical facts and does not
-activate those experimental policy choices.
+activate those experimental policy choices. The broader fixed
+1,016-target comparison records a 0.64% aggregate PPL reduction, but only
+0.057% on the new 888 targets, with two documents regressing. Most gain comes
+from the earlier prefixes; this does not establish a general quality advantage
+or justify adopting the experimental selection.
 
 ## Candidates and evidence
 

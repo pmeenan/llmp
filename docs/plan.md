@@ -1726,6 +1726,15 @@ each is checked against the design as M3.6 proceeds.
                                     and four spill restores. This closes only the
                                     bounded diagnostic, with broader quality and
                                     family gates open ([evidence](experiments/m36-numerical-audit/qwen-joined-score.md#actual-decode-continuation--2026-10-12)).
+                              - [x] **G3c2b1i — broader fixed natural secondary corpus:**
+                                    four pre-fixed 255-input histories, 1,016 targets;
+                                    complete actual Score8/4 program and finite-head
+                                    controls pass in one fresh A/C pair. Aggregate
+                                    PPL changes −0.635489%, but new 888 targets only
+                                    −0.057291% with two documents regressing. This
+                                    descriptive result adopts no policy or threshold;
+                                    original-reference and family gates remain open
+                                    ([report](experiments/m36-numerical-audit/qwen-joined-score.md#broader-fixed-natural-corpus--qwen52)).
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%
