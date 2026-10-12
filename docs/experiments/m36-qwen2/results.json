@@ -136,7 +136,7 @@
     "measured_peak": false
   },
   "remaining": [
-    "historical heldout FP16 fused and unfused trajectories",
+    "shared four-evaluation repeats and full weight eviction/relocation",
     "historical repeated state and kept-state/restart shared controls",
     "EXL3 shared ordered operation execution",
     "EXL3 1570 exact linear controls and Tier C 750-case bounds",
@@ -205,5 +205,37 @@
     "restart_adoption": false,
     "remaining_parent_g5c": true,
     "measurement_scope": "cgroup memory.peak, not total catalog/device physical occupancy"
+  },
+  "g5c2": {
+    "date": "2026-10-12",
+    "host": "spark",
+    "scope": "historical577-row heldout logits plus same-run checkpoint/spill continuation",
+    "test_sha256": "f38183d3d41138431f9a25043890c60bc33b1e536fc1c95ba0c01d2f60467ef1",
+    "model_cases": 6,
+    "failures": 0,
+    "skips": 0,
+    "heldout_tokens": 577,
+    "context": 1024,
+    "original_steps": 35,
+    "checkpoint_positions": 33,
+    "replayed_rows": 8,
+    "compared_rows_each_heldout_arm": 585,
+    "spill_positions": 49,
+    "checkpoint_and_spill_bytes_each_heldout_arm": 12582912,
+    "oracle_bytes_each": 350668288,
+    "unfused_oracle_sha256": "69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0",
+    "fused_oracle_sha256": "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5",
+    "historical_reference_evaluations_each": 2,
+    "historical_reference_repeat_differences": 0,
+    "plan_keys": 5,
+    "checked_host_inventory_bytes": 5530412208,
+    "prepaid_host_bytes": 8589934592,
+    "domain_cap_bytes": 17179869184,
+    "cgroup_memory_peak_bytes": 1638457344,
+    "memory_events": 0,
+    "measurement_scope": "cgroup memory.peak, not total catalog/device physical occupancy",
+    "source_recipe_binary_input_guards": "PASS",
+    "shared_repeat_eviction_relocation": false,
+    "restart_adoption": false
   }
 }

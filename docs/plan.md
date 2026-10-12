@@ -1810,6 +1810,12 @@ each is checked against the design as M3.6 proceeds.
                   bytes, counters, footprints and remaining logits pass
                   ([evidence](experiments/m36-qwen2/README.md)). Historical
                   heldout, repeated/kept-state and EXL3 controls remain open.
+            - [x] **G5c2 — historical FP16 heldout trajectories:** both fusion
+                  modes match all 577 frozen full-vocabulary rows, including the
+                  original 512-row prefill and suffix. Checkpoint rewind at 33,
+                  eight replayed rows and spill continuation at 49 also pass.
+                  Shared repeats/weight eviction/relocation, kept-state/restart
+                  and EXL3 controls remain open ([evidence](experiments/m36-qwen2/README.md)).
       - [ ] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
             path after G5c.
 - [ ] **Native importer** (D-109): container readers for GGUF,

@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The real FP16 fixture through the shared model runner. External oracles
-// are the frozen P0 bridge's 76-row control outputs, checked by their
-// recorded hashes. The screen stops after prefill32 + decode1; the full
-// control visits all 45 chunks. Neither qualifies EXL3 or state migration.
+// are the frozen P0 bridge's 76-row control and 577-row heldout outputs,
+// checked by their recorded hashes. Full controls also exercise checkpoint
+// rewind and in-process spill. EXL3, repeated eviction/relocation and kept
+// restart adoption remain separate gates.
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/stat.h>
@@ -220,6 +221,19 @@ static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners <= kHost
 constexpr std::uint64_t kDomainCap = std::uint64_t{8} << 30U;
 constexpr std::size_t kTokenLimit = 1024;
 constexpr std::size_t kOracleBytes = std::size_t{76} * 151936 * sizeof(float);
+constexpr std::size_t kHeldoutOracleBytes = std::size_t{577} * 151936 * sizeof(float);
+constexpr std::uint64_t kHeldoutHostAllowance = 8192 * kMiB;
+constexpr std::uint64_t kHeldoutDomainCap = std::uint64_t{16} << 30U;
+constexpr std::uint64_t kHeldoutRuntimePlans =
+    5 * (kProgramHost + kLaunches * en::kGraphNodeHostBytes);
+constexpr std::uint64_t kHeldoutMetadataOwners = kMetadataOwners + 3 * 192 * kMiB;
+constexpr std::uint64_t kHeldoutObservationOwners =
+    209977600 + kHeldoutOracleBytes + 3 * std::uint64_t{512} * 151936 * sizeof(float) + 16 * kMiB +
+    2 * kStateCopyLimit + kStateMetadata;
+static_assert(kHeldoutMetadataOwners <= 2048 * kMiB);
+static_assert(kHeldoutObservationOwners <= 2048 * kMiB);
+static_assert(kInheritedCompiler + kHeldoutMetadataOwners + kHeldoutObservationOwners <=
+              kHeldoutHostAllowance);
 
 en::Status NativeReservation(const kn::LowerInput& input) {
   const auto& p = input.plan.graph;
@@ -279,6 +293,7 @@ struct Lifetime {
   std::vector<en::SlotLifecycle::Range> saved_pages, saved_footprint;
   std::uint32_t saved_positions = 0;
   std::uint64_t saved_bytes = 0;
+  std::uint64_t domain_cap = kDomainCap;
 };
 
 en::Status SaveState(Lifetime& life, bool checkpoint) {
@@ -305,7 +320,7 @@ en::Status SaveState(Lifetime& life, bool checkpoint) {
   }
   if (!life.saved_state) {
     const auto occupied = life.node.catalog().OccupancyOf(life.node.domain()).Total().value();
-    if (occupied > kDomainCap || 2 * kStateCopyLimit > kDomainCap - occupied)
+    if (occupied > life.domain_cap || 2 * kStateCopyLimit > life.domain_cap - occupied)
       return std::unexpected("FP16 state buffers exceed the checked domain");
     auto saved = life.node.Pinned(kStateCopyLimit, 0, life.state_copy_extents);
     if (!saved) return std::unexpected(saved.error());
@@ -349,8 +364,8 @@ struct Retire {
 };
 using Owner = std::unique_ptr<Lifetime, Retire>;
 
-bool FitsDomain(std::uint64_t available) {
-  return available >= kDomainCap && available - kDomainCap >= llmp::runtime::kUncountedMargin;
+bool FitsDomain(std::uint64_t available, std::uint64_t cap = kDomainCap) {
+  return available >= cap && available - cap >= llmp::runtime::kUncountedMargin;
 }
 
 TEST(ComponentRunnerQwen2Inputs, ChecksTheWholeDomainBeforeStartup) {
@@ -359,6 +374,10 @@ TEST(ComponentRunnerQwen2Inputs, ChecksTheWholeDomainBeforeStartup) {
   EXPECT_FALSE(FitsDomain(kDomainCap + llmp::runtime::kUncountedMargin - 1));
   EXPECT_TRUE(FitsDomain(kDomainCap + llmp::runtime::kUncountedMargin));
   EXPECT_TRUE(FitsDomain(std::numeric_limits<std::uint64_t>::max()));
+  EXPECT_FALSE(FitsDomain(kDomainCap + llmp::runtime::kUncountedMargin, kHeldoutDomainCap));
+  EXPECT_FALSE(
+      FitsDomain(kHeldoutDomainCap + llmp::runtime::kUncountedMargin - 1, kHeldoutDomainCap));
+  EXPECT_TRUE(FitsDomain(kHeldoutDomainCap + llmp::runtime::kUncountedMargin, kHeldoutDomainCap));
 }
 
 TEST(ComponentRunnerQwen2Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading) {
@@ -388,52 +407,77 @@ TEST(ComponentRunnerQwen2Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading
 
 // (fusion, full trajectory). Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
-class ComponentRunnerQwen2Gpu : public testing::TestWithParam<std::tuple<bool, bool>> {};
+class ComponentRunnerQwen2Gpu : public testing::TestWithParam<std::tuple<bool, bool, bool>> {};
 TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
-  const auto [fusion, full] = GetParam();
-  const std::string tokens_path = Env("LLMP_QWEN2_FP16_TOKENS");
-  const std::string oracle_path =
-      Env(fusion ? "LLMP_QWEN2_FP16_ORACLE_F" : "LLMP_QWEN2_FP16_ORACLE_U");
+  const auto [fusion, full, heldout] = GetParam();
+  const auto domain_cap = heldout ? kHeldoutDomainCap : kDomainCap;
+  const auto host_allowance = heldout ? kHeldoutHostAllowance : kHostAllowance;
+  const auto runtime_plans = heldout ? kHeldoutRuntimePlans : kRuntimePlans;
+  const auto token_rows = heldout ? 577U : 76U;
+  const auto checkpoint_positions = heldout ? 33U : 32U;
+  const auto oracle_bytes = heldout ? kHeldoutOracleBytes : kOracleBytes;
+  const std::string tokens_path =
+      Env(heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS");
+  const std::string oracle_path = Env(
+      heldout ? (fusion ? "LLMP_QWEN2_FP16_HELDOUT_ORACLE_F" : "LLMP_QWEN2_FP16_HELDOUT_ORACLE_U")
+              : (fusion ? "LLMP_QWEN2_FP16_ORACLE_F" : "LLMP_QWEN2_FP16_ORACLE_U"));
   if (tokens_path.empty() || oracle_path.empty())
-    GTEST_SKIP() << "requires LLMP_QWEN2_FP16_TOKENS and LLMP_QWEN2_FP16_ORACLE_F/U";
+    GTEST_SKIP() << "requires the frozen FP16 trajectory IDs and fused/unfused oracle";
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available.has_value()) << "unknown physical availability";
-  ASSERT_TRUE(FitsDomain(*available)) << "the complete domain and driver margin do not fit";
+  ASSERT_TRUE(FitsDomain(*available, domain_cap))
+      << "the complete domain and driver margin do not fit";
   Owner life(new Lifetime);
+  life->domain_cap = domain_cap;
   auto& node = life->node;
   node.SetHostFloor(0);
   const auto opened_node = node.Open();
   ASSERT_TRUE(opened_node.has_value()) << opened_node.error();
   const auto occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
-  ASSERT_LE(occupied, kDomainCap - kHostAllowance);
+  ASSERT_LE(occupied, domain_cap - host_allowance);
   const auto payment =
       node.catalog().AddExtent({.domain = node.domain(),
                                 .memory_class = llmp::catalog::MemoryClass::kRuntime,
                                 .recovery = llmp::catalog::Recovery::kPinned,
-                                .size = llmp::base::Bytes(kHostAllowance),
+                                .size = llmp::base::Bytes(host_allowance),
                                 .content = {}},
                                true);
   ASSERT_TRUE(payment.has_value());
-  ASSERT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), occupied + kHostAllowance);
-  auto token_read = Read(tokens_path, kTokenLimit);
+  ASSERT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), occupied + host_allowance);
+  auto token_read = Read(tokens_path, heldout ? 8320 : kTokenLimit, heldout);
   ASSERT_TRUE(token_read.has_value()) << token_read.error();
   life->tokens_bytes = std::move(*token_read);
   ASSERT_EQ(Hash(life->tokens_bytes),
-            "37e46a2304b5ab5648d0f2b7fdb94224596ed690caaddc1726df27110b585e21");
+            heldout ? "6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c"
+                    : "37e46a2304b5ab5648d0f2b7fdb94224596ed690caaddc1726df27110b585e21");
   auto& tokens = life->tokens;
-  std::istringstream ids(life->tokens_bytes);
-  for (std::int32_t id = 0; ids >> id;) tokens.push_back(id);
-  ASSERT_EQ(tokens.size(), 76U);
-  auto oracle_read = Read(oracle_path, kOracleBytes, true);
+  if (heldout) {
+    for (std::size_t i = 0; i < token_rows; ++i) {
+      std::uint64_t id = 0;
+      for (int byte = 7; byte >= 0; --byte)
+        id = (id << 8U) |
+             static_cast<unsigned char>(life->tokens_bytes[i * 8 + static_cast<std::size_t>(byte)]);
+      ASSERT_LT(id, 151936U);
+      tokens.push_back(static_cast<std::int32_t>(id));
+    }
+  } else {
+    std::istringstream ids(life->tokens_bytes);
+    for (std::int32_t id = 0; ids >> id;) tokens.push_back(id);
+  }
+  ASSERT_EQ(tokens.size(), token_rows);
+  auto oracle_read = Read(oracle_path, oracle_bytes, true);
   ASSERT_TRUE(oracle_read.has_value()) << oracle_read.error();
   life->oracle = std::move(*oracle_read);
   const auto& oracle = life->oracle;
-  ASSERT_EQ(Hash(oracle), fusion
-                              ? "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571"
-                              : "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1");
+  ASSERT_EQ(Hash(oracle),
+            heldout
+                ? (fusion ? "bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5"
+                          : "69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0")
+                : (fusion ? "bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571"
+                          : "3560d3370b167ce87d4134b0be70c0a59aa230db469f1bbbc5fb4a6b5829d6b1"));
   const auto& profile = llmp::model::Qwen25Instruct05B();
   const std::size_t row_bytes = std::size_t{profile.vocab} * sizeof(float);
-  ASSERT_EQ(oracle.size(), 76U * row_bytes);
+  ASSERT_EQ(oracle.size(), token_rows * row_bytes);
   std::string store = Env("LLMP_EXL3_FIXTURE_STORE");
   if (store.empty()) store = Env("HOME") + "/.local/share/llmp/artifact-layout-20260922/installed";
   constexpr auto artifact_id = "b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073";
@@ -499,13 +543,27 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
   ASSERT_EQ(components, 51U);
   ASSERT_LE(parameters, 2048U);
   ASSERT_LE(weights_bound, 512U);
-  auto derived = co::StageLayout(*spec, 0, 512, 32);
+  auto derived = co::StageLayout(*spec, 0, heldout ? 1024 : 512, heldout ? 512 : 32);
   ASSERT_TRUE(derived.has_value()) << derived.error();
   life->layout.emplace(std::move(*derived));
   auto& layout = life->layout;
   auto& shapes = life->shapes;
-  shapes.push_back(Shape(0, 32));
-  for (std::uint32_t past = 32; past < (full ? 76U : 33U); ++past) shapes.push_back(Shape(past, 1));
+  const auto shape_of = [heldout](std::uint32_t past, std::uint32_t rows) {
+    auto shape = Shape(past, rows);
+    if (heldout) shape.segments.front().read_cells = llmp::model::PaddedKv(past + rows, 1024);
+    return shape;
+  };
+  if (heldout) {
+    shapes.push_back(shape_of(0, 16));
+    shapes.push_back(shape_of(16, 17));
+    for (std::uint32_t past = 33; past < 49; ++past) shapes.push_back(shape_of(past, 1));
+    shapes.push_back(shape_of(49, 512));
+    for (std::uint32_t past = 561; past < 577; ++past) shapes.push_back(shape_of(past, 1));
+  } else {
+    shapes.push_back(shape_of(0, 32));
+    for (std::uint32_t past = 32; past < (full ? 76U : 33U); ++past)
+      shapes.push_back(shape_of(past, 1));
+  }
   auto& resource = life->resource;
   auto built_step =
       co::BuildStep(*spec, 0, shapes.front(), {.tensors = source->tensors, .state = &*layout});
@@ -571,17 +629,24 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
          .policy = policy,
          .backend = std::move(checked_backend)});
     if (!component) return std::unexpected(component.error());
-    // Two complete cache keys only: prefill32 and decode1. In particular,
-    // a future position-dependent component cannot silently multiply them.
-    const auto prefill_parameters = (*component)->ShapeParameters(shapes.front());
-    const auto decode_parameters = (*component)->ShapeParameters(shapes.at(1));
+    // Exactly two control keys, or five historical heldout keys. Position
+    // parameters must agree within each shape class before cache admission.
+    std::vector<pl::StepShape> keys;
+    std::vector<std::vector<std::uint64_t>> key_parameters;
+    const auto paid_keys = heldout ? 5U : 2U;
     for (const auto& shape : shapes) {
-      if (!(shape == shapes.front()) && !(shape == shapes.at(1)))
-        return std::unexpected("shape exceeds the two-key paid script");
-      if ((*component)->ShapeParameters(shape) !=
-          (shape == shapes.front() ? prefill_parameters : decode_parameters))
+      const auto found = std::find(keys.begin(), keys.end(), shape);
+      const auto parameters = (*component)->ShapeParameters(shape);
+      if (found == keys.end()) {
+        if (keys.size() >= paid_keys)
+          return std::unexpected("shape exceeds the paid trajectory key inventory");
+        keys.push_back(shape);
+        key_parameters.push_back(parameters);
+      } else if (key_parameters[static_cast<std::size_t>(found - keys.begin())] != parameters) {
         return std::unexpected("position changes the paid plan key");
+      }
     }
+    if (keys.size() != paid_keys) return std::unexpected("trajectory key inventory differs");
     en::RunnerConfig config;
     config.slots = {.model = "qwen2-fp16-shared",
                     .slots = 1,
@@ -614,9 +679,9 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
     const auto before_workspace = node.catalog().OccupancyOf(node.domain()).Total().value();
     const auto pool = std::max<std::uint64_t>(runner->pool_needed(), en::kPagedExtent);
     // Include both regions' page rounding before MapWorkspace allocates.
-    if (before_workspace > kDomainCap || 2 * en::kPagedExtent > kDomainCap - before_workspace ||
-        runner->activations_needed() > kDomainCap - before_workspace - 2 * en::kPagedExtent ||
-        pool > kDomainCap - before_workspace - 2 * en::kPagedExtent - runner->activations_needed())
+    if (before_workspace > domain_cap || 2 * en::kPagedExtent > domain_cap - before_workspace ||
+        runner->activations_needed() > domain_cap - before_workspace - 2 * en::kPagedExtent ||
+        pool > domain_cap - before_workspace - 2 * en::kPagedExtent - runner->activations_needed())
       return std::unexpected("workspace exceeds the checked domain");
     if (auto x =
             node.MapWorkspace(runner->activations_needed(),
@@ -624,14 +689,14 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
         !x)
       return x;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    if (fixed > kDomainCap) return std::unexpected("startup footprint exceeds the checked domain");
-    if (paged->extents().size() > (kDomainCap - fixed) / en::kPagedExtent)
+    if (fixed > domain_cap) return std::unexpected("startup footprint exceeds the checked domain");
+    if (paged->extents().size() > (domain_cap - fixed) / en::kPagedExtent)
       return std::unexpected("weight extents exceed the checked domain");
     const auto weights_bytes = paged->extents().size() * en::kPagedExtent;
-    if (weights_bytes > kDomainCap - fixed || kRuntimePlans > kDomainCap - fixed - weights_bytes ||
-        node.StateCapacity() > (kDomainCap - fixed - weights_bytes - kRuntimePlans) / 4)
+    if (weights_bytes > domain_cap - fixed || runtime_plans > domain_cap - fixed - weights_bytes ||
+        node.StateCapacity() > (domain_cap - fixed - weights_bytes - runtime_plans) / 4)
       return std::unexpected("weights and state exceed the checked domain");
-    if (auto x = node.Start(llmp::base::Bytes(kDomainCap)); !x) return x;
+    if (auto x = node.Start(llmp::base::Bytes(domain_cap)); !x) return x;
     if (auto x = runner->Register(); !x) return x;
     if (auto x = runner->Bind(); !x) return x;
     node.Run();
@@ -661,7 +726,7 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
             return {};
           };
           for (const auto& shape : shapes) {
-            if (full && shape.segments.front().past == 40) {
+            if (full && shape.segments.front().past == checkpoint_positions + 8) {
               auto& slots = runner->slots();
               // Eight real decode writes must change the saved checkpoint pages.
               if (auto x = slots.CopyState(0, life->state_readback, life->saved_pages, true); !x)
@@ -681,10 +746,11 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
               if (auto x = CheckSavedState(*life); !x) return x;
               RecordProperty("checkpoint_bytes_restored", std::to_string(life->saved_bytes));
               // The same frozen full-vocabulary rows must survive the rewind.
-              for (std::uint32_t past = 32; past < 40; ++past)
-                if (auto x = run_step(Shape(past, 1)); !x) return x;
+              for (std::uint32_t past = checkpoint_positions; past < checkpoint_positions + 8;
+                   ++past)
+                if (auto x = run_step(shape_of(past, 1)); !x) return x;
             }
-            if (full && shape.segments.front().past == 48) {
+            if (full && shape.segments.front().past == (heldout ? 49U : 48U)) {
               if (auto x = SaveState(*life, false); !x) return x;
               auto& slots = runner->slots();
               if (auto x = slots.Spill(0); !x) return x;
@@ -695,9 +761,10 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
               RecordProperty("spill_bytes_restored", std::to_string(life->saved_bytes));
             }
             if (auto x = run_step(shape); !x) return x;
-            if (full && shape.segments.front().past == 0) {
+            if (full &&
+                shape.segments.front().past + shape.segments.front().rows == checkpoint_positions) {
               if (auto x = SaveState(*life, true); !x) return x;
-              if (life->saved_positions != 32)
+              if (life->saved_positions != checkpoint_positions)
                 return std::unexpected("FP16 checkpoint starts at the wrong completed position");
             }
           }
@@ -710,10 +777,14 @@ TEST_P(ComponentRunnerQwen2Gpu, FrozenFp16ControlIsBitExact) {
   // whole Lifetime, not only the runner and its kernel resources.
   life.reset();
 }
-INSTANTIATE_TEST_SUITE_P(Bridge, ComponentRunnerQwen2Gpu,
-                         testing::Combine(testing::Bool(), testing::Bool()), ([](const auto& info) {
-                           const auto [fusion, full] = info.param;
-                           return std::string(fusion ? "Fused" : "Unfused") +
-                                  (full ? "Full" : "Screen");
-                         }));
+INSTANTIATE_TEST_SUITE_P(
+    Bridge, ComponentRunnerQwen2Gpu,
+    testing::Values(std::tuple{false, false, false}, std::tuple{false, true, false},
+                    std::tuple{true, false, false}, std::tuple{true, true, false},
+                    std::tuple{false, true, true}, std::tuple{true, true, true}),
+    ([](const auto& info) {
+      const auto [fusion, full, heldout] = info.param;
+      return std::string(fusion ? "Fused" : "Unfused") +
+             (heldout ? "Heldout" : (full ? "Full" : "Screen"));
+    }));
 }  // namespace

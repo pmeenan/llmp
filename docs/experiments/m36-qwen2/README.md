@@ -59,7 +59,7 @@ native fusion/device checks. Default policies are unchanged. A missing
 optional device predicate or a row-invariant policy is refused, not invoked
 or silently substituted. Both full controls then passed.
 
-The harness pays a 4 GiB startup/compiler/result allowance before file
+The original control harness pays a 4 GiB startup/compiler/result allowance before file
 reads or compiler allocation. Its checked named source inventory is
 3,746,801,328 bytes, including the 46,188,544-byte oracle, metadata/parser
 owners and retained plans. The complete execution domain is capped at
@@ -92,12 +92,41 @@ fixture, not independent historical state-oracle or restart-adoption proofs.
 The test source SHA-256 is
 `53537626bff77947b14c5532f5c1ac14745906ac37dfa004da4f4e72d1976dec`.
 
+## Historical FP16 heldout trajectories
+
+On 2026-10-12, all six controls passed on Spark A with zero failures or skips.
+The two added cases use the original 577-token heldout trajectory: 16 and 17
+prefill rows, 16 decode rows, a 512-row prefill and 16 suffix rows, with context
+1,024. Every F32 logit matches the historical oracle across all 151,936
+vocabulary entries. The complete 1,040-ID input file has SHA-256
+`6dd8da897821f5615e7796f4d882795faf306a941f050e2eb68b619096e3fb0c`.
+Unfused logits match
+`69ff08210fb2450388e32401091eed2bb02df7325ca966268a9076009a407ae0`;
+fused logits match
+`bfb36f192317c4a32723e65753dbe6a75f4c5e45d4d885736d2b26e92431e9d5`.
+Each oracle is 350,668,288 bytes; the existing native reference regenerated
+both hashes and repeated each evaluation exactly before shared comparison.
+
+Each heldout case restores 12,582,912 checkpoint bytes saved at 33 positions
+after eight real decode writes, replays those eight rows, and restores all
+12,582,912 used bytes after spill at 49 positions. Counters and complete used
+footprints match, followed by exact remaining logits. Each case compares 585
+rows including replay. Original cases retain their input pins and funding.
+
+Five authenticated plan keys and the larger outputs have a checked host
+inventory of 5,530,412,208 bytes, prepaid within an 8 GiB host allowance and
+16 GiB execution domain plus the separate 6 GiB driver margin. Descriptor,
+program, pinned-copy and retirement bounds remain enforced. The six-arm run
+used a 16 GiB zero-swap cgroup cap, observed cgroup memory peak 1,638,457,344
+bytes and no memory-limit or OOM events. This counter does not measure total
+catalog/device occupancy. Test source SHA-256:
+`f38183d3d41138431f9a25043890c60bc33b1e536fc1c95ba0c01d2f60467ef1`.
+
 ## Remaining gate
 
-The four cases above are screen/full evaluations of the same control
-trajectory. They are **not** the four historical [P2 arms](../backend-proof-p2/README.md),
-which are fused/unfused × control/heldout. The heldout trajectories, repeated
-state and kept-state/restart controls remain open beyond the checkpoint and
-in-process spill controls above. EXL3 must
-pass its exact 1,570-linear and Tier C 750-case controls through the shared
-runner. Legacy execution remains until those controls pass.
+The shared controls now include the original control and heldout trajectories
+in both fusion modes. Historical [P2](../backend-proof-p2/README.md) also repeats
+each evaluation, evicts every weight and relocates restored weights; those
+shared controls and kept-state/restart adoption remain open. EXL3 must pass
+its exact 1,570-linear and Tier C 750-case controls through the shared runner.
+Legacy execution remains until those controls pass.
