@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -903,6 +904,214 @@ TEST(GgmlOwnerProductsTest, SelectedPairSurvivesHonestRebuildAndRejectsChangedPr
       EXPECT_NE(result.error().detail.find("selected HC:"), std::string::npos);
     } else
       ASSERT_TRUE(result) << Failed(result, &kg::KernelFailure::detail).value_or("");
+  }
+}
+
+// These synthetic shapes test descriptor authority, not measured tuning data.
+Fixture VectorFixture(std::uint32_t rows) {
+  ir::Builder b;
+  const auto input = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({32, rows})));
+  const ir::WeightRef wr{.role = 1}, other{.role = 2};
+  const auto weight = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({32, 16})), wr);
+  const auto extra_weight = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({32, 24})), other);
+  const auto product = b.MatMul(weight, input);
+  const auto extra = b.MatMul(extra_weight, input);
+  b.Output(product);
+  b.Output(extra);
+  co::StepGraph step{.graph = std::move(b).Finish().value(),
+                     .inputs = {{.tensor = input, .kind = co::InputKind::kFeatures}},
+                     .weights = {{.tensor = weight,
+                                  .ref = wr,
+                                  .parts = {{"vector", llmp::format::PartRole::kData}}},
+                                 {.tensor = extra_weight,
+                                  .ref = other,
+                                  .parts = {{"ordinary", llmp::format::PartRole::kData}}}},
+                     .state = {}};
+  return {.step = std::move(step),
+          .shape = {.segments = {{.slot = 0, .rows = rows, .outputs = rows}}},
+          .weight = weight,
+          .extra_weight = extra_weight,
+          .input = input,
+          .product = product,
+          .extra = extra};
+}
+void PlanVector(Fixture& f, const ex::Registry& registry, bool tuned, bool aligned = true) {
+  const auto rows = f.step.graph.tensor(f.input).ne(1);
+  pl::DeviceFacts device{.device_class = "sm_121", .arch = 121};
+  if (tuned)
+    device.tuned.push_back({.implementation = kg::kMulMatVecFRows,
+                            .rows = rows,
+                            .k = 32,
+                            .n = 16,
+                            .output_encoding = Encoding::kF32});
+  const std::array facts{pl::RootAlignmentFact{f.weight, 256},
+                         pl::RootAlignmentFact{f.extra_weight, 256}};
+  auto plan = pl::Plan(f.step.graph.Clone(), registry, device, {},
+                       {.written = &kg::WrittenBytes,
+                        .shape = &f.shape,
+                        .root_alignment = aligned ? pl::GraphRootAlignments(f.step.graph, facts)
+                                                  : pl::RootAlignment{},
+                        .activation_alignment = 256});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  f.plan.emplace(std::move(*plan));
+}
+
+TEST(GgmlBf16VectorSelectionTest, ExactTuningSelectsOnlyActualProductInBothLowerings) {
+  const auto registry = Registry();
+  for (const auto rows : {1U, 8U}) {
+    auto f = VectorFixture(rows);
+    PlanVector(f, registry, true);
+    ASSERT_TRUE(f.plan);
+    const auto measured = Lower(f, registry);
+    ASSERT_TRUE(measured) << measured.error().detail;
+    EXPECT_TRUE(measured->measuring);
+    EXPECT_EQ(Count(*measured, kg::kMulMatVecFRows), 1U);
+    EXPECT_EQ(Count(*measured, kg::kMulMatTensorCore), 1U);
+    const llmp::kernels::Addresses addresses{
+        .weight =
+            [](const ir::WeightRef& ref, llmp::format::PartRole) {
+              return std::uint64_t{0x1000000} + std::uint64_t{ref.role} * 65536;
+            },
+        .weight_rows = {},
+        .state = {},
+        .save = {},
+        .activations = 0x2000000,
+        .activation_bytes = f.plan->placement.extent};
+    const auto bound = Lower(f, registry, Device(), addresses);
+    ASSERT_TRUE(bound) << bound.error().detail;
+    EXPECT_FALSE(bound->measuring);
+    EXPECT_EQ(Count(*bound, kg::kMulMatVecFRows), 1U);
+    EXPECT_EQ(Count(*bound, kg::kMulMatTensorCore), 1U);
+    EXPECT_EQ(bound->extent, measured->extent);
+  }
+}
+
+TEST(GgmlBf16VectorSelectionTest, MissingTuningAlignmentOrWiderPhysicalRowsKeepOrdinarySelection) {
+  const auto registry = Registry();
+  for (const auto rows : {8U, 12U, 16U}) {
+    for (const auto tuned : {false, true}) {
+      auto f = VectorFixture(rows);
+      PlanVector(f, registry, tuned, false);
+      ASSERT_TRUE(f.plan);
+      const auto out = Lower(f, registry);
+      ASSERT_TRUE(out) << out.error().detail;
+      EXPECT_EQ(Count(*out, kg::kMulMatVecFRows), 0U);
+    }
+    auto f = VectorFixture(rows);
+    PlanVector(f, registry, rows > 8);
+    ASSERT_TRUE(f.plan);
+    const auto out = Lower(f, registry);
+    ASSERT_TRUE(out) << out.error().detail;
+    EXPECT_EQ(Count(*out, kg::kMulMatVecFRows), 0U);
+  }
+}
+
+TEST(GgmlBf16VectorSelectionTest, PhysicalBindingRechecksAlignmentAndAliasing) {
+  const auto registry = Registry();
+  auto f = VectorFixture(8);
+  PlanVector(f, registry, true);
+  ASSERT_TRUE(f.plan);
+  const auto product = f.plan->tensors.at(f.product.v);
+  const auto place = std::ranges::find(f.plan->placement.offsets, product,
+                                       &std::pair<ir::TensorId, std::uint64_t>::first);
+  ASSERT_NE(place, f.plan->placement.offsets.end());
+  const auto overlap = std::uint64_t{0x2000000} + place->second;
+  for (const bool misaligned : {false, true}) {
+    const llmp::kernels::Addresses addresses{.weight =
+                                                 [=](const ir::WeightRef&, llmp::format::PartRole) {
+                                                   return misaligned ? std::uint64_t{0x1000002}
+                                                                     : overlap;
+                                                 },
+                                             .weight_rows = {},
+                                             .state = {},
+                                             .save = {},
+                                             .activations = 0x2000000,
+                                             .activation_bytes = f.plan->placement.extent};
+    EXPECT_FALSE(Lower(f, registry, Device(), addresses));
+  }
+}
+
+TEST(GgmlBf16VectorSelectionTest, DescriptorAndTypedPinRefuseUnsupportedDomains) {
+  const auto* capability = kg::CapabilityOf(kg::kMulMatVecFRows);
+  ASSERT_NE(capability, nullptr);
+  EXPECT_TRUE(capability->needs_tuning);
+  for (int change = 0; change < 16; ++change) {
+    SCOPED_TRACE(change);
+    ir::ProductParams params;
+    std::array operands{
+        ex::OperandFormat{.operand = 0,
+                          .encoding = Encoding::kBF16,
+                          .ne = {32, 16, 1, 1},
+                          .memory = ex::OperandMemory{{2, 64, 1024, 1024}, 0, 256}},
+        ex::OperandFormat{.operand = 1,
+                          .encoding = Encoding::kF32,
+                          .ne = {32, 8, 1, 1},
+                          .memory = ex::OperandMemory{{4, 128, 1024, 1024}, 0, 256}},
+        ex::OperandFormat{.operand = ex::kOutputOperand,
+                          .encoding = Encoding::kF32,
+                          .ne = {16, 8, 1, 1},
+                          .memory = ex::OperandMemory{{4, 64, 512, 512}, 0, 256}}};
+    std::array tuning{ex::TunedShape{.implementation = kg::kMulMatVecFRows,
+                                     .rows = 8,
+                                     .k = 32,
+                                     .n = 16,
+                                     .output_encoding = Encoding::kF32}};
+    switch (change) {
+      case 1:
+        operands[0].encoding = Encoding::kF16;
+        break;
+      case 2:
+        operands[1].encoding = Encoding::kBF16;
+        break;
+      case 3:
+        operands[2].encoding = Encoding::kBF16;
+        break;
+      case 4:
+        operands[0].memory->nb[1] += 4;
+        break;
+      case 5:
+        operands[1].memory->view_offset = 4;
+        break;
+      case 6:
+        operands[0].ne[2] = 2;
+        break;
+      case 7:
+        params.reserved[0] = 1;
+        break;
+      case 8:
+        params.accumulate = ir::Accumulate::kF32;
+        break;
+      case 9:
+        tuning[0].output_encoding.reset();
+        break;
+      case 10:
+        tuning[0].n = 24;
+        break;
+      case 11:
+        operands[0].memory.reset();
+        break;
+      default:
+        break;
+    }
+    // Real graph queries carry the fixed canonical Node::params array;
+    // hypothetical descriptor queries may carry just the declared struct.
+    std::array<std::byte, ir::kMaxParamBytes + 1> storage{};
+    const auto declared = std::as_bytes(std::span(&params, 1));
+    std::ranges::copy(declared, storage.begin());
+    if (change == 13) storage[ir::kMaxParamBytes - 1] = std::byte{1};
+    const auto count = change == 14   ? sizeof(params) - 1
+                       : change == 15 ? storage.size()
+                       : change >= 12 ? ir::kMaxParamBytes
+                                      : sizeof(params);
+    const ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMul),
+                                    .operands = operands,
+                                    .rows = 8,
+                                    .k = 32,
+                                    .n = 16,
+                                    .arch = 121,
+                                    .tuned = tuning,
+                                    .params = std::span(storage).first(count)};
+    EXPECT_EQ(capability->accepts(query), change == 0 || change == 12);
   }
 }
 

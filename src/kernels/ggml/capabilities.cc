@@ -175,6 +175,11 @@ constexpr std::array<Rule, 2> kQuantProduct = {
 constexpr std::array<Rule, 2> kFloatProduct = {
     {{.operand = 0, .encodings = kFloats, .layouts = kDense},
      {.operand = 1, .encodings = kF32, .layouts = kDense}}};
+// The explicitly tuned vector product keeps F32 activation values.
+constexpr std::array<Rule, 3> kBf16VectorProduct = {
+    {{.operand = 0, .encodings = kBf16, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kPreparedProduct = {
     {{.operand = 0, .encodings = kPreparedWeights, .layouts = kGgml},
      {.operand = 1, .encodings = kQ8_1, .layouts = kGgml}}};
@@ -438,6 +443,44 @@ bool AcceptsFloatProduct(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::ProductParams>(q);
   return Built(q) && (!p || p->hint == ir::ProductHint::kNone);
 }
+// A deliberately narrow, packed two-dimensional descriptor domain. The
+// physical column count comes from the actual operands, never owner counts.
+// Tuning is a separate exact-shape opt-in; ordinary products are unchanged.
+bool AcceptsBf16VectorProduct(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::ProductParams>(q);
+  if (!Built(q) || !p || q.params.size() > ir::kMaxParamBytes ||
+      !std::ranges::all_of(q.params.subspan(sizeof(*p)),
+                           [](std::byte value) { return value == std::byte{0}; }) ||
+      p->accumulate != ir::Accumulate::kDefault || p->hint != ir::ProductHint::kNone ||
+      p->reserved[0] || p->reserved[1] || q.rows < 1 || q.rows > 8 || q.k == 0 || q.k % 2 != 0 ||
+      q.n == 0 || q.n % 2 != 0)
+    return false;
+  const auto packed = [&](std::uint8_t index, Encoding encoding, std::uint64_t columns,
+                          std::uint64_t rows, std::uint64_t element) {
+    const auto* op = Operand(q, index);
+    constexpr auto max = static_cast<std::uint64_t>(INT32_MAX);
+    if (!op || op->encoding != encoding || op->layout != Layout::kDense || !op->memory ||
+        columns > max / element || rows > max / (columns * element) ||
+        op->ne != std::array<std::uint64_t, 4>{columns, rows, 1, 1})
+      return false;
+    const auto pitch = columns * element, bytes = pitch * rows;
+    const auto& m = *op->memory;
+    const auto alignment = 2 * element;
+    return m.nb == std::array<std::uint64_t, 4>{element, pitch, bytes, bytes} &&
+           m.root_alignment >= alignment && m.root_alignment % alignment == 0 &&
+           m.view_offset % alignment == 0;
+  };
+  // Require the output-typed pin, even though legacy TunedShape entries may
+  // omit it for other implementations.
+  const bool pinned = std::ranges::any_of(q.tuned, [&](const ex::TunedShape& t) {
+    return t.implementation == kMulMatVecFRows && t.rows == q.rows && t.k == q.k && t.n == q.n &&
+           t.output_encoding == Encoding::kF32;
+  });
+  return pinned && packed(0, Encoding::kBF16, q.k, q.n, 2) &&
+         packed(1, Encoding::kF32, q.k, q.rows, 4) &&
+         packed(ex::kOutputOperand, Encoding::kF32, q.n, q.rows, 4);
+}
+
 bool AcceptsFloatProductFusion(const ex::CapabilityQuery& q) {
   const auto* w = Operand(q, 0);
   // Upstream MMVF's one-column F16 case on NVIDIA: even K and a
@@ -1059,6 +1102,13 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
           .needs_state_span = needs_state_span};
 }
 
+constexpr ex::Capability Bf16VectorProduct() {
+  auto cap = Cap(ir::Primitive(Op::kMatMul), kBf16VectorProduct, &AcceptsBf16VectorProduct, false,
+                 {}, 3, {.min_rows = 1, .max_rows = 8, .k_multiple = 2, .n_multiple = 2});
+  cap.needs_tuning = true;
+  return cap;
+}
+
 constexpr ir::OpKey P(Op op) { return ir::Primitive(op); }
 constexpr ir::OpKey F(FusedKind kind) { return ir::Fused(kind); }
 
@@ -1169,6 +1219,8 @@ const std::array kEntries = {
           Cap(P(Op::kMatMul), kQuantProduct, &AcceptsMmvq, false, kMulMatGroup, 1), kMmvqText},
     Entry{"ggml.mul_mat.mmq", Operation::kMatMul,
           Cap(P(Op::kMatMul), kQuantProduct, &AcceptsMmq, false, kMulMatGroup), kMmqText},
+    Entry{kMulMatVecFRows, Operation::kMatMul, Bf16VectorProduct(),
+          "; exact output-typed tuning; packed BF16/F32/F32 product, 1..8 physical columns"},
     Entry{"ggml.mul_mat.mmvf", Operation::kMatMul,
           Cap(P(Op::kMatMul), kFloatProduct, &AcceptsFloatProduct, false, kMulMatGroup, 2), kBuilt},
     Entry{"ggml.mul_mat.mmf", Operation::kMatMul,

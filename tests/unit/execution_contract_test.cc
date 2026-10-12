@@ -181,6 +181,37 @@ TEST(ExecutionContractTest, IdentitySealsAllOrderedStagesAndSelectionFacts) {
   EXPECT_FALSE(en::ExecutionContract::Create(*domain, inputs));
 }
 
+TEST(ExecutionContractTest, TuningOutputPrecisionAndPresenceHaveDistinctIdentities) {
+  auto registry = ex::Registry::Create({Implementation()});
+  ASSERT_TRUE(registry) << Failed(registry, &ex::PlanRejection::detail).value_or("");
+  auto domain = en::NumericalDomain::Create({Stage(0, "target")});
+  ASSERT_TRUE(domain) << Failed(domain).value_or("");
+  auto in = Input(*registry, 0, "target");
+  in.device.tuned = {{"fake.score", 1, 128, 256}};
+  const auto seal = [&]() { return en::ExecutionContract::Create(*domain, std::span(&in, 1)); };
+  auto omitted = seal();
+  ASSERT_TRUE(omitted) << Failed(omitted).value_or("");
+  in.device.tuned[0].output_encoding = llmp::format::Encoding::kF16;
+  auto half = seal();
+  ASSERT_TRUE(half) << Failed(half).value_or("");
+  in.device.tuned[0].output_encoding = llmp::format::Encoding::kF32;
+  auto full = seal();
+  ASSERT_TRUE(full) << Failed(full).value_or("");
+  EXPECT_NE(omitted->identity(), half->identity());
+  EXPECT_NE(omitted->identity(), full->identity());
+  EXPECT_NE(half->identity(), full->identity());
+  auto repeated = seal();
+  ASSERT_TRUE(repeated) << Failed(repeated).value_or("");
+  EXPECT_EQ(full->identity(), repeated->identity());
+  in.device.tuned[0].output_encoding = static_cast<llmp::format::Encoding>(65535);
+  EXPECT_FALSE(seal());
+  EXPECT_NE(full->identity(), half->identity());
+  in.device.tuned[0].output_encoding.reset();
+  auto absent_again = seal();
+  ASSERT_TRUE(absent_again) << Failed(absent_again).value_or("");
+  EXPECT_EQ(omitted->identity(), absent_again->identity());
+}
+
 TEST(ExecutionContractTest, MissingAndMalformedBackendFactsNeverBecomeLegacyPermission) {
   auto registry = ex::Registry::Create({Implementation()});
   ASSERT_TRUE(registry) << Failed(registry, &ex::PlanRejection::detail).value_or("");

@@ -1670,6 +1670,19 @@ each is checked against the design as M3.6 proceeds.
                                           replay, old/new persistence and bounded
                                           admission. The G3c2b1b parent remains
                                           open after the selected-HC correction.
+                              - [x] **G3c2b1c — inactive accurate dense-product
+                                    capability:** expose the existing joined
+                                    BF16-weight/F32-input vector kernel through
+                                    exact typed tuning and physical descriptor
+                                    checks, independently of owner-width legacy
+                                    recipes. No runtime source installs pins;
+                                    wider shapes keep ordinary selection.
+                                    Full main Spark B native build and all98 focused
+                                    owner/registry/planner/identity controls pass
+                                    (2026-10-12). The inherited bounded kernel
+                                    [replays46/47](experiments/m36-numerical-audit/qwen-products.md)
+                                    measure local error and paired path timing,
+                                    not original-model quality or serving gates.
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
                               quality and swap controls, then the matched 1%

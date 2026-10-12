@@ -24,6 +24,11 @@ are established; their net latency, memory and quality costs are unmeasured.
 Diagnostic exactness had become a blocking criterion despite D-107. Stop
 that drift before adding another arithmetic correction.
 
+Follow-up [Qwen product replays46/47](qwen-products.md) measured both the
+cost of owner-width splitting and the precision cost of ordinary joined
+BF16 matrix products. Existing joined MMVF avoids that activation contraction,
+with a measured speed tradeoff; neither replay is full-model qualification.
+
 ## Candidates and evidence
 
 | Work | What the audit established | Next decision |

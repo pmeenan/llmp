@@ -2453,6 +2453,44 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
              (plan_.owner_row_invariant && !owner_recipes_.contains(node));
     };
   }
+  // An explicit selected vector product is independent of legacy owner-row
+  // policy. Only its actual lowered node receives the request; neighbours,
+  // expert products and wider physical inputs retain their own selection.
+  const auto vector_count =
+      static_cast<std::size_t>(std::ranges::count_if(plan_.steps, [&](const auto& s) {
+        return registry_.at(s.implementation).name == kMulMatVecFRows;
+      }));
+  std::vector<const ggml_tensor*> selected_vectors;
+  selected_vectors.reserve(vector_count);
+  for (const auto& s : plan_.steps) {
+    if (registry_.at(s.implementation).name != kMulMatVecFRows) continue;
+    if (s.nodes.size() != 1) return Refused("a selected vector product has several IR nodes");
+    const auto& ir_node = p_.node(s.nodes.front());
+    const auto params = ir_node.Params<ir::ProductParams>();
+    if (ir_node.key != ir::Primitive(ir::Op::kMatMul) ||
+        params.accumulate != ir::Accumulate::kDefault || params.hint != ir::ProductHint::kNone ||
+        params.reserved[0] || params.reserved[1])
+      return Refused("a selected vector product left its primitive parameter domain");
+    const auto& nodes = launched_.at(s.nodes.front().v);
+    if (nodes.size() != 1) return Refused("a selected vector product has several physical nodes");
+    const auto* node = nodes.front();
+    if (auto checked = CheckMulMat(node); !checked) return checked;
+    const auto* weight = node->src[0];
+    const auto* input = node->src[1];
+    if (weight->type != GGML_TYPE_BF16 || input->type != GGML_TYPE_F32 ||
+        node->type != GGML_TYPE_F32 || input->ne[1] < 1 || input->ne[1] > 8 ||
+        weight->ne[0] % 2 != 0 || node->ne[0] % 2 != 0 || weight->ne[2] != 1 ||
+        weight->ne[3] != 1 || input->ne[2] != 1 || input->ne[3] != 1 ||
+        !ggml_is_contiguous(weight) || !ggml_is_contiguous(input) || !ggml_is_contiguous(node))
+      return Refused("a selected BF16 vector product left its packed physical domain");
+    selected_vectors.push_back(node);
+  }
+  if (!selected_vectors.empty()) {
+    auto prior = std::move(choices.vector_float_node);
+    choices.vector_float_node = [&selected_vectors, prior = std::move(prior)](const auto* node) {
+      return std::ranges::contains(selected_vectors, node) || (prior && prior(node));
+    };
+  }
   for (const planner::Selected& s : plan_.steps) {
     const std::string_view name = registry_.at(s.implementation).name;
     choices.fuse_norms = choices.fuse_norms || name == kRmsNormMulFused;

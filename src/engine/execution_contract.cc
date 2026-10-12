@@ -12,6 +12,8 @@
 #include <string_view>
 #include <utility>
 
+#include "format/encoding.h"
+
 namespace llmp::engine {
 namespace {
 
@@ -169,7 +171,7 @@ std::expected<ExecutionContract, std::string> ExecutionContract::Create(
   if (stages.size() != domain.stages().size()) {
     return std::unexpected("execution compatibility must seal every numerical stage");
   }
-  Identity hash("llmp-execution-contract-v1");
+  Identity hash("llmp-execution-contract-v2");
   hash.Digest(domain.identity());
   hash.Number(stages.size());
   for (std::size_t i = 0; i < stages.size(); ++i) {
@@ -200,13 +202,18 @@ std::expected<ExecutionContract, std::string> ExecutionContract::Create(
     hash.Number(stage.device.tuned.size());
     for (const auto& tune : stage.device.tuned) {
       if (tune.implementation.empty() || tune.rows == 0 || tune.k == 0 || tune.n == 0 ||
-          !stage.registry->Find(tune.implementation)) {
+          !stage.registry->Find(tune.implementation) ||
+          (tune.output_encoding &&
+           std::ranges::find(format::Encodings(), *tune.output_encoding,
+                             &format::EncodingInfo::id) == format::Encodings().end())) {
         return std::unexpected("execution compatibility has an invalid immutable tuning key");
       }
       hash.Text(tune.implementation);
       hash.Number(tune.rows);
       hash.Number(tune.k);
       hash.Number(tune.n);
+      hash.Number(tune.output_encoding.has_value());
+      if (tune.output_encoding) hash.Number(static_cast<std::uint16_t>(*tune.output_encoding));
     }
     hash.Digest(stage.backend.recipe);
     hash.Digest(stage.backend.build);
