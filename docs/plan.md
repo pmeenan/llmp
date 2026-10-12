@@ -1905,6 +1905,13 @@ each is checked against the design as M3.6 proceeds.
             through the shared runner; pass the FP16 bridge / EXL3 Tier C
             correctness controls and state, spill, restore and kept-state
             controls. This fixture slice has no serving or timing claim.
+            Grouped primary-reference scoring also records all four EXL3 profiles
+            on the existing four 256-token passages (1,020 targets per profile):
+            14 focused controls and all 16 actual cases pass without skips,
+            with unchanged tuning/arithmetic and no new quality threshold
+            ([observations](experiments/m36-exl3-selected/README.md#grouped-original-reference-observations)).
+            Main passes the full native build, 14 focused controls and all 16
+            document/profile cases, with no failures or skips.
             - [x] **G5c1 — FP16 checkpoint and spill continuation:** both
                   fused and unfused full control trajectories restore checkpoint
                   pages after eight decode writes, replay all eight full-vocabulary

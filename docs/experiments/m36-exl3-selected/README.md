@@ -347,3 +347,46 @@ and 943,742,976 bytes (45O). Actual address relocation, OS process restart/crash
 serving-history restoration, broader shapes and legacy deletion remain open.
 No corpus-quality or performance claim, or external quantized-library
 bit-equality adoption gate, is added.
+
+
+## Grouped original-reference observations
+
+All four approved EXL3 profiles score the same four independently authenticated
+256-token passages as the [original BF16 reference](../m36-original-qwen2/README.md#expanded-attention-quality-and-same-implementation-state).
+Each passage starts with a fresh owner and state, without BOS or a chat template.
+The shared scorer runs 32 eight-row chunks, checks every complete vocabulary
+head and records all 255 next-token targets. That gives 1,020 aligned targets
+per profile. Eight rows use the already authenticated packed bucket8 and the
+existing O occupancy query; no tuning or arithmetic changes. The earlier
+43-token controls retain their seven/one-row schedule.
+
+| Profile | Mean NLL | Perplexity | PPL difference from original |
+| --- | ---: | ---: | ---: |
+| Original BF16 | 4.664608265494 | 106.124004644 | — |
+| EXL3 4.0 G | 4.674358690231 | 107.163819846 | +0.979812% |
+| EXL3 4.5 G | 4.674169702044 | 107.143569063 | +0.960729% |
+| EXL3 4.0 O | 4.674219932654 | 107.148951085 | +0.965801% |
+| EXL3 4.5 O | 4.674218332170 | 107.148779595 | +0.965639% |
+
+These are bounded observations against the original weights, not a newly chosen
+quality threshold or equal-or-better claim. Quantization, precision and execution
+recipes differ, so the gaps do not isolate any single operation. No selection,
+fusion or rounding changes were made to reproduce an external quantized
+library's bits. The fixtures remain unserved with no speed baseline.
+
+Each actual eight-row plan contains 217 selected EXL3 operations: G has 121 GEMMs,
+24 paired MGEMMs and 72 bias operations; 40O replaces 120 GEMMs with GEMVs, and
+45O replaces 14. All 169 source products and 676 parts are checked; O retains
+its eight actual occupancy facts and launch-time validation. One score key fits
+the existing paid two-program domain. The 21,108,224-byte scorer ceiling already
+covers 256 IDs and eight rows; the other model/compiler/state and physical caps
+are unchanged. No full corpus heads are retained.
+
+Spark A passed the native target build and all 14 focused controls, then all 16
+actual document/profile cases with zero failures or skips, all source/binary and
+recipe guards passing, no compute processes remaining and zero memory events.
+Main independently passes the full native build, the same 14 controls and all 16
+actual cases. Every per-target NLL and selected-plan receipt equals the isolated
+run. Main process/cache peaks range from 276,647,936 to 278,220,800 bytes;
+format, header and license checks pass. Earlier checkpoint/spill/kept/reload
+evidence is reused without rerunning those cases.

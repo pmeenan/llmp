@@ -880,7 +880,9 @@ TEST(ComponentRunnerExl3Inputs, ReloadWitnessRefusesUnpaidOrChangedIdentity) {
 // cannot change the legacy chunk's matrix shapes.
 void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool lifecycle = false,
                 bool optimized = false, std::shared_ptr<KeptRestart> kept_restart = {},
-                bool kept_resume = false, bool reload_weights = false) {
+                bool kept_resume = false, bool reload_weights = false,
+                std::uint32_t corpus_chunk_rows = 7) {
+  ASSERT_TRUE(corpus_chunk_rows == 7 || (corpus && corpus_chunk_rows == 8));
   ASSERT_FALSE(reload_weights && !kept_restart);
   ASSERT_FALSE(optimized && !corpus && !lifecycle);
   ASSERT_FALSE(kept_restart && !lifecycle);
@@ -891,7 +893,9 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   std::uint32_t token_rows = full ? 161 : 145;
   const auto oracle_bytes = full ? kFullOracleBytes : kOracleBytes;
   const auto runtime_plans = (full || corpus) ? kFullRuntimePlans : kRuntimePlans;
-  const auto ids_path = Env(corpus ? "LLMP_QWEN2_CORPUS_IDS" : "LLMP_EXL3_SCREEN_IDS");
+  const auto ids_path =
+      Env(corpus ? (corpus_chunk_rows == 8 ? "LLMP_EXL3_CORPUS256_IDS" : "LLMP_QWEN2_CORPUS_IDS")
+                 : "LLMP_EXL3_SCREEN_IDS");
   const auto oracle_path = Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE" : "LLMP_EXL3_SCREEN_ORACLE");
   const auto oracle_hash =
       Env(full ? "LLMP_EXL3_TRAJECTORY_ORACLE_SHA256" : "LLMP_EXL3_SCREEN_ORACLE_SHA256");
@@ -929,13 +933,15 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   ASSERT_TRUE(ids_read.has_value()) << ids_read.error();
   life->tokens_bytes = std::move(*ids_read);
   if (corpus) {
-    const auto seal = Env("LLMP_QWEN2_CORPUS_IDS_SHA256");
+    const auto seal = Env(corpus_chunk_rows == 8 ? "LLMP_EXL3_CORPUS256_IDS_SHA256"
+                                                 : "LLMP_QWEN2_CORPUS_IDS_SHA256");
     ASSERT_EQ(seal.size(), 64U);
     ASSERT_EQ(Hash(life->tokens_bytes), seal);
     ASSERT_EQ(life->tokens_bytes.size() % 4, 0U);
     token_rows = static_cast<std::uint32_t>(life->tokens_bytes.size() / 4);
     ASSERT_GE(token_rows, 2U);
     ASSERT_LE(token_rows, 256U);
+    if (corpus_chunk_rows == 8) ASSERT_EQ(token_rows, 256U);
     for (std::size_t i = 0; i < token_rows; ++i) {
       std::uint32_t id = 0;
       for (int byte = 3; byte >= 0; --byte)
@@ -971,7 +977,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   std::uint64_t corpus_charge = 0;
   if (corpus) {
     const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = tokens}};
-    auto bound = ts::CorpusScore::Bound(documents, {profile.vocab, 7});
+    auto bound = ts::CorpusScore::Bound(documents, {profile.vocab, corpus_chunk_rows});
     ASSERT_TRUE(bound.has_value()) << bound.error();
     corpus_charge = *bound;
     ASSERT_LE(corpus_charge, 21108224U);
@@ -1099,10 +1105,10 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   }
   auto& shapes = life->shapes;
   if (corpus) {
-    for (std::uint32_t past = 0; past < token_rows; past += 7) {
-      auto shape = Shape(past, std::min(7U, token_rows - past));
+    for (std::uint32_t past = 0; past < token_rows; past += corpus_chunk_rows) {
+      auto shape = Shape(past, std::min(corpus_chunk_rows, token_rows - past));
       shape.phase = pl::Phase::kScore;
-      life->corpus_plans[shape.rows() == 7 ? 0U : 1U].rows = shape.rows();
+      life->corpus_plans[shape.rows() == corpus_chunk_rows ? 0U : 1U].rows = shape.rows();
       shapes.push_back(std::move(shape));
     }
   } else {
@@ -1369,7 +1375,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
       life->corpus_composer.emplace(std::move(*composer));
       const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = tokens}};
       auto scorer = ts::CorpusScore::Make(
-          node, *runner, *life->corpus_composer, documents, {profile.vocab, 7},
+          node, *runner, *life->corpus_composer, documents, {profile.vocab, corpus_chunk_rows},
           [held = life.get()](const ts::CorpusTargetScore& score) -> en::Status {
             if (held->corpus_score_count == held->corpus_scores.size())
               return std::unexpected("corpus NLL report exceeds prepaid rows");
@@ -1407,6 +1413,8 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
       testing::Test::RecordProperty("corpus_nll_rows", report.str());
       testing::Test::RecordProperty("corpus_ids_sha256", Hash(life->tokens_bytes));
       testing::Test::RecordProperty("corpus_targets", std::to_string(result.targets));
+      testing::Test::RecordProperty("corpus_chunk_rows", std::to_string(corpus_chunk_rows));
+      testing::Test::RecordProperty("corpus_steps", std::to_string(result.steps));
       report.str("");
       report.clear();
       report << std::setprecision(17) << result.total_nll;
@@ -1879,6 +1887,19 @@ TEST(ComponentRunnerExl3Gpu, Optimized40OFixedTeacherCorpusScoresEveryTarget) {
 }
 TEST(ComponentRunnerExl3Gpu, Optimized45OFixedTeacherCorpusScoresEveryTarget) {
   RunControl(false, true, true, false, true);
+}
+// Each independently sealed passage starts with fresh state and scores 255 targets.
+TEST(ComponentRunnerExl3Gpu, Corpus256Scores40G) {
+  RunControl(false, true, false, false, false, {}, false, false, 8);
+}
+TEST(ComponentRunnerExl3Gpu, Corpus256Scores45G) {
+  RunControl(false, true, true, false, false, {}, false, false, 8);
+}
+TEST(ComponentRunnerExl3Gpu, Corpus256Scores40O) {
+  RunControl(false, true, false, false, true, {}, false, false, 8);
+}
+TEST(ComponentRunnerExl3Gpu, Corpus256Scores45O) {
+  RunControl(false, true, true, false, true, {}, false, false, 8);
 }
 TEST(ComponentRunnerExl3Gpu, SameImplementation40OCheckpointSpillContinuation) {
   RunControl(true, false, false, true, true);

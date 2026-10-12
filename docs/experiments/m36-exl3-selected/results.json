@@ -1548,5 +1548,350 @@
       "Broader batches/shapes",
       "Tier C quality and legacy deletion"
     ]
+  },
+  "grouped_original_1020": {
+    "status": "PASS",
+    "scope": "observed primary-reference comparison; no newly asserted quality threshold",
+    "cases": 16,
+    "targets_per_profile": 1020,
+    "profiles": {
+      "40g": {
+        "mean_nll": 4.674358690230699,
+        "perplexity": 107.16381984567768,
+        "original_mean_nll": 4.664608265494155,
+        "original_perplexity": 106.12400464371585,
+        "mean_nll_delta": 0.009750424736544083,
+        "relative_ppl_percent": 0.9798115001905066,
+        "documents": [
+          {
+            "document": 0,
+            "mean_nll": 4.32200279993934,
+            "original_mean_nll": 4.293700862742697,
+            "result_sha256": "02b621db10497f84919f2583050abbfe5ce94b5ea6623ec402dcdb839bfe23ab",
+            "memory_peak_observed": 276811776
+          },
+          {
+            "document": 1,
+            "mean_nll": 4.427682045449971,
+            "original_mean_nll": 4.414813022402555,
+            "result_sha256": "42177f3887e8756ba140c6310aad5323b01cfd78a1483a858e142aac7903daf7",
+            "memory_peak_observed": 276414464
+          },
+          {
+            "document": 2,
+            "mean_nll": 5.14458169941477,
+            "original_mean_nll": 5.1561222880971735,
+            "result_sha256": "f1a301f00a921cadc14f7f589216bb1fd2983d9c669c63c8a53928534b9b048e",
+            "memory_peak_observed": 276926464
+          },
+          {
+            "document": 3,
+            "mean_nll": 4.803168216118716,
+            "original_mean_nll": 4.793796888734197,
+            "result_sha256": "a02dbd4d030fbc9cf9c165c2d32326bde75ffb10d52e2034d5a8a5b31e1067ba",
+            "memory_peak_observed": 276819968
+          }
+        ],
+        "per_target_improved": 461,
+        "per_target_worsened": 559
+      },
+      "45g": {
+        "mean_nll": 4.674169702044182,
+        "perplexity": 107.14356906334439,
+        "original_mean_nll": 4.664608265494155,
+        "original_perplexity": 106.12400464371585,
+        "mean_nll_delta": 0.009561436550026947,
+        "relative_ppl_percent": 0.9607293119511142,
+        "documents": [
+          {
+            "document": 0,
+            "mean_nll": 4.316930532778594,
+            "original_mean_nll": 4.293700862742697,
+            "result_sha256": "b00bd365b5e0cb46b40d1a4dc4ddbe953eae84b2dad42bb762e15ae75a8bcdca",
+            "memory_peak_observed": 278024192
+          },
+          {
+            "document": 1,
+            "mean_nll": 4.4254317351289645,
+            "original_mean_nll": 4.414813022402555,
+            "result_sha256": "26bdb8c4fa1915907d471916d43ca4a9c804c39c2545b26c4488ccfe788aa1a1",
+            "memory_peak_observed": 277774336
+          },
+          {
+            "document": 2,
+            "mean_nll": 5.163047480049699,
+            "original_mean_nll": 5.1561222880971735,
+            "result_sha256": "62d3c028934809f1bc7e66405443e95249ce2ce242f52e588e83efbd1dda7f69",
+            "memory_peak_observed": 277241856
+          },
+          {
+            "document": 3,
+            "mean_nll": 4.791269060219472,
+            "original_mean_nll": 4.793796888734197,
+            "result_sha256": "a98d293e9c77fbda541a08b41c4e14ae7e0fc07fc8def2143833b98f24c05f10",
+            "memory_peak_observed": 277909504
+          }
+        ],
+        "per_target_improved": 491,
+        "per_target_worsened": 529
+      },
+      "40o": {
+        "mean_nll": 4.674219932654142,
+        "perplexity": 107.14895108534176,
+        "original_mean_nll": 4.664608265494155,
+        "original_perplexity": 106.12400464371585,
+        "mean_nll_delta": 0.009611667159987292,
+        "relative_ppl_percent": 0.965800758336351,
+        "documents": [
+          {
+            "document": 0,
+            "mean_nll": 4.321513325725811,
+            "original_mean_nll": 4.293700862742697,
+            "result_sha256": "6474640dd15060b884b53360de6b15b62501d0d2f4d0b27445b5211e2132b5da",
+            "memory_peak_observed": 277848064
+          },
+          {
+            "document": 1,
+            "mean_nll": 4.427754769926382,
+            "original_mean_nll": 4.414813022402555,
+            "result_sha256": "fac06f328565911ff89223f1992e20bbd0aa9f83de86d3bfad2fc524dfccc6c1",
+            "memory_peak_observed": 277843968
+          },
+          {
+            "document": 2,
+            "mean_nll": 5.144567471618587,
+            "original_mean_nll": 5.1561222880971735,
+            "result_sha256": "4e864e1c69f80a86eee9c90435370861cf5b0dc39cf377cd6cd5666c8392e886",
+            "memory_peak_observed": 277958656
+          },
+          {
+            "document": 3,
+            "mean_nll": 4.803044163345788,
+            "original_mean_nll": 4.793796888734197,
+            "result_sha256": "141d356e11a3a3c583f96ffc416bd9f0bbd0ae714559d17fce7effa709652145",
+            "memory_peak_observed": 277962752
+          }
+        ],
+        "per_target_improved": 462,
+        "per_target_worsened": 558
+      },
+      "45o": {
+        "mean_nll": 4.6742183321698665,
+        "perplexity": 107.14877959526761,
+        "original_mean_nll": 4.664608265494155,
+        "original_perplexity": 106.12400464371585,
+        "mean_nll_delta": 0.009610066675711515,
+        "relative_ppl_percent": 0.9656391642891605,
+        "documents": [
+          {
+            "document": 0,
+            "mean_nll": 4.317304349196956,
+            "original_mean_nll": 4.293700862742697,
+            "result_sha256": "5039278c62a0c2cade2b635fe21352d50270d6e271b4d6b4cf2b3a151d7c15ba",
+            "memory_peak_observed": 277893120
+          },
+          {
+            "document": 1,
+            "mean_nll": 4.4251819604817495,
+            "original_mean_nll": 4.414813022402555,
+            "result_sha256": "2c1e39175557125f6107bd0b7b212c1c44e973ca1685a2d5533171f63a0c0273",
+            "memory_peak_observed": 277479424
+          },
+          {
+            "document": 2,
+            "mean_nll": 5.162771554699918,
+            "original_mean_nll": 5.1561222880971735,
+            "result_sha256": "2af2a9ddc3d5bdd1f7390ddb5d94c2502d909286733855be9e190049eda3a04c",
+            "memory_peak_observed": 277897216
+          },
+          {
+            "document": 3,
+            "mean_nll": 4.791615464300844,
+            "original_mean_nll": 4.793796888734197,
+            "result_sha256": "b2a91036374d3bd6407bb78c7e3cf1926747be3742e21198818ae2cec3c8eb76",
+            "memory_peak_observed": 277344256
+          }
+        ],
+        "per_target_improved": 495,
+        "per_target_worsened": 525
+      }
+    },
+    "source_base": "79dc643b",
+    "source_sha256": "f15b3e7fb3222be30c565eb9705cfa954f5c8952bc7c5306f8c743fbca0fceb3",
+    "input_receipt_sha256": "5e49e45267c52a4b46835d63f37fbb8feae91f3f6bea9274cde84a3e914aaa64",
+    "original_result_sha256": "6d6e5332b91a5aac1dae67d265be804bd43fca3f4c4c34ff98facea1ee177461",
+    "aggregate_sha256": "309b7d0573dfaaefd59316df075608b1254bcf0a214bd1e11127c943cc55ab14",
+    "native_binary_sha256": "291c1fca016d6d7abcbf9aabf715e8c9e9c252246413e6c95db9bbcf9977a881",
+    "focused_result_sha256": "63a7b5f9340f0784a5d245e2ba96d958011a2a7b7b440f1d935c18ed3c9e61c4",
+    "focused_cases": 14,
+    "raw_actual_cases": 16,
+    "raw_failures": 0,
+    "raw_skips": 0,
+    "guards": "PASS",
+    "compute_processes_after": 0,
+    "memory_events": 0,
+    "schedule": {
+      "independent_documents": 4,
+      "teacher_ids_each": 256,
+      "targets_each": 255,
+      "chunk_rows": 8,
+      "steps_each": 32,
+      "read_cells": 256,
+      "context": 512,
+      "selected_score_keys": 1
+    },
+    "funding": {
+      "scorer_ceiling_bytes": 21108224,
+      "native_domain_bytes": 8589934592,
+      "host_allowance_bytes": 4294967296,
+      "host_and_cache_cap_bytes": 10737418240,
+      "physical_margin_bytes": 6442450944,
+      "unchanged": true
+    },
+    "main_integration": {
+      "status": "PASS",
+      "full_native_build": "PASS",
+      "focused_cases": 14,
+      "raw_actual_cases": 16,
+      "raw_failures": 0,
+      "raw_skips": 0,
+      "focused_result_sha256": "38ac2a7b655689dd3097c4c3ef7c7a480f2983aed1ee74c8cdf015c7ca728695",
+      "native_binary_sha256": "230f38bd788c86a4a38cbaf43a9f4ea45f71038c48d0d79338c461ee70497091",
+      "native_binary_bytes": 212731496,
+      "source_sha256": "3d7d4cdbdbe3a246790c70e33600ecbd29e931a7b729a757dab42052ebf6cd30",
+      "aggregate_sha256": "987c5847b4d252c306427e042eb0e686e074bb01b23e5e485e22b2dee89c960b",
+      "profiles": {
+        "40g": {
+          "targets": 1020,
+          "mean_nll": 4.674358690230699,
+          "original_mean_nll": 4.664608265494155,
+          "relative_ppl_percent": 0.979811500190447,
+          "documents": [
+            {
+              "document": 0,
+              "result_sha256": "489bd4d22f81c2c54ebe856bb2ae948b19bb36f0d559c50e31331694b24d61fc",
+              "memory_peak_observed": 276656128
+            },
+            {
+              "document": 1,
+              "result_sha256": "7ba92358094f0a5187f6c112b3a0411959cb21786a2df6d00f809b6cbedfe84a",
+              "memory_peak_observed": 276647936
+            },
+            {
+              "document": 2,
+              "result_sha256": "8ea26ef964b23325810d09e956a6e4b6c18ff4a6efb8c7bb0c700f34ed182b6d",
+              "memory_peak_observed": 276803584
+            },
+            {
+              "document": 3,
+              "result_sha256": "eab938c8820f48f7bfd458c801b9c04621d6ac665f3bca1ee4950fbe87b96756",
+              "memory_peak_observed": 276926464
+            }
+          ]
+        },
+        "45g": {
+          "targets": 1020,
+          "mean_nll": 4.674169702044182,
+          "original_mean_nll": 4.664608265494155,
+          "relative_ppl_percent": 0.9607293119511131,
+          "documents": [
+            {
+              "document": 0,
+              "result_sha256": "810e6426a22a58566917d02f95f9e85060fa6944fe1d6ad2b549d9a745544945",
+              "memory_peak_observed": 277114880
+            },
+            {
+              "document": 1,
+              "result_sha256": "23ab72e950bfa65954ed57774842202aeabf749c11ef3d69ac4715eaa33bdabb",
+              "memory_peak_observed": 276979712
+            },
+            {
+              "document": 2,
+              "result_sha256": "3fb58c6759fc1f7409557cdf25745d41bed6e9b10db99ef44ca8b735ff265d9e",
+              "memory_peak_observed": 276848640
+            },
+            {
+              "document": 3,
+              "result_sha256": "b136d60a111ce45e72217b4bfc8a11dab5f5e2192b722ca9bd5bb0294ca15d4c",
+              "memory_peak_observed": 276959232
+            }
+          ]
+        },
+        "40o": {
+          "targets": 1020,
+          "mean_nll": 4.674219932654142,
+          "original_mean_nll": 4.664608265494155,
+          "relative_ppl_percent": 0.9658007583363399,
+          "documents": [
+            {
+              "document": 0,
+              "result_sha256": "edaa56bab5bb93b444668e230b5d5a550837f932bf02ac8774779481f2ed09cb",
+              "memory_peak_observed": 278220800
+            },
+            {
+              "document": 1,
+              "result_sha256": "9d4aac7630a79175fca97fdf4ae1f8ccb48f80a864363afbb6f40133dcab8bfa",
+              "memory_peak_observed": 277430272
+            },
+            {
+              "document": 2,
+              "result_sha256": "3f0b3d9852186b0a2311327f45afa0f8fb4ba324ebf99f31c5f52bc86bc7f4fb",
+              "memory_peak_observed": 277573632
+            },
+            {
+              "document": 3,
+              "result_sha256": "3cfe97c3c68237dd316ee98238fab430f882a1214da40e841931c31913a0ba7e",
+              "memory_peak_observed": 277680128
+            }
+          ]
+        },
+        "45o": {
+          "targets": 1020,
+          "mean_nll": 4.6742183321698665,
+          "original_mean_nll": 4.664608265494155,
+          "relative_ppl_percent": 0.9656391642891236,
+          "documents": [
+            {
+              "document": 0,
+              "result_sha256": "c104a7af5bd55909786ab4f155a5309a7428f71691cb99b93132cbe644557c0f",
+              "memory_peak_observed": 278126592
+            },
+            {
+              "document": 1,
+              "result_sha256": "e09e610d2c292c406895498c5dc065d739c29ac1de5b666eb18f1d3928b02c51",
+              "memory_peak_observed": 277975040
+            },
+            {
+              "document": 2,
+              "result_sha256": "5284d68da3c20efc416ffe6c1b962ef1ecfab61c465709d264b1998802f4a6ea",
+              "memory_peak_observed": 277987328
+            },
+            {
+              "document": 3,
+              "result_sha256": "cfc9c2f7021d098c3c735c955dbf1f6e9a6d4830d089c0b08f0572e7bc4033df",
+              "memory_peak_observed": 277606400
+            }
+          ]
+        }
+      },
+      "all_per_target_nll_and_selected_programs_equal_isolated": true,
+      "guards": "PASS",
+      "compute_processes_after": 0,
+      "memory_events": 0,
+      "quality": {
+        "format": "PASS",
+        "headers": 2202,
+        "reuse_version": "6.2",
+        "status": "PASS"
+      }
+    },
+    "limitations": [
+      "Observed differences, not a new threshold or equal-or-better claim",
+      "Unserved fixtures; no speed baseline",
+      "No new arithmetic, tuning or production default",
+      "No additional lifecycle or large-shape qualification"
+    ],
+    "integration_source_sha256": "3d7d4cdbdbe3a246790c70e33600ecbd29e931a7b729a757dab42052ebf6cd30",
+    "integration_source_difference": "Only the explicit256-ID cases use a separate environment input/hash pair; former43-ID cases retain their original names."
   }
 }
