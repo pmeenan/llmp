@@ -1390,6 +1390,20 @@ if(LLMP_CUDA)
                                                                  llmp_artifact)
   llmp_gpu_gtest(component_runner_gemma4_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  # Fixed natural-corpus scoring through the owned shared target source.
+  add_executable(qwen38_joined_score_gpu_test qwen38_joined_score_gpu_test.cc)
+  target_link_libraries(qwen38_joined_score_gpu_test PRIVATE llmp_corpus_score
+    llmp_engine_core llmp_runtime_serving llmp_components llmp_spec llmp_artifact)
+  # Captured-corpus diagnostic: invoke only with authenticated IDs and a paid
+  # supervised owner, never automatically through all-model CTest discovery.
+  target_link_libraries(qwen38_joined_score_gpu_test PRIVATE
+    GTest::gmock_main llmp_test_expected llmp_warnings)
+  llmp_test_executable(qwen38_joined_score_gpu_test)
+  file(RELATIVE_PATH qwen_corpus_runtime "${CMAKE_CURRENT_BINARY_DIR}"
+    "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(qwen38_joined_score_gpu_test PRIVATE
+    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${qwen_corpus_runtime}")
+
   # Owned joined target/MTP state and changed-input capture qualification.
   add_executable(qwen38_joined_mtp_gpu_test qwen38_joined_mtp_gpu_test.cc)
   target_link_libraries(qwen38_joined_mtp_gpu_test PRIVATE llmp_corpus_score

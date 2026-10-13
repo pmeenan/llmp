@@ -11,7 +11,7 @@ head bits. It is a short-corpus observation, not a family acceptance gate.
 
 ## Observed comparison
 
-The reference and historical native A/C observations use identical four
+The reference and current-main native A/C observations use identical four
 255-token histories, without BOS/EOS or a chat template. All positions 1–254
 are scored independently per document using the actual target token. The
 reference tokenizer independently agrees with all four native token prefixes.
@@ -19,17 +19,43 @@ reference tokenizer independently agrees with all four native token prefixes.
 | Implementation | Targets | Mean NLL | Perplexity | PPL relative to reference |
 | --- | ---: | ---: | ---: | ---: |
 | Pinned Mia, target only | 1016 | 3.559477762612 | 35.144838403 | baseline |
-| Historical native A, ordinary joined products | 1016 | 3.563363450261 | 35.281665930 | +0.389325% |
-| Historical native C, three explicit product tuning keys | 1016 | 3.556988278363 | 35.057454697 | −0.248639% |
+| Current native A, ordinary joined products | 1016 | 3.563363450261 | 35.281665930 | +0.389325% |
+| Current native C, three explicit product tuning keys | 1016 | 3.556988278363 | 35.057454697 | −0.248639% |
 
-These native measurements predate the current main source. Their experimental
-policies disable `owner_row_invariant`; C additionally selects existing
-physical-eight vector products for 48 routers and two PLE products. Neither
-policy is adopted by this comparison. The [broader native screen](qwen-joined-score.md)
-records mixed document-level results and a gain dominated by its earlier
-prefixes. Current-source comparison, long-context behavior, MTP and serving
-migration remain separate work. No claim about closeness to the unquantized
-model follows from either direction of perplexity change.
+The current main diagnostic completes both arms with all 1,016 finite losses
+and 1,020 finite full-head rows per arm, including terminal rows. Both
+experimental policies disable `owner_row_invariant`; C additionally selects
+existing physical-eight vector products for 48 routers and two PLE products.
+Each recorded plan has 2,482 implementation entries. At eight physical rows,
+exactly those 50 entries change from `ggml.mul_mat.mmf` to
+`llmp.mul_mat.mmvf_rows`; the four-row remainder retains the same implementation
+names. The complete recorded product geometry otherwise agrees.
+
+C reduces aggregate PPL by 0.635489% relative to A, with 518 target losses
+lower and 498 higher. Two documents improve and two regress. Per-document
+PPL changes against Mia are:
+
+| Document | A versus reference | C versus reference |
+| --- | ---: | ---: |
+| 0 | +0.157242% | +1.339807% |
+| 1 | +3.475109% | −1.147987% |
+| 2 | −0.185127% | −1.259724% |
+| 3 | −1.816925% | +0.095694% |
+
+Every current A/C loss also equals its corresponding historical
+[broader native screen](qwen-joined-score.md) observation. This is a post-run
+stability observation across different source/binary snapshots, not an
+acceptance requirement. That earlier screen found a gain dominated by its
+initial prefixes. Neither experimental policy is adopted here. Ordinary
+default-policy quality, long-context behavior, MTP and serving migration remain
+open; no claim about closeness to the unquantized model follows.
+
+The next narrow comparison is the unchanged mapping policy against only
+`owner_row_invariant` disabled, both using the same one-row-per-owner schedule
+and these fixed histories. It must authenticate the actual measured classes
+and selected programs first. This isolates the policy at the row geometry
+where it applies; the current two-row schedule does not establish the default
+policy's behavior across contexts. No additional timing ladder is implied.
 
 Mia uses FP8 KV and BF16 SSM; these native observations use F16 KV. The
 arithmetic and cache choices differ across implementations. We compare their
@@ -61,6 +87,10 @@ by the four short documents.
 | Collector source | `2808e63be9c08fe1378bf88e5dcf2f09835681d9f50894ea198bc6f61514621f` |
 | Reference actual receipt | `1dd33b3265f61cc993973c5651cde03db6b90660b3fa3c9f1cb73c476070f8e9` |
 | Historical native actual receipt | `92ad695820d1eb909d5d4336a57a7525d34b2fba5ca622c459b7743f904c535b` |
+| Current native full-build/32-host receipt | `d85243126855c65d387425da3432f2519fc0b03ca62f2dfb5e31a597d346cc3b` |
+| Current native model binary | `d70b3a0a64f473b74aa2d1084fe4d67f15f959c59e9c6260782300f8fa400987` |
+| Current native actual receipt | `7a83de2515d5d28fae3244abda23335878f982f97fe6f7c45e70cb1542f6c304` |
+| Independent current actual review | `7d7bb8b8cdf6fb27a66007e084f16101f8cc354c354e0f338db2fd97f8d37986` |
 
 Each document has 254 targets; reference summed NLL is respectively
 747.6428986233683, 1006.8320033252003, 985.9432543228786 and
@@ -75,6 +105,39 @@ removed, memory-limit/OOM events were zero and no GPU process remained.
 A preceding attempt failed before scoring because a cached absolute model
 link was unavailable inside the container; mounting its unchanged resolved
 checkpoint read-only fixed the environment. Its failure remains recorded.
+
+## Current native verification and replay
+
+Spark A, 2026-10-12: main native build and all 32 selected host controls pass;
+the manually invoked model target has no automatic CTest registrations.
+Both fresh native cases exit successfully without skips. Source and binary
+guards pass, owned process groups retire, no GPU process remains and all
+memory-limit/OOM counters are zero. Peak process/cache charge is
+1,111,531,520 bytes; this is not device occupancy. The 46-second supervised
+job includes construction, storage and scoring and is not a latency gate.
+Pinned formatting, boundary/header checks and REUSE 6.2.0 pass.
+
+Build `qwen38_joined_score_gpu_test`, then replay the two cases
+`Qwen38JoinedScoreGpu.OrdinaryBroaderNaturalTeacher` and
+`Qwen38JoinedScoreGpu.TunedBroaderNaturalTeacher` through the supervised
+captured-input recipe `qwen-corpus-current-models02` in the milestone scratch
+coordination directory. Its `run.py`, `run.steps`, input receipt and literal
+source/build/binary guards remain together. This diagnostic is deliberately
+not an ordinary all-model CTest case: it requires the captured inputs and
+explicit resource admission.
+
+The wrapper supplies `LLMP_TEST_MODELS`, `LLMP_QWEN50_IDS` pointing to the
+4,080-byte fixed ID file authenticated above, `LLMP_QWEN50_IDS_SHA256`, and a
+fresh per-case `LLMP_QWEN50_SCRATCH`. It uses installed `spark-job --gpu` with
+an explicit wait, a 112 GiB zero-swap process/cache ceiling, the 104 GiB node
+budget including prepaid construction/observations, and a separate 6 GiB
+available-memory margin. Preserve the 512 MiB per-file allowance for the
+314 MiB mapped spill files, separate 8 MiB log/XML bounds, source guards and
+whole-group retirement on every exit. These limits apply even without an
+explicit spill test because slot registration creates the mapped files.
+Raw results and the preceding file-limit refusal remain outside Git. A new
+source build requires refreshed literal guards, not reuse of an old binary
+identity.
 
 ## Reusing the collector
 

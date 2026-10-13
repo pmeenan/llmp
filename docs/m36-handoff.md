@@ -40,12 +40,17 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
-The pinned Mia reference now scores the same quantized Qwen checkpoint and
-fixed 1,016 targets: PPL 35.144838403. Historical experimental native A/C
-results differ by +0.389325%/−0.248639%; neither is a current-main or family
-adoption gate. Cache precision differences are disclosed. A current-parent
-native comparison is in flight; missing original BF16 is not its blocker.
-[Reference and reusable collector](experiments/m36-numerical-audit/qwen-quantized-reference.md).
+The pinned Mia reference and current-main manual Qwen A/C diagnostic score
+the same quantized checkpoint and fixed 1,016 targets. Mia PPL is
+35.144838403; native A/C differ by +0.389325%/−0.248639%. Full native build,
+32 host controls, both actual cases and quality checks pass. Every native
+loss also matches the historical observation; exact matching was not a gate.
+Both experimental arms disable `owner_row_invariant`, so ordinary-default
+policy remains unqualified. Next is a matched one-row-per-owner policy pair
+on the same histories, after measured-class verification. Cache precision
+differences are disclosed; no family adoption, serving-speed or
+closer-to-original claim follows.
+[Reference and manual replay](experiments/m36-numerical-audit/qwen-quantized-reference.md).
 
 The bounded dense Q8_0 cache opt-in (D-117) keeps F16 default and uses actual
 source/state/kept identities. Main native build and 519 host controls plus four

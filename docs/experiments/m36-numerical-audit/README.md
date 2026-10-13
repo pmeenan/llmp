@@ -45,10 +45,15 @@ from the earlier prefixes; this does not establish a general quality advantage
 or justify adopting the experimental selection.
 
 The [same-quantized-checkpoint Mia reference](qwen-quantized-reference.md)
-now scores those same 1,016 targets: PPL 35.144838403. Historical native
-A/C observations are respectively +0.389325% and −0.248639% relative to it.
-They predate current main and differ in cache precision; this is descriptive
-evidence, without a current-source, serving or closer-to-original claim.
+and current-main manual native diagnostic score the same 1,016 targets.
+Mia PPL is 35.144838403; native A/C are respectively +0.389325% and
+−0.248639% relative to it. Both native arms disable `owner_row_invariant`;
+C changes only the three typed product tuning keys. Full native build,
+32 host controls, both actual cases and quality checks pass. Every native
+loss also matches the historical observation, descriptively. Cache precision
+differences remain explicit. This does not qualify ordinary default policy,
+serving, or closeness to the unquantized model; a matched one-row policy
+comparison is the next bounded question.
 
 ## Candidates and evidence
 
