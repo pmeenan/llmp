@@ -1099,6 +1099,8 @@ TEST_F(EngineLlmTest, AdoptedRepeatPendingHydratesWithoutRecomputingItsPrefix) {
 // continues the chain. A record of version 1 for the other slot is refused
 // and removed.
 TEST_F(EngineLlmTest, AConversationIsKeptAcrossARestartInStageFiles) {
+  const auto recipe = llmp::base::Sha256().Update("qualified kept execution").Finish();
+  execution_identity_ = std::optional{recipe};
   const fs::path directory = root_ / "conversations";
   auto opened = pf::OpenPrivateDirectory(-1, directory.c_str());
   ASSERT_TRUE(opened.has_value());
@@ -1142,6 +1144,71 @@ TEST_F(EngineLlmTest, AConversationIsKeptAcrossARestartInStageFiles) {
   EXPECT_EQ(record->files[2].name, "slot-0.stage-2.state");
   EXPECT_EQ(record->tokens, history);
   EXPECT_EQ(record->checkpoints.size(), 1U);
+
+  // A fresh owner with another backend/tuning/domain identity (or the legacy
+  // null identity) must refuse the same saved record before adopting any state.
+  // It uses ordinary scratch files: the authentic saved files stay untouched.
+  for (int mutation = 0; mutation < 4; ++mutation) {
+    SCOPED_TRACE(mutation);
+    auto changed = recipe;
+    if (mutation < 3) {
+      changed[static_cast<std::size_t>(mutation)] ^= 1;
+      execution_identity_ = std::optional{changed};
+    } else {
+      execution_identity_ = std::nullopt;
+    }
+    Start(true, true);
+    EXPECT_NE(llm_->KeptLayout(), layout);
+    EXPECT_EQ(llm_->KeptLayout(), llm_->runner().slots().kept_layout_id());
+    auto expected_identity = identity;
+    expected_identity.layout = llm_->KeptLayout();
+    kept::Expected expected{.version = llm_->KeptVersion(),
+                            .identity = expected_identity,
+                            .slot = 0,
+                            .regions = llm_->KeptRegions(),
+                            .layouts = llm_->KeptLayouts(),
+                            .context = llm_->usable_context(),
+                            .vocabulary = kWidth,
+                            .now_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                               std::chrono::system_clock::now().time_since_epoch())
+                                               .count(),
+                            .retention_ms = 24LL * 3600 * 1000};
+    auto candidate = *record;
+    auto checked = kept::Check(candidate, expected);
+    ASSERT_FALSE(checked);
+    EXPECT_EQ(checked.error(),
+              "a kept conversation's record: its state layout is not this runner's");
+    std::vector<en::LiveState::Range> footprint;
+    const auto layouts = llm_->KeptLayouts();
+    for (const auto& extent : record->extents) {
+      const auto offset = std::uint64_t{extent.index} * kExtent;
+      ASSERT_LT(extent.region, layouts.size());
+      ASSERT_LT(offset, layouts[extent.region]);
+      footprint.push_back({.region = extent.region,
+                           .offset = offset,
+                           .bytes = std::min(kExtent, layouts[extent.region] - offset)});
+    }
+    auto& slots = llm_->runner().slots();
+    ASSERT_TRUE(slots.ValidateFootprint(record->cursor, footprint));
+    const auto before = NativeImage(0);
+    const auto executed = source_->executed();
+    auto adopt = slots.Adopt(0, record->cursor, footprint, layout);
+    ASSERT_FALSE(adopt);
+    EXPECT_NE(adopt.error().find("layout differs"), std::string::npos);
+    EXPECT_FALSE(slots.adopted(0));
+    EXPECT_EQ(NativeImage(0), before);
+    EXPECT_TRUE(BranchAt(0).history().empty());
+    Open({&BranchAt(0)});
+    auto restore = slots.PrepareRestore(0, record->cursor, footprint, layout);
+    ASSERT_FALSE(restore);
+    EXPECT_NE(restore.error().find("source layout differs"), std::string::npos);
+    EXPECT_EQ(NativeImage(0), before);
+    EXPECT_EQ(source_->executed(), executed);
+    Close();
+    Stop();
+    EXPECT_EQ(rt::VerifyKeptState(dir, *record), "");
+  }
+  execution_identity_ = std::optional{recipe};
 
   // The next process: the record checked against what it would write, its
   // files hashed, then adopted.

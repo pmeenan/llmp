@@ -2507,8 +2507,16 @@ are its synthesized spec, its components' layout and batching and a
 its own stream, with cuBLAS over a workspace the runner maps
 (`RunnerConfig::kernel_memory`) and device greedy tokens, built for
 Gemma 2, Gemma 3 and Gemma 4 (with its assistant) so far. The kept
-layout is `model::KeptLayoutId` of `spec::BoundDigest` and every stage's
-layout, and the kept record gains format version 2, a spill file per
+layout starts with `model::KeptLayoutId` of `spec::BoundDigest` and every
+stage's layout. When the source supplies a prepared execution identity,
+`ModelRunner::Setup` folds it into that same opaque layout once, before
+registration. Both kept-record validation and slot adoption/checkpoint restore
+therefore reject a different declared backend, tuning or numerical domain.
+The fold reuses the existing digest storage; legacy/null sources retain their
+original layout. Ordinary serving currently supplies no required execution
+domain, so this is protection for sources that actually declare one, not a
+claim that every shared recipe has acquired numerical admission. The kept
+record retains format version 2, a spill file per
 stage (D-112); a model refuses the other version, so the M3 runners' kept
 state is discarded at a family's switch. The image adapter is a shell
 until Qwen-Image moves: it registers and pages its runner, and its work
@@ -2516,7 +2524,10 @@ refuses. `engine_llm_test` runs `Llm` sessions over it on the fake
 backend: prompts, joined prompt and generation waves, greedy device
 choice, speculation with two cascaded drafters, spill and restore, a turn
 checkpoint's restore, recovery, and a restart adopting a version 2 record
-while refusing a version 1 one.
+while refusing a version 1 one. The prepared-identity correction passes the
+main Spark A native build and all 229 host controls across nine targets,
+including changed-identity refusal and same-identity stage-file continuation.
+No GPU run or wider numerical-domain qualification is claimed.
 
 **Cold kept-state hydration (G3c2b2b).** An adopted prefix may be eligible
 for reuse before its repeat-pending drafter progress has been read from disk.

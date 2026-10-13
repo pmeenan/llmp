@@ -628,6 +628,9 @@ Status ModelRunner::Setup() {
     if (auto prepared = config_.prepare(bases); !prepared) return Error(prepared.error());
   }
   if (auto prepared = source_->PrepareExecution(); !prepared) return prepared;
+  auto execution_identity = source_->ExecutionIdentity();
+  if (!execution_identity) return Error(execution_identity.error());
+  if (auto sealed = slots_.SealExecutionIdentity(*execution_identity); !sealed) return sealed;
   std::uint64_t activations = 0, pool = 0, inputs = 0, outputs = 0;
   std::vector<std::uint64_t> carry(slots_.stages(), 0);
   for (const pl::StepShape& shape : config_.setup_shapes) {

@@ -146,6 +146,31 @@ Status SlotLifecycle::Setup() {
   return {};
 }
 
+Status SlotLifecycle::SealExecutionIdentity(const std::optional<base::Sha256Digest>& identity) {
+  if (!setup_ || registered_ || released_ || execution_sealed_)
+    return Refuse("execution identity must be sealed once before registration");
+  if (identity) {
+    constexpr std::string_view prefix = "llmp-state-v2:";
+    if (!kept_layout_id_.starts_with(prefix) || kept_layout_id_.size() != prefix.size() + 64)
+      return Refuse("execution identity requires the complete state layout");
+    static_assert(sizeof(base::Sha256) <= 128);
+    base::Sha256 hash;
+    hash.Update("llmp-state-execution-v1");
+    hash.Update(kept_layout_id_);
+    hash.Update(std::as_bytes(std::span(*identity)));
+    const auto digest = hash.Finish();
+    // Reuse the existing 64-character digest storage. The only transient
+    // ownership is fixed stack SHA state, with no second string allocation.
+    constexpr std::string_view hex = "0123456789abcdef";
+    for (std::size_t i = 0; i < digest.size(); ++i) {
+      kept_layout_id_[prefix.size() + 2 * i] = hex[digest[i] / 16U];
+      kept_layout_id_[prefix.size() + 2 * i + 1] = hex[digest[i] % 16U];
+    }
+  }
+  execution_sealed_ = true;
+  return {};
+}
+
 Status SlotLifecycle::Register() {
   if (!setup_ || registered_ || released_) return Refuse("slot registration order");
   for (Slot& slot : slots_) {

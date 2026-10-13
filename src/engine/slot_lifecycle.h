@@ -141,6 +141,10 @@ class SlotLifecycle {
 
   // Before the weights' places: every slot's every stage's region.
   Status Setup();
+  // Once after setup and before registration, bind the prepared source recipe
+  // into the same opaque layout used by checkpoints and durable kept records.
+  // A null identity preserves the legacy layout byte for byte. No allocation.
+  Status SealExecutionIdentity(const std::optional<base::Sha256Digest>& identity);
   // After the node's Start: each region's spill file. The caller pins
   // reserved_extents() with its weights' (Scheduler::PinPlaces).
   Status Register();
@@ -467,6 +471,7 @@ class SlotLifecycle {
   std::string kept_layout_id_;
   std::uint64_t borrow_epoch_ = 1;  // bumped by RecoverInPlace
   bool setup_ = false, registered_ = false, bound_ = false, released_ = false;
+  bool execution_sealed_ = false;
 };
 
 }  // namespace llmp::engine

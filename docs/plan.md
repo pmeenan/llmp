@@ -1917,6 +1917,12 @@ each is checked against the design as M3.6 proceeds.
                                                       enforce owned whole-operation and
                                                       declared-unit admission on all current,
                                                       ahead, companion and restore paths.
+                                                      Present prepared execution identities
+                                                      now also bind the shared durable kept
+                                                      layout before registration; null/legacy
+                                                      sources keep their existing identity.
+                                                      Complete operation-shape enumeration
+                                                      and broader admission remain open.
                                           - [ ] **G4b2b2b3c — component and fusion:**
                                                 add the opt-in rounded-score
                                                 component and guarded full-mask
@@ -2496,11 +2502,15 @@ each is checked against the design as M3.6 proceeds.
       comparisons improve speed, quality, reuse, simplicity or resource cost.
 - [ ] **Persisted state and settings:**
       - [x] **Shared kept-state identity:** the bound spec and every stage's
-            layout derive `llmp-state-v2`; shared records use version 2 and
-            bind the current execution identity. Incompatible old records
-            are refused. Existing state-contract, kept-record, slot-lifecycle
-            and EngineLlm fresh-owner adoption controls cover this path
-            (D-105); no additional layout bump is needed.
+            layout derive `llmp-state-v2`. When the source provides a prepared
+            execution identity, setup folds it into that same opaque layout
+            before registration, so durable records and slot restore/adoption
+            refuse another declared configuration. Legacy/null sources retain
+            their original layouts; ordinary serving does not implicitly gain
+            a required domain. Record fields/version stay unchanged (D-105).
+            Main Spark A native build and all 229 host controls across nine
+            targets pass, including current-identity fresh-owner continuation
+            and changed-identity refusal before adoption/restore effects.
       - [x] **Spec-bound calibration:** key shared serving measurements by
             the actual bound spec, preserving artifact storage paths, default
             settings and legacy-runner handling (D-103). Main native build,

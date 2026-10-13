@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Bind durable kept-state layouts to a present prepared execution identity,
+  refusing state from a different owned backend, tuning or declared domain
+  before adoption or restore. Legacy sources without that identity keep their
+  existing layouts; no serving policy or on-disk fields change.
+
 - Compose the stored first-frame VAE decoder from shared spatial fragments and
   owner-local residual values, preserving F32 source weights and reusing the
   existing program path. GPU graph construction can omit unused full scalar

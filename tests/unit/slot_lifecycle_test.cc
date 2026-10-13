@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <format>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -130,6 +131,8 @@ class SlotLifecycleTest : public ::testing::Test {
 
   virtual std::uint64_t BudgetExtents() const { return 48; }
   virtual std::vector<en::StageState> MakeStages() const { return Stages(); }
+  virtual std::optional<llmp::base::Sha256Digest> ExecutionIdentity() const { return std::nullopt; }
+  std::string unbound_layout_;
   en::SlotLifecycle& slots() { return runner_->slots; }
 
   void SetUp() override {
@@ -182,6 +185,13 @@ class SlotLifecycleTest : public ::testing::Test {
     runner_ = std::make_unique<Runner>(node_, std::move(options));
     auto set = slots().Setup();
     ASSERT_TRUE(set) << llmp::test_support::Failed(set).value_or("");
+    unbound_layout_ = slots().kept_layout_id();
+    const auto* storage = slots().kept_layout_id().data();
+    ASSERT_TRUE(slots().SealExecutionIdentity(ExecutionIdentity()));
+    EXPECT_EQ(slots().kept_layout_id().data(), storage);
+    const auto sealed = slots().kept_layout_id();
+    EXPECT_FALSE(slots().SealExecutionIdentity(ExecutionIdentity()));
+    EXPECT_EQ(slots().kept_layout_id(), sealed);
     auto started = node_.Start(Bytes(fixed_ + (BudgetExtents() * kExtent)));
     ASSERT_TRUE(started) << llmp::test_support::Failed(started).value_or("");
     auto registered = slots().Register();
@@ -308,6 +318,49 @@ class SlotLifecycleTest : public ::testing::Test {
     return bytes;
   }
 };
+
+TEST_F(SlotLifecycleTest, NullExecutionIdentityPreservesLegacyLayoutAndCannotBeRebound) {
+  EXPECT_EQ(slots().kept_layout_id(), unbound_layout_);
+  const auto recipe = llmp::base::Sha256().Update("another execution").Finish();
+  EXPECT_FALSE(slots().SealExecutionIdentity(recipe));
+  EXPECT_EQ(slots().kept_layout_id(), unbound_layout_);
+}
+
+class QualifiedSlotLifecycleTest : public SlotLifecycleTest {
+ protected:
+  std::optional<llmp::base::Sha256Digest> ExecutionIdentity() const override {
+    return llmp::base::Sha256().Update("qualified execution").Finish();
+  }
+};
+
+TEST_F(QualifiedSlotLifecycleTest, UnboundLayoutRefusesBeforeRestoreOrAdoptionChangesState) {
+  const auto sealed = slots().kept_layout_id();
+  EXPECT_NE(sealed, unbound_layout_);
+  EXPECT_EQ(sealed.size(), unbound_layout_.size());
+  Select({0});
+  ASSERT_TRUE(slots().ReserveStateThrough(0, 1));
+  ASSERT_TRUE(slots().SetPositions(0, 1));
+  const auto footprint = Used(0);
+  ASSERT_TRUE(slots().ValidateFootprint(1, footprint));
+  const auto occupied = Occupancy();
+  const auto invalidations = invalidated_.size();
+  auto restore = slots().PrepareRestore(0, 1, footprint, unbound_layout_);
+  ASSERT_FALSE(restore);
+  EXPECT_NE(restore.error().find("source layout differs"), std::string::npos);
+  auto adopt = slots().Adopt(2, 1, footprint, unbound_layout_);
+  ASSERT_FALSE(adopt);
+  EXPECT_NE(adopt.error().find("layout differs"), std::string::npos);
+  EXPECT_EQ(slots().positions(0), 1U);
+  EXPECT_EQ(slots().positions(2), 0U);
+  EXPECT_TRUE(std::ranges::equal(Used(0), footprint, [](const Range& a, const Range& b) {
+    return a.region == b.region && a.offset == b.offset && a.bytes == b.bytes;
+  }));
+  EXPECT_FALSE(slots().adopted(2));
+  EXPECT_EQ(invalidated_.size(), invalidations);
+  EXPECT_EQ(Occupancy(), occupied);
+  EXPECT_FALSE(slots().SealExecutionIdentity(std::nullopt));
+  EXPECT_EQ(slots().kept_layout_id(), sealed);
+}
 
 TEST_F(SlotLifecycleTest, AllStagesGrowSpillIncrementallyAndRestoreExactly) {
   Select({0});

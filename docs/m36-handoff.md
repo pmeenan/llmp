@@ -56,10 +56,15 @@ or speed claim is made.
 
 Companion metadata parsing has a separate source-derived 384 MiB startup
 envelope, independent of head-observation storage. Shared kept-state identity
-was already implemented: bound spec and stage layouts derive `llmp-state-v2`,
-and shared records bind execution identity. Existing state-contract,
-kept-record, slot-lifecycle and EngineLlm controls cover refusal and fresh-owner
-adoption; no new layout bump or OS-process/GPU restart evidence is claimed.
+starts with the bound spec and stage layouts. A present prepared execution
+identity is now folded into the same opaque layout before registration;
+durable records and slot restore/adoption reject another declared configuration.
+Legacy/null sources retain their original layouts, including ordinary serving
+without a required domain. No on-disk fields/version change or new OS-process/
+GPU restart qualification is claimed. Main Spark A native build and all 229
+host controls across nine targets pass with no failures/skips and source guards
+and child retirement intact (`kept-execution-main01`). Whole-operation admission
+remains open.
 Architecture-based settings applicability/defaults and legacy retirement remain
 separate migration work.
 
