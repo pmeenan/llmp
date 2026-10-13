@@ -1,0 +1,155 @@
+{
+  "scope": "Two-step native migration agreement and descriptive output-disabled decoder counters; not independent upstream quality or matched1% gate",
+  "decision": "Do not adopt1GiB target; retain64MiB production. Quality/fit pass but no meaningful observed speed or measuredCPU/traffic gain justifies1,102,249,984 added admission bytes",
+  "receipts": {
+    "main": "8ba022d9680eefe8bcac939130de216ebfe7e4d1e82b096c5721fe0b87db437e",
+    "quality": "ba16392bf150e07c94c28b9c9610fc6672ea2bb2e596ac218da6bc1df3281ceb",
+    "score": "20bba9b69f0c74c73af986336c96f380070b67a7ec1cbd521b05686cabce150c",
+    "cost": "afffa17ab6adc6cbbcfd63e76369aed9afe3caee5ee7ed08cc18ec7c665812ae",
+    "prior64MiB_cost": "dd7c735f9bbc56c2d980746b0a81141bfa14a2535dfdcec34fad0481ca3f2556",
+    "failed_stale_pin_residual": "14d34ac24cecaa40e3152f1265906c81416c4638d3b0a23c3e66eb58870b1909"
+  },
+  "model_binary": {
+    "sha256": "ede1367bc402c16c109705172589b5ab0061c975c25674374be6ed0981c188f5",
+    "bytes": 198842448
+  },
+  "host_cases": 55,
+  "quality": {
+    "metrics": {
+      "size": [
+        1024,
+        1024
+      ],
+      "modes": [
+        "RGBA",
+        "RGBA"
+      ],
+      "identical_pixels": false,
+      "mean_abs_diff": 0.8315,
+      "max_abs_diff": 6,
+      "psnr_db": 46.495,
+      "ssim_luma": 0.99873
+    },
+    "floors": {
+      "psnr_db_min": 32,
+      "ssim_luma_min": 0.98
+    },
+    "passed": true,
+    "own_arm_pins": {
+      "legacy": "68f1d74e54548ee8a856f67b9584de37e18c74039f4fb0b13f17920cf7e815e5",
+      "shared": "f06514383c3252bdf224ded3539f9a6f84e9454c637c55a46fefaad2c0554620"
+    }
+  },
+  "quality_properties": {
+    "arm": "shared",
+    "mode": "quality",
+    "first_output_invocation": "1",
+    "tiled_tuning_keys": "13",
+    "tiled_tuning_credit_bytes": "155765",
+    "completed_generations": "2",
+    "setup_seconds": "0.995106665",
+    "first_seconds_0": "12.816405808",
+    "finish_seconds_0": "7.891795222",
+    "generation_seconds_0": "20.708201030",
+    "first_seconds_1": "4.878694058",
+    "finish_seconds_1": "7.571902601",
+    "generation_seconds_1": "12.450596659",
+    "setup_paid_footprint_bytes": "42446769088",
+    "legacy_preflight_bytes": "0",
+    "legacy_weight_capacity_bytes": "0",
+    "selected_weight_bytes": "30530338816",
+    "legacy_denoising_captures": "0",
+    "quality_counters_are_timing_samples": "false",
+    "export_credit_bytes": "20971520",
+    "construction_used_bytes": "2731256290",
+    "first_flow_sha256": "2158a554e826d77d2a9cd68aff9e396d3985242b2d8568c44723185696a22dad",
+    "pixels_sha256": "f06514383c3252bdf224ded3539f9a6f84e9454c637c55a46fefaad2c0554620",
+    "native_report": "{\"engine\":\"component\",\"architecture\":\"QwenImage21Pipeline\",\"completed_stages\":4}"
+  },
+  "cost_properties": {
+    "arm": "shared",
+    "mode": "decoder_diagnostic",
+    "first_output_invocation": "2",
+    "decoder_jobs_0": "1",
+    "decoder_job_wall_0": "2.774295930",
+    "decoder_device_0": "2.774279541",
+    "decoder_dispatch_0": "0.000002016",
+    "decoder_host_job_0": "2.773380348",
+    "decoder_after_0": "0.000913566",
+    "decoder_jobs_1": "1",
+    "decoder_job_wall_1": "2.752000420",
+    "decoder_device_1": "2.751998535",
+    "decoder_dispatch_1": "0.000000288",
+    "decoder_host_job_1": "0.005757796",
+    "decoder_after_1": "2.746242336",
+    "completed_generations": "2",
+    "setup_seconds": "0.982349905",
+    "first_seconds_0": "18.741794786",
+    "finish_seconds_0": "3.194452138",
+    "generation_seconds_0": "21.936246924",
+    "first_seconds_1": "9.653342529",
+    "finish_seconds_1": "2.781532375",
+    "generation_seconds_1": "12.434874904",
+    "setup_paid_footprint_bytes": "42446769088",
+    "legacy_preflight_bytes": "0",
+    "legacy_weight_capacity_bytes": "0",
+    "selected_weight_bytes": "30530338816",
+    "legacy_denoising_captures": "0",
+    "quality_counters_are_timing_samples": "false",
+    "export_credit_bytes": "0",
+    "construction_used_bytes": "2710126223",
+    "first_flow_sha256": "48ab739fe8cd81669e51d07f4d9abacc6003449f48ba46cc885e9e02f5318567",
+    "pixels_sha256": "f06514383c3252bdf224ded3539f9a6f84e9454c637c55a46fefaad2c0554620",
+    "native_report": "{\"engine\":\"component\",\"architecture\":\"QwenImage21Pipeline\",\"completed_stages\":4}"
+  },
+  "comparison": {
+    "old_warm_seconds": 12.459039409,
+    "new_warm_seconds": 12.434874904,
+    "percent_change": -0.19395158973928295,
+    "limitation": "One observation each, FirstOutput boundary1 vs2; not matched or significant; decoder includes copies/handoff"
+  },
+  "planned_resources": {
+    "old_stripes": 1843,
+    "new_stripes": 134,
+    "old_decoder_calls": 7706,
+    "new_decoder_calls": 870,
+    "raw_pool": 1073577984,
+    "activation": 3623878656,
+    "reserved_pool": 1342177280,
+    "prior_reserved_whole_stage_pool": 127926272,
+    "prepaid_capture_savings": 112001024,
+    "complete_admission": 42446769088,
+    "prior_admission": 41344519104,
+    "preliminary_estimate_not_upper_bound": 42353216448
+  },
+  "quality_guards": {
+    "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+    "memory_peak_process_cache_bytes": 927784960,
+    "pre_guards": "PASS",
+    "status": "PASS",
+    "post_guards": "PASS",
+    "compute_pids_after": 0,
+    "native_child_retired": true
+  },
+  "cost_guards": {
+    "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+    "memory_peak_process_cache_bytes": 898191360,
+    "pre_guards": "PASS",
+    "status": "PASS",
+    "post_guards": "PASS",
+    "compute_pids_after": 0,
+    "native_child_retired": true
+  },
+  "final_restored64_integration": {
+    "receipt_sha256": "2066eeef9c255382db0bf48c2ab30ec4e31dd1152abdb833ab99fdd0f1027da9",
+    "host_cases": 55,
+    "full_native_build": "PASS",
+    "model_binaries": {
+      "image_generation_gpu_test": {
+        "sha256": "fa5420de2613836b7e345e9a7074794b56e5058971662ecc0bd3b2255e46a7cb",
+        "bytes": 198842440
+      }
+    },
+    "scope": "Only historical diagnostic assertion fix; unchanged qualified64MiB production implementation; no new64MiB model run"
+  }
+}

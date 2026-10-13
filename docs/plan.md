@@ -2669,7 +2669,12 @@ each is checked against the design as M3.6 proceeds.
             independent upstream quality, isolated decoder timing or the1%
             family gate ([report](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse)).
       - [x] **Q3i — shared tiled F32 convolution reuse:** existing F32 im2col,
-            cuBLAS, transpose and pitched copies fit a64MiB stripe workspace.
+            cuBLAS, transpose and pitched copies initially qualify at64MiB;
+            a1GiB experiment reduces calls7,706→870 and prepaid capture
+            metadata106.8125MiB, but adds1,102,249,984 admission bytes without
+            meaningful observed latency or measuredCPU/BW gain. Keep64MiB
+            default. Quality remains46.495dB/.99873; decoder2.752s versus
+            9.653s prefix directs next optimization toward text/flow.
             Exact measured sm_121 physical geometries become ordinary shared
             candidates; other geometries keep direct fallback. Representative
             completed-job median falls90.64%; the full1024 two-step sample
@@ -2682,8 +2687,9 @@ each is checked against the design as M3.6 proceeds.
             and generation counts from the request, respecting model geometry,
             checked arithmetic and measured full-workload admission. Fixed
             two-generation/1024² diagnostics and reference implementations
-            impose no product ceilings. Compare larger convolution workspaces
-            when speed or quality benefits justify their memory cost.
+            impose no product ceilings. Continue request-driven composition and reuse of optimized attention/
+            products; no further workspace tuning or40-step ladder is a
+            prerequisite to removing diagnostic request restrictions.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

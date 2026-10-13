@@ -593,7 +593,7 @@ channel geometries for packed F32, batch1 on sm_121. They are measured evidence
 entries, not model capacity limits; a differently shaped image with the same
 flattened row count does not qualify. Other shapes/devices retain direct
 convolution unless explicitly tuned. No model/profile-name supplier is needed.
-Forty decoder convolutions use the tiled implementation. The 64MiB implementation workspace bounds columns,
+Forty decoder convolutions use the tiled implementation. The initial 64MiB qualification workspace bounds columns,
 product and transposed output together, rather than allocating the derived
 10.125GiB full-column worst case. Complete decoder planning reports64,880,640
 bytes of tiled pool, unchanged3,623,878,656-byte activation placement and7,706
@@ -673,3 +673,87 @@ final generation binary`7259cb25c96ddb315f94cf39991a9afdd2c936a175c036e99a4b0616
 (198,829,472 bytes). The comparison proves the same selected operations,
 placement and physical stripe plans, not equality of historical capability
 identities; numerical evidence remains bound to the executed b44dd binary above.
+
+
+## Larger convolution workspace and remaining stage cost
+
+A completed experiment raises the shared tiled target to1GiB of temporary workspace,
+allocating only its checked stripe requirement. No kernel, source encoding,
+precision policy or shape-selection rule changes. The same forty decoder
+convolutions need134 rather than1,843 stripes:870 total decoder launch calls
+instead of7,706. The actual planner reports1,073,577,984 bytes of raw pool and
+unchanged3,623,878,656-byte activation placement. Explicit64MiB, underpaid,
+batched-tail and1GiB partition host controls passed in the experiment; these targets
+are implementation choices, not image-dimension limits.
+
+Two complete1024²/two-step generations pass the same retained native migration
+screen at **46.495dB PSNR /0.99873 SSIM**, with their own repeatable output.
+The source remains BF16 text/flow and F32 VAE. This low-detail sample neither
+qualifies usable40-step perceptual quality nor replaces an independent upstream
+reference. No historical cross-version pixel equality is required.
+
+The output-disabled observation moves FirstOutput after both flow steps, then
+uses existing completed-job counters for the decoder. Setup is0.982s, first
+complete generation21.936s and warm generation **12.435s**, versus12.459s in
+the earlier64MiB ordinary observation. The0.194% difference is descriptive,
+not a matched speed result: the boundary differs and there is no repeated A/B.
+The warm prefix through text and both flows is9.653s; decoder completion is
+2.782s, with2.752s inside its one completed device job. Host job submission is
+5.758ms and dispatch0.288µs. These include the existing copies/handoff; they do
+not isolate individual convolutions. No64MiB decoder CPU-counter comparison
+was obtained, so fewer launches do not establish a measured CPU or bandwidth
+improvement. The larger remaining interval is text/flow, directing subsequent
+reuse work toward existing attention/product implementations.
+
+The production default remains64MiB. The1GiB experiment preserves current
+quality and reduces prepaid capture metadata by106.8125MiB, but complete
+admission increases by1,102,249,984 bytes without a meaningful observed latency
+gain or measured CPU/bandwidth improvement. Warm graph replay bypasses most
+capture construction. Fewer structural calls alone do not establish a useful
+resource benefit for this workload. More memory remains available to future
+candidates when measurements justify it; the unchanged48GiB screen is not a
+product memory ceiling.
+
+The exact admission is **42,446,769,088 bytes**, not measured device occupancy.
+The preliminary additive estimate42,353,216,448 was not an upper bound: it
+omitted the runtime's maximum-stage pool and25% aligned workspace margin.
+The new raw pool becomes1,342,177,280 reserved bytes after margin/2MiB rounding,
+versus the prior whole-stage127,926,272. The1,214,251,008-byte pool increase,
+less112,001,024 bytes of prepaid capture savings, reconciles exactly with the
+prior41,344,519,104-byte total. Quality construction uses2,731,256,290 bytes;
+output-disabled ordinary selection uses2,710,126,223, both under4GiB. The
+30,530,338,816-byte selected source closure,6GiB physical margin and52GiB
+zero-swap process/cache ceiling are unchanged. Process/cache peaks are
+927,784,960 bytes for quality and898,191,360 for cost, not device peaks.
+
+Full current-main native build and55 affected host controls pass in14s, with
+all model registrations inventoried; formatting4 files,1 boundary check,
+2,261 headers and REUSE6.2 pass. The executed generation binary is exactly the
+experimental main binary. Final landing restores the three workspace/test
+paths to their previously qualified64MiB versions; only the stale diagnostic
+pixel assertion removal remains. Restored64MiB final main passes full native
+build and55 host controls in28s, with all model inventories and guards clean.
+No new64MiB model run is attributed to this experiment. Both experimental
+actual runs retire completely with all source, artifact,
+binary and recipe guards passing, zero memory events and no remaining GPU
+processes; the confined CPU scorer also retires. Final documentation QA remains
+a landing check. The earlier residual run is retained as a failure: both
+generations completed, but a stale pre-pointwise pixel assertion prevented
+counter publication. It was removed without weakening same-arm repeat checks
+or the controller's qualified output pin.
+
+[convolution-workspace.json](convolution-workspace.json) records compact
+observations and exact receipt identities. Main receipt
+`8ba022d9680eefe8bcac939130de216ebfe7e4d1e82b096c5721fe0b87db437e`;
+quality`ba16392bf150e07c94c28b9c9610fc6672ea2bb2e596ac218da6bc1df3281ceb`;
+cost`afffa17ab6adc6cbbcfd63e76369aed9afe3caee5ee7ed08cc18ec7c665812ae`.
+Generation binary`ede1367bc402c16c109705172589b5ab0061c975c25674374be6ed0981c188f5`
+(198,842,448 bytes). Request-driven geometry/schedules and shared serving,
+independent upstream quality and the family migration gate remain open.
+
+Final restored64MiB integration receipt
+`2066eeef9c255382db0bf48c2ab30ec4e31dd1152abdb833ab99fdd0f1027da9`;
+final generation binary`fa5420de2613836b7e345e9a7074794b56e5058971662ecc0bd3b2255e46a7cb`
+(198,842,440 bytes). This final binary contains only the diagnostic assertion
+fix over the qualified64MiB implementation; the1GiB actuals retain the distinct
+experimental binary identity above.

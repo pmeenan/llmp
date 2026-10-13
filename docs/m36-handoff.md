@@ -46,7 +46,9 @@ safely fits. Workspace loans are experimental conditions, not product caps.
 Image dimensions and generation counts must follow request/hardware capacity
 with checked model geometry; two-generation/1024² samples are coverage only.
 Prospective memory comparisons are informational; admission, ownership and
-accounting stay mandatory. Larger tiled-convolution workspaces are next.
+accounting stay mandatory. The1GiB workspace experiment passes quality but does not
+justify adoption;64MiB remains default. Text/flow reuse and request-driven
+geometry/schedules are next.
 
 The shared image generation core now completes two 1024×1024 generations:
 native 36-layer text encoding, two complete 32-block Euler steps and the full
@@ -70,12 +72,16 @@ now reuses existing matrix products and explicit layout copies: a representative
 completed-job warm median falls70.53%, while the complete two-step output keeps
 native agreement (PSNR46.477 dB / SSIM0.99873). First eager representative work is
 slower. Shared tiled F32 im2col/cuBLAS now covers the forty3×3 decoder
-convolutions in a64MiB stripe workspace. Exact measured sm_121 physical shapes
+convolutions, initially in a64MiB stripe workspace. Exact measured sm_121 physical shapes
 are ordinary shared candidates with direct fallback elsewhere. The full
 sample passes46.495dB /0.99873 agreement; output-disabled warm generation falls
-from53.164s to12.459s (76.57%, descriptive, not matched1%). The remaining gap
-against native requires ordinary completed-stage counters before a40-step
-speed ladder; independent upstream quality and default serving remain open.
+from53.164s to12.459s (76.57%, descriptive, not matched1%). The1GiB follow-up preserves46.495dB/.99873 quality and observes12.435s warm
+whole generation, essentially unchanged. Decoder job2.752s versus9.653s prefix
+places most remaining time in text/flow. Experimental admission rises to42,446,769,088 bytes
+while stripe calls and prepaid capture metadata fall; absent meaningful speed
+or measuredCPU/traffic benefit, production retains64MiB. Request-driven composition, independent
+upstream quality and default serving remain open. See the
+[workspace tradeoff](experiments/m36-shared-spatial-execution/README.md#larger-convolution-workspace-and-remaining-stage-cost).
 See the [pointwise](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse)
 and [tiled reuse evidence](experiments/m36-shared-spatial-execution/README.md#shared-tiled-f32-convolution-reuse).
 See the [quality screen and accounting correction](experiments/m36-shared-spatial-execution/README.md#two-step-native-migration-quality-screen).
