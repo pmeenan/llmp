@@ -265,7 +265,89 @@ Result SHA-256: `957e270f3d31a64534b070543ea34852e1a590662267a176385d54378f12c00
 The complete four-process aggregate, raw logs/XML and source/binary receipts
 remain in session scratch `qwen-c2-speed-models02`.
 
-Public/HTTP shared selection, ordinary multi-owner admission, wider cohorts and
-contexts, same-quantized-reference quality, state/swap qualification and the
-fixed-baseline family gate remain open. This screen selects no new numerical
+The supervised HTTP bridge is now covered below; automatic public selection,
+ordinary multi-owner admission, wider cohorts and contexts,
+same-quantized-reference quality, state/swap qualification and the fixed-baseline
+family gate remain open. This screen selects no new numerical
 policy and makes no original-model agreement claim.
+
+## Supervised shared HTTP C2 control
+
+2026-10-13, Spark A. The existing HTTP service now has an internal, explicitly
+funded selector for the shared Qwen target/MTP route. It reuses `RunService`,
+`Server`, the ordinary request scheduler and `speed_gate.Service/stream_chat`;
+there is no additional serving adapter or numerical-policy selector. Public
+model selection and the qualified mapping defaults remain unchanged.
+
+A fresh process serves the same installed target/MTP identities listed above,
+with context 512, prefill chunk 16, two slots, draft depth two and read alignment
+256. Fresh private state and calibration directories exclude reused histories
+or inherited calibration. Two authenticated natural texts go through the real
+chat template, each producing 331 prompt tokens. Both streamed requests finish
+at their requested 128-token limit with zero cached tokens: 662 fresh prompt
+and 256 completion tokens total, with each history staying within 459 positions.
+Both streams produce output before either completes. The runtime reports 29
+joined MTP waves / 58 joined units, 96 speculative units, 191 draft proposals and
+158 accepted proposals. These are actual-work observations, not cross-arm
+identity or quality requirements.
+
+The first 64-output-token control completed both individual requests but failed
+the joined-overlap requirement. Speculative prompts cannot batch, and the
+scheduler may finish one prompt before alternating its generation with the
+second prompt's prefill. At chunk 16, the second 331-token prompt needs at most
+22 chunk units across its stable boundary plus reuse and checkpoint units;
+64 generated tokens can finish during those units. The 128-token control retains
+the same overlap and joined-work requirements and uses the same paid context.
+The failed receipt remains preserved; no production scheduling change was made.
+
+The actual prepared execution identity is
+`2c80ab538694d26a34204e01bb16a795ba5e708922db7417c4a858128b170f36`.
+Final cumulative runner counters are 41 plans, 27 graphs, 29 eager runs,
+18 captures, 242 replays and zero refusals; four prompt futures are built and
+captured, with prepared count zero. Plan-host and graph accounting report
+162,537,872 and 309,690,368 bytes respectively. These are component counters,
+not a total memory or performance comparison.
+
+The authenticated source/settings inventory derives a 5,909,774,336-byte startup
+payment before Server construction work, within the unchanged 104 GiB node cap.
+Existing plan/state/workspace and physical admission remain active. HTTP request
+memory is separately bounded at 64 MiB, with 8 KiB request bodies and 64 KiB stream
+buffers. The supervisor enforces 112 GiB process/page-cache memory with zero swap
+and a 6 GiB physical margin. Observed process/page-cache peak is 1,490,305,024 bytes,
+not device residency. Both source/binary guards pass; shutdown receives TERM and
+exits zero, the complete process group retires, no GPU process remains and all
+memory-limit/OOM counters stay zero. Failed native Server teardown now logs the
+error and exits before destructors can free unretired owners; a subprocess
+control exercises that production failure helper with a live owner sentinel.
+
+Main native compilation and all 158 affected host controls pass (43 runtime,
+109 API, six Qwen), with zero failures/skips. Pinned formatting, boundaries,
+2,256 headers and REUSE 6.2 pass. The actual runtime binary exactly matches the
+main build: SHA-256
+`3644baa29d56289b5066ad575602822ad1279a3233f85b59331e90c4956d0170`,
+271,061,904 bytes. Main receipt:
+`0f0d925ce39c072e01ff7e81294790676a4826136f0ad776f083526f763e1667`.
+Actual recipe:
+`7ee206bed05c8489121329ce4a81ac7d469ecdee4ede39930a39ca6ce29d8a96`.
+Actual result:
+`d9c98eaac5cfadd3a80ea30aacd6ac5885da453ef3e1d5a377f2c16fc4ca30e4`.
+
+Replay uses the existing `llmp-runtime` service with the all-or-none internal
+tuple `LLMP_DIAGNOSTIC_COMPONENT_QWEN=1`,
+`LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=5909774336` and
+`LLMP_DIAGNOSTIC_NODE_CAP_BYTES=111669149696`, authenticated artifacts and fresh
+private directories. Byte values require positive unsigned decimal, 2 MiB
+alignment and startup no larger than the cap. Partial/invalid controls refuse
+before startup; unsupported selected aliases cannot silently fall back. The
+caller must rederive payment if source/configuration changes. The existing speed harness
+client sends two simultaneous streaming chat requests with temperature zero and
+max_tokens 128; verify actual usage, overlap, prepared identity, joined counters
+and positive shutdown under an exclusive Spark supervisor. Captured texts,
+config, complete logs, request-output digests and guard receipts remain in session
+scratch `qwen-http-bridge-models02`; the earlier failed 64-token control remains
+in `qwen-http-bridge-models01`.
+
+This closes the bounded supervised HTTP route proof only. Automatic production
+selection, ordinary C1/C4 and broader MTP cohorts, same-quantized-reference
+quality, swap/state qualification and the matched fixed-baseline 1% family gate
+remain open. The check makes no new quality or comparative speed claim.

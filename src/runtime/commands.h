@@ -72,8 +72,8 @@ struct ServingOptions {
   // Decode plainly even where a model has a drafter.
   bool plain = false;
   // Internal Qwen component migration screen, including declared composed
-  // sources with multiple owners. Not exposed by
-  // CLI/TOML/HTTP; normal Qwen serving remains on its qualified adapter.
+  // sources with multiple owners. Only an explicitly funded service diagnostic
+  // can select it through HTTP; normal configuration/defaults are unchanged.
   bool diagnostic_component_solo = false;
   // Prepaid host compiler/result allowance for bounded startup screens.
   // Cataloged before artifact metadata or Setup, retained until node death.
@@ -164,6 +164,13 @@ struct CommandOptions {
   SwapTableOptions table;
   bool json = false;  // settings --json
 };
+
+// Internal supervised service qualification only. The three environment values
+// are all absent or all valid; refusal leaves options unchanged. Funding is
+// derived and source/config-bound by the caller before starting the process.
+std::expected<void, std::string> ApplyServiceDiagnostics(
+    ServingOptions& options, std::optional<std::string_view> component,
+    std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap);
 
 // Parses a command's arguments (after its name).
 std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,

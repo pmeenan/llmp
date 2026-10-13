@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Connect the internal, explicitly funded shared Qwen diagnostic to the existing
+  HTTP service. Two concurrent streamed MTP requests complete through joined
+  execution; public model selection remains unchanged. Failed native Server
+  teardown now exits before releasing potentially borrowed owners.
+
 - Reuse shared matrix products for supported F32 pointwise spatial convolutions,
   preserving explicit layout copies and source formats. A bounded image sample
   retains native migration agreement while other convolution shapes keep their

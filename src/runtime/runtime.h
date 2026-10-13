@@ -91,6 +91,10 @@ struct Started {
 // Returns the exit status on refusal.
 std::expected<Started, int> Start(const Options& options, std::FILE* log);
 
+// A service's stack-owned resources may be destroyed only after proven
+// retirement. Failure exits directly to its supervisor without unwinding.
+void RetireServiceOrExit(const std::expected<void, std::string>& retired, std::FILE* log);
+
 // The whole program: arguments, startup, readiness, then waiting for
 // SIGTERM or SIGINT, which the caller has blocked in every thread; or with
 // a serving command, `serve` (commands.h RunServing, which main links from

@@ -41,6 +41,23 @@ bool PlausibleName(std::string_view name) { return !name.empty() && name.size() 
 
 }  // namespace
 
+std::expected<void, std::string> ApplyServiceDiagnostics(
+    ServingOptions& options, std::optional<std::string_view> component,
+    std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap) {
+  if (!component && !startup_bytes && !node_cap) return {};
+  std::uint64_t bytes = 0, cap = 0;
+  constexpr std::uint64_t extent = std::uint64_t{2} << 20U;
+  if (!component || *component != "1" || !startup_bytes || !node_cap ||
+      !Number(*startup_bytes, std::uint64_t{1}, UINT64_MAX, bytes) ||
+      !Number(*node_cap, std::uint64_t{1}, UINT64_MAX, cap) || bytes % extent || cap % extent ||
+      bytes > cap)
+    return Error("shared service diagnostic needs selector=1 and aligned startup bytes/node cap");
+  options.diagnostic_component_solo = true;
+  options.diagnostic_startup_host_bytes = bytes;
+  options.diagnostic_budget_cap_bytes = cap;
+  return {};
+}
+
 const std::string_view kCommandUsage =
     "Serving commands (after the runtime's own options; local, in this process):\n"
     "  chat [--max-tokens N] [--ignore-stop] [--fresh] [SERVING] --turn MODEL TEXT...\n"

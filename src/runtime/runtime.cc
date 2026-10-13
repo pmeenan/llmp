@@ -10,6 +10,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <filesystem>
@@ -88,6 +89,12 @@ std::vector<std::string> OpenRdmaNodes(std::FILE* log) {
 }
 
 }  // namespace
+
+void RetireServiceOrExit(const std::expected<void, std::string>& retired, std::FILE* log) {
+  if (retired) return;
+  Log(log, "unproven service retirement; exiting before owner destruction: " + retired.error());
+  std::_Exit(kExitFailure);
+}
 
 std::expected<Options, std::string> ParseArguments(std::span<const std::string_view> args) {
   Options options;

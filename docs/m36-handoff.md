@@ -145,10 +145,15 @@ continuation heads pass. A short C2 MTP bookend against the current legacy
 Server observes shared prompt/generation walls 8.53%/2.17% lower, but startup
 is slower (2.024 versus 1.078 seconds). Each measured pass completes 510 fresh
 prompt tokens and 128 generated tokens; this is a coarse whole-implementation
-screen, not the frozen-baseline 1% gate or a policy adoption. Public model
-selection is unchanged. Broader
-same-quantized-reference quality, OS-process/GPU restart, production serving
-and the family speed/swap gate remain open. The full DeepSeek target screen now
+screen, not the frozen-baseline 1% gate or a policy adoption. The supervised
+internal HTTP bridge now passes two concurrent requests, each with 331 fresh
+prompt and 128 output tokens, 29 joined MTP waves and graceful process retirement.
+`RunService` in `src/runtime/serve_api.cc` validates the complete diagnostic
+selector/payment tuple before startup and reports each actual prepared identity
+before readiness. Central Server teardown exits before owner destruction if the
+native fence fails. Public model selection is unchanged; automatic production
+admission, broader same-quantized-reference quality, OS-process/GPU restart and
+the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
 snapshot continuation on Spark B. The actual spatial-image screen passes
 on main after full native build, 129 affected host controls and source checks.

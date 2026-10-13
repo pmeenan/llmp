@@ -64,6 +64,7 @@
 #include "runtime/memory_guard.h"
 #include "runtime/model_limits.h"
 #include "runtime/prefill.h"
+#include "runtime/runtime.h"
 #include "runtime/serving_support.h"
 #include "runtime/swap_room.h"
 #include "scheduler/programs.h"
@@ -1815,6 +1816,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   // A family on the component engine: the adapter of its spec's pipeline
   // kind, which its architecture's mapping names.
   const bool solo = options_.diagnostic_component_solo && settings.architecture == "qwen4exp";
+  if (options_.diagnostic_component_solo && (!solo || entry.composition))
+    return Error("shared Qwen diagnostic requires every selected alias to use its component route");
   if (!entry.composition && (OnComponentEngine(settings.architecture) || solo)) {
     const spec::Mapping* mapping = spec::FindMapping(settings.architecture);
     if (mapping == nullptr) {
@@ -2763,13 +2766,9 @@ Status Server::TearDown() {
   snapshot_model_ = nullptr;
   snapshot_store_.reset();
   const auto stopped = node_.TearDown(models);
-  if (!stopped && node_.has_pending_state_preparation()) {
-    // Server is stack-owned by its frontends. Returning would destroy a model
-    // whose independent page-ins have no proven no-access fence. Stop before
-    // any owner/resource destructor; a LiveState destructor is too late.
-    Log("unretired state preparation; aborting before owner destruction");
-    std::abort();
-  }
+  // Every frontend can stack-own Server. A failed fence is not proof that
+  // any submitted device/storage work stopped borrowing these owners.
+  RetireServiceOrExit(stopped, log_);
   if (options_.diagnostic_budget_cap_bytes) {
     const auto c = node_.backing_create_stats();
     const auto h = node_.retired_harvest_stats();

@@ -1830,8 +1830,13 @@ each is checked against the design as M3.6 proceeds.
                                     equal observed token work. This is a coarse
                                     diagnostic, not the fixed-baseline 1% gate
                                     ([timing screen](experiments/m36-numerical-audit/qwen-joined-mtp.md#short-c2-mtp-whole-implementation-timing-screen)).
-                                    Public serving admission, broader quality
-                                    and family gates remain open.
+                                    An explicitly funded internal HTTP selector
+                                    also passes two overlapping streamed requests:
+                                    331 fresh prompt and 128 output tokens each,
+                                    with 29 joined MTP waves and graceful retirement
+                                    ([HTTP control](experiments/m36-numerical-audit/qwen-joined-mtp.md#supervised-shared-http-c2-control)).
+                                    Automatic public serving admission, broader
+                                    quality and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.

@@ -33,6 +33,7 @@
 
 #include "base/check.h"
 #include "base/report.h"
+#include "base/sha256.h"
 #include "base/work_pulse.h"
 #include "chat/chat.h"
 #include "config/node_config.h"
@@ -2260,6 +2261,19 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
   // kept across a restart (D-105).
   ServingOptions serving;
   serving.keep_conversations = true;
+  const auto diagnostic = [](const char* name) -> std::optional<std::string_view> {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): read before service threads start
+    const char* value = std::getenv(name);
+    return value ? std::optional<std::string_view>(value) : std::nullopt;
+  };
+  if (auto configured =
+          ApplyServiceDiagnostics(serving, diagnostic("LLMP_DIAGNOSTIC_COMPONENT_QWEN"),
+                                  diagnostic("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES"),
+                                  diagnostic("LLMP_DIAGNOSTIC_NODE_CAP_BYTES"));
+      !configured) {
+    Say(log, configured.error());
+    return kExitFailure;
+  }
   int status = kExitOk;
   // Hang recovery (D-102; hang_ladder.h): one ladder for the chat route's
   // watch and the node's waits, outliving both (the teardown's waits are
@@ -2335,6 +2349,21 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       });
     }
     auto started = server.Start(false);
+    if (started && serving.diagnostic_component_solo) {
+      for (const auto& model : server.models()) {
+        if (!model->llm() || model->settings().architecture != "qwen4exp") {
+          started = std::unexpected("shared service diagnostic has an unsupported alias");
+          break;
+        }
+        auto identity = static_cast<Llm&>(*model).ExecutionIdentity();
+        if (!identity || !*identity) {
+          started = std::unexpected("shared service diagnostic omitted its prepared identity");
+          break;
+        }
+        Say(log, std::format("diagnostic shared alias {}: execution identity {}", model->name(),
+                             base::ToHex(**identity)));
+      }
+    }
     // A cancellation drains only once nothing submitted before it is still
     // in flight (a read a drive holds does not end when cancelled).
     ladder.set_operations([&server] { return server.node().oldest_io(); });
@@ -2516,6 +2545,8 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
         Say(log, std::format("Gemma2 serving final {}: {}", model->name(), model->extra()));
       else if (model->settings().architecture == "gemma4")
         Say(log, std::format("Gemma4 serving final {}: {}", model->name(), model->extra()));
+      else if (serving.diagnostic_component_solo)
+        Say(log, std::format("diagnostic shared final {}: {}", model->name(), model->extra()));
     if (auto stopped = server.TearDown(); !stopped) {
       Say(log, "stopping: " + stopped.error());
       status = kExitFailure;

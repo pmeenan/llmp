@@ -1193,3 +1193,52 @@ TEST(TokenStorage, AdmissionCreditsTheProspectiveBoundaryAndOtherCatalogRelease)
   // leaving current catalog occupancy unchanged.
   EXPECT_EQ(TokenReclaimCredit(0, 0, extent), extent);
 }
+
+TEST(ServiceDiagnostics, CompletePaymentIsRequiredBeforeOptionsChange) {
+  using llmp::runtime::ApplyServiceDiagnostics;
+  llmp::runtime::ServingOptions options;
+  EXPECT_TRUE(ApplyServiceDiagnostics(options, std::nullopt, std::nullopt, std::nullopt));
+  EXPECT_FALSE(options.diagnostic_component_solo);
+  const auto refused = [&](std::optional<std::string_view> select,
+                           std::optional<std::string_view> bytes,
+                           std::optional<std::string_view> cap) {
+    EXPECT_FALSE(ApplyServiceDiagnostics(options, select, bytes, cap));
+    EXPECT_FALSE(options.diagnostic_component_solo);
+    EXPECT_EQ(options.diagnostic_startup_host_bytes, 0);
+    EXPECT_FALSE(options.diagnostic_budget_cap_bytes.has_value());
+  };
+  refused("1", std::nullopt, "8388608");
+  refused(std::nullopt, "2097152", "8388608");
+  refused("1", "2097152", std::nullopt);
+  refused("0", "2097152", "8388608");
+  refused("", "2097152", "8388608");
+  for (const std::string_view value :
+       {"", "0", "-1", "+2097152", " 2097152", "2097152x", "18446744073709551616", "2097153"}) {
+    refused("1", value, "8388608");
+    refused("1", "2097152", value);
+  }
+  refused("1", "8388608", "2097152");
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "2097152", "8388608"));
+  EXPECT_TRUE(options.diagnostic_component_solo);
+  EXPECT_EQ(options.diagnostic_startup_host_bytes, 2097152);
+  EXPECT_EQ(options.diagnostic_budget_cap_bytes, 8388608);
+}
+
+TEST(ServiceRetirement, FailedFenceExitsBeforeOwnerDestruction) {
+  std::FILE* log = std::tmpfile();
+  ASSERT_NE(log, nullptr);
+  llmp::runtime::RetireServiceOrExit({}, log);
+  const int status = CrashChild([&] {
+    struct Owner {
+      ~Owner() { std::_Exit(97); }
+    } owner;
+    llmp::runtime::RetireServiceOrExit(std::unexpected("injected incomplete fence"), log);
+  });
+  EXPECT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), llmp::runtime::kExitFailure);
+  std::rewind(log);
+  std::array<char, 512> message{};
+  const auto bytes = std::fread(message.data(), 1, message.size(), log);
+  EXPECT_THAT(std::string_view(message.data(), bytes), HasSubstr("injected incomplete fence"));
+  EXPECT_EQ(std::fclose(log), 0);
+}
