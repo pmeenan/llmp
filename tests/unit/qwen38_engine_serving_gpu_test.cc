@@ -744,6 +744,83 @@ TEST(Qwen38EngineServingGpu, DerivedServingDomainRequiresAnExplicitComposedReque
   }
 }
 
+TEST(Qwen38EngineServingGpu, DerivedPlainDomainRequiresAnOrdinaryTargetRequest) {
+  en::PagedNode node{{}};
+  for (int mutation = 0; mutation != 12; ++mutation) {
+    cfg::ModelEntry entry;
+    entry.name = "missing";
+    entry.artifact = std::string(64, '0');
+    rt::ModelSettings settings;
+    settings.architecture = "qwen4exp";
+    settings.max_slots.value = 2;
+    settings.context.value = 512;
+    settings.prefill_chunk.value = 16;
+    settings.speculation.value = false;
+    rt::ComponentBuildOptions options{
+        .target_policy = {}, .diagnostic_solo = true, .derive_execution_domain = true};
+    switch (mutation) {
+      case 1:
+        settings.max_slots.value = 1;
+        break;
+      case 2:
+        settings.max_slots.value = 4;
+        break;
+      case 3:
+        settings.max_slots.value = 0;
+        break;
+      case 4:
+        settings.max_slots.value = rt::Llm::kMaxBranches + 1;
+        break;
+      case 5:
+        settings.context.value = 0;
+        break;
+      case 6:
+        settings.prefill_chunk.value = 0;
+        break;
+      case 7:
+        settings.speculation.value = true;
+        break;
+      case 8:
+        entry.drafter = std::string(64, '1');
+        break;
+      case 9:
+        options.diagnostic_solo = false;
+        break;
+      case 10:
+        options.derive_execution_domain = false;
+        break;
+      case 11: {
+        auto domain = en::NumericalDomain::Create(
+            {{.stage = 0,
+              .name = "target",
+              .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode},
+              .phases = {{.phase = llmp::planner::Phase::kPrefill,
+                          .max_owners = 2,
+                          .max_owner_rows = 16,
+                          .max_total_rows = 32},
+                         {.phase = llmp::planner::Phase::kDecode,
+                          .max_owners = 2,
+                          .max_owner_rows = 1,
+                          .max_total_rows = 2}}}});
+        ASSERT_TRUE(domain);
+        options.execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain));
+        break;
+      }
+      default:
+        break;
+    }
+    auto build = rt::ComponentLlmBuild(node, "/nonexistent-derived-plain-control", entry, 0,
+                                       std::move(options));
+    const auto result = build(settings);
+    ASSERT_FALSE(result);
+    if (mutation < 3)
+      EXPECT_NE(result.error().find("artifact"), std::string::npos);
+    else
+      EXPECT_EQ(result.error().find("artifact"), std::string::npos);
+    EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), 0U);
+  }
+}
+
 TEST(Qwen38EngineServingGpu, NativeMtpDepthTwoFullLogits) { Screen(kCutlass, true, true, 2); }
 TEST(Qwen38EngineServingGpu, NativeMtpDefaultTokenSchedule) { Screen(kCutlass, true, false, 3); }
 TEST(Qwen38EngineServingGpu, NativeGgmlExpertsPlain) { Screen(kGgml, false, true, 2); }

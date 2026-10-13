@@ -1835,6 +1835,13 @@ each is checked against the design as M3.6 proceeds.
                                     331 fresh prompt and 128 output tokens each,
                                     with 29 joined MTP waves and graceful retirement
                                     ([HTTP control](experiments/m36-numerical-audit/qwen-joined-mtp.md#supervised-shared-http-c2-control)).
+                                    The same internal selector now derives an
+                                    ordinary target-only Prompt/Decode domain.
+                                    Native C2 HTTP requests complete 128 tokens
+                                    each through 127 joined ordinary waves;
+                                    repeating the first prompt reuses 326 tokens
+                                    and completes 16 more
+                                    ([plain control](experiments/m36-numerical-audit/qwen-joined-mtp.md#supervised-native-target-only-http-c2-control)).
                                     Automatic public serving admission, broader
                                     quality and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,

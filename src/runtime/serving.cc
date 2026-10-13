@@ -1834,7 +1834,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                .prefill_lookahead = options_.qwen38_prefill_lookahead,
                                .prepare_state = options_.qwen38_prepare_state,
                                .state_only_prefill = options_.qwen38_state_only_prefill,
-                               .derive_execution_domain = solo && settings.max_slots.value > 1}));
+                               .derive_execution_domain =
+                                   solo && (settings.max_slots.value > 1 || !entry.drafter)}));
         if (options_.diagnostic_skip_turn_checkpoints) {
           llm->set_turn_checkpoints(false);
           Log(std::format("model {}: saves no turn checkpoint (a speed gate's diagnostic)",

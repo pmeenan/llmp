@@ -97,11 +97,12 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
     const spec::ModelSpec& model_spec, std::span<const model::StateLayoutDerived> layouts,
     std::uint32_t slots, std::uint32_t verify_rows,
     const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance) {
-  if (model_spec.pipeline != spec::PipelineKind::kLlm || model_spec.stages.size() < 2 ||
+  const bool composed = model_spec.stages.size() > 1;
+  if (model_spec.pipeline != spec::PipelineKind::kLlm || model_spec.stages.empty() ||
       model_spec.stages.size() > std::uint64_t{UINT16_MAX} + 1 ||
-      model_spec.stages.size() != layouts.size() || slots < 2 || slots > Llm::kMaxBranches ||
-      verify_rows == 0 || !allowance)
-    return Error("a serving domain needs its complete composed state and owner envelope");
+      model_spec.stages.size() != layouts.size() || slots == 0 || slots > Llm::kMaxBranches ||
+      (composed ? slots < 2 || verify_rows == 0 : verify_rows != 0) || !allowance)
+    return Error("a serving domain needs its complete state and owner envelope");
   std::uint64_t bytes = sizeof(DerivedDomain) + sizeof(ConstructionCharge) + 512;
   for (std::size_t i = 0; i < layouts.size(); ++i) {
     const auto& stage = model_spec.stages[i];
@@ -131,11 +132,14 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
     engine::NumericalStage stage{
         .stage = static_cast<std::uint16_t>(i),
         .name = model_spec.stages[i].name,
-        .uses = {engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
-                 engine::NumericalUse::kPromptCompanions, engine::NumericalUse::kSpeculative,
-                 engine::NumericalUse::kJoinedRepeatPending},
+        .uses = {engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode},
         .phases = {}};
-    stage.phases.reserve(i == 0 ? 4 : 1);
+    if (composed) {
+      stage.uses.push_back(engine::NumericalUse::kPromptCompanions);
+      stage.uses.push_back(engine::NumericalUse::kSpeculative);
+      stage.uses.push_back(engine::NumericalUse::kJoinedRepeatPending);
+    }
+    stage.phases.reserve(i == 0 ? (composed ? 4 : 2) : 1);
     const auto add = [&](planner::Phase phase, std::uint32_t rows) {
       stage.phases.push_back({.phase = phase,
                               .max_owners = slots,
@@ -145,8 +149,10 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
     if (i == 0) {
       add(planner::Phase::kPrefill, layouts[i].max_rows);
       add(planner::Phase::kDecode, 1);
-      add(planner::Phase::kVerify, verify_rows);
-      add(planner::Phase::kCommit, verify_rows);
+      if (composed) {
+        add(planner::Phase::kVerify, verify_rows);
+        add(planner::Phase::kCommit, verify_rows);
+      }
     } else {
       add(planner::Phase::kDraft, layouts[i].max_rows);
     }
@@ -388,6 +394,16 @@ bool JoinedScoreEnvelope(const ModelSettings& settings, std::string_view drafter
   return std::ranges::equal(stages[0].phases, phases);
 }
 
+// Derive only from an actual target-only ordinary request. Explicit caller
+// domains keep their existing (including closed scoring) admission contract.
+bool PlainServingEnvelope(const ModelSettings& settings, std::string_view drafter,
+                          const ComponentBuildOptions& options) {
+  return options.diagnostic_solo && options.derive_execution_domain && !options.execution_domain &&
+         drafter.empty() && !settings.speculation.value && settings.max_slots.value >= 1 &&
+         settings.max_slots.value <= Llm::kMaxBranches && settings.context.value != 0 &&
+         settings.prefill_chunk.value != 0;
+}
+
 // Internal composed diagnostic only. The actual source seal additionally
 // validates every stage/layout/phase and binds real prepared backend owners.
 // Ordinary Server admission remains single-owner until qualification closes.
@@ -442,8 +458,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     const bool joined_score = solo && JoinedScoreEnvelope(settings, drafter_id, options);
     const bool joined_mtp = solo && JoinedMtpEnvelope(settings, drafter_id, options);
+    const bool plain_serving = solo && PlainServingEnvelope(settings, drafter_id, options);
+    if (options.derive_execution_domain && !plain_serving && !joined_mtp)
+      return Error(
+          "derived serving qualification needs an ordinary target or composed replay source");
     if (solo && (!options.diagnostic_solo ||
-                 (settings.max_slots.value != 1 && !joined_score && !joined_mtp)))
+                 (settings.max_slots.value != 1 && !joined_score && !joined_mtp && !plain_serving)))
       return Error("the Qwen component qualification requires exactly one configured slot");
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
@@ -847,8 +867,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
             .value();
     auto execution_domain = options.execution_domain;
-    if (options.derive_execution_domain && !joined_mtp)
-      return Error("derived serving qualification needs a composed replay source");
     if (options.derive_execution_domain && !metadata) {
       auto admitted = engine::ExecutionMetadataAllowance::Admit(
           node.catalog(), node.domain(), options.execution_metadata_bytes,

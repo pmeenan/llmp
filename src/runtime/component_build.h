@@ -40,8 +40,8 @@ struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
   // Internal qualification only; Qwen and DeepSeek remain off in OnComponentEngine.
   // Other slot counts refuse before opening artifacts, except the closed
-  // target-only C4 scoring envelope or a declared repeat-pending composition
-  // with its exact owned execution domain. Server admission stays unchanged.
+  // target-only C4 scoring envelope, a declared repeat-pending composition,
+  // or a derived ordinary target-only domain. Public admission stays unchanged.
   bool diagnostic_solo = false;
   // Complete catalog-backed construction allowance for the closed DeepSeek
   // diagnostic. Admitted by its owner before constructing EngineLlm; the
@@ -55,7 +55,7 @@ struct ComponentBuildOptions {
   // this. An explicit complete domain requires the real backend declaration;
   // supplied tuning owns all names and never supplies provider device facts.
   std::shared_ptr<const engine::NumericalDomain> execution_domain{};
-  // Internal serving qualification: derive the complete composed domain from
+  // Internal serving qualification: derive the complete ordinary or composed domain from
   // the actual spec, state layouts and configured envelope. The existing
   // metadata allowance pays before construction; an explicit domain cannot
   // be combined with this request. No new public setting or default admission.

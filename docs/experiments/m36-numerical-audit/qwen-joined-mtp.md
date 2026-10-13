@@ -351,3 +351,68 @@ This closes the bounded supervised HTTP route proof only. Automatic production
 selection, ordinary C1/C4 and broader MTP cohorts, same-quantized-reference
 quality, swap/state qualification and the matched fixed-baseline 1% family gate
 remain open. The check makes no new quality or comparative speed claim.
+
+## Supervised native target-only HTTP C2 control
+
+2026-10-13, Spark A. The same internal diagnostic selector can derive an
+ordinary Prompt/Decode domain from one actual native target and its configured
+context, chunk and owner envelope. It requires no drafter, speculation disabled
+and no competing caller-provided execution domain. The composed target/MTP and
+closed Score routes keep their existing semantics. The generic single-target
+path also accepts one configured owner; this slice makes no actual C1 claim.
+
+The bounded control uses the existing installed native target, context 512,
+prefill chunk 16, two slots and read alignment 256. It sends the same two
+authenticated natural HTTP prompts through the real chat template, requesting
+128 output tokens each. Both streams produce output before either ends. Each completes 331 fresh
+prompt tokens and 128 output tokens; the runtime reports 22 joined prefill
+steps / 662 rows and 127 ordinary joined waves / 254 units, with zero
+speculative units. The subsequent exact first-prompt repeat completes 16
+output tokens and reuses 326 of its 331 prompt tokens. Total completion work
+is 272 tokens. This observes same-selected prefix reuse;
+it is not a durable-state byte oracle or a cross-implementation equality gate.
+
+The source/configuration inventory retains the conservative 5,909,774,336-byte
+startup payment, including compiler capacity and authenticated metadata bounds,
+within the unchanged 104 GiB node cap. Removing the drafter does not repurpose
+its conservative metadata allowance. Actual setup and cached plans retain
+measured resource admission and PlanAccount charges. The existing HTTP and
+process supervisor limits and positive retirement requirements are unchanged.
+
+The actual prepared execution identity is
+`707d5b8030033a801b0df6ab7d6cc05ced115f18fcd23cddef5c91e9c8c966be`.
+Final cumulative counters report seven plans, five graphs, four eager runs,
+three captures, 158 replays and zero refusals. Plan-host and graph accounting
+report 95,356,208 and 179,421,184 bytes; two prompt futures are built and
+captured, with prepared count zero. These observations are not a comparative
+speed or memory measurement. Process/page-cache peak is 1,319,759,872 bytes,
+not device residency. TERM exits zero, the complete process group retires,
+all source/runtime guards pass, no GPU process remains and all memory-limit/OOM
+counters are zero.
+
+Main native compilation and all 159 affected host controls pass (43 runtime,
+109 API, seven Qwen), without failures/skips. Pinned formatting, boundaries,
+2,256 headers and REUSE 6.2 pass. Runtime SHA-256:
+`321822e33762fb09f9ab8e32dd47a9252fa7f5224fc04354de905bf1e1882034`,
+271,071,104 bytes. Main receipt:
+`ef53398fa4f6cfe29bc4d48a187393e329f5d2dfe0f36c46f3f4798e4b90ced4`.
+Actual recipe:
+`f8a0d05d0691689093f0070931e1f3259e7f2a7d9302028f8d6ba511f4417374`.
+Actual result:
+`27a55d0cf1fd4e10b743b37dba492f3be541e282253bb717ce7c48add0e68ea1`.
+
+Replay uses the preceding internal selector/payment tuple with no drafter and
+`speculation = false`, retaining the bounded context/chunk/slot settings. After
+the simultaneous 128-token requests finish, repeat the exact first request body
+with only `max_tokens` changed to 16. Check complete token counts, actual joined
+ordinary work, positive cached prefix and graceful whole-process retirement.
+The authenticated configuration and raw evidence belong in session scratch
+`qwen-plain-serving-models02`. The preceding `models01` receipt remains
+preserved: it stopped before requests because the controller expected an
+override label instead of the source-defined `speculation=false (derived)`
+for an alias with no drafter; setup and retirement were successful. The
+correction changed only that observer, not source, configuration or payment.
+
+This is bounded native target-only C2 coverage. C1/C4, GGUF, automatic public
+selection, broader same-quantized-reference quality and the fixed-baseline 1%
+family gate remain open. It makes no quality or comparative speed claim.
