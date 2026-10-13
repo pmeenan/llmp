@@ -396,7 +396,7 @@ StepQueued ModelRunner::QueueRoutedPrefix(providers::NativeStream native) {
   if (!flight) return {.result = std::unexpected(kn::StepFailure{.detail = "no routed flight"})};
   flight->started = true;
   const auto bytes = flight->program->layout().host_bytes;
-  flight->prefix = runs_.QueueRouted(
+  flight->prefix = programs_.runs().QueueRouted(
       *flight->runs, flight->access, *flight->program, flight->inputs, {},
       {static_cast<std::byte*>(routed_->pinned), bytes}, flight->capture, graph_stats_, native);
   flight->unknown =
@@ -476,7 +476,7 @@ Status ModelRunner::ContinueRouted(RunPath& path) {
                     : std::span(static_cast<std::byte*>(flight->state->pinned) +
                                     flight->program->layout(segment).host_offset,
                                 flight->program->layout(segment).host_bytes);
-          flight->continuation = runs_.QueueRouted(
+          flight->continuation = programs_.runs().QueueRouted(
               *flight->runs, flight->access, *flight->program, {},
               final ? std::span<const RunCopy>(flight->outputs) : std::span<const RunCopy>{},
               next_staging, flight->capture, graph_stats_, native);
@@ -498,7 +498,8 @@ Status ModelRunner::ContinueRouted(RunPath& path) {
           return scheduler::JobResult::kQueued;
         },
         flight, routed_->allowance, "routed selected continuation", stream_);
-    if (!posted || flight->unknown || !flight->continuation.result || launch_->faulted()) {
+    if (!posted || flight->unknown || !flight->continuation.result ||
+        programs_.launch()->faulted()) {
       // No false inference from an error to retirement. The retained flight
       // keeps the complete caller owner, plan, source, pinned data and launch.
       return Error(!posted                        ? posted.error()

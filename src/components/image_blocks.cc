@@ -94,10 +94,8 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
 }
 std::expected<SpatialShape, std::string> SpatialNormShape(const Instance& in, SpatialShape shape,
                                                           std::optional<SpatialShape> auxiliary) {
-  std::uint64_t count = 1;
-  for (const auto n : {shape.width, shape.height, shape.channels, shape.images})
-    if (!n || __builtin_mul_overflow(count, n, &count) || count > (1ULL << 24U))
-      return std::unexpected("spatial channel norm dimensions exceed the bounded domain");
+  if (!SpatialElements(shape))
+    return std::unexpected("spatial channel norm dimensions exceed representable storage");
   if (auxiliary || shape.channels != Channels(in))
     return std::unexpected("spatial channel norm input or auxiliary differs");
   return shape;
@@ -273,12 +271,7 @@ std::expected<void, std::string> GatedReference(RefIO& io) {
   return {};
 }
 
-std::optional<std::uint64_t> Count(SpatialShape shape) {
-  std::uint64_t values = 1;
-  for (auto n : {shape.width, shape.height, shape.channels, shape.images})
-    if (!n || __builtin_mul_overflow(values, n, &values) || values > (1ULL << 24U)) return {};
-  return values;
-}
+std::optional<std::uint64_t> Count(SpatialShape shape) { return SpatialElements(shape); }
 std::expected<SpatialShape, std::string> AdaptiveSpatialShape(
     const Instance& in, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
   if (!Count(shape) || shape.channels != in.stage.width || !auxiliary || *auxiliary != shape)

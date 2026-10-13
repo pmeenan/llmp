@@ -33,6 +33,8 @@ namespace llmp::components::defs {
 
 const ComponentDef& NormRmsSpatial();
 const ComponentDef& SliceSpatial();
+const ComponentDef& ReshapeSpatial();
+const ComponentDef& AffineChannel();
 const ComponentDef& ResidualScaled();
 const ComponentDef& ConditionRows();
 const ComponentDef& ConcatSpatial();

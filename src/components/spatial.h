@@ -24,6 +24,10 @@ struct SpatialShape {
   std::uint64_t width = 0, height = 0, channels = 0, images = 1;
   bool operator==(const SpatialShape&) const = default;
 };
+// Representable dense/reference storage only, not an execution admission cap.
+// Actual graph/reference construction and device liveness are paid separately.
+std::optional<std::uint64_t> SpatialElements(SpatialShape shape);
+
 struct SpatialOwner {
   std::uint8_t owner = 0;
   SpatialShape shape;
@@ -47,6 +51,7 @@ struct SpatialBuildOptions {
   // Host reference copies are optional; real source/graph metadata is always paid.
   // False does not authorize a reference executor to allocate any buffers.
   bool reference_buffers = true;
+  format::Encoding input_encoding = format::Encoding::kF32;
   // Empty retains the last value. Otherwise distinct produced value IDs, in
   // output-port order, repeated for each owner. Zero (the input) is not an export.
   std::span<const std::uint16_t> exports{};

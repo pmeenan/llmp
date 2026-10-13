@@ -142,7 +142,7 @@ namespace {
 // itself, or with fusion the node the launcher writes instead, which has
 // the product's shape (ggml_can_fuse_ext, ggml-impl.h:681-706).
 std::expected<void, KernelFailure> CheckMulMatInto(const ggml_tensor* node, const ggml_tensor* out,
-                                                   bool f16_input = false) {
+                                                   bool cublas = false) {
   if (node == nullptr || node->op != GGML_OP_MUL_MAT || !Bound(out) || !Bound(node->src[0]) ||
       !Bound(node->src[1])) {
     return Rejected("not a bound mul_mat node");
@@ -150,7 +150,7 @@ std::expected<void, KernelFailure> CheckMulMatInto(const ggml_tensor* node, cons
   const ggml_tensor* weights = node->src[0];
   const ggml_tensor* input = node->src[1];
   // cuBLAS alone also reads F16 activations of F16 weights directly.
-  const bool input_type = IsF32(input) || (f16_input && input->type == GGML_TYPE_F16 &&
+  const bool input_type = IsF32(input) || (cublas && input->type == GGML_TYPE_F16 &&
                                            weights != nullptr && weights->type == GGML_TYPE_F16);
   if (!input_type || !IsF32(node) || !IsF32(out) ||
       (weights->type != GGML_TYPE_F16 && weights->type != GGML_TYPE_F32 &&
@@ -190,15 +190,39 @@ std::expected<void, KernelFailure> CheckMulMatInto(const ggml_tensor* node, cons
     return std::ranges::all_of(tensor->nb,
                                [size](std::size_t stride) { return stride / size <= kInt32; });
   };
-  if (Span(weights) > kInt32 || Span(input) > kInt32 || Span(out) > kInt32 ||
-      !element_strides_fit(weights) || !element_strides_fit(input) || !element_strides_fit(out) ||
-      out->ne[2] > 65535 || out->ne[3] > 65535) {
-    return Rejected("mul_mat operands beyond the kernels' 32-bit indexing or grid");
+  // cuBLAS passes m/n/k and leading dimensions as int, but its batch byte
+  // offsets and GGML conversion indices are 64-bit. A batched F32 attention
+  // matrix may therefore cross 2 GiB without overflowing any index. Keep
+  // the paired kernels' original byte limit; bound the cuBLAS object and
+  // every possible converted object by the signed pointer/index domain.
+  constexpr auto kObjectMax =
+      static_cast<std::uint64_t>(std::numeric_limits<std::ptrdiff_t>::max());
+  const auto cublas_object_fits = [](const ggml_tensor* tensor) {
+    std::uint64_t elements = 1;
+    for (const auto dim : tensor->ne) {
+      if (dim > std::numeric_limits<std::int32_t>::max() ||
+          __builtin_mul_overflow(elements, static_cast<std::uint64_t>(dim), &elements) ||
+          elements > kObjectMax / sizeof(float))
+        return false;
+    }
+    return Span(tensor) <= kObjectMax;
+  };
+  const bool spans_fit =
+      cublas ? cublas_object_fits(weights) && cublas_object_fits(input) && cublas_object_fits(out)
+             : Span(weights) <= kInt32 && Span(input) <= kInt32 && Span(out) <= kInt32;
+  if (!spans_fit || !element_strides_fit(weights) || !element_strides_fit(input) ||
+      !element_strides_fit(out) || out->ne[2] > 65535 || out->ne[3] > 65535) {
+    return Rejected("mul_mat operands beyond the selected implementation's indexing or grid");
   }
-  // Weights load as element pairs (half2, nv_bfloat162, float2), and
-  // activations and output as float2.
-  if (!AlignedEverywhere(weights, 2 * ggml_type_size(weights->type)) ||
-      !AlignedEverywhere(input, 8) || !AlignedEverywhere(out, 8)) {
+  // MMVF/MMF load element pairs. cuBLAS instead accepts element-aligned
+  // leading dimensions and batch strides, including odd attention lengths.
+  // Its conversions also support scalar elements: convert_unary_cont_cuda
+  // selects vec4 only after checking the actual base alignment and count.
+  const auto weights_alignment = (cublas ? 1U : 2U) * ggml_type_size(weights->type);
+  const auto input_alignment = cublas ? ggml_type_size(input->type) : 8U;
+  const auto output_alignment = cublas ? sizeof(float) : 8U;
+  if (!AlignedEverywhere(weights, weights_alignment) ||
+      !AlignedEverywhere(input, input_alignment) || !AlignedEverywhere(out, output_alignment)) {
     return Rejected("mul_mat operands at misaligned addresses or strides");
   }
   if (!AllCurrent({out, weights, input}) || !Disjoint(out, weights, /*in_place=*/false) ||
@@ -215,7 +239,7 @@ std::expected<void, KernelFailure> CheckMulMat(const ggml_tensor* node) {
 }
 
 std::expected<void, KernelFailure> CheckMulMatCublasOperands(const ggml_tensor* node) {
-  return CheckMulMatInto(node, node, /*f16_input=*/true);
+  return CheckMulMatInto(node, node, /*cublas=*/true);
 }
 
 std::expected<void, KernelFailure> CheckLayerNorm(const ggml_tensor* norm) {
@@ -414,8 +438,27 @@ std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* 
 
   // The pool hands out blocks from 256-byte boundaries (launch.cu), in the
   // launcher's order: weights, input, output, then the pointer arrays.
-  const auto draw = [&plan](std::uint64_t bytes) {
-    plan.scratch = ((plan.scratch + 255) / 256 * 256) + bytes;
+  bool scratch_fits = true;
+  const auto draw = [&plan, &scratch_fits](std::uint64_t bytes) {
+    std::uint64_t aligned = 0, next = 0;
+    if (__builtin_add_overflow(plan.scratch, std::uint64_t{255}, &aligned) ||
+        __builtin_add_overflow(aligned / 256 * 256, bytes, &next) ||
+        next > static_cast<std::uint64_t>(std::numeric_limits<std::ptrdiff_t>::max())) {
+      scratch_fits = false;
+      return;
+    }
+    plan.scratch = next;
+  };
+  // convert.cuh fixes CUDA_DEQUANTIZE_BLOCK_SIZE at256. Contiguous
+  // conversion launches across the whole tensor, unlike the strided gather's
+  // capped y/z loops. Reproduce its actual vec4 eligibility before bounding
+  // grid.x (CUDA's signed31-bit maximum), including the output conversion.
+  const auto contiguous_conversion_fits = [](std::uint64_t elements, std::uint64_t src,
+                                             std::uint64_t src_size, std::uint64_t dst,
+                                             std::uint64_t dst_size) {
+    const bool vec4 = elements % 4 == 0 && src % (4 * src_size) == 0 && dst % (4 * dst_size) == 0;
+    const auto threads = vec4 ? elements / 4 : elements;
+    return (threads + 255) / 256 <= kInt32Max;
   };
   // Each operand that is not already the compute type is converted into
   // scratch: element by element if its bytes are exactly its elements
@@ -423,6 +466,10 @@ std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* 
   if (src0->type != compute) {
     draw(static_cast<std::uint64_t>(ggml_nelements(src0)) * compute_size);
     if (ggml_is_contiguously_allocated(src0)) {
+      if (!contiguous_conversion_fits(static_cast<std::uint64_t>(ggml_nelements(src0)),
+                                      reinterpret_cast<std::uintptr_t>(src0->data), ts0, 256,
+                                      compute_size))
+        return Rejected("cuBLAS weight conversion exceeds the CUDA grid");
       plan.weights = CublasOperand::kConverted;
     } else {
       plan.weights = CublasOperand::kPacked;
@@ -435,6 +482,10 @@ std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* 
   if (src1->type != compute) {
     draw(static_cast<std::uint64_t>(ggml_nelements(src1)) * compute_size);
     if (ggml_is_contiguously_allocated(src1)) {
+      if (!contiguous_conversion_fits(static_cast<std::uint64_t>(ggml_nelements(src1)),
+                                      reinterpret_cast<std::uintptr_t>(src1->data), ts1, 256,
+                                      compute_size))
+        return Rejected("cuBLAS input conversion exceeds the CUDA grid");
       plan.input = CublasOperand::kConverted;
     } else {
       plan.input = CublasOperand::kPacked;
@@ -445,6 +496,10 @@ std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* 
     }
   }
   if (!f32_output && compute != GGML_TYPE_F32) {
+    if (!contiguous_conversion_fits(static_cast<std::uint64_t>(ggml_nelements(node)), 256,
+                                    compute_size, reinterpret_cast<std::uintptr_t>(node->data),
+                                    sizeof(float)))
+      return Rejected("cuBLAS output conversion exceeds the CUDA grid");
     draw(static_cast<std::uint64_t>(ggml_nelements(node)) * compute_size);
   }
 
@@ -498,6 +553,7 @@ std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* 
     draw(2 * static_cast<std::uint64_t>(batches) * sizeof(void*));
     draw(static_cast<std::uint64_t>(batches) * sizeof(void*));
   }
+  if (!scratch_fits) return Rejected("cuBLAS scratch exceeds its addressable object domain");
   return plan;
 }
 

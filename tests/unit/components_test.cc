@@ -97,7 +97,8 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
     EXPECT_EQ(Find(def->kind, def->version), def);
   }
   EXPECT_TRUE(std::ranges::is_sorted(kinds));
-  EXPECT_EQ(kinds, (std::vector<std::string_view>{"attention.borrowed",
+  EXPECT_EQ(kinds, (std::vector<std::string_view>{"affine.channel",
+                                                  "attention.borrowed",
                                                   "attention.dense",
                                                   "attention.gdn",
                                                   "attention.mqa",
@@ -124,6 +125,7 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
                                                   "norm.rms_spatial",
                                                   "norm.rope_axes",
                                                   "projection.spatial",
+                                                  "reshape.spatial",
                                                   "residual.gated",
                                                   "residual.hc",
                                                   "residual.ple",

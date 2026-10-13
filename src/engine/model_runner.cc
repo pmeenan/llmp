@@ -262,7 +262,7 @@ ModelRunner::ModelRunner(PagedNode& node, RunnerConfig config, std::unique_ptr<S
       stream_(stream),
       slots_(node, LifecycleOptions(this, std::move(config_.slots)), owner, stream),
       memory_(node, owner, stream),
-      runs_(config_.graphs) {
+      programs_(node, owner, config_.graphs) {
   for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
     frozen_.push_back(stage != 0 && model::ReadsFrozen(slots_.layout(stage)));
   }
@@ -641,22 +641,19 @@ Status ModelRunner::Setup() {
     if (!program) return Error(std::format("measuring a step: {}", program.error()));
     const kn::StepProgram& p = **program;
     if (auto routed = MeasureRouting(p); !routed) return routed;
-    activations = std::max(activations, p.scratch_bytes());
-    pool = std::max(pool, p.pool_bytes());
-    std::uint64_t in = 0, out = 0;
-    for (const kn::InputSlot& slot : p.inputs()) {
-      if (slot.kind != kn::InputKind::kFeatures) in += Round(slot.bytes, 256);
-    }
+    auto measured = ProgramEnvelope::Measure(p);
+    if (!measured) return Error(measured.error());
+    activations = std::max(activations, measured->scratch);
+    pool = std::max(pool, measured->pool);
     for (const kn::OutputSlot& slot : p.outputs()) {
-      out += Round(slot.bytes, 256);
       // A drafter's next features: what one segment's carry holds at most.
       if (slot.features && shape.stage != 0) {
         carry[shape.stage] = std::max(carry[shape.stage], slot.bytes);
       }
     }
-    inputs = std::max(inputs, in);
-    outputs = std::max(outputs, out);
-    plan_floor_bytes_ = std::max(plan_floor_bytes_, p.host_bytes());
+    inputs = std::max(inputs, measured->inputs);
+    outputs = std::max(outputs, measured->outputs);
+    plan_floor_bytes_ = std::max(plan_floor_bytes_, measured->host);
   }
   std::uint64_t commit_inputs = 0;
   for (std::uint16_t stage = 0; stage < commit_places_.size(); ++stage) {
@@ -669,12 +666,12 @@ Status ModelRunner::Setup() {
       auto p = source_->Build(shape, AddressesFor(shape, true));
       if (!p) return Error(std::format("measuring a commit: {}", p.error()));
       if (auto routed = MeasureRouting(**p); !routed) return routed;
-      activations = std::max(activations, (*p)->scratch_bytes());
-      pool = std::max(pool, (*p)->pool_bytes());
-      std::uint64_t bytes = 0;
-      for (const auto& in : (*p)->inputs()) bytes += Round(in.bytes, 256);
-      commit_inputs = std::max(commit_inputs, bytes);
-      plan_floor_bytes_ = std::max(plan_floor_bytes_, (*p)->host_bytes());
+      auto measured = ProgramEnvelope::Measure(**p, true);
+      if (!measured) return Error(measured.error());
+      activations = std::max(activations, measured->scratch);
+      pool = std::max(pool, measured->pool);
+      commit_inputs = std::max(commit_inputs, measured->inputs);
+      plan_floor_bytes_ = std::max(plan_floor_bytes_, measured->host);
     }
   }
   if (auto routed = FinishRoutingSetup(); !routed) return routed;
@@ -698,7 +695,7 @@ Status ModelRunner::Setup() {
   if (!out) return Error(out.error());
   inputs_staging_ = *in;
   outputs_staging_ = static_cast<std::byte*>(*out);
-  runs_.SetStaging(inputs_staging_, inputs_staging_bytes_);
+  programs_.runs().SetStaging(inputs_staging_, inputs_staging_bytes_);
   if (auto carried = SetupCarry(carry); !carried) return carried;
   setup_ = true;
   return {};
@@ -1128,7 +1125,8 @@ Status ModelRunner::PrepareCommit(std::uint32_t slot, std::uint16_t stage, std::
       },
       0);
   if (!copies) return Error(copies.error());
-  const bool capture = (*entry)->runs[0].CaptureDue(runs_.graphs()) && plans_.ChargeGraph(**entry);
+  const bool capture =
+      (*entry)->runs[0].CaptureDue(programs_.runs().graphs()) && plans_.ChargeGraph(**entry);
   prepared_commits_[at] = {.plan = *entry, .copies = std::move(*copies), .capture = capture};
   return {};
 }
@@ -1141,11 +1139,11 @@ LiveState::Queued ModelRunner::QueueCommit(std::uint32_t slot, std::uint16_t sta
   }
   Plans::Entry& entry = *prepared.plan;
   auto& run = entry.runs[0];
-  StepRuns commits(runs_.graphs());
+  StepRuns commits(programs_.runs().graphs());
   const std::size_t at = (std::size_t{slot} * slots_.stages()) + stage;
   commits.SetStaging(static_cast<std::byte*>(commit_staging_) + (at * commit_staging_stride_),
                      commit_staging_stride_);
-  commits.SetLaunch(launch_.get());
+  commits.SetLaunch(programs_.launch());
   const StepQueued queued = commits.Queue(run, prepared.copies, {}, *entry.planned->program, {},
                                           prepared.capture, graph_stats_, stream);
   prepared.plan = nullptr;
@@ -1178,12 +1176,8 @@ Status ModelRunner::Bind() {
   auto launch = config_.launch();
   if (!launch) return Error(launch.error());
   if (*launch == nullptr) return Error("the launch is missing");
-  launch_ = std::move(*launch);
-  runs_.SetLaunch(launch_.get());
-  account_.Bind(
-      [this](std::uint64_t bytes, bool required) { return node_.ChargeHost(bytes, required); },
-      [this](std::uint64_t bytes) { node_.UnchargeHost(bytes); });
-  plans_.set_account(&account_);
+  if (auto bound = programs_.BindLaunch(std::move(*launch)); !bound) return bound;
+  plans_.set_account(&programs_.account());
   key_base_ = source_->KeyBase();
   key_base_.shape = {};
   if (auto current = CheckRoutingSource(); !current) return current;
@@ -1208,7 +1202,7 @@ Status ModelRunner::Release() {
   routed_flight_.reset();
   // The recordings name the launch and the memory: they go first (D-090).
   DropPlans();
-  launch_.reset();
+  programs_.ReleaseAfterDrain();
   // What used the kernels' memory goes before it.
   if (prepared_ && config_.retire) config_.retire();
   std::vector<std::string> problems;
@@ -1255,32 +1249,24 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
   if (planned == nullptr || planned->program == nullptr) return Error("no program to install");
   kn::StepProgram& program = *planned->program;
   if (auto routed = CheckRouting(program); !routed) return Error(routed.error());
-  if (!planned->bound) {
-    if (auto bound = program.Bind(*launch_); !bound) {
-      return Error(std::format("binding a step: {}", bound.error().detail));
+  auto checked = programs_.BindPrepared(*planned, [&](const kn::StepProgram& bound) -> Status {
+    // Every lowered port belongs to this token shape; typed image ports use
+    // their own graph authority at the same common installation seam.
+    const auto segment_ok = [&](std::uint8_t segment) {
+      return segment == ir::kJoinedSegment || segment < shape.segments.size();
+    };
+    for (const auto& in : bound.inputs()) {
+      if (!segment_ok(in.segment)) return Error("a step's input names no segment of its shape");
     }
-    planned->bound = true;
-  }
-  // Every slot names the shape's segment it carries, or the step's: a
-  // program for another shape would read or return another owner's rows.
-  const auto segment_ok = [&](std::uint8_t segment) {
-    return segment == ir::kJoinedSegment || segment < shape.segments.size();
-  };
-  for (const kn::InputSlot& in : program.inputs()) {
-    if (!segment_ok(in.segment)) return Error("a step's input names no segment of its shape");
-  }
-  for (const kn::OutputSlot& out : program.outputs()) {
-    if (!segment_ok(out.segment)) return Error("a step's output names no segment of its shape");
-  }
-  Coverage checked;
-  CheckCoverage(node_, owner_, program.tensors(), "a step's ", checked);
-  if (checked.violations != 0) {
-    return Error(std::format("catalog coverage: {}", checked.first_violation));
-  }
-  coverage_.tensors += checked.tensors;
+    for (const auto& out : bound.outputs()) {
+      if (!segment_ok(out.segment)) return Error("a step's output names no segment of its shape");
+    }
+    return {};
+  });
+  if (!checked) return Error(checked.error());
+  coverage_.tensors += checked->tensors;
   const std::uint64_t host = program.host_bytes();
   const std::uint64_t launches = program.launches();
-  planned->positioned = !program.capturable();
   if (transfer) transfer();
   ForgetCompletedRouting();
   Plans::Entry& entry = plans_.Add(KeyOf(shape), std::move(planned), host, launches, seconds);
@@ -1682,7 +1668,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
     return Error("an unknown input kind");
   };
-  auto copies = runs_.Stage(program.inputs(), fill, 0);
+  auto copies = programs_.runs().Stage(program.inputs(), fill, 0);
   if (!copies) return Refused(copies.error());
   auto outputs = OutputCopies(program);
   if (!outputs) return Refused(outputs.error());
@@ -1732,25 +1718,26 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   StepPlanRuns& runs = entry.runs[0];
   // A recording made ahead holds the layout its plan's inputs predicted;
   // one that differs from what was staged is dropped (its charge settles).
-  if (runs_.graphs() && runs.has_graph() && *copies != runs.copies) {
+  if (programs_.runs().graphs() && runs.has_graph() && *copies != runs.copies) {
     runs.DropGraph();
     ++lookahead_.dropped_ahead;
   }
   const bool repeats = ahead_keys[0].has_value() && *ahead_keys[0] == entry.key;
-  bool capture =
-      (runs.CaptureDue(runs_.graphs()) && (config_.capture_phases & PhaseBit(shape.phase)) != 0) ||
-      (ahead.capture_ahead && repeats && runs_.graphs() && !runs.has_graph() && !runs.uncapturable);
+  bool capture = (runs.CaptureDue(programs_.runs().graphs()) &&
+                  (config_.capture_phases & PhaseBit(shape.phase)) != 0) ||
+                 (ahead.capture_ahead && repeats && programs_.runs().graphs() &&
+                  !runs.has_graph() && !runs.uncapturable);
   if (capture && !plans_.ChargeGraph(entry)) capture = false;
   const bool capture_first = capture && runs.eager_runs == 0;
   // The next shape's recording, beside this run, when it differs and is
   // already planned.
   Plans::Entry* upcoming = nullptr;
   Copies upcoming_copies, upcoming_outputs;
-  if (ahead.capture_ahead && ahead.shapes[0] && !repeats && runs_.graphs() &&
+  if (ahead.capture_ahead && ahead.shapes[0] && !repeats && programs_.runs().graphs() &&
       ahead_cached[0] != nullptr) {
     upcoming = ahead_cached[0];
     const kn::StepProgram& next = *upcoming->planned->program;
-    auto layout = runs_.Layout(next.inputs(), 0);
+    auto layout = programs_.runs().Layout(next.inputs(), 0);
     auto out = OutputCopies(next);
     if (upcoming->runs[0].has_graph() || upcoming->runs[0].uncapturable ||
         upcoming->runs[0].ahead_refused || !layout || !out || !plans_.ChargeGraph(*upcoming)) {
@@ -1999,9 +1986,10 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
           }
           saves_queued = true;
         }
-        const StepQueued q = program.routed() ? QueueRoutedPrefix(native)
-                                              : runs_.Queue(runs, *copies, {}, program, *outputs,
-                                                            capture, graph_stats_, native);
+        const StepQueued q = program.routed()
+                                 ? QueueRoutedPrefix(native)
+                                 : programs_.runs().Queue(runs, *copies, {}, program, *outputs,
+                                                          capture, graph_stats_, native);
         wrote = wrote || q.before || q.result.has_value();
         report.path = q.path;
         if (!q.result) {
@@ -2023,9 +2011,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
             }
           }
         if (upcoming != nullptr) {
-          auto captured =
-              runs_.CaptureAhead(upcoming->runs[0], upcoming_copies, *upcoming->planned->program,
-                                 upcoming_outputs, graph_stats_, native);
+          auto captured = programs_.runs().CaptureAhead(upcoming->runs[0], upcoming_copies,
+                                                        *upcoming->planned->program,
+                                                        upcoming_outputs, graph_stats_, native);
           if (!captured) {
             // This run's work is queued; the capture's fault is the launch's.
             failure = captured.error().detail;
@@ -2037,7 +2025,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
         return sc::JobResult::kQueued;
       },
       "a model step", stream_, meanwhile);
-  if (program.routed() && posted && failure.empty() && !launch_->faulted()) {
+  if (program.routed() && posted && failure.empty() && !programs_.launch()->faulted()) {
     if (auto continued = ContinueRouted(report.path); !continued) {
       failure = continued.error();
       unknown = true;  // prefix effects exist; no completion inferred from refusal
@@ -2051,7 +2039,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   for (const pl::Segment& seg : shape.segments) {
     carry_rows_.at((std::size_t{seg.slot} * slots_.stages()) + shape.stage) = 0;
   }
-  if (!posted || !failure.empty() || launch_->faulted()) {
+  if (!posted || !failure.empty() || programs_.launch()->faulted()) {
     slots_.CheckFailedJob();
     for (const pl::Segment& s : shape.segments) {
       (void)slots_.CompleteOwed(s.slot, false,
@@ -2077,7 +2065,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
       }
       if (verify) slots_.ProgressVerifyFailed(s.slot);
     }
-    if (launch_->faulted()) slots_.Fault();
+    if (programs_.launch()->faulted()) slots_.Fault();
     future.Abandon();
     // A faulted cohort (the launch's fault, or one CheckFailedJob found:
     // a scheduler fault, a lost lease) quarantined every owner, written or

@@ -14,12 +14,7 @@
 
 namespace llmp::components::defs {
 namespace {
-std::optional<std::uint64_t> Count(SpatialShape s) {
-  std::uint64_t n = 1;
-  for (auto v : {s.width, s.height, s.channels, s.images})
-    if (!v || __builtin_mul_overflow(n, v, &n) || n > (1ULL << 24U)) return {};
-  return n;
-}
+std::optional<std::uint64_t> Count(SpatialShape s) { return SpatialElements(s); }
 std::expected<std::vector<RoleShape>, std::string> NoRoles(const Instance& in) {
   if (in.site != Site::kLayer) return std::unexpected("conditioning fragments require a layer");
   return std::vector<RoleShape>{};
@@ -32,7 +27,7 @@ std::expected<void, std::string> NoTokenRef(RefIO&) {
 }
 constexpr std::array kSelectParams{
     ParamSpec{.name = "quarter", .type = ParamType::kInt, .least = 0, .most = 3},
-    ParamSpec{.name = "prefix_rows", .type = ParamType::kInt, .least = 0, .most = 4096},
+    ParamSpec{.name = "prefix_rows", .type = ParamType::kInt, .least = 0, .most = 4294967295.0},
     ParamSpec{.name = "quarters",
               .type = ParamType::kInt,
               .required = false,
@@ -41,8 +36,7 @@ constexpr std::array kSelectParams{
               .fallback = 4}};
 std::expected<SpatialShape, std::string> SelectShape(const Instance& in, SpatialShape x,
                                                      std::optional<SpatialShape> aux) {
-  if (!Count(x) || x.width != 1 || x.images != 1 || x.height > 4096 || !aux || aux->width != 1 ||
-      aux->height != 2 ||
+  if (!Count(x) || x.width != 1 || x.images != 1 || !aux || aux->width != 1 || aux->height != 2 ||
       aux->channels != static_cast<std::uint64_t>(in.params.Int("quarters")) * x.channels ||
       aux->images != 1 || static_cast<std::uint64_t>(in.params.Int("prefix_rows")) > x.height ||
       in.params.Int("quarter") >= in.params.Int("quarters"))
@@ -156,10 +150,16 @@ std::expected<void, std::string> GluReference(SpatialRefIO& io) {
 constexpr std::array kRopeParams{
     ParamSpec{.name = "heads", .type = ParamType::kInt, .least = 1, .most = 65536},
     ParamSpec{.name = "axis0", .type = ParamType::kInt, .least = 2, .most = 512},
-    ParamSpec{.name = "axis1", .type = ParamType::kInt, .least = 2, .most = 512},
-    ParamSpec{.name = "axis2", .type = ParamType::kInt, .least = 2, .most = 512},
+    ParamSpec{.name = "axis1", .type = ParamType::kInt, .least = 0, .most = 512},
+    ParamSpec{.name = "axis2", .type = ParamType::kInt, .least = 0, .most = 512},
     ParamSpec{.name = "base", .type = ParamType::kReal, .least = 1, .most = 1e10},
-    ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 1e-30, .most = 1}};
+    ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 1e-30, .most = 1},
+    ParamSpec{.name = "neox",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0}};
 constexpr std::array kRopeRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
 std::array<std::uint64_t, 3> Axes(const Instance& in) {
   return {static_cast<std::uint64_t>(in.params.Int("axis0")),
@@ -170,7 +170,9 @@ std::expected<std::vector<RoleShape>, std::string> RopeRoles(const Instance& in)
   const auto axes = Axes(in);
   const auto heads = static_cast<std::uint64_t>(in.params.Int("heads"));
   const auto dim = axes[0] + axes[1] + axes[2];
-  if (in.site != Site::kLayer || dim > 512 || dim * heads != in.stage.width ||
+  if (in.site != Site::kLayer || dim > 512 || dim * heads > 65536 ||
+      (!in.params.Flag("neox") && (dim * heads != in.stage.width || axes[1] < 2 || axes[2] < 2)) ||
+      (in.params.Flag("neox") && (axes[1] != 0 || axes[2] != 0)) ||
       std::ranges::any_of(axes, [](auto v) { return v % 2 != 0; }))
     return std::unexpected("three-axis head normalization geometry differs");
   return std::vector{Role(0, {dim})};
@@ -178,7 +180,9 @@ std::expected<std::vector<RoleShape>, std::string> RopeRoles(const Instance& in)
 std::expected<SpatialShape, std::string> RopeShape(const Instance& in, SpatialShape x,
                                                    std::optional<SpatialShape> aux) {
   if (!RopeRoles(in) || !Count(x) || x.width != 1 || x.images != 1 ||
-      x.channels != in.stage.width || !aux || *aux != SpatialShape{x.height, 3, 1, 1})
+      x.channels != (Axes(in)[0] + Axes(in)[1] + Axes(in)[2]) *
+                        static_cast<std::uint64_t>(in.params.Int("heads")) ||
+      !aux || *aux != SpatialShape{x.height, in.params.Flag("neox") ? 1U : 3U, 1, 1})
     return std::unexpected("three-axis rotation input or position geometry differs");
   return x;
 }
@@ -196,13 +200,15 @@ std::expected<SpatialValue, std::string> RopeEmit(SpatialFragment& f) {
                     NormScale(f.builder, f.weights[0]));
   std::uint32_t offset = 0;
   for (std::size_t axis = 0; axis < axes.size(); ++axis) {
+    if (axes[axis] == 0) continue;
     auto pos = f.builder.Cont(f.builder.View(f.auxiliary->tensor, ir::ShapeOf({rows}),
                                              {4, rows * 4, rows * 4, rows * 4}, axis * rows * 4));
-    x = f.builder.Rope(x, pos, {},
-                       {.mode = ir::RopeMode::kNormal,
-                        .dims = static_cast<std::uint32_t>(axes[axis]),
-                        .offset = offset,
-                        .base = F32(f.instance.params.Real("base"))});
+    x = f.builder.Rope(
+        x, pos, {},
+        {.mode = f.instance.params.Flag("neox") ? ir::RopeMode::kNeox : ir::RopeMode::kNormal,
+         .dims = static_cast<std::uint32_t>(axes[axis]),
+         .offset = offset,
+         .base = F32(f.instance.params.Real("base"))});
     offset += static_cast<std::uint32_t>(axes[axis]);
   }
   x = f.builder.Reshape(x, ir::ShapeOf({out->channels, 1, rows, 1}));
@@ -210,7 +216,8 @@ std::expected<SpatialValue, std::string> RopeEmit(SpatialFragment& f) {
 }
 std::expected<void, std::string> RopeReference(SpatialRefIO& io) {
   auto shape = RopeShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || io.input.size() != *Count(io.shape) || io.auxiliary.size() != 3 * shape->height ||
+  if (!shape || io.input.size() != *Count(io.shape) ||
+      io.auxiliary.size() != (io.instance.params.Flag("neox") ? 1U : 3U) * shape->height ||
       !io.bias.empty() || !io.carry.empty())
     return std::unexpected("three-axis reference extents");
   const auto axes = Axes(io.instance);
@@ -236,7 +243,8 @@ std::expected<void, std::string> RopeReference(SpatialRefIO& io) {
           const double angle = io.auxiliary[row + rows * axis] *
                                std::pow(F32(io.instance.params.Real("base")),
                                         -static_cast<double>(c) / static_cast<double>(axes[axis]));
-          const auto c0 = offset + c, c1 = c0 + 1;
+          const auto c0 = offset + (io.instance.params.Flag("neox") ? c / 2 : c);
+          const auto c1 = c0 + (io.instance.params.Flag("neox") ? axes[axis] / 2 : 1);
           const auto i0 = row + rows * (head * dim + c0), i1 = row + rows * (head * dim + c1);
           const double a = io.input[i0] / norm * io.kernel[c0],
                        b = io.input[i1] / norm * io.kernel[c1];
@@ -249,13 +257,13 @@ std::expected<void, std::string> RopeReference(SpatialRefIO& io) {
   return {};
 }
 constexpr std::array kSliceParams{
-    ParamSpec{.name = "start", .type = ParamType::kInt, .least = 0, .most = 16777216},
-    ParamSpec{.name = "rows", .type = ParamType::kInt, .least = 1, .most = 16777216},
+    ParamSpec{.name = "start", .type = ParamType::kInt, .least = 0, .most = 4294967295.0},
+    ParamSpec{.name = "rows", .type = ParamType::kInt, .least = 1, .most = 4294967295.0},
     ParamSpec{.name = "input_rows",
               .type = ParamType::kInt,
               .required = false,
               .least = 0,
-              .most = 16777216,
+              .most = 4294967295.0,
               .fallback = 0}};
 std::expected<SpatialShape, std::string> SliceShape(const Instance& in, SpatialShape x,
                                                     std::optional<SpatialShape> aux) {
@@ -390,6 +398,67 @@ const SpatialOps kRope{.infer_shape = RopeShape,
                        .reference = RopeReference,
                        .max_nodes = 24,
                        .auxiliary_encoding = format::Encoding::kI32};
+constexpr std::array kReshapeParams{
+    ParamSpec{.name = "width", .type = ParamType::kInt, .least = 1, .most = 4294967295.0},
+    ParamSpec{.name = "height", .type = ParamType::kInt, .least = 1, .most = 4294967295.0}};
+std::expected<SpatialShape, std::string> ReshapeShape(const Instance& in, SpatialShape x,
+                                                      std::optional<SpatialShape> auxiliary) {
+  const SpatialShape out{static_cast<std::uint64_t>(in.params.Int("width")),
+                         static_cast<std::uint64_t>(in.params.Int("height")), x.channels, x.images};
+  if (auxiliary || !Count(x) || !Count(out) || *Count(x) != *Count(out))
+    return std::unexpected("spatial reshape must retain complete typed storage");
+  return out;
+}
+std::expected<SpatialValue, std::string> ReshapeEmit(SpatialFragment& f) {
+  auto out = ReshapeShape(f.instance, f.shape,
+                          f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!out || !f.weights.empty() || f.carry)
+    return std::unexpected("spatial reshape operands differ");
+  return SpatialValue{f.builder.Reshape(f.input, ir::ShapeOf({out->width, out->height,
+                                                              out->channels, out->images})),
+                      *out};
+}
+std::expected<void, std::string> ReshapeReference(SpatialRefIO& io) {
+  auto out = ReshapeShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!out || io.input.size() != *Count(*out) || !io.kernel.empty() || !io.bias.empty() ||
+      !io.auxiliary.empty() || !io.carry.empty())
+    return std::unexpected("spatial reshape reference operands differ");
+  io.output.assign(io.input.begin(), io.input.end());
+  return {};
+}
+std::expected<SpatialShape, std::string> AffineShape(const Instance&, SpatialShape x,
+                                                     std::optional<SpatialShape> auxiliary) {
+  if (!Count(x) || auxiliary != SpatialShape{1, 2, x.channels, 1})
+    return std::unexpected("channel affine requires one scale and bias per channel");
+  return x;
+}
+std::expected<SpatialValue, std::string> AffineEmit(SpatialFragment& f) {
+  auto out = AffineShape(f.instance, f.shape,
+                         f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!out || !f.weights.empty() || f.carry)
+    return std::unexpected("channel affine operands differ");
+  const auto shape = ir::ShapeOf({1, 1, out->channels, 1});
+  const std::array<std::uint64_t, 4> strides{4, 4, 8, 8 * out->channels};
+  auto scale = f.builder.View(f.auxiliary->tensor, shape, strides, 0);
+  auto bias = f.builder.View(f.auxiliary->tensor, shape, strides, 4);
+  return SpatialValue{f.builder.Add(f.builder.Mul(f.input, scale), bias), *out};
+}
+std::expected<void, std::string> AffineReference(SpatialRefIO& io) {
+  auto out = AffineShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!out || io.input.size() != *Count(*out) || io.auxiliary.size() != 2 * out->channels ||
+      !io.kernel.empty() || !io.bias.empty() || !io.carry.empty())
+    return std::unexpected("channel affine reference operands differ");
+  io.output.resize(io.input.size());
+  const auto pixels = out->width * out->height;
+  for (std::size_t i = 0; i < io.input.size(); ++i) {
+    const auto channel = (i / pixels) % out->channels;
+    io.output[i] = io.input[i] * io.auxiliary[2 * channel] + io.auxiliary[2 * channel + 1];
+  }
+  return {};
+}
+const SpatialOps kReshape{ReshapeShape, ReshapeEmit, ReshapeReference, 1};
+const SpatialOps kAffine{AffineShape, AffineEmit, AffineReference, 4};
+
 }  // namespace
 const ComponentDef& ConditionRows() {
   static const ComponentDef d{.kind = "condition.rows",
@@ -454,4 +523,22 @@ const ComponentDef& ResidualScaled() {
                               .reference = NoTokenRef};
   return d;
 }
+const ComponentDef& ReshapeSpatial() {
+  static const ComponentDef d{.kind = "reshape.spatial",
+                              .params = kReshapeParams,
+                              .shapes = NoRoles,
+                              .spatial = &kReshape,
+                              .emit = NoToken,
+                              .reference = NoTokenRef};
+  return d;
+}
+const ComponentDef& AffineChannel() {
+  static const ComponentDef d{.kind = "affine.channel",
+                              .shapes = NoRoles,
+                              .spatial = &kAffine,
+                              .emit = NoToken,
+                              .reference = NoTokenRef};
+  return d;
+}
+
 }  // namespace llmp::components::defs

@@ -11,18 +11,26 @@
 #include "components/defs.h"
 
 namespace llmp::components {
+std::optional<std::uint64_t> SpatialElements(SpatialShape shape) {
+  std::uint64_t count = 1;
+  // The scalar reference uses doubles and pointer differences; this also
+  // bounds every dense F32 activation and all signed backend dimensions.
+  constexpr auto limit =
+      static_cast<std::uint64_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(double);
+  for (const auto dimension : {shape.width, shape.height, shape.channels, shape.images})
+    if (dimension == 0 || __builtin_mul_overflow(count, dimension, &count) || count > limit)
+      return {};
+  return count;
+}
 namespace {
 
-constexpr std::uint64_t kValues = 1ULL << 24U;
 constexpr std::size_t kComponents = spec::kMaxComponents, kOwners = 16, kTensors = 1024;
 static_assert(kComponents <= std::numeric_limits<std::uint16_t>::max());
 
 std::expected<std::uint64_t, std::string> Values(SpatialShape s) {
-  std::uint64_t count = 1;
-  for (auto n : {s.width, s.height, s.channels, s.images})
-    if (n == 0 || __builtin_mul_overflow(count, n, &count) || count > kValues)
-      return std::unexpected("spatial dimensions exceed the bounded value domain");
-  return count;
+  const auto count = SpatialElements(s);
+  if (!count) return std::unexpected("spatial dimensions exceed representable storage");
+  return *count;
 }
 format::TensorFormat Format(SpatialShape s, format::Encoding encoding = format::Encoding::kF32) {
   return {.encoding = encoding,
@@ -228,7 +236,11 @@ std::expected<std::uint64_t, std::string> MetadataBound(
         return std::unexpected("spatial bound tensor name is too large");
   }
   for (std::size_t i = 0; i < owners.size(); ++i) {
-    if (!Values(owners[i].shape) || owners[i].shape.channels != stage.stream.width ||
+    if (!Values(owners[i].shape) ||
+        (options.input_encoding != format::Encoding::kF32 &&
+         options.input_encoding != format::Encoding::kI32) ||
+        (options.input_encoding == format::Encoding::kF32 &&
+         owners[i].shape.channels != stage.stream.width) ||
         owners[i].owner >= ir::kJoinedSegment || (i && owners[i - 1].owner >= owners[i].owner))
       return std::unexpected("spatial owner order or initial channels/dimensions differ");
   }
@@ -329,13 +341,15 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
   std::vector<SpatialOwner> ends;
   for (const auto& owner : owners) {
     auto shape = owner.shape;
-    values += *Values(shape);
+    if (__builtin_add_overflow(values, *Values(shape), &values))
+      return std::unexpected("spatial reference inventory overflows");
     std::vector<SpatialShape> inferred{shape};
     std::vector<const SpatialInput*> ports;
     for (const auto& port : options.inputs)
       if (port.owner == owner.owner) {
         ports.push_back(&port);
-        values += *Values(port.shape);
+        if (__builtin_add_overflow(values, *Values(port.shape), &values))
+          return std::unexpected("spatial reference input inventory overflows");
       }
     for (std::size_t j = 0; j < chain.size(); ++j) {
       const auto link =
@@ -345,13 +359,16 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
       const auto source_shape =
           link.input_port ? ports[*link.input_port]->shape : inferred[link.input];
       const auto source_encoding =
-          link.input_port ? ports[*link.input_port]->encoding : format::Encoding::kF32;
+          link.input_port ? ports[*link.input_port]->encoding
+                          : (link.input == 0 ? options.input_encoding : format::Encoding::kF32);
       const auto auxiliary =
           link.auxiliary_port
               ? std::optional(ports[*link.auxiliary_port]->shape)
               : (link.auxiliary ? std::optional(inferred[*link.auxiliary]) : std::nullopt);
       const auto auxiliary_encoding =
-          link.auxiliary_port ? ports[*link.auxiliary_port]->encoding : format::Encoding::kF32;
+          link.auxiliary_port ? ports[*link.auxiliary_port]->encoding
+                              : (link.auxiliary && *link.auxiliary == 0 ? options.input_encoding
+                                                                        : format::Encoding::kF32);
       if (source_encoding != ops.input_encoding ||
           (auxiliary && auxiliary_encoding != ops.auxiliary_encoding) ||
           link.carry.has_value() != ops.needs_carry ||
@@ -362,9 +379,12 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
       if (!next) return std::unexpected(next.error());
       shape = *next;
       inferred.push_back(shape);
-      values += *Values(shape);
-      if (instance->def->spatial->temporary_values)
-        values += instance->def->spatial->temporary_values(*instance, source_shape);
+      if (__builtin_add_overflow(values, *Values(shape), &values))
+        return std::unexpected("spatial reference inventory overflows");
+      if (instance->def->spatial->temporary_values &&
+          __builtin_add_overflow(
+              values, instance->def->spatial->temporary_values(*instance, source_shape), &values))
+        return std::unexpected("spatial reference temporary inventory overflows");
     }
     if (options.exports.empty())
       ends.push_back({owner.owner, shape});
@@ -459,7 +479,7 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
     const auto& owner = owners[i];
     builder.SetOwner(owner.owner);
     auto shape = owner.shape;
-    auto input = builder.Input(Format(shape));
+    auto input = builder.Input(Format(shape, options.input_encoding));
     std::vector<SpatialValue> produced{{input, shape}}, ports;
     input_ports.push_back(owner);
     for (const auto& port : options.inputs)

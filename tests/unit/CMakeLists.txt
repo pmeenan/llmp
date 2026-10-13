@@ -364,6 +364,10 @@ if(LLMP_CUDA)
                                                         llmp_runtime_serving)
   llmp_gpu_gtest(dsv4_engine_target_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  add_executable(image_generation_gpu_test image_generation_gpu_test.cc)
+  target_link_libraries(image_generation_gpu_test PRIVATE llmp_runtime_serving)
+  llmp_gpu_gtest(image_generation_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Gemma 2 and Gemma 3 on the shared engine through the server: heads,
   # state, spill, restart, the near-8K context and the swap transactions.
   add_executable(gemma_engine_serving_gpu_test gemma_engine_serving_gpu_test.cc)
@@ -638,6 +642,12 @@ add_executable(snapshot_store_test snapshot_store_test.cc)
 target_link_libraries(snapshot_store_test PRIVATE llmp_runtime_llm llmp_fake_device_backend
                                                     llmp_warnings)
 llmp_gtest(snapshot_store_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit)
+
+add_executable(engine_image_test engine_image_test.cc)
+target_link_libraries(engine_image_test PRIVATE llmp_runtime_llm llmp_fake_device_backend
+                                                llmp_test_artifact_writer)
+llmp_gtest(engine_image_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
+             ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(engine_llm_test engine_llm_test.cc)
 target_link_libraries(engine_llm_test PRIVATE llmp_runtime_llm llmp_engine_core

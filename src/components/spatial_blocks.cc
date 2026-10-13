@@ -17,12 +17,7 @@
 
 namespace llmp::components::defs {
 namespace {
-std::optional<std::uint64_t> Count(SpatialShape s) {
-  std::uint64_t count = 1;
-  for (auto n : {s.width, s.height, s.channels, s.images})
-    if (!n || __builtin_mul_overflow(count, n, &count) || count > (1ULL << 24U)) return {};
-  return count;
-}
+std::optional<std::uint64_t> Count(SpatialShape s) { return SpatialElements(s); }
 std::expected<std::vector<RoleShape>, std::string> NoRoles(const Instance& in) {
   if (in.site != Site::kLayer) return std::unexpected("spatial blocks require a layer");
   return std::vector<RoleShape>{};
@@ -100,16 +95,28 @@ constexpr std::array kAttentionParams{ParamSpec{.name = "heads",
                                                 .required = false,
                                                 .least = 1,
                                                 .most = 65536,
-                                                .fallback = 1}};
+                                                .fallback = 1},
+                                      ParamSpec{.name = "kv_heads",
+                                                .type = ParamType::kInt,
+                                                .required = false,
+                                                .least = 0,
+                                                .most = 65536,
+                                                .fallback = 0}};
+std::uint64_t KvHeads(const Instance& in) {
+  const auto kv = in.params.Int("kv_heads");
+  return static_cast<std::uint64_t>(kv == 0 ? in.params.Int("heads") : kv);
+}
 std::expected<SpatialShape, std::string> AttentionShape(const Instance& in, SpatialShape x,
                                                         std::optional<SpatialShape> auxiliary) {
   const auto pixels = x.width * x.height;
   const auto heads = static_cast<std::uint64_t>(in.params.Int("heads"));
-  if (!Count(x) || x.images != 1 || x.channels % 3 || pixels > 4096 || (x.channels / 3) % heads ||
-      heads * pixels * pixels > (1ULL << 24U) ||
+  const auto kv = KvHeads(in);
+  const auto total_heads = heads + 2 * kv;
+  if (!Count(x) || x.images != 1 || heads % kv || x.channels % total_heads ||
+      !SpatialElements({pixels, pixels, heads, 1}) ||
       (auxiliary && *auxiliary != SpatialShape{pixels, pixels, 1, 1}))
     return std::unexpected("spatial attention QKV, heads or mask geometry differs");
-  x.channels /= 3;
+  x.channels = x.channels / total_heads * heads;
   return x;
 }
 std::expected<SpatialValue, std::string> AttentionEmit(SpatialFragment& f) {
@@ -120,14 +127,17 @@ std::expected<SpatialValue, std::string> AttentionEmit(SpatialFragment& f) {
   const auto pixels = shape->width * shape->height, channels = shape->channels;
   const auto heads = static_cast<std::uint64_t>(f.instance.params.Int("heads")),
              dim = channels / heads;
-  const auto src = f.builder.Reshape(f.input, ir::ShapeOf({pixels, channels * 3}));
+  const auto kv = KvHeads(f.instance), kv_channels = kv * dim;
+  const auto src = f.builder.Reshape(f.input, ir::ShapeOf({pixels, channels + 2 * kv_channels}));
   const std::array<std::uint64_t, 4> strides{4, pixels * 4, pixels * dim * 4,
-                                             pixels * channels * 4};
-  const auto plane = ir::ShapeOf({pixels, dim, heads});
-  const auto q = f.builder.Cont(f.builder.Transpose(f.builder.View(src, plane, strides, 0)));
+                                             pixels * (channels + 2 * kv_channels) * 4};
+  const auto q_plane = ir::ShapeOf({pixels, dim, heads});
+  const auto kv_plane = ir::ShapeOf({pixels, dim, kv});
+  const auto q = f.builder.Cont(f.builder.Transpose(f.builder.View(src, q_plane, strides, 0)));
   const auto k = f.builder.Cont(
-      f.builder.Transpose(f.builder.View(src, plane, strides, pixels * channels * 4)));
-  const auto v = f.builder.Cont(f.builder.View(src, plane, strides, pixels * channels * 8));
+      f.builder.Transpose(f.builder.View(src, kv_plane, strides, pixels * channels * 4)));
+  const auto v =
+      f.builder.Cont(f.builder.View(src, kv_plane, strides, pixels * (channels + kv_channels) * 4));
   const auto scores = f.builder.MatMul(k, q);
   const ir::SoftMaxParams soft{.scale =
                                    static_cast<float>(1.0 / std::sqrt(static_cast<double>(dim)))};
@@ -147,6 +157,7 @@ std::expected<void, std::string> AttentionReference(SpatialRefIO& io) {
   const auto pixels = shape->width * shape->height, channels = shape->channels;
   const auto heads = static_cast<std::uint64_t>(io.instance.params.Int("heads")),
              dim = channels / heads;
+  const auto kv = KvHeads(io.instance), kv_channels = kv * dim;
   const double scale = static_cast<float>(1.0 / std::sqrt(static_cast<double>(dim)));
   std::vector<double> out(static_cast<std::size_t>(pixels * channels)),
       row(static_cast<std::size_t>(pixels));
@@ -156,7 +167,7 @@ std::expected<void, std::string> AttentionReference(SpatialRefIO& io) {
         double dot = 0;
         for (std::uint64_t channel = 0; channel < dim; ++channel)
           dot += io.input[query + pixels * (head * dim + channel)] *
-                 io.input[key + pixels * (channels + head * dim + channel)];
+                 io.input[key + pixels * (channels + (head / (heads / kv)) * dim + channel)];
         row[key] = dot * scale + (io.auxiliary.empty() ? 0 : io.auxiliary[key + pixels * query]);
       }
       const double max = *std::max_element(row.begin(), row.end());
@@ -171,7 +182,8 @@ std::expected<void, std::string> AttentionReference(SpatialRefIO& io) {
         double value = 0;
         for (std::uint64_t key = 0; key < pixels; ++key)
           value +=
-              (row[key] / sum) * io.input[key + pixels * (2 * channels + head * dim + channel)];
+              (row[key] / sum) * io.input[key + pixels * (channels + kv_channels +
+                                                          (head / (heads / kv)) * dim + channel)];
         out[query + pixels * (head * dim + channel)] = value;
       }
     }

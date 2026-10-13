@@ -2584,6 +2584,22 @@ each is checked against the design as M3.6 proceeds.
             text encoder/VAE integration and serving remain separate. Final
             formatting, boundaries, headers and REUSE checks pass.
             ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-denoiser-forward-and-euler-step)).
+      - [x] **Q3f — complete shared generation core:** the real 36-layer text
+            encoder, two full 32-block flow/Euler steps and complete first-frame
+            VAE execute through `EngineImage` at 1024×1024. `ProgramLifecycle`
+            shares paid measurement, binding, coverage, plan accounting and
+            retained `StepRuns` with `ModelRunner`; token state and cache keys
+            remain unchanged. Typed device handoffs complete under the current
+            stage lease, and unknown completion retains the complete owner.
+            Full main Spark B native build and all 197 affected host controls
+            across eight targets pass. The actual case completes two generations
+            and eight stages, checks all 4,194,304 finite decoded values per
+            generation and reproduces its own first-flow and pixel digests.
+            The measured 41,224,157,952-byte envelope fits the unchanged 48GiB
+            node cap. Same-source image quality, broader prompts/schedules,
+            serving/swap qualification and the matched 1% migration gate remain
+            open; legacy serving is retained
+            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-shared-image-generation)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

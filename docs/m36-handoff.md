@@ -40,6 +40,16 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-13
 
+The shared image generation core now completes two 1024×1024 generations:
+native 36-layer text encoding, two complete 32-block Euler steps and the full
+first-frame VAE. Language and image adapters share the paid program lifecycle;
+stage leases, typed device handoffs and retained captures preserve completion
+ownership. Full main native build and 197 affected host controls pass, followed
+by the real source case with all finite decoded outputs and repeat digests.
+This is a functional diagnostic, not default serving, same-source reference
+quality or the 1% migration gate. See the
+[complete generation evidence](experiments/m36-shared-spatial-execution/README.md#complete-shared-image-generation).
+
 The image speed harness accepts a candidate output pin fixed before timing,
 with separate reference-quality qualification. It preserves the frozen old
 image pin, checks repeatability within each arm and rejects mixed pins;
@@ -688,11 +698,14 @@ these fixtures where applicable.
   All three actual cases pass; the full flow executes seven completions with
   3,584 finite values, 1,792 Euler checks and changed/restored inputs under
   retained capture. Source/recipe/binary guards, retirement and memory-event
-  checks pass. Broader
-  geometries/reference quality, repeated sampling, encoder/VAE integration and
-  `EngineImage` remain open. Qualify numerical choices rather than imposing the legacy
-  pipeline's rounding recipe; retire `qwen_image_runner.*` and `pipeline.cc`
-  roles after their shared replacements pass.
+  checks pass. Q3f now joins the actual text encoder, two full flow steps and
+  whole VAE through the shared `EngineImage` adapter at 1024×1024. Two complete
+  generations reuse retained plans and reproduce their own output digests;
+  all 197 affected main host controls and the real source case pass. Broader
+  geometries, prompts/schedules, same-source reference quality, serving/swap
+  qualification and the matched speed gate remain open. Qualify numerical
+  choices rather than imposing the legacy pipeline's rounding recipe; retire
+  `qwen_image_runner.*` and `pipeline.cc` roles after their replacements qualify.
 - **T-slices, structural techniques.** One per row of `engine-components.md`'s retired table: format layer T04/T11/T58/T95; wave composer T15/T16/T20/T29/T59/T64/T88; patterns T10/T31/T56/T86/T92 (+T09/T41/T57 adoption); prefill T23/T26/T55/T93; state T67; decoding T39/T45/T81; components T22/T69/T54/T71/T72/T61; planner T96; pager T68. Adopt where qualified comparisons improve speed, quality, reuse, simplicity or resource cost.
 - **K1, state encodings run.** A lossy KV encoding as a per-alias setting (public config key → D-entry), plus the long-context quality report.
 - **R1, re-keying cleanup.** Remove `ModelKeySpec::architectures` (replaced by spec capability predicates); remove `RunnerContextCeiling` (from components' position limits); `ArtifactFactsOf` from the spec. The layout-ID bump itself already lands per family through `KeptLayoutId`.

@@ -967,6 +967,29 @@ and restored inputs through retained capture. The conditioner and single-block
 regressions also pass. This does not admit `EngineImage` or establish same-source
 image quality or comparative speed.
 
+The complete shared image adapter now consumes the native 36-layer text graph,
+two full 32-block flow/Euler steps and the complete first-frame decoder through
+ordinary typed programs. `ProgramLifecycle` owns the common measured envelope,
+binding/coverage, plan charge, launch and `StepRuns`; both `ModelRunner` and
+`EngineImage` use it without changing token slot state or cache identities.
+Image stage inputs and outputs occupy explicit stable device ports. Handoffs run
+in the same current-closure leased job after the stage launch, and positive
+completion precedes lease refresh or publication. Plan protection spans lookup
+through handoff; unknown completion prevents continuation/reclamation and retains
+the complete enclosing owner. Successful `Finish` permits a new generation on
+the retained plans, restoring the initial latent only then.
+
+The internal source factory preserves BF16 text/flow and F32 decoder weights,
+with source-derived construction payment before building and measured complete
+stage admission before loading weights. The 1024×1024 diagnostic passes two
+complete generations within the unchanged 48GiB node cap, following a full native
+build and 197 affected host controls. cuBLAS validation now follows element
+alignment, actual 64-bit batch offsets and bounded conversion launches rather
+than inheriting MMVF/MMF paired-load restrictions; those kernels keep their
+original checks. Same-source reference quality, broader image workloads,
+production serving and matched migration speed remain separate. See the
+[complete generation evidence](experiments/m36-shared-spatial-execution/README.md#complete-shared-image-generation).
+
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a
 definition's `row_local` false; `attention.dense`, whose `narrows` says it

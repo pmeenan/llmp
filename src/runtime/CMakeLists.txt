@@ -41,7 +41,7 @@ target_link_libraries(llmp_runtime_llm PUBLIC llmp_runtime llmp_engine_core llmp
 # The serving commands themselves (serving.h, D-096): the configured models
 # on the engine's paged node, in CUDA builds; elsewhere a refusal.
 if(LLMP_CUDA)
-  add_library(llmp_runtime_serving STATIC serving.cc component_build.cc serve_commands.cc
+  add_library(llmp_runtime_serving STATIC serving.cc component_build.cc component_image_build.cc serve_commands.cc
                                           serve_api.cc)
   target_link_libraries(llmp_runtime_serving PUBLIC llmp_runtime llmp_runtime_llm llmp_engine
                                                       llmp_sampling

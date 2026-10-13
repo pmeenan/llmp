@@ -304,6 +304,98 @@ TEST_F(GgmlValidateTest, TheOutputHeadPlanDrawsTheRecordedPoolPeaks) {
 
 // Attention without flash attention, as llama.cpp builds it: K and V views
 // of an F16 cache, grouped over 14 query heads by 2 KV heads.
+TEST_F(GgmlValidateTest, CublasAcceptsOddAttentionStridesWithoutWeakeningPairedKernels) {
+  constexpr std::int64_t kHead = 128, kTokens = 39, kQueryHeads = 32, kKvHeads = 8;
+  auto* keys = Bound(ggml_new_tensor_3d(context(), GGML_TYPE_F32, kHead, kTokens, kKvHeads));
+  auto* queries = Bound(ggml_new_tensor_3d(context(), GGML_TYPE_F32, kHead, kTokens, kQueryHeads));
+  auto* scores = Bound(ggml_mul_mat(context(), keys, queries));
+  ASSERT_EQ(scores->nb[1], 156U);
+  ASSERT_EQ(scores->nb[2], 6084U);
+  auto score_plan = CheckMulMatCublas(scores, GGML_TYPE_F32, false);
+  ASSERT_TRUE(score_plan) << score_plan.error().detail;
+  EXPECT_EQ(score_plan->gemm, CublasGemm::kGemmBatchedEx);
+  EXPECT_EQ(score_plan->alignment, 4U);
+  Rejected(CheckMulMat(scores));
+  Rejected(CheckMulMatF(scores));
+
+  auto* values = Bound(ggml_new_tensor_3d(context(), GGML_TYPE_F32, kTokens, kHead, kKvHeads));
+  auto* output = Bound(ggml_mul_mat(context(), values, scores));
+  auto value_plan = CheckMulMatCublas(output, GGML_TYPE_F32, false);
+  ASSERT_TRUE(value_plan) << value_plan.error().detail;
+  EXPECT_EQ(value_plan->s01, kTokens);
+  EXPECT_EQ(value_plan->s11, kTokens);
+  EXPECT_EQ(value_plan->alignment, 4U);
+  Rejected(CheckMulMat(output));
+  // Scalar alignment remains mandatory even when paired alignment is not.
+  const auto address = reinterpret_cast<std::uintptr_t>(values->data);
+  TensorArena::Bind(values, address + 2);
+  Rejected(CheckMulMatCublas(output, GGML_TYPE_F32, false));
+  TensorArena::Bind(values, address);
+  const auto stride = values->nb[1];
+  values->nb[1] += 2;
+  Rejected(CheckMulMatCublas(output, GGML_TYPE_F32, false));
+  values->nb[1] = stride;
+  // The conversion path also accepts odd BF16 leading dimensions.
+  auto* bf16 = Bound(ggml_new_tensor_2d(context(), GGML_TYPE_BF16, 39, 17));
+  auto* converted = Bound(ggml_mul_mat(context(), bf16, F32(39, 19)));
+  auto converted_plan = CheckMulMatCublas(converted, GGML_TYPE_BF16, true);
+  ASSERT_TRUE(converted_plan) << converted_plan.error().detail;
+  EXPECT_EQ(converted_plan->input, CublasOperand::kConverted);
+  EXPECT_EQ(converted_plan->s01, 39);
+  EXPECT_EQ(converted_plan->alignment, 2U);
+}
+
+TEST_F(GgmlValidateTest, CublasBatchOffsetsAreBytesBeyondThePairedKernelDomain) {
+  constexpr std::int64_t kTokens = 4121;
+  auto* keys = Bound(ggml_new_tensor_3d(context(), GGML_TYPE_F32, 128, kTokens, 32));
+  auto* queries = Bound(ggml_new_tensor_3d(context(), GGML_TYPE_F32, 128, kTokens, 32));
+  auto* scores = Bound(ggml_mul_mat(context(), keys, queries));
+  EXPECT_GT(ggml_nbytes(scores),
+            static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()));
+  auto plan = CheckMulMatCublas(scores, GGML_TYPE_F32, false);
+  ASSERT_TRUE(plan) << plan.error().detail;
+  EXPECT_EQ(plan->gemm, CublasGemm::kGemmStridedBatchedEx);
+  EXPECT_EQ(plan->scratch, 0U);
+  Rejected(CheckMulMat(scores));
+  // A genuine dimension overflow is still refused before int conversion.
+  keys->ne[0] = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max()) + 1;
+  queries->ne[0] = keys->ne[0];
+  Rejected(CheckMulMatCublas(scores, GGML_TYPE_F32, false));
+}
+
+TEST_F(GgmlValidateTest, CublasContiguousConversionChecksItsActualLaunchGrid) {
+  constexpr std::int64_t kWidthLarge = 32768;
+  auto* weights = ggml_new_tensor_4d(context(), GGML_TYPE_BF16, kWidthLarge, kWidthLarge, 1, 1024);
+  auto* input = ggml_new_tensor_4d(context(), GGML_TYPE_F32, kWidthLarge, kWidthLarge, 1, 1024);
+  TensorArena::Bind(weights, 1ULL << 44);
+  TensorArena::Bind(input, 1ULL << 46);
+  auto* output = ggml_mul_mat(context(), weights, input);
+  TensorArena::Bind(output, 1ULL << 48);
+  // Descriptor-only:2^40 elements use2^30 vec4 blocks; no payload allocation.
+  auto vectorized = CheckMulMatCublas(output, GGML_TYPE_BF16, true);
+  ASSERT_TRUE(vectorized) << vectorized.error().detail;
+  EXPECT_EQ(vectorized->input, CublasOperand::kConverted);
+  // The same element-aligned source must fall back to scalar conversion,
+  // which would require2^32 blocks and cannot launch.
+  TensorArena::Bind(input, (1ULL << 46) + 4);
+  auto scalar = CheckMulMatCublas(output, GGML_TYPE_BF16, true);
+  ASSERT_FALSE(scalar);
+  EXPECT_NE(scalar.error().detail.find("input conversion"), std::string::npos);
+  TensorArena::Bind(input, 1ULL << 46);
+  TensorArena::Bind(output, (1ULL << 48) + 4);
+  auto scalar_output = CheckMulMatCublas(output, GGML_TYPE_BF16, false);
+  ASSERT_FALSE(scalar_output);
+  EXPECT_NE(scalar_output.error().detail.find("output conversion"), std::string::npos);
+  TensorArena::Bind(output, 1ULL << 48);
+  // A gapped source uses the per-axis gather, not the contiguous launch.
+  input->nb[1] += 4;
+  input->nb[2] = input->nb[1] * static_cast<std::uint64_t>(input->ne[1]);
+  input->nb[3] = input->nb[2];
+  auto gathered = CheckMulMatCublas(output, GGML_TYPE_BF16, true);
+  ASSERT_TRUE(gathered) << gathered.error().detail;
+  EXPECT_EQ(gathered->input, CublasOperand::kPacked);
+}
+
 TEST_F(GgmlValidateTest, AttentionPlansFollowTheLauncher) {
   constexpr std::int64_t kHead = 64;
   constexpr std::int64_t kCells = 256;

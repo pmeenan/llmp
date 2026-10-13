@@ -49,8 +49,9 @@ std::expected<void, KernelFailure> CheckBinary(const ggml_tensor* node, ggml_op 
 // A ggml_mul_mat node, F16, BF16 or F32 weights and F32 activations and
 // output: what both MMVF and MMF need.
 std::expected<void, KernelFailure> CheckMulMat(const ggml_tensor* node);
-// CheckMulMat, also admitting F16 activations of F16 weights, which only the
-// cuBLAS path reads (directly, as its F16 compute type).
+// The same shape/lifetime checks with cuBLAS's element-aligned operands,
+// rather than MMVF/MMF's paired-load alignment. Also admits F16 activations
+// of F16 weights, read directly as its F16 compute type.
 std::expected<void, KernelFailure> CheckMulMatCublasOperands(const ggml_tensor* node);
 // CheckMulMat plus MMF's own limits: at most 16 columns and paired strides.
 std::expected<void, KernelFailure> CheckMulMatF(const ggml_tensor* node);

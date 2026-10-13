@@ -58,6 +58,7 @@
 #include "engine/plan_account.h"
 #include "engine/plan_cache.h"
 #include "engine/ple_rows.h"
+#include "engine/program_lifecycle.h"
 #include "engine/run_stats.h"
 #include "engine/runner_memory.h"
 #include "engine/slot_lifecycle.h"
@@ -411,8 +412,8 @@ class ModelRunner final : public PagedModel {
   const GraphStats& graph_stats() const { return graph_stats_; }
   const Coverage& coverage() const { return coverage_; }
   const StepLookaheadStats& lookahead_stats() const { return lookahead_; }
-  bool graphs() const { return runs_.graphs(); }
-  void set_graphs(bool on) { runs_.set_graphs(on); }
+  bool graphs() const { return programs_.runs().graphs(); }
+  void set_graphs(bool on) { programs_.runs().set_graphs(on); }
   // Its counts, as one JSON object (the runtime's report).
   std::string report_json() const;
 
@@ -519,9 +520,7 @@ class ModelRunner final : public PagedModel {
   std::uint32_t stream_;
   SlotLifecycle slots_;
   RunnerMemory memory_;
-  StepRuns runs_;
-  std::unique_ptr<kernels::StepLaunch> launch_;
-  PlanAccount account_;
+  ProgramLifecycle programs_;
   Plans plans_;
   planner::PlanKey key_base_;
 

@@ -1209,5 +1209,257 @@ TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceB
   EXPECT_EQ(invalid_count.calls, 0U);
 }
 
+TEST(SpatialComponentsTest, TypedTextEncoderUsesIndependentGatherGqaAndNeoxReference) {
+  model::QwenImageTextProfile p;
+  p.layers = 2;
+  p.width = 8;
+  p.heads = 2;
+  p.kv_heads = 1;
+  p.head_dim = 4;
+  p.ffn = 12;
+  p.vocab = 9;
+  const auto source = model::TextEncoderTensors(p);
+  auto mapping = spec::ImageTextSpec(p, 3, 1, source);
+  ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+  const auto tensors = FlowTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{2, {1, 3, 1, 1}}};
+  const std::array ports{SpatialInput{2, 0, {3, 1, 1, 1}, format::Encoding::kI32},
+                         SpatialInput{2, 1, {3, 3, 1, 1}}};
+  Budget budget;
+  auto graph = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                {.links = mapping->links,
+                                 .input_encoding = format::Encoding::kI32,
+                                 .exports = mapping->exports,
+                                 .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  auto exec = ref::Executor::Create(graph->graph());
+  ASSERT_TRUE(exec) << Failed(exec, &ref::ExecFailure::detail).value_or("");
+  BlockWeights weights;
+  for (const auto& weight : graph->weights()) {
+    const auto& desc = graph->graph().tensor(weight.tensor).format;
+    std::size_t count = 1;
+    for (const auto n : desc.shape.ne) count *= n;
+    auto& data = weights[weight.parts[0].first];
+    data.resize(count);
+    for (std::size_t i = 0; i < count; ++i)
+      data[i] = desc.shape.rank == 1 ? 1.F + static_cast<float>(i % 3) / 16
+                                     : static_cast<float>(static_cast<int>((i * 7) % 17) - 8) / 64;
+    ASSERT_TRUE(exec->BindValues(weight.tensor, data));
+  }
+  const std::array<std::int64_t, 3> ids{2, 1, 2}, positions{-2, 0, 3};
+  std::array<float, 9> mask{};
+  for (std::size_t query = 0; query < 3; ++query)
+    for (std::size_t key = query + 1; key < 3; ++key)
+      mask[key + 3 * query] = -std::numeric_limits<float>::infinity();
+  ASSERT_TRUE(exec->BindInts(graph->graph().inputs()[0], ids));
+  ASSERT_TRUE(exec->BindInts(graph->graph().inputs()[1], positions));
+  ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[2], mask));
+  auto executed = exec->Run();
+  ASSERT_TRUE(executed) << Failed(executed, &ref::ExecFailure::detail).value_or("");
+  auto instances = InstancesOf(mapping->spec, 0);
+  ASSERT_TRUE(instances);
+  std::vector<std::vector<double>> values{std::vector<double>(ids.begin(), ids.end())};
+  std::vector<SpatialShape> shapes{owners[0].shape};
+  const std::array<std::vector<double>, 2> extra{
+      std::vector<double>(positions.begin(), positions.end()),
+      std::vector<double>(mask.begin(), mask.end())};
+  const auto& components = mapping->spec.stages[0].layers[0].components;
+  ASSERT_EQ(components.size(), 17U * p.layers + 2);
+  for (std::size_t i = 0; i < components.size(); ++i) {
+    const auto& in = instances->layers[0][i];
+    const auto& link = mapping->links[i];
+    const auto shape = shapes[link.input];
+    std::span<const double> aux;
+    std::optional<SpatialShape> aux_shape;
+    if (link.auxiliary_port) {
+      aux = extra[*link.auxiliary_port];
+      aux_shape = ports[*link.auxiliary_port].shape;
+    } else if (link.auxiliary) {
+      aux = values[*link.auxiliary];
+      aux_shape = shapes[*link.auxiliary];
+    }
+    std::span<const float> weight;
+    if (!components[i].weights.empty()) weight = weights.at(components[i].weights[0].tensor);
+    SpatialRefIO oracle{in, shape, values[link.input], weight, {}, {}, aux, aux_shape};
+    ASSERT_TRUE(in.def->spatial->reference(oracle)) << i << " " << components[i].kind;
+    auto output_shape = in.def->spatial->infer(in, shape, aux_shape);
+    ASSERT_TRUE(output_shape);
+    values.push_back(std::move(oracle.output));
+    shapes.push_back(*output_shape);
+  }
+  auto actual = exec->Values(graph->graph().outputs()[0]);
+  ASSERT_TRUE(actual);
+  ASSERT_EQ(actual->size(), values.back().size());
+  for (std::size_t i = 0; i < actual->size(); ++i)
+    EXPECT_NEAR((*actual)[i], values.back()[i], 3e-6);
+  EXPECT_EQ(graph->outputs()[0].shape, (SpatialShape{1, 2, 8, 1}));
+  const auto& embedding = instances->layers[0][0];
+  std::vector<double> bad_ids{-1, 1, 2};
+  SpatialRefIO bad{
+      embedding, owners[0].shape, bad_ids, weights.at(components[0].weights[0].tensor), {}, {}};
+  EXPECT_FALSE(embedding.def->spatial->reference(bad));
+  bad_ids[0] = p.vocab;
+  EXPECT_FALSE(embedding.def->spatial->reference(bad));
+  bad_ids[0] = 0.5;
+  EXPECT_FALSE(embedding.def->spatial->reference(bad));
+  Budget wrong_type;
+  EXPECT_FALSE(
+      BuildSpatialStep(mapping->spec, tables, owners, wrong_type.Payment(),
+                       {.links = mapping->links, .exports = mapping->exports, .inputs = ports}));
+  EXPECT_EQ(wrong_type.used, 0U);
+}
+
+TEST(SpatialComponentsTest, RealTextAnd1024FlowMetadataArePaidWithoutReferencePayloads) {
+  const auto& profile = model::QwenImage21();
+  const auto text_source = model::TextEncoderTensors(profile.text);
+  auto text = spec::ImageTextSpec(profile.text, 39, 14, text_source);
+  ASSERT_TRUE(text) << Failed(text).value_or("");
+  const auto text_tensors = FlowTensors(text_source);
+  const std::array<std::span<const BoundTensor>, 1> text_tables{text_tensors};
+  const std::array text_owners{SpatialOwner{0, {1, 39, 1, 1}}};
+  const std::array text_ports{SpatialInput{0, 0, {39, 1, 1, 1}, format::Encoding::kI32},
+                              SpatialInput{0, 1, {39, 39, 1, 1}}};
+  Budget text_budget;
+  auto text_graph = BuildSpatialStep(text->spec, text_tables, text_owners, text_budget.Payment(),
+                                     {.links = text->links,
+                                      .reference_buffers = false,
+                                      .input_encoding = format::Encoding::kI32,
+                                      .exports = text->exports,
+                                      .inputs = text_ports});
+  ASSERT_TRUE(text_graph) << Failed(text_graph).value_or("");
+  EXPECT_EQ(text_graph->weights().size(), 397U);
+  EXPECT_EQ(text_graph->outputs()[0].shape, (SpatialShape{1, 25, 4096, 1}));
+  EXPECT_EQ(text_graph->reference_bytes(), 0U);
+  Budget deny_reference;
+  EXPECT_FALSE(BuildSpatialStep(text->spec, text_tables, text_owners, deny_reference.Payment(),
+                                {.links = text->links,
+                                 .input_encoding = format::Encoding::kI32,
+                                 .exports = text->exports,
+                                 .inputs = text_ports}));
+  EXPECT_EQ(deny_reference.used, 0U);
+  const auto flow_source = model::DenoiserTensors(profile.denoiser);
+  auto flow = spec::ImageFlowSpec(profile.denoiser, 25, 4096, flow_source);
+  ASSERT_TRUE(flow) << Failed(flow).value_or("");
+  const auto flow_tensors = FlowTensors(flow_source);
+  const std::array<std::span<const BoundTensor>, 1> flow_tables{flow_tensors};
+  const std::array flow_owners{SpatialOwner{0, {1, 25, 4096, 1}}};
+  const std::array flow_ports{
+      SpatialInput{0, 0, {1, 4096, 64, 1}}, SpatialInput{0, 1, {1, 2, 256, 1}},
+      SpatialInput{0, 2, {4121, 3, 1, 1}, format::Encoding::kI32},
+      SpatialInput{0, 3, {4121, 4121, 1, 1}}, SpatialInput{0, 4, {1, 1, 1, 1}}};
+  Budget flow_budget;
+  auto flow_graph = BuildSpatialStep(flow->spec, flow_tables, flow_owners, flow_budget.Payment(),
+                                     {.links = flow->links,
+                                      .reference_buffers = false,
+                                      .exports = flow->exports,
+                                      .inputs = flow_ports});
+  ASSERT_TRUE(flow_graph) << Failed(flow_graph).value_or("");
+  EXPECT_EQ(flow_graph->weights().size(), 297U);
+  EXPECT_EQ(flow_graph->outputs()[1].shape, (SpatialShape{1, 4096, 64, 1}));
+  EXPECT_EQ(flow_graph->metadata_bytes(), 65253376U);
+  EXPECT_EQ(flow_graph->reference_bytes(), 0U);
+  RecordProperty("text_metadata_bytes", std::to_string(text_graph->metadata_bytes()));
+  RecordProperty("real_flow_metadata_bytes", std::to_string(flow_graph->metadata_bytes()));
+  EXPECT_FALSE(SpatialElements({UINT64_MAX, 2, 1, 1}));
+  EXPECT_FALSE(SpatialElements({1, 1, 1, 0}));
+  EXPECT_TRUE(SpatialElements({4121, 4121, 32, 1}));
+  auto invalid = profile.text;
+  invalid.kv_heads = 3;
+  EXPECT_FALSE(spec::ImageTextSpec(invalid, 39, 14, text_source));
+  invalid.layers = UINT32_MAX;
+  EXPECT_FALSE(spec::ImageTextSpecBound(invalid, text_source));
+}
+
+TEST(SpatialComponentsTest, LatentReshapeAndChannelAffinePreserveOwnerPlanes) {
+  spec::Stage stage{.name = "decode", .role = spec::StageRole::kVae, .artifact = 0};
+  stage.stream.width = 2;
+  spec::Layer layer;
+  layer.components.push_back({.kind = "reshape.spatial",
+                              .version = 1,
+                              .params = {{"width", std::int64_t{2}}, {"height", std::int64_t{2}}}});
+  layer.components.push_back({.kind = "affine.channel", .version = 1});
+  stage.layers.push_back(std::move(layer));
+  spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {std::move(stage)}};
+  spec::Canonicalize(model);
+  const std::array<std::span<const BoundTensor>, 1> tables{};
+  const std::array owners{SpatialOwner{2, {1, 4, 2, 1}}, SpatialOwner{5, {1, 4, 2, 1}}};
+  const std::array ports{SpatialInput{2, 0, {1, 2, 2, 1}}, SpatialInput{5, 0, {1, 2, 2, 1}}};
+  const std::array links{spec::GraphLink{0, {}}, spec::GraphLink{.input = 1, .auxiliary_port = 0}};
+  Budget budget;
+  auto graph =
+      BuildSpatialStep(model, tables, owners, budget.Payment(), {.links = links, .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  auto exec = ref::Executor::Create(graph->graph());
+  ASSERT_TRUE(exec);
+  std::array<std::vector<float>, 2> input, affine;
+  for (std::size_t owner = 0; owner < 2; ++owner) {
+    input[owner].resize(8);
+    for (std::size_t i = 0; i < 8; ++i) input[owner][i] = static_cast<float>(i + 16 * owner) / 8.F;
+    affine[owner] = {2.F, -1.F, -0.5F, static_cast<float>(owner + 2)};
+    ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[2 * owner], input[owner]));
+    ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[2 * owner + 1], affine[owner]));
+  }
+  ASSERT_TRUE(exec->Run());
+  for (std::size_t owner = 0; owner < 2; ++owner) {
+    auto output = exec->Values(graph->graph().outputs()[owner]);
+    ASSERT_TRUE(output);
+    ASSERT_EQ(output->size(), 8U);
+    EXPECT_EQ(graph->outputs()[owner].shape, (SpatialShape{2, 2, 2, 1}));
+    for (std::size_t i = 0; i < 8; ++i)
+      EXPECT_DOUBLE_EQ((*output)[i], input[owner][i] * affine[owner][2 * (i / 4)] +
+                                         affine[owner][2 * (i / 4) + 1]);
+  }
+  auto wrong_ports = ports;
+  wrong_ports[1].shape = {2, 1, 2, 1};
+  Budget refused;
+  EXPECT_FALSE(BuildSpatialStep(model, tables, owners, refused.Payment(),
+                                {.links = links, .inputs = wrong_ports}));
+  EXPECT_EQ(refused.used, 0U);
+  auto wrong_owners = owners;
+  wrong_owners[0].shape.height = 5;
+  EXPECT_FALSE(BuildSpatialStep(model, tables, wrong_owners, refused.Payment(),
+                                {.links = links, .inputs = ports}));
+  EXPECT_EQ(refused.used, 0U);
+}
+
+TEST(SpatialComponentsTest, Actual1024DecoderHandoffIsPaidBeforeReferenceAllocation) {
+  const auto& profile = model::QwenImage21().vae;
+  const auto source = model::VaeDecoderTensors(profile);
+  auto mapping = spec::ImageDecodeSpec(profile, 64, source);
+  ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+  auto tensors = FlowTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{0, {1, 4096, 64, 1}}};
+  const std::array ports{SpatialInput{0, 0, {1, 2, 64, 1}}};
+  Budget budget;
+  auto graph = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                {.links = mapping->links,
+                                 .reference_buffers = false,
+                                 .exports = mapping->exports,
+                                 .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  EXPECT_EQ(graph->weights().size(), 128U);
+  EXPECT_EQ(graph->outputs()[0].shape, (SpatialShape{1024, 1024, 4, 1}));
+  EXPECT_EQ(graph->reference_bytes(), 0U);
+  RecordProperty("decoder_metadata_bytes", std::to_string(graph->metadata_bytes()));
+  Budget no_reference;
+  EXPECT_FALSE(
+      BuildSpatialStep(mapping->spec, tables, owners, no_reference.Payment(),
+                       {.links = mapping->links, .exports = mapping->exports, .inputs = ports}));
+  EXPECT_EQ(no_reference.used, 0U);
+  auto invalid = profile;
+  invalid.res_blocks = UINT32_MAX;
+  EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 64, source));
+  invalid = profile;
+  invalid.base = UINT32_MAX;
+  EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 64, source));
+  invalid = profile;
+  invalid.spatial_factor = 8;
+  EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 64, source));
+  EXPECT_FALSE(spec::ImageDecodeSpec(profile, UINT32_MAX, source));
+  EXPECT_FALSE(spec::ImageDecodeSpec(profile, 64, std::span(source).first(127)));
+}
+
 }  // namespace
 }  // namespace llmp::components

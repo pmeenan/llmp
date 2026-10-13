@@ -32,6 +32,12 @@ struct SpatialComposition {
 // Same prepaid 1MiB source-mapping allowance, at most256 steps/4096 tensor names.
 std::expected<SpatialComposition, std::string> VaeDecoderSpec(
     std::span<const model::VaeStep> steps, std::span<const model::QwenImageTensor> tensors);
+// Decoder including typed latent reshape and source per-channel affine input.
+// Primary [1,grid*grid,z_dim,1], extra [1,2,z_dim,1] carries F32 std/mean.
+// Caller pays the same bounded VAE mapping inventory before construction.
+std::expected<SpatialComposition, std::string> ImageDecodeSpec(
+    const model::QwenImageVaeProfile& profile, std::uint32_t grid,
+    std::span<const model::QwenImageTensor> tensors);
 // Four BF16 source projections; exports modulation and final normalization scale.
 // Caller prepays the existing 1MiB source-mapping allowance before this call.
 // This maps only source roles and branches; input sinusoid policy belongs to the caller.
@@ -45,6 +51,14 @@ std::expected<SpatialComposition, std::string> ImageTimestepSpec(
 // Exports updated stream and final normalization scale. Same prepaid 1MiB mapper.
 std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
     const model::QwenImageDenoiserProfile& profile, std::uint32_t block, std::uint32_t text_rows,
+    std::span<const model::QwenImageTensor> tensors);
+// Source text encoder as a stateless typed graph: primary I32 IDs, extra
+// I32 positions and explicit causal F32 mask. Exports pre-final-norm features
+// after the source prompt prefix; no generation head or token cache is implied.
+std::expected<std::uint64_t, std::string> ImageTextSpecBound(
+    const model::QwenImageTextProfile& profile, std::span<const model::QwenImageTensor> tensors);
+std::expected<SpatialComposition, std::string> ImageTextSpec(
+    const model::QwenImageTextProfile& profile, std::uint32_t rows, std::uint32_t drop,
     std::span<const model::QwenImageTensor> tensors);
 // Complete denoiser plus explicit Euler residual. Caller prepays the returned
 // mapping bound before ImageFlowSpec; includes all copies, no source payloads.

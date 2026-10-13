@@ -1,7 +1,7 @@
 <!-- SPDX-FileCopyrightText: 2026 llmpalooza contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Shared spatial StepProgram: first actual VAE spans
+# Shared spatial programs and image generation
 
 The first private Spark A screen (2026-10-12) executes existing F32 VAE weights through the shared typed graph, planner, GGML lowering, StepProgram and StepRuns completion/capture path. It uses no image-family dispatcher, fabricated token shape or mandatory BF16 intermediate rounding. Main integration also passes (see below).
 
@@ -325,3 +325,75 @@ Actual model binary
 `1eb54e128b9209a09b040e49009f0b22b5162c1dd2ff5b367087cc1a032604be`
 (188,854,360 bytes). The literal main result and all three raw XML/log/guard
 receipts remain in the sealed session packages.
+
+
+## Complete shared image generation
+
+The controlled 1024×1024 path now executes the actual 36-layer text encoder,
+two complete 32-block flow/Euler steps and the whole first-frame VAE. The fixed
+native prompt has 39 tokens, with 25 retained text rows; the flow has 4,096
+latent rows and 4,121 joint rows. Source weights remain BF16 for text/flow and
+F32 for the decoder. The source factory reuses shared components and the owned
+GGML backend; it introduces no family dispatcher or mandatory intermediate casts.
+
+`ProgramLifecycle` is consumed by both language and image adapters for measured
+program bounds, binding/coverage, plan accounting and retained execution.
+Token `SlotLifecycle` and cache keys are unchanged. Image stage ports transfer
+on device inside the current leased job, after execution and before completed
+handoff. Source, workspace, ports and plans remain owned through completion;
+unknown work prevents continuation and reclamation. Five fake lifecycle controls
+cover completed reuse, prelaunch refusal/retry, null source refusal and unknown
+completion retention, including positioning on every noncapturable eager run.
+
+Full main Spark B native compilation and all 197 host controls across eight
+related targets pass in the 76-second supervised job, with no failures or skips.
+The real source case passes in 125.073 seconds, including setup and both complete
+generations; this is not a matched performance measurement. Eight stages complete,
+and every one of the 4,194,304 decoded F32 values per generation is finite before
+postprocessing. The second generation reuses retained typed plans/captures and
+reproduces its own first-flow and final pixel digests. The final RGBA digest is
+`6dd66c48649d75057a996f3dd7bed9a0151ffaa22beac81f942641b16b1fc4e1`;
+it is a candidate-repeat witness, not a reference-quality target.
+
+| Resource | Source-derived bound or actual observation |
+| --- | ---: |
+| Construction allowance, admitted before source parsing/building | 4,294,967,296 bytes |
+| Derived construction categories, before the small owned backend declaration | 2,669,795,776 bytes |
+| Selected source pages across all three stages | 30,530,338,816 bytes |
+| Measured fixed occupancy, including construction allowance and stable ports/staging | 4,444,683,008 bytes |
+| Measured maximum activation workspace | 6,027,214,848 bytes |
+| Measured maximum product pool | 127,926,272 bytes |
+| Retained program/capture floor | 89,800,704 bytes |
+| Pinned staging, already included in fixed occupancy | 107,772,672 bytes |
+| Complete admitted envelope, including two 2MiB spare extents | 41,224,157,952 bytes |
+
+Only the current stage closure is leased; the full sum allows prior source pages
+to remain cached. Virtual reservations are separate from physical residency.
+The measured sum is checked before weight admission against the unchanged 48GiB
+node cap and available physical memory plus a 6GiB margin. The invocation has a
+52GiB zero-swap process/cache ceiling, 54GiB preflight and bounded logs/reports.
+Observed process/cache peak is 899,457,024 bytes, not total device occupancy.
+All source/recipe/binary/artifact guards pass, all memory-limit/OOM events and
+remaining compute PIDs are zero, and the whole child process group retires.
+
+The first actual attempt refused a valid odd-39 attention product during
+measurement, before weight execution. The shared cuBLAS precheck had inherited
+paired-kernel alignment and 32-bit byte-span restrictions. The corrected contract
+keeps actual element alignment, int GEMM dimensions/leading dimensions, checked
+64-bit object/offset bounds and exact scalar/vec4 conversion-grid limits; MMVF/MMF
+pair restrictions and existing fusions are unchanged. Descriptor controls cover
+every physical product in the complete text/flow/decoder plans, odd-stride GQA,
+wide batches, conversions and refusal boundaries. The earlier failed receipt
+remains external; no source padding or bit-forcing rounding was added.
+
+This closes the bounded complete generation core, including actual text mapping
+and repeated generation ownership. It does not qualify a full-size image against
+the same-source reference, broader prompts/geometries/schedules, production
+serving/swap behavior or the matched 1% migration gate. Legacy serving remains
+in place. Final integration source-quality checks remain root's landing step.
+
+Provenance: main02 result
+`cc6863bfb7085e051b79160622a086d22b794836159f05e9f580d9dc378fcca3`;
+models02 result `47f72105ea8be1670b1de3815f5b563f9597e7cf0c55b96464f2bbf8f7dec129`;
+actual model `30d5681f89bea2fcbe6a0ce2d8b93f0e106f94d73f1002d5a69010878a20331a`
+(192,179,136 bytes). Raw records and sealed invocation remain in session scratch.

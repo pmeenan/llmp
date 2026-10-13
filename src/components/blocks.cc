@@ -38,6 +38,7 @@
 
 #include "components/component.h"
 #include "components/defs.h"
+#include "components/spatial.h"
 #include "components/step.h"
 #include "format/encoding.h"
 #include "ir/graph.h"
@@ -168,6 +169,52 @@ std::expected<void, std::string> EmbeddingReference(RefIO& io) {
   io.stream = std::move(*rows);
   return {};
 }
+
+// The same table lookup in a typed stateless graph. Integer IDs are the
+// actual primary input, not a fabricated token-step descriptor.
+std::expected<SpatialShape, std::string> EmbeddingSpatialShape(
+    const Instance& in, SpatialShape input, std::optional<SpatialShape> auxiliary) {
+  if (!SpatialElements(input) || input.width != 1 || input.channels != 1 || input.images != 1 ||
+      auxiliary || in.stage.width == 0)
+    return std::unexpected("embedding spatial IDs must be one I32 row vector");
+  input.channels = in.stage.width;
+  if (!SpatialElements(input)) return std::unexpected("embedding spatial output overflows");
+  return input;
+}
+std::expected<SpatialValue, std::string> EmbeddingSpatialEmit(SpatialFragment& f) {
+  auto shape = EmbeddingSpatialShape(
+      f.instance, f.shape, f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!shape || f.weights.size() != 1 || f.carry)
+    return std::unexpected("embedding spatial operands differ");
+  auto ids = f.builder.Reshape(f.input, ir::ShapeOf({f.shape.height}));
+  auto rows = f.builder.GetRows(f.weights[0], ids);
+  const auto scale = F32(f.instance.params.Real("scale"));
+  if (scale != 1.F) rows = f.builder.Scale(rows, scale);
+  rows = f.builder.Reshape(rows, ir::ShapeOf({shape->channels, 1, shape->height, 1}));
+  return SpatialValue{f.builder.Cont(f.builder.Permute(rows, {2, 0, 1, 3})), *shape};
+}
+std::expected<void, std::string> EmbeddingSpatialReference(SpatialRefIO& io) {
+  auto shape = EmbeddingSpatialShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!shape || io.input.size() != io.shape.height || !io.bias.empty() || !io.auxiliary.empty() ||
+      io.kernel.size() % shape->channels)
+    return std::unexpected("embedding spatial reference extents differ");
+  const auto vocab = io.kernel.size() / shape->channels;
+  for (const auto id : io.input)
+    if (!std::isfinite(id) || id < 0 || id != std::trunc(id) || id >= static_cast<double>(vocab))
+      return std::unexpected("embedding spatial reference ID is outside its table");
+  io.output.resize(*SpatialElements(*shape));
+  for (std::size_t row = 0; row < io.input.size(); ++row)
+    for (std::size_t channel = 0; channel < shape->channels; ++channel)
+      io.output[row + io.input.size() * channel] =
+          io.kernel[static_cast<std::size_t>(io.input[row]) * shape->channels + channel] *
+          static_cast<double>(F32(io.instance.params.Real("scale")));
+  return {};
+}
+const SpatialOps kSpatialEmbedding{.infer_shape = EmbeddingSpatialShape,
+                                   .emit = EmbeddingSpatialEmit,
+                                   .reference = EmbeddingSpatialReference,
+                                   .max_nodes = 6,
+                                   .input_encoding = format::Encoding::kI32};
 
 // ------------------------------------------------------- embedding.projected
 
@@ -579,6 +626,7 @@ const ComponentDef& EmbeddingToken() {
       .roles = kEmbeddingRoles,
       .shapes = EmbeddingShapes,
       .batch_classes = std::span(kJoined).subspan(2, 2),
+      .spatial = &kSpatialEmbedding,
       .emit = EmbeddingEmit,
       .reference = EmbeddingReference,
   };

@@ -1,20 +1,9 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The serving adapter of the image pipeline kind (D-107; docs/runtime-
-// serving.md, "Engine-backed models"): one Image over the shared runner,
-// for the image pipeline once it moves to the component engine.
-//
-// A shell for now: it sets up, registers, binds and pages its runner as
-// any served model does (its weights, its plans, the reclaim order), but
-// the pipeline's work, a text encoder's pass, the denoiser's steps and the
-// VAE's decode as one composition of stages (D-089), has no orchestration
-// on the shared runner yet, so FirstOutput and Finish refuse. Qwen-Image
-// keeps its own serving class (serving.cc) until its migration (M3.6's
-// order, after the LLM families) brings the image phases, their
-// components and this adapter's units of work.
-//
-// Vendor-free, every build profile.
+// One pipeline-kind adapter over shared typed graph/program mechanics.
+// Phase composition is source-owned data; no token state, kernel dispatcher,
+// or per-family execution loop is introduced here.
 
 #ifndef LLMP_RUNTIME_ENGINE_IMAGE_H_
 #define LLMP_RUNTIME_ENGINE_IMAGE_H_
@@ -23,31 +12,72 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
+#include "components/spatial.h"
 #include "config/node_config.h"
 #include "engine/model_runner.h"
 #include "engine/paged_node.h"
+#include "kernels/common/lower.h"
 #include "runtime/serving.h"
 
 namespace llmp::runtime {
 
-// What an engine-backed image pipeline runs: its runner (every stage's
-// weights and state, its setup shapes) and step source.
+// Source-owned typed stage composition. The adapter executes these graphs
+// through the same lower/program lifecycle as token models; no token state or
+// family executor is encoded here. A port is stable device storage, copied at
+// stage boundaries only after its producer completes.
+struct ImagePort {
+  format::TensorFormat format;
+  std::uint8_t owner = 0;
+  std::vector<std::byte> initial;  // exact encoded bytes, or produced by an earlier stage
+};
+struct ImageStage {
+  std::shared_ptr<const components::SpatialGraph> graph;
+  std::uint16_t weights = 0;
+  std::uint32_t observation = 0;
+  // Source role indices are local to this graph, even when component numbers
+  // coincide with another stage. The retained owner authenticates this map.
+  kernels::Addresses addresses;
+  // One entry per graph port. Absent input: host-staged by fill. An output
+  // may be observed on the host and/or carried to this device port.
+  std::vector<std::optional<std::uint32_t>> inputs, outputs;
+};
+struct ImageInvocation {
+  std::uint32_t stage = 0;
+  std::uint32_t iteration = 0;
+};
 struct EngineImageParts {
-  engine::RunnerConfig config;
-  std::unique_ptr<engine::StepSource> source;
-  std::string architecture;
-  // What the step source and the launch borrow, kept until the runner is
-  // gone.
+  // These source/kernel borrowers share one complete owner. It outlives every
+  // graph, lowered program, recording and mapped workspace on all paths.
   std::shared_ptr<void> keep;
+  std::string architecture;
+  base::Sha256Digest identity{};
+  std::vector<engine::StageWeights> weights;
+  std::vector<engine::RunnerConfig::KernelMemory> kernel_memory;
+  std::function<Status(std::span<const std::uint64_t>)> prepare;
+  std::function<void()> retire;
+  std::function<std::expected<std::unique_ptr<kernels::StepLaunch>, std::string>()> launch;
+  std::shared_ptr<const kernels::StepBackend> backend;
+  planner::Policy policy;
+  std::vector<ImagePort> ports;
+  std::vector<ImageStage> stages;
+  std::vector<ImageInvocation> sequence;
+  std::uint32_t first_output = 0;  // inclusive invocation index
+  std::function<Status(const ImageInvocation&, std::size_t, std::span<std::byte>)> fill;
+  // Final conversion is host-side pipeline output formatting, after the last
+  // typed F32 output has completed. It cannot submit work or change the plan.
+  std::function<std::expected<std::string, std::string>(std::span<const std::byte>)> finish;
+  bool graphs = true;
 };
 
 using EngineImageBuild =
     std::function<std::expected<EngineImageParts, std::string>(const ModelSettings& settings)>;
 
-class EngineImage final : public Image {
+class EngineImage final : public Image, public engine::PagedModel {
  public:
   EngineImage(engine::PagedNode& node, const config::ModelEntry& entry,
               const ModelSettings& settings, int index, EngineImageBuild build);
@@ -58,7 +88,7 @@ class EngineImage final : public Image {
   ~EngineImage() override;
 
   engine::PagedModel& paged() override;
-  bool has_paged() const override { return runner_ != nullptr; }
+  bool has_paged() const override { return state_ != nullptr; }
   Status Setup() override;
   Status Register() override;
   Status Bind() override;
@@ -77,7 +107,12 @@ class EngineImage final : public Image {
   void DropPlans() override;
   std::string extra() const override;
 
-  // Refused: the pipeline's phases are not on the shared runner yet.
+  std::uint32_t stream() const override { return static_cast<std::uint32_t>(index_); }
+  const catalog::Closure& fence_closure() const override;
+  std::vector<catalog::ExtentId> managed_extents() const override;
+  Status Release() override;
+  const catalog::Closure& request_closure() const override { return fence_closure(); }
+
   Status FirstOutput(std::string& sha) override;
   Status Finish(std::string& sha) override;
 
@@ -85,9 +120,9 @@ class EngineImage final : public Image {
   engine::PagedNode& node_;
   int index_;
   EngineImageBuild build_;
-  std::string architecture_;
-  std::shared_ptr<void> keep_;  // before the runner: it outlives it
-  std::unique_ptr<engine::ModelRunner> runner_;
+  struct State;
+  std::shared_ptr<State> state_;
+  Status RunThrough(std::size_t end, std::string& sha);
 };
 
 }  // namespace llmp::runtime

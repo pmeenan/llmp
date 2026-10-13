@@ -1693,7 +1693,8 @@ std::expected<void, KernelFailure> Lowering::MakeSelected(NodeId id, const ir::N
           if (at != inputs_.end() && at->second->kind == co::InputKind::kSideRows &&
               at->second->segment == ir::kJoinedSegment)
             operand.side_rows_component = at->second->component;
-        } else if (producer.key == ir::Primitive(Op::kWeight) && in_.addresses.weight_rows) {
+        } else if (producer.key == ir::Primitive(Op::kWeight) && in_.token &&
+                   in_.addresses.weight_rows) {
           const auto at = weights_.find(original.v);
           if (at != weights_.end() && at->second->ref.stage == in_.token->shape.stage &&
               in_.addresses.weight_rows(at->second->ref) != 0)
@@ -4148,6 +4149,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
         case Op::kConcat:
         case Op::kL2Norm:
         case Op::kMatMul:
+        case Op::kGetRows:
         case Op::kSoftMax:
           return true;
         default:

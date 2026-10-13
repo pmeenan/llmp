@@ -556,4 +556,172 @@ TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) 
   }
 }
 
+TEST(GgmlSpatialTest, ActualTextEncoderUsesTypedIdsNeoxAndGqaWithoutTokenMetadata) {
+  const auto& profile = mo::QwenImage21().text;
+  const auto source = mo::TextEncoderTensors(profile);
+  auto mapping = sp::ImageTextSpec(profile, 39, 14, source);
+  ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+  std::vector<co::BoundTensor> tensors;
+  for (const auto& tensor : source) {
+    fm::Shape shape;
+    shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
+    for (std::size_t d = 0; d < tensor.shape.size(); ++d)
+      shape.ne[d] = tensor.shape[tensor.shape.size() - 1 - d];
+    tensors.push_back({tensor.name, ir::Dense(fm::Encoding::kBF16, shape)});
+  }
+  const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+  const std::array owners{co::SpatialOwner{0, {1, 39, 1, 1}}};
+  const std::array ports{co::SpatialInput{0, 0, {39, 1, 1, 1}, fm::Encoding::kI32},
+                         co::SpatialInput{0, 1, {39, 39, 1, 1}}};
+  Budget budget;
+  budget.limit = 128ULL << 20;
+  auto graph = co::BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                    {.links = mapping->links,
+                                     .reference_buffers = false,
+                                     .input_encoding = fm::Encoding::kI32,
+                                     .exports = mapping->exports,
+                                     .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                      graph->weights()};
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  for (const bool measuring : {true, false}) {
+    kn::Addresses addresses;
+    addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+      return 0x100000000ULL + std::uint64_t{ref.component} * (2ULL << 30);
+    };
+    addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+    addresses.activations = measuring ? 0ULL : 0x10000000ULL;
+    addresses.activation_bytes = 128ULL << 20;
+    addresses.activation_alignment = 256;
+    auto plan = en::PlanComponentGraph(
+        io, backend, {}, addresses,
+        {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+         .written = kg::WrittenBytes,
+         .within = kg::WithinRoot,
+         .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+    ASSERT_TRUE(plan) << Failed(plan).value_or("");
+    const kn::LowerInput input{*plan, io, addresses};
+    kg::DeviceChoices choices;
+    choices.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+      return kg::MulMatPath::kCublas;
+    };
+    auto lowered = kg::LowerStep(input, *registry, choices);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    ASSERT_EQ(lowered->inputs.size(), 3U);
+    ASSERT_EQ(lowered->outputs.size(), 1U);
+    EXPECT_EQ(lowered->outputs[0].bytes, 25ULL * 4096 * 4);
+    std::size_t rotations = 0, products = 0, softmax = 0, rows = 0;
+    for (const auto& step : lowered->plan.steps) {
+      rotations += step.implementation == "ggml.rope.neox";
+      products += step.implementation == "ggml.mul_mat.cublas";
+      if (step.implementation == "ggml.mul_mat.cublas") {
+        // Lowering alone does not plan the physical cuBLAS scratch. Validate
+        // every product after placement, including odd-token GQA score/value
+        // matrices, using the same host planner as the actual launch path.
+        ASSERT_EQ(step.nodes.size(), 1U);
+        const auto* product = step.nodes.front();
+        const auto compute = product->src[0]->type;
+        auto physical = kg::CheckMulMatCublas(product, compute, compute == GGML_TYPE_BF16);
+        ASSERT_TRUE(physical) << Failed(physical, &kg::KernelFailure::detail).value_or("");
+      }
+      softmax += step.implementation == "ggml.soft_max";
+      rows += step.implementation == "ggml.get_rows";
+    }
+    EXPECT_EQ(rotations, 72U);
+    EXPECT_EQ(products, 324U);
+    EXPECT_EQ(softmax, 36U);
+    EXPECT_EQ(rows, 1U);
+    for (const auto& slot : lowered->inputs) EXPECT_EQ(slot.kind, kn::InputKind::kStepBytes);
+  }
+}
+
+TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
+  const auto& profile = mo::QwenImage21();
+  for (const bool decoder : {false, true}) {
+    SCOPED_TRACE(decoder ? "decoder1024" : "flow4121");
+    const auto source =
+        decoder ? mo::VaeDecoderTensors(profile.vae) : mo::DenoiserTensors(profile.denoiser);
+    auto mapping = decoder ? sp::ImageDecodeSpec(profile.vae, 64, source)
+                           : sp::ImageFlowSpec(profile.denoiser, 25, 4096, source);
+    ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+    std::vector<co::BoundTensor> tensors;
+    for (const auto& tensor : source) {
+      fm::Shape shape;
+      shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
+      for (std::size_t d = 0; d < tensor.shape.size(); ++d)
+        shape.ne[d] = tensor.shape[tensor.shape.size() - 1 - d];
+      tensors.push_back(
+          {tensor.name, ir::Dense(decoder ? fm::Encoding::kF32 : fm::Encoding::kBF16, shape)});
+    }
+    const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+    const std::array owners{co::SpatialOwner{
+        0, decoder ? co::SpatialShape{1, 4096, 64, 1} : co::SpatialShape{1, 25, 4096, 1}}};
+    const std::vector ports =
+        decoder
+            ? std::vector{co::SpatialInput{0, 0, {1, 2, 64, 1}}}
+            : std::vector{
+                  co::SpatialInput{0, 0, {1, 4096, 64, 1}}, co::SpatialInput{0, 1, {1, 2, 256, 1}},
+                  co::SpatialInput{0, 2, {4121, 3, 1, 1}, fm::Encoding::kI32},
+                  co::SpatialInput{0, 3, {4121, 4121, 1, 1}}, co::SpatialInput{0, 4, {1, 1, 1, 1}}};
+    Budget budget;
+    budget.limit = 128ULL << 20;
+    auto graph = co::BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                      {.links = mapping->links,
+                                       .reference_buffers = false,
+                                       .exports = mapping->exports,
+                                       .inputs = ports});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    auto registry = Registry();
+    ASSERT_TRUE(registry);
+    en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                        graph->weights()};
+    kn::StepBackend backend{.registry = &*registry,
+                            .device = {.arch = 121},
+                            .written = kg::WrittenBytes,
+                            .within = kg::WithinRoot};
+    // Descriptor-only physical envelopes: no activation/weight payload allocation.
+    kn::Addresses addresses;
+    addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+      return 0x10000000000ULL + std::uint64_t{ref.component} * (2ULL << 30);
+    };
+    addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+    addresses.activation_bytes = 32ULL << 30;
+    addresses.activation_alignment = 256;
+    auto plan = en::PlanComponentGraph(
+        io, backend, {}, addresses,
+        {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+         .written = kg::WrittenBytes,
+         .within = kg::WithinRoot,
+         .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+    ASSERT_TRUE(plan) << Failed(plan).value_or("");
+    kg::DeviceChoices choices;
+    choices.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+      return kg::MulMatPath::kCublas;
+    };
+    auto lowered = kg::LowerStep(kn::LowerInput{*plan, io, addresses}, *registry, choices);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    EXPECT_EQ(lowered->outputs.back().bytes, decoder ? 4ULL * 1024 * 1024 * 4 : 4096ULL * 64 * 4);
+    EXPECT_EQ(lowered->inputs.size(), decoder ? 2U : 6U);
+    EXPECT_GT(lowered->extent, 0U);
+    for (const auto& step : lowered->plan.steps) {
+      if (step.implementation != "ggml.mul_mat.cublas") continue;
+      ASSERT_EQ(step.nodes.size(), 1U);
+      const auto* product = step.nodes.front();
+      const auto compute = product->src[0]->type;
+      auto physical = kg::CheckMulMatCublas(product, compute, compute == GGML_TYPE_BF16);
+      ASSERT_TRUE(physical) << Failed(physical, &kg::KernelFailure::detail).value_or("");
+    }
+    RecordProperty(decoder ? "decoder_scratch_bytes" : "flow_scratch_bytes",
+                   std::to_string(lowered->extent));
+    RecordProperty(decoder ? "decoder_selected_ops" : "flow_selected_ops",
+                   std::to_string(lowered->plan.steps.size()));
+  }
+}
+
 }  // namespace
