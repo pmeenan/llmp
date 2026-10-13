@@ -1810,8 +1810,16 @@ each is checked against the design as M3.6 proceeds.
                                     restore capacity refusal/retry without
                                     recomputation
                                     and independent restoration of two cold peers.
-                                    Actual joined arithmetic and family gates
-                                    remain open.
+                                    The actual owned C2 target/MTP durable
+                                    control also passes on Spark A (2026-10-13):
+                                    two sequential EngineLlm owners, four kept
+                                    stage files, cold hydration without prefix
+                                    execution, eight fresh continuation heads,
+                                    and complete boundary/final initialized
+                                    state within the same selected implementation
+                                    ([report](experiments/m36-numerical-audit/qwen-joined-mtp.md#fresh-owner-durable-c2-continuation)).
+                                    Joined serving admission, broader quality
+                                    and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.

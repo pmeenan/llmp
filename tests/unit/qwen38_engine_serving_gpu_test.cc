@@ -11,12 +11,15 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <span>
 #include <string>
@@ -29,14 +32,21 @@
 #include "base/sha256.h"
 #include "engine/component_source.h"
 #include "engine/paged_weights.h"
+#include "engine/plan_cache.h"
 #include "execution/registry.h"
 #include "kernels/common/step_program.h"
 #include "kernels/ggml/graph_plan.h"
 #include "model/qwen38.h"
 #include "planner/plan.h"
+#include "platform/host_probe.h"
+#include "platform/kept_files.h"
 #include "runtime/component_build.h"
 #include "runtime/engine_llm.h"
+#include "runtime/memory_guard.h"
 #include "runtime/serving.h"
+#include "runtime/snapshot_store.h"
+#include "runtime/state_keeper.h"
+#include "spec/mappings/qwen38.h"
 #include "tokenizer_fixtures.h"
 
 namespace {
@@ -683,5 +693,685 @@ TEST(Qwen38EngineServingGpu, NativeMtpDepthTwoFullLogits) { Screen(kCutlass, tru
 TEST(Qwen38EngineServingGpu, NativeMtpDefaultTokenSchedule) { Screen(kCutlass, true, false, 3); }
 TEST(Qwen38EngineServingGpu, NativeGgmlExpertsPlain) { Screen(kGgml, false, true, 2); }
 TEST(Qwen38EngineServingGpu, GgufPlain) { Screen(kGguf, false, true, 2); }
+
+// A manually enabled durable C2 control in the existing real EngineLlm fixture.
+// It uses the same selected implementation in two sequential whole owners.
+namespace c2 {
+namespace pl = llmp::planner;
+namespace kn = llmp::kernels;
+namespace kept = rt::kept;
+using Digest = llmp::base::Sha256Digest;
+constexpr std::uint64_t kN = llmp::ir::Graph::kMaxNodes;
+constexpr std::uint64_t kT = llmp::ir::Graph::kMaxTensors;
+constexpr std::uint64_t kSaves = 5 * 48 * 2;
+constexpr std::uint64_t kDescriptors = kT + 16 + 31 * kN + 4 * kSaves;
+// Current shared compiler graph/rewrite/placement/descriptor overlap, plus
+// the existing authenticated artifact/tokenizer/catalog owners above. Retained
+// programs are measured and separately admitted; no launch-count guess.
+constexpr std::uint64_t kCompile =
+    12 * (kN * 480 + kT * 192) + 4096 * (kN + kT) + kDescriptors * (512 + 1024 + 32) + 64 * kMiB;
+constexpr std::uint64_t kObserve = 128 * kMiB;
+constexpr std::uint64_t kStartup = kCompile + kServingDelta + kObserve;
+static_assert(kCompile == 4946022912ULL);
+static_assert(3 * 2 * 8 * kVocab * sizeof(float) + 32 * kMiB < kObserve);
+
+struct Plan {
+  pl::StepShape shape;
+  std::vector<std::uint64_t> parameters;
+  Digest recipe{};
+  std::uint64_t host = 0, launches = 0, lowered = 0;
+};
+using StateRanges = std::vector<std::array<std::uint64_t, 4>>;
+struct Evidence {
+  std::array<rt::Generation, 2> prefix, final;
+  std::array<std::vector<std::int32_t>, 2> history;
+  std::array<Digest, 2> boundary{}, end{};
+  std::array<StateRanges, 2> boundary_ranges, end_ranges;
+  std::array<llmp::model::DraftProgress, 2> progress{};
+  std::array<kept::Record, 2> records;
+  kept::Identity identity;
+};
+struct Owner {
+  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+  rt::RequestMemory tokens{kMiB};
+  std::shared_ptr<en::ExecutionMetadataAllowance> startup, plans;
+  cfg::RuntimeRoles roles;
+  cfg::ModelEntry entry;
+  std::unique_ptr<rt::StateKeeper> keeper;
+  std::unique_ptr<rt::EngineLlm> llm;
+  en::StepSource* source = nullptr;
+  std::vector<Plan> measured;
+  std::vector<pl::StepShape> classes, runnable;
+  std::array<std::unique_ptr<rt::SnapshotStore>, 2> snapshots;
+  std::array<rt::StateSnapshot, 2> saved;
+  std::unique_ptr<rt::SnapshotStore> digest_store;
+  std::vector<en::PagedModel*> entered;
+  std::shared_ptr<Evidence> evidence;
+  std::size_t keeper_model = 0;
+  int directory = -1;
+  std::uint64_t snapshot_bound = 0, plan_bytes = 0, physical = 0;
+  bool admitted = false, attempted = false, retired = false;
+  bool Retire() {
+    if (attempted) return retired;
+    attempted = true;
+    if (node.InRequest(0) && !node.EndRequest(0)) return false;
+    if (keeper && !keeper->Drain(rt::Clock::now() + std::chrono::seconds(30))) return false;
+    snapshots = {};
+    digest_store.reset();
+    if (!node.TearDown(entered)) return false;
+    retired = true;
+    return true;
+  }
+  ~Owner() {
+    llm.reset();
+    keeper.reset();
+    if (directory >= 0) ::close(directory);
+  }
+  rt::Llm::Branch& Branch(std::size_t i) { return **llm->branch(i); }
+};
+struct RetainUnknown {
+  void operator()(Owner* owner) const {
+    if (owner->Retire())
+      delete owner;
+    else
+      ADD_FAILURE() << "retaining the complete unknown C2 owner; no next owner is admitted";
+  }
+};
+using Owned = std::unique_ptr<Owner, RetainUnknown>;
+
+bool AddBytes(std::uint64_t& sum, std::uint64_t bytes) {
+  if (bytes > kBudget - sum) return false;
+  sum += bytes;
+  return true;
+}
+rt::Status Observe(Owner& owner, const kn::LowerInput& in, const kn::StepProgram& program) {
+  if (!in.token || in.token->context != 512 || in.token->shape.stage > 1 ||
+      !in.plan.owner_products.empty() || in.token->step.saves.size() > kSaves ||
+      in.plan.owner_rows_policy_enabled != (in.token->shape.stage == 1))
+    return std::unexpected("C2 source/policy left its declared complete domain");
+  const auto& shape = in.token->shape;
+  if (shape.segments.empty() || shape.segments.size() > 2)
+    return std::unexpected("C2 owner geometry changed");
+  auto parameters = owner.source->ShapeParameters(shape);
+  llmp::base::Sha256 hash;
+  const auto graph = in.plan.graph.Digest();
+  hash.Update(std::as_bytes(std::span(graph)));
+  for (const auto& selected : in.plan.steps) {
+    hash.Update(std::as_bytes(std::span(&selected.implementation, 1)));
+    hash.Update(std::as_bytes(std::span(selected.nodes)));
+  }
+  const auto recipe = hash.Finish();
+  auto at = std::ranges::find(owner.measured, shape, &Plan::shape);
+  if (in.addresses.measuring()) {
+    if (at == owner.measured.end()) {
+      // One record per explicit setup key, plus ModelRunner's three target
+      // commit keys. Other shapes cannot grow an unbounded observer table.
+      if (owner.measured.size() == owner.classes.size() + 3)
+        return std::unexpected("C2 setup emitted an undeclared extra class");
+      owner.measured.push_back({.shape = shape,
+                                .parameters = std::move(parameters),
+                                .recipe = recipe,
+                                .host = program.host_bytes(),
+                                .launches = program.launches()});
+      return {};
+    }
+  } else if (!owner.admitted || at == owner.measured.end() ||
+             std::ranges::find(owner.runnable, shape) == owner.runnable.end()) {
+    return std::unexpected("C2 bound program lacks measured admission");
+  }
+  if (at == owner.measured.end() || at->parameters != parameters || at->recipe != recipe ||
+      program.host_bytes() > at->host || program.launches() > at->launches)
+    return std::unexpected("C2 actual program differs from its paid complete key/selection");
+  if (!in.addresses.measuring()) ++at->lowered;
+  return {};
+}
+
+rt::Status AddClasses(rt::EngineLlmParts& parts, Owner& owner) {
+  auto composer = en::WaveComposer::Make(
+      parts.caps, {{.context = 512, .read_align = 256}, {.context = 512, .read_align = 256}});
+  if (!composer) return std::unexpected(composer.error());
+  owner.classes = parts.config.setup_shapes;
+  const auto add = [&](const pl::StepShape& shape) {
+    if (std::ranges::find(owner.classes, shape) == owner.classes.end())
+      owner.classes.push_back(shape);
+    if (std::ranges::find(owner.runnable, shape) == owner.runnable.end())
+      owner.runnable.push_back(shape);
+  };
+  const auto compose = [&](std::uint16_t stage, pl::Phase phase, std::uint32_t a, std::uint32_t b,
+                           int outputs, bool greedy) -> rt::Status {
+    std::vector<en::PendingWork> work;
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+      const auto rows = slot == 0 ? a : b;
+      if (rows)
+        work.push_back({.slot = slot,
+                        .stage = stage,
+                        .phase = phase,
+                        .past = 0,
+                        .rows = rows,
+                        .outputs = outputs < 0 ? rows : static_cast<std::uint32_t>(outputs),
+                        .want_head = outputs != 0,
+                        .greedy = greedy});
+    }
+    auto composed = composer->Compose(work);
+    if (!composed.refused.empty()) return std::unexpected("C2 declared class cannot compose");
+    for (const auto& step : composed.steps) add(step.shape);
+    return {};
+  };
+  // Only the fixed initial prompt uses large rows. Generation's depth two
+  // permits one-to-three verify/replay rows, single or joined as owners finish.
+  for (const auto [a, b] : {std::pair{7U, 0U}, {0U, 5U}})
+    if (auto s = compose(0, pl::Phase::kPrefill, a, b, 1, false); !s) return s;
+  for (const auto [a, b] : {std::pair{6U, 0U}, {0U, 4U}})
+    if (auto s = compose(1, pl::Phase::kDraft, a, b, 0, false); !s) return s;
+  for (std::uint32_t a = 0; a <= 3; ++a)
+    for (std::uint32_t b = 0; b <= 3; ++b) {
+      if (!a && !b) continue;
+      if (auto s = compose(0, pl::Phase::kVerify, a, b, -1, false); !s) return s;
+      if (auto s = compose(1, pl::Phase::kDraft, a, b, 1, true); !s) return s;
+      if (auto s = compose(1, pl::Phase::kDraft, a, b, 0, false); !s) return s;
+      if (a <= 1 && b <= 1)
+        if (auto s = compose(0, pl::Phase::kDecode, a, b, 1, false); !s) return s;
+    }
+  for (std::uint8_t slot = 0; slot < 2; ++slot)
+    for (std::uint32_t rows = 1; rows <= 3; ++rows)
+      add({.stage = 0,
+           .phase = pl::Phase::kCommit,
+           .segments = {{.slot = slot, .rows = rows, .read_cells = 512, .want_head = false}}});
+  parts.config.setup_shapes = owner.classes;
+  return {};
+}
+
+std::expected<rt::ComponentBuildOptions, std::string> Options(Owner& owner) {
+  auto policy = pl::ParsePolicy(llmp::spec::mappings::Qwen38Mapping().policies.front().text);
+  if (!policy) return std::unexpected(policy.error());
+  if (std::erase(policy->enabled, "owner_row_invariant") != 1)
+    return std::unexpected("qualified target mapping policy changed");
+  policy->disabled.emplace_back("owner_row_invariant");
+  pl::Canonicalize(*policy);
+  std::vector<en::NumericalStage> stages;
+  for (std::uint16_t stage = 0; stage < 2; ++stage) {
+    en::NumericalStage s{
+        .stage = stage,
+        .name = stage ? "mtp" : "target",
+        .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
+                 en::NumericalUse::kPromptCompanions, en::NumericalUse::kSpeculative,
+                 en::NumericalUse::kJoinedRepeatPending},
+        .phases = {}};
+    const auto add = [&](pl::Phase phase, std::uint32_t rows) {
+      s.phases.push_back(
+          {.phase = phase, .max_owners = 2, .max_owner_rows = rows, .max_total_rows = 2ULL * rows});
+    };
+    if (stage)
+      add(pl::Phase::kDraft, 16);
+    else {
+      add(pl::Phase::kPrefill, 16);
+      add(pl::Phase::kDecode, 1);
+      add(pl::Phase::kVerify, 3);
+      add(pl::Phase::kCommit, 3);
+    }
+    stages.push_back(std::move(s));
+  }
+  auto domain = en::NumericalDomain::Create(std::move(stages));
+  if (!domain) return std::unexpected(domain.error());
+  rt::ComponentBuildOptions options{
+      .target_policy = pl::ToText(*policy),
+      .diagnostic_solo = true,
+      .prefill_lookahead = false,
+      .prepare_state = false,
+      .state_only_prefill = false,
+      .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))};
+  options.validate_program = [&owner](const auto& in, const auto& program) {
+    return Observe(owner, in, program);
+  };
+  testing::Test::RecordProperty("c2_target_policy", *options.target_policy);
+  testing::Test::RecordProperty(
+      "c2_drafter_policy",
+      std::string(llmp::spec::mappings::Qwen38MtpReplayMapping().policies.front().text));
+  return options;
+}
+
+rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bool reopen,
+                 Owned* previous = nullptr) {
+  owner.node.SetHostFloor(0);
+  if (auto s = owner.node.Open(); !s) return s;
+  auto prepaid = en::ExecutionMetadataAllowance::Admit(
+      owner.node.catalog(), owner.node.domain(),
+      kStartup + en::ExecutionMetadataAllowance::OverheadBytes(),
+      llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
+  if (!prepaid) return std::unexpected(prepaid.error());
+  owner.startup = std::move(*prepaid);
+  if (!owner.startup->Charge(kStartup)) return std::unexpected("C2 startup payment refused");
+  if (previous != nullptr) previous->reset();
+  if (auto s = CheckFixture(kCutlass, true); !s) return s;
+  owner.roles.installed = fs::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
+  owner.roles.spill = directory;
+  owner.roles.state = directory;
+  owner.entry.name = "qwen-c2-durable";
+  owner.entry.artifact = kCutlass;
+  owner.entry.drafter = kMtp;
+  const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
+                          "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+  owner.entry.tokenizer = checkpoint / "tokenizer.json";
+  owner.entry.chat_template = checkpoint / "chat_template.jinja";
+  rt::ModelSettings settings;
+  settings.name = owner.entry.name;
+  settings.architecture = "qwen4exp";
+  settings.max_slots.value = 2;
+  settings.context.value = 512;
+  settings.prefill_chunk.value = 16;
+  settings.wave_read_align.value = 256;
+  settings.speculation.value = true;
+  settings.draft_rows.value = 2;
+  settings.draft_vocab.value = 65536;
+  auto options = Options(owner);
+  if (!options) return std::unexpected(options.error());
+  auto build =
+      rt::ComponentLlmBuild(owner.node, owner.roles.installed, owner.entry, 0, std::move(*options));
+  auto inspect = [&owner, build = std::move(build)](const rt::ModelSettings& actual) mutable
+      -> std::expected<rt::EngineLlmParts, std::string> {
+    auto parts = build(actual);
+    if (!parts) return std::unexpected(parts.error());
+    if (parts->config.slots.stages.size() != 2 || parts->mode.drafters.size() != 1 ||
+        parts->mode.row_invariant || parts->logit_width != kVocab)
+      return std::unexpected("C2 factory changed stages/mode/head");
+    const auto width = en::DrafterHeadRows(parts->mode.drafters.front(), kVocab);
+    if (!width || *width != 47172 || !parts->mode.drafters.front().device_tokens)
+      return std::unexpected("C2 factory changed the actual selected device head");
+    owner.source = parts->source.get();
+    if (auto s = AddClasses(*parts, owner); !s) return std::unexpected(s.error());
+    return std::move(*parts);
+  };
+  owner.llm = std::make_unique<rt::EngineLlm>(owner.node, owner.entry, settings, owner.roles, 0,
+                                              std::move(inspect));
+  owner.llm->SetTokenMemory(owner.tokens);
+  owner.llm->set_turn_checkpoints(false);
+  if (auto s = owner.llm->Setup(); !s) {
+    if (owner.llm->has_paged()) owner.entered.push_back(&owner.llm->paged());
+    return s;
+  }
+  owner.entered.push_back(&owner.llm->paged());
+  const auto identity = owner.llm->ExecutionIdentity();
+  if (!identity || !*identity || !owner.source->JoinedRepeatPending(0) ||
+      !owner.source->JoinedRepeatPending(1))
+    return std::unexpected("C2 source lacks prepared complete pending identity");
+  std::uint64_t largest = 0;
+  for (const auto& plan : owner.measured) {
+    if (std::ranges::find(owner.runnable, plan.shape) == owner.runnable.end()) continue;
+    if (plan.host > kBudget || plan.launches > (kBudget - plan.host) / en::kGraphNodeHostBytes)
+      return std::unexpected("C2 measured capture payment overflows domain");
+    const auto bytes = plan.host + plan.launches * en::kGraphNodeHostBytes;
+    if (!AddBytes(owner.plan_bytes, bytes))
+      return std::unexpected("C2 measured plans exceed domain");
+    largest = std::max(largest, bytes);
+  }
+  if (!AddBytes(owner.plan_bytes, largest))
+    return std::unexpected("C2 replacement payment overflow");
+  auto paid_plans = en::ExecutionMetadataAllowance::Admit(
+      owner.node.catalog(), owner.node.domain(),
+      owner.plan_bytes + en::ExecutionMetadataAllowance::OverheadBytes(),
+      llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
+  if (!paid_plans) return std::unexpected(paid_plans.error());
+  owner.plans = std::move(*paid_plans);
+  if (!owner.plans->Charge(owner.plan_bytes)) return std::unexpected("C2 measured payment refused");
+  // EngineLlm::UsedStateRangesFor forwards LiveState::used_ranges: at
+  // most one descriptor per actual 2 MiB extent, including each final partial
+  // extent. SnapshotStore::Prepare adds its nine-u64 header, cursor, optional
+  // execution digest, adaptive words, ranges, history and actual layout text.
+  // Four max-align paddings cover all header/internal/following alignments.
+  std::uint64_t ranges = 0;
+  for (const auto bytes : owner.llm->KeptLayouts()) {
+    if (!AddBytes(owner.snapshot_bound, bytes)) return std::unexpected("C2 snapshot overflow");
+    ranges += (bytes + en::kPagedExtent - 1) / en::kPagedExtent;
+  }
+  const auto metadata = 9 * sizeof(std::uint64_t) + sizeof(std::uint32_t) +
+                        sizeof(std::optional<Digest>) +
+                        sizeof(std::array<std::uint64_t, llmp::execution::AdaptiveDepth::kWords>) +
+                        4 * alignof(std::max_align_t) + ranges * sizeof(en::LiveState::Range) +
+                        512 * sizeof(std::int32_t) + owner.llm->KeptLayout().size();
+  if (!AddBytes(owner.snapshot_bound, metadata))
+    return std::unexpected("C2 snapshot metadata overflow");
+  const auto snapshot_physical =
+      (owner.snapshot_bound + en::kPagedExtent - 1) / en::kPagedExtent * en::kPagedExtent;
+  for (const auto& [id, extent] : owner.node.catalog().ExtentsOf(owner.node.domain())) {
+    (void)id;
+    if (!AddBytes(owner.physical, extent.descriptor.size.value()))
+      return std::unexpected("C2 full catalog exceeds node");
+  }
+  const auto pool = std::max(owner.llm->pool_needed(), en::kPagedExtent);
+  for (const auto bytes :
+       {owner.llm->activations_needed(), pool, owner.plan_bytes, snapshot_physical,
+        snapshot_physical, snapshot_physical, 2 * en::kPagedExtent})
+    if (!AddBytes(owner.physical, bytes))
+      return std::unexpected("C2 complete physical closure does not fit");
+  const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
+  if (!available || owner.physical > available || rt::kUncountedMargin > available - owner.physical)
+    return std::unexpected("C2 complete future closure lacks physical headroom");
+  owner.admitted = true;
+  if (auto s = owner.node.MapWorkspace(owner.llm->activations_needed(), pool); !s) return s;
+  if (auto s = owner.node.Start(llmp::base::Bytes(kBudget)); !s) return s;
+  auto dir = llmp::platform::OpenPrivateDirectory(-1, directory.c_str());
+  if (!dir) return std::unexpected(std::format("C2 private directory: errno {}", dir.error()));
+  owner.directory = *dir;
+  owner.keeper = std::make_unique<rt::StateKeeper>(1, rt::StateKeeper::Log{});
+  const int worker_dir = ::dup(owner.directory);
+  if (worker_dir < 0) return std::unexpected("C2 keeper directory duplication failed");
+  owner.keeper_model = owner.keeper->AddModel(worker_dir);
+  kept::Identity expected{.build = "qwen-c2-owned-durable-v1",
+                          .artifact = std::string(kCutlass),
+                          .drafter = std::string(kMtp),
+                          .layout = owner.llm->KeptLayout()};
+  rt::Llm::Kept state{.keeper = owner.keeper.get(),
+                      .model = owner.keeper_model,
+                      .directory = owner.directory,
+                      .identity = expected,
+                      .adopt = {}};
+  if (reopen) {
+    if (expected != evidence.identity)
+      return std::unexpected("C2 fresh execution/layout identity differs");
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+      auto& record = evidence.records[slot];
+      kept::Expected check{.version = owner.llm->KeptVersion(),
+                           .identity = expected,
+                           .slot = slot,
+                           .regions = owner.llm->KeptRegions(),
+                           .layouts = owner.llm->KeptLayouts(),
+                           .context = 512,
+                           .vocabulary = kVocab,
+                           .now_unix_ms = record.used_unix_ms,
+                           .retention_ms = 60000};
+      if (auto s = kept::Check(record, check); !s) return s;
+      if (const auto why = rt::VerifyKeptState(owner.directory, record); !why.empty())
+        return std::unexpected(why);
+      if (record.files.size() != 2) return std::unexpected("C2 record omitted a stage file");
+      state.adopt.push_back(slot);
+      auto& files = state.files.emplace_back();
+      for (const auto& file : record.files) files.push_back(file.id);
+    }
+  } else
+    evidence.identity = expected;
+  owner.llm->set_kept(std::move(state));
+  if (auto s = owner.llm->Register(); !s) return s;
+  owner.node.Run();
+  if (auto s = owner.llm->Bind(); !s) return s;
+  owner.digest_store = std::make_unique<rt::SnapshotStore>(owner.node, owner.snapshot_bound);
+  testing::Test::RecordProperty(reopen ? "c2_reopened_plans_bytes" : "c2_initial_plans_bytes",
+                                std::to_string(owner.plan_bytes));
+  testing::Test::RecordProperty(reopen ? "c2_reopened_physical_bytes" : "c2_initial_physical_bytes",
+                                std::to_string(owner.physical));
+  return {};
+}
+
+// Sessions must close even when a later owner/session or wave refuses.
+// These callbacks return only at completed units; production owns retirement.
+template <class Session>
+struct FinishSession {
+  void operator()(Session* session) const {
+    if (!session->done()) session->Cancel();
+    (void)session->Finish();
+    delete session;
+  }
+};
+template <class Session>
+using SessionOwner = std::unique_ptr<Session, FinishSession<Session>>;
+rt::Status Request(Owner& owner, const std::function<rt::Status()>& body) {
+  const std::array<rt::Llm::Branch*, 2> branches{&owner.Branch(0), &owner.Branch(1)};
+  if (auto s = owner.llm->SelectBranches(branches); !s) return s;
+  return owner.node.WithRequest(0, owner.llm->request_closure(), "C2 durable control", body);
+}
+std::expected<Digest, std::string> StateDigest(Owner& owner, std::size_t slot) {
+  auto snapshot = owner.Branch(slot).CaptureState(*owner.digest_store);
+  if (!snapshot) return std::unexpected(snapshot.error());
+  return owner.digest_store->Digest(*snapshot);
+}
+StateRanges Coordinates(Owner& owner, std::size_t slot) {
+  StateRanges result;
+  for (std::size_t stage = 0; stage < 2; ++stage)
+    for (const auto& range :
+         owner.llm->runner().slots().live(static_cast<std::uint32_t>(slot), stage).used_ranges())
+      result.push_back({stage, range.region, range.offset, range.bytes});
+  return result;
+}
+rt::Status Complete(const rt::Generation& out, std::size_t count) {
+  if (out.tokens.size() != count || out.logits.size() != count || !out.drafted)
+    return std::unexpected("C2 generation omitted target rows or actual MTP work");
+  for (std::size_t i = 0; i < count; ++i) {
+    if (out.tokens[i] < 0 || std::cmp_greater_equal(out.tokens[i], kVocab) ||
+        out.logits[i].size() != kVocab ||
+        !std::ranges::all_of(out.logits[i], [](float x) { return std::isfinite(x); }))
+      return std::unexpected("C2 completed target head is not finite and complete");
+  }
+  return {};
+}
+rt::Status Generate(Owner& owner, const std::array<std::vector<float>, 2>& heads,
+                    std::array<rt::Generation, 2>& out, std::uint32_t count, bool resume) {
+  rt::GenerateOptions options;
+  options.max_tokens = count;
+  options.stop = false;
+  options.keep_logits = true;
+  std::array<SessionOwner<rt::Llm::GenerationSession>, 2> sessions;
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto session = resume ? owner.Branch(i).ResumeGeneration(heads[i], options, out[i])
+                          : owner.Branch(i).BeginGeneration(heads[i], options, out[i]);
+    if (!session) return std::unexpected(session.error());
+    sessions[i].reset(session->release());
+  }
+  // Every successful generation unit publishes at least one next token.
+  for (std::uint32_t wave = 0; wave < 2 * count; ++wave) {
+    std::vector<rt::Llm::GenerationSession*> active;
+    for (auto& session : sessions)
+      if (!session->done()) active.push_back(session.get());
+    if (active.empty()) break;
+    if (auto s = owner.llm->RunGenerationWave(active); !s) return s;
+  }
+  for (std::size_t i = 0; i < 2; ++i) {
+    if (!sessions[i]->done()) return std::unexpected("C2 generation made no bounded progress");
+    if (auto s = sessions[i]->Finish(); !s) return s;
+    if (auto s = Complete(out[i], count); !s) return s;
+  }
+  return {};
+}
+rt::Status Initial(Owner& owner, Evidence& evidence) {
+  return Request(owner, [&]() -> rt::Status {
+    auto first = Prompt(), second = Prompt();
+    second.resize(5);
+    for (auto& token : second) token += 17;
+    const std::array<std::vector<std::int32_t>, 2> prompts{std::move(first), std::move(second)};
+    std::array<SessionOwner<rt::Llm::PromptSession>, 2> sessions;
+    std::array<std::vector<float>, 2> heads;
+    for (std::size_t i = 0; i < 2; ++i) {
+      auto session = owner.Branch(i).BeginPrompt(prompts[i]);
+      if (!session) return std::unexpected(session.error());
+      sessions[i].reset(session->release());
+      while (!sessions[i]->done()) {
+        const auto unit = sessions[i]->NextUnit();
+        if (!unit) return std::unexpected(unit.error());
+        if (unit->phase == rt::Llm::PromptSession::Phase::kChunk) break;
+        if (auto s = sessions[i]->Advance(); !s) return s;
+      }
+    }
+    // Llm's prompt-cohort API is plain-only. The ordinary session advance
+    // owns speculative companion prefill; joined generation follows below.
+    for (auto& session : sessions)
+      if (!session->done())
+        if (auto s = session->Advance(); !s) return s;
+    for (std::size_t i = 0; i < 2; ++i) {
+      if (!sessions[i]->done()) return std::unexpected("C2 bounded prompt did not finish");
+      heads[i] = sessions[i]->last();
+      if (auto s = sessions[i]->Finish(); !s) return s;
+      sessions[i].reset();
+    }
+    if (auto s = Generate(owner, heads, evidence.prefix, 4, false); !s) return s;
+    for (std::size_t i = 0; i < 2; ++i) {
+      owner.snapshots[i] = std::make_unique<rt::SnapshotStore>(owner.node, owner.snapshot_bound);
+      auto saved = owner.Branch(i).CaptureState(*owner.snapshots[i]);
+      if (!saved) return std::unexpected(saved.error());
+      owner.saved[i] = std::move(*saved);
+      auto digest = owner.snapshots[i]->Digest(owner.saved[i]);
+      if (!digest) return std::unexpected(digest.error());
+      evidence.boundary[i] = *digest;
+      evidence.boundary_ranges[i] = Coordinates(owner, i);
+      evidence.history[i] = owner.Branch(i).history();
+      const auto* progress = owner.llm->runner().slots().progress(static_cast<std::uint32_t>(i), 1);
+      if (!progress || !progress->settled())
+        return std::unexpected("C2 draft progress is not settled");
+      evidence.progress[i] = progress->completed();
+      if (evidence.progress[i].pending_first >= evidence.progress[i].positions)
+        return std::unexpected("C2 boundary did not preserve a real repeat-pending interval");
+    }
+    evidence.final = evidence.prefix;
+    if (auto s = Generate(owner, {}, evidence.final, 8, true); !s) return s;
+    for (std::size_t i = 0; i < 2; ++i) {
+      auto digest = StateDigest(owner, i);
+      if (!digest) return std::unexpected(digest.error());
+      evidence.end[i] = *digest;
+      evidence.end_ranges[i] = Coordinates(owner, i);
+      if (auto s = owner.Branch(i).RestoreState(*owner.snapshots[i], owner.saved[i]); !s) return s;
+      if (owner.Branch(i).history() != evidence.history[i])
+        return std::unexpected("C2 snapshot lost its history boundary");
+      digest = StateDigest(owner, i);
+      if (!digest || *digest != evidence.boundary[i] ||
+          Coordinates(owner, i) != evidence.boundary_ranges[i])
+        return std::unexpected("C2 restored boundary initialized state differs");
+      const auto* progress = owner.llm->runner().slots().progress(static_cast<std::uint32_t>(i), 1);
+      if (!progress || progress->completed() != evidence.progress[i])
+        return std::unexpected("C2 restored pending progress differs");
+    }
+    if (!owner.llm->counts().joined_waves)
+      return std::unexpected("C2 did not join generation owners");
+    return {};
+  });
+}
+rt::Status Keep(Owner& owner, Evidence& evidence) {
+  owner.snapshots = {};
+  owner.digest_store.reset();
+  for (std::size_t i = 0; i < 2; ++i)
+    if (auto s = owner.llm->SpillIdle(owner.Branch(i)); !s) return s;
+  if (!owner.keeper->Drain(rt::Clock::now() + std::chrono::seconds(30)))
+    return std::unexpected("C2 keeper did not retire record writes");
+  for (std::uint32_t slot = 0; slot < 2; ++slot) {
+    if (!owner.keeper->Kept(owner.keeper_model, slot))
+      return std::unexpected("C2 keeper omitted a complete owner record");
+    const auto name = kept::RecordFileName(slot);
+    auto text =
+        llmp::platform::ReadPrivateFile(owner.directory, name.c_str(), kept::kMostRecordBytes);
+    if (!text) return std::unexpected(std::format("C2 kept record read: errno {}", text.error()));
+    auto record = kept::Decode(*text);
+    if (!record) return std::unexpected(record.error());
+    if (record->files.size() != 2 || record->tokens != evidence.history[slot])
+      return std::unexpected("C2 kept record lost a stage/history");
+    if (const auto why = rt::VerifyKeptState(owner.directory, *record); !why.empty())
+      return std::unexpected(why);
+    evidence.records[slot] = std::move(*record);
+  }
+  owner.llm->PreserveKeptFiles();
+  return {};
+}
+rt::Status Reopen(Owner& owner, Evidence& evidence) {
+  for (std::uint32_t slot = 0; slot < 2; ++slot) {
+    rt::MemoryCharge charge;
+    if (!charge.Add(owner.tokens, evidence.records[slot].tokens.capacity() * sizeof(std::int32_t)))
+      return std::unexpected("C2 adopted token payment refused");
+    if (auto s = owner.llm->Adopt(owner.Branch(slot), evidence.records[slot], charge); !s) return s;
+    const auto& slots = owner.llm->runner().slots();
+    if (!slots.restorable(slot) || slots.usable(slot) || slots.CheckActive(slot))
+      return std::unexpected("C2 cold adopted state became executable before hydration");
+  }
+  return Request(owner, [&]() -> rt::Status {
+    const auto before = owner.llm->counts();
+    const auto graphs = owner.llm->runner().graph_stats();
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+      auto begun = owner.Branch(slot).BeginPrompt(evidence.history[slot], 0, false, true);
+      if (!begun) return std::unexpected(begun.error());
+      SessionOwner<rt::Llm::PromptSession> session(begun->release());
+      const auto unit = session->NextUnit();
+      if (!unit || unit->phase != rt::Llm::PromptSession::Phase::kReuse)
+        return std::unexpected("C2 cold history did not begin with reuse");
+      if (auto s = session->Advance({}, true); !s) return s;
+      if (!session->done() || session->reused() != evidence.history[slot].size())
+        return std::unexpected("C2 cold hydration attempted prefix recomputation");
+      if (auto s = session->Finish(); !s) return s;
+      session.reset();
+      auto digest = StateDigest(owner, slot);
+      if (!digest || *digest != evidence.boundary[slot] ||
+          Coordinates(owner, slot) != evidence.boundary_ranges[slot])
+        return std::unexpected("C2 durable hydrated initialized state differs");
+      const auto* progress = owner.llm->runner().slots().progress(slot, 1);
+      if (!progress || !progress->settled() || progress->completed() != evidence.progress[slot])
+        return std::unexpected("C2 durable pending state differs");
+    }
+    const auto after = owner.llm->counts();
+    const auto now = owner.llm->runner().graph_stats();
+    if (before.joined_prefill_steps != after.joined_prefill_steps ||
+        before.speculative_units != after.speculative_units || graphs.eager != now.eager ||
+        graphs.replayed != now.replayed)
+      return std::unexpected("C2 hydrate executed a model prefix");
+    auto continued = evidence.prefix;
+    if (auto s = Generate(owner, {}, continued, 8, true); !s) return s;
+    for (std::size_t slot = 0; slot < 2; ++slot) {
+      const auto& got = continued[slot];
+      const auto& want = evidence.final[slot];
+      if (got.tokens != want.tokens || got.drafted != want.drafted || got.accepted != want.accepted)
+        return std::unexpected("same-selected C2 durable continuation differs");
+      for (std::size_t row = 0; row < got.logits.size(); ++row)
+        if (std::memcmp(got.logits[row].data(), want.logits[row].data(), kVocab * sizeof(float)))
+          return std::unexpected("same-selected C2 durable complete target head differs");
+      auto digest = StateDigest(owner, slot);
+      if (!digest || *digest != evidence.end[slot] ||
+          Coordinates(owner, slot) != evidence.end_ranges[slot])
+        return std::unexpected("same-selected C2 final initialized state differs");
+    }
+    return {};
+  });
+}
+
+class DurableCase : public testing::Test {
+  void TestBody() override {
+    const char* root = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    ASSERT_NE(root, nullptr);
+    fs::create_directories(root);
+    auto path = (fs::path(root) / "qwen-c2-XXXXXX").string();
+    ASSERT_NE(::mkdtemp(path.data()), nullptr);
+    auto observations = std::make_shared<Evidence>();
+    auto& evidence = *observations;
+    Owned first(new Owner);
+    first->evidence = observations;
+    auto result = ::c2::Setup(*first, path, evidence, false);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    result = Initial(*first, evidence);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    result = Keep(*first, evidence);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    ASSERT_TRUE(first->Retire()) << "unknown first-owner completion; reopening is forbidden";
+    // Retain the old host payment until the fresh startup allowance exists.
+    // Its GPU/source domain is positively retired before the second opens.
+    Owned second(new Owner);
+    second->evidence = observations;
+    result = ::c2::Setup(*second, path, evidence, true, &first);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    result = Reopen(*second, evidence);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    ASSERT_TRUE(second->Retire());
+    RecordProperty("durable_owners", 2);
+    RecordProperty("durable_stage_files", 4);
+    RecordProperty("durable_hydrated_without_prefix", 2);
+    RecordProperty("durable_complete_target_heads", 16);
+    RecordProperty("durable_same_selected_final_states", 2);
+    RecordProperty("durable_snapshot_bytes", std::to_string(second->snapshot_bound));
+    evidence = {};
+    second.reset();
+    fs::remove_all(path);
+  }
+};
+// Opt-in manual case: ordinary CTest discovery does not register this captured
+// two-owner experiment or turn a missing fixture into a skipped qualification.
+[[maybe_unused]] const auto* durable_case = []() -> testing::TestInfo* {
+  if (std::getenv("LLMP_QWEN_C2_DURABLE") == nullptr)
+    return nullptr;  // NOLINT(concurrency-mt-unsafe)
+  return testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2DurablePendingReopen", nullptr,
+                               nullptr, __FILE__, __LINE__,
+                               []() -> testing::Test* { return new DurableCase; });
+}();
+
+}  // namespace c2
 
 }  // namespace

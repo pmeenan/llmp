@@ -128,8 +128,14 @@ build and 305 affected host controls, then the actual two-owner screen on Spark 
 replay. It includes complete v0 row-table reconstruction through the existing
 artifact assembler and actual-width/selected-ID draft sampling. See the
 [joined MTP report](experiments/m36-numerical-audit/qwen-joined-mtp.md).
-Broader same-quantized-reference quality, durable old/new persistence, production serving and
-the family speed/swap gate remain open. The full DeepSeek target screen now
+The actual C2 EngineLlm/StateKeeper durable control now passes on Spark A:
+four target/MTP files reopen under a fresh, sequential owner, both conversations
+hydrate without prefix execution, and eight newly computed continuation heads
+plus complete boundary/final state match the same selected implementation.
+The target disables `owner_row_invariant`; its drafter retains the existing
+replay mapping. This does not change serving policy. Broader same-quantized-
+reference quality, OS-process/GPU restart, production serving and the family
+speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
 snapshot continuation on Spark B. The actual spatial-image screen passes
 on main after full native build, 129 affected host controls and source checks.
