@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "scope": "bounded complete first-frame VAE, actual F32 source,2x2 latent\u219232x32x4; local prefix reference only",
+  "host": "Spark B",
+  "artifact": "44c1a20a202ce1078588cbd4b0c594bbadf365a01f26091c715fd16d5b2eb34d",
+  "source_components": 109,
+  "source_steps": 113,
+  "source_parts": 128,
+  "source_bytes": 1012281936,
+  "selected_pages": 486,
+  "selected_page_bytes": 1019215872,
+  "virtual_reservation_bytes": 1356857344,
+  "compiler_metadata_bytes": 9248768,
+  "whole_output_values": 4096,
+  "local_reference_output_values": 4608,
+  "local_reference": {
+    "max_abs_error": 6.216246590806662e-07,
+    "rms_error": 5.6679068707238546e-08,
+    "error_enclosure": 0.00160995195582886,
+    "source_part_bytes": 2675456
+  },
+  "fixture_wall_seconds": 0.883,
+  "timing_scope": "includes setup/storage; no comparative or latency gate",
+  "eager": 2,
+  "captured": 2,
+  "replayed": 2,
+  "capture_refused": 0,
+  "process_cache_peak_bytes": 399495168,
+  "device_residency_measured": false,
+  "pre_guards": "PASS",
+  "post_guards": "PASS",
+  "memory_events": {
+    "low": 0,
+    "high": 0,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0,
+    "oom_group_kill": 0,
+    "sock_throttled": 0
+  },
+  "native_child_retired": true,
+  "remaining_gpu_processes": 0,
+  "programs": [
+    {
+      "scope": "local_prefix",
+      "plan": "5b9bf432a6b3c95c6afdf91f1cd21e85bbf152563e3e93d324ee1c83b8303166",
+      "input_sha256": "27960adb0be2603023ef2cc7efa6d178ea121a23e1c048d512f5991bb99cb76d",
+      "output_sha256": "127c743464f2c128f525f1c8d06bc73ed9248e3918ac0d2649cb25e9cc378300",
+      "implementations": {
+        "ggml.conv2d.f32": 2,
+        "ggml.add": 2
+      }
+    },
+    {
+      "scope": "whole_decoder",
+      "plan": "4421be97f968f0a1734a009af6f2a7fd4810e80147b326fae21f32465be363bd",
+      "input_sha256": "27960adb0be2603023ef2cc7efa6d178ea121a23e1c048d512f5991bb99cb76d",
+      "output_sha256": "50bcf667efae9f70111fad45306d13a34dcc6807ba661e103cf41b5bc9186192",
+      "implementations": {
+        "ggml.conv2d.f32": 46,
+        "ggml.add": 68,
+        "ggml.cont": 92,
+        "ggml.l2_norm": 36,
+        "ggml.scale": 36,
+        "ggml.mul": 36,
+        "ggml.unary": 35,
+        "ggml.mul_mat.cublas": 2,
+        "ggml.soft_max": 1,
+        "ggml.upsample.nearest": 4,
+        "ggml.repeat": 4
+      }
+    }
+  ],
+  "proofs": {
+    "native_result_sha256": "6b6437171c8579537b199c2903d938c85a6ec1c823e4a353e59775d7bab68f6b",
+    "actual_result_sha256": "86aa3600cf38ca111474352b1a49e6c9f253d08e2946c48b57c5815f21ccd147",
+    "actual_manifest_sha256": "cd495f76fe1ef7477354640a868dba380e74acf418a15ec462051bdf9bcc5940",
+    "actual_xml_sha256": "d8a80ce451cad55f976c2c443161f430fb857a767f0804ac066227218192f278",
+    "actual_log_sha256": "824615a2a4fd63c7edc34fd77195c30ed7eb8f2ef6cf5aab16b75d6f516c1e54",
+    "binary_sha256": "ab5006ce7f027408874f59e80ffd818d991f4708600fc6ff1457ff7af419188a",
+    "binary_bytes": 187960048
+  },
+  "quality_checks": "PASS on Spark A: formatting, portability boundaries, SPDX headers and REUSE 6.2.0",
+  "limits": [
+    "no whole-decoder scalar oracle",
+    "no original-image quality result",
+    "no comparative speed or serving admission",
+    "flow/timestep and broader family qualification remain open"
+  ]
+}

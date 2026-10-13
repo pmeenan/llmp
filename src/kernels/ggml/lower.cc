@@ -1268,6 +1268,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
           s[0]->type != GGML_TYPE_F32 || !ggml_is_contiguous(s[0]))
         return Refused("spatial upsampling needs contiguous F32 nearest2 input");
       return ggml_upscale(c_, s[0], 2, GGML_SCALE_MODE_NEAREST);
+    case Op::kL2Norm:
+      return ggml_l2_norm(c_, s[0], n.Params<ir::NormParams>().eps);
     case Op::kRmsNorm:
       return ggml_rms_norm(c_, s[0], n.Params<ir::NormParams>().eps);
     case Op::kAdd:
@@ -4116,6 +4118,9 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     // First stateless physical domain. No token/state operation can enter a
     // branch that interprets a StepShape, synthesized inputs or state spans.
     const auto supported = [](const ir::Node& n) {
+      // The sole source-level fused form is stateless and decomposes into the
+      // same checked repeat/view/cont/add primitives below. No token metadata.
+      if (n.key == ir::Fused(FusedKind::kDupUpAdd)) return true;
       if (n.key != ir::Primitive(n.key.op)) return false;
       switch (n.key.op) {
         case Op::kInput:
@@ -4124,13 +4129,25 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
         case Op::kUpsample:
         case Op::kView:
         case Op::kReshape:
+        case Op::kPermute:
+        case Op::kCont:
+        case Op::kRepeat:
+        case Op::kConvert:
+        case Op::kAdd:
+        case Op::kMul:
+        case Op::kScale:
+        case Op::kUnary:
+        case Op::kL2Norm:
+        case Op::kMatMul:
+        case Op::kSoftMax:
           return true;
         default:
           return false;
       }
     };
     if (!std::ranges::all_of(g_.nodes(), supported) || !std::ranges::all_of(p_.nodes(), supported))
-      return Refused("this stateless GGML domain supports spatial convolution and upsampling");
+      return Refused(
+          "this stateless GGML domain requires checked spatial arithmetic and owner ports");
   }
   if (auto checked = CheckSelectedHc(); !checked) return std::unexpected(checked.error());
   if (auto checked = CheckOwnerProducts(); !checked) return std::unexpected(checked.error());

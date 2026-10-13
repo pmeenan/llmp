@@ -2476,9 +2476,21 @@ each is checked against the design as M3.6 proceeds.
             outputs and two eager/capture/replay paths each. This physical
             convolution implementation supports F32 source weights; BF16 remains
             unsupported here without changing the catalog's source formats.
-            Whole VAE/flow/timestep composition, original-image quality,
-            comparative speed and serving remain open
+            Flow/timestep composition, broader VAE qualification, original-image
+            quality, comparative speed and serving remain open
             ([bounded evidence](experiments/m36-shared-spatial-execution/README.md)).
+      - [x] **Q3b — complete first-frame VAE composition:** reuse shared
+            spatial components, backward value links, source-owned roles and
+            the existing program/completion path for the stored F32 decoder.
+            A 2x2 latent produces all 32x32x4 decoder outputs; a small actual
+            prefix has a separate source-reference control. Focused native
+            compilation and all 52 host controls pass, followed by the full
+            main Spark B native build and 227 host cases across 17 targets.
+            The actual Spark B case passes all 4,096 finite decoder outputs,
+            4,608 local source-reference outputs and two eager/capture/replay
+            paths each (2026-10-12). No full-decoder scalar quality oracle,
+            original-image quality, comparative-speed or serving claim
+            ([scope and evidence](experiments/m36-shared-spatial-execution/README.md#complete-first-frame-decoder)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

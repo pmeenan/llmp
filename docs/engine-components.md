@@ -889,6 +889,28 @@ speed and pipeline serving remain open; this screen does not establish a winning
 whole-pipeline arithmetic policy. See the
 [scoped report](experiments/m36-shared-spatial-execution/README.md).
 
+The complete first-frame decoder composition reuses this path. Owner-local
+backward value links preserve saved residual inputs without copying them or
+inventing token state. Shared `residual.spatial`, `residual.upsample` and
+`attention.spatial` fragments compose with channel normalization, convolution
+and nearest upsampling; the existing GGML clamped-L2 kernel supplies normalization.
+The source-defined gamma ranks and F32 resident weights remain intact. Logical
+clamping is not replaced with RMS normalization or legacy BF16 rounding.
+
+`VaeDecoderSpec` consumes the existing stored decoder plan and common role
+visitor. Its 113 source steps become 109 components because four saved copies
+are immutable aliases. GPU graph construction can explicitly omit unused scalar
+reference buffers while retaining complete prepaid compiler/source metadata;
+CPU reference callers keep the prior default payment. The 2x2-latent diagnostic
+covers the complete 32x32x4 decoder output and a separate small source-reference
+prefix. Focused native compilation and 52 host controls pass; the full main Spark B
+build and 227 host cases across 17 targets also pass. The actual first-frame
+case passes all 4,096 finite decoder outputs and 4,608 local source-reference
+outputs, with eager, capture and same-selected replay for both programs. It
+leases 486 actual source pages and keeps completion-owned programs and buffers
+alive through retirement. This is not a new dispatcher, `EngineImage` admission,
+image-quality oracle or comparative-speed result.
+
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a
 definition's `row_local` false; `attention.dense`, whose `narrows` says it

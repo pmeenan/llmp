@@ -8,12 +8,14 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "components/step.h"
+#include "spec/graph_links.h"
 
 namespace llmp::components {
 
@@ -26,16 +28,27 @@ struct SpatialOwner {
   std::uint8_t owner = 0;
   SpatialShape shape;
 };
+struct SpatialValue {
+  ir::TensorId tensor;
+  SpatialShape shape;
+};
+// Value zero is this owner's input; component i produces value i+1.
+// Every edge points backward within the same owner. An absent link table
+// preserves the serial chain. Source composition retains this table.
+using SpatialLink = spec::GraphLink;
+struct SpatialBuildOptions {
+  std::span<const SpatialLink> links{};
+  // Host reference copies are optional; real source/graph metadata is always paid.
+  // False does not authorize a reference executor to allocate any buffers.
+  bool reference_buffers = true;
+};
 struct SpatialFragment {
   ir::Builder& builder;
   const Instance& instance;
   ir::TensorId input;
   SpatialShape shape;
   std::span<const ir::TensorId> weights;
-};
-struct SpatialValue {
-  ir::TensorId tensor;
-  SpatialShape shape;
+  std::optional<SpatialValue> auxiliary{};
 };
 // Reference/control only. Decoded weights and complete output storage belong
 // to the caller's admitted reference allowance, never resident widened weights.
@@ -46,11 +59,21 @@ struct SpatialRefIO {
   std::span<const float> kernel;
   std::span<const float> bias;
   std::vector<double> output;
+  std::span<const double> auxiliary{};
+  std::optional<SpatialShape> auxiliary_shape{};
 };
 struct SpatialOps {
-  std::expected<SpatialShape, std::string> (*infer)(const Instance&, SpatialShape);
+  std::expected<SpatialShape, std::string> (*infer_shape)(const Instance&, SpatialShape,
+                                                          std::optional<SpatialShape>);
+  std::expected<SpatialShape, std::string> infer(const Instance& instance, SpatialShape shape,
+                                                 std::optional<SpatialShape> auxiliary = {}) const {
+    return infer_shape(instance, shape, auxiliary);
+  }
   std::expected<SpatialValue, std::string> (*emit)(SpatialFragment&);
   std::expected<void, std::string> (*reference)(SpatialRefIO&);
+  // Includes all emitted descriptors and primitive-decomposition temporaries.
+  std::uint16_t max_nodes = 1;
+  std::uint64_t (*temporary_values)(SpatialShape) = nullptr;
 };
 
 // Paid before copies/graph construction. The callbacks retain their actual
@@ -77,7 +100,7 @@ class SpatialGraph {
  private:
   friend std::expected<SpatialGraph, std::string> BuildSpatialStep(
       const spec::ModelSpec&, std::span<const std::span<const BoundTensor>>,
-      std::span<const SpatialOwner>, SpatialPayment);
+      std::span<const SpatialOwner>, SpatialPayment, SpatialBuildOptions);
   SpatialGraph(std::shared_ptr<const void> payment, ir::Graph graph,
                std::vector<StepWeight> weights, std::vector<SpatialOwner> inputs,
                std::vector<SpatialOwner> outputs, std::vector<std::uint64_t> parameters,
@@ -99,13 +122,14 @@ class SpatialGraph {
   std::uint64_t metadata_bytes_ = 0, reference_bytes_ = 0;
 };
 
-// One stateless image stage, up to 64 catalog components and 16 distinct owners.
-// Complete checked trajectories/roles are validated before graph emission.
-// Typed graph ports are graph.inputs()/outputs(); descriptors retain owner IDs.
-// No family mapping, backend lowering, executor, cache or admission is added.
+// One stateless image stage, up to 256 catalog components and 16 distinct owners.
+// Complete checked trajectories/roles are validated before graph emission; branch edges are
+// owner-local backward value references. Typed graph ports are graph.inputs()/outputs();
+// descriptors retain owner IDs. No family mapping, backend lowering, executor, cache or admission
+// is added.
 std::expected<SpatialGraph, std::string> BuildSpatialStep(
     const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
-    std::span<const SpatialOwner> owners, SpatialPayment payment);
+    std::span<const SpatialOwner> owners, SpatialPayment payment, SpatialBuildOptions options = {});
 
 }  // namespace llmp::components
 #endif  // LLMP_COMPONENTS_SPATIAL_H_

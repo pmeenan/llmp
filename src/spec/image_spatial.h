@@ -7,8 +7,10 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "model/qwen_image.h"
+#include "spec/graph_links.h"
 #include "spec/spec.h"
 
 namespace llmp::spec {
@@ -19,6 +21,15 @@ namespace llmp::spec {
 // Caller prepays at least this bound for the returned spec and temporary names.
 inline constexpr std::uint64_t kVaeSpatialSpecBytes = 1ULL << 20U;
 std::expected<ModelSpec, std::string> VaeSpatialSpec(
+    std::span<const model::VaeStep> steps, std::span<const model::QwenImageTensor> tensors);
+struct SpatialComposition {
+  ModelSpec spec;
+  std::vector<GraphLink> links;
+};
+// Complete first-frame source plan, including residual and duplicate-up edges.
+// Source buffers become SSA values; Copy saves an alias, not a payload copy.
+// Same prepaid 1MiB source-mapping allowance, at most256 steps/4096 tensor names.
+std::expected<SpatialComposition, std::string> VaeDecoderSpec(
     std::span<const model::VaeStep> steps, std::span<const model::QwenImageTensor> tensors);
 }  // namespace llmp::spec
 #endif  // LLMP_SPEC_IMAGE_SPATIAL_H_

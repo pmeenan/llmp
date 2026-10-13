@@ -38,6 +38,13 @@ const ggml_cuda_device_info::cuda_device_info& Device(const LaunchContext& launc
 
 }  // namespace
 
+std::expected<void, KernelFailure> L2Norm(LaunchContext& launch, ggml_tensor* norm) {
+  if (auto checked = CheckL2Norm(norm); !checked) return checked;
+  return launch.Run(base::Bytes(0), [norm](ggml_backend_cuda_context& context) {
+    ggml_cuda_op_l2_norm(context, norm);
+  });
+}
+
 std::expected<void, KernelFailure> RmsNorm(LaunchContext& launch, ggml_tensor* norm) {
   if (auto checked = CheckRmsNorm(norm); !checked) {
     return checked;

@@ -206,6 +206,8 @@ bool Tuned(const Implementation& implementation, const CapabilityQuery& q) {
 
 std::string_view OperationName(Operation operation) {
   switch (operation) {
+    case Operation::kL2Norm:
+      return "l2_norm";
     case Operation::kRmsNorm:
       return "rms_norm";
     case Operation::kRmsNormMul:
@@ -338,6 +340,8 @@ ir::OpKey OpKeyOf(Operation operation) {
   using ir::Op;
   using ir::Primitive;
   switch (operation) {
+    case Operation::kL2Norm:
+      return Primitive(Op::kL2Norm);
     case Operation::kRmsNorm:
       return Primitive(Op::kRmsNorm);
     case Operation::kRmsNormMul:

@@ -338,6 +338,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       }
     }
     switch (node->op) {
+      case GGML_OP_L2_NORM:
+        add(Operation::kL2Norm, "ggml.l2_norm", i, {node}, 1);
+        break;
       case GGML_OP_RMS_NORM: {
         ggml_tensor* next = i + 1 < graph.size() ? graph[i + 1] : nullptr;
         if (const auto f = !fusion && device.fuse_norms
@@ -424,6 +427,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
              node->src[0]->type == GGML_TYPE_BF16)) {
           add(Operation::kMatMul, kMulMatVecFRows, i, {node}, 1);
           break;
+        }
+        if (!device.mul_mat) {
+          return Rejected(std::format("{}: no floating product selector here", Where(graph, i)));
         }
         const auto path = device.mul_mat(node);
         if (!path) {

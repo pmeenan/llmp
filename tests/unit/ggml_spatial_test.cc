@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "expected_error.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/lower.h"
+#include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 #include "spec/image_spatial.h"
 
@@ -233,5 +235,105 @@ TEST(GgmlSpatialTest, ActualVaeSourceSpansPreserveWeightsAndRefuseBranches) {
     ++spans;
   }
   EXPECT_EQ(spans, 4U);
+}
+
+TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMetadata) {
+  const auto& profile = mo::QwenImage21().vae;
+  const auto steps = mo::VaeDecoderPlan(profile, 2, 2);
+  const auto source = mo::VaeDecoderTensors(profile);
+  ASSERT_EQ(steps.size(), 113U);
+  ASSERT_EQ(source.size(), 128U);
+  auto mapped = sp::VaeDecoderSpec(steps, source);
+  ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+  ASSERT_EQ(mapped->links.size(), 109U);  // saved Copy aliases need no primitive/component
+  std::vector<co::BoundTensor> tensors;
+  std::uint64_t source_bytes = 0;
+  for (const auto& weight : source) {
+    fm::Shape shape;
+    shape.rank = static_cast<std::uint8_t>(weight.shape.size());
+    std::uint64_t bytes = sizeof(float);
+    for (std::size_t d = 0; d < weight.shape.size(); ++d) {
+      shape.ne[d] = weight.shape[weight.shape.size() - d - 1];
+      bytes *= shape.ne[d];
+    }
+    source_bytes += bytes;
+    tensors.push_back({weight.name, ir::Dense(fm::Encoding::kF32, shape)});
+  }
+  EXPECT_EQ(source_bytes, 1012281936ULL);
+  Budget budget;
+  const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+  const std::array owners{co::SpatialOwner{2, {2, 2, 64, 1}}};
+  auto graph = co::BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                                    {.links = mapped->links, .reference_buffers = false});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  EXPECT_EQ(graph->reference_bytes(), 0U);  // no billion-operation scalar payload oracle
+  EXPECT_EQ(graph->outputs()[0].shape, (co::SpatialShape{32, 32, 4, 1}));
+  ASSERT_EQ(graph->weights().size(), 128U);
+  const auto count_op = [&](ir::Op op) {
+    return std::ranges::count_if(graph->graph().nodes(),
+                                 [&](const auto& node) { return node.key == ir::Primitive(op); });
+  };
+  EXPECT_EQ(count_op(ir::Op::kConv2d), 46);
+  EXPECT_EQ(count_op(ir::Op::kL2Norm), 36);
+  EXPECT_EQ(count_op(ir::Op::kSoftMax), 1);
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                      graph->weights()};
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  for (const bool measuring : {true, false}) {
+    kn::Addresses addresses;
+    addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+      return 0x100000000ULL + (std::uint64_t{ref.component} * 2 + ref.role) * (64ULL << 20U);
+    };
+    addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+    addresses.activations = measuring ? 0ULL : 0x10000000ULL;
+    addresses.activation_bytes = 256ULL << 20U;
+    addresses.activation_alignment = 256;
+    auto plan = en::PlanComponentGraph(
+        io, backend, {}, addresses,
+        {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+         .written = kg::WrittenBytes,
+         .within = kg::WithinRoot,
+         .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+    ASSERT_TRUE(plan) << Failed(plan).value_or("");
+    const kn::LowerInput input{*plan, io, addresses};
+    auto absent = kg::LowerStep(input, *registry, {});
+    ASSERT_FALSE(absent);
+    EXPECT_NE(absent.error().detail.find("no floating product selector"), std::string::npos);
+    // This descriptor-only control models the existing cuBLAS product path;
+    // actual GPU programs obtain their selector from the owned backend.
+    kg::DeviceChoices device;
+    device.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+      return kg::MulMatPath::kCublas;
+    };
+    auto lowered = kg::LowerStep(input, *registry, device);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    ASSERT_EQ(lowered->outputs.size(), 1U);
+    EXPECT_EQ(lowered->outputs[0].segment, 2U);
+    EXPECT_EQ(lowered->outputs[0].bytes, 32U * 32U * 4U * sizeof(float));
+    std::size_t norms = 0, convolutions = 0;
+    for (auto& step : lowered->plan.steps) {
+      convolutions += step.implementation == "ggml.conv2d.f32";
+      if (step.implementation != "ggml.l2_norm") continue;
+      ++norms;
+      auto* norm = step.nodes[0];
+      ASSERT_TRUE(kg::CheckL2Norm(norm));
+      float original = 0;
+      std::memcpy(&original, norm->op_params, sizeof(original));
+      const float underflow = 1e-30F;
+      std::memcpy(norm->op_params, &underflow, sizeof(underflow));
+      EXPECT_FALSE(kg::CheckL2Norm(norm));
+      std::memcpy(norm->op_params, &original, sizeof(original));
+    }
+    EXPECT_EQ(norms, 36U);
+    EXPECT_EQ(convolutions, 46U);
+  }
+  auto malformed = steps;
+  malformed[2].in = mo::kVaeQ;  // uninitialized source at the first residual norm
+  EXPECT_FALSE(sp::VaeDecoderSpec(malformed, source));
 }
 }  // namespace

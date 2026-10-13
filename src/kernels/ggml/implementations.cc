@@ -110,7 +110,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 137> kKernels = {{
+constexpr std::array<Kernel::Entry, 138> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -155,6 +155,12 @@ constexpr std::array<Kernel::Entry, 137> kKernels = {{
      .arity = 3,
      .check = [](ConstNodes n) { return CheckGemmaNormAdd(n[0], n[1], n[2]); },
      .run = [](LaunchContext& l, Nodes n) { return RunGemmaNormAdd(l, n[0], n[1], n[2]); }},
+    {.name = "ggml.l2_norm",
+     .operation = execution::Operation::kL2Norm,
+     .variant = "locked ggml_cuda_op_l2_norm; F32 clamped L2, finite normal epsilon squared",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckL2Norm(n[0]); },
+     .run = [](LaunchContext& l, Nodes n) { return L2Norm(l, n[0]); }},
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "

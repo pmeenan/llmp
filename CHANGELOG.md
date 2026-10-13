@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Compose the stored first-frame VAE decoder from shared spatial fragments and
+  owner-local residual values, preserving F32 source weights and reusing the
+  existing program path. GPU graph construction can omit unused full scalar
+  reference buffers. The bounded complete first-frame decoder and capture/replay
+  screen passes; whole-image quality, speed and serving remain separate.
+
 - Invalidate shared calibration when the actual bound model spec changes,
   preserving default settings, artifact storage paths and legacy records.
 

@@ -15,13 +15,14 @@ namespace llmp::components {
 
 std::span<const ComponentDef* const> Catalog() {
   // Sorted by (kind, version).
-  static const std::array<const ComponentDef*, 27> catalog{
+  static const std::array<const ComponentDef*, 30> catalog{
       &defs::AttentionBorrowed(),
       &defs::AttentionDense(),
       &defs::AttentionGdn(),
       &defs::AttentionMqa(),
       &defs::AttentionQsa(),
       &defs::AttentionQsaReplay(),
+      &defs::AttentionSpatial(),
       &defs::Conv2d(),
       &defs::EmbeddingInject(),
       &defs::EmbeddingMtp(),
@@ -39,6 +40,8 @@ std::span<const ComponentDef* const> Catalog() {
       &defs::ResidualGated(),
       &defs::ResidualHc(),
       &defs::ResidualPle(),
+      &defs::ResidualSpatial(),
+      &defs::ResidualUpsample(),
       &defs::ScaleLearned(),
       &defs::SideHash(),
       &defs::SideNgram(),

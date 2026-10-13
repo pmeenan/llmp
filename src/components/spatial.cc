@@ -14,7 +14,7 @@ namespace llmp::components {
 namespace {
 
 constexpr std::uint64_t kValues = 1ULL << 24U;
-constexpr std::size_t kComponents = 64, kOwners = 16, kTensors = 1024;
+constexpr std::size_t kComponents = 256, kOwners = 16, kTensors = 1024;
 
 std::expected<std::uint64_t, std::string> Values(SpatialShape s) {
   std::uint64_t count = 1;
@@ -58,7 +58,9 @@ std::expected<std::vector<RoleShape>, std::string> UpRoles(const Instance& in) {
   if (in.site != Site::kLayer) return std::unexpected("spatial upsampling requires a layer");
   return std::vector<RoleShape>{};
 }
-std::expected<SpatialShape, std::string> ConvShape(const Instance& in, SpatialShape s) {
+std::expected<SpatialShape, std::string> ConvShape(const Instance& in, SpatialShape s,
+                                                   std::optional<SpatialShape> auxiliary = {}) {
+  if (auxiliary) return std::unexpected("spatial convolution has no auxiliary input");
   if (!Values(s) || s.channels != static_cast<std::uint64_t>(in.params.Int("in_channels")))
     return std::unexpected("spatial convolution input channels or dimensions differ");
   const auto k = static_cast<std::uint64_t>(in.params.Int("kernel"));
@@ -72,7 +74,9 @@ std::expected<SpatialShape, std::string> ConvShape(const Instance& in, SpatialSh
   if (!Values(out)) return std::unexpected("spatial convolution output exceeds its value bound");
   return out;
 }
-std::expected<SpatialShape, std::string> UpShape(const Instance& in, SpatialShape s) {
+std::expected<SpatialShape, std::string> UpShape(const Instance& in, SpatialShape s,
+                                                 std::optional<SpatialShape> auxiliary = {}) {
+  if (auxiliary) return std::unexpected("spatial upsampling has no auxiliary input");
   if (!Values(s)) return std::unexpected("spatial upsampling input exceeds its value bound");
   const auto f = static_cast<std::uint64_t>(in.params.Int("factor"));
   if (__builtin_mul_overflow(s.width, f, &s.width) ||
@@ -159,7 +163,7 @@ const SpatialOps kUp{UpShape, UpEmit, UpReference};
 // visitor. This first spatial domain has no side/state/embedding/temporal path.
 std::expected<std::uint64_t, std::string> MetadataBound(
     const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
-    std::span<const SpatialOwner> owners) {
+    std::span<const SpatialOwner> owners, SpatialBuildOptions options) {
   if (spec.pipeline != spec::PipelineKind::kImage || spec.stages.size() != 1 ||
       tensors.size() > 16 || owners.empty() || owners.size() > kOwners)
     return std::unexpected("spatial compilation needs one image stage and 1..16 owners");
@@ -169,8 +173,8 @@ std::expected<std::uint64_t, std::string> MetadataBound(
       stage.heads.output || stage.heads.final_norm || !stage.heads.mtp.empty() ||
       stage.heads.softcap || !stage.reads.empty() || !stage.taps.empty() || !stage.folds.empty() ||
       stage.context != 0)
-    return std::unexpected("spatial compilation requires a bounded stateless component chain");
-  std::size_t components = 0, source_count = 0;
+    return std::unexpected("spatial compilation requires a bounded stateless component graph");
+  std::size_t components = 0, source_count = 0, primitive_count = 0;
   for (const auto& layer : stage.layers) {
     if (layer.components.empty() || layer.components.size() > kComponents - components)
       return std::unexpected("spatial component count is outside its bound");
@@ -180,16 +184,26 @@ std::expected<std::uint64_t, std::string> MetadataBound(
         return std::unexpected("spatial component metadata exceeds its bound");
       const auto* def = Find(ref.kind, ref.version);
       if (def == nullptr || def->spatial == nullptr || def->state != nullptr ||
-          def->params.size() > 8 || def->roles.size() > 2)
+          def->params.size() > 8 || def->roles.size() > 2 || def->spatial->max_nodes == 0 ||
+          def->spatial->max_nodes > 64)
         return std::unexpected("a component has no bounded stateless spatial fragment");
+      primitive_count += def->spatial->max_nodes;
       for (const auto& param : ref.params)
-        if (param.name.size() > 64 || !std::holds_alternative<std::int64_t>(param.value))
-          return std::unexpected("spatial parameters are bounded scalar integers");
+        if (param.name.size() > 64 || (!std::holds_alternative<std::int64_t>(param.value) &&
+                                       !std::holds_alternative<double>(param.value) &&
+                                       !std::holds_alternative<bool>(param.value)))
+          return std::unexpected("spatial parameters are bounded scalar numbers or flags");
       for (const auto& weight : ref.weights)
         if (weight.role.size() > 64 || weight.tensor.size() > 256 || !weight.stage.empty())
           return std::unexpected("spatial weight binding exceeds the single-stage domain");
     }
   }
+  if (!options.links.empty() && options.links.size() != components)
+    return std::unexpected("spatial links must cover every component");
+  for (std::size_t i = 0; i < options.links.size(); ++i)
+    if (options.links[i].input > i ||
+        (options.links[i].auxiliary && *options.links[i].auxiliary > i))
+      return std::unexpected("spatial links must reference an earlier owner-local value");
   for (const auto table : tensors) {
     if (table.size() > kTensors - source_count)
       return std::unexpected("spatial bound tensor inventory is too large");
@@ -203,11 +217,11 @@ std::expected<std::uint64_t, std::string> MetadataBound(
         owners[i].owner >= ir::kJoinedSegment || (i && owners[i - 1].owner >= owners[i].owner))
       return std::unexpected("spatial owner order or initial channels/dimensions differ");
   }
-  // <=2 roles/component, one input/owner and one primitive/component/owner.
+  // <=2 roles/component, one input/owner and the declared primitive limit/component/owner.
   // 4KiB per node/tensor covers graph+clone+rewrite/placement metadata, and
   // 4KiB per source/component covers bounded names/Params/visitor copies.
   static_assert(sizeof(ir::Node) <= 256 && sizeof(ir::TensorDesc) <= 256);
-  const auto nodes = owners.size() * (components + 1) + 2 * components;
+  const auto nodes = owners.size() * (primitive_count + 1) + 2 * components;
   return 4096ULL * (2 * nodes + source_count + 4 * components + 16);
 }
 struct PaymentOwner {
@@ -258,8 +272,8 @@ const ComponentDef& UpsampleNearest() {
 
 std::expected<SpatialGraph, std::string> BuildSpatialStep(
     const spec::ModelSpec& spec, std::span<const std::span<const BoundTensor>> tensors,
-    std::span<const SpatialOwner> owners, SpatialPayment payment) {
-  auto metadata = MetadataBound(spec, tensors, owners);
+    std::span<const SpatialOwner> owners, SpatialPayment payment, SpatialBuildOptions options) {
+  auto metadata = MetadataBound(spec, tensors, owners, options);
   if (!metadata) return std::unexpected(metadata.error());
   if (!payment.charge || !payment.release || !payment.charge(*metadata))
     return std::unexpected("spatial compiler metadata was not funded");
@@ -273,17 +287,26 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
         return std::unexpected("a component has no stateless spatial fragment");
       chain.push_back(&instance);
     }
-  // Whole-chain inference before builder creation; input + every live result.
+  // Whole-graph inference before builder creation; every edge is owner-local.
   std::uint64_t values = 0;
   std::vector<SpatialOwner> ends;
   for (const auto& owner : owners) {
     auto shape = owner.shape;
     values += *Values(shape);
-    for (const auto* instance : chain) {
-      auto next = instance->def->spatial->infer(*instance, shape);
+    std::vector<SpatialShape> inferred{shape};
+    for (std::size_t j = 0; j < chain.size(); ++j) {
+      const auto link =
+          options.links.empty() ? SpatialLink{static_cast<std::uint16_t>(j), {}} : options.links[j];
+      const auto* instance = chain[j];
+      const auto auxiliary =
+          link.auxiliary ? std::optional(inferred[*link.auxiliary]) : std::nullopt;
+      auto next = instance->def->spatial->infer(*instance, inferred[link.input], auxiliary);
       if (!next) return std::unexpected(next.error());
       shape = *next;
+      inferred.push_back(shape);
       values += *Values(shape);
+      if (instance->def->spatial->temporary_values)
+        values += instance->def->spatial->temporary_values(inferred[link.input]);
     }
     ends.push_back({owner.owner, shape});
   }
@@ -314,13 +337,22 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
   // Bound encoded roots, complete reference copies and decoded double work
   // across primitive execution and the independent chain oracle (not GPU VMM).
   std::uint64_t reference_bytes = 0;
-  if (__builtin_mul_overflow(values, std::uint64_t{64}, &reference_bytes) ||
-      !hold->Add(reference_bytes))
+  if (options.reference_buffers &&
+      (__builtin_mul_overflow(values, std::uint64_t{64}, &reference_bytes) ||
+       !hold->Add(reference_bytes)))
     return std::unexpected("spatial graph/reference buffers were not funded");
-  const auto max_nodes = owners.size() * (chain.size() + 1) + roles.size();
+  std::size_t primitive_count = 0;
+  for (const auto* instance : chain) primitive_count += instance->def->spatial->max_nodes;
+  const auto max_nodes = owners.size() * (primitive_count + 1) + roles.size();
   ir::Builder builder(max_nodes);
   std::vector<StepWeight> weights;
-  std::vector<std::uint64_t> parameters{0x5350415449414cULL, 1, owners.size()};
+  std::vector<std::uint64_t> parameters{0x5350415449414cULL, 2, owners.size(), chain.size()};
+  for (std::size_t j = 0; j < chain.size(); ++j) {
+    const auto link =
+        options.links.empty() ? SpatialLink{static_cast<std::uint16_t>(j), {}} : options.links[j];
+    parameters.push_back(link.input);
+    parameters.push_back(link.auxiliary ? *link.auxiliary + 1U : 0U);
+  }
   for (auto& role : roles) {
     const auto prior =
         std::ranges::find_if(weights, [&](const auto& w) { return w.ref == role.ref; });
@@ -338,17 +370,27 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
     builder.SetOwner(owner.owner);
     auto shape = owner.shape;
     auto input = builder.Input(Format(shape));
-    for (const auto* instance : chain) {
+    std::vector<SpatialValue> produced{{input, shape}};
+    for (std::size_t j = 0; j < chain.size(); ++j) {
+      const auto* instance = chain[j];
+      const auto link =
+          options.links.empty() ? SpatialLink{static_cast<std::uint16_t>(j), {}} : options.links[j];
       builder.SetComponent(instance->index);
       std::array<ir::TensorId, 2> selected{};
       for (const auto& role : roles)
         if (role.component == instance->index) selected.at(role.role) = role.tensor;
-      SpatialFragment fragment{builder, *instance, input, shape,
-                               std::span(selected).first(instance->def->roles.size())};
+      SpatialFragment fragment{
+          builder,
+          *instance,
+          produced[link.input].tensor,
+          produced[link.input].shape,
+          std::span(selected).first(instance->def->roles.size()),
+          link.auxiliary ? std::optional(produced[*link.auxiliary]) : std::nullopt};
       auto emitted = instance->def->spatial->emit(fragment);
       if (!emitted) return std::unexpected(emitted.error());
       input = emitted->tensor;
       shape = emitted->shape;
+      produced.push_back(*emitted);
     }
     builder.Output(input);
     parameters.push_back(owner.owner);

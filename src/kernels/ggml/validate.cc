@@ -217,6 +217,23 @@ std::expected<void, KernelFailure> CheckMulMatCublasOperands(const ggml_tensor* 
   return CheckMulMatInto(node, node, /*f16_input=*/true);
 }
 
+std::expected<void, KernelFailure> CheckL2Norm(const ggml_tensor* norm) {
+  if (norm == nullptr || norm->op != GGML_OP_L2_NORM || !IsF32(norm) || !IsF32(norm->src[0]) ||
+      !Bound(norm) || !Bound(norm->src[0]) || AnyEmpty({norm, norm->src[0]}) ||
+      !AllSane({norm, norm->src[0]}))
+    return Rejected("l2_norm requires complete bound F32 operands");
+  // The locked kernel computes rsqrt(max(sum(x*x), eps*eps)). This domain
+  // keeps the squared epsilon normal and finite, including an all-zero row.
+  const float eps = Epsilon(norm);
+  if (!(eps >= 1e-18F && eps <= 1e18F) || !ggml_are_same_shape(norm, norm->src[0]) ||
+      !Packed(norm) || !Packed(norm->src[0]) || !FitsRowGrid(norm) ||
+      ggml_nelements(norm) > std::numeric_limits<std::int32_t>::max() - 1024 ||
+      !Aligned(norm, sizeof(float)) || !Aligned(norm->src[0], sizeof(float)) ||
+      !AllCurrent({norm, norm->src[0]}) || !Disjoint(norm, norm->src[0], true))
+    return Rejected("l2_norm shape, epsilon, indexing or live operand bounds differ");
+  return {};
+}
+
 std::expected<void, KernelFailure> CheckRmsNorm(const ggml_tensor* norm) {
   if (auto checked = CheckNormSource(norm); !checked) {
     return checked;

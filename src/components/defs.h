@@ -33,6 +33,9 @@ namespace llmp::components::defs {
 
 const ComponentDef& Conv2d();
 const ComponentDef& UpsampleNearest();
+const ComponentDef& ResidualSpatial();
+const ComponentDef& ResidualUpsample();
+const ComponentDef& AttentionSpatial();
 const ComponentDef& EmbeddingToken();
 const ComponentDef& EmbeddingProjected();
 const ComponentDef& NormAdaptive();

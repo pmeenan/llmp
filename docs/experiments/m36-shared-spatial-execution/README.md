@@ -54,3 +54,73 @@ Production/test code is identical to this checked image-only source export;
 final prose/aggregate additions record the result. The independently in-flight
 DSpark factory is excluded from this commit. Whole-pipeline quality, speed and
 serving remain open; the main repeat is not another timing qualification.
+
+## Complete first-frame decoder
+
+The next bounded source candidate consumes the existing `VaeDecoderPlan` and
+all 128 actual F32 decoder parts through shared components and the native role
+visitor. At a 2x2 latent, its 113 source steps become 109 components and produce
+32x32x4 outputs. Four saved copies become backward SSA aliases. The graph reuses
+convolution, nearest upsampling, clamped channel normalization, residual addition,
+duplicate-up addition and explicit spatial attention through the existing owned
+backend, program planner and completion/capture path. It adds no image-family
+executor, token-shaped surrogate or forced BF16 intermediate-rounding policy.
+
+The source parts contain 1,012,281,936 bytes. Their actual group-relative
+intervals require 486 physical 2MiB pages (1,019,215,872 bytes); the six containing
+groups reserve 647 pages of virtual space. The latter is not a claim of complete
+residency. Whole-graph compiler metadata is prepaid at 9,248,768 bytes. Disabling
+unused scalar-reference buffers retains that payment and all source checks,
+while avoiding a full-model CPU payload oracle. The small source-reference
+prefix retains its normal reference payment and checks the actual four source
+parts independently.
+
+The focused Spark B build compiles the four host targets, CUDA module and new
+actual fixture; all 52 host controls pass without skips. The full main native
+build then passes 227 host cases across 17 targets, with successful source/binary
+guards and child retirement.
+
+The single actual first-frame case passes on Spark B in 0.883 seconds including
+setup and storage (two-second supervised job). All 4,096 whole-decoder outputs
+are finite. The separate 4,608-value prefix has maximum absolute error
+6.2162465908066622e-7 and RMS error 5.6679068707238546e-8, within its predeclared
+0.0016099519558288599 F32 source-arithmetic enclosure. That enclosure applies
+only to the local prefix, not the whole decoder. Each program completes eager
+execution, capture and replay, with identical complete output hashes under its
+own selected implementation sequence and no capture refusal.
+
+The whole bound plan contains 46 F32 convolutions, 36 clamped-L2 operations,
+36 scales, 36 multiplications, 35 unary operations, 68 additions, 92 contiguous
+copies, two existing cuBLAS products, one softmax, four nearest upsamplings and
+four repeats. Source ranks/roles remain intact; no legacy BF16 rounding gate is
+introduced. All source/binary/recipe guards pass, memory limit/OOM events are
+zero, the native process group retires completely and no GPU process remains.
+The process/cache cgroup peak is 399,495,168 bytes; this is not device residency.
+Final source checks pass on Spark A: formatting, portability boundaries,
+SPDX headers and REUSE 6.2.0.
+
+This is complete bounded first-frame execution and same-selected replay evidence,
+not a full 8.28-billion-MAC scalar oracle, original-image quality result,
+comparative-speed result or serving admission. The fixture wall time is not a
+latency gate. Whole flow/timestep composition, broader VAE geometries and the
+family migration gate remain open. The compact
+[actual aggregate](whole-vae.json) records counts, scope and provenance; raw
+logs/XML remain in session scratch.
+
+Source01 manifest SHA-256:
+`5b440ee8c5e7809b82af14531e966157fb0e7dcf0b10c0ad472475afe95db1b4`.
+Source02 correction manifest SHA-256:
+`94e0c6c9237bb53cb01e8968ff2f714c0a4b931d09515a389a33aeffe6257e7c`.
+Actual fixture01 manifest SHA-256:
+`afa90908ca4711412516e09febd101c2070d702fb064c513c7318e786b515543`.
+
+Main native receipt SHA-256:
+`6b6437171c8579537b199c2903d938c85a6ec1c823e4a353e59775d7bab68f6b`.
+Actual fixture binary SHA-256:
+`ab5006ce7f027408874f59e80ffd818d991f4708600fc6ff1457ff7af419188a`
+(187,960,048 bytes).
+
+Actual recipe manifest SHA-256:
+`cd495f76fe1ef7477354640a868dba380e74acf418a15ec462051bdf9bcc5940`.
+Actual result SHA-256:
+`86aa3600cf38ca111474352b1a49e6c9f253d08e2946c48b57c5815f21ccd147`.

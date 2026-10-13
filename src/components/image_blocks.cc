@@ -14,6 +14,7 @@
 
 #include "components/component.h"
 #include "components/defs.h"
+#include "components/spatial.h"
 #include "components/step.h"
 #include "ir/op.h"
 
@@ -21,6 +22,24 @@ namespace llmp::components::defs {
 namespace {
 
 constexpr std::array kParams{
+    ParamSpec{.name = "channels",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 0,
+              .most = 65536,
+              .fallback = 0},
+    ParamSpec{.name = "weight_axis",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 0,
+              .most = 3,
+              .fallback = 0},
+    ParamSpec{.name = "weight_rank",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 1,
+              .most = 4,
+              .fallback = 1},
     ParamSpec{.name = "eps",
               .type = ParamType::kReal,
               .required = false,
@@ -42,28 +61,93 @@ constexpr std::array kBatch{
     BatchClass{.op = ir::Op::kUnary, .batch = ir::Batch::kJoined},
 };
 
-std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
-  if (in.stage.width == 0 || in.stage.width > kMaxStreamWidth || in.stage.streams != 1)
-    return std::unexpected("channel norm requires one bounded channel stream");
-  return std::vector<RoleShape>{Role(0, {in.stage.width})};
+std::uint64_t Channels(const Instance& in) {
+  const auto explicit_width = in.params.Int("channels");
+  return explicit_width == 0 ? in.stage.width : static_cast<std::uint64_t>(explicit_width);
 }
-
+std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
+  if (Channels(in) == 0 || Channels(in) > kMaxStreamWidth || in.stage.streams != 1)
+    return std::unexpected("channel norm requires one bounded channel stream");
+  const auto axis = static_cast<std::size_t>(in.params.Int("weight_axis"));
+  auto role = Role(0, {1});
+  role.rank = static_cast<std::uint8_t>(in.params.Int("weight_rank"));
+  if (axis >= role.rank) return std::unexpected("channel gamma axis exceeds source rank");
+  role.ne[axis] = Channels(in);
+  return std::vector{role};
+}
+ir::TensorId Normalized(ir::Builder& builder, const Instance& in, ir::TensorId input,
+                        ir::TensorId weight) {
+  auto out = builder.L2Norm(input, F32(in.params.Real("eps")));
+  out = builder.Scale(out, F32(std::sqrt(static_cast<double>(Channels(in)))));
+  auto scale = NormScale(builder, weight);
+  if (builder.tensor(scale).shape().rank != 1)
+    scale = builder.Reshape(scale, ir::ShapeOf({Channels(in)}));
+  out = builder.Mul(out, scale);
+  if (in.params.Flag("silu")) out = builder.Unary(out, ir::UnaryFn::kSilu);
+  return out;
+}
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
-  // Channels are ne[0] and pixels/rows ne[1] in the common stream. L2Norm's
-  // denominator is max(sqrt(sum(x*x)), eps), not sqrt(mean(x*x) + eps).
-  auto out = f.b.L2Norm(f.stream, F32(f.instance.params.Real("eps")));
-  out = f.b.Scale(out, F32(std::sqrt(static_cast<double>(f.instance.stage.width))));
-  out = f.b.Mul(out, NormScale(f.b, f.Weight(0)));
-  if (f.instance.params.Flag("silu")) out = f.b.Unary(out, ir::UnaryFn::kSilu);
-  return FragmentOut{.stream = out};
+  if (Channels(f.instance) != f.instance.stage.width)
+    return std::unexpected("token channel norm must retain its stage width");
+  return FragmentOut{.stream = Normalized(f.b, f.instance, f.stream, f.Weight(0))};
 }
+std::expected<SpatialShape, std::string> SpatialNormShape(const Instance& in, SpatialShape shape,
+                                                          std::optional<SpatialShape> auxiliary) {
+  std::uint64_t count = 1;
+  for (const auto n : {shape.width, shape.height, shape.channels, shape.images})
+    if (!n || __builtin_mul_overflow(count, n, &count) || count > (1ULL << 24U))
+      return std::unexpected("spatial channel norm dimensions exceed the bounded domain");
+  if (auxiliary || shape.channels != Channels(in))
+    return std::unexpected("spatial channel norm input or auxiliary differs");
+  return shape;
+}
+std::expected<SpatialValue, std::string> SpatialNorm(SpatialFragment& f) {
+  auto shape = SpatialNormShape(f.instance, f.shape,
+                                f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!shape || f.weights.size() != 1)
+    return std::unexpected("spatial channel norm needs one actual gamma source");
+  // Reuse the same channel-first fragment. No numerical cast at the layout boundary.
+  auto rows = f.builder.Cont(f.builder.Permute(f.input, {1, 2, 0, 3}));
+  auto out = Normalized(f.builder, f.instance, rows, f.weights[0]);
+  return SpatialValue{f.builder.Cont(f.builder.Permute(out, {2, 0, 1, 3})), *shape};
+}
+std::expected<void, std::string> SpatialNormReference(SpatialRefIO& io) {
+  if (!SpatialNormShape(io.instance, io.shape, io.auxiliary_shape) || !io.auxiliary.empty() ||
+      !io.bias.empty() || io.shape.channels != Channels(io.instance) ||
+      io.kernel.size() != io.shape.channels ||
+      io.input.size() != io.shape.width * io.shape.height * io.shape.channels * io.shape.images)
+    return std::unexpected("spatial channel norm reference sizes differ");
+  const auto pixels = io.shape.width * io.shape.height;
+  const auto channels = io.shape.channels;
+  const double eps = F32(io.instance.params.Real("eps"));
+  const double factor = F32(std::sqrt(static_cast<double>(channels)));
+  std::vector<double> out(io.input.size());
+  for (std::uint64_t image = 0; image < io.shape.images; ++image)
+    for (std::uint64_t pixel = 0; pixel < pixels; ++pixel) {
+      double squares = 0;
+      for (std::uint64_t c = 0; c < channels; ++c) {
+        const double value = io.input[pixel + pixels * (c + channels * image)];
+        squares += value * value;
+      }
+      const double denominator = std::max(std::sqrt(squares), eps);
+      for (std::uint64_t c = 0; c < channels; ++c) {
+        const auto index = pixel + pixels * (c + channels * image);
+        double value = io.input[index] / denominator * factor * io.kernel[c];
+        if (io.instance.params.Flag("silu")) value /= 1 + std::exp(-value);
+        out[index] = value;
+      }
+    }
+  io.output = std::move(out);
+  return {};
+}
+const SpatialOps kSpatialNorm{SpatialNormShape, SpatialNorm, SpatialNormReference, 12};
 
 std::expected<void, std::string> Reference(RefIO& io) {
   const auto width = io.instance->stage.width;
-  if (width == 0 || width > kMaxStreamWidth || io.stream.size() % width != 0 ||
-      io.stream.size() / width != io.rows() || io.weights.size() != 1 ||
-      io.weights[0].size() != width)
+  if (Channels(*io.instance) != width || width == 0 || width > kMaxStreamWidth ||
+      io.stream.size() % width != 0 || io.stream.size() / width != io.rows() ||
+      io.weights.size() != 1 || io.weights[0].size() != width)
     return std::unexpected("channel norm reference: stream or scale shape differs");
   const double eps = F32(io.instance->params.Real("eps"));
   const double scale = F32(std::sqrt(static_cast<double>(width)));
@@ -193,6 +277,7 @@ const ComponentDef& NormChannel() {
       .roles = kRoles,
       .shapes = Shapes,
       .batch_classes = kBatch,
+      .spatial = &kSpatialNorm,
       .emit = Emit,
       .reference = Reference,
   };

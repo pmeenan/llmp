@@ -603,9 +603,18 @@ these fixtures where applicable.
   completion path; the selected physical convolution does not support BF16.
   Source quality checks pass; see the
   [bounded report](experiments/m36-shared-spatial-execution/README.md).
+  Q3b's complete first-frame decoder now passes through the same shared path:
+  109 components preserve source roles and owner-local residual values, with
+  optional unused scalar-reference payment omitted for the GPU graph. Focused
+  native compilation and 52 host controls pass, followed by the full main
+  Spark B build and 227 host cases across 17 targets. The actual 2x2-to-32x32
+  decoder case passes all 4,096 finite outputs plus 4,608 local source-reference
+  outputs, with two eager executions, two captures and two same-selected replays.
+  These bounded execution witnesses do not establish original image quality or
+  comparative speed.
   Whole-stage timestep conditioning remains open; these contracts permit future
   per-owner broadcast on device without requiring CPU row expansion.
-  Flow-step and whole-VAE composition, 3-axis rope, bidirectional attention and
+  Flow-step, broader whole-VAE qualification, 3-axis rope, bidirectional attention and
   `EngineImage` remain open. Qualify numerical choices rather than imposing the legacy
   pipeline's rounding recipe; retire `qwen_image_runner.*` and `pipeline.cc`
   roles after their shared replacements pass.
