@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -1185,24 +1186,28 @@ StateRanges Coordinates(Owner& owner, std::size_t slot) {
       result.push_back({stage, range.region, range.offset, range.bytes});
   return result;
 }
-rt::Status Complete(const rt::Generation& out, std::size_t count) {
-  if (out.tokens.size() != count || out.logits.size() != count || !out.drafted)
+rt::Status Complete(const rt::Generation& out, std::size_t count, bool keep_logits = true) {
+  if (out.tokens.size() != count ||
+      (keep_logits ? out.logits.size() != count : !out.logits.empty()) || !out.drafted ||
+      out.stopped || out.cancelled)
     return std::unexpected("C2 generation omitted target rows or actual MTP work");
   for (std::size_t i = 0; i < count; ++i) {
     if (out.tokens[i] < 0 || std::cmp_greater_equal(out.tokens[i], kVocab) ||
-        out.logits[i].size() != kVocab ||
-        !std::ranges::all_of(out.logits[i], [](float x) { return std::isfinite(x); }))
+        (keep_logits &&
+         (out.logits[i].size() != kVocab ||
+          !std::ranges::all_of(out.logits[i], [](float x) { return std::isfinite(x); }))))
       return std::unexpected("C2 completed target head is not finite and complete");
   }
   return {};
 }
 template <class OwnerLike>
 rt::Status Generate(OwnerLike& owner, const std::array<std::vector<float>, 2>& heads,
-                    std::array<rt::Generation, 2>& out, std::uint32_t count, bool resume) {
+                    std::array<rt::Generation, 2>& out, std::uint32_t count, bool resume,
+                    bool keep_logits = true) {
   rt::GenerateOptions options;
   options.max_tokens = count;
   options.stop = false;
-  options.keep_logits = true;
+  options.keep_logits = keep_logits;
   std::array<SessionOwner<rt::Llm::GenerationSession>, 2> sessions;
   for (std::size_t i = 0; i < 2; ++i) {
     auto session = resume ? owner.Branch(i).ResumeGeneration(heads[i], options, out[i])
@@ -1221,7 +1226,7 @@ rt::Status Generate(OwnerLike& owner, const std::array<std::vector<float>, 2>& h
   for (std::size_t i = 0; i < 2; ++i) {
     if (!sessions[i]->done()) return std::unexpected("C2 generation made no bounded progress");
     if (auto s = sessions[i]->Finish(); !s) return s;
-    if (auto s = Complete(out[i], count); !s) return s;
+    if (auto s = Complete(out[i], count, keep_logits); !s) return s;
   }
   return {};
 }
@@ -1455,7 +1460,7 @@ struct Evidence {
 struct Owner {
   Lifetime life;
   std::shared_ptr<Evidence> evidence;
-  rt::EngineLlm* llm = nullptr;
+  rt::Llm* llm = nullptr;
   bool attempted = false, retired = false;
   rt::Llm::Branch& Branch(std::size_t i) { return **llm->branch(i); }
   bool Retire() {
@@ -1481,7 +1486,8 @@ struct RetainUnknown {
 };
 using Owned = std::unique_ptr<Owner, RetainUnknown>;
 
-rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previous) {
+rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previous,
+                 bool component = true) {
   if (auto s = CheckFixture(kCutlass, true); !s) return s;
   auto& life = owner.life;
   life.scratch = root;
@@ -1506,7 +1512,7 @@ rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previou
   entry.overrides["draft_rows"] = std::int64_t{2};
   entry.overrides["wave_read_align"] = std::int64_t{256};
   life.config.models.push_back(std::move(entry));
-  life.options.diagnostic_component_solo = true;
+  life.options.diagnostic_component_solo = component;
   life.options.keep_conversations = true;
   // Current compiler is transient once: the two futures build sequentially
   // while the device runs. Their retained programs are separately charged by
@@ -1518,26 +1524,29 @@ rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previou
   life.server = std::make_unique<rt::Server>(life.config, life.roles, life.options, life.log);
   if (auto s = life.server->Start(false); !s) return s;
   if (previous != nullptr) previous->reset();
-  owner.llm = dynamic_cast<rt::EngineLlm*>(life.server->Find("qwen-server-c2"));
+  owner.llm = dynamic_cast<rt::Llm*>(life.server->Find("qwen-server-c2"));
+  auto* shared = dynamic_cast<rt::EngineLlm*>(owner.llm);
   if (!owner.llm || owner.llm->generation_wave_capacity() != 2 ||
-      owner.llm->runner().slots().stages() != 2)
-    return std::unexpected("Server did not build the declared C2 composition");
-  auto identity = owner.llm->ExecutionIdentity();
-  if (!identity || !*identity) return std::unexpected("Server omitted its prepared identity");
-  if (reopen && **identity != owner.evidence->identity)
-    return std::unexpected("Server reopened another selected execution");
-  owner.evidence->identity = **identity;
+      (shared != nullptr) != component || (shared && shared->runner().slots().stages() != 2))
+    return std::unexpected("Server did not build the declared C2 implementation");
+  if (shared) {
+    auto identity = shared->ExecutionIdentity();
+    if (!identity || !*identity) return std::unexpected("Server omitted its prepared identity");
+    if (reopen && **identity != owner.evidence->identity)
+      return std::unexpected("Server reopened another selected execution");
+    owner.evidence->identity = **identity;
+    testing::Test::RecordProperty("server_execution_identity", llmp::base::ToHex(**identity));
+  }
   if (life.server->budget() != kBudget)
     return std::unexpected("Server changed the admitted budget");
   testing::Test::RecordProperty("server_plan_floor_bytes",
                                 std::to_string(life.server->plan_floor_bytes()));
-  testing::Test::RecordProperty("server_execution_identity", llmp::base::ToHex(**identity));
   return {};
 }
 
 rt::Status Run(Owner& owner, bool reopen) {
   auto& server = *owner.life.server;
-  auto& llm = *owner.llm;
+  auto& llm = *dynamic_cast<rt::EngineLlm*>(owner.llm);
   auto& evidence = *owner.evidence;
   const std::array<rt::Llm::Branch*, 2> branches{&owner.Branch(0), &owner.Branch(1)};
   if (reopen) {
@@ -1648,6 +1657,173 @@ const bool registered = [] {
   testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2ServerDefaultOptionsReopen", nullptr,
                         nullptr, __FILE__, __LINE__,
                         []() -> testing::Test* { return new ServerCase; });
+  return true;
+}();
+
+// One coarse whole-implementation timing screen, using the same Server owner
+// and public sessions. The existing durable/default tests remain unchanged.
+constexpr std::string_view kSpeedIdsSha =
+    "3cd946c3876501eccbe079b9d2700e542e66242be241a8549546df8d9b23e468";
+using SpeedIds = std::array<std::array<std::int32_t, 255>, 4>;
+rt::Status ReadSpeedIds(SpeedIds& ids) {
+  static_assert(std::endian::native == std::endian::little && sizeof(ids) == 4080);
+  const char* path = std::getenv("LLMP_QWEN_C2_SPEED_IDS");  // NOLINT(concurrency-mt-unsafe)
+  if (!path) return std::unexpected("missing authenticated natural speed inputs");
+  auto* file = std::fopen(path, "rb");
+  if (!file) return std::unexpected("opening natural speed inputs");
+  struct stat st{};
+  bool valid = fstat(fileno(file), &st) == 0 && S_ISREG(st.st_mode) &&
+               st.st_size == static_cast<off_t>(sizeof(ids));
+  valid = valid && std::fread(ids.data(), 1, sizeof(ids), file) == sizeof(ids) &&
+          std::fgetc(file) == EOF && std::ferror(file) == 0;
+  valid = std::fclose(file) == 0 && valid;
+  llmp::base::Sha256 hash;
+  hash.Update(std::as_bytes(std::span(ids)));
+  if (!valid || llmp::base::ToHex(hash.Finish()) != kSpeedIdsSha)
+    return std::unexpected("natural speed input identity mismatch");
+  for (const auto& document : ids)
+    for (const auto id : document)
+      if (id < 0 || std::cmp_greater_equal(id, kVocab))
+        return std::unexpected("natural speed token outside source vocabulary");
+  return {};
+}
+rt::Status SpeedPass(Owner& owner, const SpeedIds& ids, bool measured) {
+  auto& server = *owner.life.server;
+  auto& llm = *owner.llm;
+  const std::array<rt::Llm::Branch*, 2> branches{&owner.Branch(0), &owner.Branch(1)};
+  if (auto selected = server.SelectRequestBranches(llm, branches); !selected) return selected;
+  // Clear invalidates kept records and checkpoints through the ordinary
+  // branch API. Retain only warmed program/weight residency between passes.
+  for (auto* branch : branches) {
+    if (auto cleared = branch->Clear(); !cleared) return cleared;
+    if (!branch->history().empty() || branch->turn_checkpoints())
+      return std::unexpected("speed pass retained conversation reuse");
+  }
+  std::array<std::vector<float>, 2> heads;
+  std::uint32_t prefilled = 0, reused = 0, chunks = 0;
+  const auto started = rt::Clock::now();
+  for (std::size_t slot = 0; slot < 2; ++slot) {
+    const auto& prompt = ids[(measured ? 2U : 0U) + slot];
+    auto begun = owner.Branch(slot).BeginPrompt(prompt, 16, false, false);
+    if (!begun) return std::unexpected(begun.error());
+    c2::SessionOwner<rt::Llm::PromptSession> session(begun->release());
+    while (!session->done())
+      if (auto advanced = session->Advance(); !advanced) return advanced;
+    reused += session->reused();
+    prefilled += session->run().end - session->reused();
+    chunks += session->run().chunks;
+    heads[slot] = session->last();
+    if (auto finished = session->Finish(); !finished) return finished;
+  }
+  const auto prompted = rt::Clock::now();
+  if (reused || prefilled != 510)
+    return std::unexpected("speed pass omitted fresh natural prefill");
+  std::uint32_t checkpoints = 0;
+  for (const auto* branch : branches) {
+    if (branch->turn_checkpoints() != 1)
+      return std::unexpected("speed pass omitted a default turn checkpoint");
+    ++checkpoints;
+  }
+  std::array<rt::Generation, 2> output;
+  // stop=false fixes completed work; greedy token-only is the normal fast
+  // path. Full-head observation is confined to the separate quality controls.
+  const auto generation_started = rt::Clock::now();
+  if (auto generated = c2::Generate(owner, heads, output, 64, false, false); !generated)
+    return generated;
+  const auto generated = rt::Clock::now();
+  const auto prefix = measured ? "measured" : "warm";
+  const auto property = [&](std::string_view key, auto value) {
+    testing::Test::RecordProperty(std::format("{}_{}", prefix, key), std::to_string(value));
+  };
+  property("prefill_ns",
+           std::chrono::duration_cast<std::chrono::nanoseconds>(prompted - started).count());
+  property(
+      "generation_ns",
+      std::chrono::duration_cast<std::chrono::nanoseconds>(generated - generation_started).count());
+  property("prefilled", prefilled);
+  property("reused", reused);
+  property("chunks", chunks);
+  property("turn_checkpoints", checkpoints);
+  std::uint64_t tokens = 0, drafted = 0, accepted = 0, steps = 0;
+  for (std::size_t slot = 0; slot < 2; ++slot) {
+    const auto& result = output[slot];
+    tokens += result.tokens.size();
+    drafted += result.drafted;
+    accepted += result.accepted;
+    steps += result.steps;
+    llmp::base::Sha256 hash;
+    hash.Update(std::as_bytes(std::span(result.tokens)));
+    testing::Test::RecordProperty(std::format("{}_tokens{}_sha256", prefix, slot),
+                                  llmp::base::ToHex(hash.Finish()));
+  }
+  property("tokens", tokens);
+  property("drafted", drafted);
+  property("accepted", accepted);
+  property("branch_steps", steps);
+  const auto graphs = llm.graphs();
+  property("graphs_captured", graphs.captured);
+  property("graphs_replayed", graphs.replayed);
+  if (auto* shared = dynamic_cast<rt::EngineLlm*>(&llm)) {
+    const auto ahead = shared->runner().lookahead_stats();
+    property("future_built", ahead.built);
+    property("future_captured", ahead.captured_ahead + ahead.captured_first);
+    property("future_prepared", ahead.prepared);
+  }
+  if (auto ended = server.EndRequestBranches(llm); !ended) return ended;
+  if (!server.DrainKept(rt::Clock::now() + std::chrono::seconds(30)))
+    return std::unexpected("speed pass keeper did not retire");
+  return {};
+}
+class SpeedCase : public testing::Test {
+ public:
+  explicit SpeedCase(bool component) : component_(component) {}
+
+ private:
+  void TestBody() override {
+    SpeedIds ids{};
+    auto read = ReadSpeedIds(ids);
+    ASSERT_TRUE(read) << (read ? "" : read.error());
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    ASSERT_NE(scratch, nullptr);
+    fs::create_directories(scratch);
+    auto root = (fs::path(scratch) / "qwen-c2-speed-XXXXXX").string();
+    ASSERT_NE(::mkdtemp(root.data()), nullptr);
+    Owned owner(new Owner);
+    owner->evidence = std::make_shared<Evidence>();
+    const auto started = rt::Clock::now();
+    auto status = ::c2_server::Setup(*owner, root, false, nullptr, component_);
+    ASSERT_TRUE(status) << (status ? "" : status.error());
+    const auto setup = rt::Clock::now();
+    rt::SwapParts parts;
+    status = owner->life.server->Activate(*owner->llm, parts);
+    ASSERT_TRUE(status) << (status ? "" : status.error());
+    const auto ready = rt::Clock::now();
+    RecordProperty("speed_arm", component_ ? "shared" : "legacy");
+    RecordProperty("speed_inputs_sha256", std::string(kSpeedIdsSha));
+    RecordProperty(
+        "speed_setup_ns",
+        std::to_string(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(setup - started).count()));
+    RecordProperty(
+        "speed_materialize_ns",
+        std::to_string(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(ready - setup).count()));
+    status = SpeedPass(*owner, ids, false);
+    ASSERT_TRUE(status) << (status ? "" : status.error());
+    status = SpeedPass(*owner, ids, true);
+    ASSERT_TRUE(status) << (status ? "" : status.error());
+    ASSERT_TRUE(owner->Retire());
+    owner.reset();
+    fs::remove_all(root);
+  }
+  bool component_;
+};
+const bool speed_registered = [] {
+  if (std::getenv("LLMP_QWEN_C2_SPEED") == nullptr) return false;  // NOLINT(concurrency-mt-unsafe)
+  testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2SpeedLegacy", nullptr, nullptr, __FILE__,
+                        __LINE__, []() -> testing::Test* { return new SpeedCase(false); });
+  testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2SpeedShared", nullptr, nullptr, __FILE__,
+                        __LINE__, []() -> testing::Test* { return new SpeedCase(true); });
   return true;
 }();
 }  // namespace c2_server

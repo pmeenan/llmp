@@ -141,7 +141,12 @@ The target disables `owner_row_invariant`; its drafter retains the existing
 replay mapping. A separate internal Server control uses existing mapping defaults
 and a paid domain derived from the actual composition: two captured prompt
 futures, retained turn checkpoints, fresh-owner hydration and eight finite new
-continuation heads pass. Public model selection is unchanged. Broader
+continuation heads pass. A short C2 MTP bookend against the current legacy
+Server observes shared prompt/generation walls 8.53%/2.17% lower, but startup
+is slower (2.024 versus 1.078 seconds). Each measured pass completes 510 fresh
+prompt tokens and 128 generated tokens; this is a coarse whole-implementation
+screen, not the frozen-baseline 1% gate or a policy adoption. Public model
+selection is unchanged. Broader
 same-quantized-reference quality, OS-process/GPU restart, production serving
 and the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /

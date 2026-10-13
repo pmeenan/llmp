@@ -1824,6 +1824,12 @@ each is checked against the design as M3.6 proceeds.
                                     turn checkpoints and fresh-owner C2 hydration
                                     with eight finite new continuation heads
                                     ([Server control](experiments/m36-numerical-audit/qwen-joined-mtp.md#internal-server-c2-defaults-and-reopen)).
+                                    A short current-implementation C2 MTP ABBA
+                                    observes shared prompt/generation walls
+                                    8.53%/2.17% lower, with slower startup and
+                                    equal observed token work. This is a coarse
+                                    diagnostic, not the fixed-baseline 1% gate
+                                    ([timing screen](experiments/m36-numerical-audit/qwen-joined-mtp.md#short-c2-mtp-whole-implementation-timing-screen)).
                                     Public serving admission, broader quality
                                     and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
