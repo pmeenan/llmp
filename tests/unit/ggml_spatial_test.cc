@@ -14,6 +14,7 @@
 #include "components/spatial.h"
 #include "engine/graph_plan.h"
 #include "expected_error.h"
+#include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/lower.h"
@@ -119,6 +120,56 @@ void CheckNearestCoordinateBounds() {
       EXPECT_EQ(kg::CheckUpsampleNearest(&output).has_value(), !beyond) << axis;
     }
   }
+}
+
+TEST(GgmlSpatialTest, MaskedAttentionPackingKeepsRealRowsAndRefusesInvalidDescriptors) {
+  auto packed = [](std::array<std::int64_t, 4> dims, std::uintptr_t address) {
+    ggml_tensor t{};
+    t.type = GGML_TYPE_F32;
+    t.data = reinterpret_cast<void*>(address);
+    std::size_t stride = 4;
+    for (std::size_t i = 0; i < dims.size(); ++i) {
+      t.ne[i] = dims[i];
+      t.nb[i] = stride;
+      stride *= static_cast<std::size_t>(dims[i]);
+    }
+    return t;
+  };
+  for (const auto rows : {39LL, 1024LL, 4121LL}) {
+    auto q = packed({128, rows, 32, 1}, 0x100000000ULL);
+    auto k = packed({128, rows, 32, 1}, 0x200000000ULL);
+    auto v = packed({rows, 128, 32, 1}, 0x300000000ULL);
+    std::swap(v.ne[0], v.ne[1]);
+    std::swap(v.nb[0], v.nb[1]);
+    auto mask = packed({rows, rows, 1, 1}, 0x400000000ULL);
+    auto out = packed({128, 32, rows, 1}, 0x500000000ULL);
+    out.op = GGML_OP_FLASH_ATTN_EXT;
+    out.src[0] = &q;
+    out.src[1] = &k;
+    out.src[2] = &v;
+    out.src[3] = &mask;
+    auto plan = kg::CheckAttentionF32(&out);
+    ASSERT_TRUE(plan) << Failed(plan, &kg::KernelFailure::detail).value_or("");
+    EXPECT_EQ(plan->cells, (static_cast<std::uint64_t>(rows) + 255) / 256 * 256);
+    EXPECT_EQ(plan->rows, (static_cast<std::uint64_t>(rows) + 63) / 64 * 64);
+    EXPECT_EQ(plan->packing_bytes, 2 * plan->kv_bytes + plan->mask_bytes);
+    EXPECT_EQ(mask.ne[0], rows);
+    EXPECT_EQ(mask.ne[1], rows);
+    out.src[3] = nullptr;
+    EXPECT_FALSE(kg::CheckAttentionF32(&out));
+    out.src[3] = &mask;
+    mask.ne[1]--;
+    EXPECT_FALSE(kg::CheckAttentionF32(&out));
+    mask.ne[1]++;
+    mask.data = out.data;
+    EXPECT_FALSE(kg::CheckAttentionF32(&out));
+    mask.data = reinterpret_cast<void*>(0x400000000ULL);
+    k.ne[2] = v.ne[2] = 16;
+    EXPECT_FALSE(kg::CheckAttentionF32(&out));
+  }
+  const auto* cap = kg::CapabilityOf(kg::kAttentionF32);
+  ASSERT_NE(cap, nullptr);
+  EXPECT_TRUE(cap->needs_tuning);
 }
 
 TEST(GgmlSpatialTest, RaggedTypedPortsLowerWithoutTokenMetadataInBothBindingModes) {
@@ -277,9 +328,9 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
                                    [&](const auto& node) { return node.key == ir::Primitive(op); });
     };
     EXPECT_EQ(count_op(ir::Op::kConv2d), 40);
-    EXPECT_EQ(count_op(ir::Op::kMatMul), 8);
+    EXPECT_EQ(count_op(ir::Op::kMatMul), 6);
     EXPECT_EQ(count_op(ir::Op::kL2Norm), 36);
-    EXPECT_EQ(count_op(ir::Op::kSoftMax), 1);
+    EXPECT_EQ(count_op(ir::Op::kAttention), 1);
     auto registry = Registry();
     ASSERT_TRUE(registry);
     en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
@@ -651,9 +702,9 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
   std::vector<llmp::planner::Selected> tuned_steps;
   llmp::planner::Placement tuned_placement;
   std::vector<std::uint64_t> tuned_stripes;
-  for (const int mode : {0, 1, 2, 3}) {
-    const bool decoder = mode != 0;
-    const bool tiled = mode >= 2;
+  for (const int mode : {0, 1, 2, 3, 4}) {
+    const bool decoder = mode != 0 && mode != 4;
+    const bool tiled = mode == 2 || mode == 3;
     SCOPED_TRACE(decoder ? "decoder1024" : "flow4121");
     const auto source =
         decoder ? mo::VaeDecoderTensors(profile.vae) : mo::DenoiserTensors(profile.denoiser);
@@ -716,6 +767,13 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
       }
       policy.ranks.push_back({"sm_121", std::string(kg::kConv2dTiledF32), 0});
     }
+    if (mode == 4) {
+      backend.device.tuned.push_back({.implementation = kg::kAttentionF32,
+                                      .rows = 4121,
+                                      .k = 128,
+                                      .n = 128,
+                                      .output_encoding = fm::Encoding::kF32});
+    }
     // Descriptor-only physical envelopes: no activation/weight payload allocation.
     kn::Addresses addresses;
     addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
@@ -748,6 +806,33 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
       auto physical = kg::CheckMulMatCublas(product, compute, compute == GGML_TYPE_BF16);
       ASSERT_TRUE(physical) << Failed(physical, &kg::KernelFailure::detail).value_or("");
     }
+    if (mode == 4) {
+      std::uint64_t count = 0, packing = 0, bf16_products = 0;
+      for (const auto& step : lowered->plan.steps) {
+        if (step.implementation == kg::kAttentionF32) {
+          ASSERT_EQ(step.nodes.size(), 1U);
+          auto checked = kg::CheckAttentionF32(step.nodes.front());
+          ASSERT_TRUE(checked) << Failed(checked, &kg::KernelFailure::detail).value_or("");
+          packing = std::max(packing, checked->packing_bytes);
+          ++count;
+        }
+        if (step.implementation == "ggml.mul_mat.cublas" &&
+            step.nodes.front()->src[0]->type == GGML_TYPE_BF16) {
+          // The existing projection already keeps BF16 operands/F32 output;
+          // this experiment does not globally change product precision.
+          EXPECT_NE(step.nodes.front()->op_params[0], GGML_PREC_F32);
+          ++bf16_products;
+        }
+      }
+      EXPECT_EQ(count, 32U);
+      EXPECT_GT(bf16_products, 0U);
+      EXPECT_EQ(packing, 107511808U);
+      RecordProperty("flow_masked_attention_ops", std::to_string(count));
+      RecordProperty("flow_masked_attention_packing_bytes", std::to_string(packing));
+      RecordProperty("flow_masked_attention_activation_bytes", std::to_string(lowered->extent));
+      RecordProperty("flow_existing_bf16_products", std::to_string(bf16_products));
+      continue;
+    }
     if (tiled) {
       std::vector<std::uint64_t> physical_stripes;
       std::uint64_t count = 0, launches = 0, peak = 0;
@@ -775,7 +860,7 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
       }
       EXPECT_EQ(count, 40U);
       EXPECT_EQ(peak, 64880640U);
-      EXPECT_EQ(launches, 7706U);
+      EXPECT_EQ(launches, 7707U);
       EXPECT_EQ(lowered->extent, 3623878656ULL);
       if (mode == 2) {
         tuned_steps = plan->steps;

@@ -1,0 +1,42 @@
+--- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
++++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+@@ -1759,8 +1759,8 @@
+ 
+                         if (!needs_fixup && !is_fixup) {
+                             const float KQ_rowsum_j = meta_j[1];
+-                            dstk_val.x /= KQ_rowsum_j;
+-                            dstk_val.y /= KQ_rowsum_j;
++                            dstk_val.x = KQ_rowsum_j > 0.0f ? dstk_val.x / KQ_rowsum_j : 0.0f;
++                            dstk_val.y = KQ_rowsum_j > 0.0f ? dstk_val.y / KQ_rowsum_j : 0.0f;
+                         }
+ 
+                         if (is_fixup) {
+--- a/ggml/src/ggml-cuda/fattn-common.cuh
++++ b/ggml/src/ggml-cuda/fattn-common.cuh
+@@ -805,7 +805,7 @@
+     }
+ 
+     // Write back final result:
+-    *dst = dst_val / rowsum;
++    *dst = rowsum > 0.0f ? dst_val / rowsum : 0.0f;
+ }
+ 
+ // General fixup kernel for the case where the number of blocks per tile is not uniform across tiles
+@@ -916,7 +916,7 @@
+     }
+ 
+     // Write back final result:
+-    *dst = dst_val / rowsum;
++    *dst = rowsum > 0.0f ? dst_val / rowsum : 0.0f;
+ }
+ 
+ template<int D> // D == head size
+@@ -974,7 +974,7 @@
+         VKQ_denominator += KQ_max_scale * meta[l].y;
+     }
+ 
+-    dst[tid] = VKQ_numerator / VKQ_denominator;
++    dst[tid] = VKQ_denominator > 0.0f ? VKQ_numerator / VKQ_denominator : 0.0f;
+ }
+ 
+ template <int DV, int ncols1, int ncols2>

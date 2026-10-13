@@ -26,6 +26,35 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## Empty CUDA SoftMax rows (RE-055)
+
+- **Status:** local shared primitive correction; no upstream issue submitted.
+- **Source finding:** the pinned `softmax.cu` subtracts an all-negative-infinity
+  row maximum, then normalizes NaNs in both the ordinary row kernel and the
+  cooperative column kernel. The shared CPU reference defines that row as zero.
+  This was found by source inspection before the masked-attention GPU retry;
+  it is not a claimed measured CUDA failure.
+- **Correction:** [patch 0006](../../third_party/patches/ggml/0006-llmp-softmax-empty-rows.patch)
+  guards only the two final stores by the reduced maximum and denominator.
+  Finite-row arithmetic, launch selection, synchronization and workspace remain
+  unchanged. The existing MIT attribution is retained; the upstream pin and
+  compiled source set are unchanged.
+- **Regression:** the masked-attention representative includes an entirely
+  masked query in both the primitive and optimized arms, with complete finite
+  outputs and independent scalar checks. It exercises the ordinary SoftMax
+  path; cooperative-column runtime coverage remains separate.
+
+The first actual retry completed the primitive small graph's ten calls, including
+its empty row, then refused the first optimized graph's nonfinite output.
+The pinned MMA direct writeback, both stream-k fixups and parallel-results
+combine also divide an empty row's zero numerator by its zero denominator.
+[Patch 0007](../../third_party/patches/ggml/0007-llmp-fattn-empty-rows.patch)
+guards those final normalizations with a positive denominator. It leaves every
+positive-denominator expression and nonfinite numerator unchanged, so the
+separate out-of-range F16 operand control is not hidden. No additional kernel,
+launch, scratch, mask-scan rule or precision conversion is introduced. Actual
+qualification of this second correction remains part of the attention screen.
+
 ## Shared spatial build subset
 
 The owned build subset also compiles the pin's unchanged `conv2d.cu` and

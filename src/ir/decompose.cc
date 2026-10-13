@@ -1224,8 +1224,35 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
   return {};
 }
 
+// Attention's ordinary fallback keeps scale/softcap before the original
+// additive mask, including finite bias masks. Window/sparse fields only name
+// cells already excluded by that mask; the dense formula visits all of them.
+Outputs Attention(D& d, const AttnParams& p) {
+  if (!d.need(3, 5)) return {};
+  auto& b = d.b();
+  const auto f32 = [&](TensorId id) {
+    return d.t(id).format.encoding == format::Encoding::kF32
+               ? id
+               : b.Convert(id, format::Encoding::kF32);
+  };
+  const auto q = f32(d.s(0)), k = f32(d.s(1)), v = f32(d.s(2));
+  auto scores = b.MatMul(k, q, ProductParams{.accumulate = p.accumulate});
+  float scale = p.scale;
+  if (p.softcap != 0.0f) {
+    scores = b.Softcap(b.Scale(scores, scale), p.softcap);
+    scale = 1.0f;
+  }
+  const auto mask = d.s(3).valid() ? f32(d.s(3)) : TensorId{};
+  const auto probabilities =
+      b.SoftMax(scores, mask, d.s(4), SoftMaxParams{.scale = scale, .max_bias = p.max_bias});
+  const auto product =
+      b.MatMul(b.Cont(b.Transpose(v)), probabilities, ProductParams{.accumulate = p.accumulate});
+  return One(b.Cont(b.Permute(product, {0, 2, 1, 3})));
+}
+
 bool Composite(Op op) {
   switch (op) {
+    case Op::kAttention:
     case Op::kHcPre:
     case Op::kHcPost:
     case Op::kHcMix:
@@ -1336,6 +1363,9 @@ Outputs Decompose(Builder& b, OpKey key, const ParamBytes& params,
     o = DecomposeFused(d, key.fused, params);
   } else {
     switch (key.op) {
+      case Op::kAttention:
+        o = Attention(d, Get<AttnParams>(params));
+        break;
       case Op::kHcPre:
         o = HcPre(d, Get<HcParams>(params));
         break;

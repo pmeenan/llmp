@@ -32,6 +32,7 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_qhead.h"
@@ -1365,8 +1366,12 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
     case Op::kAttention: {
       const auto p = n.Params<ir::AttnParams>();
       if (p.sparse_any) return Refused("a sparse gather at any length");
-      ggml_tensor* t =
-          ggml_flash_attn_ext(c_, s[0], s[1], s[2], s[3], p.scale, p.max_bias, p.softcap);
+      // The owned F32 implementation retains the original mask descriptor and
+      // privately converts it. GGML's public builder accepts only F16 masks.
+      const bool packed_f32 = s[3] != nullptr && s[3]->type == GGML_TYPE_F32;
+      ggml_tensor* t = ggml_flash_attn_ext(c_, s[0], s[1], s[2], packed_f32 ? nullptr : s[3],
+                                           p.scale, p.max_bias, p.softcap);
+      if (packed_f32) t->src[3] = s[3];
       if (p.accumulate == ir::Accumulate::kF32) ggml_prec_set_acc(t, GGML_PREC_F32);
       if (s[4] != nullptr) ggml_flash_attn_ext_add_sinks(t, s[4]);
       if (p.n_kv_max != 0)
@@ -4162,6 +4167,7 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
         case Op::kMatMul:
         case Op::kGetRows:
         case Op::kSoftMax:
+        case Op::kAttention:
           return true;
         default:
           return false;

@@ -136,15 +136,17 @@ std::expected<SpatialValue, std::string> AttentionEmit(SpatialFragment& f) {
   const auto q = f.builder.Cont(f.builder.Transpose(f.builder.View(src, q_plane, strides, 0)));
   const auto k = f.builder.Cont(
       f.builder.Transpose(f.builder.View(src, kv_plane, strides, pixels * channels * 4)));
-  const auto v =
-      f.builder.Cont(f.builder.View(src, kv_plane, strides, pixels * (channels + kv_channels) * 4));
-  const auto scores = f.builder.MatMul(k, q);
-  const ir::SoftMaxParams soft{.scale =
-                                   static_cast<float>(1.0 / std::sqrt(static_cast<double>(dim)))};
-  const auto probs =
-      f.builder.SoftMax(scores, f.auxiliary ? f.auxiliary->tensor : ir::TensorId{}, {}, soft);
-  const auto result = f.builder.MatMul(v, probs);
-  return SpatialValue{f.builder.Cont(f.builder.Transpose(result),
+  const auto v = f.builder.Transpose(
+      f.builder.View(src, kv_plane, strides, pixels * (channels + kv_channels) * 4));
+  const ir::AttnParams params{.scale =
+                                  static_cast<float>(1.0 / std::sqrt(static_cast<double>(dim)))};
+  // Keep original F32 inputs and masks in the shared math contract. A selected
+  // implementation owns any transient operand conversion; absent one, the
+  // primitive decomposition retains the ordinary products and softmax.
+  const auto result =
+      f.builder.Attention(q, k, v, f.auxiliary ? f.auxiliary->tensor : ir::TensorId{}, {}, params);
+  const auto channels_rows = f.builder.Reshape(result, ir::ShapeOf({channels, pixels}));
+  return SpatialValue{f.builder.Cont(f.builder.Transpose(channels_rows),
                                      ir::ShapeOf({shape->width, shape->height, channels, 1})),
                       *shape};
 }

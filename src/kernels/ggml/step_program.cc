@@ -19,6 +19,7 @@
 #include "base/bytes.h"
 #include "base/check.h"
 #include "execution/registry.h"
+#include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
@@ -86,7 +87,9 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
           step.nodes.size() == 1
               ? std::ranges::find(lowered_.selected, step.nodes[0], &SelectedNode::tensor)
               : lowered_.selected.end();
-      if (step.implementation == kConv2dTiledF32) {
+      if (step.implementation == kAttentionF32) {
+        launches_ += AttentionF32Plan::kLaunchBound;
+      } else if (step.implementation == kConv2dTiledF32) {
         // Lowering and physical admission have checked this descriptor already.
         // Each stripe is four actual calls, not one compound launch.
         const auto tile = CheckConv2dTiledF32(step.nodes.front());

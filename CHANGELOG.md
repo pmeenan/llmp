@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Return zero for fully masked SoftMax and GGML MMA attention rows. Shared
+  spatial attention can explicitly select paid transient F16 packing, with
+  dense F32 fallback and unchanged default precision policy.
+
 - Derive shared-service startup accounting from enforced parser limits and actual
   source, settings and tokenizer inventories. The internal selector accepts
   `auto`, repays its temporary parsing extent after retained grants exist,

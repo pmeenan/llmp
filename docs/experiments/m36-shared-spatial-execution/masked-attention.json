@@ -1,0 +1,222 @@
+{
+  "scope": "Opt-in F16 transient masked attention; dense default unchanged. Two-step retained native migration comparison, not independent upstream or40step/1% qualification.",
+  "representative": {
+    "receipt_sha256": "44b5d04f1e4b24a7844f575ea64b04efdb9c0a6e25e1fd0737cb23129e40a2ef",
+    "status": "PASS",
+    "cases": [
+      {
+        "shape": "small",
+        "arms": {
+          "primitive": {
+            "warm_ns": [
+              28544,
+              27008,
+              27248,
+              27200,
+              26848
+            ],
+            "median_ns": 27200,
+            "range_ns": [
+              26848,
+              28544
+            ],
+            "eager_ns": 48040955,
+            "capture_ns": 200495,
+            "max_f64_error": 5.013556814148501e-08,
+            "finite": 16128,
+            "pool_bytes": 0,
+            "activation_bytes": 22784
+          },
+          "flash": {
+            "warm_ns": [
+              31264,
+              29648,
+              29343,
+              29472,
+              29392
+            ],
+            "median_ns": 29472,
+            "range_ns": [
+              29343,
+              31264
+            ],
+            "eager_ns": 254176,
+            "capture_ns": 89216,
+            "max_f64_error": 0.00022668552413174226,
+            "finite": 16128,
+            "pool_bytes": 311808,
+            "activation_bytes": 28928
+          }
+        },
+        "warm_percent_change": 8.352941176470585
+      },
+      {
+        "shape": "representative",
+        "arms": {
+          "primitive": {
+            "warm_ns": [
+              717550,
+              712270,
+              710190,
+              706926,
+              712190
+            ],
+            "median_ns": 712190,
+            "range_ns": [
+              706926,
+              717550
+            ],
+            "eager_ns": 1517723,
+            "capture_ns": 725198,
+            "max_f64_error": 3.0313284097596704e-05,
+            "finite": 4870656,
+            "pool_bytes": 0,
+            "activation_bytes": 42386432
+          },
+          "flash": {
+            "warm_ns": [
+              419215,
+              421535,
+              418318,
+              426926,
+              417951
+            ],
+            "median_ns": 419215,
+            "range_ns": [
+              417951,
+              426926
+            ],
+            "eager_ns": 544270,
+            "capture_ns": 439167,
+            "max_f64_error": 8.869227980091293e-05,
+            "finite": 4870656,
+            "pool_bytes": 8651008,
+            "activation_bytes": 13128192
+          }
+        },
+        "warm_percent_change": -41.137196534632615
+      }
+    ],
+    "fixture_seconds": "0.654",
+    "memory_peak_process_cache_bytes": 399482880,
+    "native_child_retired": true,
+    "scope": "Representative copy-inclusive completed-job wall; five warm samples. Not full image/family gate; F16 range qualification is explicit."
+  },
+  "image_quality": {
+    "metrics": {
+      "candidate": "/data/shared/image.png",
+      "reference": "/data/legacy/image.png",
+      "size": [
+        1024,
+        1024
+      ],
+      "modes": [
+        "RGBA",
+        "RGBA"
+      ],
+      "identical_pixels": false,
+      "mean_abs_diff": 0.6634,
+      "max_abs_diff": 6,
+      "psnr_db": 48.229,
+      "ssim_luma": 0.99877
+    },
+    "thresholds": {
+      "psnr_db_min": 32,
+      "ssim_luma_min": 0.98
+    },
+    "own_arm_pins": {
+      "legacy": "68f1d74e54548ee8a856f67b9584de37e18c74039f4fb0b13f17920cf7e815e5",
+      "shared": "4d2c0222747286afcd01274f6f48db91f37abd2153c185c146e2028d46a97e0a"
+    },
+    "properties": {
+      "arm": "shared",
+      "mode": "quality",
+      "first_output_invocation": "1",
+      "attention_tuning_keys": "1",
+      "attention_tuning_credit_bytes": "4728",
+      "attention_source_nodes": "32",
+      "completed_generations": "2",
+      "setup_seconds": "0.874592616",
+      "first_seconds_0": "13.674316816",
+      "finish_seconds_0": "6.623762560",
+      "generation_seconds_0": "20.298079376",
+      "first_seconds_1": "3.437252847",
+      "finish_seconds_1": "6.176249561",
+      "generation_seconds_1": "9.613502408",
+      "setup_paid_footprint_bytes": "39862800816",
+      "legacy_preflight_bytes": "0",
+      "legacy_weight_capacity_bytes": "0",
+      "selected_weight_bytes": "30530338816",
+      "legacy_denoising_captures": "0",
+      "quality_counters_are_timing_samples": "false",
+      "export_credit_bytes": "20971520",
+      "construction_used_bytes": "2731102696",
+      "first_flow_sha256": "8289b93f576796cfaa825446fd91280a3a27f60e7f06ae0d110cbc7716247f8e",
+      "pixels_sha256": "4d2c0222747286afcd01274f6f48db91f37abd2153c185c146e2028d46a97e0a",
+      "native_report": "{\"engine\":\"component\",\"architecture\":\"QwenImage21Pipeline\",\"completed_stages\":4}"
+    },
+    "process_cache_peak_bytes": 992067584
+  },
+  "image_cost": {
+    "properties": {
+      "arm": "shared",
+      "mode": "decoder_diagnostic",
+      "first_output_invocation": "2",
+      "decoder_jobs_0": "1",
+      "decoder_job_wall_0": "2.765399771",
+      "decoder_device_0": "2.765386719",
+      "decoder_dispatch_0": "0.000001968",
+      "decoder_host_job_0": "2.764903901",
+      "decoder_after_0": "0.000493902",
+      "decoder_jobs_1": "1",
+      "decoder_job_wall_1": "2.794201393",
+      "decoder_device_1": "2.794203613",
+      "decoder_dispatch_1": "0.000000240",
+      "decoder_host_job_1": "0.060299386",
+      "decoder_after_1": "2.733901767",
+      "attention_tuning_keys": "1",
+      "attention_tuning_credit_bytes": "4728",
+      "attention_source_nodes": "32",
+      "completed_generations": "2",
+      "setup_seconds": "0.862906129",
+      "first_seconds_0": "17.071622491",
+      "finish_seconds_0": "3.272330007",
+      "generation_seconds_0": "20.343952498",
+      "first_seconds_1": "6.777580161",
+      "finish_seconds_1": "2.825703537",
+      "generation_seconds_1": "9.603283698",
+      "setup_paid_footprint_bytes": "39862800816",
+      "legacy_preflight_bytes": "0",
+      "legacy_weight_capacity_bytes": "0",
+      "selected_weight_bytes": "30530338816",
+      "legacy_denoising_captures": "0",
+      "quality_counters_are_timing_samples": "false",
+      "export_credit_bytes": "0",
+      "construction_used_bytes": "2710131176",
+      "first_flow_sha256": "7559b4c17ab89e0d772367bb5d19b4b98e60788ab377fd41625ce6906de21a8a",
+      "pixels_sha256": "4d2c0222747286afcd01274f6f48db91f37abd2153c185c146e2028d46a97e0a",
+      "native_report": "{\"engine\":\"component\",\"architecture\":\"QwenImage21Pipeline\",\"completed_stages\":4}"
+    },
+    "process_cache_peak_bytes": 962564096,
+    "scope": "Output unset; completed prefix throughflow2 followed by one decoder job. Descriptive clocks, no matched speed claim."
+  },
+  "receipts": {
+    "main05": "28b2d65cc5156d9681b336ddbf54afbdf57089e0959577a660f3aa2225221714",
+    "main06": "a9c20adb6ddc0eddbf5ea9642ebc45ffca5f6dc58ea3e109a2255ce0e5cd2da6",
+    "representative": "44b5d04f1e4b24a7844f575ea64b04efdb9c0a6e25e1fd0737cb23129e40a2ef",
+    "quality": "5ebfe2b9fef42b76aacf07c1e768d0f20e59686d29a7911827ca0a5c5e288332",
+    "score": "3f6ac56f8202c0255eb160e9ec90253616c38fd9182d5babae4966824f348086",
+    "cost": "20cefc2d22850316a9e9fac7e2f96bf4c5b56301008590eda4f993407354a2ee"
+  },
+  "binaries": {
+    "representative": {
+      "sha256": "c9042f5493c212f592c376b36af1d859a6a639af5e3cad699b5f415c09e43e0a",
+      "bytes": 179221080
+    },
+    "generation": {
+      "sha256": "2247de5860c88f2aca45e92460ff9875cbeff06dea141f1b2c23a4f1b48ae609",
+      "bytes": 199177328
+    }
+  },
+  "guards": "All actual pre/post guards pass, zero memory limit/OOM events, no compute processes and complete child retirement; scorer container and child retire."
+}

@@ -757,3 +757,82 @@ final generation binary`fa5420de2613836b7e345e9a7074794b56e5058971662ecc0bd3b225
 (198,842,440 bytes). This final binary contains only the diagnostic assertion
 fix over the qualified64MiB implementation; the1GiB actuals retain the distinct
 experimental binary identity above.
+
+## Opt-in packed masked attention
+
+The shared spatial component now emits the existing Attention primitive. Its
+ordinary decomposition retains the dense F32 products, scale/mask order and
+SoftMax. An explicitly selected D128 implementation reuses GGML's masked MMA
+attention with paid transient packing. Resident source formats do not change;
+padded K/V cells are zero and padded mask cells are negative infinity. This
+is an approximate F16 operand policy, including finite mask bias, rather than
+an unrestricted F32 implementation. Zero/negative-infinity mask values remain
+exact. Existing selected attention families retain their original paths.
+
+A complete-output representative screen at1,057 rows/four heads reduces the
+five warm completed-job median from712.190 to419.215 microseconds (41.14%).
+The seven-row/two-head control instead rises from27.200 to29.472 microseconds
+(8.35%). These copy-inclusive observations do not establish a universal shape
+policy. All9,773,568 qualified output values are finite; full-small and sampled
+representative F64 checks pass the predeclared0.01 bound. Changed masks and
+inputs, restored capture, tails, pitched V,228 canaries and two underpayment
+refusals pass. The deliberately out-of-range70,000-valued V control produces
+1,536 nonfinite candidate values, demonstrating why shape alone cannot make
+this approximate path the generic F32 default.
+
+Fully masked queries exposed two existing upstream zero-denominator seams.
+The pinned SoftMax bodies now write zero for empty rows; MMA direct stores,
+stream-k merges and parallel combine likewise guard final zero denominators.
+Finite positive-denominator arithmetic is unchanged, and nonfinite numerators
+still propagate. The raw failed attempts are retained. Representative execution
+covers the selected paths, not every cooperative or merge variant. IR/reference
+sinks and ALiBi decomposition does not add GGML runtime support: existing
+controlled refusals for those cases remain.
+
+The complete1024-square/two-step screen uses one paid immutable tuning tuple
+and the existing shared generation lifecycle. The source graph contains32
+matching Attention nodes; this is source/selected-plan evidence, not a new
+runtime operation counter. Dense production selection stays unchanged.
+
+Two complete generations pass the retained native migration comparison at
+**48.229 dB PSNR / 0.99877 SSIM**, above the unchanged32dB/.98 floors.
+The exported4MiB RGBA output matches the candidate's own completed digest and
+repeat. This remains a low-detail two-step sample, not independent upstream
+quality or usable40-step perceptual qualification. No legacy model rerun or
+cross-implementation bit gate was used.
+
+The output-disabled observation uses the existing completed boundary after both
+flow steps. Setup is0.863s; first generation is
+20.344s and warm generation is
+**9.603s**. The warm prefix is
+6.778s and decoder completion
+2.826s; the decoder's one device job is
+2.794s. These include existing stage copies and
+handoff, and are descriptive observations rather than a matched1% result.
+Quality clocks include the export observer and file I/O and are not timing
+samples. The approximate operand policy remains opt-in; no automatic F32
+shape-only adoption follows from these results.
+
+Actual quality admission is39,862,800,816 bytes and
+construction2,731,102,696 bytes; output-disabled admission
+is39,862,800,816 bytes and construction
+2,710,131,176 bytes. The fixed screen allows48GiB managed
+resources including4GiB construction, plus6GiB physical margin. The complete
+selected source closure remains30,530,338,816 bytes. Process/cache peaks are
+992,067,584 and962,564,096 bytes,
+respectively, not device occupancy. Actual measured stage placement, pool margins,
+retained captures and paid packing determine admission before work.
+
+The current prepared GGML tree passes a full native build and101 affected host
+controls across five targets. The later one-path full-image fixture change passes
+full native compilation and both model inventories; those101 unchanged host
+binaries/source are retained explicitly rather than claimed rerun. Representative
+and image actuals authenticate their own distinct binaries. All source, artifact,
+recipe and binary guards pass before and after execution; all children retire,
+all memory limit/OOM events remain zero and no GPU processes remain. Final
+source checks pass on Spark B:17 formatted C++ paths,13 portability boundary
+checks,2,269 SPDX headers and REUSE6.2.0, over the2,549-file landing export.
+
+[masked-attention.json](masked-attention.json) binds compact observations and
+literal receipt/model identities. Request geometry/prompt/schedule flexibility,
+independent upstream quality and the family serving/swap/speed gates remain open.

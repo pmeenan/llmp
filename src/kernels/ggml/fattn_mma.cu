@@ -381,10 +381,16 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
     return std::unexpected(KernelFailure{.error = KernelError::kUnknown, .detail = shape.error()});
   }
   // launch_fattn<128, columns, 1> with stream-k (fattn-common.cuh:1085-1180);
-  // no mask, so no pre-pass.
+  // The optional mask scan reads full query tiles, including the tail.
   const std::int64_t ncols = plan.columns;
   const std::int64_t ntiles_x = (q->ne[1] + plan.columns - 1) / plan.columns;
   const std::int64_t ntiles_dst = ntiles_x * q->ne[2] * q->ne[3];
+  if (const auto* mask = node->src[3]; mask && k->ne[1] % 256 == 0 && q->ne[1] >= 1024) {
+    if (mask->ne[1] < ntiles_x * plan.columns)
+      return Rejected("D128 mask scan needs complete padded query tiles");
+    plan.mask_prepass = true;
+    plan.scratch = static_cast<std::uint64_t>(ntiles_x) * sizeof(int);
+  }
   if (ntiles_dst > INT32_MAX) {
     return Rejected("flash attention beyond the launcher's tile count");
   }
@@ -420,8 +426,9 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
   }
   plan.blocks = static_cast<int>(blocks);
   if (ntiles_dst % blocks != 0) {
-    plan.scratch = static_cast<std::uint64_t>(blocks) * static_cast<std::uint64_t>(ncols) *
-                   static_cast<std::uint64_t>(2 + (plan.head / 2)) * sizeof(float2);
+    plan.scratch = (plan.scratch > 0 ? Round(plan.scratch) : 0) +
+                   static_cast<std::uint64_t>(blocks) * static_cast<std::uint64_t>(ncols) *
+                       static_cast<std::uint64_t>(2 + (plan.head / 2)) * sizeof(float2);
   }
   return plan;
 }

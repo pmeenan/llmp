@@ -1,0 +1,20 @@
+--- a/ggml/src/ggml-cuda/softmax.cu
++++ b/ggml/src/ggml-cuda/softmax.cu
+@@ -138,7 +138,7 @@
+             return;
+         }
+ 
+-        dst[col] = vals[col] * inv_sum;
++        dst[col] = isfinite(max_val) && tmp > 0.0f ? vals[col] * inv_sum : 0.0f;
+     }
+ }
+ 
+@@ -242,7 +242,7 @@
+         for (int i = 0; i < n_elem_per_thread; i++) {
+             const int idx = col + i * step_size;
+             if (idx < p.ncols) {
+-                dst[idx] = local_vals[i] / tmp_expf;
++                dst[idx] = isfinite(local_max) && tmp_expf > 0.0f ? local_vals[i] / tmp_expf : 0.0f;
+             }
+         }
+         col += step_size * n_elem_per_thread;

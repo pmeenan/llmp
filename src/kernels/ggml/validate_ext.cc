@@ -1415,8 +1415,8 @@ std::expected<void, KernelFailure> CheckDsv4HcaTokentile(const ggml_tensor* node
 std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node) {
   if (node == nullptr || node->op != GGML_OP_FLASH_ATTN_EXT || !Bound(node) ||
       !Bound(node->src[0]) || !Bound(node->src[1]) || !Bound(node->src[2]) ||
-      node->src[3] != nullptr || node->src[4] != nullptr) {
-    return Rejected("not a bound flash_attn_ext node without mask or sinks");
+      node->src[4] != nullptr) {
+    return Rejected("not a bound flash_attn_ext node without sinks");
   }
   const ggml_tensor* q = node->src[0];
   const ggml_tensor* k = node->src[1];
@@ -1457,6 +1457,13 @@ std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node)
         return Rejected("flash attention beyond the kernel's 32-bit extents and strides");
       }
     }
+  }
+  if (const auto* mask = node->src[3]) {
+    if (!Bound(mask) || mask->type != GGML_TYPE_F16 || !AllSane({mask}) || !AllCurrent({mask}) ||
+        !Packed(mask) || !Aligned(mask, 4) || mask->ne[0] != k->ne[1] || mask->ne[1] < q->ne[1] ||
+        mask->ne[2] != 1 || mask->ne[3] != 1 || mask->nb[1] % 4 != 0 || Span(mask) > kInt32Max ||
+        !Disjoint(node, mask, false))
+      return Rejected("D128 attention needs a current disjoint packed F16 additive mask");
   }
   if (!AllCurrent(operands)) {
     return Rejected("a stale view");

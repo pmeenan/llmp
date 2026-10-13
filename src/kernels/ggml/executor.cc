@@ -16,6 +16,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/fattn_owner.h"
@@ -170,6 +171,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
       auto attention = PlanFlashAttnVecQuant(launch, step.nodes.front());
       if (!attention) return std::unexpected(attention.error());
       planned = attention->scratch;
+    } else if (step.implementation == kAttentionF32) {
+      planned = PlanAttentionF32(launch, step.nodes.front());
     } else if (step.implementation == kFlashAttnMmaGqa2Name) {
       auto attention = PlanFlashAttnMmaGqa2(launch, step.nodes.front());
       if (!attention) return std::unexpected(attention.error());

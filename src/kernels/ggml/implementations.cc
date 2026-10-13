@@ -18,6 +18,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
@@ -111,7 +112,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 140> kKernels = {{
+constexpr std::array<Kernel::Entry, 141> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -699,6 +700,17 @@ constexpr std::array<Kernel::Entry, 140> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckFlashAttnMma(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma(launch, n[0], true); }},
+    {.name = kAttentionF32,
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "original F32 MHA and additive mask, privately F16-packed/padded; existing "
+                "D128 MMA with F32 accumulation/output, qualified finite F16 operand range",
+     .arity = 1,
+     .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
+       auto checked = CheckAttentionF32(n[0]);
+       if (!checked) return std::unexpected(checked.error());
+       return {};
+     },
+     .run = [](LaunchContext& launch, Nodes n) { return AttentionF32(launch, n[0]); }},
     {.name = "ggml.flash_attn_ext.mma_d128",
      .operation = execution::Operation::kFlashAttn,
      .variant = "ggml_cuda_flash_attn_ext_mma_f16_case<128, 128, 8, 16, 32 or 64, 1> as "

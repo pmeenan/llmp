@@ -22,6 +22,7 @@
 #include "format/layout.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_qhead.h"
@@ -528,6 +529,28 @@ bool Glu(const ex::CapabilityQuery& q, ir::GluKind kind) {
 bool AcceptsGeGlu(const ex::CapabilityQuery& q) { return Glu(q, ir::GluKind::kGeGluTanh); }
 bool AcceptsSwiGlu(const ex::CapabilityQuery& q) { return Glu(q, ir::GluKind::kSwiGlu); }
 bool AcceptsSwiGluClamp(const ex::CapabilityQuery& q) { return Glu(q, ir::GluKind::kSwiGluClamp); }
+
+bool AcceptsAttentionF32(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::AttnParams>(q);
+  const auto* query = Operand(q, 0);
+  const auto* key = Operand(q, 1);
+  const auto* value = Operand(q, 2);
+  const auto* mask = Operand(q, 3);
+  if (!Built(q) || q.arch < 75 || q.k != 128 || q.n != 128 || !p || !query || !key || !value ||
+      !mask || Has(q, 4) || p->max_bias != 0 || p->softcap != 0 || p->sparse_any ||
+      p->n_kv_max != 0)
+    return false;
+  return query->ne[0] == 128 && key->ne[0] == 128 && value->ne == key->ne &&
+         query->ne[2] == key->ne[2] && query->ne[3] == 1 && key->ne[3] == 1 &&
+         mask->ne[0] == key->ne[1] && mask->ne[1] == query->ne[1] && mask->ne[2] == 1 &&
+         mask->ne[3] == 1;
+}
+constexpr std::array<Rule, 5> kF32Attention = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = 3, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
 
 // The F16 flash-attention family (graph_plan.cc): D 256 (the GQA-2 pair,
 // vector or tensor-core, by device) or 512, K's head size V's.
@@ -1233,6 +1256,12 @@ constexpr ex::Capability Cap(ir::OpKey op, std::span<const Rule> rules,
           .needs_state_span = needs_state_span};
 }
 
+constexpr ex::Capability F32MaskedAttention() {
+  auto cap = Cap(ir::Primitive(Op::kAttention), kF32Attention, &AcceptsAttentionF32, false);
+  cap.needs_tuning = true;
+  return cap;
+}
+
 constexpr ex::Capability Bf16VectorProduct() {
   auto cap = Cap(ir::Primitive(Op::kMatMul), kBf16VectorProduct, &AcceptsBf16VectorProduct, false,
                  {}, 3, {.min_rows = 1, .max_rows = 8, .k_multiple = 2, .n_multiple = 2});
@@ -1431,6 +1460,9 @@ const std::array kEntries = {
           Cap(P(Op::kGlu), kF32Glu, &AcceptsSwiGluClamp, true),
           "; selectable for the build's SASS architectures: split clamped SwiGLU"},
     // Attention and its masks.
+    Entry{kAttentionF32, Operation::kFlashAttn, F32MaskedAttention(),
+          "; opt-in packed D128 MHA: transient F16 Q/K/V MMA operands and additive mask, "
+          "F32 accumulation/output; finite F16 operand range must be qualified"},
     Entry{"ggml.state_bank_attention", Operation::kFlashAttn,
           Cap(F(FusedKind::kStateBankAttention), kStateBankAttention, &AcceptsStateBankAttention,
               false, kAttentionGroup, 0, {}, 0, {}, true),

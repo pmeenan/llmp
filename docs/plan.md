@@ -2697,6 +2697,16 @@ each is checked against the design as M3.6 proceeds.
             76.57% reduction, not the matched1% gate. Same-source upstream
             quality, serving/swap and broader schedules remain open
             ([report](experiments/m36-shared-spatial-execution/README.md#shared-tiled-f32-convolution-reuse)).
+      - [x] **Packed masked-attention candidate:** shared Attention emission
+            retains dense fallback and adds explicitly selected F16 transient
+            packing. Empty-row SoftMax/MMA fixes preserve finite-row arithmetic.
+            Representative1,057-row completed median falls41.14%; seven-row
+            control regresses8.35%, so no universal shape policy follows.
+            Complete1024/two-step native agreement passes48.229dB/.99877.
+            Wide finite V overflows F16: the approximation remains opt-in,
+            with unrestricted dense default. Independent upstream quality and
+            family gates stay open
+            ([report](experiments/m36-shared-spatial-execution/README.md#opt-in-packed-masked-attention)).
       - [ ] **Q3j — hardware-bounded shared image serving:** derive dimensions
             and generation counts from the request, respecting model geometry,
             checked arithmetic and measured full-workload admission. Fixed

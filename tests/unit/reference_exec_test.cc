@@ -2141,6 +2141,33 @@ void ExpectExpansionAgrees(const ir::Graph& graph,
   }
 }
 
+TEST(ReferenceDecompositionTest, AttentionPreservesBiasedMasksGqaOwnersAndWideFiniteValues) {
+  for (const bool capped : {false, true}) {
+    ir::Builder b;
+    const auto q = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4, 3, 4, 2})));
+    const auto k = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({4, 5, 2, 2})));
+    const auto v = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({6, 5, 2, 2})));
+    const auto mask = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({5, 4, 2, 2})));
+    const auto sink = capped ? b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4}))) : TensorId{};
+    b.Output(b.Attention(
+        q, k, v, mask, sink,
+        {.scale = 0.375f, .softcap = capped ? 2.0f : 0.0f, .max_bias = 4.0f, .sinks = capped}));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    auto masks = Uniform(901, 5 * 4 * 2 * 2, -1.25f, 0.5f);
+    for (std::size_t owner_head = 0; owner_head < 4; ++owner_head)
+      for (std::size_t key = 0; key < 5; ++key)
+        masks[owner_head * 20 + 10 + key] = -std::numeric_limits<float>::infinity();
+    std::map<std::uint32_t, std::vector<float>> values{
+        {q.v, Normal(902, 4 * 3 * 4 * 2, 0.25f)},
+        {k.v, Normal(903, 4 * 5 * 2 * 2, 0.25f)},
+        {v.v, Uniform(904, 6 * 5 * 2 * 2, 70000.0f, 90000.0f)},
+        {mask.v, masks}};
+    if (capped) values[sink.v] = {0.5f, -1.0f, 2.0f, 0.0f};
+    ExpectExpansionAgrees(*graph, values, {}, 3e-6);
+  }
+}
+
 TEST(ReferenceDecompositionTest, CompositeOpsEqualTheirDecompositions) {
   ir::Builder b;
   std::map<std::uint32_t, std::vector<float>> values;

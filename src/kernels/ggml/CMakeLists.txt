@@ -43,7 +43,7 @@ add_library(llmp_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc llmp_
 target_include_directories(llmp_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_sources(llmp_ggml_tensors PRIVATE dsv4_weighted_reduce.cc gemma_moe.cc)
 target_sources(llmp_ggml_tensors PRIVATE gemma_moe_fusion.cc graph_read_index.cc)
-target_sources(llmp_ggml_tensors PRIVATE dsv4_qhead.cc conv2d_tiled.cc)
+target_sources(llmp_ggml_tensors PRIVATE dsv4_qhead.cc conv2d_tiled.cc attention_f32.cc)
 target_sources(llmp_ggml_tensors PRIVATE dsv4_hc_norm.cc)
 target_sources(llmp_ggml_tensors PRIVATE dsv4_outa.cc)
 target_sources(llmp_ggml_tensors PRIVATE gemma_norm.cc set_rows_group.cc)
@@ -90,7 +90,7 @@ if(LLMP_CUDA)
     file(CREATE_LINK "${resolved}" "${PROJECT_BINARY_DIR}/cublas/${library}" COPY_ON_ERROR)
   endforeach()
 
-  add_library(llmp_ggml_kernels STATIC conv2d_tiled.cu ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
+  add_library(llmp_ggml_kernels STATIC conv2d_tiled.cu attention_f32.cu ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                                          llmp_ops.cu llmp_fused.cu llmp_moe.cu dsv4_fast.cu dsv4_sparse.cu
@@ -202,6 +202,7 @@ if(LLMP_CUDA)
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
                    conv2d_tiled.h conv2d_tiled.cc conv2d_tiled.cu mul_mat_cublas_internal.h
+                   attention_f32.h attention_f32.cc attention_f32.cu
                    mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
                    ops_ext.h qwen38_commit.h qwen38_graph.cc
                    qwen38_graph.h tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h

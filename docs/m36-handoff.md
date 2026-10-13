@@ -82,6 +82,15 @@ while stripe calls and prepaid capture metadata fall; absent meaningful speed
 or measuredCPU/traffic benefit, production retains64MiB. Request-driven composition, independent
 upstream quality and default serving remain open. See the
 [workspace tradeoff](experiments/m36-shared-spatial-execution/README.md#larger-convolution-workspace-and-remaining-stage-cost).
+An opt-in packed masked-attention candidate now passes complete two-step
+native agreement at48.229dB/.99877. Its1,057-row representative warm completed
+median falls41.14%, while the seven-row control is8.35% slower. Output-disabled
+warm complete generation is9.603s, descriptive only.
+Transient F16 overflow on a deliberately wide finite-value control keeps this
+policy opt-in; dense default remains. Shared empty-row SoftMax/MMA normalization
+returns zero without changing finite positive-denominator arithmetic.
+[Attention evidence](experiments/m36-shared-spatial-execution/README.md#opt-in-packed-masked-attention)
+also records paid packing, captured mask changes and full-owner retirement.
 See the [pointwise](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse)
 and [tiled reuse evidence](experiments/m36-shared-spatial-execution/README.md#shared-tiled-f32-convolution-reuse).
 See the [quality screen and accounting correction](experiments/m36-shared-spatial-execution/README.md#two-step-native-migration-quality-screen).

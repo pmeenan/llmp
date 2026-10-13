@@ -28,6 +28,29 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-055: CUDA SoftMax needs an explicit empty-row result  (2026-10-13, status: worked-around)
+
+**Environment and finding.** Source inspection of the actual Spark B prepared
+GGML v0.6.0/d812 CUDA source found that both `soft_max_f32` and its cooperative
+column helper compute `exp(-inf - -inf)` for an entirely masked row, then store
+an undefined normalization. Llmpalooza's shared scalar SoftMax contract returns
+zero for a nonfinite maximum. This finding preceded the representative GPU
+retry; the earlier fixture refusal occurred before kernel execution.
+
+**Correction.** Appended GGML patch 0006 guards each existing final store with
+its reduced maximum and positive denominator. Normal finite rows keep the
+same arithmetic, dispatch, scratch and synchronization. The source lock records
+the new prepared tree rather than editing a prepared tree in place. The
+representative masked-attention control retains its entirely masked final query;
+cooperative-column runtime coverage is not implied by that row-kernel control.
+The first actual retry passed all ten primitive small-graph calls, then refused
+a nonfinite optimized result. Source inspection found the same zero-denominator
+case in MMA direct writeback, both stream-k fixups and parallel combine.
+Appended patch 0007 guards those existing final divisions without sanitizing
+nonfinite numerators or altering positive-denominator arithmetic. The original
+failed receipt remains evidence; the corrected optimized path needs a fresh
+actual run. See the [upstream handoff](upstream/ggml.md#empty-cuda-softmax-rows-re-055).
+
 ## RE-054: NAS SMB file locks do not reliably exclude a second archive host  (2026-10-10, status: worked-around)
 
 **Observed.** On the owner's Synology CIFS 3.1.1 mounts (`cache=strict`,

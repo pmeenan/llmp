@@ -21,6 +21,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
@@ -899,6 +900,11 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                 std::format("{}: quantized V needs K of the same encoding", Where(graph, i)));
           }
           add(Operation::kFlashAttn, quantized, i, {node}, 1);
+          break;
+        }
+        if (node->src[0] && node->src[0]->ne[0] == 128 && node->src[1] &&
+            node->src[1]->type == GGML_TYPE_F32) {
+          add(Operation::kFlashAttn, kAttentionF32, i, {node}, 1);
           break;
         }
         // D64 float attention must not bypass the quantized-cache dispatch.
