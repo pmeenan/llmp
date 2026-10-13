@@ -1868,8 +1868,10 @@ each is checked against the design as M3.6 proceeds.
                                     355 startup-affected controls. The existing
                                     33,792-context family quality/geometry screen
                                     passes admission and complete work; its
-                                    single prime exposes a C4 decode gap against
-                                    the historical baseline, not a gate verdict
+                                    same-host current legacy/shared pair confirms
+                                    a 15.55% C4 decode throughput gap, with
+                                    6.38% lower wall throughput; bounded tracing
+                                    follows, without a gate verdict
                                     ([startup accounting](experiments/m36-numerical-audit/qwen-joined-mtp.md#automatic-startup-accounting-and-family-geometry)).
                                     Automatic public selection, broader
                                     quality and family gates remain open.

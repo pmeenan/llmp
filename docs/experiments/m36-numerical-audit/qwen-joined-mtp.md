@@ -639,3 +639,43 @@ SPDX headers and REUSE 6.2.0, on an isolated 2,543-file Spark A export.
 This qualifies bounded automatic internal
 startup only; public migration, broader same-quantized-reference quality,
 state/swap coverage and the matched 1% family gate remain open.
+
+## Current same-host C4 gap locator
+
+2026-10-13, Spark A, driver580.178.04. One serial current-legacy/shared pair
+uses the same `c4bc2c95…` runtime above, artifacts, settings, corpus and ordered
+requests. Each fresh process completes one warm and two measured C1/C2/C4
+passes: 21 requests and 2,688 outputs per arm, 42 requests and 5,376 outputs
+total. Actual prompts are 6,835–8,478 tokens, every reply finishes 128 tokens,
+and cached prompt tokens are zero. Measured-pass means are:
+
+| Cohort | Legacy prefill s | Shared prefill s | Legacy decode tokens/s | Shared decode tokens/s | Legacy wall tokens/s | Shared wall tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C1 | 3.216366 | 3.200493 | 48.312227 | 47.162290 | 21.858315 | 21.623517 |
+| C2 | 7.115433 | 7.067399 | 64.240352 | 61.405698 | 22.953053 | 22.464547 |
+| C4 | 15.660209 | 15.977395 | 77.640358 | 65.569426 | 23.526288 | 22.026184 |
+
+The C4 decode gap persists on the same host: **−15.5472%** throughput,
+**+2.0254%** prefill duration and **−6.3763%** wall throughput. C1/C2 decode
+differences are −2.3802%/−4.4126%. The independent audit recomputes these
+observations from completed raw chunk timestamps. This coarse sequential pair
+locates a gap; it is not the fixed-baseline matched1% family gate or a causal
+attribution. Existing bounded step tracing is justified next. No numerical
+policy or public default changes follow.
+
+Legacy uses its existing hardware-derived node budget and measured wave
+setup; shared uses reviewed automatic startup accounting and its 104GiB node
+cap. Both use the same 112GiB zero-swap process/cache ceiling and checked live
+6GiB physical margin. They therefore share workload and outer guards, without
+claiming identical internal node caps. System `MemAvailable` drops are
+82.3409/89.8578GiB; the separate combined observed cgroup peak is
+6,668,562,432 bytes. These are informational accounting observations, not
+device-only residency or reference-relative memory gates. Both complete
+admission, exit TERM/zero, positively retire their process groups and GPU
+work, and pass source/runtime guards with zero memory-limit/OOM events.
+
+Recipe: `c3273afe5aeb3f510a2becf2beb001cc809f0e618e9d55a595947cd554309bb2`.
+Result: `1cfb2cae36f0539e7f70125042cc65060ba7ac8928c838642ec469f423dea5a6`.
+Raw evidence remains in `qwen-c4-gap-models01`; replay uses the existing family
+prime controller with the two internal dispatch selections, fresh namespaces,
+the authenticated source/runtime tuple above and supervised retirement.

@@ -195,6 +195,11 @@ exist before its parsing loan retires; catalog, plan, state and future accountin
 remain active. Full native compilation and 456 combined host controls pass
 (355 startup-affected, 101 disjoint image controls). See the
 [full-geometry observation](experiments/m36-numerical-audit/qwen-joined-mtp.md#automatic-startup-accounting-and-family-geometry).
+The current same-Spark pair confirms a C4 decode throughput gap of 15.55% and
+wall throughput gap of 6.38%, with complete work/retirement and hardware fit in
+both arms. Existing bounded tracing follows; lane overlap and numerical-policy
+causes are hypotheses, not conclusions
+([gap locator](experiments/m36-numerical-audit/qwen-joined-mtp.md#current-same-host-c4-gap-locator)).
 Automatic public selection, broader same-quantized-reference quality, OS-process/GPU restart and
 the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
