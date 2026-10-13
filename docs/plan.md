@@ -1818,7 +1818,13 @@ each is checked against the design as M3.6 proceeds.
                                     and complete boundary/final initialized
                                     state within the same selected implementation
                                     ([report](experiments/m36-numerical-audit/qwen-joined-mtp.md#fresh-owner-durable-c2-continuation)).
-                                    Joined serving admission, broader quality
+                                    The internal Server route additionally derives
+                                    its paid domain from the actual composition
+                                    and passes default lookahead/capture, retained
+                                    turn checkpoints and fresh-owner C2 hydration
+                                    with eight finite new continuation heads
+                                    ([Server control](experiments/m36-numerical-audit/qwen-joined-mtp.md#internal-server-c2-defaults-and-reopen)).
+                                    Public serving admission, broader quality
                                     and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.

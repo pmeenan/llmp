@@ -133,9 +133,12 @@ four target/MTP files reopen under a fresh, sequential owner, both conversations
 hydrate without prefix execution, and eight newly computed continuation heads
 plus complete boundary/final state match the same selected implementation.
 The target disables `owner_row_invariant`; its drafter retains the existing
-replay mapping. This does not change serving policy. Broader same-quantized-
-reference quality, OS-process/GPU restart, production serving and the family
-speed/swap gate remain open. The full DeepSeek target screen now
+replay mapping. A separate internal Server control uses existing mapping defaults
+and a paid domain derived from the actual composition: two captured prompt
+futures, retained turn checkpoints, fresh-owner hydration and eight finite new
+continuation heads pass. Public model selection is unchanged. Broader
+same-quantized-reference quality, OS-process/GPU restart, production serving
+and the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
 snapshot continuation on Spark B. The actual spatial-image screen passes
 on main after full native build, 129 affected host controls and source checks.

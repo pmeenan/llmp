@@ -1815,8 +1815,6 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   // A family on the component engine: the adapter of its spec's pipeline
   // kind, which its architecture's mapping names.
   const bool solo = options_.diagnostic_component_solo && settings.architecture == "qwen4exp";
-  if (solo && settings.max_slots.value != 1)
-    return Error("the Qwen component qualification requires exactly one configured slot");
   if (!entry.composition && (OnComponentEngine(settings.architecture) || solo)) {
     const spec::Mapping* mapping = spec::FindMapping(settings.architecture);
     if (mapping == nullptr) {
@@ -1832,7 +1830,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                .diagnostic_solo = solo,
                                .prefill_lookahead = options_.qwen38_prefill_lookahead,
                                .prepare_state = options_.qwen38_prepare_state,
-                               .state_only_prefill = options_.qwen38_state_only_prefill}));
+                               .state_only_prefill = options_.qwen38_state_only_prefill,
+                               .derive_execution_domain = solo && settings.max_slots.value > 1}));
         if (options_.diagnostic_skip_turn_checkpoints) {
           llm->set_turn_checkpoints(false);
           Log(std::format("model {}: saves no turn checkpoint (a speed gate's diagnostic)",

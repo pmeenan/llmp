@@ -139,3 +139,56 @@ GPU restart, cross-format state conversion, broader same-quantized-reference
 quality, joined production serving and family speed/swap gates remain separate.
 
 Final-main actual receipt SHA-256: `3d80387174e6f8e2bd35ce1b04637bff1bb8cc939f93ac883dcb358076ec5227`.
+
+## Internal Server C2 defaults and reopen
+
+The internal shared Qwen selector now derives its immutable execution domain
+from the resolved composition, state layouts, slots and phase bounds. It uses
+the existing Server, ComponentLlmBuild, backend declaration and source seal;
+explicit caller domains keep their existing meaning. Domain storage is paid
+before construction and retained with its borrowers. Ordinary public model
+selection is unchanged. This route uses the existing mapping defaults,
+including `owner_row_invariant`, rather than the experimental target policy in
+the preceding durable control.
+
+A bounded actual Server control passes on Spark A (2026-10-13): context 512,
+prefill chunk 16, two slots, draft depth two and read alignment 256. Unequal
+55/53-token prompts retain the default lookahead, preparation, capture and turn
+checkpoint options. Individual prompt advances save one checkpoint per branch;
+joined generation completes four tokens per branch. After spill, keeper drain
+and positive whole-owner retirement, a second Server adopts both conversations
+and checkpoints. Hydration reuses each complete prefix without a new prefix
+execution, preserves the pending drafter boundary, and completes four more
+tokens per branch: eight fresh, finite full-vocabulary continuation heads.
+The earlier same-selected boundary/final state oracle remains separate evidence;
+this Server control does not add a second state-byte or uninterrupted-head oracle.
+
+The run observes two built and captured prompt futures. Preparation remains
+enabled but needs no additional backing for this short read256 schedule
+(observed prepared count zero). Its recorded plan floor is 14,591,840 bytes;
+actual retained programs and future captures use existing plan accounting.
+The source-derived startup bound is rounded upward to the Server's required
+2 MiB catalog quantum, inside the unchanged 104 GiB node cap. The wrapper keeps
+112 GiB/zero swap, the 6 GiB physical margin, 512 MiB spill-file and 8 MiB
+log/XML/report caps. Process-plus-page-cache peak is 1,557,827,584 bytes; this is
+not a device-memory measurement. All source/binary guards, completion retirement,
+zero memory-event and empty-GPU-process checks pass.
+
+The actual native case takes 24.711 seconds including setup/storage; no latency
+claim follows. Six current fixture host controls pass, with 122 unchanged
+controls authenticated by their existing binary receipts. Final-main integration
+passes the full Spark-native build and all 128 affected host controls, with the
+manual case inventoried once and absent from automatic CTest discovery. Pinned
+format, boundary, whole-source header and REUSE checks pass. The final model
+binary exactly matches the actual-case binary, so no inference repeat is needed.
+The case is manually supervised:
+set `LLMP_QWEN_C2_SERVER=1`, the existing model/scratch paths, and select
+`Qwen38EngineServingGpu.NativeC2ServerDefaultOptionsReopen` in
+`qwen38_engine_serving_gpu_test`; it is absent from automatic CTest discovery.
+Raw logs/XML remain in session scratch `qwen-c2-serving-models03`.
+Recipe SHA-256: `6f95f9139b3d4a0315da244930a757f9b4da864a735360ff966807acd025e375`.
+Result SHA-256: `22c95d7fdddee044422bb736f43f6d0378ce4d1e6ebad549ef5184eaaa9e4ee2`.
+
+This closes the bounded internal Server default-option/reopen control, not
+public Qwen admission, numerical-policy adoption, broader same-quantized-reference
+quality, OS-process/GPU restart, or the family speed/swap gates.

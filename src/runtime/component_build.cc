@@ -86,6 +86,79 @@ struct ConstructionCharge {
   ~ConstructionCharge() { allowance->Release(bytes); }
 };
 
+// The domain and its payment share one owner, including failed source setup.
+// Explicit caller domains retain their existing ownership contract.
+struct DerivedDomain {
+  std::shared_ptr<ConstructionCharge> charge;
+  engine::NumericalDomain domain;
+};
+
+std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> ServingDomain(
+    const spec::ModelSpec& model_spec, std::span<const model::StateLayoutDerived> layouts,
+    std::uint32_t slots, std::uint32_t verify_rows,
+    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance) {
+  if (model_spec.pipeline != spec::PipelineKind::kLlm || model_spec.stages.size() < 2 ||
+      model_spec.stages.size() > std::uint64_t{UINT16_MAX} + 1 ||
+      model_spec.stages.size() != layouts.size() || slots < 2 || slots > Llm::kMaxBranches ||
+      verify_rows == 0 || !allowance)
+    return Error("a serving domain needs its complete composed state and owner envelope");
+  std::uint64_t bytes = sizeof(DerivedDomain) + sizeof(ConstructionCharge) + 512;
+  for (std::size_t i = 0; i < layouts.size(); ++i) {
+    const auto& stage = model_spec.stages[i];
+    auto progress = model::DraftBounds(layouts[i]);
+    if (!progress ||
+        (i == 0 ? stage.role != spec::StageRole::kTarget || progress->has_value()
+                : stage.role != spec::StageRole::kDrafter || !progress->has_value()) ||
+        layouts[i].max_rows == 0 || (i == 0 && verify_rows > layouts[i].max_rows))
+      return Error("a serving domain needs the actual target and replayable drafter bounds");
+    // Input vectors, canonical domain, the retained shared owner and the
+    // maximum temporary moved representation; no graph or tensor payload.
+    const auto stage_bytes = sizeof(engine::NumericalStage) + stage.name.size() + 1 +
+                             5 * sizeof(engine::NumericalUse) + 4 * sizeof(engine::NumericalPhase);
+    std::uint64_t copy_bytes = 0;
+    if (__builtin_mul_overflow(std::uint64_t{4}, static_cast<std::uint64_t>(stage_bytes),
+                               &copy_bytes) ||
+        __builtin_add_overflow(bytes, copy_bytes, &bytes))
+      return Error("serving domain construction bound overflows");
+  }
+  if (!allowance->Charge(bytes)) return Error("serving domain metadata allowance is insufficient");
+  auto charge = std::make_shared<ConstructionCharge>();
+  charge->allowance = allowance;
+  charge->bytes = bytes;
+  std::vector<engine::NumericalStage> stages;
+  stages.reserve(layouts.size());
+  for (std::size_t i = 0; i < layouts.size(); ++i) {
+    engine::NumericalStage stage{
+        .stage = static_cast<std::uint16_t>(i),
+        .name = model_spec.stages[i].name,
+        .uses = {engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
+                 engine::NumericalUse::kPromptCompanions, engine::NumericalUse::kSpeculative,
+                 engine::NumericalUse::kJoinedRepeatPending},
+        .phases = {}};
+    stage.phases.reserve(i == 0 ? 4 : 1);
+    const auto add = [&](planner::Phase phase, std::uint32_t rows) {
+      stage.phases.push_back({.phase = phase,
+                              .max_owners = slots,
+                              .max_owner_rows = rows,
+                              .max_total_rows = std::uint64_t{slots} * rows});
+    };
+    if (i == 0) {
+      add(planner::Phase::kPrefill, layouts[i].max_rows);
+      add(planner::Phase::kDecode, 1);
+      add(planner::Phase::kVerify, verify_rows);
+      add(planner::Phase::kCommit, verify_rows);
+    } else {
+      add(planner::Phase::kDraft, layouts[i].max_rows);
+    }
+    stages.push_back(std::move(stage));
+  }
+  auto domain = engine::NumericalDomain::Create(std::move(stages));
+  if (!domain) return Error(domain.error());
+  auto owner = std::make_shared<DerivedDomain>(
+      DerivedDomain{.charge = std::move(charge), .domain = std::move(*domain)});
+  return std::shared_ptr<const engine::NumericalDomain>(owner, &owner->domain);
+}
+
 struct ComponentHold {
   // First: refund only after all graph, binding and backend owners die.
   std::shared_ptr<ConstructionCharge> construction;
@@ -320,11 +393,12 @@ bool JoinedScoreEnvelope(const ModelSettings& settings, std::string_view drafter
 // Ordinary Server admission remains single-owner until qualification closes.
 bool JoinedMtpEnvelope(const ModelSettings& settings, std::string_view drafter,
                        const ComponentBuildOptions& options) {
-  if (!options.diagnostic_solo || !options.execution_domain || drafter.empty() ||
-      !settings.speculation.value || settings.max_slots.value < 2 ||
+  if (!options.diagnostic_solo || (!options.execution_domain && !options.derive_execution_domain) ||
+      drafter.empty() || !settings.speculation.value || settings.max_slots.value < 2 ||
       settings.max_slots.value > Llm::kMaxBranches || !settings.context.value ||
       !settings.prefill_chunk.value || !settings.draft_rows.value)
     return false;
+  if (options.derive_execution_domain) return !options.execution_domain;
   const auto& domain = *options.execution_domain;
   return domain.stages().size() == 2 &&
          domain.CheckMode(engine::NumericalUse::kJoinedRepeatPending).has_value() &&
@@ -343,6 +417,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           stored_metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
     const bool solo = settings.architecture == "qwen4exp";
+    if (options.derive_execution_domain && (!options.diagnostic_solo || options.execution_domain))
+      return Error(
+          "derived serving qualification needs an internal request without a caller domain");
     const bool deepseek = settings.architecture == "deepseek4";
     const bool dspark = deepseek && !drafter_id.empty();
     if (deepseek &&
@@ -526,7 +603,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error(configured.error());
     }
     for (const spec::Source& s : hold->sources) hold->tables.emplace_back(s.tensors);
-    if (joined_mtp && hold->spec.stages.size() != options.execution_domain->stages().size())
+    if (joined_mtp && options.execution_domain &&
+        hold->spec.stages.size() != options.execution_domain->stages().size())
       return Error("joined MTP requires every actual source stage");
     if (joined_score &&
         (hold->spec.stages.size() != 1 || hold->spec.stages.front().name != "target"))
@@ -768,9 +846,24 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     const std::uint64_t cublas_bytes =
         kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
             .value();
-    if (options.tuning && !options.execution_domain)
+    auto execution_domain = options.execution_domain;
+    if (options.derive_execution_domain && !joined_mtp)
+      return Error("derived serving qualification needs a composed replay source");
+    if (options.derive_execution_domain && !metadata) {
+      auto admitted = engine::ExecutionMetadataAllowance::Admit(
+          node.catalog(), node.domain(), options.execution_metadata_bytes,
+          platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+      if (!admitted) return Error(admitted.error());
+      metadata = std::move(*admitted);
+    }
+    if (options.derive_execution_domain) {
+      auto domain = ServingDomain(hold->spec, hold->layouts, slots, verify_rows, metadata);
+      if (!domain) return Error(domain.error());
+      execution_domain = std::move(*domain);
+    }
+    if (options.tuning && !execution_domain)
       return Error("explicit tuning requires a declared execution source");
-    if (options.execution_domain) {
+    if (execution_domain) {
       if (!metadata) {
         auto admitted = engine::ExecutionMetadataAllowance::Admit(
             node.catalog(), node.domain(), options.execution_metadata_bytes,
@@ -813,7 +906,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
            .slots = slots,
            .policy = stage == 0 ? target_policy : std::nullopt,
            .backend = hold->backend->Backend(),
-           .execution_domain = options.execution_domain,
+           .execution_domain = execution_domain,
            .validate_program = options.validate_program});
       if (!made) return Error(made.error());
       sources.push_back(std::move(*made));

@@ -55,6 +55,11 @@ struct ComponentBuildOptions {
   // this. An explicit complete domain requires the real backend declaration;
   // supplied tuning owns all names and never supplies provider device facts.
   std::shared_ptr<const engine::NumericalDomain> execution_domain{};
+  // Internal serving qualification: derive the complete composed domain from
+  // the actual spec, state layouts and configured envelope. The existing
+  // metadata allowance pays before construction; an explicit domain cannot
+  // be combined with this request. No new public setting or default admission.
+  bool derive_execution_domain = false;
   std::shared_ptr<const planner::OwnedDeviceFacts> tuning{};
   // Paid once in the node catalog, before declaration construction. The build
   // retains it across retries; no host-floor/pre-Start counter is authority.

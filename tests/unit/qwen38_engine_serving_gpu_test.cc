@@ -689,6 +689,60 @@ TEST(Qwen38EngineServingGpu, JoinedMtpRequiresOwnedWholeCompositionBeforeArtifac
   }
 }
 
+TEST(Qwen38EngineServingGpu, DerivedServingDomainRequiresAnExplicitComposedRequest) {
+  en::PagedNode node{{}};
+  cfg::ModelEntry entry;
+  entry.name = "missing";
+  entry.artifact = std::string(64, '0');
+  entry.drafter = std::string(64, '1');
+  for (int mutation = 0; mutation != 8; ++mutation) {
+    auto model = entry;
+    rt::ModelSettings settings;
+    settings.architecture = "qwen4exp";
+    settings.max_slots.value = 2;
+    settings.context.value = 512;
+    settings.prefill_chunk.value = 16;
+    settings.draft_rows.value = 2;
+    settings.speculation.value = true;
+    rt::ComponentBuildOptions options{
+        .target_policy = {}, .diagnostic_solo = true, .derive_execution_domain = true};
+    switch (mutation) {
+      case 1:
+        options.derive_execution_domain = false;
+        break;
+      case 2:
+        options.diagnostic_solo = false;
+        break;
+      case 3:
+        model.drafter.reset();
+        break;
+      case 4:
+        settings.speculation.value = false;
+        break;
+      case 5:
+        settings.context.value = 0;
+        break;
+      case 6:
+        settings.prefill_chunk.value = 0;
+        break;
+      case 7:
+        settings.draft_rows.value = 0;
+        break;
+      default:
+        break;
+    }
+    auto build = rt::ComponentLlmBuild(node, "/nonexistent-derived-serving-control", model, 0,
+                                       std::move(options));
+    const auto result = build(settings);
+    ASSERT_FALSE(result);
+    if (mutation == 0)
+      EXPECT_NE(result.error().find("artifact"), std::string::npos);
+    else
+      EXPECT_EQ(result.error().find("artifact"), std::string::npos);
+    EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), 0U);
+  }
+}
+
 TEST(Qwen38EngineServingGpu, NativeMtpDepthTwoFullLogits) { Screen(kCutlass, true, true, 2); }
 TEST(Qwen38EngineServingGpu, NativeMtpDefaultTokenSchedule) { Screen(kCutlass, true, false, 3); }
 TEST(Qwen38EngineServingGpu, NativeGgmlExpertsPlain) { Screen(kGgml, false, true, 2); }
@@ -1142,7 +1196,8 @@ rt::Status Complete(const rt::Generation& out, std::size_t count) {
   }
   return {};
 }
-rt::Status Generate(Owner& owner, const std::array<std::vector<float>, 2>& heads,
+template <class OwnerLike>
+rt::Status Generate(OwnerLike& owner, const std::array<std::vector<float>, 2>& heads,
                     std::array<rt::Generation, 2>& out, std::uint32_t count, bool resume) {
   rt::GenerateOptions options;
   options.max_tokens = count;
@@ -1375,3 +1430,224 @@ class DurableCase : public testing::Test {
 }  // namespace c2
 
 }  // namespace
+
+// The actual Server route uses its ordinary options and keeper. The detailed
+// within-selected state oracle above remains shared evidence, not a second
+// persistence implementation in this adapter control.
+namespace c2_server {
+constexpr std::uint64_t kStartupExtent = ((c2::kStartup + 2 * kMiB - 1) / (2 * kMiB)) * (2 * kMiB);
+static_assert(kStartupExtent >= c2::kStartup && kStartupExtent - c2::kStartup < 2 * kMiB);
+
+TEST(Qwen38EngineServingGpu, DerivedServerStartupExtentPaysCompleteConstruction) {
+  EXPECT_TRUE(
+      rt::CheckStartupHostAllowance(kStartupExtent, kBudget, kBudget + rt::kUncountedMargin));
+  EXPECT_GE(kStartupExtent, c2::kStartup);
+  EXPECT_LT(kStartupExtent - c2::kStartup, 2 * kMiB);
+  EXPECT_FALSE(
+      rt::CheckStartupHostAllowance(kStartupExtent - 1, kBudget, kBudget + rt::kUncountedMargin));
+}
+struct Evidence {
+  std::array<rt::Generation, 2> generations;
+  std::array<std::vector<std::int32_t>, 2> history;
+  std::array<llmp::model::DraftProgress, 2> progress{};
+  llmp::base::Sha256Digest identity{};
+};
+struct Owner {
+  Lifetime life;
+  std::shared_ptr<Evidence> evidence;
+  rt::EngineLlm* llm = nullptr;
+  bool attempted = false, retired = false;
+  rt::Llm::Branch& Branch(std::size_t i) { return **llm->branch(i); }
+  bool Retire() {
+    if (attempted) return retired;
+    attempted = true;
+    if (life.server) {
+      if (llm && life.server->node().InRequest(0) && !life.server->EndRequestBranches(*llm))
+        return false;
+      if (!life.server->DrainKept(rt::Clock::now() + std::chrono::seconds(30))) return false;
+      if (!life.server->TearDown()) return false;
+    }
+    retired = true;
+    return true;
+  }
+};
+struct RetainUnknown {
+  void operator()(Owner* owner) const {
+    if (owner->Retire())
+      delete owner;
+    else
+      ADD_FAILURE() << "retaining the complete unknown Server owner";
+  }
+};
+using Owned = std::unique_ptr<Owner, RetainUnknown>;
+
+rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previous) {
+  if (auto s = CheckFixture(kCutlass, true); !s) return s;
+  auto& life = owner.life;
+  life.scratch = root;
+  life.roles.installed = fs::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
+  life.roles.spill = root / "spill";
+  life.roles.state = root / "state";
+  for (const auto& path : {life.roles.spill, life.roles.state}) {
+    fs::create_directories(path);
+    if (::chmod(path.c_str(), 0700) != 0) return std::unexpected("protecting Server state");
+  }
+  cfg::ModelEntry entry;
+  entry.name = "qwen-server-c2";
+  entry.artifact = kCutlass;
+  entry.drafter = kMtp;
+  const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
+                          "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+  entry.tokenizer = checkpoint / "tokenizer.json";
+  entry.chat_template = checkpoint / "chat_template.jinja";
+  entry.overrides["context"] = std::int64_t{512};
+  entry.overrides["prefill_chunk"] = std::int64_t{16};
+  entry.overrides["max_slots"] = std::int64_t{2};
+  entry.overrides["draft_rows"] = std::int64_t{2};
+  entry.overrides["wave_read_align"] = std::int64_t{256};
+  life.config.models.push_back(std::move(entry));
+  life.options.diagnostic_component_solo = true;
+  life.options.keep_conversations = true;
+  // Current compiler is transient once: the two futures build sequentially
+  // while the device runs. Their retained programs are separately charged by
+  // PrefillLookaheadGroup/PlanAccount, as the ordinary Server's current plan.
+  life.options.diagnostic_startup_host_bytes = kStartupExtent;
+  life.options.diagnostic_budget_cap_bytes = kBudget;
+  life.log = std::tmpfile();
+  if (!life.log) return std::unexpected("opening Server log");
+  life.server = std::make_unique<rt::Server>(life.config, life.roles, life.options, life.log);
+  if (auto s = life.server->Start(false); !s) return s;
+  if (previous != nullptr) previous->reset();
+  owner.llm = dynamic_cast<rt::EngineLlm*>(life.server->Find("qwen-server-c2"));
+  if (!owner.llm || owner.llm->generation_wave_capacity() != 2 ||
+      owner.llm->runner().slots().stages() != 2)
+    return std::unexpected("Server did not build the declared C2 composition");
+  auto identity = owner.llm->ExecutionIdentity();
+  if (!identity || !*identity) return std::unexpected("Server omitted its prepared identity");
+  if (reopen && **identity != owner.evidence->identity)
+    return std::unexpected("Server reopened another selected execution");
+  owner.evidence->identity = **identity;
+  if (life.server->budget() != kBudget)
+    return std::unexpected("Server changed the admitted budget");
+  testing::Test::RecordProperty("server_plan_floor_bytes",
+                                std::to_string(life.server->plan_floor_bytes()));
+  testing::Test::RecordProperty("server_execution_identity", llmp::base::ToHex(**identity));
+  return {};
+}
+
+rt::Status Run(Owner& owner, bool reopen) {
+  auto& server = *owner.life.server;
+  auto& llm = *owner.llm;
+  auto& evidence = *owner.evidence;
+  const std::array<rt::Llm::Branch*, 2> branches{&owner.Branch(0), &owner.Branch(1)};
+  if (reopen) {
+    for (std::uint32_t slot = 0; slot < 2; ++slot)
+      if (owner.Branch(slot).history() != evidence.history[slot] ||
+          !llm.runner().slots().restorable(slot) || llm.runner().slots().usable(slot) ||
+          owner.Branch(slot).turn_checkpoints() != 1)
+        return std::unexpected("Server did not adopt both pending stages and the turn checkpoint");
+  }
+  rt::SwapParts parts;
+  if (auto s = server.Activate(llm, parts); !s) return s;
+  if (auto s = server.SelectRequestBranches(llm, branches); !s) return s;
+  std::array<std::vector<float>, 2> heads;
+  const auto before = llm.runner().graph_stats();
+  for (std::uint32_t slot = 0; slot < 2; ++slot) {
+    std::vector<std::int32_t> prompt;
+    if (reopen)
+      prompt = evidence.history[slot];
+    else {
+      const auto rows = slot == 0 ? 55U : 53U;
+      for (std::uint32_t p = 0; p < rows; ++p)
+        prompt.push_back(
+            static_cast<std::int32_t>(100 + ((p * 7919U + 13U + slot * 17U) % 150000U)));
+    }
+    auto begun = owner.Branch(slot).BeginPrompt(prompt, reopen ? 0 : 16, false, reopen);
+    if (!begun) return std::unexpected(begun.error());
+    c2::SessionOwner<rt::Llm::PromptSession> session(begun->release());
+    while (!session->done()) {
+      if (auto s = session->Advance(); !s) return s;
+    }
+    if (reopen && session->reused() != prompt.size())
+      return std::unexpected("Server durable hydration recomputed its prefix");
+    heads[slot] = session->last();
+    if (auto s = session->Finish(); !s) return s;
+    if (owner.Branch(slot).turn_checkpoints() != 1)
+      return std::unexpected("default Server turn checkpoint was not saved");
+    if (reopen) {
+      const auto* progress = llm.runner().slots().progress(slot, 1);
+      if (!progress || progress->completed() != evidence.progress[slot])
+        return std::unexpected("Server lost the hydrated pending-drafter boundary");
+    }
+  }
+  const auto after = llm.runner().graph_stats();
+  if (reopen && (after.eager != before.eager || after.replayed != before.replayed))
+    return std::unexpected("Server reopened with new prefix execution");
+  if (auto s = c2::Generate(owner, heads, evidence.generations, reopen ? 8 : 4, reopen); !s)
+    return s;
+  if (!llm.counts().joined_waves || llm.runner().coverage().violations)
+    return std::unexpected("Server did not execute covered joined generations");
+  if (!reopen) {
+    const auto ahead = llm.runner().lookahead_stats();
+    if (!ahead.built || !(ahead.captured_ahead + ahead.captured_first))
+      return std::unexpected("default Server prompt futures were not built and captured");
+    testing::Test::RecordProperty("server_future_built", std::to_string(ahead.built));
+    testing::Test::RecordProperty("server_future_captured",
+                                  std::to_string(ahead.captured_ahead + ahead.captured_first));
+    // These short prompts share read256 pages; prepare can correctly need no
+    // additional backing. Record the observed count, not a manufactured gain.
+    testing::Test::RecordProperty("server_future_prepared", std::to_string(ahead.prepared));
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+      evidence.history[slot] = owner.Branch(slot).history();
+      const auto* progress = llm.runner().slots().progress(slot, 1);
+      if (!progress || !progress->settled() ||
+          progress->completed().pending_first >= progress->completed().positions)
+        return std::unexpected("Server did not leave a real pending-drafter interval");
+      evidence.progress[slot] = progress->completed();
+    }
+  }
+  if (auto s = server.EndRequestBranches(llm); !s) return s;
+  for (auto* branch : branches)
+    if (auto s = llm.SpillIdle(*branch); !s) return s;
+  if (!server.DrainKept(rt::Clock::now() + std::chrono::seconds(30)))
+    return std::unexpected("Server record writes did not retire");
+  return {};
+}
+
+class ServerCase : public testing::Test {
+  void TestBody() override {
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    ASSERT_NE(scratch, nullptr);
+    fs::create_directories(scratch);
+    auto root = (fs::path(scratch) / "qwen-server-c2-XXXXXX").string();
+    ASSERT_NE(::mkdtemp(root.data()), nullptr);
+    Owned first(new Owner);
+    first->evidence = std::make_shared<Evidence>();
+    auto result = ::c2_server::Setup(*first, root, false, nullptr);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    result = ::c2_server::Run(*first, false);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    ASSERT_TRUE(first->Retire()) << "unknown Server completion forbids another owner";
+    Owned second(new Owner);
+    second->evidence = first->evidence;
+    result = ::c2_server::Setup(*second, root, true, &first);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    result = ::c2_server::Run(*second, true);
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+    ASSERT_TRUE(second->Retire());
+    RecordProperty("server_owners", 2);
+    RecordProperty("server_hydrated_conversations", 2);
+    RecordProperty("server_kept_turn_checkpoints", 2);
+    RecordProperty("server_fresh_continuation_heads", 8);
+    second.reset();
+    fs::remove_all(root);
+  }
+};
+const bool registered = [] {
+  if (std::getenv("LLMP_QWEN_C2_SERVER") == nullptr) return false;  // NOLINT(concurrency-mt-unsafe)
+  testing::RegisterTest("Qwen38EngineServingGpu", "NativeC2ServerDefaultOptionsReopen", nullptr,
+                        nullptr, __FILE__, __LINE__,
+                        []() -> testing::Test* { return new ServerCase; });
+  return true;
+}();
+}  // namespace c2_server

@@ -2569,9 +2569,13 @@ stages of two conversations across sequential owners: cold hydration executes
 no prefix, and eight fresh continuation heads plus complete initialized-state
 coordinates and payloads match the same selected implementation. It uses the
 ordinary target policy without `owner_row_invariant` and the existing drafter
-replay policy; Server admission/defaults are unchanged. Broader quality against
-the same quantized reference, OS-process/GPU restart, production admission and
-full-family gates remain open under G3c2b1b2. See
+replay policy. The internal Server selector now derives a paid domain from the
+actual resolved composition and passes a separate C2 control using existing
+mapping defaults: real prompt futures, retained turn checkpoints, cold
+fresh-owner hydration and eight finite new continuation heads. Public model
+selection remains unchanged. Broader quality against the same quantized
+reference, OS-process/GPU restart, production admission and full-family gates
+remain open under G3c2b1b2. See
 [the selected-HC evidence](experiments/m36-selected-owner-hc/README.md) and
 [the model runner](engine.md#the-model-runner) for the state, completion and
 checked numerical scope.

@@ -71,7 +71,8 @@ struct Turn {
 struct ServingOptions {
   // Decode plainly even where a model has a drafter.
   bool plain = false;
-  // Internal single-slot Qwen component migration screen. Not exposed by
+  // Internal Qwen component migration screen, including declared composed
+  // sources with multiple owners. Not exposed by
   // CLI/TOML/HTTP; normal Qwen serving remains on its qualified adapter.
   bool diagnostic_component_solo = false;
   // Prepaid host compiler/result allowance for bounded startup screens.

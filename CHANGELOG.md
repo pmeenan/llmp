@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Let the internal shared Qwen Server route derive a paid execution domain from
+  its actual target/drafter composition. A bounded two-conversation control
+  exercises default prompt futures and restores turn checkpoints under fresh
+  Server owners; public model selection and numerical policies remain unchanged.
+
 - Honor explicit legacy image output directories with an atomic private RGBA
   export of the completed image. Ordinary serving and swap measurements keep
   exports disabled; the shared pipeline passes a bounded same-source native
