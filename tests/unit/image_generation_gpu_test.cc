@@ -86,7 +86,15 @@ struct Lifetime {
   std::unique_ptr<en::QwenImageRunner> legacy;
   std::unique_ptr<rt::EngineImage> image;
   bool legacy_arm = false, decoder_times = false, tiled = false, masked_attention = false;
-  bool rectangular_request = false;
+  bool rectangular_request = false, replace_requests = false;
+  rt::ImageGenerationRequest seed;
+  std::vector<std::int32_t> alternate_prompt;
+  std::weak_ptr<void> request_owner;
+  llmp::base::Sha256Digest request_layout{}, initial_request_identity{};
+  std::string changed_pixels;
+  std::uint64_t replacement_credit = 0, construction_peak = 0;
+  std::uint64_t eager_occupancy = 0, warmed_occupancy = 0;
+  std::uint32_t completed_requests = 0, completed_request_stages = 0, released_requests = 0;
   std::uint32_t prompt_rows = 0, dropped_rows = 0;
   std::uint64_t request_sequence = 0, request_pixel_values = 0;
   std::string request_identity;
@@ -158,10 +166,32 @@ struct Lifetime {
       source->width = 2048;
       source->height = 512;
     }
+    if (replace_requests) {
+      // Extra retained seed/alternate prompt and one simultaneously prepared
+      // source copy, with doubled vector capacities; original Load is startup-paid.
+      replacement_credit = 4 * 524288ULL + 8 * source->prompt.size() * sizeof(std::int32_t) + 4096;
+      if (!allowance->Charge(replacement_credit)) return Error("request seed copies are unpaid");
+      auto other = llmp::chat::RenderQwenImagePrompt(
+          "A blue ceramic teapot on a plain wooden table, soft daylight, no text.", *tokenizer);
+      if (!other) return Error(other.error().ToString());
+      if (auto encoded = tokenizer->EncodeMarked(other->rendered.text, other->rendered.specials, {},
+                                                 alternate_prompt);
+          !encoded)
+        return Error(encoded.error().ToString());
+      if (alternate_prompt.size() != source->prompt.size() || other->drop_tokens != source->drop ||
+          alternate_prompt == source->prompt)
+        return Error("native replacement prompt must change content within the retained layout");
+    }
     auto initial = ReadExact(noise, 524288);
     if (!initial) return Error(initial.error());
     source->noise.resize(initial->size() / sizeof(std::uint16_t));
     std::memcpy(source->noise.data(), initial->data(), initial->size());
+    if (replace_requests) {
+      seed.prompt = source->prompt;
+      seed.noise = source->noise;
+      seed.drop = source->drop;
+      seed.keep = allowance;
+    }
     return {};
   }
   // This preflight runs before QwenImageRunner::Setup maps any own storage.
@@ -302,7 +332,7 @@ struct Lifetime {
       entry.artifact = std::string(kComposition);
       rt::ModelSettings settings;
       settings.image_size.value = 1024;
-      settings.image_steps.value = rectangular_request ? 1 : 2;
+      settings.image_steps.value = rectangular_request || replace_requests ? 1 : 2;
       settings.name = entry.name;
       settings.architecture = "qwen_image_pipeline";
       if (tiled || masked_attention) {
@@ -401,18 +431,31 @@ struct Lifetime {
             -> std::expected<rt::EngineImageParts, std::string> {
           auto parts = original(current);
           if (!parts) return std::unexpected(parts.error());
-          if (parts->sequence.size() != 3 || parts->stages.size() != 3 ||
-              parts->first_output != 1 || parts->sequence[0].stage != 0 ||
-              parts->sequence[1].stage != 1 || parts->sequence[1].iteration != 0 ||
-              parts->sequence[2].stage != 2 ||
+          if (parts->request.sequence.size() != 3 || parts->stages.size() != 3 ||
+              parts->request.first_output != 1 || parts->request.sequence[0].stage != 0 ||
+              parts->request.sequence[1].stage != 1 || parts->request.sequence[1].iteration != 0 ||
+              parts->request.sequence[2].stage != 2 ||
               parts->stages[0].graph->outputs()[0].shape !=
                   llmp::components::SpatialShape{1, prompt_rows - dropped_rows, 4096, 1} ||
               parts->stages[2].graph->outputs()[0].shape !=
                   llmp::components::SpatialShape{2048, 512, 4, 1})
             return std::unexpected(std::string("actual rectangular request composition differs"));
-          request_sequence = parts->sequence.size();
+          request_sequence = parts->request.sequence.size();
           request_pixel_values = 2048ULL * 512 * 4;
-          request_identity = llmp::base::ToHex(parts->identity);
+          request_identity = llmp::base::ToHex(parts->request.identity);
+          return parts;
+        };
+      }
+      if (replace_requests) {
+        build = [this, original = std::move(build)](const rt::ModelSettings& current)
+            -> std::expected<rt::EngineImageParts, std::string> {
+          auto parts = original(current);
+          if (!parts) return std::unexpected(parts.error());
+          if (parts->request.sequence.size() != 3 || parts->stages.size() != 3)
+            return std::unexpected(std::string("initial replacement request stage inventory"));
+          request_layout = parts->request.layout;
+          initial_request_identity = parts->request.identity;
+          request_owner = parts->request.keep;
           return parts;
         };
       }
@@ -424,8 +467,8 @@ struct Lifetime {
             -> std::expected<rt::EngineImageParts, std::string> {
           auto parts = original(current);
           if (!parts) return std::unexpected(parts.error());
-          auto finish = std::move(parts->finish);
-          parts->finish =
+          auto finish = std::move(parts->request.finish);
+          parts->request.finish =
               [this, finish = std::move(finish)](
                   std::span<const std::byte> bytes) -> std::expected<std::string, std::string> {
             auto digest = finish(bytes);
@@ -443,15 +486,15 @@ struct Lifetime {
             -> std::expected<rt::EngineImageParts, std::string> {
           auto parts = original(current);
           if (!parts) return std::unexpected(parts.error());
-          if (parts->sequence.size() != 4 || parts->first_output != 1 ||
-              parts->sequence[0].stage != 0 || parts->sequence[1].stage != 1 ||
-              parts->sequence[2].stage != 1 || parts->sequence[3].stage != 2)
+          if (parts->request.sequence.size() != 4 || parts->request.first_output != 1 ||
+              parts->request.sequence[0].stage != 0 || parts->request.sequence[1].stage != 1 ||
+              parts->request.sequence[2].stage != 1 || parts->request.sequence[3].stage != 2)
             return std::unexpected(
                 std::string("decoder observation needs the complete four-stage sequence"));
           // Test-only boundary: same four programs and always-present copies.
           // FirstOutput now completes both flow iterations; Finish is decoder
           // only.
-          parts->first_output = 2;
+          parts->request.first_output = 2;
           return parts;
         };
       }
@@ -507,6 +550,7 @@ struct Lifetime {
     node.Run();
     node.SetHostFloor(0);
     setup_seconds = Seconds(std::chrono::steady_clock::now() - setup_started);
+    if (replace_requests) return RunRequests();
     // Repeated generation uses the same retained typed plans/captures and
     // restores the original latent port only after a completed prior Finish.
     for (std::size_t run = 0; run < first.size(); ++run) {
@@ -544,12 +588,142 @@ struct Lifetime {
       return Error("same selected complete generation differs on retained replay");
     return {};
   }
+  Status RunRequests() {
+    const auto original_construction = allowance->used();
+    construction_peak = original_construction;
+    const auto original_staging = image->host_input_bytes();
+    const auto original_plans = image->plan_floor_bytes();
+    // Three serial requests keep only one output string plus the first pin;
+    // this diagnostic count is not an EngineImage count limit.
+    for (std::uint32_t run = 0; run < 3; ++run) {
+      const auto steps = run == 1 ? 2U : 1U;
+      if (run) {
+        rt::ImageGenerationRequest input{.prompt = run == 1 ? alternate_prompt : seed.prompt,
+                                         .drop = seed.drop,
+                                         .noise = seed.noise,
+                                         .keep = allowance};
+        if (run == 1)
+          for (auto& value : input.noise) value ^= 0x8000U;  // exact finite BF16 sign change
+        rt::ModelSettings settings;
+        settings.image_size.value = 1024;
+        settings.image_steps.value = steps;
+        auto request = rt::ComponentImageGenerationRequest(std::move(input), settings, allowance);
+        if (!request) return Error(request.error());
+        construction_peak = std::max(construction_peak, allowance->used());
+        if (request->layout != request_layout || request->sequence.size() != steps + 2 ||
+            (request->identity == initial_request_identity) != (run == 2))
+          return Error("replacement content identity or fixed typed layout differs");
+        const auto old = request_owner;
+        auto next_owner = std::weak_ptr<void>(request->keep);
+        const auto occupancy = node.catalog().OccupancyOf(node.domain()).Total();
+        if (auto replaced = image->ReplaceRequest(std::move(*request)); !replaced) return replaced;
+        if (node.catalog().OccupancyOf(node.domain()).Total() != occupancy)
+          return Error("request replacement mutated catalog occupancy");
+        if (!old.expired()) return Error("completed old request owner remains retained");
+        ++released_requests;
+        request_owner = next_owner;
+      }
+      std::string first_output, pixels;
+      auto complete = node.WithRequest(
+          0, image->request_closure(), "image replacement screen", [&]() -> Status {
+            if (auto started = image->FirstOutput(first_output); !started) return started;
+            return image->Finish(pixels);
+          });
+      if (!complete) return complete;
+      if (first_output.size() != 64 || pixels.size() != 64)
+        return Error("replacement did not complete both finite output boundaries");
+      if (run == 0) {
+        first[0] = first_output;
+        final[0] = pixels;
+        eager_occupancy = node.catalog().OccupancyOf(node.domain()).Total().value();
+      } else if (run == 1) {
+        if (first_output == first[0] || pixels == final[0])
+          return Error("changed request did not change both completed outputs");
+        changed_pixels = pixels;
+        // Second use captures stages under the existing paid PlanAccount.
+        // Capture growth is legitimate; the next request reuses these graphs.
+        warmed_occupancy = node.catalog().OccupancyOf(node.domain()).Total().value();
+      } else if (first_output != first[0] || pixels != final[0]) {
+        return Error("restored request did not restore its own completed outputs");
+      }
+      if (image->host_input_bytes() != original_staging ||
+          image->plan_floor_bytes() != original_plans ||
+          (run == 2 &&
+           node.catalog().OccupancyOf(node.domain()).Total().value() != warmed_occupancy) ||
+          image->activations_needed() != activation || image->pool_needed() > pool)
+        return Error("same-layout replacement grew retained execution resources");
+      ++completed_requests;
+      completed_request_stages += steps + 2;
+    }
+    if (allowance->used() != original_construction)
+      return Error("restored request retained extra construction payment");
+    return {};
+  }
   Status Retire() {
     if (teardown_attempted) return Error("whole generation retirement was already attempted");
     teardown_attempted = true;
     return node.TearDown(entered);
   }
 };
+
+TEST(ImageRequestInputs, PaymentAndLayoutRemainIndependentOfRequestContent) {
+  llmp::catalog::Catalog catalog;
+  const auto domain = catalog.AddDomain("request metadata");
+  auto paid = en::ExecutionMetadataAllowance::Admit(catalog, domain, kMiB, 8 * kMiB, kMiB);
+  ASSERT_TRUE(paid) << Failed(paid).value_or("");
+  ASSERT_TRUE((*paid)->Charge(4096));  // caller input/control vectors, before construction
+  const auto input = [&] {
+    return rt::ImageGenerationRequest{.prompt = {1, 2, 3},
+                                      .drop = 1,
+                                      .width = 16,
+                                      .height = 16,
+                                      .noise = std::vector<std::uint16_t>(64, 0),
+                                      .keep = *paid};
+  };
+  rt::ModelSettings settings;
+  settings.image_steps.value = 1;
+  llmp::base::Sha256Digest layout, identity;
+  {
+    auto first = rt::ComponentImageGenerationRequest(input(), settings, *paid);
+    ASSERT_TRUE(first) << Failed(first).value_or("");
+    layout = first->layout;
+    identity = first->identity;
+    EXPECT_EQ(first->sequence.size(), 3U);
+    std::array<std::byte, 4> staged{};
+    ASSERT_TRUE(first->fill({1, 0}, 5, staged));
+    float delta = 0;
+    std::memcpy(&delta, staged.data(), sizeof(delta));
+    EXPECT_EQ(delta, -1.F);
+    auto changed = input();
+    changed.prompt[0] = 4;
+    changed.noise[0] = llmp::model::ToBf16(1.F);
+    settings.image_steps.value = 3;
+    auto next = rt::ComponentImageGenerationRequest(std::move(changed), settings, *paid);
+    ASSERT_TRUE(next) << Failed(next).value_or("");
+    EXPECT_EQ(next->layout, layout);
+    EXPECT_NE(next->identity, identity);
+    EXPECT_EQ(next->sequence.size(), 5U);
+    EXPECT_NE(next->ports[1].initial, first->ports[1].initial);
+    auto rectangle = input();
+    rectangle.height = 32;
+    rectangle.noise.resize(128);
+    auto different = rt::ComponentImageGenerationRequest(std::move(rectangle), settings, *paid);
+    ASSERT_TRUE(different) << Failed(different).value_or("");
+    EXPECT_NE(different->layout, layout);
+  }
+  EXPECT_EQ((*paid)->used(), 4096U);
+  auto too_small = en::ExecutionMetadataAllowance::Admit(
+      catalog, domain, en::ExecutionMetadataAllowance::OverheadBytes() + 64, 8 * kMiB, kMiB);
+  ASSERT_TRUE(too_small);
+  auto unpaid = rt::ComponentImageGenerationRequest(input(), settings, *too_small);
+  EXPECT_FALSE(unpaid);
+  EXPECT_EQ((*too_small)->used(), 0U);
+  auto invalid = input();
+  invalid.noise[0] = 0x7F80;  // source BF16 infinity
+  auto refused = rt::ComponentImageGenerationRequest(std::move(invalid), settings, *paid);
+  EXPECT_FALSE(refused);
+  EXPECT_EQ((*paid)->used(), 4096U);
+}
 
 TEST(ImageGenerationGpu, CompleteTextFlowAndDecoderRetainAcrossTwoGenerations) {
   if (std::getenv("LLMP_RUN_SHARED_IMAGE_GENERATION") == nullptr)
@@ -629,6 +803,52 @@ TEST(ImageGenerationGpu, RectangularRequestUsesPromptAndOneStep) {
   RecordProperty("tokenizer_parser_bound_bytes", std::to_string(life->startup_parser));
   RecordProperty("first_flow_sha256", life->first[0]);
   RecordProperty("pixels_sha256", life->final[0]);
+}
+TEST(ImageGenerationGpu, CompletedRequestsReplaceContentAndReuseRetainedCaptures) {
+  if (std::getenv("LLMP_RUN_SHARED_IMAGE_REPLACEMENT") == nullptr)
+    GTEST_SKIP() << "explicit bounded completed-request replacement diagnostic required";
+  const char* store = std::getenv("LLMP_IMAGE_GENERATION_STORE");
+  const char* noise = std::getenv("LLMP_IMAGE_GENERATION_NOISE");
+  ASSERT_NE(store, nullptr);
+  ASSERT_NE(noise, nullptr);
+  auto life = std::make_unique<Lifetime>();
+  life->replace_requests = true;
+  const auto result = life->Run(store, noise);
+  const auto retired = life->Retire();
+  if (!retired) {
+    std::ignore = life.release();
+    FAIL() << Failed(retired).value_or("");
+  }
+  ASSERT_TRUE(result) << Failed(result).value_or("");
+  EXPECT_EQ(life->completed_requests, 3U);
+  EXPECT_EQ(life->completed_request_stages, 10U);
+  EXPECT_EQ(life->released_requests, 2U);
+  RecordProperty("completed_requests", life->completed_requests);
+  RecordProperty("completed_stages", life->completed_request_stages);
+  RecordProperty("released_request_owners", life->released_requests);
+  RecordProperty("request_width", 1024);
+  RecordProperty("request_height", 1024);
+  RecordProperty("prompt_rows", life->prompt_rows);
+  RecordProperty("dropped_rows", life->dropped_rows);
+  RecordProperty("request_steps", "1,2,1");
+  RecordProperty("complete_pixel_values_per_request", 4194304);
+  RecordProperty("source_selected_weight_bytes", std::to_string(kSelectedWeights));
+  RecordProperty("setup_paid_footprint_bytes", std::to_string(life->footprint));
+  RecordProperty("fixed_bytes", std::to_string(life->fixed));
+  RecordProperty("activation_bytes", std::to_string(life->activation));
+  RecordProperty("pool_bytes", std::to_string(life->pool));
+  RecordProperty("staging_bytes", std::to_string(life->staging));
+  RecordProperty("retained_plan_floor_bytes", std::to_string(life->plans));
+  RecordProperty("eager_catalog_bytes", std::to_string(life->eager_occupancy));
+  RecordProperty("warmed_catalog_bytes", std::to_string(life->warmed_occupancy));
+  RecordProperty("replacement_input_credit_bytes", std::to_string(life->replacement_credit));
+  RecordProperty("construction_peak_bytes", std::to_string(life->construction_peak));
+  RecordProperty("construction_retained_bytes", std::to_string(life->allowance->used()));
+  RecordProperty("request_layout", llmp::base::ToHex(life->request_layout));
+  RecordProperty("original_request_identity", llmp::base::ToHex(life->initial_request_identity));
+  RecordProperty("first_flow_sha256", life->first[0]);
+  RecordProperty("original_restored_pixels_sha256", life->final[0]);
+  RecordProperty("changed_pixels_sha256", life->changed_pixels);
 }
 // One driver, two existing implementations; no serving selection or kernel
 // changes. Output mode is a quality observation, never a timing sample.

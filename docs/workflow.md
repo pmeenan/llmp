@@ -147,6 +147,15 @@ downgrade a heavy-path change to the light loop on their own.
   The 2026-10-05 deferral of the full regression suite carries over to
   the migration's incremental steps; each family's move still passes its
   focused correctness, state and swap controls.
+  *Owner direction, 2026-10-13:* accelerate M3.6 by combining nearby,
+  independent slices into one main native build and the union of affected
+  checks, running each unique check once. Run independent model checks on
+  both Sparks in parallel. Group related quality, state and swap controls
+  into family closeout batches; reuse evidence for unchanged code and stop
+  expanding experiments whose first screen finds no benefit. Avoid repeated
+  intermediate check cycles and handoffs. Whole-change review, safe admission,
+  positive completion, the migration gates and one commit per completed slice
+  still apply.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name, and a CTest summary with `Skipped` lines is

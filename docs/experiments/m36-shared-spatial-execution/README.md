@@ -886,5 +886,81 @@ across ten targets. Its image source is unchanged; final generation binary
 (199,316,304 bytes) is kept distinct from the executed tuple above. Final combined source QA passes formatting on 10 files, boundaries on seven,
 headers on 2,269 and REUSE 6.2.0; all checks retire successfully. This is a geometry/lifecycle screen, not upstream image quality,
 performance or a public serving switch. Completed-boundary replacement,
-serial requested counts and resource growth remain Q3j2; repeated execution of
-one retained request does not prove replacement.
+serial requested counts and resource growth are separated below; repeated
+execution of one retained request does not prove replacement.
+
+## Completed-request content and count reuse
+
+Q3j2a separates the paid request payload from model weights, backend handles,
+typed graphs, stable device ports and cached programs. Geometry, source and
+backend continue to identify the retained plan; prompt/noise and scheduler
+content have a separate request identity. Same-layout replacements may change
+content and step count after successful Finish and release of the caller's
+request lease. Open or unknown completion, incompatible typed layouts, missing
+required inputs or a sequence without a Finish suffix refuse before mutation.
+A refusal leaves the preceding request usable. Accepted replacements release
+its request-only owner while retaining the model and recordings.
+
+The combined final native build passes 324 host controls, including the same
+35 affected image controls: eight profile, nineteen spatial, seven
+EngineImage lifecycle and one request-payment control. The lifecycle control
+performs 33 serial replacements with changed content and schedule lengths,
+restores its own outputs, releases old owners and retains the same two captures,
+programs, staging and catalog occupancy. Separate controls cover replacement
+while leased or incomplete, unknown-flight retention, malformed atomicity,
+layout/content identity, underpayment and nonfinite-source cleanup. These are
+host/fake proofs, not measured real-model capture counts.
+
+Request construction pays the actual owner/port representations and generated
+vectors before allocation. The variable bound remains 8L + 8P + 32S + 40 bytes
+for latent elements L, output pixels P and steps S. The previous and prospective
+requests are both charged while preparation overlaps; swapping releases the
+old payload's credit. Caller-owned prompt/noise credit stays live independently.
+No mapping, workspace growth or pinned allocation occurs at replacement.
+
+The actual screen uses one retained source model for three serial **1024×1024**
+requests: original red-teapot prompt/noise with one Euler step; natively tokenized
+blue-teapot prompt and sign-changed BF16 noise with two steps; then original
+content and one step restored. Both prompts retain 39 native tokens and prefix
+drop 14. All **12,582,912** decoded values are finite across ten completed stages.
+Both output boundaries change and restore their own original digests; two prior
+request owners expire. No cross-implementation pixel equality is required.
+
+Catalog occupancy is unchanged by each replacement itself. It rises normally
+from **41,312,615,168** bytes after eager execution to **41,511,844,608** bytes
+when the second request acquires prepaid captures, then remains at that warmed
+level for the restored third request. Staging and physical program requirements
+remain unchanged. This is measured resource reuse plus source-backed capture
+lifecycle evidence; no new production capture counter or extra warmup was added.
+
+Actual admission is **41,515,681,200 bytes**: fixed occupancy 4,444,683,008,
+selected source weights 30,530,338,816, activation 6,197,084,160, pool 127,926,272,
+retained-plan floor 211,454,640 and two 2 MiB extents. Fixed occupancy already
+includes 107,772,672 staging bytes. Extra retained seed/prepared input copies
+are prepaid by 2,102,496 bytes. Simultaneous request construction peaks at
+2,720,636,287 bytes, returning to 2,710,145,047 bytes after restoration, within the
+existing 4 GiB construction allowance and 48 GiB node envelope plus 6 GiB
+physical margin. The 975,081,472-byte process/cache peak is not device occupancy.
+
+The native case completes in 40.827s; this is functional completion evidence,
+not a timing comparison. All source/artifact/input/recipe/binary guards pass,
+memory limit/OOM events stay zero, the complete child group retires and no GPU
+processes remain. Exact 26-property raw XML/logs are retained externally under
+`image-request-reuse-models01`; actual receipt
+`c629fb641ed3886823565dd4f3ac518495de15002bc5ae5b62d8e381f496e2d3`
+and executed generation binary
+`d45f85a1357fc1a81f985d70b5f1d630fdb8ffd42668d99b7201a8d662e3724c`
+(199,829,520 bytes) bind this screen to the combined native build. Its full
+324-control result includes the complete 35-control image subset; unrelated
+Qwen work in that build is not claimed by this image result. Final combined
+source QA passes formatting on 18 C++ paths, 12 portability boundary checks,
+2,269 SPDX headers and REUSE 6.2.0; the installed check retires successfully.
+
+This slice adds no arbitrary generation-count cap and no public schema or
+serving switch. The next grouped Q3j2b slice covers geometry/resource growth and
+shared serving/swap reuse: retain
+model/source/backend ownership, replace or grow request capacities only at
+positive completion, and preserve every workspace borrower and pinned/catalog
+payment. Different geometry currently refuses before mutation rather than
+repeating whole-model Setup. Independent upstream image quality, broader
+schedules, serving/swap and matched 1% qualification remain open.

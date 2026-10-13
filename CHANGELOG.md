@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Replace completed shared image request content and schedules while retaining
+  model weights, typed ports and captured programs. Active or unknown requests
+  and incompatible layouts refuse before mutation; serial generations release
+  completed request content instead of accumulating outputs.
+
 - Build shared image requests from paired output dimensions, the actual prompt
   and configured Euler step count, with checked source geometry and paid
   admission instead of fixed diagnostic dimensions or schedules.

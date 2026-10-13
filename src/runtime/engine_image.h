@@ -50,6 +50,25 @@ struct ImageInvocation {
   std::uint32_t stage = 0;
   std::uint32_t iteration = 0;
 };
+// Separately paid request content. Replacements carry the same source-defined
+// layout contract and exact typed ports; they do not replace graphs or kernels.
+struct ImageRequest {
+  ImageRequest() = default;
+  ImageRequest(const ImageRequest&) = delete;
+  ImageRequest& operator=(const ImageRequest&) = delete;
+  ImageRequest(ImageRequest&&) = default;
+  ImageRequest& operator=(ImageRequest&&) = default;
+  std::shared_ptr<void> keep;
+  base::Sha256Digest identity{}, layout{};
+  std::vector<ImagePort> ports;
+  std::vector<ImageInvocation> sequence;
+  std::uint32_t first_output = 0;  // inclusive invocation index
+  std::function<Status(const ImageInvocation&, std::size_t, std::span<std::byte>)> fill;
+  // Final conversion is host-side pipeline output formatting, after the last
+  // typed F32 output has completed. It cannot submit work or change the plan.
+  std::function<std::expected<std::string, std::string>(std::span<const std::byte>)> finish;
+};
+
 struct EngineImageParts {
   // These source/kernel borrowers share one complete owner. It outlives every
   // graph, lowered program, recording and mapped workspace on all paths.
@@ -63,14 +82,8 @@ struct EngineImageParts {
   std::function<std::expected<std::unique_ptr<kernels::StepLaunch>, std::string>()> launch;
   std::shared_ptr<const kernels::StepBackend> backend;
   planner::Policy policy;
-  std::vector<ImagePort> ports;
   std::vector<ImageStage> stages;
-  std::vector<ImageInvocation> sequence;
-  std::uint32_t first_output = 0;  // inclusive invocation index
-  std::function<Status(const ImageInvocation&, std::size_t, std::span<std::byte>)> fill;
-  // Final conversion is host-side pipeline output formatting, after the last
-  // typed F32 output has completed. It cannot submit work or change the plan.
-  std::function<std::expected<std::string, std::string>(std::span<const std::byte>)> finish;
+  ImageRequest request;
   bool graphs = true;
 };
 
@@ -113,6 +126,9 @@ class EngineImage final : public Image, public engine::PagedModel {
   Status Release() override;
   const catalog::Closure& request_closure() const override { return fence_closure(); }
 
+  // Only after successful Finish and after the caller releases its request
+  // lease. Refusal leaves the current request intact. No mapping or growth.
+  Status ReplaceRequest(ImageRequest request);
   Status FirstOutput(std::string& sha) override;
   Status Finish(std::string& sha) override;
 

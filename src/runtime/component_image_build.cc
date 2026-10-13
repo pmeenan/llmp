@@ -48,7 +48,7 @@ struct RequestGeometry {
   std::uint32_t rows = 0, prompt_rows = 0, text_rows = 0, steps = 0;
   std::uint64_t latent_elements = 0, pixels = 0, variable_bytes = 0;
 };
-std::expected<RequestGeometry, std::string> RequestOf(const ImageGenerationSource& source,
+std::expected<RequestGeometry, std::string> RequestOf(const ImageGenerationRequest& source,
                                                       const ModelSettings& settings,
                                                       const md::QwenImageProfile& profile) {
   RequestGeometry r;
@@ -87,29 +87,31 @@ std::expected<RequestGeometry, std::string> RequestOf(const ImageGenerationSourc
       return Error("image request construction bound overflows");
   return r;
 }
+struct ImageRequestOwner {
+  Paid paid;
+  ImageGenerationRequest source;
+  RequestGeometry request;
+  std::vector<float> sigmas, timesteps;
+  std::vector<std::byte> pixels;
+};
+constexpr std::uint64_t kRequestOwnerBytes =
+    2 * sizeof(ImageRequestOwner) + 2 * sizeof(ImageRequest) + 4 * sizeof(ImagePort) + 4096;
 struct ImageGenerationOwner {
   Paid paid;
   std::shared_ptr<ImageGenerationSource> source;
-  std::vector<std::int32_t> prompt;
-  std::vector<std::uint16_t> noise;
-  std::uint32_t drop = 0;
-  RequestGeometry request;
   std::array<std::vector<co::BoundTensor>, 3> tables;
   std::array<std::map<ir::WeightRef, std::uint32_t>, 3> resources;
   std::array<en::PagedWeights*, 3> weights{};
   std::array<std::shared_ptr<const co::SpatialGraph>, 3> graphs;
-  std::vector<float> sigmas, timesteps;
-  std::vector<std::byte> pixels;
   std::unique_ptr<kg::CublasHandle> cublas;
   std::unique_ptr<kg::GgmlBackend> backend;
 };
 
 // Two complete owner/return representations, doubled vector capacities for
-// three stages/two ports/eleven input ports, and fixed shared/control blocks.
+// three stages/eleven input ports, and fixed shared/control blocks.
 // Kernel declaration storage is independently charged by Declare below.
 constexpr std::uint64_t kSourceOwnerBytes = kSourceMappingBytes + 2 * sizeof(ImageGenerationOwner) +
                                             2 * sizeof(EngineImageParts) + 6 * sizeof(ImageStage) +
-                                            4 * sizeof(ImagePort) +
                                             22 * sizeof(std::optional<std::uint32_t>) + 4096;
 
 // Same lower construction categories as the complete-flow proof, derived from
@@ -155,10 +157,10 @@ std::expected<std::vector<co::BoundTensor>, std::string> Table(
   }
   return out;
 }
-Status Fill(const ImageGenerationOwner& held, const ImageInvocation& invocation, std::size_t slot,
+Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, std::size_t slot,
             std::span<std::byte> bytes) {
-  const auto rows = static_cast<std::uint32_t>(held.prompt.size());
-  const auto text = rows - held.drop;
+  const auto rows = static_cast<std::uint32_t>(held.source.prompt.size());
+  const auto text = rows - held.source.drop;
   const auto& profile = md::QwenImage21();
   const auto put = [&]<typename T>(std::size_t at, T value) {
     std::memcpy(bytes.data() + at * sizeof(T), &value, sizeof(T));
@@ -169,7 +171,7 @@ Status Fill(const ImageGenerationOwner& held, const ImageInvocation& invocation,
   if (invocation.stage == 0) {
     if (slot < 2 && exact(rows)) {
       for (std::uint32_t row = 0; row < rows; ++row)
-        put(row, slot == 0 ? held.prompt[row] : static_cast<std::int32_t>(row));
+        put(row, slot == 0 ? held.source.prompt[row] : static_cast<std::int32_t>(row));
       return {};
     }
     if (slot == 2 && exact(std::uint64_t{rows} * rows)) {
@@ -219,6 +221,88 @@ Status Fill(const ImageGenerationOwner& held, const ImageInvocation& invocation,
 }
 }  // namespace
 
+std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
+    ImageGenerationRequest&& source, const ModelSettings& settings,
+    std::shared_ptr<en::ExecutionMetadataAllowance> construction) {
+  const auto& p = md::QwenImage21();
+  if (!source.keep || !construction) return Error("image request lacks its paid caller owner");
+  auto request = RequestOf(source, settings, p);
+  if (!request) return Error(request.error());
+  const auto geometry = *request;
+  for (auto id : source.prompt)
+    if (id < 0 || static_cast<std::uint32_t>(id) >= p.text.vocab)
+      return Error("image text input ID lies outside the actual source vocabulary");
+  if (!construction->Charge(kRequestOwnerBytes)) return Error("image request owner is unpaid");
+  auto held = std::make_shared<ImageRequestOwner>();
+  held->paid.allowance = construction;
+  held->paid.bytes = kRequestOwnerBytes;
+  if (!held->paid.Add(geometry.variable_bytes)) return Error("image request vectors are unpaid");
+  held->source = std::move(source);
+  held->request = geometry;
+  const auto image_rows = geometry.rows, text_rows = geometry.text_rows;
+  const auto channels = p.vae.z_dim;
+  auto schedule = md::QwenImageSchedulerSigmas(p.scheduler, geometry.steps, image_rows);
+  if (!schedule) return Error(schedule.error());
+  held->sigmas = std::move(schedule->sigmas);
+  held->timesteps = std::move(schedule->timesteps);
+  ImageRequest out;
+  out.keep = held;
+  base::Sha256 layout;
+  layout.Update("llmp-image-request-layout-v1");
+  layout.Update(p.pipeline_architecture);
+  const std::array shape{geometry.width, geometry.height, geometry.prompt_rows, held->source.drop};
+  layout.Update(std::as_bytes(std::span(shape)));
+  out.layout = layout.Finish();
+  base::Sha256 identity;
+  identity.Update(base::ToHex(out.layout));
+  identity.Update(std::as_bytes(std::span(held->source.prompt)));
+  identity.Update(std::as_bytes(std::span(held->source.noise)));
+  identity.Update(std::as_bytes(std::span(held->sigmas)));
+  identity.Update(std::as_bytes(std::span(held->timesteps)));
+  out.identity = identity.Finish();
+  out.ports.push_back(
+      {ir::Dense(format::Encoding::kF32, ir::ShapeOf({1, text_rows, p.text.width, 1})), 0, {}});
+  auto& latent = out.ports.emplace_back(ImagePort{
+      ir::Dense(format::Encoding::kF32, ir::ShapeOf({1, image_rows, channels, 1})), 0, {}});
+  latent.initial.resize(geometry.latent_elements * sizeof(float));
+  for (std::size_t row = 0; row < image_rows; ++row)
+    for (std::size_t c = 0; c < channels; ++c) {
+      const auto value = md::FromBf16(held->source.noise[row * channels + c]);
+      if (!std::isfinite(value)) return Error("image source noise is not finite");
+      std::memcpy(latent.initial.data() + (row + std::size_t{image_rows} * c) * 4, &value, 4);
+    }
+  out.sequence.reserve(std::size_t{geometry.steps} + 2);
+  out.sequence.push_back({0, 0});
+  for (std::uint32_t iteration = 0; iteration < geometry.steps; ++iteration)
+    out.sequence.push_back({1, iteration});
+  out.sequence.push_back({2, 0});
+  out.first_output = 1;
+  out.fill = [held](const ImageInvocation& invocation, std::size_t slot,
+                    std::span<std::byte> bytes) { return Fill(*held, invocation, slot, bytes); };
+  // Interleaved pixel bytes are in the request-sized construction payment;
+  // no BF16 intermediate cast is imposed.
+  held->pixels.resize(geometry.pixels * 4);
+  out.finish = [held](std::span<const std::byte> bytes) -> std::expected<std::string, std::string> {
+    if (bytes.size() != held->pixels.size() * sizeof(float))
+      return Error("image final output extent differs");
+    const auto pixels = static_cast<std::size_t>(held->request.pixels);
+    for (std::size_t c = 0; c < 4; ++c)
+      for (std::size_t i = 0; i < pixels; ++i) {
+        float value = 0;
+        std::memcpy(&value, bytes.data() + (c * pixels + i) * 4, 4);
+        if (!std::isfinite(value)) return Error("image decoded output is not finite");
+        const float scaled = (std::clamp(value, -1.F, 1.F) * .5F + .5F) * 255.F;
+        const auto lo = static_cast<unsigned>(std::floor(scaled));
+        const auto rounded =
+            lo + static_cast<unsigned>(scaled - static_cast<float>(lo) > .5F ||
+                                       (scaled - static_cast<float>(lo) == .5F && lo % 2));
+        held->pixels[i * 4 + c] = static_cast<std::byte>(rounded);
+      }
+    return base::ToHex(base::Sha256().Update(held->pixels).Finish());
+  };
+  return out;
+}
+
 EngineImageBuild ComponentImageGenerationBuild(
     en::PagedNode& node, int owner, std::shared_ptr<ImageGenerationSource> source,
     std::shared_ptr<en::ExecutionMetadataAllowance> construction,
@@ -246,13 +330,15 @@ EngineImageBuild ComponentImageGenerationBuild(
     auto held = std::make_shared<ImageGenerationOwner>();
     held->paid.allowance = construction;
     held->paid.bytes = kSourceOwnerBytes;
-    if (!held->paid.Add(geometry.variable_bytes))
-      return Error("image request construction is not prepaid");
-    held->request = geometry;
     held->source = source;
-    held->prompt = std::move(source->prompt);
-    held->noise = std::move(source->noise);
-    held->drop = source->drop;
+    auto prepared_request = ComponentImageGenerationRequest({.prompt = std::move(source->prompt),
+                                                             .drop = source->drop,
+                                                             .width = source->width,
+                                                             .height = source->height,
+                                                             .noise = std::move(source->noise),
+                                                             .keep = source->keep},
+                                                            settings, construction);
+    if (!prepared_request) return Error(prepared_request.error());
     const std::array source_tensors{md::TextEncoderTensors(p.text), md::DenoiserTensors(p.denoiser),
                                     md::VaeDecoderTensors(p.vae)};
     const std::array<std::string_view, 3> role{"text_encoder", "transformer", "vae"};
@@ -273,9 +359,9 @@ EngineImageBuild ComponentImageGenerationBuild(
       held->tables[i] = std::move(*tensors);
       held->weights[i] = source->weights[i].get();
     }
-    const std::uint32_t text_rows = static_cast<std::uint32_t>(held->prompt.size()) - held->drop;
+    const auto text_rows = geometry.text_rows;
     std::array mappings{
-        spec::ImageTextSpec(p.text, prompt_rows, held->drop, source_tensors[0]),
+        spec::ImageTextSpec(p.text, prompt_rows, source->drop, source_tensors[0]),
         spec::ImageFlowSpec(p.denoiser, text_rows, image_rows, source_tensors[1]),
         spec::ImageDecodeSpec(p.vae, geometry.grid_height, geometry.grid_width, source_tensors[2])};
     const std::array<co::SpatialShape, 3> primary{co::SpatialShape{1, prompt_rows, 1, 1},
@@ -320,10 +406,6 @@ EngineImageBuild ComponentImageGenerationBuild(
       }
       held->graphs[i] = std::make_shared<co::SpatialGraph>(std::move(*graph));
     }
-    auto schedule = md::QwenImageSchedulerSigmas(p.scheduler, geometry.steps, image_rows);
-    if (!schedule) return Error(schedule.error());
-    held->sigmas = std::move(schedule->sigmas);
-    held->timesteps = std::move(schedule->timesteps);
     auto backend = kg::GgmlBackend::Create(0, node.execution(),
                                            node.stream(static_cast<std::uint32_t>(owner)), nullptr);
     if (!backend) return Error(backend.error());
@@ -346,24 +428,8 @@ EngineImageBuild ComponentImageGenerationBuild(
     base::Sha256 identity;
     identity.Update(source->composition->id());
     for (const auto& graph : held->graphs) identity.Update(base::ToHex(graph->graph().Digest()));
-    identity.Update(std::as_bytes(std::span(held->prompt)));
-    identity.Update(std::as_bytes(std::span(held->noise)));
-    const std::array request_identity{geometry.width, geometry.height, geometry.steps, held->drop};
-    identity.Update(std::as_bytes(std::span(request_identity)));
-    identity.Update(std::as_bytes(std::span(held->sigmas)));
-    identity.Update(std::as_bytes(std::span(held->timesteps)));
     out.identity = identity.Finish();
-    out.ports.push_back(
-        {ir::Dense(format::Encoding::kF32, ir::ShapeOf({1, text_rows, p.text.width, 1})), 0, {}});
-    auto& latent = out.ports.emplace_back(ImagePort{
-        ir::Dense(format::Encoding::kF32, ir::ShapeOf({1, image_rows, channels, 1})), 0, {}});
-    latent.initial.resize(geometry.latent_elements * sizeof(float));
-    for (std::size_t row = 0; row < image_rows; ++row)
-      for (std::size_t c = 0; c < channels; ++c) {
-        const auto value = md::FromBf16(held->noise[row * channels + c]);
-        if (!std::isfinite(value)) return Error("image source noise is not finite");
-        std::memcpy(latent.initial.data() + (row + std::size_t{image_rows} * c) * 4, &value, 4);
-      }
+    out.request = std::move(*prepared_request);
     for (std::size_t i = 0; i < 3; ++i) {
       const auto count = source->weights[i]->artifact().layout().groups.size();
       out.weights.push_back({.weights = std::move(source->weights[i]),
@@ -394,36 +460,6 @@ EngineImageBuild ComponentImageGenerationBuild(
       }
       out.stages.push_back(std::move(stage));
     }
-    out.sequence.reserve(std::size_t{geometry.steps} + 2);
-    out.sequence.push_back({0, 0});
-    for (std::uint32_t iteration = 0; iteration < geometry.steps; ++iteration)
-      out.sequence.push_back({1, iteration});
-    out.sequence.push_back({2, 0});
-    out.first_output = 1;
-    out.fill = [held](const ImageInvocation& invocation, std::size_t slot,
-                      std::span<std::byte> bytes) { return Fill(*held, invocation, slot, bytes); };
-    // Interleaved pixel bytes are in the request-sized construction payment;
-    // no BF16 intermediate cast is imposed.
-    held->pixels.resize(geometry.pixels * 4);
-    out.finish =
-        [held](std::span<const std::byte> bytes) -> std::expected<std::string, std::string> {
-      if (bytes.size() != held->pixels.size() * sizeof(float))
-        return Error("image final output extent differs");
-      const auto pixels = static_cast<std::size_t>(held->request.pixels);
-      for (std::size_t c = 0; c < 4; ++c)
-        for (std::size_t i = 0; i < pixels; ++i) {
-          float value = 0;
-          std::memcpy(&value, bytes.data() + (c * pixels + i) * 4, 4);
-          if (!std::isfinite(value)) return Error("image decoded output is not finite");
-          const float scaled = (std::clamp(value, -1.F, 1.F) * .5F + .5F) * 255.F;
-          const auto lo = static_cast<unsigned>(std::floor(scaled));
-          const auto rounded =
-              lo + static_cast<unsigned>(scaled - static_cast<float>(lo) > .5F ||
-                                         (scaled - static_cast<float>(lo) == .5F && lo % 2));
-          held->pixels[i * 4 + c] = static_cast<std::byte>(rounded);
-        }
-      return base::ToHex(base::Sha256().Update(held->pixels).Finish());
-    };
     out.kernel_memory.push_back({.name = "image shared cuBLAS", .bytes = blas_bytes});
     out.prepare = [&node, owner, held, blas_bytes](std::span<const std::uint64_t> bases) -> Status {
       if (bases.size() != 1) return Error("image cuBLAS workspace is absent");

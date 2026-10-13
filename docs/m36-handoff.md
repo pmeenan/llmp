@@ -49,8 +49,15 @@ Prospective memory comparisons are informational; admission, ownership and
 accounting stay mandatory. The1GiB workspace experiment passes quality but does not
 justify adoption;64MiB remains default. Request-driven composition now passes
 a 2048×512 actual request with 35 native prompt tokens and one Euler step, twice
-through the retained shared pipeline. Completed-boundary content/count reuse
-and safe resource growth are the next separate image steps.
+through the retained shared pipeline. Q3j2a now replaces paid content/schedules
+at completed request boundaries while retaining model/graph identity. The final
+324-control native check includes all 35 image controls and 33 serial fake
+replacements with stable captures. One real model completes original→changed→
+restored prompt/noise requests with 1/2/1 Euler steps, finite outputs, two released
+owners and stable warmed resources. Q3j2b groups geometry/resource growth with
+shared serving/swap reuse; incompatible layouts currently refuse without
+changing the retained request. This is no
+permanent dimension or count limit, and adds no serving-default switch.
 
 The shared image generation core now completes two 1024×1024 generations:
 native 36-layer text encoding, two complete 32-block Euler steps and the full

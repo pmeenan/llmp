@@ -156,6 +156,9 @@ struct Life {
     parts.keep = owner;
     parts.architecture = "typed-identity-control";
     parts.identity = llmp::base::Sha256{}.Update("two-typed-copy-stages").Finish();
+    parts.request.keep = owner;
+    parts.request.identity = parts.identity;
+    parts.request.layout = parts.identity;
     llmp::test::V1Plan artifact;
     artifact.groups = {
         {.layer = 0,
@@ -193,20 +196,20 @@ struct Life {
            .inputs = {stage_id == 0 ? std::nullopt : std::optional<std::uint32_t>(0)},
            .outputs = {stage_id == 0 ? std::optional<std::uint32_t>(0) : std::nullopt}});
     }
-    parts.ports.push_back(
+    parts.request.ports.push_back(
         {.format = ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({2, 2, 1, 1})),
          .owner = static_cast<std::uint8_t>(bad_port ? 1 : 0),
          .initial = {}});
-    parts.sequence = {{0, 0}, {1, 0}};
-    parts.first_output = 0;
+    parts.request.sequence = {{0, 0}, {1, 0}};
+    parts.request.first_output = 0;
     parts.launch = [trace =
                         trace]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       auto launch = std::make_unique<kn::RecordingLaunch>();
       trace->launch = launch.get();
       return launch;
     };
-    parts.fill = [trace = trace](const rt::ImageInvocation&, std::size_t,
-                                 std::span<std::byte> data) -> Status {
+    parts.request.fill = [trace = trace](const rt::ImageInvocation&, std::size_t,
+                                         std::span<std::byte> data) -> Status {
       if (data.size() != 16) return std::unexpected("fake typed size");
       const std::array<float, 4> values{trace->value, trace->value + 1, trace->value + 2,
                                         trace->value + 3};
@@ -235,6 +238,28 @@ struct Life {
     node.Run();
     node.SetHostFloor(0);
     return {};
+  }
+  rt::ImageRequest Request(float value, std::uint32_t repeats = 1) {
+    rt::ImageRequest request;
+    request.keep = std::make_shared<float>(value);  // within the paid fake fixture owner
+    request.layout = llmp::base::Sha256{}.Update("two-typed-copy-stages").Finish();
+    const std::array identity{value, static_cast<float>(repeats)};
+    request.identity = llmp::base::Sha256{}.Update(std::as_bytes(std::span(identity))).Finish();
+    request.ports.push_back(
+        {.format = ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({2, 2, 1, 1})),
+         .initial = {}});
+    for (std::uint32_t i = 0; i < repeats; ++i) request.sequence.push_back({0, i});
+    request.sequence.push_back({1, 0});
+    request.first_output = repeats - 1;
+    request.fill = [value](const rt::ImageInvocation& invocation, std::size_t,
+                           std::span<std::byte> data) -> Status {
+      if (data.size() != 16) return std::unexpected("fake replacement size");
+      const auto start = value + static_cast<float>(invocation.iteration);
+      const std::array<float, 4> values{start, start + 1, start + 2, start + 3};
+      std::memcpy(data.data(), values.data(), data.size());
+      return {};
+    };
+    return request;
   }
   Status Retire() {
     if (attempted) return std::unexpected("already attempted");
@@ -283,6 +308,63 @@ TEST_F(EngineImageTest, DeviceHandoffAndChangedInputsSurviveRepeatedGenerations)
   EXPECT_EQ(life->trace->executed, 6U);
   EXPECT_EQ(life->trace->live_programs, 2U);
 }
+TEST_F(EngineImageTest, CompletedRequestReplacementReusesCapturesAndReleasesContent) {
+  ASSERT_TRUE(life->Start(path));
+  std::string first, original, output;
+  EXPECT_FALSE(life->image->ReplaceRequest(life->Request(9)));
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  EXPECT_FALSE(life->image->ReplaceRequest(life->Request(9)));
+  ASSERT_TRUE(life->image->Finish(original));
+  const auto occupancy = life->node.catalog().OccupancyOf(life->node.domain()).Total();
+  const auto staging = life->image->host_input_bytes();
+  const auto plans = life->trace->live_programs;
+  std::weak_ptr<void> retired;
+  for (std::uint32_t i = 0; i < 33; ++i) {
+    auto request = life->Request(i % 2 ? 1.F : 9.F, i % 2 ? 1U : 2U);
+    auto next_owner = std::weak_ptr<void>(request.keep);
+    ASSERT_TRUE(life->image->ReplaceRequest(std::move(request)));
+    EXPECT_TRUE(retired.expired());
+    retired = next_owner;
+    ASSERT_TRUE(life->image->FirstOutput(first));
+    ASSERT_TRUE(life->image->Finish(output));
+    EXPECT_EQ(first, output);
+    if (i % 2)
+      EXPECT_EQ(output, original);
+    else
+      EXPECT_NE(output, original);
+    EXPECT_EQ(life->image->host_input_bytes(), staging);
+    EXPECT_EQ(life->node.catalog().OccupancyOf(life->node.domain()).Total(), occupancy);
+    EXPECT_EQ(life->trace->live_programs, plans);
+    EXPECT_EQ(life->trace->launch->captures(), 2U);
+  }
+}
+TEST_F(EngineImageTest, ReplacementRefusalIsAtomicAndRequiresReleasedRequestLease) {
+  ASSERT_TRUE(life->Start(path));
+  std::string output, original;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(original));
+  const auto rejected = life->node.WithRequest(
+      0, life->image->request_closure(), "replacement lease control", [&]() -> Status {
+        EXPECT_FALSE(life->image->ReplaceRequest(life->Request(9)));
+        return {};
+      });
+  ASSERT_TRUE(rejected);
+  for (int fault = 0; fault < 7; ++fault) {
+    auto request = life->Request(9);
+    if (fault == 0) request.layout = {};
+    if (fault == 1) request.ports[0].owner = 1;
+    if (fault == 2) request.ports[0].initial.resize(1);
+    if (fault == 3) request.sequence[0].stage = 99;
+    if (fault == 4) request.keep.reset();
+    if (fault == 5) request.first_output = static_cast<std::uint32_t>(request.sequence.size() - 1);
+    if (fault == 6) request.fill = {};
+    EXPECT_FALSE(life->image->ReplaceRequest(std::move(request)));
+    ASSERT_TRUE(life->image->FirstOutput(output));
+    ASSERT_TRUE(life->image->Finish(output));
+    EXPECT_EQ(output, original);
+  }
+  EXPECT_EQ(life->trace->launch->captures(), 2U);
+}
 TEST_F(EngineImageTest, NoncapturableProgramsPositionEveryRunAndRefuseBeforeSubmission) {
   life->trace->capturable = false;
   const auto started = life->Start(path);
@@ -318,6 +400,7 @@ TEST_F(EngineImageTest, QueuedFailureQuarantinesTheWholeFlightUntilPositiveDrain
   const auto count = life->trace->queued;
   EXPECT_FALSE(life->image->FirstOutput(value));
   EXPECT_FALSE(life->image->Finish(value));
+  EXPECT_FALSE(life->image->ReplaceRequest(life->Request(9)));
   life->image->DropPlans();
   std::vector<llmp::memory::ReclaimCandidate> candidates;
   life->image->ReclaimCandidates(0, false, candidates);

@@ -102,6 +102,41 @@ struct EngineImage::State {
          .within = backend.within,
          .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
   }
+  std::expected<std::uint64_t, std::string> Request(const ImageRequest& request) const {
+    if (!request.keep || request.layout == base::Sha256Digest{} ||
+        request.identity == base::Sha256Digest{} || request.sequence.empty() ||
+        request.first_output >= request.sequence.size() - 1)
+      return Error("image request needs a paid owner, identities and complete sequence");
+    std::vector<bool> initialized;
+    std::uint64_t initial_bytes = 0;
+    for (const auto& port : request.ports) {
+      const auto bytes = Bytes(port.format);
+      if (!bytes || (!port.initial.empty() && port.initial.size() != *bytes))
+        return Error("image initial port encoding or length differs");
+      initialized.push_back(!port.initial.empty());
+      if (!port.initial.empty() &&
+          (*bytes > UINT64_MAX - 255 ||
+           __builtin_add_overflow(initial_bytes, Round(*bytes, 256), &initial_bytes)))
+        return Error("image initial port staging overflows");
+    }
+    for (const auto& step : request.sequence) {
+      if (step.stage >= parts.stages.size()) return Error("image invocation names no stage");
+      const auto& stage = parts.stages[step.stage];
+      for (const auto& input_port : stage.inputs) {
+        if (!input_port && !request.fill)
+          return Error("image request lacks a required input callback");
+        if (input_port && (*input_port >= initialized.size() || !initialized[*input_port]))
+          return Error("image sequence reads an unwritten port");
+      }
+      for (const auto& output_port : stage.outputs)
+        if (output_port) {
+          if (*output_port >= initialized.size())
+            return Error("image sequence names no output port");
+          initialized[*output_port] = true;
+        }
+    }
+    return initial_bytes;
+  }
   Status Ports(std::size_t stage, const kn::StepProgram& program) const {
     const auto& descriptor = parts.stages.at(stage);
     const auto& graph = descriptor.graph->graph();
@@ -116,7 +151,7 @@ struct EngineImage::State {
             slots[i].segment != tensor.segment || !ir::IsContiguous(tensor))
           return Error("image program changed an original typed graph port");
         if (bindings[i]) {
-          const auto& port = parts.ports.at(*bindings[i]);
+          const auto& port = parts.request.ports.at(*bindings[i]);
           if (port.format != tensor.format || port.owner != tensor.segment)
             return Error("image device handoff format, geometry or owner differs");
         }
@@ -149,23 +184,9 @@ Status EngineImage::Setup() {
   state_ = std::make_shared<State>(node_, index_, std::move(*parts));
   auto& s = *state_;
   if (!s.parts.keep || !s.parts.backend || !s.parts.backend->owner || !s.parts.launch ||
-      s.parts.stages.empty() || s.parts.sequence.empty() ||
-      s.parts.first_output >= s.parts.sequence.size())
+      s.parts.stages.empty() || s.parts.request.sequence.empty() ||
+      s.parts.request.first_output >= s.parts.request.sequence.size())
     return Error("image needs an owned typed composition and complete sequence");
-  for (const auto& step : s.parts.sequence)
-    if (step.stage >= s.parts.stages.size()) return Error("image invocation names no stage");
-  std::vector<bool> initialized;
-  std::uint64_t initial_bytes = 0;
-  for (const auto& port : s.parts.ports) {
-    const auto bytes = Bytes(port.format);
-    if (!bytes || (!port.initial.empty() && port.initial.size() != *bytes))
-      return Error("image initial port encoding or length differs");
-    initialized.push_back(!port.initial.empty());
-    if (!port.initial.empty() &&
-        (*bytes > UINT64_MAX - 255 ||
-         __builtin_add_overflow(initial_bytes, Round(*bytes, 256), &initial_bytes)))
-      return Error("image initial port staging overflows");
-  }
   for (const auto& stage : s.parts.stages) {
     if (!stage.graph || stage.weights >= s.parts.weights.size() ||
         stage.inputs.size() != stage.graph->graph().inputs().size() ||
@@ -174,15 +195,11 @@ Status EngineImage::Setup() {
       return Error("image stage source or typed port inventory differs");
     for (const auto* bindings : {&stage.inputs, &stage.outputs})
       for (const auto& port : *bindings)
-        if (port && *port >= s.parts.ports.size()) return Error("image stage names no device port");
+        if (port && *port >= s.parts.request.ports.size())
+          return Error("image stage names no device port");
   }
-  for (const auto& step : s.parts.sequence) {
-    const auto& stage = s.parts.stages[step.stage];
-    for (const auto& input : stage.inputs)
-      if (input && !initialized[*input]) return Error("image sequence reads an unwritten port");
-    for (const auto& output : stage.outputs)
-      if (output) initialized[*output] = true;
-  }
+  auto initial_bytes = s.Request(s.parts.request);
+  if (!initial_bytes) return Error(initial_bytes.error());
   for (auto& weights : s.parts.weights) {
     if (auto reserved = weights.weights->Reserve(node_, weights.places, weights.slabs); !reserved)
       return reserved;
@@ -203,7 +220,7 @@ Status EngineImage::Setup() {
   auto declaration = s.parts.backend->owner->Ready();
   if (!declaration) return Error(declaration.error());
   s.declaration = *declaration;
-  for (const auto& port : s.parts.ports) {
+  for (const auto& port : s.parts.request.ports) {
     const auto bytes = Bytes(port.format);
     if (!bytes) return Error(bytes.error());
     auto& mapped = s.ports.emplace_back(std::make_unique<en::Mapped>());
@@ -249,7 +266,7 @@ Status EngineImage::Setup() {
   auto activations = Margin(s.measured.scratch, en::kPagedExtent);
   auto pool = s.measured.pool == 0 ? std::expected<std::uint64_t, std::string>(0)
                                    : Margin(s.measured.pool, en::kPagedExtent);
-  auto inputs = Margin(std::max(s.measured.inputs, initial_bytes), 256),
+  auto inputs = Margin(std::max(s.measured.inputs, *initial_bytes), 256),
        outputs = Margin(s.measured.outputs, 256);
   if (!activations || !pool || !inputs || !outputs)
     return Error("image measured envelope overflows");
@@ -307,13 +324,13 @@ Status EngineImage::Bind() {
 
 Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
   if (!state_ || !state_->bound || state_->released || state_->unknown ||
-      end > state_->parts.sequence.size() || end <= state_->next)
+      end > state_->parts.request.sequence.size() || end <= state_->next)
     return Error("image execution order or completion is invalid");
   auto hold = state_;
   auto& s = *hold;
   for (; s.next < end; ++s.next) {
     const en::PlanStep protect;
-    const auto invocation = s.parts.sequence[s.next];
+    const auto invocation = s.parts.request.sequence[s.next];
     const auto& stage = s.parts.stages[invocation.stage];
     const auto& graph = stage.graph->graph();
     auto ready = s.parts.backend->owner->Ready();
@@ -338,8 +355,8 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     if (s.next == 0) {
       en::Copies initial;
       std::uint64_t at = 0;
-      for (std::size_t i = 0; i < s.parts.ports.size(); ++i) {
-        const auto& bytes = s.parts.ports[i].initial;
+      for (std::size_t i = 0; i < s.parts.request.ports.size(); ++i) {
+        const auto& bytes = s.parts.request.ports[i].initial;
         if (bytes.empty()) continue;
         std::memcpy(s.input + at, bytes.data(), bytes.size());
         initial.push_back({s.ports[i]->base, bytes.size(), at});
@@ -414,12 +431,12 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     for (std::size_t i = 0; checked && i < program.inputs().size(); ++i) {
       const auto& input = program.inputs()[i];
       if (stage.inputs[i]) continue;
-      if (!s.parts.fill || cursor > s.input_bytes || input.bytes > s.input_bytes - cursor) {
+      if (!s.parts.request.fill || cursor > s.input_bytes || input.bytes > s.input_bytes - cursor) {
         checked = Error("image host input has no paid source");
         break;
       }
-      checked =
-          s.parts.fill(invocation, i, {s.input + cursor, static_cast<std::size_t>(input.bytes)});
+      checked = s.parts.request.fill(invocation, i,
+                                     {s.input + cursor, static_cast<std::size_t>(input.bytes)});
       if (!checked) break;
       inputs.push_back({input.device_address, input.bytes, cursor});
       cursor += Round(input.bytes, 256);
@@ -492,8 +509,8 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     en::Count(s.stats, queued->path);
     if (observe) {
       const std::span<const std::byte> bytes(s.output, static_cast<std::size_t>(observed.bytes));
-      if (end == s.parts.sequence.size() && s.parts.finish) {
-        auto converted = s.parts.finish(bytes);
+      if (end == s.parts.request.sequence.size() && s.parts.request.finish) {
+        auto converted = s.parts.request.finish(bytes);
         if (!converted) return Error(converted.error());
         sha = std::move(*converted);
       } else {
@@ -505,6 +522,29 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
   }
   return {};
 }
+Status EngineImage::ReplaceRequest(ImageRequest request) {
+  if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
+      !state_->generation_complete || state_->next != state_->parts.request.sequence.size() ||
+      node_.InRequest(stream()))
+    return Error("image request replacement requires a completed, unleased generation");
+  auto& s = *state_;
+  const auto& current = s.parts.request;
+  if (request.layout != current.layout || request.ports.size() != current.ports.size())
+    return Error("image request geometry requires separate resource preparation");
+  for (std::size_t i = 0; i < request.ports.size(); ++i)
+    if (request.ports[i].format != current.ports[i].format ||
+        request.ports[i].owner != current.ports[i].owner)
+      return Error("image request changed a retained typed port");
+  auto initial = s.Request(request);
+  if (!initial || *initial > s.input_bytes)
+    return Error(initial ? "image request exceeds retained initial staging" : initial.error());
+  // No callbacks, allocation, device work or catalog mutation follows validation.
+  // Old request-only owners retire here; graphs, addresses and recordings remain.
+  s.parts.request = std::move(request);
+  s.next = s.parts.request.sequence.size();
+  return {};
+}
+
 Status EngineImage::FirstOutput(std::string& sha) {
   if (state_ && state_->generation_complete && !state_->unknown && !state_->flight &&
       !state_->released) {
@@ -512,11 +552,12 @@ Status EngineImage::FirstOutput(std::string& sha) {
     state_->generation_complete = false;
   }
   if (!state_ || state_->next != 0) return Error("image first output order");
-  return RunThrough(state_->parts.first_output + 1, sha);
+  return RunThrough(state_->parts.request.first_output + 1, sha);
 }
 Status EngineImage::Finish(std::string& sha) {
-  if (!state_ || state_->next != state_->parts.first_output + 1) return Error("image finish order");
-  auto result = RunThrough(state_->parts.sequence.size(), sha);
+  if (!state_ || state_->next != state_->parts.request.first_output + 1)
+    return Error("image finish order");
+  auto result = RunThrough(state_->parts.request.sequence.size(), sha);
   if (result) state_->generation_complete = true;
   return result;
 }

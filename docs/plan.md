@@ -2722,14 +2722,28 @@ each is checked against the design as M3.6 proceeds.
             tokens, actual drop 14 and one Euler step completes twice through
             six stages with all 4,194,304 pixel values finite each time and own
             repeat digests ([report](experiments/m36-shared-spatial-execution/README.md#request-driven-image-composition)).
-      - [ ] **Q3j2 — completed-boundary requests and counts:** replace content
-            and schedules only after successful completion, retaining model
-            ownership, stable ports and captures where compatible. Serialize
-            requested generations without accumulating outputs. Resource growth
-            and different-geometry retirement must preserve catalog/payment and
-            every shared-workspace borrower; no fixed reference dimensions or
-            generation count become product limits. Independent upstream quality,
-            serving/swap and matched 1% family gates remain separate and open.
+      - [x] **Q3j2a — completed-request content and counts:** replace paid
+            prompt/noise/schedule payloads only after successful Finish and
+            release of the request lease. Same-layout requests retain model,
+            weights, backend, ports and program/capture identity; active or
+            unknown completion and incompatible payloads refuse atomically.
+            Serial callers release prior request content without a count cap
+            or accumulated images. Thirty-five focused host controls pass,
+            including 33 replacements with stable captures and failure-atomic
+            refusal. One retained native model completes three requests with
+            changed/restored prompt and noise, 1/2/1 Euler steps, two released
+            request owners and warmed resource reuse; all 12,582,912 decoded
+            values are finite
+            ([report](experiments/m36-shared-spatial-execution/README.md#completed-request-content-and-count-reuse)).
+      - [ ] **Q3j2b — geometry and resource growth:** extend or replace request
+            resources after positive completion while preserving catalog
+            payment, pinned storage lifetime and every shared-workspace
+            borrower. Different layouts remain a controlled refusal in Q3j2a,
+            not a permanent geometry limit. Prefer stable virtual addresses and
+            reusable capacity where supported; do not repeat whole-model Setup
+            or remap a workspace still borrowed by retained plans. Independent
+            upstream quality, serving/swap and matched 1% family gates remain
+            separate and open.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.
