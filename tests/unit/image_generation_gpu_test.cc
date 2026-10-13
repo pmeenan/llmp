@@ -65,6 +65,8 @@ constexpr std::array<std::string_view, 3> kIndexHashes{
 constexpr std::array<std::uint64_t, 3> kIndexBytes{751744, 531405, 99639};
 constexpr std::string_view kPrompt =
     "A red ceramic teapot on a plain wooden table, soft daylight, no text.";
+constexpr std::string_view kRectangularPrompt =
+    "A blue glass vase beside a yellow book, viewed from above.";
 Status Error(std::string message) { return std::unexpected(std::move(message)); }
 std::expected<std::string, std::string> ReadExact(const fs::path& path, std::uint64_t bytes) {
   std::error_code ec;
@@ -84,6 +86,10 @@ struct Lifetime {
   std::unique_ptr<en::QwenImageRunner> legacy;
   std::unique_ptr<rt::EngineImage> image;
   bool legacy_arm = false, decoder_times = false, tiled = false, masked_attention = false;
+  bool rectangular_request = false;
+  std::uint32_t prompt_rows = 0, dropped_rows = 0;
+  std::uint64_t request_sequence = 0, request_pixel_values = 0;
+  std::string request_identity;
   std::shared_ptr<const llmp::planner::OwnedDeviceFacts> tuning_facts;
   std::uint64_t tuning_credit = 0, attention_source_nodes = 0;
   std::array<en::StepTimes, 2> decoder_job_times{};
@@ -134,15 +140,24 @@ struct Lifetime {
     if (!spec) return Error(spec.error().ToString());
     auto tokenizer = llmp::tokenizer::Tokenizer::Create(std::move(*spec));
     if (!tokenizer) return Error(tokenizer.error().ToString());
-    auto prompt = llmp::chat::RenderQwenImagePrompt(kPrompt, *tokenizer);
+    auto prompt = llmp::chat::RenderQwenImagePrompt(
+        rectangular_request ? kRectangularPrompt : kPrompt, *tokenizer);
     if (!prompt) return Error(prompt.error().ToString());
     if (auto encoded = tokenizer->EncodeMarked(prompt->rendered.text, prompt->rendered.specials, {},
                                                source->prompt);
         !encoded)
       return Error(encoded.error().ToString());
-    if (source->prompt.size() != 39 || prompt->drop_tokens != 14)
+    if (!rectangular_request && (source->prompt.size() != 39 || prompt->drop_tokens != 14))
       return Error("native source prompt geometry differs");
     source->drop = static_cast<std::uint32_t>(prompt->drop_tokens);
+    prompt_rows = static_cast<std::uint32_t>(source->prompt.size());
+    dropped_rows = source->drop;
+    if (rectangular_request) {
+      if (prompt_rows == 39 || prompt_rows <= dropped_rows)
+        return Error("rectangular request must exercise a different native prompt length");
+      source->width = 2048;
+      source->height = 512;
+    }
     auto initial = ReadExact(noise, 524288);
     if (!initial) return Error(initial.error());
     source->noise.resize(initial->size() / sizeof(std::uint16_t));
@@ -286,6 +301,8 @@ struct Lifetime {
       entry.name = "shared-image-generation";
       entry.artifact = std::string(kComposition);
       rt::ModelSettings settings;
+      settings.image_size.value = 1024;
+      settings.image_steps.value = rectangular_request ? 1 : 2;
       settings.name = entry.name;
       settings.architecture = "qwen_image_pipeline";
       if (tiled || masked_attention) {
@@ -376,6 +393,26 @@ struct Lifetime {
             if (attention_source_nodes != 32)
               return std::unexpected(std::string("actual flow attention source count differs"));
           }
+          return parts;
+        };
+      }
+      if (rectangular_request) {
+        build = [this, original = std::move(build)](const rt::ModelSettings& current)
+            -> std::expected<rt::EngineImageParts, std::string> {
+          auto parts = original(current);
+          if (!parts) return std::unexpected(parts.error());
+          if (parts->sequence.size() != 3 || parts->stages.size() != 3 ||
+              parts->first_output != 1 || parts->sequence[0].stage != 0 ||
+              parts->sequence[1].stage != 1 || parts->sequence[1].iteration != 0 ||
+              parts->sequence[2].stage != 2 ||
+              parts->stages[0].graph->outputs()[0].shape !=
+                  llmp::components::SpatialShape{1, prompt_rows - dropped_rows, 4096, 1} ||
+              parts->stages[2].graph->outputs()[0].shape !=
+                  llmp::components::SpatialShape{2048, 512, 4, 1})
+            return std::unexpected(std::string("actual rectangular request composition differs"));
+          request_sequence = parts->sequence.size();
+          request_pixel_values = 2048ULL * 512 * 4;
+          request_identity = llmp::base::ToHex(parts->identity);
           return parts;
         };
       }
@@ -545,6 +582,50 @@ TEST(ImageGenerationGpu, CompleteTextFlowAndDecoderRetainAcrossTwoGenerations) {
   RecordProperty("pool_bytes", std::to_string(life->pool));
   RecordProperty("staging_bytes", std::to_string(life->staging));
   RecordProperty("retained_plan_floor_bytes", std::to_string(life->plans));
+  RecordProperty("tokenizer_parser_bound_bytes", std::to_string(life->startup_parser));
+  RecordProperty("first_flow_sha256", life->first[0]);
+  RecordProperty("pixels_sha256", life->final[0]);
+}
+// One differently sized request; repeated execution reuses that same request,
+// not request replacement. Source noise has the same area as the square screen.
+TEST(ImageGenerationGpu, RectangularRequestUsesPromptAndOneStep) {
+  if (std::getenv("LLMP_RUN_SHARED_IMAGE_REQUEST") == nullptr)
+    GTEST_SKIP() << "explicit bounded rectangular request diagnostic required";
+  const char* store = std::getenv("LLMP_IMAGE_GENERATION_STORE");
+  const char* noise = std::getenv("LLMP_IMAGE_GENERATION_NOISE");
+  ASSERT_NE(store, nullptr);
+  ASSERT_NE(noise, nullptr);
+  auto life = std::make_unique<Lifetime>();
+  life->rectangular_request = true;
+  const auto result = life->Run(store, noise);
+  const auto retired = life->Retire();
+  if (!retired) {
+    std::ignore = life.release();
+    FAIL() << Failed(retired).value_or("");
+  }
+  ASSERT_TRUE(result) << Failed(result).value_or("");
+  EXPECT_NE(life->prompt_rows, 39U);
+  ASSERT_GT(life->prompt_rows, life->dropped_rows);
+  EXPECT_EQ(life->request_sequence, 3U);
+  EXPECT_EQ(life->request_pixel_values, 4194304U);
+  EXPECT_EQ(life->request_identity.size(), 64U);
+  RecordProperty("request_width", 2048);
+  RecordProperty("request_height", 512);
+  RecordProperty("request_steps", 1);
+  RecordProperty("prompt_rows", std::to_string(life->prompt_rows));
+  RecordProperty("dropped_rows", std::to_string(life->dropped_rows));
+  RecordProperty("request_identity", life->request_identity);
+  RecordProperty("completed_generations", 2);
+  RecordProperty("completed_stages", 6);
+  RecordProperty("complete_pixel_values_per_generation", 4194304);
+  RecordProperty("source_selected_weight_bytes", std::to_string(kSelectedWeights));
+  RecordProperty("setup_paid_footprint_bytes", std::to_string(life->footprint));
+  RecordProperty("fixed_bytes", std::to_string(life->fixed));
+  RecordProperty("activation_bytes", std::to_string(life->activation));
+  RecordProperty("pool_bytes", std::to_string(life->pool));
+  RecordProperty("staging_bytes", std::to_string(life->staging));
+  RecordProperty("retained_plan_floor_bytes", std::to_string(life->plans));
+  RecordProperty("construction_used_bytes", std::to_string(life->allowance->used()));
   RecordProperty("tokenizer_parser_bound_bytes", std::to_string(life->startup_parser));
   RecordProperty("first_flow_sha256", life->first[0]);
   RecordProperty("pixels_sha256", life->final[0]);

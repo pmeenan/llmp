@@ -33,11 +33,16 @@ struct SpatialComposition {
 std::expected<SpatialComposition, std::string> VaeDecoderSpec(
     std::span<const model::VaeStep> steps, std::span<const model::QwenImageTensor> tensors);
 // Decoder including typed latent reshape and source per-channel affine input.
-// Primary [1,grid*grid,z_dim,1], extra [1,2,z_dim,1] carries F32 std/mean.
+// Primary [1,width*height,z_dim,1], extra [1,2,z_dim,1] carries F32 std/mean.
 // Caller pays the same bounded VAE mapping inventory before construction.
 std::expected<SpatialComposition, std::string> ImageDecodeSpec(
-    const model::QwenImageVaeProfile& profile, std::uint32_t grid,
+    const model::QwenImageVaeProfile& profile, std::uint32_t height, std::uint32_t width,
     std::span<const model::QwenImageTensor> tensors);
+inline std::expected<SpatialComposition, std::string> ImageDecodeSpec(
+    const model::QwenImageVaeProfile& profile, std::uint32_t grid,
+    std::span<const model::QwenImageTensor> tensors) {
+  return ImageDecodeSpec(profile, grid, grid, tensors);
+}
 // Four BF16 source projections; exports modulation and final normalization scale.
 // Caller prepays the existing 1MiB source-mapping allowance before this call.
 // This maps only source roles and branches; input sinusoid policy belongs to the caller.

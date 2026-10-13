@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Build shared image requests from paired output dimensions, the actual prompt
+  and configured Euler step count, with checked source geometry and paid
+  admission instead of fixed diagnostic dimensions or schedules.
+
 - Preserve unknown completion when a lane join fails after an earlier clean
   kernel refusal, so the enclosing owner cannot mistake unfinished work for a
   safely rejected step.

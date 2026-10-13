@@ -237,7 +237,9 @@ std::vector<VaeStep> VaeDecoderPlan(const QwenImageVaeProfile& p, std::uint32_t 
 // timesteps (steps), as QwenImage21Pipeline sets them for `image_tokens`
 // latent tokens: sigmas = linspace(1, 1/steps, steps) as NumPy computes it,
 // mu = calculate_shift(image_tokens, ...), the exponential time shift and
-// the stretch to shift_terminal in F32, timesteps = sigmas * 1000.
+// the stretch to shift_terminal in F32, timesteps = sigmas * train_timesteps.
+// One step is the explicit Euler interval1 ->0; the terminal stretch requires
+// multiple samples. The caller prepays vector storage for its requested count.
 struct QwenImageSchedule {
   double mu = 0;
   std::vector<float> sigmas;
@@ -260,6 +262,12 @@ struct RotaryTables {
   std::vector<std::uint16_t> sin;
 };
 RotaryTables QwenImageTextRotary(const QwenImageTextProfile& p, std::uint32_t rows);
+
+// Source coordinates for a previously checked joint row. Callers validate
+// nonzero width/height, row < text_rows + width*height, and signed32 coordinates.
+// Odd axes use -ceil(extent/2), independently for height and width.
+std::array<std::int32_t, 3> QwenImageDenoiserPosition(std::uint32_t text_rows, std::uint32_t height,
+                                                      std::uint32_t width, std::uint32_t row);
 
 // The denoiser's complex rotary frequencies for a joint sequence of
 // `text_rows` text tokens then a grid x grid target image, as

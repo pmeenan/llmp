@@ -115,8 +115,8 @@ std::expected<SpatialComposition, std::string> VaeDecoderSpec(
   for (const auto& step : steps) {
     if (step.in >= current.size() || step.out >= current.size() || step.aux >= current.size() ||
         !step.width || !step.height || !step.in_channels || !step.out_channels ||
-        step.width > 4096 || step.height > 4096 || step.in_channels > 65536 ||
-        step.out_channels > 65536 || (step.kind != Kind::kAddDupUp && step.factor_t != 1))
+        step.in_channels > 65536 || step.out_channels > 65536 ||
+        (step.kind != Kind::kAddDupUp && step.factor_t != 1))
       return std::unexpected("decoder source step dimensions or buffers differ");
     const auto input = current[step.in];
     Value output{0, step.width, step.height, step.out_channels, true};
@@ -224,10 +224,11 @@ std::expected<SpatialComposition, std::string> VaeDecoderSpec(
 }
 
 std::expected<SpatialComposition, std::string> ImageDecodeSpec(
-    const model::QwenImageVaeProfile& profile, std::uint32_t grid,
+    const model::QwenImageVaeProfile& profile, std::uint32_t height, std::uint32_t width,
     std::span<const model::QwenImageTensor> tensors) {
-  if (!grid || grid > UINT32_MAX / grid || !profile.z_dim || profile.z_dim > 65536 ||
-      !profile.spatial_factor || grid > UINT32_MAX / profile.spatial_factor)
+  if (!width || !height || width > UINT32_MAX / height || !profile.z_dim || profile.z_dim > 65536 ||
+      !profile.spatial_factor || width > UINT32_MAX / profile.spatial_factor ||
+      height > UINT32_MAX / profile.spatial_factor)
     return std::unexpected("latent decode geometry exceeds source representation");
   // Bound the existing source emitter before it creates its vectors. Five
   // residual groups contribute five steps/six source roles per residual;
@@ -247,7 +248,7 @@ std::expected<SpatialComposition, std::string> ImageDecodeSpec(
   if (step_count > 256 || role_count > tensors.size() || tensors.size() > 4096 ||
       profile.spatial_factor != (1U << (profile.dim_mult.size() - 1)) || !profile.out_channels)
     return std::unexpected("latent decode emitter exceeds its source trajectory allowance");
-  const auto steps = model::VaeDecoderPlan(profile, grid, grid);
+  const auto steps = model::VaeDecoderPlan(profile, height, width);
   auto out = VaeDecoderSpec(steps, tensors);
   if (!out) return std::unexpected(out.error());
   auto& components = out->spec.stages[0].layers[0].components;
@@ -261,8 +262,8 @@ std::expected<SpatialComposition, std::string> ImageDecodeSpec(
   for (auto& value : out->exports) value = static_cast<std::uint16_t>(value + 2);
   components.insert(components.begin(), ComponentRef{.kind = "reshape.spatial",
                                                      .version = 1,
-                                                     .params = {{"width", std::int64_t{grid}},
-                                                                {"height", std::int64_t{grid}}}});
+                                                     .params = {{"width", std::int64_t{width}},
+                                                                {"height", std::int64_t{height}}}});
   components.insert(components.begin() + 1, ComponentRef{.kind = "affine.channel", .version = 1});
   out->links.insert(out->links.begin(), GraphLink{0, {}});
   out->links.insert(out->links.begin() + 1, GraphLink{.input = 1, .auxiliary_port = 0});

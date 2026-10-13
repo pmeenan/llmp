@@ -2712,13 +2712,24 @@ each is checked against the design as M3.6 proceeds.
             with unrestricted dense default. Independent upstream quality and
             family gates stay open
             ([report](experiments/m36-shared-spatial-execution/README.md#opt-in-packed-masked-attention)).
-      - [ ] **Q3j — hardware-bounded shared image serving:** derive dimensions
-            and generation counts from the request, respecting model geometry,
-            checked arithmetic and measured full-workload admission. Fixed
-            two-generation/1024² diagnostics and reference implementations
-            impose no product ceilings. Continue request-driven composition and reuse of optimized attention/
-            products; no further workspace tuning or40-step ladder is a
-            prerequisite to removing diagnostic request restrictions.
+      - [x] **Q3j1 — request image geometry and schedules:** shared composition
+            accepts paired source width/height or the existing square setting,
+            actual prompt/drop/noise and configured steps. Rectangular VAE
+            mappings, independent odd-axis positions and checked payment replace
+            incidental diagnostic ceilings. One Euler step explicitly goes from
+            source sigma 1 to 0; the existing multi-step scalar contract remains.
+            Native 32 controls pass. A 2048×512 request with 35 native prompt
+            tokens, actual drop 14 and one Euler step completes twice through
+            six stages with all 4,194,304 pixel values finite each time and own
+            repeat digests ([report](experiments/m36-shared-spatial-execution/README.md#request-driven-image-composition)).
+      - [ ] **Q3j2 — completed-boundary requests and counts:** replace content
+            and schedules only after successful completion, retaining model
+            ownership, stable ports and captures where compatible. Serialize
+            requested generations without accumulating outputs. Resource growth
+            and different-geometry retirement must preserve catalog/payment and
+            every shared-workspace borrower; no fixed reference dimensions or
+            generation count become product limits. Independent upstream quality,
+            serving/swap and matched 1% family gates remain separate and open.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

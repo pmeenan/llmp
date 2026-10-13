@@ -1523,5 +1523,40 @@ TEST(SpatialComponentsTest, Actual1024DecoderHandoffIsPaidBeforeReferenceAllocat
   EXPECT_FALSE(spec::ImageDecodeSpec(profile, 64, std::span(source).first(127)));
 }
 
+TEST(ComponentsSpatial, RectangularDecoderCarriesGeometryInItsGraphIdentity) {
+  const auto profile = model::QwenImage21().vae;
+  const auto source = model::VaeDecoderTensors(profile);
+  auto tensors = FlowTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array ports{SpatialInput{0, 0, {1, 2, 64, 1}}};
+  std::vector<base::Sha256Digest> identities;
+  for (const auto dimensions : {std::array<std::uint32_t, 2>{32, 64}, {64, 32}, {31, 33}}) {
+    const auto height = dimensions[0], width = dimensions[1];
+    auto mapping = spec::ImageDecodeSpec(profile, height, width, source);
+    ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+    const std::array owners{SpatialOwner{0, {1, std::uint64_t{height} * width, 64, 1}}};
+    Budget budget;
+    auto graph = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                  {.links = mapping->links,
+                                   .reference_buffers = false,
+                                   .exports = mapping->exports,
+                                   .inputs = ports});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    EXPECT_EQ(graph->outputs()[0].shape, (SpatialShape{16ULL * width, 16ULL * height, 4, 1}));
+    EXPECT_EQ(graph->weights().size(), 128U);
+    EXPECT_EQ(graph->reference_bytes(), 0U);
+    identities.push_back(graph->graph().Digest());
+  }
+  ASSERT_EQ(identities.size(), 3U);
+  EXPECT_NE(identities[0], identities[1]);  // same area, different row/column layout
+  EXPECT_NE(identities[1], identities[2]);
+  // The source plan accepts a width beyond the old incidental4096 cap. Actual
+  // activation/workspace admission and selected kernel contracts remain later checks.
+  EXPECT_TRUE(spec::ImageDecodeSpec(profile, 1, 272, source));
+  EXPECT_FALSE(spec::ImageDecodeSpec(profile, 0, 32, source));
+  EXPECT_FALSE(spec::ImageDecodeSpec(profile, 32, 0, source));
+  EXPECT_FALSE(spec::ImageDecodeSpec(profile, UINT32_MAX, 2, source));
+}
+
 }  // namespace
 }  // namespace llmp::components

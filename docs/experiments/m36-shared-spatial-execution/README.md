@@ -834,5 +834,57 @@ source checks pass on Spark B:17 formatted C++ paths,13 portability boundary
 checks,2,269 SPDX headers and REUSE6.2.0, over the2,549-file landing export.
 
 [masked-attention.json](masked-attention.json) binds compact observations and
-literal receipt/model identities. Request geometry/prompt/schedule flexibility,
-independent upstream quality and the family serving/swap/speed gates remain open.
+literal receipt/model identities. Independent upstream quality and the family
+serving/swap/speed gates remain open. Request composition is evaluated below.
+
+## Request-driven image composition
+
+Shared composition takes paired source width/height, falling back to the existing
+square setting only when both are absent. Prompt IDs, actual prefix drop, noise
+extent and configured Euler steps determine the typed graphs and inputs. The
+existing source factor 16 divisibility, checked lengths and measured whole-workload
+admission remain mandatory. Fixed 1024/39-token/two-step assumptions and incidental
+4096-decoder-dimension/1000-step limits are removed. One Euler step explicitly
+uses source sigma 1 to terminal 0 because the multi-step terminal stretch is
+undefined for one sample; existing 40-step scalar results are preserved.
+
+Model and spatial controls cover 1/1,001 steps, independent odd-axis positions,
+equal-area rectangle identities, zero/overflow refusal and a 4,352-pixel decoder
+axis. Plan identity includes actual geometry, schedule and drop alongside source
+and content. Caller-paid prompt/noise ownership stays held; generated request
+vectors are prepaid by 8L + 8P + 32S + 40 bytes for latent elements L, output pixels P and
+steps S. Fixed source/compiler metadata and actual runtime placement, staging,
+pool and captures are charged separately.
+
+The integrated native build and 32 host controls pass across three affected
+targets. A separately guarded **2048×512** request renders 35 native prompt tokens,
+keeps the actual 14-token prefix drop and executes **one Euler step**. Two
+generations complete through six stages, with all 4,194,304 decoded pixel values
+finite per generation and matching own repeat digests. The native fixture takes
+109.84s; this is completion evidence, not a speed comparison. No approximation
+tuning or serving-default selection changes are involved.
+
+Actual admission is **41,384,820,912 bytes**, including the unchanged
+30,530,338,816-byte source closure; construction uses 2,708,037,799 bytes inside
+its 4 GiB allowance. Measured activation reservation is 6,186,598,400 bytes, pool
+127,926,272 bytes and retained plans 91,327,152 bytes. Fixed occupancy is
+4,444,435,968 bytes, including 107,525,632 bytes of staging; two 2 MiB extents complete
+the admission sum. The existing 48 GiB node envelope and 6 GiB physical margin hold.
+The 894,730,240-byte process/cache peak is not device occupancy. All pre/post
+source, recipe, artifact and binary guards pass, memory limit/OOM events remain
+zero, the child group retires and no GPU processes remain.
+
+The executed integrated generation binary is
+`f22dae3607d1bd3a3c90752696eb3c82ac1938be47151176714a43b65258dcac`
+(199,516,696 bytes); actual receipt
+`017b1eeeea46a2943ab2426adc392288177f6c4d2f6b97ceb5e396b8b917a0dd`
+is retained externally with raw logs/XML under
+`image-request-geometry-models01`. The final integration, after removing an
+unadopted Qwen experiment, passes full native compilation and 235 host controls
+across ten targets. Its image source is unchanged; final generation binary
+`a12045961714c1e90af80db14274d3ba900ec33b188790cef13a177c85aa7aa6`
+(199,316,304 bytes) is kept distinct from the executed tuple above. Final combined source QA passes formatting on 10 files, boundaries on seven,
+headers on 2,269 and REUSE 6.2.0; all checks retire successfully. This is a geometry/lifecycle screen, not upstream image quality,
+performance or a public serving switch. Completed-boundary replacement,
+serial requested counts and resource growth remain Q3j2; repeated execution of
+one retained request does not prove replacement.

@@ -356,15 +356,28 @@ float FromBf16(std::uint16_t bits) {
 
 std::expected<QwenImageSchedule, std::string> QwenImageSchedulerSigmas(
     const QwenImageSchedulerProfile& p, std::uint32_t steps, std::uint32_t image_tokens) {
-  if (steps < 2 || steps > 1000 || image_tokens == 0) {
-    return Refused("2 to 1,000 steps over at least one token");
-  }
+  if (!steps || !image_tokens || !std::isfinite(p.base_shift) || !std::isfinite(p.max_shift) ||
+      p.max_image_seq_len <= p.base_image_seq_len || !std::isfinite(p.shift_terminal) ||
+      p.shift_terminal <= 0 || p.shift_terminal >= 1 || !p.train_timesteps ||
+      std::uint64_t{steps} + 1 > std::vector<float>().max_size())
+    return Refused("scheduler geometry or source parameters are not representable");
   QwenImageSchedule s;
   // calculate_shift, in Python floats.
   const double m = (p.max_shift - p.base_shift) /
                    (static_cast<double>(p.max_image_seq_len) - p.base_image_seq_len);
   const double b = p.base_shift - (m * p.base_image_seq_len);
   s.mu = (image_tokens * m) + b;
+  const float e = Round32(std::exp(s.mu));
+  if (!std::isfinite(e) || e <= 0)
+    return Refused("scheduler source time shift is not finite at this geometry");
+  // A single Euler step uses the source start sigma and terminal zero. The
+  // multi-step terminal stretch below has zero denominator for one sample;
+  // it does not define a different one-step starting noise level.
+  if (steps == 1) {
+    s.sigmas = {1.F, 0.F};
+    s.timesteps = {static_cast<float>(p.train_timesteps)};
+    return s;
+  }
   // np.linspace(1.0, 1 / steps, steps) in F64, then .astype(float32).
   const double start = 1.0;
   const double stop = 1.0 / steps;
@@ -375,7 +388,6 @@ std::expected<QwenImageSchedule, std::string> QwenImageSchedulerSigmas(
   }
   // _time_shift_exponential with NumPy's weak Python scalars: every
   // operation in F32, exp(mu) rounded to F32 first.
-  const float e = Round32(std::exp(s.mu));
   for (float& v : t) {
     const float inv = 1.0f / v;
     const float x = inv - 1.0f;
@@ -383,6 +395,8 @@ std::expected<QwenImageSchedule, std::string> QwenImageSchedulerSigmas(
   }
   // stretch_shift_to_terminal, in F32.
   const float scale = (1.0f - t.back()) / Round32(1.0 - p.shift_terminal);
+  if (!std::isfinite(scale) || scale <= 0)
+    return Refused("scheduler source terminal stretch is not finite");
   for (float& v : t) {
     v = 1.0f - ((1.0f - v) / scale);
   }
@@ -437,6 +451,18 @@ RotaryTables QwenImageTextRotary(const QwenImageTextProfile& p, std::uint32_t ro
     }
   }
   return t;
+}
+
+std::array<std::int32_t, 3> QwenImageDenoiserPosition(std::uint32_t text_rows, std::uint32_t height,
+                                                      std::uint32_t width, std::uint32_t row) {
+  if (row < text_rows) {
+    const auto position = static_cast<std::int32_t>(row);
+    return {position, position, position};
+  }
+  const auto image = row - text_rows;
+  return {static_cast<std::int32_t>(text_rows),
+          static_cast<std::int32_t>(image / width) - static_cast<std::int32_t>(height - height / 2),
+          static_cast<std::int32_t>(image % width) - static_cast<std::int32_t>(width - width / 2)};
 }
 
 std::vector<float> QwenImageDenoiserRotary(const QwenImageDenoiserProfile& p,

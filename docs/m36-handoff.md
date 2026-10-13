@@ -47,8 +47,10 @@ Image dimensions and generation counts must follow request/hardware capacity
 with checked model geometry; two-generation/1024² samples are coverage only.
 Prospective memory comparisons are informational; admission, ownership and
 accounting stay mandatory. The1GiB workspace experiment passes quality but does not
-justify adoption;64MiB remains default. Text/flow reuse and request-driven
-geometry/schedules are next.
+justify adoption;64MiB remains default. Request-driven composition now passes
+a 2048×512 actual request with 35 native prompt tokens and one Euler step, twice
+through the retained shared pipeline. Completed-boundary content/count reuse
+and safe resource growth are the next separate image steps.
 
 The shared image generation core now completes two 1024×1024 generations:
 native 36-layer text encoding, two complete 32-block Euler steps and the full

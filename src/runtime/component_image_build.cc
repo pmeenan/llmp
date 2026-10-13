@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <map>
 #include <utility>
 
@@ -24,13 +25,12 @@ namespace co = components;
 namespace md = model;
 namespace kg = kernels::ggml;
 using en::support::Error;
-constexpr std::uint32_t kSize = 1024, kGrid = 64, kRows = kGrid * kGrid, kSteps = 2;
 // Source descriptor/spec/input owner inventory, before any source-profile
 // vectors or copied names exist: <=822 roles at4KiB, <=1435 components at8KiB,
-// source BF16 noise, stable F32 copy, complete RGBA8 output and fixed
-// schedule/control/registry objects (8MiB, separate from compiler inventory).
-constexpr std::uint64_t kSourceOwnerBytes =
-    822ULL * 4096 + (36ULL * 17 + 2 + 32ULL * 17 + 19 + 258) * 8192 + 8ULL * 1024 * 1024;
+// Request-sized port, pixel and schedule vectors are separately paid below;
+// incoming prompt/noise allocations retain their caller-owned payment.
+constexpr std::uint64_t kSourceMappingBytes =
+    822ULL * 4096 + (36ULL * 17 + 2 + 32ULL * 17 + 19 + 258) * 8192;
 struct Paid {
   std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
   std::uint64_t bytes = 0;
@@ -43,12 +43,57 @@ struct Paid {
     return true;
   }
 };
+struct RequestGeometry {
+  std::uint32_t width = 0, height = 0, grid_width = 0, grid_height = 0;
+  std::uint32_t rows = 0, prompt_rows = 0, text_rows = 0, steps = 0;
+  std::uint64_t latent_elements = 0, pixels = 0, variable_bytes = 0;
+};
+std::expected<RequestGeometry, std::string> RequestOf(const ImageGenerationSource& source,
+                                                      const ModelSettings& settings,
+                                                      const md::QwenImageProfile& profile) {
+  RequestGeometry r;
+  if ((source.width == 0) != (source.height == 0))
+    return Error("image request requires both output dimensions or neither");
+  r.width = source.width ? source.width : settings.image_size.value;
+  r.height = source.height ? source.height : settings.image_size.value;
+  r.steps = settings.image_steps.value;
+  const auto factor = profile.vae.spatial_factor;
+  if (!r.width || !r.height || !r.steps || !factor || r.width % factor || r.height % factor ||
+      source.prompt.empty() || source.prompt.size() > INT32_MAX ||
+      source.drop >= source.prompt.size())
+    return Error("image request dimensions, scheduler count or prompt/drop are invalid");
+  r.grid_width = r.width / factor;
+  r.grid_height = r.height / factor;
+  const auto rows = std::uint64_t{r.grid_width} * r.grid_height;
+  r.prompt_rows = static_cast<std::uint32_t>(source.prompt.size());
+  r.text_rows = r.prompt_rows - source.drop;
+  if (rows > UINT32_MAX - r.text_rows || r.grid_width > INT32_MAX || r.grid_height > INT32_MAX)
+    return Error("image request exceeds row/position representation");
+  r.rows = static_cast<std::uint32_t>(rows);
+  r.latent_elements = rows * profile.vae.z_dim;
+  r.pixels = std::uint64_t{r.width} * r.height;
+  if (profile.denoiser.in_channels != profile.vae.z_dim ||
+      source.noise.size() != r.latent_elements ||
+      r.pixels > std::uint64_t{PTRDIFF_MAX} / (4 * sizeof(float)))
+    return Error("image noise or output extent differs from request geometry");
+  // Initial F32 port, output RGBA8, sequence (text + steps*flow + decoder),
+  // and scheduler's t/sigmas/timesteps. Double capacities cover each vector;
+  // scheduler's push_back can retain twice its step count while t is live.
+  const std::uint64_t schedule = (4 * std::uint64_t{r.steps} + 2) * sizeof(float);
+  r.variable_bytes = 2 * r.latent_elements * sizeof(float);
+  for (const auto term :
+       {2 * r.pixels * 4, schedule, 2 * (std::uint64_t{r.steps} + 2) * sizeof(ImageInvocation)})
+    if (__builtin_add_overflow(r.variable_bytes, term, &r.variable_bytes))
+      return Error("image request construction bound overflows");
+  return r;
+}
 struct ImageGenerationOwner {
   Paid paid;
   std::shared_ptr<ImageGenerationSource> source;
   std::vector<std::int32_t> prompt;
   std::vector<std::uint16_t> noise;
   std::uint32_t drop = 0;
+  RequestGeometry request;
   std::array<std::vector<co::BoundTensor>, 3> tables;
   std::array<std::map<ir::WeightRef, std::uint32_t>, 3> resources;
   std::array<en::PagedWeights*, 3> weights{};
@@ -58,6 +103,14 @@ struct ImageGenerationOwner {
   std::unique_ptr<kg::CublasHandle> cublas;
   std::unique_ptr<kg::GgmlBackend> backend;
 };
+
+// Two complete owner/return representations, doubled vector capacities for
+// three stages/two ports/eleven input ports, and fixed shared/control blocks.
+// Kernel declaration storage is independently charged by Declare below.
+constexpr std::uint64_t kSourceOwnerBytes = kSourceMappingBytes + 2 * sizeof(ImageGenerationOwner) +
+                                            2 * sizeof(EngineImageParts) + 6 * sizeof(ImageStage) +
+                                            4 * sizeof(ImagePort) +
+                                            22 * sizeof(std::optional<std::uint32_t>) + 4096;
 
 // Same lower construction categories as the complete-flow proof, derived from
 // this mapped stage's declared primitive/role/port inventory before graph emit.
@@ -110,7 +163,9 @@ Status Fill(const ImageGenerationOwner& held, const ImageInvocation& invocation,
   const auto put = [&]<typename T>(std::size_t at, T value) {
     std::memcpy(bytes.data() + at * sizeof(T), &value, sizeof(T));
   };
-  const auto exact = [&](std::uint64_t count) { return bytes.size() == count * 4; };
+  const auto exact = [&](std::uint64_t count) {
+    return count <= SIZE_MAX / 4 && bytes.size() == count * 4;
+  };
   if (invocation.stage == 0) {
     if (slot < 2 && exact(rows)) {
       for (std::uint32_t row = 0; row < rows; ++row)
@@ -123,8 +178,8 @@ Status Fill(const ImageGenerationOwner& held, const ImageInvocation& invocation,
           put(k + std::size_t{rows} * q, k <= q ? 0.F : -INFINITY);
       return {};
     }
-  } else if (invocation.stage == 1 && invocation.iteration < kSteps) {
-    const std::uint32_t joint = text + kRows;
+  } else if (invocation.stage == 1 && invocation.iteration < held.request.steps) {
+    const std::uint32_t joint = text + held.request.rows;
     if (slot == 2 && exact(2 * profile.denoiser.timestep_dim)) {
       const auto sinusoid =
           md::QwenImageTimestepSinusoid(profile.denoiser, held.timesteps[invocation.iteration]);
@@ -136,11 +191,9 @@ Status Fill(const ImageGenerationOwner& held, const ImageInvocation& invocation,
     if (slot == 3 && exact(3ULL * joint)) {
       for (std::uint32_t row = 0; row < joint; ++row)
         for (std::uint32_t axis = 0; axis < 3; ++axis) {
-          const auto image = row - std::min(row, text);
-          const auto pos = row < text  ? static_cast<std::int32_t>(row)
-                           : axis == 0 ? static_cast<std::int32_t>(text)
-                           : axis == 1 ? static_cast<std::int32_t>(image / kGrid) - 32
-                                       : static_cast<std::int32_t>(image % kGrid) - 32;
+          const auto positions = md::QwenImageDenoiserPosition(text, held.request.grid_height,
+                                                               held.request.grid_width, row);
+          const auto pos = positions[axis];
           put(row + std::size_t{joint} * axis, pos);
         }
       return {};
@@ -172,12 +225,17 @@ EngineImageBuild ComponentImageGenerationBuild(
     std::shared_ptr<const planner::OwnedDeviceFacts> tuning) {
   return [&node, owner, source = std::move(source), construction = std::move(construction),
           tuning = std::move(tuning)](
-             const ModelSettings&) -> std::expected<EngineImageParts, std::string> {
+             const ModelSettings& settings) -> std::expected<EngineImageParts, std::string> {
     const auto& p = md::QwenImage21();
     if (!source || !source->composition || !source->keep || !construction || owner < 0 ||
-        source->composition->architecture() != p.pipeline_architecture ||
-        source->prompt.size() != 39 || source->drop != 14 || source->noise.size() != kRows * 64ULL)
-      return Error("image diagnostic requires the complete paid source/prompt/noise envelope");
+        source->composition->architecture() != p.pipeline_architecture)
+      return Error("image generation requires the complete paid source envelope");
+    auto request = RequestOf(*source, settings, p);
+    if (!request) return Error(request.error());
+    const auto& geometry = *request;
+    const auto image_rows = geometry.rows;
+    const auto prompt_rows = geometry.prompt_rows;
+    const auto channels = p.vae.z_dim;
     for (auto id : source->prompt)
       if (id < 0 || static_cast<std::uint32_t>(id) >= p.text.vocab)
         return Error("image text input ID lies outside the actual source vocabulary");
@@ -188,6 +246,9 @@ EngineImageBuild ComponentImageGenerationBuild(
     auto held = std::make_shared<ImageGenerationOwner>();
     held->paid.allowance = construction;
     held->paid.bytes = kSourceOwnerBytes;
+    if (!held->paid.Add(geometry.variable_bytes))
+      return Error("image request construction is not prepaid");
+    held->request = geometry;
     held->source = source;
     held->prompt = std::move(source->prompt);
     held->noise = std::move(source->noise);
@@ -213,20 +274,23 @@ EngineImageBuild ComponentImageGenerationBuild(
       held->weights[i] = source->weights[i].get();
     }
     const std::uint32_t text_rows = static_cast<std::uint32_t>(held->prompt.size()) - held->drop;
-    std::array mappings{spec::ImageTextSpec(p.text, 39, held->drop, source_tensors[0]),
-                        spec::ImageFlowSpec(p.denoiser, text_rows, kRows, source_tensors[1]),
-                        spec::ImageDecodeSpec(p.vae, kGrid, source_tensors[2])};
-    const std::array<co::SpatialShape, 3> primary{
-        co::SpatialShape{1, 39, 1, 1}, {1, text_rows, 4096, 1}, {1, kRows, 64, 1}};
-    const auto joint = text_rows + kRows;
+    std::array mappings{
+        spec::ImageTextSpec(p.text, prompt_rows, held->drop, source_tensors[0]),
+        spec::ImageFlowSpec(p.denoiser, text_rows, image_rows, source_tensors[1]),
+        spec::ImageDecodeSpec(p.vae, geometry.grid_height, geometry.grid_width, source_tensors[2])};
+    const std::array<co::SpatialShape, 3> primary{co::SpatialShape{1, prompt_rows, 1, 1},
+                                                  {1, text_rows, p.text.width, 1},
+                                                  {1, image_rows, channels, 1}};
+    const auto joint = text_rows + image_rows;
     const std::array<std::vector<co::SpatialInput>, 3> inputs{
-        std::vector{co::SpatialInput{0, 0, {39, 1, 1, 1}, format::Encoding::kI32},
-                    co::SpatialInput{0, 1, {39, 39, 1, 1}}},
-        std::vector{
-            co::SpatialInput{0, 0, {1, kRows, 64, 1}}, co::SpatialInput{0, 1, {1, 2, 256, 1}},
-            co::SpatialInput{0, 2, {joint, 3, 1, 1}, format::Encoding::kI32},
-            co::SpatialInput{0, 3, {joint, joint, 1, 1}}, co::SpatialInput{0, 4, {1, 1, 1, 1}}},
-        std::vector{co::SpatialInput{0, 0, {1, 2, 64, 1}}}};
+        std::vector{co::SpatialInput{0, 0, {prompt_rows, 1, 1, 1}, format::Encoding::kI32},
+                    co::SpatialInput{0, 1, {prompt_rows, prompt_rows, 1, 1}}},
+        std::vector{co::SpatialInput{0, 0, {1, image_rows, channels, 1}},
+                    co::SpatialInput{0, 1, {1, 2, p.denoiser.timestep_dim, 1}},
+                    co::SpatialInput{0, 2, {joint, 3, 1, 1}, format::Encoding::kI32},
+                    co::SpatialInput{0, 3, {joint, joint, 1, 1}},
+                    co::SpatialInput{0, 4, {1, 1, 1, 1}}},
+        std::vector{co::SpatialInput{0, 0, {1, 2, channels, 1}}}};
     for (std::size_t i = 0; i < 3; ++i) {
       if (!mappings[i]) return Error(mappings[i].error());
       auto compiler = CompilerBound(*mappings[i], source_tensors[i].size(), inputs[i].size() + 1);
@@ -256,7 +320,7 @@ EngineImageBuild ComponentImageGenerationBuild(
       }
       held->graphs[i] = std::make_shared<co::SpatialGraph>(std::move(*graph));
     }
-    auto schedule = md::QwenImageSchedulerSigmas(p.scheduler, kSteps, kRows);
+    auto schedule = md::QwenImageSchedulerSigmas(p.scheduler, geometry.steps, image_rows);
     if (!schedule) return Error(schedule.error());
     held->sigmas = std::move(schedule->sigmas);
     held->timesteps = std::move(schedule->timesteps);
@@ -284,17 +348,21 @@ EngineImageBuild ComponentImageGenerationBuild(
     for (const auto& graph : held->graphs) identity.Update(base::ToHex(graph->graph().Digest()));
     identity.Update(std::as_bytes(std::span(held->prompt)));
     identity.Update(std::as_bytes(std::span(held->noise)));
+    const std::array request_identity{geometry.width, geometry.height, geometry.steps, held->drop};
+    identity.Update(std::as_bytes(std::span(request_identity)));
+    identity.Update(std::as_bytes(std::span(held->sigmas)));
+    identity.Update(std::as_bytes(std::span(held->timesteps)));
     out.identity = identity.Finish();
     out.ports.push_back(
-        {ir::Dense(format::Encoding::kF32, ir::ShapeOf({1, text_rows, 4096, 1})), 0, {}});
-    auto& latent = out.ports.emplace_back(
-        ImagePort{ir::Dense(format::Encoding::kF32, ir::ShapeOf({1, kRows, 64, 1})), 0, {}});
-    latent.initial.resize(kRows * 64ULL * sizeof(float));
-    for (std::size_t row = 0; row < kRows; ++row)
-      for (std::size_t c = 0; c < 64; ++c) {
-        const auto value = md::FromBf16(held->noise[row * 64 + c]);
+        {ir::Dense(format::Encoding::kF32, ir::ShapeOf({1, text_rows, p.text.width, 1})), 0, {}});
+    auto& latent = out.ports.emplace_back(ImagePort{
+        ir::Dense(format::Encoding::kF32, ir::ShapeOf({1, image_rows, channels, 1})), 0, {}});
+    latent.initial.resize(geometry.latent_elements * sizeof(float));
+    for (std::size_t row = 0; row < image_rows; ++row)
+      for (std::size_t c = 0; c < channels; ++c) {
+        const auto value = md::FromBf16(held->noise[row * channels + c]);
         if (!std::isfinite(value)) return Error("image source noise is not finite");
-        std::memcpy(latent.initial.data() + (row + kRows * c) * 4, &value, 4);
+        std::memcpy(latent.initial.data() + (row + std::size_t{image_rows} * c) * 4, &value, 4);
       }
     for (std::size_t i = 0; i < 3; ++i) {
       const auto count = source->weights[i]->artifact().layout().groups.size();
@@ -326,20 +394,22 @@ EngineImageBuild ComponentImageGenerationBuild(
       }
       out.stages.push_back(std::move(stage));
     }
-    out.sequence = {{0, 0}, {1, 0}, {1, 1}, {2, 0}};
+    out.sequence.reserve(std::size_t{geometry.steps} + 2);
+    out.sequence.push_back({0, 0});
+    for (std::uint32_t iteration = 0; iteration < geometry.steps; ++iteration)
+      out.sequence.push_back({1, iteration});
+    out.sequence.push_back({2, 0});
     out.first_output = 1;
     out.fill = [held](const ImageInvocation& invocation, std::size_t slot,
                       std::span<std::byte> bytes) { return Fill(*held, invocation, slot, bytes); };
-    // Output formatting owns only four channels of interleaved pixel bytes,
-    // paid in the source owner; no BF16 intermediate cast is imposed.
-    if (!held->paid.Add(kSize * std::uint64_t{kSize} * 4))
-      return Error("image pixel output is not prepaid");
-    held->pixels.resize(kSize * std::size_t{kSize} * 4);
+    // Interleaved pixel bytes are in the request-sized construction payment;
+    // no BF16 intermediate cast is imposed.
+    held->pixels.resize(geometry.pixels * 4);
     out.finish =
         [held](std::span<const std::byte> bytes) -> std::expected<std::string, std::string> {
       if (bytes.size() != held->pixels.size() * sizeof(float))
         return Error("image final output extent differs");
-      constexpr std::size_t pixels = kSize * std::size_t{kSize};
+      const auto pixels = static_cast<std::size_t>(held->request.pixels);
       for (std::size_t c = 0; c < 4; ++c)
         for (std::size_t i = 0; i < pixels; ++i) {
           float value = 0;

@@ -12,10 +12,11 @@
 #include "runtime/engine_image.h"
 
 namespace llmp::runtime {
-// Closed diagnostic input owner. Its caller pays artifact parsing, native
+// Immutable request input owner. Its caller pays artifact parsing, native
 // tokenizer/rendering and noise acquisition before constructing these values.
 // The factory checks the exact composition and role inventory again, then
 // prepays every generated mapping/graph/compiler owner through construction.
+// The build consumes this owner once; request replacement is a separate lifecycle.
 // This is not serving admission; the caller retains the entire node/provider
 // environment after any unknown completion or unsuccessful first teardown.
 struct ImageGenerationSource {
@@ -23,11 +24,14 @@ struct ImageGenerationSource {
   std::array<std::unique_ptr<engine::PagedWeights>, 3> weights;
   std::vector<std::int32_t> prompt;
   std::uint32_t drop = 0;
+  // Both zero: use settings.image_size for a square request. Otherwise both
+  // dimensions are explicit output pixels; source model divisibility applies.
+  std::uint32_t width = 0, height = 0;
   // The prepared initial noise's BF16 boundary, in source [row,channel] order.
   std::vector<std::uint16_t> noise;
   std::shared_ptr<void> keep;
 };
-// One 1024-square generation with the source scheduler's two complete steps.
+// One request-shaped generation using settings.image_steps and source geometry.
 // Takes already-open, paid artifact owners; no checkpoint payload copies or
 // residency admission happen here. EngineImage measures all stage envelopes
 // before Start and holds only each executing stage's current weight closure.

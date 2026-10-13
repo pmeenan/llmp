@@ -85,7 +85,21 @@ TEST(QwenImage, TheScheduleIsDiffusers) {
   }
   ASSERT_EQ(s->timesteps.size(), 40U);
   EXPECT_EQ(s->timesteps[1], 986.9637451171875f);
-  EXPECT_FALSE(md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 1, 4096).has_value());
+  const auto one = md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 1, 4096);
+  ASSERT_TRUE(one);
+  EXPECT_EQ(one->sigmas, (std::vector<float>{1.F, 0.F}));
+  EXPECT_EQ(one->timesteps, (std::vector<float>{1000.F}));
+  const auto many = md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 1001, 4096);
+  ASSERT_TRUE(many);
+  ASSERT_EQ(many->sigmas.size(), 1002U);
+  EXPECT_EQ(many->sigmas.front(), 1.F);
+  EXPECT_EQ(many->sigmas.back(), 0.F);
+  for (std::size_t i = 1; i < many->sigmas.size(); ++i) {
+    EXPECT_TRUE(std::isfinite(many->sigmas[i]));
+    EXPECT_LE(many->sigmas[i], many->sigmas[i - 1]);
+  }
+  EXPECT_FALSE(md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 0, 4096));
+  EXPECT_FALSE(md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 2, UINT32_MAX));
 }
 
 TEST(QwenImage, TensorListsNameTheCheckpoint) {
@@ -188,6 +202,21 @@ TEST(QwenImage, RotaryTablesFollowTheirDefinitions) {
   const auto t = md::QwenImageTextRotary(md::QwenImage21().text, 3);
   EXPECT_EQ(t.cos[std::size_t{2} * 128], md::ToBf16(std::cos(2.0f)));
   EXPECT_EQ(t.sin[(std::size_t{2} * 128) + 64], md::ToBf16(std::sin(2.0f)));
+}
+
+TEST(QwenImage, RectangularOddAxesRetainIndependentSourceCenters) {
+  // Independent explicit source coordinates, height3/width5: [-2,-1,0] and
+  // [-3,-2,-1,0,1]. Text precedes image and freezes its frame coordinate.
+  constexpr std::array<std::int32_t, 3> ys{-2, -1, 0};
+  constexpr std::array<std::int32_t, 5> xs{-3, -2, -1, 0, 1};
+  EXPECT_EQ(md::QwenImageDenoiserPosition(2, 3, 5, 1), (std::array<std::int32_t, 3>{1, 1, 1}));
+  for (std::uint32_t y = 0; y < 3; ++y)
+    for (std::uint32_t x = 0; x < 5; ++x) {
+      EXPECT_EQ(md::QwenImageDenoiserPosition(2, 3, 5, 2 + y * 5 + x),
+                (std::array<std::int32_t, 3>{2, ys[y], xs[x]}));
+      EXPECT_EQ(md::QwenImageDenoiserPosition(2, 5, 3, 2 + x * 3 + y),
+                (std::array<std::int32_t, 3>{2, xs[x], ys[y]}));
+    }
 }
 
 TEST(QwenImage, TimestepSinusoidAndPixelsRoundAsDiffusers) {
