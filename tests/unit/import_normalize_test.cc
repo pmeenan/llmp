@@ -20,6 +20,7 @@
 
 #include "base/check.h"
 #include "components/step.h"
+#include "dsv4_gguf_normalization_fixture.h"
 #include "expected_error.h"
 #include "gemma2_fixture.h"
 #include "gemma3_fixture.h"
@@ -27,7 +28,9 @@
 #include "import/normalize.h"
 #include "import/readers/gguf.h"
 #include "import_fixtures.h"
+#include "model/dsv4.h"
 #include "qwen38_gguf_normalization_fixture.h"
+#include "spec/mappings/dsv4.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -926,6 +929,50 @@ TEST(ImportNormalizeQwenTest, RejectsUnfundedConstructionAndClosedProfileMutatio
         break;
     }
     EXPECT_FALSE(Normalize(std::move(bad), kFunded));
+  }
+}
+
+TEST(ImportNormalizeDsv4Test, CompleteCapturedTargetKeepsAllEncodingsAndLayerSemantics) {
+  auto input = test_support::Dsv4GgufCheckpoint();
+  auto cost = NormalizationBound(input);
+  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+  EXPECT_EQ(cost->layers, 43U);
+  EXPECT_LT(cost->metadata_bytes, std::uint64_t{1} << 30U);
+  auto plan = Normalize(input, {cost->metadata_bytes, cost->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  ASSERT_EQ(plan->routes().size(), 1328U);
+  ASSERT_EQ(plan->spec().stages.size(), 1U);
+  EXPECT_EQ(plan->spec().stages[0].side.size(), 3U);
+  EXPECT_EQ(plan->spec().stages[0].layers.size(), 43U);
+  auto values = spec::mappings::Dsv4V0Values(model::Dsv4Flash());
+  ASSERT_TRUE(values);
+  auto expected = spec::Synthesize(spec::mappings::Dsv4Mapping(), plan->canonical(), *values);
+  ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
+  EXPECT_EQ(plan->spec(), *expected);
+  std::set<Encoding> encodings;
+  for (std::size_t i = 0; i != input.tensors.size(); ++i) {
+    EXPECT_EQ(plan->routes()[i].extent, input.tensors[i].extent);
+    EXPECT_EQ(plan->canonical().tensors[i].format, input.tensors[i].format);
+    encodings.insert(input.tensors[i].format.encoding);
+  }
+  EXPECT_EQ(encodings.size(), 10U);
+  EXPECT_TRUE(plan->applied_folds().empty());
+  EXPECT_FALSE(Normalize(input, {cost->metadata_bytes - 1, cost->work_units}));
+}
+TEST(ImportNormalizeDsv4Test, RefusesIncompleteListsCountsAndUnclassifiedSourceSemantics) {
+  for (unsigned mutation = 0; mutation != 7; ++mutation) {
+    auto input = test_support::Dsv4GgufCheckpoint();
+    if (mutation == 0) Value(input, "deepseek4.swiglu_clamp_exp", std::vector<double>(42, 10));
+    if (mutation == 1)
+      Value(input, "deepseek4.swiglu_clamp_shexp",
+            std::vector<double>(43, std::numeric_limits<double>::infinity()));
+    if (mutation == 2)
+      Value(input, "deepseek4.attention.compress_ratios", std::vector<std::int64_t>(46, 4));
+    if (mutation == 3) Value(input, "deepseek4.hash_layer_count", std::int64_t{44});
+    if (mutation == 4) Value(input, "deepseek4.attention.value_length", std::int64_t{256});
+    if (mutation == 5) Value(input, "deepseek4.new_semantics", std::int64_t{1});
+    if (mutation == 6) input.tensors.pop_back();
+    EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
   }
 }
 

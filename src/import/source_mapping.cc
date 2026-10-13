@@ -7,6 +7,7 @@
 #include <charconv>
 #include <string_view>
 
+#include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -54,6 +55,23 @@ constexpr std::array kQwenShapes{
     TensorShapeRequirement{"token_embd.weight", kTokenShape},
     TensorShapeRequirement{"output.weight", kTokenShape},
     TensorShapeRequirement{"per_layer_token_embd.weight", kNgramShape}};
+
+constexpr auto kDsv4Ratios = [] {
+  std::array<std::int64_t, 46> out{};
+  for (std::size_t i = 2; i < 43; ++i) out[i] = i % 2 == 0 ? 4 : 128;
+  return out;
+}();
+constexpr std::array kDsv4Requirements{
+    ScalarRequirement{"deepseek4.attention.value_length", 512, true}};
+constexpr std::array kDsv4Lists{
+    ListRequirement{"deepseek4.attention.compress_ratios", 46, kDsv4Ratios},
+    ListRequirement{"deepseek4.swiglu_clamp_exp", 43},
+    ListRequirement{"deepseek4.swiglu_clamp_shexp", 43}};
+constexpr std::array kDsv4Encodings{format::Encoding::kF32,   format::Encoding::kBF16,
+                                    format::Encoding::kI32,   format::Encoding::kQ8_0,
+                                    format::Encoding::kQ5_K,  format::Encoding::kIQ2_XS,
+                                    format::Encoding::kQ6_K,  format::Encoding::kIQ3_XXS,
+                                    format::Encoding::kMxfp4, format::Encoding::kQ4_K};
 
 bool SameShape(std::string_view a, std::string_view b) {
   return (a.find(spec::kLayerField) == std::string_view::npos) ==
@@ -105,7 +123,14 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                                                .encodings = kQwenEncodings,
                                                .extended_components = true,
                                                .shapes = kQwenShapes,
-                                               .row_indices = kQwenRows}};
+                                               .row_indices = kQwenRows},
+                                 SourceMapping{.container = "gguf",
+                                               .architecture = &spec::mappings::Dsv4Mapping(),
+                                               .auxiliary = kAuxiliary,
+                                               .requirements = kDsv4Requirements,
+                                               .lists = kDsv4Lists,
+                                               .encodings = kDsv4Encodings,
+                                               .extended_components = true}};
   for (const auto& table : tables)
     if (container == table.container && architecture == table.architecture->architecture)
       return &table;
@@ -121,6 +146,7 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key) {
     seen = true;
   };
   if (key == m.layer_count_key) add(kInteger);
+  if (!m.layer_type_key.empty() && key == m.layer_type_key) add(kIntegers);
   if (!m.layer_flags_key.empty() && key == m.layer_flags_key) add(kIntegers);
   for (const auto& rule : m.params) {
     if (key != rule.key || rule.key.empty()) continue;
@@ -129,7 +155,7 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key) {
         add(rule.per_layer ? kInteger | kIntegers : kInteger);
         break;
       case spec::ValueType::kReal:
-        add(kInteger | kReal);
+        add(rule.per_layer ? kInteger | kReal | kReals : kInteger | kReal);
         break;
       case spec::ValueType::kBool:
         add(kFlag);
@@ -213,29 +239,32 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     const auto& a = table.lists[i];
     const auto& b = registered->lists[i];
     if (a.key != b.key || a.size != b.size || a.size > 48 ||
-        !std::ranges::equal(a.exact, b.exact) || nd::KeyTypes(m, a.key) != nd::kIntegers)
+        !std::ranges::equal(a.exact, b.exact) ||
+        (nd::KeyTypes(m, a.key) & (nd::kIntegers | nd::kReals)) == 0)
       return Invalid();
   }
   for (const auto& required : registered->requirements) {
     bool found = false;
     for (const auto& rule : table.requirements)
-      found |= rule.key == required.key && rule.reject_equal == required.reject_equal;
+      found |= rule.key == required.key && rule.reject_equal == required.reject_equal &&
+               rule.require_equal == required.require_equal;
     if (!found) return Invalid();
   }
   if (m.slots.empty() || m.slots.size() > (table.extended_components ? 16U : 8U) ||
       m.tensors.size() > nd::kRuleLimit || m.params.size() > 128 || m.folds.size() > 8 ||
       m.policies.size() > 8 || !m.reads.empty() || !m.v0_assembly.empty() ||
       m.pipeline != spec::PipelineKind::kLlm || m.role != spec::StageRole::kTarget ||
-      !m.layer_type_key.empty() || !m.stage.empty() || !spec::IsSourceKey(m.layer_count_key))
+      (!table.extended_components && !m.layer_type_key.empty()) || !m.stage.empty() ||
+      !spec::IsSourceKey(m.layer_count_key))
     return Invalid();
   for (const auto& slot : m.slots)
-    if (!slot.count_key.empty() || slot.per_layer ||
-        (!table.extended_components &&
-         (!slot.layers_key.empty() || slot.site == spec::Site::kSide ||
-          slot.site == spec::Site::kMixing)))
+    if (!table.extended_components &&
+        (!slot.count_key.empty() || slot.per_layer || !slot.layers_key.empty() ||
+         slot.site == spec::Site::kSide || slot.site == spec::Site::kMixing))
       return Invalid();
   for (const auto& p : m.params)
-    if ((p.per_layer && p.type != spec::ValueType::kInt) ||
+    if ((p.per_layer && p.type != spec::ValueType::kInt &&
+         !(table.extended_components && p.type == spec::ValueType::kReal)) ||
         (!table.extended_components && p.type == spec::ValueType::kInts))
       return Invalid();
   for (const auto& r : m.tensors)
@@ -261,8 +290,11 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
       if (slot.slot == a.slot) left = &slot;
       if (slot.slot == b.slot) right = &slot;
     }
-    return left && right && !left->gate.empty() && left->gate == right->gate &&
-           left->gate_absent != right->gate_absent;
+    return left && right &&
+           ((!left->gate.empty() && left->gate == right->gate &&
+             left->gate_absent != right->gate_absent) ||
+            (!left->count_key.empty() && left->count_key == right->count_key &&
+             left->count_above != right->count_above));
   };
   for (std::size_t i = 0; i < count; ++i)
     for (std::size_t j = 0; j < i; ++j)
@@ -298,8 +330,15 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
           table.auxiliary[j].prefix.starts_with(a.prefix))
         return Invalid();
   }
-  for (const auto& r : table.requirements)
-    if (nd::KeyTypes(m, r.key) != nd::kInteger) return Invalid();
+  for (const auto& r : table.requirements) {
+    if (!r.require_equal && nd::KeyTypes(m, r.key) != nd::kInteger) return Invalid();
+    if (r.require_equal && (!spec::IsSourceKey(r.key) || Structural(r.key) ||
+                            std::ranges::none_of(registered->requirements, [&](const auto& known) {
+                              return known.require_equal && known.key == r.key &&
+                                     known.reject_equal == r.reject_equal;
+                            })))
+      return Invalid();
+  }
   return {};
 }
 }  // namespace llmp::import

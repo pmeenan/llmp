@@ -373,9 +373,8 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
       const auto& side = stage.side[i];
       // On-demand side rows must not share an unbacked group with the ordinary
       // token embedding (or another table). Keep each side's ownership intact.
-      bind(side.source,
-           {side.source.kind == "side.ngram" ? 0U : 1U,
-            side.source.kind == "side.ngram" ? static_cast<std::uint32_t>(i + 1) : 0U});
+      const bool rows = side.source.kind == "side.ngram" || side.source.kind == "side.hash";
+      bind(side.source, {rows ? 0U : 1U, rows ? static_cast<std::uint32_t>(i + 1) : 0U});
     }
     for (std::size_t i = 0; i < stage.layers.size(); ++i)
       for (const auto& c : stage.layers[i].components) bind(c, {2, static_cast<std::uint32_t>(i)});

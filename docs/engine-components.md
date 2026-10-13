@@ -986,8 +986,12 @@ complete generations within the unchanged 48GiB node cap, following a full nativ
 build and 197 affected host controls. cuBLAS validation now follows element
 alignment, actual 64-bit batch offsets and bounded conversion launches rather
 than inheriting MMVF/MMF paired-load restrictions; those kernels keep their
-original checks. Same-source reference quality, broader image workloads,
-production serving and matched migration speed remain separate. See the
+original checks. This historical screen left reference quality and ordinary
+source preparation open. The later internal Server route completes request
+preparation and one retained-reference quality screen (37.059 dB/.99041), while
+a coarse 5.991× slowdown blocks public migration. Broader image workloads and
+the matched speed gate remain separate; see the
+[ordinary service result](experiments/m36-shared-spatial-execution/README.md#ordinary-installed-source-image-service). See the
 [complete generation evidence](experiments/m36-shared-spatial-execution/README.md#complete-shared-image-generation).
 
 The head reads only the step's output rows, so `BuildStep` narrows (slice
@@ -2376,6 +2380,30 @@ checks pass. This is the internal paid target route: architecture-only public
 selection and stored-drafter admission remain unchanged. ModelOpt/MLX serving,
 family migration and N5's all-artifact gates remain open. See the
 [publication and execution evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13).
+
+Ordinary internal component Server admission now shares one catalog-paid
+maximum transient compiler allowance across participating LLM aliases, instead
+of reserving a separate maximum for each. Image stages retain their separate
+paid construction limits. Source/spec/chat owners and live programs remain
+separately paid. Driver-thread acquisition precedes graph construction,
+including commit-buffer graphs; returned programs retain the construction loan
+until destruction or transfer to already paid plans/futures. Capacity stays
+accounted when use ends. The [DeepSeek service screen](experiments/m36-dsv4-target/dspark.md#shared-server-admission-and-the-remaining-c2-capacity-wall)
+passes serial speculative execution but finds a concurrent-state capacity wall;
+shared construction alone does not qualify joined serving or family migration.
+
+The approved DeepSeek V4 GGUF target also consumes ordinary native publication
+and stored bindings (N4b9). Bounded integer/real metadata lists preserve all
+43 layers and source constants; exact source receipts, complete inventory and
+stored spec remain admission requirements. Embedding and three I32 hash tables
+have separate exclusive groups, and hash values are checked through a bounded
+4KiB read window. No source encoding or numerical policy changes. An admitted empty DS
+policy means the same mapping fallback as v0; explicit empty overrides remain
+invalid. Actual full-head, initialized-state and spill-continuation equivalence
+passes. The internal diagnostic cap is an upper bound at initial physical and
+final dynamic admission; existing footprint/handle checks still apply. Stored
+DSpark, other formats, public defaults and family/N5 gates remain open. See the
+[native target evidence](experiments/m36-dsv4-target/README.md#native-gguf-publication-and-stored-target--2026-10-13).
 
 **Import transform primitives** (`import/transforms.h`). The historical
 ModelOpt import's `norm.plus_one` and `ssm.a_neg_exp` convert explicitly

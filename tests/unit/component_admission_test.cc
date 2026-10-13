@@ -16,6 +16,7 @@
 
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "dsv4_gguf_normalization_fixture.h"
 #include "import/normalize.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
@@ -315,5 +316,47 @@ TEST_P(NativeGemmaAdmissionTest, ChoosesExactProfileAndEnvelopeRecipeWithoutChec
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 2}));
 }
 INSTANTIATE_TEST_SUITE_P(ApprovedTargets, NativeGemmaAdmissionTest, testing::Values(3U, 26U, 31U));
+
+TEST(ComponentAdmissionDsv4Test, FullStoredTargetPreservesProfilePolicyAndClosedSourceAuthority) {
+  auto checkpoint = llmp::test_support::Dsv4GgufCheckpoint();
+  auto bound = llmp::import::NormalizationBound(checkpoint);
+  ASSERT_TRUE(bound) << (bound ? "" : bound.error().ToString());
+  auto normalized =
+      llmp::import::Normalize(std::move(checkpoint), {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(normalized) << (normalized ? "" : normalized.error().ToString());
+  std::array<llmp::artifact::Source, 3> origins{
+      Origins("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf", 5257664,
+              "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b")[0],
+      Origins("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf", 49437013568ULL,
+              "c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327")[0],
+      Origins("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf", 47390237120ULL,
+              "a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4")[0]};
+  const auto& model = normalized->spec();
+  const auto& source = normalized->canonical();
+  const auto admitted = rt::CheckComponentAdmission(model, source, origins);
+  ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+  EXPECT_FALSE(rt::OnComponentEngine("deepseek4"));
+  auto policy =
+      rt::ComponentAdmissionPolicy(model, source, origins, {.context = 1048576, .slots = 8});
+  ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+  EXPECT_TRUE(policy->text.empty());
+  EXPECT_FALSE(
+      rt::ComponentAdmissionPolicy(model, source, origins, {.context = 1048577, .slots = 1}));
+  for (unsigned mutation = 0; mutation != 6; ++mutation) {
+    auto changed_model = model;
+    auto changed_source = source;
+    auto changed_origins = origins;
+    if (mutation == 0) changed_origins[2].sha256[0] ^= 1;
+    if (mutation == 1) changed_origins[2] = changed_origins[1];
+    if (mutation == 2) changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
+    if (mutation == 3) changed_model.stages[0].side.pop_back();
+    if (mutation == 4)
+      changed_model.stages[0].heads.output->weights[0].tensor =
+          changed_model.stages[0].embedding->weights[0].tensor;
+    if (mutation == 5) changed_model.stages[0].folds.push_back("norm.plus_one");
+    EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
+        << mutation;
+  }
+}
 
 }  // namespace

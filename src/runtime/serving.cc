@@ -2047,9 +2047,11 @@ Status Server::Start(bool snapshot) {
   }
   bool prepaid = false;
   if (const auto bytes = startup_allowance; bytes != 0) {
-    const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
-    if (auto check = CheckStartupHostAllowance(bytes, cap, MemorySampler::Available()); !check)
-      return check;
+    const auto available = MemorySampler::Available();
+    const auto headroom =
+        available > kUncountedMargin ? (available - kUncountedMargin) / kExtent * kExtent : 0;
+    const auto cap = std::min(options_.diagnostic_budget_cap_bytes.value_or(0), headroom);
+    if (auto check = CheckStartupHostAllowance(bytes, cap, available); !check) return check;
     if (prepared.empty()) {
       if (auto opened = node_.Open(); !opened) return opened;
     }
@@ -2299,13 +2301,16 @@ Status Server::Start(bool snapshot) {
     const auto reserve = options_.handle_reserve.value_or(engine::kHandleReserve);
     if (reserve > std::numeric_limits<std::uint64_t>::max() / kExtent)
       return Error("diagnostic budget cap handle reserve overflows");
-    const auto cap = *options_.diagnostic_budget_cap_bytes;
+    const auto requested = *options_.diagnostic_budget_cap_bytes;
+    // A diagnostic ceiling cannot enlarge ordinary admission. Keep extent
+    // alignment when current measured headroom selects a smaller budget.
+    const auto cap = std::min(requested, dynamic_budget_ / kExtent * kExtent);
     if (auto checked = CheckDiagnosticBudgetCap(bounds, dynamic_budget_, cap, reserve * kExtent);
         !checked)
       return std::unexpected(checked.error());
     budget_ = cap;
-    Log(std::format("diagnostic budget cap: dynamic={} selected={} bytes", dynamic_budget_,
-                    budget_));
+    Log(std::format("diagnostic budget cap: dynamic={} selected={} bytes; requested={} bytes",
+                    dynamic_budget_, budget_, requested));
   }
   if (auto r = node_.Start(base::Bytes(budget_)); !r) {
     return r;

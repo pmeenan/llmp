@@ -260,3 +260,77 @@ family speed/swap gates. The later [shared Server screen](dspark.md#shared-serve
 completes bounded serial speculative HTTP, but its two-client overlap gate
 fails on state capacity; fixed-plain serving and the planned swap remain unrun. Agreement with an unavailable original BF16 model
 is not inferred; the quality baseline here is the same quantized checkpoint.
+
+## Native GGUF publication and stored target — 2026-10-13
+
+The ordinary native importer now normalizes and publishes the approved
+`unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93fb787c21338159b0af3318bb3f4d9768`
+UD-Q2_K_XL target: three shards, 1,328 tensors in ten source encodings,
+129 expert arrays and 43 transformer layers. Bounded integer/real metadata
+lists preserve the source constants; no arithmetic fold is added. Embedding
+and three hash tables have separate exclusive groups; expert slicing creates
+11,008 expert groups. Exact source receipts, complete tensor inventory and
+stored spec are checked before admitting the target. DSpark is not admitted.
+
+Ordinary CLI publication passed as artifact
+`698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd`:
+96,832,508,352 source bytes and 96,841,372,090 published bytes. The existing
+writer authenticated complete source SHA values while copying, performed its
+existing output Deep check, then published atomically; no redundant payload
+scan was added. The 8GiB process/cache ceiling saw 265,846 cache-reclaim max
+events, reported separately from zero OOM events. All guards and positive child
+retirement passed. Publication result:
+`62f6451c2a2adeb199c268afb29c0fdc3149c1b8920261745f83e82acf1cf5ef`;
+artifact metadata receipt:
+`15e4a79b09a009b406fef12efeaa15f4200028afc8c642f6161eeedd19f4f4e8`.
+
+The existing `Dsv4EngineTargetGpu.PublishedGgufMatchesV0HeadsStateAndSpill`
+case compared the v0 target and that actual publication through the same
+selected plain shared implementation. All 36 complete finite 129,280-value
+head rows matched bitwise. Six complete initialized-state coordinate/payload
+observations matched, including two actual spills and restores with no model
+recomputation, followed by continuation. The unskipped case passed in
+59.182 seconds using 2,560 deterministic prompt token IDs, context 3,072,
+chunk 512, C1 and two eight-token generations per owner. Pre/post guards,
+zero memory events, native exit zero, complete process-group retirement and
+zero remaining GPU processes all passed.
+
+The requested 110GiB node cap is an upper bound, not an identical-budget
+promise. Initial admission clamps it to extent-rounded available physical
+memory minus the existing margin; final admission clamps it to the ordinary
+dynamic budget. Existing startup-payment, required-footprint and handle-reserve
+checks remain. Actual selected budgets were 117,700,558,848 bytes for v0 and
+115,324,485,632 bytes for v1. The process/cache ceiling was 116GiB with zero
+swap and a live 6GiB physical margin. Its observed peak was 2,326,695,936 bytes,
+not total GPU backing. These are bounded check conditions, not product caps
+or a matched-budget performance comparison. Old results remain paid by their
+stopped owner until the new owner's observation payment is admitted.
+
+Three failed attempts are preserved: `models01` refused the requested cap
+above the ordinary final budget before v0 execution; `models02` completed v0
+but refused the native owner's initial physical-headroom check; `models03`
+passed initial headroom checks but refused parsing the deliberately empty
+stored DS policy.
+Each retired positively with guards passing and no OOM. The final changes
+retain a conservative cap at both admission points and treat an admitted empty
+policy as no override, using the existing mapping fallback. Explicit empty
+policy overrides still fail parsing. No fabricated DS recipe, reduced state
+oracle or admission bypass was used.
+
+Main06 full native and 241 affected controls passed, including normalization,
+admission and writer controls. Final main09 full native and 66 affected controls
+passed after the admission corrections. Executed model:
+`ed2cafc8ea27f0927f58c64fe1b48dc9c74f35b3ca49369a8ef07aa6cd263d31`
+(273,626,272 bytes); final build receipt:
+`e89a32a18a348e4bad14488fe900c0eb88d2bbbb1aff4af35ae203e3cbbd9d74`;
+actual result:
+`29094deadd1f9269932dff69fe9f4317e76d050405652cb83ac48705c11933bf`.
+Raw publication and all four actual attempts remain in
+`ds-native-target-publication01` and `ds-native-target-models01` through
+`ds-native-target-models04`.
+
+This completes the approved native GGUF target normalization, publication and
+stored-target execution batch. Other formats/folds, stored DSpark, public
+selection/default migration, external-reference quality and the matched 1%
+family speed gate remain separate. Full N5 all-artifact re-import/admission
+is not closed by this bounded same-selected target proof.

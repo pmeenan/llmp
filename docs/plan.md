@@ -2433,8 +2433,9 @@ each is checked against the design as M3.6 proceeds.
                   for row tables, mixing and all expert slices. Registering the
                   mapping also enables the ordinary CLI writer path. Full native build, 103 affected host controls and one
                   actual-header-only check pass on spark-b with no failures or
-                  skips (2026-10-12); full publication, runtime admission and
-                  migration remain open.
+                  skips (2026-10-12). Subsequent N4b8 completes ordinary GGUF
+                  target publication and stored-target admission; family
+                  migration and other source domains remain open.
                   [Scope and source evidence](experiments/m36-qwen-gguf-normalization/README.md).
       - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
             publication, embedded specs, verified source streaming and
@@ -2594,6 +2595,18 @@ each is checked against the design as M3.6 proceeds.
                   defaults, stored drafter, ModelOpt/MLX serving, family speed
                   gates and full N5 remain open
                   ([evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13)).
+            - [x] **N4b9 — native DeepSeek GGUF target publication and serving:**
+                  normalize the complete approved three-shard UD-Q2_K_XL target
+                  (1,328 tensors, 129 expert arrays, 43 layers), publish through
+                  the ordinary CLI and execute its validated stored spec.
+                  Actual v0/v1 comparison passes 36 full finite head rows,
+                  six initialized-state observations and two spill/zero-compute
+                  restores with continuation at 2,560 prompt tokens. Final native
+                  build/66 affected controls pass; prior full normalization,
+                  admission and writer controls remain separately recorded.
+                  Other formats/folds, stored DSpark, public defaults, family
+                  matched 1% gates and full N5 remain open
+                  ([evidence](experiments/m36-dsv4-target/README.md#native-gguf-publication-and-stored-target--2026-10-13)).
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

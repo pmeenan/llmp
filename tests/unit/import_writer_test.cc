@@ -13,6 +13,7 @@
 #include "base/json.h"
 #include "cli/cli.h"
 #include "components/step.h"
+#include "dsv4_gguf_normalization_fixture.h"
 #include "expected_error.h"
 #include "import/archive_input.h"
 #include "import/modelopt_qwen38.h"
@@ -974,6 +975,30 @@ TEST_F(ImportWriterTest, QwenSideTablePlacementAndCompleteExpertCoverageAreFunde
       *plan, {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes});
   ASSERT_FALSE(written);
   EXPECT_EQ(written.error().reason, "a parsed source lacks a valid identity receipt");
+  EXPECT_FALSE(std::filesystem::exists(destination));
+}
+
+TEST_F(ImportWriterTest, Dsv4HashTablesHaveExclusiveGroupsAndCompleteExpertSlices) {
+  auto input = test_support::Dsv4GgufCheckpoint();
+  auto cost = NormalizationBound(input);
+  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+  auto plan = Normalize(std::move(input), {cost->metadata_bytes, cost->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  auto layout = publication_detail::InspectPlacement(*plan, std::uint64_t{2} << 30U);
+  ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
+  EXPECT_EQ(layout->copies, 1328U);
+  EXPECT_EQ(layout->destinations, 1328U + 43U * 3U * 255U);
+  EXPECT_EQ(layout->tables, 4U);
+  EXPECT_EQ(layout->row_tables, 4U);
+  EXPECT_EQ(layout->globals, 0U);
+  EXPECT_EQ(layout->layers, 43U);
+  EXPECT_EQ(layout->heads, 1U);
+  EXPECT_EQ(layout->expert_groups, 43U * 256U);
+  EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
+  const auto destination = dir_ / "dsv4-unfunded";
+  EXPECT_FALSE(WriteArtifact(
+      *plan,
+      {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1}));
   EXPECT_FALSE(std::filesystem::exists(destination));
 }
 

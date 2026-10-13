@@ -6,6 +6,7 @@
 // expert paging. Exact comparisons are one implementation's snapshot replay.
 
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <array>
@@ -43,6 +44,7 @@
 #include "runtime/component_build.h"
 #include "runtime/engine_llm.h"
 #include "runtime/memory_guard.h"
+#include "runtime/serving.h"
 #include "runtime/snapshot_store.h"
 
 namespace {
@@ -1405,4 +1407,272 @@ class Dsv4NaturalCorpus : public testing::Test {
 [[maybe_unused]] const auto* const kLongNaturalCorpus = testing::RegisterTest(
     "Dsv4CorpusScoreManual", "Natural2561", nullptr, nullptr, __FILE__, __LINE__,
     []() -> Dsv4NaturalCorpus* { return new Dsv4NaturalCorpus(kLongScoreInputs); });
+namespace native_target {
+// Reuse the complete initialized-state reader and stopped-owner payment
+// handoff from the Qwen native publication proof, over this family's Server.
+namespace cfg = llmp::config;
+constexpr std::uint64_t kObservations = 128 * kMiB;
+// Both arms: 36 full rows, growth capacity, six coordinate inventories,
+// histories and the copy window. The catalog charge precedes every result.
+static_assert(3 * 36ULL * kVocab * sizeof(float) + 6 * 4096 * 24 + 4 * kMiB < kObservations);
+struct StateImage {
+  std::vector<std::array<std::uint64_t, 3>> ranges;
+  llmp::base::Sha256Digest digest{};
+  std::uint32_t positions = 0;
+  bool operator==(const StateImage&) const = default;
+};
+struct Result {
+  std::uint64_t selected_budget = 0;
+  std::array<StateImage, 3> states;
+  std::array<std::vector<float>, 2> heads;
+  std::array<rt::Generation, 2> generations;
+  std::array<std::vector<std::int32_t>, 2> history;
+};
+struct Owner {
+  cfg::NodeConfig config;
+  cfg::RuntimeRoles roles;
+  rt::ServingOptions options;
+  std::unique_ptr<rt::Server> server;
+  std::shared_ptr<en::ExecutionMetadataAllowance> observations;
+  std::unique_ptr<rt::Llm::PromptSession> restoration;
+  Result result;
+  fs::path scratch;
+  std::FILE* log = nullptr;
+  ~Owner() {
+    if (log) std::fclose(log);
+  }
+};
+std::expected<StateImage, std::string> ReadState(Owner& life, rt::EngineLlm& model) {
+  StateImage state;
+  auto& slots = model.runner().slots();
+  auto& node = life.server->node();
+  state.positions = slots.positions(0);
+  for (std::size_t stage = 0; stage < slots.stages(); ++stage)
+    for (const auto& range : slots.live(0, stage).used_ranges()) {
+      if (state.ranges.size() == 4096)
+        return std::unexpected("state observation exceeds prepaid coordinates");
+      state.ranges.push_back({stage, range.offset, range.bytes});
+    }
+  if (state.ranges.empty()) return std::unexpected("state observation is empty");
+  constexpr std::uint64_t part_bytes = 1ULL << 20U;
+  std::vector<llmp::catalog::ExtentId> extents;
+  auto buffer = node.Pinned(part_bytes, 0, extents);
+  if (!buffer) return std::unexpected(buffer.error());
+  llmp::base::Sha256 hash;
+  for (const auto& range : state.ranges)
+    for (std::uint64_t at = 0; at < range[2]; at += part_bytes) {
+      const en::LiveState::Range part{.region = range[0],
+                                      .offset = range[1] + at,
+                                      .bytes = std::min(part_bytes, range[2] - at)};
+      auto retired = en::LiveState::CopyRetirement::kUnproven;
+      auto copied = slots.CopyState(0, *buffer, std::span(&part, 1), true, &retired);
+      if (retired == en::LiveState::CopyRetirement::kUnproven) {
+        node.KeepPinned(*buffer);
+        return std::unexpected("state copy retirement is unproven");
+      }
+      if (!copied) {
+        (void)node.FreePinned(*buffer);
+        return std::unexpected(copied.error());
+      }
+      hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
+    }
+  if (auto freed = node.FreePinned(*buffer); !freed) return std::unexpected(freed.error());
+  state.digest = hash.Finish();
+  return state;
+}
+
+std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, std::string_view id,
+                                                       Owner* previous = nullptr) {
+  const auto* scratch = std::getenv("LLMP_TEST_SCRATCH");
+  if (!scratch) return std::unexpected("missing publication scratch");
+  auto life = std::make_unique<Owner>();
+  std::error_code ec;
+  fs::create_directories(scratch, ec);
+  if (ec) return std::unexpected(ec.message());
+  auto path = (fs::path(scratch) / "ds-native-XXXXXX").string();
+  if (!mkdtemp(path.data())) return std::unexpected("creating native target scratch");
+  life->scratch = path;
+  life->roles.installed = store;
+  life->roles.spill = life->scratch / "spill";
+  life->roles.state = life->scratch / "state";
+  for (const auto& dir : {life->roles.spill, life->roles.state}) {
+    fs::create_directory(dir, ec);
+    if (ec || chmod(dir.c_str(), 0700)) return std::unexpected("protecting native target state");
+  }
+  cfg::ModelEntry entry;
+  entry.name = "deepseek";
+  entry.artifact = id;
+  entry.overrides["context"] = std::int64_t{kContext};
+  entry.overrides["prefill_chunk"] = std::int64_t{kChunk};
+  entry.overrides["max_slots"] = std::int64_t{1};
+  life->config.models.push_back(std::move(entry));
+  life->options.diagnostic_component_solo = true;
+  life->options.diagnostic_component_all = true;
+  life->options.diagnostic_auto_startup = true;
+  life->options.diagnostic_budget_cap_bytes = kCap;
+  life->log = std::tmpfile();
+  if (!life->log) return std::unexpected("opening native target log");
+  life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, life->log);
+  auto completed = [&]() -> Status {
+    if (auto started = life->server->Start(true); !started) return started;
+    auto& node = life->server->node();
+    life->result.selected_budget = node.budget().value();
+    if (auto paid = node.Call(
+            [&]() -> en::Status {
+              const auto occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
+              const auto cap = node.budget().value();
+              const auto charge = kObservations + en::ExecutionMetadataAllowance::OverheadBytes();
+              if (occupied > cap || charge > cap - occupied)
+                return std::unexpected("native target observations exceed node capacity");
+              auto admitted = en::ExecutionMetadataAllowance::Admit(
+                  node.catalog(), node.domain(), charge,
+                  llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
+              if (!admitted) return std::unexpected(admitted.error());
+              life->observations = std::move(*admitted);
+              if (!life->observations->Charge(kObservations))
+                return std::unexpected("native target observations lack payment");
+              return {};
+            },
+            "pay native DS observations");
+        !paid)
+      return paid;
+    // Only the new paid owner may take over both arms' retained host results.
+    if (previous) previous->server.reset();
+    auto* model = dynamic_cast<rt::EngineLlm*>(life->server->Find("deepseek"));
+    if (!model || model->logit_width() != kVocab || model->generation_wave_capacity() != 1)
+      return std::unexpected("native target selected the wrong source or serving envelope");
+    rt::SwapParts parts;
+    if (auto activated = life->server->Activate(*model, parts); !activated) return activated;
+    auto branch = model->branch(0);
+    if (!branch) return std::unexpected(branch.error());
+    std::array<rt::Llm::Branch*, 1> active{*branch};
+    if (auto selected = life->server->SelectRequestBranches(*model, active); !selected)
+      return selected;
+    std::array<std::int32_t, kPrefix> prompt{};
+    for (std::size_t i = 0; i < prompt.size(); ++i) prompt[i] = 100 + (i * 7919U + 17U) % 30000U;
+    if (auto prefill = (*branch)->Prefill(prompt, life->result.heads[0]); !prefill) return prefill;
+    for (unsigned turn = 0; turn != 2; ++turn) {
+      rt::GenerateOptions options;
+      options.max_tokens = 8;
+      options.stop = false;
+      options.keep_logits = true;
+      auto& generation = life->result.generations[turn];
+      if (auto generated = (*branch)->Generate(life->result.heads[turn], options, generation);
+          !generated)
+        return generated;
+      if (generation.tokens.size() != 8 || generation.logits.size() != 8 || generation.drafted ||
+          generation.stopped || generation.cancelled)
+        return std::unexpected("native target returned incomplete plain generation");
+      life->result.history[turn] = (*branch)->history();
+      auto state = ReadState(*life, *model);
+      if (!state) return std::unexpected(state.error());
+      life->result.states[turn == 0 ? 0 : 2] = std::move(*state);
+      if (turn) continue;
+      if (auto ended = life->server->EndRequestBranches(*model); !ended) return ended;
+      if (auto spilled = model->SpillIdle(**branch); !spilled) return spilled;
+      if (!(*branch)->spilled()) return std::unexpected("native target did not spill");
+      if (auto selected = life->server->SelectRequestBranches(*model, active); !selected)
+        return selected;
+      const auto before = model->graphs();
+      auto begun = (*branch)->BeginPrompt(life->result.history[0], 0, false, true);
+      if (!begun) return std::unexpected(begun.error());
+      life->restoration = std::move(*begun);
+      while (!life->restoration->done())
+        if (auto advanced = life->restoration->Advance(); !advanced) return advanced;
+      if (life->restoration->reused() != life->result.history[0].size())
+        return std::unexpected("native target restore recomputed its history");
+      if (auto finished = life->restoration->Finish(); !finished) return finished;
+      life->restoration.reset();
+      const auto after = model->graphs();
+      if (before.eager != after.eager || before.captured != after.captured ||
+          before.replayed != after.replayed || (*branch)->spilled())
+        return std::unexpected("native target restoration executed model work");
+      auto restored = ReadState(*life, *model);
+      if (!restored) return std::unexpected(restored.error());
+      life->result.states[1] = std::move(*restored);
+      if (life->result.states[0] != life->result.states[1])
+        return std::unexpected("native target restored different state");
+      auto next = (*branch)->history();
+      next.push_back(generation.tokens.back());
+      std::uint32_t reused = 0;
+      if (auto continued = (*branch)->PreparePrompt(next, 0, life->result.heads[1], reused);
+          !continued)
+        return continued;
+      if (reused + 1 != next.size())
+        return std::unexpected("native target continuation lost prefix");
+    }
+    if (model->runner().coverage().violations)
+      return std::unexpected("native target used uncovered memory");
+    return life->server->EndRequestBranches(*model);
+  }();
+  if (!completed) {
+    const auto error = completed.error();
+    std::ignore = life.release();
+    return std::unexpected(error + "; complete failed owner retained");
+  }
+  if (auto retired = life->server->TearDown(); !retired) {
+    const auto error = retired.error();
+    std::ignore = life.release();
+    return std::unexpected(error + "; unproven owner retained");
+  }
+  return life;
+}
+class PublishedCase : public testing::Test {
+  void TestBody() override {
+    const auto* old_store = std::getenv("LLMP_DSV4_TARGET_STORE");
+    const auto* native_store = std::getenv("LLMP_TEST_DSV4_V1_STORE");
+    const auto* id = std::getenv("LLMP_TEST_DSV4_V1_ID");
+    ASSERT_NE(old_store, nullptr);
+    ASSERT_NE(native_store, nullptr);
+    ASSERT_NE(id, nullptr);
+    ASSERT_EQ(std::strlen(id), 64U);
+    ASSERT_TRUE(std::ranges::all_of(std::string_view(id), [](char c) {
+      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    }));
+    auto checked = Metadata(fs::path(old_store) / kArtifact);
+    ASSERT_TRUE(checked) << Failed(checked).value_or("");
+    auto old = native_target::Run(old_store, kArtifact);
+    ASSERT_TRUE(old) << Failed(old).value_or("");
+    auto native = native_target::Run(native_store, id, old->get());
+    ASSERT_TRUE(native) << Failed(native).value_or("");
+    const auto& a = (*old)->result;
+    const auto& b = (*native)->result;
+    EXPECT_EQ(a.states, b.states);
+    const auto compare = [](std::span<const float> a, std::span<const float> b) {
+      ASSERT_EQ(a.size(), kVocab);
+      ASSERT_EQ(b.size(), kVocab);
+      EXPECT_TRUE(std::ranges::all_of(a, [](float f) { return std::isfinite(f); }));
+      EXPECT_TRUE(std::ranges::all_of(b, [](float f) { return std::isfinite(f); }));
+      EXPECT_EQ(std::memcmp(a.data(), b.data(), a.size_bytes()), 0);
+    };
+    for (unsigned turn = 0; turn != 2; ++turn) {
+      compare(a.heads[turn], b.heads[turn]);
+      EXPECT_EQ(a.history[turn], b.history[turn]);
+      EXPECT_EQ(a.generations[turn].tokens, b.generations[turn].tokens);
+      ASSERT_EQ(a.generations[turn].logits.size(), 8U);
+      ASSERT_EQ(b.generations[turn].logits.size(), 8U);
+      for (unsigned row = 0; row != 8; ++row)
+        compare(a.generations[turn].logits[row], b.generations[turn].logits[row]);
+    }
+    RecordProperty("complete_head_rows", 36);
+    RecordProperty("head_values_per_row", kVocab);
+    RecordProperty("complete_state_images", 6);
+    RecordProperty("restored_owners", 2);
+    RecordProperty("prompt_tokens", kPrefix);
+    RecordProperty("native_artifact", id);
+    RecordProperty("v0_selected_node_budget", std::to_string(a.selected_budget));
+    RecordProperty("v1_selected_node_budget", std::to_string(b.selected_budget));
+    fs::remove_all((*old)->scratch);
+    fs::remove_all((*native)->scratch);
+    old->reset();
+  }
+};
+[[maybe_unused]] const auto* published = []() -> testing::TestInfo* {
+  if (!std::getenv("LLMP_TEST_DSV4_V1_STORE")) return nullptr;
+  return testing::RegisterTest("Dsv4EngineTargetGpu", "PublishedGgufMatchesV0HeadsStateAndSpill",
+                               nullptr, nullptr, __FILE__, __LINE__,
+                               []() -> testing::Test* { return new PublishedCase; });
+}();
+}  // namespace native_target
+
 }  // namespace

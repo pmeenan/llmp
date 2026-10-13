@@ -121,8 +121,9 @@ struct ServingOptions {
   bool lazy_handoff = true;
   // Internal full/partial swap factor; remains off until measured qualification.
   bool partial_weight_eviction = false;
-  // Internal same-capacity swap controls only; no production config/CLI option.
-  // Refused unless it fits the ordinary startup guard and required footprint.
+  // Internal budget ceiling only; no production config/CLI option. Admission
+  // selects at most the ordinary dynamic budget, with required footprint intact.
+  // Matched controls must record the actual selected capacity of each arm.
   std::optional<std::uint64_t> diagnostic_budget_cap_bytes;
   // engine::NodeSettings::zero_state and handle_reserve; internal
   // overrides for matched controls only.

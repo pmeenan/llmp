@@ -16,12 +16,14 @@
 
 #include "base/sha256.h"
 #include "components/step.h"
+#include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "model/gemma4_assistant.h"
 #include "model/qwen38.h"
 #include "runtime/gemma_profile.h"
+#include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -33,7 +35,7 @@ namespace {
 
 // The existing approved execution checkpoint, not the container's artifact
 // ID: publication does not broaden the family/profile or format domain.
-enum class ProfileId { kGemma2, kGemma3, kGemma26, kGemma31, kQwenGguf };
+enum class ProfileId { kGemma2, kGemma3, kGemma26, kGemma31, kQwenGguf, kDsv4Gguf };
 struct Profile {
   ProfileId id;
   std::string_view architecture, source_name, source_sha256;
@@ -85,15 +87,37 @@ constexpr std::array kQwenOrigins{
     Origin{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
            "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250", 32382955968ULL}};
 
+constexpr Profile kDsv4Gguf{ProfileId::kDsv4Gguf,
+                            "deepseek4",
+                            {},
+                            {},
+                            0,
+                            1328,
+                            129,
+                            model::kDsv4FlashContext,
+                            std::numeric_limits<std::uint32_t>::max(),
+                            "0c4a8d8bc83e96cac484de7c6272c75d282fe488d792ef60f686138f5a177c9c"};
+constexpr std::array kDsv4Origins{
+    Origin{"DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf",
+           "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b", 5257664ULL},
+    Origin{"DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf",
+           "c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327", 49437013568ULL},
+    Origin{"DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf",
+           "a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4", 47390237120ULL}};
+
 const Profile* Approved(std::string_view architecture, std::span<const artifact::Source> origins) {
-  if (architecture == kQwenGguf.architecture && origins.size() == kQwenOrigins.size()) {
-    for (const auto& expected : kQwenOrigins)
+  for (const auto& [profile, expected_origins] :
+       std::array{std::pair{&kQwenGguf, std::span<const Origin>(kQwenOrigins)},
+                  std::pair{&kDsv4Gguf, std::span<const Origin>(kDsv4Origins)}}) {
+    if (architecture != profile->architecture || origins.size() != expected_origins.size())
+      continue;
+    for (const auto& expected : expected_origins)
       if (std::ranges::count_if(origins, [&](const auto& origin) {
             return origin.name == expected.name && origin.bytes.value() == expected.bytes &&
                    base::ToHex(origin.sha256) == expected.sha256;
           }) != 1)
         return nullptr;
-    return &kQwenGguf;
+    return profile;
   }
   if (origins.size() != 1) return nullptr;
   for (const auto& profile : kProfiles)
@@ -115,6 +139,8 @@ const model::Gemma4Profile* GemmaProfile(const Profile& profile) {
 }
 std::expected<std::vector<spec::SourceValue>, std::string> Values(const Profile& profile) {
   switch (profile.id) {
+    case ProfileId::kDsv4Gguf:
+      return spec::mappings::Dsv4V0Values(model::Dsv4Flash());
     case ProfileId::kQwenGguf: {
       // Independent source metadata captured with the approved tensor inventory.
       const model::Qwen38PleHash hash{
@@ -222,7 +248,7 @@ std::expected<void, std::string> CheckComponentAdmission(
     return Refused("the stored pipeline is not an approved standalone target");
   if (auto inventory = Inventory(source, *profile); !inventory) return inventory;
   const auto& stage = model.stages.front();
-  if (profile->id != ProfileId::kQwenGguf &&
+  if (profile->id != ProfileId::kQwenGguf && profile->id != ProfileId::kDsv4Gguf &&
       (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
        stage.heads.output->weights.size() != 1 ||
        stage.embedding->weights.front().tensor != stage.heads.output->weights.front().tensor))
@@ -285,6 +311,9 @@ std::expected<spec::PolicyRule, std::string> ComponentAdmissionPolicy(
   if (!values) return Refused(values.error());
   auto rule = spec::DefaultRule(*spec::FindMapping(profile->architecture), *values, envelope);
   if (!rule) return Refused(rule.error());
+  // The existing DS mapping deliberately has no policy directives. Preserve
+  // exactly that default instead of inventing a stored-only recipe.
+  if (*rule == nullptr && profile->id == ProfileId::kDsv4Gguf) return spec::PolicyRule{};
   if (*rule == nullptr) return Refused("no approved policy for this execution envelope");
   return **rule;
 }

@@ -27,9 +27,10 @@ struct KeyAlias {
   std::string_view canonical{};  // an existing selected source key
 };
 struct ScalarRequirement {
-  // The only additional operation needed by these source domains.
+  // Refuse this integer by default; require_equal instead admits only it.
   std::string_view key{};
   std::int64_t reject_equal = 0;
+  bool require_equal = false;
 };
 struct ListRequirement {
   std::string_view key{};
@@ -60,7 +61,7 @@ struct SourceMapping {
   RouteOperation route = RouteOperation::kCopyPart;
   std::span<const ListRequirement> lists{};
   std::span<const format::Encoding> encodings{};
-  // Compiled bounded side/mixing and integer-list component domain.
+  // Compiled bounded side/mixing and numeric-list component domain.
   bool extended_components = false;
   std::span<const TensorShapeRequirement> shapes{};
   std::span<const RowIndexRequirement> row_indices{};
@@ -76,7 +77,8 @@ inline constexpr std::uint32_t kLayerLimit = 1024;
 inline constexpr std::size_t kRuleLimit = 64;
 // Bits for the accepted source scalar and layer-list alternatives. Int and Real intersect
 // when one key supplies both; a bool is never an integer.
-inline constexpr std::uint8_t kInteger = 1, kReal = 2, kFlag = 4, kText = 8, kIntegers = 16;
+inline constexpr std::uint8_t kInteger = 1, kReal = 2, kFlag = 4, kText = 8, kIntegers = 16,
+                              kReals = 32;
 std::uint8_t KeyTypes(const spec::Mapping& mapping, std::string_view key);
 bool Pattern(std::string_view pattern);
 struct NameMatch {

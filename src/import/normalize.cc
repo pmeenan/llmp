@@ -51,6 +51,9 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key) {
   auto canonical = key;
   for (const auto& alias : t.keys)
     if (key == alias.source) canonical = alias.canonical;
+  for (const auto& requirement : t.requirements)
+    if (canonical == requirement.key && requirement.require_equal)
+      return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = nd::kInteger};
   if (const auto types = nd::KeyTypes(*t.architecture, canonical); types != 0)
     return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = types};
   for (std::size_t i = 0; i < t.auxiliary.size(); ++i)
@@ -67,6 +70,9 @@ bool SelectedValue(const MetaValue& value, std::uint8_t types) {
     return (types & nd::kText) != 0 && spec::IsSourceKey(*text);
   if (const auto* list = std::get_if<std::vector<std::int64_t>>(&value))
     return (types & nd::kIntegers) != 0 && !list->empty() && list->size() <= nd::kLayerLimit;
+  if (const auto* list = std::get_if<std::vector<double>>(&value))
+    return (types & nd::kReals) != 0 && !list->empty() && list->size() <= nd::kLayerLimit &&
+           std::ranges::all_of(*list, [](double x) { return std::isfinite(x); });
   return false;
 }
 // Reader accounting, with validation before scanning any array/string. No
@@ -206,10 +212,10 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
       return Bad("component catalog exceeds normalization budget", ItemKind::kNone, kNoItem,
                  Rule::kUnsupported);
     // The extended target's only state producers are these compiled catalog
-    // contracts (QSA four, GDN two, PLE one). Refuse a newly stateful kind
+    // contracts (MQA seven, QSA four, GDN two, PLE one). Refuse a newly stateful kind
     // before constructing Instances or allocating a StateContract.
     if (t.extended_components && def->state && slot.kind != "attention.qsa" &&
-        slot.kind != "attention.gdn" && slot.kind != "residual.ple")
+        slot.kind != "attention.gdn" && slot.kind != "residual.ple" && slot.kind != "attention.mqa")
       return Bad("component state producer is outside normalization budget");
     for (const auto& p : def->params) {
       if (p.type == components::ParamType::kReals ||
@@ -258,7 +264,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
             integer && *integer > 0)
           width = static_cast<std::uint64_t>(*integer);
       for (const auto& r : t.requirements)
-        if (r.key == key->canonical && integer && *integer == r.reject_equal)
+        if (r.key == key->canonical && integer && ((*integer == r.reject_equal) != r.require_equal))
           return Bad("source scalar requires unsupported mapping semantics", ItemKind::kKey, i,
                      Rule::kUnsupported);
     } else if (key->kind == MetadataClass::kStructural) {
@@ -296,6 +302,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         if (const auto* found = s.FindTensor(alias.source)) return found;
     return nullptr;
   };
+  for (const auto& rule : t.requirements)
+    if (rule.require_equal && !value_for(rule.key)) return Bad("required source scalar is absent");
   // Profile requirements are checked allocation-free, including required
   // presence, before allocating mapping/synthesis/catalog validation.
   for (const auto& rule : m.params) {
@@ -319,10 +327,12 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   for (const auto& rule : t.lists) {
     const auto* value = value_for(rule.key);
     const auto* list = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
-    if (!list || list->size() != rule.size ||
-        (!rule.exact.empty() && !std::ranges::equal(*list, rule.exact)))
-      return Bad("source integer-list profile requirement disagrees");
-    list_elements = std::max(list_elements, list->size());
+    const auto* reals = value ? std::get_if<std::vector<double>>(value) : nullptr;
+    const auto count = list ? list->size() : reals ? reals->size() : 0;
+    if (count != rule.size ||
+        (!rule.exact.empty() && (!list || !std::ranges::equal(*list, rule.exact))))
+      return Bad("source numeric-list profile requirement disagrees");
+    list_elements = std::max(list_elements, count);
   }
   for (const auto& rule : t.shapes) {
     const auto* found = tensor_for(rule.name);
@@ -359,18 +369,21 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     const auto key = Classify(t, s.metadata[i].key);
     if (key->kind != MetadataClass::kSelected) continue;
     const auto* list = std::get_if<std::vector<std::int64_t>>(&s.metadata[i].value);
-    if (!list) continue;
+    const auto* reals = std::get_if<std::vector<double>>(&s.metadata[i].value);
+    if (!list && !reals) continue;
+    const auto count = list ? list->size() : reals->size();
     const bool per_layer =
         key->canonical == m.layer_flags_key || std::ranges::any_of(m.params, [&](const auto& p) {
           return p.key == key->canonical && p.per_layer;
         });
-    if (per_layer && list->size() != layers)
+    if (per_layer && count != layers)
       return Bad("selected layer list does not cover every layer", ItemKind::kKey, i);
     if (t.extended_components &&
         std::ranges::none_of(t.lists, [&](const auto& rule) { return rule.key == key->canonical; }))
       return Bad("selected list has no compiled storage/domain bound", ItemKind::kKey, i);
     for (const auto& slot : m.slots) {
       if (slot.layers_key != key->canonical) continue;
+      if (!list) return Bad("layer selector requires integer values");
       for (std::size_t j = 0; j < list->size(); ++j)
         if ((*list)[j] < 0 || static_cast<std::uint64_t>((*list)[j]) >= layers ||
             (j && (*list)[j - 1] >= (*list)[j]))
@@ -436,7 +449,15 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   const auto T = std::uint64_t{s.tensors.size()}, M = std::uint64_t{s.metadata.size()};
   const auto F = std::uint64_t{s.files.size()};
   std::uint64_t C = 0;
-  for (const auto& slot : m.slots) C = a.Add(C, slot.site == spec::Site::kLayer ? layers : 1);
+  for (const auto& slot : m.slots) {
+    if (!slot.count_key.empty()) {
+      const auto* v = value_for(slot.count_key);
+      const auto* count = v ? std::get_if<std::int64_t>(v) : nullptr;
+      if (!count || *count < 0 || static_cast<std::uint64_t>(*count) > layers)
+        return Bad("source component count exceeds its layer domain");
+    }
+    C = a.Add(C, slot.site == spec::Site::kLayer || slot.per_layer ? layers : 1);
+  }
   const auto V = [&](std::uint64_t n, std::uint64_t z) { return a.Add(a.Mul(a.Mul(3, n), z), 64); };
   const auto Str = [&](std::uint64_t n) { return a.Mul(n, 1024); };
   const auto Tree = [&](std::uint64_t n) { return a.Mul(n, 256); };
@@ -448,7 +469,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   charge(a.Add(V(64, 256), a.Mul(2, Str(64))));
   // Owned selected lists plus overlapping ParamValue copies in Synthesis::Param.
   // Per-layer extraction leaves scalars in components, not retained layer lists.
-  charge(a.Mul(68, V(layers, 8)));
+  charge(a.Mul(68, V(std::max<std::uint64_t>(layers, list_elements), 8)));
   // Params::Of's absent optional list default is empty (params.cc). Present
   // lists can coexist in source values, synthesis, validated Instances and
   // temporary parameter values; conservatively fund all 64 per component.
@@ -460,7 +481,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   charge(a.Mul(C, a.Add(V(32, 160), a.Mul(3, Str(32)))));
   charge(a.Add(a.Add(V(layers, 32), V(C, 256)), a.Add(layers * 64, a.Mul(3, V(C, 8)))));
   charge(a.Mul(C, a.Add(a.Add(V(64, 128), a.Mul(3, Str(64))), V(64, 32))));
-  const auto contracts = t.extended_components ? a.Mul(4, C) : a.Mul(2, layers);
+  const auto contracts = t.extended_components ? a.Mul(7, C) : a.Mul(2, layers);
   charge(a.Add(a.Add(V(contracts, 256), a.Mul(2, Str(contracts))), V(4, 256)));
   charge(a.Add(a.Mul(6, V(32, 256)), a.Mul(4, Str(32))));
   charge(64 * 256 + 16 * 8192);
@@ -564,7 +585,8 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, std::int64_t> || std::is_same_v<T, double> ||
                           std::is_same_v<T, bool> || std::is_same_v<T, std::string> ||
-                          std::is_same_v<T, std::vector<std::int64_t>>)
+                          std::is_same_v<T, std::vector<std::int64_t>> ||
+                          std::is_same_v<T, std::vector<double>>)
               value = v;
           },
           e.value);

@@ -13,6 +13,15 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Normalize and publish the approved DeepSeek V4 GGUF target through the native
+  importer, preserving source encodings and exclusive embedding/hash-table
+  ownership. Validate stored-target full-head, state and spill-continuation
+  equivalence through the existing paid shared route; public defaults and
+  stored DSpark admission remain unchanged.
+- Treat the internal diagnostic node cap as an upper bound at both initial
+  physical admission and final dynamic-budget selection, retaining all existing
+  startup footprint and handle-reserve checks.
+
 - Admit DeepSeek target/DSpark through the internal shared Server route with
   component-derived decoding bounds and explicit physical admission. Share one
   paid transient compiler allowance across component aliases while retaining

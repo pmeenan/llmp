@@ -362,6 +362,44 @@ std::expected<void, std::string> CheckHashTables(const ja::Artifact& artifact,
   return {};
 }
 
+// Native hash tables retain I32 source values. Validate each table through a
+// bounded direct-read window before any routed work; no whole-table copy or
+// uncharged payload allocation is introduced for stored targets.
+std::expected<void, std::string> CheckStoredHashTables(const ja::Artifact& artifact) {
+  const auto& profile = model::Dsv4Flash();
+  for (std::uint32_t layer = 0; layer < profile.hash_layers; ++layer) {
+    auto index = artifact.FindResource(std::format("blk.{}.ffn_gate_tid2eid.weight", layer));
+    if (!index) return Error("stored hash-routing table is missing");
+    auto place = artifact.ResourcePlacement(*index);
+    const auto count = std::uint64_t{profile.experts_used} * profile.vocab;
+    if (!place || place->bytes.value() != count * sizeof(std::int32_t))
+      return Error("stored hash-routing table has an inconsistent byte count");
+    const auto& group = artifact.groups()[place->group];
+    const auto& shard = artifact.shards()[group.shard];
+    const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
+    const auto end = begin + place->bytes.value();
+    if (begin % sizeof(std::int32_t)) return Error("stored hash-routing table is unaligned");
+    auto file = artifact.OpenShardForDirectRead(group.shard);
+    if (!file) return Error(file.error().ToString());
+    alignas(4096) std::array<std::byte, 4096> window{};
+    for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
+      if (at > shard.data_offset.value() + shard.data_bytes.value() ||
+          window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
+        return Error("stored hash-routing read exceeds its shard");
+      if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
+        return Error(std::format("reading stored hash-routing table: errno {}", read.error()));
+      for (auto offset = std::max(at, begin); offset < std::min(at + window.size(), end);
+           offset += sizeof(std::int32_t)) {
+        std::int32_t expert = 0;
+        std::memcpy(&expert, window.data() + offset - at, sizeof(expert));
+        if (expert < 0 || std::cmp_greater_equal(expert, profile.experts))
+          return Error("stored hash-routing table names an invalid expert");
+      }
+    }
+  }
+  return {};
+}
+
 std::expected<model::Qwen38PleHash, std::string> RecipeHash(const ja::Artifact& artifact,
                                                             const model::Qwen38Binding& binding) {
   const auto& p = model::Qwen38Flash();
@@ -581,8 +619,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
     const bool stored = artifact->format_version() == 1;
-    if (deepseek && stored)
-      return Error("the DeepSeek target bridge requires its prepared v0 source");
+
     if (stored && !drafter_id.empty())
       return Error("native v1 component admission has no qualified drafter composition");
     const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
@@ -631,6 +668,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           {.context = settings.context.value, .slots = settings.max_slots.value});
       if (!policy) return Error(policy.error());
       stored_policy = *policy;
+      if (deepseek)
+        if (auto checked = CheckStoredHashTables(*artifact); !checked)
+          return Error(checked.error());
       hold->stored_payment = std::move(stored_bindings->payment);
       synthesized = std::move(stored_bindings->model);
       hold->sources.push_back(std::move(stored_bindings->source));
@@ -1070,7 +1110,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
 
     // A harness's matched recipe in place of the target's mapping's.
     std::optional<planner::Policy> target_policy;
-    if (stored || options.target_policy) {
+    if ((stored && !composition.text.empty()) || options.target_policy) {
       auto parsed =
           planner::ParsePolicy(options.target_policy ? *options.target_policy : composition.text);
       if (!parsed) return Error(std::format("the target's policy: {}", parsed.error()));
