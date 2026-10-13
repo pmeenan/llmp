@@ -1848,6 +1848,12 @@ each is checked against the design as M3.6 proceeds.
                                     four-owner joined wave and a 325-token reused
                                     prefix before 16 more outputs
                                     ([C4 control](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-target-only-http-c4-control)).
+                                    The existing GGUF target-only route also
+                                    passes C2: two overlapping 128-token replies,
+                                    127 joined ordinary waves and a 326-token
+                                    reused prefix before 16 more outputs, with
+                                    rendered counts authenticated before inference
+                                    ([GGUF control](experiments/m36-numerical-audit/qwen-joined-mtp.md#gguf-target-only-http-c2-control)).
                                     Automatic public serving admission, broader
                                     quality and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,

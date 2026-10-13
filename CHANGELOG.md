@@ -26,6 +26,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   configured envelope. Two- and four-request HTTP cohorts and retained-prefix
   reuse pass; public defaults and composed/scoring routes are unchanged.
 
+- Qualify the existing shared Qwen GGUF target-only HTTP route with two
+  overlapping requests and retained-prefix reuse, using native preflight
+  token counts from its kept chat assets; public defaults remain unchanged.
+
 - Connect the internal, explicitly funded shared Qwen diagnostic to the existing
   HTTP service. Two concurrent streamed MTP requests complete through joined
   execution; public model selection remains unchanged. Failed native Server

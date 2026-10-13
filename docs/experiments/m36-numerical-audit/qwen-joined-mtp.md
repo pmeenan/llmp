@@ -414,7 +414,7 @@ for an alias with no drafter; setup and retirement were successful. The
 correction changed only that observer, not source, configuration or payment.
 
 This is bounded native target-only C2 coverage; the C4 follow-up is below. C1,
-GGUF, automatic public selection, broader same-quantized-reference quality and
+automatic public selection, broader same-quantized-reference quality and
 the fixed-baseline 1% family gate remain open. It makes no quality or comparative speed claim.
 
 ## Native target-only HTTP C4 control
@@ -460,5 +460,56 @@ Replay keeps the existing supervised HTTP path, sets four slots and the derived
 startup payment above, and starts all four 128-token requests together before
 the 16-token prefix repeat. Require exact per-document rendered counts, all-four
 output overlap, the four-owner counter witness, positive cached prefix and
-positive retirement. Native C1, GGUF, larger contexts, broader quality, public
-default selection and the fixed-baseline 1% family gate remain open.
+positive retirement. Native C1, larger contexts, broader quality, public default
+selection and the fixed-baseline 1% family gate remain open. GGUF C2 coverage follows below.
+
+## GGUF target-only HTTP C2 control
+
+2026-10-13, Spark A. The same qualified shared runtime and internal selector
+complete a target-only C2 HTTP control for prepared GGUF artifact
+`5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78`
+(Qwen3.8 UD-IQ3_XXS). Context 512, chunk 16, read alignment 256 and two slots
+remain unchanged; there is no drafter. Both fresh requests complete 128 output
+tokens from 331-token prompts, with both streams producing output before either
+finishes. Cumulative counters record 127 joined ordinary waves /
+254 units and zero speculative work. Repeating the exact first
+prompt completes 16 more tokens and reuses 326 of 331 prompt tokens. Total
+completion work is 272 tokens. This is live retained-prefix evidence, not a
+durable-state byte comparison or a cross-implementation output gate.
+
+Before inference, a bounded native metadata check uses the existing GGUF
+reader, tokenizer and chat renderer to record both complete rendered token
+sequences. The runtime prefers the kept GGUF template
+`12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce`
+over configured external fallback assets. Its independently measured counts
+are 331/331; the native artifact's counts were not assumed. Metadata receipt:
+`2032002e63c013fef22c09b98be3d5b9cf8210895fd1914e763b073d2c9240c3`.
+
+The authenticated source has 1,080 resources and 24,627 groups, whose rounded
+weight reservations total 85,983,232,000 bytes. The source/configuration-derived
+startup payment remains 5,909,774,336 bytes within the 104 GiB node cap; actual
+setup, workspaces, state, cached plans and futures retain ordinary accounting.
+The 112 GiB zero-swap process/page-cache ceiling and 6 GiB physical margin are
+unchanged. Observed process/page-cache peak is 1,221,808,128
+bytes, not device residency. TERM exits zero, the complete process group retires,
+source/runtime guards pass, and GPU processes and memory-limit/OOM events are
+zero. No comparative speed, quality or memory-saving claim follows.
+
+Actual prepared execution identity:
+`c586531b75d58716979810a7647477338eaaf60c70c54a176463d4290df64508`.
+The runtime and relevant source bytes are exactly those of the preceding
+successful main159 build (runtime `321822e33762fb09f9ab8e32dd47a9252fa7f5224fc04354de905bf1e1882034`).
+The guarded A source map retains the already authenticated four documentation
+changes at `ba20c1cb`; later unrelated image changes are not part of this run.
+No duplicate compilation was required. Recipe:
+`6cdb4594719b7ab3d58fe5497c49b0756eb5ec031f8f7c5224bccf2b9f7b6ff1`.
+Actual result:
+`ff50307a1330c37ca77c5bc4207a279556efbec4c4239f672e5ca2723a57aab2`.
+
+Replay uses the same supervised C2 HTTP protocol and startup payment, selects
+this artifact under `qgguf-artifacts`, verifies the kept metadata and native
+rendered-input receipt, and requires both 128-token responses to overlap before
+the 16-token prefix repeat. Raw evidence and inputs remain in session scratch
+`qwen-gguf-c2-models01`. GGUF C4, larger contexts, broader same-quantized-reference
+quality, automatic public selection and the fixed-baseline family speed/swap
+gates remain open. GGUF+MTP and native-v1 admission are unchanged.
