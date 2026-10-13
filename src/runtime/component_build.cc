@@ -251,9 +251,20 @@ bool DeepSeekDomain(const ComponentBuildOptions& options, bool companion) {
                                                      .max_owners = 1,
                                                      .max_owner_rows = 1,
                                                      .max_total_rows = 1}};
-  if (!companion)
-    return stages.size() == 1 && stages[0].stage == 0 && stages[0].name == "target" &&
-           std::ranges::equal(stages[0].uses, uses) && std::ranges::equal(stages[0].phases, phases);
+  if (!companion) {
+    if (stages.size() != 1 || stages[0].stage != 0 || stages[0].name != "target") return false;
+    constexpr std::array scored_uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
+                                     engine::NumericalUse::kScore};
+    constexpr std::array scored_phases{phases[0], phases[1],
+                                       engine::NumericalPhase{.phase = planner::Phase::kScore,
+                                                              .max_owners = 1,
+                                                              .max_owner_rows = 128,
+                                                              .max_total_rows = 128}};
+    return (std::ranges::equal(stages[0].uses, uses) &&
+            std::ranges::equal(stages[0].phases, phases)) ||
+           (std::ranges::equal(stages[0].uses, scored_uses) &&
+            std::ranges::equal(stages[0].phases, scored_phases));
+  }
   constexpr std::array composed_uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
                                      engine::NumericalUse::kPromptCompanions,
                                      engine::NumericalUse::kSpeculative};
@@ -646,6 +657,20 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           single.segments = {segment};
           setup.push_back(std::move(single));
         }
+      }
+    }
+    if (deepseek && !dspark && options.execution_domain->CheckMode(engine::NumericalUse::kScore)) {
+      // Full-head Score has a different output/workspace envelope from the
+      // frontier-only Prefill. Measure the maximum and the actual short
+      // corpus's complete compressor/read classes independently.
+      for (const std::uint32_t rows : {128U, 1U})
+        setup.push_back(shape(0, planner::Phase::kScore, 1, rows, rows, false));
+      for (const std::uint32_t past : {0U, 128U, 256U}) {
+        const std::uint32_t rows = past == 256 ? 1 : 128;
+        auto scored = shape(0, planner::Phase::kScore, 1, rows, rows, false);
+        scored.segments.front().past = past;
+        scored.segments.front().read_cells = past + rows <= 256 ? 256 : 512;
+        setup.push_back(std::move(scored));
       }
     }
     // Each weight's place, by what the steps bind (the head's included;

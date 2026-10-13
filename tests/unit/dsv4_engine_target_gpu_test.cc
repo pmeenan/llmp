@@ -17,8 +17,11 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,9 +29,11 @@
 
 #include "artifact/json.h"
 #include "base/sha256.h"
+#include "corpus_score.h"
 #include "engine/component_source.h"
 #include "engine/expert_slab.h"
 #include "engine/paged_weights.h"
+#include "engine/plan_cache.h"
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "kernels/common/step_program.h"
@@ -46,6 +51,7 @@ namespace en = llmp::engine;
 namespace rt = llmp::runtime;
 namespace pl = llmp::planner;
 namespace kn = llmp::kernels;
+namespace ts = llmp::test_support;
 using Status = std::expected<void, std::string>;
 using llmp::test_support::Failed;
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
@@ -130,6 +136,36 @@ static_assert(kCompiler + kArtifactParser + kArtifacts + kTokenizer + kCatalog +
               kConstruction);
 static_assert(2 * (kTail + 1) * kVocab * sizeof(float) + 4 * kMiB < kCaller);
 
+constexpr std::uint32_t kScoreInputs = 257, kScoreChunk = 128;
+constexpr std::uint64_t kScoreOutputs = 4ULL * kVocab * kScoreChunk;
+constexpr std::uint64_t kScoreHost =
+    16ULL * kScoreInputs + 4 * kScoreOutputs + 4ULL * kVocab + kMiB;
+// Setup programs are transient. Their measured retained/capture costs are
+// admitted separately before any runtime compilation or weight payload.
+constexpr std::uint64_t kScoreFixed = kCompiler + kArtifactParser + kArtifacts + kTokenizer +
+                                      kCatalog + kBindings + kDirectory + kCaller + kScoreHost;
+static_assert(kScoreFixed < kConstruction);
+constexpr std::uint64_t kScoreCredit = kConstruction - kScoreFixed;
+static_assert(kScoreCredit == 567071792ULL);
+// ComponentLlmBuild retains one complete kConstruction charge. These named
+// subcategories reuse that held grant; charging its residual again would
+// double-count it. This closed diagnostic has no second factory construction.
+std::expected<std::uint64_t, std::string> HeldScoreCredit(
+    const en::ExecutionMetadataAllowance& allowance, std::uint64_t plans) {
+  if (allowance.capacity() < kConstruction || allowance.used() != kConstruction)
+    return std::unexpected("scored plans lack the complete held factory construction charge");
+  return std::min(plans, kScoreCredit);
+}
+// One selected index (0..255) plus separator per source-bounded graph node.
+constexpr std::uint64_t kSelectionReceipt = 4ULL * llmp::ir::Graph::kMaxNodes;
+constexpr std::uint64_t kClassReceipt = 3 * kMiB;
+static_assert(8 * (kSelectionReceipt + 512 * 21 + 512) <= kClassReceipt);
+// Retained selections, stream growth/string copies and GTest property copy;
+// leave 4 MiB for the existing small corpus/observer working storage.
+static_assert(8 * kSelectionReceipt + 4 * kSelectionReceipt + 4 * kClassReceipt + 4 * kMiB <=
+              kCaller);
+static_assert(kScoreOutputs <= 64 * kMiB && kScoreHost == 266335248ULL);
+
 rt::ModelSettings Settings(bool companion = false) {
   rt::ModelSettings s;
   s.name = companion ? "deepseek-component-dspark" : "deepseek-component-target";
@@ -143,7 +179,28 @@ rt::ModelSettings Settings(bool companion = false) {
   return s;
 }
 std::expected<std::shared_ptr<const en::NumericalDomain>, std::string> Domain(
-    bool companion = false) {
+    bool companion = false, bool scoring = false) {
+  if (scoring) {
+    if (companion) return std::unexpected("scored companion is not admitted");
+    auto score_domain = en::NumericalDomain::Create(
+        {{.stage = 0,
+          .name = "target",
+          .uses = {en::NumericalUse::kPrompt, en::NumericalUse::kDecode, en::NumericalUse::kScore},
+          .phases = {{.phase = pl::Phase::kPrefill,
+                      .max_owners = 1,
+                      .max_owner_rows = kChunk,
+                      .max_total_rows = kChunk},
+                     {.phase = pl::Phase::kDecode,
+                      .max_owners = 1,
+                      .max_owner_rows = 1,
+                      .max_total_rows = 1},
+                     {.phase = pl::Phase::kScore,
+                      .max_owners = 1,
+                      .max_owner_rows = kScoreChunk,
+                      .max_total_rows = kScoreChunk}}}});
+    if (!score_domain) return std::unexpected(score_domain.error());
+    return std::make_shared<const en::NumericalDomain>(std::move(*score_domain));
+  }
   if (companion) {
     const std::vector uses{en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
                            en::NumericalUse::kPromptCompanions, en::NumericalUse::kSpeculative};
@@ -224,8 +281,24 @@ Status Metadata(const fs::path& artifact) {
 }
 
 struct Lifetime {
-  explicit Lifetime(bool with_companion = false) : companion(with_companion) {}
-  bool companion;
+  explicit Lifetime(bool with_companion = false, bool with_score = false)
+      : companion(with_companion), scoring(with_score) {}
+  bool companion, scoring;
+  struct ScoreClass {
+    pl::StepShape shape;
+    std::vector<std::uint64_t> parameters;
+    bool measured = false, lowered = false;
+    std::uint64_t host_bytes = 0, launches = 0, selected_steps = 0, paid_bytes = 0;
+    std::string selection;
+  };
+  std::array<ScoreClass, 8> score_classes;
+  en::StepSource* source = nullptr;  // Owned by the actual EngineLlm runner.
+  llmp::model::Batching score_caps{};
+  std::array<std::int32_t, kScoreInputs> score_ids{};
+  std::array<ts::CorpusTargetScore, kScoreInputs - 1> scores{};
+  std::array<bool, kScoreInputs> seen{};
+  std::uint32_t score_count = 0;
+  rt::RequestMemory score_tokens{4 * kMiB};
   std::uint64_t StateBytes() const { return kState + (companion ? kDsparkState : 0); }
   std::uint64_t SnapshotBytes() const { return companion ? StateBytes() + 4 * kMiB : kSnapshot; }
   std::uint64_t WeightBytes() const { return kWeights + (companion ? kDsparkWeights : 0); }
@@ -233,8 +306,11 @@ struct Lifetime {
   // Complete caller storage is prepaid with construction; local token memory
   // also enforces its own small limit before any history-vector growth.
   rt::RequestMemory tokens{kMiB};
-  std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
+  std::shared_ptr<en::ExecutionMetadataAllowance> allowance, score_plan_allowance;
+  std::uint64_t score_plan_bytes = 0, score_extra_extent = 0;
   std::unique_ptr<rt::EngineLlm> model;
+  std::optional<en::WaveComposer> score_composer;
+  std::unique_ptr<ts::CorpusScore> scorer;
   std::unique_ptr<rt::SnapshotStore> prefix, end;
   std::vector<en::PagedModel*> entered;
   std::array<std::int32_t, kPrefix> ids{};
@@ -255,6 +331,56 @@ struct Lifetime {
     if (in.token->shape.stage > (companion ? 1 : 0) || in.token->shape.segments.size() != 1 ||
         program.routed() || in.plan.steps.empty() || program.launches() == 0)
       return std::unexpected("the target did not lower to its ordinary owned full-step program");
+    if (scoring) {
+      if (source == nullptr) return std::unexpected("missing scored source");
+      const auto parameters = source->ShapeParameters(in.token->shape);
+      const auto record = std::ranges::find_if(score_classes, [&](const auto& item) {
+        return item.shape == in.token->shape && item.parameters == parameters &&
+               item.shape.segments.front().past == in.token->shape.segments.front().past;
+      });
+      if (record == score_classes.end())
+        return std::unexpected("score/setup shape parameters were not prepaid and measured");
+      // Only the final three classes belong to the fixed scored schedule.
+      // Other setup programs are destroyed without entering the plan cache.
+      const bool retained = record - score_classes.begin() >= 5;
+      if (!retained && in.addresses.activations != 0)
+        return std::unexpected("measurement-only setup class cannot execute in the scored run");
+      const auto host = program.host_bytes(), launches = program.launches();
+      if (host > kCompiler || (retained && launches > (kCap - host) / en::kGraphNodeHostBytes))
+        return std::unexpected("measured program exceeds representable paid node geometry");
+      const auto paid = host + (retained ? launches * en::kGraphNodeHostBytes : 0);
+      if (in.addresses.activations != 0 &&
+          (!record->measured || host > record->host_bytes || launches > record->launches ||
+           paid > record->paid_bytes))
+        return std::unexpected("bound scored program exceeds its measured admitted owner");
+      if (in.addresses.activations == 0)
+        record->measured = true;
+      else {
+        if (!record->measured) return std::unexpected("score shape ran before measurement");
+        record->lowered = true;
+      }
+      if (in.token->shape.phase == pl::Phase::kScore) {
+        if (auto head_ok = ts::CheckCorpusHead(in, program, kVocab); !head_ok) return head_ok;
+      }
+      if (paid >= record->paid_bytes) {
+        record->host_bytes = host;
+        record->launches = launches;
+        record->selected_steps = in.plan.steps.size();
+        record->paid_bytes = paid;
+      }
+      // Registry indices are below the existing256 implementation limit:
+      // at most three decimal digits plus a comma, checked before streaming.
+      if (in.plan.steps.size() > llmp::ir::Graph::kMaxNodes)
+        return std::unexpected("selection receipt exceeds prepaid text capacity");
+      std::ostringstream selected;
+      for (const auto& item : in.plan.steps) selected << item.implementation << ',';
+      if (selected.tellp() > static_cast<std::streamoff>(kSelectionReceipt))
+        return std::unexpected("selection receipt exceeds payment");
+      const auto serialized = selected.str();
+      if (!record->selection.empty() && record->selection != serialized)
+        return std::unexpected("measured and bound selection differs for the same complete key");
+      record->selection = serialized;
+    }
     std::uint32_t products = 0, arrays = 0, hash_inputs = 0;
     for (const auto& weight : in.token->step.weights)
       if (weight.ref.expert_array) ++arrays;
@@ -337,7 +463,7 @@ struct Lifetime {
         llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
     if (!paid) return std::unexpected(paid.error());
     allowance = std::move(*paid);
-    auto domain = Domain(companion);
+    auto domain = Domain(companion, scoring);
     if (!domain) return std::unexpected(domain.error());
     llmp::config::ModelEntry entry;
     entry.name = Settings(companion).name;
@@ -355,6 +481,24 @@ struct Lifetime {
          .validate_program = [this](const kn::LowerInput& in, const kn::StepProgram& program) {
            return Validate(in, program);
          }});
+    if (scoring) {
+      build = [this, inner = std::move(build)](const rt::ModelSettings& settings) mutable
+          -> std::expected<rt::EngineLlmParts, std::string> {
+        auto parts = inner(settings);
+        if (!parts) return std::unexpected(parts.error());
+        if (parts->config.setup_shapes.size() != score_classes.size())
+          return std::unexpected("score setup class inventory differs");
+        source = parts->source.get();
+        score_caps = parts->caps;
+        for (std::size_t i = 0; i < score_classes.size(); ++i) {
+          score_classes[i].shape = parts->config.setup_shapes[i];
+          score_classes[i].parameters = source->ShapeParameters(score_classes[i].shape);
+          if (score_classes[i].parameters.size() > 512)
+            return std::unexpected("score shape parameters exceed fixed payment");
+        }
+        return parts;
+      };
+    }
     model = std::make_unique<rt::EngineLlm>(node, entry, Settings(companion), roles, 0,
                                             std::move(build));
     model->SetTokenMemory(tokens);
@@ -362,6 +506,32 @@ struct Lifetime {
     const auto setup = model->Setup();
     if (model->has_paged()) entered.push_back(&model->paged());
     if (!setup) return setup;
+    if (scoring) {
+      if (auto inputs = ScoreInputs(); !inputs) return inputs;
+      if (!std::ranges::all_of(score_classes, [](const auto& item) { return item.measured; }))
+        return std::unexpected("incomplete score class measurement");
+      std::uint64_t largest = 0;
+      for (std::size_t i = 5; i < score_classes.size(); ++i) {
+        const auto bytes = score_classes[i].paid_bytes;
+        if (bytes > kCap - score_plan_bytes)
+          return std::unexpected("retained scored plans exceed node geometry");
+        score_plan_bytes += bytes;
+        largest = std::max(largest, bytes);
+      }
+      if (largest > kCap - score_plan_bytes)
+        return std::unexpected("scored replacement owner exceeds node geometry");
+      score_plan_bytes += largest;
+      const auto credit = HeldScoreCredit(*allowance, score_plan_bytes);
+      if (!credit) return std::unexpected(credit.error());
+      const auto excess = score_plan_bytes - *credit;
+      if (excess != 0) {
+        const auto overhead = en::ExecutionMetadataAllowance::OverheadBytes();
+        if (excess > kCap - overhead - en::kPagedExtent)
+          return std::unexpected("scored metadata extent cannot be represented");
+        score_extra_extent =
+            (excess + overhead + en::kPagedExtent - 1) / en::kPagedExtent * en::kPagedExtent;
+      }
+    }
     const auto execution = model->ExecutionIdentity();
     if (!execution || !execution->has_value())
       return std::unexpected("the actual target has no complete execution identity after Setup");
@@ -391,7 +561,8 @@ struct Lifetime {
     // live/copy/spill state overlap, caller host staging and minimum plans.
     if (!take(fixed) || !take(weight_bytes) || !take(4 * SnapshotBytes()) ||
         !take(model->activations_needed()) || !take(pool) || !take(2 * en::kPagedExtent) ||
-        !take(model->host_input_bytes()) || !take(model->plan_floor_bytes()))
+        !take(model->host_input_bytes()) || !take(model->plan_floor_bytes()) ||
+        (scoring && (!take(kScoreHost) || !take(score_plan_bytes) || !take(score_extra_extent))))
       return std::unexpected("actual Setup storage exceeds the unchanged 110 GiB domain");
     footprint = kCap - left;
     const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
@@ -399,6 +570,14 @@ struct Lifetime {
     // allocations already reduce MemAvailable. Unknown is never authority.
     if (footprint > available || rt::kUncountedMargin > available - footprint)
       return std::unexpected("actual Setup footprint plus six GiB lacks physical headroom");
+    if (score_extra_extent != 0) {
+      auto extra = en::ExecutionMetadataAllowance::Admit(
+          node.catalog(), node.domain(), score_extra_extent, available, rt::kUncountedMargin);
+      if (!extra) return std::unexpected(extra.error());
+      score_plan_allowance = std::move(*extra);
+      if (!score_plan_allowance->Charge(score_plan_bytes - kScoreCredit))
+        return std::unexpected("scored metadata excess lacks its admitted payment");
+    }
     if (auto s = node.MapWorkspace(model->activations_needed(), pool); !s) return s;
     const auto mapped = node.catalog().OccupancyOf(node.domain()).Total().value();
     const auto now = llmp::platform::AvailableMemoryBytes().value_or(0);
@@ -407,7 +586,7 @@ struct Lifetime {
                           .plans = model->plan_floor_bytes(),
                           .available = now,
                           .fixed = mapped,
-                          .requests = kCaller};
+                          .requests = kCaller + (scoring ? kScoreHost + score_plan_bytes : 0)};
     if (auto s = rt::CheckMemoryGuard(guard); !s) return s;
     const auto reserve = rt::GuardReserve(guard);
     if (now == 0 || now < reserve || mapped > kCap)
@@ -426,6 +605,7 @@ struct Lifetime {
     const std::array active{&branch};
     if (auto s = model->SelectBranches(active); !s) return s;
     if (auto s = model->PrepareDefaultRequest(); !s) return s;
+    if (scoring) return Score();
     for (std::uint32_t i = 0; i < ids.size(); ++i)
       ids[i] = static_cast<std::int32_t>(100 + (i * 7919U + 17U) % 30000U);
     prefix = std::make_unique<rt::SnapshotStore>(node, SnapshotBytes());
@@ -500,6 +680,78 @@ struct Lifetime {
           restored_state_digest = llmp::base::ToHex(*again);
           return {};
         });
+  }
+  Status ScoreInputs() {
+    const char* text_path = std::getenv("LLMP_DSV4_CORPUS_TEXT");
+    const char* ids_path = std::getenv("LLMP_DSV4_CORPUS_IDS");
+    const char* ids_hash = std::getenv("LLMP_DSV4_CORPUS_SHA256");
+    if (!text_path || !ids_path || !ids_hash || std::string_view(ids_hash).size() != 64)
+      return std::unexpected("captured DeepSeek corpus identity is required");
+    if (auto checked = File(text_path, 17210,
+                            "772a8b2d503df4fefd1a0a974ecae3ad58f8a4d1f2940fbc6bd440b5c86fb431");
+        !checked)
+      return checked;
+    if (auto checked = File(ids_path, sizeof(score_ids), ids_hash); !checked) return checked;
+    std::string text(17210, '\0');
+    std::ifstream text_in(text_path, std::ios::binary);
+    if (!text_in.read(text.data(), static_cast<std::streamsize>(text.size())))
+      return std::unexpected("captured corpus read failed");
+    std::ifstream ids_in(ids_path, std::ios::binary);
+    if (!ids_in.read(reinterpret_cast<char*>(score_ids.data()), sizeof(score_ids)))
+      return std::unexpected("captured IDs read failed");
+    if (model->tokenizer().size() != kVocab || !model->tokenizer().bos() ||
+        *model->tokenizer().bos() != score_ids.front())
+      return std::unexpected("native corpus vocabulary/BOS differs");
+    auto native = model->EncodeText(text, &score_tokens);
+    if (!native) return std::unexpected(native.error());
+    if (native->size() < score_ids.size() ||
+        !std::ranges::equal(std::span(*native).first(score_ids.size()), score_ids))
+      return std::unexpected("native tokenizer differs from captured reference prefix");
+    return {};
+  }
+  Status Score() {
+    auto composer = en::WaveComposer::For(score_caps, model->runner().slots());
+    if (!composer) return std::unexpected(composer.error());
+    score_composer.emplace(std::move(*composer));
+    const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = score_ids}};
+    auto bound =
+        ts::CorpusScore::Bound(documents, {.vocabulary = kVocab, .chunk_rows = kScoreChunk});
+    if (!bound || *bound != kScoreHost) return std::unexpected("scorer host payment differs");
+    auto made = ts::CorpusScore::Make(
+        node, model->runner(), *score_composer, documents,
+        {.vocabulary = kVocab, .chunk_rows = kScoreChunk},
+        [this](const ts::CorpusTargetScore& row) -> Status {
+          if (score_count >= scores.size() || row.document || row.slot ||
+              row.position != score_count + 1 || row.target != score_ids[row.position])
+            return std::unexpected("DeepSeek loss coordinates differ");
+          scores[score_count++] = row;
+          return {};
+        },
+        [this](std::uint32_t document, std::uint32_t slot, std::uint32_t position,
+               std::span<const float> row) -> Status {
+          if (document || slot || position >= seen.size() || seen[position] || row.size() != kVocab)
+            return std::unexpected("DeepSeek full finite row coverage differs");
+          seen[position] = true;
+          return {};
+        });
+    if (!made) return std::unexpected(made.error());
+    scorer = std::move(*made);
+    auto completed = node.WithRequest(
+        0, model->request_closure(), "DeepSeek fixed natural corpus", [&]() -> Status {
+          for (std::uint32_t wave = 0; wave < 3; ++wave) {
+            auto done = scorer->Step();
+            if (!done) return std::unexpected(done.error());
+            if (*done != (wave == 2)) return std::unexpected("DeepSeek scored cutoff differs");
+          }
+          return {};
+        });
+    if (!completed) return completed;
+    if (!scorer->complete() || score_count != scores.size() ||
+        scorer->result().inputs != kScoreInputs || scorer->result().targets != kScoreInputs - 1 ||
+        scorer->result().steps != 3 || model->runner().slots().positions(0) != kScoreInputs ||
+        !std::ranges::all_of(seen, [](bool value) { return value; }))
+      return std::unexpected("DeepSeek score completion differs");
+    return {};
   }
   Status Complete(const rt::Generation& generated) const {
     if (generated.tokens.size() != kTail + 1 || generated.logits.size() != kTail + 1 ||
@@ -583,6 +835,76 @@ TEST(Dsv4EngineTargetInputs, RejectsUnpaidOrDifferentEnvelopeBeforeArtifactRead)
   auto absent = build(Settings());
   ASSERT_FALSE(absent);
   EXPECT_EQ((*admitted)->used(), 0U);
+}
+
+TEST(Dsv4EngineTargetInputs, CreditsOnlyTheRetainedFactoryConstructionCharge) {
+  llmp::catalog::Catalog catalog;
+  const auto owner = catalog.AddDomain("held construction credit");
+  auto paid = en::ExecutionMetadataAllowance::Admit(catalog, owner, kConstructionExtent,
+                                                    kConstructionExtent + rt::kUncountedMargin,
+                                                    rt::kUncountedMargin);
+  ASSERT_TRUE(paid) << Failed(paid).value_or("");
+  auto& allowance = **paid;
+  EXPECT_FALSE(HeldScoreCredit(allowance, kScoreCredit));
+  // The real factory charges this whole grant before source construction and
+  // retains it in ComponentHold through source/backend teardown.
+  ASSERT_TRUE(allowance.Charge(kConstruction));
+  EXPECT_EQ(allowance.capacity() - allowance.used(),
+            2 * kMiB - en::ExecutionMetadataAllowance::OverheadBytes());
+  EXPECT_FALSE(allowance.Charge(kScoreCredit));  // Reproduces the old double charge.
+  const auto used = allowance.used();
+  for (const auto plans : {kScoreCredit - 1, kScoreCredit, kScoreCredit + 1}) {
+    const auto credit = HeldScoreCredit(allowance, plans);
+    ASSERT_TRUE(credit) << Failed(credit).value_or("");
+    EXPECT_EQ(*credit, std::min(plans, kScoreCredit));
+    EXPECT_LE(kScoreFixed + *credit, used);
+    EXPECT_EQ(plans - *credit, plans > kScoreCredit ? 1U : 0U);
+    EXPECT_EQ(allowance.used(), used);
+  }
+  ASSERT_TRUE(allowance.Charge(1));
+  EXPECT_FALSE(HeldScoreCredit(allowance, kScoreCredit));
+  allowance.Release(1);
+  allowance.Release(kConstruction);
+  EXPECT_FALSE(HeldScoreCredit(allowance, kScoreCredit));
+}
+
+TEST(Dsv4EngineTargetInputs, ScoredTargetEnvelopeIsClosedBeforeArtifactRead) {
+  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+  llmp::catalog::Catalog catalog;
+  const auto owner = catalog.AddDomain("closed scored target payment");
+  auto paid = en::ExecutionMetadataAllowance::Admit(catalog, owner, kConstructionExtent,
+                                                    kConstructionExtent + rt::kUncountedMargin,
+                                                    rt::kUncountedMargin);
+  ASSERT_TRUE(paid) << Failed(paid).value_or("");
+  for (unsigned mutation = 0; mutation < 8; ++mutation) {
+    auto scored = Domain(false, true);
+    ASSERT_TRUE(scored) << Failed(scored).value_or("");
+    std::vector<en::NumericalStage> stages((*scored)->stages().begin(), (*scored)->stages().end());
+    if (mutation == 1) stages[0].phases.back().max_owner_rows = 129;
+    if (mutation == 2) stages[0].phases.back().max_total_rows = 129;
+    if (mutation == 3) stages[0].phases.back().max_owners = 2;
+    if (mutation == 4) stages[0].phases.back().row_invariant = true;
+    if (mutation == 5) stages[0].uses.pop_back();
+    if (mutation == 6) stages[0].uses.push_back(en::NumericalUse::kPromptCompanions);
+    auto domain = en::NumericalDomain::Create(std::move(stages));
+    ASSERT_TRUE(domain) << Failed(domain).value_or("");
+    llmp::config::ModelEntry entry;
+    entry.name = Settings().name;
+    entry.artifact = std::string(kArtifact);
+    if (mutation == 7) entry.drafter = std::string(kDsparkArtifact);
+    auto build = rt::ComponentLlmBuild(
+        node, "/nonexistent-dsv4-score-control", entry, 0,
+        {.target_policy = std::nullopt,
+         .diagnostic_solo = true,
+         .construction_metadata = *paid,
+         .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))});
+    auto result = build(Settings());
+    ASSERT_FALSE(result);
+    const bool envelope =
+        result.error().find("paid single-owner diagnostic envelope") != std::string::npos;
+    EXPECT_EQ(envelope, mutation != 0) << result.error();
+    EXPECT_EQ((*paid)->used(), 0U);
+  }
 }
 
 TEST(Dsv4EngineTargetInputs, RejectsUnpaidOrDifferentCompanionBeforeArtifactRead) {
@@ -700,4 +1022,71 @@ TEST(Dsv4EngineTargetGpu, TargetAndDsparkFiniteHeadsAndSnapshotContinuation) {
   RecordProperty("restored_initialized_state_sha256", life->restored_state_digest);
   RecordProperty("selected_plan_receipt", llmp::base::ToHex(life->recipes.Finish()));
 }
+// Deliberately registered dynamically: this captured-input diagnostic is
+// built in the existing owner fixture but has no automatic CTest entry.
+class Dsv4NaturalCorpus : public testing::Test {
+ public:
+  void TestBody() override {
+    const char* store = std::getenv("LLMP_DSV4_TARGET_STORE");
+    const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
+    ASSERT_NE(store, nullptr);
+    ASSERT_NE(scratch, nullptr);
+    const fs::path out = fs::path(scratch) / "dsv4-corpus";
+    std::error_code error;
+    fs::create_directories(out, error);
+    ASSERT_FALSE(error) << error.message();
+    auto life = std::make_unique<Lifetime>(false, true);
+    const auto result = life->Run(store, out);
+    const auto retired = life->Retire();
+    if (!retired) {
+      std::ignore = life.release();
+      FAIL() << Failed(retired).value_or("");
+    }
+    ASSERT_TRUE(result) << Failed(result).value_or("");
+    std::ostringstream losses, classes;
+    losses << std::setprecision(17);
+    for (const auto& row : life->scores)
+      losses << row.document << ',' << row.position << ',' << row.target << ',' << row.nll << '\n';
+    for (std::size_t i = 0; i < life->score_classes.size(); ++i) {
+      const auto& item = life->score_classes[i];
+      const auto& shape = item.shape;
+      const auto& segment = shape.segments.front();
+      classes << i << ',' << static_cast<unsigned>(shape.phase) << ',' << shape.stage << ','
+              << shape.row_invariant << ',' << shape.read_align << ','
+              << static_cast<unsigned>(segment.slot) << ',' << segment.rows << ',' << segment.past
+              << ',' << segment.read_cells << ',' << segment.outputs << ','
+              << static_cast<unsigned>(segment.group) << ',' << segment.want_head << ','
+              << segment.greedy << ',' << item.measured << ',' << item.lowered << ','
+              << item.host_bytes << ',' << item.launches << ',' << item.selected_steps << ','
+              << item.paid_bytes << "|parameters:";
+      for (auto value : item.parameters) classes << value << ',';
+      classes << "|selection:" << item.selection << '\n';
+    }
+    ASSERT_LE(losses.tellp(), 64 * 1024);
+    ASSERT_LE(classes.tellp(), kClassReceipt);
+    RecordProperty("losses", losses.str());
+    RecordProperty("classes", classes.str());
+    RecordProperty("inputs", std::to_string(kScoreInputs));
+    RecordProperty("targets", std::to_string(life->score_count));
+    RecordProperty("finite_rows", std::to_string(std::ranges::count(life->seen, true)));
+    RecordProperty("waves", std::to_string(life->scorer->result().steps));
+    RecordProperty("scorer_host_bound", std::to_string(kScoreHost));
+    RecordProperty("retained_plan_bound_bytes", std::to_string(life->score_plan_bytes));
+    RecordProperty("plan_metadata_extra_extent_bytes", std::to_string(life->score_extra_extent));
+    RecordProperty("plan_metadata_overhead_bytes",
+                   std::to_string(en::ExecutionMetadataAllowance::OverheadBytes()));
+    RecordProperty("source_artifact", std::string(kArtifact));
+    RecordProperty("source_weight_extent_bytes", std::to_string(kWeights));
+    RecordProperty("state_layout_bytes", std::to_string(kState));
+    RecordProperty("setup_paid_footprint_bytes", std::to_string(life->footprint));
+    RecordProperty("setup_activation_bytes", std::to_string(life->activation_bytes));
+    RecordProperty("setup_pool_bytes", std::to_string(life->pool_bytes));
+    RecordProperty("setup_host_input_bytes", std::to_string(life->input_bytes));
+    RecordProperty("setup_plan_floor_bytes", std::to_string(life->plan_bytes));
+    RecordProperty("selected_plan_receipt", llmp::base::ToHex(life->recipes.Finish()));
+  }
+};
+[[maybe_unused]] const auto* const kNaturalCorpus =
+    testing::RegisterTest("Dsv4CorpusScoreManual", "Natural257", nullptr, nullptr, __FILE__,
+                          __LINE__, []() -> Dsv4NaturalCorpus* { return new Dsv4NaturalCorpus; });
 }  // namespace

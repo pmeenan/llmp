@@ -46,7 +46,7 @@ with a measured speed tradeoff; neither replay is full-model qualification.
 A later [target-only joined scoring screen](qwen-joined-score.md) uses the real
 owned backend and records lower secondary same-artifact loss with three
 explicit physical8 tuning keys. Its short fresh-process bookend shows no clear
-timing separation. Same-candidate short state controls pass; original-reference,
+timing separation. Same-candidate short state controls pass; broader same-quantized-reference quality,
 long-context, MTP and serving migration qualifications remain open. The generic
 reserved-weight alignment fix supplies checked physical facts and does not
 activate those experimental policy choices. The broader fixed
@@ -74,6 +74,15 @@ cases, including same-selected checkpoint/spill replay and complete final
 initialized-state hashes. Its 20 measured classes and explicit buffer payment
 do not qualify MTP, long context or family performance. No memory saving or
 new corpus-quality result is claimed.
+
+A [DeepSeek shared Score screen](../m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)
+now compares the same UD-Q2_K_XL checkpoint on 256 fixed natural targets.
+Current default fused llama.cpp PPL is 41.634137984; native
+PPL is 42.160877478 (+1.265162%). All 257 full heads,
+36 host controls and both actual cases pass. Measured retained-plan metadata
+is explicitly admitted before payload under the unchanged 110 GiB node cap.
+This short observation does not qualify longer sparse histories, DSpark quality,
+serving, family speed/swap or agreement with an unavailable original BF16 model.
 
 ## Candidates and evidence
 

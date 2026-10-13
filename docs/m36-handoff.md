@@ -108,7 +108,7 @@ build and 305 affected host controls, then the actual two-owner screen on Spark 
 replay. It includes complete v0 row-table reconstruction through the existing
 artifact assembler and actual-width/selected-ID draft sampling. See the
 [joined MTP report](experiments/m36-numerical-audit/qwen-joined-mtp.md).
-Original-reference quality, durable old/new persistence, production serving and
+Broader same-quantized-reference quality, durable old/new persistence, production serving and
 the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
 snapshot continuation on Spark B. The actual spatial-image screen passes
@@ -122,8 +122,18 @@ Actual setup pays 106,614,572,256 bytes under the unchanged 110 GiB cap and
 no-head prefill skips dead final expert products while keeping all persistent
 state writes. The actual case passes in 28.516 seconds including setup/storage;
 this is not a throughput result. DSpark's composed execution now passes the bounded screen below;
-original-reference quality, persistence, production serving and matched family
+broader same-quantized-reference quality, persistence, production serving and matched family
 speed/swap gates remain open. See [the target report](experiments/m36-dsv4-target/README.md).
+
+G4c3 now scores one fixed natural history through the real shared target and
+CorpusScore: 257 authenticated IDs, 256 next-token losses, 257 complete finite
+heads, C1/context 3072 and 128/128/1 waves. Native PPL is
+42.160877478, +1.265162% versus current default fused
+llama.cpp on the same UD-Q2_K_XL checkpoint. Main native/36 host and both
+actual cases pass; capture metadata is admitted from measured program sizes
+before payload, within the unchanged node cap. This is not DSpark or longer
+sparse-history quality, original-model agreement, serving or performance
+qualification ([report](experiments/m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)).
 
 G4c2 now passes complete composed target/DSpark execution on main: full native
 build, 308 affected host controls and the actual block-drafter/snapshot screen
@@ -132,7 +142,7 @@ proposals and one accepted draft; 18 finite complete target heads and nine
 restored rows reach frontier 2568. Actual setup pays 117,595,233,088 bytes under
 the unchanged 110 GiB cap and preserves the 6 GiB physical margin. The case
 takes 35.309 seconds including setup/storage, not a speed qualification.
-Draft-head finiteness, original-model quality, durable persistence, selected-only
+Draft-head finiteness, broader same-quantized-reference quality, durable persistence, selected-only
 expert paging, production serving and matched family speed/swap gates remain
 open ([report](experiments/m36-dsv4-target/dspark.md)).
 

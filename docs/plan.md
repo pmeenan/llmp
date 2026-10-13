@@ -1720,7 +1720,7 @@ each is checked against the design as M3.6 proceeds.
                                           complete v0 multipart row tables through
                                           the shared artifact assembler, and draft
                                           heads use their actual selected width.
-                                          Original-model quality, durable old/new
+                                          Broader same-quantized-reference quality, durable old/new
                                           persistence and serving admission remain
                                           open ([evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md)).
                               - [x] **G3c2b1c — inactive accurate dense-product
@@ -1786,7 +1786,7 @@ each is checked against the design as M3.6 proceeds.
                                     PPL changes −0.635489%, but new 888 targets only
                                     −0.057291% with two documents regressing. This
                                     descriptive result adopts no policy or threshold;
-                                    original-reference and family gates remain open
+                                    broader same-quantized-reference quality and family gates remain open
                                     ([report](experiments/m36-numerical-audit/qwen-joined-score.md#broader-fixed-natural-corpus--qwen52)).
                         - [ ] **G3c2b2 — serving and gate:** compose the
                               native, GGUF and MTP serving paths, pass state,
@@ -1996,7 +1996,7 @@ each is checked against the design as M3.6 proceeds.
                         and 307 affected host controls pass; 18 finite complete
                         head rows and nine snapshot-restored rows pass at frontier
                         2568 on Spark B. The unchanged 110 GiB cap and 6 GiB
-                        physical margin admit actual setup. DSpark, original-model
+                        physical margin admit actual setup. Broader same-checkpoint
                         quality, serving, swap and matched speed remain open
                         ([evidence](experiments/m36-dsv4-target/README.md)).
                   - [x] **G4c2 — composed DSpark execution screen:**
@@ -2007,9 +2007,20 @@ each is checked against the design as M3.6 proceeds.
                         proposals and one accepted draft, with 18 finite complete
                         target heads and nine restored rows at frontier 2568.
                         Actual paid setup fits the unchanged 110 GiB cap and
-                        6 GiB physical margin. Draft-head finiteness, original
+                        6 GiB physical margin. Draft-head finiteness, broader same-checkpoint
                         quality, production serving and family speed/swap gates
                         remain open ([evidence](experiments/m36-dsv4-target/dspark.md)).
+                  - [x] **G4c3 — bounded same-checkpoint target scoring:**
+                        the real target factory admits a closed Score domain and
+                        independently measures its full-head shapes. Shared
+                        CorpusScore and current fused llama.cpp score the same
+                        256 natural targets; native PPL changes
+                        +1.265162% relative to that quantized reference.
+                        Main native build, 36 host controls and both actual cases
+                        pass. Measured plan metadata is paid before payload;
+                        longer sparse histories, DSpark quality, serving and
+                        family speed/swap remain open
+                        ([evidence](experiments/m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)).
             - [ ] **G4d — deletion:** remove DeepSeek V4's M3 runner, plans,
                   graph builders, bindings and serving class after G4c.
 - [x] **Migrate Qwen2 FP16 and EXL3 fixtures** (required by the exit criteria).

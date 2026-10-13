@@ -360,7 +360,8 @@ if(LLMP_CUDA)
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Fixed default-off full DeepSeek target factory/state diagnostic.
   add_executable(dsv4_engine_target_gpu_test dsv4_engine_target_gpu_test.cc)
-  target_link_libraries(dsv4_engine_target_gpu_test PRIVATE llmp_runtime_serving)
+  target_link_libraries(dsv4_engine_target_gpu_test PRIVATE llmp_corpus_score llmp_engine_core
+                                                        llmp_runtime_serving)
   llmp_gpu_gtest(dsv4_engine_target_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Gemma 2 and Gemma 3 on the shared engine through the server: heads,

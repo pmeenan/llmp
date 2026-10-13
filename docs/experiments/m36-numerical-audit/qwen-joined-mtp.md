@@ -49,10 +49,12 @@ Actual recipe manifest SHA-256: `8158f99d116ad7a666179a6aef57ea782dd084f0e3b01bb
 Raw logs/XML remain outside Git under each host's session scratch.
 
 This establishes same-implementation state restoration and owned-domain
-execution. It does not establish original-model quality, durable old/new
-restart compatibility, production serving, matched family speed or swap gates.
-The original Qwen source-precision model remains absent from inspected local
-and NAS catalog evidence; no quantized bit-equality result substitutes for it.
+execution. Broader quality and behavioral coverage against a reference of the
+same quantized checkpoint, durable old/new restart compatibility, production
+serving and matched family speed/swap remain open. The original Qwen
+source-precision model remains absent from inspected local and NAS catalog
+evidence, limiting original-agreement claims without blocking that quantized
+baseline. Cross-library bit equality is diagnostic, not a quality requirement.
 
 ## Isolated commit check
 

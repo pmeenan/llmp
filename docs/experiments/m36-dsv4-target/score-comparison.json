@@ -1,0 +1,49 @@
+{
+  "native": {
+    "targets": 256,
+    "mean_nll": 3.7414927170733474,
+    "perplexity": 42.16087747847592
+  },
+  "reference": {
+    "targets": 256,
+    "mean_nll": 3.7289204553616284,
+    "perplexity": 41.634137984304324
+  },
+  "delta_nll": 0.01257226171171899,
+  "relative_ppl_percent": 1.2651624836574435,
+  "coordinates_lower_nll": 126,
+  "coordinates_higher_nll": 130,
+  "coordinates_equal_nll": 0,
+  "largest_abs_delta_nll": 1.0000918949968352,
+  "receipt_sha256": {
+    "/tmp/llmp-m36-coordination/dsv4-shared-score-offline01/result.json": "6ab4b78def95361d513e714e4880df14c5de463043797288ccc252f3ae931d10",
+    "/tmp/llmp-m36-coordination/dsv4-shared-score-reference-models01/remote/result.json": "dd87393d19bbd5a37394ac12ba973591271cf15663bcb6f330ff31843a44f0ed"
+  },
+  "quality_scope": "short256loss same-quantized-checkpoint comparison; no original-model or general adoption claim",
+  "first128": {
+    "native": {
+      "targets": 128,
+      "mean_nll": 4.162531507440402,
+      "perplexity": 64.23392561160207
+    },
+    "reference": {
+      "targets": 128,
+      "mean_nll": 4.168357437615382,
+      "perplexity": 64.60924019379497
+    },
+    "relative_ppl_percent": -0.580899235259751
+  },
+  "second128": {
+    "native": {
+      "targets": 128,
+      "mean_nll": 3.3204539267062927,
+      "perplexity": 27.672909180471986
+    },
+    "reference": {
+      "targets": 128,
+      "mean_nll": 3.2894834731078753,
+      "perplexity": 26.82900217518062
+    },
+    "relative_ppl_percent": 3.1455027651832044
+  }
+}

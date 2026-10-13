@@ -1398,7 +1398,7 @@ scalar policies, not measured CUDA recipes: the existing native IndexScore
 also rounds queries to F16. No Lid capability or changed TopK semantics
 is introduced by the bank form.
 
-Default policy, original-reference quality and performance remain open.
+Default policy, broader same-quantized-reference quality and performance remain open.
 G4b2c ports output-A and product policies after G4b2b2, executing all selected
 contributions and preserving same-implementation state, rollback and replay.
 Legacy bit parity is historical diagnostic evidence, not the prospective
@@ -1424,8 +1424,8 @@ with a head), without forcing work to match another implementation.
 The Spark B screen passes 18 finite complete heads and nine snapshot-restored
 rows at frontier 2568, with actual setup below the unchanged 110 GiB cap and
 6 GiB physical margin. Full native build and 307 affected host controls pass.
-It uses ordinary full expert residency, not selected-only admission. DSpark,
-original-reference quality, durable restart, production serving and the family
+It uses ordinary full expert residency, not selected-only admission. Broader
+same-quantized-reference quality, durable restart, production serving and the family
 speed/swap gates remain open ([target evidence](experiments/m36-dsv4-target/README.md)).
 
 G4c2 composes the fixed DSpark companion through the same factory and existing
@@ -1440,7 +1440,7 @@ snapshot continuations complete seven steps, 17 proposals and one accepted draft
 with 18 finite complete target head rows and nine restored rows at frontier 2568.
 Measured setup pays 117,595,233,088 bytes, leaving 516,367,552 bytes below the
 unchanged 110 GiB cap; the 6 GiB physical margin also passes. This measures
-composed fit and continuation, not serving speed or original-model quality.
+composed fit and continuation, not serving speed or reference quality.
 Full draft-head finiteness, durable restart, selected-only paging, production
 serving and matched family gates remain open ([DSpark evidence](experiments/m36-dsv4-target/dspark.md)).
 

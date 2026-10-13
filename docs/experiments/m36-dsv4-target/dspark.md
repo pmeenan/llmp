@@ -79,7 +79,9 @@ with a one-case guard; only that guard and the scratch path changed before the
 actual invocation. No native rebuild or arithmetic change was needed.
 
 Full draft-head finiteness remains unqualified: complete proposals prove actual
-draft execution, while finite-value checks cover target heads. Original BF16
-quality, durable restart, selected-only expert paging, production serving,
-throughput and matched family speed/swap gates remain open. No bit-parity policy
-is adopted and no quality claim substitutes for the missing original model.
+draft execution, while finite-value checks cover target heads. Broader quality
+against a reference of the same quantized checkpoint, durable restart,
+selected-only expert paging, production serving, throughput and matched family
+speed/swap gates remain open. No bit-parity policy is adopted. The absent
+original BF16 model limits original-agreement claims, not that quantized
+reference baseline.
