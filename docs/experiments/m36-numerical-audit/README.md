@@ -44,6 +44,12 @@ activate those experimental policy choices. The broader fixed
 from the earlier prefixes; this does not establish a general quality advantage
 or justify adopting the experimental selection.
 
+The [same-quantized-checkpoint Mia reference](qwen-quantized-reference.md)
+now scores those same 1,016 targets: PPL 35.144838403. Historical native
+A/C observations are respectively +0.389325% and −0.248639% relative to it.
+They predate current main and differ in cache precision; this is descriptive
+evidence, without a current-source, serving or closer-to-original claim.
+
 ## Candidates and evidence
 
 | Work | What the audit established | Next decision |

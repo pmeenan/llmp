@@ -40,6 +40,13 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
+The pinned Mia reference now scores the same quantized Qwen checkpoint and
+fixed 1,016 targets: PPL 35.144838403. Historical experimental native A/C
+results differ by +0.389325%/−0.248639%; neither is a current-main or family
+adoption gate. Cache precision differences are disclosed. A current-parent
+native comparison is in flight; missing original BF16 is not its blocker.
+[Reference and reusable collector](experiments/m36-numerical-audit/qwen-quantized-reference.md).
+
 The bounded dense Q8_0 cache opt-in (D-117) keeps F16 default and uses actual
 source/state/kept identities. Main native build and 519 host controls plus four
 actual D64/D256 cases pass. Same-weights paired short PPL rises 4.598% and

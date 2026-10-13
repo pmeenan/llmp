@@ -1432,6 +1432,12 @@ each is checked against the design as M3.6 proceeds.
       - [ ] Broader fixed corpus and same-checkpoint reference comparisons;
             optional original-reference comparisons for original-agreement claims;
             production-phase, speculation, context and cohort controls for chosen candidates.
+            - [x] Pinned Mia Qwen same-quantized-checkpoint baseline: all
+                  1,016 existing fixed-corpus targets scored and independently
+                  checked; PPL 35.144838403. Historical native A/C comparisons
+                  remain descriptive, with cache differences disclosed and no
+                  current-main or family gate claim
+                  ([reference](experiments/m36-numerical-audit/qwen-quantized-reference.md)).
       - [x] First Qwen2 fused-attention recovery screen: actual selected attention,
             aligned natural smoke losses and four fresh-fixture ABBA cases pass.
             Timing includes setup/I/O and baseline drift; no quality, serving-speed
