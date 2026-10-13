@@ -75,14 +75,17 @@ initialized-state hashes. Its 20 measured classes and explicit buffer payment
 do not qualify MTP, long context or family performance. No memory saving or
 new corpus-quality result is claimed.
 
-A [DeepSeek shared Score screen](../m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)
-now compares the same UD-Q2_K_XL checkpoint on 256 fixed natural targets.
-Current default fused llama.cpp PPL is 41.634137984; native
-PPL is 42.160877478 (+1.265162%). All 257 full heads,
-36 host controls and both actual cases pass. Measured retained-plan metadata
-is explicitly admitted before payload under the unchanged 110 GiB node cap.
-This short observation does not qualify longer sparse histories, DSpark quality,
-serving, family speed/swap or agreement with an unavailable original BF16 model.
+The [DeepSeek shared Score screen](../m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)
+compares the same UD-Q2_K_XL checkpoint with current default fused llama.cpp.
+The short 256-target result remains native/reference PPL 42.160877478/41.634137984
+(+1.265162%). A separate 2,560-target prefix reaches actual selective indexer
+execution beyond past 2048: native/reference PPL 21.685131518/21.512273654
+(+0.803531%), with −0.034072% on the final 512 targets. All 2,561 complete heads
+are finite. The main build/474 combined host controls, measured complete-key
+plan admission and both actual cases pass; a stale wrapper overhead assertion
+is corrected offline without repeating inference. These fixed-history diagnostics
+do not qualify broader sparse histories, DSpark quality, serving, family
+speed/swap or distance to an unavailable original BF16 model.
 
 ## Candidates and evidence
 

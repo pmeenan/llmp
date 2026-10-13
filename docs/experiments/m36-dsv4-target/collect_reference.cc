@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 // External pinned llama.cpp reference only. Derived from dsv4-native/oracle.cc.
-// Fixed natural corpus, BOS plus256 input tokens;256 next-token losses.
+// Fixed natural corpus; preserved257-input and long2561-input diagnostics.
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -20,7 +20,7 @@
 #include "llama.h"
 
 namespace {
-constexpr std::size_t kInputs = 257, kChunk = 128, kTextBytes = 17210;
+constexpr std::size_t kChunk = 128, kTextBytes = 17210;
 constexpr int kVocabulary = 129280;
 static_assert(sizeof(llama_token) == 4 && std::endian::native == std::endian::little);
 void Require(bool ok, const char* what) {
@@ -38,7 +38,7 @@ std::vector<llama_token> Tokens(const llama_vocab* vocab, const std::string& tex
   std::vector<llama_token> ids(text.size() + 16);
   const int count = llama_tokenize(vocab, text.data(), static_cast<int32_t>(text.size()),
                                    ids.data(), static_cast<int32_t>(ids.size()), false, false);
-  Require(count >= static_cast<int>(kInputs - 1) && count <= static_cast<int>(ids.size()),
+  Require(count >= 256 && count <= static_cast<int>(ids.size()),
           "tokenizer count outside fixed bounds");
   ids.resize(static_cast<std::size_t>(count));
   const auto bos = llama_vocab_bos(vocab);
@@ -81,12 +81,14 @@ double Loss(const float* row, llama_token target) {
 
 int main(int argc, char** argv) {
   try {
-    Require(
-        argc == 5 || argc == 6,
-        "usage: collector prepare MODEL CORPUS OUTDIR | collector score MODEL CORPUS OUTDIR IDS");
+    Require(argc == 5 || argc == 6,
+            "usage: collector prepare[-long] MODEL CORPUS OUTDIR | collector score[-long] MODEL "
+            "CORPUS OUTDIR IDS");
     const std::string mode = argv[1];
-    const bool prepare = mode == "prepare";
-    Require((prepare && argc == 5) || (mode == "score" && argc == 6), "invalid mode");
+    const bool prepare = mode == "prepare" || mode == "prepare-long";
+    const bool score = mode == "score" || mode == "score-long";
+    Require((prepare && argc == 5) || (score && argc == 6), "invalid mode");
+    const std::size_t inputs = mode.ends_with("-long") ? 2561 : 257;
     for (const char* key : {"GGML_CUDA_DISABLE_FUSION", "GGML_CUDA_DISABLE_GRAPHS",
                             "GGML_CUDA_FORCE_MMQ", "GGML_CUDA_FORCE_CUBLAS"})
       Require(std::getenv(key) == nullptr, "unexpected reference override");
@@ -109,13 +111,15 @@ int main(int argc, char** argv) {
       Require(llama_vocab_n_tokens(vocab) == kVocabulary, "wrong vocabulary");
       auto ids = Tokens(vocab, text);
       const auto full_count = ids.size();
-      ids.resize(kInputs);
+      Require(ids.size() >= inputs, "corpus does not contain the requested prefix");
+      ids.resize(inputs);
       if (!prepare) {
-        Require(std::filesystem::file_size(argv[5]) == kInputs * sizeof(llama_token),
+        Require(std::filesystem::file_size(argv[5]) == inputs * sizeof(llama_token),
                 "wrong captured ID extent");
-        std::array<llama_token, kInputs> supplied{};
+        std::vector<llama_token> supplied(inputs);
         std::ifstream in(argv[5], std::ios::binary);
-        Require(bool(in.read(reinterpret_cast<char*>(supplied.data()), sizeof(supplied))),
+        Require(bool(in.read(reinterpret_cast<char*>(supplied.data()),
+                             static_cast<std::streamsize>(supplied.size() * sizeof(llama_token)))),
                 "captured ID read failed");
         Require(std::equal(ids.begin(), ids.end(), supplied.begin()),
                 "reference tokenizer disagrees with captured IDs");
@@ -139,7 +143,7 @@ int main(int argc, char** argv) {
         Require(bool(ctx), "context creation failed");
         Require(llama_n_ctx(ctx.get()) == 3072, "context differs");
         llama_memory_clear(llama_get_memory(ctx.get()), true);
-        losses.reserve(kInputs - 1);
+        losses.reserve(inputs - 1);
         for (std::size_t at = 0; at < ids.size(); at += kChunk) {
           const auto rows = std::min(kChunk, ids.size() - at);
           Decode(ctx.get(), ids.data() + at, rows, at);
@@ -151,7 +155,7 @@ int main(int argc, char** argv) {
             if (at + row + 1 < ids.size()) losses.push_back(loss);
           }
         }
-        Require(finite_rows == kInputs && losses.size() == kInputs - 1, "incomplete coordinates");
+        Require(finite_rows == inputs && losses.size() == inputs - 1, "incomplete coordinates");
         llama_synchronize(ctx.get());
       }
       // Successful retirement precedes output publication. Wrapper publishes final receipt only on
@@ -177,9 +181,9 @@ int main(int argc, char** argv) {
       }
       std::ofstream summary(out / "summary.json");
       summary << std::setprecision(17) << "{\"mode\":\"" << mode
-              << "\",\"full_token_count\":" << full_count
-              << ",\"input_count\":257,\"vocabulary\":129280,\"bos\":" << ids[0]
-              << ",\"targets\":" << losses.size() << ",\"finite_rows\":" << finite_rows
+              << "\",\"full_token_count\":" << full_count << ",\"input_count\":" << inputs
+              << ",\"vocabulary\":129280,\"bos\":" << ids[0] << ",\"targets\":" << losses.size()
+              << ",\"finite_rows\":" << finite_rows
               << ",\"context\":3072,\"chunk\":128,\"cache_k\":\"f16\",\"cache_v\":\"f16\",\"fusion_"
                  "disabled\":false,\"swa_full\":false,\"kv_unified\":false,\"mean_nll\":"
               << mean << ",\"perplexity\":" << std::exp(mean) << "}\n";

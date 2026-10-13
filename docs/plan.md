@@ -2102,10 +2102,15 @@ each is checked against the design as M3.6 proceeds.
                         CorpusScore and current fused llama.cpp score the same
                         256 natural targets; native PPL changes
                         +1.265162% relative to that quantized reference.
-                        Main native build, 36 host controls and both actual cases
-                        pass. Measured plan metadata is paid before payload;
-                        longer sparse histories, DSpark quality, serving and
-                        family speed/swap remain open
+                        A separate 2,560-target history reaches selective indexer
+                        execution beyond past 2048: native PPL changes +0.803531%
+                        overall and −0.034072% on its final 512 targets. Full native
+                        build/474 combined host controls (39 DS-related), repository
+                        checks and both actual cases pass; a stale wrapper overhead
+                        constant is corrected by a source-backed offline audit.
+                        Complete-key plan owners and one replacement are measured
+                        and paid before payload. Broader sparse histories, DSpark
+                        quality, serving and family speed/swap remain open
                         ([evidence](experiments/m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)).
             - [ ] **G4d — deletion:** remove DeepSeek V4's M3 runner, plans,
                   graph builders, bindings and serving class after G4c.

@@ -820,17 +820,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     if (deepseek && !dspark && options.execution_domain->CheckMode(engine::NumericalUse::kScore)) {
       // Full-head Score has a different output/workspace envelope from the
-      // frontier-only Prefill. Measure the maximum and the actual short
-      // corpus's complete compressor/read classes independently.
+      // frontier-only Prefill. Actual caller schedules may add their complete
+      // compressor/read classes before Setup; the factory measures the maxima.
       for (const std::uint32_t rows : {128U, 1U})
         setup.push_back(shape(0, planner::Phase::kScore, 1, rows, rows, false));
-      for (const std::uint32_t past : {0U, 128U, 256U}) {
-        const std::uint32_t rows = past == 256 ? 1 : 128;
-        auto scored = shape(0, planner::Phase::kScore, 1, rows, rows, false);
-        scored.segments.front().past = past;
-        scored.segments.front().read_cells = past + rows <= 256 ? 256 : 512;
-        setup.push_back(std::move(scored));
-      }
     }
     // Each weight's place, by what the steps bind (the head's included;
     // a state-only prompt chunk binds a subset), and a head row's width:

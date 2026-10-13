@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Extend the shared DeepSeek target scoring diagnostic beyond 2,048 history
+  tokens using the existing scorer and same-checkpoint fused reference. Derive
+  actual wave shapes, deduplicate complete plan keys and pay measured retained
+  owners plus one replacement before execution; preserve the short diagnostic.
 - Apply the same validated internal shared-engine options to HTTP and local
   serving commands. Retain exact quality token IDs/losses from one score call
   for same-checkpoint reference comparison, and validate existing 8K saved-state

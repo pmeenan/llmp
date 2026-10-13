@@ -45,5 +45,87 @@
       "perplexity": 26.82900217518062
     },
     "relative_ppl_percent": 3.1455027651832044
+  },
+  "long_history": {
+    "paired": {
+      "targets": 2560,
+      "coordinate_from": 1,
+      "coordinate_through": 2560,
+      "native": {
+        "mean_nll": 3.0766268421921383,
+        "perplexity": 21.6851315178596
+      },
+      "reference": {
+        "mean_nll": 3.0686236398923454,
+        "perplexity": 21.512273654295985
+      },
+      "delta_nll": 0.0080032022997929,
+      "relative_ppl_percent": 0.8035313530380629,
+      "coordinates_lower_nll": 1215,
+      "coordinates_higher_nll": 1345,
+      "coordinates_equal_nll": 0,
+      "mean_abs_delta_nll": 0.09951595624383362,
+      "largest_abs_delta_nll": 2.540150354191777
+    },
+    "first2048": {
+      "targets": 2048,
+      "coordinate_from": 1,
+      "coordinate_through": 2048,
+      "native": {
+        "mean_nll": 3.147471607659865,
+        "perplexity": 23.277136382203373
+      },
+      "reference": {
+        "mean_nll": 3.137382409970967,
+        "perplexity": 23.04346948946224
+      },
+      "delta_nll": 0.010089197688897933,
+      "relative_ppl_percent": 1.0140265242956967,
+      "coordinates_lower_nll": 972,
+      "coordinates_higher_nll": 1076,
+      "coordinates_equal_nll": 0,
+      "mean_abs_delta_nll": 0.09985418084236018,
+      "largest_abs_delta_nll": 2.540150354191777
+    },
+    "last512": {
+      "targets": 512,
+      "coordinate_from": 2049,
+      "coordinate_through": 2560,
+      "native": {
+        "mean_nll": 2.793247780321231,
+        "perplexity": 16.33398293726991
+      },
+      "reference": {
+        "mean_nll": 2.7935885595778593,
+        "perplexity": 16.33955016837761
+      },
+      "delta_nll": -0.0003407792566281209,
+      "relative_ppl_percent": -0.034072119797249605,
+      "coordinates_lower_nll": 243,
+      "coordinates_higher_nll": 269,
+      "coordinates_equal_nll": 0,
+      "mean_abs_delta_nll": 0.09816305784972741,
+      "largest_abs_delta_nll": 1.025543761924311
+    },
+    "receipt_sha256": {
+      "native_wrapper": "d448cbfd4bd1f74df2b4a47a61e48b490eaaf841eb5145381caaad4305a92e2c",
+      "native_xml": "577556d023e77d65e8995c3043266cdcf017493283e84fc55eeb034e46a9ebef",
+      "reference": "784514b319703d65f3e91ea6233c43617ca5bef5341cf537c8a49c4c6c1bec6a"
+    },
+    "input_ids_sha256": "4305649054af339e49353b7fdfc68a12a8d7ced945f37a587c09fe79a77a2c3c",
+    "input_count": 2561,
+    "finite_heads": 2561,
+    "waves": 21,
+    "unique_plan_keys": 11,
+    "retained_plan_bound_bytes": 4509881440,
+    "plan_metadata_extra_extent_bytes": 3944742912,
+    "setup_paid_footprint_bytes": 115501547600,
+    "scorer_host_bound": 266372112,
+    "memory_peak_process_cache_bytes": 3666571264,
+    "main_receipt_sha256": "1de554731febc03c542a8681a3d2f50c1bd90fa6f984a59be43b139edae454f9",
+    "offline_receipt_sha256": "17a618b371092d5e84400a9739bf1fe34aca757b120b69b6994149d3da2cb03d",
+    "quality_scope": "fixed2560 target-only diagnostic through post2048 indexer shapes; no general quality/default/original-model or speed qualification",
+    "original_native_wrapper_status": "FAIL",
+    "offline_status": "PASS"
   }
 }

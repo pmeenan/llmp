@@ -75,7 +75,7 @@ target-only report's scope or close the remaining family gates.
 
 ## Same-quantized-checkpoint scoring
 
-2026-10-13, Spark A. A closed, target-only Score domain uses the existing
+Short screen, 2026-10-13, Spark A. A closed, target-only Score domain uses the existing
 ComponentLlmBuild, EngineLlm, ModelRunner and CorpusScore path. It keeps the
 mapping's arithmetic policy and ordinary complete expert closure. Five added
 Score shapes are independently measured alongside the three existing setup
@@ -159,10 +159,83 @@ storage fits the existing 32 MiB caller allowance. Native process and page-cache
 confinement is 116 GiB with zero swap; the separate reference uses 110 GiB
 with zero swap. Neither cgroup peak measures device residency.
 
+### Long-history diagnostic
+
+The same target-only path also scores a separate `Natural2561` history:
+BOS plus 2,560 natural tokens, twenty 128-row waves and a terminal row at
+past 2560, within context 3072. The 2,561 complete finite heads yield exactly
+2,560 losses at global target coordinates 1–2560. Both implementations consume
+the same 10,244-byte ID file, SHA-256
+`4305649054af339e49353b7fdfc68a12a8d7ced945f37a587c09fe79a77a2c3c`.
+The source text, checkpoint, pinned fused reference and F16 reference cache
+are unchanged from the short screen. The short result above remains a
+separate historical receipt.
+
+| Target coordinates | Native mean NLL | Reference mean NLL | Native PPL | Reference PPL | Relative PPL |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1–2560 | 3.076626842192 | 3.068623639892 | 21.685131517860 | 21.512273654296 | +0.803531% |
+| 1–2048 | 3.147471607660 | 3.137382409971 | 23.277136382203 | 23.043469489462 | +1.014027% |
+| 2049–2560 | 2.793247780321 | 2.793588559578 | 16.333982937270 | 16.339550168378 | −0.034072% |
+
+Across all 2,560 coordinates, native loss is lower at 1,215 and higher at
+1,345; the mean absolute difference is 0.099515956244 and maximum absolute
+difference is 2.540150354192. The partitions describe this fixed history;
+no quality threshold, external bit-equivalence or original-model agreement
+claim is inferred from them.
+
+The factory retains generic full-context setup maxima. The caller derives its
+21 actual shapes through the existing WaveComposer and records every shape
+field, source ShapeParameters and prepared key identity. Five other classes
+remain measurement-only. The 21 scheduled classes resolve to 11 complete
+PlanKeys: runtime past remains separately checked even when the cache reuses
+a key. Every executed key has a physically lowered representative and matching
+selected-operation digest/count. Actual lowerings at past 2048, 2304 and 2560
+include 21 selective indexer operations with 768 read cells and 512 selected
+cells. This is source-backed execution evidence for the bounded long schedule,
+not a claim of every sparse-attention geometry.
+
+Measured retained-plan payment sums each unique key's maximum host and launch
+costs plus one maximum replacement, rather than counting duplicate schedule
+records. It is 4,509,881,440 bytes; the separately admitted excess extent is
+3,944,742,912 bytes. The actual complete setup footprint is 115,501,547,600
+bytes, within the unchanged 110 GiB node cap and 6 GiB physical margin. The
+scorer bound is 266,372,112 bytes, leaving 567,034,928 bytes of named credit
+inside the factory's held 4 GiB construction charge. Positive excess is
+charged before workspace and payload, with the existing PlanAccount active.
+Streaming selected-index digests keep receipt construction within the existing
+caller allowance. Native process/cache peak is 3,666,571,264 bytes; this is
+not device residency.
+
+The combined main build passes 474 host controls, including 39 DS-related
+controls (16 corpus, 17 execution-contract and six input controls), plus
+repository checks. Spark A executes the exact Spark B checked binary,
+`af6d827a50fa5d40e9445e993faee3a5630b90069475937e882c317859fd1d97`
+(239,125,368 bytes), with matching source and cuBLAS closure. Both actual
+cases complete, with zero memory-limit/OOM events, guards and positive
+process/container/GPU retirement. No native rebuild or inference repeat
+was needed for cross-host transport.
+
+The native wrapper preserves a reporting-only FAIL after the case passed:
+it expected the old 528-byte metadata-owner overhead. The current checked
+owner is 40 bytes plus 512 bytes of catalog/control overhead, or 552 bytes;
+actual admission already used that value. The pure offline audit changes only
+that observer constant and verifies the complete remaining audit and paired
+rows. The first reference attempt refused its initial physical-memory gate
+before execution; a reviewed 109 GiB reference process cap with 115 GiB initial
+availability and the same 6 GiB live margin completed. Native confinement
+remains 116 GiB; both use zero swap.
+
+Main receipt: `1de554731febc03c542a8681a3d2f50c1bd90fa6f984a59be43b139edae454f9`.
+Original native wrapper FAIL: `d448cbfd4bd1f74df2b4a47a61e48b490eaaf841eb5145381caaad4305a92e2c`.
+Offline qualification: `17a618b371092d5e84400a9739bf1fe34aca757b120b69b6994149d3da2cb03d`.
+Reference PASS: `784514b319703d65f3e91ea6233c43617ca5bef5341cf537c8a49c4c6c1bec6a`.
+The existing [aggregate comparison](score-comparison.json) retains both the
+short result and this long-history result; raw receipts remain in scratch.
+
 ### Manual replay
 
 The built `dsv4_engine_target_gpu_test` exposes
-`Dsv4CorpusScoreManual.Natural257` as a manually supervised diagnostic,
+`Dsv4CorpusScoreManual.Natural257` and `Natural2561` as manually supervised diagnostics,
 with no automatic captured-input CTest registration. Supply
 `LLMP_DSV4_TARGET_STORE`, `LLMP_DSV4_CORPUS_TEXT`, `LLMP_DSV4_CORPUS_IDS`,
 `LLMP_DSV4_CORPUS_SHA256` and a fresh `LLMP_TEST_SCRATCH`. Use the installed
@@ -170,16 +243,18 @@ exclusive Spark supervisor with the declared memory, file, output and
 retirement guards; the 512 MiB spill-file bound is separate from the 8 MiB
 log/XML bound.
 
-[collect_reference.cc](collect_reference.cc) is a formatting-only copy of the
-executed external collector, linked only against the pinned reference. Its `prepare` mode
+[collect_reference.cc](collect_reference.cc) is the existing external collector,
+linked only against the pinned reference. Its `prepare` mode
 reads vocabulary metadata and writes the fixed IDs; `score` revalidates those
 IDs, uses the current default fused reference and publishes all 256 losses.
+The corresponding `prepare-long` and `score-long` modes retain 2,561 IDs and
+publish 2,560 losses with the same argument forms and reference settings.
 Arguments are `prepare FIRST_SHARD TEXT FRESH_OUTPUT` and
 `score FIRST_SHARD TEXT FRESH_OUTPUT CAPTURED_IDS`. Compile and execute it
 under the same qualified toolchain/reference closure and supervised resource
 bounds. It is not linked into llmpalooza or used for native dispatch.
 
-This is one short, fixed natural history. It does not qualify longer sparse
-attention histories, DSpark quality, durable restart, production serving or
+These are two fixed prefixes of one natural history. They do not qualify
+broader sparse-attention histories, DSpark quality, durable restart, production serving or
 family speed/swap gates. Agreement with an unavailable original BF16 model
 is not inferred; the quality baseline here is the same quantized checkpoint.

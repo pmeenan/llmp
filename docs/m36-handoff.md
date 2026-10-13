@@ -257,15 +257,20 @@ this is not a throughput result. DSpark's composed execution now passes the boun
 broader same-quantized-reference quality, persistence, production serving and matched family
 speed/swap gates remain open. See [the target report](experiments/m36-dsv4-target/README.md).
 
-G4c3 now scores one fixed natural history through the real shared target and
-CorpusScore: 257 authenticated IDs, 256 next-token losses, 257 complete finite
-heads, C1/context 3072 and 128/128/1 waves. Native PPL is
-42.160877478, +1.265162% versus current default fused
-llama.cpp on the same UD-Q2_K_XL checkpoint. Main native/36 host and both
-actual cases pass; capture metadata is admitted from measured program sizes
-before payload, within the unchanged node cap. This is not DSpark or longer
-sparse-history quality, original-model agreement, serving or performance
-qualification ([report](experiments/m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)).
+G4c3 retains its 256-target same-checkpoint result (+1.265162% PPL) and now
+scores a separate 2,560-target prefix through the same target-only CorpusScore
+path. All 2,561 full heads are finite; 21 waves resolve to 11 complete keys,
+with actual selective indexer execution beyond past 2048. Native/reference PPL
+is 21.685131518/21.512273654 (+0.803531%); the final 512 targets change
+−0.034072%. These are diagnostic observations, not family quality thresholds.
+The combined native build passes 474 host controls (39 DS-related) and repository
+checks. Both actual cases complete; the original native wrapper FAIL is retained
+and its stale 528-byte overhead observer is corrected offline to the source-backed
+552 bytes. Actual retained-plan payment is 4,509,881,440 bytes and full setup
+115,501,547,600 bytes under the unchanged 110 GiB node cap. Guards and positive
+retirement pass. Broader same-checkpoint quality, DSpark, durable restart,
+serving and family speed/swap gates remain open
+([report](experiments/m36-dsv4-target/README.md#long-history-diagnostic)).
 
 G4c2 now passes complete composed target/DSpark execution on main: full native
 build, 308 affected host controls and the actual block-drafter/snapshot screen
