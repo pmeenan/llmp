@@ -369,10 +369,13 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
   for (const auto& stage : plan.spec().stages) {
     if (stage.embedding) bind(*stage.embedding, {0, 0});
     if (stage.stream.mixing) bind(*stage.stream.mixing, {1, 0});
-    for (const auto& side : stage.side) {
-      // Side n-gram inputs perform row lookup just like token embeddings.
-      // Keep the encoded table eligible for exact row-closure admission.
-      bind(side.source, {side.source.kind == "side.ngram" ? 0U : 1U, 0});
+    for (std::size_t i = 0; i < stage.side.size(); ++i) {
+      const auto& side = stage.side[i];
+      // On-demand side rows must not share an unbacked group with the ordinary
+      // token embedding (or another table). Keep each side's ownership intact.
+      bind(side.source,
+           {side.source.kind == "side.ngram" ? 0U : 1U,
+            side.source.kind == "side.ngram" ? static_cast<std::uint32_t>(i + 1) : 0U});
     }
     for (std::size_t i = 0; i < stage.layers.size(); ++i)
       for (const auto& c : stage.layers[i].components) bind(c, {2, static_cast<std::uint32_t>(i)});

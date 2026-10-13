@@ -8,14 +8,19 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdint>
 #include <string_view>
+#include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "import/normalize.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
+#include "qwen38_gguf_normalization_fixture.h"
 #include "runtime/calibration.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
@@ -144,6 +149,68 @@ TEST_F(ComponentAdmissionTest, PolicyRechecksTheApprovedSpecBeforeSelectingItsRe
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 3}));
   model.stages.front().context = 8193;
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 2}));
+}
+
+TEST(ComponentAdmissionQwenTest, FullNormalizedTargetKeepsItsUntiedHeadAndSourceHash) {
+  auto checkpoint = llmp::test_support::Qwen38GgufCheckpoint();
+  auto bound = llmp::import::NormalizationBound(checkpoint);
+  ASSERT_TRUE(bound);
+  auto normalized =
+      llmp::import::Normalize(std::move(checkpoint), {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(normalized) << (normalized ? "" : normalized.error().ToString());
+  std::array<llmp::artifact::Source, 3> origins{
+      Origins("Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf", 10946624,
+              "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8")[0],
+      Origins("Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf", 49567921344ULL,
+              "cfe600b236b88c7fad1613a5ca5e83b9f2beb63cbd44c32b2be50a44747c695f")[0],
+      Origins("Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf", 32382955968ULL,
+              "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250")[0]};
+  auto model = normalized->spec();
+  auto source = normalized->canonical();
+  const auto admitted = rt::CheckComponentAdmission(model, source, origins);
+  ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+  EXPECT_FALSE(rt::OnComponentEngine("qwen4exp"));  // v0 default is unchanged
+  EXPECT_NE(model.stages[0].embedding->weights[0].tensor,
+            model.stages[0].heads.output->weights[0].tensor);
+  auto policy = rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 4});
+  ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+  EXPECT_TRUE(
+      rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262144, .slots = 8}));
+  EXPECT_FALSE(
+      rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262145, .slots = 1}));
+  for (int mutation = 0; mutation != 7; ++mutation) {
+    auto changed_model = model;
+    auto changed_source = source;
+    auto changed_origins = origins;
+    switch (mutation) {
+      case 0:
+        changed_origins[2].sha256[0] ^= 1;
+        break;
+      case 1:
+        changed_origins[2] = changed_origins[1];
+        break;
+      case 2:
+        ++changed_model.stages[0].context;
+        break;
+      case 3:
+        changed_model.stages[0].folds.clear();
+        break;
+      case 4:
+        changed_model.stages[0].heads.output->weights[0].tensor =
+            changed_model.stages[0].embedding->weights[0].tensor;
+        break;
+      case 5:
+        changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
+        break;
+      case 6:
+        ASSERT_FALSE(changed_model.stages[0].side.empty());
+        for (auto& param : changed_model.stages[0].side[0].source.params)
+          if (param.name == "multipliers") std::get<std::vector<std::int64_t>>(param.value)[0] += 2;
+        break;
+    }
+    EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
+        << mutation;
+  }
 }
 
 class NativeGemmaAdmissionTest : public testing::TestWithParam<std::uint32_t> {

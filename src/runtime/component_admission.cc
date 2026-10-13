@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,10 +20,12 @@
 #include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "model/gemma4_assistant.h"
+#include "model/qwen38.h"
 #include "runtime/gemma_profile.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 
 namespace llmp::runtime {
@@ -30,7 +33,7 @@ namespace {
 
 // The existing approved execution checkpoint, not the container's artifact
 // ID: publication does not broaden the family/profile or format domain.
-enum class ProfileId { kGemma2, kGemma3, kGemma26, kGemma31 };
+enum class ProfileId { kGemma2, kGemma3, kGemma26, kGemma31, kQwenGguf };
 struct Profile {
   ProfileId id;
   std::string_view architecture, source_name, source_sha256;
@@ -57,7 +60,41 @@ constexpr std::array kProfiles{
             "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575", 18822970304ULL, 833,
             0, 8192, 4, "a5ba88997fe0b72a54148526573c38e6a619f5a91980c59dcb5cbc5123760f52"}};
 
+// Pinned three-shard UD-IQ3_XXS source. The ordinary writer verifies these
+// whole streams while publishing; runtime admission checks their declared
+// identity and the complete stored inventory/spec without rehashing payloads.
+constexpr Profile kQwenGguf{ProfileId::kQwenGguf,
+                            "qwen4exp",
+                            {},
+                            {},
+                            0,
+                            1224,
+                            144,
+                            model::kQwen38FlashContext,
+                            std::numeric_limits<std::uint32_t>::max(),
+                            "ebfde9be4041367912853e848599eb2bbfeb62f853ae373546ceb31416d482f6"};
+struct Origin {
+  std::string_view name, sha256;
+  std::uint64_t bytes;
+};
+constexpr std::array kQwenOrigins{
+    Origin{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+           "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8", 10946624ULL},
+    Origin{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+           "cfe600b236b88c7fad1613a5ca5e83b9f2beb63cbd44c32b2be50a44747c695f", 49567921344ULL},
+    Origin{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+           "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250", 32382955968ULL}};
+
 const Profile* Approved(std::string_view architecture, std::span<const artifact::Source> origins) {
+  if (architecture == kQwenGguf.architecture && origins.size() == kQwenOrigins.size()) {
+    for (const auto& expected : kQwenOrigins)
+      if (std::ranges::count_if(origins, [&](const auto& origin) {
+            return origin.name == expected.name && origin.bytes.value() == expected.bytes &&
+                   base::ToHex(origin.sha256) == expected.sha256;
+          }) != 1)
+        return nullptr;
+    return &kQwenGguf;
+  }
   if (origins.size() != 1) return nullptr;
   for (const auto& profile : kProfiles)
     if (architecture == profile.architecture && origins[0].name == profile.source_name &&
@@ -78,6 +115,18 @@ const model::Gemma4Profile* GemmaProfile(const Profile& profile) {
 }
 std::expected<std::vector<spec::SourceValue>, std::string> Values(const Profile& profile) {
   switch (profile.id) {
+    case ProfileId::kQwenGguf: {
+      // Independent source metadata captured with the approved tensor inventory.
+      const model::Qwen38PleHash hash{
+          .multipliers = {23703573157769, 20109073645365, 8052911324071},
+          .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
+                      160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114,
+                      300001275},
+          .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
+                    20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161,
+                    20000171}};
+      return spec::mappings::Qwen38GgufValues(model::Qwen38Flash(), hash);
+    }
     case ProfileId::kGemma2:
       return spec::mappings::Gemma2V0Values(model::Gemma2_2B());
     case ProfileId::kGemma3:
@@ -96,8 +145,8 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const Pro
     if (!format::Validate(f) || t.part != format::PartRole::kData || f.stacked != 1 ||
         f.params != format::EncodingParams{} || f.shape.rank < 1 || f.shape.rank > 3 ||
         t.experts != (f.shape.rank == 3) ||
-        f.layout != (f.encoding == format::Encoding::kF32 ? format::Layout::kDense
-                                                          : format::Layout::kGgmlBlocks))
+        f.layout != (format::Info(f.encoding).quantized ? format::Layout::kGgmlBlocks
+                                                        : format::Layout::kDense))
       return Refused("native tensor layout, part, parameters or expert geometry differs");
     sorted.push_back(&t);
   }
@@ -173,9 +222,10 @@ std::expected<void, std::string> CheckComponentAdmission(
     return Refused("the stored pipeline is not an approved standalone target");
   if (auto inventory = Inventory(source, *profile); !inventory) return inventory;
   const auto& stage = model.stages.front();
-  if (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
-      stage.heads.output->weights.size() != 1 ||
-      stage.embedding->weights.front().tensor != stage.heads.output->weights.front().tensor)
+  if (profile->id != ProfileId::kQwenGguf &&
+      (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
+       stage.heads.output->weights.size() != 1 ||
+       stage.embedding->weights.front().tensor != stage.heads.output->weights.front().tensor))
     return Refused("the approved target requires its output tied to its embedding");
   const auto values = Values(*profile);
   if (!values) return Refused(values.error());

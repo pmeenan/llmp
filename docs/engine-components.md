@@ -2366,6 +2366,17 @@ initialized state bytes). These checks use the existing artifacts, without
 republication or full payload hashing. No runtime numerical policy changed.
 The construction-work reduction is structural, not a measured speed claim.
 
+The Qwen GGUF target now consumes that binding path after ordinary native CLI
+publication (N4b8). Admission validates the approved three source receipts,
+complete tensor inventory, stored spec, untied head and PLE metadata. The writer
+places embedding and PLE tables in separate groups, preserving the existing
+exclusive row-owner guard; stored execution uses those bindings rather than v0
+PLE assumptions. Actual v0/v1 full-head, initialized-state and spill-continuation
+checks pass. This is the internal paid target route: architecture-only public
+selection and stored-drafter admission remain unchanged. ModelOpt/MLX serving,
+family migration and N5's all-artifact gates remain open. See the
+[publication and execution evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13).
+
 **Import transform primitives** (`import/transforms.h`). The historical
 ModelOpt import's `norm.plus_one` and `ssm.a_neg_exp` convert explicitly
 selected BF16 scalars to F32 using binary64 arithmetic and nearest-even

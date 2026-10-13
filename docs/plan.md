@@ -2574,8 +2574,18 @@ each is checked against the design as M3.6 proceeds.
                   affected host controls, four existing published Gemma execution
                   cases, and the mapped DeepSeek source case pass. Admission,
                   native multipart expert placement and shared row-group ownership
-                  are not widened. Native Qwen/ModelOpt/MLX serving and family
-                  qualification remain open ([scope and checks](engine-components.md)).
+                  are not widened by this foundation. ModelOpt/MLX serving and
+                  family qualification remain open ([scope and checks](engine-components.md)).
+            - [x] **N4b8 — ordinary Qwen GGUF publication and stored target:**
+                  publish the complete approved three-shard UD-IQ3_XXS source
+                  through the native CLI; retain exclusive embedding/PLE groups
+                  and execute the admitted stored spec. Actual v0/v1 comparison
+                  passes 36 complete finite head rows, six initialized-state
+                  observations and two spill/zero-compute restores with
+                  continuation. Main native/476 host controls pass. Public
+                  defaults, stored drafter, ModelOpt/MLX serving, family speed
+                  gates and full N5 remain open
+                  ([evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13)).
             The remaining fold catalog, normalized publication domains and
             runtime import admission remain open in N4; N5's all-artifact
             re-import and serving qualification remain separate.

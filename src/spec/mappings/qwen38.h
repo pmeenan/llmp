@@ -87,6 +87,11 @@ const Mapping& Qwen38MtpMapping();
 // Explicit opt-in; existing v1 artifacts/specs keep their original identity.
 const Mapping& Qwen38MtpReplayMapping();
 
+// Container-independent profile oracle for the source-owned GGUF hash. The
+// stored consumer executes its validated spec; this only checks its semantics.
+std::expected<std::vector<SourceValue>, std::string> Qwen38GgufValues(
+    const model::Qwen38Profile& profile, const model::Qwen38PleHash& hash);
+
 // The profile and the hash's constants as the GGUF keys the mapping reads,
 // with the binding's form (the ModelOpt import's or a GGUF's) as
 // llmp.qwen4exp.* facts. Refused where the profile says what the mapping

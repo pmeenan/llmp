@@ -897,3 +897,45 @@ Replay uses the existing `swap-table` with `--pairs native:gguf,gguf:native`,
 and the preserved M3 context bytes/configuration under the sealed supervisor.
 Automatic public migration, wider/mixed-family state/swap coverage, broader
 same-quantized-reference quality and the family speed gate remain open.
+
+## Native GGUF publication and target serving — 2026-10-13
+
+The ordinary checked native CLI published all three shards of
+`unsloth/Qwen3.8-Flash-Next-GGUF@38bb39ee97821de2c9009abb7e93950eec396e66`,
+UD-IQ3_XXS (81,961,823,936 source bytes), as v1 artifact
+`18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2`.
+The existing writer authenticated complete source SHA values while copying,
+ran its existing output Deep check, then published atomically. No separate
+payload scan was added. All 1,224 tensors and 144 expert arrays retain source
+encodings; embedding and PLE row tables have distinct exclusive groups.
+
+`Qwen38EngineServingGpu.PublishedGgufMatchesV0HeadsStateAndSpill` then compared
+that publication with the existing v0 GGUF target through the same selected
+plain shared implementation. All 36 complete finite 248,320-value head rows
+matched bitwise. Six complete initialized-state coordinate/payload observations
+matched, including two actual spills and restores with no model recomputation,
+followed by continuation. The case passed in 22.243 seconds (23-second installed
+job); pre/post guards, zero memory events, process-group and GPU retirement
+passed. The bounded fixture uses context 512, chunk 16, C1, no drafter, a 104GiB
+node budget and 112GiB process/cache ceiling with zero swap and 6GiB live
+physical margin. These are check conditions, not public request or family caps.
+Publication used an 8GiB process/cache ceiling; cache-reclaim events were
+reported and no OOM occurred.
+
+Main02 full native build and 476 host controls passed. Executed model:
+`1a619a2b0c4ba1d5cc004063ddd75bf2c711cc8370c61e578c310c349fc7da29`
+(272,819,216 bytes). Build receipt:
+`c1ac4f03381e2330ab415362090df65d2b5a9c53bb607a74d5f8340dd0e7eae6`;
+publication receipt:
+`238498c066dc87943cad81299aea25ba19b80521da8efc26e917d2dd6644da97`;
+actual serving receipt:
+`04698aab7bffb2db1af3933a09ed7f8397ad5b678487f11bc2fc1d44d8f9109c`.
+Raw evidence remains in `qwen-gguf-v1-publication01` and
+`qwen-gguf-v1-models01`. Later combined native builds have separate identities;
+the executed tuple above remains the numerical authority.
+
+This closes ordinary native publication and stored-target execution for this
+approved GGUF source under the internal paid component route. It does not
+change public defaults, admit a stored drafter, qualify ModelOpt/MLX serving,
+or establish external-reference quality or the matched 1% family speed gate.
+Full N5 all-artifact re-import/admission remains open.

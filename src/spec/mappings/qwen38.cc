@@ -771,9 +771,8 @@ const Mapping& Qwen38NativeMapping() { return kNativeMapping; }
 const Mapping& Qwen38MtpMapping() { return kMtpMapping; }
 const Mapping& Qwen38MtpReplayMapping() { return kMtpReplayMapping; }
 
-std::expected<std::vector<SourceValue>, std::string> Qwen38V0Values(
-    const model::Qwen38Profile& p, const model::Qwen38Binding& binding,
-    const model::Qwen38PleHash& hash) {
+std::expected<std::vector<SourceValue>, std::string> Qwen38GgufValues(
+    const model::Qwen38Profile& p, const model::Qwen38PleHash& hash) {
   std::vector<std::int64_t> ratios;
   for (std::uint32_t il = 0; il < p.layers; ++il) {
     const bool full = kMapping.layer_types.at(il % kMapping.layer_types.size()) == 'f';
@@ -782,7 +781,6 @@ std::expected<std::vector<SourceValue>, std::string> Qwen38V0Values(
     }
     ratios.push_back(full ? std::int64_t{p.indexer_ratio} : 0);
   }
-  if (binding.layers.size() != p.layers) return std::unexpected("a binding of another profile");
   const auto list = [](const std::vector<std::uint64_t>& v) {
     return std::vector<std::int64_t>(v.begin(), v.end());
   };
@@ -808,6 +806,16 @@ std::expected<std::vector<SourceValue>, std::string> Qwen38V0Values(
        }) {
     out.push_back(std::move(v));
   }
+  return out;
+}
+
+std::expected<std::vector<SourceValue>, std::string> Qwen38V0Values(
+    const model::Qwen38Profile& p, const model::Qwen38Binding& binding,
+    const model::Qwen38PleHash& hash) {
+  if (binding.layers.size() != p.layers) return std::unexpected("a binding of another profile");
+  auto values = Qwen38GgufValues(p, hash);
+  if (!values) return std::unexpected(values.error());
+  auto out = std::move(*values);
   // The ModelOpt import's form (a GGUF's when absent).
   if (!binding.gguf()) {
     out.push_back(Value(kIndexer, "fused"));

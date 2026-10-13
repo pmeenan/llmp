@@ -531,7 +531,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // component parameters or role maps. Retain one catalog payment on retries.
     std::unique_ptr<StoredBindingPayment> stored_payment;
     if (stored) {
-      if (solo) return Error("native Qwen serving/diagnostic admission is not qualified");
       if (auto admitted = CheckComponentArtifactAdmission(*artifact); !admitted)
         return Error(admitted.error());
       auto bytes = StoredBindingBytes(*artifact);
@@ -834,7 +833,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (!slabs) return Error(slabs.error());
       placements.push_back(std::move(*slabs));
     }
-    if (solo)
+    if (solo && !stored)
       placements[0].places.at(artifact->resources()[qwen->ple_table.index].group) =
           engine::GroupPlace::kNone;
     std::optional<engine::RunnerConfig::RowTable> row_table;
@@ -898,7 +897,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     if (logit_width == 0) return Error("the spec's target stage has no head");
     // A layer's routed experts in one slab (the M3 runners' pitch).
-    if (solo && !row_table) return Error("the component recipe has no n-gram row table");
+    if (solo && !row_table && (!stored_bindings || stored_bindings->rows.empty()))
+      return Error("the component recipe has no n-gram row table");
     ComponentHold* held = hold.get();
     auto backend = kernels::ggml::GgmlBackend::Create(
         0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,

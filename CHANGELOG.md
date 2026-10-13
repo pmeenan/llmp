@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Publish the approved Qwen GGUF target through the ordinary native importer
+  and admit its stored spec through the internal paid component route. Keep
+  embedding and PLE tables independently owned; validate full-head, state and
+  spill-continuation equivalence against the existing v0 target. Public defaults
+  and stored-drafter admission remain unchanged.
+
 - Grow shared image request resources at completed boundaries while retaining
   stable workspace addresses and other models' borrowers. Retire geometry-owned
   ports and staging after completion; an internal prepared-source Server bridge

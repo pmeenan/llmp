@@ -956,7 +956,7 @@ TEST_F(ImportWriterTest, QwenSideTablePlacementAndCompleteExpertCoverageAreFunde
   ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
   EXPECT_EQ(layout->copies, 1224U);
   EXPECT_EQ(layout->destinations, 1224U + 48U * 3U * 511U);
-  EXPECT_EQ(layout->tables, 1U);
+  EXPECT_EQ(layout->tables, 2U);      // resident embedding and independently paged side table
   EXPECT_EQ(layout->row_tables, 2U);  // embedding plus side.ngram, unchanged encoding
   EXPECT_EQ(layout->globals, 0U);     // residual.hc mixing has no weights
   EXPECT_EQ(layout->layers, 48U);

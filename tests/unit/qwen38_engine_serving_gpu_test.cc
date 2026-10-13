@@ -268,7 +268,14 @@ rt::Status CheckFixture(std::string_view id, bool mtp) {
   return {};
 }
 
+struct StateImage {
+  std::vector<std::array<std::uint64_t, 3>> ranges;
+  llmp::base::Sha256Digest digest{};
+  std::uint32_t positions = 0;
+  bool operator==(const StateImage&) const = default;
+};
 struct Result {
+  std::array<StateImage, 3> states;
   std::array<std::vector<float>, 2> heads;
   std::array<rt::Generation, 2> generations;
   std::array<std::vector<std::int32_t>, 2> history;
@@ -282,6 +289,8 @@ struct Lifetime {
   cfg::RuntimeRoles roles;
   rt::ServingOptions options;
   std::unique_ptr<rt::Server> server;
+  std::shared_ptr<en::ExecutionMetadataAllowance> observation_payment;
+  std::unique_ptr<rt::Llm::PromptSession> restoration;
   Result result;
   fs::path scratch;
   std::FILE* log = nullptr;
@@ -300,10 +309,50 @@ std::vector<std::int32_t> Prompt() {
   return out;
 }
 
-std::expected<std::unique_ptr<Lifetime>, std::string> Run(std::string_view id, bool mtp,
-                                                          bool component, bool rows,
-                                                          std::uint32_t depth,
-                                                          Lifetime* previous = nullptr) {
+// Same completed-state reader used by the native Gemma publication proof:
+// bounded pinned staging, complete initialized coordinates and streamed bytes.
+std::expected<StateImage, std::string> ReadState(Lifetime& life, rt::EngineLlm& model) {
+  StateImage state;
+  auto& slots = model.runner().slots();
+  auto& node = life.server->node();
+  state.positions = slots.positions(0);
+  for (std::size_t stage = 0; stage < slots.stages(); ++stage)
+    for (const auto& range : slots.live(0, stage).used_ranges()) {
+      if (state.ranges.size() == 4096)
+        return std::unexpected("state observation exceeds prepaid coordinates");
+      state.ranges.push_back({stage, range.offset, range.bytes});
+    }
+  if (state.ranges.empty()) return std::unexpected("state observation is empty");
+  constexpr std::uint64_t part_bytes = 1ULL << 20U;
+  std::vector<llmp::catalog::ExtentId> extents;
+  auto buffer = node.Pinned(part_bytes, 0, extents);
+  if (!buffer) return std::unexpected(buffer.error());
+  llmp::base::Sha256 hash;
+  for (const auto& range : state.ranges)
+    for (std::uint64_t at = 0; at < range[2]; at += part_bytes) {
+      const en::LiveState::Range part{.region = range[0],
+                                      .offset = range[1] + at,
+                                      .bytes = std::min(part_bytes, range[2] - at)};
+      auto retired = en::LiveState::CopyRetirement::kUnproven;
+      auto copied = slots.CopyState(0, *buffer, std::span(&part, 1), true, &retired);
+      if (retired == en::LiveState::CopyRetirement::kUnproven) {
+        node.KeepPinned(*buffer);
+        return std::unexpected("state copy retirement is unproven");
+      }
+      if (!copied) {
+        (void)node.FreePinned(*buffer);
+        return std::unexpected(copied.error());
+      }
+      hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
+    }
+  if (auto freed = node.FreePinned(*buffer); !freed) return std::unexpected(freed.error());
+  state.digest = hash.Finish();
+  return state;
+}
+
+std::expected<std::unique_ptr<Lifetime>, std::string> Run(
+    std::string_view id, bool mtp, bool component, bool rows, std::uint32_t depth,
+    Lifetime* previous = nullptr, const fs::path& stored_root = {}, bool publication = false) {
   auto life = std::make_unique<Lifetime>();
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   if (scratch == nullptr) return std::unexpected("no test scratch directory");
@@ -313,6 +362,7 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(std::string_view id, b
   life->scratch = name;
   life->roles.installed = fs::path(llmp::test_support::ModelsDir()) /
                           (id == kGguf ? "qgguf-artifacts" : "m3-artifacts");
+  if (!stored_root.empty()) life->roles.installed = stored_root;
   life->roles.spill = life->scratch / "spill";
   life->roles.state = life->scratch / "state";
   for (const auto& path : {life->roles.spill, life->roles.state}) {
@@ -334,7 +384,8 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(std::string_view id, b
   entry.overrides["wave_read_align"] = std::int64_t{256};
   life->config.models.push_back(std::move(entry));
   life->options.diagnostic_component_solo = component;
-  life->options.diagnostic_startup_host_bytes = kAllowance;
+  life->options.diagnostic_startup_host_bytes = publication ? 0 : kAllowance;
+  life->options.diagnostic_auto_startup = publication;
   life->options.diagnostic_budget_cap_bytes = kBudget;
   life->log = std::tmpfile();
   if (!life->log) return std::unexpected("opening test log");
@@ -342,8 +393,33 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(std::string_view id, b
   rt::Llm* model = nullptr;
   auto run = [&]() -> rt::Status {
     if (auto s = life->server->Start(true); !s) return s;
-    if (life->server->node().catalog().OccupancyOf(life->server->node().domain()).Total().value() <
-        kAllowance)
+    if (publication) {
+      auto& node = life->server->node();
+      const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
+      auto paid = node.Call(
+          [&]() -> en::Status {
+            std::uint64_t charge = 0;
+            const auto occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
+            const auto budget = node.budget().value();
+            if (__builtin_add_overflow(kResults, en::ExecutionMetadataAllowance::OverheadBytes(),
+                                       &charge) ||
+                occupied > budget || charge > budget - occupied)
+              return std::unexpected("publication observations exceed the node budget");
+            auto payment = en::ExecutionMetadataAllowance::Admit(
+                node.catalog(), node.domain(), charge, available, rt::kUncountedMargin);
+            if (!payment) return std::unexpected(payment.error());
+            life->observation_payment = std::move(*payment);
+            if (!life->observation_payment->Charge(kResults))
+              return std::unexpected("publication observations lack complete payment");
+            return {};
+          },
+          "pay native publication observations");
+      if (!paid) return paid;
+    } else if (life->server->node()
+                   .catalog()
+                   .OccupancyOf(life->server->node().domain())
+                   .Total()
+                   .value() < kAllowance)
       return std::unexpected("startup compiler allowance was not cataloged");
     // The old stopped Server pays its retained results until this allowance
     // is actually admitted. Only then transfer that payment and destroy its
@@ -372,12 +448,39 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(std::string_view id, b
         return std::unexpected("serving returned incomplete generation");
       if (mtp && result.drafted == 0) return std::unexpected("the serving unit did not speculate");
       life->result.history[turn] = (*b)->history();
+      if (publication) {
+        auto state = ReadState(*life, *static_cast<rt::EngineLlm*>(model));
+        if (!state) return std::unexpected(state.error());
+        life->result.states[turn == 0 ? 0 : 2] = std::move(*state);
+      }
       if (turn == 0) {
         // Idle spill retains the actual pending MTP state. Restore through
         // the normal prompt interface, then process the last sampled token.
         if (auto s = life->server->EndRequestBranches(*model); !s) return s;
         if (auto s = model->SpillIdle(**b); !s) return s;
         if (auto s = life->server->SelectRequestBranches(*model, active); !s) return s;
+        if (publication) {
+          if (!(*b)->spilled()) return std::unexpected("native publication did not spill state");
+          const auto before = model->graphs();
+          auto begun = (*b)->BeginPrompt(life->result.history[0], 0, false, true);
+          if (!begun) return std::unexpected(begun.error());
+          life->restoration = std::move(*begun);
+          while (!life->restoration->done())
+            if (auto step = life->restoration->Advance(); !step) return step;
+          if (life->restoration->reused() != life->result.history[0].size())
+            return std::unexpected("native publication restoration recomputed its history");
+          if (auto finished = life->restoration->Finish(); !finished) return finished;
+          life->restoration.reset();
+          const auto after = model->graphs();
+          if (before.eager != after.eager || before.captured != after.captured ||
+              before.replayed != after.replayed || (*b)->spilled())
+            return std::unexpected("native publication restoration executed model work");
+          auto state = ReadState(*life, *static_cast<rt::EngineLlm*>(model));
+          if (!state) return std::unexpected(state.error());
+          life->result.states[1] = std::move(*state);
+          if (life->result.states[0] != life->result.states[1])
+            return std::unexpected("native publication restored different initialized state");
+        }
         auto next = (*b)->history();
         next.push_back(result.tokens.back());
         std::uint32_t reused = 0;
@@ -464,6 +567,50 @@ void Screen(std::string_view id, bool mtp, bool rows, std::uint32_t depth) {
   // both results. Lifetime destroys its own Result before its Server.
   legacy->reset();
 }
+
+void PublishedScreen() {
+  const char* root = std::getenv("LLMP_TEST_QWEN_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
+  const char* id = std::getenv("LLMP_TEST_QWEN_V1_ID");       // NOLINT(concurrency-mt-unsafe)
+  ASSERT_NE(root, nullptr);
+  ASSERT_NE(id, nullptr);
+  ASSERT_EQ(std::strlen(id), 64U);
+  ASSERT_TRUE(std::ranges::all_of(std::string_view(id), [](char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+  }));
+  auto fixed = CheckFixture(kGguf, false);
+  ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
+  auto old = Run(kGguf, false, true, true, 2, nullptr, {}, true);
+  ASSERT_TRUE(old) << (old ? "" : old.error());
+  auto native = Run(id, false, true, true, 2, old->get(), root, true);
+  ASSERT_TRUE(native) << (native ? "" : native.error());
+  Compare((*native)->result, (*old)->result, true);
+  EXPECT_EQ((*native)->result.states, (*old)->result.states);
+  for (const auto* result : {&(*old)->result, &(*native)->result}) {
+    for (const auto& head : result->heads)
+      EXPECT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
+    for (const auto& generation : result->generations)
+      for (const auto& head : generation.logits)
+        EXPECT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
+  }
+  testing::Test::RecordProperty("complete_head_rows", 36);
+  testing::Test::RecordProperty("head_values_per_row", kVocab);
+  testing::Test::RecordProperty("complete_state_images", 6);
+  testing::Test::RecordProperty("restored_owners", 2);
+  testing::Test::RecordProperty("native_artifact", id);
+  fs::remove_all((*old)->scratch);
+  fs::remove_all((*native)->scratch);
+  old->reset();
+}
+class PublishedCase : public testing::Test {
+  void TestBody() override { PublishedScreen(); }
+};
+[[maybe_unused]] const auto* published_case = []() -> testing::TestInfo* {
+  if (std::getenv("LLMP_TEST_QWEN_V1_STORE") == nullptr)
+    return nullptr;  // NOLINT(concurrency-mt-unsafe)
+  return testing::RegisterTest("Qwen38EngineServingGpu", "PublishedGgufMatchesV0HeadsStateAndSpill",
+                               nullptr, nullptr, __FILE__, __LINE__,
+                               []() -> testing::Test* { return new PublishedCase; });
+}();
 
 // No artifact, runner registration, model binding or device work is needed
 // to discriminate these early refusal/payment paths.
