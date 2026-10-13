@@ -25,6 +25,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   spill-continuation equivalence against the existing v0 target. Public defaults
   and stored-drafter admission remain unchanged.
 
+- Prepare installed image compositions through the existing shared Server route,
+  retaining paid source ownership across changed prompts, schedules and geometry.
+  Grow construction accounting on demand and write private image output only
+  when requested; public serving defaults remain unchanged.
 - Grow shared image request resources at completed boundaries while retaining
   stable workspace addresses and other models' borrowers. Retire geometry-owned
   ports and staging after completion; an internal prepared-source Server bridge

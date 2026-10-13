@@ -63,8 +63,26 @@ passes 474 host controls, including 296 image controls; the final placement-pin
 correction passes ten targeted controls before the successful actual retry.
 Observed catalog/construction maxima are 38,561,241,102/2,883,507,343 bytes.
 These are functional lifecycle results, without a capture-acceptance or speed
-claim. The prepared-source bridge remains internal: automatic source preparation
-and public defaults are not switched.
+claim. Ordinary installed-source preparation now uses the same internal shared
+Server route, with source-derived construction high-water accounting and no
+injected prepared owner. Four changed prompt/geometry requests with 1/2/2/1
+steps complete 14 stages and six activation calls while retaining Gemma state;
+current main passes 476 unique host controls, including 144 image controls.
+One ordinary 1024²/40-step request passes the retained independent same-checkpoint
+upstream comparison: 37.059 dB PSNR/.99041 luma SSIM against fixed 32/.98 floors.
+An output-disabled CLI old/new/old screen then measures 32.483/195.756/32.869
+seconds from readiness to pixels: the current path is 5.991× the legacy mean.
+This coarse result blocks default migration; it is not the formal 1% verdict.
+Three retained plans and one graph rule out forty separate timestep plan builds.
+Dense attention, product/layout traffic and repeated mask/position staging or
+graph-digest work need attribution; these are unmeasured reuse ideas, not causes
+established by this screen. A short paired two-step Nsight attribution draft is
+retained externally and has not run. Resume with final source/binary binding,
+own session retirement and explicit native/shared capture asymmetry, without
+another forty-step run or speculative optimization ladder.
+Public defaults, legacy deletion and the matched 1% family gate remain open;
+see the
+[ordinary service report](experiments/m36-shared-spatial-execution/README.md#ordinary-installed-source-image-service).
 
 The shared image generation core now completes two 1024×1024 generations:
 native 36-layer text encoding, two complete 32-block Euler steps and the full
@@ -95,8 +113,9 @@ from53.164s to12.459s (76.57%, descriptive, not matched1%). The1GiB follow-up pr
 whole generation, essentially unchanged. Decoder job2.752s versus9.653s prefix
 places most remaining time in text/flow. Experimental admission rises to42,446,769,088 bytes
 while stripe calls and prepaid capture metadata fall; absent meaningful speed
-or measuredCPU/traffic benefit, production retains64MiB. Request-driven composition, independent
-upstream quality and default serving remain open. See the
+or measuredCPU/traffic benefit, production retains64MiB. At that stage, request-driven composition and independent
+upstream quality were still open; their later evidence appears above. Default
+serving remains open. See the
 [workspace tradeoff](experiments/m36-shared-spatial-execution/README.md#larger-convolution-workspace-and-remaining-stage-cost).
 An opt-in packed masked-attention candidate now passes complete two-step
 native agreement at48.229dB/.99877. Its1,057-row representative warm completed

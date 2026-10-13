@@ -2786,9 +2786,16 @@ each is checked against the design as M3.6 proceeds.
             own repeated/restored pixels and retained Gemma state pass. The
             combined native build passes 474 host controls; the placement-pin
             correction passes ten targeted controls and the actual retry.
-            Public defaults, automatic source preparation, independent upstream
-            quality and matched 1% family gates remain separate
-            ([report](experiments/m36-shared-spatial-execution/README.md#geometry-growth-and-prepared-server-reuse)).
+            Ordinary installed-source preparation now consumes the same Server
+            route under the internal shared-engine selector, retaining paid
+            sources while four requests change prompt, geometry and 1/2/2/1
+            steps. All 14 image stages, six activation calls and retained Gemma
+            state pass. The combined native build passes 476 unique controls,
+            including 144 current image controls. One ordinary 1024²/40-step
+            request passes retained same-checkpoint diffusers quality at
+            37.059 dB PSNR/.99041 luma SSIM (floors 32/.98). Public defaults,
+            legacy retirement and matched 1% family qualification remain open
+            ([report](experiments/m36-shared-spatial-execution/README.md#ordinary-installed-source-image-service)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

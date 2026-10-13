@@ -12,11 +12,19 @@
 #include <utility>
 
 #include "base/bytes.h"
+#include "base/json.h"
+#include "chat/chat.h"
 #include "engine/support.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
+#include "platform/files.h"
+#include "platform/host_probe.h"
+#include "platform/kept_files.h"
 #include "providers/device_runtime.h"
+#include "runtime/memory_guard.h"
+#include "runtime/serving_support.h"
 #include "spec/image_spatial.h"
+#include "tokenizer/hf.h"
 
 namespace llmp::runtime {
 namespace {
@@ -31,14 +39,44 @@ using en::support::Error;
 // incoming prompt/noise allocations retain their caller-owned payment.
 constexpr std::uint64_t kSourceMappingBytes =
     822ULL * 4096 + (36ULL * 17 + 2 + 32ULL * 17 + 19 + 258) * 8192;
+bool Charge(const std::shared_ptr<en::ExecutionMetadataAllowance>& allowance, std::uint64_t bytes,
+            en::PagedNode* node = nullptr, std::uint64_t cap = 0) {
+  if (!allowance) return false;
+  if (bytes <= allowance->capacity() - allowance->used()) return allowance->Charge(bytes);
+  if (!node || cap == 0 || bytes > UINT64_MAX - allowance->used()) return false;
+  auto needed = bytes + allowance->used();
+  if (needed > UINT64_MAX - (en::kPagedExtent - 1)) return false;
+  needed = (needed + en::kPagedExtent - 1) / en::kPagedExtent * en::kPagedExtent;
+  const auto grow = [&]() -> Status {
+    const auto budget = node->open_for_setup() ? cap : std::min(cap, node->budget().value());
+    return allowance->Grow(node->catalog(), node->domain(), needed, budget,
+                           platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+  };
+  if (node->open_for_setup()) {
+    if (!grow()) return false;
+  } else {
+    std::optional<Status> completed;
+    const auto posted = node->Call(
+        [&]() -> Status {
+          completed = grow();
+          return *completed;
+        },
+        "growing retained image construction payment");
+    // A completed catalog mutation remains authoritative after task cancellation.
+    if (!(completed ? *completed : posted)) return false;
+  }
+  return allowance->Charge(bytes);
+}
 struct Paid {
   std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
   std::uint64_t bytes = 0;
+  en::PagedNode* node = nullptr;
+  std::uint64_t cap = 0;
   ~Paid() {
     if (allowance) allowance->Release(bytes);
   }
   bool Add(std::uint64_t n) {
-    if (n > UINT64_MAX - bytes || !allowance->Charge(n)) return false;
+    if (n > UINT64_MAX - bytes || !Charge(allowance, n, node, cap)) return false;
     bytes += n;
     return true;
   }
@@ -232,7 +270,8 @@ Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, st
 
 std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
     ImageGenerationRequest&& source, const ModelSettings& settings,
-    std::shared_ptr<en::ExecutionMetadataAllowance> construction) {
+    std::shared_ptr<en::ExecutionMetadataAllowance> construction, en::PagedNode* construction_node,
+    std::uint64_t construction_cap) {
   const auto& p = md::QwenImage21();
   if (!source.keep || !construction) return Error("image request lacks its paid caller owner");
   auto request = RequestOf(source, settings, p);
@@ -241,10 +280,13 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
   for (auto id : source.prompt)
     if (id < 0 || static_cast<std::uint32_t>(id) >= p.text.vocab)
       return Error("image text input ID lies outside the actual source vocabulary");
-  if (!construction->Charge(kRequestOwnerBytes)) return Error("image request owner is unpaid");
+  if (!Charge(construction, kRequestOwnerBytes, construction_node, construction_cap))
+    return Error("image request owner is unpaid");
   auto held = std::make_shared<ImageRequestOwner>();
   held->paid.allowance = construction;
   held->paid.bytes = kRequestOwnerBytes;
+  held->paid.node = construction_node;
+  held->paid.cap = construction_cap;
   if (!held->paid.Add(geometry.variable_bytes)) return Error("image request vectors are unpaid");
   held->source = std::move(source);
   held->request = geometry;
@@ -307,6 +349,16 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
                                        (scaled - static_cast<float>(lo) == .5F && lo % 2));
         held->pixels[i * 4 + c] = static_cast<std::byte>(rounded);
       }
+    if (!held->source.output.empty()) {
+      auto directory = platform::OpenPrivateDirectory(-1, held->source.output.c_str());
+      if (!directory) return Error("image output directory: " + std::to_string(directory.error()));
+      const artifact::FileDescriptor output_directory(*directory);
+      const std::string_view rgba(reinterpret_cast<const char*>(held->pixels.data()),
+                                  held->pixels.size());
+      if (auto written = platform::ReplacePrivateFile(output_directory.get(), "image.rgba8", rgba);
+          !written)
+        return Error("image output write: " + std::to_string(written.error()));
+    }
     return base::ToHex(base::Sha256().Update(held->pixels).Finish());
   };
   return out;
@@ -326,13 +378,17 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   const auto channels = p.vae.z_dim;
   const auto geometry_bytes = kSourceMappingBytes + 2 * sizeof(ImageGeometryOwner) +
                               2 * sizeof(ImageGeometry) + 6 * sizeof(ImageStage) + 4096;
-  if (!construction->Charge(geometry_bytes)) return Error("image geometry mapping is not prepaid");
+  if (!Charge(construction, geometry_bytes, source->construction_node, source->construction_cap))
+    return Error("image geometry mapping is not prepaid");
   auto held = std::make_shared<ImageGeometryOwner>();
   held->paid.allowance = construction;
   held->paid.bytes = geometry_bytes;
+  held->paid.node = source->construction_node;
+  held->paid.cap = source->construction_cap;
   held->model = model;
   auto prepared_request =
-      ComponentImageGenerationRequest(std::move(request_source), settings, construction);
+      ComponentImageGenerationRequest(std::move(request_source), settings, construction,
+                                      source->construction_node, source->construction_cap);
   if (!prepared_request) return Error(prepared_request.error());
   const auto& source_tensors = model->source_tensors;
   const auto text_rows = geometry.text_rows;
@@ -369,7 +425,9 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
     const std::array owners{co::SpatialOwner{0, primary[i]}};
     auto graph = co::BuildSpatialStep(
         mappings[i]->spec, tables, owners,
-        {[construction](std::uint64_t bytes) { return construction->Charge(bytes); },
+        {[construction, source](std::uint64_t bytes) {
+           return Charge(construction, bytes, source->construction_node, source->construction_cap);
+         },
          [construction](std::uint64_t bytes) { construction->Release(bytes); }},
         {.links = mappings[i]->links,
          .reference_buffers = false,
@@ -443,11 +501,14 @@ EngineImageBuild ComponentImageGenerationBuild(
         return Error("image text input ID lies outside the actual source vocabulary");
     for (const auto& weights : source->weights)
       if (!weights || !weights->opened()) return Error("image source artifact is not open");
-    if (!construction->Charge(kSourceOwnerBytes))
+    if (!Charge(construction, kSourceOwnerBytes, source->construction_node,
+                source->construction_cap))
       return Error("image source mapping is not prepaid");
     auto held = std::make_shared<ImageGenerationModel>();
     held->paid.allowance = construction;
     held->paid.bytes = kSourceOwnerBytes;
+    held->paid.node = source->construction_node;
+    held->paid.cap = source->construction_cap;
     held->source = source;
     held->source_tensors = {md::TextEncoderTensors(p.text), md::DenoiserTensors(p.denoiser),
                             md::VaeDecoderTensors(p.vae)};
@@ -482,7 +543,9 @@ EngineImageBuild ComponentImageGenerationBuild(
                                : std::span<const execution::TunedShape>{};
     auto declared = held->backend->Declare(
         tuples, blas_bytes,
-        [construction](std::uint64_t bytes) { return construction->Charge(bytes); },
+        [construction, source](std::uint64_t bytes) {
+          return Charge(construction, bytes, source->construction_node, source->construction_cap);
+        },
         [construction](std::uint64_t bytes) { construction->Release(bytes); });
     if (!declared) return Error(declared.error());
     source->prepared = held;
@@ -492,11 +555,13 @@ EngineImageBuild ComponentImageGenerationBuild(
                                                             .width = source->width,
                                                             .height = source->height,
                                                             .noise = std::move(source->noise),
-                                                            .keep = source->keep},
+                                                            .keep = source->keep,
+                                                            .output = source->output},
                                                            settings, construction);
     if (!geometry_parts) return Error(geometry_parts.error());
     EngineImageParts out;
     out.keep = held;
+    out.construction = construction;
     out.architecture = p.pipeline_architecture;
     out.backend = std::make_shared<kernels::StepBackend>(held->backend->Backend());
     out.geometry_keep = geometry_parts->keep;
@@ -530,4 +595,194 @@ EngineImageBuild ComponentImageGenerationBuild(
     return out;
   };
 }
+namespace {
+struct InstalledImageOwner {
+  Paid paid;
+  std::optional<tokenizer::Tokenizer> tokenizer;
+  std::filesystem::path noise;
+  ModelSettings settings;
+};
+struct ImageInputOwner {
+  Paid paid;
+};
+std::expected<ImageGenerationRequest, std::string> ReadImageInput(
+    const std::shared_ptr<InstalledImageOwner>& owner, const ImageInput& input,
+    ModelSettings& settings) {
+  const auto& profile = md::QwenImage21();
+  settings = owner->settings;
+  if (input.steps) settings.image_steps.value = input.steps;
+  if ((input.width == 0) != (input.height == 0))
+    return Error("image request needs both dimensions or neither");
+  const auto width = input.width ? input.width : settings.image_size.value;
+  const auto height = input.height ? input.height : settings.image_size.value;
+  if (!width || !height || width % profile.vae.spatial_factor ||
+      height % profile.vae.spatial_factor || !settings.image_steps.value)
+    return Error("image dimensions or schedule do not match the source geometry");
+  const auto rows =
+      std::uint64_t{width / profile.vae.spatial_factor} * (height / profile.vae.spatial_factor);
+  if (rows > UINT32_MAX || rows > std::uint64_t{PTRDIFF_MAX} / (4 * profile.vae.z_dim))
+    return Error("image noise extent overflows its representation");
+  const auto elements = rows * profile.vae.z_dim;
+  if (input.prompt.size() > (UINT64_MAX - 65536) / 16)
+    return Error("image prompt working bound overflows");
+  std::uint64_t initial = 16 * input.prompt.size() + 65536;
+  for (const auto term : {8 * elements, std::uint64_t{input.output.native().size()},
+                          std::uint64_t{input.noise.native().size()}}) {
+    std::uint64_t doubled = 0;
+    if (__builtin_mul_overflow(term, std::uint64_t{2}, &doubled) ||
+        __builtin_add_overflow(initial, doubled, &initial))
+      return Error("image input working bound overflows");
+  }
+  if (!Charge(owner->paid.allowance, initial, owner->paid.node, owner->paid.cap))
+    return Error("image input construction exceeds available memory");
+  auto keep = std::make_shared<ImageInputOwner>();
+  keep->paid.allowance = owner->paid.allowance;
+  keep->paid.node = owner->paid.node;
+  keep->paid.cap = owner->paid.cap;
+  keep->paid.bytes = initial;
+  auto rendered = chat::RenderQwenImagePrompt(input.prompt, *owner->tokenizer);
+  if (!rendered) return Error(rendered.error().ToString());
+  const auto work = owner->tokenizer->WorkingBytes(rendered->rendered.text);
+  if (!keep->paid.Add(work)) return Error("image tokenization working space is unpaid");
+  ImageGenerationRequest request;
+  request.keep = keep;
+  request.width = width;
+  request.height = height;
+  request.output = input.output;
+  if (auto encoded = owner->tokenizer->EncodeMarked(
+          rendered->rendered.text, rendered->rendered.specials, {}, request.prompt);
+      !encoded)
+    return Error(encoded.error().ToString());
+  if (rendered->drop_tokens > UINT32_MAX) return Error("image dropped prefix is unrepresentable");
+  request.drop = static_cast<std::uint32_t>(rendered->drop_tokens);
+  const auto& noise_path = input.noise.empty() ? owner->noise : input.noise;
+  auto noise = platform::ReadSmallFile(noise_path, elements * sizeof(std::uint16_t));
+  if (!noise || noise->size() != elements * sizeof(std::uint16_t))
+    return Error("image noise file differs from the exact requested BF16 extent");
+  request.noise.resize(elements);
+  std::memcpy(request.noise.data(), noise->data(), noise->size());
+  return request;
+}
+std::expected<std::uint64_t, std::string> RetainedImageArtifactBytes(const artifact::Artifact& a) {
+  // Documents bound retained names/string capacities. Index-derived records,
+  // source placements and future registration descriptors each have distinct
+  // inventory terms; no decoded weight payload belongs to this payment.
+  std::uint64_t bytes = 8 * artifact::kMaxManifestBytes;
+  for (const auto& file : a.files())
+    if (!file.path.starts_with("data/")) {
+      std::uint64_t term = 0;
+      if (__builtin_mul_overflow(file.bytes.value(), std::uint64_t{8}, &term) ||
+          __builtin_add_overflow(bytes, term, &bytes))
+        return Error("image source metadata bound overflows");
+    }
+  for (const auto term : {4096ULL * a.resources().size(), 4096ULL * a.expert_arrays().size(),
+                          1024ULL * a.chunk_sha256().size(), 4096ULL * a.groups().size(),
+                          1024ULL * a.shards().size()})
+    if (__builtin_add_overflow(bytes, term, &bytes))
+      return Error("image source descriptor bound overflows");
+  return bytes;
+}
+}  // namespace
+
+EngineImageBuild ComponentImageServingBuild(en::PagedNode& node, std::filesystem::path store,
+                                            std::string composition_id, int owner,
+                                            std::string prompt, std::filesystem::path noise,
+                                            std::uint64_t parser_loan, std::uint64_t cap) {
+  return [&node, store = std::move(store), composition_id = std::move(composition_id), owner,
+          prompt = std::move(prompt), noise = std::move(noise), parser_loan, cap,
+          retained = std::shared_ptr<InstalledImageOwner>{},
+          source = std::shared_ptr<ImageGenerationSource>{}](const ModelSettings& settings) mutable
+             -> std::expected<EngineImageParts, std::string> {
+    // These installed readers run under the Server's still-live parser loan;
+    // retained allocations acquire their own payment before the loan retires.
+    const auto required = StartupBootstrapBytes(1);
+    if (!required || parser_loan < *required || !node.open_for_setup() || cap == 0 || source)
+      return Error("ordinary image source requires its held startup parser loan and stopped node");
+    auto allowance = serving_support::AdmitStartup(node, 65536, cap);
+    if (!allowance) return Error(allowance.error());
+    retained = std::make_shared<InstalledImageOwner>();
+    retained->paid.allowance = *allowance;
+    retained->paid.bytes = 65536;
+    retained->paid.node = &node;
+    retained->paid.cap = cap;
+    retained->noise = noise;
+    retained->settings = settings;
+    source = std::make_shared<ImageGenerationSource>();
+    source->keep = retained;
+    source->construction_node = &node;
+    source->construction_cap = cap;
+    auto composition = artifact::OpenComposition(store / composition_id, composition_id);
+    if (!composition) return Error(composition.error().ToString());
+    const auto& p = md::QwenImage21();
+    if (composition->architecture() != p.pipeline_architecture)
+      return Error("installed composition has no qualified shared image mapping");
+    if (!retained->paid.Add(2 * artifact::kMaxMetadataTotal + 8 * artifact::kMaxManifestBytes))
+      return Error("retained image composition metadata is unpaid");
+    source->composition = std::make_shared<const artifact::Composition>(std::move(*composition));
+    const std::array<std::string_view, 3> roles{"text_encoder", "transformer", "vae"};
+    for (std::size_t i = 0; i < roles.size(); ++i) {
+      const auto* component = source->composition->Find(roles[i]);
+      if (!component) return Error("image composition is missing a required component");
+      auto weights = std::make_unique<en::PagedWeights>();
+      artifact::OpenOptions options;
+      options.expected_id = component->artifact;
+      if (auto opened = weights->Open(store / component->artifact, options); !opened)
+        return Error(opened.error());
+      if (weights->artifact().model().architecture != component->architecture)
+        return Error("image artifact architecture differs from its composition");
+      auto bytes = RetainedImageArtifactBytes(weights->artifact());
+      if (!bytes || !retained->paid.Add(*bytes))
+        return Error(bytes ? "retained image source metadata is unpaid" : bytes.error());
+      source->weights[i] = std::move(weights);
+    }
+    const auto json = source->composition->Metadata("tokenizer.json");
+    if (!json) return Error("image composition has no native tokenizer metadata");
+    const auto parsing = base::json::ParseWorkingBytes(*json);
+    const auto expanded = 32 * std::uint64_t{json->size()} + parsing;
+    if (expanded > parser_loan) return Error("image tokenizer exceeds the held parser loan");
+    auto spec = tokenizer::ReadHfTokenizer(*json);
+    if (!spec) return Error(spec.error().ToString());
+    auto tokenizer_bytes = tokenizer::Tokenizer::ConstructionBytes(*spec);
+    if (!tokenizer_bytes || !retained->paid.Add(*tokenizer_bytes))
+      return Error("image tokenizer construction is unpaid");
+    auto tokenizer = tokenizer::Tokenizer::Create(std::move(*spec));
+    if (!tokenizer) return Error(tokenizer.error().ToString());
+    retained->tokenizer.emplace(std::move(*tokenizer));
+    ModelSettings request_settings;
+    auto initial = ReadImageInput(retained, {.prompt = prompt}, request_settings);
+    if (!initial) return Error(initial.error());
+    static_cast<ImageGenerationRequest&>(*source) = std::move(*initial);
+    // Retain the parsed model source independently of the consumable input.
+    auto build = ComponentImageGenerationBuild(node, owner, source, *allowance);
+    auto parts = build(request_settings);
+    if (!parts) return Error(parts.error());
+    parts->prepare_request = [retained, source, construction = *allowance](
+                                 const ImageInput& input, const base::Sha256Digest& layout)
+        -> std::expected<std::variant<ImageRequest, ImageGeometry>, std::string> {
+      ModelSettings next_settings;
+      auto request = ReadImageInput(retained, input, next_settings);
+      if (!request) return Error(request.error());
+      auto checked = RequestOf(*request, next_settings, md::QwenImage21());
+      if (!checked) return Error(checked.error());
+      base::Sha256 hash;
+      hash.Update("llmp-image-request-layout-v1");
+      hash.Update(md::QwenImage21().pipeline_architecture);
+      const std::array shape{checked->width, checked->height, checked->prompt_rows, request->drop};
+      hash.Update(std::as_bytes(std::span(shape)));
+      if (hash.Finish() == layout) {
+        auto content =
+            ComponentImageGenerationRequest(std::move(*request), next_settings, construction,
+                                            retained->paid.node, retained->paid.cap);
+        if (!content) return Error(content.error());
+        return std::variant<ImageRequest, ImageGeometry>(std::move(*content));
+      }
+      auto geometry = ComponentImageGenerationGeometry(source, std::move(*request), next_settings,
+                                                       construction);
+      if (!geometry) return Error(geometry.error());
+      return std::variant<ImageRequest, ImageGeometry>(std::move(*geometry));
+    };
+    return parts;
+  };
+}
+
 }  // namespace llmp::runtime

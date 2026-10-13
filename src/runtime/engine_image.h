@@ -15,6 +15,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "components/spatial.h"
@@ -83,6 +84,7 @@ struct EngineImageParts {
   // graph, lowered program, recording and mapped workspace on all paths.
   std::shared_ptr<void> keep;
   std::string architecture;
+  std::shared_ptr<const engine::ExecutionMetadataAllowance> construction;
   std::shared_ptr<void> geometry_keep;
   base::Sha256Digest identity{};
   std::vector<engine::StageWeights> weights;
@@ -94,6 +96,10 @@ struct EngineImageParts {
   planner::Policy policy;
   std::vector<ImageStage> stages;
   ImageRequest request;
+  // Paid source-owned request construction, not a second execution path.
+  std::function<std::expected<std::variant<ImageRequest, ImageGeometry>, std::string>(
+      const ImageInput&, const base::Sha256Digest&)>
+      prepare_request;
   bool graphs = true;
 };
 
@@ -118,6 +124,7 @@ class EngineImage final : public Image, public engine::PagedModel {
   std::uint64_t activations_needed() const override;
   std::uint64_t pool_needed() const override;
   std::uint64_t host_input_bytes() const override;
+  std::uint64_t startup_host_bytes() const override;
   std::uint64_t plan_floor_bytes() const override;
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out) override;
@@ -136,8 +143,9 @@ class EngineImage final : public Image, public engine::PagedModel {
   Status Release() override;
   const catalog::Closure& request_closure() const override { return fence_closure(); }
 
-  // Only after successful Finish and after the caller releases its request
-  // lease. Refusal leaves the current request intact. No mapping or growth.
+  // Before the first launch or after completed Finish, without a request lease.
+  // Content replacement preserves maps; geometry uses measured admission.
+  Status PrepareRequest(const ImageInput& input) override;
   Status ReplaceRequest(ImageRequest request);
   Status ReplaceGeometry(ImageGeometry geometry);
   Status FirstOutput(std::string& sha) override;

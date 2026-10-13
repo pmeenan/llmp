@@ -1455,10 +1455,25 @@ class Llm : public Served {
   }
 };
 
+// One serial image request. Zero dimensions/steps keep the model settings;
+// an empty noise path keeps its configured seed input. No count accumulation.
+struct ImageInput {
+  std::string_view prompt;
+  std::uint32_t width = 0, height = 0, steps = 0;
+  std::filesystem::path noise{};
+  // Explicit quality/export observer only. Empty leaves timing unobserved.
+  std::filesystem::path output{};
+};
+
 // The image pipeline (Qwen-Image-2.1).
 class Image : public Served {
  public:
   bool llm() const override { return false; }
+  // Called outside the request lease, before activation/execution. Legacy
+  // adapters may retain their registered-request restriction.
+  virtual Status PrepareRequest(const ImageInput&) {
+    return std::unexpected("this image adapter cannot replace its registered request");
+  }
   // Encode and the first denoising step (the swap table's endpoint); its
   // noise prediction's SHA-256.
   virtual Status FirstOutput(std::string& sha) = 0;

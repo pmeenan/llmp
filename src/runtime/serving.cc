@@ -1704,6 +1704,12 @@ class QwenImage final : public Image {
   std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
     return runner_.Reclaim(kind, id);
   }
+  Status PrepareRequest(const ImageInput& input) override {
+    if (input.prompt != options_.prompt || input.width || input.height || input.steps ||
+        !input.noise.empty() || !input.output.empty())
+      return Error("legacy image request differs from its registered prompt/settings");
+    return {};
+  }
   Status FirstOutput(std::string& sha) override { return runner_.FirstOutput(sha); }
   Status Finish(std::string& sha) override { return runner_.Finish(sha); }
 
@@ -1893,6 +1899,20 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
           node_, entry, settings, index,
           ComponentImageGenerationBuild(node_, index, (*prepared)->source,
                                         (*prepared)->construction)));
+      return {};
+    }
+    if (options_.diagnostic_component_all) {
+      auto parser =
+          options_.diagnostic_auto_startup
+              ? StartupBootstrapBytes(config_.models.size())
+              : std::expected<std::uint64_t, std::string>(options_.diagnostic_startup_host_bytes);
+      const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
+      if (!parser || !*parser || cap == 0 || options_.image_noise.empty())
+        return Error("shared image serving requires paid startup and its configured noise input");
+      models_.push_back(std::make_unique<EngineImage>(
+          node_, entry, settings, index,
+          ComponentImageServingBuild(node_, roles_.installed, *entry.composition, index,
+                                     options_.image_prompt, options_.image_noise, *parser, cap)));
       return {};
     }
     if (options_.image_noise.empty()) {

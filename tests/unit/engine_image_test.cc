@@ -32,7 +32,7 @@ using en::Status;
 using llmp::test_support::Failed;
 struct Trace {
   bool fail_second = false, capturable = true, fail_position = false;
-  std::size_t positioned = 0;
+  std::size_t positioned = 0, prepared_requests = 0;
   std::size_t queued = 0, executed = 0;
   std::size_t live_programs = 0;
   float value = 1;
@@ -224,6 +224,17 @@ struct Life {
                                         trace->value + 3};
       std::memcpy(data.data(), values.data(), data.size());
       return {};
+    };
+    parts.prepare_request = [this](const rt::ImageInput& input, const llmp::base::Sha256Digest&)
+        -> std::expected<std::variant<rt::ImageRequest, rt::ImageGeometry>, std::string> {
+      ++trace->prepared_requests;
+      if (input.prompt == "refuse") return std::unexpected("paid source refused input");
+      auto request = Request(input.prompt == "changed" ? 9.F : 1.F);
+      if (!input.output.empty())
+        request.finish = [](std::span<const std::byte>) -> std::expected<std::string, std::string> {
+          return std::unexpected("completed host export refused");
+        };
+      return std::variant<rt::ImageRequest, rt::ImageGeometry>(std::move(request));
     };
     auto captured = std::make_shared<std::optional<rt::EngineImageParts>>(std::move(parts));
     llmp::config::ModelEntry entry;
@@ -450,10 +461,42 @@ TEST_F(EngineImageTest, InvalidGeometryAndGrowthRefusalLeaveCompletedRequestUsab
   ASSERT_TRUE(life->image->Finish(output));
   EXPECT_EQ(output, original);
 }
+TEST_F(EngineImageTest, ServingRequestPreparationIsIdleAtomicAndReusesCompletedOwners) {
+  ASSERT_TRUE(life->Start(path));
+  EXPECT_FALSE(life->image->PrepareRequest({.prompt = "refuse"}));
+  ASSERT_TRUE(life->image->PrepareRequest({.prompt = "original"}));
+  std::string first, original, changed;
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  const auto calls = life->trace->prepared_requests;
+  EXPECT_FALSE(life->image->PrepareRequest({.prompt = "changed"}));
+  EXPECT_EQ(life->trace->prepared_requests, calls);
+  ASSERT_TRUE(life->image->Finish(original));
+  ASSERT_TRUE(life->image->PrepareRequest({.prompt = "changed"}));
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(changed));
+  EXPECT_NE(original, changed);
+  const auto captures = life->trace->launch->captures();
+  const auto occupied = life->node.catalog().OccupancyOf(life->node.domain()).Total();
+  EXPECT_FALSE(life->image->PrepareRequest({.prompt = "refuse"}));
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(first));
+  EXPECT_EQ(first, changed);
+  EXPECT_EQ(life->trace->launch->captures(), captures);
+  EXPECT_EQ(life->node.catalog().OccupancyOf(life->node.domain()).Total(), occupied);
+  ASSERT_TRUE(life->image->PrepareRequest({.prompt = "original", .output = "refused"}));
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  EXPECT_FALSE(life->image->Finish(first));
+  // GPU completion is known even when the optional host output observer fails.
+  ASSERT_TRUE(life->image->PrepareRequest({.prompt = "original"}));
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(first));
+  EXPECT_EQ(first, original);
+}
+
 TEST_F(EngineImageTest, CompletedRequestReplacementReusesCapturesAndReleasesContent) {
   ASSERT_TRUE(life->Start(path));
   std::string first, original, output;
-  EXPECT_FALSE(life->image->ReplaceRequest(life->Request(9)));
+  ASSERT_TRUE(life->image->ReplaceRequest(life->Request(1)));
   ASSERT_TRUE(life->image->FirstOutput(first));
   EXPECT_FALSE(life->image->ReplaceRequest(life->Request(9)));
   ASSERT_TRUE(life->image->Finish(original));
@@ -543,6 +586,9 @@ TEST_F(EngineImageTest, QueuedFailureQuarantinesTheWholeFlightUntilPositiveDrain
   EXPECT_FALSE(life->image->FirstOutput(value));
   EXPECT_FALSE(life->image->Finish(value));
   EXPECT_FALSE(life->image->ReplaceRequest(life->Request(9)));
+  const auto prepared = life->trace->prepared_requests;
+  EXPECT_FALSE(life->image->PrepareRequest({.prompt = "changed"}));
+  EXPECT_EQ(life->trace->prepared_requests, prepared);
   auto next = life->Geometry(8, 4, 9.F);
   ASSERT_TRUE(next);
   EXPECT_FALSE(life->image->ReplaceGeometry(std::move(*next)));

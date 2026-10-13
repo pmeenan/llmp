@@ -572,7 +572,14 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
       const std::span<const std::byte> bytes(s.output, static_cast<std::size_t>(observed.bytes));
       if (end == s.parts.request.sequence.size() && s.parts.request.finish) {
         auto converted = s.parts.request.finish(bytes);
-        if (!converted) return Error(converted.error());
+        if (!converted) {
+          // Device work and handoff have completed. A rejected host conversion
+          // or optional file observer must not strand an otherwise retired
+          // request or report its output as successful.
+          ++s.next;
+          s.generation_complete = true;
+          return Error(converted.error());
+        }
         sha = std::move(*converted);
       } else {
         base::Sha256 hash;
@@ -583,9 +590,25 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
   }
   return {};
 }
+Status EngineImage::PrepareRequest(const ImageInput& input) {
+  if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
+      !transitions_.empty() || node_.InRequest(stream()) ||
+      !(state_->next == 0 ||
+        (state_->generation_complete && state_->next == state_->parts.request.sequence.size())))
+    return Error("image preparation requires an idle initial or completed request");
+  const auto& prepare = state_->model->parts.prepare_request;
+  if (!prepare) return Error("image source has no serving request preparation");
+  auto candidate = prepare(input, state_->parts.request.layout);
+  if (!candidate) return Error(candidate.error());
+  if (auto* request = std::get_if<ImageRequest>(&*candidate))
+    return ReplaceRequest(std::move(*request));
+  return ReplaceGeometry(std::move(std::get<ImageGeometry>(*candidate)));
+}
+
 Status EngineImage::ReplaceRequest(ImageRequest request) {
   if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
-      !state_->generation_complete || state_->next != state_->parts.request.sequence.size() ||
+      !(state_->next == 0 ||
+        (state_->generation_complete && state_->next == state_->parts.request.sequence.size())) ||
       node_.InRequest(stream()))
     return Error("image request replacement requires a completed, unleased generation");
   auto& s = *state_;
@@ -602,14 +625,17 @@ Status EngineImage::ReplaceRequest(ImageRequest request) {
   // No callbacks, allocation, device work or catalog mutation follows validation.
   // Old request-only owners retire here; graphs, addresses and recordings remain.
   s.parts.request = std::move(request);
+  s.generation_complete = true;
   s.next = s.parts.request.sequence.size();
   return {};
 }
 
 Status EngineImage::ReplaceGeometry(ImageGeometry geometry) {
   if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
-      !transitions_.empty() || !state_->generation_complete ||
-      state_->next != state_->parts.request.sequence.size() || node_.InRequest(stream()))
+      !transitions_.empty() ||
+      !(state_->next == 0 ||
+        (state_->generation_complete && state_->next == state_->parts.request.sequence.size())) ||
+      node_.InRequest(stream()))
     return Error("image geometry replacement requires a completed, unleased generation");
   auto previous = state_;
   auto candidate = std::make_shared<State>(previous->model, std::move(geometry));
@@ -673,6 +699,10 @@ std::uint64_t EngineImage::activations_needed() const {
 std::uint64_t EngineImage::pool_needed() const { return state_ ? state_->pool_bytes : 0; }
 std::uint64_t EngineImage::host_input_bytes() const {
   return state_ ? state_->input_bytes + state_->output_bytes : 0;
+}
+std::uint64_t EngineImage::startup_host_bytes() const {
+  const auto payment = state_ ? state_->model->parts.construction : nullptr;
+  return payment ? payment->capacity() + en::ExecutionMetadataAllowance::OverheadBytes() : 0;
 }
 std::uint64_t EngineImage::plan_floor_bytes() const { return state_ ? state_->plan_floor : 0; }
 void EngineImage::ReclaimCandidates(std::uint32_t owner, bool running,

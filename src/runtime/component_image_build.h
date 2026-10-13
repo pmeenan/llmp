@@ -4,6 +4,7 @@
 #define LLMP_RUNTIME_COMPONENT_IMAGE_BUILD_H_
 
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -21,6 +22,7 @@ struct ImageGenerationRequest {
   std::uint32_t width = 0, height = 0;
   std::vector<std::uint16_t> noise;  // source BF16 [row,channel] boundary
   std::shared_ptr<void> keep;        // caller's paid prompt/noise owner
+  std::filesystem::path output{};    // explicit completed RGBA8 export, empty normally
 };
 // Initial model source retains the paid artifact owner while its input content
 // moves to the independently owned first request. Setup consumes weights once.
@@ -29,6 +31,10 @@ struct ImageGenerationSource : ImageGenerationRequest {
   std::shared_ptr<const artifact::Composition> composition;
   std::array<std::unique_ptr<engine::PagedWeights>, 3> weights;
   std::weak_ptr<ImageGenerationModel> prepared;
+  // Ordinary serving may grow its one retained host payment under this node's
+  // catalog owner. Null retains the fixed caller-paid diagnostic contract.
+  engine::PagedNode* construction_node = nullptr;
+  std::uint64_t construction_cap = 0;
 };
 // Internal serving handoff from paid source preparation. It names the exact
 // opened, stopped node that holds the source/construction payment. Server
@@ -45,7 +51,8 @@ struct PreparedImageGeneration {
 // against the retained graphs/ports before accepting a completed-boundary change.
 std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
     ImageGenerationRequest&& request, const ModelSettings& settings,
-    std::shared_ptr<engine::ExecutionMetadataAllowance> construction);
+    std::shared_ptr<engine::ExecutionMetadataAllowance> construction,
+    engine::PagedNode* construction_node = nullptr, std::uint64_t construction_cap = 0);
 // Builds only paid geometry/request owners against the existing bound source.
 // EngineImage publishes this at a completed boundary after measured admission.
 std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
@@ -63,5 +70,11 @@ EngineImageBuild ComponentImageGenerationBuild(
     engine::PagedNode& node, int owner, std::shared_ptr<ImageGenerationSource> source,
     std::shared_ptr<engine::ExecutionMetadataAllowance> construction,
     std::shared_ptr<const planner::OwnedDeviceFacts> tuning = {});
+// Existing installed readers and native tokenizer, under the Server's parser
+// loan. Keeps one model/source allowance and source-owned request preparation.
+EngineImageBuild ComponentImageServingBuild(engine::PagedNode& node, std::filesystem::path store,
+                                            std::string composition_id, int owner,
+                                            std::string prompt, std::filesystem::path noise,
+                                            std::uint64_t parser_loan, std::uint64_t cap);
 }  // namespace llmp::runtime
 #endif  // LLMP_RUNTIME_COMPONENT_IMAGE_BUILD_H_

@@ -228,11 +228,9 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
     if (m == nullptr) {
       return Error(std::format("turn {}: no registered model is named {}", index + 1, turn.model));
     }
-    if (!m->llm() && turn.text != serving.image_prompt) {
-      return Error(
-          std::format("turn {}: this build's image runner generates the prompt it registered with "
-                      "(--image-prompt); another needs a new process",
-                      index + 1));
+    if (!m->llm()) {
+      if (auto prepared = static_cast<Image&>(*m).PrepareRequest({.prompt = turn.text}); !prepared)
+        return Error(std::format("turn {}: {}", index + 1, prepared.error()));
     }
     server.memory().Reset();
     SwapParts parts;

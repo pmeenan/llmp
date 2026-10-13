@@ -962,7 +962,9 @@ struct ServerGrowthLifetime {
   rt::ImageGenerationRequest seed;
   fs::path scratch;
   std::FILE* log = nullptr;
+  bool ordinary = false, quality = false;
   bool retirement_attempted = false;
+  fs::path small_noise, grown_noise, output;
   Status retirement;
   std::array<std::string, 4> pixels;
   llmp::base::Sha256Digest state_digest{};
@@ -982,7 +984,8 @@ struct ServerGrowthLifetime {
     if (log) (void)std::fclose(log);
   }
   void Observe() {
-    peak_construction = std::max(peak_construction, loader->allowance->used());
+    peak_construction = std::max(
+        peak_construction, ordinary ? image->startup_host_bytes() : loader->allowance->used());
     peak_catalog =
         std::max(peak_catalog,
                  server->node().catalog().OccupancyOf(server->node().domain()).Total().value());
@@ -1009,6 +1012,18 @@ struct ServerGrowthLifetime {
     return {};
   }
   Status Geometry(std::uint32_t width, std::uint32_t height) {
+    if (ordinary) {
+      if (auto r = image->PrepareRequest({.prompt = width == 1024 ? kRectangularPrompt : kPrompt,
+                                          .width = width,
+                                          .height = height,
+                                          .steps = width == 1024 ? 2U : 1U,
+                                          .noise = width == 1024 ? grown_noise : small_noise});
+          !r)
+        return r;
+      ++retired_geometries;
+      Observe();
+      return {};
+    }
     // Seed and candidate copies are paid before the copy below; the factory
     // separately pays generated graphs/request data before allocating them.
     auto request = seed;
@@ -1028,7 +1043,10 @@ struct ServerGrowthLifetime {
     Observe();
     return {};
   }
-  Status Run(const fs::path& store, const fs::path& noise, const fs::path& gemma_store) {
+  Status Run(const fs::path& store, const fs::path& noise, const fs::path& gemma_store,
+             bool installed_source = false, bool upstream_quality = false) {
+    ordinary = installed_source;
+    quality = upstream_quality;
     constexpr std::string_view gemma =
         "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
     const char* temporary = std::getenv("LLMP_TEST_SCRATCH");
@@ -1055,8 +1073,8 @@ struct ServerGrowthLifetime {
     llmp::config::ModelEntry image_entry;
     image_entry.name = "image";
     image_entry.composition = kComposition;
-    image_entry.overrides["image_size"] = std::int64_t{512};
-    image_entry.overrides["image_steps"] = std::int64_t{1};
+    image_entry.overrides["image_size"] = std::int64_t{quality ? 1024 : 512};
+    image_entry.overrides["image_steps"] = std::int64_t{quality ? 40 : 1};
     config.models.push_back(std::move(image_entry));
     llmp::config::ModelEntry gemma_entry;
     gemma_entry.name = "gemma";
@@ -1064,52 +1082,88 @@ struct ServerGrowthLifetime {
     gemma_entry.overrides["context"] = std::int64_t{512};
     gemma_entry.overrides["prefill_chunk"] = std::int64_t{32};
     gemma_entry.overrides["max_slots"] = std::int64_t{1};
-    config.models.push_back(std::move(gemma_entry));
+    if (!quality) config.models.push_back(std::move(gemma_entry));
     options.plain = true;
     options.diagnostic_budget_cap_bytes = kCap;
     // The existing Server parser/settings phase is separate from the held
     // image construction owner. Both live charges are included in node admission.
-    options.diagnostic_startup_host_bytes = kStartup;
+    options.diagnostic_startup_host_bytes = ordinary ? 0 : kStartup;
+    if (ordinary) {
+      options.diagnostic_component_solo = true;
+      options.diagnostic_component_all = true;
+      options.diagnostic_auto_startup = true;
+      options.image_prompt = kPrompt;
+      // The bounded caller preparation is <2 MiB, separately covered by the
+      // diagnostic process envelope before Server's own source-derived loan.
+      auto bytes = ReadExact(noise, 524288);
+      if (!bytes) return Error(bytes.error());
+      auto directory = llmp::platform::OpenPrivateDirectory(-1, scratch.c_str());
+      if (!directory)
+        return Error("private request directory: " + std::to_string(directory.error()));
+      llmp::artifact::FileDescriptor fd(*directory);
+      for (const auto& [name, length] : {std::pair{"small.bf16", std::size_t{32 * 32 * 64 * 2}},
+                                         std::pair{"grown.bf16", std::size_t{64 * 32 * 64 * 2}}})
+        if (auto written = llmp::platform::ReplacePrivateFile(
+                fd.get(), name, std::string_view(*bytes).substr(0, length));
+            !written)
+          return Error("private request noise write: " + std::to_string(written.error()));
+      small_noise = scratch / "small.bf16";
+      grown_noise = scratch / "grown.bf16";
+      options.image_noise = quality ? noise : small_noise;
+      if (quality) {
+        const char* export_path = std::getenv("LLMP_IMAGE_SCREEN_OUTPUT");
+        if (!export_path) return Error("quality run requires explicit completed output directory");
+        output = export_path;
+      }
+    }
     log = std::tmpfile();
     if (!log) return Error("private Server diagnostic log failed");
     server = std::make_unique<rt::Server>(config, roles, options, log);
     auto& node = server->node();
-    if (auto r = rt::CheckStartupHostAllowance(kConstruction + kStartup, kCap,
-                                               llmp::platform::AvailableMemoryBytes().value_or(0));
-        !r)
-      return r;
-    if (auto r = node.Open(); !r) return r;
-    loader = std::make_unique<Lifetime>(node);
-    auto paid = en::ExecutionMetadataAllowance::Admit(
-        node.catalog(), node.domain(), kConstruction,
-        llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
-    if (!paid) return Error(paid.error());
-    loader->allowance = std::move(*paid);
-    if (auto r = loader->Load(store, noise); !r) return r;
-    // Original 1024 source noise plus seed/candidate capacities and one Gemma
-    // vocabulary row; no copied weight payload or retained rendered images.
-    const auto request_credit = 4 * 524288ULL +
-                                8 * loader->source->prompt.size() * sizeof(std::int32_t) +
-                                256000ULL * sizeof(float) + 16384;
-    if (!loader->allowance->Charge(request_credit)) return Error("swap request copies unpaid");
-    seed = *loader->source;
-    seed.keep = loader->allowance;
-    loader->source->width = 512;
-    loader->source->height = 512;
-    loader->source->noise.resize(32 * 32 * 64);
-    auto prepared = std::make_shared<rt::PreparedImageGeneration>();
-    prepared->alias = "image";
-    prepared->node = &node;
-    prepared->owner = 0;
-    prepared->source = loader->source;
-    prepared->construction = loader->allowance;
-    options.diagnostic_prepared_images.push_back(std::move(prepared));
+    if (!ordinary) {
+      if (auto r = rt::CheckStartupHostAllowance(
+              kConstruction + kStartup, kCap, llmp::platform::AvailableMemoryBytes().value_or(0));
+          !r)
+        return r;
+      if (auto r = node.Open(); !r) return r;
+      loader = std::make_unique<Lifetime>(node);
+      auto paid = en::ExecutionMetadataAllowance::Admit(
+          node.catalog(), node.domain(), kConstruction,
+          llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
+      if (!paid) return Error(paid.error());
+      loader->allowance = std::move(*paid);
+      if (auto r = loader->Load(store, noise); !r) return r;
+      // Original 1024 source noise plus seed/candidate capacities and one Gemma
+      // vocabulary row; no copied weight payload or retained rendered images.
+      const auto request_credit = 4 * 524288ULL +
+                                  8 * loader->source->prompt.size() * sizeof(std::int32_t) +
+                                  256000ULL * sizeof(float) + 16384;
+      if (!loader->allowance->Charge(request_credit)) return Error("swap request copies unpaid");
+      seed = *loader->source;
+      seed.keep = loader->allowance;
+      loader->source->width = 512;
+      loader->source->height = 512;
+      loader->source->noise.resize(32 * 32 * 64);
+      auto prepared = std::make_shared<rt::PreparedImageGeneration>();
+      prepared->alias = "image";
+      prepared->node = &node;
+      prepared->owner = 0;
+      prepared->source = loader->source;
+      prepared->construction = loader->allowance;
+      options.diagnostic_prepared_images.push_back(std::move(prepared));
+    }
     if (auto r = server->Start(true); !r) return r;
     // Server owns its snapshot; clearing the caller's handoff cannot release it.
     options.diagnostic_prepared_images.clear();
     image = dynamic_cast<rt::EngineImage*>(server->Find("image"));
     llm = dynamic_cast<rt::EngineLlm*>(server->Find("gemma"));
-    if (!image || !llm) return Error("Server did not construct the shared image/LLM adapters");
+    if (!image || (!quality && !llm))
+      return Error("Server did not construct the shared image/LLM adapters");
+    if (ordinary) {
+      if (!options.diagnostic_prepared_images.empty() || !image->startup_host_bytes())
+        return Error("ordinary image unexpectedly used a prepared-source handoff");
+      if (auto r = image->PrepareRequest({.prompt = kPrompt, .output = output}); !r) return r;
+    }
     activation_base = node.activations().base;
     pool_base = node.pool().base;
     initial_activation = node.activations().bytes;
@@ -1117,6 +1171,7 @@ struct ServerGrowthLifetime {
     const auto activation_extent = node.activations().extents.front();
     const auto pool_extent = node.pool().extents.front();
     if (auto r = Image(0); !r) return r;
+    if (quality) return {};
     if (auto r = Activate(*llm); !r) return r;
     constexpr std::array<std::int32_t, 6> tokens{2, 818, 5279, 529, 7001, 563};
     std::vector<float> head;
@@ -1186,6 +1241,45 @@ TEST(ImageGenerationGpu, ServerSwapsRetainStateAcrossImageGeometryGrowth) {
   RecordProperty("peak_construction_bytes", std::to_string(life->peak_construction));
   RecordProperty("gemma_state_sha256", llmp::base::ToHex(life->state_digest));
   RecordProperty("original_restored_pixels_sha256", life->pixels[0]);
+  RecordProperty("grown_repeated_pixels_sha256", life->pixels[1]);
+  fs::remove_all(life->scratch);
+}
+TEST(ImageGenerationGpu, OrdinaryServerConsumesInstalledSourceAndRequests) {
+  if (!std::getenv("LLMP_RUN_SHARED_IMAGE_SERVICE"))
+    GTEST_SKIP() << "explicit paid ordinary-source service screen required";
+  const char* store = std::getenv("LLMP_IMAGE_GENERATION_STORE");
+  const char* noise = std::getenv("LLMP_IMAGE_GENERATION_NOISE");
+  const char* gemma = std::getenv("LLMP_IMAGE_GROWTH_GEMMA_STORE");
+  ASSERT_NE(store, nullptr);
+  ASSERT_NE(noise, nullptr);
+  ASSERT_NE(gemma, nullptr);
+  const bool quality = std::getenv("LLMP_IMAGE_SERVICE_UPSTREAM_QUALITY") != nullptr;
+  ASSERT_TRUE(rt::CheckStartupHostAllowance(2 * kMiB, kCap,
+                                            llmp::platform::AvailableMemoryBytes().value_or(0)));
+  auto life = std::make_unique<ServerGrowthLifetime>();
+  const auto run = life->Run(store, noise, gemma, true, quality);
+  const auto retired = life->Retire();
+  if (!retired) {
+    std::ignore = life.release();
+    FAIL() << Failed(retired).value_or("");
+  }
+  ASSERT_TRUE(run) << Failed(run).value_or("");
+  EXPECT_EQ(life->completed_images, quality ? 1U : 4U);
+  EXPECT_EQ(life->retired_geometries, quality ? 0U : 2U);
+  RecordProperty("ordinary_installed_source", 1);
+  RecordProperty("completed_images", life->completed_images);
+  RecordProperty("completed_image_stages", quality ? 42 : 14);
+  RecordProperty("server_activations", life->swaps);
+  RecordProperty("request_steps", quality ? "40" : "1,2,2,1");
+  RecordProperty("image_geometries", quality ? "1024x1024" : "512x512,1024x512,1024x512,512x512");
+  RecordProperty("initial_activation_bytes", std::to_string(life->initial_activation));
+  RecordProperty("grown_activation_bytes", std::to_string(life->grown_activation));
+  RecordProperty("initial_pool_bytes", std::to_string(life->initial_pool));
+  RecordProperty("grown_pool_bytes", std::to_string(life->grown_pool));
+  RecordProperty("observed_catalog_max_bytes", std::to_string(life->peak_catalog));
+  RecordProperty("construction_reserved_max_bytes", std::to_string(life->peak_construction));
+  RecordProperty("gemma_state_sha256", llmp::base::ToHex(life->state_digest));
+  RecordProperty("original_pixels_sha256", life->pixels[0]);
   RecordProperty("grown_repeated_pixels_sha256", life->pixels[1]);
   fs::remove_all(life->scratch);
 }

@@ -993,8 +993,8 @@ sources matching configured composition, alias, final model owner index and the
 same opened, stopped node/catalog. It checks a still-held construction charge,
 keeps the ordinary separately paid settings/parser phase, and skips only duplicate
 source/node opening. It does not introduce a public selector or raw-checkpoint
-loader. Automatic prepared-source import/routing and public migration remain
-separate work.
+loader. This checkpoint used prepared owners; the ordinary installed-source
+route is covered below. Public migration remains separate work.
 
 Construction pays both geometry owners concurrently. Runtime mapping growth
 prepays local transition descriptors and a node-wide catalog/span capacity
@@ -1060,3 +1060,107 @@ following targeted build receipt `9f953f0d…`; the earlier union receipt
 Actual receipt `68b84ac6dc2cedc00310cd919c3f76beef064fc3735f20ff72324773d5da6d7c`
 is under external `image-request-growth-models02/actual`; full raw logs, XML and
 identity seals remain outside Git. Final landing documentation QA is separate.
+
+## Ordinary installed-source image service
+
+The existing internal shared-engine selector now lets Server prepare an installed
+image composition through the composition/artifact readers and native tokenizer.
+The same ComponentImageGeneration source owner and EngineImage lifecycle consume
+requests; no prepared owner is injected by the caller and no second loader or
+runner is added. Source parsing retains the ordinary Server startup payment.
+One model-owned construction allowance grows to the checked source/request
+high-water demand before allocation; it does not inherit the earlier diagnostic
+4 GiB allowance as a product limit. Known refused growth preserves the existing
+request, and cancellation cannot discard completed accounting effects.
+
+The existing request path accepts changed prompt, paired dimensions, schedule and
+noise source, using configured defaults when omitted. Same-layout content changes
+retain programs and ports; geometry changes use the previously checked growth and
+retirement path. Requests remain serial and their completed pixel buffers are
+released before the next output. Optional output writes the existing completed
+RGBA buffer to an owner-only file through the private-file helper. Output is unset
+by default, and a failed host write after positive GPU completion does not strand
+the request lifecycle. Public serving selection and HTTP schemas are unchanged.
+
+The combined Spark B main build passes **476 unique host controls**, including
+**144 current image controls**: catalog 23, execution-contract 18, EngineImage 10,
+model-runner 65, image profile 8, spatial components 19 and one request-input
+control. All are from the same final source/build receipt; no historical subset
+is relabeled as current. Source QA passes 31 format, 22 boundary and 2,270 header
+checks plus REUSE 6.2.0. Controls include failed payment growth, stale closure
+refusal, stable retained accounting, request preparation failure atomicity,
+active/unknown refusal, program reuse and recovery after host-output refusal.
+
+The ordinary **Spark B actual passes in 75.657 seconds** (77-second supervised
+job). Four images use 512×512 → 1024×512 → repeated 1024×512 → restored 512×512,
+red/blue/repeated/red prompts and **1/2/2/1 Euler steps**, completing **14 image
+stages and six successful activation calls**. The calls include the resident
+repeat, not six physical swaps. Native checks preserve Gemma saved state across
+model switches and verify own repeated/restored pixels. Repeated pixels do not
+claim accepted capture, replay, independent image quality or speed.
+
+| Actual observation | Bytes |
+| --- | ---: |
+| Initial activation backing | 1,132,462,080 |
+| Grown activation backing | 2,264,924,160 |
+| Pool backing, initial and grown | 81,788,928 |
+| Observed catalog maximum | 41,325,122,870 |
+| Held construction high-water capacity | 2,235,564,584 |
+| Process/cache peak (not device occupancy) | 1,062,629,376 |
+
+Catalog/construction observations are sampled at fixture boundaries; native
+admission remains authoritative throughout. The screen keeps the 48 GiB managed
+node budget, separate 52 GiB process/cache ceiling and 6 GiB physical margin.
+All pre/post guards pass, memory events are zero and the complete child process
+group and GPU work positively retire. The current actual model is `78e11f44…`
+(272,047,024 bytes), built by combined receipt `c1ac4f03…`; actual receipt
+`46ca75fe…` and raw logs/XML remain external under `image-serving-models01`.
+
+A separate ordinary Server request completes **1024×1024 and 40 Euler steps**
+(42 stages) and exports one complete private RGBA image. Its 200.656-second
+fixture time includes startup, source loading and quality output I/O; it is not
+an isolated generation time. Observed catalog maximum is 39,179,812,136 bytes,
+held construction high-water capacity 2,092,958,248 bytes, activation backing
+6,197,084,160 bytes and pool backing 127,926,272 bytes. The child and GPU work
+positively retire with all identity guards passing and zero memory events.
+Actual receipt `a0d9f234…` and own output digest `4f123911…` remain external under
+`image-serving-quality01`.
+
+The existing image comparator **passes the retained independent same-checkpoint
+upstream quality screen**: **37.059 dB PSNR and .99041 luma SSIM**, above the
+predeclared 32 dB/.98 floors. Candidate and retained diffusers reference use the
+same source BF16/F32 assets, red-teapot prompt, initial noise, 1024² geometry,
+40-step schedule and CFG 1. Pixels are not bit-identical, which is not the quality
+criterion. The retained reference image (`9de442f1…`), metadata and noise are
+authenticated; no reference rerun, download or new scorer is introduced.
+
+Scoring receipt `f5501f88…` records positive container/process
+retirement and pre/post guards. The full quality metrics and output pins remain
+external under `image-serving-quality01` and `image-serving-score01`; the images
+are not committed. This qualifies one reference workload, not every prompt or
+geometry. Public-default migration, legacy retirement and the matched 1% family
+performance gate remain open. No performance claim is inferred from fixture
+wall time. Final landing documentation QA remains a separate root check.
+
+A following output-disabled ordinary CLI old/new/old bookend uses each arm's
+quality-qualified pixel pin. The existing harness measures generation from model
+readiness to completed pixels: **32.483 / 195.756 / 32.869 seconds** for frozen
+legacy/current/frozen legacy. Current generation is **5.991×** the two legacy
+observations' mean; their spread is 1.19%. Whole process durations are
+37.201 / 200.545 / 37.273 seconds, with peak sampled drops in host MemAvailable of
+33.498 / 36.538 / 33.476 GiB. These are one coarse screen, not a matched 1%
+verdict. The gap blocks default migration and makes a full statistical ladder
+premature.
+
+Readiness remains about 2.3 seconds in each arm. Current first output follows
+readiness by 5.118 seconds, then the remaining 39 flows and decoder take
+190.638 seconds. Existing runtime accounting reports three retained plans and
+one graph, with 0.010 seconds capture time; timestep-specific program rebuilding
+does not explain the gap. Dense F32 attention, product/layout choices and
+repeated staging remain candidates for bounded kernel/copy attribution. Earlier
+two-step masked-Attention evidence alone does not account for the sixfold gap.
+This screen does not attribute elapsed time to any single kernel or host task;
+no further quality or timing ladder is justified before that attribution.
+Raw three-arm reports and their hashes remain external under
+`image-serving-cli-bookend01/observations`; candidate runtime `6a5404f2…` and
+frozen legacy `f5443363…` retain their distinct identities.
