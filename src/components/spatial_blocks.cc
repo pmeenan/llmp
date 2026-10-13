@@ -157,6 +157,67 @@ std::expected<void, std::string> AttentionReference(SpatialRefIO& io) {
   io.output = std::move(out);
   return {};
 }
+// A pointwise source-typed projection; channels contract, WHN are rows.
+constexpr std::array kProjectionParams{
+    ParamSpec{.name = "in_channels", .type = ParamType::kInt, .least = 1, .most = 65536},
+    ParamSpec{.name = "out_channels", .type = ParamType::kInt, .least = 1, .most = 65536},
+    ParamSpec{.name = "silu",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0},
+};
+constexpr std::array kProjectionRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
+std::expected<std::vector<RoleShape>, std::string> ProjectionRoles(const Instance& in) {
+  if (in.site != Site::kLayer) return std::unexpected("spatial projection requires a layer");
+  return std::vector{Role(0, {static_cast<std::uint64_t>(in.params.Int("in_channels")),
+                              static_cast<std::uint64_t>(in.params.Int("out_channels"))})};
+}
+std::expected<SpatialShape, std::string> ProjectionShape(const Instance& in, SpatialShape shape,
+                                                         std::optional<SpatialShape> auxiliary) {
+  if (auxiliary || !Count(shape) ||
+      shape.channels != static_cast<std::uint64_t>(in.params.Int("in_channels")))
+    return std::unexpected("spatial projection input channels or auxiliary differ");
+  shape.channels = static_cast<std::uint64_t>(in.params.Int("out_channels"));
+  if (!Count(shape)) return std::unexpected("spatial projection output exceeds value bound");
+  return shape;
+}
+std::expected<SpatialValue, std::string> ProjectionEmit(SpatialFragment& f) {
+  auto shape = ProjectionShape(f.instance, f.shape,
+                               f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!shape || f.weights.size() != 1)
+    return std::unexpected("spatial projection needs its validated source weight");
+  auto rows = f.builder.Cont(f.builder.Permute(f.input, {1, 2, 0, 3}));
+  rows = f.builder.Reshape(
+      rows, ir::ShapeOf({f.shape.channels, f.shape.width * f.shape.height * f.shape.images}));
+  auto output = f.builder.MatMul(f.weights[0], rows);
+  if (f.instance.params.Flag("silu")) output = f.builder.Unary(output, ir::UnaryFn::kSilu);
+  output = f.builder.Reshape(
+      output, ir::ShapeOf({shape->channels, shape->width, shape->height, shape->images}));
+  return SpatialValue{f.builder.Cont(f.builder.Permute(output, {2, 0, 1, 3})), *shape};
+}
+std::expected<void, std::string> ProjectionReference(SpatialRefIO& io) {
+  auto shape = ProjectionShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!shape || !io.auxiliary.empty() || !io.bias.empty() || io.input.size() != *Count(io.shape) ||
+      io.kernel.size() != io.shape.channels * shape->channels)
+    return std::unexpected("spatial projection reference source extents differ");
+  std::vector<double> output(static_cast<std::size_t>(*Count(*shape)));
+  const auto pixels = io.shape.width * io.shape.height;
+  for (std::uint64_t n = 0; n < shape->images; ++n)
+    for (std::uint64_t c = 0; c < shape->channels; ++c)
+      for (std::uint64_t p = 0; p < pixels; ++p) {
+        double value = 0;
+        for (std::uint64_t k = 0; k < io.shape.channels; ++k)
+          value += io.input[p + pixels * (k + io.shape.channels * n)] *
+                   io.kernel[k + io.shape.channels * c];
+        if (io.instance.params.Flag("silu")) value /= 1 + std::exp(-value);
+        output[p + pixels * (c + shape->channels * n)] = value;
+      }
+  io.output = std::move(output);
+  return {};
+}
+const SpatialOps kProjection{ProjectionShape, ProjectionEmit, ProjectionReference, 8};
 const SpatialOps kAdd{AddShape, AddEmit, AddReference};
 const SpatialOps kDup{DupShape, DupEmit, DupReference, 24};
 std::uint64_t AttentionTemporaries(SpatialShape shape) {
@@ -167,6 +228,16 @@ const SpatialOps kAttention{AttentionShape, AttentionEmit, AttentionReference, 2
                             AttentionTemporaries};
 }  // namespace
 
+const ComponentDef& ProjectionSpatial() {
+  static const ComponentDef def{.kind = "projection.spatial",
+                                .params = kProjectionParams,
+                                .roles = kProjectionRoles,
+                                .shapes = ProjectionRoles,
+                                .spatial = &kProjection,
+                                .emit = NoToken,
+                                .reference = NoTokenRef};
+  return def;
+}
 const ComponentDef& ResidualSpatial() {
   static const ComponentDef def{.kind = "residual.spatial",
                                 .shapes = NoRoles,

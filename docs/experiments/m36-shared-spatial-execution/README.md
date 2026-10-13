@@ -124,3 +124,65 @@ Actual recipe manifest SHA-256:
 `cd495f76fe1ef7477354640a868dba380e74acf418a15ec462051bdf9bcc5940`.
 Actual result SHA-256:
 `86aa3600cf38ca111474352b1a49e6c9f253d08e2946c48b57c5815f21ccd147`.
+
+
+## Complete timestep conditioner
+
+`ImageTimestepSpec` composes four shared source-typed projections, with SiLU after
+both timestep projections and explicit exports for modulation and final scale.
+The prior single-output default is unchanged. The source's four BF16 matrices
+contain 203,423,744 bytes. Their actual intervals lease 99 physical pages
+(207,618,048 bytes); the containing global group reserves 130 virtual pages
+(272,629,760 bytes). Resident weights retain BF16 encoding. The existing source
+sinusoid creates two unequal conditioning rows at `[t, 0]`; its BF16 values widen
+exactly to F32 at the input boundary. No legacy intermediate rounding is imposed.
+
+Independent reduced host controls cover both branches, multiple owners and
+changed inputs against the scalar reference, plus source-shaped metadata,
+export identity, malformed geometry and full reference-payment refusal. The
+main Spark B native build passes 443 host cases across 25 targets, including all
+55 cases in the four directly affected targets. The actual source fixture then
+passes in 0.444 seconds (one-second supervised job). This elapsed observation
+includes setup and storage and is not a performance comparison.
+
+All 40,960 output values are finite at each of five completed steps, totaling
+204,800 checked values. Both first-row branches change when timestep1000 becomes
+500; both zero-time rows remain unchanged. Restoring the original input restores
+the complete original output hashes. Execution uses one eager call, one capture
+and three replays of that retained recording, with no refusal. The bound plan
+contains four `ggml.mul_mat.mmf` products, two unary operations and eight contiguous
+copies; the complete producer and both outputs are executed. These are bounded
+finite-output, row-attribution and same-selected replay controls, not a full-size
+reference quality comparison.
+
+| Resource | Paid bound | Actual program observation |
+| --- | ---: | ---: |
+| Graph metadata | Within64MiB metadata allowance | 491,520 bytes |
+| Activation | 2MiB | 294,912 bytes |
+| Product pool | 2MiB | 0 bytes |
+| Program host metadata | 2MiB | 51,536 bytes |
+
+The separate compiler/owner prepayment is32MiB, pinned staging/output/baseline
+storage1MiB, and managed node capacity512MiB. The invocation uses a2GiB zero-swap
+process/cache ceiling,9GiB available-memory preflight and6GiB physical margin.
+Observed process/cache peak is227,135,488 bytes, not total device residency.
+All pre/post source, recipe and binary guards pass; memory limit/OOM events are
+zero, the whole child process group retires and no GPU process remains. Source
+quality checks are recorded by the final integration separately.
+
+Full flow composition, broader geometries, same-source reference image quality,
+comparative speed, serving and the family migration gate remain open. A reference
+implementation using the same source encoding is the relevant quality baseline;
+unquantized results are only needed for closer/farther-from-original claims.
+No such quality claim is made by this execution screen.
+
+Provenance: `image-timestep-main01` result SHA-256
+`88683f38cabcf4211fa3d680e55d97f86065365ca11ccf130421f85f1b4d75e6`;
+`image-timestep-models01` recipe
+`1848fcf2fbcbe697f670cd81ba3327bbaeb3a163c01b821dda668a1ad3c37c7a`
+and result
+`7c161f68e53225fcb204d974e56562af9b2a7a292a99e97c26c57e7e73b6bf66`.
+Actual binary SHA-256
+`c218d1392b7e71c69cc08fe2e51b7cd7e7c014834cd8687e0dcd1867c9bb40c2`
+(187,663,232 bytes). Raw logs/XML and preserved failed compile/inventory attempts
+remain in session scratch; the successful main receipt is used unchanged.

@@ -623,8 +623,14 @@ these fixtures where applicable.
   outputs, with two eager executions, two captures and two same-selected replays.
   These bounded execution witnesses do not establish original image quality or
   comparative speed.
-  Whole-stage timestep conditioning remains open; these contracts permit future
-  per-owner broadcast on device without requiring CPU row expansion.
+  Q3c's complete timestep conditioner now passes through shared projections
+  and explicit owner-ordered output ports. Four actual BF16 source parts feed
+  two unequal rows and both full branches. Main Spark B native build and all
+  443 host cases across 25 targets pass; the actual case checks 204,800 finite
+  values over five completions, with one eager execution, one capture and three
+  retained replays, including changed/restored input and unchanged zero-time rows.
+  This bounded producer does not yet wire per-owner modulation into a full flow
+  step; on-device broadcast remains possible without requiring CPU row expansion.
   Flow-step, broader whole-VAE qualification, 3-axis rope, bidirectional attention and
   `EngineImage` remain open. Qualify numerical choices rather than imposing the legacy
   pipeline's rounding recipe; retire `qwen_image_runner.*` and `pipeline.cc`

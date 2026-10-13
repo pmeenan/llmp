@@ -41,6 +41,9 @@ struct SpatialBuildOptions {
   // Host reference copies are optional; real source/graph metadata is always paid.
   // False does not authorize a reference executor to allocate any buffers.
   bool reference_buffers = true;
+  // Empty retains the last value. Otherwise distinct produced value IDs, in
+  // output-port order, repeated for each owner. Zero (the input) is not an export.
+  std::span<const std::uint16_t> exports{};
 };
 struct SpatialFragment {
   ir::Builder& builder;
@@ -91,6 +94,7 @@ class SpatialGraph {
   const ir::Graph& graph() const { return graph_; }
   std::span<const StepWeight> weights() const { return weights_; }
   std::span<const SpatialOwner> inputs() const { return inputs_; }
+  // Owner-major, then requested export order; multiple ports may share an owner.
   std::span<const SpatialOwner> outputs() const { return outputs_; }
   // Source-owned domain/version and complete input/output WHCN owner order.
   std::span<const std::uint64_t> parameters() const { return parameters_; }

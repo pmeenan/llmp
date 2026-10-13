@@ -204,6 +204,15 @@ std::expected<std::uint64_t, std::string> MetadataBound(
     if (options.links[i].input > i ||
         (options.links[i].auxiliary && *options.links[i].auxiliary > i))
       return std::unexpected("spatial links must reference an earlier owner-local value");
+  if (options.exports.size() > components)
+    return std::unexpected("spatial exports exceed produced values");
+  for (std::size_t i = 0; i < options.exports.size(); ++i) {
+    if (options.exports[i] == 0 || options.exports[i] > components)
+      return std::unexpected("spatial export must name a produced value");
+    for (std::size_t j = 0; j < i; ++j)
+      if (options.exports[i] == options.exports[j])
+        return std::unexpected("spatial exports must be distinct");
+  }
   for (const auto table : tensors) {
     if (table.size() > kTensors - source_count)
       return std::unexpected("spatial bound tensor inventory is too large");
@@ -222,7 +231,10 @@ std::expected<std::uint64_t, std::string> MetadataBound(
   // 4KiB per source/component covers bounded names/Params/visitor copies.
   static_assert(sizeof(ir::Node) <= 256 && sizeof(ir::TensorDesc) <= 256);
   const auto nodes = owners.size() * (primitive_count + 1) + 2 * components;
-  return 4096ULL * (2 * nodes + source_count + 4 * components + 16);
+  // Explicit outputs add owned port/shape lists and graph output retention.
+  // Legacy single-output metadata payment and identity remain unchanged.
+  return 4096ULL *
+         (2 * nodes + source_count + 4 * components + 16 + owners.size() * options.exports.size());
 }
 struct PaymentOwner {
   SpatialPayment calls;
@@ -308,7 +320,10 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
       if (instance->def->spatial->temporary_values)
         values += instance->def->spatial->temporary_values(inferred[link.input]);
     }
-    ends.push_back({owner.owner, shape});
+    if (options.exports.empty())
+      ends.push_back({owner.owner, shape});
+    else
+      for (const auto value : options.exports) ends.push_back({owner.owner, inferred[value]});
   }
   std::vector<RoleUse> roles;
   auto visited = VisitWeightBindings(
@@ -322,9 +337,12 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
           return std::unexpected("spatial roles need complete dense F32/BF16 source parts");
         std::uint64_t count = 1;
         for (auto n : role.format.shape.ne)
-          if (__builtin_mul_overflow(count, n, &count) || count > kValues)
-            return std::unexpected("spatial weight value count exceeds its bound");
-        values += count;
+          if (__builtin_mul_overflow(count, n, &count))
+            return std::unexpected("spatial source weight value count overflows");
+        // Resident source descriptors do not allocate decoded payloads. Keep the
+        // activation cap separate; reference copies require checked payment below.
+        if (__builtin_add_overflow(values, count, &values))
+          return std::unexpected("spatial source/reference inventory overflows");
         roles.push_back({role.use_component,
                          role.use_role,
                          role.ref,
@@ -352,6 +370,11 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
         options.links.empty() ? SpatialLink{static_cast<std::uint16_t>(j), {}} : options.links[j];
     parameters.push_back(link.input);
     parameters.push_back(link.auxiliary ? *link.auxiliary + 1U : 0U);
+  }
+  if (!options.exports.empty()) {
+    parameters[1] = 3;
+    parameters.push_back(options.exports.size());
+    for (const auto value : options.exports) parameters.push_back(value);
   }
   for (auto& role : roles) {
     const auto prior =
@@ -392,10 +415,24 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
       shape = emitted->shape;
       produced.push_back(*emitted);
     }
-    builder.Output(input);
-    parameters.push_back(owner.owner);
-    for (auto s : {owner.shape, ends[i].shape})
-      for (auto n : {s.width, s.height, s.channels, s.images}) parameters.push_back(n);
+    if (options.exports.empty()) {
+      builder.Output(input);
+      parameters.push_back(owner.owner);
+      for (auto s : {owner.shape, ends[i].shape})
+        for (auto n : {s.width, s.height, s.channels, s.images}) parameters.push_back(n);
+    } else {
+      parameters.push_back(owner.owner);
+      for (auto n :
+           {owner.shape.width, owner.shape.height, owner.shape.channels, owner.shape.images})
+        parameters.push_back(n);
+      for (const auto value : options.exports) {
+        const auto& exported = produced[value];
+        builder.Output(exported.tensor);
+        for (auto n : {exported.shape.width, exported.shape.height, exported.shape.channels,
+                       exported.shape.images})
+          parameters.push_back(n);
+      }
+    }
   }
   auto graph = std::move(builder).Finish();
   if (!graph) return std::unexpected(graph.error().detail);

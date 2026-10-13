@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 #include <utility>
 
 namespace llmp::spec {
@@ -217,6 +218,49 @@ std::expected<SpatialComposition, std::string> VaeDecoderSpec(
   ModelSpec spec{.pipeline = PipelineKind::kImage, .stages = {std::move(stage)}};
   Canonicalize(spec);
   if (auto valid = Validate(spec); !valid) return std::unexpected(valid.error());
-  return SpatialComposition{std::move(spec), std::move(links)};
+  return SpatialComposition{std::move(spec), std::move(links), {}};
+}
+std::expected<SpatialComposition, std::string> ImageTimestepSpec(
+    const model::QwenImageDenoiserProfile& profile,
+    std::span<const model::QwenImageTensor> tensors) {
+  constexpr std::array<std::string_view, 4> names{
+      "time_text_embed.timestep_embedder.linear_1.weight",
+      "time_text_embed.timestep_embedder.linear_2.weight", "modulation.1.weight",
+      "norm_out.linear.weight"};
+  const std::uint64_t width = profile.width, input = profile.timestep_dim;
+  if (!width || width > 65536 / 4 || !input || input > 65536 || tensors.size() > 4096)
+    return std::unexpected("image timestep source dimensions or inventory exceed component bounds");
+  const std::array<std::uint64_t, 4> ins{input, width, width, width};
+  const std::array<std::uint64_t, 4> outs{width, width, 4 * width, width};
+  std::array<const model::QwenImageTensor*, 4> sources{};
+  for (const auto& tensor : tensors) {
+    if (tensor.name.empty() || tensor.name.size() > 256 || tensor.shape.size() > 4)
+      return std::unexpected("image timestep source metadata exceeds mapping allowance");
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      if (tensor.name != names[i]) continue;
+      if (sources[i] || tensor.dtype != "BF16" || tensor.shape.size() != 2 ||
+          tensor.shape[0] != outs[i] || tensor.shape[1] != ins[i])
+        return std::unexpected("image timestep source role encoding or shape differs");
+      sources[i] = &tensor;
+    }
+  }
+  if (std::ranges::find(sources, nullptr) != sources.end())
+    return std::unexpected("image timestep source role is missing");
+  Stage stage{.name = "conditioning", .role = StageRole::kDenoiser, .artifact = 0};
+  stage.stream.width = static_cast<std::uint32_t>(input);
+  Layer layer;
+  layer.components.reserve(4);
+  for (std::size_t i = 0; i < names.size(); ++i)
+    layer.components.push_back({.kind = "projection.spatial",
+                                .version = 1,
+                                .params = {{"in_channels", static_cast<std::int64_t>(ins[i])},
+                                           {"out_channels", static_cast<std::int64_t>(outs[i])},
+                                           {"silu", i < 2}},
+                                .weights = {{.role = "weight", .tensor = sources[i]->name}}});
+  stage.layers.push_back(std::move(layer));
+  ModelSpec spec{.pipeline = PipelineKind::kImage, .stages = {std::move(stage)}};
+  Canonicalize(spec);
+  if (auto valid = Validate(spec); !valid) return std::unexpected(valid.error());
+  return SpatialComposition{std::move(spec), {{0, {}}, {1, {}}, {2, {}}, {2, {}}}, {3, 4}};
 }
 }  // namespace llmp::spec

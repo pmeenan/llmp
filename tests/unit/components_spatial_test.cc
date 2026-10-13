@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -353,5 +354,200 @@ TEST(SpatialComponentsTest, CompleteReducedDecoderSharesAllFragmentsAndIndepende
   for (std::size_t i = 0; i < actual->size(); ++i)
     EXPECT_NEAR((*actual)[i], values.back()[i], 2e-5);
 }
+
+std::vector<BoundTensor> TimestepTensors(std::span<const model::QwenImageTensor> source) {
+  std::vector<BoundTensor> out;
+  for (const auto& tensor : source) {
+    if (tensor.name != "time_text_embed.timestep_embedder.linear_1.weight" &&
+        tensor.name != "time_text_embed.timestep_embedder.linear_2.weight" &&
+        tensor.name != "modulation.1.weight" && tensor.name != "norm_out.linear.weight")
+      continue;
+    out.push_back({tensor.name, ir::Dense(format::Encoding::kBF16,
+                                          ir::ShapeOf({tensor.shape[1], tensor.shape[0]}))});
+  }
+  return out;
+}
+// Deliberately scalar, independent WHCN matrix contraction; no builder or
+// component emitter is used to compute the expected branch values.
+std::vector<double> ProjectRows(std::span<const double> input, std::uint64_t pixels,
+                                std::uint64_t ci, std::uint64_t co, std::span<const float> weight,
+                                bool silu) {
+  std::vector<double> out(static_cast<std::size_t>(pixels * co));
+  for (std::uint64_t row = 0; row < pixels; ++row)
+    for (std::uint64_t channel = 0; channel < co; ++channel) {
+      double value = 0;
+      for (std::uint64_t k = 0; k < ci; ++k)
+        value += input[row + pixels * k] * weight[k + ci * channel];
+      out[row + pixels * channel] = silu ? value / (1 + std::exp(-value)) : value;
+    }
+  return out;
+}
+
+TEST(SpatialComponentsTest, TimestepBranchesKeepBothOutputsAndChangedMultiownerInputs) {
+  auto profile = model::QwenImage21().denoiser;
+  profile.width = 4;
+  profile.timestep_dim = 2;
+  const auto source = model::DenoiserTensors(profile);
+  auto mapping = spec::ImageTimestepSpec(profile, source);
+  ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+  auto tensors = TimestepTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{1, {1, 2, 2, 1}}, SpatialOwner{4, {3, 1, 2, 1}}};
+  Budget budget;
+  {
+    auto graph = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                  {.links = mapping->links, .exports = mapping->exports});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    ASSERT_EQ(graph->graph().outputs().size(), 4U);
+    ASSERT_EQ(graph->outputs().size(), 4U);
+    ASSERT_EQ(graph->weights().size(), 4U);
+    auto exec = ref::Executor::Create(graph->graph());
+    ASSERT_TRUE(exec) << Failed(exec, &ref::ExecFailure::detail).value_or("");
+    std::array<std::vector<float>, 4> weights;
+    const std::array<std::uint64_t, 4> ci{2, 4, 4, 4}, co{4, 4, 16, 4};
+    for (std::size_t i = 0; i < weights.size(); ++i) {
+      weights[i].resize(static_cast<std::size_t>(ci[i] * co[i]));
+      for (std::size_t j = 0; j < weights[i].size(); ++j)
+        weights[i][j] = static_cast<float>(static_cast<int>((j * 3 + i * 7) % 17) - 8) / 32;
+      const auto& weight = graph->weights()[i];
+      EXPECT_EQ(graph->graph().tensor(weight.tensor).format.encoding, format::Encoding::kBF16);
+      ASSERT_TRUE(exec->BindValues(weight.tensor, weights[i]));
+    }
+    std::array<std::vector<float>, 2> original_outputs;
+    for (std::size_t revision = 0; revision < 2; ++revision) {
+      std::array<std::vector<float>, 2> inputs;
+      for (std::size_t owner = 0; owner < owners.size(); ++owner) {
+        inputs[owner].resize(
+            static_cast<std::size_t>(owners[owner].shape.width * owners[owner].shape.height * 2));
+        for (std::size_t j = 0; j < inputs[owner].size(); ++j)
+          inputs[owner][j] = static_cast<float>(j + owner * 3 + revision * 5) / 8;
+        ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[owner], inputs[owner]));
+      }
+      ASSERT_TRUE(exec->Run());
+      for (std::size_t owner = 0; owner < owners.size(); ++owner) {
+        const auto pixels = owners[owner].shape.width * owners[owner].shape.height;
+        std::vector<double> input(inputs[owner].begin(), inputs[owner].end());
+        auto first = ProjectRows(input, pixels, 2, 4, weights[0], true);
+        auto second = ProjectRows(first, pixels, 4, 4, weights[1], true);
+        const std::array expected{ProjectRows(second, pixels, 4, 16, weights[2], false),
+                                  ProjectRows(second, pixels, 4, 4, weights[3], false)};
+        for (std::size_t branch = 0; branch < 2; ++branch) {
+          const auto port = owner * 2 + branch;
+          EXPECT_EQ(graph->outputs()[port].owner, owners[owner].owner);
+          EXPECT_EQ(graph->outputs()[port].shape.channels, branch == 0 ? 16U : 4U);
+          const auto output = graph->graph().outputs()[port];
+          EXPECT_EQ(graph->graph().tensor(output).segment, owners[owner].owner);
+          auto actual = exec->Values(output);
+          ASSERT_TRUE(actual);
+          ASSERT_EQ(actual->size(), expected[branch].size());
+          for (std::size_t j = 0; j < actual->size(); ++j)
+            EXPECT_NEAR((*actual)[j], expected[branch][j], 1e-6);
+          if (owner == 0) {
+            if (revision == 0)
+              original_outputs[branch] = *actual;
+            else
+              EXPECT_NE(*actual, original_outputs[branch]);
+          }
+        }
+      }
+    }
+    const std::array<std::uint16_t, 2> reversed{4, 3};
+    auto other = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                  {.links = mapping->links, .exports = reversed});
+    ASSERT_TRUE(other);
+    EXPECT_FALSE(std::ranges::equal(graph->parameters(), other->parameters()));
+    EXPECT_EQ(other->outputs()[0].shape.channels, 4U);
+    auto legacy = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                   {.links = mapping->links});
+    ASSERT_TRUE(legacy);
+    EXPECT_EQ(legacy->graph().outputs().size(), owners.size());
+    EXPECT_EQ(legacy->outputs()[0].shape.channels, 4U);
+  }
+  EXPECT_EQ(budget.used, 0U);
+}
+
+TEST(SpatialComponentsTest, FullTimestepSourceMetadataDoesNotAllocateDecodedWeights) {
+  const auto& profile = model::QwenImage21().denoiser;
+  const auto source = model::DenoiserTensors(profile);
+  auto mapping = spec::ImageTimestepSpec(profile, source);
+  ASSERT_TRUE(mapping);
+  auto tensors = TimestepTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{0, {1, 2, 256, 1}}};
+  Budget budget;
+  {
+    auto graph = BuildSpatialStep(
+        mapping->spec, tables, owners, budget.Payment(),
+        {.links = mapping->links, .reference_buffers = false, .exports = mapping->exports});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    EXPECT_EQ(graph->reference_bytes(), 0U);
+    EXPECT_EQ(budget.used, graph->metadata_bytes());
+    EXPECT_LT(budget.used, 1U << 20U);
+    std::uint64_t weight_bytes = 0;
+    for (const auto& weight : graph->weights()) {
+      const auto& desc = graph->graph().tensor(weight.tensor);
+      EXPECT_EQ(desc.format.encoding, format::Encoding::kBF16);
+      weight_bytes += 2 * desc.ne(0) * desc.ne(1);
+    }
+    EXPECT_EQ(weight_bytes, 203423744U);
+    ASSERT_EQ(graph->outputs().size(), 2U);
+    EXPECT_EQ(graph->outputs()[0].shape, (SpatialShape{1, 2, 16384, 1}));
+    EXPECT_EQ(graph->outputs()[1].shape, (SpatialShape{1, 2, 4096, 1}));
+  }
+  EXPECT_EQ(budget.used, 0U);
+  // A reference request must pay the full source-derived aggregate, not reuse
+  // the metadata-only authorization. The 128MiB test allowance cannot pay it.
+  auto refused = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                  {.links = mapping->links, .exports = mapping->exports});
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().find("buffers were not funded"), std::string::npos);
+  EXPECT_EQ(budget.used, 0U);
+}
+
+TEST(SpatialComponentsTest, TimestepRefusesMalformedSourcesExportsAndPaymentBeforeGraphCopies) {
+  auto profile = model::QwenImage21().denoiser;
+  profile.width = 4;
+  profile.timestep_dim = 2;
+  auto source = model::DenoiserTensors(profile);
+  auto mapping = spec::ImageTimestepSpec(profile, source);
+  ASSERT_TRUE(mapping);
+  auto wrong = source;
+  wrong[0].name = source[2].name;
+  EXPECT_FALSE(spec::ImageTimestepSpec(profile, wrong));
+  wrong = source;
+  wrong[2].dtype = "F32";
+  EXPECT_FALSE(spec::ImageTimestepSpec(profile, wrong));
+  wrong = source;
+  wrong[2].shape[1] = 3;
+  EXPECT_FALSE(spec::ImageTimestepSpec(profile, wrong));
+  wrong.erase(wrong.begin() + 2);
+  EXPECT_FALSE(spec::ImageTimestepSpec(profile, wrong));
+  auto tensors = TimestepTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{0, {1, 2, 2, 1}}};
+  for (const auto exports : {std::array<std::uint16_t, 2>{0, 3}, {3, 3}, {3, 5}}) {
+    Budget budget;
+    EXPECT_FALSE(BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                  {.links = mapping->links, .exports = exports}));
+    EXPECT_EQ(budget.calls, 0U);
+    EXPECT_EQ(budget.used, 0U);
+  }
+  Budget denied;
+  denied.limit = 0;
+  EXPECT_FALSE(BuildSpatialStep(mapping->spec, tables, owners, denied.Payment(),
+                                {.links = mapping->links, .exports = mapping->exports}));
+  EXPECT_EQ(denied.calls, 1U);
+  EXPECT_EQ(denied.used, 0U);
+  Budget malformed;
+  tensors[0].format.shape.ne[0] = UINT64_MAX;
+  EXPECT_FALSE(BuildSpatialStep(
+      mapping->spec, tables, owners, malformed.Payment(),
+      {.links = mapping->links, .reference_buffers = false, .exports = mapping->exports}));
+  EXPECT_EQ(malformed.used, 0U);
+  const std::array huge{SpatialOwner{0, {UINT64_MAX, 2, 2, 1}}};
+  EXPECT_FALSE(BuildSpatialStep(mapping->spec, tables, huge, malformed.Payment(),
+                                {.links = mapping->links, .exports = mapping->exports}));
+}
+
 }  // namespace
 }  // namespace llmp::components

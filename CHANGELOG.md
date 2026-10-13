@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Compose the complete image timestep conditioner from shared projections and
+  explicit output ports, preserving BF16 source weights. Both conditioning
+  branches pass bounded finite-output and changed-input capture/replay checks;
+  full flow, image quality, comparative speed and serving remain separate.
+
 - Bind durable kept-state layouts to a present prepared execution identity,
   refusing state from a different owned backend, tuning or declared domain
   before adoption or restore. Legacy sources without that identity keep their

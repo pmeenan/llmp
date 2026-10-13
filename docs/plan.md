@@ -2502,6 +2502,18 @@ each is checked against the design as M3.6 proceeds.
             paths each (2026-10-12). No full-decoder scalar quality oracle,
             original-image quality, comparative-speed or serving claim
             ([scope and evidence](experiments/m36-shared-spatial-execution/README.md#complete-first-frame-decoder)).
+      - [x] **Q3c — complete timestep conditioner:** shared source-typed
+            projections and bounded exported values retain the prior single-output
+            default. Four actual BF16 matrices produce both modulation and final
+            scale for two unequal conditioning rows, without a mandatory legacy
+            intermediate-rounding policy. Full main Spark B native build and
+            443 host cases across 25 targets pass, including the four-target
+            55-case affected subset. One actual case checks all 40,960 output
+            values at five completed steps (204,800 finite values), both changed
+            first-row branches, unchanged zero-time rows and retained capture
+            replay (2026-10-12). Full flow, image quality against a same-source
+            reference, comparative speed and serving remain open
+            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-timestep-conditioner)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

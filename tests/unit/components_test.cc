@@ -96,36 +96,18 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
     EXPECT_EQ(Find(def->kind, def->version), def);
   }
   EXPECT_TRUE(std::ranges::is_sorted(kinds));
-  EXPECT_EQ(kinds, (std::vector<std::string_view>{"attention.borrowed",
-                                                  "attention.dense",
-                                                  "attention.gdn",
-                                                  "attention.mqa",
-                                                  "attention.qsa",
-                                                  "attention.qsa",
-                                                  "attention.spatial",
-                                                  "conv.spatial",
-                                                  "embedding.inject",
-                                                  "embedding.mtp",
-                                                  "embedding.mtp",
-                                                  "embedding.projected",
-                                                  "embedding.token",
-                                                  "ffn.glu",
-                                                  "ffn.moe",
-                                                  "hc.combine",
-                                                  "hc.mix",
-                                                  "head.linear",
-                                                  "norm.adaptive",
-                                                  "norm.channel",
-                                                  "norm.rms",
-                                                  "residual.gated",
-                                                  "residual.hc",
-                                                  "residual.ple",
-                                                  "residual.spatial",
-                                                  "residual.upsample",
-                                                  "scale.learned",
-                                                  "side.hash",
-                                                  "side.ngram",
-                                                  "upsample.nearest"}));
+  EXPECT_EQ(kinds, (std::vector<std::string_view>{
+                       "attention.borrowed", "attention.dense",  "attention.gdn",
+                       "attention.mqa",      "attention.qsa",    "attention.qsa",
+                       "attention.spatial",  "conv.spatial",     "embedding.inject",
+                       "embedding.mtp",      "embedding.mtp",    "embedding.projected",
+                       "embedding.token",    "ffn.glu",          "ffn.moe",
+                       "hc.combine",         "hc.mix",           "head.linear",
+                       "norm.adaptive",      "norm.channel",     "norm.rms",
+                       "projection.spatial", "residual.gated",   "residual.hc",
+                       "residual.ple",       "residual.spatial", "residual.upsample",
+                       "scale.learned",      "side.hash",        "side.ngram",
+                       "upsample.nearest"}));
   EXPECT_EQ(Find("attention.dense", 2), nullptr);
   EXPECT_EQ(Find("attention.sparse", 1), nullptr);
   EXPECT_EQ(RoleIndex(*Find("ffn.glu", 1), "down"), 3);

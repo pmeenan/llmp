@@ -911,6 +911,25 @@ leases 486 actual source pages and keeps completion-owned programs and buffers
 alive through retirement. This is not a new dispatcher, `EngineImage` admission,
 image-quality oracle or comparative-speed result.
 
+The complete timestep conditioner adds shared `projection.spatial` and explicit
+bounded graph exports. Empty exports preserve the prior last-output default;
+explicit exports preserve each owner's requested output order in graph identity.
+`ImageTimestepSpec` binds the existing four BF16 projection roles and produces
+both modulation and final scale. Resident source descriptors have checked format
+and byte geometry independently of the activation-element limit. Scalar reference
+callers must still prepay complete source buffers; GPU callers omit those unused
+buffers without weakening source validation or activation limits.
+
+The actual two-row program uses the existing BF16 sinusoid input boundary,
+widened exactly to F32, and shared projection/SiLU operations without forced
+legacy intermediate casts. Main native build and 443 host cases across 25 targets
+pass. The one actual Spark B case checks all 40,960 output values at each of five
+completed steps, including changed and restored inputs through the retained
+capture; both branches change only for the changed row. Source weights remain
+BF16. This qualifies bounded conditioner composition and execution, not full
+flow, image quality, comparative speed or pipeline serving. See the
+[timestep evidence](experiments/m36-shared-spatial-execution/README.md#complete-timestep-conditioner).
+
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a
 definition's `row_local` false; `attention.dense`, whose `narrows` says it

@@ -25,11 +25,18 @@ std::expected<ModelSpec, std::string> VaeSpatialSpec(
 struct SpatialComposition {
   ModelSpec spec;
   std::vector<GraphLink> links;
+  std::vector<std::uint16_t> exports;
 };
 // Complete first-frame source plan, including residual and duplicate-up edges.
 // Source buffers become SSA values; Copy saves an alias, not a payload copy.
 // Same prepaid 1MiB source-mapping allowance, at most256 steps/4096 tensor names.
 std::expected<SpatialComposition, std::string> VaeDecoderSpec(
     std::span<const model::VaeStep> steps, std::span<const model::QwenImageTensor> tensors);
+// Four BF16 source projections; exports modulation and final normalization scale.
+// Caller prepays the existing 1MiB source-mapping allowance before this call.
+// This maps only source roles and branches; input sinusoid policy belongs to the caller.
+std::expected<SpatialComposition, std::string> ImageTimestepSpec(
+    const model::QwenImageDenoiserProfile& profile,
+    std::span<const model::QwenImageTensor> tensors);
 }  // namespace llmp::spec
 #endif  // LLMP_SPEC_IMAGE_SPATIAL_H_
