@@ -679,3 +679,77 @@ Result: `1cfb2cae36f0539e7f70125042cc65060ba7ac8928c838642ec469f423dea5a6`.
 Raw evidence remains in `qwen-c4-gap-models01`; replay uses the existing family
 prime controller with the two internal dispatch selections, fresh namespaces,
 the authenticated source/runtime tuple above and supervised retirement.
+
+## Owner-lane candidate not adopted
+
+2026-10-13, Spark A. Bounded traces of recognizable target-stage intervals
+showed five legacy streams versus one shared stream, with mean overlap
+21.253ms versus 0.511ms in the selected windows. Launch structure does not
+prove equal verify rows or accepted work, so this motivated a candidate rather
+than explaining the entire earlier gap.
+
+The candidate reused component owner segments, existing planner lanes and
+activation placement, projected logical regions onto physical steps, and
+paid for four lane contexts and five immutable scratch partitions. It kept
+shared arithmetic and fusions. Review added region-boundary refusal, complete
+mutable-root alias checks and propagation of unknown lane-join completion.
+The full native build and 207 affected host controls passed before the screen.
+
+Both arms used the same candidate runtime; artifacts, settings and ordered
+work matched the earlier locator: context33,792/chunk4,096/C4, actual draft
+47,172, one warm and two measured C1/C2/C4 passes per arm. All 42 requests
+completed 5,376 outputs with zero reused prompt tokens. Measured-pass means:
+
+| Cohort | Legacy prefill s | Candidate prefill s | Legacy decode tokens/s | Candidate decode tokens/s | Legacy wall tokens/s | Candidate wall tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C1 | 3.633401 | 3.189109 | 46.618665 | 45.490208 | 20.076500 | 21.395755 |
+| C2 | 7.148492 | 7.088110 | 64.326102 | 63.037442 | 22.827924 | 22.591114 |
+| C4 | 16.000934 | 16.910869 | 76.156816 | 63.470713 | 23.013496 | 21.072778 |
+
+C4 decode throughput is **16.6579% lower**, wall throughput **8.4330% lower**
+and prefill duration **5.6868% longer** than the current legacy arm. This
+representative screen establishes no benefit from enabling the candidate;
+it is not a statistical regression estimate or the frozen-baseline matched1%
+gate. No further trace or quality run was needed to reject its adoption.
+
+| Shared allocation observation | Previous locator | Owner-lane candidate |
+| --- | ---: | ---: |
+| Activation bytes | 6,075,449,344 | 15,240,003,584 |
+| Scratch bytes | 222,298,112 | 1,103,101,952 |
+| Retained startup host grant bytes | 6,708,789,248 | 6,855,589,888 |
+
+The candidate fits the admitted hardware budget. Extra memory would be
+acceptable for a worthwhile measured benefit; none is established here. These
+separate runs do not isolate the cause of the memory or timing differences.
+The candidate's final cumulative counters report 131 reclaimed plans and 107
+reclaimed graphs, without attributing its timing to reclaim. Both arms exit
+TERM/zero, retire all process groups and GPU work, and pass source/runtime and
+allocation guards with zero memory-limit/OOM events. System `MemAvailable`
+drops are 82.5871/98.5137GiB; the separate combined cgroup process/cache peak
+is 5,977,755,648 bytes, not device-only residency.
+
+The lane experiment remains in the private `codex/m36-owner-lanes` worktree
+and immutable `qwen-owner-lanes-source02`; it is not enabled or carried into
+production. Only the independently useful inherited executor correction is
+retained: an unproven lane join dominates an earlier clean rejection, keeping
+the existing owner-retirement rules conservative. The final trimmed-source full
+native build and 235 host controls pass across ten targets: 203 existing
+Qwen-related controls and 32 integrated image controls. These checks are
+distinct from the experimental 207-host build and timing runtime. Public
+defaults, numerical policy, same-quantized-reference quality status and family
+speed/swap gates are unchanged.
+
+Experimental runtime: `df4fb85e00e84dc03dda285c0a5646603ab1a0f630bdbcef84886a3472dcd688`
+(272,147,000 bytes), authenticated source map2,549. Root full-native recipe:
+`a9f0f536fd122b5f8d917f85b27052ab0f25aa111a52a10413e65b14303a8fc6`;
+207-host receipt: `4d93d2603ae62760875116e5ec8c998475206d83508f8b6cd4688862f0476872`.
+Actual recipe: `9c0319198ce51edb3682730099a54b33f8255be4958a303f658e6108e3ae7040`;
+result: `de8052744a0cceed9c95577cd0979e578fa7a219a9440098347786158a4547a3`.
+Raw evidence stays in `qwen-owner-lanes-models01`. The earlier trace receipt is
+`149be4e6f81a36a7397550d152cb5f3723e5e75b6b64663f366d388a44dffb11`.
+
+Final trimmed-source full-native recipe:
+`ebf2189b23686a8d758674100ff1e83ec689c2e50a38aae343e177cc5e511282`;
+235-host receipt: `e7d37b420d07f0c5976b38e4f422428d2190911543814bd77af2850f85541ca3`.
+This build retains the executor correction and integrated image changes,
+not the owner-lane candidate; no new inference is claimed for that binary.

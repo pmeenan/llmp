@@ -206,9 +206,13 @@ remain active. Full native compilation and 456 combined host controls pass
 [full-geometry observation](experiments/m36-numerical-audit/qwen-joined-mtp.md#automatic-startup-accounting-and-family-geometry).
 The current same-Spark pair confirms a C4 decode throughput gap of 15.55% and
 wall throughput gap of 6.38%, with complete work/retirement and hardware fit in
-both arms. Existing bounded tracing follows; lane overlap and numerical-policy
-causes are hypotheses, not conclusions
-([gap locator](experiments/m36-numerical-audit/qwen-joined-mtp.md#current-same-host-c4-gap-locator)).
+both arms. Bounded tracing motivated a generic owner-lane candidate, but the
+fresh candidate pair remains 16.66% slower in C4 decode and 8.43% slower in
+wall throughput; no performance adoption follows. Only the inherited lane-join
+unknown-completion safety fix lands. The reviewed experiment remains unmerged
+in `.claude/worktrees/m36-owner-lanes` (`codex/m36-owner-lanes`) and immutable
+`qwen-owner-lanes-source02`; retain its raw evidence until milestone close
+([candidate outcome](experiments/m36-numerical-audit/qwen-joined-mtp.md#owner-lane-candidate-not-adopted)).
 Automatic public selection, broader same-quantized-reference quality, OS-process/GPU restart and
 the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /

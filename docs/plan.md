@@ -1870,8 +1870,13 @@ each is checked against the design as M3.6 proceeds.
                                     passes admission and complete work; its
                                     same-host current legacy/shared pair confirms
                                     a 15.55% C4 decode throughput gap, with
-                                    6.38% lower wall throughput; bounded tracing
-                                    follows, without a gate verdict
+                                    6.38% lower wall throughput. Bounded tracing
+                                    motivated a generic owner-lane candidate,
+                                    but its fresh pair remains 16.66% slower in
+                                    C4 decode and does not justify adoption.
+                                    The experiment is preserved privately; only
+                                    its independent unknown-join safety fix lands,
+                                    without a family gate verdict
                                     ([startup accounting](experiments/m36-numerical-audit/qwen-joined-mtp.md#automatic-startup-accounting-and-family-geometry)).
                                     Automatic public selection, broader
                                     quality and family gates remain open.

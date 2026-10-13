@@ -359,7 +359,7 @@ std::expected<void, KernelFailure> BoundGraph::RunLanes(LaunchContext& launch) c
     std::expected<void, KernelFailure> joined;
     for (std::uint8_t lane = 1; lane < kLanes; ++lane) {
       auto r = wait(0, lane);
-      if (joined && !r) {
+      if (!r && (joined || r.error().error == KernelError::kUnknown)) {
         joined = r;
       }
     }
@@ -436,8 +436,13 @@ std::expected<void, KernelFailure> BoundGraph::RunLanes(LaunchContext& launch) c
   if (open) {
     // Joined even after a failure, so the stream's fence covers every lane.
     auto closed = close();
-    if (result && !closed) {
-      result = closed;
+    if (!closed) {
+      // A rejected kernel is not evidence that already queued lane work
+      // retired. Preserve an unproven join as kUnknown for the owner even
+      // when the earlier step failed cleanly.
+      if (!result)
+        closed.error().detail = result.error().detail + "; lane closure: " + closed.error().detail;
+      if (result || closed.error().error == KernelError::kUnknown) result = std::move(closed);
     }
   }
   launch.SelectLane(0);
