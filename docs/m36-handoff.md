@@ -10,25 +10,157 @@ resumed, reviewed and checked on both Sparks. **This file is
 temporary**: update it when you land or start a slice, and delete it when
 M3.6 closes. AGENTS.md's rules govern all of it (rules 5, 9–13 especially:
 one reviewed squashed commit per sub-task, heavy-path review rounds, Spark
-jobs through `spark-job`, the full Spark set once per slice).
+jobs through installed `spark-job`; use the owner's combined final-check cadence below).
+
+## Latest quota handoff — 2026-10-13
+
+**M3.6 is incomplete.** The owner requested completion of the in-flight work
+and handoff, rather than new development or performance experiments. This section
+is the current starting point; lower dated snapshots retain historical scope.
+
+The native Qwen GGUF target landed in `d5323ce7` (N4b8). Ordinary import published
+artifact `18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2`
+on Spark A. The same selected v0/v1 implementation passes 36 complete finite
+heads, six initialized-state observations and two real spill/zero-compute
+restores followed by continuation. Public defaults, stored drafter and other
+source formats remain separate. See the [publication and execution report](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13).
+
+The ordinary image installed-source route landed in `44080740` under the internal shared
+selector. Four changed prompt/geometry requests and retained Gemma state pass;
+1024²/40-step quality passes at 37.059 dB PSNR/.99041 SSIM against the retained
+same-checkpoint reference. Its coarse generation screen is **5.991× slower**
+than legacy, so public migration, formal 1% qualification and deletion remain
+blocked. See the [ordinary service report](experiments/m36-shared-spatial-execution/README.md#ordinary-installed-source-image-service).
+
+DeepSeek's ordinary source/compiler foundation landed in `adb0686e`. The
+three tested speculative requests complete 384 outputs, but the complete batch
+is **FAIL**: another 506 MiB of prompt state cannot fit beside the active
+request, so the second client queues and zero joined waves execute. The runtime
+and all process/GPU work positively retire. Fixed-plain HTTP and the planned
+8K/16 swap were not reached. Inspect the actual state-page demand and retained
+compiler footprint before any retry; keep `RoomFor` admission intact.
+Native DeepSeek GGUF publication and target serving landed in `926a4f40`
+(N4b9). Artifact
+`698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd`
+retains all 1,328 tensors/129 expert arrays in their ten source encodings.
+The actual v0/v1 comparison passes 36 complete finite heads, six initialized-state
+observations and two spill/zero-compute restores with continuation. Both arms
+positively retire. Their selected node budgets are 117,700,558,848 and
+115,324,485,632 bytes; the private 110 GiB request is a ceiling at startup and
+final admission, with all physical/footprint checks intact. Empty admitted
+policy directives now use the existing mapping default. Earlier three setup
+refusals are preserved; this is target integrity evidence, not a speed gate.
+See the [native publication report](experiments/m36-dsv4-target/README.md#native-gguf-publication-and-stored-target--2026-10-13).
+
+The final integrated source passes main09's full native build, 48 runtime/memory
+admission controls, 17 stored-admission controls and one request-input control
+on Spark B. Unchanged checks from main06's 241-case union and main02 are reused;
+actual Qwen/image/DeepSeek service evidence retains its original executable identities.
+Final source QA passes 13 format, eight boundary, 2,271 header checks and REUSE 6.2.0
+(main06 also passed 43 format and 29 boundary checks before the cap correction).
+Main09 build receipt is
+`e89a32a18a348e4bad14488fe900c0eb88d2bbbb1aff4af35ae203e3cbbd9d74`;
+runtime `c20c46a01da2f6d97bb630b8ddc793dda90e1e63a8d2834c1c7f1927626d1555`.
+Main06 receipt remains
+`08daa73b84a382f7881924d1518c8422c4c6ea11d104364208b96373b3a09141`.
+The final DeepSeek actual receipt is
+`29094deadd1f9269932dff69fe9f4317e76d050405652cb83ac48705c11933bf`
+(`ds-native-target-models04`, Spark A; all guards pass, zero memory-limit/OOM
+events, no process/GPU work left). No jobs are left running at handoff; completed
+in-flight source is committed on main. The remaining work is the plan
+and blockers below, not an uncommitted root implementation.
+The source receipts describe the final source snapshot, not the subsequent
+Git commits or documentation updates. Both Sparks retain warm
+`/home/pmeenan/src/m36-main` source trees (no `.git`); each host's checked
+source map and executable receipt are authoritative. Check for live jobs before syncing;
+never change guarded source while an actual run is active.
+
+### Resume in this order
+
+- Resolve the measured image speed gap with one short paired attribution using
+  existing source/fixtures and retained oracles. The external
+  `/tmp/llmp-m36-coordination/image-flow-attribution01` draft is **unsealed and
+  unexecuted**; bind final sources/binaries and review it before use. Dense
+  attention, layout/product traffic and repeated mask/position staging or graph
+  digests are possible speed/reuse targets, not established causes. Do not repeat
+  the forty-step quality run or expand timing ladders before attribution.
+- Resolve Qwen's measured C4 decode gap: 65.5694 versus 77.6404 tok/s
+  (−15.55%; wall throughput −6.38%). Existing traces, the rejected owner-lane
+  experiment and default-off first-Verify capture result are retained; do not
+  repeat them or the numerical retrospective. Capture improved decode 3.0257%
+  while wall throughput fell .4834%; it is not an unconditional speed win. Then
+  combine remaining reference-quality, own-state,
+  restart, mixed swap and matched 1% controls in one family closeout batch.
+- Resolve DeepSeek/DSpark's measured concurrent-state capacity wall, then finish
+  its remaining reference-quality, durable restart,
+  state/cohort and matched family speed/swap gates in a combined batch. Short
+  target and long 2,560-target quality evidence already exist; the latter is
+  +0.803531% PPL versus the quantized reference. Qualify remaining scope rather
+  than relabeling those diagnostics as whole-family acceptance.
+- Finish native ModelOpt target products/placement and actual admission,
+  MLX normalization beyond its reader, target-linked drafter semantics and
+  other unsupported native import domains. N5 still requires all current
+  artifacts' re-import/admission, rather than another importer framework.
+- Finish the plan's structural/state/settings cleanup, K1 long-context/state
+  encoding gates and family legacy deletion once qualified. Gemma 2/3/4 and
+  Qwen2/EXL3 migrations are already landed; do not rebuild their work.
+- Run the final owed tiers/package/source-lock and platform checks when they
+  decide milestone acceptance or shipping. Workstation and discrete-GPU work
+  use `hostlock shared`; ordinary development remains on the Sparks. M3.6
+  cleanup waits for accepted closure, not this quota handoff.
+
+Judge numerical adoption by quality versus the quantized checkpoint reference,
+performance, reuse/simplicity and CPU/memory traffic. External bit identity is
+only diagnostic. Exact own-state restoration and lossless source publication
+remain integrity requirements. Useful extra memory is allowed if the full
+workload safely fits; image count/dimensions follow hardware, request and checked
+geometry, not the reference implementation's sample limits.
+
+### Evidence and preserved work
+
+Current raw receipts, sealed controllers and incomplete attribution drafts are
+under local `/tmp/llmp-m36-coordination` and remote `/home/pmeenan/scratch`.
+Keep them until milestone closure. Prepared native targets are under Spark A's
+`/home/pmeenan/scratch/qwen-gguf-v1-store01` and
+`/home/pmeenan/scratch/ds-native-target-store01`; retain their complete stores,
+not only artifact metadata. The installed supervisor has each job's exit record
+under `~/.local/share/llmp/jobs`; use it rather than inferring completion from
+logs. Do not redownload checkpoints, redo complete payload authentication or
+rerun references already authenticated by their retained receipts.
+
+A read-only inventory is retained at
+`/tmp/llmp-m36-coordination/m36-preserved-worktrees.md` with adjacent JSON. At
+its pre-closeout snapshot there are 120 private worktrees, 116 dirty and four
+clean; 118 HEADs are already main ancestry. Dirty patches may be landed,
+superseded or unfinished. Preserve all of them. The non-ancestral
+`codex/m36-qwen-solo` commit is patch-equivalent in main; `codex/m36-g3c2b1b-selected-hc`
+needs substantive comparison before cleanup. The latest author snapshots are
+`.claude/worktrees/m36-image-serving-source`, `m36-dsv4-serving`,
+`m36-qwen-gguf-v1-serving` and `m36-ds-native-target`. Root's final main is
+authoritative; these older whole files must not overwrite integrated fixes.
 
 ## How a slice runs
 
-1. Builder in its own git worktree (`.claude/worktrees/<name>` or any other),
-   with its own source copy on a Spark (`~/src/m36-<slice>`; never copy a
-   build directory between paths).
-2. Heavy-path review: a separate reviewer challenges it, rounds repeat until a
-   round is clean or finds only low-severity issues (fixed without another
-   round). Whoever changes code last runs the full Spark set on the final
-   state (AGENTS.md rule 10).
-3. Merge: root carries the reviewed, checked slice onto `main`, preserving
-   its exact source identity and both sides of any integration. Semantic
-   conflicts need review. Main builds and passes affected integration checks
-   on a dedicated Spark copy before root commits.
-4. Commit on `main`: `[M3.6] <what landed>`, recording the review and checks.
-   Tick the plan sub-item. Keep unmerged worktrees and milestone evidence
-   until their work lands or the owner directs otherwise; final cleanup
-   follows `workflow.md`.
+The owner's 2026-10-13 acceleration direction in [workflow.md](workflow.md)
+supersedes the earlier per-worktree/full-suite cadence recorded below.
+
+1. Keep independent development in private worktrees. Root integrates reviewed
+   final source into `main`; preserve both sides of semantic conflicts. Never
+   overwrite main with older author whole files or transport build directories.
+2. Review and challenge the whole final change. Fix actual defects; a clean
+   round or only fixed low-severity findings ends review. Avoid separate design,
+   controller, template and helper check cycles for the same result.
+3. Run one full main native Spark build and the union of unique affected checks,
+   each once. Reuse authenticated unchanged evidence. Batch related family
+   quality/state/swap controls and run independent batches on both Sparks.
+   Use installed `~/.local/bin/spark-job start --shared` for builds/CPU checks,
+   `--gpu` for inference/timing, and explicitly `wait` for every job. Source and
+   binary guards, complete accounting and positive process/GPU retirement apply.
+4. Root commits each completed reviewed subtask on main as
+   `[M3.6] <what landed>` and updates its plan/evidence. No push, tag, amend or
+   history rewrite. Public/default migration still needs the family gates.
+   Preserve unfinished worktrees and evidence until milestone acceptance;
+   only then perform workflow cleanup.
 
 Family migrations add the 1% speed gate (docs/experiments/m36-baselines/README.md:
 protocol, frozen baselines `~/.local/share/llmp/m36-baseline/1facc957-fixed`
@@ -273,7 +405,6 @@ snapshot continuation on Spark B. The actual spatial-image screen passes
 on main after full native build, 129 affected host controls and source checks.
 Neither result closes its whole-family migration gate.
 
-
 Current DS service/compiler closeout: the generic internal Server route and
 shared maximum transient compiler ownership are checked on combined main06
 (full native/241 current host controls, unchanged main02 proofs retained).
@@ -359,8 +490,8 @@ role/owner visitor in admitted native Gemma builds. Main full native build and
 191 affected host controls pass; the four existing published Gemma 2/3/26/31
 execution cases and mapped DeepSeek source case pass without new artifact
 publication or payload hashing. Real setup measurement and ordinary admission
-are unchanged. Native Qwen/ModelOpt/MLX serving, multipart expert placement,
-shared row-group ownership and full-family gates remain open. Source and map
+are unchanged. At that stage native Qwen serving was still open; N4b8 above supersedes it.
+ModelOpt/MLX serving, multipart expert placement and full-family gates remain open. Source and map
 copies/discovery graphs removed here are a structural simplification, not a
 measured latency improvement.
 

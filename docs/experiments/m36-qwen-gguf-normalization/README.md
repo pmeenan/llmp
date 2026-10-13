@@ -6,8 +6,11 @@
 This slice adds the supported 48-layer `qwen4exp` target GGUF domain to the
 existing owned normalizer. It also makes that domain eligible for the ordinary
 `llmp import` normalization and writer path. The full native build, 103 affected host controls and the actual-header
-normalization check pass on `spark-b`, with zero failures or skips. There is no full artifact publication,
-runtime admission, model execution, quality or performance result here.
+normalization check pass on `spark-b`, with zero failures or skips. This historical
+normalization slice did not publish or execute the full artifact. N4b8 later
+completed ordinary publication and stored-target execution; see the
+[2026-10-13 evidence](../m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13).
+Family quality/performance and public migration remain separate.
 
 ## Source evidence and retained meaning
 
@@ -49,8 +52,10 @@ Existing Gemma normalizer controls remain part of the affected check set.
 The shared writer's exact metadata planner is exercised without file opens.
 The target produces 74,808 destinations: 1,224 whole sources, with each of the
 144 expert arrays split into 512 byte-preserving destinations. There are
-24,576 expert groups, 48 layer groups, one head group and one row-table group
-containing both token embedding and side n-gram weights. The mixing component
+24,576 expert groups, 48 layer groups, one head group and, in this historical
+planner check, one row-table group containing both token embedding and side
+n-gram weights. N4b8 separates those tables into two exclusive groups for the
+actual stored-target row-owner contract. The mixing component
 has no weights. Underfunded placement and a source lacking parsed identity
 receipts refuse before creating a publication directory.
 
@@ -58,8 +63,8 @@ The incremental normalizer ledger is below 512 MiB for these headers; the
 source reader/checkpoint remains separately owned and funded. The writer's
 existing metadata allowance independently covers placement and streaming.
 The metadata tests do not traverse or materialize the approximately 82 GB
-tensor payload. Actual publication, reuse and runtime interpretation of a newly
-written artifact remain N4/N5 work.
+tensor payload. Actual publication and stored-target execution were subsequent
+N4b8 work; N5 all-artifact qualification remains open.
 
 ## Validation — 2026-10-12
 

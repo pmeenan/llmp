@@ -96,7 +96,8 @@ Gemma aliases retain their shared route. Unsupported legacy-only fusion
 overrides refuse before source construction; public defaults do not change.
 
 One Server-owned compiler allowance pays the maximum transient construction
-across aliases. Actual use is charged and confined to its driver thread; returned
+across participating LLM aliases. Image stage compilation retains separate paid
+limits. Actual use is charged and confined to its driver thread; returned
 programs retain that payment until destruction or transfer to paid current-plan
 or future ownership. Commit-buffer graph construction acquires the same loan.
 Source/spec/chat/tokenizer ownership remains separately paid per alias, as do
