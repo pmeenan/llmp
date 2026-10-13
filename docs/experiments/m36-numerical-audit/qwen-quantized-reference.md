@@ -46,16 +46,47 @@ Every current A/C loss also equals its corresponding historical
 [broader native screen](qwen-joined-score.md) observation. This is a post-run
 stability observation across different source/binary snapshots, not an
 acceptance requirement. That earlier screen found a gain dominated by its
-initial prefixes. Neither experimental policy is adopted here. Ordinary
-default-policy quality, long-context behavior, MTP and serving migration remain
-open; no claim about closeness to the unquantized model follows.
+initial prefixes. Neither experimental policy is adopted here. Broader
+default-policy qualification, long-context behavior, MTP and serving migration
+remain open; no claim about closeness to the unquantized model follows.
 
-The next narrow comparison is the unchanged mapping policy against only
-`owner_row_invariant` disabled, both using the same one-row-per-owner schedule
-and these fixed histories. It must authenticate the actual measured classes
-and selected programs first. This isolates the policy at the row geometry
-where it applies; the current two-row schedule does not establish the default
-policy's behavior across contexts. No additional timing ladder is implied.
+## Matched one-row mapping-policy comparison
+
+A separate current-source pair retains identical histories and uses one row
+per owner for all 255 waves. Neither arm supplies explicit tuning entries.
+The first retains the mapping policy; the second disables only
+`owner_row_invariant`. Factory prefill settings remain two rows and all 16
+factory classes are measured under each arm's actual policy. Both execute
+the existing four-owner Score4/read256 class with 1,020 finite full-head rows
+and all 1,016 targets. The plan's owner-row policy flag differs; the
+`StepShape::row_invariant` flag remains false in both.
+
+| One-row policy | Mean NLL | Perplexity | PPL relative to Mia |
+| --- | ---: | ---: | ---: |
+| Unchanged mapping | 3.566793653199 | 35.402897009 | +0.734272% |
+| Only owner-row restriction disabled | 3.563363450261 | 35.281665930 | +0.389325% |
+
+Disabling the restriction reduces mean NLL by 0.003430202938 and aggregate
+PPL by 0.342433% relative to the unchanged mapping: 525 target losses improve
+and 491 worsen. Documents 0 and 1 improve; 2 and 3 regress. Every disabled-arm
+loss equals the earlier two-row A observation, descriptively, with no such
+identity required by the run.
+
+Each actual program records 2,482 implementation entries. The default arm
+has 51 `llmp.mul_mat.mmvf_rows` entries; the disabled arm has 51 corresponding
+`ggml.mul_mat.mmf` entries, with all remaining names unchanged. Default
+policy can select these vector implementations without explicit tuning.
+Names do not expose every internal per-owner operation parameter, so this
+is a whole-policy comparison, not isolated kernel-error attribution. The
+short aggregate result favors disabling the restriction relative to this
+quantized reference; it does not establish agreement with an unquantized
+model, a general quality improvement or a serving-default decision.
+
+A prospective policy change still needs ordinary Prefill/Decode evidence at
+one and four owners, including same-policy state continuation across those
+cohorts. This bounded next check can reuse the existing factory and state
+controls; no larger corpus or context ladder follows automatically. Ordinary
+serving admission, MTP, long-context and migration-speed gates remain open.
 
 Mia uses FP8 KV and BF16 SSM; these native observations use F16 KV. The
 arithmetic and cache choices differ across implementations. We compare their
@@ -91,6 +122,9 @@ by the four short documents.
 | Current native model binary | `d70b3a0a64f473b74aa2d1084fe4d67f15f959c59e9c6260782300f8fa400987` |
 | Current native actual receipt | `7a83de2515d5d28fae3244abda23335878f982f97fe6f7c45e70cb1542f6c304` |
 | Independent current actual review | `7d7bb8b8cdf6fb27a66007e084f16101f8cc354c354e0f338db2fd97f8d37986` |
+| One-row full-build/32-host receipt | `18c0246b84b53d429e18b2e4cb87afd5e0e468d3c640907e8adc7755befbf489` |
+| One-row model binary | `ec131650499b2815f907518f8a052e3a654ad3ff5045834cb539747a1680fdfb` |
+| One-row actual receipt | `dcb203a6b4be744d0e0db234a765ea47f6c25c682dfff8bf78de73b6bd6e5246` |
 
 Each document has 254 targets; reference summed NLL is respectively
 747.6428986233683, 1006.8320033252003, 985.9432543228786 and
@@ -117,6 +151,17 @@ memory-limit/OOM counters are zero. Peak process/cache charge is
 job includes construction, storage and scoring and is not a latency gate.
 Pinned formatting, boundary/header checks and REUSE 6.2.0 pass.
 
+The subsequent one-row pair also passes the main native build, 32 host
+controls and source quality checks, with four manual cases listed and zero
+automatic registrations. Both actual cases exit zero; guards, whole process
+group retirement, GPU-process and memory-event checks pass. Its process/cache
+peak is 1,038,852,096 bytes. The unbookended 55-second job and individual
+elapsed counters are not a comparative speed measurement. An earlier wrapper
+incorrectly treated any vector selection as explicit tuning; its failed
+receipt and successful default native case remain preserved. The corrected
+wrapper retains the complete selection inventory and all numerical/lifetime
+gates, and both fresh cases pass.
+
 Build `qwen38_joined_score_gpu_test`, then replay the two cases
 `Qwen38JoinedScoreGpu.OrdinaryBroaderNaturalTeacher` and
 `Qwen38JoinedScoreGpu.TunedBroaderNaturalTeacher` through the supervised
@@ -125,6 +170,14 @@ coordination directory. Its `run.py`, `run.steps`, input receipt and literal
 source/build/binary guards remain together. This diagnostic is deliberately
 not an ordinary all-model CTest case: it requires the captured inputs and
 explicit resource admission.
+
+For the matched one-row comparison, use the separately sealed
+`qwen-corpus-default-policy-models02` recipe and its current literal binary
+and source receipts. It invokes only
+`Qwen38JoinedScoreGpu.DefaultSingleRowNaturalTeacher` and
+`Qwen38JoinedScoreGpu.JoinedSingleRowNaturalTeacher`; the earlier two cases
+remain available in the same manual target. Both recipes use the same captured
+input identity and the resource/retirement requirements below.
 
 The wrapper supplies `LLMP_TEST_MODELS`, `LLMP_QWEN50_IDS` pointing to the
 4,080-byte fixed ID file authenticated above, `LLMP_QWEN50_IDS_SHA256`, and a

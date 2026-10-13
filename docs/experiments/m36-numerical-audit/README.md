@@ -51,9 +51,14 @@ Mia PPL is 35.144838403; native A/C are respectively +0.389325% and
 C changes only the three typed product tuning keys. Full native build,
 32 host controls, both actual cases and quality checks pass. Every native
 loss also matches the historical observation, descriptively. Cache precision
-differences remain explicit. This does not qualify ordinary default policy,
-serving, or closeness to the unquantized model; a matched one-row policy
-comparison is the next bounded question.
+differences remain explicit. A subsequent matched one-row pair scores the
+unchanged mapping policy at PPL 35.402897009 and the same policy with only
+`owner_row_invariant` disabled at 35.281665930: −0.342433% paired, with two
+documents improving and two regressing. Actual default vector selection is
+recorded without treating it as an explicit tune. Native/32-host, both fresh
+cases and quality checks pass. This whole-policy observation does not adopt
+a serving default or establish closeness to an unquantized model; ordinary
+Prefill/Decode and cohort/state qualification remain open.
 
 ## Candidates and evidence
 

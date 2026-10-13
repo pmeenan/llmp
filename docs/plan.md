@@ -1437,9 +1437,14 @@ each is checked against the design as M3.6 proceeds.
                   independently checked. Mia PPL 35.144838403; native A/C
                   +0.389325%/−0.248639% relative to it. Main native build,
                   32 host controls and both actual cases pass. Experimental
-                  policies and cache differences are explicit; ordinary-default
-                  policy and family gates remain open
+                  policies and cache differences are explicit
                   ([reference and replay](experiments/m36-numerical-audit/qwen-quantized-reference.md)).
+            - [x] Matched one-row Qwen mapping-policy screen: unchanged policy
+                  PPL 35.402897009 versus 35.281665930 with only the owner-row
+                  restriction disabled (−0.342433%, same 1,016 targets).
+                  Full native build, 32 host controls and both actual cases
+                  pass. This whole-policy observation leaves ordinary serving
+                  phases, cohort/state qualification and family gates open.
       - [x] First Qwen2 fused-attention recovery screen: actual selected attention,
             aligned natural smoke losses and four fresh-fixture ABBA cases pass.
             Timing includes setup/I/O and baseline drift; no quality, serving-speed

@@ -118,7 +118,7 @@ static_assert(sizeof(llmp::kernels::ggml::PlanStep) <= 64);
 static_assert(sizeof(std::string) <= 32 && sizeof(en::SlotLifecycle::Range) <= 24);
 static_assert(kShapes * (4096 * (32 + 129) + 64 * 1024) + 2 * 8 * kMiB +
                   (3 * 8 + 1) * kVocabulary * sizeof(float) + 4 * 3 * 512 * 24 + 4096 + 64 * 1024 +
-                  2 * 512 * 1024 <
+                  2 * 512 * 1024 + 2 * 64 * 1024 <
               kObservationEnvelope);
 
 constexpr std::string_view kArtifact =
@@ -153,11 +153,34 @@ bool AllowedShape(const pl::StepShape& shape) {
   return true;
 }
 
+enum class TeacherPolicy { kJoined, kTunedJoined, kDefaultSingleRow, kJoinedSingleRow };
+bool DefaultPolicy(TeacherPolicy policy) { return policy == TeacherPolicy::kDefaultSingleRow; }
+bool TunedPolicy(TeacherPolicy policy) { return policy == TeacherPolicy::kTunedJoined; }
+std::uint32_t ScoreChunk(TeacherPolicy policy) {
+  return policy == TeacherPolicy::kDefaultSingleRow || policy == TeacherPolicy::kJoinedSingleRow
+             ? 1U
+             : 2U;
+}
+std::string_view PolicyName(TeacherPolicy policy) {
+  switch (policy) {
+    case TeacherPolicy::kJoined:
+      return "A-no-tunes";
+    case TeacherPolicy::kTunedJoined:
+      return "C-three-physical8-tunes";
+    case TeacherPolicy::kDefaultSingleRow:
+      return "mapping-default-single-row";
+    case TeacherPolicy::kJoinedSingleRow:
+      return "owner-policy-disabled-single-row";
+  }
+  return {};
+}
+
 struct ShapeRecord {
   pl::StepShape shape;
   std::vector<std::uint64_t> parameters;
   bool parameterized = false;
   bool measured = false, lowered = false;
+  bool owner_policy = false, owner_invariant = false;
   ts::CorpusPlanRecord selected;
   // Planned surviving dense products: node, weight/input IDs, physical K/N/rows,
   // encodings, strides and binding. This is a descriptor receipt, distinct
@@ -246,6 +269,7 @@ static_assert(sizeof(QualityWitness) <= 64 * 1024);
 bool retirement_failed = false;
 
 struct Lifetime {
+  TeacherPolicy policy = TeacherPolicy::kJoined;
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   std::array<ShapeRecord, kShapes> records{};
   std::unique_ptr<QualityWitness> quality;  // Outlives scorer callbacks and runner.
@@ -281,9 +305,13 @@ using Owner = std::unique_ptr<Lifetime, RetainUnknown>;
 en::Status ValidateProgram(Lifetime& life, const kn::LowerInput& input,
                            const kn::StepProgram& program) {
   if (!input.token) return std::unexpected("scorer requires actual token metadata");
+  const bool policy_enabled = DefaultPolicy(life.policy);
+  const bool invariant =
+      policy_enabled && input.token->shape.segments.size() > 1 &&
+      std::ranges::all_of(input.token->shape.segments, [](const auto& s) { return s.rows == 1; });
   if (!AllowedShape(input.token->shape) || input.token->context != 512 ||
-      input.token->shape.stage != 0 || input.plan.owner_row_invariant ||
-      input.plan.owner_rows_policy_enabled || input.token->shape.row_invariant ||
+      input.token->shape.stage != 0 || input.plan.owner_row_invariant != invariant ||
+      input.plan.owner_rows_policy_enabled != policy_enabled || input.token->shape.row_invariant ||
       !input.plan.owner_products.empty() || input.token->step.weights.size() > 4096 ||
       input.token->step.state.size() > 4096 || input.token->step.inputs.size() > 256 ||
       !input.token->step.saves.empty())
@@ -291,6 +319,8 @@ en::Status ValidateProgram(Lifetime& life, const kn::LowerInput& input,
   auto found = std::ranges::find_if(life.records,
                                     [&](const auto& r) { return r.shape == input.token->shape; });
   if (found == life.records.end()) return std::unexpected("lowering escaped sixteen paid classes");
+  found->owner_policy = policy_enabled;
+  found->owner_invariant = invariant;
   if (input.token->shape.phase == pl::Phase::kScore) {
     if (auto valid = ts::CheckCorpusHead(input, program, kVocabulary); !valid) return valid;
   }
@@ -339,12 +369,16 @@ en::Status ValidateProgram(Lifetime& life, const kn::LowerInput& input,
   return {};
 }
 
-std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life, bool tuned) {
+std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life) {
   auto policy = pl::ParsePolicy(llmp::spec::mappings::Qwen38Mapping().policies.front().text);
   if (!policy) return std::unexpected(policy.error());
-  if (std::erase(policy->enabled, "owner_row_invariant") != 1)
+  if (std::ranges::count(policy->enabled, "owner_row_invariant") != 1 ||
+      std::ranges::find(policy->disabled, "owner_row_invariant") != policy->disabled.end())
     return std::unexpected("native mapping owner policy changed");
-  policy->disabled.emplace_back("owner_row_invariant");
+  if (!DefaultPolicy(life.policy)) {
+    std::erase(policy->enabled, "owner_row_invariant");
+    policy->disabled.emplace_back("owner_row_invariant");
+  }
   pl::Canonicalize(*policy);
   auto domain =
       en::NumericalDomain::Create({{.stage = 0,
@@ -375,7 +409,7 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life, bo
       .validate_program = [&life](const kn::LowerInput& input, const kn::StepProgram& program) {
         return ValidateProgram(life, input, program);
       }};
-  if (tuned) {
+  if (TunedPolicy(life.policy)) {
     const auto device = llmp::providers::QueryDeviceFacts(0);
     if (!device) return std::unexpected(std::string(device.error().text()));
     // Same provider-to-planner conversion as GgmlBackend::Create. The factory
@@ -418,7 +452,7 @@ bool BoundedSourceSpellings(std::string_view text) {
   return !quoted;
 }
 
-en::Status SetUp(Lifetime& life, bool tuned) {
+en::Status SetUp(Lifetime& life) {
   auto& node = life.node;
   // All construction-domain prerequisites precede the first graph. The source
   // manifest/index/config hashes below bind this compiled profile's artifact.
@@ -454,7 +488,7 @@ en::Status SetUp(Lifetime& life, bool tuned) {
   }
   testing::Test::RecordProperty("compiler_construction_bytes", std::to_string(kCompilerEnvelope));
   testing::Test::RecordProperty("compiler_descriptor_limit", std::to_string(kNativeDescriptors));
-  auto options = Options(life, tuned);
+  auto options = Options(life);
   if (!options) return std::unexpected(options.error());
   rt::ModelSettings settings;
   settings.architecture = "qwen4exp";
@@ -464,7 +498,8 @@ en::Status SetUp(Lifetime& life, bool tuned) {
   settings.wave_read_align.value = 256;
   settings.speculation.value = false;
   llmp::config::ModelEntry entry;
-  entry.name = tuned ? "qwen50-c" : "qwen50-a";
+  entry.name = ScoreChunk(life.policy) == 1 ? "qwen-policy-single"
+                                            : (TunedPolicy(life.policy) ? "qwen50-c" : "qwen50-a");
   entry.artifact = std::string(kArtifact);
   const fs::path store = fs::path(ts::ModelsDir()) / "m3-artifacts";
   auto build = rt::ComponentLlmBuild(node, store, entry, 0, std::move(*options));
@@ -534,7 +569,7 @@ en::Status ScoreQuality(Lifetime& life) {
                         .tokens = std::span(observed.ids).subspan(owner * rows, rows)};
   auto score = ts::CorpusScore::Make(
       life.node, *life.runner, *life.composer, documents,
-      {.vocabulary = kVocabulary, .chunk_rows = 2},
+      {.vocabulary = kVocabulary, .chunk_rows = ScoreChunk(life.policy)},
       [&observed, rows](const ts::CorpusTargetScore& row) -> en::Status {
         if (observed.score_count >= kOwners * (rows - 1) || row.document != row.slot ||
             row.slot >= kOwners || !row.position || row.position >= rows ||
@@ -553,7 +588,7 @@ en::Status ScoreQuality(Lifetime& life) {
       });
   if (!score) return std::unexpected(score.error());
   life.scorer = std::move(*score);
-  observed.waves = (rows + 1) / 2;
+  observed.waves = (rows + ScoreChunk(life.policy) - 1) / ScoreChunk(life.policy);
   auto completed = life.node.WithRequest(
       0, life.runner->slots().execution(), "Qwen52 larger fixed natural teacher",
       [&]() -> en::Status {
@@ -579,12 +614,13 @@ en::Status ScoreQuality(Lifetime& life) {
   return {};
 }
 
-void Screen(bool tuned) {
+void Screen(TeacherPolicy policy) {
   ASSERT_FALSE(retirement_failed) << "prior owner retirement remains unknown";
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available);
   ASSERT_GE(*available, kDomainBytes + rt::kUncountedMargin);
   Owner life(new Lifetime);
+  life->policy = policy;
   life->scratch = Env("LLMP_QWEN50_SCRATCH");
   ASSERT_FALSE(life->scratch.empty());
   std::error_code error;
@@ -603,7 +639,7 @@ void Screen(bool tuned) {
     ASSERT_GE(id, 0);
     ASSERT_LT(static_cast<std::uint32_t>(id), kVocabulary);
   }
-  auto setup = SetUp(*life, tuned);
+  auto setup = SetUp(*life);
   ASSERT_TRUE(setup) << setup.error();
   // This witness is in the startup observation allowance admitted by SetUp.
   life->quality = std::make_unique<QualityWitness>();
@@ -631,17 +667,32 @@ void Screen(bool tuned) {
   testing::Test::RecordProperty("corpus_ids_sha256", id_sha);
   testing::Test::RecordProperty("inputs", std::to_string(kOwners * document_rows));
   testing::Test::RecordProperty("targets", std::to_string(kOwners * (document_rows - 1)));
-  testing::Test::RecordProperty("score_waves", std::to_string((document_rows + 1) / 2));
-  testing::Test::RecordProperty("candidate", tuned ? "C-three-physical8-tunes" : "A-no-tunes");
+  testing::Test::RecordProperty("score_waves", std::to_string(life->quality->waves));
+  testing::Test::RecordProperty("score_chunk_rows", std::to_string(ScoreChunk(policy)));
+  testing::Test::RecordProperty("candidate", std::string(PolicyName(policy)));
   testing::Test::RecordProperty("quality_scope",
                                 "same-checkpoint reference pairing; no original-model claim");
-  std::ostringstream programs;
+  std::ostringstream programs, policies;
   std::size_t executed = 0, vector8 = 0;
   for (const auto& record : life->records) {
+    policies << "class " << static_cast<unsigned>(record.shape.phase) << ' ' << record.shape.stage
+             << ' ' << record.shape.read_align << ' ' << record.shape.row_invariant << ' '
+             << record.measured << ' ' << record.lowered << ' ' << record.owner_policy << ' '
+             << record.owner_invariant << ' ' << record.selected.runs << '\n';
+    for (const auto& segment : record.shape.segments)
+      policies << "owner " << static_cast<unsigned>(segment.slot) << ' ' << segment.rows << ' '
+               << segment.past << ' ' << segment.outputs << ' ' << segment.read_cells << ' '
+               << static_cast<unsigned>(segment.group) << ' ' << segment.want_head << ' '
+               << segment.greedy << '\n';
     if (!record.selected.runs) continue;
     ++executed;
     ASSERT_EQ(record.shape.phase, pl::Phase::kScore);
     ASSERT_EQ(record.shape.segments.size(), kOwners);
+    if (ScoreChunk(policy) == 1) {
+      ASSERT_EQ(record.shape.rows(), kOwners);
+      ASSERT_EQ(record.owner_policy, DefaultPolicy(policy));
+      ASSERT_EQ(record.owner_invariant, DefaultPolicy(policy));
+    }
     ASSERT_TRUE(record.lowered);
     ASSERT_FALSE(record.selected.implementations.empty());
     programs << "shape " << static_cast<unsigned>(record.shape.phase) << ' ' << record.shape.stage
@@ -661,17 +712,25 @@ void Screen(bool tuned) {
       programs << name << '\n';
     }
   }
-  ASSERT_EQ(executed, 2U);  // Actual full8 and remainder4 score keys.
+  ASSERT_EQ(executed, ScoreChunk(policy) == 1 ? 1U : 2U);
+  ASSERT_LE(policies.tellp(), 64 * 1024);
+  testing::Test::RecordProperty("measured_policy_classes", policies.str());
   ASSERT_LE(programs.tellp(), 8 * kMiB);
   testing::Test::RecordProperty("selected_programs", programs.str());
-  if (tuned) ASSERT_GT(vector8, 0U);
+  if (TunedPolicy(policy)) ASSERT_GT(vector8, 0U);
   if (!life->Retire()) {
     std::ignore = life.release();
     FAIL() << "complete scorer owner retained after unknown retirement";
   }
 }
 
-TEST(Qwen38JoinedScoreGpu, OrdinaryBroaderNaturalTeacher) { Screen(false); }
-TEST(Qwen38JoinedScoreGpu, TunedBroaderNaturalTeacher) { Screen(true); }
+TEST(Qwen38JoinedScoreGpu, OrdinaryBroaderNaturalTeacher) { Screen(TeacherPolicy::kJoined); }
+TEST(Qwen38JoinedScoreGpu, TunedBroaderNaturalTeacher) { Screen(TeacherPolicy::kTunedJoined); }
+TEST(Qwen38JoinedScoreGpu, DefaultSingleRowNaturalTeacher) {
+  Screen(TeacherPolicy::kDefaultSingleRow);
+}
+TEST(Qwen38JoinedScoreGpu, JoinedSingleRowNaturalTeacher) {
+  Screen(TeacherPolicy::kJoinedSingleRow);
+}
 
 }  // namespace

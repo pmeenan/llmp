@@ -45,11 +45,15 @@ the same quantized checkpoint and fixed 1,016 targets. Mia PPL is
 35.144838403; native A/C differ by +0.389325%/−0.248639%. Full native build,
 32 host controls, both actual cases and quality checks pass. Every native
 loss also matches the historical observation; exact matching was not a gate.
-Both experimental arms disable `owner_row_invariant`, so ordinary-default
-policy remains unqualified. Next is a matched one-row-per-owner policy pair
-on the same histories, after measured-class verification. Cache precision
-differences are disclosed; no family adoption, serving-speed or
-closer-to-original claim follows.
+The subsequent matched one-row pair retains the mapping policy in one arm
+and disables only `owner_row_invariant` in the other: PPL
+35.402897009/35.281665930, −0.342433% paired. Both fresh cases, main native/32
+host controls and source quality checks pass. Two documents improve and two
+regress; actual vector selection is distinct from explicit tuning. This
+whole-policy result does not adopt a default. A prospective change still
+needs ordinary Prefill/Decode at one/four owners and same-policy state
+continuation across cohorts. Cache precision differences remain disclosed;
+no family adoption, serving-speed or closer-to-original claim follows.
 [Reference and manual replay](experiments/m36-numerical-audit/qwen-quantized-reference.md).
 
 The bounded dense Q8_0 cache opt-in (D-117) keeps F16 default and uses actual
