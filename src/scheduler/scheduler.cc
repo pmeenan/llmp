@@ -319,7 +319,8 @@ void Scheduler::FinishTask(TaskId task, TaskOutcome outcome) {
       for (const OperationId id : std::vector<OperationId>(pending.begin(), pending.end())) {
         Operation* operation = Find(id);
         if (operation != nullptr && !operation->published &&
-            (operation->kind == Kind::kDevice || operation->kind == Kind::kCpu) &&
+            (operation->kind == Kind::kDevice || operation->kind == Kind::kCpu ||
+             operation->kind == Kind::kBacking) &&
             operation->task == task) {
           RollBack(*operation);
         }
@@ -421,6 +422,12 @@ std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
     } else if (const auto* launch = std::get_if<LaunchWork>(&device.work)) {
       valid = static_cast<bool>(launch->job);
     }
+  } else if (kind == Kind::kBacking && (lanes_.backing != nullptr || lanes_.device != nullptr)) {
+    if (const auto* region = std::get_if<RegionWork>(&device.work)) {
+      valid = region->result != nullptr &&
+              (region->kind == RegionWork::Kind::kReserve ? region->size.value() != 0
+                                                          : region->reservation.valid());
+    }
   } else if (kind == Kind::kCpu) {
     valid = lanes_.cpu != nullptr && static_cast<bool>(job);
   }
@@ -467,7 +474,9 @@ std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
   }
   base::Check(tasks_.PrepareOperation(task).has_value(), "an open task takes an operation");
   Operation& operation = Open(kind);
-  operation.route = kind == Kind::kCpu ? Route::kCpu : Route::kDevice;
+  operation.route = kind == Kind::kCpu       ? Route::kCpu
+                    : kind == Kind::kBacking ? BackingRoute()
+                                             : Route::kDevice;
   operation.task = task;
   operation.lease = lease;
   operation.held = held;
@@ -911,7 +920,7 @@ void Scheduler::Conclude(Operation& operation, Outcome outcome, std::uint64_t by
   SetCritical(operation, false);
   const Kind kind = operation.kind;
   const catalog::ExtentId extent = operation.extent;
-  if (kind == Kind::kDevice || kind == Kind::kCpu) {
+  if (kind == Kind::kDevice || kind == Kind::kCpu || kind == Kind::kBacking) {
     const catalog::LeaseId held = operation.held;
     if (!held.valid()) {
       base::Check(catalog_.ReleaseLease(operation.lease).has_value(),
@@ -959,6 +968,7 @@ void Scheduler::Quarantine(Operation& operation, Fault fault) {
       return;
     case Kind::kDevice:
     case Kind::kCpu:
+    case Kind::kBacking:
       // The lease and the task's hold stay: nothing it touched is reused.
       Wake(operation.task, true);
       return;

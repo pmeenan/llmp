@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Grow shared image request resources at completed boundaries while retaining
+  stable workspace addresses and other models' borrowers. Retire geometry-owned
+  ports and staging after completion; an internal prepared-source Server bridge
+  reuses the same model/backend ownership without changing public defaults.
 - Extend the shared DeepSeek target scoring diagnostic beyond 2,048 history
   tokens using the existing scorer and same-checkpoint fused reference. Derive
   actual wave shapes, deduplicate complete plan keys and pay measured retained

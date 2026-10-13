@@ -602,4 +602,29 @@ TEST_F(CatalogTest, UseIsRecordedThroughLeases) {
   EXPECT_EQ(catalog_.Describe(extent).value().last_use, 7U);
 }
 
+TEST_F(CatalogTest, OwnedPinnedRetirementExcludesNewLeasesWithoutBecomingEvictable) {
+  auto extent = catalog_
+                    .AddExtent({.domain = domain_,
+                                .memory_class = MemoryClass::kRuntime,
+                                .recovery = Recovery::kPinned,
+                                .size = 2_MiB,
+                                .content = {}},
+                               true)
+                    .value();
+  const auto closure = Of({extent});
+  const auto lease = catalog_.AcquireLease(closure).value();
+  EXPECT_FALSE(catalog_.BeginRetirePinned(extent));
+  ASSERT_TRUE(catalog_.ReleaseLease(lease));
+  EXPECT_FALSE(catalog_.BeginEvict(extent));
+  const auto ticket = catalog_.BeginRetirePinned(extent).value();
+  EXPECT_FALSE(catalog_.AcquireLease(closure));
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).Total(), 2_MiB);
+  ASSERT_TRUE(catalog_.CancelEvict(ticket));
+  ASSERT_TRUE(catalog_.CanRetirePinned(extent));
+  const auto next = catalog_.BeginRetirePinned(extent).value();
+  ASSERT_TRUE(catalog_.CompleteEvict(next));
+  ASSERT_TRUE(catalog_.RemoveExtent(extent));
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).Total(), Bytes());
+}
+
 }  // namespace

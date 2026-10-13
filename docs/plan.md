@@ -2758,15 +2758,19 @@ each is checked against the design as M3.6 proceeds.
             request owners and warmed resource reuse; all 12,582,912 decoded
             values are finite
             ([report](experiments/m36-shared-spatial-execution/README.md#completed-request-content-and-count-reuse)).
-      - [ ] **Q3j2b — geometry and resource growth:** extend or replace request
-            resources after positive completion while preserving catalog
-            payment, pinned storage lifetime and every shared-workspace
-            borrower. Different layouts remain a controlled refusal in Q3j2a,
-            not a permanent geometry limit. Prefer stable virtual addresses and
-            reusable capacity where supported; do not repeat whole-model Setup
-            or remap a workspace still borrowed by retained plans. Independent
-            upstream quality, serving/swap and matched 1% family gates remain
-            separate and open.
+      - [x] **Q3j2b — geometry and resource growth:** paid backing grows
+            behind stable shared workspace addresses and extent IDs; geometry
+            ports, staging and plans retire after positive completion. The
+            existing Server adapter retains a validated prepared source and
+            Gemma state through four images: 512×512 → 1024×512 → repeat →
+            512×512, with six activation calls and two retired geometry owners.
+            Activation backing grows from 1,132,462,080 to 2,264,924,160 bytes;
+            own repeated/restored pixels and retained Gemma state pass. The
+            combined native build passes 474 host controls; the placement-pin
+            correction passes ten targeted controls and the actual retry.
+            Public defaults, automatic source preparation, independent upstream
+            quality and matched 1% family gates remain separate
+            ([report](experiments/m36-shared-spatial-execution/README.md#geometry-growth-and-prepared-server-reuse)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

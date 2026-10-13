@@ -36,7 +36,18 @@ ExecutionMetadataAllowance::Admit(catalog::Catalog& catalog, catalog::DomainId d
                                   true);
   if (!extent) return std::unexpected("execution metadata allowance could not be cataloged");
   return std::shared_ptr<ExecutionMetadataAllowance>(
-      new ExecutionMetadataAllowance(bytes - overhead));
+      new ExecutionMetadataAllowance(catalog, domain, *extent, bytes - overhead));
+}
+
+bool ExecutionMetadataAllowance::HeldBy(const catalog::Catalog& catalog,
+                                        catalog::DomainId domain) const {
+  if (catalog_ != &catalog || domain_ != domain) return false;
+  const auto extent = catalog.Describe(extent_);
+  return extent && extent->state == catalog::ExtentState::kResident &&
+         extent->descriptor.domain == domain &&
+         extent->descriptor.recovery == catalog::Recovery::kPinned &&
+         extent->descriptor.memory_class == catalog::MemoryClass::kRuntime &&
+         extent->descriptor.size.value() >= capacity_ + OverheadBytes();
 }
 
 bool ExecutionMetadataAllowance::Charge(std::uint64_t bytes) {

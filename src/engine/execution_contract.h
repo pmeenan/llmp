@@ -46,9 +46,17 @@ class ExecutionMetadataAllowance {
   void Release(std::uint64_t bytes);
   std::uint64_t used() const { return used_; }
   std::uint64_t capacity() const { return capacity_; }
+  // Startup/driver check: location alone is insufficient; the pinned catalog
+  // payment must still exist. Call only under that catalog's normal ownership.
+  bool HeldBy(const catalog::Catalog& catalog, catalog::DomainId domain) const;
 
  private:
-  explicit ExecutionMetadataAllowance(std::uint64_t capacity) : capacity_(capacity) {}
+  ExecutionMetadataAllowance(const catalog::Catalog& catalog, catalog::DomainId domain,
+                             catalog::ExtentId extent, std::uint64_t capacity)
+      : catalog_(&catalog), domain_(domain), extent_(extent), capacity_(capacity) {}
+  const catalog::Catalog* catalog_;
+  catalog::DomainId domain_;
+  catalog::ExtentId extent_;
   std::uint64_t capacity_ = 0, used_ = 0;
 };
 

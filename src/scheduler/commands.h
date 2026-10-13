@@ -5,8 +5,9 @@
 // docs/async-model.md#submission-and-completion-protocol). Each names the
 // operation it belongs to by its generation-tagged identity, whose mailbox
 // on the completion board receives what the lane observes. A command is a
-// value: it owns no memory, and the backing it names is protected by the
-// leases or load the scheduler recorded before publishing it.
+// value: backing is protected by the leases/load or paid owned-region
+// transition recorded before publication. Region results remain owned through
+// retirement, including unknown provider outcomes.
 
 #ifndef LLMP_SCHEDULER_COMMANDS_H_
 #define LLMP_SCHEDULER_COMMANDS_H_
@@ -15,7 +16,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <optional>
 #include <variant>
+#include <vector>
 
 #include "base/bytes.h"
 #include "providers/device_execution.h"
@@ -98,6 +102,36 @@ struct BackingWork {
   bool reuse = false;  // kMap: map a handed-off backing
 };
 
+// Virtual address operations use the same provider lane as physical backing.
+// The caller prepays and retains this result until positive operation retirement;
+// it must not inspect it while the lane can still write it. A reservation holds
+// no physical memory. Growth/retirement operate on paid extent-sized handles,
+// retaining partial progress when provider completion is unknown.
+struct RegionResult {
+  // Provider effects, independent of the enclosing task's later cancellation.
+  enum class Outcome : std::uint8_t { kUntouched, kComplete, kRolledBack, kUnknown };
+  Outcome outcome = Outcome::kUntouched;
+  providers::ReservationId reservation;
+  std::uint64_t base = 0;
+  std::optional<providers::Failure> failure;
+  // Capacity is paid/reserved by the caller before submission. On grow these
+  // are the new handles only; on retire they are the exact owned handles.
+  std::vector<providers::BackingId> backings;
+  std::size_t mapped = 0;
+};
+struct RegionWork {
+  enum class Kind : std::uint8_t { kReserve, kFree, kGrow, kRetire };
+  Kind kind = Kind::kReserve;
+  Bytes size;
+  // Catalog extent size, an explicit multiple of the provider's minimum.
+  // Provider granularity is alignment, not the caller's physical unit.
+  Bytes extent_size;
+  Bytes offset;
+  std::size_t allocation_class = 0;
+  providers::ReservationId reservation;
+  std::shared_ptr<RegionResult> result;
+};
+
 // Device submission lane: a job that queues kernel work on one of the
 // lane's streams (D-053), given the stream's native handle; the lane then
 // fences the stream, as it does copies. The job runs on the submission
@@ -132,7 +166,7 @@ struct LaunchWork {
 
 struct DeviceCommand {
   OperationId operation;
-  std::variant<DeviceWork, BackingWork, LaunchWork> work;
+  std::variant<DeviceWork, BackingWork, RegionWork, LaunchWork> work;
 };
 
 // CPU worker lane: bounded host work, such as verification, over memory

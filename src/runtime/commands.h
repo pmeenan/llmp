@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <expected>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -47,6 +48,8 @@
 #include "config/storage_roles.h"
 
 namespace llmp::runtime {
+
+struct PreparedImageGeneration;
 
 // The commands' turns, texts and pairs have no count or byte caps of their
 // own (D-102): the command line's own limits bound them (Linux: an argument
@@ -77,6 +80,9 @@ struct ServingOptions {
   bool diagnostic_component_solo = false;
   // Internal default-off experiment, only with the paid shared service route.
   bool diagnostic_capture_first_verify = false;
+  // Internal prepared-image migration route, absent from CLI/TOML/HTTP. Each
+  // owner was paid on this Server's stopped node; legacy defaults are unchanged.
+  std::vector<std::shared_ptr<const PreparedImageGeneration>> diagnostic_prepared_images;
   // Prepaid host compiler/result allowance for bounded startup screens.
   // Cataloged before artifact metadata or Setup, retained until node death.
   // Requires a known physical budget cap; zero leaves ordinary starts alone.

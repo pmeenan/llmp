@@ -1752,6 +1752,8 @@ class Server {
   const config::NodeConfig& config_;
   const config::RuntimeRoles& roles_;
   const ServingOptions& options_;
+  // Retain admitted source owners independently of mutable caller options.
+  std::vector<std::shared_ptr<const PreparedImageGeneration>> prepared_images_;
   std::FILE* log_;
   MemorySampler memory_;
   ResidentTimes times_;

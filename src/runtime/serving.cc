@@ -59,6 +59,7 @@
 #include "platform/memory_pressure.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_build.h"
+#include "runtime/component_image_build.h"
 #include "runtime/engine_image.h"
 #include "runtime/engine_llm.h"
 #include "runtime/intake_limits.h"
@@ -1863,6 +1864,17 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     }
   }
   if (entry.composition) {
+    const auto prepared = std::ranges::find_if(
+        prepared_images_, [&](const auto& source) { return source->alias == entry.name; });
+    if (prepared != prepared_images_.end()) {
+      if ((*prepared)->owner != index)
+        return Error("prepared image owner differs from its registered Server index");
+      models_.push_back(std::make_unique<EngineImage>(
+          node_, entry, settings, index,
+          ComponentImageGenerationBuild(node_, index, (*prepared)->source,
+                                        (*prepared)->construction)));
+      return {};
+    }
     if (options_.image_noise.empty()) {
       Log(
           std::format("model {}: not registered: an image pipeline needs --image-noise (its "
@@ -1963,12 +1975,44 @@ Status Server::Start(bool snapshot) {
     if (!bytes) return Error(bytes.error());
     startup_allowance = *bytes;
   }
+  const auto& prepared = options_.diagnostic_prepared_images;
+  if (!prepared.empty()) {
+    if (!node_.open_for_setup() || options_.diagnostic_auto_startup || startup_allowance == 0 ||
+        prepared.size() > config_.models.size())
+      return Error("prepared images require an opened stopped node and separate startup payment");
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      const auto& input = prepared[i];
+      if (!input || input->node != &node_ || !input->source || !input->source->composition ||
+          !input->source->keep || !input->construction || input->construction->used() == 0 ||
+          !input->construction->HeldBy(node_.catalog(), node_.domain()))
+        return Error("prepared image source has no held payment on this Server node");
+      const auto entry = std::ranges::find(config_.models, input->alias, &config::ModelEntry::name);
+      if (entry == config_.models.end() || !entry->composition ||
+          *entry->composition != input->source->composition->id() || input->owner < 0 ||
+          static_cast<std::size_t>(input->owner) !=
+              static_cast<std::size_t>(std::distance(config_.models.begin(), entry)))
+        return Error("prepared image alias/composition/owner differs from configured source");
+      for (std::size_t j = 0; j < i; ++j)
+        if (prepared[j]->alias == input->alias) return Error("duplicate prepared image alias");
+    }
+  }
+  if (!prepared.empty()) {
+    for (const auto& entry : config_.models)
+      if (entry.composition && std::ranges::none_of(prepared, [&](const auto& source) {
+            return source->alias == entry.name;
+          }))
+        return Error("prepared image mode has no source for a configured image");
+    if (prepared.size() > startup_allowance / sizeof(prepared.front()))
+      return Error("prepared image owner snapshot exceeds startup payment");
+  }
   bool prepaid = false;
   if (const auto bytes = startup_allowance; bytes != 0) {
     const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
     if (auto check = CheckStartupHostAllowance(bytes, cap, MemorySampler::Available()); !check)
       return check;
-    if (auto opened = node_.Open(); !opened) return opened;
+    if (prepared.empty()) {
+      if (auto opened = node_.Open(); !opened) return opened;
+    }
     const auto before = node_.catalog().OccupancyOf(node_.domain()).Total().value();
     if (before > cap || bytes > cap - before)
       return Error("startup host allowance exceeds the execution budget");
@@ -1987,6 +2031,9 @@ Status Server::Start(bool snapshot) {
     if (options_.diagnostic_auto_startup) bootstrap = *extent;
     prepaid = true;
   }
+  // The parser loan above also covers this bounded alias/owner snapshot. Shared
+  // source and construction owners then survive every failed Start/teardown.
+  prepared_images_ = prepared;
   // Every model's settings (D-103: derived from its artifacts, calibrated on
   // this machine, or overridden), its checkpoint's ceiling among them,
   // resolved before opening the device node or constructing runners. An
@@ -2138,7 +2185,7 @@ Status Server::Start(bool snapshot) {
   if (auto kept = PrepareKept(); !kept) {
     return kept;
   }
-  if (auto r = node_.MapWorkspace(activations, pool); !r) {
+  if (auto r = node_.MapWorkspace(activations, pool, startup_available); !r) {
     return r;
   }
   workspace_ = activations + pool;

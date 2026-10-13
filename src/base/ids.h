@@ -135,6 +135,12 @@ class SlotTable {
   }
 
   std::size_t size() const { return live_; }
+  // Retained allocation capacity, including free slots. Owners prepay any
+  // transient replacement of these vectors before adding dynamic resources.
+  std::uint64_t storage_bytes() const {
+    return std::uint64_t{slots_.capacity()} * sizeof(Slot) +
+           std::uint64_t{free_.capacity()} * sizeof(std::uint32_t);
+  }
   // Slots whose generation is exhausted: never issued again.
   std::size_t retired() const { return retired_; }
 

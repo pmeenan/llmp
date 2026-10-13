@@ -2040,6 +2040,210 @@ TEST(VmmLaneTest, OtherWorkAndMissingMemoryAreRefused) {
   EXPECT_FALSE(lane.Turn());
 }
 
+// A virtual capacity is address space only. Failed physical growth rolls back
+// the candidate suffix without changing an existing borrower's address/payload.
+TEST(VmmLaneTest, OwnedRegionGrowthPaysOnlyItsPrefixAndRollsBackKnownRefusal) {
+  using llmp::scheduler::RegionResult;
+  using llmp::scheduler::RegionWork;
+  FakeDeviceMemory memory{Bytes(kSize / 2), Bytes(kSize * 3)};
+  llmp::base::WakeFlag wake;
+  CompletionBoard board{16, wake};
+  BackingService lane(&memory, board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 8});
+  const auto run = [&](RegionWork work) {
+    const auto operation = board.Open();
+    EXPECT_EQ(lane.Submit({.operation = operation, .work = std::move(work)}),
+              PushResult::kAccepted);
+    EXPECT_TRUE(lane.Turn());
+    auto seen = board.Harvest(4);
+    EXPECT_EQ(seen.size(), 1U);
+    (void)board.Close(operation);
+    return seen.front();
+  };
+  auto first = std::make_shared<RegionResult>();
+  auto reserved = run({.kind = RegionWork::Kind::kReserve,
+                       .size = Bytes(1ULL << 30),
+                       .extent_size = Bytes(kSize),
+                       .offset = {},
+                       .allocation_class = 0,
+                       .reservation = {},
+                       .result = first});
+  ASSERT_TRUE(reserved.terminal);
+  ASSERT_EQ(reserved.terminal->outcome, llmp::scheduler::Outcome::kSucceeded);
+  EXPECT_EQ(memory.in_use(), Bytes());
+  const auto reservation = first->reservation;
+  first->backings.reserve(1);
+  auto initial = run({.kind = RegionWork::Kind::kGrow,
+                      .size = Bytes(kSize),
+                      .extent_size = Bytes(kSize),
+                      .offset = {},
+                      .allocation_class = 0,
+                      .reservation = reservation,
+                      .result = first});
+  ASSERT_TRUE(initial.terminal);
+  ASSERT_EQ(initial.terminal->outcome, llmp::scheduler::Outcome::kSucceeded);
+  auto* payload = reinterpret_cast<std::byte*>(first->base);
+  payload[0] = std::byte{42};
+  const auto original = memory.MappedAt(reservation, Bytes(0));
+  auto tail = std::make_shared<RegionResult>();
+  tail->backings.reserve(3);
+  auto refused = run({.kind = RegionWork::Kind::kGrow,
+                      .size = Bytes(3 * kSize),
+                      .extent_size = Bytes(kSize),
+                      .offset = Bytes(kSize),
+                      .allocation_class = 0,
+                      .reservation = reservation,
+                      .result = tail});
+  EXPECT_EQ(refused.acceptance, llmp::scheduler::Acceptance::kNotStarted);
+  EXPECT_FALSE(refused.terminal);
+  EXPECT_EQ(tail->outcome, RegionResult::Outcome::kRolledBack);
+  EXPECT_TRUE(tail->backings.empty());
+  EXPECT_EQ(tail->mapped, 0U);
+  EXPECT_EQ(memory.in_use(), Bytes(kSize));
+  EXPECT_EQ(memory.MappedAt(reservation, Bytes(0)), original);
+  EXPECT_EQ(payload[0], std::byte{42});
+  auto grown = run({.kind = RegionWork::Kind::kGrow,
+                    .size = Bytes(kSize),
+                    .extent_size = Bytes(kSize),
+                    .offset = Bytes(kSize),
+                    .allocation_class = 0,
+                    .reservation = reservation,
+                    .result = tail});
+  ASSERT_TRUE(grown.terminal);
+  ASSERT_EQ(grown.terminal->outcome, llmp::scheduler::Outcome::kSucceeded);
+  auto retired = run({.kind = RegionWork::Kind::kRetire,
+                      .size = Bytes(kSize),
+                      .extent_size = Bytes(kSize),
+                      .offset = Bytes(kSize),
+                      .allocation_class = 0,
+                      .reservation = reservation,
+                      .result = tail});
+  ASSERT_TRUE(retired.terminal);
+  EXPECT_EQ(retired.terminal->outcome, llmp::scheduler::Outcome::kSucceeded);
+  EXPECT_EQ(memory.in_use(), Bytes(kSize));
+  EXPECT_EQ(payload[0], std::byte{42});
+  ASSERT_TRUE(run({.kind = RegionWork::Kind::kRetire,
+                   .size = Bytes(kSize),
+                   .extent_size = Bytes(kSize),
+                   .offset = {},
+                   .allocation_class = 0,
+                   .reservation = reservation,
+                   .result = first})
+                  .terminal);
+  ASSERT_TRUE(run({.kind = RegionWork::Kind::kFree,
+                   .size = {},
+                   .extent_size = Bytes(kSize),
+                   .offset = {},
+                   .allocation_class = 0,
+                   .reservation = reservation,
+                   .result = first})
+                  .terminal);
+  EXPECT_EQ(memory.in_use(), Bytes());
+  lane.Close();
+  lane.Run();
+}
+
+TEST(VmmLaneTest, UnknownOwnedRegionGrowthKeepsItsTransitionAndPoisonsReservation) {
+  using llmp::scheduler::RegionResult;
+  using llmp::scheduler::RegionWork;
+  FakeDeviceMemory memory{Bytes(kSize), Bytes(2 * kSize)};
+  auto reservation = memory.Reserve(Bytes(2 * kSize)).value();
+  llmp::base::WakeFlag wake;
+  CompletionBoard board{4, wake};
+  BackingService lane(&memory, board, QueueSettings{.capacity = 4, .reserved = 1, .batch = 4});
+  auto result = std::make_shared<RegionResult>();
+  result->backings.reserve(1);
+  memory.FailNext(llmp::providers::fake::Operation::kSetAccess,
+                  llmp::providers::ProviderError::kUnknown, true);
+  const auto operation = board.Open();
+  ASSERT_EQ(lane.Submit({.operation = operation,
+                         .work = RegionWork{.kind = RegionWork::Kind::kGrow,
+                                            .size = Bytes(kSize),
+                                            .extent_size = Bytes(kSize),
+                                            .offset = {},
+                                            .allocation_class = 0,
+                                            .reservation = reservation,
+                                            .result = result}}),
+            PushResult::kAccepted);
+  ASSERT_TRUE(lane.Turn());
+  const auto seen = board.Harvest(4);
+  ASSERT_EQ(seen.size(), 1U);
+  ASSERT_TRUE(seen[0].terminal);
+  EXPECT_FALSE(seen[0].terminal->no_further_access);
+  EXPECT_EQ(result->outcome, RegionResult::Outcome::kUnknown);
+  EXPECT_EQ(result->backings.size(), 1U);
+  EXPECT_EQ(result->mapped, 1U);
+  EXPECT_EQ(memory.in_use(), Bytes(kSize));
+  EXPECT_FALSE(memory.RangeOf(reservation));
+  lane.Close();
+  lane.Run();
+  // The fake's enclosing owner reclaims its OS mappings only at destruction;
+  // no successful provider retirement or usable old prefix is asserted.
+}
+
+// Cancellation retires the task but cannot undo a successfully executed
+// provider command. Its explicit result still transfers all effects to owner.
+TEST_P(PageInTest, CancelledRegionTasksRetainCompletedReserveAndGrowthEffects) {
+  using llmp::scheduler::RegionResult;
+  using llmp::scheduler::RegionWork;
+  class RegionProgram final : public TaskProgram {
+   public:
+    RegionProgram(RegionWork work, LoadProgram::Report& report)
+        : work_(std::move(work)), report_(report) {}
+    Step Advance(TaskContext& context) override {
+      if (context.TakeFailure()) return Step::Finish(TaskOutcome::kFailed);
+      if (submitted_) return Step::Finish(TaskOutcome::kSucceeded);
+      auto submitted = context.SubmitRegion({}, work_);
+      if (!submitted) return Step::Finish(TaskOutcome::kFailed);
+      submitted_ = true;
+      return Step::Wait();
+    }
+    void Finished(TaskOutcome outcome) override { report_.outcome = outcome; }
+    void Retired() override { report_.retired = true; }
+
+   private:
+    RegionWork work_;
+    LoadProgram::Report& report_;
+    bool submitted_ = false;
+  };
+  Build();
+  auto result = std::make_shared<RegionResult>();
+  result->backings.reserve(1);
+  std::uint64_t request = 10;
+  const auto run = [&](RegionWork::Kind kind, bool cancel) {
+    LoadProgram::Report report;
+    const auto id = request++;
+    result->outcome = RegionResult::Outcome::kUntouched;
+    EXPECT_TRUE(scheduler_->Start(
+        id, std::make_unique<RegionProgram>(
+                RegionWork{.kind = kind,
+                           .size = Bytes(kind == RegionWork::Kind::kFree ? 0 : kSize),
+                           .extent_size = Bytes(kSize),
+                           .offset = {},
+                           .allocation_class = kDeviceClass,
+                           .reservation = result->reservation,
+                           .result = result},
+                report)));
+    (void)scheduler_->Turn();  // publish command; no provider lane has run
+    EXPECT_EQ(result->outcome, RegionResult::Outcome::kUntouched);
+    if (cancel) EXPECT_TRUE(scheduler_->Cancel(id));
+    Settle();
+    EXPECT_TRUE(report.retired);
+    EXPECT_EQ(report.outcome, cancel ? TaskOutcome::kCancelled : TaskOutcome::kSucceeded);
+    EXPECT_EQ(result->outcome, RegionResult::Outcome::kComplete);
+  };
+  run(RegionWork::Kind::kReserve, true);
+  ASSERT_TRUE(result->reservation.valid());
+  EXPECT_TRUE(memory_.RangeOf(result->reservation));
+  run(RegionWork::Kind::kGrow, true);
+  ASSERT_EQ(result->backings.size(), 1U);
+  EXPECT_EQ(result->mapped, 1U);
+  EXPECT_EQ(memory_.MappedAt(result->reservation, Bytes()), result->backings.front());
+  EXPECT_EQ(memory_.backings(), baseline_ + 1);
+  run(RegionWork::Kind::kRetire, false);
+  run(RegionWork::Kind::kFree, false);
+  EXPECT_EQ(memory_.backings(), baseline_);
+}
+
 // The VMM lane's lazy handoff, step by step: a lazily kept backing stays
 // mapped; a reuse at its own place takes it as it is; a reuse elsewhere
 // unmaps it first; a created backing's map at a place a kept one holds

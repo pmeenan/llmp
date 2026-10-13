@@ -78,6 +78,10 @@ class RunnerMemory {
   // Every mapping released (the problems appended). Once, after the node's
   // teardown fenced the stream and after whatever named the memory is gone.
   void ReleaseMappings(std::vector<std::string>& problems);
+  // Completed-boundary retirement of this owner's allocations only. Captures,
+  // plans and every request lease must have retired first. Successful removal
+  // updates both the node catalog and this owner's staging accounting.
+  Status Retire();
 
  private:
   PagedNode& node_;
@@ -85,6 +89,12 @@ class RunnerMemory {
   std::uint32_t stream_;
   std::vector<Mapped*> mapped_;  // the runner's members, in mapping order
   std::vector<catalog::ExtentId> staging_;
+  struct PinnedAllocation {
+    void* pointer = nullptr;
+    catalog::ExtentId extent;
+    std::uint64_t bytes = 0;
+  };
+  std::vector<PinnedAllocation> pinned_;
   std::uint64_t pinned_bytes_ = 0;
 };
 

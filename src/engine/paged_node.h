@@ -179,7 +179,9 @@ struct Mapped {
   std::string name;
   providers::ReservationId reservation;
   std::uint64_t base = 0;
-  std::uint64_t bytes = 0;  // rounded to extents
+  std::uint64_t bytes = 0;           // backed/cataloged prefix, rounded to extents
+  std::uint64_t capacity_bytes = 0;  // virtual reservation only
+  std::uint64_t metadata_bytes = 0;  // runtime-grown host metadata charge
   std::vector<providers::BackingId> backings;
   std::vector<catalog::ExtentId> extents;
 };
@@ -437,10 +439,21 @@ class PagedNode {
   ~PagedNode();
 
   Status Open();
+  bool open_for_setup() const {
+    return memory_ && execution_ && domain_.valid() && !scheduler_ && !torn_down_;
+  }
   // The shared workspace (scratch, discardable): the activations and the
   // GGML pool, each at the largest size a model asked for (at least one
   // extent). Once, before Start.
-  Status MapWorkspace(std::uint64_t activations, std::uint64_t pool);
+  Status MapWorkspace(std::uint64_t activations, std::uint64_t pool,
+                      std::uint64_t virtual_capacity = 0);
+  // Grows only backed prefixes, preserving every existing address and extent.
+  // Capacity is reserved before Start from the node's physical admission bound.
+  // No shrinking: retained borrowers keep their high-water workspace.
+  Status GrowWorkspace(std::uint64_t activations, std::uint64_t pool);
+  // Only the owning model's unreferenced pinned allocation, after positive
+  // device completion and destruction of every plan/registration naming it.
+  Status RetireMapped(Mapped& mapped);
   Status Start(base::Bytes budget);
   void Run();
   // Every problem in one error. Once.
@@ -769,7 +782,12 @@ class PagedNode {
   // sorted copy of its closure.
   Status MapRegion(Mapped& mapped, std::string name, std::uint64_t bytes,
                    providers::BackingKind kind, catalog::MemoryClass memory_class,
-                   catalog::Recovery recovery, int owner, bool resident);
+                   catalog::Recovery recovery, int owner, bool resident,
+                   std::uint64_t virtual_capacity = 0);
+  Status GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::BackingKind kind,
+                    catalog::MemoryClass memory_class, catalog::Recovery recovery, int owner);
+  Status Region(scheduler::RegionWork work, std::string_view what);
+  Status RegionCatalog(std::function<Status()> mutation, std::string_view what);
   struct OpenRequest {
     std::string what;
     catalog::Closure closure;
@@ -855,6 +873,8 @@ class PagedNode {
   catalog::ExtentId reserve_extent_;  // the handle reserve's charge
   std::uint64_t host_floor_ = std::numeric_limits<std::uint64_t>::max();
   std::uint64_t host_total_ = 0;
+  // Catalog/span vector capacity remains node-owned after geometry retirement.
+  std::uint64_t region_metadata_bytes_ = 0;
   std::uint64_t host_charged_ = 0;  // the extent's size: whole extents past the floor
   std::uint64_t host_overcharges_ = 0;
   catalog::ExtentId host_extent_;

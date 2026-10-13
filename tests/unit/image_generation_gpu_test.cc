@@ -3,6 +3,8 @@
 
 // Default-off complete source generation through the shared typed pipeline.
 #include <gtest/gtest.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -34,6 +36,7 @@
 #include "platform/kept_files.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_image_build.h"
+#include "runtime/engine_llm.h"
 #include "runtime/memory_guard.h"
 #include "tokenizer/hf.h"
 
@@ -79,7 +82,13 @@ std::expected<std::string, std::string> ReadExact(const fs::path& path, std::uin
   return out;
 }
 struct Lifetime {
-  en::PagedNode node{{.compute_streams = 1, .slots = 1, .slot_bytes = en::kSlabSlotBytes}};
+  std::unique_ptr<en::PagedNode> owned_node;
+  en::PagedNode& node;
+  Lifetime()
+      : owned_node(std::make_unique<en::PagedNode>(
+            en::NodeSettings{.compute_streams = 1, .slots = 1, .slot_bytes = en::kSlabSlotBytes})),
+        node(*owned_node) {}
+  explicit Lifetime(en::PagedNode& server_node) : node(server_node) {}
   std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
   std::shared_ptr<rt::ImageGenerationSource> source;
   en::QwenImageOptions legacy_options;  // before the runner borrowing it
@@ -937,5 +946,247 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
   RecordProperty("first_flow_sha256", life->first[0]);
   RecordProperty("pixels_sha256", life->final[0]);
   RecordProperty("native_report", life->native_report);
+}
+// The production Server adapter consumes the same prepared source owner as the
+// direct fixture. Four serial images cover initial geometry, larger geometry,
+// its repeated output, and original geometry again; Gemma state crosses both
+// workspace growth and a real Server swap. No pixels accumulate across requests.
+struct ServerGrowthLifetime {
+  llmp::config::NodeConfig config;
+  llmp::config::RuntimeRoles roles;
+  rt::ServingOptions options;
+  std::unique_ptr<rt::Server> server;
+  std::unique_ptr<Lifetime> loader;
+  rt::EngineImage* image = nullptr;
+  rt::Llm* llm = nullptr;
+  rt::ImageGenerationRequest seed;
+  fs::path scratch;
+  std::FILE* log = nullptr;
+  bool retirement_attempted = false;
+  Status retirement;
+  std::array<std::string, 4> pixels;
+  llmp::base::Sha256Digest state_digest{};
+  std::uint64_t initial_activation = 0, grown_activation = 0, initial_pool = 0, grown_pool = 0;
+  std::uint64_t activation_base = 0, pool_base = 0, peak_construction = 0, peak_catalog = 0;
+  std::uint32_t completed_images = 0, swaps = 0, retired_geometries = 0;
+  std::weak_ptr<void> grown_owner;
+
+  Status Retire() {
+    if (retirement_attempted) return retirement;
+    retirement_attempted = true;
+    if (server) retirement = server->TearDown();
+    return retirement;
+  }
+  ~ServerGrowthLifetime() {
+    // Caller retains this complete owner on any unproven retirement.
+    if (log) (void)std::fclose(log);
+  }
+  void Observe() {
+    peak_construction = std::max(peak_construction, loader->allowance->used());
+    peak_catalog =
+        std::max(peak_catalog,
+                 server->node().catalog().OccupancyOf(server->node().domain()).Total().value());
+  }
+  Status Activate(rt::Served& model) {
+    rt::SwapParts parts;
+    if (auto r = server->Activate(model, parts); !r) return r;
+    if (auto r = server->FinishSwap(parts); !r) return r;
+    ++swaps;
+    return {};
+  }
+  Status Image(std::size_t index) {
+    if (auto r = Activate(*image); !r) return r;
+    std::string first;
+    const auto result = server->InRequest(*image, [&]() -> Status {
+      if (auto r = image->FirstOutput(first); !r) return r;
+      return image->Finish(pixels[index]);
+    });
+    if (!result) return result;
+    if (first.size() != 64 || pixels[index].size() != 64)
+      return Error("Server image did not produce complete output identities");
+    ++completed_images;
+    Observe();
+    return {};
+  }
+  Status Geometry(std::uint32_t width, std::uint32_t height) {
+    // Seed and candidate copies are paid before the copy below; the factory
+    // separately pays generated graphs/request data before allocating them.
+    auto request = seed;
+    request.width = width;
+    request.height = height;
+    request.noise.resize(static_cast<std::size_t>(width / 16) * (height / 16) * 64);
+    auto geometry = rt::ComponentImageGenerationGeometry(loader->source, std::move(request),
+                                                         image->settings(), loader->allowance);
+    if (!geometry) return Error(geometry.error());
+    Observe();
+    const auto previous = grown_owner;
+    auto next = std::weak_ptr<void>(geometry->keep);
+    if (auto r = image->ReplaceGeometry(std::move(*geometry)); !r) return r;
+    if (!previous.expired()) return Error("retired image geometry still retains its owner");
+    if (width == 1024) grown_owner = next;
+    ++retired_geometries;
+    Observe();
+    return {};
+  }
+  Status Run(const fs::path& store, const fs::path& noise, const fs::path& gemma_store) {
+    constexpr std::string_view gemma =
+        "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+    const char* temporary = std::getenv("LLMP_TEST_SCRATCH");
+    if (!temporary) return Error("explicit private scratch required");
+    std::string pattern = (fs::path(temporary) / "image-growth-XXXXXX").string();
+    if (mkdtemp(pattern.data()) == nullptr) return Error("private image scratch failed");
+    scratch = pattern;
+    roles.installed = scratch / "installed";
+    roles.spill = scratch / "spill";
+    roles.state = scratch / "state";
+    std::error_code ec;
+    for (const auto& path : {roles.installed, roles.spill, roles.state}) {
+      if (!fs::create_directory(path, ec) || ec || chmod(path.c_str(), 0700) != 0)
+        return Error("private image directory failed");
+    }
+    for (auto id : kIds) {
+      fs::create_directory_symlink(store / id, roles.installed / id, ec);
+      if (ec) return Error("prepared artifact link failed");
+    }
+    fs::create_directory_symlink(store / kComposition, roles.installed / kComposition, ec);
+    if (ec) return Error("prepared composition link failed");
+    fs::create_directory_symlink(gemma_store / gemma, roles.installed / gemma, ec);
+    if (ec) return Error("prepared Gemma link failed");
+    llmp::config::ModelEntry image_entry;
+    image_entry.name = "image";
+    image_entry.composition = kComposition;
+    image_entry.overrides["image_size"] = std::int64_t{512};
+    image_entry.overrides["image_steps"] = std::int64_t{1};
+    config.models.push_back(std::move(image_entry));
+    llmp::config::ModelEntry gemma_entry;
+    gemma_entry.name = "gemma";
+    gemma_entry.artifact = gemma;
+    gemma_entry.overrides["context"] = std::int64_t{512};
+    gemma_entry.overrides["prefill_chunk"] = std::int64_t{32};
+    gemma_entry.overrides["max_slots"] = std::int64_t{1};
+    config.models.push_back(std::move(gemma_entry));
+    options.plain = true;
+    options.diagnostic_budget_cap_bytes = kCap;
+    // The existing Server parser/settings phase is separate from the held
+    // image construction owner. Both live charges are included in node admission.
+    options.diagnostic_startup_host_bytes = kStartup;
+    log = std::tmpfile();
+    if (!log) return Error("private Server diagnostic log failed");
+    server = std::make_unique<rt::Server>(config, roles, options, log);
+    auto& node = server->node();
+    if (auto r = rt::CheckStartupHostAllowance(kConstruction + kStartup, kCap,
+                                               llmp::platform::AvailableMemoryBytes().value_or(0));
+        !r)
+      return r;
+    if (auto r = node.Open(); !r) return r;
+    loader = std::make_unique<Lifetime>(node);
+    auto paid = en::ExecutionMetadataAllowance::Admit(
+        node.catalog(), node.domain(), kConstruction,
+        llmp::platform::AvailableMemoryBytes().value_or(0), rt::kUncountedMargin);
+    if (!paid) return Error(paid.error());
+    loader->allowance = std::move(*paid);
+    if (auto r = loader->Load(store, noise); !r) return r;
+    // Original 1024 source noise plus seed/candidate capacities and one Gemma
+    // vocabulary row; no copied weight payload or retained rendered images.
+    const auto request_credit = 4 * 524288ULL +
+                                8 * loader->source->prompt.size() * sizeof(std::int32_t) +
+                                256000ULL * sizeof(float) + 16384;
+    if (!loader->allowance->Charge(request_credit)) return Error("swap request copies unpaid");
+    seed = *loader->source;
+    seed.keep = loader->allowance;
+    loader->source->width = 512;
+    loader->source->height = 512;
+    loader->source->noise.resize(32 * 32 * 64);
+    auto prepared = std::make_shared<rt::PreparedImageGeneration>();
+    prepared->alias = "image";
+    prepared->node = &node;
+    prepared->owner = 0;
+    prepared->source = loader->source;
+    prepared->construction = loader->allowance;
+    options.diagnostic_prepared_images.push_back(std::move(prepared));
+    if (auto r = server->Start(true); !r) return r;
+    // Server owns its snapshot; clearing the caller's handoff cannot release it.
+    options.diagnostic_prepared_images.clear();
+    image = dynamic_cast<rt::EngineImage*>(server->Find("image"));
+    llm = dynamic_cast<rt::EngineLlm*>(server->Find("gemma"));
+    if (!image || !llm) return Error("Server did not construct the shared image/LLM adapters");
+    activation_base = node.activations().base;
+    pool_base = node.pool().base;
+    initial_activation = node.activations().bytes;
+    initial_pool = node.pool().bytes;
+    const auto activation_extent = node.activations().extents.front();
+    const auto pool_extent = node.pool().extents.front();
+    if (auto r = Image(0); !r) return r;
+    if (auto r = Activate(*llm); !r) return r;
+    constexpr std::array<std::int32_t, 6> tokens{2, 818, 5279, 529, 7001, 563};
+    std::vector<float> head;
+    if (auto r = server->InRequest(*llm, [&]() { return llm->Prefill(tokens, head); }); !r)
+      return r;
+    if (head.size() != 256000 ||
+        !std::ranges::all_of(head, [](float x) { return std::isfinite(x); }))
+      return Error("Gemma full head is not finite");
+    if (auto r = server->SaveSnapshot(*llm); !r) return r;
+    auto digest = server->SnapshotDigest();
+    if (!digest) return Error(digest.error());
+    state_digest = *digest;
+    if (auto r = Geometry(1024, 512); !r) return r;
+    grown_activation = node.activations().bytes;
+    grown_pool = node.pool().bytes;
+    if (grown_activation <= initial_activation && grown_pool <= initial_pool)
+      return Error("larger geometry did not exercise backed workspace growth");
+    if (node.activations().base != activation_base || node.pool().base != pool_base ||
+        node.activations().extents.front() != activation_extent ||
+        node.pool().extents.front() != pool_extent)
+      return Error("growth changed another retained model's workspace addresses or IDs");
+    if (auto r = Image(1); !r) return r;
+    if (auto r = Image(2); !r) return r;  // existing second-use capture policy
+    if (pixels[1] != pixels[2]) return Error("grown geometry repetition changed own pixels");
+    if (auto r = Activate(*llm); !r) return r;
+    if (auto r = server->SaveSnapshot(*llm); !r) return r;
+    digest = server->SnapshotDigest();
+    if (!digest || *digest != state_digest)
+      return Error("Gemma state changed across image growth and Server swap");
+    if (auto r = Geometry(512, 512); !r) return r;
+    if (node.activations().bytes != grown_activation || node.pool().bytes != grown_pool)
+      return Error("retiring image geometry shrank shared workspace backing");
+    if (auto r = Image(3); !r) return r;
+    if (pixels[0] != pixels[3]) return Error("restored geometry changed its own pixels");
+    return {};
+  }
+};
+TEST(ImageGenerationGpu, ServerSwapsRetainStateAcrossImageGeometryGrowth) {
+  if (!std::getenv("LLMP_RUN_SHARED_IMAGE_GROWTH"))
+    GTEST_SKIP() << "explicit bounded Server geometry/swap diagnostic required";
+  const char* store = std::getenv("LLMP_IMAGE_GENERATION_STORE");
+  const char* noise = std::getenv("LLMP_IMAGE_GENERATION_NOISE");
+  const char* gemma = std::getenv("LLMP_IMAGE_GROWTH_GEMMA_STORE");
+  ASSERT_NE(store, nullptr);
+  ASSERT_NE(noise, nullptr);
+  ASSERT_NE(gemma, nullptr);
+  auto life = std::make_unique<ServerGrowthLifetime>();
+  const auto run = life->Run(store, noise, gemma);
+  const auto retired = life->Retire();
+  if (!retired) {
+    std::ignore = life.release();
+    FAIL() << Failed(retired).value_or("");
+  }
+  ASSERT_TRUE(run) << Failed(run).value_or("");
+  EXPECT_EQ(life->completed_images, 4U);
+  EXPECT_EQ(life->retired_geometries, 2U);
+  RecordProperty("completed_images", life->completed_images);
+  RecordProperty("completed_image_stages", 12);
+  RecordProperty("server_activations", life->swaps);
+  RecordProperty("retired_geometries", life->retired_geometries);
+  RecordProperty("image_geometries", "512x512,1024x512,1024x512,512x512");
+  RecordProperty("initial_activation_bytes", std::to_string(life->initial_activation));
+  RecordProperty("grown_activation_bytes", std::to_string(life->grown_activation));
+  RecordProperty("initial_pool_bytes", std::to_string(life->initial_pool));
+  RecordProperty("grown_pool_bytes", std::to_string(life->grown_pool));
+  RecordProperty("peak_catalog_bytes", std::to_string(life->peak_catalog));
+  RecordProperty("peak_construction_bytes", std::to_string(life->peak_construction));
+  RecordProperty("gemma_state_sha256", llmp::base::ToHex(life->state_digest));
+  RecordProperty("original_restored_pixels_sha256", life->pixels[0]);
+  RecordProperty("grown_repeated_pixels_sha256", life->pixels[1]);
+  fs::remove_all(life->scratch);
 }
 }  // namespace

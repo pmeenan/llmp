@@ -380,6 +380,22 @@ TEST(ExecutionMetadataAllowanceTest, RefusesBeforeCatalogOrAllocationWithoutHead
   EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), bytes);
 }
 
+TEST(ExecutionMetadataAllowanceTest, PreparedOwnerRequiresItsStillHeldCatalogPayment) {
+  llmp::catalog::Catalog catalog, other;
+  const auto domain = catalog.AddDomain("node"), foreign = other.AddDomain("node");
+  constexpr std::uint64_t bytes = 1U << 20;
+  auto owner = en::ExecutionMetadataAllowance::Admit(catalog, domain, bytes, 2 * bytes, bytes);
+  ASSERT_TRUE(owner);
+  ASSERT_TRUE((*owner)->HeldBy(catalog, domain));
+  EXPECT_FALSE((*owner)->HeldBy(other, foreign));  // even matching numeric IDs are foreign
+  EXPECT_FALSE((*owner)->HeldBy(catalog, catalog.AddDomain("different domain")));
+  const auto extents = catalog.ExtentsOf(domain);
+  ASSERT_EQ(extents.size(), 1U);
+  ASSERT_TRUE(catalog.ReleasePinned(extents[0].first));
+  ASSERT_TRUE(catalog.RemoveExtent(extents[0].first));
+  EXPECT_FALSE((*owner)->HeldBy(catalog, domain));
+}
+
 TEST_F(SourceIdentityTest, ProductionAllowanceRejectsConstructionAndFundsRetryOnlyOnce) {
   llmp::catalog::Catalog catalog;
   const auto node = catalog.AddDomain("test");

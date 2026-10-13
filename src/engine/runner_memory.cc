@@ -28,9 +28,13 @@ RunnerMemory::Status RunnerMemory::Map(Mapped& mapped, std::string name, std::ui
 }
 
 std::expected<void*, std::string> RunnerMemory::Pinned(std::uint64_t bytes) {
+  const auto charged = std::max<std::uint64_t>(bytes, 256);
+  if (charged > UINT64_MAX - pinned_bytes_)
+    return std::unexpected("pinned staging accounting overflows");
   auto allocated = node_.Pinned(bytes, owner_, staging_);
   if (allocated) {
-    pinned_bytes_ += std::max<std::uint64_t>(bytes, 256);
+    pinned_bytes_ += charged;
+    pinned_.push_back({*allocated, staging_.back(), charged});
   }
   return allocated;
 }
@@ -76,6 +80,21 @@ std::vector<catalog::ExtentId> RunnerMemory::extents() const {
   }
   all.insert(all.end(), staging_.begin(), staging_.end());
   return all;
+}
+
+RunnerMemory::Status RunnerMemory::Retire() {
+  while (!mapped_.empty()) {
+    if (auto retired = node_.RetireMapped(*mapped_.back()); !retired) return retired;
+    mapped_.pop_back();
+  }
+  while (!pinned_.empty()) {
+    const auto& allocation = pinned_.back();
+    if (auto retired = node_.FreePinned(allocation.pointer); !retired) return retired;
+    std::erase(staging_, allocation.extent);
+    pinned_bytes_ -= allocation.bytes;
+    pinned_.pop_back();
+  }
+  return {};
 }
 
 void RunnerMemory::ReleaseMappings(std::vector<std::string>& problems) {

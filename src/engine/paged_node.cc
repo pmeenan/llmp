@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "base/bounded_queue.h"
+#include "base/check.h"
 #include "engine/live_state.h"
 #include "engine/supplemental_run.h"
 #include "engine/support.h"
@@ -402,6 +403,7 @@ bool HavePinned(void*& pointer, std::uint64_t bytes) {
 }
 
 Status PagedNode::Open() {
+  if (memory_ || execution_ || torn_down_) return Error("the node cannot be opened twice");
   auto device = providers::OpenDevice(
       0, {.fences_ahead = kEventsAhead, .fences_kept = std::max<std::size_t>(kEventsAhead, 4096)});
   if (!device) {
@@ -458,20 +460,38 @@ Status PagedNode::Open() {
                      catalog::Recovery::kPinned, kShared);
 }
 
-Status PagedNode::MapWorkspace(std::uint64_t activations, std::uint64_t pool) {
-  if (auto r =
-          MapResident(activations_, "the activations", activations, providers::BackingKind::kDevice,
-                      MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared);
-      !r) {
+Status PagedNode::MapWorkspace(std::uint64_t activations, std::uint64_t pool,
+                               std::uint64_t virtual_capacity) {
+  if (scheduler_) return Error("workspace reservation must precede node start");
+  if (auto r = MapRegion(activations_, "the activations", activations,
+                         providers::BackingKind::kDevice, MemoryClass::kScratch,
+                         catalog::Recovery::kDiscardable, kShared, true, virtual_capacity);
+      !r)
     return r;
-  }
-  return MapResident(pool_, "the GGML pool", pool, providers::BackingKind::kDevice,
-                     MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared);
+  return MapRegion(pool_, "the GGML pool", pool, providers::BackingKind::kDevice,
+                   MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared, true,
+                   virtual_capacity);
+}
+
+Status PagedNode::GrowWorkspace(std::uint64_t activations, std::uint64_t pool) {
+  if (auto r = GrowMapped(activations_, activations, providers::BackingKind::kDevice,
+                          MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared);
+      !r)
+    return r;
+  // A refused second growth leaves a usable larger first prefix. It is retained
+  // node-wide capacity, not an allocation owned by the failed image request.
+  return GrowMapped(pool_, pool, providers::BackingKind::kDevice, MemoryClass::kScratch,
+                    catalog::Recovery::kDiscardable, kShared);
 }
 
 Status PagedNode::MapResident(Mapped& mapped, std::string name, std::uint64_t bytes,
                               providers::BackingKind kind, MemoryClass memory_class,
                               catalog::Recovery recovery, int owner) {
+  if (scheduler_) {
+    if (mapped.reservation.valid()) return Error("an owned region is already mapped");
+    mapped.name = std::move(name);
+    return GrowMapped(mapped, bytes, kind, memory_class, recovery, owner);
+  }
   return MapRegion(mapped, std::move(name), bytes, kind, memory_class, recovery, owner, true);
 }
 
@@ -482,14 +502,20 @@ Status PagedNode::ReserveState(Mapped& mapped, std::string name, std::uint64_t b
 
 Status PagedNode::MapRegion(Mapped& mapped, std::string name, std::uint64_t bytes,
                             providers::BackingKind kind, MemoryClass memory_class,
-                            catalog::Recovery recovery, int owner, bool resident) {
+                            catalog::Recovery recovery, int owner, bool resident,
+                            std::uint64_t virtual_capacity) {
+  if (mapped.reservation.valid()) return Error("a mapped region cannot be overwritten");
   if (bytes > std::numeric_limits<std::uint64_t>::max() - kPagedExtent + 1) {
     return Error("a region's size overflows its extent alignment");
   }
   mapped.name = std::move(name);
   mapped.bytes =
       (std::max<std::uint64_t>(bytes, 1) + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
-  auto reservation = memory_->Reserve(Bytes(mapped.bytes));
+  if (virtual_capacity > UINT64_MAX - (kPagedExtent - 1))
+    return Error("virtual reservation alignment overflows");
+  mapped.capacity_bytes =
+      std::max(mapped.bytes, (virtual_capacity + kPagedExtent - 1) / kPagedExtent * kPagedExtent);
+  auto reservation = memory_->Reserve(Bytes(mapped.capacity_bytes));
   if (!reservation) {
     return Error(std::format("reserving {}: {}", mapped.name, reservation.error().detail));
   }
@@ -532,6 +558,320 @@ Status PagedNode::MapRegion(Mapped& mapped, std::string name, std::uint64_t byte
       return Error(std::format("access to {}: {}", mapped.name, access.error().detail));
     }
   }
+  return {};
+}
+
+Status PagedNode::Region(sc::RegionWork work, std::string_view what) {
+  class RegionProgram final : public sc::ReportingProgram {
+   public:
+    RegionProgram(Done& done, sc::RegionWork work)
+        : ReportingProgram(done), work_(std::move(work)) {}
+    sc::Step Advance(sc::TaskContext& context) override {
+      if (context.TakeFailure()) return sc::Step::Finish(sc::TaskOutcome::kFailed);
+      if (submitted_) return sc::Step::Finish(sc::TaskOutcome::kSucceeded);
+      const auto submitted = context.SubmitRegion({}, work_);
+      if (!submitted) {
+        if (submitted.error() == sc::WorkError::kBusy) return sc::Step::Yield();
+        return Fail(submitted.error());
+      }
+      submitted_ = true;
+      return sc::Step::Wait();
+    }
+
+   private:
+    sc::RegionWork work_;
+    bool submitted_ = false;
+  };
+  if (!scheduler_ || job_active_ || supplemental_ || torn_down_)
+    return Error("a region transition requires a live idle node");
+  Done done;
+  auto result = work.result;
+  // Reset before submission, including cancellation that never reaches a lane.
+  result->outcome = sc::RegionResult::Outcome::kUntouched;
+  result->failure.reset();
+  auto ran = Post(std::make_unique<RegionProgram>(done, std::move(work)), done, what);
+  // Task cancellation can follow positive provider completion. Its effects
+  // still belong to this caller and must be published/retired, never refunded.
+  if (result->outcome == sc::RegionResult::Outcome::kComplete) return {};
+  base::Check(result->outcome != sc::RegionResult::Outcome::kUnknown,
+              "unknown region completion cannot return to its owner");
+  if (result->failure) return Error(std::format("{}: {}", what, result->failure->detail));
+  return ran ? Error("region task retired without completed provider work") : ran;
+}
+
+Status PagedNode::RegionCatalog(std::function<Status()> mutation, std::string_view what) {
+  std::optional<Status> completed;
+  auto task = Call(
+      [&]() -> Status {
+        completed = mutation();
+        return *completed;
+      },
+      what);
+  // The completed transaction is authoritative even if its task is cancelled
+  // afterwards. If it never ran, no catalog effects were made by this call.
+  return completed ? std::move(*completed) : task;
+}
+
+Status PagedNode::GrowMapped(Mapped& mapped, std::uint64_t bytes, providers::BackingKind kind,
+                             MemoryClass memory_class, catalog::Recovery recovery, int owner) {
+  if (!scheduler_ || job_active_ || supplemental_ || torn_down_ ||
+      bytes > UINT64_MAX - (kPagedExtent - 1))
+    return Error("owned-region growth has invalid size or an unretired operation");
+  const auto rounded =
+      (std::max<std::uint64_t>(bytes, 1) + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
+  if (rounded <= mapped.bytes) return {};
+  if (mapped.reservation.valid() && rounded > mapped.capacity_bytes)
+    return Error("owned-region growth exceeds its virtual reservation");
+  const auto added = rounded - mapped.bytes;
+  const auto count = rounded / kPagedExtent;
+  // Per extent: both old/new vector storage, provider and catalog descriptors,
+  // span and transition handles. This charge precedes vector growth and is
+  // retained with the mapping. The old metadata charge remains during copying.
+  static_assert(sizeof(catalog::ExtentView) + sizeof(Span) + 4 * sizeof(providers::BackingId) +
+                    4 * sizeof(ExtentId) <=
+                512);
+  if (count > (UINT64_MAX - 4096) / 1024) return Error("owned-region metadata overflows");
+  std::uint64_t catalog_storage = 0;
+  if (auto read = RegionCatalog(
+          [&]() -> Status {
+            catalog_storage = catalog_.ExtentStorageBytes();
+            return {};
+          },
+          "measuring owned-region metadata");
+      !read)
+    return read;
+  // Appending one extent may reallocate the whole existing catalog/span
+  // vectors. Their capacity survives geometry retirement, so retain a separate
+  // node-wide high-water charge, including transient old/new vector storage.
+  const std::uint64_t metadata = count * 1024 + 4096;
+  std::uint64_t retained = 0, charge = 0;
+  if (__builtin_add_overflow(catalog_storage, std::uint64_t{spans_.capacity()} * sizeof(Span),
+                             &retained) ||
+      __builtin_mul_overflow(retained, std::uint64_t{2}, &retained) ||
+      __builtin_add_overflow(retained, metadata, &retained))
+    return Error("owned-region retained metadata copy overflows");
+  const auto growth = retained > region_metadata_bytes_ ? retained - region_metadata_bytes_ : 0;
+  if (__builtin_add_overflow(metadata, growth, &charge) || !TryChargeHost(charge))
+    return Error("owned-region metadata does not fit");
+  region_metadata_bytes_ += growth;
+  auto result = std::make_shared<sc::RegionResult>();
+  const auto new_count = static_cast<std::size_t>(added / kPagedExtent);
+  result->backings.reserve(new_count);
+  mapped.backings.reserve(static_cast<std::size_t>(count));
+  mapped.extents.reserve(static_cast<std::size_t>(count));
+  std::vector<catalog::Ticket> tickets;
+  tickets.reserve(new_count);
+  // Each new physical extent is cataloged LOADING before any provider effect.
+  // Existing extents and their generations remain unchanged. The scheduler is
+  // the only publisher; the backing lane receives only already-paid work.
+  const auto cancel_tickets = [&] {
+    for (auto ticket : tickets) {
+      base::Check(catalog_.FailLoad(ticket, true).has_value(), "owned growth rollback ticket");
+      base::Check(catalog_.RemoveExtent(ticket.extent).has_value(), "owned growth rollback extent");
+    }
+    tickets.clear();
+  };
+  auto admitted = RegionCatalog(
+      [&]() -> Status {
+        if (Shortfall(added) != 0) return Error("owned-region backing does not fit");
+        spans_.reserve(spans_.size() + new_count);
+        for (std::size_t i = 0; i < new_count; ++i) {
+          const auto extent = catalog_.AddExtent({.domain = domain_,
+                                                  .memory_class = memory_class,
+                                                  .recovery = recovery,
+                                                  .size = Bytes(kPagedExtent),
+                                                  .content = {}},
+                                                 false);
+          if (!extent) {
+            cancel_tickets();
+            return Error("owned-region catalog capacity");
+          }
+          const auto ticket = catalog_.BeginLoad(*extent, budget_);
+          if (!ticket) {
+            base::Check(catalog_.RemoveExtent(*extent).has_value(), "unadmitted owned extent");
+            cancel_tickets();
+            return Error("owned-region backing admission");
+          }
+          tickets.push_back(*ticket);
+        }
+        return {};
+      },
+      "admitting owned-region growth");
+  if (!admitted) {
+    UnchargeHost(metadata);
+    return admitted;
+  }
+  const auto repay = [&] {
+    auto canceled = RegionCatalog(
+        [&]() -> Status {
+          cancel_tickets();
+          return {};
+        },
+        "undoing untouched owned-region growth");
+    base::Check(canceled.has_value(), "paid owned growth rollback");
+    UnchargeHost(metadata);
+  };
+  const bool fresh = !mapped.reservation.valid();
+  if (fresh) {
+    auto reserved = Region({.kind = sc::RegionWork::Kind::kReserve,
+                            .size = Bytes(rounded),
+                            .extent_size = Bytes(kPagedExtent),
+                            .offset = {},
+                            .allocation_class = 0,
+                            .reservation = {},
+                            .result = result},
+                           "reserving owned region");
+    if (!reserved) {
+      repay();
+      return reserved;
+    }
+    mapped.reservation = result->reservation;
+    mapped.base = result->base;
+    mapped.capacity_bytes = rounded;
+  }
+  const auto allocation_class =
+      kind == providers::BackingKind::kDevice ? device_class_ : host_class_;
+  auto grown = Region({.kind = sc::RegionWork::Kind::kGrow,
+                       .size = Bytes(added),
+                       .extent_size = Bytes(kPagedExtent),
+                       .offset = Bytes(mapped.bytes),
+                       .allocation_class = allocation_class,
+                       .reservation = mapped.reservation,
+                       .result = result},
+                      "growing owned region");
+  if (!grown) {
+    // A known refusal has rolled back every new handle. Unknown operations
+    // cannot retire their RegionProgram and are stopped by Await's failstop.
+    if (fresh) {
+      auto canceled = RegionCatalog(
+          [&]() -> Status {
+            cancel_tickets();
+            return {};
+          },
+          "retiring rolled-back owned growth tickets");
+      base::Check(canceled.has_value(), "known rolled-back growth tickets");
+      if (auto freed = Region({.kind = sc::RegionWork::Kind::kFree,
+                               .size = {},
+                               .extent_size = Bytes(kPagedExtent),
+                               .offset = {},
+                               .allocation_class = 0,
+                               .reservation = mapped.reservation,
+                               .result = result},
+                              "unwinding owned reservation");
+          !freed) {
+        // No physical suffix remains; retain the reservation and local metadata
+        // so candidate cleanup or terminal owner teardown can release them.
+        mapped.metadata_bytes = metadata;
+        return freed;
+      }
+      mapped.reservation = {};
+      mapped.base = mapped.capacity_bytes = 0;
+    }
+    repay();
+    return grown;
+  }
+  mapped.backings.insert(mapped.backings.end(), result->backings.begin(), result->backings.end());
+  auto published = RegionCatalog(
+      [&]() -> Status {
+        std::uint64_t at = mapped.bytes;
+        for (auto ticket : tickets) {
+          base::Check(catalog_.CompleteLoad(ticket).has_value(), "owned growth publication");
+          mapped.extents.push_back(ticket.extent);
+          AddSpan({.base = mapped.base + at,
+                   .size = kPagedExtent,
+                   .extent = ticket.extent,
+                   .memory_class = memory_class,
+                   .device = kind == providers::BackingKind::kDevice,
+                   .owner = owner});
+          at += kPagedExtent;
+        }
+        SortSpans();
+        return {};
+      },
+      "publishing owned-region growth");
+  base::Check(published.has_value(), "completed owned growth must publish its paid tickets");
+  mapped.bytes = rounded;
+  UnchargeHost(mapped.metadata_bytes);
+  mapped.metadata_bytes = metadata;
+  return {};
+}
+
+Status PagedNode::RetireMapped(Mapped& mapped) {
+  if (!mapped.reservation.valid()) return {};
+  if (!scheduler_ || job_active_ || supplemental_ || torn_down_ ||
+      mapped.backings.size() != mapped.extents.size())
+    return Error("owned mapping cannot retire with pending work or managed backing");
+  // Metadata for this temporary copy is held in the mapping's growth charge,
+  // or its original setup construction allowance. No payload copy is made.
+  auto result = std::make_shared<sc::RegionResult>();
+  result->backings = mapped.backings;
+  result->mapped = result->backings.size();
+  std::vector<catalog::Ticket> tickets;
+  tickets.reserve(mapped.extents.size());
+  auto checked = RegionCatalog(
+      [&]() -> Status {
+        for (auto extent : mapped.extents)
+          if (!catalog_.CanRetirePinned(extent)) return Error("owned mapping remains borrowed");
+        for (auto extent : mapped.extents) {
+          const auto ticket = catalog_.BeginRetirePinned(extent);
+          if (!ticket) {
+            for (auto prior : tickets) (void)catalog_.CancelEvict(prior);
+            tickets.clear();
+            return Error("owned mapping retirement ticket");
+          }
+          tickets.push_back(*ticket);
+        }
+        return {};
+      },
+      "excluding new owned-region borrowers");
+  if (!checked) return checked;
+  auto retired = Region({.kind = sc::RegionWork::Kind::kRetire,
+                         .size = Bytes(mapped.bytes),
+                         .extent_size = Bytes(kPagedExtent),
+                         .offset = {},
+                         .allocation_class = 0,
+                         .reservation = mapped.reservation,
+                         .result = result},
+                        "retiring owned region");
+  if (!retired) {
+    auto restored = RegionCatalog(
+        [&]() -> Status {
+          for (auto ticket : tickets) (void)catalog_.CancelEvict(ticket);
+          return {};
+        },
+        "undoing untouched owned-region retirement");
+    base::Check(restored.has_value(), "untouched retirement must restore its tickets");
+    return retired;
+  }
+  auto forgotten = RegionCatalog(
+      [&]() -> Status {
+        for (auto ticket : tickets) {
+          if (!catalog_.CompleteEvict(ticket) || !catalog_.RemoveExtent(ticket.extent))
+            return Error("forgetting retired owned-region extent");
+        }
+        EraseSpans([&](const Span& span) {
+          return std::ranges::find(mapped.extents, span.extent) != mapped.extents.end();
+        });
+        return {};
+      },
+      "forgetting retired owned region");
+  base::Check(forgotten.has_value(), "retired backing must leave the catalog");
+  mapped.backings.clear();
+  mapped.extents.clear();
+  mapped.bytes = 0;
+  if (auto freed = Region({.kind = sc::RegionWork::Kind::kFree,
+                           .size = {},
+                           .extent_size = Bytes(kPagedExtent),
+                           .offset = {},
+                           .allocation_class = 0,
+                           .reservation = mapped.reservation,
+                           .result = result},
+                          "freeing retired owned reservation");
+      !freed)
+    return freed;  // empty reservation/local charge remain owned for retry
+  mapped.reservation = {};
+  UnchargeHost(mapped.metadata_bytes);
+  mapped = {};
   return {};
 }
 
@@ -597,7 +937,7 @@ std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int own
     return {};
   };
   auto registered =
-      scheduler_ == nullptr ? register_memory() : Call(register_memory, "pinned staging");
+      scheduler_ == nullptr ? register_memory() : RegionCatalog(register_memory, "pinned staging");
   if (!registered) {
     providers::FreePinned(pointer);
     return std::unexpected(registered.error());
@@ -634,7 +974,7 @@ bool PagedNode::ChargeRuntime(catalog::ExtentId& held, std::uint64_t& charged, s
     return true;
   }
   bool fits = true;
-  auto changed = Call(
+  auto changed = RegionCatalog(
       [&]() -> Status {
         const std::uint64_t occupancy = catalog_.OccupancyOf(domain_).Total().value();
         const std::uint64_t others = occupancy - std::min(occupancy, charged);
@@ -809,17 +1149,16 @@ Status PagedNode::FreePinned(void* pointer) {
   if (std::ranges::find(pinned_, pointer) == pinned_.end()) {
     return Error("the pinned allocation is not owned or its completion is unproven");
   }
-  ExtentId extent;
-  auto checked = Call(
+  catalog::Ticket ticket;
+  auto checked = RegionCatalog(
       [&]() -> Status {
         const auto span = std::ranges::find(spans_, Address(pointer), &Span::base);
         if (span == spans_.end() || span->device || span->memory_class != MemoryClass::kStaging) {
           return Error("no pinned staging extent at this address");
         }
-        if (!catalog_.CanRetirePinned(span->extent)) {
-          return Error("pinned staging is still held or referenced");
-        }
-        extent = span->extent;
+        auto retiring = catalog_.BeginRetirePinned(span->extent);
+        if (!retiring) return Error("pinned staging is still held or referenced");
+        ticket = *retiring;
         return {};
       },
       "checking retired pinned staging");
@@ -828,15 +1167,17 @@ Status PagedNode::FreePinned(void* pointer) {
   }
   providers::FreePinned(pointer);
   std::erase(pinned_, pointer);
-  return Call(
+  auto forgotten = RegionCatalog(
       [&]() -> Status {
-        if (!catalog_.ReleasePinned(extent) || !catalog_.RemoveExtent(extent)) {
+        if (!catalog_.CompleteEvict(ticket) || !catalog_.RemoveExtent(ticket.extent)) {
           return Error("forgetting retired pinned staging");
         }
-        EraseSpans([&](const Span& s) { return s.extent == extent; });
+        EraseSpans([&](const Span& s) { return s.extent == ticket.extent; });
         return {};
       },
       "forgetting pinned staging");
+  base::Check(forgotten.has_value(), "freed pinned staging must leave the catalog");
+  return {};
 }
 
 bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,

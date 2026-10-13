@@ -24,14 +24,33 @@ struct ImageGenerationRequest {
 };
 // Initial model source retains the paid artifact owner while its input content
 // moves to the independently owned first request. Setup consumes weights once.
+struct ImageGenerationModel;
 struct ImageGenerationSource : ImageGenerationRequest {
   std::shared_ptr<const artifact::Composition> composition;
   std::array<std::unique_ptr<engine::PagedWeights>, 3> weights;
+  std::weak_ptr<ImageGenerationModel> prepared;
+};
+// Internal serving handoff from paid source preparation. It names the exact
+// opened, stopped node that holds the source/construction payment. Server
+// snapshots this owner, validates the configured alias/composition, and uses
+// the same EngineImage factory as every other caller. No raw parser or runner.
+struct PreparedImageGeneration {
+  std::string alias;
+  engine::PagedNode* node = nullptr;
+  int owner = -1;
+  std::shared_ptr<ImageGenerationSource> source;
+  std::shared_ptr<engine::ExecutionMetadataAllowance> construction;
 };
 // Pays generated request data before allocation. EngineImage verifies its layout
 // against the retained graphs/ports before accepting a completed-boundary change.
 std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
     ImageGenerationRequest&& request, const ModelSettings& settings,
+    std::shared_ptr<engine::ExecutionMetadataAllowance> construction);
+// Builds only paid geometry/request owners against the existing bound source.
+// EngineImage publishes this at a completed boundary after measured admission.
+std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
+    const std::shared_ptr<ImageGenerationSource>& source, ImageGenerationRequest&& request,
+    const ModelSettings& settings,
     std::shared_ptr<engine::ExecutionMetadataAllowance> construction);
 // One request-shaped generation using settings.image_steps and source geometry.
 // Takes already-open, paid artifact owners; no checkpoint payload copies or

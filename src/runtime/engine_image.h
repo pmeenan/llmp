@@ -69,11 +69,21 @@ struct ImageRequest {
   std::function<std::expected<std::string, std::string>(std::span<const std::byte>)> finish;
 };
 
+// A separately paid geometry candidate over the retained model source/backend.
+// It owns only graphs, typed ports and request content, never a second model.
+struct ImageGeometry {
+  std::shared_ptr<void> keep;
+  base::Sha256Digest identity{};
+  std::vector<ImageStage> stages;
+  ImageRequest request;
+};
+
 struct EngineImageParts {
   // These source/kernel borrowers share one complete owner. It outlives every
   // graph, lowered program, recording and mapped workspace on all paths.
   std::shared_ptr<void> keep;
   std::string architecture;
+  std::shared_ptr<void> geometry_keep;
   base::Sha256Digest identity{};
   std::vector<engine::StageWeights> weights;
   std::vector<engine::RunnerConfig::KernelMemory> kernel_memory;
@@ -129,6 +139,7 @@ class EngineImage final : public Image, public engine::PagedModel {
   // Only after successful Finish and after the caller releases its request
   // lease. Refusal leaves the current request intact. No mapping or growth.
   Status ReplaceRequest(ImageRequest request);
+  Status ReplaceGeometry(ImageGeometry geometry);
   Status FirstOutput(std::string& sha) override;
   Status Finish(std::string& sha) override;
 
@@ -138,6 +149,9 @@ class EngineImage final : public Image, public engine::PagedModel {
   EngineImageBuild build_;
   struct State;
   std::shared_ptr<State> state_;
+  std::vector<std::shared_ptr<State>> transitions_;
+  Status PrepareState(State& state);
+  Status BindState(State& state);
   Status RunThrough(std::size_t end, std::string& sha);
 };
 

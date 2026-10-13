@@ -51,6 +51,147 @@ Outcome OutcomeOf(providers::ReadOutcome outcome) {
   return Outcome::kFailed;
 }
 
+// Run even virtual-only provider access on its owning lane: a background
+// physical-handle refill can otherwise race Reserve, Free, or RangeOf.
+void CarryRegion(providers::DeviceMemory* memory, CompletionBoard& board, OperationId operation,
+                 const RegionWork& work) {
+  if (memory == nullptr || !work.result) {
+    (void)board.Accept(operation, Acceptance::kNotStarted);
+    return;
+  }
+  auto& result = *work.result;
+  result.outcome = RegionResult::Outcome::kUntouched;
+  result.failure.reset();
+  const auto fail = [&](providers::Failure failure) {
+    const bool unknown = failure.error == providers::ProviderError::kUnknown ||
+                         failure.error == providers::ProviderError::kUndetermined;
+    result.failure = std::move(failure);
+    (void)board.Accept(operation, unknown ? Acceptance::kUnknown : Acceptance::kNotStarted);
+    if (unknown) {
+      result.outcome = RegionResult::Outcome::kUnknown;
+      (void)board.Complete(
+          operation, Terminal{.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = false});
+    }
+  };
+  if (work.kind == RegionWork::Kind::kReserve) {
+    auto reserved = memory->Reserve(work.size);
+    if (!reserved) {
+      fail(reserved.error());
+      return;
+    }
+    result.reservation = *reserved;
+    const auto range = memory->RangeOf(*reserved);
+    if (!range) {
+      // A successful reservation must remain owned even if its metadata is
+      // unavailable. No retry or false known-refusal report can drop it.
+      result.failure = range.error();
+      result.outcome = RegionResult::Outcome::kUnknown;
+      (void)board.Accept(operation, Acceptance::kAccepted);
+      (void)board.Complete(
+          operation, Terminal{.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = false});
+      return;
+    }
+    result.base = range->base;
+  } else if (work.kind == RegionWork::Kind::kFree) {
+    const auto freed = memory->Free(work.reservation);
+    if (!freed) {
+      fail(freed.error());
+      return;
+    }
+  } else {
+    const auto granularity = memory->Granularity().value();
+    const auto extent = work.extent_size.value();
+    const auto range = memory->RangeOf(work.reservation);
+    if (!range || granularity == 0 || extent == 0 || extent % granularity != 0 ||
+        work.size.value() % extent != 0 || work.offset.value() % extent != 0 ||
+        work.offset.value() > range->size.value() ||
+        work.size.value() > range->size.value() - work.offset.value()) {
+      fail(range ? providers::Failure{.error = providers::ProviderError::kInvalid,
+                                      .detail = "owned region geometry"}
+                 : range.error());
+      return;
+    }
+    const auto count = work.size.value() / extent;
+    const bool growing = work.kind == RegionWork::Kind::kGrow;
+    if ((growing && (!result.backings.empty() || result.backings.capacity() < count)) ||
+        (!growing && (result.backings.size() != count || result.mapped != count))) {
+      fail({.error = providers::ProviderError::kInvalid,
+            .detail = "owned region transition was not prepaid"});
+      return;
+    }
+    // Unknown provider state poisons the shared reservation too. Retain the
+    // complete transition and stop the node; neither its old prefix nor another
+    // borrower's address may be advertised usable in that case.
+    const auto unproven = [&](providers::Failure failure) {
+      result.failure = std::move(failure);
+      result.outcome = RegionResult::Outcome::kUnknown;
+      (void)board.Accept(operation, Acceptance::kAccepted);
+      (void)board.Complete(
+          operation, Terminal{.outcome = Outcome::kFailed, .bytes = 0, .no_further_access = false});
+    };
+    const auto undo = [&]() -> std::expected<void, providers::Failure> {
+      while (result.mapped != 0) {
+        const auto at = work.offset.value() + (result.mapped - 1) * extent;
+        if (auto unmapped = memory->Unmap(work.reservation, Bytes(at), Bytes(extent)); !unmapped)
+          return std::unexpected(unmapped.error());
+        --result.mapped;
+      }
+      while (!result.backings.empty()) {
+        if (auto released = memory->Release(result.backings.back()); !released)
+          return std::unexpected(released.error());
+        result.backings.pop_back();
+      }
+      return {};
+    };
+    if (growing) {
+      std::optional<providers::Failure> failure;
+      for (std::uint64_t i = 0; i < count; ++i) {
+        auto backing = memory->Create(work.allocation_class, Bytes(extent));
+        if (!backing) {
+          failure = backing.error();
+          break;
+        }
+        result.backings.push_back(*backing);
+        const auto at = Bytes(work.offset.value() + i * extent);
+        auto mapped = memory->Map(work.reservation, at, *backing);
+        if (!mapped) {
+          failure = mapped.error();
+          break;
+        }
+        ++result.mapped;
+        auto access =
+            memory->SetAccess(work.reservation, at, Bytes(extent), providers::Access::kReadWrite);
+        if (!access) {
+          failure = access.error();
+          break;
+        }
+      }
+      if (failure) {
+        if (failure->error == providers::ProviderError::kUnknown ||
+            failure->error == providers::ProviderError::kUndetermined) {
+          unproven(std::move(*failure));
+        } else if (auto undone = undo(); !undone) {
+          unproven(undone.error());
+        } else {
+          result.outcome = RegionResult::Outcome::kRolledBack;
+          fail(std::move(*failure));  // known refusal: old prefix is intact
+        }
+        return;
+      }
+    } else if (auto retired = undo(); !retired) {
+      // Partial retirement is terminal; retain handles and catalog payment.
+      // Never free the reservation or publish reclaimed capacity on refusal.
+      unproven(retired.error());
+      return;
+    }
+  }
+  result.outcome = RegionResult::Outcome::kComplete;
+  (void)board.Accept(operation, Acceptance::kAccepted);
+  (void)board.Complete(operation, Terminal{.outcome = Outcome::kSucceeded,
+                                           .bytes = work.size.value(),
+                                           .no_further_access = true});
+}
+
 // Carries out VMM work and publishes its acceptance and result at once
 // (DeviceService and BackingService alike), keeping handed-off backing in
 // the lane's `stash`.
@@ -574,6 +715,8 @@ void DeviceService::Launch(DeviceCommand& command) {
           Copy(command.operation, work);
         } else if constexpr (std::is_same_v<Work, LaunchWork>) {
           Run(command.operation, work);
+        } else if constexpr (std::is_same_v<Work, RegionWork>) {
+          CarryRegion(memory_, board_, command.operation, work);
         } else {
           Back(command.operation, work);
         }
@@ -910,6 +1053,10 @@ void BackingService::Handle(DeviceCommand& command) {
     if (lazy_park) creates_.BeginPark();
     CarryOut(memory_, stash_, &reserve_, board_, command.operation, *work, &creates_);
     if (lazy_park) creates_.EndPark();
+    return;
+  }
+  if (const auto* work = std::get_if<RegionWork>(&command.work)) {
+    CarryRegion(memory_, board_, command.operation, *work);
     return;
   }
   (void)board_.Accept(command.operation, Acceptance::kNotStarted);  // not VMM work

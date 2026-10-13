@@ -297,6 +297,16 @@ std::expected<void, CatalogError> Catalog::CanRetirePinned(ExtentId extent) cons
   return {};
 }
 
+std::expected<Ticket, CatalogError> Catalog::BeginRetirePinned(ExtentId extent) {
+  if (auto checked = CanRetirePinned(extent); !checked) return std::unexpected(checked.error());
+  auto& record = *Extent(extent);
+  const auto before = BucketOf(record.view);
+  record.view.state = ExtentState::kEvicting;
+  record.writing_back = false;
+  Recount(record, before);
+  return Begin(extent, record, Operation::kEvict);
+}
+
 std::expected<void, CatalogError> Catalog::RemoveResource(ResourceId resource) {
   const Resource* found = resources_.Find(resource);
   if (found == nullptr) {

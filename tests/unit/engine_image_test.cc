@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -44,16 +45,20 @@ class TypedCopy final : public kn::StepProgram {
     ++trace_->live_programs;
     const auto& graph = input.io.graph;
     const auto in = input.io.inputs[0], out = input.io.outputs[0];
+    bytes_ = 4;
+    for (auto dimension : graph.tensor(in).shape().ne) bytes_ *= dimension;
+    const auto output_offset = (bytes_ + 255) / 256 * 256;
+    scratch_ = std::max<std::uint64_t>(512, output_offset + bytes_);
     input_[0] = {.device_address = input.addresses.activations,
-                 .bytes = 16,
+                 .bytes = bytes_,
                  .tensor = in,
                  .segment = graph.tensor(in).segment,
                  .kind = kn::InputKind::kStepBytes};
-    output_[0] = {.device_address = input.addresses.activations + 256,
-                  .bytes = 16,
+    output_[0] = {.device_address = input.addresses.activations + output_offset,
+                  .bytes = bytes_,
                   .tensor = out,
                   .segment = graph.tensor(out).segment};
-    uses_[0] = {.address = input.addresses.activations, .bytes = 512};
+    uses_[0] = {.address = input.addresses.activations, .bytes = scratch_};
     second_ = graph.tensor(out).shape().ne[0] == 1;
   }
   ~TypedCopy() override { --trace_->live_programs; }
@@ -65,7 +70,7 @@ class TypedCopy final : public kn::StepProgram {
     positioned_ = true;
     return {};
   }
-  std::uint64_t scratch_bytes() const override { return 512; }
+  std::uint64_t scratch_bytes() const override { return scratch_; }
   std::uint64_t host_bytes() const override { return 1024; }
   std::uint64_t launches() const override { return 1; }
   std::span<const kn::InputSlot> inputs() const override { return input_; }
@@ -85,10 +90,10 @@ class TypedCopy final : public kn::StepProgram {
     positioned_ = false;
     ++trace_->queued;
     const auto from = input_[0].device_address, to = output_[0].device_address;
-    auto queued =
-        llmp::providers::fake::FakeDeviceExecution::Launch(stream, [from, to, trace = trace_] {
+    auto queued = llmp::providers::fake::FakeDeviceExecution::Launch(
+        stream, [from, to, bytes = bytes_, trace = trace_] {
           // Fake device payload, deliberately only the typed identity copy.
-          std::memcpy(reinterpret_cast<void*>(to), reinterpret_cast<const void*>(from), 16);
+          std::memcpy(reinterpret_cast<void*>(to), reinterpret_cast<const void*>(from), bytes);
           ++trace->executed;
         });
     if (!queued || (second_ && trace_->fail_second))
@@ -98,6 +103,7 @@ class TypedCopy final : public kn::StepProgram {
 
  private:
   std::shared_ptr<Trace> trace_;
+  std::uint64_t bytes_ = 0, scratch_ = 0;
   bool measuring_, bound_ = false, second_ = false;
   mutable bool positioned_ = false;
   std::array<kn::InputSlot, 1> input_{};
@@ -128,7 +134,8 @@ struct Life {
   std::unique_ptr<rt::EngineImage> image;
   std::vector<en::PagedModel*> entered;
   bool attempted = false;
-  Status Start(const std::filesystem::path& scratch, bool bad_port = false) {
+  Status Start(const std::filesystem::path& scratch, bool bad_port = false,
+               bool mapped_weight = false) {
     if (auto opened = node.Open(); !opened) return opened;
     auto admitted = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), 8ULL << 20,
                                                           1ULL << 30, 1ULL << 20);
@@ -168,7 +175,9 @@ struct Life {
     if (auto opened = weights->Open(llmp::test::Publish(scratch, llmp::test::Render(artifact)));
         !opened)
       return opened;
-    parts.weights.push_back({std::move(weights), {en::GroupPlace::kNone}, {}});
+    parts.weights.push_back({std::move(weights),
+                             {mapped_weight ? en::GroupPlace::kDevice : en::GroupPlace::kNone},
+                             {}});
     for (std::size_t stage_id = 0; stage_id < 2; ++stage_id) {
       llmp::spec::Stage stage{.name = "copy", .role = llmp::spec::StageRole::kVae, .artifact = 0};
       stage.stream.width = 1;
@@ -230,7 +239,8 @@ struct Life {
     auto setup = image->Setup();
     if (image->has_paged()) entered.push_back(&image->paged());
     if (!setup) return setup;
-    if (auto mapped = node.MapWorkspace(image->activations_needed(), en::kPagedExtent); !mapped)
+    if (auto mapped = node.MapWorkspace(image->activations_needed(), en::kPagedExtent, 64ULL << 20);
+        !mapped)
       return mapped;
     if (auto started = node.Start(llmp::base::Bytes(64ULL << 20)); !started) return started;
     if (auto registered = image->Register(); !registered) return registered;
@@ -260,6 +270,53 @@ struct Life {
       return {};
     };
     return request;
+  }
+  std::expected<rt::ImageGeometry, std::string> Geometry(std::uint32_t width, std::uint32_t height,
+                                                         float value) {
+    rt::ImageGeometry next;
+    next.keep = std::make_shared<float>(value);
+    const std::array dims{width, height};
+    next.identity = llmp::base::Sha256{}.Update(std::as_bytes(std::span(dims))).Finish();
+    next.request.keep = next.keep;
+    next.request.layout = next.request.identity = next.identity;
+    next.request.ports.push_back(
+        {.format = ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({width, height, 1, 1})),
+         .initial = {}});
+    next.request.sequence = {{0, 0}, {1, 0}};
+    next.request.fill = [value](const rt::ImageInvocation&, std::size_t,
+                                std::span<std::byte> data) -> Status {
+      if (data.size() % sizeof(float)) return std::unexpected("fake geometry element bytes");
+      for (std::size_t at = 0; at < data.size(); at += sizeof(float))
+        std::memcpy(data.data() + at, &value, sizeof(value));
+      return {};
+    };
+    for (std::uint32_t i = 0; i < 2; ++i) {
+      llmp::spec::Stage stage{.name = "copy", .role = llmp::spec::StageRole::kVae, .artifact = 0};
+      stage.stream.width = 1;
+      llmp::spec::Layer layer;
+      layer.components.push_back(
+          {.kind = "reshape.spatial",
+           .version = 1,
+           .params = {{"width", std::int64_t{i == 0 ? width : 1}},
+                      {"height", std::int64_t{i == 0 ? height : width * height}}}});
+      stage.layers.push_back(std::move(layer));
+      llmp::spec::ModelSpec spec{.pipeline = llmp::spec::PipelineKind::kImage,
+                                 .stages = {std::move(stage)}};
+      llmp::spec::Canonicalize(spec);
+      const std::array<std::span<const co::BoundTensor>, 1> tables{};
+      const std::array owners{co::SpatialOwner{0, {width, height, 1, 1}}};
+      auto graph =
+          co::BuildSpatialStep(spec, tables, owners,
+                               {[payment = payment](std::uint64_t n) { return payment->Charge(n); },
+                                [payment = payment](std::uint64_t n) { payment->Release(n); }},
+                               {.reference_buffers = false});
+      if (!graph) return std::unexpected(graph.error());
+      next.stages.push_back({.graph = std::make_shared<const co::SpatialGraph>(std::move(*graph)),
+                             .addresses = {},
+                             .inputs = {i == 0 ? std::nullopt : std::optional<std::uint32_t>(0)},
+                             .outputs = {i == 0 ? std::optional<std::uint32_t>(0) : std::nullopt}});
+    }
+    return next;
   }
   Status Retire() {
     if (attempted) return std::unexpected("already attempted");
@@ -307,6 +364,91 @@ TEST_F(EngineImageTest, DeviceHandoffAndChangedInputsSurviveRepeatedGenerations)
   EXPECT_EQ(life->trace->launch->launches(), 4U);
   EXPECT_EQ(life->trace->executed, 6U);
   EXPECT_EQ(life->trace->live_programs, 2U);
+}
+TEST_F(EngineImageTest, GeometryGrowthRetiresOnlyOwnedPortsAndKeepsWorkspaceAddresses) {
+  ASSERT_TRUE(life->Start(path, false, true));
+  const auto managed = life->image->managed_extents();
+  ASSERT_EQ(managed.size(), 1U);
+  const auto check_places = [&]() -> Status {
+    auto& scheduler = life->node.scheduler();
+    EXPECT_TRUE(scheduler.PlacePinned(managed.front()));
+    const auto* source = scheduler.SourceOf(managed.front());
+    if (!source) return std::unexpected("registered source is absent");
+    auto relocated = *source;
+    relocated.destination += en::kPagedExtent;
+    const auto refused = scheduler.SetSource(managed.front(), relocated);
+    EXPECT_FALSE(refused);
+    if (!refused) EXPECT_EQ(refused.error(), llmp::scheduler::WorkError::kBusy);
+    return life->image->CheckPlaces();
+  };
+  ASSERT_TRUE(life->node.Call(check_places, "checking image registered places"));
+  std::string first, output;
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(life->image->FirstOutput(first));
+    ASSERT_TRUE(life->image->Finish(output));
+  }
+  const auto activation_base = life->node.activations().base;
+  const auto pool_base = life->node.pool().base;
+  const auto old_extent = life->node.activations().extents.front();
+  const auto old_generation = life->node.catalog().Describe(old_extent)->backing_generation;
+  auto* const launch = life->trace->launch;
+  auto geometry = life->Geometry(1024, 512, 7.F);
+  ASSERT_TRUE(geometry) << Failed(geometry).value_or("");
+  std::weak_ptr<void> old_owner = geometry->keep;
+  const auto replaced = life->image->ReplaceGeometry(std::move(*geometry));
+  ASSERT_TRUE(replaced) << Failed(replaced).value_or("");
+  EXPECT_EQ(life->node.activations().base, activation_base);
+  EXPECT_EQ(life->node.pool().base, pool_base);
+  EXPECT_EQ(life->node.activations().extents.front(), old_extent);
+  EXPECT_EQ(life->node.catalog().Describe(old_extent)->backing_generation, old_generation);
+  EXPECT_EQ(life->node.activations().bytes, 6ULL << 20);
+  EXPECT_EQ(life->trace->launch, launch);
+  EXPECT_EQ(life->trace->live_programs, 0U);  // old geometry retired; candidate builds lazily
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(life->image->FirstOutput(first));
+    ASSERT_TRUE(life->image->Finish(output));
+    EXPECT_EQ(first, output);
+  }
+  const auto staging = life->image->host_input_bytes();
+  const auto occupancy = life->node.catalog().OccupancyOf(life->node.domain()).Total();
+  auto smaller = life->Geometry(2, 2, 3.F);
+  ASSERT_TRUE(smaller);
+  ASSERT_TRUE(life->image->ReplaceGeometry(std::move(*smaller)));
+  EXPECT_TRUE(old_owner.expired());
+  EXPECT_EQ(life->image->managed_extents(), managed);
+  ASSERT_TRUE(life->node.Call(check_places, "checking retained image registered places"));
+  EXPECT_EQ(life->node.activations().bytes, 6ULL << 20);  // shared high-water backing
+  EXPECT_EQ(life->trace->launch, launch);
+  EXPECT_LT(life->image->host_input_bytes(), staging);
+  EXPECT_LT(life->node.catalog().OccupancyOf(life->node.domain()).Total(), occupancy);
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(output));
+}
+TEST_F(EngineImageTest, InvalidGeometryAndGrowthRefusalLeaveCompletedRequestUsable) {
+  ASSERT_TRUE(life->Start(path));
+  std::string first, original, output;
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(original));
+  const auto base = life->node.activations().base;
+  const auto extents = life->node.activations().extents;
+  auto bad = life->Geometry(8, 4, 9.F);
+  ASSERT_TRUE(bad);
+  bad->request.ports[0].owner = 1;
+  EXPECT_FALSE(life->image->ReplaceGeometry(std::move(*bad)));
+  EXPECT_FALSE(life->node.GrowWorkspace(65ULL << 20, 0));
+  const auto staging = life->image->host_input_bytes();
+  auto unpaid = life->Geometry(8192, 1024, 9.F);
+  ASSERT_TRUE(unpaid);
+  std::weak_ptr<void> candidate_owner = unpaid->keep;
+  EXPECT_FALSE(life->image->ReplaceGeometry(std::move(*unpaid)));
+  EXPECT_TRUE(candidate_owner.expired());
+  EXPECT_EQ(life->image->host_input_bytes(), staging);
+  EXPECT_LE(life->node.catalog().OccupancyOf(life->node.domain()).Total(), life->node.budget());
+  EXPECT_EQ(life->node.activations().base, base);
+  EXPECT_EQ(life->node.activations().extents, extents);
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_EQ(output, original);
 }
 TEST_F(EngineImageTest, CompletedRequestReplacementReusesCapturesAndReleasesContent) {
   ASSERT_TRUE(life->Start(path));
@@ -401,6 +543,9 @@ TEST_F(EngineImageTest, QueuedFailureQuarantinesTheWholeFlightUntilPositiveDrain
   EXPECT_FALSE(life->image->FirstOutput(value));
   EXPECT_FALSE(life->image->Finish(value));
   EXPECT_FALSE(life->image->ReplaceRequest(life->Request(9)));
+  auto next = life->Geometry(8, 4, 9.F);
+  ASSERT_TRUE(next);
+  EXPECT_FALSE(life->image->ReplaceGeometry(std::move(*next)));
   life->image->DropPlans();
   std::vector<llmp::memory::ReclaimCandidate> candidates;
   life->image->ReclaimCandidates(0, false, candidates);

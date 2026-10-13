@@ -54,10 +54,17 @@ at completed request boundaries while retaining model/graph identity. The final
 324-control native check includes all 35 image controls and 33 serial fake
 replacements with stable captures. One real model completes original→changed→
 restored prompt/noise requests with 1/2/1 Euler steps, finite outputs, two released
-owners and stable warmed resources. Q3j2b groups geometry/resource growth with
-shared serving/swap reuse; incompatible layouts currently refuse without
-changing the retained request. This is no
-permanent dimension or count limit, and adds no serving-default switch.
+owners and stable warmed resources. Q3j2b now grows paid workspace backing at
+stable addresses and retires completed geometry owners through the existing
+Server image adapter. Four images (512×512 → 1024×512 → repeat → 512×512), six
+activation calls and retained Gemma state pass; two geometry owners retire,
+backing grows and own repeated/restored pixels agree. The combined native build
+passes 474 host controls, including 296 image controls; the final placement-pin
+correction passes ten targeted controls before the successful actual retry.
+Observed catalog/construction maxima are 38,561,241,102/2,883,507,343 bytes.
+These are functional lifecycle results, without a capture-acceptance or speed
+claim. The prepared-source bridge remains internal: automatic source preparation
+and public defaults are not switched.
 
 The shared image generation core now completes two 1024×1024 generations:
 native 36-layer text encoding, two complete 32-block Euler steps and the full

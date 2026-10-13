@@ -96,21 +96,30 @@ struct ImageRequestOwner {
 };
 constexpr std::uint64_t kRequestOwnerBytes =
     2 * sizeof(ImageRequestOwner) + 2 * sizeof(ImageRequest) + 4 * sizeof(ImagePort) + 4096;
-struct ImageGenerationOwner {
+}  // namespace
+struct ImageGenerationModel {
   Paid paid;
   std::shared_ptr<ImageGenerationSource> source;
+  std::array<std::vector<md::QwenImageTensor>, 3> source_tensors;
   std::array<std::vector<co::BoundTensor>, 3> tables;
-  std::array<std::map<ir::WeightRef, std::uint32_t>, 3> resources;
+  std::array<std::vector<std::uint32_t>, 3> resource_ids;
   std::array<en::PagedWeights*, 3> weights{};
-  std::array<std::shared_ptr<const co::SpatialGraph>, 3> graphs;
+  std::array<std::uint64_t, 3> compiler_limits{};
   std::unique_ptr<kg::CublasHandle> cublas;
   std::unique_ptr<kg::GgmlBackend> backend;
+};
+namespace {
+struct ImageGeometryOwner {
+  Paid paid;
+  std::shared_ptr<ImageGenerationModel> model;
+  std::array<std::map<ir::WeightRef, std::uint32_t>, 3> resources;
+  std::array<std::shared_ptr<const co::SpatialGraph>, 3> graphs;
 };
 
 // Two complete owner/return representations, doubled vector capacities for
 // three stages/eleven input ports, and fixed shared/control blocks.
 // Kernel declaration storage is independently charged by Declare below.
-constexpr std::uint64_t kSourceOwnerBytes = kSourceMappingBytes + 2 * sizeof(ImageGenerationOwner) +
+constexpr std::uint64_t kSourceOwnerBytes = kSourceMappingBytes + 2 * sizeof(ImageGenerationModel) +
                                             2 * sizeof(EngineImageParts) + 6 * sizeof(ImageStage) +
                                             22 * sizeof(std::optional<std::uint32_t>) + 4096;
 
@@ -303,6 +312,119 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
   return out;
 }
 
+std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
+    const std::shared_ptr<ImageGenerationSource>& source, ImageGenerationRequest&& request_source,
+    const ModelSettings& settings, std::shared_ptr<en::ExecutionMetadataAllowance> construction) {
+  auto model = source ? source->prepared.lock() : nullptr;
+  if (!model || !construction) return Error("image geometry requires the retained model source");
+  const auto& p = md::QwenImage21();
+  auto checked = RequestOf(request_source, settings, p);
+  if (!checked) return Error(checked.error());
+  const auto geometry = *checked;
+  const auto drop = request_source.drop;
+  const auto image_rows = geometry.rows, prompt_rows = geometry.prompt_rows;
+  const auto channels = p.vae.z_dim;
+  const auto geometry_bytes = kSourceMappingBytes + 2 * sizeof(ImageGeometryOwner) +
+                              2 * sizeof(ImageGeometry) + 6 * sizeof(ImageStage) + 4096;
+  if (!construction->Charge(geometry_bytes)) return Error("image geometry mapping is not prepaid");
+  auto held = std::make_shared<ImageGeometryOwner>();
+  held->paid.allowance = construction;
+  held->paid.bytes = geometry_bytes;
+  held->model = model;
+  auto prepared_request =
+      ComponentImageGenerationRequest(std::move(request_source), settings, construction);
+  if (!prepared_request) return Error(prepared_request.error());
+  const auto& source_tensors = model->source_tensors;
+  const auto text_rows = geometry.text_rows;
+  std::array mappings{
+      spec::ImageTextSpec(p.text, prompt_rows, drop, source_tensors[0]),
+      spec::ImageFlowSpec(p.denoiser, text_rows, image_rows, source_tensors[1]),
+      spec::ImageDecodeSpec(p.vae, geometry.grid_height, geometry.grid_width, source_tensors[2])};
+  const std::array<co::SpatialShape, 3> primary{co::SpatialShape{1, prompt_rows, 1, 1},
+                                                {1, text_rows, p.text.width, 1},
+                                                {1, image_rows, channels, 1}};
+  const auto joint = text_rows + image_rows;
+  const std::array<std::vector<co::SpatialInput>, 3> inputs{
+      std::vector{co::SpatialInput{0, 0, {prompt_rows, 1, 1, 1}, format::Encoding::kI32},
+                  co::SpatialInput{0, 1, {prompt_rows, prompt_rows, 1, 1}}},
+      std::vector{co::SpatialInput{0, 0, {1, image_rows, channels, 1}},
+                  co::SpatialInput{0, 1, {1, 2, p.denoiser.timestep_dim, 1}},
+                  co::SpatialInput{0, 2, {joint, 3, 1, 1}, format::Encoding::kI32},
+                  co::SpatialInput{0, 3, {joint, joint, 1, 1}},
+                  co::SpatialInput{0, 4, {1, 1, 1, 1}}},
+      std::vector{co::SpatialInput{0, 0, {1, 2, channels, 1}}}};
+  for (std::size_t i = 0; i < 3; ++i) {
+    if (!mappings[i]) return Error(mappings[i].error());
+    auto compiler = CompilerBound(*mappings[i], source_tensors[i].size(), inputs[i].size() + 1);
+    if (!compiler) return Error(compiler.error());
+    // Compilation is serial on the model owner. Retained old/candidate graph
+    // descriptors each have their own BuildSpatialStep payment; this common
+    // two-program compiler scratch ceiling is held once at its high-water.
+    if (*compiler > model->compiler_limits[i]) {
+      if (!model->paid.Add(*compiler - model->compiler_limits[i]))
+        return Error("image complete compiler owners are not prepaid");
+      model->compiler_limits[i] = *compiler;
+    }
+    const std::array<std::span<const co::BoundTensor>, 1> tables{model->tables[i]};
+    const std::array owners{co::SpatialOwner{0, primary[i]}};
+    auto graph = co::BuildSpatialStep(
+        mappings[i]->spec, tables, owners,
+        {[construction](std::uint64_t bytes) { return construction->Charge(bytes); },
+         [construction](std::uint64_t bytes) { construction->Release(bytes); }},
+        {.links = mappings[i]->links,
+         .reference_buffers = false,
+         .input_encoding = i == 0 ? format::Encoding::kI32 : format::Encoding::kF32,
+         .exports = mappings[i]->exports,
+         .inputs = inputs[i]});
+    if (!graph) return Error(std::format("image stage {}: {}", i, graph.error()));
+    for (const auto& weight : graph->weights()) {
+      if (weight.parts.size() != 1 || weight.parts[0].second != format::PartRole::kData)
+        return Error("image source part contract changed");
+      auto found =
+          std::ranges::find(source_tensors[i], weight.parts[0].first, &md::QwenImageTensor::name);
+      if (found == source_tensors[i].end())
+        return Error("image graph names an unbound source role");
+      const auto index = static_cast<std::size_t>(found - source_tensors[i].begin());
+      held->resources[i].emplace(weight.ref, model->resource_ids[i][index]);
+    }
+    held->graphs[i] = std::make_shared<co::SpatialGraph>(std::move(*graph));
+  }
+  ImageGeometry out;
+  out.keep = held;
+  base::Sha256 identity;
+  identity.Update(source->composition->id());
+  for (const auto& graph : held->graphs) identity.Update(base::ToHex(graph->graph().Digest()));
+  out.identity = identity.Finish();
+  out.request = std::move(*prepared_request);
+  for (std::size_t i = 0; i < 3; ++i) {
+    ImageStage stage;
+    stage.graph = held->graphs[i];
+    stage.weights = static_cast<std::uint16_t>(i);
+    stage.addresses.weight = [held, i](const ir::WeightRef& ref, format::PartRole part) {
+      const auto at = held->resources[i].find(ref);
+      return part == format::PartRole::kData && at != held->resources[i].end()
+                 ? held->model->weights[i]->resource_address(at->second)
+                 : std::uint64_t{0};
+    };
+    stage.addresses.weight_alignment = [](const ir::WeightRef&, format::PartRole) { return 256; };
+    if (i == 0) {
+      stage.inputs = {{}, {}, {}};
+      stage.outputs = {0};
+    }
+    if (i == 1) {
+      stage.observation = 1;
+      stage.inputs = {0, 1, {}, {}, {}, {}};
+      stage.outputs = {{}, 1};
+    }
+    if (i == 2) {
+      stage.inputs = {1, {}};
+      stage.outputs = {{}};
+    }
+    out.stages.push_back(std::move(stage));
+  }
+  return out;
+}
+
 EngineImageBuild ComponentImageGenerationBuild(
     en::PagedNode& node, int owner, std::shared_ptr<ImageGenerationSource> source,
     std::shared_ptr<en::ExecutionMetadataAllowance> construction,
@@ -316,10 +438,6 @@ EngineImageBuild ComponentImageGenerationBuild(
       return Error("image generation requires the complete paid source envelope");
     auto request = RequestOf(*source, settings, p);
     if (!request) return Error(request.error());
-    const auto& geometry = *request;
-    const auto image_rows = geometry.rows;
-    const auto prompt_rows = geometry.prompt_rows;
-    const auto channels = p.vae.z_dim;
     for (auto id : source->prompt)
       if (id < 0 || static_cast<std::uint32_t>(id) >= p.text.vocab)
         return Error("image text input ID lies outside the actual source vocabulary");
@@ -327,24 +445,17 @@ EngineImageBuild ComponentImageGenerationBuild(
       if (!weights || !weights->opened()) return Error("image source artifact is not open");
     if (!construction->Charge(kSourceOwnerBytes))
       return Error("image source mapping is not prepaid");
-    auto held = std::make_shared<ImageGenerationOwner>();
+    auto held = std::make_shared<ImageGenerationModel>();
     held->paid.allowance = construction;
     held->paid.bytes = kSourceOwnerBytes;
     held->source = source;
-    auto prepared_request = ComponentImageGenerationRequest({.prompt = std::move(source->prompt),
-                                                             .drop = source->drop,
-                                                             .width = source->width,
-                                                             .height = source->height,
-                                                             .noise = std::move(source->noise),
-                                                             .keep = source->keep},
-                                                            settings, construction);
-    if (!prepared_request) return Error(prepared_request.error());
-    const std::array source_tensors{md::TextEncoderTensors(p.text), md::DenoiserTensors(p.denoiser),
-                                    md::VaeDecoderTensors(p.vae)};
+    held->source_tensors = {md::TextEncoderTensors(p.text), md::DenoiserTensors(p.denoiser),
+                            md::VaeDecoderTensors(p.vae)};
+    const auto& source_tensors = held->source_tensors;
     const std::array<std::string_view, 3> role{"text_encoder", "transformer", "vae"};
     const std::array<std::string_view, 3> architecture{p.text_architecture, p.denoiser_architecture,
                                                        p.vae_architecture};
-    std::array<std::vector<std::uint32_t>, 3> resource_ids;
+
     for (std::size_t i = 0; i < 3; ++i) {
       const auto* component = source->composition->Find(role[i]);
       const auto& artifact = source->weights[i]->artifact();
@@ -353,58 +464,11 @@ EngineImageBuild ComponentImageGenerationBuild(
         return Error("image composition/source artifact identity differs");
       auto bindings = md::BindQwenImageComponent(source_tensors[i], architecture[i], artifact);
       if (!bindings) return Error(bindings.error());
-      resource_ids[i] = std::move(*bindings);
+      held->resource_ids[i] = std::move(*bindings);
       auto tensors = Table(source_tensors[i]);
       if (!tensors) return Error(tensors.error());
       held->tables[i] = std::move(*tensors);
       held->weights[i] = source->weights[i].get();
-    }
-    const auto text_rows = geometry.text_rows;
-    std::array mappings{
-        spec::ImageTextSpec(p.text, prompt_rows, source->drop, source_tensors[0]),
-        spec::ImageFlowSpec(p.denoiser, text_rows, image_rows, source_tensors[1]),
-        spec::ImageDecodeSpec(p.vae, geometry.grid_height, geometry.grid_width, source_tensors[2])};
-    const std::array<co::SpatialShape, 3> primary{co::SpatialShape{1, prompt_rows, 1, 1},
-                                                  {1, text_rows, p.text.width, 1},
-                                                  {1, image_rows, channels, 1}};
-    const auto joint = text_rows + image_rows;
-    const std::array<std::vector<co::SpatialInput>, 3> inputs{
-        std::vector{co::SpatialInput{0, 0, {prompt_rows, 1, 1, 1}, format::Encoding::kI32},
-                    co::SpatialInput{0, 1, {prompt_rows, prompt_rows, 1, 1}}},
-        std::vector{co::SpatialInput{0, 0, {1, image_rows, channels, 1}},
-                    co::SpatialInput{0, 1, {1, 2, p.denoiser.timestep_dim, 1}},
-                    co::SpatialInput{0, 2, {joint, 3, 1, 1}, format::Encoding::kI32},
-                    co::SpatialInput{0, 3, {joint, joint, 1, 1}},
-                    co::SpatialInput{0, 4, {1, 1, 1, 1}}},
-        std::vector{co::SpatialInput{0, 0, {1, 2, channels, 1}}}};
-    for (std::size_t i = 0; i < 3; ++i) {
-      if (!mappings[i]) return Error(mappings[i].error());
-      auto compiler = CompilerBound(*mappings[i], source_tensors[i].size(), inputs[i].size() + 1);
-      if (!compiler || !held->paid.Add(*compiler))
-        return Error("image complete compiler owners are not prepaid");
-      const std::array<std::span<const co::BoundTensor>, 1> tables{held->tables[i]};
-      const std::array owners{co::SpatialOwner{0, primary[i]}};
-      auto graph = co::BuildSpatialStep(
-          mappings[i]->spec, tables, owners,
-          {[construction](std::uint64_t bytes) { return construction->Charge(bytes); },
-           [construction](std::uint64_t bytes) { construction->Release(bytes); }},
-          {.links = mappings[i]->links,
-           .reference_buffers = false,
-           .input_encoding = i == 0 ? format::Encoding::kI32 : format::Encoding::kF32,
-           .exports = mappings[i]->exports,
-           .inputs = inputs[i]});
-      if (!graph) return Error(std::format("image stage {}: {}", i, graph.error()));
-      for (const auto& weight : graph->weights()) {
-        if (weight.parts.size() != 1 || weight.parts[0].second != format::PartRole::kData)
-          return Error("image source part contract changed");
-        auto found =
-            std::ranges::find(source_tensors[i], weight.parts[0].first, &md::QwenImageTensor::name);
-        if (found == source_tensors[i].end())
-          return Error("image graph names an unbound source role");
-        const auto index = static_cast<std::size_t>(found - source_tensors[i].begin());
-        held->resources[i].emplace(weight.ref, resource_ids[i][index]);
-      }
-      held->graphs[i] = std::make_shared<co::SpatialGraph>(std::move(*graph));
     }
     auto backend = kg::GgmlBackend::Create(0, node.execution(),
                                            node.stream(static_cast<std::uint32_t>(owner)), nullptr);
@@ -421,44 +485,29 @@ EngineImageBuild ComponentImageGenerationBuild(
         [construction](std::uint64_t bytes) { return construction->Charge(bytes); },
         [construction](std::uint64_t bytes) { construction->Release(bytes); });
     if (!declared) return Error(declared.error());
+    source->prepared = held;
+    auto geometry_parts = ComponentImageGenerationGeometry(source,
+                                                           {.prompt = std::move(source->prompt),
+                                                            .drop = source->drop,
+                                                            .width = source->width,
+                                                            .height = source->height,
+                                                            .noise = std::move(source->noise),
+                                                            .keep = source->keep},
+                                                           settings, construction);
+    if (!geometry_parts) return Error(geometry_parts.error());
     EngineImageParts out;
     out.keep = held;
     out.architecture = p.pipeline_architecture;
     out.backend = std::make_shared<kernels::StepBackend>(held->backend->Backend());
-    base::Sha256 identity;
-    identity.Update(source->composition->id());
-    for (const auto& graph : held->graphs) identity.Update(base::ToHex(graph->graph().Digest()));
-    out.identity = identity.Finish();
-    out.request = std::move(*prepared_request);
+    out.geometry_keep = geometry_parts->keep;
+    out.identity = geometry_parts->identity;
+    out.request = std::move(geometry_parts->request);
+    out.stages = std::move(geometry_parts->stages);
     for (std::size_t i = 0; i < 3; ++i) {
       const auto count = source->weights[i]->artifact().layout().groups.size();
       out.weights.push_back({.weights = std::move(source->weights[i]),
                              .places = std::vector(count, en::GroupPlace::kDevice),
                              .slabs = {}});
-      ImageStage stage;
-      stage.graph = held->graphs[i];
-      stage.weights = static_cast<std::uint16_t>(i);
-      stage.addresses.weight = [held, i](const ir::WeightRef& ref, format::PartRole part) {
-        const auto at = held->resources[i].find(ref);
-        return part == format::PartRole::kData && at != held->resources[i].end()
-                   ? held->weights[i]->resource_address(at->second)
-                   : std::uint64_t{0};
-      };
-      stage.addresses.weight_alignment = [](const ir::WeightRef&, format::PartRole) { return 256; };
-      if (i == 0) {
-        stage.inputs = {{}, {}, {}};
-        stage.outputs = {0};
-      }
-      if (i == 1) {
-        stage.observation = 1;
-        stage.inputs = {0, 1, {}, {}, {}, {}};
-        stage.outputs = {{}, 1};
-      }
-      if (i == 2) {
-        stage.inputs = {1, {}};
-        stage.outputs = {{}};
-      }
-      out.stages.push_back(std::move(stage));
     }
     out.kernel_memory.push_back({.name = "image shared cuBLAS", .bytes = blas_bytes});
     out.prepare = [&node, owner, held, blas_bytes](std::span<const std::uint64_t> bases) -> Status {
@@ -472,7 +521,7 @@ EngineImageBuild ComponentImageGenerationBuild(
     };
     out.launch = [&node, held] {
       return held->backend->Launch(
-          {.base = node.pool().base, .size = base::Bytes(node.pool().bytes)});
+          {.base = node.pool().base, .size = base::Bytes(node.pool().capacity_bytes)});
     };
     out.retire = [held] {
       held->backend->LaunchReleased();

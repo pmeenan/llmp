@@ -52,12 +52,24 @@ struct EngineImage::State {
     bool operator==(const Key&) const = default;
   };
   using Plans = en::BasicPlanCache<Key, en::StepPlanned, 1, en::StepPlanRuns>;
-  // Complete source/handle owner precedes every borrower.
-  EngineImageParts parts;
+  struct Model {
+    EngineImageParts parts;
+    en::RunnerMemory memory;
+    en::ProgramLifecycle programs;
+    std::vector<std::unique_ptr<en::Mapped>> kernel;
+    bool prepared = false, registered = false, released = false;
+    Model(en::PagedNode& node, int owner, EngineImageParts source)
+        : parts(std::move(source)),
+          memory(node, owner, static_cast<std::uint32_t>(owner)),
+          programs(node, owner, parts.graphs) {}
+  };
+  // One complete model/handle/launch owner precedes geometry-only borrowers.
+  std::shared_ptr<Model> model;
+  ImageGeometry parts;
   en::RunnerMemory memory;
-  en::ProgramLifecycle programs;
+  en::ProgramLifecycle& programs;
   Plans plans;
-  std::vector<std::unique_ptr<en::Mapped>> kernel, ports;
+  std::vector<std::unique_ptr<en::Mapped>> ports;
   std::vector<std::vector<catalog::ExtentId>> stage_weights;
   std::vector<catalog::Closure> closures;
   catalog::Closure all, fence;
@@ -71,16 +83,27 @@ struct EngineImage::State {
   std::uint64_t input_bytes = 0, output_bytes = 0, activation_bytes = 0, pool_bytes = 0;
   std::uint64_t plan_floor = 0;
   std::size_t next = 0;
-  bool prepared = false, setup = false, registered = false, bound = false, released = false;
+  bool setup = false, registered = false, bound = false, released = false;
   bool unknown = false, generation_complete = false;
   // A pending job's source, captures, plan and storage survive a failed wait.
   // Release, called after actual node drain, is the only cycle-breaking path.
   std::shared_ptr<State> flight;
+  std::vector<std::shared_ptr<State>> transition_holds;
 
   State(en::PagedNode& node, int owner, EngineImageParts source)
-      : parts(std::move(source)),
+      : model(std::make_shared<Model>(node, owner, std::move(source))),
+        parts{.keep = model->parts.geometry_keep ? std::move(model->parts.geometry_keep)
+                                                 : model->parts.keep,
+              .identity = model->parts.identity,
+              .stages = std::move(model->parts.stages),
+              .request = std::move(model->parts.request)},
         memory(node, owner, static_cast<std::uint32_t>(owner)),
-        programs(node, owner, parts.graphs) {}
+        programs(model->programs) {}
+  State(std::shared_ptr<Model> retained, ImageGeometry geometry)
+      : model(std::move(retained)),
+        parts(std::move(geometry)),
+        memory(model->memory.node(), model->memory.owner(), model->memory.stream()),
+        programs(model->programs) {}
 
   kn::Addresses Addresses(std::size_t stage, bool measuring) const {
     auto result = parts.stages.at(stage).addresses;
@@ -94,9 +117,9 @@ struct EngineImage::State {
     const auto& graph = *parts.stages.at(stage).graph;
     const en::GraphBuildIO io{graph.graph(), graph.graph().inputs(), graph.graph().outputs(),
                               graph.weights()};
-    const auto& backend = parts.backend->owner->backend();
+    const auto& backend = model->parts.backend->owner->backend();
     return en::BuildComponentProgram(
-        io, backend, parts.policy, Addresses(stage, measuring),
+        io, backend, model->parts.policy, Addresses(stage, measuring),
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = backend.written,
          .within = backend.within,
@@ -183,12 +206,41 @@ Status EngineImage::Setup() {
   // All source construction was paid by the factory before these values exist.
   state_ = std::make_shared<State>(node_, index_, std::move(*parts));
   auto& s = *state_;
-  if (!s.parts.keep || !s.parts.backend || !s.parts.backend->owner || !s.parts.launch ||
-      s.parts.stages.empty() || s.parts.request.sequence.empty() ||
+  if (!s.parts.keep || !s.model->parts.backend || !s.model->parts.backend->owner ||
+      !s.model->parts.launch || s.parts.stages.empty() || s.parts.request.sequence.empty() ||
       s.parts.request.first_output >= s.parts.request.sequence.size())
     return Error("image needs an owned typed composition and complete sequence");
+  for (auto& weights : s.model->parts.weights) {
+    if (auto reserved = weights.weights->Reserve(node_, weights.places, weights.slabs); !reserved)
+      return reserved;
+  }
+  std::vector<std::uint64_t> bases;
+  for (const auto& allocation : s.model->parts.kernel_memory) {
+    auto& mapped = s.model->kernel.emplace_back(std::make_unique<en::Mapped>());
+    if (auto r = s.model->memory.Map(*mapped, allocation.name, allocation.bytes,
+                                     catalog::MemoryClass::kRuntime);
+        !r)
+      return r;
+    bases.push_back(mapped->base);
+  }
+  if (s.model->parts.prepare) {
+    s.model->prepared = true;
+    if (auto prepared = s.model->parts.prepare(bases); !prepared) return prepared;
+  }
+  auto declaration = s.model->parts.backend->owner->Ready();
+  if (!declaration) return Error(declaration.error());
+  s.declaration = *declaration;
+  return PrepareState(s);
+}
+
+Status EngineImage::PrepareState(State& s) {
+  if (!s.parts.keep || s.parts.identity == base::Sha256Digest{} || s.parts.stages.empty())
+    return Error("image geometry needs a paid graph owner and identity");
+  auto declaration = s.model->parts.backend->owner->Ready();
+  if (!declaration) return Error(declaration.error());
+  s.declaration = *declaration;
   for (const auto& stage : s.parts.stages) {
-    if (!stage.graph || stage.weights >= s.parts.weights.size() ||
+    if (!stage.graph || stage.weights >= s.model->parts.weights.size() ||
         stage.inputs.size() != stage.graph->graph().inputs().size() ||
         stage.outputs.size() != stage.graph->graph().outputs().size() ||
         stage.observation >= stage.outputs.size())
@@ -200,26 +252,6 @@ Status EngineImage::Setup() {
   }
   auto initial_bytes = s.Request(s.parts.request);
   if (!initial_bytes) return Error(initial_bytes.error());
-  for (auto& weights : s.parts.weights) {
-    if (auto reserved = weights.weights->Reserve(node_, weights.places, weights.slabs); !reserved)
-      return reserved;
-  }
-  std::vector<std::uint64_t> bases;
-  for (const auto& allocation : s.parts.kernel_memory) {
-    auto& mapped = s.kernel.emplace_back(std::make_unique<en::Mapped>());
-    if (auto r = s.memory.Map(*mapped, allocation.name, allocation.bytes,
-                              catalog::MemoryClass::kRuntime);
-        !r)
-      return r;
-    bases.push_back(mapped->base);
-  }
-  if (s.parts.prepare) {
-    s.prepared = true;
-    if (auto prepared = s.parts.prepare(bases); !prepared) return prepared;
-  }
-  auto declaration = s.parts.backend->owner->Ready();
-  if (!declaration) return Error(declaration.error());
-  s.declaration = *declaration;
   for (const auto& port : s.parts.request.ports) {
     const auto bytes = Bytes(port.format);
     if (!bytes) return Error(bytes.error());
@@ -245,13 +277,13 @@ Status EngineImage::Setup() {
     if (__builtin_add_overflow(nodes, (*program)->inputs().size(), &nodes) ||
         __builtin_add_overflow(nodes, (*program)->outputs().size() + 1ULL, &nodes) ||
         __builtin_mul_overflow(nodes, en::kGraphNodeHostBytes, &capture_bytes) ||
-        (s.parts.graphs && __builtin_add_overflow(retained, capture_bytes, &retained)))
+        (s.model->parts.graphs && __builtin_add_overflow(retained, capture_bytes, &retained)))
       return Error("image capture inventory overflows");
     s.stage_capture_nodes.push_back(nodes);
     if (__builtin_add_overflow(s.plan_floor, retained, &s.plan_floor))
       return Error("retained image program inventory overflows");
     auto& selected = s.stage_weights.emplace_back();
-    const auto& weights = *s.parts.weights[s.parts.stages[stage].weights].weights;
+    const auto& weights = *s.model->parts.weights[s.parts.stages[stage].weights].weights;
     std::vector<catalog::ExtentId> scratch(weights.extents().size());
     for (const auto& use : (*program)->tensors()) {
       if (use.role != ir::Role::kWeight) continue;
@@ -278,46 +310,70 @@ Status EngineImage::Setup() {
   if (!input || !output) return Error(!input ? input.error() : output.error());
   s.input = static_cast<std::byte*>(*input);
   s.output = static_cast<std::byte*>(*output);
-  s.programs.runs().SetStaging(s.input, s.input_bytes);
   s.setup = true;
   return {};
 }
 
 Status EngineImage::Register() {
   if (!state_ || !state_->setup || state_->registered) return Error("image register order");
-  for (auto& weights : state_->parts.weights)
+  for (auto& weights : state_->model->parts.weights)
     if (auto r = weights.weights->Register(node_, index_); !r) return r;
+  // D-090: every registered source place remains stable for this model's
+  // lifetime, including source extents unused by the current geometry.
+  if (auto pinned = node_.scheduler().PinPlaces(managed_extents()); !pinned)
+    return Error(
+        std::format("pinning the image's places: {}", scheduler::ToString(pinned.error())));
   state_->registered = true;
+  state_->model->registered = true;
   return {};
 }
 Status EngineImage::Bind() {
   if (!state_ || !state_->registered || state_->bound) return Error("image bind order");
   auto& s = *state_;
-  auto launch = s.parts.launch();
-  if (!launch) return Error(launch.error());
-  if (auto r = s.programs.BindLaunch(std::move(*launch)); !r) return r;
-  s.plans.set_account(&s.programs.account());
-  auto common = s.memory.extents();
-  for (const auto* mapping : {&node_.activations(), &node_.pool()})
-    common.insert(common.end(), mapping->extents.begin(), mapping->extents.end());
-  Unique(common);
-  auto fence = node_.catalog().ClosureOfExtents(common);
-  if (!fence) return Error("image common closure is incomplete");
-  s.fence = *fence;
-  auto all = common;
-  for (const auto& weights : s.stage_weights) {
-    auto ids = common;
-    ids.insert(ids.end(), weights.begin(), weights.end());
-    Unique(ids);
-    auto closure = node_.catalog().ClosureOfExtents(ids);
-    if (!closure) return Error("image stage closure is incomplete");
-    s.closures.push_back(std::move(*closure));
-    all.insert(all.end(), weights.begin(), weights.end());
+  if (auto bound = BindState(s); !bound) return bound;
+  s.programs.runs().SetStaging(s.input, s.input_bytes);
+  return {};
+}
+Status EngineImage::BindState(State& s) {
+  if (s.activation_bytes > node_.activations().bytes || s.pool_bytes > node_.pool().bytes)
+    return Error("image geometry exceeds backed workspace");
+  if (!s.programs.launch()) {
+    auto launch = s.model->parts.launch();
+    if (!launch) return Error(launch.error());
+    if (auto r = s.programs.BindLaunch(std::move(*launch)); !r) return r;
   }
-  Unique(all);
-  auto complete = node_.catalog().ClosureOfExtents(all);
-  if (!complete) return Error("image complete closure is incomplete");
-  s.all = std::move(*complete);
+  s.plans.set_account(&s.programs.account());
+  const auto closures = [&]() -> Status {
+    auto common = s.memory.extents();
+    const auto model_extents = s.model->memory.extents();
+    common.insert(common.end(), model_extents.begin(), model_extents.end());
+    for (const auto* mapping : {&node_.activations(), &node_.pool()})
+      common.insert(common.end(), mapping->extents.begin(), mapping->extents.end());
+    Unique(common);
+    auto fence = node_.catalog().ClosureOfExtents(common);
+    if (!fence) return Error("image common closure is incomplete");
+    s.fence = *fence;
+    auto all = common;
+    for (const auto& weights : s.stage_weights) {
+      auto ids = common;
+      ids.insert(ids.end(), weights.begin(), weights.end());
+      Unique(ids);
+      auto closure = node_.catalog().ClosureOfExtents(ids);
+      if (!closure) return Error("image stage closure is incomplete");
+      s.closures.push_back(std::move(*closure));
+      all.insert(all.end(), weights.begin(), weights.end());
+    }
+    Unique(all);
+    auto complete = node_.catalog().ClosureOfExtents(all);
+    if (!complete) return Error("image complete closure is incomplete");
+    s.all = std::move(*complete);
+    return {};
+  };
+  // Before Start catalog access is local; afterwards only its owner reads it.
+  if (node_.budget().value() != 0) {
+    if (auto read = node_.Call(closures, "binding image geometry closures"); !read) return read;
+  } else if (auto read = closures(); !read)
+    return read;
   s.bound = true;
   return {};
 }
@@ -328,15 +384,19 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     return Error("image execution order or completion is invalid");
   auto hold = state_;
   auto& s = *hold;
+  if (s.activation_bytes > node_.activations().bytes || s.pool_bytes > node_.pool().bytes)
+    return Error("image execution exceeds the backed workspace prefix");
   for (; s.next < end; ++s.next) {
     const en::PlanStep protect;
     const auto invocation = s.parts.request.sequence[s.next];
     const auto& stage = s.parts.stages[invocation.stage];
     const auto& graph = stage.graph->graph();
-    auto ready = s.parts.backend->owner->Ready();
+    auto ready = s.model->parts.backend->owner->Ready();
     if (!ready || *ready != s.declaration) return Error("image backend identity changed");
     // Catalog content identities are refreshed between completed stages.
     auto ids = s.memory.extents();
+    const auto model_extents = s.model->memory.extents();
+    ids.insert(ids.end(), model_extents.begin(), model_extents.end());
     for (const auto* mapped : {&node_.activations(), &node_.pool()})
       ids.insert(ids.end(), mapped->extents.begin(), mapped->extents.end());
     const auto& selected = s.stage_weights[invocation.stage];
@@ -455,7 +515,8 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     // Fixed observation addresses are part of the captured plan contract.
     // Always copy this stage output; only requested boundaries publish it.
     outputs.push_back({en::support::Address(s.output), observed.device_address, observed.bytes});
-    const bool capture = entry->runs[0].CaptureDue(s.parts.graphs) && s.plans.ChargeGraph(*entry);
+    const bool capture =
+        entry->runs[0].CaptureDue(s.model->parts.graphs) && s.plans.ChargeGraph(*entry);
     s.flight = hold;
     auto queued = std::make_shared<en::StepQueued>();
     auto job = [hold, entry, invocation, inputs = std::move(inputs), outputs = std::move(outputs),
@@ -545,6 +606,50 @@ Status EngineImage::ReplaceRequest(ImageRequest request) {
   return {};
 }
 
+Status EngineImage::ReplaceGeometry(ImageGeometry geometry) {
+  if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
+      !transitions_.empty() || !state_->generation_complete ||
+      state_->next != state_->parts.request.sequence.size() || node_.InRequest(stream()))
+    return Error("image geometry replacement requires a completed, unleased generation");
+  auto previous = state_;
+  auto candidate = std::make_shared<State>(previous->model, std::move(geometry));
+  // Retain candidate ownership even when setup or cleanup refuses midway.
+  transitions_.push_back(candidate);
+  const auto refuse = [&](Status failure) -> Status {
+    candidate->plans.Clear();
+    if (auto retired = candidate->memory.Retire(); !retired) {
+      previous->unknown = true;
+      previous->flight = previous;
+      previous->transition_holds = transitions_;
+      return Error(std::format("{}; candidate retirement: {}", failure.error(), retired.error()));
+    }
+    candidate->released = true;
+    transitions_.clear();
+    return failure;
+  };
+  if (auto prepared = PrepareState(*candidate); !prepared) return refuse(prepared);
+  if (auto grown = node_.GrowWorkspace(candidate->activation_bytes, candidate->pool_bytes); !grown)
+    return refuse(grown);
+  candidate->registered = previous->model->registered;
+  if (auto bound = BindState(*candidate); !bound) return refuse(bound);
+  // All candidate validation/payment precedes retiring the old geometry. The
+  // shared model/launch and node-wide workspace remain alive throughout.
+  previous->plans.Clear();
+  if (auto retired = previous->memory.Retire(); !retired) {
+    previous->unknown = true;
+    previous->flight = previous;
+    previous->transition_holds = transitions_;
+    return retired;  // partial retirement is never represented as old usability
+  }
+  previous->released = true;
+  candidate->programs.runs().SetStaging(candidate->input, candidate->input_bytes);
+  candidate->generation_complete = true;
+  candidate->next = candidate->parts.request.sequence.size();
+  state_ = std::move(candidate);
+  transitions_.clear();
+  return {};
+}
+
 Status EngineImage::FirstOutput(std::string& sha) {
   if (state_ && state_->generation_complete && !state_->unknown && !state_->flight &&
       !state_->released) {
@@ -605,7 +710,7 @@ std::vector<catalog::ExtentId> EngineImage::managed_extents() const {
   // only pageable source extents participate in scheduler eviction.
   std::vector<catalog::ExtentId> result;
   if (state_)
-    for (const auto& source : state_->parts.weights) {
+    for (const auto& source : state_->model->parts.weights) {
       if (!source.weights) continue;
       const auto& ids = source.weights->extents();
       result.insert(result.end(), ids.begin(), ids.end());
@@ -617,7 +722,7 @@ std::uint64_t EngineImage::weight_read_bytes() const { return weights().size() *
 Status EngineImage::CheckPlaces() {
   if (!state_ || !state_->bound) return Error("image places before bind");
   en::PlaceCheck check;
-  for (const auto& source : state_->parts.weights)
+  for (const auto& source : state_->model->parts.weights)
     source.weights->CheckPlaces(node_.scheduler(), check);
   if (check.moved) return Error("image retained weight place differs");
   return {};
@@ -628,23 +733,35 @@ void EngineImage::DropPlans() {
 std::string EngineImage::extra() const {
   return state_
              ? std::format(R"({{"engine":"component","architecture":"{}","completed_stages":{}}})",
-                           state_->parts.architecture, state_->next)
+                           state_->model->parts.architecture, state_->next)
              : "{}";
 }
 Status EngineImage::Release() {
   if (!state_ || state_->released) return {};
-  auto& s = *state_;
-  s.released = true;
-  s.flight.reset();
-  s.plans.Clear();
-  s.programs.ReleaseAfterDrain();
-  if (s.prepared && s.parts.retire) s.parts.retire();
   std::vector<std::string> problems;
-  s.memory.ReleaseMappings(problems);
-  for (auto& weights : s.parts.weights) {
-    if (!weights.weights) continue;
-    if (auto r = weights.weights->Release(node_.memory()); !r) problems.push_back(r.error());
+  auto model = state_->model;
+  const auto release = [&](State& s) {
+    if (s.released) return;
+    s.released = true;
+    s.flight.reset();
+    s.transition_holds.clear();
+    s.plans.Clear();
+    s.memory.ReleaseMappings(problems);
+  };
+  release(*state_);
+  for (auto& pending : transitions_) release(*pending);
+  transitions_.clear();
+  model->programs.ReleaseAfterDrain();
+  if (!model->released) {
+    model->released = true;
+    if (model->prepared && model->parts.retire) model->parts.retire();
+    model->memory.ReleaseMappings(problems);
+    for (auto& weights : model->parts.weights) {
+      if (!weights.weights) continue;
+      if (auto r = weights.weights->Release(node_.memory()); !r) problems.push_back(r.error());
+    }
   }
   return en::support::Joined(problems);
 }
+
 }  // namespace llmp::runtime

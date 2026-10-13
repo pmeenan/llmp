@@ -961,6 +961,102 @@ serving switch. The next grouped Q3j2b slice covers geometry/resource growth and
 shared serving/swap reuse: retain
 model/source/backend ownership, replace or grow request capacities only at
 positive completion, and preserve every workspace borrower and pinned/catalog
-payment. Different geometry currently refuses before mutation rather than
-repeating whole-model Setup. Independent upstream image quality, broader
-schedules, serving/swap and matched 1% qualification remain open.
+payment. This completed-request slice itself does not grow geometry; the next
+section covers that separate lifecycle. Independent upstream image quality, broader
+schedules and matched 1% qualification remain open.
+
+## Geometry growth and prepared Server reuse
+
+Q3j2b extends the existing shared lifecycle without a new model runner. Node
+workspace virtual reservations have a checked capacity distinct from their
+mapped, physically paid prefixes. Growth preserves addresses, old extent IDs
+and generations; backing remains at its high-water mark while another model
+may retain a borrower. Provider reserve/range/map/retire work uses the existing
+backing lane. All new extents are admitted before submission. Known refusal
+rolls back only candidate effects; unknown completion retains the complete
+transition and enclosing node, never advertises the old shared reservation as
+usable. A cancelled task cannot erase a positively completed provider or
+catalog operation: explicit effect results determine publication and cleanup.
+
+The model retains weights, source, backend and one program lifecycle. A new
+geometry pays its graphs, ports, pinned staging and prospective programs while
+the old geometry remains owned. Publication follows successful preparation,
+backing growth and binding; old geometry plans/ports/staging retire after
+positive completion with no request lease. Shared launch ownership stays live.
+Known refusal before publication leaves the prior request usable. Same-layout
+request-content replacement retains its existing inexpensive path. No whole
+model Setup repeats at each geometry, and no arbitrary dimension/count cap is
+introduced; checked operation applicability and actual admission still apply.
+
+The internal Server bridge accepts only a snapshot of paid prepared image
+sources matching configured composition, alias, final model owner index and the
+same opened, stopped node/catalog. It checks a still-held construction charge,
+keeps the ordinary separately paid settings/parser phase, and skips only duplicate
+source/node opening. It does not introduce a public selector or raw-checkpoint
+loader. Automatic prepared-source import/routing and public migration remain
+separate work.
+
+Construction pays both geometry owners concurrently. Runtime mapping growth
+prepays local transition descriptors and a node-wide catalog/span capacity
+high-water charge before copying or allocating vectors. Virtual reservation
+capacity is not physical occupancy. Retiring a geometry removes only its own
+mapped/pinned extents and staging accounting; shared workspace and other models'
+leases survive. The fixed screen retains the existing 48 GiB node budget,
+4 GiB image construction allowance and separate 1 GiB Server parsing allowance,
+all registered in node accounting. The enclosing process/cache ceiling and
+physical margin remain independently guarded.
+
+The combined main build passes full native compilation and **474 unique host
+controls**, including **296 image controls**: catalog 23, scheduler 29,
+page-in 125, execution-contract 17, EngineImage 9, model-runner 65, profile 8,
+spatial 19 and one request-input control. Runtime/API and additional DS controls
+run in that union without repeating shared targets. Source QA passes 28 format,
+21 boundary and 2,270 SPDX-header checks plus REUSE 6.2.0. A later two-file
+placement-pin correction compiles the affected targets and passes nine
+EngineImage controls plus the request-input control, with two format and one
+boundary check. The actual retry binds those ten fresh controls and the 286
+unchanged image controls; it does not relabel the historical union as a fresh
+full build. Source controls cover preserved bases/IDs, capacity/payment refusal,
+owner expiry, pinned exclusion, unknown-owner retention and cancellation after
+provider effects in both lane configurations.
+
+The corrected **Spark B actual screen passes** in 71.65 seconds (73-second
+supervised job). Four one-step images follow 512×512 → 1024×512 → repeated
+1024×512 → restored 512×512, completing 12 image stages and six successful
+Server activation calls. Those calls include an already-resident repeat; they
+are not six physical swaps. Native assertions verify stable workspace bases and
+old extent IDs, two retired geometry owners, retained Gemma saved state across
+model switches, and repeated/restored own pixels. Repeated output does not
+establish accepted capture or replay.
+
+| Actual observation | Bytes |
+| --- | ---: |
+| Initial activation backing | 1,132,462,080 |
+| Grown activation backing | 2,264,924,160 |
+| Pool backing, initial and grown | 81,788,928 |
+| Observed catalog maximum | 38,561,241,102 |
+| Observed held construction maximum | 2,883,507,343 |
+| Process/cache peak (not device occupancy) | 1,034,133,504 |
+
+Catalog and construction maxima are sampled at the fixture's observation
+boundaries; admission and accounting remain active throughout. The actual
+48 GiB node and 4 GiB image-construction limits are unchanged, with the separate
+1 GiB Server allowance registered in the same catalog. All pre/post identity
+guards pass, memory events are zero, and the complete child process group and
+GPU work positively retire. This is functional lifecycle evidence, not forced
+full eviction, public-default migration, independent upstream image quality,
+a 40-step quality result or matched 1% performance qualification.
+
+The first attempt stopped at the Server's incoming placement check: all 15,863
+image extents had registered sources but lacked placement pins. Register now
+pins the complete managed source inventory, including extents unused by the
+current geometry, before publishing registration. These pins preserve addresses;
+they are not residency leases. The unchanged Server check occurs after
+materialization/AfterLoad and before image generation, so the failed attempt
+does not establish that no weight reads occurred. Its raw receipt remains
+external. The corrected retry uses model binary `232073b2…` (271,147,248 bytes),
+following targeted build receipt `9f953f0d…`; the earlier union receipt
+`1de55473…` and binary `bf3c422c…` remain distinct historical evidence.
+Actual receipt `68b84ac6dc2cedc00310cd919c3f76beef064fc3735f20ff72324773d5da6d7c`
+is under external `image-request-growth-models02/actual`; full raw logs, XML and
+identity seals remain outside Git. Final landing documentation QA is separate.

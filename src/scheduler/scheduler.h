@@ -657,7 +657,7 @@ class Scheduler {
 
   // What an operation is: a stage of a page-in, the unmap of an eviction,
   // or a task's device or CPU work.
-  enum class Kind : std::uint8_t { kLoad, kEvict, kDevice, kCpu };
+  enum class Kind : std::uint8_t { kLoad, kEvict, kDevice, kCpu, kBacking };
   // The lane an operation's command goes to.
   enum class Route : std::uint8_t { kStorage, kDevice, kCpu, kBacking, kCopy };
   static constexpr std::size_t kRoutes = 5;
@@ -1002,6 +1002,16 @@ class TaskContext {
     DeviceCommand device{.operation = {}, .work = work};
     CpuJob none;
     return scheduler_.Submit(task_, &closure, {}, Scheduler::Kind::kDevice, device, none);
+  }
+  // Paid owned-region transitions only: the closure holds the admitted
+  // capacity/metadata through provider completion. The task retains every
+  // reservation/result and partial transition until retirement, including an
+  // unknown outcome. Catalog publication is a later scheduler-owner step.
+  std::expected<OperationId, WorkError> SubmitRegion(const catalog::Closure& paid,
+                                                     const RegionWork& work) {
+    DeviceCommand device{.operation = {}, .work = work};
+    CpuJob none;
+    return scheduler_.Submit(task_, &paid, {}, Scheduler::Kind::kBacking, device, none);
   }
   // A job that queues kernel work on one of the device lane's streams
   // (commands.h): it runs on the submission lane, and the operation's

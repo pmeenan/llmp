@@ -240,6 +240,10 @@ class Catalog {
   // Preflight for removing an owner's pinned allocation: no logical
   // resource, lease or registration may still name it. Does not mutate.
   std::expected<void, CatalogError> CanRetirePinned(ExtentId extent) const;
+  // Owner retirement, not policy eviction: exclude new leases while an
+  // unreferenced pinned allocation is freed on its provider lane. Complete,
+  // cancel-before-touch and unknown use the existing eviction ticket protocol.
+  std::expected<Ticket, CatalogError> BeginRetirePinned(ExtentId extent);
 
   std::expected<ResourceId, CatalogError> AddResource(std::span<const Range> ranges);
   std::expected<void, CatalogError> RemoveResource(ResourceId resource);
@@ -321,6 +325,8 @@ class Catalog {
   std::expected<ExtentView, CatalogError> Describe(ExtentId extent) const;
   // Every extent of a domain, in identity order.
   std::vector<std::pair<ExtentId, ExtentView>> ExtentsOf(DomainId domain) const;
+  // Scheduler-owned observation for prepaid runtime extent-table growth.
+  std::uint64_t ExtentStorageBytes() const { return extents_.storage_bytes(); }
 
   // Whether an extent could start eviction now.
   static bool Evictable(const ExtentView& extent);
