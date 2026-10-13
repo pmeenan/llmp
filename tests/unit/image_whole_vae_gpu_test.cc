@@ -175,14 +175,15 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
   if (!program.bound()) return {};
   const auto& bound = *program.bound();
   if (bound.size() > 1024) return Error("bounded selected implementation inventory");
-  std::size_t conv = 0, norm = 0, softmax = 0;
+  std::size_t conv = 0, norm = 0, softmax = 0, products = 0;
   for (std::size_t i = 0; i < bound.size(); ++i) {
     conv += bound.at(i).name == "ggml.conv2d.f32";
+    products += bound.at(i).name.starts_with("ggml.mul_mat.");
     norm += bound.at(i).name == "ggml.l2_norm";
     softmax += bound.at(i).name == "ggml.soft_max";
   }
-  if (conv != (index == 0 ? 2U : 46U) || norm != (index == 0 ? 0U : 36U) ||
-      softmax != (index == 0 ? 0U : 1U))
+  if (products != (index == 0 ? 1U : 8U) || conv != (index == 0 ? 1U : 40U) ||
+      norm != (index == 0 ? 0U : 36U) || softmax != (index == 0 ? 0U : 1U))
     return Error("complete actual decoder primitive selection");
 
   return {};
@@ -277,7 +278,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     if (!graph) return Error(graph.error());
     if (graph->graph().nodes().size() > 749 || graph->graph().tensor_count() > 1498 ||
         graph->weights().size() != (i == 0 ? 4U : 128U) ||
-        (i == 1 && (graph->reference_bytes() != 0 || graph->metadata_bytes() != 9248768)))
+        (i == 1 && (graph->reference_bytes() != 0 || graph->metadata_bytes() != 12263424)))
       return Error("fixed spatial compiler inventory");
     item.graph.emplace(std::move(*graph));
     for (const auto& weight : item.graph->weights()) {
@@ -423,7 +424,14 @@ en::Status Reference(Lifetime& life, SpanCase& item) {
       // F64 oracle roundoff and subnormal flushing, no historical bit target.
       const double n = static_cast<double>(2 * terms + 2);
       const double gamma = (n * 0x1p-24) / (1 - n * 0x1p-24) * (1 + n * 0x1p-50);
-      error = error * sum_abs + gamma * ((max_input + error) * sum_abs + max_bias) +
+      const bool pointwise =
+          instance.params.Int("kernel") == 1 && instance.params.Int("padding") == 0;
+      // The shared F32 product can round both MMA multiplicands to TF32;
+      // allow a full TF32 ULP without assuming its rounding mode.
+      const double product_round =
+          pointwise ? (2 * 0x1p-10 + 0x1p-20) * (max_input + error) * sum_abs : 0;
+      error = error * sum_abs + product_round +
+              gamma * ((max_input + error) * sum_abs + product_round + max_bias) +
               n * 0x1p-126 * (1 + max_input + error + max_weight) +
               n * 0x1p-52 * (max_input * sum_abs + max_bias);
     }

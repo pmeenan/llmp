@@ -1,0 +1,139 @@
+{
+  "scope": "Supported shared F32 pointwise operation reuse. Representative completed-job screen and two-step native migration agreement; no independent upstream or matched family gate.",
+  "representative": {
+    "source_result_sha256": "e12403cae71c26fd1592b972fe60f2b09180d432702663d03e38d5bf7daaa546",
+    "scope": "Completed whole-job wall times including copies and retirement; sequential first screen, not isolated kernel or matched family gate",
+    "fixture_seconds": "0.535",
+    "arms": {
+      "direct": {
+        "all_completed_job_ns": [
+          3976067,
+          264304,
+          253472,
+          249936,
+          249584,
+          246608,
+          247136
+        ],
+        "warm_median_ns": 249584,
+        "warm_min_ns": 246608,
+        "warm_max_ns": 253472,
+        "max_error": 2.75621914624935e-07,
+        "rms_error": 3.172109402053042e-08,
+        "enclosure": 0.002646864884805904,
+        "output_sha256": "6e3d2d1c4c05d7c7c29c88708902776f2d91741a19482e6ce1472042c6e49753",
+        "selected": "ggml.conv2d.f32,ggml.add,"
+      },
+      "copied_product": {
+        "all_completed_job_ns": [
+          46508030,
+          183104,
+          70240,
+          73552,
+          65776,
+          73744,
+          73808
+        ],
+        "warm_median_ns": 73552,
+        "warm_min_ns": 65776,
+        "warm_max_ns": 73808,
+        "max_error": 0.0001791752001736313,
+        "rms_error": 4.562055089635122e-05,
+        "enclosure": 0.002646864884805904,
+        "output_sha256": "e2fe88888af23cd5696de95b284560ec695bd93486c78cabbdc919fd9f725e03",
+        "selected": "ggml.cont,ggml.mul_mat.cublas,ggml.cont,ggml.add,"
+      }
+    },
+    "guards": {
+      "status": "PASS",
+      "pre_guards": "PASS",
+      "post_guards": "PASS",
+      "native_child_retired": true,
+      "compute_pids_after": 0,
+      "memory_peak_process_cache_bytes": 393928704,
+      "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n"
+    },
+    "candidate_over_baseline": 0.29469837810116034,
+    "reduction_percent": 70.53016218988397
+  },
+  "quality": {
+    "metrics": {
+      "size": [
+        1024,
+        1024
+      ],
+      "modes": [
+        "RGBA",
+        "RGBA"
+      ],
+      "identical_pixels": false,
+      "mean_abs_diff": 0.8331,
+      "max_abs_diff": 6,
+      "psnr_db": 46.477,
+      "ssim_luma": 0.99873
+    },
+    "screen_floors": {
+      "psnr_db_min": 32,
+      "ssim_luma_min": 0.98
+    },
+    "pass": true,
+    "own_arm_pins": {
+      "legacy": "68f1d74e54548ee8a856f67b9584de37e18c74039f4fb0b13f17920cf7e815e5",
+      "shared": "b59a9291e165eb26fa718c227639695b4006ace82f81d88ea92ca217c883a4f4"
+    },
+    "result_sha256": {
+      "legacy": "4361f62501623c4a94dfd8bfecd77871731bece03b98e6edd5610f77d7425fa7",
+      "shared": "0b93331d4bebcb5ab4d745e01a679b031433c5707b1acbf7594da849898ac4f7"
+    },
+    "comparator_sha256": "dc0bc8e8aa87201803e93927dcab015f4b7d9cdd7f25c0b12ac519ec9c9a24f6"
+  },
+  "output_unset_whole_generation": {
+    "baseline": {
+      "result_sha256": "da0d5b0d686d721a5706b1d63b36052fbd861ddb8de173330b1c1185ed6721cf",
+      "first_output_invocation": 2,
+      "setup_seconds": 0.931844874,
+      "first_seconds": 66.278563804,
+      "warm_seconds": 55.927294441
+    },
+    "candidate": {
+      "result_sha256": "e33abef2c16d590084da207bed7ce2b68128ec794837f804b1a3bfbf5756590f",
+      "first_output_invocation": 1,
+      "setup_seconds": 0.9326716,
+      "first_seconds": 64.876684424,
+      "warm_seconds": 53.164493984
+    },
+    "warm_reduction_percent": 4.939985895285148,
+    "scope": "Single descriptive cold/warm observations; phase boundary differs, no isolated decoder or matched1% claim."
+  },
+  "resources": {
+    "candidate_admitted_bytes": 41224391616,
+    "candidate_construction_without_export_bytes": 2710126223,
+    "candidate_construction_with_export_bytes": 2731097743,
+    "source_closure_bytes": 30530338816,
+    "construction_ceiling_bytes": 4294967296,
+    "node_ceiling_bytes": 51539607552,
+    "static_ceiling_addition_bytes": 39437824,
+    "overhead_vs_exact_shape_callback_bytes": 34293760,
+    "candidate_process_cache_peak_bytes": 890052608,
+    "device_peak_measured": false
+  },
+  "checks": {
+    "focused_host_cases": 25,
+    "representative_case": 1,
+    "quality_case": 1,
+    "output_unset_case": 1,
+    "all_failed": 0,
+    "all_skipped": 0,
+    "full_main_integration": {
+      "status": "PASS",
+      "host": "spark-b",
+      "host_cases": 62,
+      "receipt_sha256": "2f16ce1cb2f06bd1c9d5e3023ae04ad53db5d7e244c08db6b8282ea6f072f685",
+      "actual_model_binary_identity": "unchanged",
+      "source_quality": "format/boundaries/2256 headers/REUSE6.2 PASS"
+    },
+    "all_actual_guards": "PASS",
+    "remaining_compute_pids": 0,
+    "all_child_groups_retired": true
+  }
+}

@@ -479,3 +479,97 @@ Compact observations and own-arm pins are in [image-quality.json](image-quality.
 Provenance: model result `4361f62501623c4a94dfd8bfecd77871731bece03b98e6edd5610f77d7425fa7`;
 actual binary `0aa624d0845e58d18039c8d6a55c5b3b40dd925860ba543f2f978e6501b0cc37`
 (198,195,200 bytes). Raw outputs, logs and invocation receipts remain in scratch.
+
+## Shared pointwise convolution reuse
+
+An output-disabled diagnostic using the same complete image graph moved the
+first-output boundary after both flow steps. Its warm decoder job took
+46.242 seconds, with 0.001605 seconds of host job time; this includes device
+copies and output handoff, not an isolated convolution. The complete decoder
+contains 46 convolutions: six 1×1 and forty 3×3. A derived full-column im2col
+inventory would require up to 10.125GiB for one 3×3 operation, beyond the current
+workspace envelope. No such allocation or new kernel was introduced.
+
+Supported F32 1×1, zero-padding `conv.spatial` components now express their
+existing algebra through shared reshape/transpose, two real contiguous copies,
+MatMul and bias Add. Unequal width/height, batches and separate owners are
+covered. BF16 source, padded and 3×3 cases keep the existing direct path. No
+source weight conversion, hidden intermediate narrowing, backend-specific
+selector or forced accumulation recipe was added. Existing product selection
+and fusions remain available.
+
+The simple static nine-node component ceiling adds 39,437,824 bytes to the
+complete factory's derived compiler/graph allowance. Its 34,293,760-byte
+conservative overhead versus a shape-dependent exact ceiling is below 1% of
+the existing 4GiB construction credit; avoiding a new sizing callback was the
+chosen simplicity tradeoff. Normal placement pays both contiguous activations.
+The complete decoder's metadata bound is 12,263,424 bytes. The measured
+whole-generation admission remains within the unchanged 48GiB cap.
+
+A representative actual post-quantization source tensor (64 channels in/out,
+64×64 spatial plane) compares the direct convolution with the emitted shared
+product, including copies and completed-job retirement. Each arm runs once
+eagerly, once while recording, then five retained replays; all 262,144 values
+per execution are checked against a scalar F64 reference. Both arms satisfy the
+predeclared 0.002646865 enclosure. Maximum errors are 2.7562e-7 for direct and
+1.7918e-4 for the selected cuBLAS product; their outputs need not be identical.
+The enclosure includes the selected implementation's product rounding, rather
+than forcing historical intermediate bits.
+
+| Completed representative job (µs) | Direct | Shared copies/product |
+| --- | ---: | ---: |
+| First eager | 3,976.067 | 46,508.030 |
+| Capture | 264.304 | 183.104 |
+| Five warm replays, median | 249.584 | 73.552 |
+| Warm minimum–maximum | 246.608–253.472 | 65.776–73.808 |
+
+The warm median falls **70.53%** on this shape, while the first eager execution
+is slower. This sequential small screen is not a family timing qualification.
+The observed implementation keys are direct convolution+Add versus
+Cont+cuBLAS MatMul+Cont+Add; no speed claim excludes the layout copies.
+
+The candidate then completes two full 1024×1024 two-step generations and
+exports its own repeatable image. Against the retained native migration output,
+the unchanged comparator reports **46.477 dB PSNR**, **0.99873 luma SSIM**,
+**0.8331/255 mean absolute difference** and **6/255 maximum difference**, passing
+the original 32dB / 0.98 thresholds. This is the same low-detail two-step sample;
+it does not qualify usable 40-step output, independent upstream same-source
+quality, broader prompts, serving/swap behavior or the 1% migration gate. No
+legacy model rerun or old shared pixel pin was required.
+
+Only after the quality screen passes, one output-disabled run uses the new
+candidate's own qualified pixel pin. Setup takes0.933s, first generation64.877s
+and warm generation53.164s. The prior output-disabled observation was66.279s
+first /55.927s warm: the warm observation is4.94% lower. This is a descriptive
+whole-generation comparison, not a matched1% result. Its first-output boundary
+is after flow1 rather than after flow2 in the earlier diagnostic, so phase
+intervals do not isolate the decoder's change. There is no exported file or
+quality observation copy in this cost run. The remaining performance gap is
+large; this bounded improvement does not qualify shared default image serving.
+
+The quality run charges 2,731,097,743 bytes of construction, including its
+20MiB observation credit, and admits 41,224,391,616 bytes of managed resources.
+The source closure remains 30,530,338,816 bytes. The output-disabled run omits
+the observation credit. Both are bounded by the existing 48GiB node, 4GiB
+construction and 6GiB physical margin; the supervisor separately limits
+process/cache memory to 52GiB with zero swap. These are accounting envelopes,
+not measured total device occupancy.
+
+Focused native builds and all 25 affected host controls pass. The representative
+actual, complete-image quality and conditional output-disabled cases all retire
+with source/binary/artifact guards passing, no memory-limit/OOM events and no
+remaining compute PIDs. CPU scoring uses the existing comparator in a removed
+networkless 1GiB container, retaining the original baseline and candidate
+receipts separately. Full current-main Spark B native build and all62 affected
+host controls pass, along with six-file formatting, boundaries,2256 headers
+and REUSE6.2. Final generation and representative binaries are byte-identical
+to the executed candidates, so their actual evidence carries without rerunning.
+The main receipt is`2f16ce1cb2f06bd1c9d5e3023ae04ad53db5d7e244c08db6b8282ea6f072f685`.
+Raw outputs and receipts stay outside Git;
+[pointwise-reuse.json](pointwise-reuse.json) records compact observations.
+
+Provenance: representative result `e12403cae71c26fd1592b972fe60f2b09180d432702663d03e38d5bf7daaa546`;
+quality result `0b93331d4bebcb5ab4d745e01a679b031433c5707b1acbf7594da849898ac4f7`;
+cost result `e33abef2c16d590084da207bed7ce2b68128ec794837f804b1a3bfbf5756590f`.
+Actual generation binary `63e739113f86b28c56bad548e1ced598872f6f056711e1533ef70caf8637e8f1`
+(198,334,592 bytes); all model records remain bound to their executed source.

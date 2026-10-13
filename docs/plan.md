@@ -2624,6 +2624,15 @@ each is checked against the design as M3.6 proceeds.
             or default adoption is claimed. Independent upstream quality,
             broader schedules and the 40-step/1% family gate remain open
             ([report](experiments/m36-shared-spatial-execution/README.md#two-step-native-migration-quality-screen)).
+      - [x] **Q3h — shared pointwise convolution reuse:** supported F32 1×1
+            spatial components emit existing layout copies and matrix products;
+            padded/BF16/3×3 cases preserve their existing path. A source-backed
+            64×64 pointwise comparison passes its F64 enclosure and reduces
+            five warm completed-job median from249.584 to73.552µs (70.53%).
+            Complete1024 two-step output passes retained native comparison at
+            PSNR46.477 dB / SSIM0.99873. This is bounded reuse evidence, not
+            independent upstream quality, isolated decoder timing or the1%
+            family gate ([report](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

@@ -81,7 +81,8 @@ struct Lifetime {
   en::QwenImageOptions legacy_options;  // before the runner borrowing it
   std::unique_ptr<en::QwenImageRunner> legacy;
   std::unique_ptr<rt::EngineImage> image;
-  bool legacy_arm = false;
+  bool legacy_arm = false, decoder_times = false;
+  std::array<en::StepTimes, 2> decoder_job_times{};
   fs::path output;
   std::vector<std::byte> exported;
   double setup_seconds = 0;
@@ -211,7 +212,9 @@ struct Lifetime {
     legacy_preflight = kCap - left;
     const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
     if (legacy_preflight > available || rt::kUncountedMargin > available - legacy_preflight)
-      return Error("legacy source-derived footprint plus margin lacks physical headroom");
+      return Error(
+          "legacy source-derived footprint plus margin lacks physical "
+          "headroom");
     return {};
   }
   Status Export(std::string_view expected) {
@@ -304,6 +307,23 @@ struct Lifetime {
           return parts;
         };
       }
+      if (decoder_times) {
+        build = [original = std::move(build)](const rt::ModelSettings& current)
+            -> std::expected<rt::EngineImageParts, std::string> {
+          auto parts = original(current);
+          if (!parts) return std::unexpected(parts.error());
+          if (parts->sequence.size() != 4 || parts->first_output != 1 ||
+              parts->sequence[0].stage != 0 || parts->sequence[1].stage != 1 ||
+              parts->sequence[2].stage != 1 || parts->sequence[3].stage != 2)
+            return std::unexpected(
+                std::string("decoder observation needs the complete four-stage sequence"));
+          // Test-only boundary: same four programs and always-present copies.
+          // FirstOutput now completes both flow iterations; Finish is decoder
+          // only.
+          parts->first_output = 2;
+          return parts;
+        };
+      }
       image = std::make_unique<rt::EngineImage>(node, entry, settings, 0, std::move(build));
       const auto setup = image->Setup();
       if (image->has_paged()) entered.push_back(&image->paged());
@@ -364,11 +384,15 @@ struct Lifetime {
       auto complete = node.WithRequest(
           0, legacy_arm ? legacy->everything() : image->request_closure(), "image migration screen",
           [&]() -> Status {
+            if (decoder_times) (void)node.TakeTimes(0);
             auto step =
                 legacy_arm ? legacy->FirstOutput(first[run]) : image->FirstOutput(first[run]);
             first_done = std::chrono::steady_clock::now();
             if (!step) return step;
-            return legacy_arm ? legacy->Finish(final[run]) : image->Finish(final[run]);
+            if (decoder_times) (void)node.TakeTimes(0);
+            auto output_done = legacy_arm ? legacy->Finish(final[run]) : image->Finish(final[run]);
+            if (decoder_times) decoder_job_times[run] = node.TakeTimes(0);
+            return output_done;
           });
       const auto finished = std::chrono::steady_clock::now();
       if (!complete) return complete;
@@ -377,7 +401,9 @@ struct Lifetime {
       generation_seconds[run] = Seconds(finished - started);
       if (auto saved = Export(final[run]); !saved) return saved;
       if (first[run].size() != 64 || final[run].size() != 64)
-        return Error("complete generation did not publish both completed output boundaries");
+        return Error(
+            "complete generation did not publish both completed "
+            "output boundaries");
     }
     if (legacy_arm)
       native_report = legacy->Report();
@@ -443,6 +469,11 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
     ASSERT_FALSE(error);
     life->output = output;
   }
+  life->decoder_times = std::getenv("LLMP_IMAGE_SCREEN_DECODER_TIMES") != nullptr;
+  if (life->decoder_times) {
+    ASSERT_FALSE(life->legacy_arm);
+    ASSERT_TRUE(life->output.empty());
+  }
   const auto result = life->Run(store, noise);
   const auto retired = life->Retire();
   if (!retired) {
@@ -451,7 +482,23 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
   }
   ASSERT_TRUE(result) << Failed(result).value_or("");
   RecordProperty("arm", arm);
-  RecordProperty("mode", life->output.empty() ? "timing" : "quality");
+  RecordProperty("mode", life->decoder_times ? "decoder_diagnostic"
+                                             : (life->output.empty() ? "timing" : "quality"));
+  RecordProperty("first_output_invocation", life->decoder_times ? 2 : 1);
+  if (life->decoder_times) {
+    ASSERT_EQ(life->final[0], "6dd66c48649d75057a996f3dd7bed9a0151ffaa22beac81f942641b16b1fc4e1");
+    for (std::size_t i = 0; i < 2; ++i) {
+      const auto& times = life->decoder_job_times[i];
+      ASSERT_EQ(times.steps, 1U);
+      ASSERT_GT(times.device, 0.0);
+      RecordProperty(std::format("decoder_jobs_{}", i), std::to_string(times.steps));
+      RecordProperty(std::format("decoder_job_wall_{}", i), std::format("{:.9f}", times.wall));
+      RecordProperty(std::format("decoder_device_{}", i), std::format("{:.9f}", times.device));
+      RecordProperty(std::format("decoder_dispatch_{}", i), std::format("{:.9f}", times.dispatch));
+      RecordProperty(std::format("decoder_host_job_{}", i), std::format("{:.9f}", times.job));
+      RecordProperty(std::format("decoder_after_{}", i), std::format("{:.9f}", times.after));
+    }
+  }
   RecordProperty("completed_generations", 2);
   RecordProperty("setup_seconds", std::format("{:.9f}", life->setup_seconds));
   for (std::size_t i = 0; i < 2; ++i) {

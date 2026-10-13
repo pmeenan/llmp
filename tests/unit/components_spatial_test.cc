@@ -69,6 +69,68 @@ struct Budget {
 };
 constexpr std::array kOwners{SpatialOwner{1, {3, 2, 2, 1}}, SpatialOwner{4, {2, 3, 2, 1}}};
 
+TEST(SpatialComponentsTest, PointwiseProductsPreserveWHCNBiasBatchAndOwnerIsolation) {
+  for (const auto encoding : {format::Encoding::kF32, format::Encoding::kBF16}) {
+    auto model = SpatialSpec(1);
+    model.stages[0].layers[0].components.erase(model.stages[0].layers[0].components.begin());
+    auto tensors = Tensors(1, encoding);
+    const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+    const std::array owners{SpatialOwner{1, {3, 2, 2, 2}}, SpatialOwner{4, {2, 3, 2, 1}}};
+    Budget budget;
+    auto graph = BuildSpatialStep(model, tables, owners, budget.Payment());
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    const auto count = [&](ir::Op op) {
+      return std::ranges::count_if(graph->graph().nodes(),
+                                   [&](const auto& n) { return n.key == ir::Primitive(op); });
+    };
+    EXPECT_EQ(count(ir::Op::kMatMul), encoding == format::Encoding::kF32 ? 2 : 0);
+    EXPECT_EQ(count(ir::Op::kConv2d), encoding == format::Encoding::kF32 ? 0 : 2);
+    EXPECT_EQ(count(ir::Op::kCont), encoding == format::Encoding::kF32 ? 4 : 0);
+    auto executor = ref::Executor::Create(graph->graph());
+    ASSERT_TRUE(executor) << Failed(executor, &ref::ExecFailure::detail).value_or("");
+    const std::vector<float> kernel{0.5F, -1.F, 0.25F, 2.F, -0.5F, 0.75F};
+    const std::vector<float> bias{0.25F, -0.5F, 1.F};
+    for (const auto& weight : graph->weights())
+      ASSERT_TRUE(
+          executor->BindValues(weight.tensor, weight.parts[0].first == "kernel" ? kernel : bias));
+    std::array<std::vector<float>, 2> input;
+    for (std::size_t o = 0; o < owners.size(); ++o) {
+      input[o].resize(static_cast<std::size_t>(*SpatialElements(owners[o].shape)));
+      for (std::size_t j = 0; j < input[o].size(); ++j)
+        input[o][j] =
+            static_cast<float>(static_cast<int>(j % 17) - 8 + 4 * static_cast<int>(o)) / 8.F;
+      ASSERT_TRUE(executor->BindValues(graph->graph().inputs()[o], input[o]));
+    }
+    ASSERT_TRUE(executor->Run());
+    auto instances = InstancesOf(model, 0);
+    ASSERT_TRUE(instances);
+    for (std::size_t o = 0; o < owners.size(); ++o) {
+      const std::vector<double> original(input[o].begin(), input[o].end());
+      SpatialRefIO oracle{instances->layers[0][0], owners[o].shape, original, kernel, bias, {}};
+      ASSERT_TRUE(instances->layers[0][0].def->spatial->reference(oracle));
+      auto actual = executor->Values(graph->graph().outputs()[o]);
+      ASSERT_TRUE(actual);
+      ASSERT_EQ(actual->size(), oracle.output.size());
+      for (std::size_t j = 0; j < actual->size(); ++j)
+        EXPECT_DOUBLE_EQ((*actual)[j], oracle.output[j]);
+    }
+    Budget short_payment;
+    short_payment.limit = graph->metadata_bytes() - 1;
+    EXPECT_FALSE(BuildSpatialStep(model, tables, owners, short_payment.Payment()));
+    EXPECT_EQ(short_payment.used, 0U);
+    // Padding changes the spatial footprint; retain the direct convolution.
+    for (auto& param : model.stages[0].layers[0].components[0].params)
+      if (param.name == "padding") param.value = std::int64_t{1};
+    Budget padded_payment;
+    auto padded = BuildSpatialStep(model, tables, owners, padded_payment.Payment());
+    ASSERT_TRUE(padded) << Failed(padded).value_or("");
+    EXPECT_EQ(std::ranges::count_if(
+                  padded->graph().nodes(),
+                  [](const auto& n) { return n.key == ir::Primitive(ir::Op::kConv2d); }),
+              2);
+  }
+}
+
 TEST(SpatialComponentsTest, RaggedUpsampleAndChannelChangingConvolutionUseSharedReferenceAndPlan) {
   for (const auto encoding : {format::Encoding::kF32, format::Encoding::kBF16}) {
     Budget budget;

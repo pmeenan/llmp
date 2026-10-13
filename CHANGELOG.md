@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Reuse shared matrix products for supported F32 pointwise spatial convolutions,
+  preserving explicit layout copies and source formats. A bounded image sample
+  retains native migration agreement while other convolution shapes keep their
+  existing implementation.
+
 - Let the internal shared Qwen Server route derive a paid execution domain from
   its actual target/drafter composition. A bounded two-conversation control
   exercises default prompt futures and restores turn checkpoints under fresh

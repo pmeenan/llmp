@@ -56,8 +56,13 @@ checkpoint/prompt/noise and two generations in each existing arm. Pixel equality
 is diagnostic only. This is not an independent upstream reference or40-step/1%
 qualification. Quality-run counters include asymmetric observation/file costs;
 shared warm Finish takes51.082s and includes the second flow step plus decoder,
-not isolated VAE time. Next inspect existing optimized operation reuse before
-requesting matched timing; no numerical re-rounding or timing rerun was adopted.
+not isolated VAE time. A later output-disabled diagnostic isolates the decoder
+job at46.242s warm, including its copies/handoff. Shared F32 pointwise emission
+now reuses existing matrix products and explicit layout copies: a representative
+completed-job warm median falls70.53%, while the complete two-step output keeps
+native agreement (PSNR46.477 dB / SSIM0.99873). First eager representative work is
+slower, and remaining3×3 convolutions retain their direct implementation. See the
+[bounded reuse evidence](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse).
 See the [quality screen and accounting correction](experiments/m36-shared-spatial-execution/README.md#two-step-native-migration-quality-screen).
 
 The image speed harness accepts a candidate output pin fixed before timing,

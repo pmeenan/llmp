@@ -82,6 +82,9 @@ std::string Hash(std::span<const std::byte> bytes) {
 struct SpanCase {
   sp::ModelSpec spec;
   std::optional<co::SpatialGraph> graph;
+  std::optional<ir::Graph> direct;
+  std::vector<co::StepWeight> direct_weights;
+  bool pointwise = false;
   std::map<std::pair<ir::WeightRef, fm::PartRole>, std::uint32_t> bindings;
   std::unique_ptr<kn::StepProgram> program;
   en::StepPlanRuns runs;
@@ -90,7 +93,7 @@ struct SpanCase {
   std::vector<double> reference;
   double error_enclosure = 0;
   std::string eager_hash;
-  std::array<std::uint64_t, 3> elapsed_ns{};
+  std::array<std::uint64_t, 7> elapsed_ns{};
 };
 
 struct Lifetime final : en::PagedModel {
@@ -117,6 +120,8 @@ struct Lifetime final : en::PagedModel {
     for (auto& item : cases) {
       item.runs.DropGraph();
       item.program.reset();
+      item.direct.reset();
+      item.direct_weights.clear();
       item.graph.reset();
     }
     step_runs.SetLaunch(nullptr);
@@ -169,17 +174,23 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
   if (program.inputs().size() != 1 || program.outputs().size() != 1 ||
       program.inputs()[0].kind != kn::InputKind::kStepBytes || program.inputs()[0].segment != 0 ||
       program.outputs()[0].segment != 0 || program.inputs()[0].bytes != item.input.size() * 4 ||
-      program.outputs()[0].bytes != (index == 0 ? 18874368ULL : 73728ULL) ||
+      program.outputs()[0].bytes !=
+          (item.pointwise ? 1048576ULL : (index == 0 ? 18874368ULL : 73728ULL)) ||
       program.scratch_bytes() > kActivation || program.pool_bytes() > kPool ||
       program.host_bytes() > kProgram || program.launches() > 8 || !program.capturable() ||
       program.routed())
     return Error("spatial program ownership, complete ports or paid envelope differ");
-  const std::array<std::string_view, 4> prefix{"ggml.conv2d.f32", "ggml.add", "ggml.conv2d.f32",
-                                               "ggml.add"};
+  const std::array<std::string_view, 6> prefix{"ggml.cont", "ggml.mul_mat.cublas", "ggml.cont",
+                                               "ggml.add",  "ggml.conv2d.f32",     "ggml.add"};
   const std::array<std::string_view, 3> up{"ggml.upsample.nearest", "ggml.conv2d.f32", "ggml.add"};
-  const std::span<const std::string_view> expected = index == 0
-                                                         ? std::span<const std::string_view>(prefix)
-                                                         : std::span<const std::string_view>(up);
+  const std::array<std::string_view, 2> direct{"ggml.conv2d.f32", "ggml.add"};
+  const std::array<std::string_view, 4> product{"ggml.cont", "ggml.mul_mat.cublas", "ggml.cont",
+                                                "ggml.add"};
+  const std::span<const std::string_view> expected =
+      item.pointwise ? (item.direct ? std::span<const std::string_view>(direct)
+                                    : std::span<const std::string_view>(product))
+                     : (index == 0 ? std::span<const std::string_view>(prefix)
+                                   : std::span<const std::string_view>(up));
   if (!program.bound())
     return {};  // Measurement cannot bind; the real program is checked after
                 // Bind.
@@ -189,7 +200,14 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
   return {};
 }
 
-en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
+en::GraphBuildIO GraphIO(const SpanCase& item) {
+  const auto& graph = item.direct ? *item.direct : item.graph->graph();
+  return {
+      graph, graph.inputs(), graph.outputs(),
+      item.direct ? std::span<const co::StepWeight>(item.direct_weights) : item.graph->weights()};
+}
+
+en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool pointwise = false) {
   auto available = llmp::platform::AvailableMemoryBytes();
   if (!available || *available < (4ULL << 30U) + (6ULL << 30U)) return Error("physical headroom");
   if (auto r = life.node.Open(); !r) return r;
@@ -249,13 +267,19 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   // actual.
   spans[1][0].height = spans[1][0].width = 4;
   spans[1][1].height = spans[1][1].width = 8;
+  if (pointwise) {
+    spans[0] = {steps[0]};
+    spans[1] = spans[0];
+  }
   const std::array<std::span<const co::BoundTensor>, 1> tables{source->tensors};
   for (std::size_t i = 0; i < 2; ++i) {
     auto& item = life.cases[i];
+    item.pointwise = pointwise;
     auto spec = sp::VaeSpatialSpec(spans[i], tensors);
     if (!spec) return Error(spec.error());
     item.spec = std::move(*spec);
-    item.shape = i == 0 ? co::SpatialShape{64, 64, 64, 1} : co::SpatialShape{4, 4, 288, 1};
+    item.shape =
+        (pointwise || i == 0) ? co::SpatialShape{64, 64, 64, 1} : co::SpatialShape{4, 4, 288, 1};
     const std::array owners{co::SpatialOwner{0, item.shape}};
     auto graph =
         co::BuildSpatialStep(item.spec, tables, owners,
@@ -263,7 +287,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
                               [paid = life.paid](std::uint64_t n) { paid->Release(n); }});
     if (!graph) return Error(graph.error());
     if (graph->graph().nodes().size() > 32 || graph->graph().tensor_count() > 64 ||
-        graph->weights().size() != (i == 0 ? 4U : 2U))
+        graph->weights().size() != (pointwise ? 2U : (i == 0 ? 4U : 2U)))
       return Error("fixed spatial graph inventory");
     item.graph.emplace(std::move(*graph));
     for (const auto& weight : item.graph->weights()) {
@@ -275,6 +299,24 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
       if (!id || std::ranges::find(life.resource_ids, *id) == life.resource_ids.end() ||
           !item.bindings.emplace(std::pair{weight.ref, role}, *id).second)
         return Error("complete component weight binding");
+    }
+    if (pointwise && i == 0) {
+      // Same source-bound operation and ports; direct baseline is explicit IR,
+      // not a production selector or a different source/precision policy.
+      ir::Builder b(16);
+      std::array<ir::TensorId, 2> parts{};
+      for (const auto& weight : item.graph->weights()) {
+        auto copy = weight;
+        copy.tensor = b.Weight(item.graph->graph().tensor(weight.tensor).format, weight.ref);
+        parts.at(weight.ref.role) = copy.tensor;
+        item.direct_weights.push_back(std::move(copy));
+      }
+      b.SetOwner(0);
+      const auto input = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({64, 64, 64, 1})));
+      b.Output(b.Conv2d(parts[0], input, parts[1], {.stride = 1, .padding = 0, .dilation = 1}));
+      auto direct = std::move(b).Finish();
+      if (!direct) return Error("direct pointwise graph validation");
+      item.direct.emplace(std::move(*direct));
     }
     item.input.resize(item.shape.width * item.shape.height * item.shape.channels);
     for (std::size_t n = 0; n < item.input.size(); ++n)
@@ -299,8 +341,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   const auto& table = owned.owner->backend();
   for (std::size_t i = 0; i < 2; ++i) {
     auto& item = life.cases[i];
-    en::GraphBuildIO io{item.graph->graph(), item.graph->graph().inputs(),
-                        item.graph->graph().outputs(), item.graph->weights()};
+    auto io = GraphIO(item);
     const auto addresses = Addresses(life, item, true);
     auto measured = en::BuildComponentProgram(
         io, table, {}, addresses,
@@ -322,8 +363,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   life.step_runs.SetLaunch(life.launch.get());
   for (std::size_t i = 0; i < 2; ++i) {
     auto& item = life.cases[i];
-    en::GraphBuildIO io{item.graph->graph(), item.graph->graph().inputs(),
-                        item.graph->graph().outputs(), item.graph->weights()};
+    auto io = GraphIO(item);
     const auto addresses = Addresses(life, item, false);
     auto program = en::BuildComponentProgram(
         io, table, {}, addresses,
@@ -409,7 +449,14 @@ en::Status Reference(Lifetime& life, SpanCase& item) {
       // F64 oracle roundoff and subnormal flushing, no historical bit target.
       const double n = static_cast<double>(2 * terms + 2);
       const double gamma = (n * 0x1p-24) / (1 - n * 0x1p-24) * (1 + n * 0x1p-50);
-      error = error * sum_abs + gamma * ((max_input + error) * sum_abs + max_bias) +
+      const bool pointwise =
+          instance.params.Int("kernel") == 1 && instance.params.Int("padding") == 0;
+      // Existing F32 cuBLAS may round both multiplicands to TF32. Bound that
+      // source-relative error explicitly, without forcing intermediate casts.
+      const double product_round =
+          pointwise ? (2 * 0x1p-11 + 0x1p-22) * (max_input + error) * sum_abs : 0;
+      error = error * sum_abs + product_round +
+              gamma * ((max_input + error) * sum_abs + product_round + max_bias) +
               n * 0x1p-126 * (1 + max_input + error + max_weight) +
               n * 0x1p-52 * (max_input * sum_abs + max_bias);
     }
@@ -449,7 +496,7 @@ en::Status Execute(Lifetime& life) {
           },
           "spatial catalog coverage");
       if (!coverage) return coverage;
-      for (std::size_t repeat = 0; repeat < 3; ++repeat) {
+      for (std::size_t repeat = 0; repeat < (item.pointwise ? 7U : 3U); ++repeat) {
         auto copies = life.step_runs.Stage(
             item.program->inputs(),
             [&](std::size_t slot, std::span<std::byte> out) -> en::Status {
@@ -520,50 +567,57 @@ en::Status Execute(Lifetime& life) {
   });
 }
 
-TEST(ImageSpatialGpuTest, ActualF32VaePartsUseSharedTypedProgramsAndCompletedReplay) {
+void RunFixture(bool pointwise) {
   const auto* path = std::getenv("LLMP_TEST_VAE_ARTIFACT");
   ASSERT_NE(path, nullptr);
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
-  auto setup = SetupFixture(*life, path);
+  auto setup = SetupFixture(*life, path, pointwise);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");
   auto ran = Execute(*life);
   ASSERT_TRUE(ran) << Failed(ran).value_or("");
   EXPECT_EQ(life->stats.eager, 2U);
   EXPECT_EQ(life->stats.captured, 2U);
-  EXPECT_EQ(life->stats.replayed, 2U);
+  EXPECT_EQ(life->stats.replayed, pointwise ? 10U : 2U);
   EXPECT_EQ(life->stats.refused, 0U);
-  RecordProperty("actual_source_bytes", std::to_string(kTotalWeightBytes));
-  RecordProperty("selected_pages", std::to_string(life->selected_pages));
-  RecordProperty("complete_output_values", "4737024");
-  RecordProperty("eager", std::to_string(life->stats.eager));
-  RecordProperty("captured", std::to_string(life->stats.captured));
-  RecordProperty("replayed", std::to_string(life->stats.replayed));
-  RecordProperty("capture_refused", std::to_string(life->stats.refused));
+  ::testing::Test::RecordProperty("actual_source_bytes", std::to_string(kTotalWeightBytes));
+  ::testing::Test::RecordProperty("selected_pages", std::to_string(life->selected_pages));
+  ::testing::Test::RecordProperty("complete_output_values", pointwise ? "524288" : "4737024");
+  ::testing::Test::RecordProperty("eager", std::to_string(life->stats.eager));
+  ::testing::Test::RecordProperty("captured", std::to_string(life->stats.captured));
+  ::testing::Test::RecordProperty("replayed", std::to_string(life->stats.replayed));
+  ::testing::Test::RecordProperty("capture_refused", std::to_string(life->stats.refused));
   for (std::size_t i = 0; i < kNames.size(); ++i) {
     const auto values = WeightValues(*life, kNames[i]);
-    RecordProperty("source_part" + std::to_string(i) + "_sha", Hash(std::as_bytes(values)));
+    ::testing::Test::RecordProperty("source_part" + std::to_string(i) + "_sha",
+                                    Hash(std::as_bytes(values)));
   }
   for (std::size_t i = 0; i < 2; ++i) {
     const auto& item = life->cases[i];
-    RecordProperty("span" + std::to_string(i) + "_plan",
-                   llmp::base::ToHex(item.program->bound()->identity()));
+    ::testing::Test::RecordProperty("span" + std::to_string(i) + "_plan",
+                                    llmp::base::ToHex(item.program->bound()->identity()));
     std::string implementations;
     for (std::size_t op = 0; op < item.program->bound()->size(); ++op)
       implementations += item.program->bound()->at(op).name + ",";
     ASSERT_LE(implementations.size(), 1024U);
-    RecordProperty("span" + std::to_string(i) + "_implementations", implementations);
+    ::testing::Test::RecordProperty("span" + std::to_string(i) + "_implementations",
+                                    implementations);
     std::string parameters;
     for (const auto n : item.graph->parameters()) parameters += std::to_string(n) + ",";
     ASSERT_LE(parameters.size(), 1024U);
-    RecordProperty("span" + std::to_string(i) + "_parameters", parameters);
-    RecordProperty("span" + std::to_string(i) + "_input_sha",
-                   Hash(std::as_bytes(std::span(item.input))));
-    RecordProperty("span" + std::to_string(i) + "_sha", life->cases[i].eager_hash);
-    for (std::size_t j = 0; j < 3; ++j)
-      RecordProperty("span" + std::to_string(i) + "_step" + std::to_string(j) + "_ns",
-                     std::to_string(life->cases[i].elapsed_ns[j]));
+    ::testing::Test::RecordProperty("span" + std::to_string(i) + "_parameters", parameters);
+    ::testing::Test::RecordProperty("span" + std::to_string(i) + "_input_sha",
+                                    Hash(std::as_bytes(std::span(item.input))));
+    ::testing::Test::RecordProperty("span" + std::to_string(i) + "_sha", life->cases[i].eager_hash);
+    for (std::size_t j = 0; j < (pointwise ? 7U : 3U); ++j)
+      ::testing::Test::RecordProperty(
+          "span" + std::to_string(i) + "_step" + std::to_string(j) + "_ns",
+          std::to_string(life->cases[i].elapsed_ns[j]));
   }
   auto retired = life->Retire();
   ASSERT_TRUE(retired) << Failed(retired).value_or("");
 }
+TEST(ImageSpatialGpuTest, ActualF32VaePartsUseSharedTypedProgramsAndCompletedReplay) {
+  RunFixture(false);
+}
+TEST(ImageSpatialGpuTest, PointwiseSourceDirectAndSharedProductCompleteReplay) { RunFixture(true); }
 }  // namespace
