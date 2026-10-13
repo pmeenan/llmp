@@ -86,13 +86,15 @@ never change guarded source while an actual run is active.
   attention, layout/product traffic and repeated mask/position staging or graph
   digests are possible speed/reuse targets, not established causes. Do not repeat
   the forty-step quality run or expand timing ladders before attribution.
-- Resolve Qwen's measured C4 decode gap: 65.5694 versus 77.6404 tok/s
-  (−15.55%; wall throughput −6.38%). Existing traces, the rejected owner-lane
-  experiment and default-off first-Verify capture result are retained; do not
-  repeat them or the numerical retrospective. Capture improved decode 3.0257%
-  while wall throughput fell .4834%; it is not an unconditional speed win. Then
-  combine remaining reference-quality, own-state,
-  restart, mixed swap and matched 1% controls in one family closeout batch.
+- Qwen's C4 decode gap (`65.5694` vs `77.6404` tok/s, −15.55%) is resolved in
+  `qwen-c4-fix-models01` on Spark A by wiring `DrafterSpec::shared_wave_depth`
+  (`= 2` in multi-slot waves, matching `serving.cc:1464-1465`) and bounding
+  `moe::QuantLayout::scale_rows_max()` by `std::min(slots, experts)` (−457.5 MiB
+  `cudaMemsetAsync` per 4-way Verify step): shared C4 decode is now **78.4439 vs
+  76.3917 tok/s (+2.69%)**, C2 decode is **+4.08%** (+2.32% wall), and C1/C2/C4
+  prefill is −0.88%/−1.76%/−0.58% faster ([report](experiments/m36-numerical-audit/qwen-joined-mtp.md#multi-slot-mtp-wave-depth-cap-and-moe-scale-memset-bound--2026-10-13)).
+  Combine remaining reference-quality, own-state, restart, mixed swap and
+  matched 1% controls in one family closeout batch.
 - Resolve DeepSeek/DSpark's measured concurrent-state capacity wall, then finish
   its remaining reference-quality, durable restart,
   state/cohort and matched family speed/swap gates in a combined batch. Short

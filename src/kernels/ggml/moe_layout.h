@@ -23,6 +23,7 @@
 #ifndef LLMP_KERNELS_GGML_MOE_LAYOUT_H_
 #define LLMP_KERNELS_GGML_MOE_LAYOUT_H_
 
+#include <algorithm>
 #include <cstdint>
 
 namespace llmp::kernels::ggml::moe {
@@ -94,7 +95,7 @@ struct QuantLayout {
   static constexpr std::uint64_t codes() { return 0; }
   constexpr std::uint64_t scale_rows_max() const {
     constexpr auto kRows = static_cast<std::uint64_t>(kScaleRows);
-    const std::uint64_t rows = slots + ((kRows - 1) * experts);
+    const std::uint64_t rows = slots + ((kRows - 1) * std::min(slots, experts));
     return (rows + kRows - 1) / kRows * kRows;
   }
   constexpr std::uint64_t scales() const { return Align(slots * (k / 2)); }

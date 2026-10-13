@@ -85,6 +85,8 @@ struct DrafterSpec {
   std::uint16_t stage = 1;  // its SlotLifecycle stage (a drafter: not 0)
   Shape shape = Shape::kAutoregressive;
   std::uint32_t max_depth = 1;  // proposals a unit, at most
+  // Proposals a unit in a wave of more than one slot (0: max_depth).
+  std::uint32_t shared_wave_depth = 0;
   // Autoregressive: its first pass of a unit starts where its state stops
   // being the committed tokens' (its catch-up: MTP).
   bool catch_up = false;

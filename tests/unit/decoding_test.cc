@@ -1689,4 +1689,68 @@ TEST_F(DecodingTest, CompletePassScheduleRefusesMultiDrafterDeclaration) {
   EXPECT_FALSE(made);
 }
 
+TEST_F(DecodingTest, SharedWaveDepthCapsMultiSlotWavesAndLeavesLoneWavesAdaptive) {
+  auto invalid_depth = Mtp(2);
+  invalid_depth.shared_wave_depth = 3;
+  EXPECT_FALSE(en::DecodingOrchestrator::Make(
+      *runner_, *composer_,
+      {.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {invalid_depth}}, Policy()));
+  auto invalid_block = Block(3);
+  invalid_block.shared_wave_depth = 2;
+  EXPECT_FALSE(en::DecodingOrchestrator::Make(
+      *runner_, *composer_,
+      {.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {invalid_block}}, Policy()));
+
+  auto spec = Mtp(3);
+  spec.shared_wave_depth = 2;
+  spec.draft_before_limit = true;
+  spec.adaptive = true;
+  auto policy = Policy();
+  std::vector<std::tuple<std::uint32_t, std::uint32_t, std::uint32_t, bool>> observations;
+  policy.observe = [&](std::uint32_t slot, std::size_t, std::uint32_t depth, std::uint32_t kept,
+                       bool complete) { observations.emplace_back(slot, depth, kept, complete); };
+  auto decoding =
+      Make({.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {spec}}, std::move(policy));
+  const std::array<std::uint32_t, 2> prompts{40, 41};
+  Prefill(prompts, &decoding);
+
+  const auto lone = Unit(decoding, {0});
+  ASSERT_FALSE(lone.outcomes[0].refusal);
+  ASSERT_EQ(lone.outcomes[0].drafts.size(), 1U);
+  EXPECT_EQ(lone.outcomes[0].drafts[0].depth, 3U);
+  EXPECT_EQ(lone.outcomes[0].drafts[0].steps, 3U);
+  EXPECT_EQ(lone.outcomes[0].drafts[0].proposed, 3U);
+  EXPECT_EQ(verified_[0].size(), 4U);
+  ASSERT_EQ(observations.size(), 1U);
+  EXPECT_EQ(observations[0], (std::tuple{0U, 3U, 4U, true}));
+
+  observations.clear();
+  const auto shared = Unit(decoding, {0, 1});
+  for (std::uint32_t slot = 0; slot < 2; ++slot) {
+    ASSERT_FALSE(shared.outcomes[slot].refusal);
+    ASSERT_EQ(shared.outcomes[slot].drafts.size(), 1U);
+    EXPECT_EQ(shared.outcomes[slot].drafts[0].depth, 2U);
+    EXPECT_EQ(shared.outcomes[slot].drafts[0].steps, 2U);
+    EXPECT_EQ(shared.outcomes[slot].drafts[0].proposed, 2U);
+    EXPECT_EQ(verified_[slot].size(), 3U);
+  }
+  ASSERT_EQ(observations.size(), 2U);
+  EXPECT_EQ(observations[0], (std::tuple{0U, 2U, 3U, true}));
+  EXPECT_EQ(observations[1], (std::tuple{1U, 2U, 3U, true}));
+
+  observations.clear();
+  const auto shared_tail = Unit(decoding, {0, 1}, 2);
+  for (std::uint32_t slot = 0; slot < 2; ++slot) {
+    ASSERT_FALSE(shared_tail.outcomes[slot].refusal);
+    ASSERT_EQ(shared_tail.outcomes[slot].drafts.size(), 1U);
+    EXPECT_EQ(shared_tail.outcomes[slot].drafts[0].depth, 2U);
+    EXPECT_EQ(shared_tail.outcomes[slot].drafts[0].steps, 2U);
+    EXPECT_EQ(shared_tail.outcomes[slot].drafts[0].proposed, 2U);
+    EXPECT_EQ(verified_[slot].size(), 2U);
+  }
+  ASSERT_EQ(observations.size(), 2U);
+  EXPECT_EQ(observations[0], (std::tuple{0U, 2U, 2U, false}));
+  EXPECT_EQ(observations[1], (std::tuple{1U, 2U, 2U, false}));
+}
+
 }  // namespace

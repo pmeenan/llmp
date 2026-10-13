@@ -984,15 +984,21 @@ TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment)
   ASSERT_TRUE(replay_layout) << Failed(replay_layout).value_or("");
   const std::array replay_layouts{*a, *replay_layout};
   EXPECT_FALSE(rt::ComponentServingDomain(spec, replay_layouts, 4, mode, *allowance));
+  auto block_shared = mode;
+  block_shared.drafters[0].shared_wave_depth = 2;
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, 4, block_shared, *allowance));
   auto autoregressive = mode;
   autoregressive.drafters[0].shape = en::DrafterSpec::Shape::kAutoregressive;
   autoregressive.drafters[0].catch_up = true;
   autoregressive.drafters[0].features = true;
+  autoregressive.drafters[0].shared_wave_depth = 2;
   {
     auto joined = rt::ComponentServingDomain(spec, replay_layouts, 4, autoregressive, *allowance);
     ASSERT_TRUE(joined) << Failed(joined).value_or("");
     EXPECT_TRUE((*joined)->CheckMode(en::NumericalUse::kJoinedRepeatPending));
   }
+  autoregressive.drafters[0].shared_wave_depth = 4;
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, replay_layouts, 4, autoregressive, *allowance));
   EXPECT_EQ((*allowance)->used(), 0U);
   spec.stages.resize(1);
   auto plain = rt::ComponentServingDomain(spec, std::span(layouts).first(1), 4, {}, *allowance);

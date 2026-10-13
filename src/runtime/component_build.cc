@@ -129,7 +129,10 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Compo
       return Error("a serving domain needs the actual target and drafter bounds");
     if (i != 0) {
       const auto& draft = mode.drafters[i - 1];
-      if (draft.stage != i || draft.max_depth == 0 || verify_rows > layouts[i].max_rows ||
+      if (draft.stage != i || draft.max_depth == 0 || draft.shared_wave_depth > draft.max_depth ||
+          (draft.shared_wave_depth != 0 &&
+           draft.shape != engine::DrafterSpec::Shape::kAutoregressive) ||
+          verify_rows > layouts[i].max_rows ||
           (!layouts[i].borrowed.empty() && !draft.borrows_target) ||
           (draft.features && model::FeatureTap(layouts[i]) == nullptr) ||
           (progress->has_value() && (draft.shape != engine::DrafterSpec::Shape::kAutoregressive ||
@@ -1060,6 +1063,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                             .shape = dspark ? engine::DrafterSpec::Shape::kBlock
                                             : engine::DrafterSpec::Shape::kAutoregressive,
                             .max_depth = depth,
+                            .shared_wave_depth =
+                                solo ? std::min(settings.shared_wave_depth.value, depth) : 0,
                             .catch_up = solo,
                             .fill = dspark ? model::DsparkDeepSeekV4Flash().mask_token : 0,
                             .borrows_target = !solo && !dspark,

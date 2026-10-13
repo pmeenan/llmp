@@ -939,3 +939,61 @@ approved GGUF source under the internal paid component route. It does not
 change public defaults, admit a stored drafter, qualify ModelOpt/MLX serving,
 or establish external-reference quality or the matched 1% family speed gate.
 Full N5 all-artifact re-import/admission remains open.
+
+## Multi-slot MTP wave depth cap and MoE scale memset bound — 2026-10-13
+
+Comparing the shared component engine (`src/runtime/component_build.cc`,
+`src/engine/decoding.cc`, `src/kernels/ggml/moe_layout.h`) against the legacy
+Qwen3.8 reference (`src/runtime/serving.cc:1464-1465`,
+`src/engine/qwen38_runner.cc`) identified two concrete causes of the earlier C4
+decode gap:
+
+1. **Missing `shared_wave_depth` cap (`= 2`) in multi-slot waves**:
+   In `ServingEngine::StepQwen38Wave`, multi-slot waves clamp each slot's draft
+   depth to `shared_wave_depth_` (`2`), whereas `ComponentLlmBuild` and
+   `DecodingOrchestrator::Speculate` left every slot adaptive up to `max_depth = 3`
+   (`4` verify rows per slot). Allowing per-slot rows to toggle independently
+   between `3` and `4` across four slots produced up to $\{3, 4\}^4 = 16$
+   distinct 4-owner `Phase::kVerify` `StepShape`s per `read_cells` bucket
+   (6 synchronous `~145 ms` CPU `Plan + LowerStep` stalls in Pass 1 C4 and 14
+   in Pass 2 C4), ran 13–16 row `Verify` plus a third draft pass, and caused
+   the high-acceptance code prompt (`req 0`) to finish after 42–45 waves and
+   strand `req 1` for 21–29 solo tail waves (`1.23–1.62 s`). Wiring
+   `DrafterSpec::shared_wave_depth` (`std::min(settings.shared_wave_depth.value, depth)`)
+   for multi-slot waves keeps lone waves adaptive up to `max_depth = 3` while
+   giving full 4-way waves a single `(3, 3, 3, 3)` `Verify` shape and keeping
+   all four slots synchronized through completion.
+2. **Over-sized MoE scale zeroing in `moe::QuantLayout::scale_rows_max()`**:
+   `scale_rows_max()` previously computed `slots + (kRows - 1) * experts`
+   (`65,152` rows = `5,043,200` bytes per GEMM, `604.98 MiB` of
+   `cudaMemsetAsync` across 120 MoE GEMMs per 4-way `Verify` step), even though
+   at most `std::min(slots, experts)` (`120`) experts can be non-empty.
+   Bounding by `std::min(slots, experts)` reduces `scale_rows_max()` to
+   `15,360` rows (`147.46 MiB/step`, `-75.6%`).
+
+On Spark A (`qwen-c4-fix-main02` / `qwen-c4-fix-models01`), the same serial
+current-legacy/shared locator (`context = 33,792`, `chunk = 4,096`, C4, draft
+vocab 47,172, one warm and two measured C1/C2/C4 passes per arm, 42 requests
+and 5,376 outputs) records:
+
+| Cohort | Legacy prefill s | Shared prefill s | Legacy decode tokens/s | Shared decode tokens/s | Legacy wall tokens/s | Shared wall tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C1 | 3.2131 | 3.1848 (−0.88%) | 47.7793 | 45.9403 (−3.85%) | 21.7619 | 21.4856 (−1.27%) |
+| C2 | 7.1285 | 7.0030 (−1.76%) | 64.3472 | 66.9697 (+4.08%) | 22.8870 | 23.4177 (+2.32%) |
+| C4 | 15.8014 | 15.7104 (−0.58%) | 76.3917 | 78.4439 (+2.69%) | 23.3517 | 22.7603 (−2.53%) |
+
+C4 decode moves from the earlier **−15.55%** deficit to **+2.69% faster** than
+the legacy arm (78.44 versus 76.39 tokens/s; Pass 1 and Pass 2 are 78.46 and
+78.42 tokens/s in `shared` versus 80.21 and 72.57 tokens/s in `legacy`), C2
+decode is **+4.08% faster** (+2.32% wall), and prefill duration is lower across
+all three cohorts. Shared joined waves rise from 270 (744 units) to 289 (794
+units), retained plans drop from 324 to 305 (`1,435,411,120` bytes) and
+captured graphs drop from 189 to 168 (`1,916,092,416` bytes, −931.9 MiB), with
+zero reclaimed plans/graphs, zero refusals and zero coverage violations.
+Runtime `44d867c6…` (`276,366,768` bytes, source `f4c30163…`), build receipt
+`738b1426…` (`33/33` `decoding_test`, `13/13` `ggml_lower_qwen38_test`, `8/8`
+`dsv4_engine_target_gpu_test` target inputs) and actual result `eb132aa4…`
+(primes `7178af0c…` and `30e883e0…`, execution identity `2b0bd627…`) pass all
+pre/post guards with zero memory-limit/OOM events and positive process/GPU
+retirement.
+

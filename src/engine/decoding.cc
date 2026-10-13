@@ -164,6 +164,10 @@ std::expected<DecodingOrchestrator, std::string> DecodingOrchestrator::Make(
       return Error(
           std::format("stage {} drafts 1 to {} rows", d.stage, d.adaptive ? 7 : 1U << 31U));
     }
+    if (d.shared_wave_depth > d.max_depth ||
+        (d.shared_wave_depth != 0 && d.shape != DrafterSpec::Shape::kAutoregressive)) {
+      return Error("a shared-wave draft depth must bound an autoregressive drafter");
+    }
     // Its rows end within its chunk bound past the committed positions
     // (ModelRunner::Admit): a cascade's last drafter's at the verify's.
     if (verify > layout.max_rows) {
@@ -350,12 +354,19 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     }
     if (drafters == 1 && mode_.drafters[0].draft_before_limit) {
       const auto& spec = mode_.drafters[0];
-      const auto want = policy_.depth   ? policy_.depth(w.slot, 0)
-                        : spec.adaptive ? adaptive_.at(At(w.slot, 0)).Choose()
-                                        : spec.max_depth;
+      auto want = policy_.depth   ? policy_.depth(w.slot, 0)
+                  : spec.adaptive ? adaptive_.at(At(w.slot, 0)).Choose()
+                                  : spec.max_depth;
       const auto context = slots.context(spec.stage);
-      if (want == 0 || want > spec.max_depth || want > target_context - u.positions ||
-          u.positions >= context || want > context - u.positions) {
+      if (want == 0 || want > spec.max_depth) {
+        out.refusal = Refusal("the requested draft depth exceeds its declared bounds", w.slot);
+        continue;
+      }
+      if (work.size() > 1 && spec.shared_wave_depth != 0) {
+        want = std::min(want, spec.shared_wave_depth);
+      }
+      if (want > target_context - u.positions || u.positions >= context ||
+          want > context - u.positions) {
         out.refusal = Refusal("the requested draft depth exceeds its declared bounds", w.slot);
         continue;
       }
@@ -412,14 +423,17 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
       const DrafterSpec& spec = mode_.drafters[d];
       // A first pass reads the features before its rows: none at position 0.
       if ((spec.anchored || spec.features) && u.positions == 0) continue;
-      const std::uint32_t want = u.full_depth    ? *u.full_depth
-                                 : policy_.depth ? policy_.depth(w.slot, d)
-                                 : spec.adaptive ? adaptive_.at(At(w.slot, d)).Choose()
-                                                 : spec.max_depth;
+      std::uint32_t want = u.full_depth    ? *u.full_depth
+                           : policy_.depth ? policy_.depth(w.slot, d)
+                           : spec.adaptive ? adaptive_.at(At(w.slot, d)).Choose()
+                                           : spec.max_depth;
       if (want == 0 || want > spec.max_depth) {
         u.live = false;
         out.refusal = Refusal("the requested draft depth exceeds its declared bounds", w.slot);
         break;
+      }
+      if (work.size() > 1 && spec.shared_wave_depth != 0) {
+        want = std::min(want, spec.shared_wave_depth);
       }
       // Its rows end inside its stage's context.
       const std::uint64_t end = std::uint64_t{u.positions} + proposals;
