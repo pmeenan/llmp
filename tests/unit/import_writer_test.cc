@@ -25,6 +25,7 @@
 #include "import/writer.h"
 #include "import_fixtures.h"
 #include "part_publication_fixture.h"
+#include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
 #include "spec/stored.h"
 
@@ -996,6 +997,30 @@ TEST_F(ImportWriterTest, Dsv4HashTablesHaveExclusiveGroupsAndCompleteExpertSlice
   EXPECT_EQ(layout->expert_groups, 43U * 256U);
   EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
   const auto destination = dir_ / "dsv4-unfunded";
+  EXPECT_FALSE(WriteArtifact(
+      *plan,
+      {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1}));
+  EXPECT_FALSE(std::filesystem::exists(destination));
+}
+
+TEST_F(ImportWriterTest, Qwen2PlacementAndCompleteLayerCoverageAreFundedBeforeEffects) {
+  auto input = test_support::Qwen2GgufCheckpoint();
+  auto cost = NormalizationBound(input);
+  ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+  auto plan = Normalize(std::move(input), {cost->metadata_bytes, cost->work_units});
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  auto layout = publication_detail::InspectPlacement(*plan, std::uint64_t{2} << 30U);
+  ASSERT_TRUE(layout) << test_support::Failed(layout, &Error::ToString).value_or("");
+  EXPECT_EQ(layout->copies, 291U);
+  EXPECT_EQ(layout->destinations, 291U);
+  EXPECT_EQ(layout->tables, 1U);
+  EXPECT_EQ(layout->row_tables, 1U);
+  EXPECT_EQ(layout->globals, 0U);
+  EXPECT_EQ(layout->layers, 24U);
+  EXPECT_EQ(layout->heads, 1U);
+  EXPECT_EQ(layout->expert_groups, 0U);
+  EXPECT_FALSE(publication_detail::InspectPlacement(*plan, layout->metadata_bytes - 1));
+  const auto destination = dir_ / "qwen2-unfunded";
   EXPECT_FALSE(WriteArtifact(
       *plan,
       {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1}));

@@ -11,6 +11,7 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -27,6 +28,9 @@ constexpr std::array kAuxiliary{
     AuxiliaryNamespace{"quantize.imatrix.", "source quantization calibration provenance"}};
 constexpr std::array kGemma2Requirements{ScalarRequirement{"gemma2.block_count", 46}};
 constexpr std::array kGemma3Requirements{ScalarRequirement{"gemma3.block_count", 62}};
+constexpr std::array kQwen2Encodings{format::Encoding::kF16, format::Encoding::kF32};
+constexpr std::array<std::uint64_t, 2> kQwen2TokenShape{896, 151936};
+constexpr std::array kQwen2Shapes{TensorShapeRequirement{"token_embd.weight", kQwen2TokenShape}};
 
 constexpr std::array<std::int64_t, 1> kPleLayers{1};
 constexpr std::array<std::int64_t, 4> kRopeSections{11, 11, 10, 0};
@@ -116,6 +120,11 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                                  SourceMapping{.container = "gguf",
                                                .architecture = &spec::mappings::Gemma4Mapping(),
                                                .auxiliary = kAuxiliary},
+                                 SourceMapping{.container = "gguf",
+                                               .architecture = &spec::mappings::Qwen2GgufMapping(),
+                                               .auxiliary = kAuxiliary,
+                                               .encodings = kQwen2Encodings,
+                                               .shapes = kQwen2Shapes},
                                  SourceMapping{.container = "gguf",
                                                .architecture = &spec::mappings::Qwen38GgufMapping(),
                                                .auxiliary = kAuxiliary,

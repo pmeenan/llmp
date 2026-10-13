@@ -29,8 +29,11 @@
 #include "import/readers/gguf.h"
 #include "import_fixtures.h"
 #include "model/dsv4.h"
+#include "model/qwen2.h"
+#include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
 #include "spec/mappings/dsv4.h"
+#include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -972,6 +975,56 @@ TEST(ImportNormalizeDsv4Test, RefusesIncompleteListsCountsAndUnclassifiedSourceS
     if (mutation == 4) Value(input, "deepseek4.attention.value_length", std::int64_t{256});
     if (mutation == 5) Value(input, "deepseek4.new_semantics", std::int64_t{1});
     if (mutation == 6) input.tensors.pop_back();
+    EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
+  }
+}
+
+TEST(ImportNormalizeQwen2Test, CompleteCapturedTargetMatchesV0SpecWithOmittedOrExplicitKeyLength) {
+  for (const bool explicit_keys : {false, true}) {
+    auto input = test_support::Qwen2GgufCheckpoint();
+    if (explicit_keys) {
+      Value(input, "qwen2.attention.key_length", std::int64_t{64});
+      Value(input, "qwen2.attention.value_length", std::int64_t{64});
+      Value(input, "qwen2.rope.dimension_count", std::int64_t{64});
+      Value(input, "qwen2.rope.scaling.type", std::string("none"));
+    }
+    auto cost = NormalizationBound(input);
+    ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+    EXPECT_EQ(cost->layers, 24U);
+    EXPECT_EQ(cost->payload_bytes, 1260477952ULL);
+    auto plan = Normalize(input, {cost->metadata_bytes, cost->work_units});
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    ASSERT_EQ(plan->routes().size(), 291U);
+    ASSERT_EQ(plan->spec().stages.size(), 1U);
+    EXPECT_EQ(plan->spec().stages[0].layers.size(), 24U);
+    EXPECT_EQ(plan->spec().stages[0].heads.output->weights[0].tensor, "output.weight");
+    auto values = spec::mappings::Qwen2V0Values(model::Qwen25Instruct05B());
+    ASSERT_TRUE(values);
+    auto expected = spec::Synthesize(spec::mappings::Qwen2Mapping(), plan->canonical(), *values);
+    ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
+    EXPECT_EQ(plan->spec(), *expected);
+    EXPECT_TRUE(plan->applied_folds().empty());
+    EXPECT_FALSE(Normalize(input, {cost->metadata_bytes - 1, cost->work_units}));
+  }
+  auto tied = test_support::Qwen2GgufCheckpoint(false);
+  auto plan = Normalize(std::move(tied), kFunded);
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  ASSERT_EQ(plan->routes().size(), 290U);
+  EXPECT_EQ(plan->spec().stages[0].heads.output->weights[0].tensor, "token_embd.weight");
+}
+
+TEST(ImportNormalizeQwen2Test, RefusesProfileShapeEncodingAndUnclassifiedMetadataDrift) {
+  for (unsigned mutation = 0; mutation != 9; ++mutation) {
+    auto input = test_support::Qwen2GgufCheckpoint();
+    if (mutation == 0) Value(input, "qwen2.block_count", std::int64_t{28});
+    if (mutation == 1) Value(input, "qwen2.attention.key_length", std::int64_t{128});
+    if (mutation == 2) Value(input, "qwen2.rope.scaling.type", std::string("yarn"));
+    if (mutation == 3) Value(input, "qwen2.rope.freq_base", 10000.0);
+    if (mutation == 4) Value(input, "qwen2.unknown_semantics", std::int64_t{1});
+    if (mutation == 5) Value(input, "llmp.qwen2.exl3", true);
+    if (mutation == 6) input.tensors.front().format.encoding = Encoding::kBF16;
+    if (mutation == 7) input.tensors.back().dims[0] = 1536;
+    if (mutation == 8) input.tensors.pop_back();
     EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
   }
 }

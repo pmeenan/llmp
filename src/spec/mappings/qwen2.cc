@@ -314,9 +314,80 @@ constexpr Mapping kMapping{
     .policies = kPolicies,
     .v0_assembly = kAssembly,
 };
+
+constexpr std::array kGgufSlots = {
+    SlotRule{.slot = "embedding", .site = Site::kEmbedding, .kind = "embedding.token"},
+    SlotRule{.slot = "attention", .site = Site::kLayer, .kind = "attention.dense"},
+    SlotRule{.slot = "ffn", .site = Site::kLayer, .kind = "ffn.glu"},
+    SlotRule{.slot = "final_norm", .site = Site::kFinalNorm, .kind = "norm.rms"},
+    SlotRule{.slot = "output", .site = Site::kOutput, .kind = "head.linear"},
+};
+
+// The GGUF omits qwen2.attention.key_length when it equals width / heads
+// (896 / 14 = 64 in the approved Qwen2.5-0.5B-Instruct FP16 fixture).
+constexpr std::array kGgufParams = {
+    FromKey(kStageSlot, "context", "qwen2.context_length", kInt),
+    FromKey(kStreamSlot, "width", "qwen2.embedding_length", kInt),
+    Name("attention", "placement", "pre"),
+    FromKey("attention", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
+    FromKey("attention", "heads", "qwen2.attention.head_count", kInt),
+    FromKey("attention", "kv_heads", "qwen2.attention.head_count_kv", kInt),
+    FromKey("attention", "key_dim", "qwen2.attention.key_length", kInt),
+    Int("attention", "key_dim", 64),
+    FromKey("attention", "value_dim", "qwen2.attention.value_length", kInt),
+    FromKey("attention", "value_dim", "qwen2.attention.key_length", kInt),
+    Int("attention", "value_dim", 64),
+    FromKey("attention", "scale", "qwen2.attention.key_length", kReal, Transform::kRsqrt),
+    Real("attention", "scale", 0.125),
+    Int("attention", "window", 0),
+    Name("attention", "rotation", "neox"),
+    FromKey("attention", "rope_dims", "qwen2.rope.dimension_count", kInt),
+    FromKey("attention", "rope_dims", "qwen2.attention.key_length", kInt),
+    Int("attention", "rope_dims", 64),
+    FromKey("attention", "rope_base", "qwen2.rope.freq_base", kReal),
+    Real("attention", "rope_scale", 1.0),
+    Flag("attention", "qkv_bias", true),
+    Flag("attention", "scale_scores", true),
+    Flag("attention", "explicit_scores", false),
+    Flag("attention", "f16_projections", false),
+    Name("ffn", "placement", "pre"),
+    FromKey("ffn", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
+    Name("ffn", "activation", "silu"),
+    FromKey("ffn", "hidden", "qwen2.feed_forward_length", kInt),
+    Flag("ffn", "f16_inputs", false),
+    FromKey("final_norm", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
+    Flag("final_norm", "f16_output", false),
+    RequireInt("qwen2.block_count", 24, false),
+    RequireInt("qwen2.context_length", 8192, false),
+    RequireInt("qwen2.embedding_length", 896, false),
+    RequireInt("qwen2.feed_forward_length", 4864, false),
+    RequireInt("qwen2.attention.head_count", 14, false),
+    RequireInt("qwen2.attention.head_count_kv", 2, false),
+    RequireInt("qwen2.attention.key_length", 64, true),
+    RequireInt("qwen2.attention.value_length", 64, true),
+    RequireInt("qwen2.rope.dimension_count", 64, true),
+    Require("qwen2.rope.scaling.type", "none", true),
+    ParamRule{.key = "qwen2.rope.freq_base", .type = kReal, .value = {.real = 1000000.0}},
+    ParamRule{.key = "qwen2.attention.layer_norm_rms_epsilon",
+              .type = kReal,
+              .value = {.real = static_cast<double>(1e-6F)}},
+};
+
+constexpr Mapping kGgufMapping{
+    .architecture = "qwen2",
+    .version = 1,
+    .pipeline = PipelineKind::kLlm,
+    .layer_count_key = "qwen2.block_count",
+    .layer_types = "g",
+    .slots = kGgufSlots,
+    .tensors = std::span(kTensors).first(15),
+    .params = kGgufParams,
+    .policies = kPolicies,
+};
 }  // namespace
 
 const Mapping& Qwen2Mapping() { return kMapping; }
+const Mapping& Qwen2GgufMapping() { return kGgufMapping; }
 
 std::expected<std::vector<SourceValue>, std::string> Qwen2V0Values(const model::Qwen2Profile& p) {
   if (p.weight_type != "F16" && p.weight_type != "exl3") {

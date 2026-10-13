@@ -21,12 +21,14 @@
 #include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "model/gemma4_assistant.h"
+#include "model/qwen2.h"
 #include "model/qwen38.h"
 #include "runtime/gemma_profile.h"
 #include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 
@@ -35,7 +37,7 @@ namespace {
 
 // The existing approved execution checkpoint, not the container's artifact
 // ID: publication does not broaden the family/profile or format domain.
-enum class ProfileId { kGemma2, kGemma3, kGemma26, kGemma31, kQwenGguf, kDsv4Gguf };
+enum class ProfileId { kGemma2, kGemma3, kGemma26, kGemma31, kQwen2Gguf, kQwenGguf, kDsv4Gguf };
 struct Profile {
   ProfileId id;
   std::string_view architecture, source_name, source_sha256;
@@ -60,7 +62,10 @@ constexpr std::array kProfiles{
             60, 8192, 4, "97551b8fcfead217ce2feb8c0abe7228211b15bca6867158a955f3d5a7790e02"},
     Profile{ProfileId::kGemma31, "gemma4", "gemma-4-31B-it-UD-Q4_K_XL.gguf",
             "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575", 18822970304ULL, 833,
-            0, 8192, 4, "a5ba88997fe0b72a54148526573c38e6a619f5a91980c59dcb5cbc5123760f52"}};
+            0, 8192, 4, "a5ba88997fe0b72a54148526573c38e6a619f5a91980c59dcb5cbc5123760f52"},
+    Profile{ProfileId::kQwen2Gguf, "qwen2", "qwen2.5-0.5b-instruct-fp16.gguf",
+            "8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc", 1266425696ULL, 291,
+            0, 8192, 1, "0ac91b5fa50d1a17c55de9011431cb67b0224dff6d018e1e8c3e8d6112a5adbe"}};
 
 // Pinned three-shard UD-IQ3_XXS source. The ordinary writer verifies these
 // whole streams while publishing; runtime admission checks their declared
@@ -139,6 +144,8 @@ const model::Gemma4Profile* GemmaProfile(const Profile& profile) {
 }
 std::expected<std::vector<spec::SourceValue>, std::string> Values(const Profile& profile) {
   switch (profile.id) {
+    case ProfileId::kQwen2Gguf:
+      return spec::mappings::Qwen2V0Values(model::Qwen25Instruct05B());
     case ProfileId::kDsv4Gguf:
       return spec::mappings::Dsv4V0Values(model::Dsv4Flash());
     case ProfileId::kQwenGguf: {
@@ -248,7 +255,8 @@ std::expected<void, std::string> CheckComponentAdmission(
     return Refused("the stored pipeline is not an approved standalone target");
   if (auto inventory = Inventory(source, *profile); !inventory) return inventory;
   const auto& stage = model.stages.front();
-  if (profile->id != ProfileId::kQwenGguf && profile->id != ProfileId::kDsv4Gguf &&
+  if (profile->id != ProfileId::kQwen2Gguf && profile->id != ProfileId::kQwenGguf &&
+      profile->id != ProfileId::kDsv4Gguf &&
       (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
        stage.heads.output->weights.size() != 1 ||
        stage.embedding->weights.front().tensor != stage.heads.output->weights.front().tensor))

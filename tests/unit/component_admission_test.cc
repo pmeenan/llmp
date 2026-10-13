@@ -21,6 +21,7 @@
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
+#include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
 #include "runtime/calibration.h"
 #include "spec/mappings/gemma2.h"
@@ -354,6 +355,41 @@ TEST(ComponentAdmissionDsv4Test, FullStoredTargetPreservesProfilePolicyAndClosed
       changed_model.stages[0].heads.output->weights[0].tensor =
           changed_model.stages[0].embedding->weights[0].tensor;
     if (mutation == 5) changed_model.stages[0].folds.push_back("norm.plus_one");
+    EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
+        << mutation;
+  }
+}
+
+TEST(ComponentAdmissionQwen2Test, FullStoredTargetPreservesProfilePolicyAndClosedSourceAuthority) {
+  auto checkpoint = llmp::test_support::Qwen2GgufCheckpoint();
+  auto bound = llmp::import::NormalizationBound(checkpoint);
+  ASSERT_TRUE(bound) << (bound ? "" : bound.error().ToString());
+  auto normalized =
+      llmp::import::Normalize(std::move(checkpoint), {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(normalized) << (normalized ? "" : normalized.error().ToString());
+  const auto origins = Origins("qwen2.5-0.5b-instruct-fp16.gguf", 1266425696ULL,
+                               "8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc");
+  const auto& model = normalized->spec();
+  const auto& source = normalized->canonical();
+  const auto admitted = rt::CheckComponentAdmission(model, source, origins);
+  ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+  EXPECT_FALSE(rt::OnComponentEngine("qwen2"));
+  auto policy = rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 1});
+  ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+  EXPECT_TRUE(policy->text.contains("max_decode_rows 1"));
+  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8193, .slots = 1}));
+  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 2}));
+  for (unsigned mutation = 0; mutation != 5; ++mutation) {
+    auto changed_model = model;
+    auto changed_source = source;
+    auto changed_origins = origins;
+    if (mutation == 0) changed_origins[0].sha256[0] ^= 1;
+    if (mutation == 1) changed_origins[0].bytes = llmp::base::Bytes(1266425695ULL);
+    if (mutation == 2) changed_source.tensors[0].format.encoding = fm::Encoding::kBF16;
+    if (mutation == 3)
+      changed_model.stages[0].heads.output->weights[0].tensor =
+          changed_model.stages[0].embedding->weights[0].tensor;
+    if (mutation == 4) changed_model.stages[0].folds.push_back("norm.plus_one");
     EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
         << mutation;
   }
