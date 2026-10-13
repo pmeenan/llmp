@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Report migration peak-memory differences without rejecting a worthwhile
+  speed or quality benefit solely for using more than its reference. Speed
+  and run-validity checks remain mandatory; hardware admission is unchanged.
+
 - Reuse bounded F32 im2col and shared cuBLAS for qualified spatial convolutions
   on Spark, preserving source formats and explicit copies. Exact measured
   shapes use the shared selector; other shapes retain direct convolution.

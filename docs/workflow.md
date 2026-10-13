@@ -101,8 +101,10 @@ downgrade a heavy-path change to the light loop on their own.
   D-085); they do not wait for the owner. The owner decides license and
   provenance permissions, commits (D-075) and changes to a load-bearing
   constraint. Perf checks stay coarse (D-085): an idle host, a few repeats,
-  "is one more than 10% slower", memory within ~1.1× of the reference by
-  ordinary counters. nsys passes run only to debug a gap that ordinary
+  "is one more than 10% slower", with memory cost reported by ordinary
+  counters and the complete workload fitting the hardware. The owner
+  (2026-10-13) permits more memory than the reference when performance or
+  quality warrants it; exact accounting and safe admission still apply. nsys passes run only to debug a gap that ordinary
   counters found, never in a slice's checks. TensorFold's pin is refreshed
   at a milestone's entry and exit only (owner, 2026-10-06; see
   [reference comparisons](reference-comparisons.md)).

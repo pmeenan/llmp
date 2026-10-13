@@ -1300,8 +1300,9 @@ TensorFold comparisons report speed, memory and separate quality controls.
   near-ties, under the recorded-first noise bound; perplexity within a few
   percent; speculation, where present, meets M3's speculation criteria.
 - **Speed and memory** (D-085): prefill and decode at least as fast as the
-  same-format reference, at 8K and at depth; peak memory at most about
-  1.1× the reference's.
+  same-format reference, at 8K and at depth; report peak memory and permit
+  worthwhile speed or quality benefits to use more than the reference when
+  the complete workload safely fits (owner, 2026-10-13).
 - **Long context:** M3's scaling criterion applies to the family's
   maximum context on one Spark, with any architectural floor measured and
   named. Dense global attention's per-token KV read is such a floor.
@@ -2666,6 +2667,12 @@ each is checked against the design as M3.6 proceeds.
             76.57% reduction, not the matched1% gate. Same-source upstream
             quality, serving/swap and broader schedules remain open
             ([report](experiments/m36-shared-spatial-execution/README.md#shared-tiled-f32-convolution-reuse)).
+      - [ ] **Q3j — hardware-bounded shared image serving:** derive dimensions
+            and generation counts from the request, respecting model geometry,
+            checked arithmetic and measured full-workload admission. Fixed
+            two-generation/1024² diagnostics and reference implementations
+            impose no product ceilings. Compare larger convolution workspaces
+            when speed or quality benefits justify their memory cost.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.
@@ -2713,8 +2720,9 @@ each is checked against the design as M3.6 proceeds.
   historical completed gates are not reclassified. Exact same-implementation
   state, continuation, spill, restore and kept-state controls pass; the M3
   swap table and the Gemma
-  near-8K switch controls pass within their bounds; peak memory is no
-  higher than the baseline's.
+  near-8K switch controls pass within their bounds. Report peak memory;
+  a worthwhile speed or quality benefit may use more than the baseline
+  when the complete workload safely fits the hardware (owner, 2026-10-13).
 - **Formats:** Qwen3.8's NVFP4 and MXFP8 tensors, read from its
   artifacts, run every product shape on `sm_86` through on-chip decode
   within tolerance of the CPU references; no resident weight

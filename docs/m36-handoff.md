@@ -40,6 +40,14 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-13
 
+Owner clarification: small memory is preferred, but any useful speed or
+quality improvement may use more than a reference if the complete workload
+safely fits. Workspace loans are experimental conditions, not product caps.
+Image dimensions and generation counts must follow request/hardware capacity
+with checked model geometry; two-generation/1024² samples are coverage only.
+Prospective memory comparisons are informational; admission, ownership and
+accounting stay mandatory. Larger tiled-convolution workspaces are next.
+
 The shared image generation core now completes two 1024×1024 generations:
 native 36-layer text encoding, two complete 32-block Euler steps and the full
 first-frame VAE. Language and image adapters share the paid program lifecycle;

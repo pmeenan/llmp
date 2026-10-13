@@ -642,6 +642,19 @@ is explicit, and historical references/results are not silently rebased.
 The [retrospective audit](experiments/m36-numerical-audit/README.md) records
 candidate improvements and evidence limits. The matched 1% speed gate stands.
 
+**Owner clarification, 2026-10-13.** Small memory use is preferred, not a
+reference-relative acceptance ceiling: a worthwhile speed or quality benefit
+may use more memory as long as the complete workload fits the hardware with
+normal admission and lifetime guarantees. This supersedes D-085's ~1.1×
+reference bound and M3.6's 0.5GiB peak-difference rejection for prospective
+qualification; historical measurements and completed gates remain history.
+Image dimensions and generation counts derive from requests and hardware
+capacity, subject to model geometry and checked arithmetic, not limits inherited
+from reference implementations or fixed diagnostic samples. Tiling is an
+implementation choice; compare larger workspaces when they may be worthwhile.
+The matched 1% speed gate, quality, source-encoding and restoration contracts
+remain in force.
+
 **Context.** On 2026-10-08, about 35.5k lines were family-specific against
 8.3k of shared skeleton; Gemma2's and Gemma3's runners differed by about 100 lines
 and had drifted apart; slot-lifecycle methods were 80–99% alike across
@@ -2860,13 +2873,15 @@ The machinery around development was holding it back.
     more than about 10% slower than the other, so a few repeats on an
     idle host are enough, with no calibration or statistical protocol.
     Finer performance work comes later.
-- **Memory is judged loosely too.** Each engine's peak device memory for a
-  run should be no more than about 10% above its reference's for the same
-  workload, read from ordinary counters (the driver's free memory,
-  `MemAvailable`) in a quick run. It is not byte-exact and not
-  pre-registered. The catalog's own accounting stays exact, because it is
-  code, not measurement. The census rules (v1–v3) and nsys passes stop;
-  nsys is a debugging tool for a gap found this way.
+- **Memory is a measured tradeoff (owner clarification, 2026-10-13).**
+  Prefer small allocations, but a speed or quality benefit may use any
+  amount of memory that the complete workload can safely fit on the target.
+  Report ordinary peak counters and capacity costs; the former ~1.1×
+  reference limit is superseded for new qualifications. Catalog accounting,
+  completion ownership, physical headroom and admission remain mandatory.
+  Smaller experimental workspace loans are test conditions, not product
+  ceilings. The census rules (v1–v3) and nsys passes remain retired; nsys
+  is a debugging tool for a gap found in ordinary counters.
 - **Speed before bit exactness (2026-09-28).** The owner: "Speed matters
   more than bit exactness." The default path takes the fastest correct
   kernels, fused or quantized differently from a reference engine's, and

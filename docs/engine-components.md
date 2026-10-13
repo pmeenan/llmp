@@ -2908,7 +2908,17 @@ baseline:
   improve end-to-end speed. Record these benefits separately; distinguish
   measurements from derived byte counts and expected future gains. The
   speed, quality, memory, swap and state gates still apply.
-- **Memory, swap and state**: the existing controls pass unchanged.
+- **Memory**: report peak use and capacity costs. Prefer small footprints,
+  but permit a worthwhile speed or quality benefit to use more memory than
+  the reference when the complete workload safely fits the target (owner,
+  2026-10-13). Workspace sizes are implementation choices, not product
+  ceilings. Exact catalog accounting and resource admission remain mandatory.
+- **Swap and state**: the existing controls pass unchanged.
+
+Image dimensions and generation counts derive from the request and hardware
+capacity, respecting model geometry and checked arithmetic. Reference-engine
+limits and the current two-generation/1024² diagnostics do not define product
+limits; general shared image serving remains an open migration task.
 
 Owner answers that shape the migration's work (2026-10-08, 2026-10-09):
 

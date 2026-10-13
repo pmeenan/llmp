@@ -238,7 +238,7 @@ the commit gate.
    number on the actual target or check a current source — training knowledge
    is stale for this ecosystem. Never present an estimate as a measurement.
    Everything else: ship it and see. Checks are coarse (D-085): is one engine
-   more than ~10% slower, is peak memory within ~1.1× of the reference, by
+   more than ~10% slower, does the complete workload fit the hardware, by
    ordinary counters and a few repeats, with no calibration or holdout
    protocol; the stricter exception is M3.6's matched 1% migration gate.
    Thresholds, bounds and calibrations are your judgment, taken from measured

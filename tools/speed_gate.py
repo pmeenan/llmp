@@ -58,9 +58,10 @@ after every block from min_blocks on: at 95% a look, a true 1% slowdown
 would pass about one comparison in ten (`operating` measures both). No
 verdict is given before the family's min_blocks, chosen from the measured
 same-binary (A-vs-A) spread so that a one-sided 95% bound's half-width is
-expected to be at most RESOLUTION (0.5%). peak_gib is judged the same way
-at its own margin (MEMORY_MARGIN_GIB, absolute). Only the first
-max_blocks blocks count. A family passes when every metric passes and its
+expected to be at most RESOLUTION (0.5%). peak_gib is reported as an
+absolute difference, not a baseline-relative acceptance gate (owner,
+2026-10-13). Hardware fit and resource admission still apply. Only the first
+max_blocks blocks count. A family passes when every speed metric passes and its
 runs are valid: none failed or recorded a problem (token counts, cached
 prompt tokens, pixels, another GPU process), each ran in a session whose
 priming run succeeded before it, and every old run used one
@@ -136,7 +137,6 @@ sys.dont_write_bytecode = True
 
 GATE = 0.01  # a new implementation may be at most 1% slower (engine-components.md)
 RESOLUTION = 0.005  # the bound's expected half-width when min_blocks is chosen
-MEMORY_MARGIN_GIB = 0.5  # peak memory: no higher than the baseline, within this
 PORT = 18114
 CORPUS_SHA256 = "55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb"
 IMAGE_PROMPT = "A red ceramic teapot on a plain wooden table, soft daylight, no text."
@@ -1028,8 +1028,12 @@ def verdicts(out: pathlib.Path, family_name: str | None) -> dict:
         for metric in metrics:
             values = [v for v in (block_slowdowns(b, metric) for b in mine) if v is not None]
             memory = metric == "peak_gib"
-            margin = MEMORY_MARGIN_GIB if memory else math.log1p(GATE)
+            margin = 0.0 if memory else math.log1p(GATE)
             row = judge(values, margin, family.min_blocks, family.max_blocks)
+            if memory:
+                # Keep paired estimates/bounds, but more memory is allowed when
+                # the candidate fits and its quality/performance benefit warrants it.
+                row["verdict"] = "INFORMATIONAL"
             runs = {label: [r["metrics"][metric] for b in mine for r in b.values()
                             if not r["error"] and r["label"] == label and metric in r["metrics"]]
                     for label in ("old", "new")}
@@ -1039,8 +1043,8 @@ def verdicts(out: pathlib.Path, family_name: str | None) -> dict:
             row["unit"] = "GiB" if memory else "slowdown"
             rows[metric] = row
         invalid = validity(family, mine, primes)
-        states = {row["verdict"] for row in rows.values()}
-        overall = ("INVALID" if invalid else "INCOMPLETE" if not rows
+        states = {row["verdict"] for metric, row in rows.items() if metric != "peak_gib"}
+        overall = ("INVALID" if invalid else "INCOMPLETE" if not states
                    else "FAIL" if "FAIL" in states else "NOT PASSED" if "NOT PASSED" in states
                    else "INCOMPLETE" if "INCOMPLETE" in states
                    else "CONTINUE" if "CONTINUE" in states else "PASS")

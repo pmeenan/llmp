@@ -192,8 +192,14 @@ No verdict is given before the family's minimum blocks, chosen below from
 the measured same-binary spread so that a one-sided 95% bound's
 half-width is expected to be at most 0.5%, half the gap judged (at the
 97.5% look bound that half-width is 1.24–1.47 times larger). Peak memory
-is judged the same way against an absolute margin of 0.5 GiB. A family
-passes when every metric of every cell passes and its runs are valid:
+is reported as an informational paired absolute difference. The owner
+(2026-10-13) superseded the former 0.5GiB rejection: more memory is allowed
+for worthwhile speed or quality when the full workload safely fits the target.
+`speed_gate.py verdict` retains peak estimates/bounds as `INFORMATIONAL`;
+only speed metrics determine its statistical verdict. Admission, physical
+headroom, completion and run validity remain required. Historical recorded
+gates keep their original provenance. A family
+passes when every speed metric of every cell passes and its runs are valid:
 every block has its four runs, none failed or recorded a problem (a reply
 short of 128 tokens, cached prompt tokens, a cell without a common decode
 window, the image's pixels, another GPU process), and the old runs used
@@ -294,8 +300,9 @@ to twelve while it is unresolved, reading it beside the C4 prefill and
 wall rates (run sd 0.17% and 0.23%), rather than raising the family's
 minimum to twelve. Simulated at its sd, a true zero then passes this
 metric in 93% of comparisons, in 7.5 blocks on average, and is NOT PASSED
-in the rest. The 1% gate itself is unchanged. The peak memory margin, 0.5 GiB, is at least six times every
-family's run sd.
+in the rest. The 1% speed gate itself is unchanged. The historical peak-memory margin
+of 0.5GiB was at least six times every family's run sd; it is informational
+under the owner's 2026-10-13 memory clarification above.
 
 Same-binary determinism: every C1 reply repeats byte for byte across all
 runs of a family, and so does every cohort reply of DeepSeek, both

@@ -242,6 +242,33 @@ class Blocks(unittest.TestCase):
 class Verdicts(unittest.TestCase):
     SAME = {"C1.prefill_s": 2.0, "C1.decode_tok_s": 40.0, "peak_gib": 30.0}
 
+    def test_more_memory_is_reported_without_overriding_speed_or_run_validity(self):
+        n = gate.FAMILIES["gemma2"].min_blocks
+        for slowdown, problem, expected in ((1.0, None, "PASS"),
+                                            (1.02, None, "FAIL"),
+                                            (1.0, "capacity admission failed", "INVALID")):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                out = pathlib.Path(tmp)
+                candidate = dict(self.SAME, peak_gib=100.0)
+                candidate["C1.prefill_s"] *= slowdown
+                write_blocks(out, "gemma2", [(self.SAME, candidate)] * n)
+                if problem:
+                    self.rewrite(out, "gemma2-b01-p1-new.json",
+                                 lambda r: r.update(problems=[problem]))
+                report = gate.verdicts(out, "gemma2")["gemma2"]
+                self.assertEqual(report["verdict"], expected)
+                memory = report["metrics"]["peak_gib"]
+                self.assertEqual(memory["verdict"], "INFORMATIONAL")
+                self.assertEqual(memory["mean"], 70.0)
+                self.assertEqual(memory["new_mean"], 100.0)
+
+    def test_memory_observations_alone_cannot_pass_the_speed_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            n = gate.FAMILIES["gemma2"].min_blocks
+            write_blocks(out, "gemma2", [({"peak_gib": 30.0}, {"peak_gib": 100.0})] * n)
+            self.assertEqual(gate.verdicts(out, "gemma2")["gemma2"]["verdict"], "INCOMPLETE")
+
     def rewrite(self, out, name, change):
         path = out / "runs" / name
         r = json.loads(path.read_text())
