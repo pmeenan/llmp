@@ -32,6 +32,7 @@
 #include "ir/decompose.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/fattn_owner.h"
@@ -1790,7 +1791,8 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
       break;
     }
     case Op::kConv2d: {
-      if (n.nsrc != 3 || n.nout != 1 || Selected(id) != "ggml.conv2d.f32")
+      if (n.nsrc != 3 || n.nout != 1 ||
+          (Selected(id) != "ggml.conv2d.f32" && Selected(id) != kConv2dTiledF32))
         return Refused("spatial convolution needs its selected F32 implementation");
       auto* kernel = made_.at(n.src[0].v);
       auto* input = made_.at(n.src[1].v);
@@ -2646,6 +2648,15 @@ std::expected<void, KernelFailure> Lowering::CheckOwnerRecipes(const GraphPlan& 
 std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   // The device's choices, with the policies the selection takes.
   DeviceChoices choices = device_;
+  choices.conv2d_tiled = [this](const ggml_tensor* tensor) {
+    for (const auto& step : plan_.steps) {
+      if (registry_.at(step.implementation).name != kConv2dTiledF32) continue;
+      if (step.nodes.size() != 1) continue;
+      const auto& nodes = launched_.at(step.nodes.front().v);
+      if (!nodes.empty() && nodes.front() == tensor) return true;
+    }
+    return false;
+  };
   choices.selected = [this](const ggml_tensor* tensor) -> const execution::Implementation* {
     const auto at = std::ranges::find(out_.selected, tensor, &SelectedNode::tensor);
     return at == out_.selected.end() ? nullptr : at->implementation;

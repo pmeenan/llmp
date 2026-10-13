@@ -1,0 +1,267 @@
+{
+  "scope": "Shared F32 tiled convolution: representative completed-job screen plus same-source native migration two-step1024 agreement and descriptive output-unset complete-generation cost. Not upstream quality,40-step or matched1% qualification.",
+  "representative": {
+    "scope": "default-off shared F32 tiled convolution representative screen; full-small F64 and representative halo/tail samples; not full image or family migration speed gate",
+    "result_sha256": "9decd4a552550c0f6d5a3bd12bf61287978eb0dc5fc5048b3a14fb5a1383e19e",
+    "manifest_sha256": "7be4ef52da2858d527f5ce04f1e88e616f921af4510000e489dfe2d6283e3441",
+    "cases": {
+      "small": {
+        "direct": {
+          "warm_completed_job_ns": {
+            "samples": [
+              152287,
+              148255,
+              147999,
+              148672,
+              148384
+            ],
+            "median": 148384,
+            "min": 147999,
+            "max": 152287
+          },
+          "eager_ns": 4467090,
+          "capture_ns": 201296,
+          "changed_replay_ns": 153103,
+          "restored_replay_ns": 151312,
+          "output_sha256": "abe8ef8ea1024cca063a9627bdccce2d506073ba71038d7935436c036f5c0886",
+          "changed_output_sha256": "c66dc7326e09961f054cbe67e7b08d1eb19c094a60e4fed0b095cf77326fe377",
+          "independent_samples_per_output": 40320,
+          "max_enclosure_fraction": 0.003986555527981321,
+          "activation_bytes": 170240,
+          "pool_bytes": 0,
+          "captured_launches": 2
+        },
+        "tiled": {
+          "warm_completed_job_ns": {
+            "samples": [
+              29599,
+              25536,
+              24976,
+              25136,
+              25648
+            ],
+            "median": 25536,
+            "min": 24976,
+            "max": 29599
+          },
+          "eager_ns": 46496271,
+          "capture_ns": 211583,
+          "changed_replay_ns": 30224,
+          "restored_replay_ns": 28112,
+          "output_sha256": "0240f9e93e03dc2e977aeaee1850f9a6ecf5ad9f42aa3a84d9224839bd46e8aa",
+          "changed_output_sha256": "09050f1125c476a5cd84a35387ddab9a415f4c55cc9584bc15b31cbea096c637",
+          "independent_samples_per_output": 40320,
+          "max_enclosure_fraction": 0.046372425133685946,
+          "activation_bytes": 170240,
+          "pool_bytes": 403200,
+          "captured_launches": 5
+        },
+        "warm_median_change_percent": -82.79059736898857
+      },
+      "representative": {
+        "direct": {
+          "warm_completed_job_ns": {
+            "samples": [
+              44581924,
+              44676100,
+              44786851,
+              44587092,
+              44619044
+            ],
+            "median": 44619044,
+            "min": 44581924,
+            "max": 44786851
+          },
+          "eager_ns": 44653300,
+          "capture_ns": 44797219,
+          "changed_replay_ns": 44616484,
+          "restored_replay_ns": 44812291,
+          "output_sha256": "30678e77cbfd002e7f48a13a8e37afd424c5f90c9e1003c0950c64f2a6e41143",
+          "changed_output_sha256": "f2cbf716d078c2a69f06420de6a7119a2162fe6f7332efb2fc3a89306dd11ed4",
+          "independent_samples_per_output": 32256,
+          "max_enclosure_fraction": 0.003393998016746028,
+          "activation_bytes": 79691776,
+          "pool_bytes": 0,
+          "captured_launches": 2
+        },
+        "tiled": {
+          "warm_completed_job_ns": {
+            "samples": [
+              4175491,
+              4156595,
+              4176019,
+              4169859,
+              4175714
+            ],
+            "median": 4175491,
+            "min": 4156595,
+            "max": 4176019
+          },
+          "eager_ns": 5565182,
+          "capture_ns": 4474002,
+          "changed_replay_ns": 4177923,
+          "restored_replay_ns": 4169795,
+          "output_sha256": "4386262fe3c01d025e6e7369df280c1d1b3fa02f63fecc0ef5c4386a7a043ab4",
+          "changed_output_sha256": "ac62572c6460d62b0fcd3e6a53f7a8a9d32959fa2d0707094637e71e15881928",
+          "independent_samples_per_output": 32256,
+          "max_enclosure_fraction": 0.04233749466726728,
+          "activation_bytes": 79691776,
+          "pool_bytes": 66355200,
+          "captured_launches": 13
+        },
+        "warm_median_change_percent": -90.64190841919428
+      }
+    },
+    "timing": "wall elapsed around completed scheduler job; includes H2D input, all operation calls and D2H output; excludes oracle, host staging, canary checks and hashing. Eager/capture separate; 5 warm samples, no ABBA/1% inference. Integer nanoseconds are clock representation, not calibrated resolution.",
+    "memory_peak_process_cache_bytes": 499953664,
+    "complete_retirement": true
+  },
+  "quality": {
+    "scope": "Two-step same-source native migration baseline; not independent upstream quality or40-step/1% qualification",
+    "quality_screen_pass": true,
+    "screen_floors": {
+      "psnr_db_min": 32,
+      "ssim_luma_min": 0.98
+    },
+    "metrics": {
+      "candidate": "/data/shared/image.png",
+      "reference": "/data/legacy/image.png",
+      "size": [
+        1024,
+        1024
+      ],
+      "modes": [
+        "RGBA",
+        "RGBA"
+      ],
+      "identical_pixels": false,
+      "mean_abs_diff": 0.8315,
+      "max_abs_diff": 6,
+      "psnr_db": 46.495,
+      "ssim_luma": 0.99873
+    },
+    "own_arm_pins": {
+      "legacy": "68f1d74e54548ee8a856f67b9584de37e18c74039f4fb0b13f17920cf7e815e5",
+      "shared": "259f6ea89b9310236024f609faa7f4a2c97c47d8656bd0119922a47c7a1f737a"
+    },
+    "counter_scope": "Quality observer/copy/I/O included; descriptive only, not matched speed samples",
+    "model_result_sha256": {
+      "legacy": "4361f62501623c4a94dfd8bfecd77871731bece03b98e6edd5610f77d7425fa7",
+      "shared": "2210d7fedcbfb6f4f09b446c516a8beeaa97d80c5391ca811430885fa58fd7af"
+    },
+    "comparator_sha256": "dc0bc8e8aa87201803e93927dcab015f4b7d9cdd7f25c0b12ac519ec9c9a24f6"
+  },
+  "quality_properties": {
+    "arm": "shared",
+    "mode": "quality",
+    "first_output_invocation": "1",
+    "tiled_tuning_keys": "13",
+    "tiled_tuning_credit_bytes": "155765",
+    "completed_generations": "2",
+    "setup_seconds": "0.976427779",
+    "first_seconds_0": "14.525512668",
+    "finish_seconds_0": "8.027982912",
+    "generation_seconds_0": "22.553495580",
+    "first_seconds_1": "4.880579540",
+    "finish_seconds_1": "7.598525522",
+    "generation_seconds_1": "12.479105062",
+    "setup_paid_footprint_bytes": "41344519104",
+    "legacy_preflight_bytes": "0",
+    "legacy_weight_capacity_bytes": "0",
+    "selected_weight_bytes": "30530338816",
+    "legacy_denoising_captures": "0",
+    "quality_counters_are_timing_samples": "false",
+    "export_credit_bytes": "20971520",
+    "construction_used_bytes": "2731256290",
+    "first_flow_sha256": "2158a554e826d77d2a9cd68aff9e396d3985242b2d8568c44723185696a22dad",
+    "pixels_sha256": "259f6ea89b9310236024f609faa7f4a2c97c47d8656bd0119922a47c7a1f737a",
+    "native_report": "{\"engine\":\"component\",\"architecture\":\"QwenImage21Pipeline\",\"completed_stages\":4}"
+  },
+  "cost_properties": {
+    "arm": "shared",
+    "mode": "timing",
+    "first_output_invocation": "1",
+    "tiled_tuning_keys": "13",
+    "tiled_tuning_credit_bytes": "155765",
+    "completed_generations": "2",
+    "setup_seconds": "0.927929119",
+    "first_seconds_0": "13.743661486",
+    "finish_seconds_0": "7.916751353",
+    "generation_seconds_0": "21.660412839",
+    "first_seconds_1": "4.872764257",
+    "finish_seconds_1": "7.586275152",
+    "generation_seconds_1": "12.459039409",
+    "setup_paid_footprint_bytes": "41344519104",
+    "legacy_preflight_bytes": "0",
+    "legacy_weight_capacity_bytes": "0",
+    "selected_weight_bytes": "30530338816",
+    "legacy_denoising_captures": "0",
+    "quality_counters_are_timing_samples": "false",
+    "export_credit_bytes": "0",
+    "construction_used_bytes": "2710284770",
+    "first_flow_sha256": "2158a554e826d77d2a9cd68aff9e396d3985242b2d8568c44723185696a22dad",
+    "pixels_sha256": "259f6ea89b9310236024f609faa7f4a2c97c47d8656bd0119922a47c7a1f737a",
+    "native_report": "{\"engine\":\"component\",\"architecture\":\"QwenImage21Pipeline\",\"completed_stages\":4}"
+  },
+  "previous_pointwise_cost_properties": {
+    "arm": "shared",
+    "mode": "timing",
+    "first_output_invocation": "1",
+    "completed_generations": "2",
+    "setup_seconds": "0.932671600",
+    "first_seconds_0": "16.337930233",
+    "finish_seconds_0": "48.538754191",
+    "generation_seconds_0": "64.876684424",
+    "first_seconds_1": "4.881663631",
+    "finish_seconds_1": "48.282830353",
+    "generation_seconds_1": "53.164493984",
+    "setup_paid_footprint_bytes": "41224391616",
+    "legacy_preflight_bytes": "0",
+    "legacy_weight_capacity_bytes": "0",
+    "selected_weight_bytes": "30530338816",
+    "legacy_denoising_captures": "0",
+    "quality_counters_are_timing_samples": "false",
+    "export_credit_bytes": "0",
+    "construction_used_bytes": "2710126223",
+    "first_flow_sha256": "2158a554e826d77d2a9cd68aff9e396d3985242b2d8568c44723185696a22dad",
+    "pixels_sha256": "b59a9291e165eb26fa718c227639695b4006ace82f81d88ea92ca217c883a4f4",
+    "native_report": "{\"engine\":\"component\",\"architecture\":\"QwenImage21Pipeline\",\"completed_stages\":4}"
+  },
+  "warm_whole_generation_change_percent": -76.56511239860652,
+  "resources": {
+    "node_cap_bytes": 51539607552,
+    "construction_cap_bytes": 4294967296,
+    "process_cache_cap_bytes": 55834574848,
+    "swap_bytes": 0,
+    "physical_margin_bytes": 6442450944,
+    "quality_process_cache_peak_bytes": 993865728,
+    "cost_process_cache_peak_bytes": 964177920,
+    "scope": "Accounting envelopes and process/cache peaks, not measured device occupancy."
+  },
+  "receipts": {
+    "image-tiled-conv-main01/actual-result.json": "9f896ddaf1275b21ce1be0a7aefa2d14042fae73366178350a99cac536ff712b",
+    "image-tiled-conv-quality01/result.json": "2210d7fedcbfb6f4f09b446c516a8beeaa97d80c5391ca811430885fa58fd7af",
+    "image-tiled-conv-cost01/result.json": "dd7c735f9bbc56c2d980746b0a81141bfa14a2535dfdcec34fad0481ca3f2556",
+    "image-tiled-conv-score01/result.json": "e46fb6385ffe10b6b781d217b1a2a53a2b0523c278873986784fd92176f93d5e",
+    "image-pointwise-cost01/result.json": "e33abef2c16d590084da207bed7ce2b68128ec794837f804b1a3bfbf5756590f"
+  },
+  "generation_binary": {
+    "sha256": "b44dd5bc61ce80bbb20048321609bbc666b649efcc0f51c523d61f4edabb598d",
+    "bytes": 198819672
+  },
+  "final_selection_integration": {
+    "native_build": "PASS",
+    "host_controls": 55,
+    "host_targets": 3,
+    "seconds": 14,
+    "result_sha256": "b177ea323170e2eb02cedd565a87f83edbe973b38ba6717fe037f9a7b3bf0b7f",
+    "model_binary": {
+      "sha256": "7259cb25c96ddb315f94cf39991a9afdd2c936a175c036e99a4b061641271b77",
+      "bytes": 198829472
+    },
+    "actual_model_run": false,
+    "proof": "Current ordinary and explicit selection use equal selected operation sequences, activation root offsets/extent, operand shapes/strides and every stripe partition;40convolutions/7706calls/64880640pool/3623878656activation. Capability identity changes; historical numerical evidence stays on b44dd.",
+    "quality_log_sha256": "9a713e97bc408d17984c56672243bdd929a75b189b186b6eb89aee74dcbed46d",
+    "source_qa": "19format/16boundaries/2260headers/REUSE6.2 PASS; finaldocs QA separately owed"
+  }
+}

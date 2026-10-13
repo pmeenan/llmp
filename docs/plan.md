@@ -2656,6 +2656,16 @@ each is checked against the design as M3.6 proceeds.
             PSNR46.477 dB / SSIM0.99873. This is bounded reuse evidence, not
             independent upstream quality, isolated decoder timing or the1%
             family gate ([report](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse)).
+      - [x] **Q3i — shared tiled F32 convolution reuse:** existing F32 im2col,
+            cuBLAS, transpose and pitched copies fit a64MiB stripe workspace.
+            Exact measured sm_121 physical geometries become ordinary shared
+            candidates; other geometries keep direct fallback. Representative
+            completed-job median falls90.64%; the full1024 two-step sample
+            passes retained native agreement at46.495dB /0.99873. Output-disabled
+            warm complete generation is12.459s versus53.164s, a descriptive
+            76.57% reduction, not the matched1% gate. Same-source upstream
+            quality, serving/swap and broader schedules remain open
+            ([report](experiments/m36-shared-spatial-execution/README.md#shared-tiled-f32-convolution-reuse)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

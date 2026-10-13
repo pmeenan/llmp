@@ -61,8 +61,15 @@ job at46.242s warm, including its copies/handoff. Shared F32 pointwise emission
 now reuses existing matrix products and explicit layout copies: a representative
 completed-job warm median falls70.53%, while the complete two-step output keeps
 native agreement (PSNR46.477 dB / SSIM0.99873). First eager representative work is
-slower, and remaining3×3 convolutions retain their direct implementation. See the
-[bounded reuse evidence](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse).
+slower. Shared tiled F32 im2col/cuBLAS now covers the forty3×3 decoder
+convolutions in a64MiB stripe workspace. Exact measured sm_121 physical shapes
+are ordinary shared candidates with direct fallback elsewhere. The full
+sample passes46.495dB /0.99873 agreement; output-disabled warm generation falls
+from53.164s to12.459s (76.57%, descriptive, not matched1%). The remaining gap
+against native requires ordinary completed-stage counters before a40-step
+speed ladder; independent upstream quality and default serving remain open.
+See the [pointwise](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse)
+and [tiled reuse evidence](experiments/m36-shared-spatial-execution/README.md#shared-tiled-f32-convolution-reuse).
 See the [quality screen and accounting correction](experiments/m36-shared-spatial-execution/README.md#two-step-native-migration-quality-screen).
 
 The image speed harness accepts a candidate output pin fixed before timing,

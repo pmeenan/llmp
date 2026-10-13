@@ -15,6 +15,7 @@
 #include "engine/graph_plan.h"
 #include "expected_error.h"
 #include "kernels/ggml/capabilities.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -320,7 +321,8 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
       EXPECT_EQ(lowered->outputs[0].bytes, 16ULL * latent * 16ULL * latent * 4ULL * sizeof(float));
       std::size_t norms = 0, convolutions = 0;
       for (auto& step : lowered->plan.steps) {
-        convolutions += step.implementation == "ggml.conv2d.f32";
+        convolutions +=
+            step.implementation == "ggml.conv2d.f32" || step.implementation == kg::kConv2dTiledF32;
         if (step.implementation != "ggml.l2_norm") continue;
         ++norms;
         auto* norm = step.nodes[0];
@@ -646,7 +648,12 @@ TEST(GgmlSpatialTest, ActualTextEncoderUsesTypedIdsNeoxAndGqaWithoutTokenMetadat
 
 TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
   const auto& profile = mo::QwenImage21();
-  for (const bool decoder : {false, true}) {
+  std::vector<llmp::planner::Selected> tuned_steps;
+  llmp::planner::Placement tuned_placement;
+  std::vector<std::uint64_t> tuned_stripes;
+  for (const int mode : {0, 1, 2, 3}) {
+    const bool decoder = mode != 0;
+    const bool tiled = mode >= 2;
     SCOPED_TRACE(decoder ? "decoder1024" : "flow4121");
     const auto source =
         decoder ? mo::VaeDecoderTensors(profile.vae) : mo::DenoiserTensors(profile.denoiser);
@@ -688,6 +695,27 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
                             .device = {.arch = 121},
                             .written = kg::WrittenBytes,
                             .within = kg::WithinRoot};
+    llmp::planner::Policy policy;
+    if (mode == 1) {
+      backend.device.device_class = "sm_121";
+      policy.ranks.push_back({"sm_121", "ggml.conv2d.f32", 0});
+    }
+    if (mode == 2) {
+      backend.device.device_class = "sm_121";
+      for (const auto& step : mo::VaeDecoderPlan(profile.vae, 64, 64)) {
+        if (step.kind != mo::VaeStep::Kind::kConv3x3) continue;
+        ex::TunedShape key{.implementation = kg::kConv2dTiledF32,
+                           .rows = std::uint64_t{step.width} * step.height,
+                           .k = 9ULL * step.in_channels,
+                           .n = step.out_channels,
+                           .output_encoding = fm::Encoding::kF32};
+        if (std::ranges::none_of(backend.device.tuned, [&](const auto& old) {
+              return old.rows == key.rows && old.k == key.k && old.n == key.n;
+            }))
+          backend.device.tuned.push_back(key);
+      }
+      policy.ranks.push_back({"sm_121", std::string(kg::kConv2dTiledF32), 0});
+    }
     // Descriptor-only physical envelopes: no activation/weight payload allocation.
     kn::Addresses addresses;
     addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
@@ -697,7 +725,7 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
     addresses.activation_bytes = 32ULL << 30;
     addresses.activation_alignment = 256;
     auto plan = en::PlanComponentGraph(
-        io, backend, {}, addresses,
+        io, backend, policy, addresses,
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = kg::WrittenBytes,
          .within = kg::WithinRoot,
@@ -720,11 +748,311 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
       auto physical = kg::CheckMulMatCublas(product, compute, compute == GGML_TYPE_BF16);
       ASSERT_TRUE(physical) << Failed(physical, &kg::KernelFailure::detail).value_or("");
     }
+    if (tiled) {
+      std::vector<std::uint64_t> physical_stripes;
+      std::uint64_t count = 0, launches = 0, peak = 0;
+      for (const auto& step : lowered->plan.steps) {
+        ASSERT_NE(step.implementation, "ggml.conv2d.f32");
+        if (step.implementation != kg::kConv2dTiledF32) {
+          launches += step.nodes.size();
+          continue;
+        }
+        auto stripes = kg::CheckConv2dTiledF32(step.nodes.front());
+        ASSERT_TRUE(stripes) << Failed(stripes, &kg::KernelFailure::detail).value_or("");
+        ++count;
+        for (const auto* tensor :
+             {step.nodes.front()->src[0], step.nodes.front()->src[1], step.nodes.front()}) {
+          for (std::size_t d = 0; d < 4; ++d) {
+            physical_stripes.push_back(static_cast<std::uint64_t>(tensor->ne[d]));
+            physical_stripes.push_back(tensor->nb[d]);
+          }
+        }
+        for (const auto value : {stripes->rows, stripes->columns_bytes, stripes->product_bytes,
+                                 stripes->scratch, stripes->stripes, stripes->launches})
+          physical_stripes.push_back(value);
+        launches += stripes->launches;
+        peak = std::max(peak, stripes->scratch);
+      }
+      EXPECT_EQ(count, 40U);
+      EXPECT_EQ(peak, 64880640U);
+      EXPECT_EQ(launches, 7706U);
+      EXPECT_EQ(lowered->extent, 3623878656ULL);
+      if (mode == 2) {
+        tuned_steps = plan->steps;
+        tuned_placement = plan->placement;
+        tuned_stripes = physical_stripes;
+      } else {
+        EXPECT_TRUE(backend.device.tuned.empty());
+        EXPECT_TRUE(policy.ranks.empty());
+        EXPECT_EQ(plan->steps, tuned_steps);
+        EXPECT_EQ(plan->placement.offsets, tuned_placement.offsets);
+        EXPECT_EQ(plan->placement.extent, tuned_placement.extent);
+        EXPECT_EQ(physical_stripes, tuned_stripes);
+        RecordProperty("decoder_default_matches_qualified_selection", "true");
+        continue;
+      }
+      RecordProperty("decoder_tiled_convolutions", std::to_string(count));
+      RecordProperty("decoder_tiled_launches", std::to_string(launches));
+      RecordProperty("decoder_tiled_pool", std::to_string(peak));
+      RecordProperty("decoder_tiled_capture_bytes", std::to_string((launches + 4) * 16384));
+      RecordProperty("decoder_tiled_activation_bytes", std::to_string(lowered->extent));
+      RecordProperty("decoder_tiled_tuning_keys", std::to_string(backend.device.tuned.size()));
+      continue;
+    }
     RecordProperty(decoder ? "decoder_scratch_bytes" : "flow_scratch_bytes",
                    std::to_string(lowered->extent));
     RecordProperty(decoder ? "decoder_selected_ops" : "flow_selected_ops",
                    std::to_string(lowered->plan.steps.size()));
   }
+}
+
+// No allocations at these addresses: exercise the actual physical contract.
+struct ConvDescriptor {
+  ggml_tensor weight{}, input{}, output{};
+  static void Set(ggml_tensor& t, std::array<std::int64_t, 4> dims, std::uintptr_t address) {
+    t = {};
+    t.type = GGML_TYPE_F32;
+    t.data = reinterpret_cast<void*>(address);
+    std::size_t stride = sizeof(float);
+    for (std::size_t i = 0; i < dims.size(); ++i) {
+      t.ne[i] = dims[i];
+      t.nb[i] = stride;
+      stride *= static_cast<std::size_t>(dims[i]);
+    }
+  }
+  ConvDescriptor(std::int64_t width, std::int64_t height, std::int64_t cin, std::int64_t cout,
+                 std::int64_t batch = 1) {
+    Set(weight, {3, 3, cin, cout}, 0x100000000ULL);
+    Set(input, {width, height, cin, batch}, 0x200000000ULL);
+    Set(output, {width, height, cout, batch}, 0x300000000ULL);
+    output.op = GGML_OP_CONV_2D;
+    output.src[0] = &weight;
+    output.src[1] = &input;
+    for (std::size_t i = 0; i < 6; ++i) output.op_params[i] = 1;
+  }
+};
+TEST(GgmlSpatialTest, TiledConvolutionDerivesFullTailAndBatchLaunchesFromPaidWorkspace) {
+  ConvDescriptor representative(128, 128, 64, 1152);
+  auto plan = kg::CheckConv2dTiledF32(&representative.output);
+  ASSERT_TRUE(plan) << Failed(plan, &kg::KernelFailure::detail).value_or("");
+  EXPECT_EQ(plan->rows, 45U);
+  EXPECT_EQ(plan->stripes, 3U);
+  EXPECT_EQ(plan->launches, 12U);
+  EXPECT_EQ(plan->scratch, 66355200U);
+  EXPECT_EQ(128U % plan->rows, 38U);
+  ConvDescriptor small(7, 5, 2, 3, 2);
+  auto two = kg::CheckConv2dTiledF32(&small.output, 1792);
+  ASSERT_TRUE(two) << Failed(two, &kg::KernelFailure::detail).value_or("");
+  EXPECT_EQ(two->rows, 2U);
+  EXPECT_EQ(two->stripes, 6U);
+  EXPECT_EQ(two->launches, 24U);
+  EXPECT_LE(two->scratch, 1792U);
+  EXPECT_FALSE(kg::CheckConv2dTiledF32(&small.output, 1023));
+  // The largest source decoder geometry still has a bounded row tile; no
+  // fixed spatial policy cap or full 10.125 GiB columns allocation is needed.
+  ConvDescriptor large(1024, 1024, 288, 288);
+  auto five = kg::CheckConv2dTiledF32(&large.output);
+  ASSERT_TRUE(five) << Failed(five, &kg::KernelFailure::detail).value_or("");
+  EXPECT_EQ(five->rows, 5U);
+  EXPECT_EQ(five->scratch, 64880640U);
+  EXPECT_EQ(five->stripes, 205U);
+}
+TEST(GgmlSpatialTest, TiledConvolutionRefusesAliasesLayoutsAndUnpaidRowsBeforeExecution) {
+  ConvDescriptor descriptor(128, 128, 64, 1152);
+  const auto original = descriptor.output;
+  descriptor.output.data = descriptor.input.data;
+  EXPECT_FALSE(kg::CheckConv2dTiledF32(&descriptor.output));
+  descriptor.output = original;
+  descriptor.input.nb[2] += 4;
+  EXPECT_FALSE(kg::CheckConv2dTiledF32(&descriptor.output));
+  descriptor.input.nb[2] -= 4;
+  descriptor.output.op_params[3] = 0;
+  EXPECT_FALSE(kg::CheckConv2dTiledF32(&descriptor.output));
+  descriptor.output = original;
+  descriptor.weight.type = GGML_TYPE_BF16;
+  EXPECT_FALSE(kg::CheckConv2dTiledF32(&descriptor.output));
+  descriptor.weight.type = GGML_TYPE_F32;
+  EXPECT_FALSE(kg::CheckConv2dTiledF32(&descriptor.output, 1474559));
+  EXPECT_TRUE(kg::CheckConv2dTiledF32(&descriptor.output, 1474560));
+  ConvDescriptor too_wide(1 << 20, 1, 1, 1);
+  EXPECT_TRUE(kg::CheckConv2dTiledF32(&too_wide.output));
+  ConvDescriptor unpaid(1 << 21, 1, 1, 1);
+  EXPECT_FALSE(kg::CheckConv2dTiledF32(&unpaid.output));
+}
+TEST(GgmlSpatialTest, TiledConvolutionPhysicalSelectionFollowsTheChosenImplementation) {
+  const auto* capability = kg::CapabilityOf(kg::kConv2dTiledF32);
+  ASSERT_NE(capability, nullptr);
+  EXPECT_FALSE(capability->needs_tuning);
+  ConvDescriptor descriptor(128, 128, 64, 1152);
+  std::array nodes{&descriptor.output};
+  auto direct = kg::PlanGraph(nodes, false, {}, {});
+  ASSERT_TRUE(direct) << Failed(direct, &kg::KernelFailure::detail).value_or("");
+  ASSERT_EQ(direct->steps.size(), 1U);
+  EXPECT_EQ(direct->steps[0].implementation, "ggml.conv2d.f32");
+  kg::DeviceChoices selected;
+  selected.conv2d_tiled = [&](const ggml_tensor* t) { return t == &descriptor.output; };
+  auto tiled = kg::PlanGraph(nodes, false, selected, {});
+  ASSERT_TRUE(tiled) << Failed(tiled, &kg::KernelFailure::detail).value_or("");
+  ASSERT_EQ(tiled->steps.size(), 1U);
+  EXPECT_EQ(tiled->steps[0].implementation, kg::kConv2dTiledF32);
+}
+
+TEST(GgmlSpatialTest, TiledDefaultQualificationKeepsPhysicalShapeDeviceAndFormatIdentity) {
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  const ir::Conv2dParams params{.stride = 1, .padding = 1, .dilation = 1};
+  // The negative geometry cases have exactly the same collapsed rows/K/N as
+  // qualified64x64. Their real W,H or batch differs and must remain direct.
+  for (const auto dims : {std::array<std::int64_t, 3>{64, 64, 1}, {128, 32, 1}, {32, 64, 2}}) {
+    ConvDescriptor descriptor(dims[0], dims[1], 64, 1152, dims[2]);
+    ggml_tensor bias{};
+    ConvDescriptor::Set(bias, {1152, 1, 1, 1}, 0x400000000ULL);
+    std::array<ex::OperandFormat, 4> operands{};
+    const std::array tensors{&descriptor.weight, &descriptor.input, &bias, &descriptor.output};
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      operands[i].operand = i == 3 ? ex::kOutputOperand : static_cast<std::uint8_t>(i);
+      operands[i].encoding = fm::Encoding::kF32;
+      operands[i].layout = fm::Layout::kDense;
+      operands[i].memory.emplace();
+      for (std::size_t d = 0; d < 4; ++d) {
+        operands[i].ne[d] = static_cast<std::uint64_t>(tensors[i]->ne[d]);
+        operands[i].memory->nb[d] = tensors[i]->nb[d];
+      }
+    }
+    ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kConv2d),
+                              .operands = operands,
+                              .rows = 4096,
+                              .k = 576,
+                              .n = 1152,
+                              .arch = 121,
+                              .params = std::as_bytes(std::span(&params, 1))};
+    for (const auto arch : {86U, 121U}) {
+      query.arch = arch;
+      if (arch != 121) {
+        EXPECT_FALSE(kg::CapabilityOf(kg::kConv2dTiledF32)->accepts(query));
+        continue;  // This build need not contain any implementation for arch86.
+      }
+      const auto candidates = ex::Candidates(*registry, query);
+      ASSERT_FALSE(candidates.empty());
+      const bool qualified = arch == 121 && dims == std::array<std::int64_t, 3>{64, 64, 1};
+      EXPECT_EQ(registry->at(candidates.front()).name,
+                qualified ? kg::kConv2dTiledF32 : std::string_view("ggml.conv2d.f32"));
+    }
+    query.arch = 121;
+    operands[1].memory->nb[1] += 4;
+    EXPECT_FALSE(kg::CapabilityOf(kg::kConv2dTiledF32)->accepts(query));
+    operands[1].memory->nb[1] -= 4;
+    operands[0].encoding = fm::Encoding::kBF16;
+    EXPECT_FALSE(kg::CapabilityOf(kg::kConv2dTiledF32)->accepts(query));
+  }
+}
+
+TEST(GgmlSpatialTest, TiledConvolutionUsesRealTuningAndPhysicalPlanInBothBindingModes) {
+  auto registry = Registry();
+  ASSERT_TRUE(registry) << Failed(registry, &ex::PlanRejection::detail).value_or("");
+  Budget budget;
+  const auto spec = Spec();
+  const std::vector<co::BoundTensor> tensors{
+      {"kernel", ir::Dense(fm::Encoding::kF32, ir::ShapeOf({3, 3, 2, 3}))},
+      {"bias", ir::Dense(fm::Encoding::kF32, ir::ShapeOf({3}))}};
+  const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+  const std::array owners{co::SpatialOwner{0, {3, 2, 2, 1}}};
+  auto graph = co::BuildSpatialStep(spec, tables, owners, budget.Payment());
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                      graph->weights()};
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.device_class = "sm_121", .arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  llmp::planner::Policy policy;
+  // Diagnostic forced choice, not a claimed measured rank.
+  policy.ranks.push_back({"sm_121", std::string(kg::kConv2dTiledF32), 0});
+  for (const bool tuning : {false, true}) {
+    backend.device.tuned.clear();
+    if (tuning)
+      backend.device.tuned.push_back({.implementation = kg::kConv2dTiledF32,
+                                      .rows = 24,
+                                      .k = 18,
+                                      .n = 3,
+                                      .output_encoding = fm::Encoding::kF32});
+    auto paid = llmp::planner::OwnedDeviceFacts::Bound(backend.device);
+    ASSERT_TRUE(paid) << Failed(paid).value_or("");
+    auto owned = llmp::planner::OwnedDeviceFacts::Create(backend.device, *paid);
+    ASSERT_TRUE(owned) << Failed(owned).value_or("");
+    for (const bool measuring : {true, false}) {
+      kn::Addresses addresses;
+      addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+        return 0x20000000ULL + (std::uint64_t{ref.role} << 16U);
+      };
+      addresses.activations = measuring ? 0ULL : 0x10000000ULL;
+      addresses.activation_bytes = 1U << 20U;
+      addresses.activation_alignment = 256;
+      addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+      auto plan = en::PlanComponentGraph(
+          io, backend, policy, addresses,
+          {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+           .written = kg::WrittenBytes,
+           .within = kg::WithinRoot,
+           .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+      ASSERT_TRUE(plan) << Failed(plan).value_or("");
+      auto lowered = kg::LowerStep(kn::LowerInput{*plan, io, addresses}, *registry, {});
+      ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+      const auto count = std::ranges::count(
+          lowered->plan.steps, tuning ? kg::kConv2dTiledF32 : std::string_view("ggml.conv2d.f32"),
+          &kg::PlanStep::implementation);
+      EXPECT_EQ(count, 1);
+    }
+  }
+}
+
+TEST(GgmlSpatialTest, RepresentativeTiledConvolutionFitsCompleteActivationPlacement) {
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  ir::Builder b(8);
+  const auto weight =
+      b.Weight(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({3, 3, 64, 1152})), {0, 0, 0});
+  const auto bias = b.Weight(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({1152})), {0, 0, 1});
+  b.SetOwner(0);
+  const auto x = b.Input(ir::Dense(fm::Encoding::kF32, ir::ShapeOf({128, 128, 64, 1})));
+  b.Output(b.Conv2d(weight, x, bias, {.stride = 1, .padding = 1, .dilation = 1}));
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  const std::array<co::StepWeight, 2> weights{
+      co::StepWeight{weight, {0, 0, 0}, {{"kernel", fm::PartRole::kData}}},
+      co::StepWeight{bias, {0, 0, 1}, {{"bias", fm::PartRole::kData}}}};
+  en::GraphBuildIO io{*graph, graph->inputs(), graph->outputs(), weights};
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.device_class = "sm_121", .arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  backend.device.tuned.push_back({.implementation = kg::kConv2dTiledF32,
+                                  .rows = 16384,
+                                  .k = 576,
+                                  .n = 1152,
+                                  .output_encoding = fm::Encoding::kF32});
+  llmp::planner::Policy policy;
+  policy.ranks.push_back({"sm_121", std::string(kg::kConv2dTiledF32), 0});
+  kn::Addresses addresses;
+  addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+    return 0x20000000ULL + (std::uint64_t{ref.role} << 24U);
+  };
+  addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+  addresses.activations = 0x100000000ULL;
+  addresses.activation_bytes = 128ULL << 20U;
+  addresses.activation_alignment = 256;
+  auto plan =
+      en::PlanComponentGraph(io, backend, policy, addresses,
+                             {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+                              .written = kg::WrittenBytes,
+                              .within = kg::WithinRoot,
+                              .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+  ASSERT_TRUE(plan) << Failed(plan).value_or("");
+  auto lowered = kg::LowerStep(kn::LowerInput{*plan, io, addresses}, *registry, {});
+  ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+  EXPECT_LE(lowered->extent, addresses.activation_bytes);
+  EXPECT_EQ(lowered->outputs[0].bytes, 75497472U);
+  RecordProperty("representative_activation_bytes", std::to_string(lowered->extent));
 }
 
 }  // namespace

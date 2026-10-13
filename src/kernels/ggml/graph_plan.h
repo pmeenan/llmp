@@ -54,6 +54,9 @@ namespace llmp::kernels::ggml {
 struct DeviceChoices {
   // Exact declarations of opaque selected-source markers. Empty by default.
   std::function<const execution::Implementation*(const ggml_tensor*)> selected{};
+  // Exact per-node choice from the selected IR implementation. Empty preserves
+  // the ordinary direct convolution; never inferred from geometry alone.
+  std::function<bool(const ggml_tensor*)> conv2d_tiled = nullptr;
   // The family ggml_cuda_mul_mat selects for a product, or a refusal where
   // it would take a path no implementation here has.
   std::function<std::expected<MulMatPath, KernelFailure>(const ggml_tensor*)> mul_mat;

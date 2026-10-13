@@ -21,6 +21,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
@@ -636,7 +637,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kDiv, kDivName, i, {node}, 1);
         break;
       case GGML_OP_CONV_2D:
-        add(Operation::kConv2d, "ggml.conv2d.f32", i, {node}, 1);
+        add(Operation::kConv2d,
+            device.conv2d_tiled && device.conv2d_tiled(node) ? kConv2dTiledF32 : "ggml.conv2d.f32",
+            i, {node}, 1);
         break;
       case GGML_OP_UPSCALE:
         add(Operation::kUpsample, "ggml.upsample.nearest", i, {node}, 1);

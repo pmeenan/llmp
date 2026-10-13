@@ -31,8 +31,12 @@ struct ImageGenerationSource {
 // Takes already-open, paid artifact owners; no checkpoint payload copies or
 // residency admission happen here. EngineImage measures all stage envelopes
 // before Start and holds only each executing stage's current weight closure.
+// Optional internal tuning owns its names and is paid by the caller before
+// construction. Only its tuning tuples are forwarded; provider device facts
+// remain authoritative and an absent record preserves default selection.
 EngineImageBuild ComponentImageGenerationBuild(
     engine::PagedNode& node, int owner, std::shared_ptr<ImageGenerationSource> source,
-    std::shared_ptr<engine::ExecutionMetadataAllowance> construction);
+    std::shared_ptr<engine::ExecutionMetadataAllowance> construction,
+    std::shared_ptr<const planner::OwnedDeviceFacts> tuning = {});
 }  // namespace llmp::runtime
 #endif  // LLMP_RUNTIME_COMPONENT_IMAGE_BUILD_H_

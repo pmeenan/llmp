@@ -16,6 +16,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/graph_plan.h"
@@ -99,7 +100,9 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
       continue;
     }
     std::expected<std::uint64_t, KernelFailure> planned = 0;
-    if (step.implementation == kMulMatCublas) {
+    if (step.implementation == kConv2dTiledF32) {
+      planned = PlanConv2dTiledF32(launch, step.nodes.front());
+    } else if (step.implementation == kMulMatCublas) {
       auto cublas = PlanMulMatCublas(launch, step.nodes.front());
       if (!cublas) {
         return std::unexpected(cublas.error());

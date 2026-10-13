@@ -19,6 +19,7 @@
 #include "execution/registry.h"
 #include "ggml.h"
 #include "kernels/ggml/capabilities.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
@@ -110,7 +111,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 139> kKernels = {{
+constexpr std::array<Kernel::Entry, 140> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -507,6 +508,17 @@ constexpr std::array<Kernel::Entry, 139> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckBinary(n[0], GGML_OP_DIV); },
      .run = [](LaunchContext& launch, Nodes n) { return Div(launch, n[0]); }},
+    {.name = kConv2dTiledF32,
+     .operation = execution::Operation::kConv2d,
+     .variant = "workspace-derived stripes: pinned F32 im2col, cuBLAS, packed transpose and "
+                "pitched scatter; 64 MiB scratch target; experimental exact-shape opt-in",
+     .arity = 1,
+     .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
+       auto checked = CheckConv2dTiledF32(n[0]);
+       if (!checked) return std::unexpected(checked.error());
+       return {};
+     },
+     .run = [](LaunchContext& launch, Nodes n) { return Conv2dTiledF32(launch, n[0]); }},
     {.name = "ggml.conv2d.f32",
      .operation = execution::Operation::kConv2d,
      .variant = "ggml_cuda_op_conv2d direct F32 WHCN; unchanged pinned launch configuration",
@@ -1240,7 +1252,8 @@ std::string_view RmsNormMulKernel::name() const { return entry_->name; }
 bool UsesCublas(std::string_view implementation) {
   // The declarations above whose launchers take the lent cuBLAS handle
   // (MulMatCublas, RunGemmBf16); a new one belongs here.
-  return implementation == "ggml.mul_mat.cublas" || implementation == "llmp.gemm.bf16";
+  return implementation == "ggml.mul_mat.cublas" || implementation == "llmp.gemm.bf16" ||
+         implementation == kConv2dTiledF32;
 }
 
 std::expected<Kernel, KernelFailure> Kernel::Bind(const execution::Implementation& implementation) {

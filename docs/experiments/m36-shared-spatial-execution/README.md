@@ -573,3 +573,103 @@ quality result `0b93331d4bebcb5ab4d745e01a679b031433c5707b1acbf7594da849898ac4f7
 cost result `e33abef2c16d590084da207bed7ce2b68128ec794837f804b1a3bfbf5756590f`.
 Actual generation binary `63e739113f86b28c56bad548e1ced598872f6f056711e1533ef70caf8637e8f1`
 (198,334,592 bytes); all model records remain bound to their executed source.
+
+
+## Shared tiled F32 convolution reuse
+
+The shared Conv2d implementation now has a bounded tiled alternative for packed
+F32 3×3, stride-one, pad-one operands. It reuses the pinned GGML F32 im2col body,
+llmpalooza's existing cuBLAS product, transpose and pitched output copy. Source
+weights and activations stay F32. No new GPU kernel, forced intermediate
+rounding or family executor was added. The physical planner and executor use
+the same checked stripe plan; each stripe preserves the original image/channel
+stride and has its own exact tail pitch and signed halo offset. Ordinary cuBLAS
+callers retain their existing validation and workspace ownership.
+
+The executed qualification used a default-off candidate with an immutable,
+paid tuning record supplying thirteen source-derived shape keys. After it passed,
+ordinary shared selection adopts those thirteen exact W/H/input-channel/output-
+channel geometries for packed F32, batch1 on sm_121. They are measured evidence
+entries, not model capacity limits; a differently shaped image with the same
+flattened row count does not qualify. Other shapes/devices retain direct
+convolution unless explicitly tuned. No model/profile-name supplier is needed.
+Forty decoder convolutions use the tiled implementation. The 64MiB implementation workspace bounds columns,
+product and transposed output together, rather than allocating the derived
+10.125GiB full-column worst case. Complete decoder planning reports64,880,640
+bytes of tiled pool, unchanged3,623,878,656-byte activation placement and7,706
+actual launch calls. Capture accounting includes every stripe call and boundary
+copy. These are planned bounds, not measured device peaks.
+
+The independent representative screen uses the real F32 decoder input weights
+with64 input and1,152 output channels. It covers the full7×5 scalar case and
+128×128 case with45/45/38-row stripes, including both halo boundaries and the
+last row. All outputs are finite,108 guard values per geometry remain intact,
+and independent F64 checks cover40,320 small outputs or32,256 representative
+samples per execution. Changed-input retained replay changes the output and
+restoring the input restores each implementation's own pin. Both satisfy their
+predeclared arithmetic enclosure; cross-implementation bits need not agree.
+The representative pool is66,355,200 bytes, including all stripe buffers.
+
+| Complete representative job (ms) | Direct | Tiled copies/product |
+| --- | ---: | ---: |
+| First eager |44.653300|5.565182|
+| Five warm replays, median |44.619044|4.175491|
+| Warm minimum–maximum |44.581924–44.786851|4.156595–4.176019|
+
+The warm median is90.64% lower, including copies and completion. The small case
+also improves warm median, but its first tiled eager run is46.496ms versus
+4.467ms direct; startup is not hidden in the warm statistic. This local screen
+is not a family speed qualification.
+
+Two complete1024×1024 generations then pass the unchanged retained native
+migration comparison at **46.495dB PSNR and0.99873 luma SSIM** (floors32dB/0.98).
+Mean absolute RGB difference is0.8315/255, maximum6/255. The candidate owns its
+new repeatable pixel pin; no legacy rerun or previous shared-pixel requirement
+was imposed. This remains the low-detail two-step sample, not independent
+upstream diffusers quality or usable40-step perceptual qualification.
+
+After that pass, an output-disabled run takes0.928s to set up,21.660s for its
+first complete generation and **12.459s warm**, versus the prior pointwise
+candidate's64.877s first and53.164s warm. The warm observation is **76.57% lower**.
+Both ordinary runs place the first-output boundary after flow1. These are
+single-run descriptive complete-generation observations, not an isolated
+convolution attribution, matched1% gate or production serving claim. Quality
+runs include observation/I/O and are kept separate from these cost counters.
+
+The actual managed admission is41,344,519,104 bytes under the unchanged48GiB
+node cap. Construction uses2,731,256,290 bytes with quality observation or
+2,710,284,770 without, under the existing4GiB allowance. The immutable tuning
+preparation/ownership credit is155,765 bytes; source closure remains
+30,530,338,816 bytes. The6GiB physical margin and separate52GiB zero-swap
+process/cache ceiling remain enforced. Process/cache peaks are993,865,728 bytes
+for quality and964,177,920 for cost, not total device occupancy.
+
+Full current-main Spark B native build and all54 affected host controls pass,
+with exact3 spatial/2 generation/1 whole-VAE registrations inventoried. These
+qualification binaries match those executed. The later selector-only adoption
+changes capability identity; it does not relabel historical binaries or plan
+digests. A focused control compares default and explicit selection's operation
+sequence, placement, tensor geometry and complete stripe partitions, including
+all40 convolutions, pool and launch counts. Final current-main integration passes the full native build and55 affected
+host controls in14s, including the ordinary-selection comparison. No additional
+model execution is attributed to the selector-only binary. Formatting19 files,
+16 boundary checks,2,260 headers and REUSE6.2 pass; the final added documentation
+and aggregate receive the separate landing source-quality check. The earlier qualifying main check passes formatting19 files,16 boundary checks,
+2,260 headers and REUSE6.2 pass. Representative, quality and cost runs retire
+completely with source/binary/artifact guards passing, zero memory/OOM events
+and zero remaining compute PIDs; the existing CPU comparator's confined
+container also retires. Raw outputs and receipts remain outside Git;
+[tiled-convolution.json](tiled-convolution.json) contains compact observations.
+
+Provenance: main receipt`9f896ddaf1275b21ce1be0a7aefa2d14042fae73366178350a99cac536ff712b`;
+quality`2210d7fedcbfb6f4f09b446c516a8beeaa97d80c5391ca811430885fa58fd7af`;
+cost`dd7c735f9bbc56c2d980746b0a81141bfa14a2535dfdcec34fad0481ca3f2556`.
+Generation binary`b44dd5bc61ce80bbb20048321609bbc666b649efcc0f51c523d61f4edabb598d`
+(198,819,672 bytes). Broader same-source quality, serving/swap and the matched
+family migration gate remain open.
+
+Final selector integration receipt`b177ea323170e2eb02cedd565a87f83edbe973b38ba6717fe037f9a7b3bf0b7f`;
+final generation binary`7259cb25c96ddb315f94cf39991a9afdd2c936a175c036e99a4b061641271b77`
+(198,829,472 bytes). The comparison proves the same selected operations,
+placement and physical stripe plans, not equality of historical capability
+identities; numerical evidence remains bound to the executed b44dd binary above.

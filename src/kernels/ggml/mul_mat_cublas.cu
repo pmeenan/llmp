@@ -39,6 +39,7 @@
 #include "convert.cuh"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/ggml_support.h"
+#include "kernels/ggml/mul_mat_cublas_internal.h"
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/validate.h"
 #include "mmf.cuh"
@@ -317,6 +318,21 @@ void Launch(ggml_backend_cuda_context& ctx, const CublasMulMat& plan, const ggml
 
 }  // namespace
 
+void internal::LaunchPlannedMulMatCublas(ggml_backend_cuda_context& context,
+                                         const CublasMulMat& plan, ggml_tensor* node) {
+  switch (plan.compute) {
+    case GGML_TYPE_F16:
+      Launch<GGML_TYPE_F16>(context, plan, node->src[0], node->src[1], node);
+      break;
+    case GGML_TYPE_BF16:
+      Launch<GGML_TYPE_BF16>(context, plan, node->src[0], node->src[1], node);
+      break;
+    default:
+      Launch<GGML_TYPE_F32>(context, plan, node->src[0], node->src[1], node);
+      break;
+  }
+}
+
 std::expected<CublasMulMat, KernelFailure> PlanMulMatCublas(const LaunchContext& launch,
                                                             const ggml_tensor* node) {
   if (auto checked = CheckMulMatCublasOperands(node); !checked) {
@@ -350,19 +366,7 @@ std::expected<void, KernelFailure> MulMatCublas(LaunchContext& launch, ggml_tens
   }
   return launch.Run(base::Bytes(plan->scratch),
                     [&plan = *plan, node](ggml_backend_cuda_context& context) {
-                      const ggml_tensor* src0 = node->src[0];
-                      const ggml_tensor* src1 = node->src[1];
-                      switch (plan.compute) {
-                        case GGML_TYPE_F16:
-                          Launch<GGML_TYPE_F16>(context, plan, src0, src1, node);
-                          break;
-                        case GGML_TYPE_BF16:
-                          Launch<GGML_TYPE_BF16>(context, plan, src0, src1, node);
-                          break;
-                        default:
-                          Launch<GGML_TYPE_F32>(context, plan, src0, src1, node);
-                          break;
-                      }
+                      internal::LaunchPlannedMulMatCublas(context, plan, node);
                     });
 }
 

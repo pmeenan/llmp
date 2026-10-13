@@ -17,8 +17,10 @@
 #include <utility>
 
 #include "base/bytes.h"
+#include "base/check.h"
 #include "execution/registry.h"
 #include "kernels/ggml/capabilities.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
@@ -84,8 +86,17 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
           step.nodes.size() == 1
               ? std::ranges::find(lowered_.selected, step.nodes[0], &SelectedNode::tensor)
               : lowered_.selected.end();
-      launches_ +=
-          selected == lowered_.selected.end() ? step.nodes.size() : selected->call->launches();
+      if (step.implementation == kConv2dTiledF32) {
+        // Lowering and physical admission have checked this descriptor already.
+        // Each stripe is four actual calls, not one compound launch.
+        const auto tile = CheckConv2dTiledF32(step.nodes.front());
+        base::Check(tile.has_value(),
+                    "an admitted tiled convolution retains its checked descriptor");
+        launches_ += tile->launches;
+      } else {
+        launches_ +=
+            selected == lowered_.selected.end() ? step.nodes.size() : selected->call->launches();
+      }
     }
     for (const auto& selected : lowered_.selected) selected_host_ += selected.call->host_bytes();
     if (lowered_.weight_reads) {

@@ -22,6 +22,7 @@
 #include "format/layout.h"
 #include "ir/graph.h"
 #include "ir/op.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/gemma_moe.h"
@@ -1108,6 +1109,49 @@ bool AcceptsSpatialConv(const ex::CapabilityQuery& q) {
                                x->ne[1] + 2 * p->padding - w->ne[1] + 1, w->ne[3], x->ne[3]})
                       .ne;
 }
+bool AcceptsSpatialTiled(const ex::CapabilityQuery& q) {
+  if (!AcceptsSpatialConv(q)) return false;
+  const auto p = ParamsOf<ir::Conv2dParams>(q);
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, 1);
+  if (w->ne[0] != 3 || p->padding != 1) return false;
+  // SpatialPackedF32 already bounded the complete packed source/output spans.
+  const auto round = [](std::uint64_t n) { return (n + 255) & ~std::uint64_t{255}; };
+  const auto k = 9 * w->ne[2];
+  if (k > static_cast<std::uint64_t>(INT32_MAX) ||
+      round(4 * x->ne[0] * k) + 2 * round(4 * x->ne[0] * w->ne[3]) > kConv2dTileBudget)
+    return false;
+  // Measured sm_121 F32 qualification (image-tiled-conv quality/cost01):
+  // group repeated operations by exact W,H,Cin,Cout with batch=1. These are
+  // evidence entries, not model geometry limits. In particular, rows=W*H*N
+  // alone must not admit a differently shaped image or batch. Other shapes
+  // retain direct convolution unless the caller supplies explicit tuning.
+  constexpr std::array<std::array<std::uint64_t, 4>, 13> qualified{{
+      {64, 64, 64, 1152},
+      {64, 64, 1152, 1152},
+      {128, 128, 1152, 1152},
+      {256, 256, 576, 576},
+      {256, 256, 1152, 576},
+      {256, 256, 1152, 1152},
+      {512, 512, 288, 288},
+      {512, 512, 576, 288},
+      {512, 512, 576, 576},
+      {1024, 1024, 144, 4},
+      {1024, 1024, 144, 144},
+      {1024, 1024, 288, 144},
+      {1024, 1024, 288, 288},
+  }};
+  if (q.arch == 121 && x->ne[3] == 1 &&
+      std::ranges::find(qualified, std::array{x->ne[0], x->ne[1], w->ne[2], w->ne[3]}) !=
+          qualified.end())
+    return true;
+  // Preserve the existing explicit owned-tuning path for diagnostic or later
+  // qualification shapes; it still passes every physical check above.
+  return std::ranges::any_of(q.tuned, [&](const ex::TunedShape& t) {
+    return t.implementation == kConv2dTiledF32 && t.rows == q.rows && t.k == q.k && t.n == q.n &&
+           (!t.output_encoding || *t.output_encoding == Encoding::kF32);
+  });
+}
 bool AcceptsSpatialUp(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::UpsampleParams>(q);
   const auto* x = Operand(q, 0);
@@ -1209,6 +1253,13 @@ constexpr std::string_view kVecQDenseName = "llmp.vecq.dense";
 constexpr std::string_view kVecQGluName = "llmp.vecq.glu";
 constexpr std::string_view kVecQExpertsName = "llmp.vecq.experts";
 constexpr std::string_view kVecQExpertsGluName = "llmp.vecq.experts_glu";
+constexpr std::array<std::string_view, 2> kSpatialTiledSteps = {kConv2dTiledF32, "ggml.add"};
+constexpr ex::Capability SpatialTiled() {
+  // The qualified geometry predicate supplies default eligibility. Explicit
+  // caller ranks still take precedence over this measured ordinary preference.
+  return Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsSpatialTiled, false, {}, 1, {}, 0,
+             kSpatialTiledSteps);
+}
 constexpr std::array<std::string_view, 2> kSpatialConvSteps = {"ggml.conv2d.f32", "ggml.add"};
 constexpr std::array<std::string_view, 2> kMxfp8GemmSteps = {kMxfp8SwizzleName, kMxfp8GemmName};
 constexpr std::array<std::string_view, 2> kQsaAttentionSteps = {kQsaTopKName, kQsaAttnName};
@@ -1240,6 +1291,7 @@ const std::array kEntries = {
           Cap(P(Op::kGetRows), kFloatTable, &AcceptsAny, true, {}, 1), kBuilt},
     Entry{"ggml.get_rows.ext", Operation::kGetRows,
           Cap(P(Op::kGetRows), {}, &AcceptsGetRowsExt, true), kBuilt},
+    Entry{kConv2dTiledF32, Operation::kConv2d, SpatialTiled(), kBuilt},
     Entry{"ggml.conv2d.f32", Operation::kConv2d,
           Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsSpatialConv, false, {}, 0, {}, 0,
               kSpatialConvSteps),

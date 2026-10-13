@@ -26,6 +26,7 @@
 #include "engine/expert_slab.h"
 #include "engine/qwen_image_runner.h"
 #include "expected_error.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/image/pipeline.h"
 #include "platform/host_probe.h"
@@ -81,7 +82,9 @@ struct Lifetime {
   en::QwenImageOptions legacy_options;  // before the runner borrowing it
   std::unique_ptr<en::QwenImageRunner> legacy;
   std::unique_ptr<rt::EngineImage> image;
-  bool legacy_arm = false, decoder_times = false;
+  bool legacy_arm = false, decoder_times = false, tiled = false;
+  std::shared_ptr<const llmp::planner::OwnedDeviceFacts> tiled_facts;
+  std::uint64_t tuning_credit = 0;
   std::array<en::StepTimes, 2> decoder_job_times{};
   fs::path output;
   std::vector<std::byte> exported;
@@ -284,7 +287,63 @@ struct Lifetime {
       rt::ModelSettings settings;
       settings.name = entry.name;
       settings.architecture = "qwen_image_pipeline";
-      auto build = rt::ComponentImageGenerationBuild(node, 0, source, allowance);
+      if (tiled) {
+        // Closed source inventory:113 VaeStep entries and128 tensor names/shapes
+        // produced together by VaeDecoderPlan. Double capacities and512B per
+        // source descriptor include strings, dimensions and bookkeeping. Pay
+        // this temporary phase before any vector construction; no payloads.
+        constexpr std::uint64_t preparation = 2 * 113 * sizeof(llmp::model::VaeStep) +
+                                              2 * 128 * 512 +
+                                              2 * 113 * sizeof(llmp::execution::TunedShape) + 4096;
+        if (!allowance->Charge(preparation)) return Error("tiled selection preparation unpaid");
+        tuning_credit = preparation;
+        const auto stages = llmp::model::VaeDecoderPlan(llmp::model::QwenImage21().vae, 64, 64);
+        if (stages.size() != 113) return Error("actual decoder tuning inventory changed");
+        llmp::planner::DeviceFacts facts{.device_class = "sm_121"};
+        facts.tuned.reserve(stages.size());
+        for (const auto& stage : stages) {
+          if (stage.kind != llmp::model::VaeStep::Kind::kConv3x3) continue;
+          llmp::execution::TunedShape key{.implementation = llmp::kernels::ggml::kConv2dTiledF32,
+                                          .rows = std::uint64_t{stage.width} * stage.height,
+                                          .k = 9ULL * stage.in_channels,
+                                          .n = stage.out_channels,
+                                          .output_encoding = llmp::format::Encoding::kF32};
+          if (std::ranges::none_of(facts.tuned, [&](const auto& before) {
+                return before.rows == key.rows && before.k == key.k && before.n == key.n;
+              }))
+            facts.tuned.push_back(key);
+        }
+        auto bytes = llmp::planner::OwnedDeviceFacts::Bound(facts);
+        if (!bytes || !allowance->Charge(*bytes)) return Error("owned tiled selection unpaid");
+        tuning_credit += *bytes;
+        auto owned = llmp::planner::OwnedDeviceFacts::Create(facts, *bytes);
+        if (!owned) return Error(owned.error());
+        tiled_facts = std::make_shared<llmp::planner::OwnedDeviceFacts>(std::move(*owned));
+      }
+      auto build = rt::ComponentImageGenerationBuild(node, 0, source, allowance, tiled_facts);
+      if (tiled) {
+        build = [original = std::move(build), facts = tiled_facts](const rt::ModelSettings& current)
+            -> std::expected<rt::EngineImageParts, std::string> {
+          auto parts = original(current);
+          if (!parts) return std::unexpected(parts.error());
+          if (!parts->backend || !parts->backend->owner)
+            return std::unexpected(std::string("tiled source lost its actual backend owner"));
+          const auto& actual = parts->backend->owner->backend().device.tuned;
+          const auto& expected = facts->facts().tuned;
+          if (actual.size() != expected.size())
+            return std::unexpected(std::string("owned tiled tuple count changed"));
+          for (std::size_t i = 0; i < expected.size(); ++i)
+            if (actual[i].implementation != expected[i].implementation ||
+                actual[i].rows != expected[i].rows || actual[i].k != expected[i].k ||
+                actual[i].n != expected[i].n ||
+                actual[i].output_encoding != expected[i].output_encoding)
+              return std::unexpected(std::string("owned tiled tuple identity changed"));
+          // Explicit diagnostic candidate, not a serving rank claim for all shapes.
+          parts->policy.ranks.push_back(
+              {"sm_121", std::string(llmp::kernels::ggml::kConv2dTiledF32), 0});
+          return parts;
+        };
+      }
       if (!output.empty()) {
         export_credit = 20 * kMiB;
         if (!allowance->Charge(export_credit)) return Error("quality export credit is unavailable");
@@ -437,6 +496,10 @@ TEST(ImageGenerationGpu, CompleteTextFlowAndDecoderRetainAcrossTwoGenerations) {
     FAIL() << Failed(retired).value_or("");
   }
   ASSERT_TRUE(result) << Failed(result).value_or("");
+  if (life->tiled) {
+    RecordProperty("tiled_tuning_keys", std::to_string(life->tiled_facts->facts().tuned.size()));
+    RecordProperty("tiled_tuning_credit_bytes", std::to_string(life->tuning_credit));
+  }
   RecordProperty("completed_generations", 2);
   RecordProperty("completed_stages", 8);
   RecordProperty("complete_pixel_values_per_generation", 4194304);
@@ -469,6 +532,8 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
     ASSERT_FALSE(error);
     life->output = output;
   }
+  life->tiled = std::getenv("LLMP_IMAGE_SCREEN_TILED_CONV") != nullptr;
+  if (life->tiled) ASSERT_FALSE(life->legacy_arm);
   life->decoder_times = std::getenv("LLMP_IMAGE_SCREEN_DECODER_TIMES") != nullptr;
   if (life->decoder_times) {
     ASSERT_FALSE(life->legacy_arm);
@@ -498,6 +563,10 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
       RecordProperty(std::format("decoder_host_job_{}", i), std::format("{:.9f}", times.job));
       RecordProperty(std::format("decoder_after_{}", i), std::format("{:.9f}", times.after));
     }
+  }
+  if (life->tiled) {
+    RecordProperty("tiled_tuning_keys", std::to_string(life->tiled_facts->facts().tuned.size()));
+    RecordProperty("tiled_tuning_credit_bytes", std::to_string(life->tuning_credit));
   }
   RecordProperty("completed_generations", 2);
   RecordProperty("setup_seconds", std::format("{:.9f}", life->setup_seconds));

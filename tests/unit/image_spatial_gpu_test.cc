@@ -32,6 +32,7 @@
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
+#include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/step_program.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
@@ -84,7 +85,8 @@ struct SpanCase {
   std::optional<co::SpatialGraph> graph;
   std::optional<ir::Graph> direct;
   std::vector<co::StepWeight> direct_weights;
-  bool pointwise = false;
+  bool pointwise = false, tiled = false;
+  llmp::planner::Policy policy;
   std::map<std::pair<ir::WeightRef, fm::PartRole>, std::uint32_t> bindings;
   std::unique_ptr<kn::StepProgram> program;
   en::StepPlanRuns runs;
@@ -93,7 +95,7 @@ struct SpanCase {
   std::vector<double> reference;
   double error_enclosure = 0;
   std::string eager_hash;
-  std::array<std::uint64_t, 7> elapsed_ns{};
+  std::array<std::uint64_t, 9> elapsed_ns{};
 };
 
 struct Lifetime final : en::PagedModel {
@@ -111,6 +113,10 @@ struct Lifetime final : en::PagedModel {
   en::GraphStats stats;
   ca::Closure closure, empty;
   std::uint64_t selected_pages = 0;
+  bool tiled = false;
+  std::uint64_t activation = kActivation, pool = kPool, pinned = kPinned;
+  std::uint64_t output_offset = kOutputOffset, weight_offset = kWeightOffset;
+  std::uint64_t guard = 0;
   bool opened = false, retirement_attempted = false, retired = false;
 
   std::uint32_t stream() const override { return 0; }
@@ -160,8 +166,8 @@ kn::Addresses Addresses(Lifetime& life, SpanCase& item, bool measuring) {
   };
   kn::Addresses result;
   result.weight = address;
-  result.activations = measuring ? 0 : life.node.activations().base;
-  result.activation_bytes = kActivation;
+  result.activations = measuring ? 0 : life.node.activations().base + life.guard;
+  result.activation_bytes = life.activation;
   result.activation_alignment = 256;
   result.weight_alignment = [address](const ir::WeightRef& ref, fm::PartRole role) {
     const auto actual = address(ref, role);
@@ -175,10 +181,11 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
       program.inputs()[0].kind != kn::InputKind::kStepBytes || program.inputs()[0].segment != 0 ||
       program.outputs()[0].segment != 0 || program.inputs()[0].bytes != item.input.size() * 4 ||
       program.outputs()[0].bytes !=
-          (item.pointwise ? 1048576ULL : (index == 0 ? 18874368ULL : 73728ULL)) ||
-      program.scratch_bytes() > kActivation || program.pool_bytes() > kPool ||
-      program.host_bytes() > kProgram || program.launches() > 8 || !program.capturable() ||
-      program.routed())
+          (item.tiled ? item.shape.width * item.shape.height * 1152 * 4
+                      : (item.pointwise ? 1048576ULL : (index == 0 ? 18874368ULL : 73728ULL))) ||
+      program.scratch_bytes() > (item.tiled ? 128 * kMiB : kActivation) ||
+      program.pool_bytes() > (item.tiled ? 64 * kMiB : kPool) || program.host_bytes() > kProgram ||
+      program.launches() > (item.tiled ? 13U : 8U) || !program.capturable() || program.routed())
     return Error("spatial program ownership, complete ports or paid envelope differ");
   const std::array<std::string_view, 6> prefix{"ggml.cont", "ggml.mul_mat.cublas", "ggml.cont",
                                                "ggml.add",  "ggml.conv2d.f32",     "ggml.add"};
@@ -186,11 +193,20 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
   const std::array<std::string_view, 2> direct{"ggml.conv2d.f32", "ggml.add"};
   const std::array<std::string_view, 4> product{"ggml.cont", "ggml.mul_mat.cublas", "ggml.cont",
                                                 "ggml.add"};
+  const std::array<std::string_view, 2> tiled{kg::kConv2dTiledF32, "ggml.add"};
   const std::span<const std::string_view> expected =
-      item.pointwise ? (item.direct ? std::span<const std::string_view>(direct)
-                                    : std::span<const std::string_view>(product))
-                     : (index == 0 ? std::span<const std::string_view>(prefix)
-                                   : std::span<const std::string_view>(up));
+      item.tiled       ? (index == 0 ? std::span<const std::string_view>(direct)
+                                     : std::span<const std::string_view>(tiled))
+      : item.pointwise ? (item.direct ? std::span<const std::string_view>(direct)
+                                      : std::span<const std::string_view>(product))
+                       : (index == 0 ? std::span<const std::string_view>(prefix)
+                                     : std::span<const std::string_view>(up));
+  if (item.tiled && index == 1) {
+    const bool small = item.shape.width == 7;
+    if (program.pool_bytes() != (small ? 403200ULL : 66355200ULL) ||
+        program.launches() != (small ? 5U : 13U))
+      return Error("actual tiled workspace/launch partition differs from checked stripes");
+  }
   if (!program.bound())
     return {};  // Measurement cannot bind; the real program is checked after
                 // Bind.
@@ -207,7 +223,19 @@ en::GraphBuildIO GraphIO(const SpanCase& item) {
       item.direct ? std::span<const co::StepWeight>(item.direct_weights) : item.graph->weights()};
 }
 
-en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool pointwise = false) {
+en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool pointwise = false,
+                        std::uint64_t tile_width = 0, std::uint64_t tile_height = 0) {
+  life.tiled = tile_width != 0;
+  if (life.tiled) {
+    if (!((tile_width == 7 && tile_height == 5) || (tile_width == 128 && tile_height == 128)))
+      return Error("fixed diagnostic shape inventory");
+    life.activation = 128 * kMiB;
+    life.pool = 64 * kMiB;
+    life.pinned = 128 * kMiB;
+    life.output_offset = 8 * kMiB;
+    life.weight_offset = 96 * kMiB;
+    life.guard = 256;
+  }
   auto available = llmp::platform::AvailableMemoryBytes();
   if (!available || *available < (4ULL << 30U) + (6ULL << 30U)) return Error("physical headroom");
   if (auto r = life.node.Open(); !r) return r;
@@ -234,7 +262,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
   if (!source) return Error(source.error());
   if (source->tensors.size() != 238) return Error("fixed source tensor metadata");
   std::vector<en::GroupPlace> groups(6, en::GroupPlace::kNone);
-  std::uint64_t offset = kWeightOffset;
+  std::uint64_t offset = life.weight_offset;
   for (std::size_t i = 0; i < kNames.size(); ++i) {
     const auto id = artifact.FindResource(kNames[i]);
     if (!id) return Error("actual source role missing");
@@ -246,7 +274,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
     life.host_offsets[i] = offset;
     offset += kWeightBytes[i];
   }
-  if (offset != kWeightOffset + kTotalWeightBytes || offset > kPinned)
+  if (offset != life.weight_offset + kTotalWeightBytes || offset > life.pinned)
     return Error("weight host layout");
   if (auto r = life.weights.Reserve(life.node, groups, {}); !r) return r;
   if (life.weights.bytes() != 555745280ULL || life.weights.host_bytes() != 0 ||
@@ -271,23 +299,37 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
     spans[0] = {steps[0]};
     spans[1] = spans[0];
   }
+  if (life.tiled) {
+    spans[0] = {steps[1]};
+    spans[0][0].width = static_cast<std::uint32_t>(tile_width);
+    spans[0][0].height = static_cast<std::uint32_t>(tile_height);
+    spans[1] = spans[0];
+  }
   const std::array<std::span<const co::BoundTensor>, 1> tables{source->tensors};
   for (std::size_t i = 0; i < 2; ++i) {
     auto& item = life.cases[i];
     item.pointwise = pointwise;
+    item.tiled = life.tiled;
+    if (life.tiled) {
+      // Explicit diagnostic arm selection, not a measured production rank.
+      item.policy.ranks.push_back(
+          {"sm_121", i == 0 ? "ggml.conv2d.f32" : std::string(kg::kConv2dTiledF32), 0});
+    }
     auto spec = sp::VaeSpatialSpec(spans[i], tensors);
     if (!spec) return Error(spec.error());
     item.spec = std::move(*spec);
-    item.shape =
-        (pointwise || i == 0) ? co::SpatialShape{64, 64, 64, 1} : co::SpatialShape{4, 4, 288, 1};
+    item.shape = life.tiled ? co::SpatialShape{tile_width, tile_height, 64, 1}
+                            : ((pointwise || i == 0) ? co::SpatialShape{64, 64, 64, 1}
+                                                     : co::SpatialShape{4, 4, 288, 1});
     const std::array owners{co::SpatialOwner{0, item.shape}};
     auto graph =
         co::BuildSpatialStep(item.spec, tables, owners,
                              {[paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
-                              [paid = life.paid](std::uint64_t n) { paid->Release(n); }});
+                              [paid = life.paid](std::uint64_t n) { paid->Release(n); }},
+                             {.reference_buffers = !life.tiled});
     if (!graph) return Error(graph.error());
     if (graph->graph().nodes().size() > 32 || graph->graph().tensor_count() > 64 ||
-        graph->weights().size() != (pointwise ? 2U : (i == 0 ? 4U : 2U)))
+        graph->weights().size() != ((pointwise || life.tiled) ? 2U : (i == 0 ? 4U : 2U)))
       return Error("fixed spatial graph inventory");
     item.graph.emplace(std::move(*graph));
     for (const auto& weight : item.graph->weights()) {
@@ -329,8 +371,16 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
   if (!facts) return Error("actual device facts");
   const auto workspace = kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture));
   if (workspace.value() > 64 * kMiB) return Error("handle workspace");
+  std::vector<llmp::execution::TunedShape> tuning;
+  if (life.tiled)
+    tuning.push_back({.implementation = kg::kConv2dTiledF32,
+                      .rows = tile_width * tile_height,
+                      .k = 576,
+                      .n = 1152,
+                      .output_encoding = fm::Encoding::kF32});
   if (auto r = life.backend->Declare(
-          {}, workspace.value(), [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
+          tuning, workspace.value(),
+          [paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
           [paid = life.paid](std::uint64_t n) { paid->Release(n); });
       !r)
     return Error(r.error());
@@ -344,7 +394,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
     auto io = GraphIO(item);
     const auto addresses = Addresses(life, item, true);
     auto measured = en::BuildComponentProgram(
-        io, table, {}, addresses,
+        io, table, item.policy, addresses,
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = table.written,
          .within = table.within,
@@ -352,21 +402,23 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
     if (!measured) return Error(measured.error());
     if (auto r = CheckProgram(item, **measured, i); !r) return r;
   }
-  if (auto r = life.node.MapWorkspace(kActivation, kPool); !r) return r;
-  auto launch = life.backend->Launch({life.node.pool().base, Bytes(life.node.pool().bytes)});
+  if (auto r = life.node.MapWorkspace(life.activation + 2 * life.guard, life.pool + 2 * life.guard);
+      !r)
+    return r;
+  auto launch = life.backend->Launch({life.node.pool().base + life.guard, Bytes(life.pool)});
   if (!launch) return Error(launch.error());
   life.launch = std::move(*launch);
-  auto host = life.resources.Pinned(kPinned);
+  auto host = life.resources.Pinned(life.pinned);
   if (!host) return Error(host.error());
   life.host = static_cast<std::byte*>(*host);
-  life.step_runs.SetStaging(life.host, 2 * kMiB);
+  life.step_runs.SetStaging(life.host, life.tiled ? 4 * kMiB : 2 * kMiB);
   life.step_runs.SetLaunch(life.launch.get());
   for (std::size_t i = 0; i < 2; ++i) {
     auto& item = life.cases[i];
     auto io = GraphIO(item);
     const auto addresses = Addresses(life, item, false);
     auto program = en::BuildComponentProgram(
-        io, table, {}, addresses,
+        io, table, item.policy, addresses,
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = table.written,
          .within = table.within,
@@ -620,4 +672,254 @@ TEST(ImageSpatialGpuTest, ActualF32VaePartsUseSharedTypedProgramsAndCompletedRep
   RunFixture(false);
 }
 TEST(ImageSpatialGpuTest, PointwiseSourceDirectAndSharedProductCompleteReplay) { RunFixture(true); }
+
+struct ConvSample {
+  std::size_t index;
+  double value, bound;
+};
+std::vector<ConvSample> ConvSamples(const Lifetime& life, const SpanCase& item, bool tensor_core,
+                                    bool small) {
+  const auto weight = WeightValues(life, "decoder.conv_in.weight");
+  const auto bias = WeightValues(life, "decoder.conv_in.bias");
+  const auto width = static_cast<std::size_t>(item.shape.width);
+  const auto height = static_cast<std::size_t>(item.shape.height);
+  const std::array<std::size_t, 7> boundary_y{0, 1, 44, 45, 89, 90, 127};
+  const std::array<std::size_t, 4> boundary_x{0, 1, 126, 127};
+  std::vector<ConvSample> samples;
+  samples.reserve(small ? width * height * 1152 : boundary_y.size() * boundary_x.size() * 1152);
+  const auto sample = [&](std::size_t channel, std::size_t y, std::size_t x) {
+    double value = static_cast<double>(bias[channel]), magnitude = 0, max_weight = 0;
+    for (std::size_t input_channel = 0; input_channel < 64; ++input_channel) {
+      for (std::size_t ky = 0; ky < 3; ++ky) {
+        for (std::size_t kx = 0; kx < 3; ++kx) {
+          const auto iy = static_cast<std::int64_t>(y + ky) - 1;
+          const auto ix = static_cast<std::int64_t>(x + kx) - 1;
+          if (iy < 0 || ix < 0 || iy >= static_cast<std::int64_t>(height) ||
+              ix >= static_cast<std::int64_t>(width))
+            continue;
+          const auto w =
+              static_cast<double>(weight[kx + 3 * (ky + 3 * (input_channel + 64 * channel))]);
+          const auto v = static_cast<double>(
+              item.input[static_cast<std::size_t>(ix) +
+                         width * (static_cast<std::size_t>(iy) + height * input_channel)]);
+          value += w * v;
+          magnitude += std::abs(w * v);
+          max_weight = std::max(max_weight, std::abs(w));
+        }
+      }
+    }
+    // Independent scalar F64 summation, no candidate packing/kernel code.
+    // Conservative one-ULP TF32 multiplicand envelope permits the library's
+    // existing math choice without requesting or inserting any rounding.
+    constexpr double n = 2 * 576 + 2;
+    constexpr double gamma = n * 0x1p-24 / (1 - n * 0x1p-24);
+    const double product_round = tensor_core ? (2 * 0x1p-10 + 0x1p-20) * magnitude : 0;
+    const double bound =
+        product_round +
+        gamma * (magnitude + product_round + std::abs(static_cast<double>(bias[channel]))) +
+        n * 0x1p-52 * (magnitude + std::abs(static_cast<double>(bias[channel]))) +
+        n * 0x1p-126 * (3 + max_weight);
+    samples.push_back({x + width * (y + height * channel), value, bound});
+  };
+  for (std::size_t channel = 0; channel < 1152; ++channel) {
+    if (small) {
+      for (std::size_t y = 0; y < height; ++y)
+        for (std::size_t x = 0; x < width; ++x) sample(channel, y, x);
+    } else {
+      for (const auto y : boundary_y)
+        for (const auto x : boundary_x) sample(channel, y, x);
+    }
+  }
+  return samples;
+}
+en::Status TiledCanaries(Lifetime& life, bool initialize) {
+  const std::array device{life.node.activations().base,
+                          life.node.activations().base + life.guard + life.activation,
+                          life.node.pool().base, life.node.pool().base + life.guard + life.pool};
+  for (std::size_t i = 0; i < device.size(); ++i) {
+    auto* host = life.host + 120 * kMiB + i * 256;
+    if (initialize) std::memset(host, 0xa5, 256);
+    if (auto done = life.node.Copy(0, life.closure, device[i], host, 256, !initialize,
+                                   "completed activation/pool canary");
+        !done)
+      return done;
+    if (!std::ranges::all_of(std::span(host, 256),
+                             [](std::byte b) { return b == std::byte{0xa5}; }))
+      return Error("tiled activation/pool boundary canary changed");
+  }
+  return {};
+}
+en::Status ExecuteTiled(Lifetime& life, bool small) {
+  const std::string prefix = small ? "small_" : "representative_";
+  return life.node.WithRequest(
+      0, life.closure, "source F32 tiled convolution", [&]() -> en::Status {
+        for (std::size_t i = 0; i < kNames.size(); ++i) {
+          if (auto copied = life.node.Copy(0, life.closure,
+                                           life.weights.resource_address(life.resource_ids[i]),
+                                           life.host + life.host_offsets[i], kWeightBytes[i], true,
+                                           "completed source F64 sample weights");
+              !copied)
+            return copied;
+          if (!std::ranges::all_of(WeightValues(life, kNames[i]),
+                                   [](float value) { return std::isfinite(value); }))
+            return Error("nonfinite source F32 weights");
+        }
+        for (std::size_t arm = 0; arm < life.cases.size(); ++arm) {
+          auto& item = life.cases[arm];
+          const auto label = prefix + (arm == 0 ? "direct_" : "tiled_");
+          if (auto initialized = TiledCanaries(life, true); !initialized) return initialized;
+          auto coverage = life.node.Call(
+              [&]() -> en::Status {
+                en::Coverage result;
+                en::CheckCoverage(life.node, 0, item.program->tensors(), "tiled source convolution",
+                                  result);
+                return result.violations ? Error(result.first_violation) : en::Status{};
+              },
+              "tiled catalog coverage");
+          if (!coverage) return coverage;
+          ::testing::Test::RecordProperty(label + "input_sha",
+                                          Hash(std::as_bytes(std::span(item.input))));
+          ::testing::Test::RecordProperty(label + "plan",
+                                          llmp::base::ToHex(item.program->bound()->identity()));
+          std::string implementations;
+          for (std::size_t op = 0; op < item.program->bound()->size(); ++op)
+            implementations += std::string(item.program->bound()->at(op).name) + ",";
+          ::testing::Test::RecordProperty(label + "implementations", implementations);
+          auto samples = ConvSamples(life, item, arm == 1, small);
+          double maximum_error = 0, maximum_fraction = 0;
+          std::string changed_hash;
+          for (std::size_t repeat = 0; repeat < 9; ++repeat) {
+            if (repeat == 7 || repeat == 8) {
+              item.input[0] += repeat == 7 ? .5F : -.5F;
+              samples = ConvSamples(life, item, arm == 1, small);
+            }
+            std::memset(life.host + life.output_offset - 256, 0x5a, 256);
+            const auto& output = item.program->outputs()[0];
+            std::memset(life.host + life.output_offset + output.bytes, 0x5a, 256);
+            auto staged = life.step_runs.Stage(
+                item.program->inputs(),
+                [&](std::size_t slot, std::span<std::byte> out) -> en::Status {
+                  if (slot != 0 || out.size() != item.input.size() * 4)
+                    return Error("tiled input port");
+                  std::memcpy(out.data(), item.input.data(), out.size());
+                  return {};
+                },
+                0);
+            if (!staged) return Error(staged.error());
+            const std::array<en::RunCopy, 1> outputs{
+                {{en::support::Address(life.host + life.output_offset), output.device_address,
+                  output.bytes}}};
+            en::StepQueued queued;
+            const auto begin = std::chrono::steady_clock::now();
+            auto ran = life.node.Job(
+                life.closure,
+                [&](llmp::providers::NativeStream native) {
+                  queued = life.step_runs.Queue(item.runs, *staged, {}, *item.program, outputs,
+                                                item.runs.CaptureDue(true), life.stats, native);
+                  if (queued.result) return sc::JobResult::kQueued;
+                  return queued.before || queued.result.error().error == kn::StepError::kUnknown
+                             ? sc::JobResult::kUnknown
+                             : sc::JobResult::kNotStarted;
+                },
+                "complete tiled/direct convolution and ports", 0);
+            item.elapsed_ns[repeat] =
+                static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                               std::chrono::steady_clock::now() - begin)
+                                               .count());
+            if (!ran) return ran;
+            if (!queued.result) return Error(queued.result.error().detail);
+            const auto expected = repeat == 0   ? en::RunPath::kEager
+                                  : repeat == 1 ? en::RunPath::kCaptured
+                                                : en::RunPath::kReplayed;
+            if (queued.path != expected) return Error("required tiled capture/replay path");
+            en::Count(life.stats, queued.path);
+            const auto actual =
+                std::span(reinterpret_cast<const float*>(life.host + life.output_offset),
+                          static_cast<std::size_t>(output.bytes / 4));
+            if (!std::ranges::all_of(actual, [](float v) { return std::isfinite(v); }))
+              return Error("nonfinite complete tiled output");
+            for (const auto& sample : samples) {
+              const double error =
+                  std::abs(static_cast<double>(actual[sample.index]) - sample.value);
+              if (!std::isfinite(sample.value) || !std::isfinite(sample.bound) ||
+                  error > sample.bound)
+                return Error("independent F64 convolution enclosure");
+              maximum_error = std::max(maximum_error, error);
+              if (sample.bound > 0)
+                maximum_fraction = std::max(maximum_fraction, error / sample.bound);
+            }
+            const auto digest = Hash(std::as_bytes(actual));
+            if (repeat == 0)
+              item.eager_hash = digest;
+            else if (repeat == 7) {
+              if (digest == item.eager_hash)
+                return Error("changed staged input did not affect convolution");
+              changed_hash = digest;
+            } else if (digest != item.eager_hash)
+              return Error("own-arm replay/restoration differs");
+            for (auto* guard : {life.host + life.output_offset - 256,
+                                life.host + life.output_offset + output.bytes}) {
+              if (!std::ranges::all_of(std::span(guard, 256),
+                                       [](std::byte b) { return b == std::byte{0x5a}; }))
+                return Error("pinned output copy canary changed");
+            }
+            if (auto intact = TiledCanaries(life, false); !intact) return intact;
+          }
+          ::testing::Test::RecordProperty(label + "sha", item.eager_hash);
+          ::testing::Test::RecordProperty(label + "changed_sha", changed_hash);
+          ::testing::Test::RecordProperty(label + "samples", std::to_string(samples.size()));
+          ::testing::Test::RecordProperty(label + "max_error",
+                                          std::format("{:.17g}", maximum_error));
+          ::testing::Test::RecordProperty(label + "max_enclosure_fraction",
+                                          std::format("{:.17g}", maximum_fraction));
+          ::testing::Test::RecordProperty(label + "activation",
+                                          std::to_string(item.program->scratch_bytes()));
+          ::testing::Test::RecordProperty(label + "pool",
+                                          std::to_string(item.program->pool_bytes()));
+          ::testing::Test::RecordProperty(label + "launches",
+                                          std::to_string(item.program->launches()));
+          ::testing::Test::RecordProperty(label + "program_host",
+                                          std::to_string(item.program->host_bytes()));
+          for (std::size_t repeat = 0; repeat < 9; ++repeat)
+            ::testing::Test::RecordProperty(label + "step" + std::to_string(repeat) + "_ns",
+                                            std::to_string(item.elapsed_ns[repeat]));
+        }
+        return {};
+      });
+}
+void TiledSourceCase(bool small) {
+  const auto* path = std::getenv("LLMP_TEST_VAE_ARTIFACT");
+  ASSERT_NE(path, nullptr);
+  std::unique_ptr<Lifetime, Retire> life(new Lifetime);
+  auto setup = SetupFixture(*life, path, false, small ? 7U : 128U, small ? 5U : 128U);
+  ASSERT_TRUE(setup) << Failed(setup).value_or("");
+  auto ran = ExecuteTiled(*life, small);
+  ASSERT_TRUE(ran) << Failed(ran).value_or("");
+  EXPECT_EQ(life->stats.eager, 2U);
+  EXPECT_EQ(life->stats.captured, 2U);
+  EXPECT_EQ(life->stats.replayed, 14U);
+  EXPECT_EQ(life->stats.refused, 0U);
+  const auto prefix = small ? "small_" : "representative_";
+  ::testing::Test::RecordProperty(std::string(prefix) + "eager", std::to_string(life->stats.eager));
+  ::testing::Test::RecordProperty(std::string(prefix) + "captured",
+                                  std::to_string(life->stats.captured));
+  ::testing::Test::RecordProperty(std::string(prefix) + "replayed",
+                                  std::to_string(life->stats.replayed));
+  ::testing::Test::RecordProperty(std::string(prefix) + "capture_refused",
+                                  std::to_string(life->stats.refused));
+  ::testing::Test::RecordProperty(std::string(prefix) + "completed_canary_checks", "108");
+  ::testing::Test::RecordProperty(std::string(prefix) + "finite_values",
+                                  std::to_string((small ? 7ULL * 5 : 128ULL * 128) * 1152 * 18));
+  ::testing::Test::RecordProperty(std::string(prefix) + "selected_pages",
+                                  std::to_string(life->selected_pages));
+  ::testing::Test::RecordProperty(std::string(prefix) + "source_bytes",
+                                  std::to_string(kTotalWeightBytes));
+  auto retired = life->Retire();
+  ASSERT_TRUE(retired) << Failed(retired).value_or("");
+}
+TEST(ImageSpatialGpuTest, TiledSourceThreeStripesPreserveHaloTailAndCompletedReplay) {
+  TiledSourceCase(true);
+  if (::testing::Test::HasFailure()) return;  // No new owner after unproven retirement.
+  TiledSourceCase(false);
+}
 }  // namespace

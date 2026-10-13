@@ -266,6 +266,19 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
     }
   }
   switch (key.op) {
+    case Op::kConv2d: {
+      const auto* output = At(outputs, 0);
+      if (s0 == nullptr || output == nullptr) return {};
+      std::uint64_t rows = 0, k = 0;
+      if (__builtin_mul_overflow(output->ne(0), output->ne(1), &rows) ||
+          __builtin_mul_overflow(rows, output->ne(3), &rows) ||
+          __builtin_mul_overflow(s0->ne(0), s0->ne(1), &k) ||
+          __builtin_mul_overflow(k, s0->ne(2), &k))
+        return {};
+      // Spatial products use the same semantic tuning tuple as dense products:
+      // output spatial positions, receptive-field reduction, output channels.
+      return {.rows = rows, .k = k, .n = s0->ne(3)};
+    }
     case Op::kMatMul:
       return Product(s0, At(sources, 1));
     case Op::kMatMulId: {

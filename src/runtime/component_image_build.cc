@@ -168,8 +168,10 @@ Status Fill(const ImageGenerationOwner& held, const ImageInvocation& invocation,
 
 EngineImageBuild ComponentImageGenerationBuild(
     en::PagedNode& node, int owner, std::shared_ptr<ImageGenerationSource> source,
-    std::shared_ptr<en::ExecutionMetadataAllowance> construction) {
-  return [&node, owner, source = std::move(source), construction = std::move(construction)](
+    std::shared_ptr<en::ExecutionMetadataAllowance> construction,
+    std::shared_ptr<const planner::OwnedDeviceFacts> tuning) {
+  return [&node, owner, source = std::move(source), construction = std::move(construction),
+          tuning = std::move(tuning)](
              const ModelSettings&) -> std::expected<EngineImageParts, std::string> {
     const auto& p = md::QwenImage21();
     if (!source || !source->composition || !source->keep || !construction || owner < 0 ||
@@ -266,8 +268,11 @@ EngineImageBuild ComponentImageGenerationBuild(
     if (!facts) return Error("image device facts unavailable");
     const auto blas_bytes =
         kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
+    const auto tuples = tuning ? std::span<const execution::TunedShape>(tuning->facts().tuned)
+                               : std::span<const execution::TunedShape>{};
     auto declared = held->backend->Declare(
-        {}, blas_bytes, [construction](std::uint64_t bytes) { return construction->Charge(bytes); },
+        tuples, blas_bytes,
+        [construction](std::uint64_t bytes) { return construction->Charge(bytes); },
         [construction](std::uint64_t bytes) { construction->Release(bytes); });
     if (!declared) return Error(declared.error());
     EngineImageParts out;

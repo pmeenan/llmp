@@ -14,7 +14,8 @@
 // A capability query sees a node as the registry's query does: each
 // source's format at its position, and a shape (QueryShape): a product's
 // rows (tokens), K and N; attention's query rows and head sizes; a store's
-// rows and values a row; anything else its rows and row length.
+// rows and values a row; Conv2d spatial positions, kernel reduction and output
+// channels; anything else its rows and row length.
 
 #ifndef LLMP_PLANNER_SELECT_H_
 #define LLMP_PLANNER_SELECT_H_
