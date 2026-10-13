@@ -57,6 +57,93 @@ def write_blocks(out, family, blocks):
             (out / "runs" / f"{family}-b{b:02d}-p{p}-{label}.json").write_text(json.dumps(r))
 
 
+class ImagePins(unittest.TestCase):
+    CANDIDATE = "a" * 64
+
+    def records(self, candidate=None):
+        family = gate.FAMILIES["image"]
+        blocks = [{p: record("image", 1, p, {"generation_s": 33.0, "peak_gib": 32.0})
+                   for p in range(4)}]
+        prime = prime_record("image")
+        prime["turn"] = {"pixels_sha256": gate.IMAGE_PIXELS_SHA256}
+        for r in blocks[0].values():
+            pin = candidate if r["label"] == "new" and candidate else gate.IMAGE_PIXELS_SHA256
+            r["turn"] = {"pixels_sha256": pin}
+            if candidate:
+                r["image_pixels_sha256"] = pin
+        return family, blocks, {"image-s1": prime}
+
+    def test_historical_implicit_baseline_pin_remains_valid(self):
+        family, blocks, primes = self.records()
+        self.assertEqual(gate.validity(family, blocks, primes), [])
+
+    def test_candidate_can_repeat_its_own_predeclared_output(self):
+        family, blocks, primes = self.records(self.CANDIDATE)
+        self.assertEqual(gate.validity(family, blocks, primes), [])
+        self.assertEqual(gate.block_slowdowns(blocks[0], "generation_s"), 0.0)
+
+    def test_image_run_checks_the_candidate_pin(self):
+        for observed in (self.CANDIDATE, gate.IMAGE_PIXELS_SHA256):
+            with self.subTest(observed=observed), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                turn = {"swap": {"ready": 1.0}, "first_step_seconds": 2.0,
+                        "generation_seconds": 34.0, "peak_bytes": 1024,
+                        "pixels_sha256": observed}
+                (root / "report.json").write_text(json.dumps({"turns": [turn]}))
+                r = {"image_pixels_sha256": self.CANDIDATE}
+                with unittest.mock.patch.object(gate, "sha256_file",
+                                                return_value=gate.IMAGE_NOISE_SHA256), \
+                     unittest.mock.patch.object(gate, "MemorySampler") as sampler, \
+                     unittest.mock.patch.object(gate.subprocess, "run") as run:
+                    sampler.return_value.stop.return_value = {"peak_gib": 32.0}
+                    run.return_value.returncode = 0
+                    gate.image_run(gate.FAMILIES["image"], pathlib.Path("/runtime"),
+                                   pathlib.Path("/share"), root,
+                                   gate.config_template(gate.FAMILIES["image"]), {}, r)
+                self.assertEqual(bool(r["problems"]), observed != self.CANDIDATE)
+                self.assertEqual(r["metrics"]["generation_s"], 33.0)
+
+    def test_changed_pin_cannot_be_mixed_in_one_arm(self):
+        family, blocks, primes = self.records(self.CANDIDATE)
+        blocks[0][2]["image_pixels_sha256"] = "b" * 64
+        blocks[0][2]["turn"]["pixels_sha256"] = "b" * 64
+        self.assertTrue(any("image output pins" in reason
+                            for reason in gate.validity(family, blocks, primes)))
+
+    def test_mismatched_or_missing_outputs_including_prime_are_invalid(self):
+        for position in (None, 0, 1, 2, 3):
+            with self.subTest(position=position):
+                family, blocks, primes = self.records(self.CANDIDATE)
+                r = primes["image-s1"] if position is None else blocks[0][position]
+                r.pop("turn")
+                self.assertTrue(any("pixels differ" in reason
+                                    for reason in gate.validity(family, blocks, primes)))
+
+    def test_bad_pins_refuse_before_runtime_access(self):
+        for family, label, pin in (("image", "new", "x" * 64),
+                                   ("image", "new", "a" * 63),
+                                   ("image", "old", self.CANDIDATE),
+                                   ("gemma2", "new", self.CANDIDATE)):
+            with self.subTest(family=family, label=label, pin=pin), self.assertRaises(SystemExit):
+                gate.main(["run", "--family", family, "--label", label,
+                           "--runtime", "/nonexistent", "--out", "/nonexistent",
+                           "--image-pixels-sha256", pin])
+
+    def test_plan_forwards_candidate_pin_only_to_new_runs(self):
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            gate.main(["plan", "--family", "image", "--old", "/o", "--new", "/n",
+                       "--out", "/out", "--blocks", "1",
+                       "--new-image-pixels-sha256", self.CANDIDATE])
+        prime, *runs = text.getvalue().splitlines()
+        self.assertNotIn("--image-pixels-sha256", prime)
+        for line, label in zip(runs, gate.ORDER):
+            self.assertEqual("--image-pixels-sha256" in line, label == "new")
+        with self.assertRaises(SystemExit):
+            gate.main(["plan", "--family", "gemma2", "--old", "/o", "--new", "/n",
+                       "--out", "/out", "--new-image-pixels-sha256", self.CANDIDATE])
+
+
 class Judge(unittest.TestCase):
     def test_identical_blocks_pass(self):
         row = gate.judge([0.0, 0.0, 0.0], MARGIN, 3, 6)

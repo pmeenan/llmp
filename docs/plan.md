@@ -1411,6 +1411,10 @@ each is checked against the design as M3.6 proceeds.
       Preserve the 1% speed and same-implementation state gates.
       - [x] Retrospective numerical-policy audit and prospective gate clarification
             ([audit](experiments/m36-numerical-audit/README.md)).
+      - [x] Image timing output controls use a frozen pin per implementation,
+            preserving the old arm and historical records without requiring
+            candidate pixels to match legacy bits. Reference image quality
+            remains separate; workload and the 1% speed protocol are unchanged.
       - [x] Shared target-only teacher-forced scorer foundation: paid finite
             IDs/outputs, global next-target alignment, full-vocabulary NLL and
             guarded head/owner semantics; ten host controls pass. This is

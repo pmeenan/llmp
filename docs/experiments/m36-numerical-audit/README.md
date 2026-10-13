@@ -12,6 +12,17 @@ not block same-quantized-model qualification. This clarifies D-107's existing
 "speed and quality, not bit-exactness" rule. It does not change the matched
 1% migration speed gate or the memory, state and source-integrity contracts.
 
+The image timing harness now accepts a candidate's output digest frozen before
+timing, while retaining the frozen old arm's original pin. It checks output
+repeatability separately for each implementation and rejects changed pins or
+outputs within an arm. Image reference quality remains a separate required
+control; the digest is not quality evidence. The statistical speed protocol
+and historical records are unchanged
+([timing controls](../m36-baselines/README.md#the-protocol)).
+Spark A's native build, all 41 speed-harness controls, header checks and
+REUSE 6.2.0 pass (2026-10-13). These synthetic controls establish harness
+behavior, not a new image quality or performance result.
+
 ## Scope and conclusion
 
 Read-only audit at `50a2b72047b44886d2ccdfb712a7281727bf8d78`: inventory of

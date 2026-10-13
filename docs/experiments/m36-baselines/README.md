@@ -99,8 +99,16 @@ different prompts, the same in every run). Qwen-Image's run is
 one `chat --image-prompt` process (one generation a process is what this
 build supports): `generation_s` is the turn's generation time from its
 model being ready to its pixels (the report's `generation_seconds` minus
-the activation's `ready`), and the pixels must equal the pinned
-`3b7770ca…`.
+the activation's `ready`). The frozen old arm retains pixels `3b7770ca…`.
+Prospective candidates may declare their own output digest with
+`plan --new-image-pixels-sha256 SHA256` after reference quality qualification
+and before timing. Each arm must reproduce its own pin throughout the
+comparison; changing the pin within an arm invalidates the comparison.
+Direct `run` uses `--image-pixels-sha256`. Without these options both arms
+retain the historical pin, and old records retain their original meaning.
+This checks repeatability within an implementation, not image quality or
+bit equality with another implementation. Workload, timing and stopping rules
+are unchanged.
 
 **Families** (`speed_gate.py families`):
 
@@ -369,16 +377,18 @@ P=64) to be compared with this number.
 
 ## Quality controls
 
-**Prospective addendum, owner 2026-10-12.** Original unquantized weights are
-the primary reference for numerical improvements; quantized library results
-remain secondary diagnostic controls. The tables and historical verdicts
+**Prospective addendum, owner 2026-10-12, clarified 2026-10-13.** A reference
+implementation of the same quantized checkpoint is the primary comparison.
+Original unquantized evidence is useful when available and required for a
+closer-to-original claim, not for same-quantized-model qualification.
+The tables and historical verdicts
 below are frozen observations, including their exact claims. Changed bits
 alone do not fail a prospective candidate or require unfusing, extra rounding
 or owner serialization. Keep the same teacher IDs/history and full-vocabulary
 NLL/perplexity, fix reference provenance, coverage and acceptance bounds before
 qualification, and retain existing behavioral controls. Old tolerance budgets
-do not automatically apply to a new original-precision oracle. Record missing
-primary evidence honestly; no new quality pass is asserted here. Exact
+do not automatically apply to a new oracle. Record missing reference
+evidence honestly; no new quality pass is asserted here. Exact
 same-implementation continuation/restore, source integrity, selected-expert
 execution and the matched 1% timing protocol remain unchanged. See the
 [audit and recovery protocol](../m36-numerical-audit/README.md).

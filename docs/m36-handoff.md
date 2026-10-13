@@ -38,7 +38,13 @@ on both Sparks, candidate installs under `~/.local/share/llmp/m36-candidates/`,
 checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 `spark-job --gpu` jobs, never beside a build on that host.
 
-## Current direction, 2026-10-12
+## Current direction, 2026-10-13
+
+The image speed harness accepts a candidate output pin fixed before timing,
+with separate reference-quality qualification. It preserves the frozen old
+image pin, checks repeatability within each arm and rejects mixed pins;
+historical defaults and the statistical 1% protocol are unchanged. This
+removes a remaining legacy-pixel bit gate without claiming new image quality.
 
 The pinned Mia reference and current-main manual Qwen A/C diagnostic score
 the same quantized checkpoint and fixed 1,016 targets. Mia PPL is

@@ -43,7 +43,8 @@ pays different prompts, the same in every run). Whole-node
 MemAvailable is sampled every 20 ms from before the process starts until it
 has exited; peak_gib is the largest drop. An image family's run is one
 `chat --image-prompt` process: generation_s is the generation's time from
-its model being ready to its pixels, whose digest must equal the pinned one.
+its model being ready to its pixels, whose digest must equal that arm's
+predeclared output pin. Reference image quality is a separate control.
 
 A *block* is four runs, old/new/new/old (ABBA), so linear drift cancels.
 Its slowdown for a metric is ln(mean(new) / mean(old)) for a time and the
@@ -333,13 +334,40 @@ def arm_env(runtime_env: dict[str, str]) -> dict[str, str]:
 
 # What makes an arm: its binary, its configuration and its diagnostic switches
 # (a record before switches had none).
-ARM_KEYS = ("runtime_sha256", "config_sha256", "runtime_env")
+ARM_KEYS = ("runtime_sha256", "config_sha256", "runtime_env", "image_pixels_sha256")
 
 
 def arm_identity(record: dict, key: str) -> str:
     if key == "runtime_env":
         return json.dumps(record.get(key) or {}, sort_keys=True)
+    if key == "image_pixels_sha256":
+        return str(record.get(key, IMAGE_PIXELS_SHA256 if record.get("family") == "image" else None))
     return str(record.get(key))
+
+
+def image_pixels_pin(family: Family, label: str, value: str | None) -> str | None:
+    """Freeze output repeatability per implementation, not cross-library bits."""
+    if family.kind != "image":
+        if value is not None:
+            raise SystemExit("an image output pin requires the image family")
+        return None
+    pin = IMAGE_PIXELS_SHA256 if value is None else value
+    if len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
+        raise SystemExit("image output pin must be a lowercase SHA-256 digest")
+    if label == "old" and pin != IMAGE_PIXELS_SHA256:
+        raise SystemExit("the frozen old image arm must retain its baseline output pin")
+    return pin
+
+
+def image_output_problems(record: dict) -> list[str]:
+    try:
+        pin = image_pixels_pin(FAMILIES["image"], record.get("label"),
+                               record.get("image_pixels_sha256"))
+    except SystemExit as error:
+        return [str(error)]
+    if (record.get("turn") or {}).get("pixels_sha256") != pin:
+        return ["pixels differ from this arm's pinned image"]
+    return []
 
 
 # ---------------------------------------------------------------- memory
@@ -678,12 +706,13 @@ def image_run(family: Family, runtime: pathlib.Path, share: pathlib.Path,
     record["turn"]["ready"] = ready
     record["metrics"] = {"generation_s": turn["generation_seconds"] - ready,
                          "peak_gib": record["memory"]["peak_gib"]}
-    record["problems"] = ([] if turn["pixels_sha256"] == IMAGE_PIXELS_SHA256
-                          else [f"pixels {turn['pixels_sha256']}, not the pinned image"])
+    record["problems"] = ([] if turn["pixels_sha256"] == record["image_pixels_sha256"]
+                          else [f"pixels {turn['pixels_sha256']}, not this arm's pinned image"])
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     family = FAMILIES[args.family]
+    pixels_pin = image_pixels_pin(family, args.label, args.image_pixels_sha256)
     out = pathlib.Path(args.out).resolve()
     share = pathlib.Path(args.share).expanduser().resolve()
     runtime = pathlib.Path(args.runtime).resolve()
@@ -711,6 +740,7 @@ def cmd_run(args: argparse.Namespace) -> int:
               "config_template": template,
               "config_sha256": hashlib.sha256(template.encode()).hexdigest(),
               "runtime_env": runtime_env,
+              "image_pixels_sha256": pixels_pin,
               "family_spec": dataclasses.asdict(family), "facts": host_facts(), "error": None}
     began = time.monotonic()
     try:
@@ -811,6 +841,7 @@ PRIME_ARM = "old"
 
 def cmd_plan(args: argparse.Namespace) -> int:
     family = FAMILIES[args.family]
+    pixels_pin = image_pixels_pin(family, "new", args.new_image_pixels_sha256)
     me = pathlib.Path(__file__).resolve()
     blocks = args.blocks or family.min_blocks
     runs = [(block, position, label) for block in range(args.first, args.first + blocks)
@@ -830,6 +861,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 f"--label {label} --out {args.out} {which}"
                 + (f" --corpus {args.corpus}" if family.kind == "llm" else "")
                 + (f" --config-template {template}" if template else "")
+                + (f" --image-pixels-sha256 {pixels_pin}"
+                   if label == "new" and args.new_image_pixels_sha256 is not None else "")
                 + "".join(f" --runtime-env {k}={v}" for k, v in env.items()))
 
     texts = []
@@ -936,6 +969,8 @@ def validity(family: Family, mine: list[dict], primes: dict) -> list[str]:
             if r["error"]:
                 reasons.append(f"{where}: {r['error']}")
             reasons += [f"{where}: {problem}" for problem in r.get("problems") or []]
+            if family.kind == "image":
+                reasons += [f"{where}: {problem}" for problem in image_output_problems(r)]
             if run_spec(r.get("family_spec") or {}) != spec:
                 reasons.append(f"{where}: other protocol constants than the current {family.name}")
             if r.get("session"):
@@ -960,13 +995,17 @@ def validity(family: Family, mine: list[dict], primes: dict) -> list[str]:
             reasons.append(f"session {session}: priming run: {prime['error']}")
         reasons += [f"session {session}: priming run: {problem}"
                     for problem in prime.get("problems") or []]
+        if family.kind == "image":
+            reasons += [f"session {session}: priming run: {problem}"
+                        for problem in image_output_problems(prime)]
         began = prime.get("started_unix")
         for where, r in members:
             if began is None or r.get("started_unix") is None or r["started_unix"] < began:
                 reasons.append(f"session {session}: {where} did not start after its priming run")
     for label in ("old", "new"):
         runs = [r for b in mine for r in b.values() if r["label"] == label]
-        for key, what in zip(ARM_KEYS, ("runtimes", "configurations", "diagnostic switch sets")):
+        for key, what in zip(ARM_KEYS, ("runtimes", "configurations", "diagnostic switch sets",
+                                      "image output pins")):
             seen = sorted({arm_identity(r, key) for r in runs})
             if len(seen) > 1:
                 reasons.append(f"{label} runs used {len(seen)} {what}: "
@@ -1223,6 +1262,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="a diagnostic switch (LLMP_DIAGNOSTIC_*) for this arm's runtime")
         p.set_defaults(func=func)
         if command == "run":
+            p.add_argument("--image-pixels-sha256",
+                           help="this image arm's output pin, frozen before timing; quality is separate")
             p.add_argument("--block", type=int)
             p.add_argument("--position", type=int, choices=range(4))
             p.add_argument("--prime", action="store_true",
@@ -1233,6 +1274,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--family", required=True, choices=sorted(FAMILIES))
     p.add_argument("--old", required=True)
     p.add_argument("--new", required=True)
+    p.add_argument("--new-image-pixels-sha256",
+                   help="qualified candidate image output pin, frozen before timing")
     p.add_argument("--out", required=True)
     p.add_argument("--blocks", type=int)
     p.add_argument("--old-config", help="the old arm's --config-template")
