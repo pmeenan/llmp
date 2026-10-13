@@ -27,6 +27,7 @@
 #include "kernels/image/implementations.h"
 #include "kernels/image/ops.h"
 #include "kernels/image/pipeline.h"
+#include "platform/kept_files.h"
 #include "providers/device_runtime.h"
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
@@ -680,6 +681,17 @@ Status QwenImageRunner::Decode(std::string& sha) {
   const auto pixels = md::QwenImagePixels(decoded, p.out_channels, o_.size, o_.size);
   sha = llmp::base::ToHex(llmp::base::Sha256().Update(std::as_bytes(std::span(pixels))).Finish());
   s.decode = Seconds(Clock::now() - started);
+  // An explicit diagnostic destination only. Ordinary serving leaves out
+  // empty. Export after positive decode completion from the exact bytes hashed
+  // above; this quality pass is not a timing sample.
+  if (!o_.out.empty()) {
+    auto opened = platform::OpenPrivateDirectory(-1, o_.out.c_str());
+    if (!opened) return Error("opening the image output directory failed");
+    const ja::FileDescriptor directory(*opened);
+    const std::string_view bytes(reinterpret_cast<const char*>(pixels.data()), pixels.size());
+    if (auto wrote = platform::ReplacePrivateFile(directory.get(), "image.rgba8", bytes); !wrote)
+      return Error(std::format("writing the completed image failed: errno {}", wrote.error()));
+  }
   return {};
 }
 

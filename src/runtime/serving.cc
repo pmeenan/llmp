@@ -1663,7 +1663,6 @@ class QwenImage final : public Image {
     options_.store = roles.installed;
     options_.composition = composition_id_;
     options_.noise = serving.image_noise;
-    options_.out = roles.spill;
     options_.prompt = serving.image_prompt;
     options_.size = settings.image_size.value;
     options_.steps = settings.image_steps.value;

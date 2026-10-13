@@ -2600,6 +2600,16 @@ each is checked against the design as M3.6 proceeds.
             serving/swap qualification and the matched 1% migration gate remain
             open; legacy serving is retained
             ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-shared-image-generation)).
+      - [x] **Q3g — two-step native migration agreement screen:** compare
+            completed legacy/shared images from the same checkpoint, prompt,
+            noise and 1024×1024 schedule. Two generations per arm retain their
+            own pins; PSNR46.438 dB / SSIM0.99873 pass the fixed32 dB / 0.98
+            screen. The existing native pipeline is a migration baseline,
+            not an independent upstream reference. Descriptive quality-run
+            counters expose a shared remainder cost; no matched speed result
+            or default adoption is claimed. Independent upstream quality,
+            broader schedules and the 40-step/1% family gate remain open
+            ([report](experiments/m36-shared-spatial-execution/README.md#two-step-native-migration-quality-screen)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

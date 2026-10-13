@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -22,8 +24,13 @@
 #include "base/sha256.h"
 #include "chat/chat.h"
 #include "engine/expert_slab.h"
+#include "engine/qwen_image_runner.h"
 #include "expected_error.h"
+#include "kernels/ggml/cublas.h"
+#include "kernels/image/pipeline.h"
 #include "platform/host_probe.h"
+#include "platform/kept_files.h"
+#include "providers/device_runtime.h"
 #include "runtime/component_image_build.h"
 #include "runtime/memory_guard.h"
 #include "tokenizer/hf.h"
@@ -71,11 +78,24 @@ struct Lifetime {
   en::PagedNode node{{.compute_streams = 1, .slots = 1, .slot_bytes = en::kSlabSlotBytes}};
   std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
   std::shared_ptr<rt::ImageGenerationSource> source;
+  en::QwenImageOptions legacy_options;  // before the runner borrowing it
+  std::unique_ptr<en::QwenImageRunner> legacy;
   std::unique_ptr<rt::EngineImage> image;
+  bool legacy_arm = false;
+  fs::path output;
+  std::vector<std::byte> exported;
+  double setup_seconds = 0;
+  std::array<double, 2> first_seconds{}, finish_seconds{}, generation_seconds{};
+  std::uint64_t legacy_preflight = 0, legacy_staging = 0, export_credit = 0;
+  std::uint64_t legacy_weight_capacity = 0;
+  std::string native_report;
+  static double Seconds(std::chrono::steady_clock::duration duration) {
+    return std::chrono::duration<double>(duration).count();
+  }
   std::vector<en::PagedModel*> entered;
   bool teardown_attempted = false;
   std::uint64_t footprint = 0, fixed = 0, activation = 0, pool = 0, staging = 0, plans = 0;
-  std::uint64_t startup_parser = 0;
+  std::uint64_t startup_parser = 0, selected_weight_bytes = 0;
   std::array<std::string, 2> first{}, final{};
   Status Load(const fs::path& store, const fs::path& noise) {
     if (!allowance->Charge(kStartup)) return Error("image startup owner is unpaid");
@@ -124,7 +144,105 @@ struct Lifetime {
     std::memcpy(source->noise.data(), initial->data(), initial->size());
     return {};
   }
+  // This preflight runs before QwenImageRunner::Setup maps any own storage.
+  // Artifact/tokenizer copies and source-derived small layout vectors remain
+  // in the separately charged startup construction phase.
+  Status MeasureLegacy() {
+    namespace md = llmp::model;
+    namespace ki = llmp::kernels::image;
+    const auto& profile = md::QwenImage21();
+    const std::array tensors{md::TextEncoderTensors(profile.text),
+                             md::DenoiserTensors(profile.denoiser),
+                             md::VaeDecoderTensors(profile.vae)};
+    const std::array architectures{profile.text_architecture, profile.denoiser_architecture,
+                                   profile.vae_architecture};
+    std::uint64_t weight_bytes = 0;
+    std::vector<std::uint64_t> vae_sizes;
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      const auto& artifact = source->weights[i]->artifact();
+      auto bound = md::BindQwenImageComponent(tensors[i], architectures[i], artifact);
+      if (!bound) return Error(bound.error());
+      std::vector<bool> used(artifact.groups().size());
+      for (auto index : *bound) {
+        const auto& resource = artifact.resources()[index];
+        used[resource.group] = true;
+        if (i == 2) vae_sizes.push_back(resource.bytes.value());
+      }
+      for (std::size_t g = 0; g < used.size(); ++g)
+        if (used[g]) weight_bytes += std::uint64_t{artifact.groups()[g].chunks} * en::kPagedExtent;
+    }
+    legacy_weight_capacity = weight_bytes;
+    std::uint64_t own = 0, text = 0, flow = 0, vae = 0;
+    std::vector<std::uint64_t> converted;
+    (void)ki::OwnLayout(0, profile.denoiser, 25, 4096, own);
+    (void)ki::TextLayout(0, profile.text, 39, text);
+    (void)ki::DitLayout(0, profile.denoiser, 4121, flow);
+    (void)ki::VaeLayout(0, profile.vae, 64, vae_sizes, true, converted, vae);
+    auto facts = llmp::providers::QueryDeviceFacts(0);
+    if (!facts) return Error("legacy preflight device facts are unavailable");
+    const auto blas =
+        llmp::kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture))
+            .value();
+    const auto freqs = md::QwenImageDenoiserRotary(profile.denoiser, 25, 64);
+    const auto align = [](std::uint64_t bytes) { return (bytes + 255) / 256 * 256; };
+    const auto text_in = align(39 * 4) + 2 * align(39 * 256);
+    const auto step_in = align(freqs.size() * 4) + align(4096 * 64 * 2) +
+                         align(2 * std::uint64_t{profile.denoiser.timestep_dim} * 2) + 256;
+    const auto input = std::max<std::uint64_t>({text_in, step_in, 4096});
+    const auto output_bytes =
+        std::max<std::uint64_t>(std::uint64_t{profile.vae.out_channels} * 1024 * 1024 * 2,
+                                4096 * std::uint64_t{profile.denoiser.out_channels} * 2);
+    legacy_staging = input + output_bytes;
+    // Existing legacy Step captures only index>=2; this exact two-step
+    // workload never creates a denoising graph in either generation.
+    constexpr std::uint64_t graph_floor = 0;
+    const auto rounded = [](std::uint64_t bytes) {
+      return (bytes + en::kPagedExtent - 1) / en::kPagedExtent * en::kPagedExtent;
+    };
+    std::uint64_t left = kCap;
+    // Count the actual opening grant and mapped landing zone together.
+    const auto opening = node.catalog().OccupancyOf(node.domain()).Total().value();
+    for (const auto bytes :
+         {opening, weight_bytes, rounded(own), rounded(std::max({text, flow, vae})), rounded(blas),
+          legacy_staging, graph_floor, 3 * en::kPagedExtent}) {
+      if (bytes > left) return Error("source-derived legacy generation exceeds 48GiB");
+      left -= bytes;
+    }
+    legacy_preflight = kCap - left;
+    const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
+    if (legacy_preflight > available || rt::kUncountedMargin > available - legacy_preflight)
+      return Error("legacy source-derived footprint plus margin lacks physical headroom");
+    return {};
+  }
+  Status Export(std::string_view expected) {
+    if (output.empty() || legacy_arm) return {};
+    constexpr std::size_t pixels = 1024 * 1024;
+    if (exported.size() != pixels * 16) return Error("completed export extent differs");
+    std::vector<std::byte> rgba(pixels * 4);
+    for (std::size_t c = 0; c < 4; ++c)
+      for (std::size_t i = 0; i < pixels; ++i) {
+        float value = 0;
+        std::memcpy(&value, exported.data() + (c * pixels + i) * 4, 4);
+        if (!std::isfinite(value)) return Error("completed export is not finite");
+        const float scaled = (std::clamp(value, -1.F, 1.F) * .5F + .5F) * 255.F;
+        const auto lo = static_cast<unsigned>(std::floor(scaled));
+        const auto rounded =
+            lo + static_cast<unsigned>(scaled - static_cast<float>(lo) > .5F ||
+                                       (scaled - static_cast<float>(lo) == .5F && lo % 2));
+        rgba[i * 4 + c] = static_cast<std::byte>(rounded);
+      }
+    if (llmp::base::ToHex(llmp::base::Sha256{}.Update(rgba).Finish()) != expected)
+      return Error("exported pixels differ from the completed output digest");
+    auto opened = llmp::platform::OpenPrivateDirectory(-1, output.c_str());
+    if (!opened) return Error("opening shared image export directory failed");
+    const llmp::artifact::FileDescriptor directory(*opened);
+    auto written = llmp::platform::ReplacePrivateFile(
+        directory.get(), "image.rgba8",
+        std::string_view(reinterpret_cast<const char*>(rgba.data()), rgba.size()));
+    return written ? Status{} : Error("writing completed shared image failed");
+  }
   Status Run(const fs::path& store, const fs::path& noise) {
+    const auto setup_started = std::chrono::steady_clock::now();
     const auto before = llmp::platform::AvailableMemoryBytes().value_or(0);
     if (auto paid = rt::CheckStartupHostAllowance(kConstruction, kCap, before); !paid) return paid;
     if (auto opened = node.Open(); !opened) return opened;
@@ -134,24 +252,71 @@ struct Lifetime {
     if (!paid) return Error(paid.error());
     allowance = std::move(*paid);
     if (auto loaded = Load(store, noise); !loaded) return loaded;
-    llmp::config::ModelEntry entry;
-    entry.name = "shared-image-generation";
-    entry.artifact = std::string(kComposition);
-    rt::ModelSettings settings;
-    settings.name = entry.name;
-    settings.architecture = "qwen_image_pipeline";
-    image = std::make_unique<rt::EngineImage>(
-        node, entry, settings, 0, rt::ComponentImageGenerationBuild(node, 0, source, allowance));
-    const auto setup = image->Setup();
-    if (image->has_paged()) entered.push_back(&image->paged());
-    if (!setup) return setup;
-    const auto weights = image->weight_read_bytes();
-    if (weights != kSelectedWeights) return Error("complete source closure page union differs");
+    std::uint64_t weights = 0;
+    if (legacy_arm) {
+      // A second artifact/tokenizer construction is simultaneous with Load's
+      // verified source owners. Its separate 1GiB credit stays inside the one
+      // held 4GiB allowance, not another catalog reservation.
+      if (!allowance->Charge(kStartup)) return Error("legacy startup metadata is unpaid");
+      if (auto measured = MeasureLegacy(); !measured) return measured;
+      legacy_options.store = store;
+      legacy_options.composition = kComposition;
+      legacy_options.noise = noise;
+      legacy_options.prompt = kPrompt;
+      legacy_options.steps = 2;
+      legacy_options.out = output;
+      legacy = std::make_unique<en::QwenImageRunner>(node, legacy_options, 0, 0);
+      entered.push_back(legacy.get());  // partial Setup resources retire too
+      if (auto setup = legacy->Setup(); !setup) return setup;
+      selected_weight_bytes = legacy->weight_read_bytes();
+      weights = legacy_weight_capacity;
+      activation = legacy->activations_needed();
+      pool = legacy->pool_needed();
+      plans = 0;  // no legacy denoising graph at two steps
+      staging = legacy_staging;
+    } else {
+      llmp::config::ModelEntry entry;
+      entry.name = "shared-image-generation";
+      entry.artifact = std::string(kComposition);
+      rt::ModelSettings settings;
+      settings.name = entry.name;
+      settings.architecture = "qwen_image_pipeline";
+      auto build = rt::ComponentImageGenerationBuild(node, 0, source, allowance);
+      if (!output.empty()) {
+        export_credit = 20 * kMiB;
+        if (!allowance->Charge(export_credit)) return Error("quality export credit is unavailable");
+        exported.resize(16 * kMiB);
+        build = [this, original = std::move(build)](const rt::ModelSettings& current)
+            -> std::expected<rt::EngineImageParts, std::string> {
+          auto parts = original(current);
+          if (!parts) return std::unexpected(parts.error());
+          auto finish = std::move(parts->finish);
+          parts->finish =
+              [this, finish = std::move(finish)](
+                  std::span<const std::byte> bytes) -> std::expected<std::string, std::string> {
+            auto digest = finish(bytes);
+            if (!digest) return digest;
+            if (bytes.size() != exported.size())
+              return std::unexpected(std::string("quality observation extent differs"));
+            std::ranges::copy(bytes, exported.begin());
+            return digest;
+          };
+          return parts;
+        };
+      }
+      image = std::make_unique<rt::EngineImage>(node, entry, settings, 0, std::move(build));
+      const auto setup = image->Setup();
+      if (image->has_paged()) entered.push_back(&image->paged());
+      if (!setup) return setup;
+      weights = image->weight_read_bytes();
+      selected_weight_bytes = weights;
+      if (weights != kSelectedWeights) return Error("complete source closure page union differs");
+      activation = image->activations_needed();
+      pool = std::max<std::uint64_t>(image->pool_needed(), en::kPagedExtent);
+      staging = image->host_input_bytes();
+      plans = image->plan_floor_bytes();
+    }
     fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    activation = image->activations_needed();
-    pool = std::max<std::uint64_t>(image->pool_needed(), en::kPagedExtent);
-    staging = image->host_input_bytes();
-    plans = image->plan_floor_bytes();
     std::uint64_t left = kCap;
     const auto take = [&left](std::uint64_t bytes) {
       if (bytes > left) return false;
@@ -165,6 +330,8 @@ struct Lifetime {
         !take(2 * en::kPagedExtent))
       return Error("measured complete generation exceeds the 48GiB paid node envelope");
     footprint = kCap - left;
+    if (legacy_arm && footprint > legacy_preflight)
+      return Error("actual legacy allocation exceeds the source-derived preflight");
     const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
     if (footprint > available || rt::kUncountedMargin > available - footprint)
       return Error("actual generation footprint plus physical margin lacks headroom");
@@ -183,22 +350,39 @@ struct Lifetime {
     const auto dynamic = current_fixed + (now - reserve) / en::kPagedExtent * en::kPagedExtent;
     if (auto valid = rt::CheckDiagnosticBudgetCap(guard, dynamic, kCap, 0); !valid) return valid;
     if (auto started = node.Start(llmp::base::Bytes(kCap)); !started) return started;
-    if (auto registered = image->Register(); !registered) return registered;
-    if (auto bound = image->Bind(); !bound) return bound;
+    if (auto registered = legacy_arm ? legacy->Register() : image->Register(); !registered)
+      return registered;
+    if (auto bound = legacy_arm ? legacy->Bind() : image->Bind(); !bound) return bound;
     node.Run();
     node.SetHostFloor(0);
+    setup_seconds = Seconds(std::chrono::steady_clock::now() - setup_started);
     // Repeated generation uses the same retained typed plans/captures and
     // restores the original latent port only after a completed prior Finish.
     for (std::size_t run = 0; run < first.size(); ++run) {
-      auto complete =
-          node.WithRequest(0, image->request_closure(), "shared image generation", [&]() -> Status {
-            if (auto step = image->FirstOutput(first[run]); !step) return step;
-            return image->Finish(final[run]);
+      const auto started = std::chrono::steady_clock::now();
+      auto first_done = started;
+      auto complete = node.WithRequest(
+          0, legacy_arm ? legacy->everything() : image->request_closure(), "image migration screen",
+          [&]() -> Status {
+            auto step =
+                legacy_arm ? legacy->FirstOutput(first[run]) : image->FirstOutput(first[run]);
+            first_done = std::chrono::steady_clock::now();
+            if (!step) return step;
+            return legacy_arm ? legacy->Finish(final[run]) : image->Finish(final[run]);
           });
+      const auto finished = std::chrono::steady_clock::now();
       if (!complete) return complete;
+      first_seconds[run] = Seconds(first_done - started);
+      finish_seconds[run] = Seconds(finished - first_done);
+      generation_seconds[run] = Seconds(finished - started);
+      if (auto saved = Export(final[run]); !saved) return saved;
       if (first[run].size() != 64 || final[run].size() != 64)
         return Error("complete generation did not publish both completed output boundaries");
     }
+    if (legacy_arm)
+      native_report = legacy->Report();
+    else
+      native_report = image->extra();
     if (first[0] != first[1] || final[0] != final[1])
       return Error("same selected complete generation differs on retained replay");
     return {};
@@ -240,5 +424,54 @@ TEST(ImageGenerationGpu, CompleteTextFlowAndDecoderRetainAcrossTwoGenerations) {
   RecordProperty("tokenizer_parser_bound_bytes", std::to_string(life->startup_parser));
   RecordProperty("first_flow_sha256", life->first[0]);
   RecordProperty("pixels_sha256", life->final[0]);
+}
+// One driver, two existing implementations; no serving selection or kernel
+// changes. Output mode is a quality observation, never a timing sample.
+TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
+  const char* arm = std::getenv("LLMP_IMAGE_SCREEN_ARM");
+  if (arm == nullptr) GTEST_SKIP() << "explicit same-source migration screen required";
+  ASSERT_TRUE(std::string_view(arm) == "legacy" || std::string_view(arm) == "shared");
+  const char* store = std::getenv("LLMP_IMAGE_GENERATION_STORE");
+  const char* noise = std::getenv("LLMP_IMAGE_GENERATION_NOISE");
+  ASSERT_NE(store, nullptr);
+  ASSERT_NE(noise, nullptr);
+  auto life = std::make_unique<Lifetime>();
+  life->legacy_arm = std::string_view(arm) == "legacy";
+  if (const char* output = std::getenv("LLMP_IMAGE_SCREEN_OUTPUT")) {
+    std::error_code error;
+    ASSERT_TRUE(fs::is_directory(output, error));
+    ASSERT_FALSE(error);
+    life->output = output;
+  }
+  const auto result = life->Run(store, noise);
+  const auto retired = life->Retire();
+  if (!retired) {
+    std::ignore = life.release();
+    FAIL() << Failed(retired).value_or("");
+  }
+  ASSERT_TRUE(result) << Failed(result).value_or("");
+  RecordProperty("arm", arm);
+  RecordProperty("mode", life->output.empty() ? "timing" : "quality");
+  RecordProperty("completed_generations", 2);
+  RecordProperty("setup_seconds", std::format("{:.9f}", life->setup_seconds));
+  for (std::size_t i = 0; i < 2; ++i) {
+    RecordProperty(std::format("first_seconds_{}", i),
+                   std::format("{:.9f}", life->first_seconds[i]));
+    RecordProperty(std::format("finish_seconds_{}", i),
+                   std::format("{:.9f}", life->finish_seconds[i]));
+    RecordProperty(std::format("generation_seconds_{}", i),
+                   std::format("{:.9f}", life->generation_seconds[i]));
+  }
+  RecordProperty("setup_paid_footprint_bytes", std::to_string(life->footprint));
+  RecordProperty("legacy_preflight_bytes", std::to_string(life->legacy_preflight));
+  RecordProperty("legacy_weight_capacity_bytes", std::to_string(life->legacy_weight_capacity));
+  RecordProperty("selected_weight_bytes", std::to_string(life->selected_weight_bytes));
+  RecordProperty("legacy_denoising_captures", 0);
+  RecordProperty("quality_counters_are_timing_samples", "false");
+  RecordProperty("export_credit_bytes", std::to_string(life->export_credit));
+  RecordProperty("construction_used_bytes", std::to_string(life->allowance->used()));
+  RecordProperty("first_flow_sha256", life->first[0]);
+  RecordProperty("pixels_sha256", life->final[0]);
+  RecordProperty("native_report", life->native_report);
 }
 }  // namespace

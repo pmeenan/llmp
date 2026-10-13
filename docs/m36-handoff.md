@@ -50,6 +50,16 @@ This is a functional diagnostic, not default serving, same-source reference
 quality or the 1% migration gate. See the
 [complete generation evidence](experiments/m36-shared-spatial-execution/README.md#complete-shared-image-generation).
 
+The two-step native migration image comparison now passes its fixed local
+agreement screen: PSNR46.438 dB and SSIM0.99873 at1024×1024, using the same
+checkpoint/prompt/noise and two generations in each existing arm. Pixel equality
+is diagnostic only. This is not an independent upstream reference or40-step/1%
+qualification. Quality-run counters include asymmetric observation/file costs;
+shared warm Finish takes51.082s and includes the second flow step plus decoder,
+not isolated VAE time. Next inspect existing optimized operation reuse before
+requesting matched timing; no numerical re-rounding or timing rerun was adopted.
+See the [quality screen and accounting correction](experiments/m36-shared-spatial-execution/README.md#two-step-native-migration-quality-screen).
+
 The image speed harness accepts a candidate output pin fixed before timing,
 with separate reference-quality qualification. It preserves the frozen old
 image pin, checks repeatability within each arm and rejects mixed pins;

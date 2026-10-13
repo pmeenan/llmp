@@ -79,6 +79,8 @@ struct QwenImageOptions {
   std::filesystem::path store;  // the installed artifacts
   std::string composition;      // its ID
   std::filesystem::path noise;  // the initial latents (BF16, diffusers' for the seed)
+  // Optional directory for a completed image.rgba8 diagnostic export.
+  // Empty (including ordinary serving): no file write. Export runs are untimed.
   std::filesystem::path out;
   std::string prompt = "A red ceramic teapot on a plain wooden table, soft daylight, no text.";
   std::uint32_t size = 1024;

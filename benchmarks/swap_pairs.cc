@@ -616,7 +616,6 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   o.qwen38.graphs = o.dsv4.graphs;
   o.dsv4.out = o.out / "dsv4";
   o.qwen38.out = o.out / "qwen38";
-  o.image.out = o.out / "image";
   return o;
 }
 

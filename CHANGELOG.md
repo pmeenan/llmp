@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Honor explicit legacy image output directories with an atomic private RGBA
+  export of the completed image. Ordinary serving and swap measurements keep
+  exports disabled; the shared pipeline passes a bounded same-source native
+  migration agreement screen without requiring identical pixels.
+
 - Execute a complete 1024×1024 image generation through shared text, flow and
   decoder programs, with completed device-port handoffs and retained-plan reuse.
   The same paid program lifecycle now serves language and image adapters. Valid

@@ -397,3 +397,85 @@ Provenance: main02 result
 models02 result `47f72105ea8be1670b1de3815f5b563f9597e7cf0c55b96464f2bbf8f7dec129`;
 actual model `30d5681f89bea2fcbe6a0ce2d8b93f0e106f94d73f1002d5a69010878a20331a`
 (192,179,136 bytes). Raw records and sealed invocation remain in session scratch.
+
+
+## Two-step native migration quality screen
+
+One prompt now has a direct completed-image comparison between the existing
+`QwenImageRunner` and shared `EngineImage`, using the same BF16 text/flow and F32
+VAE checkpoint, tokenizer, initial noise and two-step Euler schedule at 1024×1024.
+This is the native migration baseline, not an independent upstream diffusers
+reference. Each arm completes two generations and reproduces its own output pin.
+No cross-arm bit equality is required.
+
+The existing image-GGUF comparator scores the completed lossless RGBA exports.
+RGB PSNR is **46.438 dB**, luma SSIM **0.99873**, mean absolute RGB difference
+**0.837/255** and maximum difference **6/255**. This passes the predeclared local
+32 dB / 0.98 agreement screen. Pixel identity is false and diagnostic only.
+Both exported two-step images are low-detail blurred forms. This checks
+implementation agreement on that sample, not usable 40-step perceptual output
+quality. The result covers this prompt and short schedule; independent upstream
+same-source quality, broader prompts/schedules, serving/swap qualification and
+the frozen 40-step matched 1% family gate remain open.
+
+| Descriptive quality-run interval (seconds) | Legacy | Shared |
+| --- | ---: | ---: |
+| Setup | 0.838428 | 0.884807 |
+| First generation | 12.046084 | 68.598573 |
+| Warm generation | 2.069708 | 55.972123 |
+| Warm first-output boundary | 0.878826 | 4.890541 |
+| Warm remainder through final output | 1.190882 | 51.081582 |
+
+These are ordinary counters from quality runs, **not matched timing samples**:
+legacy Finish includes its private file write/sync, while shared Finish includes
+the observation copy and writes the file after the recorded interval. The
+first-output boundary includes text encoding and the first flow step; the
+remainder includes the second flow step and decoder, so it is not an isolated
+VAE measurement. Legacy records no denoising graph at two steps (capture begins
+at the third step); shared retained execution is deliberately allowed to differ.
+The large shared remainder identifies useful follow-up work on existing shared
+operation implementations; no ABBA, unmatched timing rerun, kernel selection or
+performance adoption is part of this slice.
+
+The single driver reuses both existing adapters and their complete ownership and
+retirement paths. Explicit legacy `out` now writes its already-completed RGBA
+buffer as `image.rgba8` in an existing private directory, atomically with mode
+0600. Empty `out` writes nothing. The old serving and swap harness assignments
+were removed so their default timing path remains free of image exports. Shared
+quality observation uses 20 MiB of the already-held 4 GiB construction allowance;
+actual local usage including the existing owned-backend declaration is
+2,691,659,919 bytes. No second construction reservation or resident reference
+weight copy was added.
+
+Accounting review distinguishes legacy source reads (30,718,271,488 bytes) from
+14,719 rounded pages (30,867,980,288 bytes). The original recorded post-Setup sum
+38,102,882,048 was read-based; replacing reads with capacity gives
+**38,252,590,848 bytes**. The original preflight 38,248,397,072 omitted the opened
+4 MiB landing zone while adding 528 bytes of allowance overhead, understating
+that reconciled bound by 4,193,776 bytes. The fixture correction uses actual
+opening catalog occupancy and retained rounded page capacity in both admission
+and the memory guard. Original output receipts remain from the earlier exact
+binary; they are not relabelled as a run of the corrected accounting. The actual
+node scheduler/48 GiB cap remained enforced, and the reconciled envelope remains
+below that cap and the available physical memory with the 6 GiB margin. Shared
+admission was 41,224,157,952 bytes. These are accounting envelopes, not measured
+device peaks.
+
+The scoped Spark B checks pass all 37 affected host cases with no skips; the
+changed swap target and actual diagnostic compile successfully. The two native
+cases complete with every source/binary/artifact guard passing, zero memory-limit
+or OOM events, zero remaining compute PIDs and positive whole-process-group
+retirement. Process/cache peak is 928,067,584 bytes, not device occupancy.
+Postprocessing reuses the existing comparator in a networkless CPU-only 1 GiB
+container with zero extra swap; it exits successfully and is removed. Earlier
+recipe-only inventory initialization and container-entrypoint failures remain
+preserved outside Git. Root integration passes the full Spark-native build and
+all 37 affected host cases on the corrected accounting source, with both model
+registrations inventoried and no additional model execution. Pinned format,
+boundary, whole-source header and REUSE checks also pass; the numerical evidence
+above remains attributed to its original executed binary.
+
+Compact observations and own-arm pins are in [image-quality.json](image-quality.json).
+Provenance: model result `4361f62501623c4a94dfd8bfecd77871731bece03b98e6edd5610f77d7425fa7`;
+actual binary `0aa624d0845e58d18039c8d6a55c5b3b40dd925860ba543f2f978e6501b0cc37`
+(198,195,200 bytes). Raw outputs, logs and invocation receipts remain in scratch.
