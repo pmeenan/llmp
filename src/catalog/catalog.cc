@@ -218,6 +218,25 @@ std::expected<ExtentId, CatalogError> Catalog::AddExtent(const ExtentDescriptor&
   return id;
 }
 
+std::expected<void, CatalogError> Catalog::GrowRuntimeCharge(ExtentId extent, Bytes bytes) {
+  if (auto ready = CanRetirePinned(extent); !ready) return ready;
+  auto& view = Extent(extent)->view;
+  if (view.descriptor.memory_class != MemoryClass::kRuntime || bytes < view.descriptor.size)
+    return std::unexpected(CatalogError::kWrongState);
+  if (bytes == view.descriptor.size) return {};
+  const auto delta = bytes.Minus(view.descriptor.size);
+  auto& domain = *domains_.Find(view.descriptor.domain);
+  const auto registered = domain.registered.Plus(*delta);
+  if (!registered) return std::unexpected(CatalogError::kBadRange);
+  domain.registered = *registered;
+  domain.occupancy.pinned = Add(domain.occupancy.pinned, *delta);
+  auto& runtime = domain.occupancy.by_class.at(static_cast<std::size_t>(MemoryClass::kRuntime));
+  runtime = Add(runtime, *delta);
+  view.descriptor.size = bytes;
+  Advance(view.content_generation);  // stale closures must remeasure this charge
+  return {};
+}
+
 std::expected<void, CatalogError> Catalog::RemoveExtent(ExtentId extent) {
   const ExtentRecord* record = Extent(extent);
   if (record == nullptr) {

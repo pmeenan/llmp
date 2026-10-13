@@ -255,6 +255,8 @@ under the same qualified toolchain/reference closure and supervised resource
 bounds. It is not linked into llmpalooza or used for native dispatch.
 
 These are two fixed prefixes of one natural history. They do not qualify
-broader sparse-attention histories, DSpark quality, durable restart, production serving or
-family speed/swap gates. Agreement with an unavailable original BF16 model
+broader sparse-attention histories, DSpark quality, durable restart or
+family speed/swap gates. The later [shared Server screen](dspark.md#shared-server-admission-and-the-remaining-c2-capacity-wall)
+completes bounded serial speculative HTTP, but its two-client overlap gate
+fails on state capacity; fixed-plain serving and the planned swap remain unrun. Agreement with an unavailable original BF16 model
 is not inferred; the quality baseline here is the same quantized checkpoint.

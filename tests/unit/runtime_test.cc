@@ -1273,7 +1273,8 @@ TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartia
   const int status = CrashChild([] {
     // This isolated child changes its environment before starting any threads.
     // NOLINTBEGIN(concurrency-mt-unsafe)
-    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0 ||
+    if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_ENGINE") != 0 ||
+        ::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0 ||
         ::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
         ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0 ||
         ::unsetenv("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY") != 0)
@@ -1293,6 +1294,40 @@ TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartia
     if (llmp::runtime::ApplyServiceDiagnosticEnvironment(refused) ||
         refused.diagnostic_component_solo || !refused.plain)
       std::_Exit(5);
+    std::_Exit(0);
+  });
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(ServiceDiagnostics, GenericSelectorExcludesLegacyScopeAndPreservesPaymentAtomicity) {
+  const int status = CrashChild([] {
+    // NOLINTBEGIN(concurrency-mt-unsafe): isolated child before serving threads
+    if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN") != 0 ||
+        ::setenv("LLMP_DIAGNOSTIC_COMPONENT_ENGINE", "1", 1) != 0 ||
+        ::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
+        ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0 ||
+        ::unsetenv("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY") != 0)
+      std::_Exit(2);
+    llmp::runtime::ServingOptions options;
+    if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
+        !options.diagnostic_component_solo || !options.diagnostic_component_all ||
+        !options.diagnostic_auto_startup)
+      std::_Exit(3);
+    // Ambiguous scopes refuse without mutating the previously resolved tuple.
+    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0) std::_Exit(4);
+    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
+        !options.diagnostic_component_all || options.diagnostic_budget_cap_bytes != 8388608)
+      std::_Exit(5);
+    if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_ENGINE") != 0) std::_Exit(6);
+    if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
+        options.diagnostic_component_all || !options.diagnostic_component_solo)
+      std::_Exit(7);
+    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "all", 1) != 0) std::_Exit(8);
+    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
+        options.diagnostic_component_all)
+      std::_Exit(9);
+    // NOLINTEND(concurrency-mt-unsafe)
     std::_Exit(0);
   });
   ASSERT_TRUE(WIFEXITED(status));

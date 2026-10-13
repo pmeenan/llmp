@@ -619,6 +619,8 @@ std::expected<std::unique_ptr<kn::StepProgram>, std::string> FakeStepSource::Bui
       options_.host_bytes, options_.launches, addresses.measuring(), &options_, queued_, executed_,
       positioned_, shape.phase);
   program->SetExtra(std::move(extra));
+  if (options_.construction_owner && !program->HoldConstruction(options_.construction_owner()))
+    return Refuse("fake construction owner was not admitted");
   return program;
 }
 

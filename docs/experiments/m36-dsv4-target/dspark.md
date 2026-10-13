@@ -85,3 +85,73 @@ selected-only expert paging, production serving, throughput and matched family
 speed/swap gates remain open. No bit-parity policy is adopted. The absent
 original BF16 model limits original-agreement claims, not that quantized
 reference baseline.
+
+## Shared Server admission and the remaining C2 capacity wall
+
+2026-10-13, Spark B, checked combined main06. The internal generic component
+selector now consumes the ordinary Server/EngineLlm path for target/DSpark.
+Permissions derive from the actual component/state contracts and configured
+geometry, including block versus repeat-pending drafting. Already migrated
+Gemma aliases retain their shared route. Unsupported legacy-only fusion
+overrides refuse before source construction; public defaults do not change.
+
+One Server-owned compiler allowance pays the maximum transient construction
+across aliases. Actual use is charged and confined to its driver thread; returned
+programs retain that payment until destruction or transfer to paid current-plan
+or future ownership. Commit-buffer graph construction acquires the same loan.
+Source/spec/chat/tokenizer ownership remains separately paid per alias, as do
+live plans, graphs, state and futures. The compiler extent remains catalog-paid
+through teardown; releasing a use does not pretend that its capacity disappeared.
+
+The actual service uses the same prepared target/DSpark IDs above, context 8448,
+prompt chunk 256, two configured slots, draft depth three and fixed speculative
+waves. The automatic parser loan retires after 6,350,176,256 retained host bytes
+are paid. Complete physical admission passes with 6,716,392,320 fixed bytes,
+110,930,952,192 weight bytes, 270,532,608 activation bytes and 29,360,128 scratch
+bytes. The diagnostic node cap is 118,338,093,056 bytes, below the fresh ordinary
+dynamic budget of 118,574,285,696 bytes. HTTP request memory is 64 MiB; the
+6 GiB live physical margin and zero-swap process guards remain enforced.
+
+All three HTTP requests complete 128 outputs each, with prompt lengths
+371/341/344 and no cached prompt tokens. The shared composition records 110
+speculative units, 323 proposed tokens and 271 accepted drafts. Its prepared
+execution identity is
+`2e690ae4e57e258b6bf335f8b800ba1372516a09f6af57efe2f32d27e462307a`.
+The service shuts down with TERM/exit 0; source guards, zero memory-limit/OOM
+events and positive child/GPU retirement pass. This establishes bounded serial
+speculative serving, not a throughput or family-quality result.
+
+The full batch remains **FAIL**: the two simultaneously submitted requests
+serialize, with zero joined waves/units. The first ends at monotonic
+1876326.289819543; the second first output arrives at 1876329.574886926.
+The runtime explicitly queues the second request for another 506 MiB of prompt
+state beside one active request, then reports 7.988 seconds queued. The logged
+conversation room beside the largest weights is only 0.64 GiB. This is the
+existing `serve_api.cc` request-slot admission (`PromptStateToCome`/`RoomFor`),
+using `EngineLlm::StateBytesThrough` and actual component used-range page demand;
+it is not evidence of an incompatible joined kernel or read shape. Idle-state
+spill and plan/graph reclaim occur, but they do not establish restored-state or
+swap integrity. The next bounded investigation is the complete simultaneous
+state-page/physical footprint, preserving the admission guard.
+
+The failed overlap gate stops the batch before fixed-plain HTTP and the planned
+DSpark/Gemma 8K/16 two-cycle swap. Those controls, full-head continuation,
+process/GPU restart, DSpark reference quality, qualified family cohorts and
+matched 1% speed remain open. Existing target-only 256/2,560-loss quantized
+reference evidence is reused unchanged; it is not DSpark quality evidence or
+an original-model agreement claim. Public migration and legacy deletion remain
+blocked by the family gates.
+
+Earlier immutable attempts preserve physical-fit/cap refusals, controller
+assertion failures before native execution, and an HTTP rendering-budget refusal.
+None is relabeled PASS. `dsv4-serving-actual06` retains the genuine C2 failure:
+recipe `490c9701…`, result `2be5392c…`, detailed service result `4378a616…`.
+The checked runtime is `2939b1f3…` (276,362,160 bytes), full source 2,551 paths;
+`m36-serving-union-main06` result `08daa73b…` passes the full native build and
+241 current host controls, with unchanged main02 proofs retained. The actual
+required 263-name subset is authenticated through 329 raw cases across eight
+targets. The executed binary includes separately reviewed image/native-publication
+changes; this service/compiler source is staged independently with those hunks
+excluded. Raw receipts remain in `/tmp/llmp-m36-coordination/` until milestone
+close. The unmerged author worktree is
+`/home/pmeenan/src/llmp/.claude/worktrees/m36-dsv4-serving`.

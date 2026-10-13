@@ -27,9 +27,10 @@
 
 namespace llmp::engine {
 
-// Fixed pre-start host payment for the backend and its source declarations.
+// Retained host payment for the backend and its source declarations.
 // Admission pins the entire allowance in the node catalog before allocating
-// this owner. Local charges never exceed it, including temporary construction.
+// this owner. Explicit serialized growth admits a larger high-water payment;
+// local charges never exceed it, including temporary construction.
 // The pinned extent stays charged until the node is destroyed: borrower
 // destruction must not mutate a running scheduler's catalog. A build retains
 // and reuses one owner across failed/retried setup, rather than admitting again.
@@ -42,6 +43,11 @@ class ExecutionMetadataAllowance {
       std::uint64_t available, std::uint64_t margin);
   ExecutionMetadataAllowance(const ExecutionMetadataAllowance&) = delete;
   ExecutionMetadataAllowance& operator=(const ExecutionMetadataAllowance&) = delete;
+  // Serialized catalog-owner operation. Retain the same accounting identity;
+  // admit only a larger high-water capacity, never one extent per request.
+  std::expected<void, std::string> Grow(catalog::Catalog& catalog, catalog::DomainId domain,
+                                        std::uint64_t capacity, std::uint64_t budget,
+                                        std::uint64_t available, std::uint64_t margin);
   bool Charge(std::uint64_t bytes);
   void Release(std::uint64_t bytes);
   std::uint64_t used() const { return used_; }

@@ -232,6 +232,10 @@ class Catalog {
   // or one that would overflow the domain's total, is refused.
   std::expected<ExtentId, CatalogError> AddExtent(const ExtentDescriptor& descriptor,
                                                   bool resident = false);
+  // Increase an owner's unreferenced pinned runtime accounting extent. This
+  // changes a host-payment high-water mark, not provider backing or a resource
+  // range. The caller admits the delta before allocating against it.
+  std::expected<void, CatalogError> GrowRuntimeCharge(ExtentId extent, Bytes bytes);
   // Forgets a NONRESIDENT extent that no resource uses.
   std::expected<void, CatalogError> RemoveExtent(ExtentId extent);
   // RESIDENT -> NONRESIDENT for a pinned extent whose owner has freed it,

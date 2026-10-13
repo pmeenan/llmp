@@ -1817,9 +1817,19 @@ void Server::Log(std::string_view text) {
 Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index) {
   // A family on the component engine: the adapter of its spec's pipeline
   // kind, which its architecture's mapping names.
-  const bool solo = options_.diagnostic_component_solo && settings.architecture == "qwen4exp";
-  if (options_.diagnostic_component_solo && (!solo || entry.composition))
-    return Error("shared Qwen diagnostic requires every selected alias to use its component route");
+  const bool solo = options_.diagnostic_component_solo &&
+                    (settings.architecture == "qwen4exp" ||
+                     (options_.diagnostic_component_all && settings.architecture == "deepseek4"));
+  const bool component_existing = options_.diagnostic_component_all && !entry.composition &&
+                                  OnComponentEngine(settings.architecture);
+  const bool component_image =
+      options_.diagnostic_component_all && entry.composition && settings.composition;
+  if (options_.diagnostic_component_all && !options_.diagnostic_component_solo)
+    return Error("the generic component route requires the funded diagnostic selector");
+  if (options_.diagnostic_component_solo && ((!solo && !component_existing && !component_image) ||
+                                             (entry.composition && !component_image)))
+    return Error(
+        "shared diagnostic requires every selected alias to use a qualified component route");
   if (!entry.composition && (OnComponentEngine(settings.architecture) || solo)) {
     const spec::Mapping* mapping = spec::FindMapping(settings.architecture);
     if (mapping == nullptr) {
@@ -1828,6 +1838,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     }
     switch (mapping->pipeline) {
       case spec::PipelineKind::kLlm: {
+        if (options_.diagnostic_auto_startup && !compiler_)
+          compiler_ = std::make_shared<engine::SharedCompilerAllowance>();
         auto llm = std::make_unique<EngineLlm>(
             node_, entry, settings, roles_, index,
             ComponentLlmBuild(
@@ -1838,11 +1850,19 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                  .automatic_startup_cap = options_.diagnostic_auto_startup
                                               ? options_.diagnostic_budget_cap_bytes.value_or(0)
                                               : 0,
-                 .prefill_lookahead = options_.qwen38_prefill_lookahead,
-                 .prepare_state = options_.qwen38_prepare_state,
-                 .state_only_prefill = options_.qwen38_state_only_prefill,
+                 .shared_compiler = compiler_,
+                 .prefill_lookahead = settings.architecture == "deepseek4"
+                                          ? options_.dsv4_prefill_lookahead
+                                          : options_.qwen38_prefill_lookahead,
+                 .prepare_state = settings.architecture == "deepseek4"
+                                      ? options_.dsv4_prepare_state
+                                      : options_.qwen38_prepare_state,
+                 .state_only_prefill = settings.architecture == "deepseek4"
+                                           ? options_.dsv4_state_only_prefill
+                                           : options_.qwen38_state_only_prefill,
                  .derive_execution_domain =
-                     solo && (settings.max_slots.value > 1 || !entry.drafter)}));
+                     solo && (settings.architecture == "deepseek4" ||
+                              settings.max_slots.value > 1 || !entry.drafter)}));
         if (options_.diagnostic_capture_first_verify)
           Log(std::format("model {}: experimental Verify capture beside first eager run",
                           entry.name));
@@ -2142,7 +2162,9 @@ Status Server::Start(bool snapshot) {
     }
   }
   if (bootstrap) {
-    std::uint64_t retained = 0;
+    // Every alias reports only retained source/spec/chat bytes. The shared
+    // transient compiler extent is counted once, not once per borrowing source.
+    std::uint64_t retained = compiler_ ? compiler_->paid_bytes() : 0;
     for (const auto& model : models_) {
       if (model->startup_host_bytes() == 0 ||
           __builtin_add_overflow(retained, model->startup_host_bytes(), &retained))

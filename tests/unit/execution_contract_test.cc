@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -354,6 +355,84 @@ struct SourceIdentityTest : ::testing::Test {
   std::array<std::shared_ptr<DeclaredFakeBackend>, 2> owners;
 };
 
+TEST(SharedCompilerAllowanceTest, OneMaximumExtentPaysOverlapsAndRejectsForeignThreads) {
+  llmp::catalog::Catalog catalog, other;
+  const auto domain = catalog.AddDomain("node"), foreign = other.AddDomain("node");
+  constexpr std::uint64_t bytes = 1U << 20, cap = 4 * bytes, margin = bytes;
+  en::SharedCompilerAllowance compiler;
+  EXPECT_FALSE(compiler.Acquire(1));
+  EXPECT_FALSE(compiler.Reserve(catalog, domain, bytes, bytes - 1, cap, margin));
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 0U);
+  ASSERT_TRUE(compiler.Reserve(catalog, domain, bytes, cap, cap, margin));
+  ASSERT_TRUE(compiler.Reserve(catalog, domain, bytes, cap, cap, margin));
+  EXPECT_EQ(catalog.ExtentsOf(domain).size(), 1U);
+  EXPECT_EQ(compiler.paid_bytes(), bytes);
+  EXPECT_FALSE(compiler.Reserve(other, foreign, bytes, cap, cap, margin));
+  const auto usable = bytes - en::ExecutionMetadataAllowance::OverheadBytes();
+  {
+    auto first = compiler.Acquire(usable / 2);
+    ASSERT_TRUE(first);
+    auto second = compiler.Acquire(usable - usable / 2);
+    ASSERT_TRUE(second);
+    EXPECT_FALSE(compiler.Acquire(1));
+    EXPECT_FALSE(compiler.Reserve(catalog, domain, 2 * bytes, cap, cap, margin));
+  }
+  // Refused nested/foreign use does not spend capacity. Growth keeps one owner.
+  bool acquired = true, reserved = true;
+  std::thread worker([&] {
+    acquired = compiler.Acquire(1).has_value();
+    reserved = compiler.Reserve(catalog, domain, 2 * bytes, cap, cap, margin).has_value();
+  });
+  worker.join();
+  EXPECT_FALSE(acquired);
+  EXPECT_FALSE(reserved);
+  ASSERT_TRUE(compiler.Reserve(catalog, domain, 2 * bytes, cap, cap, margin));
+  EXPECT_EQ(catalog.ExtentsOf(domain).size(), 1U);
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 2 * bytes);
+  EXPECT_EQ(compiler.paid_bytes(), 2 * bytes);
+  EXPECT_TRUE(compiler.Acquire(2 * bytes - en::ExecutionMetadataAllowance::OverheadBytes()));
+}
+
+TEST_F(SourceIdentityTest, SharedCompilerChargePrecedesGraphAndReturnsOnBuildRefusal) {
+  llmp::catalog::Catalog catalog;
+  const auto node = catalog.AddDomain("node");
+  constexpr std::uint64_t bytes = 1U << 20;
+  auto compiler = std::make_shared<en::SharedCompilerAllowance>();
+  ASSERT_TRUE(compiler->Reserve(catalog, node, bytes, 2 * bytes, 2 * bytes, bytes));
+  const auto usable = bytes - en::ExecutionMetadataAllowance::OverheadBytes();
+  spec.stages.resize(1);
+  auto declared = en::NumericalDomain::Create({Stage(0, "target")});
+  ASSERT_TRUE(declared);
+  auto table = owners[0]->backend();
+  table.owner = owners[0];
+  auto source = en::ComponentStepSource::Create(
+      {.spec = &spec,
+       .stage = 0,
+       .bindings = {.state = &layout},
+       .bound_digest = spec.Digest(),
+       .slots = 2,
+       .policy = pl::Policy{},
+       .backend = std::move(table),
+       .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*declared)),
+       .compiler = compiler,
+       .compiler_bytes = usable});
+  ASSERT_TRUE(source) << Failed(source).value_or("");
+  ASSERT_TRUE((*source)->PrepareExecution());
+  {
+    auto held = compiler->Acquire(usable);
+    ASSERT_TRUE(held);
+    auto program = (*source)->Build(Shape(), {});
+    ASSERT_FALSE(program);
+    EXPECT_EQ(program.error(), "compiler construction exceeds its shared payment");
+  }
+  // This deliberately incomplete spec fails BuildStep. Its paid temporary
+  // compiler use must return even on that early graph-construction failure.
+  auto program = (*source)->Build(Shape(), {});
+  ASSERT_FALSE(program);
+  EXPECT_NE(program.error(), "compiler construction exceeds its shared payment");
+  EXPECT_TRUE(compiler->Acquire(usable));
+}
+
 TEST(ExecutionMetadataAllowanceTest, RefusesBeforeCatalogOrAllocationWithoutHeadroom) {
   llmp::catalog::Catalog catalog;
   const auto domain = catalog.AddDomain("test");
@@ -394,6 +473,41 @@ TEST(ExecutionMetadataAllowanceTest, PreparedOwnerRequiresItsStillHeldCatalogPay
   ASSERT_TRUE(catalog.ReleasePinned(extents[0].first));
   ASSERT_TRUE(catalog.RemoveExtent(extents[0].first));
   EXPECT_FALSE((*owner)->HeldBy(catalog, domain));
+}
+
+TEST(ExecutionMetadataAllowanceTest, RetainedGrowthPreservesIdentityAndRefusalPayment) {
+  llmp::catalog::Catalog catalog;
+  const auto domain = catalog.AddDomain("node");
+  constexpr std::uint64_t unit = 1U << 20;
+  auto admitted = en::ExecutionMetadataAllowance::Admit(catalog, domain, unit, 8 * unit, unit);
+  ASSERT_TRUE(admitted);
+  auto& owner = **admitted;
+  ASSERT_TRUE(owner.Charge(unit / 2));
+  const auto extent = catalog.ExtentsOf(domain).front().first;
+  const auto before = catalog.OccupancyOf(domain).Total();
+  EXPECT_FALSE(owner.Grow(catalog, domain, 2 * unit, 2 * unit, 8 * unit, unit));
+  EXPECT_FALSE(owner.Grow(catalog, domain, 2 * unit, 8 * unit, unit, unit));
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total(), before);
+  EXPECT_EQ(owner.used(), unit / 2);
+  auto closure = catalog.ClosureOfExtents(std::array{extent});
+  ASSERT_TRUE(closure);
+  auto lease = catalog.AcquireLease(*closure);
+  ASSERT_TRUE(lease);
+  EXPECT_FALSE(owner.Grow(catalog, domain, 2 * unit, 8 * unit, 8 * unit, unit));
+  ASSERT_TRUE(catalog.ReleaseLease(*lease));
+  ASSERT_TRUE(owner.Grow(catalog, domain, 2 * unit, 8 * unit, 8 * unit, unit));
+  EXPECT_FALSE(catalog.AcquireLease(*closure));
+  EXPECT_EQ(catalog.ExtentsOf(domain).size(), 1U);
+  EXPECT_EQ(catalog.ExtentsOf(domain).front().first, extent);
+  EXPECT_EQ(catalog.OccupancyOf(domain).Total().value(), 2 * unit + owner.OverheadBytes());
+  for (unsigned i = 0; i < 33; ++i) {
+    ASSERT_TRUE(owner.Grow(catalog, domain, unit, 8 * unit, 8 * unit, unit));
+    ASSERT_TRUE(owner.Charge(unit));
+    owner.Release(unit);
+  }
+  EXPECT_EQ(catalog.ExtentsOf(domain).size(), 1U);
+  EXPECT_EQ(owner.used(), unit / 2);
+  EXPECT_TRUE(owner.HeldBy(catalog, domain));
 }
 
 TEST_F(SourceIdentityTest, ProductionAllowanceRejectsConstructionAndFundsRetryOnlyOnce) {

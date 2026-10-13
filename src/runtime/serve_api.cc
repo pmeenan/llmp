@@ -50,6 +50,7 @@
 #include "runtime/cohort_schedule.h"
 #include "runtime/commands.h"
 #include "runtime/completion_tokens.h"
+#include "runtime/component_admission.h"
 #include "runtime/hang_ladder.h"
 #include "runtime/intake_limits.h"
 #include "runtime/prefill.h"
@@ -2342,7 +2343,15 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
     auto started = server.Start(false);
     if (started && serving.diagnostic_component_solo) {
       for (const auto& model : server.models()) {
-        if (!model->llm() || model->settings().architecture != "qwen4exp") {
+        if (serving.diagnostic_component_all && model->llm() &&
+            OnComponentEngine(model->settings().architecture)) {
+          Say(log, std::format("diagnostic shared alias {}: existing migrated component route",
+                               model->name()));
+          continue;
+        }
+        if (!model->llm() || (model->settings().architecture != "qwen4exp" &&
+                              !(serving.diagnostic_component_all &&
+                                model->settings().architecture == "deepseek4"))) {
           started = std::unexpected("shared service diagnostic has an unsupported alias");
           break;
         }

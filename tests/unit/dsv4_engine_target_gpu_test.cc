@@ -910,6 +910,126 @@ struct Lifetime {
   }
 };
 
+TEST(Dsv4EngineTargetInputs, ServingDomainUsesActualBlockStateAndOwnsItsPayment) {
+  namespace md = llmp::model;
+  using C = md::StateTensorContract;
+  llmp::spec::ModelSpec spec;
+  spec.pipeline = llmp::spec::PipelineKind::kLlm;
+  spec.stages.resize(2);
+  spec.stages[0].name = "target";
+  spec.stages[0].role = llmp::spec::StageRole::kTarget;
+  spec.stages[1].name = "block";
+  spec.stages[1].role = llmp::spec::StageRole::kDrafter;
+  const std::vector<std::pair<std::uint32_t, md::StateContract>> target = {
+      {0, {.tensors = {C{.name = "kv", .cell_bytes = 256}}}}};
+  const std::vector<std::pair<std::uint32_t, md::StateContract>> block = {
+      {0,
+       {.tensors = {C{.name = "ring",
+                      .kind = md::StateKind::kDrafterRing,
+                      .cell_bytes = 256,
+                      .cells = md::CellRule::kPositionRing,
+                      .window_or_ratio = 256,
+                      .rollback = md::Rollback::kSnapshot,
+                      .target_writes = true}}}}};
+  auto a = md::Layout(target, 8192, 512);
+  auto b = md::Layout(block, 8192, 512);
+  ASSERT_TRUE(a) << Failed(a).value_or("");
+  ASSERT_TRUE(b) << Failed(b).value_or("");
+  const std::array layouts{*a, *b};
+  en::DecodingMode mode{
+      .kind = en::DecodingMode::Kind::kSpeculative,
+      .drafters = {{.stage = 1, .shape = en::DrafterSpec::Shape::kBlock, .max_depth = 3}},
+      .combine = en::DecodingMode::Drafters::kCascade,
+      .row_invariant = false};
+  llmp::catalog::Catalog catalog;
+  auto allowance =
+      en::ExecutionMetadataAllowance::Admit(catalog, catalog.AddDomain("serving domain"), 2 * kMiB,
+                                            2 * kMiB + rt::kUncountedMargin, rt::kUncountedMargin);
+  ASSERT_TRUE(allowance) << Failed(allowance).value_or("");
+  for (const auto owners : {1U, 4U}) {
+    auto domain = rt::ComponentServingDomain(spec, layouts, owners, mode, *allowance);
+    ASSERT_TRUE(domain) << Failed(domain).value_or("");
+    EXPECT_GT((*allowance)->used(), 0U);
+    EXPECT_TRUE((*domain)->CheckMode(en::NumericalUse::kPrompt));
+    EXPECT_TRUE((*domain)->CheckMode(en::NumericalUse::kSpeculative));
+    EXPECT_TRUE((*domain)->CheckMode(en::NumericalUse::kPromptCompanions));
+    EXPECT_FALSE((*domain)->CheckMode(en::NumericalUse::kJoinedRepeatPending));
+    EXPECT_EQ((*domain)->stages()[0].phases[2].max_owners, owners);
+    EXPECT_EQ((*domain)->stages()[0].phases[2].max_owner_rows, 4U);
+  }
+  EXPECT_EQ((*allowance)->used(), 0U);
+  auto invalid = mode;
+  invalid.drafters[0].stage = 0;
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, 4, invalid, *allowance));
+  invalid = mode;
+  invalid.drafters[0].max_depth = 512;
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, 4, invalid, *allowance));
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, layouts, 4, mode, nullptr));
+  EXPECT_EQ((*allowance)->used(), 0U);
+  const std::vector<std::pair<std::uint32_t, md::StateContract>> replay = {
+      {0,
+       {.tensors = {C{.name = "kv", .cell_bytes = 256, .replayable = true},
+                    C{.name = "tap",
+                      .kind = md::StateKind::kFeatures,
+                      .encoding = md::Encoding::kF32,
+                      .cell_bytes = 256,
+                      .cells = md::CellRule::kPerRow,
+                      .window_or_ratio = 1,
+                      .rollback = md::Rollback::kSnapshot,
+                      .target_writes = true},
+                    md::DraftProgressControl("progress", md::DraftRelation::kTokenAfterCache)}}}};
+  auto replay_layout = md::Layout(replay, 8192, 512);
+  ASSERT_TRUE(replay_layout) << Failed(replay_layout).value_or("");
+  const std::array replay_layouts{*a, *replay_layout};
+  EXPECT_FALSE(rt::ComponentServingDomain(spec, replay_layouts, 4, mode, *allowance));
+  auto autoregressive = mode;
+  autoregressive.drafters[0].shape = en::DrafterSpec::Shape::kAutoregressive;
+  autoregressive.drafters[0].catch_up = true;
+  autoregressive.drafters[0].features = true;
+  {
+    auto joined = rt::ComponentServingDomain(spec, replay_layouts, 4, autoregressive, *allowance);
+    ASSERT_TRUE(joined) << Failed(joined).value_or("");
+    EXPECT_TRUE((*joined)->CheckMode(en::NumericalUse::kJoinedRepeatPending));
+  }
+  EXPECT_EQ((*allowance)->used(), 0U);
+  spec.stages.resize(1);
+  auto plain = rt::ComponentServingDomain(spec, std::span(layouts).first(1), 4, {}, *allowance);
+  ASSERT_TRUE(plain) << Failed(plain).value_or("");
+  EXPECT_FALSE((*plain)->CheckMode(en::NumericalUse::kSpeculative));
+}
+
+TEST(Dsv4EngineTargetInputs, AutomaticServingRefusesUnpaidOrMixedAuthorityBeforeSourceRead) {
+  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+  llmp::config::ModelEntry entry;
+  entry.name = Settings().name;
+  entry.artifact = std::string(kArtifact);
+  auto domain = Domain();
+  ASSERT_TRUE(domain) << Failed(domain).value_or("");
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    auto settings = Settings();
+    settings.context.value = 8192;
+    settings.max_slots.value = 4;
+    rt::ComponentBuildOptions options{.target_policy = std::nullopt,
+                                      .diagnostic_solo = true,
+                                      .automatic_startup_cap = kCap,
+                                      .derive_execution_domain = true};
+    if (mutation == 0) options.automatic_startup_cap = 0;
+    if (mutation == 1) options.execution_domain = *domain;
+    if (mutation == 2) options.diagnostic_solo = false;
+    if (mutation == 3) options.target_policy = "";
+    if (mutation == 4) settings.speculation.value = true;  // no drafter
+    if (mutation == 5) settings.prefill_outa_hca.source = rt::SettingSource::kOverride;
+    if (mutation == 6) settings.prefill_outa_hca_partial.source = rt::SettingSource::kOverride;
+    auto build = rt::ComponentLlmBuild(node, "/nonexistent-dsv4-serving-control", entry, 0,
+                                       std::move(options));
+    auto parts = build(settings);
+    ASSERT_FALSE(parts);
+    EXPECT_TRUE(parts.error().find("diagnostic envelope") != std::string::npos ||
+                parts.error().find("internal request") != std::string::npos ||
+                parts.error().find("legacy prefill fusion overrides") != std::string::npos);
+  }
+}
+
 TEST(Dsv4EngineTargetInputs, RejectsUnpaidOrDifferentEnvelopeBeforeArtifactRead) {
   EXPECT_FALSE(rt::OnComponentEngine("deepseek4"));
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};

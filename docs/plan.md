@@ -2075,6 +2075,14 @@ each is checked against the design as M3.6 proceeds.
                   expert-count checks, compressor inputs and injection
                   features with one drafter slot per target slot; pass the
                   family state, quality, swap and matched 1% controls.
+                  Internal Server admission now derives actual composition bounds
+                  and shares a paid transient compiler across aliases. At context
+                  8448/chunk 256, three serial speculative HTTP requests complete
+                  384 outputs. The two-client gate remains FAIL: another 506 MiB
+                  of prompt state cannot join the active request, so zero joined
+                  waves execute. Fixed-plain and the planned 8K/16 swap are unrun;
+                  public/default adoption and the family gates remain open
+                  ([service outcome](experiments/m36-dsv4-target/dspark.md#shared-server-admission-and-the-remaining-c2-capacity-wall)).
                   - [x] **G4c1 — full target factory execution screen:**
                         the fixed prepared GGUF executes through ComponentLlmBuild,
                         EngineLlm and ModelRunner with real hash/compressor inputs
@@ -2094,7 +2102,7 @@ each is checked against the design as M3.6 proceeds.
                         target heads and nine restored rows at frontier 2568.
                         Actual paid setup fits the unchanged 110 GiB cap and
                         6 GiB physical margin. Draft-head finiteness, broader same-checkpoint
-                        quality, production serving and family speed/swap gates
+                        quality, joined serving and family speed/swap gates
                         remain open ([evidence](experiments/m36-dsv4-target/dspark.md)).
                   - [x] **G4c3 — bounded same-checkpoint target scoring:**
                         the real target factory admits a closed Score domain and
@@ -2110,7 +2118,7 @@ each is checked against the design as M3.6 proceeds.
                         constant is corrected by a source-backed offline audit.
                         Complete-key plan owners and one replacement are measured
                         and paid before payload. Broader sparse histories, DSpark
-                        quality, serving and family speed/swap remain open
+                        quality, joined serving and family speed/swap remain open
                         ([evidence](experiments/m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)).
             - [ ] **G4d — deletion:** remove DeepSeek V4's M3 runner, plans,
                   graph builders, bindings and serving class after G4c.

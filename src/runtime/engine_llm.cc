@@ -85,6 +85,7 @@ Status EngineLlm::Setup() {
   branch_depth_ = parts->branch_depth;
   if (branch_depth_) depth_cost_ratio_ = settings_.depth_cost_ratio.value;
   drafter_specs_ = parts->mode.drafters;
+  wave_mode_ = std::move(parts->wave_mode);
   if (branch_depth_ > 7 || (branch_depth_ && drafter_specs_.size() > 1))
     return Error("a conversation-owned depth requires exactly one drafter");
   architecture_ = parts->architecture;
@@ -574,8 +575,9 @@ void EngineLlm::RunPlain(std::span<PreparedGeneration> units) {
   // segments are all of them): one that keeps its rows or samples keeps
   // the whole wave on rows, joined, as the M3 classes' homogeneous waves.
   const bool device =
-      device_greedy_ &&
-      std::ranges::all_of(units, [](const PreparedGeneration& unit) { return DeviceGreedy(unit); });
+      device_greedy_ && std::ranges::all_of(units, [](const PreparedGeneration& unit) {
+        return GreedyWithoutRows(unit);
+      });
   for (PreparedGeneration& unit : units) {
     unit.chosen.reset();
     greedy.push_back(device);
@@ -649,6 +651,7 @@ void EngineLlm::RunSpeculative(std::span<PreparedGeneration> units) {
   }
   SyncDrafters(work);
   const en::DecodeReport report = speculative_->Step(work);
+  std::uint32_t complete = 0, committed = 0;
   for (std::size_t i = 0; i < units.size(); ++i) {
     PreparedGeneration& unit = units[i];
     const en::DecodeOutcome& out = report.outcomes[i];
@@ -664,12 +667,21 @@ void EngineLlm::RunSpeculative(std::span<PreparedGeneration> units) {
       verified_rows_.at(slot).clear();
       continue;
     }
+    if (wave_mode_ && unit.step.left >= verify_rows_ && out.proposed.size() + 1 == verify_rows_ &&
+        out.joined.size() > out.outputs.size()) {
+      ++complete;
+      committed += out.kept;
+    }
     counts_.accepted += out.kept - 1;
     unit.kept = out.tokens;
     if (unit.step.need_logits) unit.logits = std::move(verified_rows_.at(slot));
     verified_rows_.at(slot).clear();
     unit.result = {};
   }
+  if (wave_mode_ &&
+      std::ranges::none_of(units, [this](const auto& unit) { return sampling(*unit.branch); }))
+    wave_mode_->Observe(static_cast<std::uint32_t>(units.size()),
+                        execution::AdaptiveWaveMode::Mode::kSpeculative, committed, complete);
   if (units.size() > 1) {
     ++counts_.joined_waves;
     counts_.joined_units += units.size();
@@ -692,7 +704,34 @@ Status EngineLlm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepar
   }
   if (speculative) {
     if (!speculative_) return Error(std::format("{} has no drafter to speculate with", name_));
-    RunSpeculative(prepared);
+    const auto width = static_cast<std::uint32_t>(prepared.size());
+    const bool sampled =
+        std::ranges::any_of(prepared, [this](const auto& unit) { return sampling(*unit.branch); });
+    if (wave_mode_ &&
+        wave_mode_->Choose(width, sampled) == execution::AdaptiveWaveMode::Mode::kPlain) {
+      // Sessions still consume a speculative result, but this selected form
+      // commits one target row. RunPlain retains the ordinary companion/tap
+      // writes; no draft state is substituted or copied from another owner.
+      RunPlain(prepared);
+      for (auto& unit : prepared) {
+        if (!unit.result) continue;
+        auto token = unit.chosen
+                         ? std::expected<std::int32_t, std::string>(*unit.chosen)
+                         : Choose(*unit.branch, unit.row, std::uint64_t{unit.step.position} + 1);
+        if (!token) {
+          unit.result = Error(token.error());
+          unit.anchor_processed = true;
+          continue;
+        }
+        unit.kept = {*token};
+        if (unit.step.need_logits) unit.logits.push_back(std::move(unit.row));
+      }
+      if (!sampled &&
+          std::ranges::all_of(prepared, [](const auto& unit) { return unit.result.has_value(); }))
+        wave_mode_->Observe(width, execution::AdaptiveWaveMode::Mode::kPlain);
+    } else {
+      RunSpeculative(prepared);
+    }
   } else {
     RunPlain(prepared);
   }

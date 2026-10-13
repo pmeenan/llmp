@@ -26,6 +26,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "base/sha256.h"
@@ -39,6 +40,44 @@
 #include "spec/spec.h"
 
 namespace llmp::engine {
+
+// One catalog-backed transient compiler ceiling shared by sources on the
+// serving driver. Retained source metadata and installed plans pay separately.
+// Foreign-thread/reentrant builds cannot borrow uncharged construction room.
+class SharedCompilerAllowance {
+ public:
+  SharedCompilerAllowance() = default;
+  SharedCompilerAllowance(const SharedCompilerAllowance&) = delete;
+  SharedCompilerAllowance& operator=(const SharedCompilerAllowance&) = delete;
+  class Use {
+   public:
+    Use(Use&& other) noexcept;
+    Use& operator=(Use&&) = delete;
+    Use(const Use&) = delete;
+    Use& operator=(const Use&) = delete;
+    ~Use();
+
+   private:
+    friend class SharedCompilerAllowance;
+    Use(std::shared_ptr<ExecutionMetadataAllowance> owner, std::uint64_t bytes)
+        : owner_(std::move(owner)), bytes_(bytes), thread_(std::this_thread::get_id()) {}
+    std::shared_ptr<ExecutionMetadataAllowance> owner_;
+    std::uint64_t bytes_;
+    std::thread::id thread_;
+  };
+  // Startup only, under the stopped node's catalog owner. Total includes the
+  // metadata owner overhead and caller's page rounding. Grow the same extent.
+  Status Reserve(catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t total,
+                 std::uint64_t cap, std::uint64_t available, std::uint64_t margin);
+  std::expected<Use, std::string> Acquire(std::uint64_t bytes);
+  std::uint64_t paid_bytes() const {
+    return owner_ ? owner_->capacity() + ExecutionMetadataAllowance::OverheadBytes() : 0;
+  }
+
+ private:
+  const std::thread::id thread_ = std::this_thread::get_id();
+  std::shared_ptr<ExecutionMetadataAllowance> owner_;
+};
 
 struct ComponentSourceOptions {
   // The model's spec and the stage this source plans; both outlive it, as
@@ -69,6 +108,11 @@ struct ComponentSourceOptions {
   // Diagnostic validation only, after the real backend lowers both measuring
   // and bound plans. No callback means the ordinary path is unchanged.
   kernels::ProgramValidator validate_program{};
+  // Nonzero and owned together. Charged before any BuildStep/graph allocation
+  // and retained with the produced program until measurement destruction or
+  // transfer into an independently paid live plan/future.
+  std::shared_ptr<SharedCompilerAllowance> compiler{};
+  std::uint64_t compiler_bytes = 0;
 };
 
 class ComponentStepSource final : public StepSource {

@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "engine/graph_plan.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
@@ -16,8 +17,49 @@
 
 namespace llmp::engine {
 
+SharedCompilerAllowance::Use::Use(Use&& other) noexcept
+    : owner_(std::move(other.owner_)), bytes_(other.bytes_), thread_(other.thread_) {}
+SharedCompilerAllowance::Use::~Use() {
+  if (owner_) {
+    base::Check(thread_ == std::this_thread::get_id(), "compiler charge leaves its driver thread");
+    owner_->Release(bytes_);
+  }
+}
+Status SharedCompilerAllowance::Reserve(catalog::Catalog& catalog, catalog::DomainId domain,
+                                        std::uint64_t total, std::uint64_t cap,
+                                        std::uint64_t available, std::uint64_t margin) {
+  // Check the immutable thread identity before touching unsynchronized local
+  // usage or catalog state. No worker may race the driver's accounting.
+  if (thread_ != std::this_thread::get_id())
+    return std::unexpected("compiler admission belongs to its serving driver");
+  if (owner_ && (owner_->used() != 0 || !owner_->HeldBy(catalog, domain)))
+    return std::unexpected("compiler admission has live use or another catalog owner");
+  if (total <= ExecutionMetadataAllowance::OverheadBytes())
+    return std::unexpected("compiler admission omits its owner overhead");
+  const auto occupied = catalog.OccupancyOf(domain).Total().value();
+  if (occupied > cap) return std::unexpected("compiler admission exceeds the node cap");
+  if (owner_)
+    return owner_->Grow(catalog, domain, total - ExecutionMetadataAllowance::OverheadBytes(), cap,
+                        available, margin);
+  if (total > cap - occupied) return std::unexpected("compiler admission exceeds the node cap");
+  auto owner = ExecutionMetadataAllowance::Admit(catalog, domain, total, available, margin);
+  if (!owner) return std::unexpected(owner.error());
+  owner_ = std::move(*owner);
+  return {};
+}
+std::expected<SharedCompilerAllowance::Use, std::string> SharedCompilerAllowance::Acquire(
+    std::uint64_t bytes) {
+  if (thread_ != std::this_thread::get_id())
+    return std::unexpected("compiler use belongs to its serving driver");
+  if (bytes == 0 || !owner_ || !owner_->Charge(bytes))
+    return std::unexpected("compiler construction exceeds its shared payment");
+  return Use(owner_, bytes);
+}
+
 std::expected<std::unique_ptr<ComponentStepSource>, std::string> ComponentStepSource::Create(
     ComponentSourceOptions options) {
+  if (static_cast<bool>(options.compiler) != (options.compiler_bytes != 0))
+    return std::unexpected("a compiler source needs both its owner and byte bound");
   if (options.backend.owner) {
     auto owner = options.backend.owner;
     // Retain just the owned table, avoiding another allocation/copy of its
@@ -411,6 +453,12 @@ std::expected<std::vector<CommitBuffer>, std::string> ComponentStepSource::Commi
     return item.contract.rollback == model::Rollback::kCommit;
   });
   if (!commits) return std::vector<CommitBuffer>{};
+  std::optional<SharedCompilerAllowance::Use> compiler;
+  if (o_.compiler) {
+    auto paid = o_.compiler->Acquire(o_.compiler_bytes);
+    if (!paid) return std::unexpected(paid.error());
+    compiler.emplace(std::move(*paid));
+  }
   planner::StepShape shape{
       .stage = stage,
       .phase = planner::Phase::kVerify,
@@ -438,6 +486,12 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
     return std::unexpected(
         std::format("a step of stage {} from stage {}'s source", shape.stage, o_.stage));
   }
+  std::optional<SharedCompilerAllowance::Use> compiler;
+  if (o_.compiler) {
+    auto paid = o_.compiler->Acquire(o_.compiler_bytes);
+    if (!paid) return std::unexpected(paid.error());
+    compiler.emplace(std::move(*paid));
+  }
   // The narrowed final layer is the policy's (planner/pattern.h
   // narrow_final).
   auto step = shape.phase == planner::Phase::kCommit
@@ -459,7 +513,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   }
   const auto state_spans = StateSpans(shape, addresses);
   const GraphBuildIO io{step->graph, step->graph.inputs(), step->graph.outputs(), step->weights};
-  return BuildComponentProgram(
+  auto program = BuildComponentProgram(
       io, Backend(), policy_, addresses,
       {.row_invariant = shape.row_invariant,
        .capturable = o_.require_capture,
@@ -472,6 +526,12 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
        .alignment_staged = std::move(aligned_staged)},
       kernels::TokenLowerInput{*step, shape, o_.bindings.state->context, state_spans},
       o_.validate_program);
+  if (program && compiler) {
+    auto held = std::make_shared<SharedCompilerAllowance::Use>(std::move(*compiler));
+    if (!(**program).HoldConstruction(std::move(held)))
+      return std::unexpected("lowered program already has a construction owner");
+  }
+  return program;
 }
 
 std::expected<std::unique_ptr<StagedStepSource>, std::string> StagedStepSource::Create(

@@ -50,6 +50,22 @@ bool ExecutionMetadataAllowance::HeldBy(const catalog::Catalog& catalog,
          extent->descriptor.size.value() >= capacity_ + OverheadBytes();
 }
 
+std::expected<void, std::string> ExecutionMetadataAllowance::Grow(
+    catalog::Catalog& catalog, catalog::DomainId domain, std::uint64_t capacity,
+    std::uint64_t budget, std::uint64_t available, std::uint64_t margin) {
+  if (!HeldBy(catalog, domain)) return std::unexpected("metadata growth lost its held payment");
+  if (capacity <= capacity_) return {};
+  const auto delta = capacity - capacity_;
+  const auto occupied = catalog.OccupancyOf(domain).Total().value();
+  if (capacity > UINT64_MAX - OverheadBytes() || occupied > budget || delta > budget - occupied ||
+      margin == 0 || delta > available || margin > available - delta)
+    return std::unexpected("metadata growth exceeds admitted physical headroom");
+  if (!catalog.GrowRuntimeCharge(extent_, base::Bytes(capacity + OverheadBytes())))
+    return std::unexpected("metadata growth could not retain its catalog charge");
+  capacity_ = capacity;
+  return {};
+}
+
 bool ExecutionMetadataAllowance::Charge(std::uint64_t bytes) {
   if (bytes > capacity_ - used_) return false;
   used_ += bytes;

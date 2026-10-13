@@ -73,6 +73,7 @@
 #include "engine/paged_node.h"
 #include "engine/prefill.h"
 #include "engine/wave_composer.h"
+#include "execution/adaptive_wave_mode.h"
 #include "model/batching.h"
 #include "runtime/serving.h"
 
@@ -91,6 +92,9 @@ struct EngineLlmParts {
   // The decoding mode, with its drafters when the model has any (they
   // draft only with the speculation setting on); kPlain otherwise.
   engine::DecodingMode mode;
+  // Optional existing counted wave-form policy. Unset preserves the source
+  // recipe: every speculative session uses its declared drafter schedule.
+  std::optional<execution::AdaptiveWaveMode> wave_mode{};
   std::uint32_t logit_width = 0;  // a head row's F32 logits
   // A plain greedy step returns its tokens chosen on the device.
   bool device_greedy = false;
@@ -391,6 +395,7 @@ class EngineLlm final : public Llm {
   std::optional<engine::WaveComposer> composer_;
   std::optional<engine::DecodingOrchestrator> plain_;
   std::optional<engine::DecodingOrchestrator> speculative_;
+  std::optional<execution::AdaptiveWaveMode> wave_mode_;
   model::Batching caps_;
   engine::PrefillOptions prefill_;
   std::uint32_t logit_width_ = 0;

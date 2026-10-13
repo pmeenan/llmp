@@ -74,10 +74,13 @@ struct Turn {
 struct ServingOptions {
   // Decode plainly even where a model has a drafter.
   bool plain = false;
-  // Internal Qwen component migration screen, including declared composed
+  // Internal component migration screen, including declared composed
   // sources with multiple owners. Only an explicitly funded service diagnostic
   // can select it in HTTP or local commands; normal defaults are unchanged.
   bool diagnostic_component_solo = false;
+  // The generic selector additionally admits qualified component pipelines. The
+  // historical Qwen-only selector keeps its narrower alias contract.
+  bool diagnostic_component_all = false;
   // Internal default-off experiment, only with the paid shared service route.
   bool diagnostic_capture_first_verify = false;
   // Internal prepared-image migration route, absent from CLI/TOML/HTTP. Each

@@ -67,6 +67,7 @@
 #include "config/node_config.h"
 #include "config/storage_roles.h"
 #include "engine/checkpoint_file.h"
+#include "engine/component_source.h"
 #include "engine/execution_contract.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
@@ -1774,6 +1775,8 @@ class Server {
   };
   std::vector<PendingAdoption> adoptions_;
   engine::PagedNode node_;
+  // Outlives model sources; its one extent remains pinned through node teardown.
+  std::shared_ptr<engine::SharedCompilerAllowance> compiler_;
   std::vector<std::unique_ptr<Served>> models_;
   Served* resident_ = nullptr;
   // Extra closure protection during a switch/rollback, also honored by

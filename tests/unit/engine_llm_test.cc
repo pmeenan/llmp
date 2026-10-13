@@ -271,6 +271,7 @@ class EngineLlmTest : public ::testing::Test {
         parts.device_verify = true;
         parts.branch_depth = 3;
       }
+      parts.wave_mode = wave_mode_;
       parts.logit_width = kWidth;
       parts.device_greedy = true;
       parts.prefill = {.chunk_rows = kChunk,
@@ -360,6 +361,42 @@ class EngineLlmTest : public ::testing::Test {
     return t;
   }
 
+  void JoinedTurn(const std::array<std::vector<std::int32_t>, 2>& prompts,
+                  std::array<rt::Generation, 2>& outputs) {
+    Open({&BranchAt(0), &BranchAt(1)});
+    const auto finish = [](rt::Llm::GenerationSession* session) {
+      if (!session) return;
+      if (!session->done()) session->Cancel();
+      (void)session->Finish();
+      delete session;
+    };
+    std::array<std::unique_ptr<rt::Llm::GenerationSession, decltype(finish)>, 2> sessions;
+    rt::GenerateOptions options;
+    options.max_tokens = 16;
+    options.keep_logits = true;
+    for (std::size_t i = 0; i < sessions.size(); ++i) {
+      std::uint32_t reused = 0;
+      std::vector<float> head;
+      ASSERT_TRUE(BranchAt(i).PreparePrompt(prompts[i], 0, head, reused));
+      auto begun = BranchAt(i).BeginGeneration(head, options, outputs[i]);
+      ASSERT_TRUE(begun) << Failed(begun).value_or("");
+      sessions[i].reset(begun->release());
+    }
+    for (unsigned step = 0; step < 32; ++step) {
+      std::vector<rt::Llm::GenerationSession*> active;
+      for (auto& session : sessions)
+        if (!session->done()) active.push_back(session.get());
+      if (active.empty()) break;
+      ASSERT_TRUE(llm_->RunGenerationWave(active));
+    }
+    for (auto& session : sessions) {
+      EXPECT_TRUE(session->done());
+      if (!session->done()) session->Cancel();
+      EXPECT_TRUE(session->Finish());
+    }
+    Close();
+  }
+
   // What follows a branch's history: its next prompt continues it.
   std::vector<std::int32_t> Continue(std::size_t index, const rt::Generation& out,
                                      const std::vector<std::int32_t>& more) {
@@ -399,6 +436,7 @@ class EngineLlmTest : public ::testing::Test {
   ts::FakeStepSource* source_ = nullptr;
   std::expected<std::optional<llmp::base::Sha256Digest>, std::string> execution_identity_{
       std::nullopt};
+  std::optional<llmp::execution::AdaptiveWaveMode> wave_mode_;
   bool native_outputs_ = false;
   bool kept_progress_ = false;
   bool save_checkpoints_ = true;  // Llm::set_turn_checkpoints at Start
@@ -784,6 +822,43 @@ TEST_F(EngineLlmTest, AStoppedOwnerKeepsItsCompletedPrefixAndItsPeerRunsOn) {
   const Turned next = Turn(0, prompts[0], 6);
   EXPECT_EQ(next.reused, kChunk);
   EXPECT_EQ(next.out.tokens, Chain(prompts[0], 6));
+}
+
+TEST_F(EngineLlmTest, ConfiguredPlainCohortKeepsCompanionStateAndSpeculativeSessionResults) {
+  using Wave = llmp::execution::AdaptiveWaveMode;
+  wave_mode_.emplace(Wave::Costs{}, Wave::Force::kPlain);
+  Start(true, true);
+  const std::array prompts{Prompt(32, 5), Prompt(32, 17)};
+  std::array<rt::Generation, 2> outputs;
+  JoinedTurn(prompts, outputs);
+  for (std::size_t i = 0; i < outputs.size(); ++i) {
+    EXPECT_EQ(outputs[i].tokens, Chain(prompts[i], 16));
+    ASSERT_EQ(outputs[i].logits.size(), 16U);
+    for (std::size_t row = 0; row < 16; ++row)
+      EXPECT_EQ(ArgmaxOf(outputs[i].logits[row]), outputs[i].tokens[row]);
+  }
+  EXPECT_EQ(llm_->counts().speculative_units, 0U);
+  // A lone owner still speculates and reads the companion state written by
+  // the preceding ordinary target waves.
+  const auto continuation = Continue(0, outputs[0], {});
+  const auto next = Turn(0, continuation, 8);
+  EXPECT_EQ(next.out.tokens, Chain(continuation, 8));
+  EXPECT_GT(llm_->counts().drafted, 0U);
+}
+
+TEST_F(EngineLlmTest, ExplicitSpeculativeWaveKeepsTheExistingJoinedMode) {
+  using Wave = llmp::execution::AdaptiveWaveMode;
+  wave_mode_.emplace(Wave::Costs{}, Wave::Force::kSpeculative);
+  Start(true, true);
+  const std::array prompts{Prompt(32, 5), Prompt(32, 17)};
+  std::array<rt::Generation, 2> outputs;
+  JoinedTurn(prompts, outputs);
+  for (std::size_t i = 0; i < outputs.size(); ++i) {
+    EXPECT_EQ(outputs[i].tokens, Chain(prompts[i], 16));
+    EXPECT_EQ(outputs[i].logits.size(), 16U);
+  }
+  EXPECT_GT(llm_->counts().speculative_units, 0U);
+  EXPECT_GT(llm_->counts().drafted, 0U);
 }
 
 // Speculation with two drafters in a cascade: the MTP-like drafter's two

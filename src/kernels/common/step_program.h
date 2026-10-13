@@ -299,6 +299,16 @@ class StepProgram {
   StepProgram& operator=(StepProgram&&) = delete;
   virtual ~StepProgram() = default;
 
+  // A compiler's temporary payment follows the returned program until its
+  // caller transfers the retained graph/arena to a paid plan or future. The
+  // base member dies after derived storage, including failed measurements.
+  bool HoldConstruction(std::shared_ptr<void> owner) {
+    if (!owner || construction_) return false;
+    construction_ = std::move(owner);
+    return true;
+  }
+  void ConstructionPaid() { construction_.reset(); }
+
   // What it needs: the activations' extent it was placed in, the backend's
   // pool scratch, the host bytes the plan holds (its arena, its steps), and
   // the launches it queues (a captured graph's cost, kGraphNodeHostBytes
@@ -346,6 +356,9 @@ class StepProgram {
       StepLaunch& launch, providers::NativeStream stream, const StepLaunch::Body& body) const {
     return launch.Capture(stream, body);
   }
+
+ private:
+  std::shared_ptr<void> construction_{};
 };
 
 }  // namespace llmp::kernels

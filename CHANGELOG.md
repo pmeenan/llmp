@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Admit DeepSeek target/DSpark through the internal shared Server route with
+  component-derived decoding bounds and explicit physical admission. Share one
+  paid transient compiler allowance across component aliases while retaining
+  separate source and live-program ownership. Serial speculative HTTP completes;
+  the bounded two-client screen remains blocked by conversation-state capacity.
+
 - Publish the approved Qwen GGUF target through the ordinary native importer
   and admit its stored spec through the internal paid component route. Keep
   embedding and PLE tables independently owned; validate full-head, state and

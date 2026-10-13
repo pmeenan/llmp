@@ -1270,6 +1270,9 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Install(
   if (transfer) transfer();
   ForgetCompletedRouting();
   Plans::Entry& entry = plans_.Add(KeyOf(shape), std::move(planned), host, launches, seconds);
+  // Add's required PlanAccount charge owns all returned program storage before
+  // the source's transient compiler use can be returned to another builder.
+  entry.planned->program->ConstructionPaid();
   // Never recorded: no capture beside a run, on its first run or ahead.
   if (entry.planned->positioned) entry.runs[0].uncapturable = true;
   return &entry;
@@ -1780,6 +1783,10 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
           if (!program) return std::unexpected(std::move(program.error()));
           auto planned = std::make_unique<StepPlanned>();
           planned->program = std::move(*program);
+          // Fund already charged this future's allowance. Keep construction
+          // ownership until its actual returned storage fits that paid owner;
+          // an oversized future is destroyed by the existing Build refusal.
+          if (PlannedHostBytes(*planned) <= plan_floor_bytes_) planned->program->ConstructionPaid();
           return planned;
         });
     for (std::size_t i = 0; i < built.size(); ++i) {

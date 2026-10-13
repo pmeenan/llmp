@@ -128,6 +128,8 @@ struct FakeSourceOptions {
   // Called at the start of every Build (on the driver; a lookahead's in
   // the job's meanwhile).
   std::function<void(const planner::StepShape&, bool measuring)> on_build;
+  // Tests the real runner's returned-program payment transfer.
+  std::function<std::shared_ptr<void>()> construction_owner;
   // Programs are not capturable and take each row's position from
   // StepProgram::Position (past + row) instead of their positions input.
   bool positioned = false;

@@ -13,17 +13,22 @@
 #ifndef LLMP_RUNTIME_COMPONENT_BUILD_H_
 #define LLMP_RUNTIME_COMPONENT_BUILD_H_
 
+#include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
 #include "config/node_config.h"
+#include "engine/component_source.h"
 #include "engine/execution_contract.h"
 #include "engine/paged_node.h"
 #include "kernels/common/lower.h"
 #include "runtime/engine_llm.h"
+#include "spec/spec.h"
 
 namespace llmp::runtime {
 
@@ -39,15 +44,18 @@ bool OnComponentEngine(std::string_view architecture);
 struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
   // Internal qualification only; Qwen and DeepSeek remain off in OnComponentEngine.
-  // Other slot counts refuse before opening artifacts, except the closed
-  // target-only C4 scoring envelope, a declared repeat-pending composition,
-  // or a derived ordinary target-only domain. Public admission stays unchanged.
+  // Explicit diagnostic domains retain their closed envelopes. Automatic
+  // service admission derives the domain and payment from its actual source,
+  // state, decoding mode and configured owners. Public defaults stay unchanged.
   bool diagnostic_solo = false;
   // Default-off capture scheduling experiment; numerical policy is unchanged.
   bool capture_first_verify = false;
   // Nonzero only under the Server's admitted metadata bootstrap loan.
   // Derive and pin this source's construction budget before graph construction.
   std::uint64_t automatic_startup_cap = 0;
+  // One driver-owned transient compiler payment across automatic aliases.
+  // Sources retain this owner; per-alias source/spec/chat storage stays separate.
+  std::shared_ptr<engine::SharedCompilerAllowance> shared_compiler{};
   // Complete catalog-backed construction allowance for the closed DeepSeek
   // diagnostic. Admitted by its owner before constructing EngineLlm; the
   // factory charges before reading/parsing its prepared source and retains
@@ -94,6 +102,14 @@ struct ComponentBuildOptions {
 // drafter reading the target's tapped features, three drafts a unit), by
 // their compiled profiles' values; any other architecture is refused at
 // Setup, naming why.
+// The paid internal serving domain, shared by ordinary and block/replay
+// compositions. The retained domain owns its allowance charge; this does not
+// approve a source or replace ComponentStepSource's complete sealing checks.
+std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> ComponentServingDomain(
+    const spec::ModelSpec& model, std::span<const model::StateLayoutDerived> layouts,
+    std::uint32_t slots, const engine::DecodingMode& mode,
+    const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance);
+
 EngineBuild ComponentLlmBuild(engine::PagedNode& node, std::filesystem::path store,
                               const config::ModelEntry& entry, int index,
                               ComponentBuildOptions options = {});

@@ -39,6 +39,7 @@
 
 #include "artifact/format_map.h"
 #include "base/bytes.h"
+#include "engine/component_source.h"
 #include "engine/paged_node.h"
 #include "engine/ple_rows.h"
 #include "engine/prefill.h"
@@ -688,6 +689,73 @@ class ModelRunnerTest : public ::testing::Test {
 
   std::vector<std::vector<std::int32_t>> tokens_;
 };
+
+class CompilerTransferTest : public ModelRunnerTest {
+ protected:
+  std::shared_ptr<en::SharedCompilerAllowance> compiler_;
+  std::uint64_t compiler_bytes_ = 0;
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = ModelRunnerTest::SourceOptions();
+    compiler_ = std::make_shared<en::SharedCompilerAllowance>();
+    constexpr std::uint64_t bytes = 1U << 20;
+    const auto paid = compiler_->Reserve(node_.catalog(), node_.domain(), bytes, fixed_ + 4 * bytes,
+                                         2 * bytes, bytes);
+    EXPECT_TRUE(paid);
+    compiler_bytes_ = bytes - en::ExecutionMetadataAllowance::OverheadBytes();
+    options.construction_owner = [this]() -> std::shared_ptr<void> {
+      auto use = compiler_->Acquire(compiler_bytes_);
+      EXPECT_TRUE(use);
+      if (!use) return {};
+      return std::make_shared<en::SharedCompilerAllowance::Use>(std::move(*use));
+    };
+    return options;
+  }
+};
+
+TEST_F(CompilerTransferTest, MeasurementAndInstalledPlanReturnTheSharedCompilerCharge) {
+  // Every setup measurement destroyed its program. A cached executable then
+  // returns construction payment only after its required PlanAccount charge.
+  EXPECT_TRUE(compiler_->Acquire(compiler_bytes_));
+  auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{7}});
+  ASSERT_TRUE(ran) << ran.error().what;
+  EXPECT_EQ(runner_->plans().size(), 1U);
+  EXPECT_GT(runner_->plans().host_bytes(), 0U);
+  EXPECT_TRUE(compiler_->Acquire(compiler_bytes_));
+}
+
+TEST_F(CompilerTransferTest, TwoPaidFuturesReleaseCompilerBeforeTheNextBuild) {
+  const auto before = source_->built().size();
+  en::StepAhead ahead;
+  // Different read classes make both keys distinct from the current256-cell
+  // decode and from each other; changing only runtime past is insufficient.
+  ahead.shapes[0] = Shape(pl::Phase::kDecode, {Seg(1, 256, 1, 1)});
+  ahead.shapes[1] = Shape(pl::Phase::kDecode, {Seg(2, 512, 1, 1)});
+  ahead.build = 2;
+  auto ran = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{7}}, ahead);
+  ASSERT_TRUE(ran) << ran.error().what;
+  EXPECT_EQ(ran->built_ahead, 2U);
+  EXPECT_EQ(runner_->lookahead_stats().attempted, 2U);
+  EXPECT_EQ(runner_->lookahead_stats().refused, 0U);
+  ASSERT_EQ(source_->built().size(), before + 3);
+  EXPECT_EQ(source_->built()[before + 1].shape.segments.front().read_cells, 512U);
+  EXPECT_EQ(source_->built()[before + 2].shape.segments.front().read_cells, 768U);
+  EXPECT_FALSE(source_->built()[before + 1].measuring);
+  EXPECT_FALSE(source_->built()[before + 2].measuring);
+  EXPECT_EQ(runner_->plans().size(), 3U);
+  EXPECT_GE(runner_->plans().host_bytes(), 3 * runner_->plan_floor_bytes());
+  std::vector<const kn::StepProgram*> programs;
+  runner_->plans().ForEach([&](const auto& entry) {
+    EXPECT_GT(entry.host_bytes, 0U);
+    programs.push_back(entry.planned->program.get());
+  });
+  ASSERT_EQ(programs.size(), 3U);
+  EXPECT_NE(programs[0], programs[1]);
+  EXPECT_NE(programs[0], programs[2]);
+  EXPECT_NE(programs[1], programs[2]);
+  // Both funded futures retain different programs while the one compiler
+  // allowance is entirely available again. The second Build also required it.
+  EXPECT_TRUE(compiler_->Acquire(compiler_bytes_));
+}
 
 TEST_F(ModelRunnerTest, MeasuresTheWidestShapesAtSetup) {
   // The widest shape's inputs and outputs, a quarter's margin, and the

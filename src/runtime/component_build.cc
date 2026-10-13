@@ -93,15 +93,30 @@ struct DerivedDomain {
   engine::NumericalDomain domain;
 };
 
-std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> ServingDomain(
+}  // namespace
+
+std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> ComponentServingDomain(
     const spec::ModelSpec& model_spec, std::span<const model::StateLayoutDerived> layouts,
-    std::uint32_t slots, std::uint32_t verify_rows,
+    std::uint32_t slots, const engine::DecodingMode& mode,
     const std::shared_ptr<engine::ExecutionMetadataAllowance>& allowance) {
   const bool composed = model_spec.stages.size() > 1;
+  std::uint64_t verify = composed ? 1 : 0;
+  for (const auto& draft : mode.drafters) {
+    if (mode.combine == engine::DecodingMode::Drafters::kCascade)
+      verify += draft.max_depth;
+    else
+      verify = std::max(verify, std::uint64_t{draft.max_depth} + 1);
+    if (verify > UINT32_MAX) return Error("serving verify row bound overflows");
+  }
+  const auto verify_rows = static_cast<std::uint32_t>(verify);
+  bool repeat_pending = false;
   if (model_spec.pipeline != spec::PipelineKind::kLlm || model_spec.stages.empty() ||
       model_spec.stages.size() > std::uint64_t{UINT16_MAX} + 1 ||
       model_spec.stages.size() != layouts.size() || slots == 0 || slots > Llm::kMaxBranches ||
-      (composed ? slots < 2 || verify_rows == 0 : verify_rows != 0) || !allowance)
+      (composed ? mode.kind != engine::DecodingMode::Kind::kSpeculative || verify_rows == 0 ||
+                      mode.drafters.size() != layouts.size() - 1
+                : mode.kind != engine::DecodingMode::Kind::kPlain || !mode.drafters.empty()) ||
+      !allowance)
     return Error("a serving domain needs its complete state and owner envelope");
   std::uint64_t bytes = sizeof(DerivedDomain) + sizeof(ConstructionCharge) + 512;
   for (std::size_t i = 0; i < layouts.size(); ++i) {
@@ -109,9 +124,19 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
     auto progress = model::DraftBounds(layouts[i]);
     if (!progress ||
         (i == 0 ? stage.role != spec::StageRole::kTarget || progress->has_value()
-                : stage.role != spec::StageRole::kDrafter || !progress->has_value()) ||
+                : stage.role != spec::StageRole::kDrafter) ||
         layouts[i].max_rows == 0 || (i == 0 && verify_rows > layouts[i].max_rows))
-      return Error("a serving domain needs the actual target and replayable drafter bounds");
+      return Error("a serving domain needs the actual target and drafter bounds");
+    if (i != 0) {
+      const auto& draft = mode.drafters[i - 1];
+      if (draft.stage != i || draft.max_depth == 0 || verify_rows > layouts[i].max_rows ||
+          (!layouts[i].borrowed.empty() && !draft.borrows_target) ||
+          (draft.features && model::FeatureTap(layouts[i]) == nullptr) ||
+          (progress->has_value() && (draft.shape != engine::DrafterSpec::Shape::kAutoregressive ||
+                                     !draft.catch_up || !draft.features || draft.anchored)))
+        return Error("a serving domain disagrees with the actual drafter schedule");
+      repeat_pending |= progress->has_value();
+    }
     // Input vectors, canonical domain, the retained shared owner and the
     // maximum temporary moved representation; no graph or tensor payload.
     const auto stage_bytes = sizeof(engine::NumericalStage) + stage.name.size() + 1 +
@@ -121,6 +146,15 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
                                &copy_bytes) ||
         __builtin_add_overflow(bytes, copy_bytes, &bytes))
       return Error("serving domain construction bound overflows");
+  }
+  if (repeat_pending && slots > 1) {
+    // The existing joined replay contract requires every companion to own
+    // replay progress; block drafters use the ordinary speculative contract.
+    for (std::size_t i = 1; i < layouts.size(); ++i) {
+      auto progress = model::DraftBounds(layouts[i]);
+      if (!progress || !*progress)
+        return Error("joined replay requires complete companion progress contracts");
+    }
   }
   if (!allowance->Charge(bytes)) return Error("serving domain metadata allowance is insufficient");
   auto charge = std::make_shared<ConstructionCharge>();
@@ -137,7 +171,8 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
     if (composed) {
       stage.uses.push_back(engine::NumericalUse::kPromptCompanions);
       stage.uses.push_back(engine::NumericalUse::kSpeculative);
-      stage.uses.push_back(engine::NumericalUse::kJoinedRepeatPending);
+      if (repeat_pending && slots > 1)
+        stage.uses.push_back(engine::NumericalUse::kJoinedRepeatPending);
     }
     stage.phases.reserve(i == 0 ? (composed ? 4 : 2) : 1);
     const auto add = [&](planner::Phase phase, std::uint32_t rows) {
@@ -154,7 +189,10 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
         add(planner::Phase::kCommit, verify_rows);
       }
     } else {
-      add(planner::Phase::kDraft, layouts[i].max_rows);
+      const auto& draft = mode.drafters[i - 1];
+      add(planner::Phase::kDraft, draft.shape == engine::DrafterSpec::Shape::kBlock
+                                      ? draft.max_depth
+                                      : layouts[i].max_rows);
     }
     stages.push_back(std::move(stage));
   }
@@ -165,13 +203,23 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
   return std::shared_ptr<const engine::NumericalDomain>(owner, &owner->domain);
 }
 
+namespace {
+
+// PlanGraph owns one temporary reader index per synchronous lowering; current
+// and future retained programs do not retain that index. This named category
+// is both paid by automatic construction and enforced before index allocation.
+constexpr std::uint64_t kServingReaderScratchBytes =
+    4096ULL * (ir::Graph::kMaxNodes + ir::Graph::kMaxTensors);
+
 // Called under the Server's parser loan after source/schema validation, and
 // before any BuildStep/lowering. Graph maxima are the existing IR contract;
 // commit roots come from the actual component inventory and owner envelope.
-std::expected<std::uint64_t, std::string> ServingConstructionBytes(const spec::ModelSpec& model,
-                                                                   const ja::Artifact& target,
-                                                                   const ja::Artifact* draft,
-                                                                   const ModelSettings& settings) {
+struct ServingConstruction {
+  std::uint64_t compiler = 0, retained = 0;
+};
+std::expected<ServingConstruction, std::string> ServingConstructionBytes(
+    const spec::ModelSpec& model, const ja::Artifact& target, const ja::Artifact* draft,
+    const ModelSettings& settings) {
   auto saves = components::CommitSaveBound(model, settings.max_slots.value);
   if (!saves) return Error(saves.error());
   constexpr std::uint64_t nodes = ir::Graph::kMaxNodes;
@@ -184,7 +232,7 @@ std::expected<std::uint64_t, std::string> ServingConstructionBytes(const spec::M
   if (__builtin_mul_overflow(*saves, std::uint64_t{4}, &extra) ||
       __builtin_add_overflow(descriptors, extra, &descriptors))
     return Error("component saved-root descriptor payment overflows");
-  std::uint64_t bytes = 12 * (480 * nodes + 192 * tensors) + 4096 * (nodes + tensors);
+  std::uint64_t bytes = 12 * (480 * nodes + 192 * tensors) + kServingReaderScratchBytes;
   const auto add = [&](std::uint64_t count, std::uint64_t unit) {
     std::uint64_t part = 0;
     return !__builtin_mul_overflow(count, unit, &part) &&
@@ -192,6 +240,8 @@ std::expected<std::uint64_t, std::string> ServingConstructionBytes(const spec::M
   };
   if (ggml_tensor_overhead() > 512 || !add(descriptors, 512 + 1024 + 32))
     return Error("component descriptor ABI or payment exceeds its construction inventory");
+  ServingConstruction result{.compiler = bytes};
+  bytes = 0;
   // The complete spec and canonical/digest copies, parameter/role maps and
   // retained source bindings. Serialization is still inside the parser loan.
   const auto canonical = spec::ToJson(model);
@@ -212,13 +262,16 @@ std::expected<std::uint64_t, std::string> ServingConstructionBytes(const spec::M
   };
   if (!source(target) || (draft && !source(*draft)))
     return Error("component retained source inventory overflows");
-  return bytes;
+  result.retained = bytes;
+  return result;
 }
 
 struct ComponentHold {
   // First: refund only after all graph, binding and backend owners die.
   std::shared_ptr<ConstructionCharge> construction;
   std::shared_ptr<engine::ExecutionMetadataAllowance> automatic_construction;
+  std::shared_ptr<engine::SharedCompilerAllowance> compiler;
+  std::uint64_t compiler_bytes = 0;
   std::shared_ptr<ConstructionCharge> kv_encoding_charge;
   std::unique_ptr<StoredBindingPayment> stored_payment;
   spec::ModelSpec spec;
@@ -489,7 +542,16 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           "derived serving qualification needs an internal request without a caller domain");
     const bool deepseek = settings.architecture == "deepseek4";
     const bool dspark = deepseek && !drafter_id.empty();
-    if (deepseek &&
+    const bool deepseek_serving =
+        deepseek && options.derive_execution_domain && options.automatic_startup_cap != 0 &&
+        !options.construction_metadata && !options.target_policy && settings.context.value != 0 &&
+        settings.prefill_chunk.value != 0 &&
+        settings.prefill_chunk.value < settings.context.value && settings.max_slots.value != 0 &&
+        settings.max_slots.value <= Llm::kMaxBranches && (!settings.speculation.value || dspark);
+    if (deepseek_serving && (settings.prefill_outa_hca.source == SettingSource::kOverride ||
+                             settings.prefill_outa_hca_partial.source == SettingSource::kOverride))
+      return Error("the shared diagnostic does not consume legacy prefill fusion overrides");
+    if (deepseek && !deepseek_serving &&
         (!options.diagnostic_solo || !DeepSeekDomain(options, dspark) ||
          !options.construction_metadata || options.target_policy || settings.max_slots.value != 1 ||
          settings.context.value != 3072 || settings.prefill_chunk.value != 512 ||
@@ -498,7 +560,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
          id != kDsv4DiagnosticArtifact))
       return Error("the DeepSeek target bridge requires its paid single-owner diagnostic envelope");
     std::shared_ptr<ConstructionCharge> construction;
-    if (deepseek) {
+    if (deepseek && !deepseek_serving) {
       if (ggml_tensor_overhead() > 512)
         return Error("DeepSeek native descriptor ABI exceeds its construction inventory");
       if (!options.construction_metadata->Charge(kDsv4ConstructionBytes))
@@ -510,7 +572,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     const bool joined_score = solo && JoinedScoreEnvelope(settings, drafter_id, options);
     const bool joined_mtp = solo && JoinedMtpEnvelope(settings, drafter_id, options);
     const bool plain_serving = solo && PlainServingEnvelope(settings, drafter_id, options);
-    if (options.derive_execution_domain && !plain_serving && !joined_mtp)
+    if (options.derive_execution_domain && !plain_serving && !joined_mtp && !deepseek_serving)
       return Error(
           "derived serving qualification needs an ordinary target or composed replay source");
     if (solo && (!options.diagnostic_solo ||
@@ -683,12 +745,33 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error(valid.error());
     }
     if (options.automatic_startup_cap != 0) {
-      if (!options.diagnostic_solo || !options.derive_execution_domain || construction)
-        return Error("automatic construction requires the derived shared serving route");
+      // Already migrated component families use the same paid construction
+      // inventory without inventing a NumericalDomain. Newly opted families
+      // still require their explicit diagnostic request and derived domain.
+      if ((!OnComponentEngine(settings.architecture) &&
+           (!options.diagnostic_solo || !options.derive_execution_domain)) ||
+          hold->construction)
+        return Error("automatic construction requires a qualified shared serving route");
       auto bytes =
           ServingConstructionBytes(hold->spec, *artifact, drafter ? &*drafter : nullptr, settings);
       if (!bytes) return Error(bytes.error());
-      auto owner = serving_support::AdmitStartup(node, *bytes, options.automatic_startup_cap);
+      if (!node.open_for_setup() || !options.shared_compiler)
+        return Error("automatic compiler admission requires its stopped Server owner");
+      std::uint64_t total = 0;
+      if (__builtin_add_overflow(bytes->compiler,
+                                 engine::ExecutionMetadataAllowance::OverheadBytes(), &total) ||
+          __builtin_add_overflow(total, kExtent - 1, &total))
+        return Error("shared compiler payment overflows");
+      total = total / kExtent * kExtent;
+      if (auto paid = options.shared_compiler->Reserve(
+              node.catalog(), node.domain(), total, options.automatic_startup_cap,
+              platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+          !paid)
+        return Error(paid.error());
+      hold->compiler = options.shared_compiler;
+      hold->compiler_bytes = bytes->compiler;
+      auto owner =
+          serving_support::AdmitStartup(node, bytes->retained, options.automatic_startup_cap);
       if (!owner) return Error(owner.error());
       hold->automatic_construction = std::move(*owner);
     }
@@ -710,9 +793,13 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         solo ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
                                 model::Qwen38MostRows(settings.context.value, false))
              : settings.prefill_chunk.value;
-    const auto depth = solo ? (configured_chunk >= 4 ? settings.draft_rows.value
-                                                     : std::min(settings.draft_rows.value, 2U))
-                            : kAssistantDepth;
+    const auto depth = solo     ? (configured_chunk >= 4 ? settings.draft_rows.value
+                                                         : std::min(settings.draft_rows.value, 2U))
+                       : dspark ? settings.draft_rows.value
+                                : kAssistantDepth;
+    if (speculate && dspark &&
+        (depth == 0 || depth == UINT32_MAX || depth > model::DsparkDeepSeekV4Flash().block_size))
+      return Error("the resolved draft depth exceeds the bound block drafter");
     for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
       auto layout = components::StageLayout(hold->spec, stage, settings.context.value,
                                             configured_chunk, kExtent);
@@ -742,6 +829,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("the actual component capability cannot join the scoring cohort");
     // A verify's rows: the anchor and every draft.
     const std::uint32_t verify_rows = speculate ? depth + 1 : 0;
+    if (speculate && std::ranges::any_of(hold->layouts, [verify_rows](const auto& layout) {
+          return verify_rows > layout.max_rows;
+        }))
+      return Error("the complete drafter verify exceeds its actual stage row bounds");
     const std::uint32_t read_align = solo ? settings.wave_read_align.value : 256;
     // The widest steps (the setup measurement): every owner's rows at the
     // end of its context, reading all of it.
@@ -817,7 +908,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         }
       }
     }
-    if (deepseek && !dspark && options.execution_domain->CheckMode(engine::NumericalUse::kScore)) {
+    if (deepseek && !dspark && options.execution_domain &&
+        options.execution_domain->CheckMode(engine::NumericalUse::kScore)) {
       // Full-head Score has a different output/workspace envelope from the
       // frontier-only Prefill. Actual caller schedules may add their complete
       // compressor/read classes before Setup; the factory measures the maxima.
@@ -907,8 +999,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                    // positions before the rows); the device's are made
                    // anyway.
                    .frozen_host_masks = true,
-                   .index_scratch_limit = deepseek ? kDsv4ReaderScratchBytes
-                                                   : std::numeric_limits<std::uint64_t>::max(),
+                   .index_scratch_limit = deepseek_serving ? kServingReaderScratchBytes
+                                          : deepseek ? kDsv4ReaderScratchBytes
+                                                     : std::numeric_limits<std::uint64_t>::max(),
                    .expert_stride = [held](const ir::WeightRef& ref) -> std::uint64_t {
                      const auto at = held->pitch.find(ref);
                      return at == held->pitch.end() ? 0 : at->second;
@@ -920,6 +1013,27 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     const std::uint64_t cublas_bytes =
         kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts.architecture))
             .value();
+    engine::DecodingMode mode;
+    if (speculate) {
+      mode = {.kind = engine::DecodingMode::Kind::kSpeculative,
+              .drafters = {{.stage = 1,
+                            .shape = dspark ? engine::DrafterSpec::Shape::kBlock
+                                            : engine::DrafterSpec::Shape::kAutoregressive,
+                            .max_depth = depth,
+                            .catch_up = solo,
+                            .fill = dspark ? model::DsparkDeepSeekV4Flash().mask_token : 0,
+                            .borrows_target = !solo && !dspark,
+                            .anchored = !solo && !dspark,
+                            .features = !dspark,
+                            .adaptive = solo && depth >= 3,
+                            .depth_cost = solo ? settings.depth_cost_ratio.value : 1.16,
+                            .device_tokens = solo,
+                            .draft_before_limit = solo,
+                            .head_ids = hold->draft_head_ids,
+                            .head_rows = hold->draft_head_rows}},
+              .combine = engine::DecodingMode::Drafters::kCascade,
+              .row_invariant = false};
+    }
     auto execution_domain = options.execution_domain;
     if (options.derive_execution_domain && !metadata) {
       auto admitted = engine::ExecutionMetadataAllowance::Admit(
@@ -929,7 +1043,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       metadata = std::move(*admitted);
     }
     if (options.derive_execution_domain) {
-      auto domain = ServingDomain(hold->spec, hold->layouts, slots, verify_rows, metadata);
+      auto domain = ComponentServingDomain(hold->spec, hold->layouts, slots, mode, metadata);
       if (!domain) return Error(domain.error());
       execution_domain = std::move(*domain);
     }
@@ -979,7 +1093,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
            .policy = stage == 0 ? target_policy : std::nullopt,
            .backend = hold->backend->Backend(),
            .execution_domain = execution_domain,
-           .validate_program = options.validate_program});
+           .validate_program = options.validate_program,
+           .compiler = hold->compiler,
+           .compiler_bytes = hold->compiler_bytes});
       if (!made) return Error(made.error());
       sources.push_back(std::move(*made));
     }
@@ -1029,24 +1145,20 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                       .places = std::move(placements[1].places),
                                       .slabs = std::move(placements[1].slabs)});
       parts.config.max_verify_rows = verify_rows;
-      parts.mode = {.kind = engine::DecodingMode::Kind::kSpeculative,
-                    .drafters = {{.stage = 1,
-                                  .shape = dspark ? engine::DrafterSpec::Shape::kBlock
-                                                  : engine::DrafterSpec::Shape::kAutoregressive,
-                                  .max_depth = depth,
-                                  .catch_up = solo,
-                                  .fill = dspark ? model::DsparkDeepSeekV4Flash().mask_token : 0,
-                                  .borrows_target = !solo && !dspark,
-                                  .anchored = !solo && !dspark,
-                                  .features = !dspark,
-                                  .adaptive = solo && depth >= 3,
-                                  .depth_cost = solo ? settings.depth_cost_ratio.value : 1.16,
-                                  .device_tokens = solo,
-                                  .draft_before_limit = solo,
-                                  .head_ids = hold->draft_head_ids,
-                                  .head_rows = hold->draft_head_rows}},
-                    .combine = engine::DecodingMode::Drafters::kCascade,
-                    .row_invariant = false};
+      parts.mode = std::move(mode);
+    }
+    if (deepseek_serving && speculate) {
+      execution::AdaptiveWaveMode::Costs costs{};
+      for (std::size_t i = 0; i < settings.wave_costs.value.size() && i + 2 < costs.size(); ++i)
+        costs[i + 2] = settings.wave_costs.value[i];
+      const auto force = settings.wave_form.value == config::WaveForm::kPlain
+                             ? execution::AdaptiveWaveMode::Force::kPlain
+                         : settings.wave_form.value == config::WaveForm::kSpeculative
+                             ? execution::AdaptiveWaveMode::Force::kSpeculative
+                             : execution::AdaptiveWaveMode::Force::kNone;
+      // The shared composer admits full per-owner verifies or separates them;
+      // it has no legacy fixed sixteen-row lane that truncates each owner.
+      parts.wave_mode.emplace(costs, force);
     }
     parts.config.setup_shapes = std::move(setup);
     // cuBLAS on the model's stream over the runner's workspace (D-053: the
@@ -1094,7 +1206,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                      .capture_ahead = composition.capture_ahead,
                      .prepare_ahead = true,
                      .state_only = true};
-    if (deepseek) {
+    if (deepseek && !deepseek_serving) {
       // Closed first target screen: serial completed chunks, with no extra
       // future program owners; normal prefill/decode execution is unchanged.
       parts.prefill.lookahead = 0;
@@ -1102,7 +1214,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       parts.prefill.prepare_ahead = false;
       parts.prefill.state_only = false;
     }
-    if (solo) {
+    if (solo || deepseek_serving) {
       parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
       parts.prefill.prepare_ahead = options.prepare_state;
       parts.prefill.state_only = options.state_only_prefill.value_or(!speculate);

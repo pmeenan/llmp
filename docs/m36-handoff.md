@@ -254,6 +254,27 @@ snapshot continuation on Spark B. The actual spatial-image screen passes
 on main after full native build, 129 affected host controls and source checks.
 Neither result closes its whole-family migration gate.
 
+
+Current DS service/compiler closeout: the generic internal Server route and
+shared maximum transient compiler ownership are checked on combined main06
+(full native/241 current host controls, unchanged main02 proofs retained).
+At context8448/chunk256/slots2, actual06 completes three serial speculative
+HTTP requests and384 outputs; parser retirement, full fit, source guards and
+graceful native retirement pass. The batch remains FAIL because its two-client
+requests do not join: the second needs another506MiB of prompt state and waits
+7.988s for the first to retire. Zero joined waves execute. Follow the real
+`serve_api.cc` request-slot `PromptStateToCome`/`RoomFor` admission and
+`EngineLlm::StateBytesThrough` page demand before proposing a correction; do not
+bypass capacity or infer a joined-kernel incompatibility. Fixed-plain HTTP and
+the planned DSpark/Gemma8K/16 swap were not reached. Serial service is qualified
+only for this bounded smoke; joined cohorts, same-selected service restore/swap,
+process/GPU restart, DSpark quality, public defaults and matched family1% gates
+remain open. Target256/2560 same-checkpoint diagnostics remain valid unchanged.
+See the [complete outcome](experiments/m36-dsv4-target/dspark.md#shared-server-admission-and-the-remaining-c2-capacity-wall).
+No new run is pending. Preserve actual01–06 failures/raw evidence and the
+unmerged author worktree `.claude/worktrees/m36-dsv4-serving` until milestone
+close; the source-only final packet excludes image service and native DS import.
+
 G4c1 qualifies the closed DeepSeek target factory at context 3072/chunk 512:
 18 finite complete head rows, nine restored rows and completed frontier 2568.
 Actual setup pays 106,614,572,256 bytes under the unchanged 110 GiB cap and
@@ -261,7 +282,7 @@ Actual setup pays 106,614,572,256 bytes under the unchanged 110 GiB cap and
 no-head prefill skips dead final expert products while keeping all persistent
 state writes. The actual case passes in 28.516 seconds including setup/storage;
 this is not a throughput result. DSpark's composed execution now passes the bounded screen below;
-broader same-quantized-reference quality, persistence, production serving and matched family
+broader same-quantized-reference quality, persistence, joined serving and matched family
 speed/swap gates remain open. See [the target report](experiments/m36-dsv4-target/README.md).
 
 G4c3 retains its 256-target same-checkpoint result (+1.265162% PPL) and now
@@ -276,7 +297,7 @@ and its stale 528-byte overhead observer is corrected offline to the source-back
 552 bytes. Actual retained-plan payment is 4,509,881,440 bytes and full setup
 115,501,547,600 bytes under the unchanged 110 GiB node cap. Guards and positive
 retirement pass. Broader same-checkpoint quality, DSpark, durable restart,
-serving and family speed/swap gates remain open
+joined serving and family speed/swap gates remain open
 ([report](experiments/m36-dsv4-target/README.md#long-history-diagnostic)).
 
 G4c2 now passes complete composed target/DSpark execution on main: full native
@@ -287,7 +308,7 @@ restored rows reach frontier 2568. Actual setup pays 117,595,233,088 bytes under
 the unchanged 110 GiB cap and preserves the 6 GiB physical margin. The case
 takes 35.309 seconds including setup/storage, not a speed qualification.
 Draft-head finiteness, broader same-quantized-reference quality, durable persistence, selected-only
-expert paging, production serving and matched family speed/swap gates remain
+expert paging, joined serving and matched family speed/swap gates remain
 open ([report](experiments/m36-dsv4-target/dspark.md)).
 
 Main through `7e0bf848` includes split NVFP4 paged rows, checked route/part
