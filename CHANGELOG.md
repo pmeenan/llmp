@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Compose all 32 image denoiser blocks with source-owned text/image projections,
+  final adaptive normalization and an explicit Euler update through shared
+  components. BF16 weights, existing fusions and owner-local input/output ports
+  are retained; whole-pipeline quality and serving remain separate.
+
 - Compose an image transformer block with its timestep conditioner through shared
   adaptive normalization, three-axis rotations, masked attention and gated
   residuals. BF16 source weights and existing fusions are retained; bounded

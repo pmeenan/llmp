@@ -125,7 +125,6 @@ Actual recipe manifest SHA-256:
 Actual result SHA-256:
 `86aa3600cf38ca111474352b1a49e6c9f253d08e2946c48b57c5815f21ccd147`.
 
-
 ## Complete timestep conditioner
 
 `ImageTimestepSpec` composes four shared source-typed projections, with SiLU after
@@ -186,7 +185,6 @@ Actual binary SHA-256
 `c218d1392b7e71c69cc08fe2e51b7cd7e7c014834cd8687e0dcd1867c9bb40c2`
 (187,663,232 bytes). Raw logs/XML and preserved failed compile/inventory attempts
 remain in session scratch; the successful main receipt is used unchanged.
-
 
 ## Conditioned transformer block
 
@@ -252,3 +250,78 @@ block result `7de24f20a05a3f9b221033e5794c887961b174069739faefcb8bfe5651cc22fb`;
 conditioner result `e9b65e31c67548ae1472dfcdb3a04347554d9bd3c717a96c91b0ccbc41d4e1f4`.
 Actual model binary `11d63cadeb6fd1952146721c4b519cceda5396c6ca23b51ba124932dc1aa83de`
 (188,396,320 bytes). Raw XML/logs and sealed recipes remain in session scratch.
+
+## Complete denoiser forward and Euler step
+
+One shared graph consumes two 4,096-channel text rows and four 64-channel image
+latent rows through all 32 source blocks. Text uses the stored zero-centered RMS
+gamma and two projections with GELU; image rows enter through their source
+projection. The qualified conditioner and block formulas are reused. Final
+normalization takes the first timestep scale row, the source output projection
+produces noise, and a second port returns `latent + dt * noise`. The source-owned
+mapping has 563 components and 297 BF16 roles; no family executor, new kernel or
+mandatory intermediate rounding is introduced.
+
+Independent reduced double equations cover the complete two-block forward and
+Euler step for two owners, changed text/image/time, zero step size and restoration.
+Full source-shaped planning preserves all 296 products, 192 NORMAL rotations,
+32 softmax and SwiGLU operations, 65 LayerNorms and 65 learned-RMS fusions. The four
+affected targets pass all 66 host controls. Full main Spark B native compilation
+and all 455 host cases across 25 targets pass in the 61-second supervised job,
+with no failures or skips.
+
+All three actual cases pass on Spark B: the retained conditioner and single-block
+regressions, and the complete flow. The flow completes seven steps (one eager,
+one capture and five replays), checking all 512 output values each time: 3,584
+finite values and 1,792 Euler contributions. Changed time and image/position
+inputs affect both branches; restored inputs reproduce the same selected program's
+outputs. Its graph has 4,651 nodes and tensors. The native case reports 4.812 seconds;
+this is an execution observation, not comparative performance evidence.
+
+All source weights remain BF16: 14,230,249,472 bytes in 6,818 selected pages
+(14,298,382,336 bytes), also the full virtual group reservation. No decoded
+full-model CPU oracle is allocated.
+
+| Resource | Paid bound | Source-derived bound or observation |
+| --- | ---: | ---: |
+| Graph metadata | 66,072,576-byte ceiling within 1GiB allowance | 65,253,376 bytes charged |
+| Source mapping | Separately charged within that allowance | 2,675,712 bytes |
+| Compiler/owner construction | 768MiB within that allowance | 624,475,488-byte conservative bound including reader scratch |
+| Activation | 32MiB | 1,410,816 bytes |
+| Product pool | 32MiB | 0 bytes |
+| Program host metadata | 16MiB | 5,161,648 bytes |
+
+The fixed managed domain is 16GiB; measured programs fit before node admission.
+The invocation uses a 2GiB zero-swap process/cache ceiling, 24GiB physical
+preflight and 6GiB margin. Peak process/cache occupancy is 497,651,712 bytes;
+this is not device peak occupancy. All pre/post source, binary, recipe and
+artifact guards pass; memory-limit/OOM events and remaining compute PIDs are zero,
+and every child process group retires. The complete source/program/capture owner
+remains retained until successful completion and teardown.
+
+The metadata host control derives 5,545 primitive slots (32 × 169 plus 137
+boundary slots), verifies the actual charge and exercises underpayment refusal.
+The fixture treats its metadata allowance as a ceiling. An earlier setup-only
+attempt incorrectly required equality to an overestimated charge and refused
+before flow execution; its raw failure remains in scratch. The previous wrapper's
+stale host-count refusal is also retained. No budget or numerical policy was
+increased to pass either check.
+
+The existing reference admission formula conservatively charges 64 times
+aggregate element count: source elements alone yield a 455,367,983,104-byte bound,
+and the 128MiB host control refuses before decoded copies. This is not measured
+decoded storage; one raw F32 source copy would be 28,460,498,944 bytes.
+
+This bounded screen does not qualify realistic image geometry, full-source image
+quality against a same-encoding reference, comparative speed, repeated diffusion
+sampling, text encoder/VAE composition or serving. Final formatting, portability
+boundaries, header and REUSE checks pass on Spark A; raw logs stay outside Git.
+
+Provenance: main02 result
+`6eacb329f05944397a5079121169234bbb6ffa2930ef6d2f8339300d925d78e8`;
+models04 flow result
+`318f830d32de932fa70723e020ae9c7d58c1c779f477f9a6a4775c710c5bf721`.
+Actual model binary
+`1eb54e128b9209a09b040e49009f0b22b5162c1dd2ff5b367087cc1a032604be`
+(188,854,360 bytes). The literal main result and all three raw XML/log/guard
+receipts remain in the sealed session packages.

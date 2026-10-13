@@ -2546,9 +2546,24 @@ each is checked against the design as M3.6 proceeds.
             isolation; the existing conditioner regression also passes.
             Full main Spark B native build and all 452 host cases across 25
             targets pass; format, boundaries, headers and REUSE checks pass.
-            All 32-block flow, broader shapes, same-source reference quality,
-            speed and serving remain open
+            Broader shapes, same-source reference quality, speed and serving
+            remain open; the complete 32-block forward follows in Q3e
             ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#conditioned-transformer-block)).
+      - [x] **Q3e — complete denoiser forward and Euler step:** source-owned
+            text/image projections and all 32 shared blocks feed final adaptive
+            normalization, noise projection and the original-latent Euler carry.
+            Generic learned RMS, row slicing/concatenation and scaled residuals
+            preserve BF16 source encodings and existing fusions. Full main Spark B
+            native build and 455 host controls across 25 targets pass, including
+            the reduced independent two-owner complete-flow reference and complete
+            source-shaped physical planning. All three actual cases pass: the
+            complete flow checks 3,584 finite values and 1,792 Euler contributions
+            across seven eager/captured/replayed steps with changed/restored inputs;
+            the conditioner and single-block regressions also pass. Broader
+            geometries, same-source reference quality, repeated sampling,
+            text encoder/VAE integration and serving remain separate. Final
+            formatting, boundaries, headers and REUSE checks pass.
+            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-denoiser-forward-and-euler-step)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

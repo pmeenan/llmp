@@ -32,12 +32,20 @@ std::expected<void, std::string> NoTokenRef(RefIO&) {
 }
 constexpr std::array kSelectParams{
     ParamSpec{.name = "quarter", .type = ParamType::kInt, .least = 0, .most = 3},
-    ParamSpec{.name = "prefix_rows", .type = ParamType::kInt, .least = 0, .most = 4096}};
+    ParamSpec{.name = "prefix_rows", .type = ParamType::kInt, .least = 0, .most = 4096},
+    ParamSpec{.name = "quarters",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 1,
+              .most = 4,
+              .fallback = 4}};
 std::expected<SpatialShape, std::string> SelectShape(const Instance& in, SpatialShape x,
                                                      std::optional<SpatialShape> aux) {
   if (!Count(x) || x.width != 1 || x.images != 1 || x.height > 4096 || !aux || aux->width != 1 ||
-      aux->height != 2 || aux->channels != 4 * x.channels || aux->images != 1 ||
-      static_cast<std::uint64_t>(in.params.Int("prefix_rows")) > x.height)
+      aux->height != 2 ||
+      aux->channels != static_cast<std::uint64_t>(in.params.Int("quarters")) * x.channels ||
+      aux->images != 1 || static_cast<std::uint64_t>(in.params.Int("prefix_rows")) > x.height ||
+      in.params.Int("quarter") >= in.params.Int("quarters"))
     return std::unexpected("conditioning row selection geometry differs");
   return x;
 }
@@ -76,12 +84,24 @@ std::expected<void, std::string> SelectReference(SpatialRefIO& io) {
           io.auxiliary[2 * (quarter * c + channel) + (row < prefix ? 1U : 0U)];
   return {};
 }
-std::expected<SpatialShape, std::string> ConcatShape(const Instance&, SpatialShape x,
+constexpr std::array kConcatParams{ParamSpec{.name = "axis",
+                                             .type = ParamType::kInt,
+                                             .required = false,
+                                             .least = 1,
+                                             .most = 2,
+                                             .fallback = 2}};
+std::expected<SpatialShape, std::string> ConcatShape(const Instance& in, SpatialShape x,
                                                      std::optional<SpatialShape> aux) {
-  if (!Count(x) || !aux || !Count(*aux) || x.width != aux->width || x.height != aux->height ||
-      x.images != aux->images || __builtin_add_overflow(x.channels, aux->channels, &x.channels) ||
-      !Count(x))
+  if (!Count(x) || !aux || !Count(*aux) || x.width != aux->width || x.images != aux->images)
+    return std::unexpected("spatial concatenation geometry differs");
+  if (in.params.Int("axis") == 1) {
+    if (x.channels != aux->channels || __builtin_add_overflow(x.height, aux->height, &x.height))
+      return std::unexpected("row concatenation geometry differs");
+  } else if (x.height != aux->height ||
+             __builtin_add_overflow(x.channels, aux->channels, &x.channels)) {
     return std::unexpected("channel concatenation geometry differs");
+  }
+  if (!Count(x)) return std::unexpected("concatenation output exceeds the value bound");
   return x;
 }
 std::expected<SpatialValue, std::string> ConcatEmit(SpatialFragment& f) {
@@ -89,7 +109,9 @@ std::expected<SpatialValue, std::string> ConcatEmit(SpatialFragment& f) {
                          f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
   if (!out || !f.weights.empty() || f.carry)
     return std::unexpected("channel concatenation operands");
-  return SpatialValue{f.builder.Concat(f.input, f.auxiliary->tensor, 2), *out};
+  return SpatialValue{f.builder.Concat(f.input, f.auxiliary->tensor,
+                                       static_cast<std::uint8_t>(f.instance.params.Int("axis"))),
+                      *out};
 }
 std::expected<void, std::string> ConcatReference(SpatialRefIO& io) {
   auto out = ConcatShape(io.instance, io.shape, io.auxiliary_shape);
@@ -98,8 +120,10 @@ std::expected<void, std::string> ConcatReference(SpatialRefIO& io) {
       !io.bias.empty() || !io.carry.empty())
     return std::unexpected("channel concatenation reference extents");
   io.output.resize(*Count(*out));
-  const auto a = io.input.size() / io.shape.images, b = io.auxiliary.size() / io.shape.images;
-  for (std::size_t n = 0; n < io.shape.images; ++n) {
+  const auto batches =
+      io.shape.images * (io.instance.params.Int("axis") == 1 ? io.shape.channels : 1);
+  const auto a = io.input.size() / batches, b = io.auxiliary.size() / batches;
+  for (std::size_t n = 0; n < batches; ++n) {
     std::ranges::copy(io.input.subspan(n * a, a),
                       io.output.begin() + static_cast<std::ptrdiff_t>(n * (a + b)));
     std::ranges::copy(io.auxiliary.subspan(n * b, b),
@@ -224,6 +248,140 @@ std::expected<void, std::string> RopeReference(SpatialRefIO& io) {
     }
   return {};
 }
+constexpr std::array kSliceParams{
+    ParamSpec{.name = "start", .type = ParamType::kInt, .least = 0, .most = 16777216},
+    ParamSpec{.name = "rows", .type = ParamType::kInt, .least = 1, .most = 16777216},
+    ParamSpec{.name = "input_rows",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 0,
+              .most = 16777216,
+              .fallback = 0}};
+std::expected<SpatialShape, std::string> SliceShape(const Instance& in, SpatialShape x,
+                                                    std::optional<SpatialShape> aux) {
+  const auto start = static_cast<std::uint64_t>(in.params.Int("start"));
+  const auto rows = static_cast<std::uint64_t>(in.params.Int("rows"));
+  if (!Count(x) || aux || start >= x.height || rows > x.height - start ||
+      (in.params.Int("input_rows") != 0 &&
+       static_cast<std::uint64_t>(in.params.Int("input_rows")) != x.height))
+    return std::unexpected("spatial row slice lies outside its input");
+  x.height = rows;
+  return x;
+}
+std::expected<SpatialValue, std::string> SliceEmit(SpatialFragment& f) {
+  auto shape = SliceShape(f.instance, f.shape,
+                          f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!shape || !f.weights.empty() || f.carry) return std::unexpected("spatial row slice operands");
+  const auto x = f.shape;
+  const auto start = static_cast<std::uint64_t>(f.instance.params.Int("start"));
+  const auto view =
+      f.builder.View(f.input, ir::ShapeOf({x.width, shape->height, x.channels, x.images}),
+                     {4, 4 * x.width, 4 * x.width * x.height, 4 * x.width * x.height * x.channels},
+                     start * x.width * 4);
+  return SpatialValue{f.builder.Cont(view), *shape};
+}
+std::expected<void, std::string> SliceReference(SpatialRefIO& io) {
+  auto shape = SliceShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!shape || io.input.size() != *Count(io.shape) || !io.kernel.empty() || !io.bias.empty() ||
+      !io.auxiliary.empty() || !io.carry.empty())
+    return std::unexpected("spatial row slice reference extents");
+  const auto start = static_cast<std::uint64_t>(io.instance.params.Int("start"));
+  const auto rows = shape->height, width = shape->width;
+  io.output.resize(*Count(*shape));
+  for (std::uint64_t outer = 0; outer < shape->channels * shape->images; ++outer)
+    for (std::uint64_t v = 0; v < width * rows; ++v)
+      io.output[outer * width * rows + v] = io.input[(outer * io.shape.height + start) * width + v];
+  return {};
+}
+constexpr std::array kSpatialRmsParams{
+    ParamSpec{.name = "channels", .type = ParamType::kInt, .least = 1, .most = 65536},
+    ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 1e-30, .most = 1},
+    kNormZeroCentered};
+constexpr std::array kSpatialRmsRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
+std::expected<std::vector<RoleShape>, std::string> SpatialRmsRoles(const Instance& in) {
+  if (in.site != Site::kLayer || NormOffsetContradictsFold(in))
+    return std::unexpected("spatial RMS role or source gamma convention differs");
+  return std::vector{Role(0, {static_cast<std::uint64_t>(in.params.Int("channels"))})};
+}
+std::expected<SpatialShape, std::string> SpatialRmsShape(const Instance& in, SpatialShape x,
+                                                         std::optional<SpatialShape> aux) {
+  if (!Count(x) || aux || x.channels != static_cast<std::uint64_t>(in.params.Int("channels")) ||
+      !SpatialRmsRoles(in))
+    return std::unexpected("spatial RMS channel geometry differs");
+  return x;
+}
+std::expected<SpatialValue, std::string> SpatialRmsEmit(SpatialFragment& f) {
+  auto shape = SpatialRmsShape(f.instance, f.shape,
+                               f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!shape || f.weights.size() != 1 || f.carry) return std::unexpected("spatial RMS operands");
+  auto x = f.builder.Cont(f.builder.Permute(f.input, {1, 2, 0, 3}));
+  x = f.builder.Reshape(
+      x, ir::ShapeOf({shape->channels, shape->width * shape->height * shape->images}));
+  auto gamma = NormScale(f.builder, f.weights[0]);
+  if (f.instance.params.Flag("norm_zero_centered")) gamma = f.builder.Scale(gamma, 1.F, 1.F);
+  x = f.builder.Mul(f.builder.RmsNorm(x, F32(f.instance.params.Real("eps"))), gamma);
+  x = f.builder.Reshape(x,
+                        ir::ShapeOf({shape->channels, shape->width, shape->height, shape->images}));
+  return SpatialValue{f.builder.Cont(f.builder.Permute(x, {2, 0, 1, 3})), *shape};
+}
+std::expected<void, std::string> SpatialRmsReference(SpatialRefIO& io) {
+  auto shape = SpatialRmsShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!shape || io.input.size() != *Count(io.shape) || io.kernel.size() != shape->channels ||
+      !io.bias.empty() || !io.auxiliary.empty() || !io.carry.empty())
+    return std::unexpected("spatial RMS reference extents");
+  const auto pixels = shape->width * shape->height, channels = shape->channels;
+  io.output.resize(io.input.size());
+  for (std::uint64_t n = 0; n < shape->images; ++n)
+    for (std::uint64_t row = 0; row < pixels; ++row) {
+      double square = 0;
+      for (std::uint64_t c = 0; c < channels; ++c) {
+        const auto value = io.input[row + pixels * (c + channels * n)];
+        square += value * value;
+      }
+      const double denominator =
+          std::sqrt(square / static_cast<double>(channels) + F32(io.instance.params.Real("eps")));
+      for (std::uint64_t c = 0; c < channels; ++c) {
+        const auto at = row + pixels * (c + channels * n);
+        io.output[at] = io.input[at] / denominator *
+                        (static_cast<double>(io.kernel[c]) +
+                         (io.instance.params.Flag("norm_zero_centered") ? 1.0 : 0.0));
+      }
+    }
+  return {};
+}
+std::expected<SpatialShape, std::string> ScaledShape(const Instance&, SpatialShape x,
+                                                     std::optional<SpatialShape> aux) {
+  if (!Count(x) || !aux || *aux != SpatialShape{1, 1, 1, 1})
+    return std::unexpected("scaled residual requires an explicit scalar");
+  return x;
+}
+std::expected<SpatialValue, std::string> ScaledEmit(SpatialFragment& f) {
+  auto shape = ScaledShape(f.instance, f.shape,
+                           f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!shape || !f.weights.empty() || !f.carry || f.carry->shape != *shape)
+    return std::unexpected("scaled residual requires its complete original carry");
+  return SpatialValue{f.builder.Add(f.carry->tensor, f.builder.Mul(f.input, f.auxiliary->tensor)),
+                      *shape};
+}
+std::expected<void, std::string> ScaledReference(SpatialRefIO& io) {
+  auto shape = ScaledShape(io.instance, io.shape, io.auxiliary_shape);
+  if (!shape || io.input.size() != *Count(*shape) || io.auxiliary.size() != 1 || !io.carry_shape ||
+      *io.carry_shape != *shape || io.carry.size() != io.input.size() || !io.kernel.empty() ||
+      !io.bias.empty())
+    return std::unexpected("scaled residual reference operands differ");
+  io.output.resize(io.input.size());
+  for (std::size_t i = 0; i < io.output.size(); ++i)
+    io.output[i] = io.carry[i] + io.auxiliary[0] * io.input[i];
+  return {};
+}
+const SpatialOps kSlice{SliceShape, SliceEmit, SliceReference, 2};
+const SpatialOps kSpatialRms{SpatialRmsShape, SpatialRmsEmit, SpatialRmsReference, 10};
+const SpatialOps kScaled{.infer_shape = ScaledShape,
+                         .emit = ScaledEmit,
+                         .reference = ScaledReference,
+                         .max_nodes = 2,
+                         .needs_carry = true};
+
 const SpatialOps kSelect{SelectShape, SelectEmit, SelectReference, 8};
 const SpatialOps kConcat{ConcatShape, ConcatEmit, ConcatReference, 1};
 const SpatialOps kGlu{GluShape, GluEmit, GluReference, 1};
@@ -244,6 +402,7 @@ const ComponentDef& ConditionRows() {
 }
 const ComponentDef& ConcatSpatial() {
   static const ComponentDef d{.kind = "concat.spatial",
+                              .params = kConcatParams,
                               .shapes = NoRoles,
                               .spatial = &kConcat,
                               .emit = NoToken,
@@ -264,6 +423,33 @@ const ComponentDef& NormRopeAxes() {
                               .roles = kRopeRoles,
                               .shapes = RopeRoles,
                               .spatial = &kRope,
+                              .emit = NoToken,
+                              .reference = NoTokenRef};
+  return d;
+}
+const ComponentDef& SliceSpatial() {
+  static const ComponentDef d{.kind = "slice.spatial",
+                              .params = kSliceParams,
+                              .shapes = NoRoles,
+                              .spatial = &kSlice,
+                              .emit = NoToken,
+                              .reference = NoTokenRef};
+  return d;
+}
+const ComponentDef& NormRmsSpatial() {
+  static const ComponentDef d{.kind = "norm.rms_spatial",
+                              .params = kSpatialRmsParams,
+                              .roles = kSpatialRmsRoles,
+                              .shapes = SpatialRmsRoles,
+                              .spatial = &kSpatialRms,
+                              .emit = NoToken,
+                              .reference = NoTokenRef};
+  return d;
+}
+const ComponentDef& ResidualScaled() {
+  static const ComponentDef d{.kind = "residual.scaled",
+                              .shapes = NoRoles,
+                              .spatial = &kScaled,
                               .emit = NoToken,
                               .reference = NoTokenRef};
   return d;

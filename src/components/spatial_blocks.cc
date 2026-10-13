@@ -188,6 +188,12 @@ constexpr std::array kProjectionParams{
               .least = 0,
               .most = 1,
               .fallback = 0},
+    ParamSpec{.name = "gelu",
+              .type = ParamType::kBool,
+              .required = false,
+              .least = 0,
+              .most = 1,
+              .fallback = 0},
 };
 constexpr std::array kProjectionRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
 std::expected<std::vector<RoleShape>, std::string> ProjectionRoles(const Instance& in) {
@@ -197,7 +203,7 @@ std::expected<std::vector<RoleShape>, std::string> ProjectionRoles(const Instanc
 }
 std::expected<SpatialShape, std::string> ProjectionShape(const Instance& in, SpatialShape shape,
                                                          std::optional<SpatialShape> auxiliary) {
-  if (auxiliary || !Count(shape) ||
+  if (auxiliary || !Count(shape) || (in.params.Flag("silu") && in.params.Flag("gelu")) ||
       shape.channels != static_cast<std::uint64_t>(in.params.Int("in_channels")))
     return std::unexpected("spatial projection input channels or auxiliary differ");
   shape.channels = static_cast<std::uint64_t>(in.params.Int("out_channels"));
@@ -214,6 +220,7 @@ std::expected<SpatialValue, std::string> ProjectionEmit(SpatialFragment& f) {
       rows, ir::ShapeOf({f.shape.channels, f.shape.width * f.shape.height * f.shape.images}));
   auto output = f.builder.MatMul(f.weights[0], rows);
   if (f.instance.params.Flag("silu")) output = f.builder.Unary(output, ir::UnaryFn::kSilu);
+  if (f.instance.params.Flag("gelu")) output = f.builder.Unary(output, ir::UnaryFn::kGeluTanh);
   output = f.builder.Reshape(
       output, ir::ShapeOf({shape->channels, shape->width, shape->height, shape->images}));
   return SpatialValue{f.builder.Cont(f.builder.Permute(output, {2, 0, 1, 3})), *shape};
@@ -233,6 +240,9 @@ std::expected<void, std::string> ProjectionReference(SpatialRefIO& io) {
           value += io.input[p + pixels * (k + io.shape.channels * n)] *
                    io.kernel[k + io.shape.channels * c];
         if (io.instance.params.Flag("silu")) value /= 1 + std::exp(-value);
+        if (io.instance.params.Flag("gelu"))
+          value *= 0.5 *
+                   (1 + std::tanh(0.7978845608028654 * (value + 0.044715 * value * value * value)));
         output[p + pixels * (c + shape->channels * n)] = value;
       }
   io.output = std::move(output);

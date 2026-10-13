@@ -140,7 +140,7 @@ class SpatialGraph {
   std::uint64_t metadata_bytes_ = 0, reference_bytes_ = 0;
 };
 
-// One stateless image stage, up to 256 catalog components and 16 distinct owners.
+// One stateless image stage, up to the spec/value-ID component limit and 16 distinct owners.
 // Complete checked trajectories/roles are validated before graph emission; branch edges are
 // owner-local backward value references. Typed graph ports are graph.inputs()/outputs();
 // descriptors retain owner IDs. No family mapping, backend lowering, executor, cache or admission

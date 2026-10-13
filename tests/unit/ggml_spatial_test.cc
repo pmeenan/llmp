@@ -65,10 +65,10 @@ sp::ModelSpec Spec() {
   return model;
 }
 struct Budget {
-  std::uint64_t used = 0;
+  std::uint64_t used = 0, limit = 32ULL << 20U;
   co::SpatialPayment Payment() {
     return {[this](std::uint64_t bytes) {
-              if (bytes > (32ULL << 20U) - used) return false;
+              if (bytes > limit - used) return false;
               used += bytes;
               return true;
             },
@@ -450,6 +450,108 @@ TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNo
     EXPECT_EQ(rotations, 6U);
     EXPECT_EQ(products, 13U);  // eleven source projections and QK/AV
     EXPECT_EQ(softmax, 1U);
+    for (const auto& slot : lowered->inputs) EXPECT_EQ(slot.kind, kn::InputKind::kStepBytes);
+  }
+}
+
+TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) {
+  const auto& profile = mo::QwenImage21().denoiser;
+  const auto source = mo::DenoiserTensors(profile);
+  auto mapped = sp::ImageFlowSpec(profile, 2, 4, source);
+  ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+  std::vector<co::BoundTensor> tensors;
+  for (const auto& component : mapped->spec.stages[0].layers[0].components)
+    for (const auto& binding : component.weights) {
+      const auto found = std::ranges::find(source, binding.tensor, &mo::QwenImageTensor::name);
+      ASSERT_NE(found, source.end());
+      fm::Shape shape;
+      shape.rank = static_cast<std::uint8_t>(found->shape.size());
+      for (std::size_t d = 0; d < found->shape.size(); ++d)
+        shape.ne[d] = found->shape[found->shape.size() - d - 1];
+      tensors.push_back({binding.tensor, ir::Dense(fm::Encoding::kBF16, shape)});
+    }
+  ASSERT_EQ(tensors.size(), 297U);
+  const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+  const std::array owners{co::SpatialOwner{2, {1, 2, 4096, 1}}};
+  const std::array ports{
+      co::SpatialInput{2, 0, {1, 4, 64, 1}}, co::SpatialInput{2, 1, {1, 2, 256, 1}},
+      co::SpatialInput{2, 2, {6, 3, 1, 1}, fm::Encoding::kI32},
+      co::SpatialInput{2, 3, {6, 6, 1, 1}}, co::SpatialInput{2, 4, {1, 1, 1, 1}}};
+  Budget budget;
+  budget.limit = 128ULL << 20U;
+  auto graph = co::BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                                    {.links = mapped->links,
+                                     .reference_buffers = false,
+                                     .exports = mapped->exports,
+                                     .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                      graph->weights()};
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  for (const bool measuring : {true, false}) {
+    kn::Addresses addresses;
+    addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+      return 0x100000000ULL + std::uint64_t{ref.component} * (256ULL << 20U);
+    };
+    addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+    addresses.activations = measuring ? 0ULL : 0x10000000ULL;
+    addresses.activation_bytes = 32ULL << 20U;
+    addresses.activation_alignment = 256;
+    auto plan = en::PlanComponentGraph(
+        io, backend, {}, addresses,
+        {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+         .written = kg::WrittenBytes,
+         .within = kg::WithinRoot,
+         .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+    ASSERT_TRUE(plan) << Failed(plan).value_or("");
+    std::vector<std::string> planned_keys;
+    std::size_t fused_norms = 0;
+    for (const auto& node : plan->graph.nodes()) {
+      planned_keys.push_back(ir::OpKeyName(node.key));
+      if (node.key != ir::Primitive(node.key.op)) {
+        EXPECT_EQ(node.key, ir::Fused(ir::FusedKind::kRmsNormMul));
+        ++fused_norms;
+      }
+    }
+    EXPECT_EQ(fused_norms, 65U);
+    std::ranges::sort(planned_keys);
+    planned_keys.erase(std::unique(planned_keys.begin(), planned_keys.end()), planned_keys.end());
+    std::string keys;
+    for (const auto& key : planned_keys) keys += key + ",";
+    ASSERT_LE(keys.size(), 2048U);
+    SCOPED_TRACE(keys);
+    RecordProperty(measuring ? "measured_planned_keys" : "bound_planned_keys", keys);
+    const kn::LowerInput input{*plan, io, addresses};
+    EXPECT_FALSE(input.token);
+    kg::DeviceChoices choices;
+    choices.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+      return kg::MulMatPath::kCublas;
+    };
+    auto lowered = kg::LowerStep(input, *registry, choices);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    ASSERT_EQ(lowered->inputs.size(), 6U);
+    ASSERT_EQ(lowered->outputs.size(), 2U);
+    EXPECT_EQ(lowered->outputs[0].bytes, 4U * 64U * 4U);
+    EXPECT_EQ(lowered->outputs[1].bytes, 4U * 64U * 4U);
+    std::size_t rotations = 0, products = 0, softmax = 0, norms = 0;
+    for (const auto& step : lowered->plan.steps) {
+      if (step.implementation == "ggml.norm") {
+        ++norms;
+        EXPECT_TRUE(kg::CheckLayerNorm(step.nodes[0]));
+      }
+      rotations += step.implementation == "ggml.rope.ext";
+      products += step.implementation == "ggml.mul_mat.cublas";
+      softmax += step.implementation == "ggml.soft_max";
+    }
+    EXPECT_EQ(norms, 65U);
+    EXPECT_EQ(rotations, 192U);
+    EXPECT_EQ(products, 296U);  // 232 source projections and 64 QK/AV
+    EXPECT_EQ(softmax, 32U);
     for (const auto& slot : lowered->inputs) EXPECT_EQ(slot.kind, kn::InputKind::kStepBytes);
   }
 }

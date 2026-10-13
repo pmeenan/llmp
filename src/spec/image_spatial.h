@@ -46,5 +46,15 @@ std::expected<SpatialComposition, std::string> ImageTimestepSpec(
 std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
     const model::QwenImageDenoiserProfile& profile, std::uint32_t block, std::uint32_t text_rows,
     std::span<const model::QwenImageTensor> tensors);
+// Complete denoiser plus explicit Euler residual. Caller prepays the returned
+// mapping bound before ImageFlowSpec; includes all copies, no source payloads.
+std::expected<std::uint64_t, std::string> ImageFlowSpecBound(
+    const model::QwenImageDenoiserProfile& profile,
+    std::span<const model::QwenImageTensor> tensors);
+// Primary text embedding rows; extra ports:0 latent,1 sinusoid,2 I32 positions,
+// 3 explicit mask,4 F32 dt scalar. Exports full noise and updated latent.
+std::expected<SpatialComposition, std::string> ImageFlowSpec(
+    const model::QwenImageDenoiserProfile& profile, std::uint32_t text_rows,
+    std::uint32_t image_rows, std::span<const model::QwenImageTensor> tensors);
 }  // namespace llmp::spec
 #endif  // LLMP_SPEC_IMAGE_SPATIAL_H_

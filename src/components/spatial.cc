@@ -14,7 +14,8 @@ namespace llmp::components {
 namespace {
 
 constexpr std::uint64_t kValues = 1ULL << 24U;
-constexpr std::size_t kComponents = 256, kOwners = 16, kTensors = 1024;
+constexpr std::size_t kComponents = spec::kMaxComponents, kOwners = 16, kTensors = 1024;
+static_assert(kComponents <= std::numeric_limits<std::uint16_t>::max());
 
 std::expected<std::uint64_t, std::string> Values(SpatialShape s) {
   std::uint64_t count = 1;

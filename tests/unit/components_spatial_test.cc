@@ -372,7 +372,7 @@ std::vector<BoundTensor> TimestepTensors(std::span<const model::QwenImageTensor>
 // component emitter is used to compute the expected branch values.
 std::vector<double> ProjectRows(std::span<const double> input, std::uint64_t pixels,
                                 std::uint64_t ci, std::uint64_t co, std::span<const float> weight,
-                                bool silu) {
+                                bool silu = false) {
   std::vector<double> out(static_cast<std::size_t>(pixels * co));
   for (std::uint64_t row = 0; row < pixels; ++row)
     for (std::uint64_t channel = 0; channel < co; ++channel) {
@@ -579,8 +579,8 @@ std::array<std::vector<double>, 2> BlockOracle(const model::QwenImageDenoiserPro
                                                std::uint64_t rows, std::span<const double> stream,
                                                std::span<const double> sinusoid,
                                                std::span<const double> positions,
-                                               std::span<const double> mask,
-                                               const BlockWeights& w) {
+                                               std::span<const double> mask, const BlockWeights& w,
+                                               std::uint32_t block = 0) {
   const auto project = [&](std::span<const double> x, std::uint64_t n, std::uint64_t ci,
                            std::uint64_t co, const std::string& name, bool silu = false) {
     return ProjectRows(x, n, ci, co, w.at(name), silu);
@@ -611,7 +611,7 @@ std::array<std::vector<double>, 2> BlockOracle(const model::QwenImageDenoiserPro
     }
     return out;
   };
-  const std::string prefix = "transformer_blocks.0.";
+  const std::string prefix = "transformer_blocks." + std::to_string(block) + ".";
   const auto normalized = adaptive(stream, 0);
   auto q = project(normalized, rows, p.width, p.width, prefix + "attn.to_q.weight");
   auto k = project(normalized, rows, p.width, p.width, prefix + "attn.to_k.weight");
@@ -947,6 +947,266 @@ TEST(SpatialComponentsTest, ConditionedBlockPaysFullSourcesAndRefusesMalformedPo
   auto invalid = p;
   invalid.rope_axes = {15, 57, 56};
   EXPECT_FALSE(spec::ImageTransformerBlockSpec(invalid, 0, 2, source));
+}
+
+std::vector<BoundTensor> FlowTensors(std::span<const model::QwenImageTensor> source) {
+  std::vector<BoundTensor> out;
+  for (const auto& tensor : source) {
+    format::Shape shape;
+    shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
+    for (std::size_t i = 0; i < tensor.shape.size(); ++i)
+      shape.ne[i] = tensor.shape[tensor.shape.size() - i - 1];
+    out.push_back({tensor.name, ir::Dense(format::Encoding::kBF16, shape)});
+  }
+  return out;
+}
+std::vector<SpatialInput> FlowPorts(std::span<const SpatialOwner> owners,
+                                    const model::QwenImageDenoiserProfile& p) {
+  std::vector<SpatialInput> out;
+  for (const auto& owner : owners) {
+    out.push_back({owner.owner, 0, {1, 4, p.in_channels, 1}});
+    out.push_back({owner.owner, 1, {1, 2, p.timestep_dim, 1}});
+    out.push_back({owner.owner, 2, {6, 3, 1, 1}, format::Encoding::kI32});
+    out.push_back({owner.owner, 3, {6, 6, 1, 1}});
+    out.push_back({owner.owner, 4, {1, 1, 1, 1}});
+  }
+  return out;
+}
+// Independent complete forward and Euler equations. The block oracle evaluates
+// its own equations, never component references or graph links.
+std::array<std::vector<double>, 2> FlowOracle(const model::QwenImageDenoiserProfile& p,
+                                              std::span<const double> text,
+                                              std::span<const double> latent,
+                                              std::span<const double> sinusoid,
+                                              std::span<const double> positions,
+                                              std::span<const double> mask, double dt,
+                                              const BlockWeights& weights) {
+  std::vector<double> normalized(text.begin(), text.end());
+  for (std::size_t row = 0; row < 2; ++row) {
+    double square = 0;
+    for (std::size_t c = 0; c < p.context; ++c) square += text[row + 2 * c] * text[row + 2 * c];
+    const double scale = 1 / std::sqrt(square / p.context + p.eps);
+    for (std::size_t c = 0; c < p.context; ++c)
+      normalized[row + 2 * c] *= scale * (1 + weights.at("txt_in.text_norm.weight")[c]);
+  }
+  auto text_hidden =
+      ProjectRows(normalized, 2, p.context, p.width, weights.at("txt_in.in_layer.weight"));
+  for (auto& value : text_hidden)
+    value = 0.5 * value *
+            (1 + std::tanh(0.7978845608028654 * (value + 0.044715 * value * value * value)));
+  const auto text_projected =
+      ProjectRows(text_hidden, 2, p.width, p.width, weights.at("txt_in.out_layer.weight"));
+  const auto image_projected =
+      ProjectRows(latent, 4, p.in_channels, p.width, weights.at("img_in.weight"));
+  std::vector<double> stream(6ULL * p.width), final_scale;
+  for (std::size_t c = 0; c < p.width; ++c) {
+    for (std::size_t row = 0; row < 2; ++row) stream[row + 6 * c] = text_projected[row + 2 * c];
+    for (std::size_t row = 0; row < 4; ++row)
+      stream[row + 2 + 6 * c] = image_projected[row + 4 * c];
+  }
+  for (std::uint32_t block = 0; block < p.blocks; ++block) {
+    auto next = BlockOracle(p, 6, stream, sinusoid, positions, mask, weights, block);
+    stream = std::move(next[0]);
+    final_scale = std::move(next[1]);
+  }
+  normalized.resize(4ULL * p.width);
+  for (std::size_t row = 0; row < 4; ++row) {
+    double mean = 0, variance = 0;
+    for (std::size_t c = 0; c < p.width; ++c) mean += stream[row + 2 + 6 * c];
+    mean /= p.width;
+    for (std::size_t c = 0; c < p.width; ++c) {
+      const double delta = stream[row + 2 + 6 * c] - mean;
+      variance += delta * delta;
+    }
+    const double scale = 1 / std::sqrt(variance / p.width + p.eps);
+    for (std::size_t c = 0; c < p.width; ++c)
+      normalized[row + 4 * c] = (stream[row + 2 + 6 * c] - mean) * scale * (1 + final_scale[2 * c]);
+  }
+  auto noise = ProjectRows(normalized, 4, p.width, p.out_channels, weights.at("proj_out.weight"));
+  std::vector<double> next(latent.begin(), latent.end());
+  for (std::size_t i = 0; i < next.size(); ++i) next[i] += dt * noise[i];
+  return {std::move(noise), std::move(next)};
+}
+
+TEST(SpatialComponentsTest, CompleteFlowUsesAllBlocksAndIndependentBoundaryMathForTwoOwners) {
+  auto p = model::QwenImage21().denoiser;
+  p.blocks = 2;
+  p.width = 16;
+  p.context = 16;
+  p.heads = 2;
+  p.head_dim = 8;
+  p.mlp = 48;
+  p.timestep_dim = 4;
+  p.rope_axes = {2, 2, 4};
+  p.in_channels = 4;
+  p.out_channels = 4;
+  const auto source = model::DenoiserTensors(p);
+  auto mapping = spec::ImageFlowSpec(p, 2, 4, source);
+  ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+  ASSERT_EQ(mapping->links.size(), 53U);
+  const auto tensors = FlowTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{2, {1, 2, 16, 1}}, SpatialOwner{5, {1, 2, 16, 1}}};
+  const auto ports = FlowPorts(owners, p);
+  Budget budget;
+  auto graph =
+      BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                       {.links = mapping->links, .exports = mapping->exports, .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  ASSERT_EQ(graph->weights().size(), 27U);
+  ASSERT_EQ(graph->graph().inputs().size(), 12U);
+  ASSERT_EQ(graph->graph().outputs().size(), 4U);
+  auto exec = ref::Executor::Create(graph->graph());
+  ASSERT_TRUE(exec) << Failed(exec, &ref::ExecFailure::detail).value_or("");
+  BlockWeights weights;
+  for (const auto& weight : graph->weights()) {
+    const auto& format = graph->graph().tensor(weight.tensor).format;
+    std::size_t n = 1;
+    for (auto extent : format.shape.ne) n *= extent;
+    const auto& name = weight.parts[0].first;
+    auto& data = weights[name];
+    data.resize(n);
+    for (std::size_t i = 0; i < n; ++i)
+      data[i] =
+          format.shape.rank == 1
+              ? (name == "txt_in.text_norm.weight" ? -0.25F : 1.0F) + static_cast<float>(i % 3) / 16
+              : static_cast<float>(static_cast<int>((i * 13 + weights.size() * 7) % 23) - 11) / 64;
+    ASSERT_TRUE(exec->BindValues(weight.tensor, data));
+  }
+  std::array<std::array<std::vector<float>, 2>, 2> original;
+  for (std::size_t revision = 0; revision < 6; ++revision) {
+    std::array<std::array<std::vector<double>, 2>, 2> expected;
+    std::array<std::vector<float>, 2> latents;
+    for (std::size_t owner = 0; owner < owners.size(); ++owner) {
+      std::vector<float> text(2 * p.context), latent(4 * p.in_channels), time(2 * p.timestep_dim),
+          mask(36);
+      std::vector<std::int64_t> positions(18);
+      for (std::size_t i = 0; i < text.size(); ++i)
+        text[i] = static_cast<float>(static_cast<int>((i * 7 + owner * 3) % 19) - 9) / 8;
+      for (std::size_t i = 0; i < latent.size(); ++i)
+        latent[i] = static_cast<float>(static_cast<int>((i * 3 + owner * 5) % 17) - 8) / 8;
+      if (revision == 2) latent[3] += 0.5F;
+      if (revision == 3) text[1] += 0.5F;
+      for (std::size_t i = 0; i < time.size(); ++i)
+        time[i] = static_cast<float>(i + owner + (revision == 1 && i % 2 == 0 ? 4U : 0U)) / 8;
+      for (std::size_t row = 0; row < 6; ++row) {
+        positions[row] = row < 2 ? static_cast<std::int64_t>(row) : 2;
+        positions[6 + row] =
+            row < 2 ? static_cast<std::int64_t>(row) : static_cast<std::int64_t>((row - 2) / 2) - 1;
+        positions[12 + row] =
+            row < 2 ? static_cast<std::int64_t>(row) : static_cast<std::int64_t>((row - 2) % 2) - 1;
+        for (std::size_t key = 0; key < 6; ++key)
+          mask[key + 6 * row] = row < 2 && key > row ? -std::numeric_limits<float>::infinity() : 0;
+      }
+      const std::array dt{revision == 4 ? 0.F : -0.125F};
+      const auto inputs = graph->graph().inputs();
+      ASSERT_TRUE(exec->BindValues(inputs[owner * 6], text));
+      ASSERT_TRUE(exec->BindValues(inputs[owner * 6 + 1], latent));
+      ASSERT_TRUE(exec->BindValues(inputs[owner * 6 + 2], time));
+      ASSERT_TRUE(exec->BindInts(inputs[owner * 6 + 3], positions));
+      ASSERT_TRUE(exec->BindValues(inputs[owner * 6 + 4], mask));
+      ASSERT_TRUE(exec->BindValues(inputs[owner * 6 + 5], dt));
+      const std::vector<double> tx(text.begin(), text.end()), lx(latent.begin(), latent.end()),
+          tm(time.begin(), time.end()), pos(positions.begin(), positions.end()),
+          m(mask.begin(), mask.end());
+      expected[owner] = FlowOracle(p, tx, lx, tm, pos, m, dt[0], weights);
+      latents[owner] = latent;
+    }
+    ASSERT_TRUE(exec->Run()) << "revision " << revision;
+    for (std::size_t owner = 0; owner < owners.size(); ++owner)
+      for (std::size_t branch = 0; branch < 2; ++branch) {
+        auto actual = exec->Values(graph->graph().outputs()[owner * 2 + branch]);
+        ASSERT_TRUE(actual);
+        ASSERT_EQ(actual->size(), expected[owner][branch].size());
+        for (std::size_t i = 0; i < actual->size(); ++i)
+          EXPECT_NEAR((*actual)[i], expected[owner][branch][i], 1e-4);
+        if (revision == 0)
+          original[owner][branch] = *actual;
+        else if (revision == 5 || (revision == 4 && branch == 0))
+          EXPECT_EQ(*actual, original[owner][branch]);
+        else
+          EXPECT_NE(*actual, original[owner][branch]);
+        if (revision == 4 && branch == 1) EXPECT_EQ(*actual, latents[owner]);
+        EXPECT_EQ(graph->outputs()[owner * 2 + branch].owner, owners[owner].owner);
+      }
+  }
+}
+
+TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceBeforeCopy) {
+  const auto& p = model::QwenImage21().denoiser;
+  const auto source = model::DenoiserTensors(p);
+  ASSERT_EQ(source.size(), 297U);
+  auto mapping = spec::ImageFlowSpec(p, 2, 4, source);
+  ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+  ASSERT_EQ(mapping->links.size(), 563U);
+  const auto tensors = FlowTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{0, {1, 2, 4096, 1}}};
+  const auto ports = FlowPorts(owners, p);
+  Budget budget;
+  auto graph = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                {.links = mapping->links,
+                                 .reference_buffers = false,
+                                 .exports = mapping->exports,
+                                 .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  EXPECT_EQ(graph->weights().size(), 297U);
+  EXPECT_EQ(graph->graph().outputs().size(), 2U);
+  for (const auto& output : graph->outputs()) EXPECT_EQ(output.shape, (SpatialShape{1, 4, 64, 1}));
+  std::uint64_t primitive_count = 0;
+  for (const auto& layer : mapping->spec.stages[0].layers) {
+    for (const auto& component : layer.components) {
+      const auto* def = Find(component.kind, component.version);
+      ASSERT_NE(def, nullptr);
+      ASSERT_NE(def->spatial, nullptr);
+      primitive_count += def->spatial->max_nodes;
+    }
+  }
+  EXPECT_EQ(primitive_count, 32U * 169U + 137U);
+  const auto metadata_nodes =
+      owners.size() * (primitive_count + 1) + ports.size() + 2 * mapping->links.size();
+  const auto metadata_bytes =
+      4096ULL * (2 * metadata_nodes + source.size() + 4 * mapping->links.size() + 16 +
+                 owners.size() * mapping->exports.size() + 2 * ports.size());
+  EXPECT_EQ(metadata_bytes, 65253376U);
+  EXPECT_EQ(graph->metadata_bytes(), metadata_bytes);
+  RecordProperty("full_flow_primitive_ceiling", std::to_string(primitive_count));
+  RecordProperty("full_flow_metadata_bytes", std::to_string(graph->metadata_bytes()));
+  const auto paid = budget.used;
+  EXPECT_EQ(paid, metadata_bytes);
+  EXPECT_LT(paid, budget.limit);
+  Budget denied;
+  denied.limit = paid - 1;
+  EXPECT_FALSE(BuildSpatialStep(mapping->spec, tables, owners, denied.Payment(),
+                                {.links = mapping->links,
+                                 .reference_buffers = false,
+                                 .exports = mapping->exports,
+                                 .inputs = ports}));
+  EXPECT_EQ(denied.calls, 1U);
+  EXPECT_EQ(denied.used, 0U);
+  Budget reference;
+  EXPECT_FALSE(BuildSpatialStep(mapping->spec, tables, owners, reference.Payment(),
+                                {.links = mapping->links,
+                                 .reference_buffers = true,
+                                 .exports = mapping->exports,
+                                 .inputs = ports}));
+  EXPECT_EQ(reference.calls, 2U);
+  EXPECT_EQ(reference.used, 0U);
+  auto invalid = p;
+  invalid.blocks = UINT32_MAX;
+  EXPECT_FALSE(spec::ImageFlowSpecBound(invalid, source));
+  invalid = p;
+  invalid.context = 4095;
+  EXPECT_FALSE(spec::ImageFlowSpec(invalid, 2, 4, source));
+  auto bad_source = source;
+  bad_source.push_back(source.front());
+  EXPECT_FALSE(spec::ImageFlowSpec(p, 2, 4, bad_source));
+  auto too_many = mapping->spec;
+  auto& components = too_many.stages[0].layers[0].components;
+  components.resize(spec::kMaxComponents + 1ULL);
+  Budget invalid_count;
+  EXPECT_FALSE(BuildSpatialStep(too_many, tables, owners, invalid_count.Payment()));
+  EXPECT_EQ(invalid_count.calls, 0U);
 }
 
 }  // namespace

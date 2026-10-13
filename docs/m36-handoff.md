@@ -165,7 +165,9 @@ The generic reserved-weight alignment landed in `b9833111` and passes main nativ
 installing tuning. The [Qwen secondary screen](experiments/m36-numerical-audit/qwen-joined-score.md)
 records 4.56% lower perplexity on 128 targets and no clear short-screen timing
 separation. Broader decode continuation, quality and serving gates
-remain open; the original unquantized reference is still missing.
+remain open. A same-checkpoint, same-encoding reference is the quality baseline;
+original unquantized evidence is only needed for closer/farther-from-original
+claims, not as a prerequisite to that comparison.
 
 The shared real-program validator, full-head row witness and closed target-only
 scoring factory landed in `5167cc36` and pass main native build and 127 focused host controls. They
@@ -660,8 +662,15 @@ these fixtures where applicable.
   finite values over seven steps with changed/restored inputs and retained replay.
   The full main Spark B native build and 452 host cases across 25 targets pass,
   with the actual-tested model binary unchanged; final source quality checks pass.
-  All 32-block flow, broader geometries/reference quality and `EngineImage` remain
-  open. Qualify numerical choices rather than imposing the legacy
+  Q3e now composes the source text/image boundaries, all 32 shared blocks and
+  final modulation/output projection with an explicit original-latent Euler carry.
+  Full main Spark B native build and 455 host controls across 25 targets pass.
+  All three actual cases pass; the full flow executes seven completions with
+  3,584 finite values, 1,792 Euler checks and changed/restored inputs under
+  retained capture. Source/recipe/binary guards, retirement and memory-event
+  checks pass. Broader
+  geometries/reference quality, repeated sampling, encoder/VAE integration and
+  `EngineImage` remain open. Qualify numerical choices rather than imposing the legacy
   pipeline's rounding recipe; retire `qwen_image_runner.*` and `pipeline.cc`
   roles after their shared replacements pass.
 - **T-slices, structural techniques.** One per row of `engine-components.md`'s retired table: format layer T04/T11/T58/T95; wave composer T15/T16/T20/T29/T59/T64/T88; patterns T10/T31/T56/T86/T92 (+T09/T41/T57 adoption); prefill T23/T26/T55/T93; state T67; decoding T39/T45/T81; components T22/T69/T54/T71/T72/T61; planner T96; pager T68. Adopt where qualified comparisons improve speed, quality, reuse, simplicity or resource cost.

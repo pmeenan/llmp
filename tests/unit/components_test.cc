@@ -121,16 +121,19 @@ TEST(ComponentsTest, CatalogHoldsTheGemmaKindsInOrder) {
                                                   "norm.adaptive",
                                                   "norm.channel",
                                                   "norm.rms",
+                                                  "norm.rms_spatial",
                                                   "norm.rope_axes",
                                                   "projection.spatial",
                                                   "residual.gated",
                                                   "residual.hc",
                                                   "residual.ple",
+                                                  "residual.scaled",
                                                   "residual.spatial",
                                                   "residual.upsample",
                                                   "scale.learned",
                                                   "side.hash",
                                                   "side.ngram",
+                                                  "slice.spatial",
                                                   "upsample.nearest"}));
   EXPECT_EQ(Find("attention.dense", 2), nullptr);
   EXPECT_EQ(Find("attention.sparse", 1), nullptr);

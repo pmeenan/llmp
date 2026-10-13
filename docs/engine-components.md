@@ -952,6 +952,21 @@ the actual-size screen establishes finite execution and same-selected replay,
 not full-size reference quality, full flow, comparative speed or serving. See
 [block evidence](experiments/m36-shared-spatial-execution/README.md#conditioned-transformer-block).
 
+The whole denoiser mapping composes 563 shared components: zero-centered learned
+RMS and GELU text projections, image projection, all 32 existing blocks, image-row
+selection, first-timestep final modulation, output projection and `latent + dt *
+noise`. Generic row-axis concatenation, slicing and scaled residual fragments use
+ordinary typed ports and produced carries. The former incidental 256-component
+limit is replaced by the spec/value-ID limit and prepaid metadata; per-tensor
+activation limits are unchanged. Full decoded-reference requests still pay the
+existing conservative aggregate bound before any payload copy. Reduced
+independent host equations and the full main native/455-host check pass. The actual
+297-part BF16 source executes all 32 blocks and both output ports: seven completed
+steps check 3,584 finite values and 1,792 Euler contributions, including changed
+and restored inputs through retained capture. The conditioner and single-block
+regressions also pass. This does not admit `EngineImage` or establish same-source
+image quality or comparative speed.
+
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a
 definition's `row_local` false; `attention.dense`, whose `narrows` says it
