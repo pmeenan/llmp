@@ -950,7 +950,7 @@ they are the output rows, in segment order. The M3 Gemma 4 runner turned
 row's; the components' tap keeps only the output rows' and narrows. A
 state tensor's cell is the format layer's
 (`model::CellBytes`), its leaf a block encoding's whole blocks where an
-alias opts into a lossy cache (D-108; F16 today).
+alias opts into a lossy cache (D-108; F16 by default, with an explicit bounded Q8_0 opt-in).
 
 Each fragment records today's builders' nodes in their execution order
 (GGML's `GraphOrder` over their outputs: V's product before K's, the gate
@@ -1883,7 +1883,7 @@ executor's cache stores can write them.
 
 **Lossy state encodings, the kernel half (2026-10-09).**
 `src/kernels/ggml/kv_quant.h` reads and writes block-quantized KV caches,
-declared with capabilities but selected by no model yet:
+declared with capabilities; the bounded dense Q8_0 opt-in below now consumes them:
 - *Attention.* GGML's vector kernel at the pin, compiled for K and V both
   Q8_0 or both Q4_0 at D 64 and 256 only (`fattn_vec_quant.cu`, four
   `ggml_cuda_flash_attn_ext_vec_case` instances with GGML's device flags),
@@ -1947,30 +1947,32 @@ declared with capabilities but selected by no model yet:
   (before the below-normal-range test and the GQA-1 and 1,025-row cases
   were added) pass on the workstation's RTX 3080 Ti (sm_86).
 
-What each model's opt-in still needs, besides the per-alias setting below
-and its long-context quality report: Qwen2 (D 64) its runner's cache
-stores and forced vector attention renamed to the quantized forms; Gemma
-2 and 3 (D 256) the same for decode, and for prefill and joined cohorts
-either the vector kernel (the owner and tensor-core kernels take F16 only)
-or the measured conversion path; Gemma 4 and its assistant (which reads
-the target's cache) the same for the local layers, and the global layers'
-D 512 kept F16 (a per-component encoding) until a quantized D 512 path
-exists; Qwen3.8 its QSA kernels (`llmp.qsa.attn`) and tensor-core
-attention reading blocks; DeepSeek V4 and DSpark a D 512 path and their
-compressed and indexer caches' readers.
+**Bounded dense Q8_0 opt-in (D-117).** The shared dense component computes
+blocked K/V cell strides with the format size rule, uses existing quantizing
+stores and vector attention at D64/D256, and retains the F16 primitive/fusion
+behavior by default. The CPU component oracle reuses `EncodeRows`/`DecodeRows`
+through a synchronous bounded row codec. An alias's `kv_cache_encoding` override
+validates the complete authenticated target spec and pays parameter storage
+before mutation; the same transformed spec drives settings, graph/state layout
+and kept identity. There is no resident weight transcode or second model copy.
 
-**The per-alias setting (not added yet).** A lossy state encoding is a
-model setting under `[models.NAME]` (D-096), one key per kind of state a
-component's contract names (the KV cache first), resolved through D-103's
-layers: the derived default is each contract's own exact encoding;
-calibration never picks a lossy one, since it trades quality rather than
-speed; an override or a preset may name any encoding the contract admits
-from `StateEncodings()` for which the backend declares an attention and a
-cache store, the schema refusing others, and the `settings`
-command reports it with its source and whether it is lossy. Off by
-default. It changes the kept-state layout ID, so kept state of another
-encoding is discarded rather than adopted. Adding the key is a public
-configuration change and takes a decisions entry with the item.
+The public values are `"f16"` (default) and `"q8_0"`. Calibration never selects
+the lossy choice, and settings report its source and lossiness. Unsupported
+geometry and state consumers refuse; admission does not broaden to another
+family. The initial source domain is one independent owned dense target, with
+no drafter, borrowed cache, D512, sinks, specialized QSA/MQA or image state.
+Same-weights F16 cache is the paired NLL/PPL baseline; original unquantized
+evidence is optional unless claiming agreement with that original. Logical
+Q8_0 cache bytes are 34/64 of F16, while physical page padding can leave
+reservations unchanged. Long-context quality, all-family state formats and
+serving/migration speed remain open.
+
+Main native build and 519 affected host controls pass. Four actual Spark A
+cases pass paired teacher scoring and same-Q8 state restoration. The selected Q8 kernel also quantizes queries to Q8_1; the reported loss
+includes that arithmetic, not just stored-cache precision. Short-sample
+PPL rises 4.598% at D64 and 1.452% at D256 versus the same weights with F16
+cache; these are reported tradeoffs, not a new quality threshold.
+[Evidence and scope](experiments/m36-numerical-audit/q8-state.md).
 
 ## The importer
 

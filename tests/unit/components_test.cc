@@ -30,6 +30,7 @@
 
 #include "components/component.h"
 #include "components/moe.h"
+#include "components/state_encoding.h"
 #include "components/step.h"
 #include "format/encoding.h"
 #include "ir/builder.h"
@@ -375,6 +376,7 @@ void Compare(const Instance& in, std::span<const format::TensorFormat> formats,
   // Random weights by role, encoded in their formats; both sides read the
   // decoded values.
   RefIO io{.instance = &in};
+  io.store_row = &ref::StoreStateRow;
   io.weights.resize(in.def->roles.size());
   io.weight_shapes.resize(in.def->roles.size());
   std::vector<std::vector<std::byte>> encoded(in.def->roles.size());
@@ -992,6 +994,145 @@ TEST(ComponentsTest, ChannelNormBuildsInACompleteStatelessSpec) {
   ASSERT_TRUE(ValidateSpec(model_spec, tables));
   tensors[0].format = Vector(3);
   EXPECT_FALSE(ValidateSpec(model_spec, tables));
+}
+
+// Alias-wide conversion is paid and validated before changing any component.
+TEST(ComponentsTest, Q8CacheOverrideIsPaidAtomicAndChangesStateIdentity) {
+  for (auto model_spec : {Gemma2Spec(), Gemma3Spec()}) {
+    const auto original = model_spec;
+    const auto old_digest = model_spec.Digest();
+    ASSERT_TRUE(ApplyKvCacheEncoding(model_spec, Encoding::kF16, 0));
+    EXPECT_EQ(model_spec.Digest(), old_digest);
+    const auto bytes = KvCacheEncodingBytes(model_spec, Encoding::kQ8_0);
+    ASSERT_TRUE(bytes) << bytes.error();
+    ASSERT_GT(*bytes, 0U);
+    EXPECT_FALSE(ApplyKvCacheEncoding(model_spec, Encoding::kQ8_0, *bytes - 1));
+    EXPECT_EQ(model_spec.Digest(), old_digest);
+    ASSERT_TRUE(ApplyKvCacheEncoding(model_spec, Encoding::kQ8_0, *bytes));
+    const auto digest = model_spec.Digest();
+    EXPECT_NE(digest, old_digest);
+    const auto before = StageLayout(original, 0, 4096, 128, kExtent);
+    const auto after = StageLayout(model_spec, 0, 4096, 128, kExtent);
+    ASSERT_TRUE(before) << before.error();
+    ASSERT_TRUE(after) << after.error();
+    ASSERT_EQ(before->items.size(), after->items.size());
+    for (std::size_t i = 0; i < after->items.size(); ++i) {
+      const auto& a = after->items[i];
+      const auto& b = before->items[i];
+      EXPECT_EQ(a.contract.encoding, Encoding::kQ8_0);
+      EXPECT_EQ(a.contract.cell_bytes * 64, b.contract.cell_bytes * 34);
+      EXPECT_EQ(a.cells, b.cells);
+      EXPECT_EQ(a.bytes, a.cells * a.contract.cell_bytes);
+      EXPECT_EQ(a.offset % kExtent, 0U);
+    }
+    EXPECT_NE(model::KeptLayoutId(old_digest, std::span(&*before, 1)),
+              model::KeptLayoutId(digest, std::span(&*after, 1)));
+    EXPECT_FALSE(ApplyKvCacheEncoding(model_spec, Encoding::kF16, 0));
+    EXPECT_EQ(model_spec.Digest(), digest);
+  }
+  auto unsupported = Gemma2Spec();
+  for (auto& component : unsupported.stages[0].layers.back().components) {
+    if (component.kind != "attention.dense") continue;
+    for (auto& p : component.params)
+      if (p.name == "key_dim" || p.name == "value_dim") p.value = I(512);
+  }
+  const auto digest = unsupported.Digest();
+  const auto bytes = KvCacheEncodingBytes(unsupported, Encoding::kQ8_0);
+  ASSERT_TRUE(bytes);
+  EXPECT_FALSE(ApplyKvCacheEncoding(unsupported, Encoding::kQ8_0, *bytes));
+  EXPECT_EQ(unsupported.Digest(), digest);  // late refusal did not rewrite earlier layers
+  unsupported.stages[0].layers.back().components.front().kind = "attention.mqa";
+  const auto specialized = unsupported.Digest();
+  EXPECT_FALSE(ApplyKvCacheEncoding(unsupported, Encoding::kQ8_0, *bytes));
+  EXPECT_EQ(unsupported.Digest(), specialized);
+}
+
+TEST(ComponentsTest, Q8CacheReferenceUsesBlockStateAcrossRingAndOwners) {
+  auto component = Attention(8, 0.0, false, "neox", "pre");
+  for (auto& p : component.params) {
+    if (p.name == "key_dim" || p.name == "value_dim" || p.name == "rope_dims") p.value = I(64);
+    if (p.name == "rope_scale") p.value = R(1e-30);
+  }
+  component.params.push_back(P("kv_encoding", N("q8_0")));
+  component.params.push_back(P("qkv_bias", true));
+  std::ranges::sort(component.params, {}, &Param::name);
+  const auto instance = MakeInstance(component, kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(instance) << instance.error();
+  auto formats = AttentionFormats(Encoding::kF32);
+  formats[1] = Matrix(Encoding::kF32, kWidth, 256);
+  formats[2] = formats[3] = Matrix(Encoding::kF32, kWidth, 128);
+  formats[4] = Matrix(Encoding::kF32, 256, kWidth);
+  formats.push_back(Vector(256));
+  formats.push_back(Vector(128));
+  formats.push_back(Vector(128));
+  const std::array<std::uint64_t, 2> cells{20, 20};
+  // Exact nonzero bias-driven blocks isolate encode/store/read and ring
+  // geometry from projection-rounding differences between the two references.
+  Compare(*instance, formats, cells, AttentionSteps(32), kOutputTolerance, kF16StateTolerance,
+          {{1, {0.0F, 0.0F}},
+           {2, {0.0F, 0.0F}},
+           {3, {0.0F, 0.0F}},
+           {9, {0.125F, 0.0F}},
+           {10, {0.25F, 0.0F}},
+           {11, {0.5F, 0.0F}}});
+}
+
+TEST(ComponentsTest, Q8CacheViewsPreserveWholeHeadBlocksAndRefuseUnsupportedGeometry) {
+  for (const std::int64_t dim : {64, 256}) {
+    auto component = Attention(0, 0.0, false, "neox", "pre");
+    for (auto& p : component.params)
+      if (p.name == "key_dim" || p.name == "value_dim" || p.name == "rope_dims") p.value = I(dim);
+    component.params.push_back(P("kv_encoding", N("q8_0")));
+    component.params.push_back(P("f16_projections", true));
+    std::ranges::sort(component.params, {}, &Param::name);
+    auto instance = MakeInstance(component, kFacts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(instance) << instance.error();
+    auto formats = AttentionFormats(Encoding::kF16);
+    const auto d = static_cast<std::uint64_t>(dim);
+    formats[1] = Matrix(Encoding::kF16, kWidth, 4 * d);
+    formats[2] = Matrix(Encoding::kF16, kWidth, 2 * d);
+    formats[3] = formats[2];
+    formats[4] = Matrix(Encoding::kF16, 4 * d, kWidth);
+    const std::array<std::uint64_t, 2> cells{256, 256};
+    const auto graph = BuildComponent(*instance, AttentionSteps(256)[0].shape, formats, cells);
+    ASSERT_TRUE(graph) << graph.error();
+    std::size_t stores = 0, attention = 0;
+    for (const auto& node : graph->step.graph.nodes()) {
+      if (node.key.op == ir::Op::kCacheStore) {
+        ++stores;
+        EXPECT_EQ(graph->step.graph.tensor(node.src[1]).format.encoding, Encoding::kF32);
+      }
+      if (node.key.op != ir::Op::kAttention) continue;
+      ++attention;
+      for (const auto input : {node.src[1], node.src[2]}) {
+        const auto& tensor = graph->step.graph.tensor(input);
+        EXPECT_EQ(tensor.format.encoding, Encoding::kQ8_0);
+        EXPECT_EQ(tensor.nb[0], 34U);
+        EXPECT_EQ(tensor.nb[1], 2 * d / 32 * 34);  // complete cell
+        EXPECT_EQ(tensor.nb[2], d / 32 * 34);      // one KV head
+      }
+    }
+    EXPECT_EQ(stores, 4U);
+    EXPECT_EQ(attention, 2U);
+    RefIO reference{.instance = &*instance};
+    EXPECT_FALSE(instance->def->reference(reference));  // no codec, before any state mutation
+    auto explicit_scores = component;
+    explicit_scores.params.push_back(P("explicit_scores", true));
+    std::ranges::sort(explicit_scores.params, {}, &Param::name);
+    EXPECT_FALSE(MakeInstance(explicit_scores, kFacts, Site::kLayer, 0, 1));
+    auto borrowed = component;
+    borrowed.kind = "attention.borrowed";
+    EXPECT_FALSE(MakeInstance(borrowed, kFacts, Site::kLayer, 0, 1));
+    if (dim == 64) {
+      auto capped = component;
+      for (auto& p : capped.params)
+        if (p.name == "softcap") p.value = R(50.0);
+      EXPECT_FALSE(MakeInstance(capped, kFacts, Site::kLayer, 0, 1));
+    }
+    for (auto& p : component.params)
+      if (p.name == "value_dim") p.value = I(dim == 64 ? 256 : 512);
+    EXPECT_FALSE(MakeInstance(component, kFacts, Site::kLayer, 0, 1));
+  }
 }
 
 // ---------------------------------------------------------------- the step

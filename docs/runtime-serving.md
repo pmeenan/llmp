@@ -230,6 +230,23 @@ The widening preserves `schema_version = 2` and the HTTP API version (D-062).
 
 ## Model settings
 
+`[models.NAME] kv_cache_encoding = "q8_0"` explicitly selects lossy Q8_0 K/V
+state for a supported independent dense-attention target at head dimension 64
+or 256. The default is `"f16"`; absent and explicit F16 preserve the existing
+bound spec and layout. Calibration never chooses the lossy option. Unsupported
+state geometry, borrowed state, drafters and image compositions refuse it.
+The settings command reports the choice and its source. Changed cache encoding
+changes state/kept identity; another encoding cannot restore that state. This
+additive key preserves configuration schema 2 ([D-117](decisions.md)).
+
+```toml
+# Within an eligible existing [models.NAME] section:
+kv_cache_encoding = "q8_0"
+```
+
+The selected Q8 attention also quantizes queries to Q8_1 internally. Paired
+quality reports measure that complete selected path, not cache storage alone.
+
 Users bring any model, so no setting is chosen for a named checkpoint
 (D-103). Every setting of a model resolves once at registration, before
 the model is constructed (`runtime/model_settings.h`), from three layers,

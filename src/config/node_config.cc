@@ -1230,6 +1230,7 @@ class Validator {
 };
 
 constexpr std::array<std::string_view, 3> kWaveForms = {"auto", "speculative", "plain"};
+constexpr std::array<std::string_view, 2> kKvCacheEncodings = {"f16", "q8_0"};
 constexpr std::int64_t kU32Max = 0xFFFF'FFFF;
 
 // The schema of a [models.<name>] table (D-096, D-103): what names the
@@ -1264,6 +1265,10 @@ constexpr std::array kModelKeys = std::to_array<ModelKeySpec>({
      .unit = " tokens",
      .summary = "tokens of conversation state"},
     {.key = "speculation", .type = ModelKeyType::kBool, .summary = "decode with the drafter"},
+    {.key = "kv_cache_encoding",
+     .type = ModelKeyType::kChoice,
+     .choices = kKvCacheEncodings,
+     .summary = "KV state encoding; Q8_0 is lossy and requires supported dense attention"},
     {.key = "prefill_chunk",
      .least = 1,
      .most = kMaxPrefillChunk,

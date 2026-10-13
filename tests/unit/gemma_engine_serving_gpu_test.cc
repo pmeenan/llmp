@@ -54,6 +54,7 @@
 #include <print>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <tuple>
@@ -63,6 +64,7 @@
 #include "base/sha256.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
+#include "execution/sampling.h"
 #include "plain_token_serving_checks.h"
 #include "platform/crash_policy.h"
 #include "runtime/engine_llm.h"
@@ -486,6 +488,193 @@ TEST_P(GemmaEngineNativeV1Gpu, PublishedGemma2MatchesV0HeadsTokensStateAndSpillC
       EXPECT_TRUE(
           Same(result[0].generated[owner].logits[row], result[1].generated[owner].logits[row]));
   }
+}
+
+// A bounded public-alias opt-in screen. Cross-encoding quality is paired
+// NLL on identical native-tokenized text; exact state/heads are required only
+// when restoring the same Q8 source. No original-weight or speed claim.
+class GemmaEngineQ8CacheGpu : public GemmaEngineServingGpu {};
+
+TEST_P(GemmaEngineQ8CacheGpu, AliasTeacherScoresCheckpointSpillAndKeptContinuation) {
+  ASSERT_EQ(GetParam(), 2U);  // Installed D256/positive-softcap artifact.
+  constexpr std::string_view text =
+      "A tensor's encoding is its numeric content: codes, scales, their formats and block "
+      "geometry. Its layout is the byte arrangement: block interleave, scale placement, tile "
+      "swizzle, alignment. The artifact names encodings independently of any kernel library "
+      "and records layouts separately; a model may mix encodings tensor by tensor. Resident "
+      "weights never grow beyond their source encoding. Decode never expands into device "
+      "memory. A decode-shaped product reads each weight once.";
+  static_assert(text.size() < 1024);
+  // Existing source/graph hard-cap inventory plus <=32 MiB observations:
+  // paired <=255 losses/IDs, tokenizer workspace, six full heads and JSON.
+  // The former server retains that allowance until its replacement admits
+  // the same payment. No completed GPU allocation survives successful Stop.
+  life->options.diagnostic_startup_host_bytes = (4096ULL + 32) << 20U;
+  life->options.diagnostic_budget_cap_bytes = 16ULL << 30U;
+  life->options.keep_conversations = true;
+  auto& entry = life->config.models.front();
+  entry.overrides["context"] = std::int64_t{512};
+  entry.overrides["prefill_chunk"] = std::int64_t{8};
+  entry.overrides["max_slots"] = std::int64_t{1};
+  std::unique_ptr<rt::Server> retired_server;
+  std::array<std::vector<double>, 2> losses;
+  std::array<std::uint64_t, 2> logical{}, reserved{};
+  std::array<std::string, 2> layout_ids;
+  std::vector<std::int32_t> ids;
+  std::vector<float> last, continued, restored_head;
+  llmp::base::Sha256 text_hash;
+  text_hash.Update(text);
+  RecordProperty("text_sha256", llmp::base::ToHex(text_hash.Finish()));
+  const auto stop_with_payment = [&]() -> rt::Status {
+    const auto stopped = life->server->TearDown();
+    retirement_failed = !stopped;
+    if (!stopped) return stopped;
+    retired_server = std::move(life->server);
+    model = nullptr;
+    return {};
+  };
+  for (std::size_t arm = 0; arm < 2; ++arm) {
+    entry.overrides["kv_cache_encoding"] = std::string(arm == 0 ? "f16" : "q8_0");
+    const auto started = Start(1);
+    ASSERT_TRUE(started) << (started ? "" : started.error());
+    retired_server.reset();
+    ASSERT_EQ(model->settings().kv_cache_encoding.value, arm == 0 ? "f16" : "q8_0");
+    const auto& layout = Engine().runner().slots().layout(0);
+    ASSERT_EQ(layout.context, 512U);
+    ASSERT_EQ(layout.items.size(), 52U);
+    ASSERT_TRUE(layout.borrowed.empty());
+    for (const auto& item : layout.items) {
+      ASSERT_EQ(item.contract.encoding,
+                arm == 0 ? llmp::format::Encoding::kF16 : llmp::format::Encoding::kQ8_0);
+      ASSERT_EQ(item.contract.cell_bytes, arm == 0 ? 2048U : 1088U);
+      logical[arm] += item.bytes;
+    }
+    reserved[arm] = layout.bytes;
+    layout_ids[arm] = Engine().runner().slots().kept_layout_id();
+    auto encoded = model->EncodeText(text);
+    ASSERT_TRUE(encoded) << (encoded ? "" : encoded.error());
+    ASSERT_GT(encoded->size(), 40U);
+    ASSERT_LE(encoded->size(), 256U);
+    if (arm == 0) ids = *encoded;
+    ASSERT_EQ(*encoded, ids);
+    losses[arm].reserve(ids.size() - 1);
+    std::size_t at = 1;
+    bool valid_rows = true;
+    const auto scored =
+        Branch(0).ScorePrompt(ids, last, [&](std::int32_t id, std::span<const float> row) {
+          if (at >= ids.size() || id != ids[at] || row.size() != Vocab() ||
+              !std::ranges::all_of(row, [](float v) { return std::isfinite(v); })) {
+            valid_rows = false;
+            return false;
+          }
+          const auto score = llmp::execution::ScoreToken(row, id, 0);
+          if (!score || !std::isfinite(score->logprob)) {
+            valid_rows = false;
+            return false;
+          }
+          losses[arm].push_back(-score->logprob);
+          ++at;
+          return true;
+        });
+    ASSERT_TRUE(scored) << (scored ? "" : scored.error());
+    ASSERT_TRUE(valid_rows);
+    ASSERT_EQ(at, ids.size());
+    ASSERT_EQ(losses[arm].size(), ids.size() - 1);
+    ASSERT_TRUE(Finite(last, Vocab()));
+    ASSERT_EQ(Engine().runner().coverage().violations, 0U);
+    if (arm == 0) {
+      ASSERT_TRUE(life->server->EndRequestBranches(*model));
+      ASSERT_TRUE(stop_with_payment());
+      ClearStorage();
+    }
+  }
+  ASSERT_NE(layout_ids[0], layout_ids[1]);
+  ASSERT_EQ(logical[1] * 64, logical[0] * 34);
+  // State controls start from a completed scorer, then a fresh same-Q8
+  // request. No live scorer cursor is rewound.
+  ASSERT_TRUE(Branch(0).Clear());
+  const std::vector<std::int32_t> first(ids.begin(), ids.begin() + 36);
+  auto other = first;
+  std::copy_n(ids.begin() + 36, 4, other.begin() + 32);
+  std::uint32_t reused = 0;
+  ASSERT_TRUE(Branch(0).PreparePrompt(first, 32, last, reused));
+  ASSERT_EQ(Branch(0).turn_checkpoints(), 1U);
+  ASSERT_TRUE(Finite(last, Vocab()));
+  const auto state = StateHash(0);
+  ASSERT_TRUE(state) << (state ? "" : state.error());
+  ASSERT_TRUE(Branch(0).PreparePrompt(other, 32, restored_head, reused));
+  ASSERT_EQ(reused, 32U);
+  ASSERT_TRUE(Branch(0).PreparePrompt(first, 32, restored_head, reused));
+  ASSERT_EQ(reused, 32U);
+  ASSERT_TRUE(Same(last, restored_head));
+  const auto checkpoint_state = StateHash(0);
+  ASSERT_TRUE(checkpoint_state);
+  ASSERT_EQ(*checkpoint_state, *state);
+  const std::array<std::int32_t, 1> anchor{ids[40]};
+  ASSERT_TRUE(Branch(0).Prefill(anchor, continued));
+  ASSERT_TRUE(Finite(continued, Vocab()));
+  ASSERT_TRUE(Branch(0).PreparePrompt(first, 32, restored_head, reused));
+  ASSERT_EQ(reused, 32U);
+  const auto before_spill = StateHash(0);
+  ASSERT_TRUE(before_spill);
+  ASSERT_EQ(*before_spill, *state);
+  auto retired = life->server->RetireRequestBranches(*model, true);
+  ASSERT_TRUE(retired.result);
+  ASSERT_TRUE(retired.references_retired);
+  ASSERT_TRUE(model->SpillIdle(Branch(0)));
+  ASSERT_TRUE(Branch(0).spilled());
+  ASSERT_TRUE(Select(1));
+  ASSERT_TRUE(RestoreBranch(Branch(0), first));
+  const auto spilled_state = StateHash(0);
+  ASSERT_TRUE(spilled_state);
+  ASSERT_EQ(*spilled_state, *state);
+  ASSERT_TRUE(Branch(0).Prefill(anchor, restored_head));
+  ASSERT_TRUE(Same(continued, restored_head));
+  ASSERT_TRUE(Branch(0).PreparePrompt(first, 32, restored_head, reused));
+  ASSERT_EQ(reused, 32U);
+  retired = life->server->RetireRequestBranches(*model, true);
+  ASSERT_TRUE(retired.result);
+  ASSERT_TRUE(retired.references_retired);
+  ASSERT_TRUE(model->SpillIdle(Branch(0)));
+  life->server->Persist(rt::Clock::now() + std::chrono::seconds(30), {});
+  ASSERT_TRUE(stop_with_payment());
+  const auto restarted = Start(1);
+  ASSERT_TRUE(restarted) << (restarted ? "" : restarted.error());
+  retired_server.reset();
+  ASSERT_EQ(Engine().runner().slots().kept_layout_id(), layout_ids[1]);
+  ASSERT_EQ(Branch(0).history(), first);
+  ASSERT_TRUE(RestoreBranch(Branch(0), first));
+  const auto kept_state = StateHash(0);
+  ASSERT_TRUE(kept_state);
+  ASSERT_EQ(*kept_state, *state);
+  ASSERT_TRUE(Branch(0).Prefill(anchor, restored_head));
+  ASSERT_TRUE(Same(continued, restored_head));
+  ASSERT_EQ(Engine().runner().coverage().violations, 0U);
+  llmp::base::Sha256 token_hash;
+  token_hash.Update(std::as_bytes(std::span(ids)));
+  RecordProperty("ids_sha256", llmp::base::ToHex(token_hash.Finish()));
+  RecordProperty("targets", static_cast<int>(ids.size() - 1));
+  RecordProperty("state_prefix", 36);
+  RecordProperty("state_restores", 3);
+  RecordProperty("continuation_heads", 2);
+  RecordProperty("cache_head_dim", 256);
+  std::string report = "[";
+  for (std::size_t arm = 0; arm < 2; ++arm) {
+    if (arm != 0) report += ',';
+    report += std::format(
+        "{{\"encoding\":\"{}\",\"logical_bytes\":{},\"reserved_bytes\":{},"
+        "\"losses\":[",
+        arm == 0 ? "f16" : "q8_0", logical[arm], reserved[arm]);
+    for (std::size_t i = 0; i < losses[arm].size(); ++i) {
+      if (i != 0) report += ',';
+      report += std::format("{:.17g}", losses[arm][i]);
+    }
+    report += "]}";
+  }
+  report += ']';
+  ASSERT_LT(report.size(), 64U << 10U);
+  RecordProperty("paired_quality", report);
+  ASSERT_TRUE(life->server->EndRequestBranches(*model));
 }
 
 TEST_P(GemmaEngineServingGpu, PlainTokensAndRowsAgreeOnTheEngine) {
@@ -1251,6 +1440,11 @@ TEST_P(GemmaEngineGemma3Gpu, UnprovenPreparationStopsServerBeforeOwnerDestructio
       ::testing::ExitedWithCode(llmp::platform::kFatalSignalExitBase + SIGABRT),
       "unretired state preparation; aborting before owner destruction");
 }
+
+INSTANTIATE_TEST_SUITE_P(Q8Cache, GemmaEngineQ8CacheGpu, ::testing::Values(2U),
+                         [](const ::testing::TestParamInfo<std::uint32_t>& info) {
+                           return std::format("gemma{}", info.param);
+                         });
 
 INSTANTIATE_TEST_SUITE_P(NativeV1, GemmaEngineNativeV1Gpu, ::testing::Values(2U),
                          [](const ::testing::TestParamInfo<std::uint32_t>& info) {

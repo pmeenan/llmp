@@ -784,6 +784,29 @@ decode_floor_tok_s = 5
 
 // A model's request slots (docs/runtime-serving.md#request-slots): absent,
 // the model's own default; configured, 1 to 16, and only on an artifact.
+TEST(NodeConfigTest, ReadsExplicitCacheEncodingWithoutChoosingLossyByDefault) {
+  const auto config = Parsed(std::format(R"(schema_version = 2
+[models.exact]
+artifact = "{0}"
+[models.small]
+artifact = "{1}"
+kv_cache_encoding = "q8_0"
+)",
+                                         std::string(64, 'a'), std::string(64, 'b')));
+  ASSERT_EQ(config.models.size(), 2U);
+  EXPECT_FALSE(config.models[0].Text("kv_cache_encoding"));
+  EXPECT_EQ(config.models[1].Text("kv_cache_encoding"), "q8_0");
+  for (const auto value : {"q4_0", "auto", "bf16"}) {
+    EXPECT_FALSE(Failures(std::format(R"(schema_version = 2
+[models.bad]
+artifact = "{}"
+kv_cache_encoding = "{}"
+)",
+                                      std::string(64, 'a'), value))
+                     .empty());
+  }
+}
+
 TEST(NodeConfigTest, ReadsMaxSlots) {
   const NodeConfig config =
       Parsed(std::format(R"(schema_version = 2

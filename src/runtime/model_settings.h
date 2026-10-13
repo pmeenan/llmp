@@ -129,6 +129,8 @@ inline constexpr std::string_view kThinkEnd = "</think>";
 // What a model's artifacts say, read before the model is constructed
 // (ReadArtifactFacts), including the bound spec identity for shared serving.
 struct ArtifactFacts {
+  // Encoding used to compute target_spec; independent of speed calibration.
+  std::string kv_cache_encoding = "f16";
   // Actual spec/artifact identities for current component serving. No parsed
   // model is retained. Legacy facts leave these absent.
   std::optional<base::Sha256Digest> target_spec{};
@@ -181,8 +183,9 @@ std::expected<std::string, std::string> ReadRegularFile(const std::filesystem::p
 std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelEntry& entry,
                                                             const std::filesystem::path& store);
 // The same from what an opened artifact keeps (and its drafter's, if any).
-std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const artifact::Artifact& target,
-                                                          const artifact::Artifact* drafter);
+std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
+    const artifact::Artifact& target, const artifact::Artifact* drafter,
+    std::string_view kv_cache_encoding = "f16");
 // Its parts, each adding to `facts` (`facts.architecture` set): the kept
 // GGUF metadata's keys (GgufFactKeys: the context, its rope scaling, the
 // sampling defaults), config.json's (max_position_embeddings and
@@ -242,6 +245,8 @@ struct ModelSettings {
   std::optional<base::Sha256Digest> bound_spec{};
 
   // Every LLM.
+  Setting<std::string> kv_cache_encoding{"f16", SettingSource::kDerived,
+                                         "dense-attention state default"};
   Setting<std::uint32_t> context;
   Setting<bool> speculation;
   Setting<std::uint32_t> prefill_chunk;  // before the model caps it at its context

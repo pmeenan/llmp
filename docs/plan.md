@@ -1469,8 +1469,16 @@ each is checked against the design as M3.6 proceeds.
             the reference encoder, cell sizes by the size rule, with
             capabilities and graph planning
             ([engine-components.md](engine-components.md#weight-and-state-formats)).
-            Each model's wiring, D 512, the per-alias setting and its
-            quality report remain.
+            - [x] Bounded shared dense Q8_0 opt-in at D64/D256: blocked
+                  stores/readers, source/state/kept identity and explicit
+                  per-alias `kv_cache_encoding` (D-117), preserving F16 by
+                  default. Main native build and 519 host controls pass;
+                  four actual cases cover short paired NLL and same-Q8
+                  checkpoint/spill/kept restoration. PPL rises 4.598%/1.452%
+                  in the two short samples; no quality threshold or speed
+                  claim. [Evidence](experiments/m36-numerical-audit/q8-state.md).
+            Broader-context quality, all migrated families, D512 and
+            specialized/borrowed state remain open.
 - [x] **Shared slot lifecycle, one runner interface, one serving adapter
       per pipeline kind**, derived from state contracts; reconcile today's
       divergent copies (Gemma2's restore guards against Gemma3's).

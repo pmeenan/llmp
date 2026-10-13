@@ -55,6 +55,7 @@
 #include <cstdint>
 #include <expected>
 #include <span>
+#include <string>
 #include <string_view>
 
 #include "format/encoding.h"
@@ -95,6 +96,12 @@ std::expected<void, DecodeError> DecodeRows(const format::TensorFormat& format,
 std::expected<void, DecodeError> EncodeRows(const format::TensorFormat& format,
                                             std::uint64_t matrix, std::uint64_t first,
                                             std::span<const float> rows, std::span<std::byte> data);
+
+// Reference component cache row: round complete blocks through EncodeRows /
+// DecodeRows, not per-scalar rounding. At most 256 values; no retained spans.
+std::expected<void, std::string> StoreStateRow(format::Encoding encoding,
+                                               std::span<const double> source,
+                                               std::span<double> destination);
 
 // An EXL3 trellis's rotated weights Ŵ, F16 bits: columns [first, first +
 // count) of matrix `matrix`, multiples of 16, for every one of the K rows,

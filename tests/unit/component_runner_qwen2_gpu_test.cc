@@ -38,6 +38,7 @@
 #include "artifact/artifact.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "components/state_encoding.h"
 #include "components/step.h"
 #include "corpus_score.h"
 #include "engine/component_source.h"
@@ -433,7 +434,8 @@ TEST(ComponentRunnerQwen2Inputs, RefusesOversizeAndWrongLengthFilesBeforeReading
 class ComponentRunnerQwen2Gpu : public testing::TestWithParam<std::tuple<bool, bool, bool, bool>> {
 };
 void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool corpus = false,
-                     bool same_plan = false) {
+                     bool same_plan = false, bool q8_cache = false) {
+  ASSERT_FALSE(q8_cache && (heldout || (!corpus && !same_plan)));
   ASSERT_FALSE(same_plan && (corpus || !full || !repeated));
   const auto domain_cap = heldout ? kHeldoutDomainCap : kDomainCap;
   const auto host_allowance = heldout ? kHeldoutHostAllowance : kHostAllowance;
@@ -576,6 +578,15 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   ASSERT_TRUE(synthesized.has_value()) << synthesized.error();
   life->spec.emplace(std::move(*synthesized));
   auto& spec = life->spec;
+  if (q8_cache) {
+    const auto bytes = co::KvCacheEncodingBytes(*spec, llmp::format::Encoding::kQ8_0);
+    ASSERT_TRUE(bytes) << bytes.error();
+    // One MiB of the existing 128 MiB artifact/spec/binding owner category;
+    // no second allowance or unbounded copied model.
+    ASSERT_LE(*bytes, kMiB);
+    ASSERT_TRUE(co::ApplyKvCacheEncoding(*spec, llmp::format::Encoding::kQ8_0, *bytes));
+  }
+  testing::Test::RecordProperty("kv_cache_encoding", q8_cache ? "q8_0" : "f16");
   // Frozen Bridge files describe the historical explicit-attention recipe,
   // independently of the selected production default. Never rewrite their oracle.
   if (!corpus && !same_plan) {
@@ -618,6 +629,10 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   ASSERT_TRUE(derived.has_value()) << derived.error();
   life->layout.emplace(std::move(*derived));
   auto& layout = life->layout;
+  std::uint64_t logical_state = 0;
+  for (const auto& item : layout->items) logical_state += item.bytes;
+  testing::Test::RecordProperty("state_logical_bytes", std::to_string(logical_state));
+  testing::Test::RecordProperty("state_reserved_bytes", std::to_string(layout->bytes));
   auto& shapes = life->shapes;
   const auto shape_of = [heldout](std::uint32_t past, std::uint32_t rows) {
     auto shape = Shape(past, rows);
@@ -875,6 +890,9 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
         if (!plan.rows) continue;
         if (!plan.runs || plan.implementations.empty())
           return std::unexpected("corpus selected program never entered execution");
+        if (q8_cache &&
+            std::ranges::count(plan.implementations, "ggml.flash_attn_ext.vec_q8_0") != 24)
+          return std::unexpected("Q8 corpus did not select all quantized attention operations");
         report << "rows=" << plan.rows << " bound_plan=" << llmp::base::ToHex(plan.identity)
                << " run_or_record=" << plan.runs << '\n';
         for (const auto& name : plan.implementations) report << name << '\n';
@@ -1092,6 +1110,9 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
         const auto& plan = life->corpus_plans[i];
         if (!plan.runs || plan.implementations.empty())
           return std::unexpected("same-plan program never entered execution");
+        if (q8_cache &&
+            std::ranges::count(plan.implementations, "ggml.flash_attn_ext.vec_q8_0") != 24)
+          return std::unexpected("Q8 replay did not select all quantized attention operations");
         const auto header = "rows=" + std::to_string(plan.rows) +
                             " read_cells=" + std::to_string(shape->segments.front().read_cells) +
                             " phase=" + std::to_string(static_cast<unsigned>(shape->phase)) +
@@ -1130,6 +1151,12 @@ TEST(ComponentRunnerQwen2StateGpu, SamePlanCheckpointSpillAndEviction) {
 }
 TEST(ComponentRunnerQwen2StateGpu, SamePlanHeldoutCheckpointSpillAndEviction) {
   RunQwen2Control(true, true, true, true, false, true);
+}
+TEST(ComponentRunnerQwen2Q8StateGpu, SamePlanCheckpointSpillAndEviction) {
+  RunQwen2Control(true, true, false, true, false, true, true);
+}
+TEST(ComponentRunnerQwen2Q8CorpusGpu, FixedTeacherCorpusScoresEveryTarget) {
+  RunQwen2Control(true, false, false, false, true, false, true);
 }
 class ComponentRunnerQwen2CorpusGpu : public testing::TestWithParam<bool> {};
 TEST_P(ComponentRunnerQwen2CorpusGpu, FixedTeacherCorpusScoresEveryTarget) {

@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Add explicit per-alias `kv_cache_encoding = "q8_0"` for supported shared
+  dense attention at D64/D256, with checked blocked state and kept identity.
+  F16 remains the default; short paired quality costs are reported and unsupported
+  state consumers refuse. Configuration schema 2 remains compatible (D-117).
+
 - Compose the complete image timestep conditioner from shared projections and
   explicit output ports, preserving BF16 source weights. Both conditioning
   branches pass bounded finite-output and changed-input capture/replay checks;

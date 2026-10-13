@@ -40,6 +40,14 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
+The bounded dense Q8_0 cache opt-in (D-117) keeps F16 default and uses actual
+source/state/kept identities. Main native build and 519 host controls plus four
+actual D64/D256 cases pass. Same-weights paired short PPL rises 4.598% and
+1.452%; Gemma logical bytes shrink but its padded reservation does not. This
+is explicit functionality with a measured quality cost, not an automatic
+selection or whole-K1 closure. Long context, other families and serving speed
+remain open. [Evidence](experiments/m36-numerical-audit/q8-state.md).
+
 Spec-bound calibration now uses execution's stored/synthesized spec authority,
 keys measurements before resolving calibrated values, and rechecks identity at
 factory construction. Legacy keys, artifact-named paths and settings defaults
@@ -726,7 +734,7 @@ own slice when it names none.
 - Spec JSON: decisions.md entry when the importer first writes it to disk; v1 manifest holding the spec needs the strict-JSON nesting limit raised (spec uses all 8 levels) or the spec as its own document.
 - Gemma2 mapping uses rsqrt(key_length) (llama.cpp's rule below 27B); 27B needs its own rule. norm.plus_one asserted for GGUF sources (llama.cpp converter applies it).
 - EXL3: capabilities declare nothing row-invariant/capturable; check vs the M3 Qwen2 EXL3 path's capture when the fixtures migrate. Reconstruction capability limited to sm_121 (GB10-only cuBLASLt pins).
-- KV encodings item: GGML quantized fattn-vec instances (D 64/128/256) must be compiled and declared; quantizing cache store (llmp set_rows/rope-store/grouped stores are F16/F32 only); kept layout ID must carry state encodings; per-alias [models.NAME] key per state kind via D-103 layers (decision entry).
+- KV encodings: the bounded dense Q8_0 D64/D256 opt-in now wires existing quantized kernels, blocked state layouts and per-alias settings/kept identity (D-117). Broader context, all migrated families and D512/specialized or borrowed state remain open; the kernel inventory does not qualify them.
 - Registry: capability needing tuning data (EXL3 reconstruction only works at pinned cuBLASLt shapes m=145/1023/1024) — planner (I5) must drop candidates without a pin, or registry gains a 'needs tuning data' notion. EXL3 priority order differs from upstream (recon >144 rows, fused >=1024): migrating fixtures need measured ranks.
 - Importer/mapping language: Gemma2 46-layer / Gemma3 62-layer (27B) query scale 1/sqrt(width/heads) not expressible (layer-count-dependent rule or refusal needed); require the target stage first in specs; check cycles between stage reads; Gemma3 sliding_window 0 → all layers global incl. base; verify mappings against the pinned llama.cpp (reviewer used 8019dc56).
 - L5c: Admit with advance=false (verify, draft) doesn't check past vs slot positions (drafter stages may differ: define the rule); PrefillOutcome drops the step's joined outputs.

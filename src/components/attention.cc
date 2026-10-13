@@ -122,7 +122,12 @@ constexpr std::array<ParamSpec, kCommon + N> WithCommon(const std::array<ParamSp
   return out;
 }
 
+constexpr std::array<std::string_view, 2> kKvEncodings{"f16", "q8_0"};
 constexpr auto kParams = WithCommon(std::array{
+    ParamSpec{.name = "kv_encoding",
+              .type = ParamType::kName,
+              .required = false,
+              .choices = kKvEncodings},
     // V is K's product (no V weight), before K's norm and rotation.
     Flag("kv_tie"),
     // V normalized by an unweighted RMS norm of each head.
@@ -163,11 +168,8 @@ constexpr std::array kRoles{
     WeightRole{.name = "v_bias", .encodings = kBiasEncodings},
 };
 
-// The state's encoding (D-108: F16 by default; a lossy one is a later
-// per-alias setting).
-constexpr Encoding kKvEncoding = Encoding::kF16;
-
 struct Dims {
+  Encoding kv_encoding;
   std::uint64_t width, heads, kv_heads, kd, vd, rope_dims;
   std::uint32_t window;
   bool sandwich, qk_norm, neox, freqs, kv_tie, v_norm, borrowed;
@@ -178,7 +180,9 @@ struct Dims {
 Dims DimsOf(const Instance& in) {
   const Params& p = in.params;
   const bool borrowed = in.def->kind == "attention.borrowed";
-  return {.width = in.stage.width,
+  return {.kv_encoding =
+              !borrowed && p.Name("kv_encoding") == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16,
+          .width = in.stage.width,
           .heads = static_cast<std::uint64_t>(p.Int("heads")),
           .kv_heads = static_cast<std::uint64_t>(p.Int("kv_heads")),
           .kd = static_cast<std::uint64_t>(p.Int("key_dim")),
@@ -206,6 +210,11 @@ Dims DimsOf(const Instance& in) {
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   const Dims d = DimsOf(in);
+  if (d.kv_encoding == Encoding::kQ8_0 && (d.kd != d.vd || (d.kd != 64 && d.kd != 256) ||
+                                           d.explicit_scores || (d.kd == 64 && d.softcap != 0.0F)))
+    return std::unexpected(
+        "Q8_0 KV requires owned D64/D256 attention, equal K/V, "
+        "no explicit scores and softcap only at D256");
   if (d.heads % d.kv_heads != 0) return std::unexpected("heads are not a multiple of kv_heads");
   if (d.rope_dims > d.kd || d.rope_dims % 2 != 0) {
     return std::unexpected("rope_dims is odd or past key_dim");
@@ -237,15 +246,16 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   return out;
 }
 
-model::StateTensorContract Kv(std::string name, std::uint64_t width, std::uint32_t window) {
+model::StateTensorContract Kv(std::string name, std::uint64_t width, std::uint32_t window,
+                              Encoding encoding) {
   const bool ring = window != 0;
   // The format layer's cell size (model::CellBytes): a lossy encoding's
   // whole blocks once an alias opts in (D-108); F16's elements today.
-  const auto cell = model::CellBytes(kKvEncoding, width);
-  base::Check(cell.has_value(), "an F16 cell of any width");
+  const auto cell = model::CellBytes(encoding, width);
+  base::Check(cell.has_value(), "validated dense attention cell geometry");
   return {.name = std::move(name),
           .kind = ring ? model::StateKind::kRing : model::StateKind::kKv,
-          .encoding = kKvEncoding,
+          .encoding = encoding,
           .cell_bytes = *cell,
           .cells = ring ? model::CellRule::kRing : model::CellRule::kPerPosition,
           .window_or_ratio = window,
@@ -259,8 +269,8 @@ model::StateTensorContract Kv(std::string name, std::uint64_t width, std::uint32
 
 model::StateContract State(const Instance& in) {
   const Dims d = DimsOf(in);
-  model::StateContract c{
-      .tensors = {Kv("k", d.kv_heads * d.kd, d.window), Kv("v", d.kv_heads * d.vd, d.window)}};
+  model::StateContract c{.tensors = {Kv("k", d.kv_heads * d.kd, d.window, d.kv_encoding),
+                                     Kv("v", d.kv_heads * d.vd, d.window, d.kv_encoding)}};
   if (d.borrowed) {
     // The target's tensors of these names in its layer: read, never written.
     for (auto& t : c.tensors) {
@@ -393,7 +403,6 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   ir::TensorId k_rows{};
   ir::TensorId v_rows{};
   const CellKey cells = CellsOf(f, 0);
-  const std::uint64_t el = format::Info(kKvEncoding).element_bits / 8;
   std::vector<ir::TensorId> outputs;
   for (std::size_t s = 0; s < f.step.segments().size(); ++s) {
     const SegmentRows& seg = f.step.segments()[s];
@@ -408,7 +417,10 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
       if (!k_rows.valid()) k_rows = b.Reshape(k, Shape({k_width, rows}));
       b.CacheStore(f.State(s, 0), slice(k_rows, k_width), store);
       if (!v_rows.valid()) v_rows = b.Reshape(v, Shape({v_width, rows}));
-      b.CacheStore(f.State(s, 1), slice(v_rows, v_width), store);
+      auto values = slice(v_rows, v_width);
+      if (d.kv_encoding == Encoding::kQ8_0 && b.tensor(values).format.encoding != Encoding::kF32)
+        values = b.Convert(values, Encoding::kF32);  // lossless widening for the quantizing store
+      b.CacheStore(f.State(s, 1), values, store);
     }
     if (!f.stream_needed) continue;
     const std::uint64_t read = f.step.ReadCells(s, cells);
@@ -421,13 +433,14 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
         b.Permute(b.View(q, q_shape, ViewStrides(qn[0], qn[1], qn[2], q_shape),
                          std::uint64_t{seg.first_row} * qn[2]),
                   {0, 2, 1, 3});
-    const auto cache_view = [&](ir::TensorId cache, std::uint64_t dim, std::uint64_t width) {
+    const auto cache_view = [&](ir::TensorId cache, std::uint64_t dim) {
       const format::Shape shape = Shape({dim, d.kv_heads, read});
-      return b.Permute(b.View(cache, shape, ViewStrides(el, dim * el, width * el, shape), 0),
-                       {0, 2, 1, 3});
+      auto format = b.tensor(cache).format;
+      format.shape = shape;
+      return b.Permute(b.View(cache, shape, ir::NaturalStrides(format), 0), {0, 2, 1, 3});
     };
-    const ir::TensorId keys = cache_view(f.State(s, 0), d.kd, k_width);
-    const ir::TensorId values = cache_view(f.State(s, 1), d.vd, v_width);
+    const ir::TensorId keys = cache_view(f.State(s, 0), d.kd);
+    const ir::TensorId values = cache_view(f.State(s, 1), d.vd);
     const float scale = d.scale_scores ? d.scale : 1.0F;
     ir::TensorId attention;
     if (d.explicit_scores) {
@@ -488,6 +501,8 @@ void Rotate(std::span<double> row, std::uint64_t heads, const Dims& d, std::span
 std::expected<void, std::string> Reference(RefIO& io) {
   const Instance& in = *io.instance;
   const Dims d = DimsOf(in);
+  if (d.kv_encoding == Encoding::kQ8_0 && io.store_row == nullptr)
+    return std::unexpected("Q8_0 reference state requires the block row codec");
   const std::uint64_t width = d.width;
   const std::uint64_t rows = io.rows();
   if (io.stream.size() != width * rows || io.state.size() != io.segments.size() ||
@@ -558,12 +573,22 @@ std::expected<void, std::string> Reference(RefIO& io) {
              pos);
       const std::uint64_t cell = ring ? (seg.past + i) % capacity : seg.past + i;
       if (cell >= capacity) return std::unexpected("attention reference: a row past the cache");
-      for (std::uint64_t j = 0; j < d.kv_heads * d.kd; ++j) {
-        kc[(cell * d.kv_heads * d.kd) + j] = Stored(kKvEncoding, k[(r * d.kv_heads * d.kd) + j]);
-      }
-      for (std::uint64_t j = 0; j < d.kv_heads * d.vd; ++j) {
-        vc[(cell * d.kv_heads * d.vd) + j] = Stored(kKvEncoding, v[(r * d.kv_heads * d.vd) + j]);
-      }
+      const auto store = [&](std::vector<double>& cache, const std::vector<double>& values,
+                             std::uint64_t dim) -> std::expected<void, std::string> {
+        const auto row_width = d.kv_heads * dim;
+        for (std::uint64_t head = 0; head < d.kv_heads; ++head) {
+          auto dst = std::span(cache).subspan(cell * row_width + head * dim, dim);
+          const auto src = std::span(values).subspan(r * row_width + head * dim, dim);
+          if (d.kv_encoding == Encoding::kQ8_0) {
+            if (auto stored = io.store_row(d.kv_encoding, src, dst); !stored) return stored;
+          } else {
+            for (std::size_t j = 0; j < dst.size(); ++j) dst[j] = Stored(d.kv_encoding, src[j]);
+          }
+        }
+        return {};
+      };
+      if (auto stored = store(kc, k, d.kd); !stored) return stored;
+      if (auto stored = store(vc, v, d.vd); !stored) return stored;
     }
     const std::uint64_t read = std::min<std::uint64_t>(capacity, seg.read_cells);
     std::vector<double> score(read);

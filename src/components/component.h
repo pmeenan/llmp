@@ -332,6 +332,11 @@ struct RefIO {
   std::vector<format::Shape> weight_shapes{};
   std::vector<std::vector<std::vector<double>>> state{};  // [segment][tensor]
   std::vector<std::uint64_t> state_cells{};               // by tensor
+  // Reference-only complete row encoding, supplied by the CPU reference
+  // codec. Components do not link kernel libraries. Synchronous, no retained
+  // spans; required for blocked state (never silently rounds each scalar).
+  std::expected<void, std::string> (*store_row)(format::Encoding, std::span<const double>,
+                                                std::span<double>) = nullptr;
   bool greedy = false;
   // The caller's effective greedy-pick policy for this call. A native
   // verify/draft head ignores NaNs; an ordinary host pick keeps column zero

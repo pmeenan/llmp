@@ -683,7 +683,8 @@ std::optional<OwnerAttention> OwnerAttentionAt(const MatchContext& c, NodeId id)
   // The caches: [D, Hk, C_o] from the start of a state leaf.
   for (const TensorId cache : {o.k, o.v}) {
     const ir::TensorDesc& d = c.tensor(cache);
-    if (!d.is_view() || d.view_offset != 0 || d.ne(3) != 1 ||
+    if (d.format.encoding != format::Encoding::kF16 || d.format.layout != format::Layout::kDense ||
+        !d.is_view() || d.view_offset != 0 || d.ne(3) != 1 ||
         c.producer(d.view_of).key != Prim(Op::kState)) {
       return std::nullopt;
     }

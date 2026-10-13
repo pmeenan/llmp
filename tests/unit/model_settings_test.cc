@@ -93,6 +93,42 @@ TEST(ModelSettings, BoundSpecSelectionDoesNotDependOnCalibration) {
   EXPECT_FALSE(legacy->bound_spec);
 }
 
+TEST(ModelSettings, LossyCacheChoiceRequiresMatchingFactsAndIsNotCalibrated) {
+  auto entry = Model("shared");
+  auto facts = Facts("gemma2");
+  facts.target_spec = llmp::base::Sha256Digest{};
+  const auto baseline = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(baseline);
+  EXPECT_EQ(baseline->kv_cache_encoding.value, "f16");
+  entry.overrides["kv_cache_encoding"] = std::string("q8_0");
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  facts.kv_cache_encoding = "q8_0";
+  (*facts.target_spec)[0] = 1;
+  Calibration calibration;
+  calibration.prefill_chunk = 64;
+  const auto configured = ResolveSettings(entry, facts, &calibration, false);
+  ASSERT_TRUE(configured) << configured.error();
+  EXPECT_EQ(configured->kv_cache_encoding.value, "q8_0");
+  EXPECT_EQ(configured->kv_cache_encoding.source, SettingSource::kOverride);
+  EXPECT_EQ(configured->bound_spec, facts.target_spec);
+  EXPECT_NE(configured->bound_spec, baseline->bound_spec);
+  entry.drafter = std::string(64, 'b');
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true));
+  entry.drafter.reset();
+  entry.overrides.erase("kv_cache_encoding");
+  EXPECT_FALSE(ResolveSettings(entry, facts, &calibration, false));
+  auto image_entry = Model("image");
+  image_entry.artifact.reset();
+  image_entry.composition = std::string(64, 'c');
+  ArtifactFacts image_facts;
+  image_facts.composition = true;
+  const auto image = ResolveSettings(image_entry, image_facts, nullptr, false);
+  ASSERT_TRUE(image);
+  for (const auto& line : image->Lines()) EXPECT_NE(line.key, "kv_cache_encoding");
+  image_entry.overrides["kv_cache_encoding"] = std::string("f16");
+  EXPECT_FALSE(ResolveSettings(image_entry, image_facts, nullptr, false));
+}
+
 TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   const ModelSettings s = Resolved(Model("ds"), Facts("deepseek4"));
   EXPECT_EQ(s.context.value, 262144U);

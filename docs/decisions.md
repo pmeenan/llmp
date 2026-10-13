@@ -39,6 +39,16 @@ one Spark and on two.
 
 ---
 
+## D-117: Explicit per-alias Q8_0 dense KV cache (2026-10-12, accepted; implements D-108)
+
+`[models.NAME] kv_cache_encoding = "q8_0"` opts an artifact alias into lossy Q8_0 K and V state. The absent setting and explicit `"f16"` preserve the existing F16 graph, bound spec digest and state layout. This additive key keeps configuration schema 2: existing configurations remain valid, following D-103/D-104 and D-062. The settings command reports the choice, its source and its lossy character; calibration does not select it.
+
+The override is a checked transformation of the actual authenticated component spec, before layout, settings identity and source construction. The initial domain is one independent LLM target whose owned dense-attention contracts and existing store/reader kernels support Q8_0 at D64 or D256. Unsupported state consumers, borrowed state, drafters, compositions, D512 and specialized attention refuse; the key does not widen family serving admission. Unsupported source geometry cannot silently fall back to F16. Transient validation and retained parameter storage are paid before mutation. Artifact weights and their encoding stay unchanged.
+
+The selected encoding changes the bound spec and state/kept layout identities. Checkpoint, spill and restart use that selected layout; records from another encoding cannot be adopted. Initial quality is measured against the same checkpoint with F16 cache using paired teacher-forced NLL/PPL. Exact cross-encoding logits are not required. Same-selected-state restoration remains exact. An original unquantized reference is optional unless a claim compares closeness to that original. Logical Q8_0 bytes are 34/64 of F16 for complete 32-element blocks; physical savings depend on page padding and are reported separately.
+
+Qualification is the bounded D64/D256 slice documented with its actual evidence. It does not close all-model lossy state, long context, family migration or serving performance gates.
+
 ## D-116: Native import CLI and verified v1 publication  (2026-10-11, status: reviewed, pending N4 landing; implements D-109 and D-114)
 
 **Decision.** `llmp import SOURCE --store DIRECTORY [--metadata-mib N]`

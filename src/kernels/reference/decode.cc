@@ -542,4 +542,29 @@ std::expected<void, DecodeError> EncodeRows(const format::TensorFormat& format,
   return {};
 }
 
+std::expected<void, std::string> StoreStateRow(format::Encoding encoding,
+                                               std::span<const double> source,
+                                               std::span<double> destination) {
+  if (encoding != Encoding::kQ8_0 || source.empty() || source.size() > 256 ||
+      source.size() % 32 != 0 || destination.size() != source.size())
+    return std::unexpected("reference state row requires whole Q8_0 blocks, at most 256 values");
+  std::array<float, 256> values{};
+  std::array<std::byte, 272> bytes{};
+  for (std::size_t i = 0; i < source.size(); ++i) values[i] = static_cast<float>(source[i]);
+  const auto shape = format::ShapeOf(std::array<std::uint64_t, 2>{source.size(), 1});
+  if (!shape) return std::unexpected("invalid reference state row shape");
+  const format::TensorFormat row{
+      .encoding = encoding, .layout = format::Layout::kGgmlBlocks, .shape = *shape};
+  const auto size = source.size() / 32 * 34;
+  auto floats = std::span(values).first(source.size());
+  auto encoded = std::span(bytes).first(size);
+  if (!EncodeRows(row, 0, 0, floats, encoded))
+    return std::unexpected("encoding a reference state row failed");
+  const PartView part{.role = PartRole::kData, .bytes = encoded};
+  if (!DecodeRows(row, std::span(&part, 1), 0, 0, 1, floats))
+    return std::unexpected("decoding a reference state row failed");
+  for (std::size_t i = 0; i < source.size(); ++i) destination[i] = floats[i];
+  return {};
+}
+
 }  // namespace llmp::kernels::reference

@@ -53,6 +53,28 @@ using format::Layout;
 using format::PartRole;
 using format::TensorFormat;
 
+TEST(ReferenceDecode, ComponentStateRowReusesWholeBlockCodec) {
+  for (const std::size_t width : {64U, 256U}) {
+    std::vector<double> input(width), output(width, -999.0);
+    std::vector<float> values(width), decoded(width);
+    for (std::size_t i = 0; i < width; ++i)
+      input[i] = values[i] = static_cast<float>(std::sin(static_cast<double>(i) * 0.73));
+    const TensorFormat f{.encoding = Encoding::kQ8_0,
+                         .layout = Layout::kGgmlBlocks,
+                         .shape = {.ne = {width, 1, 1, 1}, .rank = 2}};
+    std::vector<std::byte> encoded(width / 32 * 34);
+    ASSERT_TRUE(ref::EncodeRows(f, 0, 0, values, encoded));
+    const ref::PartView part{.role = PartRole::kData, .bytes = encoded};
+    ASSERT_TRUE(ref::DecodeRows(f, std::span(&part, 1), 0, 0, 1, decoded));
+    ASSERT_TRUE(ref::StoreStateRow(Encoding::kQ8_0, input, output));
+    for (std::size_t i = 0; i < width; ++i) EXPECT_EQ(output[i], decoded[i]);
+    std::ranges::fill(output, -999.0);
+    EXPECT_FALSE(ref::StoreStateRow(Encoding::kQ4_0, input, output));
+    EXPECT_FALSE(ref::StoreStateRow(Encoding::kQ8_0, std::span(input).first(width - 1), output));
+    EXPECT_TRUE(std::ranges::all_of(output, [](double x) { return x == -999.0; }));
+  }
+}
+
 // OCP E4M3 (bias 7, no infinities, 0x7F and 0xFF NaN), as qwen38_ops_test.
 double E4m3(std::uint8_t b) {
   const int e = (b >> 3) & 0xF;

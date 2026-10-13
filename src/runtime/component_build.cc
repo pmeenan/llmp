@@ -21,6 +21,7 @@
 
 #include "artifact/artifact.h"
 #include "base/bytes.h"
+#include "components/state_encoding.h"
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "engine/decoding.h"
@@ -88,6 +89,7 @@ struct ConstructionCharge {
 struct ComponentHold {
   // First: refund only after all graph, binding and backend owners die.
   std::shared_ptr<ConstructionCharge> construction;
+  std::shared_ptr<ConstructionCharge> kv_encoding_charge;
   std::unique_ptr<StoredBindingPayment> stored_payment;
   spec::ModelSpec spec;
   std::vector<spec::Source> sources;  // by artifact: the target's, the drafter's
@@ -482,6 +484,32 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       hold->sources.push_back(std::move(*dsource));
     } else {
       hold->spec = std::move(*synthesized);
+    }
+    if (settings.kv_cache_encoding.value != "f16") {
+      if (settings.kv_cache_encoding.value != "q8_0" || !drafter_id.empty())
+        return Error("unsupported KV encoding or drafter composition");
+      auto bytes = components::KvCacheEncodingBytes(hold->spec, format::Encoding::kQ8_0);
+      if (!bytes) return Error(bytes.error());
+      if (!metadata) {
+        auto admitted = engine::ExecutionMetadataAllowance::Admit(
+            node.catalog(), node.domain(), options.execution_metadata_bytes,
+            platform::AvailableMemoryBytes().value_or(0), kUncountedMargin);
+        if (!admitted) return Error(admitted.error());
+        metadata = std::move(*admitted);
+      }
+      if (!metadata->Charge(*bytes))
+        return Error("Q8_0 KV source metadata allowance is insufficient");
+      hold->kv_encoding_charge = std::make_shared<ConstructionCharge>();
+      hold->kv_encoding_charge->allowance = metadata;
+      hold->kv_encoding_charge->bytes = *bytes;
+      if (auto configured =
+              components::ApplyKvCacheEncoding(hold->spec, format::Encoding::kQ8_0, *bytes);
+          !configured)
+        return Error(configured.error());
+    } else if (auto configured =
+                   components::ApplyKvCacheEncoding(hold->spec, format::Encoding::kF16, 0);
+               !configured) {
+      return Error(configured.error());
     }
     for (const spec::Source& s : hold->sources) hold->tables.emplace_back(s.tensors);
     if (joined_mtp && hold->spec.stages.size() != options.execution_domain->stages().size())

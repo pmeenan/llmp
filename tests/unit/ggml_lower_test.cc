@@ -37,6 +37,7 @@
 #include <utility>
 #include <vector>
 
+#include "components/state_encoding.h"
 #include "components/step.h"
 #include "engine/support.h"
 #include "execution/registry.h"
@@ -49,6 +50,7 @@
 #include "kernels/common/lower.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/kv_quant.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
@@ -465,6 +467,39 @@ void ExpectFamilyLowers() {
 TEST(GgmlLowerTest, Gemma2LowersEverySetupShape) { ExpectFamilyLowers<Gemma2Family>(); }
 
 TEST(GgmlLowerTest, Gemma3LowersEverySetupShape) { ExpectFamilyLowers<Gemma3Family>(); }
+
+TEST(GgmlLowerTest, Q8DenseCacheUsesBlockedPrimitiveAttentionAndStores) {
+  Ir inputs{.spec = Gemma2Family::Spec(), .source = Gemma2Family::Source()};
+  const auto bytes = co::KvCacheEncodingBytes(inputs.spec, llmp::format::Encoding::kQ8_0);
+  ASSERT_TRUE(bytes) << bytes.error();
+  ASSERT_TRUE(co::ApplyKvCacheEncoding(inputs.spec, llmp::format::Encoding::kQ8_0, *bytes));
+  auto layout = co::StageLayout(inputs.spec, 0, 512, 8, kExtent);
+  ASSERT_TRUE(layout) << layout.error();
+  inputs.layout.emplace(std::move(*layout));
+  const Cells cells = Gemma2Family::State(512, 8);
+  for (const Case& c :
+       {Case{.segments = {{0, 3, 0}, {1, 1, 5}}}, Case{.segments = {{0, 1, 256}, {1, 1, 300}}}}) {
+    const auto lowered = Lower<Gemma2Family>(inputs, c, cells, true, Gemma2Family::Policy());
+    ASSERT_TRUE(lowered.lowered);
+    ExpectWellFormed(lowered);
+    EXPECT_EQ(lowered.owners,
+              0U);  // F16-only owner fusion must fall back, not forge a dense Q8 view
+    std::size_t attentions = 0, stores = 0;
+    for (const auto& step : lowered.lowered->plan.steps) {
+      if (step.implementation == kg::kFlashAttnVecQ8Name) ++attentions;
+      if (step.implementation == kg::kSetRowsQuantName ||
+          step.implementation == kg::kSetRowsQuantGroupName ||
+          step.implementation == kg::kRopeSetRowsQuantName)
+        ++stores;
+    }
+    EXPECT_EQ(attentions, Gemma2Family::P().layers * c.segments.size());
+    EXPECT_GT(stores, 0U);
+    for (const auto& state : lowered.step->state) {
+      const auto& tensor = lowered.step->graph.tensor(state.tensor);
+      EXPECT_EQ(tensor.format.encoding, llmp::format::Encoding::kQ8_0);
+    }
+  }
+}
 
 // A late-built norm scale is a dependency of the selected fusion, although
 // the original RMS primitive only needs the already-built activation.

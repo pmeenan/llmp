@@ -22,6 +22,7 @@
 #include "artifact/gguf_metadata.h"
 #include "base/json.h"
 #include "base/report.h"
+#include "components/state_encoding.h"
 #include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
@@ -384,8 +385,23 @@ std::expected<void, std::string> FactsFromGenerationConfig(std::string_view text
 }
 
 std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& target,
-                                                          const ja::Artifact* drafter) {
+                                                          const ja::Artifact* drafter,
+                                                          std::string_view kv_cache_encoding) {
   ArtifactFacts facts;
+  if (kv_cache_encoding != "f16" && kv_cache_encoding != "q8_0")
+    return Error("unknown KV cache encoding");
+  facts.kv_cache_encoding = kv_cache_encoding;
+  const bool quantized_kv = kv_cache_encoding == "q8_0";
+  if (quantized_kv && (drafter != nullptr || !OnComponentEngine(target.model().architecture)))
+    return Error("Q8_0 KV requires a supported shared target without a drafter");
+  const auto configure = [&](spec::ModelSpec& model) -> std::expected<void, std::string> {
+    if (!quantized_kv) return components::ApplyKvCacheEncoding(model, format::Encoding::kF16, 0);
+    auto bytes = components::KvCacheEncodingBytes(model, format::Encoding::kQ8_0);
+    if (!bytes) return Error(bytes.error());
+    // Bounded metadata-only inspection; the actual factory independently pays
+    // and retains the same transform before constructing an executable source.
+    return components::ApplyKvCacheEncoding(model, format::Encoding::kQ8_0, *bytes);
+  };
   facts.architecture = target.model().architecture;
   std::optional<std::uint32_t> declared_context;
   if (target.format_version() == 1) {
@@ -396,6 +412,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     declared_context = admitted->model.stages.front().context;
     facts.gemma_profile = admitted->gemma_profile;
     const std::array<std::string_view, 1> ids{target.id()};
+    if (auto configured = configure(admitted->model); !configured) return Error(configured.error());
     auto digest = spec::BoundDigest(admitted->model, ids);
     if (!digest) return Error(digest.error());
     facts.target_spec = *digest;
@@ -421,6 +438,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     auto model = spec::SynthesizeV0(target, *mapping, *values);
     if (!model) return Error(model.error());
     const std::array<std::string_view, 1> ids{target.id()};
+    if (auto configured = configure(*model); !configured) return Error(configured.error());
     auto digest = spec::BoundDigest(*model, ids);
     if (!digest) return Error(digest.error());
     facts.target_spec = *digest;
@@ -539,7 +557,8 @@ std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelE
     }
     drafter.emplace(std::move(*opened));
   }
-  return ArtifactFactsOf(*target, drafter ? &*drafter : nullptr);
+  return ArtifactFactsOf(*target, drafter ? &*drafter : nullptr,
+                         entry.Text("kv_cache_encoding").value_or("f16"));
 }
 
 std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target,
@@ -615,6 +634,17 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.architecture = facts.architecture;
   s.composition = facts.composition;
   s.drafter = entry.drafter.has_value();
+  if (facts.composition && entry.Text("kv_cache_encoding"))
+    return Error("KV cache encoding is not a composition setting");
+  const auto kv = entry.Text("kv_cache_encoding").value_or("f16");
+  if ((kv != "f16" && kv != "q8_0") || kv != facts.kv_cache_encoding)
+    return Error("KV cache setting differs from the authenticated source facts");
+  if (kv == "q8_0" && (facts.composition || entry.drafter || !facts.target_spec))
+    return Error("Q8_0 KV requires an authenticated independent dense target");
+  s.kv_cache_encoding = {
+      kv, entry.Text("kv_cache_encoding") ? SettingSource::kOverride : SettingSource::kDerived,
+      kv == "f16" ? "exact dense-attention contract encoding"
+                  : "explicit lossy KV state override; never calibrated"};
   const Calibration none;
   const Calibration& cal = calibration != nullptr ? *calibration : none;
   const auto basis = [&](std::string_view key) { return OverrideBasis(entry, key); };
@@ -953,7 +983,9 @@ std::vector<ModelSettings::Line> ModelSettings::Lines() const {
       continue;
     }
     const std::string_view k = spec.key;
-    if (k == "context") {
+    if (k == "kv_cache_encoding") {
+      add(k, kv_cache_encoding);
+    } else if (k == "context") {
       add(k, context);
     } else if (k == "speculation") {
       add(k, speculation);
