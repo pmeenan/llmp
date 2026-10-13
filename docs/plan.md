@@ -1677,7 +1677,7 @@ each is checked against the design as M3.6 proceeds.
                                           carries explicit joined-repeat-pending
                                           source eligibility and a two-owner
                                           unequal-pending recovery/capture test.
-                                          Main native build and 306 affected host
+                                          Main native build and 305 affected host
                                           controls pass; the actual two-owner
                                           target/MTP screen passes 13 units,
                                           132 finite heads, checkpoint/spill
@@ -2482,9 +2482,23 @@ each is checked against the design as M3.6 proceeds.
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.
-- [ ] **Persisted state and settings:** kept-state layout IDs bumped and
-      old kept state discarded (D-105); settings and calibration re-keyed
-      from family to spec (D-103).
+- [ ] **Persisted state and settings:**
+      - [x] **Shared kept-state identity:** the bound spec and every stage's
+            layout derive `llmp-state-v2`; shared records use version 2 and
+            bind the current execution identity. Incompatible old records
+            are refused. Existing state-contract, kept-record, slot-lifecycle
+            and EngineLlm fresh-owner adoption controls cover this path
+            (D-105); no additional layout bump is needed.
+      - [x] **Spec-bound calibration:** key shared serving measurements by
+            the actual bound spec, preserving artifact storage paths, default
+            settings and legacy-runner handling (D-103). Main native build,
+            321 host controls across 15 affected targets and six existing
+            Gemma serving/assistant model cases pass without failures or skips.
+            The companion metadata parser has a separate 384 MiB startup
+            envelope; this is not a quality or performance qualification.
+      - [ ] **Component-derived settings and legacy retirement:** replace
+            architecture-based applicability and defaults as the remaining
+            serving paths migrate; retain their qualification limits.
 
 **Exit criteria:**
 

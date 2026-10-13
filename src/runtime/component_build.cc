@@ -203,15 +203,7 @@ std::expected<std::vector<spec::SourceValue>, std::string> V0Values(std::string_
     if (auto checked = CheckHashTables(artifact, *binding); !checked) return Error(checked.error());
     return spec::mappings::Dsv4V0Values(model::Dsv4Flash());
   }
-  if (architecture == "gemma2") return spec::mappings::Gemma2V0Values(model::Gemma2_2B());
-  if (architecture == "gemma3") return spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
-  if (architecture == "gemma4") {
-    auto profile = ApprovedGemmaProfile(artifact);
-    if (!profile) return Error(profile.error());
-    return spec::mappings::Gemma4V0Values(**profile);
-  }
-  return Error(
-      std::format("the component engine has no recipe for architecture {} yet", architecture));
+  return ComponentV0Values(artifact);
 }
 
 // A drafter's v0 values (its compiled profile's, by its target's): the
@@ -228,19 +220,7 @@ std::expected<std::vector<spec::SourceValue>, std::string> DrafterV0Values(
       return Error(bound.error());
     return spec::mappings::DsparkV0Values(companion);
   }
-  if (drafter.model().architecture == "gemma4-assistant" &&
-      target.model().architecture == "gemma4") {
-    auto profile = ApprovedGemmaProfile(target);
-    if (!profile) return Error(profile.error());
-    const model::Gemma4AssistantProfile& assistant =
-        *profile == &model::Gemma4_31B() ? model::Gemma4Assistant31() : model::Gemma4Assistant26();
-    if (auto bound = model::BindGemma4Assistant(assistant, drafter); !bound) {
-      return Error(bound.error());
-    }
-    return spec::mappings::Gemma4AssistantV0Values(assistant, **profile);
-  }
-  return Error(std::format("the component engine has no drafter {} for architecture {}",
-                           drafter.model().architecture, target.model().architecture));
+  return ComponentDrafterV0Values(target, drafter);
 }
 
 // What of a family's chat template its chat route serves (the M3 classes'
@@ -337,10 +317,6 @@ bool JoinedMtpEnvelope(const ModelSettings& settings, std::string_view drafter,
 }
 
 }  // namespace
-
-bool OnComponentEngine(std::string_view architecture) {
-  return architecture == "gemma2" || architecture == "gemma3" || architecture == "gemma4";
-}
 
 EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                               const config::ModelEntry& entry, int index,
@@ -523,6 +499,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (speculate) artifacts.emplace_back(drafter_id);
     auto bound = spec::BoundDigest(hold->spec, artifacts);
     if (!bound) return Error(bound.error());
+    if (settings.bound_spec && *settings.bound_spec != *bound)
+      return Error("resolved calibration spec differs from the actual component spec");
     // Each state tensor starts on its own paged extent, as the M3 layouts
     // did: packed tensors would straddle extents, so their growth would
     // cross extent boundaries at staggered positions and a prompt would

@@ -40,6 +40,29 @@ checkpoints are broken, defect 3). Gate runs are timing work: exclusive
 
 ## Current direction, 2026-10-12
 
+Spec-bound calibration now uses execution's stored/synthesized spec authority,
+keys measurements before resolving calibrated values, and rechecks identity at
+factory construction. Legacy keys, artifact-named paths and settings defaults
+are preserved. Spark A main native build and 321 host controls across 15 affected
+targets pass, followed by six existing Gemma target/assistant model cases with
+no failures or skips. Source/binary guards and complete child retirement pass;
+no compute processes or memory events remain. The observed 793,939,968-byte
+peak is process/cache accounting, not device occupancy. Evidence is retained in
+`spec-calibration-main02` and `spec-calibration-gpu02` under the coordination
+scratch directory. The earlier Spark B native result also passes; its model
+preflight stopped before execution because the publications were absent there.
+Source checks pass: formatting, boundaries, headers and REUSE 6.2. No new quality
+or speed claim is made.
+
+Companion metadata parsing has a separate source-derived 384 MiB startup
+envelope, independent of head-observation storage. Shared kept-state identity
+was already implemented: bound spec and stage layouts derive `llmp-state-v2`,
+and shared records bind execution identity. Existing state-contract,
+kept-record, slot-lifecycle and EngineLlm controls cover refusal and fresh-owner
+adoption; no new layout bump or OS-process/GPU restart evidence is claimed.
+Architecture-based settings applicability/defaults and legacy retirement remain
+separate migration work.
+
 The reviewed owned Qwen target/MTP joined execution foundation passes main native
 build and 305 affected host controls, then the actual two-owner screen on Spark B:
 13 units, 132 finite heads, checkpoint/spill restoration and changed-input capture

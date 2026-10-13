@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Invalidate shared calibration when the actual bound model spec changes,
+  preserving default settings, artifact storage paths and legacy records.
+
 - Compose the prepared DeepSeek target and DSpark companion through shared
   block drafting and injected features, checking complete proposals and combined
   snapshot continuation within existing memory limits. Ordinary serving remains

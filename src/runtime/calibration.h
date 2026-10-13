@@ -80,6 +80,8 @@ struct CalibrationKey {
 // limit, wave read alignment and depth cost ratio. Another configuration
 // of them makes a record stale. The depth ratio here is resolved without
 // calibration, so the recorded ratio does not invalidate its own key.
+// Shared serving appends the actual bound spec digest. Old records without
+// that identity are stale; legacy keys and artifact-named storage stay intact.
 // Override presence for the chunk, slot cap and depth ratio also matters:
 // setting the fallback value explicitly bypasses a calibrated value.
 // DeepSeek also keys its uncalibrated wave costs and the number of leading

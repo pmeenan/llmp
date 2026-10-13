@@ -58,6 +58,30 @@ Calibration Measured() {
   return c;
 }
 
+TEST(Calibration, BoundSpecInvalidatesOnlySharedRecordsWithoutChangingTheirPath) {
+  llmp::runtime::ModelSettings legacy;
+  auto legacy_key = Key();
+  legacy_key.settings = llmp::runtime::MeasuredWith(legacy);
+  const auto old_record = FormatCalibration(Measured(), legacy_key);
+  auto shared = legacy;
+  shared.bound_spec = llmp::base::Sha256Digest{};
+  (*shared.bound_spec)[0] = 17;
+  auto key = legacy_key;
+  key.settings = llmp::runtime::MeasuredWith(shared);
+  EXPECT_THAT(key.settings, HasSubstr(" bound_spec=11"));
+  EXPECT_FALSE(ParseCalibration(old_record, key).calibration);
+  const auto record = FormatCalibration(Measured(), key);
+  EXPECT_TRUE(ParseCalibration(record, key).calibration);
+  EXPECT_FALSE(ParseCalibration(record, legacy_key).calibration);
+  (*shared.bound_spec)[31] = 1;
+  key.settings = llmp::runtime::MeasuredWith(shared);
+  EXPECT_FALSE(ParseCalibration(record, key).calibration);
+  EXPECT_EQ(llmp::runtime::CalibrationPath("state", key.artifact),
+            llmp::runtime::CalibrationPath("state", legacy_key.artifact));
+  EXPECT_EQ(FormatCalibration(Measured(), legacy_key), old_record);
+  EXPECT_TRUE(ParseCalibration(old_record, legacy_key).calibration);
+}
+
 TEST(Calibration, RoundTripsItsRecord) {
   const std::string text = FormatCalibration(Measured(), Key());
   EXPECT_THAT(text, StartsWith(R"({"format":"llmp-model-calibration-v1","artifact":")"));

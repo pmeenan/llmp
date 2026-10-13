@@ -60,6 +60,39 @@ ModelSettings Resolved(const ModelEntry& entry, const ArtifactFacts& facts,
 
 // With nothing kept and nothing set, every setting is its fallback (the
 // constants M3 measured), except what the configuration itself decides.
+TEST(ModelSettings, BoundSpecSelectionDoesNotDependOnCalibration) {
+  auto entry = Model("shared", true);
+  auto facts = Facts("gemma4", "gemma4-assistant");
+  facts.target_spec = llmp::base::Sha256Digest{};
+  facts.composed_spec = llmp::base::Sha256Digest{};
+  (*facts.target_spec)[0] = 1;
+  (*facts.composed_spec)[0] = 2;
+  const auto uncalibrated = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(uncalibrated) << (uncalibrated ? "" : uncalibrated.error());
+  EXPECT_EQ(uncalibrated->bound_spec, facts.composed_spec);
+  Calibration calibration;
+  calibration.prefill_chunk = 64;
+  const auto calibrated = ResolveSettings(entry, facts, &calibration, false);
+  ASSERT_TRUE(calibrated) << (calibrated ? "" : calibrated.error());
+  EXPECT_EQ(calibrated->bound_spec, uncalibrated->bound_spec);
+  const auto plain = ResolveSettings(entry, facts, &calibration, true);
+  ASSERT_TRUE(plain) << (plain ? "" : plain.error());
+  EXPECT_EQ(plain->bound_spec, facts.target_spec);
+  entry.overrides["speculation"] = false;
+  const auto disabled = ResolveSettings(entry, facts, &calibration, false);
+  ASSERT_TRUE(disabled) << (disabled ? "" : disabled.error());
+  EXPECT_EQ(disabled->bound_spec, facts.target_spec);
+  entry.overrides.erase("speculation");
+  facts.composed_spec.reset();
+  facts.composed_spec_error = "unqualified companion";
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  EXPECT_TRUE(ResolveSettings(entry, facts, nullptr, true));
+  facts.target_spec.reset();
+  const auto legacy = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(legacy) << (legacy ? "" : legacy.error());
+  EXPECT_FALSE(legacy->bound_spec);
+}
+
 TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   const ModelSettings s = Resolved(Model("ds"), Facts("deepseek4"));
   EXPECT_EQ(s.context.value, 262144U);

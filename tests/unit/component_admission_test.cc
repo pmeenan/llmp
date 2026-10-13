@@ -16,6 +16,7 @@
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
+#include "runtime/calibration.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -52,6 +53,31 @@ class ComponentAdmissionTest : public testing::Test {
     model = std::move(*made);
   }
 };
+
+TEST_F(ComponentAdmissionTest, ActualSpecChangesInvalidateCalibrationForTheSameArtifact) {
+  rt::CalibrationKey key{.artifact = std::string(64, 'a'),
+                         .drafter = {},
+                         .device = "test device",
+                         .build = "test build",
+                         .settings = {}};
+  const std::array<std::string_view, 1> artifacts{key.artifact};
+  auto digest = sp::BoundDigest(model, artifacts);
+  ASSERT_TRUE(digest) << (digest ? "" : digest.error());
+  rt::ModelSettings settings;
+  settings.bound_spec = *digest;
+  key.settings = rt::MeasuredWith(settings);
+  const auto record = rt::FormatCalibration(rt::Calibration{}, key);
+  EXPECT_TRUE(rt::ParseCalibration(record, key).calibration);
+  // Same artifact/build/settings, different real spec semantics and unchanged
+  // layout sizes: calibration must still become stale.
+  ASSERT_TRUE(model.stages.front().heads.softcap);
+  model.stages.front().heads.softcap = *model.stages.front().heads.softcap + 1.0;
+  digest = sp::BoundDigest(model, artifacts);
+  ASSERT_TRUE(digest) << (digest ? "" : digest.error());
+  settings.bound_spec = *digest;
+  key.settings = rt::MeasuredWith(settings);
+  EXPECT_FALSE(rt::ParseCalibration(record, key).calibration);
+}
 
 TEST_F(ComponentAdmissionTest, ApprovesCompleteNativeFormatsAndPreservesTheStoredSpec) {
   const auto before = model.Digest();

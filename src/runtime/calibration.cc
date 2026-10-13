@@ -103,6 +103,7 @@ std::string MeasuredWith(const ModelSettings& s) {
         s.wave_read_align.value, s.depth_cost_ratio.value,
         s.depth_cost_ratio.source == SettingSource::kOverride);
   }
+  if (s.bound_spec) measured += " bound_spec=" + base::ToHex(*s.bound_spec);
   return measured;
 }
 

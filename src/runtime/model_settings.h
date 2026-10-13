@@ -41,6 +41,7 @@
 
 #include "artifact/artifact.h"
 #include "artifact/gguf_metadata.h"
+#include "base/sha256.h"
 #include "config/node_config.h"
 #include "tokenizer/tokenizer.h"
 
@@ -126,8 +127,13 @@ inline constexpr std::string_view kThinkEnd = "</think>";
 // ------------------------------------------------------------ the artifact
 
 // What a model's artifacts say, read before the model is constructed
-// (ReadArtifactFacts). Nothing here is a checkpoint's name or hash.
+// (ReadArtifactFacts), including the bound spec identity for shared serving.
 struct ArtifactFacts {
+  // Actual spec/artifact identities for current component serving. No parsed
+  // model is retained. Legacy facts leave these absent.
+  std::optional<base::Sha256Digest> target_spec{};
+  std::optional<base::Sha256Digest> composed_spec{};
+  std::string composed_spec_error;  // ignored when speculation is disabled
   // Non-null only after the complete approved Gemma binding was checked.
   const model::Gemma4Profile* gemma_profile = nullptr;
   // The artifact's architecture ("deepseek4", "qwen4exp"); a composition's
@@ -232,6 +238,8 @@ struct ModelSettings {
   std::string architecture;  // empty for a composition
   bool composition = false;
   bool drafter = false;
+  // Chosen before calibration from the unchanged speculation setting.
+  std::optional<base::Sha256Digest> bound_spec{};
 
   // Every LLM.
   Setting<std::uint32_t> context;

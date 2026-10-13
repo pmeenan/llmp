@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -17,6 +18,8 @@
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
+#include "model/gemma4_assistant.h"
+#include "runtime/gemma_profile.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -115,6 +118,47 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const Pro
 }
 
 }  // namespace
+
+// Size anchors for the closed serving mappings' transient settings synthesis.
+// No graph, tensor payload or execution owner is constructed here.
+static_assert(sizeof(spec::Param) <= 128 && sizeof(spec::WeightBinding) <= 128);
+static_assert(sizeof(spec::ComponentRef) <= 128 && sizeof(spec::SourceTensor) <= 256);
+static_assert(sizeof(spec::V0Tensor) <= 128 && sizeof(spec::Stage) <= 2048);
+
+bool OnComponentEngine(std::string_view architecture) {
+  return architecture == "gemma2" || architecture == "gemma3" || architecture == "gemma4";
+}
+
+std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
+    const artifact::Artifact& artifact) {
+  const auto& architecture = artifact.model().architecture;
+  if (architecture == "gemma2") return spec::mappings::Gemma2V0Values(model::Gemma2_2B());
+  if (architecture == "gemma3") return spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
+  if (architecture == "gemma4") {
+    auto profile = ApprovedGemmaProfile(artifact);
+    if (!profile) return std::unexpected(profile.error());
+    return spec::mappings::Gemma4V0Values(**profile);
+  }
+  return std::unexpected(
+      std::format("the component engine has no recipe for architecture {} yet", architecture));
+}
+
+std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Values(
+    const artifact::Artifact& target, const artifact::Artifact& drafter) {
+  if (drafter.model().architecture == "gemma4-assistant" &&
+      target.model().architecture == "gemma4") {
+    auto profile = ApprovedGemmaProfile(target);
+    if (!profile) return std::unexpected(profile.error());
+    const model::Gemma4AssistantProfile& assistant =
+        *profile == &model::Gemma4_31B() ? model::Gemma4Assistant31() : model::Gemma4Assistant26();
+    if (auto bound = model::BindGemma4Assistant(assistant, drafter); !bound) {
+      return std::unexpected(bound.error());
+    }
+    return spec::mappings::Gemma4AssistantV0Values(assistant, **profile);
+  }
+  return std::unexpected(std::format("the component engine has no drafter {} for architecture {}",
+                                     drafter.model().architecture, target.model().architecture));
+}
 
 std::expected<void, std::string> CheckComponentAdmission(
     const spec::ModelSpec& model, const spec::Source& source,

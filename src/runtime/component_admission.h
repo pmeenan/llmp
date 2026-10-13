@@ -10,6 +10,8 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "artifact/artifact.h"
 #include "spec/mapping.h"
@@ -19,6 +21,16 @@ namespace llmp::model {
 struct Gemma4Profile;
 }
 namespace llmp::runtime {
+
+// One authority for current production component serving. Diagnostic Qwen/DS
+// paths remain separate until their serving migration is qualified.
+bool OnComponentEngine(std::string_view architecture);
+// Existing v0 recipe values shared by registration facts and actual execution.
+// These do not parse a spec or change admission/default policy.
+std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
+    const artifact::Artifact& artifact);
+std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Values(
+    const artifact::Artifact& target, const artifact::Artifact& drafter);
 
 struct ComponentAdmission {
   spec::ModelSpec model;

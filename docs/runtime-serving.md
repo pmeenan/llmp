@@ -384,8 +384,11 @@ it adds the executable's size
 and modification time, so each rebuild measures again. The record is
 in force from the next registration, never mid-service, so a running
 schedule never changes with wall time; the start logs whether it is in
-force. A record for another drafter, device, driver, build or settings is
-stale: not used, and measured again. To measure again on purpose, delete
+force. Shared component serving also binds calibration to the exact model spec
+and active artifact IDs used by the factory. A changed spec, or an old shared
+record without that identity, is stale; artifact-named storage and legacy
+calibration keys are unchanged. A record for another drafter, device, driver,
+build or settings is stale: not used, and measured again. To measure again on purpose, delete
 the file (with the runtime stopped, or before its next start). One that is not this format, names another
 artifact, holds a key other than the calibrated ones (the five above,
 `prefill_chunk` and `max_slots`) or a value outside its key's range, or that
@@ -402,6 +405,20 @@ key for an owned slot-only record; explicit slot or wave-cost-prefix
 overrides and a changed context make it stale. The performance measurements keep their original
 build/key. Broader profiles still need controlled calibration. An override
 always wins over a calibration.
+
+Registration retains the bound digest, not an additional executable model.
+Its temporary companion GGUF read/parse has a separate source-derived startup
+envelope of 384 MiB, including malformed wanted arrays before semantic refusal.
+This is an allocation inventory, not a measured peak or a new node allowance;
+it is separate from retained head-observation buffers. Default settings and
+artifact limits are unchanged.
+
+The spec-bound calibration change passes a main native build and 321 host
+controls across 15 affected targets, plus the six existing Gemma model cases:
+published v0/v1 target comparisons for Gemma 2, 3, 26B and 31B, and assistant
+state/verification controls for the latter two. All pass with no skips. These
+check registration, identity and existing execution behavior; they do not
+establish a new quality or speed result.
 
 ## Registration and the swap
 

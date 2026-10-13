@@ -395,6 +395,10 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     if (!admitted) return Error(admitted.error());
     declared_context = admitted->model.stages.front().context;
     facts.gemma_profile = admitted->gemma_profile;
+    const std::array<std::string_view, 1> ids{target.id()};
+    auto digest = spec::BoundDigest(admitted->model, ids);
+    if (!digest) return Error(digest.error());
+    facts.target_spec = *digest;
   } else if (facts.architecture == "gemma4") {
     auto profile = ApprovedGemmaProfile(target);
     if (!profile) return std::unexpected(profile.error());
@@ -405,6 +409,39 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
   }
   if (target.format_version() == 0 && facts.architecture == "gemma3") {
     if (auto binding = model::BindApprovedGemma3(target); !binding) return Error(binding.error());
+  }
+  if (target.format_version() == 0 && OnComponentEngine(facts.architecture)) {
+    // Reuse the factory's source values and the existing synthesis/composition
+    // library; no independent parser or cached execution model. All objects
+    // below die before tokenizer/generation metadata is read.
+    const auto* mapping = spec::FindMapping(facts.architecture);
+    if (mapping == nullptr) return Error("component calibration has no target mapping");
+    auto values = ComponentV0Values(target);
+    if (!values) return Error(values.error());
+    auto model = spec::SynthesizeV0(target, *mapping, *values);
+    if (!model) return Error(model.error());
+    const std::array<std::string_view, 1> ids{target.id()};
+    auto digest = spec::BoundDigest(*model, ids);
+    if (!digest) return Error(digest.error());
+    facts.target_spec = *digest;
+    if (drafter != nullptr) {
+      const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
+        const auto* draft_mapping = spec::FindMapping(drafter->model().architecture);
+        if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
+        auto draft_values = ComponentDrafterV0Values(target, *drafter);
+        if (!draft_values) return Error(draft_values.error());
+        auto composed =
+            spec::ComposeDrafterV0(*model, *mapping, *drafter, *draft_mapping, *draft_values);
+        if (!composed) return Error(composed.error());
+        const std::array<std::string_view, 2> both{target.id(), drafter->id()};
+        return spec::BoundDigest(*composed, both);
+      };
+      auto composed = compose();
+      if (composed)
+        facts.composed_spec = *composed;
+      else
+        facts.composed_spec_error = composed.error();
+    }
   }
   // generation_config.json first: GGUF's general.sampling keys are copied
   // from it where a converter kept them.
@@ -655,6 +692,13 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       (entry.drafter || entry.Bool("speculation").value_or(false)))
     return Error("Gemma serving has no qualified assistant or speculative path");
   const bool speculative = s.speculation.value;
+  if (facts.target_spec) {
+    s.bound_spec = speculative ? facts.composed_spec : facts.target_spec;
+    if (!s.bound_spec)
+      return Error(facts.composed_spec_error.empty()
+                       ? "component calibration has no active composed spec identity"
+                       : facts.composed_spec_error);
+  }
 
   // Speed trades: calibrated on the machine, else M3's measured constants.
   const bool gemma = arch == "gemma4" || arch == "gemma3" || arch == "gemma2";
