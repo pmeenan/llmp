@@ -156,3 +156,57 @@ changes; this service/compiler source is staged independently with those hunks
 excluded. Raw receipts remain in `/tmp/llmp-m36-coordination/` until milestone
 close. The unmerged author worktree is
 `/home/pmeenan/src/llmp/.claude/worktrees/m36-dsv4-serving`.
+
+## C2 concurrent serving and DSpark/Gemma 8K/16 swap
+
+2026-10-13, Spark A (`m36-serving-union-main11` and `dsv4-serving-actual08`).
+Comparing `ComponentLlmBuild` (`src/runtime/component_build.cc`) against the
+legacy `Dsv4State` (`src/model/dsv4.cc:458`) and `DsparkState`
+(`src/model/dspark.cc:173`) layouts identified why each slot previously
+demanded 506 MiB of prompt state: passing `kExtent` (`2 MiB`) as `tensor_align`
+to `components::StageLayout` padded all 229 target state tensors (most 8–256 KiB
+at context 8,448 / chunk 256) and 3 DSpark ring tensors (64 KiB each) onto
+separate 2 MiB extents (`1,061,158,912` virtual state bytes across two slots).
+Restoring 256-byte state-tensor alignment for `deepseek_serving`
+(`deepseek_serving ? 256ULL : kExtent`) reduces each slot's initial prompt-state
+demand (`StateBytesThrough(256)`) to 56 MiB (`58,720,256` bytes), the two-slot
+virtual state reservation to 200 MiB (`209,715,200` bytes), and an 8,192-token
+initialized state to 102,711,296 bytes.
+
+In two-alias `swap-table` startup (`dspark:gemma`), `Llm::UseChatAssets`
+(`src/runtime/llm.cc`) previously charged worst-case static Jinja AST and
+full-context rendering limits (`2048 * limits.max_nodes = 512 MiB` plus live
+output buffers, ~800 MiB per alias) against the permanently pinned
+`chat_startup_` grant, pushing two-alias `fixed_catalog_bytes` to
+`7,772,541,568` bytes (`dsv4-serving-actual07`, preserved). Bounding
+`template_bytes` by the already-loaded `assets->chat_template` byte length
+(`nodes = std::min(template_size + 1, limits.max_nodes)`) and the 32 MiB
+startup probe scratch lowers two-alias `startup_retained_bytes` to
+`5,838,471,168` bytes and `fixed_catalog_bytes` to `6,239,523,456` bytes while
+keeping request-time rendering budgets unchanged.
+
+- **Speculative HTTP (`wave_form="speculative"`, C1 then C2)**:
+  `startup_retained_bytes = 5,595,201,536`, `fixed_catalog_bytes = 5,961,417,600`,
+  `registered_state_virtual_extent_bytes = 209,715,200`. Three requests
+  (371 / 341 / 344 prompt tokens, 128 outputs each) complete with **31 joined
+  waves / 62 joined units**, 110 speculative units, 324 drafted tokens and 271
+  accepted drafts. Both C2 requests overlap in flight.
+- **Plain HTTP (`wave_form="plain"`, C2)**:
+  Two concurrent requests complete 128 outputs each with **118 joined waves /
+  236 joined units** (`greedy_tokens = 236`), followed by 8 trailing solo
+  speculative units (20 drafted, 10 accepted) after the shorter prompt retires.
+- **Two-cycle `swap-table` (`dspark:gemma`, 8,192 context tokens, 16
+  continuation tokens, `handoff=true`)**:
+  All four rows pass (`exact = true`, `state_exact = true`):
+  - First-use `A->B`: 0.342 s (`first_output = 0.061 s`), `evicted_weight_bytes = 110,930,952,192`, `spilled_bytes = 102,711,296`.
+  - First-use `B->A`: 8.655 s (`first_output = 0.578 s`), `initialized_state_bytes = 102,711,296`, `state_before_sha256 == state_restored_sha256 = 7546e110130a9700725151a16cb512d1770ca009e5a36be67b8354ef8d1b4415`, `reference_logits_sha256 == continued_logits_sha256 = 1bf21b63187fba490ed946636cbc147338e9017a284af2ea755ebfdb0087f26e`.
+  - Prepared `A->B`: 0.358 s (`first_output = 0.044 s`).
+  - Prepared `B->A`: 8.243 s (`first_output = 0.114 s`), `graphs_kept = 2`, `replayed = 8`, matching state and full-head digests.
+
+`m36-serving-union-main11` (`1a93ff67…`, source `14af3a51…`, runtime
+`5089b332…`) passes the full native build, 241 host controls and source QA
+(44 format, 30 boundary, 2,271 header checks and REUSE 6.2.0).
+`dsv4-serving-actual08` (`1bbd0622…`, service `2fe3b430…`, swap `6f08339e…`)
+passes all pre/post guards with zero memory-limit/OOM events, 7.32 GiB minimum
+`MemAvailable` (above the 6 GiB margin) and positive process/GPU retirement.
+

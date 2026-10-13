@@ -32,13 +32,15 @@ same-checkpoint reference. Its coarse generation screen is **5.991× slower**
 than legacy, so public migration, formal 1% qualification and deletion remain
 blocked. See the [ordinary service report](experiments/m36-shared-spatial-execution/README.md#ordinary-installed-source-image-service).
 
-DeepSeek's ordinary source/compiler foundation landed in `adb0686e`. The
-three tested speculative requests complete 384 outputs, but the complete batch
-is **FAIL**: another 506 MiB of prompt state cannot fit beside the active
-request, so the second client queues and zero joined waves execute. The runtime
-and all process/GPU work positively retire. Fixed-plain HTTP and the planned
-8K/16 swap were not reached. Inspect the actual state-page demand and retained
-compiler footprint before any retry; keep `RoomFor` admission intact.
+DeepSeek's ordinary source/compiler foundation landed in `adb0686e`, and its
+256-byte serving state layout and bounded chat-template startup accounting
+now resolve the C2 capacity wall (`m36-serving-union-main11` /
+`dsv4-serving-actual08` on Spark A): C1/C2 speculative HTTP completes with 31
+joined waves / 62 joined units (324 drafted, 271 accepted), C2 plain HTTP
+completes with 118 joined waves / 236 joined units, and the two-cycle
+`dspark:gemma` 8K/16 swap passes all four rows (`0.342 s` / `8.655 s` first-use,
+`0.358 s` / `8.243 s` prepared) with exact restored 102,711,296-byte state and
+full-head continuations ([report](experiments/m36-dsv4-target/dspark.md#c2-concurrent-serving-and-dsparkgemma-8k16-swap)).
 Native DeepSeek GGUF publication and target serving landed in `926a4f40`
 (N4b9). Artifact
 `698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd`

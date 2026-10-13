@@ -842,7 +842,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("the resolved draft depth exceeds the bound block drafter");
     for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
       auto layout = components::StageLayout(hold->spec, stage, settings.context.value,
-                                            configured_chunk, kExtent);
+                                            configured_chunk, deepseek_serving ? 256ULL : kExtent);
       if (!layout) return Error(layout.error());
       hold->layouts.push_back(std::move(*layout));
     }
