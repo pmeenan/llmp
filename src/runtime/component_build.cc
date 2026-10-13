@@ -1022,6 +1022,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                     .slabs = std::move(placements[0].slabs)});
     if (stored_bindings) parts.config.row_tables = std::move(stored_bindings->rows);
     if (row_table) parts.config.row_tables.push_back(*row_table);
+    if (options.capture_first_verify)
+      parts.config.capture_first_phases = 1U << static_cast<unsigned>(planner::Phase::kVerify);
     if (solo)
       parts.config.capture_phases &= ~(1U << static_cast<unsigned>(planner::Phase::kPrefill));
     if (speculate) {

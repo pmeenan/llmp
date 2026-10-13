@@ -201,6 +201,9 @@ class FakeProgram final : public kn::StepProgram {
   std::expected<std::unique_ptr<kn::Recorded>, kn::StepFailure> Record(
       kn::StepLaunch& launch, providers::NativeStream stream,
       const kn::StepLaunch::Body& body) const override {
+    if (options_->fail_record)
+      return std::unexpected(
+          kn::StepFailure{.error = *options_->fail_record, .detail = "the fake capture failed"});
     if (options_->refuse_record) {
       return std::unexpected(
           kn::StepFailure{.error = kn::StepError::kRejected, .detail = "the fake refuses"});

@@ -753,3 +753,81 @@ Final trimmed-source full-native recipe:
 235-host receipt: `e7d37b420d07f0c5976b38e4f422428d2190911543814bd77af2850f85541ca3`.
 This build retains the executor correction and integrated image changes,
 not the owner-lane candidate; no new inference is claimed for that binary.
+
+## Default-off first-Verify capture screen
+
+2026-10-13, Spark A. Correlation of the existing trace's selected target-stage
+intervals found five eager shared windows and fifteen graph-replay windows.
+These intervals do not prove equal PlanKeys, verify rows or accepted work
+across implementations, or explain the entire earlier C4 gap. They motivated
+one small shared lifecycle experiment, without another trace or quality run.
+
+`RunnerConfig.capture_first_phases` defaults to zero. The internal
+`LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY=1` selector permits Verify capture beside
+its first eager execution only when the existing capture-phase mask and program
+capabilities allow it. The existing queue executes once eagerly, then records;
+it does not replay the newly captured graph on that run. Graph payment,
+refusal fallback and unknown-completion quarantine remain active. The default
+second-use rule and public settings are unchanged; no future-key hint is invented.
+
+One fresh-process OFF/ON pair uses the same runtime, artifacts, settings and
+numerical execution identity. Each arm runs one warm and two measured
+C1/C2/C4 passes at context33,792/chunk4,096, with the actual 47,172-entry MTP
+head. All 42 requests complete 5,376 outputs; ordered prompt counts match and
+reused prompt tokens are zero. Recomputed measured-pass means:
+
+| Cohort | OFF prefill s | ON prefill s | OFF decode tokens/s | ON decode tokens/s | OFF wall tokens/s | ON wall tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C1 | 3.163528 | 3.182486 | 47.523132 | 47.386889 | 21.915155 | 21.756353 |
+| C2 | 7.069857 | 7.016301 | 63.507395 | 64.271947 | 22.966864 | 23.060072 |
+| C4 | 15.886794 | 15.975076 | 64.704590 | 66.662372 | 22.244750 | 22.137218 |
+
+C4 decode throughput rises **3.0257%**, while wall throughput falls **0.4834%**
+and prefill duration rises **0.5557%**. Its two measured decode rates are
+71.5651/57.8441 OFF and 71.7177/61.6071 ON; most of the mean gain comes from
+the second pass. C1/C2 decode changes are −0.2867%/+1.2039%. This sequential
+screen supports retaining the small option **default-off** for experimentation,
+not a universal speed claim, public default change or matched1% gate verdict.
+
+Final cumulative eager/captured/replayed runs change from 323/154/1,446 to
+271/166/1,495; first-use captures change from 0 to 67. Plans change from 324
+to 341 and graphs from 189 to 201. Accepted proposals differ (1,690/1,687),
+so the observed counters do not establish identical per-key work or an isolated
+CPU-cost saving. Neither arm reclaims a plan or graph or reports a capture
+refusal or coverage violation.
+
+| Retained resource observation, bytes | OFF | ON |
+| --- | ---: | ---: |
+| Plan host accounting | 1,629,187,888 | 1,737,145,824 |
+| Graph accounting | 2,847,997,952 | 3,384,524,800 |
+| Startup host grant | 6,708,789,248 | 6,708,789,248 |
+| Activations | 6,075,449,344 | 6,075,449,344 |
+| Scratch | 222,298,112 | 222,298,112 |
+
+The extra 107,957,936 plan-host and 536,526,848 graph bytes fit the admitted
+104GiB node budget, 112GiB zero-swap process/cache ceiling and live 6GiB
+physical margin. System `MemAvailable` drops are 89.9513/90.6869GiB; the
+separate combined cgroup process/cache peak is 6,911,893,504 bytes, not
+device-only residency. Both owners exit TERM/zero, positively retire their
+process groups and GPU work, and pass all source/runtime guards with zero
+memory-limit/OOM events.
+
+Source03 and its lifetime/accounting controls are independently reviewed.
+One combined Spark B full-native build passes 324 host controls, including
+35 image controls; Spark A builds the measured runtime from the identical
+2,549-source map without repeating the host suite. The test coverage includes
+first eager execution, replay, disabled policy, positioned-program refusal,
+unpaid graph fallback, clean capture refusal and unknown completion.
+Same-quantized-reference quality, state/swap qualification and the family
+migration gate remain open; this screen makes no new quality claim.
+
+Runtime: `0b5a88059307fe7846b5bd10af78cda305c8734380c9159c0c1d52d8fecf4b61`
+(271,915,208 bytes). Full-native/324-host receipt:
+`1fb30e281eae4a4202e6e76c6d10c4c4c711d030f3e7789a8435e9d49990a43d`;
+Spark A runtime receipt:
+`0a96b04d64a8dade96b5f01ad5f2fa2fa1dcb7c1be390e5cd2259f328cb9b91e`.
+Actual recipe: `14b75505ebbc74866d17ae121bb5be41cde9f28bce02f5a8a5b4da1a8b2927a5`;
+result: `f6674a87a6535a5ef0702f292d25ac64bcf7f2fded9f42aab237d3dff85c46ba`.
+Raw evidence and reproducible metric audit remain in
+`qwen-capture-first-models01`; replay uses its existing family-prime controller
+with only the optional first-Verify selector differing between arms.

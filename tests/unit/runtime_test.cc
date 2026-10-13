@@ -1255,6 +1255,20 @@ TEST(ServiceDiagnostics, AutoKeepsStrictTupleAndNumericCompatibility) {
   EXPECT_EQ(options.diagnostic_startup_host_bytes, 2097152U);
 }
 
+TEST(ServiceDiagnostics, FirstVerifyCaptureRequiresTheCompletePaidOptIn) {
+  using namespace llmp::runtime;
+  ServingOptions options;
+  EXPECT_FALSE(ApplyServiceDiagnostics(options, std::nullopt, std::nullopt, std::nullopt, "1"));
+  for (const std::string_view invalid : {"", "0", "true", " 1"})
+    EXPECT_FALSE(ApplyServiceDiagnostics(options, "1", "auto", "8388608", invalid));
+  EXPECT_FALSE(options.diagnostic_component_solo);
+  EXPECT_FALSE(options.diagnostic_capture_first_verify);
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "auto", "8388608", "1"));
+  EXPECT_TRUE(options.diagnostic_capture_first_verify);
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "auto", "8388608"));
+  EXPECT_FALSE(options.diagnostic_capture_first_verify);
+}
+
 TEST(ServiceRetirement, FailedFenceExitsBeforeOwnerDestruction) {
   std::FILE* log = std::tmpfile();
   ASSERT_NE(log, nullptr);

@@ -1833,6 +1833,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                 node_, roles_.installed, entry, index,
                 {.target_policy = {},
                  .diagnostic_solo = solo,
+                 .capture_first_verify = options_.diagnostic_capture_first_verify,
                  .automatic_startup_cap = options_.diagnostic_auto_startup
                                               ? options_.diagnostic_budget_cap_bytes.value_or(0)
                                               : 0,
@@ -1841,6 +1842,9 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                  .state_only_prefill = options_.qwen38_state_only_prefill,
                  .derive_execution_domain =
                      solo && (settings.max_slots.value > 1 || !entry.drafter)}));
+        if (options_.diagnostic_capture_first_verify)
+          Log(std::format("model {}: experimental Verify capture beside first eager run",
+                          entry.name));
         if (options_.diagnostic_skip_turn_checkpoints) {
           llm->set_turn_checkpoints(false);
           Log(std::format("model {}: saves no turn checkpoint (a speed gate's diagnostic)",

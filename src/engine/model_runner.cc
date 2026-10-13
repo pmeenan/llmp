@@ -1723,7 +1723,12 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     ++lookahead_.dropped_ahead;
   }
   const bool repeats = ahead_keys[0].has_value() && *ahead_keys[0] == entry.key;
-  bool capture = (runs.CaptureDue(programs_.runs().graphs()) &&
+  const bool first_capture =
+      (config_.capture_first_phases & config_.capture_phases & PhaseBit(shape.phase)) != 0 &&
+      programs_.runs().graphs() && runs.eager_runs == 0 && !runs.has_graph() &&
+      !runs.uncapturable && !program.routed();
+  bool capture = first_capture ||
+                 (runs.CaptureDue(programs_.runs().graphs()) &&
                   (config_.capture_phases & PhaseBit(shape.phase)) != 0) ||
                  (ahead.capture_ahead && repeats && programs_.runs().graphs() &&
                   !runs.has_graph() && !runs.uncapturable);

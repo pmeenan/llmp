@@ -2269,7 +2269,8 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
   if (auto configured =
           ApplyServiceDiagnostics(serving, diagnostic("LLMP_DIAGNOSTIC_COMPONENT_QWEN"),
                                   diagnostic("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES"),
-                                  diagnostic("LLMP_DIAGNOSTIC_NODE_CAP_BYTES"));
+                                  diagnostic("LLMP_DIAGNOSTIC_NODE_CAP_BYTES"),
+                                  diagnostic("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY"));
       !configured) {
     Say(log, configured.error());
     return kExitFailure;

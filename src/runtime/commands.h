@@ -75,6 +75,8 @@ struct ServingOptions {
   // sources with multiple owners. Only an explicitly funded service diagnostic
   // can select it through HTTP; normal configuration/defaults are unchanged.
   bool diagnostic_component_solo = false;
+  // Internal default-off experiment, only with the paid shared service route.
+  bool diagnostic_capture_first_verify = false;
   // Prepaid host compiler/result allowance for bounded startup screens.
   // Cataloged before artifact metadata or Setup, retained until node death.
   // Requires a known physical budget cap; zero leaves ordinary starts alone.
@@ -168,11 +170,13 @@ struct CommandOptions {
 };
 
 // Internal supervised service qualification only. The three environment values
-// are all absent or all valid; refusal leaves options unchanged. Funding is
+// are all absent or all valid; an optional first-Verify capture selector requires
+// that complete tuple. Refusal leaves options unchanged. Funding is
 // derived and source/config-bound by the caller before starting the process.
 std::expected<void, std::string> ApplyServiceDiagnostics(
     ServingOptions& options, std::optional<std::string_view> component,
-    std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap);
+    std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap,
+    std::optional<std::string_view> capture_first_verify = std::nullopt);
 
 // Parses a command's arguments (after its name).
 std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,

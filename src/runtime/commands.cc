@@ -43,12 +43,14 @@ bool PlausibleName(std::string_view name) { return !name.empty() && name.size() 
 
 std::expected<void, std::string> ApplyServiceDiagnostics(
     ServingOptions& options, std::optional<std::string_view> component,
-    std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap) {
-  if (!component && !startup_bytes && !node_cap) return {};
+    std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap,
+    std::optional<std::string_view> capture_first_verify) {
+  if (!component && !startup_bytes && !node_cap && !capture_first_verify) return {};
   std::uint64_t bytes = 0, cap = 0;
   constexpr std::uint64_t extent = std::uint64_t{2} << 20U;
   const bool automatic = startup_bytes && *startup_bytes == "auto";
-  if (!component || *component != "1" || !startup_bytes || !node_cap ||
+  if ((capture_first_verify && *capture_first_verify != "1") || !component || *component != "1" ||
+      !startup_bytes || !node_cap ||
       (!automatic && !Number(*startup_bytes, std::uint64_t{1}, UINT64_MAX, bytes)) ||
       !Number(*node_cap, std::uint64_t{1}, UINT64_MAX, cap) || bytes % extent || cap % extent ||
       bytes > cap)
@@ -56,6 +58,7 @@ std::expected<void, std::string> ApplyServiceDiagnostics(
         "shared service diagnostic needs selector=1, startup bytes (or auto), and aligned node "
         "cap");
   options.diagnostic_component_solo = true;
+  options.diagnostic_capture_first_verify = capture_first_verify.has_value();
   options.diagnostic_startup_host_bytes = bytes;
   options.diagnostic_auto_startup = automatic;
   options.diagnostic_budget_cap_bytes = cap;

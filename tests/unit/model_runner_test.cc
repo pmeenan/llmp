@@ -747,6 +747,127 @@ TEST_F(ModelRunnerTest, CapturesOnTheSecondRunAndReplays) {
   ExpectPrompt(0, all);
 }
 
+class FirstCaptureTest : public ModelRunnerTest {
+ protected:
+  std::vector<en::StageState> StateStages() const override {
+    // This control writes append-only cells. The general fake's fixed hash
+    // requires a separate commit program for Verify and is not used here.
+    const std::vector<std::pair<std::uint32_t, md::StateContract>> layers = {
+        {0, {.tensors = {{.name = "kv", .kind = md::StateKind::kKv, .cell_bytes = 4096}}}}};
+    return {{.name = "target", .layout = md::Layout(layers, kContext, 256).value()}};
+  }
+  void Configure(en::RunnerConfig& config) override {
+    config.max_verify_rows = 1;
+    config.capture_first_phases = 1U << static_cast<unsigned>(pl::Phase::kVerify);
+  }
+  std::expected<en::StepReport, en::StepRefusal> Verify(std::uint32_t past) {
+    const std::array<std::int32_t, 1> tokens{static_cast<std::int32_t>(40 + past)};
+    const std::array<en::SegmentWork, 1> work{{{.tokens = tokens}}};
+    return runner_->RunStep({.shape = Shape(pl::Phase::kVerify, {Seg(0, past, 1, 1)}),
+                             .work = work,
+                             .advance = false,
+                             .ahead = {}});
+  }
+};
+
+TEST_F(FirstCaptureTest, FirstVerifyWarmsOnceThenCapturesAndNextReplays) {
+  for (std::uint32_t past = 0; past < 2; ++past) {
+    auto ran = Verify(past);
+    ASSERT_TRUE(ran) << ran.error().what;
+    EXPECT_EQ(ran->path, past == 0 ? en::RunPath::kCaptured : en::RunPath::kReplayed);
+    EXPECT_EQ(Rows(ran->outputs.at(0)).at(0).token, static_cast<std::int32_t>(40 + past));
+    ASSERT_TRUE(runner_->slots().Accept(0, 1));
+  }
+  EXPECT_EQ(source_->executed(), 2U);  // recording never executes the state update twice
+  EXPECT_EQ(runner_->plans().graphs(), 1U);
+  EXPECT_EQ(runner_->lookahead_stats().captured_first, 1U);
+  auto ordinary = Run(Shape(pl::Phase::kDecode, {Seg(0, 2, 1, 1)}), {{42}});
+  ASSERT_TRUE(ordinary);
+  EXPECT_EQ(ordinary->path, en::RunPath::kEager);  // another phase retains D-090
+  ExpectPrompt(0, std::array<std::int32_t, 3>{40, 41, 42});
+}
+
+TEST_F(FirstCaptureTest, CleanCaptureRefusalKeepsExactlyOneEagerExecution) {
+  source_->options().refuse_record = true;
+  for (std::uint32_t past = 0; past < 2; ++past) {
+    auto ran = Verify(past);
+    ASSERT_TRUE(ran) << ran.error().what;
+    EXPECT_EQ(ran->path, en::RunPath::kEager);
+    ASSERT_TRUE(runner_->slots().Accept(0, 1));
+  }
+  EXPECT_EQ(source_->executed(), 2U);
+  EXPECT_EQ(runner_->graph_stats().refused, 1U);
+  EXPECT_EQ(runner_->plans().graphs(), 0U);
+  std::vector<llmp::memory::ReclaimCandidate> candidates;
+  runner_->ReclaimCandidates(0, true, candidates);
+  ASSERT_EQ(candidates.size(), 1U);
+  EXPECT_EQ(candidates[0].kind, llmp::memory::ReclaimKind::kPlan);
+  EXPECT_EQ(candidates[0].bytes, 4096U);  // no retained graph charge
+}
+
+TEST_F(FirstCaptureTest, UnknownCaptureDoesNotRetryOrCommitTheWarmRun) {
+  source_->options().fail_record = kn::StepError::kUnknown;
+  auto failed = Verify(0);
+  ASSERT_FALSE(failed);
+  EXPECT_FALSE(failed.error().clean);
+  EXPECT_EQ(source_->queued(), 1U);  // only the warm execution; no fallback or replay
+  EXPECT_FALSE(runner_->slots().usable(0));
+  EXPECT_EQ(runner_->slots().positions(0), 0U);
+}
+
+class FirstCaptureDisabledTest : public FirstCaptureTest {
+ protected:
+  void Configure(en::RunnerConfig& config) override {
+    FirstCaptureTest::Configure(config);
+    config.capture_phases = 0;
+  }
+};
+
+TEST_F(FirstCaptureDisabledTest, FirstUseMaskDoesNotOverrideDisabledPhase) {
+  auto ran = Verify(0);
+  ASSERT_TRUE(ran);
+  EXPECT_EQ(ran->path, en::RunPath::kEager);
+  EXPECT_EQ(runner_->plans().graphs(), 0U);
+}
+
+class FirstCapturePositionedTest : public FirstCaptureTest {
+ protected:
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = FirstCaptureTest::SourceOptions();
+    options.positioned = true;
+    return options;
+  }
+};
+
+TEST_F(FirstCapturePositionedTest, PositionedProgramStillRunsWithoutARecording) {
+  auto ran = Verify(0);
+  ASSERT_TRUE(ran);
+  EXPECT_EQ(ran->path, en::RunPath::kEager);
+  EXPECT_EQ(runner_->graph_stats().captured, 0U);
+}
+
+class FirstCaptureUnpaidTest : public FirstCaptureTest {
+ protected:
+  void Configure(en::RunnerConfig& config) override {
+    FirstCaptureTest::Configure(config);
+    node_.SetHostFloor(0);  // enable real catalog host charges, unlike the general fake fixture
+  }
+  ts::FakeSourceOptions SourceOptions() override {
+    auto options = FirstCaptureTest::SourceOptions();
+    options.launches = 1U << 20;  // graph exceeds the actual fake node's paid capacity
+    return options;
+  }
+};
+
+TEST_F(FirstCaptureUnpaidTest, RefusedGraphPaymentLeavesOneEagerExecution) {
+  auto ran = Verify(0);
+  ASSERT_TRUE(ran) << ran.error().what;
+  EXPECT_EQ(ran->path, en::RunPath::kEager);
+  EXPECT_EQ(source_->executed(), 1U);
+  EXPECT_EQ(runner_->plans().graphs(), 0U);
+  EXPECT_EQ(runner_->graph_stats().captured, 0U);
+}
+
 TEST_F(ModelRunnerTest, RecordingsAreReleasedBeforeTheLaunch) {
   for (std::uint32_t i = 0; i < 2; ++i) {
     ASSERT_TRUE(Run(Shape(pl::Phase::kDecode, {Seg(1, i, 1, 1)}), {{3}}).has_value());

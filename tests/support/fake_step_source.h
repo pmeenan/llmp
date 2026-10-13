@@ -118,6 +118,7 @@ struct FakeSourceOptions {
                                std::uint32_t, std::span<std::int32_t>)>
       side_rows;
   bool refuse_record = false;
+  std::optional<kernels::StepError> fail_record;
   bool refuse_bind = false;
   // Run fails: refused with nothing queued (kRejected), or of unknown
   // effect after its work was queued (kUnknown).

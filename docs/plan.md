@@ -1878,6 +1878,13 @@ each is checked against the design as M3.6 proceeds.
                                     its independent unknown-join safety fix lands,
                                     without a family gate verdict
                                     ([startup accounting](experiments/m36-numerical-audit/qwen-joined-mtp.md#automatic-startup-accounting-and-family-geometry)).
+                                    A default-off Verify capture policy now reuses
+                                    the first eager run before recording. One shared
+                                    off/on screen observes 3.03% higher C4 decode
+                                    throughput but 0.48% lower wall throughput and
+                                    extra graph/plan memory, with complete work
+                                    and no reclaims. The option remains experimental
+                                    ([capture screen](experiments/m36-numerical-audit/qwen-joined-mtp.md#default-off-first-verify-capture-screen)).
                                     Automatic public selection, broader
                                     quality and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,

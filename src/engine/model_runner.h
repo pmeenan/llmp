@@ -165,6 +165,10 @@ struct RunnerConfig {
   // own request). Qwen3.8 and DeepSeek capture prefill only from a hint.
   bool graphs = true;
   std::uint32_t capture_phases = 0x1F;
+  // Internal experiment: eligible phases may record beside their first eager
+  // run. Still subject to capture_phases, graph payment and program capability;
+  // zero preserves D-090. This never records before the warm eager execution.
+  std::uint32_t capture_first_phases = 0;
   // Device memory the step source's kernels hold beside the node's
   // workspace (a cuBLAS workspace): each mapped at Setup before any
   // measurement, of the runtime class, pinned and in every closure as the

@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Allow an internal, default-off Verify policy to capture beside its first eager
+  execution through the existing paid graph lifecycle. A bounded shared-engine
+  screen observes higher C4 decode throughput with extra graph memory and
+  slightly lower overall throughput; public defaults remain unchanged.
+
 - Replace completed shared image request content and schedules while retaining
   model weights, typed ports and captured programs. Active or unknown requests
   and incompatible layouts refuse before mutation; serial generations release

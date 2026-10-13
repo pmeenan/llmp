@@ -222,6 +222,14 @@ unknown-completion safety fix lands. The reviewed experiment remains unmerged
 in `.claude/worktrees/m36-owner-lanes` (`codex/m36-owner-lanes`) and immutable
 `qwen-owner-lanes-source02`; retain its raw evidence until milestone close
 ([candidate outcome](experiments/m36-numerical-audit/qwen-joined-mtp.md#owner-lane-candidate-not-adopted)).
+A small default-off Verify capture policy reuses the existing eager-then-record
+path without changing the default second-use rule. The shared off/on screen
+observes C4 decode +3.03%, wall throughput −0.48%, and extra graph/plan memory;
+both arms fit and retire cleanly with no reclaims. Retain the option for bounded
+experiments, not public adoption. Full native compilation and 324 combined
+host controls pass; the actual Spark A runtime is bound separately to the same
+source as the Spark B full build
+([capture screen](experiments/m36-numerical-audit/qwen-joined-mtp.md#default-off-first-verify-capture-screen)).
 Automatic public selection, broader same-quantized-reference quality, OS-process/GPU restart and
 the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /

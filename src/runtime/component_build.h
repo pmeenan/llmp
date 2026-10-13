@@ -43,6 +43,8 @@ struct ComponentBuildOptions {
   // target-only C4 scoring envelope, a declared repeat-pending composition,
   // or a derived ordinary target-only domain. Public admission stays unchanged.
   bool diagnostic_solo = false;
+  // Default-off capture scheduling experiment; numerical policy is unchanged.
+  bool capture_first_verify = false;
   // Nonzero only under the Server's admitted metadata bootstrap loan.
   // Derive and pin this source's construction budget before graph construction.
   std::uint64_t automatic_startup_cap = 0;
