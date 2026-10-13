@@ -20,6 +20,8 @@ namespace llmp::spec::mappings {
 const Mapping& Qwen2Mapping();
 // Closed, byte-preserving GGUF target normalization; no v0 assembly.
 const Mapping& Qwen2GgufMapping();
+// Closed, multipart-copy EXL3 target normalization; no v0 assembly.
+const Mapping& Qwen2Exl3Mapping();
 std::expected<std::vector<SourceValue>, std::string> Qwen2V0Values(
     const model::Qwen2Profile& profile);
 }  // namespace llmp::spec::mappings

@@ -32,6 +32,39 @@ constexpr std::array kQwen2Encodings{format::Encoding::kF16, format::Encoding::k
 constexpr std::array<std::uint64_t, 2> kQwen2TokenShape{896, 151936};
 constexpr std::array kQwen2Shapes{TensorShapeRequirement{"token_embd.weight", kQwen2TokenShape}};
 
+constexpr std::array kExl3Auxiliary{
+    AuxiliaryNamespace{"architectures", "transformers class provenance"},
+    AuxiliaryNamespace{"transformers_version", "transformers writer version provenance"}};
+constexpr std::array kQwen2Exl3Keys{
+    KeyAlias{"attention_dropout", "qwen2.attention_dropout"},
+    KeyAlias{"bos_token_id", "qwen2.bos_token_id"},
+    KeyAlias{"eos_token_id", "qwen2.eos_token_id"},
+    KeyAlias{"head_dim", "qwen2.attention.key_length"},
+    KeyAlias{"hidden_act", "qwen2.hidden_act"},
+    KeyAlias{"hidden_size", "qwen2.embedding_length"},
+    KeyAlias{"initializer_range", "qwen2.initializer_range"},
+    KeyAlias{"intermediate_size", "qwen2.feed_forward_length"},
+    KeyAlias{"max_position_embeddings", "qwen2.context_length"},
+    KeyAlias{"max_window_layers", "qwen2.max_window_layers"},
+    KeyAlias{"num_attention_heads", "qwen2.attention.head_count"},
+    KeyAlias{"num_hidden_layers", "qwen2.block_count"},
+    KeyAlias{"num_key_value_heads", "qwen2.attention.head_count_kv"},
+    KeyAlias{"rms_norm_eps", "qwen2.attention.layer_norm_rms_epsilon"},
+    KeyAlias{"rope_theta", "qwen2.rope.freq_base"},
+    KeyAlias{"sliding_window", "qwen2.sliding_window"},
+    KeyAlias{"tie_word_embeddings", "qwen2.tie_word_embeddings"},
+    KeyAlias{"torch_dtype", "qwen2.torch_dtype"},
+    KeyAlias{"use_cache", "qwen2.use_cache"},
+    KeyAlias{"use_sliding_window", "qwen2.use_sliding_window"},
+    KeyAlias{"vocab_size", "qwen2.vocab_size"}};
+constexpr std::array kQwen2Exl3Encodings{format::Encoding::kBF16, format::Encoding::kF16,
+                                         format::Encoding::kExl3Trellis};
+constexpr std::array<std::uint64_t, 2> kQwen2Exl3EmbedShape{151936, 896};
+constexpr std::array<std::uint64_t, 3> kQwen2Exl3HeadShape{56, 9496, 128};
+constexpr std::array kQwen2Exl3Shapes{
+    TensorShapeRequirement{"model.embed_tokens.weight", kQwen2Exl3EmbedShape},
+    TensorShapeRequirement{"lm_head.trellis", kQwen2Exl3HeadShape}};
+
 constexpr std::array<std::int64_t, 1> kPleLayers{1};
 constexpr std::array<std::int64_t, 4> kRopeSections{11, 11, 10, 0};
 constexpr auto kCompressRatios = [] {
@@ -104,7 +137,7 @@ bool Overlap(std::string_view a, std::string_view b) {
 }
 bool Structural(std::string_view key) {
   return key == "general.architecture" || key == "general.alignment" || key == "split.no" ||
-         key == "split.count" || key == "split.tensors.count";
+         key == "split.count" || key == "split.tensors.count" || key == "model_type";
 }
 }  // namespace
 
@@ -125,6 +158,12 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                                                .auxiliary = kAuxiliary,
                                                .encodings = kQwen2Encodings,
                                                .shapes = kQwen2Shapes},
+                                 SourceMapping{.container = "exl3",
+                                               .architecture = &spec::mappings::Qwen2Exl3Mapping(),
+                                               .keys = kQwen2Exl3Keys,
+                                               .auxiliary = kExl3Auxiliary,
+                                               .encodings = kQwen2Exl3Encodings,
+                                               .shapes = kQwen2Exl3Shapes},
                                  SourceMapping{.container = "gguf",
                                                .architecture = &spec::mappings::Qwen38GgufMapping(),
                                                .auxiliary = kAuxiliary,
@@ -226,9 +265,10 @@ std::optional<NameMatch> Match(std::string_view pattern, std::string_view name,
 }  // namespace normalization_detail
 
 std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
-  if (table.container != "gguf" || table.version == 0 || !table.architecture ||
-      table.route != RouteOperation::kCopyPart || table.tensors.size() > nd::kRuleLimit ||
-      table.keys.size() > 64 || table.auxiliary.size() > 8 || table.requirements.size() > 16)
+  if ((table.container != "gguf" && table.container != "exl3") || table.version == 0 ||
+      !table.architecture || table.route != RouteOperation::kCopyPart ||
+      table.tensors.size() > nd::kRuleLimit || table.keys.size() > 64 ||
+      table.auxiliary.size() > 8 || table.requirements.size() > 16)
     return Invalid();
   const auto& m = *table.architecture;
   const auto* registered = FindSourceMapping(table.container, m.architecture);
@@ -278,7 +318,10 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
       return Invalid();
   for (const auto& r : m.tensors)
     if (!nd::Pattern(r.pattern) || r.target || r.any_part || r.unbound ||
-        r.part != format::PartRole::kData)
+        (table.container == "gguf" && r.part != format::PartRole::kData) ||
+        (table.container == "exl3" && r.part != format::PartRole::kData &&
+         r.part != format::PartRole::kCodes && r.part != format::PartRole::kInputSigns &&
+         r.part != format::PartRole::kOutputSigns && r.part != format::PartRole::kCodebookMarker))
       return Invalid();
   const auto count = m.tensors.size() + table.tensors.size();
   const auto spelling = [&](std::size_t i) {
@@ -320,23 +363,27 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
   }
   for (std::size_t i = 0; i < table.auxiliary.size(); ++i) {
     const auto& a = table.auxiliary[i];
-    if (a.prefix.empty() || !a.prefix.ends_with('.') || !spec::IsSourceKey(a.prefix) ||
-        a.reason.empty() || a.reason.size() > spec::kMaxText)
+    if (a.prefix.empty() || (table.container == "gguf" && !a.prefix.ends_with('.')) ||
+        !spec::IsSourceKey(a.prefix) || a.reason.empty() || a.reason.size() > spec::kMaxText)
       return Invalid();
-    if (m.layer_count_key.starts_with(a.prefix) ||
-        (!m.layer_flags_key.empty() && m.layer_flags_key.starts_with(a.prefix)))
+    const auto matches_aux = [&](std::string_view key) {
+      return table.container == "gguf" ? key.starts_with(a.prefix) : key == a.prefix;
+    };
+    if (matches_aux(m.layer_count_key) ||
+        (!m.layer_flags_key.empty() && matches_aux(m.layer_flags_key)))
       return Invalid();
     for (const auto& slot : m.slots)
-      if (!slot.gate.empty() && slot.gate.starts_with(a.prefix)) return Invalid();
+      if (!slot.gate.empty() && matches_aux(slot.gate)) return Invalid();
     for (const auto& policy : m.policies)
-      if (!policy.gate.empty() && policy.gate.starts_with(a.prefix)) return Invalid();
+      if (!policy.gate.empty() && matches_aux(policy.gate)) return Invalid();
     for (const auto& p : m.params)
-      if (!p.key.empty() && p.key.starts_with(a.prefix)) return Invalid();
+      if (!p.key.empty() && matches_aux(p.key)) return Invalid();
     for (const auto& k : table.keys)
-      if (k.source.starts_with(a.prefix)) return Invalid();
+      if (matches_aux(k.source)) return Invalid();
     for (std::size_t j = 0; j < i; ++j)
-      if (a.prefix.starts_with(table.auxiliary[j].prefix) ||
-          table.auxiliary[j].prefix.starts_with(a.prefix))
+      if (table.container == "gguf" ? (a.prefix.starts_with(table.auxiliary[j].prefix) ||
+                                       table.auxiliary[j].prefix.starts_with(a.prefix))
+                                    : a.prefix == table.auxiliary[j].prefix)
         return Invalid();
   }
   for (const auto& r : table.requirements) {

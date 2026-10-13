@@ -384,10 +384,90 @@ constexpr Mapping kGgufMapping{
     .params = kGgufParams,
     .policies = kPolicies,
 };
+
+constexpr std::array kExl3Slots = {
+    SlotRule{.slot = "embedding_exl3", .site = Site::kEmbedding, .kind = "embedding.token"},
+    SlotRule{.slot = "attention_exl3", .site = Site::kLayer, .kind = "attention.dense"},
+    SlotRule{.slot = "ffn_exl3", .site = Site::kLayer, .kind = "ffn.glu"},
+    SlotRule{.slot = "final_norm_exl3", .site = Site::kFinalNorm, .kind = "norm.rms"},
+    SlotRule{.slot = "output_exl3", .site = Site::kOutput, .kind = "head.linear"},
+};
+
+// The EXL3 config.json omits head_dim when it equals hidden_size /
+// num_attention_heads (896 / 14 = 64 in the approved 0.5B EXL3 fixtures).
+// Emit the approved float-rounded rms_eps in component parameters while
+// checking config.json's 1e-6 and all remaining profile keys.
+constexpr std::array kExl3Params = {
+    FromKey(kStageSlot, "context", "qwen2.context_length", kInt),
+    FromKey(kStreamSlot, "width", "qwen2.embedding_length", kInt),
+    Name("attention_exl3", "placement", "pre"),
+    Real("attention_exl3", "eps", static_cast<double>(1e-6F)),
+    FromKey("attention_exl3", "heads", "qwen2.attention.head_count", kInt),
+    FromKey("attention_exl3", "kv_heads", "qwen2.attention.head_count_kv", kInt),
+    FromKey("attention_exl3", "key_dim", "qwen2.attention.key_length", kInt),
+    Int("attention_exl3", "key_dim", 64),
+    FromKey("attention_exl3", "value_dim", "qwen2.attention.key_length", kInt),
+    Int("attention_exl3", "value_dim", 64),
+    FromKey("attention_exl3", "scale", "qwen2.attention.key_length", kReal, Transform::kRsqrt),
+    Real("attention_exl3", "scale", 0.125),
+    Int("attention_exl3", "window", 0),
+    Name("attention_exl3", "rotation", "neox"),
+    FromKey("attention_exl3", "rope_dims", "qwen2.attention.key_length", kInt),
+    Int("attention_exl3", "rope_dims", 64),
+    FromKey("attention_exl3", "rope_base", "qwen2.rope.freq_base", kReal),
+    Real("attention_exl3", "rope_scale", 1.0),
+    Flag("attention_exl3", "qkv_bias", true),
+    Flag("attention_exl3", "scale_scores", true),
+    Flag("attention_exl3", "explicit_scores", false),
+    Flag("attention_exl3", "f16_projections", true),
+    Name("ffn_exl3", "placement", "pre"),
+    Real("ffn_exl3", "eps", static_cast<double>(1e-6F)),
+    Name("ffn_exl3", "activation", "silu"),
+    FromKey("ffn_exl3", "hidden", "qwen2.feed_forward_length", kInt),
+    Flag("ffn_exl3", "f16_inputs", true),
+    Real("final_norm_exl3", "eps", static_cast<double>(1e-6F)),
+    Flag("final_norm_exl3", "f16_output", true),
+    Flag("output_exl3", "f16_output", true),
+    RequireInt("qwen2.block_count", 24, false),
+    RequireInt("qwen2.context_length", 32768, false),
+    RequireInt("qwen2.embedding_length", 896, false),
+    RequireInt("qwen2.feed_forward_length", 4864, false),
+    RequireInt("qwen2.attention.head_count", 14, false),
+    RequireInt("qwen2.attention.head_count_kv", 2, false),
+    RequireInt("qwen2.attention.key_length", 64, true),
+    ParamRule{.key = "qwen2.rope.freq_base", .type = kReal, .value = {.real = 1000000.0}},
+    ParamRule{
+        .key = "qwen2.attention.layer_norm_rms_epsilon", .type = kReal, .value = {.real = 1e-6}},
+    RequireInt("qwen2.vocab_size", 151936, false),
+    Require("qwen2.hidden_act", "silu", false),
+    Require("qwen2.torch_dtype", "bfloat16", false),
+    ParamRule{.key = "qwen2.tie_word_embeddings", .type = kBool, .value = {.flag = true}},
+    ParamRule{.key = "qwen2.use_cache", .type = kBool, .value = {.flag = true}},
+    ParamRule{.key = "qwen2.use_sliding_window", .type = kBool, .value = {.flag = false}},
+    RequireInt("qwen2.max_window_layers", 21, false),
+    RequireInt("qwen2.sliding_window", 32768, false),
+    RequireInt("qwen2.bos_token_id", 151643, false),
+    RequireInt("qwen2.eos_token_id", 151645, false),
+    ParamRule{.key = "qwen2.attention_dropout", .type = kReal, .value = {.real = 0.0}},
+    ParamRule{.key = "qwen2.initializer_range", .type = kReal, .value = {.real = 0.02}},
+};
+
+constexpr Mapping kExl3Mapping{
+    .architecture = "qwen2",
+    .version = 1,
+    .pipeline = PipelineKind::kLlm,
+    .layer_count_key = "qwen2.block_count",
+    .layer_types = "g",
+    .slots = kExl3Slots,
+    .tensors = std::span(kTensors).subspan(15),
+    .params = kExl3Params,
+    .policies = kPolicies,
+};
 }  // namespace
 
 const Mapping& Qwen2Mapping() { return kMapping; }
 const Mapping& Qwen2GgufMapping() { return kGgufMapping; }
+const Mapping& Qwen2Exl3Mapping() { return kExl3Mapping; }
 
 std::expected<std::vector<SourceValue>, std::string> Qwen2V0Values(const model::Qwen2Profile& p) {
   if (p.weight_type != "F16" && p.weight_type != "exl3") {

@@ -30,6 +30,8 @@
 #include "import_fixtures.h"
 #include "model/dsv4.h"
 #include "model/qwen2.h"
+#include "model/qwen2_exl3.h"
+#include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
 #include "spec/mappings/dsv4.h"
@@ -1025,6 +1027,45 @@ TEST(ImportNormalizeQwen2Test, RefusesProfileShapeEncodingAndUnclassifiedMetadat
     if (mutation == 6) input.tensors.front().format.encoding = Encoding::kBF16;
     if (mutation == 7) input.tensors.back().dims[0] = 1536;
     if (mutation == 8) input.tensors.pop_back();
+    EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
+  }
+}
+
+TEST(ImportNormalizeQwen2Exl3Test, CompleteCaptured40And45TargetsMatchV0SpecAndPreserveParts) {
+  for (const bool rate_4_5 : {false, true}) {
+    auto input = test_support::Qwen2Exl3Checkpoint(rate_4_5);
+    auto cost = NormalizationBound(input);
+    ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+    EXPECT_EQ(cost->layers, 24U);
+    EXPECT_EQ(cost->payload_bytes, rate_4_5 ? 611173284ULL : 588866468ULL);
+    auto plan = Normalize(input, {cost->metadata_bytes, cost->work_units});
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    ASSERT_EQ(plan->routes().size(), 798U);
+    ASSERT_EQ(plan->spec().stages.size(), 1U);
+    EXPECT_EQ(plan->spec().stages[0].layers.size(), 24U);
+    auto values = spec::mappings::Qwen2V0Values(model::Qwen25Instruct05BExl3());
+    ASSERT_TRUE(values);
+    auto expected = spec::Synthesize(spec::mappings::Qwen2Mapping(), plan->canonical(), *values);
+    ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
+    EXPECT_EQ(plan->spec(), *expected);
+    EXPECT_TRUE(plan->applied_folds().empty());
+    EXPECT_FALSE(Normalize(input, {cost->metadata_bytes - 1, cost->work_units}));
+  }
+}
+
+TEST(ImportNormalizeQwen2Exl3Test, RefusesMalformedPartRolesRatesCodebooksAndMetadataDrift) {
+  for (unsigned mutation = 0; mutation != 10; ++mutation) {
+    auto input = test_support::Qwen2Exl3Checkpoint();
+    if (mutation == 0) input.quantization = "gguf";
+    if (mutation == 1) Value(input, "architectures", std::vector<std::string>{"LlamaForCausalLM"});
+    if (mutation == 2) Value(input, "tie_word_embeddings", false);
+    if (mutation == 3) Value(input, "use_sliding_window", true);
+    if (mutation == 4) Value(input, "rms_norm_eps", 1e-5);
+    if (mutation == 5) input.tensors[2].format.params.k_bits = 7;
+    if (mutation == 6) input.tensors[2].format.params.codebook = format::Exl3Codebook::kMul1;
+    if (mutation == 7) input.tensors[5].dims = {1};
+    if (mutation == 8) input.tensors[3].format.params.k_bits = 4;  // suh disagrees with trellis
+    if (mutation == 9) input.tensors.pop_back();
     EXPECT_FALSE(Normalize(std::move(input), kFunded)) << mutation;
   }
 }

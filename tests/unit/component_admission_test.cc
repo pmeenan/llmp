@@ -21,6 +21,7 @@
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
+#include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
 #include "runtime/calibration.h"
@@ -392,6 +393,46 @@ TEST(ComponentAdmissionQwen2Test, FullStoredTargetPreservesProfilePolicyAndClose
     if (mutation == 4) changed_model.stages[0].folds.push_back("norm.plus_one");
     EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
         << mutation;
+  }
+}
+
+TEST(ComponentAdmissionQwen2Exl3Test,
+     Approved40And45TargetsPreserveMultipartInventoryAndClosedSourceAuthority) {
+  for (const bool rate_4_5 : {false, true}) {
+    auto checkpoint = llmp::test_support::Qwen2Exl3Checkpoint(rate_4_5);
+    auto bound = llmp::import::NormalizationBound(checkpoint);
+    ASSERT_TRUE(bound) << (bound ? "" : bound.error().ToString());
+    auto normalized =
+        llmp::import::Normalize(std::move(checkpoint), {bound->metadata_bytes, bound->work_units});
+    ASSERT_TRUE(normalized) << (normalized ? "" : normalized.error().ToString());
+    std::array<llmp::artifact::Source, 2> origins{
+        Origins("config.json", rate_4_5 ? 923ULL : 996ULL,
+                rate_4_5 ? "dcd945f38ba6e7835c8c281a45c03d9a20759d03afe5761d09def8c62aa11f3c"
+                         : "966657b7e8c331ea16127a868eb6d6ff16ad0b16a5ee39d26279e12de0a3205c")[0],
+        Origins("model.safetensors", rate_4_5 ? 611257914ULL : 588951098ULL,
+                rate_4_5 ? "94c45f9838a56fbf23f43d0a04c47e187d840dd97f17b4a027a69a20339762bc"
+                         : "66b61bd1ca3ebb0fc1cea29148eda8bdaca45d232c6a7e319c6d2835b65c066b")[0]};
+    const auto& model = normalized->spec();
+    const auto& source = normalized->canonical();
+    const auto admitted = rt::CheckComponentAdmission(model, source, origins);
+    ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+    auto policy =
+        rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 1});
+    ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+    EXPECT_TRUE(policy->text.contains("max_decode_rows 1"));
+    for (unsigned mutation = 0; mutation != 6; ++mutation) {
+      auto changed_model = model;
+      auto changed_source = source;
+      auto changed_origins = origins;
+      if (mutation == 0) changed_origins[0].sha256[0] ^= 1;
+      if (mutation == 1) changed_origins[1] = changed_origins[0];
+      if (mutation == 2) changed_source.container = "gguf";
+      if (mutation == 3) changed_source.tensors[2].format.params.k_bits = 6;
+      if (mutation == 4) changed_source.tensors[2].part = fm::PartRole::kData;
+      if (mutation == 5) changed_model.stages[0].folds.push_back("norm.plus_one");
+      EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
+          << mutation;
+    }
   }
 }
 

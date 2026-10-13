@@ -22,6 +22,7 @@
 #include "model/gemma4.h"
 #include "model/gemma4_assistant.h"
 #include "model/qwen2.h"
+#include "model/qwen2_exl3.h"
 #include "model/qwen38.h"
 #include "runtime/gemma_profile.h"
 #include "spec/mappings/dsv4.h"
@@ -37,7 +38,17 @@ namespace {
 
 // The existing approved execution checkpoint, not the container's artifact
 // ID: publication does not broaden the family/profile or format domain.
-enum class ProfileId { kGemma2, kGemma3, kGemma26, kGemma31, kQwen2Gguf, kQwenGguf, kDsv4Gguf };
+enum class ProfileId {
+  kGemma2,
+  kGemma3,
+  kGemma26,
+  kGemma31,
+  kQwen2Gguf,
+  kQwen2Exl3_4_0,
+  kQwen2Exl3_4_5,
+  kQwenGguf,
+  kDsv4Gguf
+};
 struct Profile {
   ProfileId id;
   std::string_view architecture, source_name, source_sha256;
@@ -92,6 +103,40 @@ constexpr std::array kQwenOrigins{
     Origin{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
            "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250", 32382955968ULL}};
 
+constexpr Profile kQwen2Exl3_4_0{
+    ProfileId::kQwen2Exl3_4_0,
+    "qwen2",
+    {},
+    {},
+    0,
+    798,
+    0,
+    8192,
+    1,
+    "6168967c4decc23a1bc531830d6e10aa13382d7d545631c93caf59f2476c1c4a"};
+constexpr std::array kQwen2Exl3_4_0Origins{
+    Origin{"config.json", "966657b7e8c331ea16127a868eb6d6ff16ad0b16a5ee39d26279e12de0a3205c",
+           996ULL},
+    Origin{"model.safetensors", "66b61bd1ca3ebb0fc1cea29148eda8bdaca45d232c6a7e319c6d2835b65c066b",
+           588951098ULL}};
+
+constexpr Profile kQwen2Exl3_4_5{
+    ProfileId::kQwen2Exl3_4_5,
+    "qwen2",
+    {},
+    {},
+    0,
+    798,
+    0,
+    8192,
+    1,
+    "19bf365e055876d87db9c25a1109ac9a1be39b8a3be4e398dc8c6479e6c1f484"};
+constexpr std::array kQwen2Exl3_4_5Origins{
+    Origin{"config.json", "dcd945f38ba6e7835c8c281a45c03d9a20759d03afe5761d09def8c62aa11f3c",
+           923ULL},
+    Origin{"model.safetensors", "94c45f9838a56fbf23f43d0a04c47e187d840dd97f17b4a027a69a20339762bc",
+           611257914ULL}};
+
 constexpr Profile kDsv4Gguf{ProfileId::kDsv4Gguf,
                             "deepseek4",
                             {},
@@ -112,17 +157,20 @@ constexpr std::array kDsv4Origins{
 
 const Profile* Approved(std::string_view architecture, std::span<const artifact::Source> origins) {
   for (const auto& [profile, expected_origins] :
-       std::array{std::pair{&kQwenGguf, std::span<const Origin>(kQwenOrigins)},
+       std::array{std::pair{&kQwen2Exl3_4_0, std::span<const Origin>(kQwen2Exl3_4_0Origins)},
+                  std::pair{&kQwen2Exl3_4_5, std::span<const Origin>(kQwen2Exl3_4_5Origins)},
+                  std::pair{&kQwenGguf, std::span<const Origin>(kQwenOrigins)},
                   std::pair{&kDsv4Gguf, std::span<const Origin>(kDsv4Origins)}}) {
     if (architecture != profile->architecture || origins.size() != expected_origins.size())
       continue;
+    bool matched = true;
     for (const auto& expected : expected_origins)
       if (std::ranges::count_if(origins, [&](const auto& origin) {
             return origin.name == expected.name && origin.bytes.value() == expected.bytes &&
                    base::ToHex(origin.sha256) == expected.sha256;
           }) != 1)
-        return nullptr;
-    return profile;
+        matched = false;
+    if (matched) return profile;
   }
   if (origins.size() != 1) return nullptr;
   for (const auto& profile : kProfiles)
@@ -146,6 +194,9 @@ std::expected<std::vector<spec::SourceValue>, std::string> Values(const Profile&
   switch (profile.id) {
     case ProfileId::kQwen2Gguf:
       return spec::mappings::Qwen2V0Values(model::Qwen25Instruct05B());
+    case ProfileId::kQwen2Exl3_4_0:
+    case ProfileId::kQwen2Exl3_4_5:
+      return spec::mappings::Qwen2V0Values(model::Qwen25Instruct05BExl3());
     case ProfileId::kDsv4Gguf:
       return spec::mappings::Dsv4V0Values(model::Dsv4Flash());
     case ProfileId::kQwenGguf: {
@@ -171,16 +222,33 @@ std::expected<std::vector<spec::SourceValue>, std::string> Values(const Profile&
   return Refused("unknown profile");
 }
 std::expected<void, std::string> Inventory(const spec::Source& source, const Profile& profile) {
+  const bool exl3 =
+      profile.id == ProfileId::kQwen2Exl3_4_0 || profile.id == ProfileId::kQwen2Exl3_4_5;
   std::vector<const spec::SourceTensor*> sorted;
   sorted.reserve(source.tensors.size());
   for (const auto& t : source.tensors) {
     const auto& f = t.format;
-    if (!format::Validate(f) || t.part != format::PartRole::kData || f.stacked != 1 ||
-        f.params != format::EncodingParams{} || f.shape.rank < 1 || f.shape.rank > 3 ||
-        t.experts != (f.shape.rank == 3) ||
-        f.layout != (format::Info(f.encoding).quantized ? format::Layout::kGgmlBlocks
-                                                        : format::Layout::kDense))
+    if (!format::Validate(f) || f.stacked != 1)
       return Refused("native tensor layout, part, parameters or expert geometry differs");
+    if (exl3) {
+      const bool trellis = f.encoding == format::Encoding::kExl3Trellis;
+      const auto bits = f.params.k_bits;
+      if (t.experts ||
+          (trellis
+               ? (f.layout != format::Layout::kExl3Tiles || f.shape.rank != 2 ||
+                  t.part == format::PartRole::kData ||
+                  f.params.codebook != format::Exl3Codebook::kMcg || f.params.tensor_scale ||
+                  (bits != 4 && bits != 5 && bits != 6 && bits != 8))
+               : ((f.encoding != format::Encoding::kBF16 && f.encoding != format::Encoding::kF16) ||
+                  f.layout != format::Layout::kDense || t.part != format::PartRole::kData ||
+                  f.params != format::EncodingParams{} || f.shape.rank < 1 || f.shape.rank > 2)))
+        return Refused("native tensor layout, part, parameters or expert geometry differs");
+    } else if (t.part != format::PartRole::kData || f.params != format::EncodingParams{} ||
+               f.shape.rank < 1 || f.shape.rank > 3 || t.experts != (f.shape.rank == 3) ||
+               f.layout != (format::Info(f.encoding).quantized ? format::Layout::kGgmlBlocks
+                                                               : format::Layout::kDense)) {
+      return Refused("native tensor layout, part, parameters or expert geometry differs");
+    }
     sorted.push_back(&t);
   }
   std::ranges::sort(sorted, {}, [](const auto* tensor) { return tensor->name; });
@@ -190,6 +258,11 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const Pro
         .Update("\n")
         .Update(format::Info(tensor->format.encoding).name)
         .Update("\n");
+    if (exl3)
+      hash.Update(format::PartRoleName(tensor->part))
+          .Update(":")
+          .Update(std::to_string(tensor->format.params.k_bits))
+          .Update("\n");
     for (std::uint8_t i = 0; i < tensor->format.shape.rank; ++i)
       hash.Update(std::to_string(tensor->format.shape.ne[i])).Update(",");
     hash.Update("\n");
@@ -247,15 +320,17 @@ std::expected<void, std::string> CheckComponentAdmission(
     std::span<const artifact::Source> origins) {
   const auto* profile = Approved(source.architecture, origins);
   if (profile == nullptr) return Refused("source identity has no approved v1 execution profile");
-  if (source.container != "gguf" || !source.converter.empty() || !source.folds.empty() ||
-      source.tensors.size() != profile->tensors)
+  const bool exl3 =
+      profile->id == ProfileId::kQwen2Exl3_4_0 || profile->id == ProfileId::kQwen2Exl3_4_5;
+  if (source.container != (exl3 ? "exl3" : "gguf") || !source.converter.empty() ||
+      !source.folds.empty() || source.tensors.size() != profile->tensors)
     return Refused("source container, transforms or tensor inventory differs from its profile");
   if (model.pipeline != spec::PipelineKind::kLlm || model.stages.size() != 1 ||
       model.stages[0].role != spec::StageRole::kTarget || model.stages[0].artifact != 0)
     return Refused("the stored pipeline is not an approved standalone target");
   if (auto inventory = Inventory(source, *profile); !inventory) return inventory;
   const auto& stage = model.stages.front();
-  if (profile->id != ProfileId::kQwen2Gguf && profile->id != ProfileId::kQwenGguf &&
+  if (profile->id != ProfileId::kQwen2Gguf && !exl3 && profile->id != ProfileId::kQwenGguf &&
       profile->id != ProfileId::kDsv4Gguf &&
       (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
        stage.heads.output->weights.size() != 1 ||

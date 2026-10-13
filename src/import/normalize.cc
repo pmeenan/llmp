@@ -45,8 +45,10 @@ struct Key {
   std::uint32_t auxiliary = 0;
 };
 std::optional<Key> Classify(const SourceMapping& t, std::string_view key) {
-  if (key == "general.architecture" || key == "general.alignment" || key == "split.no" ||
-      key == "split.count" || key == "split.tensors.count")
+  if ((t.container == "gguf" &&
+       (key == "general.architecture" || key == "general.alignment" || key == "split.no" ||
+        key == "split.count" || key == "split.tensors.count")) ||
+      (t.container == "exl3" && key == "model_type"))
     return Key{.kind = MetadataClass::kStructural, .canonical = key};
   auto canonical = key;
   for (const auto& alias : t.keys)
@@ -57,7 +59,8 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key) {
   if (const auto types = nd::KeyTypes(*t.architecture, canonical); types != 0)
     return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = types};
   for (std::size_t i = 0; i < t.auxiliary.size(); ++i)
-    if (key.starts_with(t.auxiliary[i].prefix))
+    if (t.container == "gguf" ? key.starts_with(t.auxiliary[i].prefix)
+                              : key == t.auxiliary[i].prefix)
       return Key{.auxiliary = static_cast<std::uint32_t>(i)};
   return std::nullopt;
 }
@@ -128,6 +131,7 @@ std::optional<std::uint64_t> MetaBytes(const MetaValue& value) {
 
 struct ResolvedName {
   std::string_view pattern{}, digits{};
+  format::PartRole part = format::PartRole::kData;
   bool experts = false;
 };
 std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view name,
@@ -136,14 +140,14 @@ std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view 
   for (const auto& rule : t.architecture->tensors)
     if (const auto match = nd::Match(rule.pattern, name, layers)) {
       if (found && found->pattern != rule.pattern) return std::nullopt;
-      found = ResolvedName{rule.pattern, match->digits, rule.experts};
+      found = ResolvedName{rule.pattern, match->digits, rule.part, rule.experts};
     }
   for (const auto& alias : t.tensors)
     if (const auto match = nd::Match(alias.source, name, layers)) {
       if (found) return std::nullopt;
       for (const auto& rule : t.architecture->tensors)
         if (rule.pattern == alias.canonical)
-          found = ResolvedName{alias.canonical, match->digits, rule.experts};
+          found = ResolvedName{alias.canonical, match->digits, rule.part, rule.experts};
     }
   return found;
 }
@@ -199,7 +203,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   if (auto table = ValidateSourceMapping(t); !table) return std::unexpected(table.error());
   const auto& m = *t.architecture;
   if (s.container != t.container || s.architecture != m.architecture || !s.role.empty() ||
-      !s.quantization.empty() || !s.components.empty() || !s.skipped.empty())
+      s.quantization != (t.container == "exl3" ? std::string_view("exl3") : std::string_view{}) ||
+      !s.components.empty() || !s.skipped.empty())
     return Bad("source is outside the normalization domain", ItemKind::kNone, kNoItem,
                Rule::kUnsupported);
   if (s.files.empty() || s.files.size() > kMaxGgufSplits || s.metadata.size() > kMaxMetadata ||
@@ -269,7 +274,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
                      Rule::kUnsupported);
     } else if (key->kind == MetadataClass::kStructural) {
       const auto* integer = std::get_if<std::int64_t>(&e.value);
-      if (e.key == "general.architecture") {
+      if (e.key == "general.architecture" || e.key == "model_type") {
         const auto* name = std::get_if<std::string>(&e.value);
         if (!name || *name != s.architecture)
           return Bad("source architecture disagrees", ItemKind::kKey, i);
@@ -286,6 +291,17 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         split_count = *integer;
       else
         split_tensors = *integer;
+    } else if (t.container == "exl3") {
+      if (e.key == "architectures") {
+        const auto* list = std::get_if<std::vector<std::string>>(&e.value);
+        if (!list || list->size() != 1 || (*list)[0] != "Qwen2ForCausalLM")
+          return Bad("EXL3 source architectures disagree", ItemKind::kKey, i);
+      } else {
+        const auto* text = std::get_if<std::string>(&e.value);
+        if (e.key != "transformers_version" || !text || text->empty() ||
+            !NoControlCharacters(*text))
+          return Bad("EXL3 auxiliary metadata has the wrong type", ItemKind::kKey, i);
+      }
     }
   }
   // Borrow the already classified source values only during preflight. This
@@ -319,6 +335,8 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
               (rule.type == spec::ValueType::kReal && static_cast<double>(*i) == rule.value.real);
     if (const auto* d = std::get_if<double>(value))
       equal = rule.type == spec::ValueType::kReal && *d == rule.value.real;
+    if (const auto* flag = std::get_if<bool>(value))
+      equal = rule.type == spec::ValueType::kBool && *flag == rule.value.flag;
     if (const auto* text = std::get_if<std::string>(value))
       equal = rule.type == spec::ValueType::kString && *text == rule.value.text;
     if (!equal) return Bad("source profile requirement disagrees");
@@ -390,12 +408,17 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
           return Bad("layer selector is not ordered unique in-range layers", ItemKind::kKey, i);
     }
   }
-  if ((split_no && *split_no != 0) ||
-      (split_count &&
-       (*split_count <= 0 || static_cast<std::uint64_t>(*split_count) != s.files.size())) ||
-      (s.files.size() > 1 && (!split_count || !split_no)) ||
-      (split_tensors &&
-       (*split_tensors < 0 || static_cast<std::uint64_t>(*split_tensors) != s.tensors.size())))
+  if (t.container == "exl3") {
+    if (s.files.size() > 2 || (s.files.size() == 2 && (s.files[0].name != "model.safetensors" ||
+                                                       s.files[1].name != "config.json")))
+      return Bad("EXL3 source files differ from the single-shard contract", ItemKind::kNone,
+                 kNoItem, Rule::kShards);
+  } else if ((split_no && *split_no != 0) ||
+             (split_count &&
+              (*split_count <= 0 || static_cast<std::uint64_t>(*split_count) != s.files.size())) ||
+             (s.files.size() > 1 && (!split_count || !split_no)) ||
+             (split_tensors && (*split_tensors < 0 ||
+                                static_cast<std::uint64_t>(*split_tensors) != s.tensors.size())))
     return Bad("split structure disagrees with checkpoint files", ItemKind::kNone, kNoItem,
                Rule::kShards);
   std::uint64_t maximum = 0;
@@ -419,26 +442,68 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     if (tensor.name.empty() || tensor.name.size() > kMaxNameBytes || !name)
       return Bad("unclassified tensor or noncanonical layer name", ItemKind::kTensor, i);
     const auto parts = format::PartsOf(tensor.format);
-    if (!parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData ||
-        tensor.part != format::PartRole::kData || tensor.experts != name->experts ||
-        tensor.format.stacked != 1 || tensor.dims.size() > format::kMaxDims ||
-        tensor.dims.size() != tensor.format.shape.rank ||
-        !format::Info(tensor.format.encoding).ggml ||
-        tensor.dtype != format::Info(tensor.format.encoding).name ||
-        !std::ranges::equal(tensor.dims,
-                            std::span(tensor.format.shape.ne).first(tensor.dims.size())))
-      return Bad("tensor is not a complete GGUF data part", ItemKind::kTensor, i);
+    const auto part = parts ? parts->Find(tensor.part) : std::nullopt;
+    if (!part || tensor.part != name->part || tensor.experts != name->experts ||
+        tensor.format.stacked != 1 || tensor.dims.size() > format::kMaxDims)
+      return Bad("tensor is not a complete source part", ItemKind::kTensor, i);
     if (!t.encodings.empty() && !std::ranges::contains(t.encodings, tensor.format.encoding))
       return Bad("tensor encoding is outside this source domain", ItemKind::kTensor, i);
-    const auto& encoding = format::Info(tensor.format.encoding);
-    const auto layout = !encoding.quantized                       ? format::Layout::kDense
-                        : encoding.id == format::Encoding::kNvfp4 ? format::Layout::kGgmlNvfp4Blocks
-                                                                  : format::Layout::kGgmlBlocks;
-    if (tensor.format.layout != layout)
-      return Bad("tensor layout is not the GGUF encoding layout", ItemKind::kTensor, i);
+    if (t.container == "exl3") {
+      if (tensor.part == format::PartRole::kData) {
+        const bool bias = tensor.name.ends_with(".bias");
+        const auto expected_encoding = bias ? format::Encoding::kF16 : format::Encoding::kBF16;
+        if (parts->size() != 1 || tensor.format.encoding != expected_encoding ||
+            tensor.format.layout != format::Layout::kDense ||
+            tensor.format.params != format::EncodingParams{} ||
+            tensor.dims.size() != tensor.format.shape.rank ||
+            (tensor.dtype != (bias ? "F16" : "BF16") && tensor.dtype != (bias ? "f16" : "bf16")))
+          return Bad("EXL3 dense tensor disagrees with its role format", ItemKind::kTensor, i);
+        for (std::size_t d = 0; d < tensor.dims.size(); ++d)
+          if (tensor.dims[d] != tensor.format.shape.ne[tensor.dims.size() - 1 - d])
+            return Bad("EXL3 dense tensor shape disagrees with its format", ItemKind::kTensor, i);
+      } else {
+        const auto bits = tensor.format.params.k_bits;
+        const auto k = tensor.format.shape.ne[0], n = tensor.format.shape.ne[1];
+        if (parts->size() != 4 || tensor.format.encoding != format::Encoding::kExl3Trellis ||
+            tensor.format.layout != format::Layout::kExl3Tiles || tensor.format.shape.rank != 2 ||
+            tensor.format.params.codebook != format::Exl3Codebook::kMcg ||
+            tensor.format.params.tensor_scale || (bits != 4 && bits != 5 && bits != 6 && bits != 8))
+          return Bad("EXL3 trellis tensor disagrees with its role format", ItemKind::kTensor, i);
+        const bool dims_ok =
+            tensor.part == format::PartRole::kCodes
+                ? ((tensor.dtype == "I16" || tensor.dtype == "exl3_trellis") &&
+                   tensor.dims == std::vector<std::uint64_t>{k / 16, n / 16, 16ULL * bits})
+            : tensor.part == format::PartRole::kInputSigns
+                ? ((tensor.dtype == "F16" || tensor.dtype == "exl3_trellis") &&
+                   tensor.dims == std::vector<std::uint64_t>{k})
+            : tensor.part == format::PartRole::kOutputSigns
+                ? ((tensor.dtype == "F16" || tensor.dtype == "exl3_trellis") &&
+                   tensor.dims == std::vector<std::uint64_t>{n})
+                : (tensor.part == format::PartRole::kCodebookMarker &&
+                   (tensor.dtype == "I32" || tensor.dtype == "exl3_trellis") &&
+                   tensor.dims.empty());
+        if (!dims_ok)
+          return Bad("EXL3 trellis part dtype or dimensions disagree", ItemKind::kTensor, i);
+      }
+    } else {
+      if (parts->size() != 1 || (*parts)[0].role != format::PartRole::kData ||
+          tensor.dims.size() != tensor.format.shape.rank ||
+          !format::Info(tensor.format.encoding).ggml ||
+          tensor.dtype != format::Info(tensor.format.encoding).name ||
+          !std::ranges::equal(tensor.dims,
+                              std::span(tensor.format.shape.ne).first(tensor.dims.size())))
+        return Bad("tensor is not a complete GGUF data part", ItemKind::kTensor, i);
+      const auto& encoding = format::Info(tensor.format.encoding);
+      const auto layout = !encoding.quantized ? format::Layout::kDense
+                          : encoding.id == format::Encoding::kNvfp4
+                              ? format::Layout::kGgmlNvfp4Blocks
+                              : format::Layout::kGgmlBlocks;
+      if (tensor.format.layout != layout)
+        return Bad("tensor layout is not the GGUF encoding layout", ItemKind::kTensor, i);
+    }
     const auto& extent = tensor.extent;
-    if (extent.file >= s.files.size() || extent.bytes != (*parts)[0].bytes ||
-        extent.offset > s.files[extent.file].bytes ||
+    if ((t.container == "exl3" ? extent.file != 0 : extent.file >= s.files.size()) ||
+        extent.bytes != part->bytes || extent.offset > s.files[extent.file].bytes ||
         extent.bytes > s.files[extent.file].bytes - extent.offset)
       return Bad("tensor extent disagrees with its format or file", ItemKind::kTensor, i);
     payload = a.Add(payload, extent.bytes);
@@ -529,7 +594,8 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
                                        .part = tensor.part,
                                        .experts = tensor.experts});
     const auto parts = format::PartsOf(tensor.format);
-    plan.routes_.push_back({static_cast<std::uint32_t>(i), tensor.extent, (*parts)[0].readable});
+    const auto part = parts->Find(tensor.part);
+    plan.routes_.push_back({static_cast<std::uint32_t>(i), tensor.extent, part->readable});
   }
   std::vector<std::uint32_t> names(input.tensors.size()), scratch(input.tensors.size());
   std::iota(names.begin(), names.end(), 0U);
