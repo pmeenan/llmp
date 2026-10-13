@@ -165,9 +165,60 @@ std::expected<std::shared_ptr<const engine::NumericalDomain>, std::string> Servi
   return std::shared_ptr<const engine::NumericalDomain>(owner, &owner->domain);
 }
 
+// Called under the Server's parser loan after source/schema validation, and
+// before any BuildStep/lowering. Graph maxima are the existing IR contract;
+// commit roots come from the actual component inventory and owner envelope.
+std::expected<std::uint64_t, std::string> ServingConstructionBytes(const spec::ModelSpec& model,
+                                                                   const ja::Artifact& target,
+                                                                   const ja::Artifact* draft,
+                                                                   const ModelSettings& settings) {
+  auto saves = components::CommitSaveBound(model, settings.max_slots.value);
+  if (!saves) return Error(saves.error());
+  constexpr std::uint64_t nodes = ir::Graph::kMaxNodes;
+  constexpr std::uint64_t tensors = ir::Graph::kMaxTensors;
+  // Twelve overlapping graph representations (construction/clone/plan facts
+  // and the current/future compiler), reader indexes, and descriptor arena.
+  // Cache/recording lifetimes still pay PlanAccount independently.
+  std::uint64_t descriptors = tensors + 16 + 31 * nodes;
+  std::uint64_t extra = 0;
+  if (__builtin_mul_overflow(*saves, std::uint64_t{4}, &extra) ||
+      __builtin_add_overflow(descriptors, extra, &descriptors))
+    return Error("component saved-root descriptor payment overflows");
+  std::uint64_t bytes = 12 * (480 * nodes + 192 * tensors) + 4096 * (nodes + tensors);
+  const auto add = [&](std::uint64_t count, std::uint64_t unit) {
+    std::uint64_t part = 0;
+    return !__builtin_mul_overflow(count, unit, &part) &&
+           !__builtin_add_overflow(bytes, part, &bytes);
+  };
+  if (ggml_tensor_overhead() > 512 || !add(descriptors, 512 + 1024 + 32))
+    return Error("component descriptor ABI or payment exceeds its construction inventory");
+  // The complete spec and canonical/digest copies, parameter/role maps and
+  // retained source bindings. Serialization is still inside the parser loan.
+  const auto canonical = spec::ToJson(model);
+  if (!add(canonical.size(), 64) || !add(1, std::uint64_t{64} << 20U))
+    return Error("component spec construction payment overflows");
+  const auto source = [&](const ja::Artifact& artifact) {
+    if (!add(artifact.resources().size() + artifact.expert_arrays().size(), 16384) ||
+        !add(artifact.layout().groups.size(), 4096) ||
+        !add(artifact.files().size() + artifact.sources().size(), 4096))
+      return false;
+    for (const auto& file : artifact.files())
+      if (file.role != ja::FileRole::kShard && !add(file.bytes.value(), 8)) return false;
+    for (const auto& group : artifact.layout().groups)
+      if (!add(group.chunks, 4096)) return false;
+    for (const auto& array : artifact.expert_arrays())
+      if (!add(array.count, 2048)) return false;
+    return true;
+  };
+  if (!source(target) || (draft && !source(*draft)))
+    return Error("component retained source inventory overflows");
+  return bytes;
+}
+
 struct ComponentHold {
   // First: refund only after all graph, binding and backend owners die.
   std::shared_ptr<ConstructionCharge> construction;
+  std::shared_ptr<engine::ExecutionMetadataAllowance> automatic_construction;
   std::shared_ptr<ConstructionCharge> kv_encoding_charge;
   std::unique_ptr<StoredBindingPayment> stored_payment;
   spec::ModelSpec spec;
@@ -632,6 +683,16 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (auto valid = components::ValidateSpec(hold->spec, hold->tables); !valid) {
       return Error(valid.error());
     }
+    if (options.automatic_startup_cap != 0) {
+      if (!options.diagnostic_solo || !options.derive_execution_domain || construction)
+        return Error("automatic construction requires the derived shared serving route");
+      auto bytes =
+          ServingConstructionBytes(hold->spec, *artifact, drafter ? &*drafter : nullptr, settings);
+      if (!bytes) return Error(bytes.error());
+      auto owner = serving_support::AdmitStartup(node, *bytes, options.automatic_startup_cap);
+      if (!owner) return Error(owner.error());
+      hold->automatic_construction = std::move(*owner);
+    }
     // The spec bound to the artifacts its stages run from (each stage's
     // index into them; D-105's layout identity and the plans' key): the
     // target's ID, then the drafter's.
@@ -942,6 +1003,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     engine::PagedWeights* paged = weights.get();
     engine::PagedWeights* drafter_paged = nullptr;
     EngineLlmParts parts;
+    if (hold->automatic_construction) {
+      parts.startup_host_bytes = hold->automatic_construction->capacity() +
+                                 engine::ExecutionMetadataAllowance::OverheadBytes();
+      parts.startup_cap = options.automatic_startup_cap;
+    }
     parts.config.slots = {.model = settings.name,
                           .slots = slots,
                           .stages = {{.name = "target", .layout = target, .read_align = 0}},

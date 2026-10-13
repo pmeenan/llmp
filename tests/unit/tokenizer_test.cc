@@ -289,6 +289,28 @@ std::vector<TokenId> Encode(const tok::Tokenizer& t, std::string_view text,
 
 TokenId Byte(char c) { return static_cast<unsigned char>(c); }
 
+TEST(Create, ConstructionPaymentCountsMovedCapacitiesAndSpecialTrie) {
+  Vocab v;
+  auto first = tok::Tokenizer::ConstructionBytes(v.spec);
+  ASSERT_TRUE(first);
+  v.spec.tokens.reserve(v.spec.tokens.capacity() + 1024);
+  auto capacity = tok::Tokenizer::ConstructionBytes(v.spec);
+  ASSERT_TRUE(capacity);
+  EXPECT_GE(*capacity - *first, 1024 * sizeof(std::string));
+  v.Add("<|startup-special|>", TokenKind::kControl);
+  v.Merge("a", "b");
+  auto full = tok::Tokenizer::ConstructionBytes(v.spec);
+  ASSERT_TRUE(full);
+  EXPECT_GT(*full, *capacity);
+  auto tokenizer = tok::Tokenizer::Create(std::move(v.spec));
+  ASSERT_TRUE(tokenizer) << tokenizer.error().ToString();
+  EXPECT_TRUE(tokenizer->Find("<|startup-special|>"));
+  tok::TokenizerSpec malformed;
+  EXPECT_FALSE(tok::Tokenizer::ConstructionBytes(malformed));
+  malformed.tokens.push_back("a");
+  EXPECT_FALSE(tok::Tokenizer::ConstructionBytes(malformed));
+}
+
 TEST(Bpe, MergesByRankThenLeftmost) {
   Vocab v;
   v.spec.pre_tokenizer = PreTokenizer::kQwen2;

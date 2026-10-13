@@ -67,6 +67,7 @@
 #include "config/node_config.h"
 #include "config/storage_roles.h"
 #include "engine/checkpoint_file.h"
+#include "engine/execution_contract.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
 #include "execution/adaptive_depth.h"
@@ -252,6 +253,8 @@ class Served {
   // is charged inside the budget and given back through the node's one
   // reclaim order (Server::Reclaim); a swap keeps them (D-090 as amended).
   virtual std::uint64_t plan_floor_bytes() const { return 0; }
+  // Actual source-derived startup reservations, separate from live plan charges.
+  virtual std::uint64_t startup_host_bytes() const { return 0; }
   // What its kept graphs took of the device's free memory at their
   // captures (the count's check, for the teardown's log).
   virtual std::uint64_t graph_measured_bytes() const { return 0; }
@@ -1337,7 +1340,8 @@ class Llm : public Served {
   // The model's tokenizer, reasoning markers (its settings') and chat
   // template, from its artifact or the files `entry` names
   // (model_settings.h ReadChatAssets); then UseTemplate.
-  Status UseChatAssets(const artifact::Artifact& artifact, const config::ModelEntry& entry);
+  Status UseChatAssets(const artifact::Artifact& artifact, const config::ModelEntry& entry,
+                       std::uint64_t startup_cap = 0);
   // Chooses how the model's chat template renders (chat::ChatTemplate) and
   // its stop tokens (after the tokenizer); an error refuses the model.
   Status UseTemplate(std::string_view text);
@@ -1348,6 +1352,7 @@ class Llm : public Served {
   std::uint32_t context_ = config::kDefaultContext;
   bool speculate_ = false;
   bool bos_ = false;  // EncodeText puts BOS first
+  std::shared_ptr<engine::ExecutionMetadataAllowance> chat_startup_{};
   std::unique_ptr<tokenizer::Tokenizer> tokenizer_;
   std::optional<chat::ChatTemplate> template_;
   std::size_t render_bytes_ = chat::jinja::Limits{}.max_output_bytes;  // set by UseTemplate

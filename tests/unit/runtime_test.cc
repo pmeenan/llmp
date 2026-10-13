@@ -1017,6 +1017,23 @@ TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
   EXPECT_EQ(GuardReserve({.host_inputs = kGiB, .plans = plans}), kGiB + plans + kUncountedMargin);
 }
 
+TEST(StartupHostAllowanceTest, ParserLoanIsIndependentOfMutableFileSizes) {
+  using llmp::runtime::StartupBootstrapBytes;
+  auto one = StartupBootstrapBytes(1);
+  auto two = StartupBootstrapBytes(2);
+  ASSERT_TRUE(one);
+  ASSERT_TRUE(two);
+  EXPECT_GT(*one, 0U);
+  EXPECT_GE(*two, *one);
+  EXPECT_EQ(*one % (2U << 20U), 0U);
+  EXPECT_FALSE(StartupBootstrapBytes(0));
+  EXPECT_FALSE(StartupBootstrapBytes(UINT64_MAX));
+  EXPECT_FALSE(StartupBootstrapBytes(1, UINT64_MAX));
+  auto configured = StartupBootstrapBytes(1, 2U << 20U);
+  ASSERT_TRUE(configured);
+  EXPECT_GT(*configured, *one);
+}
+
 TEST(StartupHostAllowanceTest, RefusesBeforeNodeOrMetadataEffects) {
   using llmp::runtime::CheckStartupHostAllowance;
   constexpr std::uint64_t gib = std::uint64_t{1} << 30U;
@@ -1222,6 +1239,20 @@ TEST(ServiceDiagnostics, CompletePaymentIsRequiredBeforeOptionsChange) {
   EXPECT_TRUE(options.diagnostic_component_solo);
   EXPECT_EQ(options.diagnostic_startup_host_bytes, 2097152);
   EXPECT_EQ(options.diagnostic_budget_cap_bytes, 8388608);
+}
+
+TEST(ServiceDiagnostics, AutoKeepsStrictTupleAndNumericCompatibility) {
+  using namespace llmp::runtime;
+  ServingOptions options;
+  EXPECT_FALSE(ApplyServiceDiagnostics(options, "1", "auto", std::nullopt));
+  EXPECT_FALSE(ApplyServiceDiagnostics(options, "1", "auto", "2097153"));
+  EXPECT_FALSE(options.diagnostic_auto_startup);
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "auto", "8388608"));
+  EXPECT_TRUE(options.diagnostic_auto_startup);
+  EXPECT_EQ(options.diagnostic_startup_host_bytes, 0U);
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "2097152", "8388608"));
+  EXPECT_FALSE(options.diagnostic_auto_startup);
+  EXPECT_EQ(options.diagnostic_startup_host_bytes, 2097152U);
 }
 
 TEST(ServiceRetirement, FailedFenceExitsBeforeOwnerDestruction) {

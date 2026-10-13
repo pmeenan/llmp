@@ -112,6 +112,11 @@ struct StageInstances {
 std::expected<StageInstances, std::string> InstancesOf(const spec::ModelSpec& spec,
                                                        std::size_t stage);
 
+// Allocation-free upper bound across all stages, including injected components.
+// Source declarations bound roots; owner count is the actual serving envelope.
+std::expected<std::uint64_t, std::string> CommitSaveBound(const spec::ModelSpec& model,
+                                                          std::uint32_t owners);
+
 // Validated, conservative all-role inventory, without building a graph. Parts
 // borrow only for the synchronous visitor call. References use the same owner
 // resolver as BuildStep, including borrowed and injected stage weights.

@@ -75,7 +75,7 @@ Status EngineLlm::Setup() {
   if (entry_.artifact) {
     auto artifact = OpenInstalled(store_, *entry_.artifact);
     if (!artifact) return Error(artifact.error());
-    if (auto used = UseChatAssets(*artifact, entry_); !used) return used;
+    if (auto used = UseChatAssets(*artifact, entry_, parts->startup_cap); !used) return used;
   }
   logit_width_ = parts->logit_width;
   caps_ = parts->caps;
@@ -90,6 +90,7 @@ Status EngineLlm::Setup() {
   architecture_ = parts->architecture;
   chat_ = std::move(parts->chat);
   keep_ = std::move(parts->keep);
+  startup_host_bytes_ = parts->startup_host_bytes;
   // Control tokens that end a chat reply (a channel the slice does not
   // parse), where the tokenizer has them.
   chat_stops_.clear();

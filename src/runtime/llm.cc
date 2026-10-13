@@ -534,10 +534,37 @@ Status Llm::UseTemplate(std::string_view text) {
   return {};
 }
 
-Status Llm::UseChatAssets(const ja::Artifact& artifact, const config::ModelEntry& entry) {
+Status Llm::UseChatAssets(const ja::Artifact& artifact, const config::ModelEntry& entry,
+                          std::uint64_t startup_cap) {
   auto assets = ReadChatAssets(artifact, entry);
   if (!assets) {
     return std::unexpected(assets.error());
+  }
+  if (startup_cap != 0) {
+    auto bytes = tokenizer::Tokenizer::ConstructionBytes(assets->spec);
+    if (!bytes) return Error(bytes.error().ToString());
+    // Template AST nodes, strings/edges and old+new parse scratch, plus
+    // the bounded native probe renderer's live values and output buffers.
+    constexpr chat::jinja::Limits limits;
+    std::size_t longest = 0;
+    for (const auto& token : assets->spec.tokens) longest = std::max(longest, token.size());
+    // Decoding cannot lengthen a token's original UTF-8 representation. Match
+    // UseTemplate's actual context-dependent output/live limits before Create.
+    const auto output = RenderBytes(context_, longest,
+                                    assets->spec.normalization == tokenizer::Normalization::kNfc);
+    std::uint64_t live = 0, outputs = 0;
+    if (__builtin_mul_overflow(output, std::uint64_t{2}, &live) ||
+        __builtin_mul_overflow(output, std::uint64_t{3}, &outputs))
+      return Error("chat rendering construction payment overflows");
+    std::uint64_t template_bytes = 2048 * limits.max_nodes + 4 * limits.max_template_bytes;
+    if (__builtin_add_overflow(template_bytes, std::max<std::uint64_t>(limits.max_live_bytes, live),
+                               &template_bytes) ||
+        __builtin_add_overflow(template_bytes, outputs, &template_bytes) ||
+        __builtin_add_overflow(*bytes, template_bytes, &*bytes))
+      return Error("chat asset construction payment overflows");
+    auto paid = serving_support::AdmitStartup(*node_, *bytes, startup_cap);
+    if (!paid) return Error(paid.error());
+    chat_startup_ = std::move(*paid);
   }
   auto created = tokenizer::Tokenizer::Create(std::move(assets->spec));
   if (!created) {

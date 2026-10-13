@@ -79,6 +79,8 @@ struct ServingOptions {
   // Cataloged before artifact metadata or Setup, retained until node death.
   // Requires a known physical budget cap; zero leaves ordinary starts alone.
   std::uint64_t diagnostic_startup_host_bytes = 0;
+  // Internal auto mode derives a parser loan and actual source construction.
+  bool diagnostic_auto_startup = false;
   // Internal matched plain-token qualification; absent from CLI/TOML/HTTP.
   // Unset uses each runner's ordinary policy.
   std::optional<bool> diagnostic_plain_device_tokens;

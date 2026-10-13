@@ -556,6 +556,86 @@ witness, exact completion counts, positive prefix reuse and complete retirement.
 Raw evidence remains in `qwen-gguf-c4-models01`. This closes the bounded ordinary
 C2/C4 HTTP coverage for both native and GGUF sources; it does not qualify larger
 histories, automatic public admission, broader same-quantized-reference quality
-or the fixed-baseline family speed/swap gate. The next shared work is deriving
-startup accounting from actual source/settings, followed by the existing family
-quality and representative frozen-geometry screen, not another small HTTP case.
+or the fixed-baseline family speed/swap gate. Automatic internal startup accounting and the existing family-geometry screen
+follow below; public selection and the family gates remain separate.
+
+
+## Automatic startup accounting and family geometry
+
+2026-10-13, Spark A. The internal shared selector accepts
+`LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto` alongside its existing selector/node-cap
+fields. Numeric grants and public model defaults are unchanged. Initial parsing
+is paid from enforced reader/parser ceilings, including duplicate-key scratch;
+it does not trust a disconnected file-size observation. Actual validated
+source/settings and component-declared saved-root bounds then pay compiler/domain
+metadata, while tokenizer capacities and chat geometry pay retained assets.
+Those grants exist before the temporary parsing extent is released, after local
+parser/settings owners die and before scheduling starts. Existing catalog,
+plan/capture, future, workspace and growing-state accounting remain active.
+
+The existing family harness uses native target `c4fb47a9…` and MTP `8600a998…`,
+context 33,792, chunk 4,096 and four slots. Its requested draft-vocabulary cap
+65,536 resolves to the artifact's 47,172 selected rows. The completed quality
+process retires its parsing loan and reports 6,708,789,248 retained host bytes;
+its complete allocation guard passes. Two greedy replies each complete 128
+tokens. Literal prompt scoring, through existing one-row Decode/full-head
+execution, records 996 target losses: mean NLL **2.756445494533136**, PPL
+**15.743782013599764**. No external same-quantized-checkpoint reference on these
+996 coordinates is established by this run; historical legacy-runtime quality
+is migration context, not a replacement reference oracle.
+
+The original wrapper receipt is FAIL because its settings observer expected the
+requested vocabulary cap rather than the source-backed effective row count.
+Native quality exited zero, and source guards, complete process/GPU retirement
+and zero memory events passed. An independently reviewed offline audit corrects
+only that observer; completed model work is not repeated.
+
+The remaining existing `run --prime --session auto-locator` completes one warm
+and two measured passes, each with C1/C2/C4. All 21 requests finish 128 tokens
+with zero cached prompt tokens: 2,688 outputs and actual prompt lengths
+6,835–8,478. This configures the full family envelope; it does not fill the
+33,792-token context. The two measured-pass averages are:
+
+| Cohort | Prefill seconds | Decode tokens/s | Wall tokens/s |
+| --- | ---: | ---: | ---: |
+| C1 | 3.203883 | 48.454922 | 21.907664 |
+| C2 | 7.121829 | 61.824115 | 22.609637 |
+| C4 | 16.755124 | 65.637934 | 21.334918 |
+
+The C4 decode observation is about 14.7% below the historical frozen baseline's
+76.93 tokens/s; prefill is about 6.0% longer and wall rate about 8.6% lower.
+This single prime locates a meaningful gap for investigation, not a matched
+statistical verdict. Cumulative counters show 270 joined waves / 744 units,
+36 built and cached futures, eight state preparations, and zero runner refusals
+or coverage violations. The existing memory sampler records an 89.8664 GiB
+drop in system `MemAvailable`; the separate cgroup process/page-cache peak is
+6,714,793,984 bytes. Neither is a device-only measurement. Both processes pass
+hardware-fit admission, retain the same 6,708,789,248-byte startup grant, exit
+TERM/zero and positively retire their groups/GPU work, with zero memory-limit
+or OOM events. The recipe retains a 104 GiB node cap, 112 GiB zero-swap outer
+ceiling and a checked live 6 GiB physical margin.
+
+Prime result:
+`6861fd4980be4cd44de000cdc7efa24648117ba048dd975c30d08165819396d4`.
+Raw evidence remains in `shared-startup-admission-models03`; it runs only the
+previously unstarted prime. Replay uses the existing `speed_gate.py quality`
+and `run --prime` commands with the frozen family config and internal `auto`
+startup tuple, under the supervised source/input/runtime and retirement guards.
+The 996-loss observation and single prime do not establish an external-reference
+quality pass or a family speed gate.
+
+The source02 payment/lifetime review is clean. The integrated main build passes
+full native compilation and 456 host cases (355 startup-affected plus 101
+separate image controls), with no failures or skips. Main receipt:
+`cec4f4af92ba9554911a1ba271f674722142c4cdff30a7e984a9b19d11191f29`.
+Actual runtime:
+`c4bc2c9507a59c0324d6ac54aaaf61ca684825420e75b33f35b224ed5ea5e6df`
+(271,813,392 bytes), authenticated against the combined 2,542-file source map.
+Quality raw/failed-wrapper evidence remains in `shared-startup-admission-models02`;
+its corrected offline aggregate is
+`5f399b7555d763fcf9f92998a4396c6340c662d93de65365faed054d7153a766`.
+Final source QA passes: 22 formatted C++ paths, 19 boundary checks, 2,266
+SPDX headers and REUSE 6.2.0, on an isolated 2,543-file Spark A export.
+This qualifies bounded automatic internal
+startup only; public migration, broader same-quantized-reference quality,
+state/swap coverage and the matched 1% family gate remain open.

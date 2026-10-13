@@ -1859,7 +1859,19 @@ each is checked against the design as M3.6 proceeds.
                                     and a 325-token reused prefix before 16 more
                                     outputs, on the same qualified runtime
                                     ([GGUF C4](experiments/m36-numerical-audit/qwen-joined-mtp.md#gguf-target-only-http-c4-control)).
-                                    Automatic public serving admission, broader
+                                    Automatic internal startup accounting now
+                                    derives parser, compiler/domain and retained
+                                    tokenizer/chat payments from enforced limits
+                                    and actual source/settings; explicit grants
+                                    remain supported. Full native compilation and
+                                    456 combined host controls pass, including
+                                    355 startup-affected controls. The existing
+                                    33,792-context family quality/geometry screen
+                                    passes admission and complete work; its
+                                    single prime exposes a C4 decode gap against
+                                    the historical baseline, not a gate verdict
+                                    ([startup accounting](experiments/m36-numerical-audit/qwen-joined-mtp.md#automatic-startup-accounting-and-family-geometry)).
+                                    Automatic public selection, broader
                                     quality and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.

@@ -1306,10 +1306,53 @@ TEST(ComponentsTest, AheadAndExactMasksAreIndependentForFrozenAndOwnedCells) {
   }
 }
 
+TEST(ComponentsTest, DeclaredCommitRootsBoundEachOwnerBeforeSaveMetadataGrows) {
+  spec::ModelSpec model;
+  model.stages.emplace_back();
+  model.stages.front().layers.emplace_back();
+  auto& refs = model.stages.front().layers.front().components;
+  refs.push_back({.kind = "attention.gdn"});
+  refs.push_back({.kind = "residual.ple"});
+  auto bound = CommitSaveBound(model, 4);
+  ASSERT_TRUE(bound);
+  EXPECT_EQ(*bound, 20U);
+  EXPECT_FALSE(CommitSaveBound(model, 0));
+  EXPECT_FALSE(CommitSaveBound(model, UINT32_MAX));
+  refs.push_back({.kind = "absent.component"});
+  EXPECT_FALSE(CommitSaveBound(model, 4));
+
+  ir::Builder b;
+  StepContext ctx(b, {{.slot = 0, .rows = 1}}, false);
+  const Instance saver{.def = Find("residual.ple", 1), .params = {}, .stage = {}, .index = 2};
+  const auto value = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({8, 1})));
+  ctx.Save(saver, "one", value);
+  EXPECT_FALSE(b.error());
+  ctx.Save(saver, "unpaid", value);
+  ASSERT_TRUE(b.error());
+  EXPECT_EQ(b.error()->error, ir::GraphError::kBounds);
+  EXPECT_EQ(ctx.TakeSaves().size(), 1U);
+}
+
+TEST(ComponentsTest, SeparateOwnerSavesShareOneComponentDeclaration) {
+  ir::Builder b;
+  StepContext ctx(b, {{.slot = 0, .rows = 1}, {.slot = 1, .first_row = 1, .rows = 1}}, false);
+  const Instance first{.def = Find("residual.ple", 1), .params = {}, .stage = {}, .index = 2};
+  const Instance second{.def = Find("residual.ple", 1), .params = {}, .stage = {}, .index = 3};
+  const auto value = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({8, 1})));
+  ctx.Save(first, "owner0", value, 0);
+  ctx.Save(first, "owner1", value, 1);
+  ctx.Save(second, "other-component", value, 0);
+  ASSERT_FALSE(b.error());
+  ctx.Save(first, "third-root", value, 0);
+  ASSERT_TRUE(b.error());
+  EXPECT_EQ(ctx.TakeSaves().size(), 3U);
+}
+
 TEST(ComponentsTest, SaveIndicesStayLiveUntilTheLoweringsStores) {
   ir::Builder b;
   StepContext ctx(b, {{.slot = 0, .rows = 3}, {.slot = 1, .first_row = 3, .rows = 2}}, false);
-  const Instance saver{.params = {}, .stage = {}, .layer = 1, .index = 2};
+  const Instance saver{
+      .def = Find("residual.ple", 1), .params = {}, .stage = {}, .layer = 1, .index = 2};
   const auto joined = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({8, 5})));
   const auto own = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({8, 3})));
   ctx.Save(saver, "joined", joined);

@@ -63,6 +63,13 @@ std::uint64_t GuardReserve(const MemoryGuard& guard);
 // passes.
 std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard);
 
+// Initial metadata loan, independent of a file's observed size: the existing
+// readers enforce their caps on opened descriptors even if files grow. At most
+// target+drafter parse simultaneously; aliases resolve and set up sequentially.
+// The server replaces this loan only after all parser owners have died.
+std::expected<std::uint64_t, std::string> StartupBootstrapBytes(
+    std::uint64_t aliases, std::uint64_t configuration_bytes = 0);
+
 // A default-off startup screen prepays host metadata before Setup. Unknown
 // physical availability, unaligned/overflowed allowances and a cap that cannot
 // leave the ordinary driver margin all refuse before opening a node.

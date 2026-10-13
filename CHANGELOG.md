@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Derive shared-service startup accounting from enforced parser limits and actual
+  source, settings and tokenizer inventories. The internal selector accepts
+  `auto`, repays its temporary parsing extent after retained grants exist,
+  and preserves explicit grants, public defaults and ordinary runtime admission.
+
 - Validate image diagnostic repeats against the current candidate output
   instead of a stale pixel hash from an earlier implementation.
 

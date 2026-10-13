@@ -135,6 +135,10 @@ struct DecodeOptions {
 
 class Tokenizer {
  public:
+  // Allocation-free bound for Create's peak and retained storage, including
+  // capacities moved from the reader. Pay before passing ownership to Create.
+  // This does not replace Create's semantic validation.
+  static std::expected<std::uint64_t, Error> ConstructionBytes(const TokenizerSpec& spec);
   static std::expected<Tokenizer, Error> Create(TokenizerSpec spec);
 
   Tokenizer(Tokenizer&&) noexcept;

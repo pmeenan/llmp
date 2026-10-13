@@ -600,6 +600,7 @@ const ComponentDef& ResidualPle() {
       .emit = PleEmit,
       .reference = PleReference,
       .commit = PleCommit,
+      .max_commit_saves = 1,
   };
   return def;
 }

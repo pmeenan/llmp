@@ -29,6 +29,7 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -1828,14 +1829,18 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
       case spec::PipelineKind::kLlm: {
         auto llm = std::make_unique<EngineLlm>(
             node_, entry, settings, roles_, index,
-            ComponentLlmBuild(node_, roles_.installed, entry, index,
-                              {.target_policy = {},
-                               .diagnostic_solo = solo,
-                               .prefill_lookahead = options_.qwen38_prefill_lookahead,
-                               .prepare_state = options_.qwen38_prepare_state,
-                               .state_only_prefill = options_.qwen38_state_only_prefill,
-                               .derive_execution_domain =
-                                   solo && (settings.max_slots.value > 1 || !entry.drafter)}));
+            ComponentLlmBuild(
+                node_, roles_.installed, entry, index,
+                {.target_policy = {},
+                 .diagnostic_solo = solo,
+                 .automatic_startup_cap = options_.diagnostic_auto_startup
+                                              ? options_.diagnostic_budget_cap_bytes.value_or(0)
+                                              : 0,
+                 .prefill_lookahead = options_.qwen38_prefill_lookahead,
+                 .prepare_state = options_.qwen38_prepare_state,
+                 .state_only_prefill = options_.qwen38_state_only_prefill,
+                 .derive_execution_domain =
+                     solo && (settings.max_slots.value > 1 || !entry.drafter)}));
         if (options_.diagnostic_skip_turn_checkpoints) {
           llm->set_turn_checkpoints(false);
           Log(std::format("model {}: saves no turn checkpoint (a speed gate's diagnostic)",
@@ -1916,8 +1921,46 @@ Status Server::Start(bool snapshot) {
   if (config_.models.empty()) {
     return Error("the configuration names no models ([models.<name>], D-096)");
   }
+  std::optional<catalog::ExtentId> bootstrap;
+  std::uint64_t startup_allowance = options_.diagnostic_startup_host_bytes;
+  if (options_.diagnostic_auto_startup) {
+    if (!options_.diagnostic_component_solo || options_.diagnostic_startup_host_bytes != 0)
+      return Error("automatic startup requires its exclusive shared diagnostic mode");
+    // The already parsed configuration is caller-owned. Its actual capacities
+    // bound the copied entries/settings; no reopening or file-size estimate.
+    std::uint64_t configured = 0;
+    const auto add = [&](std::uint64_t count) {
+      return !__builtin_add_overflow(configured, count, &configured);
+    };
+    for (const auto& entry : config_.models) {
+      if (!add(sizeof(entry)) || !add(entry.name.capacity() + 1))
+        return Error("startup configuration inventory overflows");
+      for (const auto* text : {&entry.artifact, &entry.composition, &entry.drafter})
+        if (*text && !add((*text)->capacity() + 1))
+          return Error("startup identity inventory overflows");
+      for (const auto* path : {&entry.tokenizer, &entry.chat_template})
+        if (*path && !add((*path)->native().capacity() + 1))
+          return Error("startup path inventory overflows");
+      for (const auto& [name, value] : entry.overrides) {
+        if (!add(name.capacity() + 1 + sizeof(value) + 128))
+          return Error("startup setting inventory overflows");
+        if (const auto* text = std::get_if<std::string>(&value); text && !add(text->capacity() + 1))
+          return Error("startup text setting inventory overflows");
+        if (const auto* list = std::get_if<std::vector<double>>(&value)) {
+          std::uint64_t storage = 0;
+          if (__builtin_mul_overflow(static_cast<std::uint64_t>(list->capacity()),
+                                     std::uint64_t{sizeof(double)}, &storage) ||
+              !add(storage))
+            return Error("startup list setting inventory overflows");
+        }
+      }
+    }
+    auto bytes = StartupBootstrapBytes(config_.models.size(), configured);
+    if (!bytes) return Error(bytes.error());
+    startup_allowance = *bytes;
+  }
   bool prepaid = false;
-  if (const auto bytes = options_.diagnostic_startup_host_bytes; bytes != 0) {
+  if (const auto bytes = startup_allowance; bytes != 0) {
     const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
     if (auto check = CheckStartupHostAllowance(bytes, cap, MemorySampler::Available()); !check)
       return check;
@@ -1937,6 +1980,7 @@ Status Server::Start(bool snapshot) {
     const auto after = node_.catalog().OccupancyOf(node_.domain()).Total().value();
     if (after < before || after - before != bytes)
       return Error("startup host allowance has no physical occupancy");
+    if (options_.diagnostic_auto_startup) bootstrap = *extent;
     prepaid = true;
   }
   // Every model's settings (D-103: derived from its artifacts, calibrated on
@@ -2046,8 +2090,25 @@ Status Server::Start(bool snapshot) {
       Log(std::format("model {}: {}", m->name(), slots));
     }
   }
+  if (bootstrap) {
+    std::uint64_t retained = 0;
+    for (const auto& model : models_) {
+      if (model->startup_host_bytes() == 0 ||
+          __builtin_add_overflow(retained, model->startup_host_bytes(), &retained))
+        return Error("automatic startup has no complete retained metadata payment");
+    }
+    // All Artifact/Open/JSON/Setup locals have died. The models now own paid
+    // source/compiler/chat metadata. Settings/calibration copies are released
+    // before repaying the parser loan, while the scheduler is still stopped.
+    std::vector<ModelSettings>().swap(settings);
+    std::vector<Llm::CalibrationRecord>().swap(calibrations);
+    if (!node_.catalog().ReleasePinned(*bootstrap) || !node_.catalog().RemoveExtent(*bootstrap))
+      return Error("could not retire the startup parser loan");
+    startup_allowance = retained;
+    Log(std::format("automatic startup: parser loan retired; {} retained host bytes", retained));
+  }
   const auto measured_startup_available = MemorySampler::Available();
-  const auto allowance = options_.diagnostic_startup_host_bytes;
+  const auto allowance = startup_allowance;
   if (allowance && measured_startup_available <= allowance)
     return Error("startup host allowance exhausts physical headroom");
   const auto startup_available = measured_startup_available - allowance;

@@ -8,6 +8,12 @@
 #include <format>
 #include <string>
 
+#include "artifact/artifact.h"
+#include "artifact/json.h"
+#include "base/json.h"
+#include "runtime/calibration.h"
+#include "runtime/model_settings.h"
+
 namespace llmp::runtime {
 
 std::uint64_t GuardReserve(const MemoryGuard& guard) {
@@ -33,6 +39,45 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard) {
         gib(kUncountedMargin), gib(guard.available), gib(guard.fixed)));
   }
   return {};
+}
+
+std::expected<std::uint64_t, std::string> StartupBootstrapBytes(std::uint64_t aliases,
+                                                                std::uint64_t configuration_bytes) {
+  namespace a = artifact;
+  // Canonical parser: old+new storage for nodes(24), kids(4), stack(4),
+  // duplicate-key scratch(16). An extra node covers a rejected last value.
+  constexpr std::uint64_t values = a::json::kMaxSeparators + a::json::kMaxContainers + 2;
+  constexpr std::uint64_t canonical = 3 * values * (24 + 4 + 4 + 16);
+  // Both manifest/index trees, plus transient spec parse. Text doubling,
+  // index expansions/roles/maps, directory names and one rebuilt shard header.
+  // The entry term includes the complete rejected-input growth inventory;
+  // strings copied into it are separately bounded by the document bytes.
+  constexpr std::uint64_t documents = a::kMaxManifestBytes + a::kMaxIndexBytes + a::kMaxSpecBytes;
+  constexpr std::uint64_t artifact_open = 3 * canonical + 8 * documents + 4096 * a::kMaxEntries +
+                                          3 * (a::kMaxShardHeader + a::kFileAlignment) +
+                                          1536 * a::kMaxDirectoryEntries;
+  constexpr base::json::Limits json;
+  // General JSON node/kid/pending (20/value), duplicate-key string_view
+  // scratch (16/value), copied text, input and bounded metadata source views.
+  constexpr std::uint64_t metadata =
+      36 * json.max_values + 4 * a::kMaxMetadataTotal + json.max_string_bytes;
+  // One fact pass may have both opened artifacts. Settings retained for all
+  // aliases are paid independently of transient parser reuse (including names,
+  // calibration fields and their canonical/digest scratch).
+  constexpr std::uint64_t fixed = 2 * artifact_open + 2 * metadata;
+  // Retained settings/calibration, their copies and formatting. Parser scratch
+  // is already in metadata; variable configured strings are paid separately.
+  constexpr std::uint64_t per_alias =
+      16 * (kMaxCalibrationBytes + sizeof(ModelSettings) + sizeof(Calibration));
+  constexpr std::uint64_t alignment = a::kChunkBytes;
+  std::uint64_t bytes = 0, configured = 0;
+  if (aliases == 0 || __builtin_mul_overflow(configuration_bytes, std::uint64_t{16}, &configured) ||
+      __builtin_mul_overflow(aliases, per_alias, &bytes) ||
+      __builtin_add_overflow(bytes, configured, &bytes) ||
+      __builtin_add_overflow(bytes, fixed, &bytes) ||
+      __builtin_add_overflow(bytes, alignment - 1, &bytes))
+    return std::unexpected("startup parser loan overflows");
+  return bytes / alignment * alignment;
 }
 
 std::expected<void, std::string> CheckStartupHostAllowance(std::uint64_t bytes, std::uint64_t cap,

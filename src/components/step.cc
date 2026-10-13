@@ -1132,8 +1132,46 @@ ir::TensorId StepContext::SideRows(std::uint16_t component, std::uint64_t count)
   return id;
 }
 
+std::expected<std::uint64_t, std::string> CommitSaveBound(const spec::ModelSpec& model,
+                                                          std::uint32_t owners) {
+  if (owners == 0 || owners > kMaxSegments) return Refused("invalid commit-save owner envelope");
+  std::uint64_t total = 0;
+  const auto add = [&](const spec::ComponentRef& ref) -> bool {
+    const auto* def = Find(ref.kind, ref.version);
+    return def != nullptr &&
+           !__builtin_add_overflow(total, std::uint64_t{def->max_commit_saves} * owners, &total);
+  };
+  const auto optional = [&](const std::optional<spec::ComponentRef>& ref) {
+    return !ref || add(*ref);
+  };
+  for (const auto& stage : model.stages) {
+    if (!optional(stage.embedding) || !optional(stage.stream.mixing) ||
+        !optional(stage.heads.final_norm) || !optional(stage.heads.output))
+      return Refused("unknown component or overflowing commit-save bound");
+    for (const auto& side : stage.side)
+      if (!add(side.source)) return Refused("unknown side component or commit-save overflow");
+    for (const auto& layer : stage.layers)
+      for (const auto& ref : layer.components)
+        if (!add(ref)) return Refused("unknown layer component or commit-save overflow");
+    for (const auto& ref : stage.heads.mtp)
+      if (!add(ref)) return Refused("unknown head component or commit-save overflow");
+  }
+  return total;
+}
+
 void StepContext::Save(const Instance& in, std::string_view what, ir::TensorId tensor,
                        std::uint8_t segment) {
+  const std::uint64_t limit =
+      in.def ? std::uint64_t{in.def->max_commit_saves} * segments_.size() : 0;
+  const auto count = std::ranges::count_if(saves_, [&](const CommitSave& save) {
+    return save.layer == in.layer && save.component == in.index;
+  });
+  if (std::cmp_greater_equal(count, limit) ||
+      (segment != ir::kJoinedSegment && segment >= segments_.size())) {
+    b_.Refuse(ir::GraphError::kBounds, "component exceeds its declared commit-save bound");
+    return;
+  }
+
   // The rows of the save's buffer: the segment's (the step's, joined).
   ir::TensorId rows = save_rows_[segment];
   if (!rows.valid()) {

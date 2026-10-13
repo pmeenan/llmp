@@ -118,6 +118,8 @@ struct EngineLlmParts {
   // What the step source and the launch borrow (the spec, the artifact's
   // tensors, a kernel source's backend): kept until the runner is gone.
   std::shared_ptr<void> keep;
+  std::uint64_t startup_host_bytes = 0;
+  std::uint64_t startup_cap = 0;
 };
 
 // Makes a model's parts from its settings: the component engine's
@@ -149,6 +151,12 @@ class EngineLlm final : public Llm {
   std::uint64_t pool_needed() const override;
   std::uint64_t host_input_bytes() const override;
   std::uint64_t plan_floor_bytes() const override;
+  std::uint64_t startup_host_bytes() const override {
+    return startup_host_bytes_ +
+           (chat_startup_
+                ? chat_startup_->capacity() + engine::ExecutionMetadataAllowance::OverheadBytes()
+                : 0);
+  }
   std::string slots_report() const override;
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out) override;
@@ -377,6 +385,7 @@ class EngineLlm final : public Llm {
 
   // Declared before the runner, so it outlives it (EngineLlmParts::keep).
   std::shared_ptr<void> keep_;
+  std::uint64_t startup_host_bytes_ = 0;
   std::unique_ptr<engine::ModelRunner> runner_;
   std::optional<base::Sha256Digest> execution_identity_{};
   std::optional<engine::WaveComposer> composer_;

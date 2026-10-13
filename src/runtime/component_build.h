@@ -43,6 +43,9 @@ struct ComponentBuildOptions {
   // target-only C4 scoring envelope, a declared repeat-pending composition,
   // or a derived ordinary target-only domain. Public admission stays unchanged.
   bool diagnostic_solo = false;
+  // Nonzero only under the Server's admitted metadata bootstrap loan.
+  // Derive and pin this source's construction budget before graph construction.
+  std::uint64_t automatic_startup_cap = 0;
   // Complete catalog-backed construction allowance for the closed DeepSeek
   // diagnostic. Admitted by its owner before constructing EngineLlm; the
   // factory charges before reading/parsing its prepared source and retains

@@ -635,6 +635,52 @@ Tokenizer::Tokenizer(Tokenizer&&) noexcept = default;
 Tokenizer& Tokenizer::operator=(Tokenizer&&) noexcept = default;
 Tokenizer::~Tokenizer() = default;
 
+std::expected<std::uint64_t, Error> Tokenizer::ConstructionBytes(const TokenizerSpec& spec) {
+  const auto fail = [] {
+    return std::unexpected(Error{Rule::kBounds, "tokenizer construction bound overflows"});
+  };
+  if (spec.tokens.empty() || spec.tokens.size() > kMaxVocabulary ||
+      spec.kinds.size() != spec.tokens.size() || spec.merges.size() > 2 * kMaxVocabulary)
+    return fail();
+  // The byte alphabet's 256 strings/map nodes, fixed arrays and objects.
+  // Hash entries below include node allocation, bucket storage and rehash
+  // overlap under the pinned standard library; vector growth counts old+new.
+  std::uint64_t bytes = sizeof(Impl) + sizeof(TokenizerSpec) + 256 * 192;
+  const auto add = [&](std::uint64_t count, std::uint64_t unit) {
+    std::uint64_t part = 0;
+    return !__builtin_mul_overflow(count, unit, &part) &&
+           !__builtin_add_overflow(bytes, part, &bytes);
+  };
+  if (!add(spec.tokens.capacity(), sizeof(std::string)) ||
+      !add(spec.kinds.capacity(), sizeof(TokenKind)) ||
+      !add(spec.scores.capacity(), sizeof(float)) || !add(spec.rstrip.capacity(), 1) ||
+      !add(spec.merges.capacity(), sizeof(std::pair<std::string, std::string>)) ||
+      !add(spec.tokens.size(), sizeof(std::string) + 192) || !add(spec.merges.size(), 192))
+    return fail();
+  std::uint64_t longest = 0, longest_merge = 0;
+  for (std::size_t i = 0; i < spec.tokens.size(); ++i) {
+    const auto& text = spec.tokens[i];
+    if (!add(text.capacity(), 1) || !add(1, 1) || !add(text.size(), 3)) return fail();
+    longest = std::max(longest, static_cast<std::uint64_t>(text.size()));
+    if ((spec.kinds[i] != TokenKind::kNormal && spec.kinds[i] != TokenKind::kUnused &&
+         spec.kinds[i] != TokenKind::kByte) &&
+        !add(text.size(), 192))
+      return fail();
+  }
+  for (const auto& [left, right] : spec.merges) {
+    std::uint64_t size = 0;
+    if (!add(left.capacity(), 1) || !add(right.capacity(), 1) || !add(2, 1) ||
+        __builtin_add_overflow(static_cast<std::uint64_t>(left.size()),
+                               static_cast<std::uint64_t>(right.size()), &size))
+      return fail();
+    longest_merge = std::max(longest_merge, size);
+  }
+  // UTF-8 code points grow by doubling; the merge's joined string may grow
+  // while retaining its previous buffer. The special-trie root is separate.
+  if (!add(longest, 12) || !add(longest_merge, 3) || !add(1, 192)) return fail();
+  return bytes;
+}
+
 std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   auto fail = [](Rule rule, std::string_view reason, std::uint64_t item = kNoItem) {
     return std::unexpected(Error{rule, reason, item});

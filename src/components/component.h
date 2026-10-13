@@ -426,6 +426,9 @@ struct ComponentDef {
   // rows (StepContext::Saved), writes the state the kept rows alone would
   // have left (BuildCommit). Null: none.
   std::expected<void, std::string> (*commit)(Fragment& fragment) = nullptr;
+  // Maximum saved roots per instance and owner, checked before Save grows
+  // its metadata. Startup can pay lowering descriptors without building a graph.
+  std::uint32_t max_commit_saves = 0;
   // A drafter's injection (a block drafter's, DSpark's): what its target's
   // steps compute into its state, run in its target's step after the
   // target's own (BuildStep's injection pass) over each segment's last rows

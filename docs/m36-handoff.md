@@ -188,7 +188,14 @@ inference. GGUF C4 also passes four overlapping 128-token replies and proven
 four-owner execution; the first-prompt repeat reuses 325 tokens before 16 more
 outputs. These bounded controls leave larger histories and broader quality
 unqualified. Public
-model selection is unchanged; automatic production admission, broader same-quantized-reference quality, OS-process/GPU restart and
+model selection is unchanged. The internal selector now accepts automatic startup
+payment derived from enforced parser ceilings and actual source/settings,
+component saved-root contracts and tokenizer/chat inventories. Retained grants
+exist before its parsing loan retires; catalog, plan, state and future accounting
+remain active. Full native compilation and 456 combined host controls pass
+(355 startup-affected, 101 disjoint image controls). See the
+[full-geometry observation](experiments/m36-numerical-audit/qwen-joined-mtp.md#automatic-startup-accounting-and-family-geometry).
+Automatic public selection, broader same-quantized-reference quality, OS-process/GPU restart and
 the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
 snapshot continuation on Spark B. The actual spatial-image screen passes

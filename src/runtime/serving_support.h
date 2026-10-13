@@ -18,10 +18,13 @@
 #include <utility>
 #include <vector>
 
+#include "engine/execution_contract.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
+#include "platform/host_probe.h"
 #include "platform/kept_files.h"
 #include "runtime/kept_record.h"
+#include "runtime/memory_guard.h"
 
 namespace llmp::runtime::serving_support {
 
@@ -31,6 +34,26 @@ inline constexpr std::uint64_t kExtent = engine::kPagedExtent;
 
 inline std::unexpected<std::string> Error(std::string what) {
   return std::unexpected(std::move(what));
+}
+
+// Startup only: a real pinned catalog owner, charged before construction.
+// Neither local charge release nor a failed factory unpins this reservation.
+inline std::expected<std::shared_ptr<engine::ExecutionMetadataAllowance>, std::string> AdmitStartup(
+    engine::PagedNode& node, std::uint64_t bytes, std::uint64_t cap) {
+  std::uint64_t total = 0;
+  if (__builtin_add_overflow(bytes, engine::ExecutionMetadataAllowance::OverheadBytes(), &total) ||
+      __builtin_add_overflow(total, kExtent - 1, &total))
+    return Error("startup metadata payment overflows");
+  total = total / kExtent * kExtent;
+  const auto occupancy = node.catalog().OccupancyOf(node.domain()).Total().value();
+  if (cap == 0 || occupancy > cap || total > cap - occupancy)
+    return Error("startup metadata exceeds the node execution cap");
+  auto owner = engine::ExecutionMetadataAllowance::Admit(
+      node.catalog(), node.domain(), total, platform::AvailableMemoryBytes().value_or(0),
+      kUncountedMargin);
+  if (!owner) return Error(owner.error());
+  if (!(*owner)->Charge(bytes)) return Error("startup metadata charge exceeds its payment");
+  return owner;
 }
 
 inline double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }

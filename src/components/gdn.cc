@@ -449,6 +449,7 @@ const ComponentDef& AttentionGdn() {
       .emit = Emit,
       .reference = Reference,
       .commit = Commit,
+      .max_commit_saves = 4,
   };
   return def;
 }
