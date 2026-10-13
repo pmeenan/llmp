@@ -82,15 +82,68 @@ short aggregate result favors disabling the restriction relative to this
 quantized reference; it does not establish agreement with an unquantized
 model, a general quality improvement or a serving-default decision.
 
-A prospective policy change still needs ordinary Prefill/Decode evidence at
-one and four owners, including same-policy state continuation across those
-cohorts. This bounded next check can reuse the existing factory and state
-controls; no larger corpus or context ladder follows automatically. Ordinary
-serving admission, MTP, long-context and migration-speed gates remain open.
+The short ordinary Prefill/Decode and same-policy state control below now
+covers one/four owners. A serving-default decision still needs a matched
+performance observation and applicable admission qualification; MTP,
+long-context and family migration gates remain open. No larger corpus or
+context ladder follows automatically.
 
 Mia uses FP8 KV and BF16 SSM; these native observations use F16 KV. The
 arithmetic and cache choices differ across implementations. We compare their
 complete losses without forcing a common rounding sequence.
+
+## Ordinary prompt/decode and state continuation
+
+Both policies complete the same bounded ordinary schedule through the shared
+factory and runner, without explicit tuning. The diagnostic alone adds Prompt
+authority to its existing target-only C4/context512 domain. It independently
+measures 20 classes, including actual C1/C4 Prefill2 and Decode1 classes at
+read256; the larger read512 measurements are not substituted for them.
+
+Each arm starts with the first 32 authenticated tokens per document: 16 C1
+prompt waves, a clear within the held request, then 16 C4 prompt waves.
+All 80 full-vocabulary prompt heads are finite. Eight plain Decode waves
+alternate slot 0 alone and all four owners. They produce 20 full finite
+heads and generated-token observations. A checkpoint after four waves holds
+positions 36/34; the completed sequence reaches positions 40/36 for slot 0
+and the other owners respectively.
+
+Each arm restores that checkpoint and repeats the final four waves, then
+restores again, spills/restores all four owners and repeats the same waves.
+All checkpoint bytes, 20 repeated full heads/tokens and eight complete final
+initialized-state range-and-byte hashes agree within their same policy and
+schedule. No cross-policy or cross-cohort bit equality is required. These are
+functional/state observations, not fresh NLL measurements; the quantitative
+quality evidence remains the matched 1,016-target comparison above.
+
+The four actual program classes retain complete descriptor/implementation
+inventories. The default C4 Decode plan selects 51 vector products; the
+owner-policy-disabled plan selects none. Both policies record zero such
+vector selections for these C1 and Prompt classes. This remains a whole-policy
+comparison, including the hyper-connection choice, rather than isolated
+kernel-error attribution.
+
+Five admitted checkpoint/readback buffers total 1,646,264,320 bytes. The
+329,252,864-byte packed used-page capacity equals the full mapped layout in
+this domain, so the simpler full-layout allocation is retained and no memory
+saving is claimed. The 9 GiB construction/metadata allowance and these
+separately admitted buffers fit within the unchanged 104 GiB node budget;
+spill files still require their complete mapped capacity.
+
+Final main native build and all 33 selected host controls pass, with six
+manual cases listed and no automatic corpus CTest entries. Both fresh model
+cases pass without skips; source/binary guards, full process-group retirement,
+zero remaining GPU processes and zero memory-limit/OOM events pass. Source
+formatting (three files), boundary (one file), header (2,246 files) and REUSE
+6.2.0 checks pass on Spark A. Fixture/schedule counters include state copies
+and hashing and are not a comparative performance gate.
+
+Replay only `Qwen38JoinedScoreGpu.DefaultOrdinaryPhaseState` and
+`Qwen38JoinedScoreGpu.JoinedOrdinaryPhaseState` with the separately sealed
+`qwen-ordinary-policy-models02` recipe, its current main receipt and the same
+captured input identity below. It uses the same supervised resource and
+retirement requirements as the teacher recipes. This slice does not adopt a
+mapping default or claim serving, MTP or long-context qualification.
 
 ## Checkpoint, policy and result provenance
 
@@ -125,6 +178,9 @@ by the four short documents.
 | One-row full-build/32-host receipt | `18c0246b84b53d429e18b2e4cb87afd5e0e468d3c640907e8adc7755befbf489` |
 | One-row model binary | `ec131650499b2815f907518f8a052e3a654ad3ff5045834cb539747a1680fdfb` |
 | One-row actual receipt | `dcb203a6b4be744d0e0db234a765ea47f6c25c682dfff8bf78de73b6bd6e5246` |
+| Ordinary final full-build/33-host receipt | `02a20a2f51adb3969efb3a0698e160ab870686c0af657c4bbd161e6cd563f972` |
+| Ordinary final model binary | `ffd63778072e0c98f6dad7980b5fc3e5f884e04d368cf8dcf749f8c416dbcc08` |
+| Ordinary final actual receipt | `6efc58b9298d41d5686b97b0fcdf516dda387cbfe4f7ff0a68a98a9c074d9434` |
 
 Each document has 254 targets; reference summed NLL is respectively
 747.6428986233683, 1006.8320033252003, 985.9432543228786 and

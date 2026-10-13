@@ -283,8 +283,11 @@ bool JoinedScoreEnvelope(const ModelSettings& settings, std::string_view drafter
     return false;
   const auto stages = options.execution_domain->stages();
   constexpr std::array uses{engine::NumericalUse::kDecode, engine::NumericalUse::kScore};
+  constexpr std::array ordinary_uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
+                                     engine::NumericalUse::kScore};
   if (stages.size() != 1 || stages[0].stage != 0 || stages[0].name != "target" ||
-      !std::ranges::equal(stages[0].uses, uses))
+      (!std::ranges::equal(stages[0].uses, uses) &&
+       !std::ranges::equal(stages[0].uses, ordinary_uses)))
     return false;
   constexpr std::array phases{engine::NumericalPhase{.phase = planner::Phase::kPrefill,
                                                      .max_owners = 4,

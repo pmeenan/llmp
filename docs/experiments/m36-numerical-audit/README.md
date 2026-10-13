@@ -57,8 +57,12 @@ unchanged mapping policy at PPL 35.402897009 and the same policy with only
 documents improving and two regressing. Actual default vector selection is
 recorded without treating it as an explicit tune. Native/32-host, both fresh
 cases and quality checks pass. This whole-policy observation does not adopt
-a serving default or establish closeness to an unquantized model; ordinary
-Prefill/Decode and cohort/state qualification remain open.
+a serving default or establish closeness to an unquantized model. The bounded
+ordinary C1/C4 Prompt/Decode follow-up passes 33 host controls and both model
+cases, including same-selected checkpoint/spill replay and complete final
+initialized-state hashes. Its 20 measured classes and explicit buffer payment
+do not qualify MTP, long context or family performance. No memory saving or
+new corpus-quality result is claimed.
 
 ## Candidates and evidence
 

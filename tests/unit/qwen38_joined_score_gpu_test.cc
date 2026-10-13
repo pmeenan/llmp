@@ -33,8 +33,10 @@
 #include "base/sha256.h"
 #include "corpus_score.h"
 #include "engine/component_source.h"
+#include "engine/decoding.h"
 #include "engine/model_runner.h"
 #include "engine/paged_weights.h"
+#include "engine/prefill.h"
 #include "kernels/ggml/graph_plan.h"
 #include "model/qwen38.h"
 #include "planner/plan.h"
@@ -86,9 +88,9 @@ std::expected<std::string, std::string> ReadExact(const fs::path& path, std::uin
 
 constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
 constexpr std::uint64_t kDomainBytes = std::uint64_t{104} << 30U;
-constexpr std::uint64_t kHostBytes = std::uint64_t{8} << 30U;
+constexpr std::uint64_t kHostBytes = std::uint64_t{9} << 30U;
 constexpr std::uint64_t kProgramBytes = 64 * kMiB;
-constexpr std::size_t kFactoryShapes = 16, kShapes = kFactoryShapes;
+constexpr std::size_t kFactoryShapes = 16, kShapes = kFactoryShapes + 4;
 // Current-source construction bound, independent of completed program limits.
 // funding.md derives these categories from Builder's enforced N/T limits,
 // the two rewrite rounds, serial fallback passes and Lower's descriptor count.
@@ -105,11 +107,16 @@ constexpr std::uint64_t kNativeConstruction = kNativeDescriptors * (512 + 1024 +
 constexpr std::uint64_t kCompilerEnvelope =
     kGraphConstruction + kIrWorksets + kNativeConstruction + 64 * kMiB;
 constexpr std::uint64_t kRetainedPrograms =
-    (kShapes + 1) * (kProgramBytes + 4096 * en::kGraphNodeHostBytes);  // Retain paid17 ceiling.
+    (kShapes + 1) *
+    (kProgramBytes + 4096 * en::kGraphNodeHostBytes);  // Includes one conservative spare program.
 constexpr std::uint64_t kMetadataEnvelope = 1024 * kMiB;
 constexpr std::uint64_t kObservationEnvelope = 128 * kMiB;
 static_assert(kCompilerEnvelope + kRetainedPrograms + kMetadataEnvelope + kObservationEnvelope <=
               kHostBytes);
+static_assert(kCompilerEnvelope +
+                  (kFactoryShapes + 1) * (kProgramBytes + 4096 * en::kGraphNodeHostBytes) +
+                  kMetadataEnvelope + kObservationEnvelope <=
+              8 * (kMiB * 1024));
 static_assert(ir::Graph::kMaxNodes == 65536 && ir::Graph::kMaxTensors == 131072);
 static_assert(sizeof(ir::Node) <= 160 && sizeof(ir::TensorDesc) <= 160);
 static_assert(sizeof(pl::Selected) <= 128 && sizeof(pl::Applied) <= 64);
@@ -144,7 +151,8 @@ bool AllowedShape(const pl::StepShape& shape) {
         return false;
     } else {
       if (segment.rows != (phase == pl::Phase::kPrefill ? 2U : 1U) || segment.outputs != 1 ||
-          segment.read_cells != 512 || (phase == pl::Phase::kPrefill && segment.greedy))
+          (segment.read_cells != 512 && (segment.read_cells != 256 || segment.greedy)) ||
+          (phase == pl::Phase::kPrefill && segment.greedy))
         return false;
     }
     if (i && (segment.rows != shape.segments[0].rows || segment.greedy != shape.segments[0].greedy))
@@ -153,8 +161,20 @@ bool AllowedShape(const pl::StepShape& shape) {
   return true;
 }
 
-enum class TeacherPolicy { kJoined, kTunedJoined, kDefaultSingleRow, kJoinedSingleRow };
-bool DefaultPolicy(TeacherPolicy policy) { return policy == TeacherPolicy::kDefaultSingleRow; }
+enum class TeacherPolicy {
+  kJoined,
+  kTunedJoined,
+  kDefaultSingleRow,
+  kJoinedSingleRow,
+  kDefaultOrdinary,
+  kJoinedOrdinary
+};
+bool OrdinaryPolicy(TeacherPolicy policy) {
+  return policy == TeacherPolicy::kDefaultOrdinary || policy == TeacherPolicy::kJoinedOrdinary;
+}
+bool DefaultPolicy(TeacherPolicy policy) {
+  return policy == TeacherPolicy::kDefaultSingleRow || policy == TeacherPolicy::kDefaultOrdinary;
+}
 bool TunedPolicy(TeacherPolicy policy) { return policy == TeacherPolicy::kTunedJoined; }
 std::uint32_t ScoreChunk(TeacherPolicy policy) {
   return policy == TeacherPolicy::kDefaultSingleRow || policy == TeacherPolicy::kJoinedSingleRow
@@ -171,6 +191,10 @@ std::string_view PolicyName(TeacherPolicy policy) {
       return "mapping-default-single-row";
     case TeacherPolicy::kJoinedSingleRow:
       return "owner-policy-disabled-single-row";
+    case TeacherPolicy::kDefaultOrdinary:
+      return "mapping-default-ordinary";
+    case TeacherPolicy::kJoinedOrdinary:
+      return "owner-policy-disabled-ordinary";
   }
   return {};
 }
@@ -190,7 +214,7 @@ struct ShapeRecord {
 
 class RecordedSource final : public en::StepSource {
  public:
-  RecordedSource(std::unique_ptr<en::StepSource> inner, std::array<ShapeRecord, kShapes>& records)
+  RecordedSource(std::unique_ptr<en::StepSource> inner, std::span<ShapeRecord> records)
       : inner_(std::move(inner)), records_(records) {}
   pl::PlanKey KeyBase() const override { return inner_->KeyBase(); }
   en::Status PrepareExecution() override { return inner_->PrepareExecution(); }
@@ -253,7 +277,7 @@ class RecordedSource final : public en::StepSource {
 
  private:
   std::unique_ptr<en::StepSource> inner_;
-  std::array<ShapeRecord, kShapes>& records_;
+  std::span<ShapeRecord> records_;
 };
 
 constexpr std::uint32_t kQualityRows = 255;
@@ -266,12 +290,39 @@ struct QualityWitness {
 };
 static_assert(sizeof(QualityWitness) <= 64 * 1024);
 
+constexpr std::uint32_t kPromptRows = 32, kDecodeWaves = 8, kCheckpointWave = 4;
+constexpr std::uint64_t kStateLimit = 512 * kMiB;
+struct SavedOwner {
+  std::vector<en::SlotLifecycle::Range> pages, footprint;
+  std::uint32_t position = 0;
+  std::uint64_t bytes = 0;
+};
+struct OrdinaryWitness {
+  std::array<SavedOwner, kOwners> saved{};
+  std::array<void*, kOwners> buffers{};
+  void* readback = nullptr;
+  std::vector<llmp::catalog::ExtentId> extents;
+  std::uint64_t capacity = 0;
+  std::array<std::array<std::int32_t, kPromptRows + kDecodeWaves + 1>, kOwners> history{};
+  decltype(history) checkpoint_history{};
+  std::array<std::string, kOwners * kDecodeWaves> heads{};
+  std::array<std::int32_t, kOwners * kDecodeWaves> tokens{};
+  std::array<std::string, kOwners> final_state{};
+  std::unique_ptr<float[]> row;
+  std::uint32_t prompt_heads = 0, prompt_waves = 0, decode_waves = 0, reference_rows = 0,
+                compared_rows = 0;
+  std::uint32_t checkpoint_restores = 0, spill_restores = 0, final_state_checks = 0;
+};
+static_assert(sizeof(OrdinaryWitness) < 16 * 1024);
+
 bool retirement_failed = false;
 
 struct Lifetime {
   TeacherPolicy policy = TeacherPolicy::kJoined;
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   std::array<ShapeRecord, kShapes> records{};
+  std::size_t shape_count = kFactoryShapes;
+  std::unique_ptr<OrdinaryWitness> ordinary;
   std::unique_ptr<QualityWitness> quality;  // Outlives scorer callbacks and runner.
   std::shared_ptr<void> keep;
   std::unique_ptr<en::ModelRunner> runner;
@@ -302,6 +353,33 @@ struct RetainUnknown {
 };
 using Owner = std::unique_ptr<Lifetime, RetainUnknown>;
 
+en::Status CheckOrdinaryHead(const kn::LowerInput& input, const kn::StepProgram& program) {
+  const auto& step = input.token->step;
+  const auto owners = input.token->shape.segments.size();
+  if (!step.logits.valid() || step.logits.v >= step.graph.tensor_count() || step.greedy.valid() ||
+      step.features.valid() || !step.saves.empty() || program.outputs().size() != owners)
+    return std::unexpected("ordinary operation has no complete original owner heads");
+  const auto& logits = step.graph.tensor(step.logits);
+  if (logits.format.encoding != llmp::format::Encoding::kF32 ||
+      logits.shape() != ir::ShapeOf({kVocabulary, owners}) || !ir::IsContiguous(logits))
+    return std::unexpected("ordinary original head is not packed F32 full vocabulary");
+  std::array<const kn::OutputSlot*, kOwners> outputs{};
+  for (const auto& out : program.outputs()) {
+    if (out.segment >= owners || out.features || outputs[out.segment] || out.tensor != step.logits)
+      return std::unexpected("ordinary outputs reorder or replace owner heads");
+    outputs[out.segment] = &out;
+  }
+  auto address = outputs[0]->device_address;
+  constexpr auto bytes = std::uint64_t{kVocabulary} * sizeof(float);
+  for (const auto* out : std::span(outputs).first(owners)) {
+    if (!out || out->bytes != bytes || out->device_address != address ||
+        address > std::numeric_limits<std::uint64_t>::max() - bytes)
+      return std::unexpected("ordinary packed owner head coverage differs");
+    address += bytes;
+  }
+  return {};
+}
+
 en::Status ValidateProgram(Lifetime& life, const kn::LowerInput& input,
                            const kn::StepProgram& program) {
   if (!input.token) return std::unexpected("scorer requires actual token metadata");
@@ -316,13 +394,17 @@ en::Status ValidateProgram(Lifetime& life, const kn::LowerInput& input,
       input.token->step.state.size() > 4096 || input.token->step.inputs.size() > 256 ||
       !input.token->step.saves.empty())
     return std::unexpected("scorer source/state/policy exceeds closed paid domain");
-  auto found = std::ranges::find_if(life.records,
+  auto found = std::ranges::find_if(std::span(life.records).first(life.shape_count),
                                     [&](const auto& r) { return r.shape == input.token->shape; });
-  if (found == life.records.end()) return std::unexpected("lowering escaped sixteen paid classes");
+  if (found == std::span(life.records).first(life.shape_count).end())
+    return std::unexpected("lowering escaped paid classes");
   found->owner_policy = policy_enabled;
   found->owner_invariant = invariant;
   if (input.token->shape.phase == pl::Phase::kScore) {
     if (auto valid = ts::CheckCorpusHead(input, program, kVocabulary); !valid) return valid;
+  } else if (input.token->shape.segments.front().read_cells == 256) {
+    if (!OrdinaryPolicy(life.policy)) return std::unexpected("unpaid ordinary short class");
+    if (auto valid = CheckOrdinaryHead(input, program); !valid) return valid;
   }
   if (program.host_bytes() > kProgramBytes || program.launches() > 4096)
     return std::unexpected("lowering exceeds paid program inventory");
@@ -380,22 +462,25 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life) {
     policy->disabled.emplace_back("owner_row_invariant");
   }
   pl::Canonicalize(*policy);
-  auto domain =
-      en::NumericalDomain::Create({{.stage = 0,
-                                    .name = "target",
-                                    .uses = {en::NumericalUse::kDecode, en::NumericalUse::kScore},
-                                    .phases = {{.phase = pl::Phase::kPrefill,
-                                                .max_owners = 4,
-                                                .max_owner_rows = 2,
-                                                .max_total_rows = 8},
-                                               {.phase = pl::Phase::kDecode,
-                                                .max_owners = 4,
-                                                .max_owner_rows = 1,
-                                                .max_total_rows = 4},
-                                               {.phase = pl::Phase::kScore,
-                                                .max_owners = 4,
-                                                .max_owner_rows = 2,
-                                                .max_total_rows = 8}}}});
+  auto domain = en::NumericalDomain::Create(
+      {{.stage = 0,
+        .name = "target",
+        .uses = OrdinaryPolicy(life.policy)
+                    ? std::vector{en::NumericalUse::kPrompt, en::NumericalUse::kDecode,
+                                  en::NumericalUse::kScore}
+                    : std::vector{en::NumericalUse::kDecode, en::NumericalUse::kScore},
+        .phases = {{.phase = pl::Phase::kPrefill,
+                    .max_owners = 4,
+                    .max_owner_rows = 2,
+                    .max_total_rows = 8},
+                   {.phase = pl::Phase::kDecode,
+                    .max_owners = 4,
+                    .max_owner_rows = 1,
+                    .max_total_rows = 4},
+                   {.phase = pl::Phase::kScore,
+                    .max_owners = 4,
+                    .max_owner_rows = 2,
+                    .max_total_rows = 8}}}});
   if (!domain) return std::unexpected(domain.error());
   rt::ComponentBuildOptions options{
       .target_policy = pl::ToText(*policy),
@@ -462,12 +547,13 @@ en::Status SetUp(Lifetime& life) {
     return std::unexpected("compiler construction domain or descriptor ABI changed");
   node.SetHostFloor(0);
   if (auto open = node.Open(); !open) return open;
+  const auto host_bytes = OrdinaryPolicy(life.policy) ? kHostBytes : 8 * (kMiB * 1024);
   const auto occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
-  if (occupied > kDomainBytes - kHostBytes) return std::unexpected("startup payment does not fit");
+  if (occupied > kDomainBytes - host_bytes) return std::unexpected("startup payment does not fit");
   auto paid = node.catalog().AddExtent({.domain = node.domain(),
                                         .memory_class = llmp::catalog::MemoryClass::kRuntime,
                                         .recovery = llmp::catalog::Recovery::kPinned,
-                                        .size = llmp::base::Bytes(kHostBytes),
+                                        .size = llmp::base::Bytes(host_bytes),
                                         .content = {}},
                                        true);
   if (!paid) return std::unexpected("startup catalog payment refused");
@@ -509,11 +595,34 @@ en::Status SetUp(Lifetime& life) {
       parts->config.setup_shapes.size() != kFactoryShapes || parts->caps.max_segments < kOwners ||
       !parts->config.slots.stages[0].layout.bytes)
     return std::unexpected("actual target parts exceed the declared scoring domain");
+  if (OrdinaryPolicy(life.policy)) {
+    // These are new measurements, not reuse of the larger read512 result.
+    for (const auto phase : {pl::Phase::kPrefill, pl::Phase::kDecode}) {
+      for (const std::size_t owners : {std::size_t{1}, std::size_t{kOwners}}) {
+        const auto from = std::ranges::find_if(parts->config.setup_shapes, [&](const auto& shape) {
+          return shape.phase == phase && shape.segments.size() == owners &&
+                 !shape.segments.front().greedy && shape.segments.front().read_cells == 512;
+        });
+        if (from == parts->config.setup_shapes.end())
+          return std::unexpected("factory omitted ordinary full-head shape template");
+        auto shape = *from;
+        for (auto& segment : shape.segments) {
+          segment.read_cells = 256;
+          segment.past = 256 - segment.rows;
+        }
+        if (!AllowedShape(shape) || std::ranges::find(parts->config.setup_shapes, shape) !=
+                                        parts->config.setup_shapes.end())
+          return std::unexpected("ordinary short class is not distinct and supported");
+        parts->config.setup_shapes.push_back(std::move(shape));
+      }
+    }
+    life.shape_count = kShapes;
+  }
   life.keep = parts->keep;
   parts->config.slots.model = entry.name;
   parts->config.slots.slots = kOwners;
   parts->config.slots.spill_directory = life.scratch / "spill";
-  for (std::size_t i = 0; i < kShapes; ++i) {
+  for (std::size_t i = 0; i < life.shape_count; ++i) {
     const auto& shape = parts->config.setup_shapes[i];
     if (!AllowedShape(shape))
       return std::unexpected("factory setup shape escapes closed inventory");
@@ -524,7 +633,8 @@ en::Status SetUp(Lifetime& life) {
     life.records[i].shape = shape;
     life.records[i].selected.rows = shape.rows();
   }
-  auto source = std::make_unique<RecordedSource>(std::move(parts->source), life.records);
+  auto source = std::make_unique<RecordedSource>(std::move(parts->source),
+                                                 std::span(life.records).first(life.shape_count));
   life.source = source.get();
   auto made = en::ModelRunner::Create(node, std::move(parts->config), std::move(source), 0, 0);
   if (!made) return std::unexpected(made.error());
@@ -535,8 +645,9 @@ en::Status SetUp(Lifetime& life) {
   if (!identity || !*identity) return std::unexpected("owned execution identity was not sealed");
   testing::Test::RecordProperty("execution_identity", llmp::base::ToHex(**identity));
   testing::Test::RecordProperty("kept_layout_id", life.runner->slots().kept_layout_id());
-  if (!std::ranges::all_of(life.records, [](const auto& r) { return r.measured; }))
-    return std::unexpected("not all sixteen actual setup classes were measured");
+  if (!std::ranges::all_of(std::span(life.records).first(life.shape_count),
+                           [](const auto& r) { return r.measured; }))
+    return std::unexpected("not all actual setup classes were measured");
   const auto pool = std::max<std::uint64_t>(life.runner->pool_needed(), en::kPagedExtent);
   const auto before = node.catalog().OccupancyOf(node.domain()).Total().value();
   const auto activation = life.runner->activations_needed();
@@ -614,6 +725,249 @@ en::Status ScoreQuality(Lifetime& life) {
   return {};
 }
 
+en::Status OrdinaryBuffers(Lifetime& life) {
+  auto& state = *life.ordinary;
+  auto& slots = life.runner->slots();
+  if (slots.stages() != 1 || !slots.layout(0).bytes || slots.layout(0).bytes > kStateLimit)
+    return std::unexpected("ordinary state layout exceeds bounded capacity");
+  state.capacity = slots.layout(0).bytes;
+  auto admitted = life.node.Call(
+      [&]() -> en::Status {
+        const auto occupied = life.node.catalog().OccupancyOf(life.node.domain()).Total().value();
+        if (occupied > kDomainBytes || state.capacity > (kDomainBytes - occupied) / 5)
+          return std::unexpected("five ordinary state buffers exceed paid physical domain");
+        return {};
+      },
+      "ordinary policy state-buffer payment");
+  if (!admitted) return admitted;
+  for (auto& buffer : state.buffers) {
+    auto allocated = life.node.Pinned(state.capacity, 0, state.extents);
+    if (!allocated) return std::unexpected(allocated.error());
+    buffer = *allocated;
+  }
+  auto allocated = life.node.Pinned(state.capacity, 0, state.extents);
+  if (!allocated) return std::unexpected(allocated.error());
+  state.readback = *allocated;
+  state.row = std::make_unique<float[]>(kVocabulary);  // Existing observation payment.
+  return {};
+}
+
+en::Status SaveOrdinary(Lifetime& life) {
+  auto& state = *life.ordinary;
+  auto& slots = life.runner->slots();
+  state.checkpoint_history = state.history;
+  for (std::uint32_t owner = 0; owner < kOwners; ++owner) {
+    auto& saved = state.saved[owner];
+    saved.position = slots.positions(owner);
+    saved.footprint = slots.live(owner, 0).used_ranges();
+    auto ranges = slots.CheckpointRanges(owner, saved.position);
+    if (!ranges) return std::unexpected(ranges.error());
+    saved.pages = std::move(*ranges);
+    if (saved.pages.empty() || saved.pages.size() > 512 || saved.footprint.size() > 512)
+      return std::unexpected("ordinary state ranges exceed paid inventory");
+    saved.bytes = 0;
+    for (const auto& range : saved.pages) {
+      if (range.region || !range.bytes || range.bytes > state.capacity - saved.bytes)
+        return std::unexpected("ordinary checkpoint exceeds paid copy capacity");
+      saved.bytes += range.bytes;
+    }
+    if (auto copy = slots.CopyState(owner, state.buffers[owner], saved.pages, true); !copy)
+      return copy;
+  }
+  return {};
+}
+
+en::Status CheckOrdinaryState(Lifetime& life, bool final, bool compare) {
+  auto& state = *life.ordinary;
+  auto& slots = life.runner->slots();
+  for (std::uint32_t owner = 0; owner < kOwners; ++owner) {
+    const auto& saved = state.saved[owner];
+    const auto footprint = slots.live(owner, 0).used_ranges();
+    const auto expected = final ? kPromptRows + (owner == 0 ? 8U : 4U) : saved.position;
+    if (slots.positions(owner) != expected || slots.spilled(owner) || slots.restoring(owner) ||
+        footprint.empty() || footprint.size() > 512)
+      return std::unexpected("ordinary state frontier/footprint differs");
+    if (!final) {
+      if (footprint.size() != saved.footprint.size())
+        return std::unexpected("restored initialized footprint size differs");
+      for (std::size_t i = 0; i < footprint.size(); ++i)
+        if (footprint[i].region != saved.footprint[i].region ||
+            footprint[i].offset != saved.footprint[i].offset ||
+            footprint[i].bytes != saved.footprint[i].bytes)
+          return std::unexpected("restored initialized footprint coordinates differ");
+    }
+    const auto& ranges = final ? footprint : saved.pages;
+    std::uint64_t bytes = 0;
+    for (const auto& range : ranges) {
+      if (range.region || !range.bytes || range.bytes > state.capacity - bytes)
+        return std::unexpected("ordinary state witness exceeds paid readback");
+      bytes += range.bytes;
+    }
+    if (auto copy = slots.CopyState(owner, state.readback, ranges, true); !copy) return copy;
+    const auto data =
+        std::span(static_cast<const std::byte*>(state.readback), static_cast<std::size_t>(bytes));
+    if (final) {
+      llmp::base::Sha256 digest;
+      for (const auto& range : ranges) {
+        const std::array<std::uint64_t, 3> coordinates{range.region, range.offset, range.bytes};
+        digest.Update(std::as_bytes(std::span(coordinates)));
+      }
+      digest.Update(data);
+      const auto hash = llmp::base::ToHex(digest.Finish());
+      if (compare && hash != state.final_state[owner])
+        return std::unexpected("same-selected final initialized state differs");
+      if (compare)
+        ++state.final_state_checks;
+      else
+        state.final_state[owner] = hash;
+    } else if (std::memcmp(state.buffers[owner], state.readback, static_cast<std::size_t>(bytes))) {
+      return std::unexpected("restored initialized checkpoint bytes differ");
+    }
+  }
+  return {};
+}
+
+en::Status OrdinarySchedule(Lifetime& life) {
+  life.ordinary = std::make_unique<OrdinaryWitness>();
+  if (auto paid = OrdinaryBuffers(life); !paid) return paid;
+  auto& state = *life.ordinary;
+  auto& slots = life.runner->slots();
+  auto head = [&](std::span<const std::byte> bytes) -> std::expected<std::int32_t, std::string> {
+    if (bytes.size() != kVocabulary * sizeof(float))
+      return std::unexpected("ordinary head is not complete F32 vocabulary");
+    std::memcpy(state.row.get(), bytes.data(), bytes.size());
+    const std::span row(state.row.get(), kVocabulary);
+    if (std::ranges::any_of(row, [](float x) { return !std::isfinite(x); }))
+      return std::unexpected("ordinary head contains a nonfinite value");
+    return static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
+  };
+  return life.node.WithRequest(
+      0, slots.execution(), "Qwen ordinary owner policy", [&]() -> en::Status {
+        en::PrefillOrchestrator prompt(*life.runner, *life.composer,
+                                       {.chunk_rows = 2,
+                                        .lookahead = 0,
+                                        .capture_ahead = false,
+                                        .prepare_ahead = false,
+                                        .state_only = false});
+        for (const std::uint32_t owners : {1U, kOwners}) {
+          for (std::uint32_t owner = 0; owner < owners; ++owner)
+            std::copy_n(life.quality->ids.begin() + owner * kQualityRows, kPromptRows,
+                        state.history[owner].begin());
+          for (std::uint32_t at = 0; at < kPromptRows; at += 2) {
+            std::array<en::PromptWork, kOwners> work{};
+            for (std::uint32_t owner = 0; owner < owners; ++owner)
+              work[owner] = {
+                  .slot = owner,
+                  .stage = 0,
+                  .tokens = std::span(state.history[owner]).subspan(at, kPromptRows - at),
+                  .past = at,
+                  .want_head = true,
+                  .all_outputs = false,
+                  .boundary = 0,
+                  .history = std::span(state.history[owner]).first(kPromptRows)};
+            const auto report = prompt.Step(std::span(work).first(owners));
+            if (report.steps != 1 || report.outcomes.size() != owners)
+              return std::unexpected("ordinary prompt did not run one requested cohort");
+            ++state.prompt_waves;
+            for (std::uint32_t owner = 0; owner < owners; ++owner) {
+              const auto& out = report.outcomes[owner];
+              if (out.refusal || out.rows != 2 || out.last != (at + 2 == kPromptRows) ||
+                  !out.joined.empty() || slots.positions(owner) != at + 2)
+                return std::unexpected("ordinary prompt owner completion differs");
+              auto next = head(out.outputs);
+              if (!next) return std::unexpected(next.error());
+              ++state.prompt_heads;
+              if (at + 2 == kPromptRows) state.history[owner][kPromptRows] = *next;
+            }
+          }
+          if (owners == 1) {
+            if (auto clear = slots.Clear(0); !clear) return clear;
+          }
+        }
+        auto made = en::DecodingOrchestrator::Make(*life.runner, *life.composer,
+                                                   {.kind = en::DecodingMode::Kind::kPlain}, {});
+        if (!made) return std::unexpected(made.error());
+        auto decoder = std::move(*made);
+        auto wave = [&](std::uint32_t step, bool compare) -> en::Status {
+          const auto owners = step % 2 == 0 ? 1U : kOwners;
+          std::array<en::DecodeWork, kOwners> work{};
+          for (std::uint32_t owner = 0; owner < owners; ++owner) {
+            const auto past = kPromptRows + (owner == 0 ? step : step / 2);
+            if (slots.positions(owner) != past)
+              return std::unexpected("ordinary decode history frontier differs");
+            work[owner] = {.slot = owner,
+                           .history = std::span(state.history[owner]).first(past + 1),
+                           .left = kDecodeWaves - step,
+                           .greedy = false};
+          }
+          const auto report = decoder.Step(std::span(work).first(owners));
+          if (report.steps != 1 || report.outcomes.size() != owners || report.speculated)
+            return std::unexpected("ordinary decode did not run one plain requested cohort");
+          ++state.decode_waves;
+          for (std::uint32_t owner = 0; owner < owners; ++owner) {
+            const auto& out = report.outcomes[owner];
+            if (out.refusal || out.discarded || !out.joined.empty() || !out.tokens.empty() ||
+                out.kept != 1)
+              return std::unexpected("ordinary decode completion differs");
+            auto next = head(out.outputs);
+            if (!next) return std::unexpected(next.error());
+            const auto index = step * kOwners + owner;
+            const auto hash = Hash(std::as_bytes(std::span(state.row.get(), kVocabulary)));
+            if (compare) {
+              if (hash != state.heads[index] || *next != state.tokens[index])
+                return std::unexpected("same-selected ordinary replay changed head/token");
+              ++state.compared_rows;
+            } else {
+              state.heads[index] = hash;
+              state.tokens[index] = *next;
+              ++state.reference_rows;
+            }
+            const auto past = kPromptRows + (owner == 0 ? step : step / 2);
+            if (slots.positions(owner) != past + 1)
+              return std::unexpected("ordinary decode did not commit its row");
+            state.history[owner][past + 1] = *next;
+          }
+          return {};
+        };
+        for (std::uint32_t step = 0; step < kDecodeWaves; ++step) {
+          if (step == kCheckpointWave) {
+            if (auto save = SaveOrdinary(life); !save) return save;
+          }
+          if (auto done = wave(step, false); !done) return done;
+        }
+        if (auto final = CheckOrdinaryState(life, true, false); !final) return final;
+        for (const bool spill : {false, true}) {
+          for (std::uint32_t owner = 0; owner < kOwners; ++owner) {
+            const auto& saved = state.saved[owner];
+            if (auto x = slots.PrepareRestore(owner, saved.position, saved.footprint,
+                                              slots.kept_layout_id());
+                !x)
+              return x;
+            if (auto x = slots.CopyState(owner, state.buffers[owner], saved.pages, false); !x)
+              return x;
+            if (auto x = slots.CompleteRestore(owner, saved.position); !x) return x;
+            ++state.checkpoint_restores;
+            decoder.Reset(owner);
+          }
+          state.history = state.checkpoint_history;
+          if (auto check = CheckOrdinaryState(life, false, true); !check) return check;
+          if (spill) {
+            for (std::uint32_t owner = 0; owner < kOwners; ++owner) {
+              if (auto x = slots.Spill(owner); !x) return x;
+              if (!slots.spilled(owner)) return std::unexpected("ordinary state did not spill");
+              if (auto x = slots.Restore(owner); !x) return x;
+              ++state.spill_restores;
+            }
+            if (auto check = CheckOrdinaryState(life, false, true); !check) return check;
+          }
+          for (std::uint32_t step = kCheckpointWave; step < kDecodeWaves; ++step)
+            if (auto done = wave(step, true); !done) return done;
+          if (auto final = CheckOrdinaryState(life, true, true); !final) return final;
+        }
+        return {};
+      });
+}
+
 void Screen(TeacherPolicy policy) {
   ASSERT_FALSE(retirement_failed) << "prior owner retirement remains unknown";
   const auto available = llmp::platform::AvailableMemoryBytes();
@@ -646,35 +1000,73 @@ void Screen(TeacherPolicy policy) {
   life->quality->document_rows = document_rows;
   std::memcpy(life->quality->ids.data(), ids->data(), ids->size());
   const auto start = std::chrono::steady_clock::now();
-  auto score = ScoreQuality(*life);
+  auto completed = OrdinaryPolicy(policy) ? OrdinarySchedule(*life) : ScoreQuality(*life);
   const auto elapsed = std::chrono::steady_clock::now() - start;
-  ASSERT_TRUE(score) << score.error();
-  testing::Test::RecordProperty("measured_shape_classes", std::to_string(kShapes));
-  testing::Test::RecordProperty("retained_program_bound", std::to_string(kRetainedPrograms));
-  std::ostringstream nll;
-  nll << std::setprecision(17);
-  const auto losses = std::span(life->quality->scores).first(life->quality->score_count);
-  for (const auto& row : losses) {
-    nll << row.document << ',' << row.slot << ',' << row.position << ',' << row.target << ','
-        << row.nll << '\n';
+  ASSERT_TRUE(completed) << completed.error();
+  if (OrdinaryPolicy(policy)) {
+    const auto& state = *life->ordinary;
+    ASSERT_EQ(state.prompt_waves, 32U);
+    ASSERT_EQ(state.prompt_heads, 80U);
+    ASSERT_EQ(state.decode_waves, 16U);
+    ASSERT_EQ(state.reference_rows, 20U);
+    ASSERT_EQ(state.compared_rows, 20U);
+    ASSERT_EQ(state.checkpoint_restores, 8U);
+    ASSERT_EQ(state.spill_restores, 4U);
+    ASSERT_EQ(state.final_state_checks, 8U);
+    std::ostringstream states, heads;
+    for (std::uint32_t owner = 0; owner < kOwners; ++owner)
+      states << owner << ' ' << state.saved[owner].position << ' '
+             << life->runner->slots().positions(owner) << ' ' << state.saved[owner].bytes << ' '
+             << state.final_state[owner] << '\n';
+    for (std::uint32_t step = 0; step < kDecodeWaves; ++step)
+      for (std::uint32_t owner = 0; owner < (step % 2 == 0 ? 1U : kOwners); ++owner) {
+        const auto index = step * kOwners + owner;
+        heads << step << ' ' << owner << ' ' << state.tokens[index] << ' ' << state.heads[index]
+              << '\n';
+      }
+    ASSERT_LE(states.tellp(), 4096);
+    ASSERT_LE(heads.tellp(), 4096);
+    testing::Test::RecordProperty("ordinary_state", states.str());
+    testing::Test::RecordProperty("ordinary_heads", heads.str());
+    testing::Test::RecordProperty("ordinary_counts", "32 80 16 20 20 8 4 8");
+    testing::Test::RecordProperty("state_buffer_bytes", std::to_string(state.capacity));
+    testing::Test::RecordProperty("state_layout_bytes",
+                                  std::to_string(life->runner->slots().layout(0).bytes));
   }
-  ASSERT_LE(nll.tellp(), 512 * 1024);
-  testing::Test::RecordProperty("corpus_nll_rows", nll.str());
-  testing::Test::RecordProperty("document_rows", std::to_string(document_rows));
+  testing::Test::RecordProperty("measured_shape_classes", std::to_string(life->shape_count));
   testing::Test::RecordProperty(
-      "teacher_elapsed_ns",
-      std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
-  testing::Test::RecordProperty("corpus_ids_sha256", id_sha);
-  testing::Test::RecordProperty("inputs", std::to_string(kOwners * document_rows));
-  testing::Test::RecordProperty("targets", std::to_string(kOwners * (document_rows - 1)));
-  testing::Test::RecordProperty("score_waves", std::to_string(life->quality->waves));
-  testing::Test::RecordProperty("score_chunk_rows", std::to_string(ScoreChunk(policy)));
+      "retained_program_bound",
+      std::to_string((life->shape_count + 1) * (kProgramBytes + 4096 * en::kGraphNodeHostBytes)));
+  if (!OrdinaryPolicy(policy)) {
+    std::ostringstream nll;
+    nll << std::setprecision(17);
+    const auto losses = std::span(life->quality->scores).first(life->quality->score_count);
+    for (const auto& row : losses) {
+      nll << row.document << ',' << row.slot << ',' << row.position << ',' << row.target << ','
+          << row.nll << '\n';
+    }
+    ASSERT_LE(nll.tellp(), 512 * 1024);
+    testing::Test::RecordProperty("corpus_nll_rows", nll.str());
+    testing::Test::RecordProperty("document_rows", std::to_string(document_rows));
+    testing::Test::RecordProperty(
+        "teacher_elapsed_ns",
+        std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
+    testing::Test::RecordProperty("corpus_ids_sha256", id_sha);
+    testing::Test::RecordProperty("inputs", std::to_string(kOwners * document_rows));
+    testing::Test::RecordProperty("targets", std::to_string(kOwners * (document_rows - 1)));
+    testing::Test::RecordProperty("score_waves", std::to_string(life->quality->waves));
+    testing::Test::RecordProperty("score_chunk_rows", std::to_string(ScoreChunk(policy)));
+    testing::Test::RecordProperty("quality_scope",
+                                  "same-checkpoint reference pairing; no original-model claim");
+  }
   testing::Test::RecordProperty("candidate", std::string(PolicyName(policy)));
-  testing::Test::RecordProperty("quality_scope",
-                                "same-checkpoint reference pairing; no original-model claim");
+  testing::Test::RecordProperty("corpus_ids_sha256", id_sha);
+  testing::Test::RecordProperty(
+      "fixture_schedule_elapsed_ns",
+      std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
   std::ostringstream programs, policies;
   std::size_t executed = 0, vector8 = 0;
-  for (const auto& record : life->records) {
+  for (const auto& record : std::span(life->records).first(life->shape_count)) {
     policies << "class " << static_cast<unsigned>(record.shape.phase) << ' ' << record.shape.stage
              << ' ' << record.shape.read_align << ' ' << record.shape.row_invariant << ' '
              << record.measured << ' ' << record.lowered << ' ' << record.owner_policy << ' '
@@ -686,8 +1078,14 @@ void Screen(TeacherPolicy policy) {
                << segment.greedy << '\n';
     if (!record.selected.runs) continue;
     ++executed;
-    ASSERT_EQ(record.shape.phase, pl::Phase::kScore);
-    ASSERT_EQ(record.shape.segments.size(), kOwners);
+    if (OrdinaryPolicy(policy)) {
+      ASSERT_TRUE(record.shape.phase == pl::Phase::kPrefill ||
+                  record.shape.phase == pl::Phase::kDecode);
+      ASSERT_EQ(record.shape.segments.front().read_cells, 256U);
+    } else {
+      ASSERT_EQ(record.shape.phase, pl::Phase::kScore);
+      ASSERT_EQ(record.shape.segments.size(), kOwners);
+    }
     if (ScoreChunk(policy) == 1) {
       ASSERT_EQ(record.shape.rows(), kOwners);
       ASSERT_EQ(record.owner_policy, DefaultPolicy(policy));
@@ -712,7 +1110,7 @@ void Screen(TeacherPolicy policy) {
       programs << name << '\n';
     }
   }
-  ASSERT_EQ(executed, ScoreChunk(policy) == 1 ? 1U : 2U);
+  ASSERT_EQ(executed, OrdinaryPolicy(policy) ? 4U : (ScoreChunk(policy) == 1 ? 1U : 2U));
   ASSERT_LE(policies.tellp(), 64 * 1024);
   testing::Test::RecordProperty("measured_policy_classes", policies.str());
   ASSERT_LE(programs.tellp(), 8 * kMiB);
@@ -732,5 +1130,8 @@ TEST(Qwen38JoinedScoreGpu, DefaultSingleRowNaturalTeacher) {
 TEST(Qwen38JoinedScoreGpu, JoinedSingleRowNaturalTeacher) {
   Screen(TeacherPolicy::kJoinedSingleRow);
 }
+
+TEST(Qwen38JoinedScoreGpu, DefaultOrdinaryPhaseState) { Screen(TeacherPolicy::kDefaultOrdinary); }
+TEST(Qwen38JoinedScoreGpu, JoinedOrdinaryPhaseState) { Screen(TeacherPolicy::kJoinedOrdinary); }
 
 }  // namespace

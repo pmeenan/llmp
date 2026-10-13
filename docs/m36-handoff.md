@@ -50,10 +50,14 @@ and disables only `owner_row_invariant` in the other: PPL
 35.402897009/35.281665930, −0.342433% paired. Both fresh cases, main native/32
 host controls and source quality checks pass. Two documents improve and two
 regress; actual vector selection is distinct from explicit tuning. This
-whole-policy result does not adopt a default. A prospective change still
-needs ordinary Prefill/Decode at one/four owners and same-policy state
-continuation across cohorts. Cache precision differences remain disclosed;
-no family adoption, serving-speed or closer-to-original claim follows.
+whole-policy result does not adopt a default. The bounded ordinary C1/C4
+Prompt/Decode follow-up now passes main native/33 host controls and both
+actual cases, including checkpoint/spill replay and complete final initialized
+state hashes within each policy. All 20 classes are independently measured;
+no cross-cohort bit equality is required. Five full-layout state buffers cost
+1,646,264,320 bytes, with no compact-buffer saving in this domain. Matched
+performance/default adoption, MTP, long-context and family gates remain open;
+no new NLL or closer-to-original claim follows.
 [Reference and manual replay](experiments/m36-numerical-audit/qwen-quantized-reference.md).
 
 The bounded dense Q8_0 cache opt-in (D-117) keeps F16 default and uses actual
