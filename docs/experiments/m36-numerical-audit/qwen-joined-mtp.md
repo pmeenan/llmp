@@ -510,6 +510,52 @@ Replay uses the same supervised C2 HTTP protocol and startup payment, selects
 this artifact under `qgguf-artifacts`, verifies the kept metadata and native
 rendered-input receipt, and requires both 128-token responses to overlap before
 the 16-token prefix repeat. Raw evidence and inputs remain in session scratch
-`qwen-gguf-c2-models01`. GGUF C4, larger contexts, broader same-quantized-reference
-quality, automatic public selection and the fixed-baseline family speed/swap
-gates remain open. GGUF+MTP and native-v1 admission are unchanged.
+`qwen-gguf-c2-models01`. GGUF C4 coverage follows below. Larger contexts,
+broader same-quantized-reference quality, automatic public selection and the
+fixed-baseline family speed/swap gates remain open. GGUF+MTP and native-v1 admission are unchanged.
+
+## GGUF target-only HTTP C4 control
+
+2026-10-13, Spark A. The existing GGUF route also passes four-owner ordinary
+HTTP serving at context 512, chunk 16 and read alignment 256. The same native
+metadata driver independently authenticates the remaining two texts before
+inference; all four rendered prompt counts are 330, 331, 331 and 331.
+Four fresh requests each complete 128 tokens, with all four streams producing
+output before any request finishes. The runtime records 127 joined ordinary
+waves / 504 units, proving an actual four-owner wave with four configured slots.
+Speculative work is zero. Repeating the first prompt reuses 325 of 330 tokens
+and completes 16 more, for 528 total output tokens.
+
+This reuses the successful native C4 controller and the GGUF C2 source guards;
+no production change or rebuild is involved. Four owners increase the existing
+saved-root bound to 960 and the derived startup payment to 5,913,968,640 bytes.
+Actual state, workspace, activation, input and plan/capture/future allocations
+retain normal measured admission within the same 104 GiB node cap, 112 GiB
+zero-swap process/page-cache ceiling and 6 GiB physical margin. Cumulative
+observations are 11 plans, five graphs, eight eager runs, four captures,
+159 replays and zero refusals. Process/page-cache peak is 1,292,857,344 bytes,
+not device residency. TERM exits zero, the complete process group retires,
+source/runtime guards pass, and GPU processes and memory-limit/OOM events are
+zero. These are functional observations, not comparative speed, quality or
+memory-saving claims.
+
+Prepared execution identity:
+`3cdcdc88220fefaf19496cc966065c229267cd99eb64020f8bfc7aa5226d6eb5`.
+The exact main159 runtime and guarded source provenance are unchanged from
+GGUF C2 above. Remaining-input metadata receipt:
+`c4de428c8d3183ff1bad92ff6478623076b86617af7de03a6e477319dc75490f`.
+Actual recipe:
+`78153369ca24dad56b3e251e0aef451941218490c50bf755cc6ff1623b2c7a5d`.
+Actual result:
+`7f115b8ef6cedee0d4e7e395b83ddb16df6a22a8846a6d5428328d8d3e08371e`.
+
+Replay selects four slots and the source-derived startup payment above, reuses
+the authenticated GGUF metadata/input receipts and existing four-request
+controller, and requires all-four output overlap, the four-owner work-counter
+witness, exact completion counts, positive prefix reuse and complete retirement.
+Raw evidence remains in `qwen-gguf-c4-models01`. This closes the bounded ordinary
+C2/C4 HTTP coverage for both native and GGUF sources; it does not qualify larger
+histories, automatic public admission, broader same-quantized-reference quality
+or the fixed-baseline family speed/swap gate. The next shared work is deriving
+startup accounting from actual source/settings, followed by the existing family
+quality and representative frozen-geometry screen, not another small HTTP case.

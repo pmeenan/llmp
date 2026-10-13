@@ -1854,6 +1854,11 @@ each is checked against the design as M3.6 proceeds.
                                     reused prefix before 16 more outputs, with
                                     rendered counts authenticated before inference
                                     ([GGUF control](experiments/m36-numerical-audit/qwen-joined-mtp.md#gguf-target-only-http-c2-control)).
+                                    GGUF C4 also passes with four overlapping
+                                    128-token replies, a proven four-owner wave
+                                    and a 325-token reused prefix before 16 more
+                                    outputs, on the same qualified runtime
+                                    ([GGUF C4](experiments/m36-numerical-audit/qwen-joined-mtp.md#gguf-target-only-http-c4-control)).
                                     Automatic public serving admission, broader
                                     quality and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,

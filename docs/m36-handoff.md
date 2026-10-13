@@ -178,7 +178,10 @@ completes 16 more. The existing GGUF target-only route also passes C2 with
 331-token prompts, two overlapping 128-token replies, 127 joined ordinary
 waves and 326 cached tokens before a 16-token prefix repeat. Its kept tokenizer
 and template supply independently authenticated native rendered counts before
-inference. C1, GGUF C4 and broader quality remain unqualified. Public
+inference. GGUF C4 also passes four overlapping 128-token replies and proven
+four-owner execution; the first-prompt repeat reuses 325 tokens before 16 more
+outputs. These bounded controls leave larger histories and broader quality
+unqualified. Public
 model selection is unchanged; automatic production admission, broader same-quantized-reference quality, OS-process/GPU restart and
 the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
