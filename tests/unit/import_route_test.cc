@@ -85,14 +85,18 @@ TEST(ImportRouteTest, PermutationsCoverEveryByteInEitherPartOrder) {
   // Two groups of three heads become three pairs. This fixed reference
   // ordering is independent of the cursor's source-to-destination formula.
   constexpr std::array<std::size_t, 6> source_heads{0, 3, 1, 4, 2, 5};
-  for (const auto encoding : {Encoding::kF32, Encoding::kBF16, Encoding::kMxfp8}) {
+  for (const auto encoding :
+       {Encoding::kF32, Encoding::kBF16, Encoding::kMxfp8, Encoding::kAffine}) {
     for (const auto axis : {HeadAxis::kRows, HeadAxis::kColumns}) {
       format::TensorFormat format{
           .encoding = encoding,
-          .layout = encoding == Encoding::kMxfp8 ? Layout::kSplit : Layout::kDense,
+          .layout = encoding == Encoding::kMxfp8 || encoding == Encoding::kAffine ? Layout::kSplit
+                                                                                  : Layout::kDense,
           .shape = {.ne = axis == HeadAxis::kRows ? std::array<std::uint64_t, 4>{64, 9, 1, 1}
                                                   : std::array<std::uint64_t, 4>{192, 3, 1, 1},
                     .rank = 2}};
+      if (encoding == Encoding::kAffine)
+        format.params = {.bits = 4, .group = 32, .scale = format::AffineScale::kBF16};
       auto permutation = HeadPermutationPlan::Make(
           format, axis, 2, 6, axis == HeadAxis::kRows ? 1 : 32, axis == HeadAxis::kRows ? 2 : 0);
       ASSERT_TRUE(permutation);

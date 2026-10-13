@@ -359,6 +359,108 @@ TEST(ImportTransformsTest, Bf16HeadRefusalsLeaveSourceAndCursorUnchanged) {
   refuse(bad, HeadAxis::kRows, 2, 6, 1);
 }
 
+format::TensorFormat AffineMatrix(std::uint64_t columns, std::uint64_t rows) {
+  return {.encoding = Encoding::kAffine,
+          .params = {.bits = 4, .group = 32, .scale = format::AffineScale::kBF16},
+          .layout = Layout::kSplit,
+          .shape = {.ne = {columns, rows, 1, 1}, .rank = 2}};
+}
+
+TEST(ImportTransformsTest, AffineHeadsPreserveAllCodesScalesAndBiases) {
+  struct Geometry {
+    HeadAxis axis;
+    std::uint64_t columns, rows, keys, heads, width, first;
+  };
+  const std::array cases{Geometry{HeadAxis::kRows, 64, 17, 2, 6, 2, 3},
+                         Geometry{HeadAxis::kRows, 32, 101, 16, 48, 2, 3},
+                         Geometry{HeadAxis::kColumns, 192, 3, 2, 6, 32, 0},
+                         Geometry{HeadAxis::kColumns, 6144, 3, 16, 48, 128, 0}};
+  for (const auto& g : cases) {
+    const auto format = AffineMatrix(g.columns, g.rows);
+    auto plan = HeadPermutationPlan::Make(format, g.axis, g.keys, g.heads, g.width, g.first);
+    ASSERT_TRUE(plan.has_value());
+    EXPECT_EQ(plan->format(), format);
+    ASSERT_EQ(plan->parts().size(), 3U);
+    for (const auto& part : plan->parts()) {
+      const auto row = part.role == PartRole::kCodes ? g.columns / 2 : g.columns / 32 * 2;
+      EXPECT_EQ(part.bytes, row * g.rows);
+      const auto row_bytes = format::RowBytes(format, part.role);
+      ASSERT_TRUE(row_bytes);
+      EXPECT_EQ(*row_bytes, row);
+    }
+    // Complete independent destination->source reference, byte coverage,
+    // input/output guards, odd-byte chunks, and reverse physical part order.
+    CheckPermutation(*plan, g.axis, g.keys, g.heads, g.width, g.first);
+    for (const auto absent : {PartRole::kData, PartRole::kTensorScale, PartRole::kZeros})
+      EXPECT_FALSE(plan->CursorFor(absent).has_value());
+  }
+}
+
+TEST(ImportTransformsTest, AffineHeadFactoryRefusesPartialGroupsAndUnsupportedFormats) {
+  const auto good = AffineMatrix(192, 17);
+  const auto refuse = [](format::TensorFormat candidate, HeadAxis axis = HeadAxis::kRows,
+                         std::uint64_t keys = 2, std::uint64_t heads = 6, std::uint64_t width = 2,
+                         std::uint64_t first = 3) {
+    const auto original = candidate;
+    EXPECT_FALSE(HeadPermutationPlan::Make(candidate, axis, keys, heads, width, first));
+    EXPECT_EQ(candidate, original);
+  };
+  // Both cuts exactly cover K; one divides an affine group, the other also
+  // divides a packed code byte. A positive matrix format alone is insufficient.
+  refuse(good, HeadAxis::kColumns, 2, 12, 16, 0);
+  refuse(good, HeadAxis::kColumns, 1, 192, 1, 0);
+  refuse(good, HeadAxis::kColumns, 2, 6, 32, 1);
+  refuse(good, HeadAxis::kRows, 0, 6, 2);
+  refuse(good, HeadAxis::kRows, 4, 6, 2);
+  refuse(good, HeadAxis::kRows, 2, 6, 0);
+  refuse(good, HeadAxis::kRows, 2, 6, 3);
+  refuse(good, HeadAxis::kRows, 2, 6, 2, 6);
+  refuse(good, HeadAxis::kRows, 2, 6, std::numeric_limits<std::uint64_t>::max());
+  refuse(good, static_cast<HeadAxis>(255));
+  for (const auto bits : {2U, 3U, 5U, 8U}) {
+    auto bad = good;
+    bad.params.bits = static_cast<std::uint8_t>(bits);
+    refuse(bad);
+  }
+  for (const auto group : {0U, 16U, 64U}) {
+    auto bad = good;
+    bad.params.group = group;
+    refuse(bad);
+  }
+  for (const auto scale :
+       {format::AffineScale::kNone, format::AffineScale::kF16, format::AffineScale::kF32}) {
+    auto bad = good;
+    bad.params.scale = scale;
+    refuse(bad);
+  }
+  auto bad = good;
+  bad.params.zero_point = true;
+  refuse(bad);
+  bad = good;
+  bad.params.tensor_scale = true;
+  refuse(bad);
+  bad = good;
+  bad.layout = Layout::kRowInterleaved;
+  refuse(bad);
+  bad = good;
+  bad.stacked = 2;
+  refuse(bad);
+  bad = good;
+  bad.shape.rank = 1;
+  bad.shape.ne[1] = 1;
+  refuse(bad, HeadAxis::kColumns, 2, 6, 32, 0);
+  bad = good;
+  bad.shape.rank = 3;
+  bad.shape.ne[2] = 2;
+  refuse(bad);
+  bad = good;
+  bad.shape.ne[0] = 191;
+  refuse(bad);
+  bad = good;
+  bad.shape.ne[0] = std::numeric_limits<std::uint64_t>::max() - 31;
+  refuse(bad);
+}
+
 TEST(ImportTransformsTest, HeadFactoryRefusesUnprovablePermutations) {
   auto f = Matrix(Encoding::kMxfp8, 192, 16);
   EXPECT_FALSE(HeadPermutationPlan::Make(f, HeadAxis::kRows, 0, 6, 1).has_value());

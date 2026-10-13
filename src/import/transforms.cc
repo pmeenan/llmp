@@ -159,16 +159,27 @@ std::expected<HeadPermutationPlan, Error> HeadPermutationPlan::Make(
   using format::PartRole;
   const auto parts = format::PartsOf(format);
   const bool dense = format.encoding == Encoding::kF32 || format.encoding == Encoding::kBF16;
+  // This finite affine domain preserves the source code packing and both
+  // BF16 parameter planes; no value decoding or implicit zero-point conversion.
+  const bool affine = format.encoding == Encoding::kAffine && format.layout == Layout::kSplit &&
+                      format.shape.rank == 2 && format.params.bits == 4 &&
+                      format.params.group == 32 &&
+                      format.params.scale == format::AffineScale::kBF16 &&
+                      !format.params.zero_point && !format.params.tensor_scale;
   if (!parts || format.stacked != 1 || format.shape.rank < 1 || format.shape.rank > 2 ||
       !((dense && format.layout == Layout::kDense) ||
         (format.encoding == Encoding::kMxfp8 && format.layout == Layout::kSplit &&
-         !format.params.tensor_scale))) {
-    return Refuse("head permutation needs unstacked dense F32/BF16 or split MXFP8");
+         !format.params.tensor_scale) ||
+        affine)) {
+    return Refuse(
+        "head permutation needs unstacked dense F32/BF16, split MXFP8 or affine4/BF16/group32");
   }
   if ((dense && (parts->size() != 1 || !parts->Find(PartRole::kData))) ||
       (format.encoding == Encoding::kMxfp8 &&
        (parts->size() != 2 || !parts->Find(PartRole::kCodes) ||
-        !parts->Find(PartRole::kBlockScales)))) {
+        !parts->Find(PartRole::kBlockScales))) ||
+      (affine && (parts->size() != 3 || !parts->Find(PartRole::kCodes) ||
+                  !parts->Find(PartRole::kBlockScales) || !parts->Find(PartRole::kBiases)))) {
     return Refuse("head permutation lacks complete format parts");
   }
   if (key_heads == 0 || value_heads == 0 || value_heads % key_heads != 0 || head_elements == 0 ||
@@ -183,7 +194,9 @@ std::expected<HeadPermutationPlan, Error> HeadPermutationPlan::Make(
     }
   } else if (axis == HeadAxis::kColumns) {
     if (first_value_row != 0 || extent != format.shape.ne[0] ||
-        (format.encoding == Encoding::kMxfp8 && head_elements % 32 != 0)) {
+        (format.encoding == Encoding::kMxfp8 && head_elements % 32 != 0) ||
+        (affine && (head_elements % format.params.group != 0 ||
+                    head_elements % (8 / format.params.bits) != 0))) {
       return Refuse("column heads must cover the row and whole scale blocks");
     }
   } else {

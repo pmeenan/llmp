@@ -26,10 +26,15 @@ using Payloads = std::map<Key, std::vector<std::byte>>;
 format::TensorFormat Fmt(Encoding encoding, std::initializer_list<std::uint64_t> dims) {
   auto shape = format::ShapeOf(std::span(dims.begin(), dims.size()));
   EXPECT_TRUE(shape);
+  format::EncodingParams params{.tensor_scale = encoding == Encoding::kNvfp4};
+  if (encoding == Encoding::kAffine)
+    params = {.bits = 4, .group = 32, .scale = format::AffineScale::kBF16};
   return {.encoding = encoding,
-          .params = {.tensor_scale = encoding == Encoding::kNvfp4},
-          .layout = encoding == Encoding::kNvfp4 || encoding == Encoding::kMxfp8 ? Layout::kSplit
-                                                                                 : Layout::kDense,
+          .params = params,
+          .layout = encoding == Encoding::kNvfp4 || encoding == Encoding::kMxfp8 ||
+                            encoding == Encoding::kAffine
+                        ? Layout::kSplit
+                        : Layout::kDense,
           .shape = shape.value_or(format::Shape{})};
 }
 struct Fixture {
@@ -180,7 +185,7 @@ TEST(ImportIndexedPartsTest, RowShardsUseOneInheritedScaleWithoutReplication) {
 }
 
 TEST(ImportIndexedPartsTest, Bf16SingletonReshapeAndAllMxfp8PartsSharePermutation) {
-  for (auto encoding : {Encoding::kBF16, Encoding::kMxfp8}) {
+  for (auto encoding : {Encoding::kBF16, Encoding::kMxfp8, Encoding::kAffine}) {
     Fixture f;
     const auto destination = Fmt(encoding, {32, 6});
     const auto source = encoding == Encoding::kBF16 ? Fmt(encoding, {32, 1, 6}) : destination;

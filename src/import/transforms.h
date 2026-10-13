@@ -63,10 +63,12 @@ class HeadPermutationCursor {
 };
 
 // Grouped-to-tiled heads: destination j*K+g receives source g*(V/K)+j.
-// Only dense F32/BF16 or split MXFP8 (codes AND block scales), unstacked, rank
-// 1 or 2. Rows are rank 2, with unchanged prefix/suffix; columns cover a
-// whole row (rank-1 dense input is one row). Column MXFP8 heads are whole 32-value
-// blocks. Neither format, shape nor any payload byte changes.
+// Dense F32/BF16, split MXFP8 (codes AND block scales), or split affine
+// 4-bit/group32/BF16 (codes AND block scales AND biases), all unstacked.
+// Affine is rank 2 only; dense/MXFP8 remain rank 1 or 2. Rows are rank 2,
+// with unchanged prefix/suffix; columns cover a whole row. Quantized column
+// heads are whole 32-value groups and packed code bytes. No decoding,
+// allocation, format/shape change or source head-order authority is implied.
 class HeadPermutationPlan {
  public:
   static std::expected<HeadPermutationPlan, Error> Make(const format::TensorFormat& format,
@@ -75,7 +77,7 @@ class HeadPermutationPlan {
                                                         std::uint64_t head_elements,
                                                         std::uint64_t first_value_row = 0);
 
-  // One independent monotone cursor per actual part: either source part
+  // One independent monotone cursor per actual part: any source part
   // may arrive first. No caller-provided initial offsets or coverage.
   std::expected<HeadPermutationCursor, Error> CursorFor(format::PartRole part) const;
   const format::TensorFormat& format() const { return format_; }
