@@ -1885,8 +1885,19 @@ each is checked against the design as M3.6 proceeds.
                                     extra graph/plan memory, with complete work
                                     and no reclaims. The option remains experimental
                                     ([capture screen](experiments/m36-numerical-audit/qwen-joined-mtp.md#default-off-first-verify-capture-screen)).
-                                    Automatic public selection, broader
-                                    quality and family gates remain open.
+                                    Local commands now consume the same strict
+                                    internal selector. A grouped check captures
+                                    exact 996-target IDs/losses and observes PPL
+                                    15.743782 versus 16.354833 from the pinned
+                                    same-quantized reference (target-only; cache
+                                    precision differs). Existing 8K/16 swap-table
+                                    controls pass both ordered native+MTP/GGUF
+                                    pairs, including real spill and exact
+                                    same-selected state/full-head continuation.
+                                    Full native, 156 host and 48 tool controls pass
+                                    ([grouped evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#grouped-exact-quality-and-8k-saved-state-swaps)).
+                                    Automatic public selection, wider mixed-family
+                                    swaps, broader quality and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
                   graph builders, bindings and serving class after G3c2.
 - [ ] **Migrate DeepSeek V4 Flash** with DSpark.

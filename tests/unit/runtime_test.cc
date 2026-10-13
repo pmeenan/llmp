@@ -1269,6 +1269,36 @@ TEST(ServiceDiagnostics, FirstVerifyCaptureRequiresTheCompletePaidOptIn) {
   EXPECT_FALSE(options.diagnostic_capture_first_verify);
 }
 
+TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartialTuple) {
+  const int status = CrashChild([] {
+    // This isolated child changes its environment before starting any threads.
+    // NOLINTBEGIN(concurrency-mt-unsafe)
+    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0 ||
+        ::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
+        ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0 ||
+        ::unsetenv("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY") != 0)
+      std::_Exit(2);
+    llmp::runtime::ServingOptions options;
+    options.plain = true;
+    options.report = "swap.json";
+    if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
+        !options.diagnostic_component_solo || !options.diagnostic_auto_startup ||
+        options.diagnostic_budget_cap_bytes != 8388608 || !options.plain ||
+        options.report != "swap.json" || options.keep_conversations)
+      std::_Exit(3);
+    if (::unsetenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES") != 0) std::_Exit(4);
+    // NOLINTEND(concurrency-mt-unsafe)
+    llmp::runtime::ServingOptions refused;
+    refused.plain = true;
+    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(refused) ||
+        refused.diagnostic_component_solo || !refused.plain)
+      std::_Exit(5);
+    std::_Exit(0);
+  });
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
 TEST(ServiceRetirement, FailedFenceExitsBeforeOwnerDestruction) {
   std::FILE* log = std::tmpfile();
   ASSERT_NE(log, nullptr);

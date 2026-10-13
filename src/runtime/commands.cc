@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cstddef>
+#include <cstdlib>
 #include <format>
 #include <limits>
 #include <string>
@@ -63,6 +64,17 @@ std::expected<void, std::string> ApplyServiceDiagnostics(
   options.diagnostic_auto_startup = automatic;
   options.diagnostic_budget_cap_bytes = cap;
   return {};
+}
+
+std::expected<void, std::string> ApplyServiceDiagnosticEnvironment(ServingOptions& options) {
+  const auto value = [](const char* name) -> std::optional<std::string_view> {
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): before serving threads start
+    const char* text = std::getenv(name);
+    return text ? std::optional<std::string_view>(text) : std::nullopt;
+  };
+  return ApplyServiceDiagnostics(
+      options, value("LLMP_DIAGNOSTIC_COMPONENT_QWEN"), value("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES"),
+      value("LLMP_DIAGNOSTIC_NODE_CAP_BYTES"), value("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY"));
 }
 
 const std::string_view kCommandUsage =

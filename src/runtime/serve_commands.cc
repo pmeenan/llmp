@@ -1011,14 +1011,18 @@ int RunServing(const config::NodeConfig& config, const config::RuntimeRoles& rol
     (void)std::fwrite(line.data(), 1, line.size(), log);
     (void)std::fflush(log);
   };
+  ServingOptions serving = command.serving;
+  if (auto configured = ApplyServiceDiagnosticEnvironment(serving); !configured) {
+    say(configured.error());
+    return 1;
+  }
   Status ran;
   {
-    Server server(config, roles, command.serving, log);
+    Server server(config, roles, serving, log);
     ran = server.Start(command.command == Command::kSwapTable);
     if (ran) {
-      ran = command.command == Command::kChat
-                ? RunChat(server, command.chat, command.serving, out)
-                : RunSwapTable(server, command.table, command.serving, out);
+      ran = command.command == Command::kChat ? RunChat(server, command.chat, serving, out)
+                                              : RunSwapTable(server, command.table, serving, out);
     }
     if (auto stopped = server.TearDown(); !stopped) {
       say("stopping: " + stopped.error());

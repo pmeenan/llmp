@@ -270,3 +270,74 @@ the model; the owning wrapper must verify source/runtime identity and retire
 all work even on failure. Six offline positive/negative controls and the
 actual run checked this unchanged collector. Raw losses, logs and actual
 receipts remain outside Git.
+
+## Exact 996-target serving-corpus comparison
+
+The existing native quality command now retains its single raw scoring
+response and complete token-ID sequence. The same collector consumes that
+response, verifies the recorded loss-array digest and exports inputs for the
+pinned reference. No additional native scoring or tokenization call is needed.
+The internal shared-route options also resolve consistently for HTTP and local
+serving commands; public defaults and numerical policy are unchanged.
+
+One fresh native run at context 33,792, prefill chunk 4,096 and four configured
+slots completes the existing two 128-token behavioral replies and the fixed
+4,000-character score passage. Scoring uses the target-only, single-row,
+teacher-forced full-head path; it is not a joined or MTP quality measurement.
+The reference independently reproduces the entire 997-token sequence with the
+same special-token policy before scoring those explicit IDs. The first token,
+220, is unscored; positions 1–996 are the exact paired targets. This passage
+is separate from the earlier 1,016-target four-document corpus.
+
+| Implementation | Targets | Mean NLL | Perplexity |
+| --- | ---: | ---: | ---: |
+| Shared native, current mapping | 996 | 2.756445494533136 | 15.743782013599764 |
+| Pinned Mia, same quantized checkpoint | 996 | 2.794523476545248 | 16.354833434248587 |
+
+Native mean NLL is lower by **0.038077982012112**, and PPL by **3.736213%**.
+Its target loss is lower at 508 coordinates and higher at 488; mean absolute
+loss difference is 0.525157320267 and maximum difference 7.628330496994.
+This supports a bounded corpus observation, not token equivalence or a
+post-hoc family-quality threshold. Native uses F16 KV; the unchanged reference
+uses FP8 KV and BF16 SSM. Both use the same quantized target checkpoint, but
+these implementation/precision differences remain part of the comparison.
+No closer-to-original claim follows. Broader corpus, joined/MTP quality and
+the migration speed gate remain open.
+
+Native startup retires its temporary parsing extent and retains 6,708,789,248
+host bytes within the admitted 104GiB node budget. The separate process/cache
+peak is 3,615,989,760 bytes. The reference retains its pinned hardware-derived
+GPU budget and 105GiB process/cache ceiling; its minimum observed available
+memory is 17,727,176,704 bytes and controller peak 182,411,264 bytes. These
+process/cache measurements are not device-memory peaks. Both jobs positively
+retire their owners, process groups and GPU work, with no memory-limit/OOM
+events. The complete reference job takes 172.591 seconds, including cleanup;
+this is completion evidence, not a latency comparison.
+
+The final Spark A full-native build passes 156 host controls (47 runtime,
+109 API), 48 tool controls and pinned format/boundary/header/REUSE checks.
+Runtime SHA-256:
+`f3ec40cabb427a1e87fa2a9fb83e61a43e143c770e4096eeba714d672c4a3551`
+(271,963,984 bytes); native build receipt:
+`823552b3c10d855f49394217ce28b3c841327905300053c353770792a773b20c`.
+Native quality receipt:
+`d9c53957317dba2bc2bfd6c47b2cf6cad3e2fcfe98de8bcc9651049be89a9cb2`;
+reference receipt:
+`c226ea7de8d7fd3bb22611431f6bd0f557c79bb533e06837b14f8e1249d564ef`.
+Full-ID SHA-256 (997 little-endian int32 values):
+`8ec5d9288894f733df7a5f68b929f76157a3ceb8caa464fe48821e3aa15b60df`.
+Native/reference loss-file hashes:
+`c56b99b8debb67019fba2ccc7ed478fb0a05c83d13680f845a36176b84c51fdd` /
+`b816836c41004aad095320a23f79e22f25faecce65812ba60bf77cbbaf2c6ecb`.
+Raw evidence and reproducible paired audit remain in
+`qwen-quality-native-models01` and `qwen-quality-reference-models01`.
+
+To replay this input path, run the existing supervised `speed_gate.py quality`
+command with the qualified internal shared configuration, then invoke
+`collect-qwen-reference.py --native-quality QUALITY_RECORD DESTINATION` on its
+completed record. This exports the authenticated text, full IDs and native
+losses without model execution. Copy the collector and those exact exported
+inputs to a fresh reference directory and use the existing pinned Mia launcher
+and collection command above. The full-tokenization flag distinguishes this
+complete passage from the retained four-document prefix inputs; do not mix
+their aggregates or measurement identities.

@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Apply the same validated internal shared-engine options to HTTP and local
+  serving commands. Retain exact quality token IDs/losses from one score call
+  for same-checkpoint reference comparison, and validate existing 8K saved-state
+  continuations across native+MTP and GGUF swaps without changing public defaults.
+
 - Allow an internal, default-off Verify policy to capture beside its first eager
   execution through the existing paid graph lifecycle. A bounded shared-engine
   screen observes higher C4 decode throughput with extra graph memory and

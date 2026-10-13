@@ -2261,17 +2261,7 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
   // kept across a restart (D-105).
   ServingOptions serving;
   serving.keep_conversations = true;
-  const auto diagnostic = [](const char* name) -> std::optional<std::string_view> {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe): read before service threads start
-    const char* value = std::getenv(name);
-    return value ? std::optional<std::string_view>(value) : std::nullopt;
-  };
-  if (auto configured =
-          ApplyServiceDiagnostics(serving, diagnostic("LLMP_DIAGNOSTIC_COMPONENT_QWEN"),
-                                  diagnostic("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES"),
-                                  diagnostic("LLMP_DIAGNOSTIC_NODE_CAP_BYTES"),
-                                  diagnostic("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY"));
-      !configured) {
+  if (auto configured = ApplyServiceDiagnosticEnvironment(serving); !configured) {
     Say(log, configured.error());
     return kExitFailure;
   }

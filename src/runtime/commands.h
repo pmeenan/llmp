@@ -73,7 +73,7 @@ struct ServingOptions {
   bool plain = false;
   // Internal Qwen component migration screen, including declared composed
   // sources with multiple owners. Only an explicitly funded service diagnostic
-  // can select it through HTTP; normal configuration/defaults are unchanged.
+  // can select it in HTTP or local commands; normal defaults are unchanged.
   bool diagnostic_component_solo = false;
   // Internal default-off experiment, only with the paid shared service route.
   bool diagnostic_capture_first_verify = false;
@@ -177,6 +177,10 @@ std::expected<void, std::string> ApplyServiceDiagnostics(
     ServingOptions& options, std::optional<std::string_view> component,
     std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap,
     std::optional<std::string_view> capture_first_verify = std::nullopt);
+
+// Reads the same internal diagnostic tuple before either HTTP or local serving
+// constructs its Server. Preserves caller-selected command options.
+std::expected<void, std::string> ApplyServiceDiagnosticEnvironment(ServingOptions& options);
 
 // Parses a command's arguments (after its name).
 std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,

@@ -800,12 +800,22 @@ def cmd_quality(args: argparse.Namespace) -> int:
         text = passage(corpus, 100003, family.score_chars)
         conn = http.client.HTTPConnection("127.0.0.1", args.port, timeout=3600)
         conn.request("POST", "/v1/completions", json.dumps(
-            {"model": family.model, "prompt": text, "max_tokens": 0, "prompt_logprobs": 0}),
+            {"model": family.model, "prompt": text, "max_tokens": 0, "prompt_logprobs": 0,
+             "echo": True, "logprobs": 0, "return_tokens_as_token_ids": True}),
             {"Content-Type": "application/json"})
         response = conn.getresponse()
         body = response.read()
         if response.status != 200:
             raise RuntimeError(f"scoring: HTTP {response.status}: {body[:400]!r}")
+        # Keep the actual scored IDs, including the unscored first token, and
+        # every target loss for reference pairing without another native run.
+        prompt_name, response_name = f"{name}-score.txt", f"{name}-score.json"
+        (out / "quality" / prompt_name).write_text(text)
+        (out / "quality" / response_name).write_bytes(body)
+        record["score_prompt"] = {"file": prompt_name,
+                                  "sha256": hashlib.sha256(text.encode()).hexdigest()}
+        record["score_response"] = {"file": response_name,
+                                    "sha256": hashlib.sha256(body).hexdigest()}
         rows = json.loads(body)["choices"][0]["prompt_logprobs"]
         scores = [next(iter(row.values()))["logprob"] for row in rows if row]
         record["score"] = {"tokens": len(scores), "nll": -sum(scores) / len(scores),

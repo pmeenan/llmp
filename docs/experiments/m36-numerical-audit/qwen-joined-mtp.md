@@ -831,3 +831,69 @@ result: `f6674a87a6535a5ef0702f292d25ac64bcf7f2fded9f42aab237d3dff85c46ba`.
 Raw evidence and reproducible metric audit remain in
 `qwen-capture-first-models01`; replay uses its existing family-prime controller
 with only the optional first-Verify selector differing between arms.
+
+## Grouped exact quality and 8K saved-state swaps
+
+The shared diagnostic option resolver is now consumed by local serving
+commands as well as HTTP, with the same strict complete-tuple validation and
+unchanged public defaults. The existing quality collector captures the complete
+IDs and losses from one native score response. The exact 996-target comparison
+against the pinned same-quantized-checkpoint reference observes native PPL
+15.743782 versus 16.354833, with F16 versus FP8 KV disclosed; this is a bounded
+target-only teacher-forced observation, not joined/MTP qualification
+([paired evidence](qwen-quantized-reference.md#exact-996-target-serving-corpus-comparison)).
+
+The existing `swap-table` runs both ordered native+MTP/GGUF target-only pairs
+at context 33,792/chunk 4,096/four configured slots. Each pair has first-use and
+prepared cycles: A prefills 8,192 tokens, saves state, generates an unswapped
+16-token control, restores, switches to B for its first output, then returns
+and continues A for 16 tokens. All eight rows pass. Each of the four returns
+restores the exact initialized-state payload and reproduces all 16 tokens and
+16 complete finite 248,320-logit rows of its own unswapped implementation.
+There is no native-versus-GGUF output equality requirement.
+
+| Ordered pair | Direction | First-use total s | Prepared total s |
+| --- | --- | ---: | ---: |
+| Native+MTP as A, GGUF as B | A→B | 4.580019 | 4.448372 |
+| Native+MTP as A, GGUF as B | B→A | 6.024512 | 5.953049 |
+| GGUF as A, native+MTP as B | A→B | 6.144753 | 6.031086 |
+| GGUF as A, native+MTP as B | B→A | 4.245365 | 4.171379 |
+
+These are single-run swap observations, not the matched 1% gate or a new
+mixed-family table. Native initialized state is 700,448,768 bytes per return;
+GGUF state is 505,413,632 bytes. All four restored continuations match their
+saved-state and full-head digests. Prepared native/GGUF returns retain 9/1
+graphs and replay 19/15 times. Actual state writes total 2,411,724,800 bytes;
+weight evictions total 521,159,049,216 bytes across the eight rows. The two
+selected weight closures total 130,289,762,304 bytes, exceeding the admitted
+104GiB node budget: the check exercises actual weight replacement and state
+spill, not a library held entirely resident.
+
+Automatic startup pays both model owners before retiring the parsing extent.
+The retained host grants sum to 13,228,834,816 bytes; actual shared activation
+and scratch capacities are 6,190,792,704 and 593,494,016 bytes. The complete
+allocation guard passes. State, snapshots and plan/graph ownership use the
+existing catalog and reclaim path. Process/cache peak is 6,683,197,440 bytes,
+not device residency, within the 112GiB zero-swap outer ceiling; the live
+6GiB physical margin, source guards and zero memory events pass. Native exit
+is zero and all process/GPU work positively retires.
+
+The initial wrapper incorrectly required HTTP-only prepared-identity and final
+log records after a local command. Its failed receipt is preserved. A reviewed
+offline correction uses the existing `Table.models` records from both actual
+shared engines, plus sealed source/configuration and the unchanged full
+state/head/spill checks; no model work is repeated and no absent execution
+identity digest is invented. Raw table hash:
+`570b69fed0eee961bd0df1e12e9f090e90384e4ab3be84b5177ebdbc5eb40dbf`;
+original wrapper receipt:
+`94e3122c47788b1ca38e2cf5253a70695046c2fcae27a47dc506a8c812a40256`;
+corrected offline result:
+`46bebf43fc6da8efa3d238d205f9bb624df1977e9e3a6062c2d75b34d7535e77`.
+Evidence remains in `qwen-quality-swap-models01` and
+`qwen-quality-swap-offline01`. The same final runtime/build provenance as the
+paired quality report applies: full native, 156 host and 48 tool controls pass.
+Replay uses the existing `swap-table` with `--pairs native:gguf,gguf:native`,
+`--context-tokens 8192 --continue 16 --cycles 2 --zero-context off --handoff on`
+and the preserved M3 context bytes/configuration under the sealed supervisor.
+Automatic public migration, wider/mixed-family state/swap coverage, broader
+same-quantized-reference quality and the family speed gate remain open.

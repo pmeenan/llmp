@@ -230,8 +230,18 @@ experiments, not public adoption. Full native compilation and 324 combined
 host controls pass; the actual Spark A runtime is bound separately to the same
 source as the Spark B full build
 ([capture screen](experiments/m36-numerical-audit/qwen-joined-mtp.md#default-off-first-verify-capture-screen)).
-Automatic public selection, broader same-quantized-reference quality, OS-process/GPU restart and
-the family speed/swap gate remain open. The full DeepSeek target screen now
+The grouped follow-up captures exact 996 target coordinates from the existing
+native scoring call and compares the same quantized checkpoint: PPL15.743782
+native versus16.354833 reference, with F16/FP8 KV differences disclosed and no
+family acceptance threshold. The existing 8K/16 swap table passes both ordered
+native+MTP/GGUF pairs, actual spill/weight replacement and four exact
+same-selected state/full-head continuations. The internal resolver is shared
+by HTTP and local commands; full native,156host/48tool controls and QA pass
+([grouped evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#grouped-exact-quality-and-8k-saved-state-swaps)).
+The preserved wrapper failure is an HTTP-only log assumption corrected offline
+against actual Table model records, not a model failure or rerun.
+Automatic public selection, broader same-quantized-reference quality,
+OS-process/GPU restart, mixed-family swaps and the family speed gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
 snapshot continuation on Spark B. The actual spatial-image screen passes
 on main after full native build, 129 affected host controls and source checks.
