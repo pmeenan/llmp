@@ -28,6 +28,12 @@ struct SpatialOwner {
   std::uint8_t owner = 0;
   SpatialShape shape;
 };
+struct SpatialInput {
+  std::uint8_t owner = 0;
+  std::uint16_t slot = 0;
+  SpatialShape shape;
+  format::Encoding encoding = format::Encoding::kF32;
+};
 struct SpatialValue {
   ir::TensorId tensor;
   SpatialShape shape;
@@ -44,6 +50,8 @@ struct SpatialBuildOptions {
   // Empty retains the last value. Otherwise distinct produced value IDs, in
   // output-port order, repeated for each owner. Zero (the input) is not an export.
   std::span<const std::uint16_t> exports{};
+  // Sorted (owner,slot), slots0..N-1 per owner, after its primary F32 input.
+  std::span<const SpatialInput> inputs{};
 };
 struct SpatialFragment {
   ir::Builder& builder;
@@ -52,6 +60,7 @@ struct SpatialFragment {
   SpatialShape shape;
   std::span<const ir::TensorId> weights;
   std::optional<SpatialValue> auxiliary{};
+  std::optional<SpatialValue> carry{};
 };
 // Reference/control only. Decoded weights and complete output storage belong
 // to the caller's admitted reference allowance, never resident widened weights.
@@ -64,6 +73,8 @@ struct SpatialRefIO {
   std::vector<double> output;
   std::span<const double> auxiliary{};
   std::optional<SpatialShape> auxiliary_shape{};
+  std::span<const double> carry{};
+  std::optional<SpatialShape> carry_shape{};
 };
 struct SpatialOps {
   std::expected<SpatialShape, std::string> (*infer_shape)(const Instance&, SpatialShape,
@@ -76,7 +87,10 @@ struct SpatialOps {
   std::expected<void, std::string> (*reference)(SpatialRefIO&);
   // Includes all emitted descriptors and primitive-decomposition temporaries.
   std::uint16_t max_nodes = 1;
-  std::uint64_t (*temporary_values)(SpatialShape) = nullptr;
+  std::uint64_t (*temporary_values)(const Instance&, SpatialShape) = nullptr;
+  format::Encoding input_encoding = format::Encoding::kF32;
+  format::Encoding auxiliary_encoding = format::Encoding::kF32;
+  bool needs_carry = false;
 };
 
 // Paid before copies/graph construction. The callbacks retain their actual

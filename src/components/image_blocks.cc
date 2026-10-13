@@ -208,14 +208,19 @@ bool JoinedRows(const Fragment& f, ir::TensorId id) {
          t.ne(3) == 1 && t.segment == ir::kJoinedSegment;
 }
 
+ir::TensorId AdaptiveMath(ir::Builder& b, ir::TensorId x, ir::TensorId side, float eps) {
+  return b.Mul(b.LayerNorm(x, eps), b.Scale(side, 1.0F, 1.0F));
+}
+ir::TensorId GatedMath(ir::Builder& b, ir::TensorId x, ir::TensorId gate, ir::TensorId carry) {
+  return b.Add(carry, b.Mul(x, b.Unary(gate, ir::UnaryFn::kTanh)));
+}
 std::expected<FragmentOut, std::string> AdaptiveEmit(Fragment& f) {
   if (!f.stream_needed) return FragmentOut{.stream = f.stream};
   const auto side = f.Side(Conditioning(f.instance));
   if (!JoinedRows(f, f.stream) || !JoinedRows(f, side))
     return std::unexpected(
         "adaptive norm requires matching F32 stream and conditioning owner rows");
-  const auto norm = f.b.LayerNorm(f.stream, F32(f.instance.params.Real("eps")));
-  const auto out = f.b.Mul(norm, f.b.Scale(side, 1.0F, 1.0F));
+  const auto out = AdaptiveMath(f.b, f.stream, side, F32(f.instance.params.Real("eps")));
   // Retain the original stream, before normalization and before the branch.
   return FragmentOut{.stream = out, .carry = f.stream};
 }
@@ -226,8 +231,7 @@ std::expected<FragmentOut, std::string> GatedEmit(Fragment& f) {
   if (!JoinedRows(f, f.stream) || !JoinedRows(f, gate) || !JoinedRows(f, f.carry))
     return std::unexpected(
         "gated residual requires matching F32 branch, gate and saved owner rows");
-  const auto gated = f.b.Mul(f.stream, f.b.Unary(gate, ir::UnaryFn::kTanh));
-  return FragmentOut{.stream = f.b.Add(f.carry, gated)};
+  return FragmentOut{.stream = GatedMath(f.b, f.stream, gate, f.carry)};
 }
 
 bool RefRows(const RefIO& io) {
@@ -237,24 +241,27 @@ bool RefRows(const RefIO& io) {
          io.side.size() == io.stream.size() && io.weights.empty();
 }
 
-std::expected<void, std::string> AdaptiveReference(RefIO& io) {
-  if (!RefRows(io)) return std::unexpected("adaptive norm reference: stream or conditioning shape");
-  const auto width = io.instance->stage.width;
-  const double eps = F32(io.instance->params.Real("eps"));
-  io.carry = io.stream;
-  for (std::size_t row = 0; row < io.stream.size(); row += width) {
+void AdaptiveScalar(std::vector<double>& output, std::span<const double> side, std::uint64_t width,
+                    double eps) {
+  for (std::size_t row = 0; row < output.size(); row += width) {
     double mean = 0.0;
-    for (std::size_t c = 0; c < width; ++c) mean += io.stream[row + c];
+    for (std::size_t c = 0; c < width; ++c) mean += output[row + c];
     mean /= static_cast<double>(width);
     double variance = 0.0;
     for (std::size_t c = 0; c < width; ++c) {
-      const double d = io.stream[row + c] - mean;
+      const double d = output[row + c] - mean;
       variance += d * d;
     }
     const double denominator = std::sqrt(variance / static_cast<double>(width) + eps);
     for (std::size_t c = 0; c < width; ++c)
-      io.stream[row + c] = (io.stream[row + c] - mean) / denominator * (1.0 + io.side[row + c]);
+      output[row + c] = (output[row + c] - mean) / denominator * (1.0 + side[row + c]);
   }
+}
+std::expected<void, std::string> AdaptiveReference(RefIO& io) {
+  if (!RefRows(io)) return std::unexpected("adaptive norm reference: stream or conditioning shape");
+  io.carry = io.stream;
+  AdaptiveScalar(io.stream, io.side, io.instance->stage.width,
+                 F32(io.instance->params.Real("eps")));
   return {};
 }
 
@@ -265,6 +272,86 @@ std::expected<void, std::string> GatedReference(RefIO& io) {
     io.stream[i] = io.carry[i] + std::tanh(io.side[i]) * io.stream[i];
   return {};
 }
+
+std::optional<std::uint64_t> Count(SpatialShape shape) {
+  std::uint64_t values = 1;
+  for (auto n : {shape.width, shape.height, shape.channels, shape.images})
+    if (!n || __builtin_mul_overflow(values, n, &values) || values > (1ULL << 24U)) return {};
+  return values;
+}
+std::expected<SpatialShape, std::string> AdaptiveSpatialShape(
+    const Instance& in, SpatialShape shape, std::optional<SpatialShape> auxiliary) {
+  if (!Count(shape) || shape.channels != in.stage.width || !auxiliary || *auxiliary != shape)
+    return std::unexpected("adaptive spatial operands must have identical owner geometry");
+  return shape;
+}
+ir::TensorId ChannelRows(ir::Builder& b, ir::TensorId x, SpatialShape shape) {
+  return b.Reshape(b.Cont(b.Permute(x, {1, 2, 0, 3})),
+                   ir::ShapeOf({shape.channels, shape.width * shape.height * shape.images}));
+}
+ir::TensorId FromChannelRows(ir::Builder& b, ir::TensorId x, SpatialShape shape) {
+  return b.Cont(b.Permute(
+      b.Reshape(x, ir::ShapeOf({shape.channels, shape.width, shape.height, shape.images})),
+      {2, 0, 1, 3}));
+}
+std::expected<SpatialValue, std::string> AdaptiveSpatialEmit(SpatialFragment& f) {
+  auto shape = AdaptiveSpatialShape(f.instance, f.shape,
+                                    f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!shape || !f.weights.empty() || f.carry) return std::unexpected("adaptive spatial operands");
+  auto out = AdaptiveMath(f.builder, ChannelRows(f.builder, f.input, f.shape),
+                          ChannelRows(f.builder, f.auxiliary->tensor, f.shape),
+                          F32(f.instance.params.Real("eps")));
+  return SpatialValue{FromChannelRows(f.builder, out, f.shape), f.shape};
+}
+std::expected<SpatialValue, std::string> GatedSpatialEmit(SpatialFragment& f) {
+  auto shape = AdaptiveSpatialShape(f.instance, f.shape,
+                                    f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
+  if (!shape || !f.weights.empty() || !f.carry || f.carry->shape != f.shape)
+    return std::unexpected("gated spatial original carry or operands differ");
+  return SpatialValue{GatedMath(f.builder, f.input, f.auxiliary->tensor, f.carry->tensor), f.shape};
+}
+std::expected<void, std::string> AdaptiveSpatialReference(SpatialRefIO& io) {
+  if (!AdaptiveSpatialShape(io.instance, io.shape, io.auxiliary_shape) ||
+      io.input.size() != *Count(io.shape) || io.auxiliary.size() != io.input.size() ||
+      !io.kernel.empty() || !io.bias.empty() || !io.carry.empty())
+    return std::unexpected("adaptive spatial reference extents differ");
+  const auto rows = io.shape.width * io.shape.height * io.shape.images, width = io.shape.channels;
+  std::vector<double> channels(io.input.size()), side(io.input.size());
+  for (std::uint64_t n = 0; n < io.shape.images; ++n)
+    for (std::uint64_t row = 0; row < io.shape.width * io.shape.height; ++row)
+      for (std::uint64_t c = 0; c < width; ++c) {
+        const auto dst = c + width * (row + n * io.shape.width * io.shape.height);
+        const auto src = row + io.shape.width * io.shape.height * (c + width * n);
+        channels[dst] = io.input[src];
+        side[dst] = io.auxiliary[src];
+      }
+  AdaptiveScalar(channels, side, width, F32(io.instance.params.Real("eps")));
+  io.output.resize(rows * width);
+  for (std::uint64_t n = 0; n < io.shape.images; ++n)
+    for (std::uint64_t row = 0; row < io.shape.width * io.shape.height; ++row)
+      for (std::uint64_t c = 0; c < width; ++c)
+        io.output[row + io.shape.width * io.shape.height * (c + width * n)] =
+            channels[c + width * (row + n * io.shape.width * io.shape.height)];
+  return {};
+}
+std::expected<void, std::string> GatedSpatialReference(SpatialRefIO& io) {
+  if (!AdaptiveSpatialShape(io.instance, io.shape, io.auxiliary_shape) ||
+      io.input.size() != *Count(io.shape) || io.auxiliary.size() != io.input.size() ||
+      !io.carry_shape || *io.carry_shape != io.shape || io.carry.size() != io.input.size() ||
+      !io.kernel.empty() || !io.bias.empty())
+    return std::unexpected("gated spatial reference original carry or extents differ");
+  io.output.resize(io.input.size());
+  for (std::size_t i = 0; i < io.output.size(); ++i)
+    io.output[i] = io.carry[i] + std::tanh(io.auxiliary[i]) * io.input[i];
+  return {};
+}
+const SpatialOps kSpatialAdaptive{AdaptiveSpatialShape, AdaptiveSpatialEmit,
+                                  AdaptiveSpatialReference, 16};
+const SpatialOps kSpatialGated{.infer_shape = AdaptiveSpatialShape,
+                               .emit = GatedSpatialEmit,
+                               .reference = GatedSpatialReference,
+                               .max_nodes = 3,
+                               .needs_carry = true};
 
 }  // namespace
 
@@ -293,6 +380,7 @@ const ComponentDef& NormAdaptive() {
       .params = kAdaptiveParams,
       .shapes = AdaptiveShapes,
       .batch_classes = kAdaptiveBatch,
+      .spatial = &kSpatialAdaptive,
       .emit = AdaptiveEmit,
       .reference = AdaptiveReference,
   };
@@ -308,6 +396,7 @@ const ComponentDef& ResidualGated() {
       .params = kGatedParams,
       .shapes = AdaptiveShapes,
       .batch_classes = kGatedBatch,
+      .spatial = &kSpatialGated,
       .emit = GatedEmit,
       .reference = GatedReference,
   };

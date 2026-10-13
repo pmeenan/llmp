@@ -802,6 +802,10 @@ std::expected<StageInstances, std::string> InstancesOf(const spec::ModelSpec& sp
   }
   for (const Instance* in : All(out)) {
     if (in->def->side_input == nullptr) continue;
+    // Stateless image compositions bind dynamic operands by typed owner-local
+    // graph edges, not token side-table declarations. Their spatial builder
+    // validates every required auxiliary/carry before allocating the graph.
+    if (spec.pipeline == spec::PipelineKind::kImage && s.side.empty() && in->def->spatial) continue;
     const std::string_view name = in->def->side_input(*in);
     if (!name.empty() && !std::ranges::contains(s.side, name, &spec::SideInput::name)) {
       return Refused(std::format("{}: no side input {}", Where(s, in->site, in->layer), name));

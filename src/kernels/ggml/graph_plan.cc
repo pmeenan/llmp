@@ -338,6 +338,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       }
     }
     switch (node->op) {
+      case GGML_OP_NORM:
+        add(Operation::kLayerNorm, "ggml.norm", i, {node}, 1);
+        break;
       case GGML_OP_L2_NORM:
         add(Operation::kL2Norm, "ggml.l2_norm", i, {node}, 1);
         break;

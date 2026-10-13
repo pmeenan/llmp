@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -547,6 +548,405 @@ TEST(SpatialComponentsTest, TimestepRefusesMalformedSourcesExportsAndPaymentBefo
   const std::array huge{SpatialOwner{0, {UINT64_MAX, 2, 2, 1}}};
   EXPECT_FALSE(BuildSpatialStep(mapping->spec, tables, huge, malformed.Payment(),
                                 {.links = mapping->links, .exports = mapping->exports}));
+}
+
+std::vector<BoundTensor> BlockTensors(std::span<const model::QwenImageTensor> source) {
+  auto out = TimestepTensors(source);
+  for (const auto& tensor : source) {
+    if (!tensor.name.starts_with("transformer_blocks.0.")) continue;
+    format::Shape shape;
+    shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
+    for (std::size_t i = 0; i < tensor.shape.size(); ++i)
+      shape.ne[i] = tensor.shape[tensor.shape.size() - i - 1];
+    out.push_back({tensor.name, ir::Dense(format::Encoding::kBF16, shape)});
+  }
+  return out;
+}
+std::vector<SpatialInput> BlockPorts(std::span<const SpatialOwner> owners, std::uint64_t timestep) {
+  std::vector<SpatialInput> out;
+  for (const auto& owner : owners) {
+    const auto rows = owner.shape.height;
+    out.push_back({owner.owner, 0, {1, 2, timestep, 1}});
+    out.push_back({owner.owner, 1, {rows, 3, 1, 1}, format::Encoding::kI32});
+    out.push_back({owner.owner, 2, {rows, rows, 1, 1}});
+  }
+  return out;
+}
+using BlockWeights = std::map<std::string, std::vector<float>>;
+// Independent complete block equations over channel-major double vectors.
+// Neither GraphLink nor component emit/reference code computes this expectation.
+std::array<std::vector<double>, 2> BlockOracle(const model::QwenImageDenoiserProfile& p,
+                                               std::uint64_t rows, std::span<const double> stream,
+                                               std::span<const double> sinusoid,
+                                               std::span<const double> positions,
+                                               std::span<const double> mask,
+                                               const BlockWeights& w) {
+  const auto project = [&](std::span<const double> x, std::uint64_t n, std::uint64_t ci,
+                           std::uint64_t co, const std::string& name, bool silu = false) {
+    return ProjectRows(x, n, ci, co, w.at(name), silu);
+  };
+  const auto first = project(sinusoid, 2, p.timestep_dim, p.width,
+                             "time_text_embed.timestep_embedder.linear_1.weight", true);
+  const auto second = project(first, 2, p.width, p.width,
+                              "time_text_embed.timestep_embedder.linear_2.weight", true);
+  const auto modulation = project(second, 2, p.width, 4ULL * p.width, "modulation.1.weight");
+  const auto final_scale = project(second, 2, p.width, p.width, "norm_out.linear.weight");
+  const auto condition = [&](std::uint64_t row, std::uint64_t channel, std::uint64_t quarter) {
+    return modulation[(row < 2 ? 1U : 0U) + 2 * (channel + quarter * p.width)];
+  };
+  const auto adaptive = [&](std::span<const double> input, std::uint64_t quarter) {
+    std::vector<double> out(input.size());
+    for (std::uint64_t row = 0; row < rows; ++row) {
+      double mean = 0, variance = 0;
+      for (std::uint64_t c = 0; c < p.width; ++c) mean += input[row + rows * c];
+      mean /= p.width;
+      for (std::uint64_t c = 0; c < p.width; ++c) {
+        const double d = input[row + rows * c] - mean;
+        variance += d * d;
+      }
+      const double scale = 1 / std::sqrt(variance / p.width + p.eps);
+      for (std::uint64_t c = 0; c < p.width; ++c)
+        out[row + rows * c] =
+            (input[row + rows * c] - mean) * scale * (1 + condition(row, c, quarter));
+    }
+    return out;
+  };
+  const std::string prefix = "transformer_blocks.0.";
+  const auto normalized = adaptive(stream, 0);
+  auto q = project(normalized, rows, p.width, p.width, prefix + "attn.to_q.weight");
+  auto k = project(normalized, rows, p.width, p.width, prefix + "attn.to_k.weight");
+  const auto v = project(normalized, rows, p.width, p.width, prefix + "attn.to_v.weight");
+  const auto rotate = [&](std::vector<double>& x, const std::string& name) {
+    for (std::uint64_t row = 0; row < rows; ++row)
+      for (std::uint64_t head = 0; head < p.heads; ++head) {
+        double square = 0;
+        for (std::uint64_t c = 0; c < p.head_dim; ++c) {
+          const auto value = x[row + rows * (head * p.head_dim + c)];
+          square += value * value;
+        }
+        const double scale = 1 / std::sqrt(square / p.head_dim + p.eps);
+        std::uint64_t offset = 0;
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+          for (std::uint64_t pair = 0; pair < p.rope_axes[axis]; pair += 2) {
+            const auto c0 = offset + pair, c1 = c0 + 1;
+            const auto i0 = row + rows * (head * p.head_dim + c0), i1 = i0 + rows;
+            const double a = x[i0] * scale * w.at(name)[c0];
+            const double b = x[i1] * scale * w.at(name)[c1];
+            const double angle =
+                positions[row + rows * axis] *
+                std::pow(p.rope_theta, -static_cast<double>(pair) / p.rope_axes[axis]);
+            x[i0] = a * std::cos(angle) - b * std::sin(angle);
+            x[i1] = a * std::sin(angle) + b * std::cos(angle);
+          }
+          offset += p.rope_axes[axis];
+        }
+      }
+  };
+  rotate(q, prefix + "attn.norm_q.weight");
+  rotate(k, prefix + "attn.norm_k.weight");
+  std::vector<double> attended(stream.size()), scores(rows);
+  for (std::uint64_t head = 0; head < p.heads; ++head)
+    for (std::uint64_t query = 0; query < rows; ++query) {
+      for (std::uint64_t key = 0; key < rows; ++key) {
+        double score = 0;
+        for (std::uint64_t c = 0; c < p.head_dim; ++c)
+          score +=
+              q[query + rows * (head * p.head_dim + c)] * k[key + rows * (head * p.head_dim + c)];
+        scores[key] = score / std::sqrt(p.head_dim) + mask[key + rows * query];
+      }
+      const double largest = *std::ranges::max_element(scores);
+      double sum = 0;
+      for (auto& score : scores) {
+        score = std::exp(score - largest);
+        sum += score;
+      }
+      for (std::uint64_t c = 0; c < p.head_dim; ++c) {
+        double value = 0;
+        for (std::uint64_t key = 0; key < rows; ++key)
+          value += scores[key] / sum * v[key + rows * (head * p.head_dim + c)];
+        attended[query + rows * (head * p.head_dim + c)] = value;
+      }
+    }
+  auto branch = project(attended, rows, p.width, p.width, prefix + "attn.to_out.0.weight");
+  std::vector<double> residual(stream.size());
+  for (std::uint64_t c = 0; c < p.width; ++c)
+    for (std::uint64_t row = 0; row < rows; ++row) {
+      const auto i = row + rows * c;
+      residual[i] = stream[i] + branch[i] * std::tanh(condition(row, c, 1));
+    }
+  const auto mlp = adaptive(residual, 2);
+  auto gate = project(mlp, rows, p.width, p.mlp, prefix + "img_mlp.gate_layer.weight");
+  const auto up = project(mlp, rows, p.width, p.mlp, prefix + "img_mlp.proj.weight");
+  for (std::size_t i = 0; i < gate.size(); ++i)
+    gate[i] = gate[i] / (1 + std::exp(-gate[i])) * up[i];
+  branch = project(gate, rows, p.mlp, p.width, prefix + "img_mlp.out.weight");
+  for (std::uint64_t c = 0; c < p.width; ++c)
+    for (std::uint64_t row = 0; row < rows; ++row)
+      residual[row + rows * c] += branch[row + rows * c] * std::tanh(condition(row, c, 3));
+  return {std::move(residual), final_scale};
+}
+
+TEST(SpatialComponentsTest, ConditionedBlockConsumesBothCarriesAndOwnerLocalTypedInputs) {
+  auto p = model::QwenImage21().denoiser;
+  p.blocks = 1;
+  p.width = 16;
+  p.heads = 2;
+  p.head_dim = 8;
+  p.mlp = 48;
+  p.timestep_dim = 4;
+  p.rope_axes = {2, 2, 4};
+  const auto source = model::DenoiserTensors(p);
+  auto mapped = spec::ImageTransformerBlockSpec(p, 0, 2, source);
+  ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+  const auto tensors = BlockTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{1, {1, 6, 16, 1}}, SpatialOwner{4, {1, 7, 16, 1}}};
+  const auto ports = BlockPorts(owners, p.timestep_dim);
+  Budget budget;
+  auto graph =
+      BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                       {.links = mapped->links, .exports = mapped->exports, .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  ASSERT_EQ(graph->weights().size(), 13U);
+  ASSERT_EQ(graph->graph().inputs().size(), 8U);
+  ASSERT_EQ(graph->graph().outputs().size(), 4U);
+  auto exec = ref::Executor::Create(graph->graph());
+  ASSERT_TRUE(exec) << Failed(exec, &ref::ExecFailure::detail).value_or("");
+  BlockWeights weights;
+  for (const auto& weight : graph->weights()) {
+    const auto& format = graph->graph().tensor(weight.tensor).format;
+    std::size_t n = 1;
+    for (auto extent : format.shape.ne) n *= extent;
+    auto& data = weights[weight.parts[0].first];
+    data.resize(n);
+    for (std::size_t i = 0; i < n; ++i)
+      data[i] =
+          format.shape.rank == 1
+              ? 1.0F + static_cast<float>(i % 3) / 16
+              : static_cast<float>(static_cast<int>((i * 13 + weights.size() * 7) % 23) - 11) / 64;
+    ASSERT_TRUE(exec->BindValues(weight.tensor, data));
+  }
+  std::array<std::vector<float>, 2> original;
+  for (std::size_t revision = 0; revision < 5; ++revision) {
+    std::array<std::array<std::vector<double>, 2>, 2> expected;
+    for (std::size_t owner = 0; owner < owners.size(); ++owner) {
+      const auto rows = owners[owner].shape.height;
+      std::vector<float> stream(rows * p.width), sinusoid(2 * p.timestep_dim), mask(rows * rows);
+      std::vector<std::int64_t> positions(3 * rows);
+      for (std::size_t i = 0; i < stream.size(); ++i)
+        stream[i] = static_cast<float>(static_cast<int>((i * 7 + owner * 3) % 19) - 9) / 8;
+      if (revision == 2)
+        for (std::uint64_t c = 0; c < p.width; ++c)
+          stream[rows - 1 + rows * c] += static_cast<float>(c % 3) / 4;
+      for (std::size_t i = 0; i < sinusoid.size(); ++i)
+        sinusoid[i] = static_cast<float>(i + owner + (revision == 1 && i % 2 == 0 ? 4U : 0U)) / 8;
+      for (std::uint64_t row = 0; row < rows; ++row) {
+        positions[row] = row < 2 ? static_cast<std::int64_t>(row) : 2;
+        positions[rows + row] =
+            row < 2 ? static_cast<std::int64_t>(row) : static_cast<std::int64_t>((row - 2) / 2) - 1;
+        positions[2 * rows + row] =
+            row < 2 ? static_cast<std::int64_t>(row) : static_cast<std::int64_t>((row - 2) % 2) - 1;
+        for (std::uint64_t key = 0; key < rows; ++key)
+          mask[key + rows * row] =
+              row < 2 && key > row ? -std::numeric_limits<float>::infinity() : 0;
+      }
+      if (revision == 3) positions[rows + rows - 1] -= 2;
+      ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[owner * 4], stream));
+      ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[owner * 4 + 1], sinusoid));
+      ASSERT_TRUE(exec->BindInts(graph->graph().inputs()[owner * 4 + 2], positions));
+      ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[owner * 4 + 3], mask));
+      const std::vector<double> x(stream.begin(), stream.end()),
+          t(sinusoid.begin(), sinusoid.end()), pos(positions.begin(), positions.end()),
+          m(mask.begin(), mask.end());
+      expected[owner] = BlockOracle(p, rows, x, t, pos, m, weights);
+    }
+    ASSERT_TRUE(exec->Run()) << "revision " << revision;
+    for (std::size_t owner = 0; owner < owners.size(); ++owner) {
+      for (std::size_t branch = 0; branch < 2; ++branch) {
+        auto actual = exec->Values(graph->graph().outputs()[owner * 2 + branch]);
+        ASSERT_TRUE(actual);
+        ASSERT_EQ(actual->size(), expected[owner][branch].size());
+        for (std::size_t i = 0; i < actual->size(); ++i)
+          EXPECT_NEAR((*actual)[i], expected[owner][branch][i], 2e-5);
+        EXPECT_EQ(graph->outputs()[owner * 2 + branch].owner, owners[owner].owner);
+        if (branch == 0) {
+          if (revision == 0)
+            original[owner] = *actual;
+          else if (revision == 4)
+            EXPECT_EQ(*actual, original[owner]);
+          else {
+            EXPECT_NE(*actual, original[owner]);
+            if (revision == 2 || revision == 3) {
+              bool noncausal_key_used = false;
+              for (std::uint64_t c = 0; c < p.width; ++c)
+                noncausal_key_used |= (*actual)[2 + owners[owner].shape.height * c] !=
+                                      original[owner][2 + owners[owner].shape.height * c];
+              EXPECT_TRUE(noncausal_key_used);
+            }
+            for (std::uint64_t c = 0; c < p.width; ++c)
+              for (std::uint64_t row = 0; row < 2; ++row)
+                EXPECT_EQ((*actual)[row + owners[owner].shape.height * c],
+                          original[owner][row + owners[owner].shape.height * c]);
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePositionFormula) {
+  const auto& p = model::QwenImage21().denoiser;
+  spec::Stage stage{.name = "rotation", .role = spec::StageRole::kDenoiser, .artifact = 0};
+  stage.stream.width = 128;
+  spec::ComponentRef rotate{.kind = "norm.rope_axes",
+                            .version = 1,
+                            .params = {{"heads", std::int64_t{1}},
+                                       {"axis0", std::int64_t{16}},
+                                       {"axis1", std::int64_t{56}},
+                                       {"axis2", std::int64_t{56}},
+                                       {"base", double{p.rope_theta}},
+                                       {"eps", double{p.eps}}},
+                            .weights = {{.role = "weight", .tensor = "gamma"}}};
+  spec::Layer layer;
+  layer.components.push_back(std::move(rotate));
+  stage.layers.push_back(std::move(layer));
+  spec::ModelSpec model{.pipeline = spec::PipelineKind::kImage, .stages = {std::move(stage)}};
+  spec::Canonicalize(model);
+  const std::vector<BoundTensor> tensors{
+      {"gamma", ir::Dense(format::Encoding::kBF16, ir::ShapeOf({128}))}};
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{0, {1, 6, 128, 1}}};
+  const std::array ports{SpatialInput{0, 0, {6, 3, 1, 1}, format::Encoding::kI32}};
+  const std::array links{SpatialLink{.auxiliary_port = 0}};
+  Budget budget;
+  auto graph =
+      BuildSpatialStep(model, tables, owners, budget.Payment(), {.links = links, .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  auto exec = ref::Executor::Create(graph->graph());
+  ASSERT_TRUE(exec);
+  const std::vector<float> gamma(128, 1.0F);
+  std::vector<float> input(768);
+  for (std::size_t i = 0; i < input.size(); ++i)
+    input[i] = static_cast<float>(static_cast<int>((i * 17) % 29) - 14) / 16;
+  const std::array<std::int64_t, 18> positions{0,  1, 2, 2, 2, 2,  0, 1,  -1,
+                                               -1, 0, 0, 0, 1, -1, 0, -1, 0};
+  ASSERT_TRUE(exec->BindValues(graph->weights()[0].tensor, gamma));
+  ASSERT_TRUE(exec->BindValues(graph->graph().inputs()[0], input));
+  ASSERT_TRUE(exec->BindInts(graph->graph().inputs()[1], positions));
+  ASSERT_TRUE(exec->Run());
+  auto actual = exec->Values(graph->graph().outputs()[0]);
+  ASSERT_TRUE(actual);
+  const auto source_table = model::QwenImageDenoiserRotary(p, 2, 2);
+  for (std::uint64_t row = 0; row < 6; ++row) {
+    double square = 0;
+    for (std::uint64_t c = 0; c < 128; ++c)
+      square += double{input[row + 6 * c]} * input[row + 6 * c];
+    const auto scale = 1 / std::sqrt(square / 128 + p.eps);
+    std::uint64_t offset = 0;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      for (std::uint64_t c = 0; c < p.rope_axes[axis]; c += 2) {
+        const auto pair = (offset + c) / 2;
+        const double angle = static_cast<double>(positions[row + 6 * axis]) *
+                             std::pow(p.rope_theta, -static_cast<double>(c) / p.rope_axes[axis]);
+        EXPECT_NEAR(source_table[(row * 64 + pair) * 2], std::cos(angle), 3e-7);
+        EXPECT_NEAR(source_table[(row * 64 + pair) * 2 + 1], std::sin(angle), 3e-7);
+        const double a = input[row + 6 * (offset + c)] * scale;
+        const double b = input[row + 6 * (offset + c + 1)] * scale;
+        EXPECT_NEAR((*actual)[row + 6 * (offset + c)], a * std::cos(angle) - b * std::sin(angle),
+                    2e-6);
+        EXPECT_NEAR((*actual)[row + 6 * (offset + c + 1)],
+                    a * std::sin(angle) + b * std::cos(angle), 2e-6);
+      }
+      offset += p.rope_axes[axis];
+    }
+  }
+  auto instances = InstancesOf(model, 0);
+  ASSERT_TRUE(instances);
+  std::vector<double> x(input.begin(), input.end()),
+      invalid_positions(positions.begin(), positions.end());
+  SpatialRefIO oracle{instances->layers[0][0], owners[0].shape, x, gamma, {}, {},
+                      invalid_positions,       ports[0].shape};
+  invalid_positions[2] = double{INT32_MAX} + 1;
+  EXPECT_FALSE(oracle.instance.def->spatial->reference(oracle));
+  invalid_positions[2] = 0.5;
+  EXPECT_FALSE(oracle.instance.def->spatial->reference(oracle));
+}
+
+TEST(SpatialComponentsTest, ConditionedBlockPaysFullSourcesAndRefusesMalformedPortsAndCarries) {
+  const auto& p = model::QwenImage21().denoiser;
+  const auto source = model::DenoiserTensors(p);
+  auto mapped = spec::ImageTransformerBlockSpec(p, 0, 2, source);
+  ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+  const auto tensors = BlockTensors(source);
+  const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+  const std::array owners{SpatialOwner{0, {1, 6, p.width, 1}}};
+  auto ports = BlockPorts(owners, p.timestep_dim);
+  Budget budget;
+  {
+    auto graph = BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                                  {.links = mapped->links,
+                                   .reference_buffers = false,
+                                   .exports = mapped->exports,
+                                   .inputs = ports});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    EXPECT_EQ(graph->reference_bytes(), 0U);
+    std::uint64_t bytes = 0;
+    for (const auto& weight : graph->weights()) {
+      auto parts = format::PartsOf(graph->graph().tensor(weight.tensor).format);
+      ASSERT_TRUE(parts);
+      bytes += (*parts)[0].bytes;
+    }
+    EXPECT_EQ(bytes, 639631872ULL);
+    EXPECT_EQ(graph->outputs()[0].shape, (SpatialShape{1, 6, 4096, 1}));
+    EXPECT_EQ(graph->outputs()[1].shape, (SpatialShape{1, 2, 4096, 1}));
+  }
+  EXPECT_EQ(budget.used, 0U);
+  EXPECT_FALSE(
+      BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                       {.links = mapped->links, .exports = mapped->exports, .inputs = ports}));
+  EXPECT_EQ(budget.used, 0U);
+  const auto refused = [&] {
+    return !BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                             {.links = mapped->links,
+                              .reference_buffers = false,
+                              .exports = mapped->exports,
+                              .inputs = ports});
+  };
+  ports[1].encoding = format::Encoding::kF32;
+  EXPECT_TRUE(refused());
+  ports[1].encoding = format::Encoding::kI32;
+  ports[2].shape.width = 5;
+  EXPECT_TRUE(refused());
+  ports[2].shape.width = 6;
+  ports[1].owner = 2;
+  EXPECT_TRUE(refused());
+  ports[1].owner = 0;
+  ports[1].slot = 0;
+  EXPECT_TRUE(refused());
+  ports[1].slot = 1;
+  const auto original_aux = mapped->links[8].auxiliary;
+  mapped->links[8].auxiliary.reset();
+  EXPECT_TRUE(refused());
+  mapped->links[8].auxiliary = original_aux;
+  const auto original_carry = mapped->links.back().carry;
+  mapped->links.back().carry = static_cast<std::uint16_t>(mapped->links.size());
+  EXPECT_TRUE(refused());
+  mapped->links.back().carry.reset();
+  EXPECT_TRUE(refused());
+  mapped->links.back().carry = original_carry;
+  budget.limit = 1;
+  EXPECT_TRUE(refused());
+  EXPECT_EQ(budget.used, 0U);
+  auto wrong = source;
+  auto role = std::ranges::find(wrong, "transformer_blocks.0.attn.norm_q.weight",
+                                &model::QwenImageTensor::name);
+  ASSERT_NE(role, wrong.end());
+  role->shape[0] = 64;
+  EXPECT_FALSE(spec::ImageTransformerBlockSpec(p, 0, 2, wrong));
+  EXPECT_FALSE(spec::ImageTransformerBlockSpec(p, p.blocks, 2, source));
+  auto invalid = p;
+  invalid.rope_axes = {15, 57, 56};
+  EXPECT_FALSE(spec::ImageTransformerBlockSpec(invalid, 0, 2, source));
 }
 
 }  // namespace

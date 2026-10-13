@@ -131,6 +131,7 @@ enum class Operation : std::uint8_t {
   kGemmaRoute,         // softmax, top-eight IDs and normalized routing weights
   kGemmaScaledReduce,  // eight scaled/weighted experts summed in selected order
   kL2Norm,             // x / max(sqrt(sum(x*x)), eps), distinct from RMS normalization
+  kLayerNorm,          // centered rows divided by sqrt(variance + eps)
 };
 
 std::string_view OperationName(Operation operation);

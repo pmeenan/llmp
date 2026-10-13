@@ -38,5 +38,13 @@ std::expected<SpatialComposition, std::string> VaeDecoderSpec(
 std::expected<SpatialComposition, std::string> ImageTimestepSpec(
     const model::QwenImageDenoiserProfile& profile,
     std::span<const model::QwenImageTensor> tensors);
+// Complete conditioner and one source transformer block. Primary input is the
+// already projected text/image stream. Extra owner-local ports are: 0 sinusoid
+// [1,2,timestep_dim,1] F32, 1 positions [rows,3,1,1] I32, and 2 explicit attention
+// mask [rows,rows,1,1] F32. Text-prefix policy/positions belong to the source caller.
+// Exports updated stream and final normalization scale. Same prepaid 1MiB mapper.
+std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
+    const model::QwenImageDenoiserProfile& profile, std::uint32_t block, std::uint32_t text_rows,
+    std::span<const model::QwenImageTensor> tensors);
 }  // namespace llmp::spec
 #endif  // LLMP_SPEC_IMAGE_SPATIAL_H_

@@ -644,10 +644,15 @@ these fixtures where applicable.
   443 host cases across 25 targets pass; the actual case checks 204,800 finite
   values over five completions, with one eager execution, one capture and three
   retained replays, including changed/restored input and unchanged zero-time rows.
-  This bounded producer does not yet wire per-owner modulation into a full flow
-  step; on-device broadcast remains possible without requiring CPU row expansion.
-  Flow-step, broader whole-VAE qualification, 3-axis rope, bidirectional attention and
-  `EngineImage` remain open. Qualify numerical choices rather than imposing the legacy
+  Q3d now consumes that modulation in one complete shared block 0 graph, using
+  existing adaptive/gated formulas, three NORMAL rotation slices and explicit
+  causal-text/all-image attention. Scoped native compilation and 63 host controls
+  pass; both actual conditioner and block cases pass, the latter checking 229,376
+  finite values over seven steps with changed/restored inputs and retained replay.
+  The full main Spark B native build and 452 host cases across 25 targets pass,
+  with the actual-tested model binary unchanged; final source quality checks pass.
+  All 32-block flow, broader geometries/reference quality and `EngineImage` remain
+  open. Qualify numerical choices rather than imposing the legacy
   pipeline's rounding recipe; retire `qwen_image_runner.*` and `pipeline.cc`
   roles after their shared replacements pass.
 - **T-slices, structural techniques.** One per row of `engine-components.md`'s retired table: format layer T04/T11/T58/T95; wave composer T15/T16/T20/T29/T59/T64/T88; patterns T10/T31/T56/T86/T92 (+T09/T41/T57 adoption); prefill T23/T26/T55/T93; state T67; decoding T39/T45/T81; components T22/T69/T54/T71/T72/T61; planner T96; pager T68. Adopt where qualified comparisons improve speed, quality, reuse, simplicity or resource cost.

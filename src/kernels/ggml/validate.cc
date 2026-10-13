@@ -4,6 +4,7 @@
 #include "kernels/ggml/validate.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -215,6 +216,23 @@ std::expected<void, KernelFailure> CheckMulMat(const ggml_tensor* node) {
 
 std::expected<void, KernelFailure> CheckMulMatCublasOperands(const ggml_tensor* node) {
   return CheckMulMatInto(node, node, /*f16_input=*/true);
+}
+
+std::expected<void, KernelFailure> CheckLayerNorm(const ggml_tensor* norm) {
+  if (norm == nullptr || norm->op != GGML_OP_NORM || !IsF32(norm) || !IsF32(norm->src[0]) ||
+      !Bound(norm) || !Bound(norm->src[0]) || AnyEmpty({norm, norm->src[0]}) ||
+      !AllSane({norm, norm->src[0]}))
+    return Rejected("layer_norm requires complete bound F32 operands");
+  // norm.cu reads float columns and writes densely using 32-bit row products;
+  // the column loop may advance up to1024 beyond its last valid element.
+  if (!std::isfinite(Epsilon(norm)) || Epsilon(norm) < 0.0F ||
+      !ggml_are_same_shape(norm, norm->src[0]) || !Packed(norm) || !Packed(norm->src[0]) ||
+      !FitsRowGrid(norm) ||
+      ggml_nelements(norm) > std::numeric_limits<std::int32_t>::max() - 1024 ||
+      !Aligned(norm, sizeof(float)) || !Aligned(norm->src[0], sizeof(float)) ||
+      !AllCurrent({norm, norm->src[0]}) || !Disjoint(norm, norm->src[0], true))
+    return Rejected("layer_norm shape, epsilon, indexing or live operand bounds differ");
+  return {};
 }
 
 std::expected<void, KernelFailure> CheckL2Norm(const ggml_tensor* norm) {

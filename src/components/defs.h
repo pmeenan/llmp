@@ -31,6 +31,10 @@
 
 namespace llmp::components::defs {
 
+const ComponentDef& ConditionRows();
+const ComponentDef& ConcatSpatial();
+const ComponentDef& GluSpatial();
+const ComponentDef& NormRopeAxes();
 const ComponentDef& Conv2d();
 const ComponentDef& ProjectionSpatial();
 const ComponentDef& UpsampleNearest();

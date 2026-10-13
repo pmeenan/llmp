@@ -930,6 +930,28 @@ BF16. This qualifies bounded conditioner composition and execution, not full
 flow, image quality, comparative speed or pipeline serving. See the
 [timestep evidence](experiments/m36-shared-spatial-execution/README.md#complete-timestep-conditioner).
 
+`ImageTransformerBlockSpec` consumes modulation in the same graph as the full
+conditioner. Shared conditioning-row, concatenation, GLU and axis-rotation
+fragments compose with existing adaptive normalization, products and gated
+residuals. Typed extra inputs carry positions and an explicit mask; backward
+links preserve each owner's original residual and requested output order.
+Three existing NORMAL rotations cover the source axes. The shared GGML adapter
+now selects the existing packed-F32 LayerNorm kernel and preserves learned
+RMS scaling fusion, with exact operand validators and named stateless refusals.
+No new kernel, family executor, token-shaped surrogate or forced intermediate
+rounding is introduced.
+
+The source-shaped block0 screen consumes13 BF16 parts and leases 308 actual pages.
+Seven completed steps check both complete outputs, changed/restored timestep and
+image inputs, causal text isolation and retained recording replay. All 63 affected
+host controls and both actual block/conditioner cases pass. The full main Spark B
+native build and 452 host cases across 25 targets pass, as do format, boundary,
+header and REUSE checks. The model binary is byte-identical to both actual cases.
+The reduced independent reference covers complete block math;
+the actual-size screen establishes finite execution and same-selected replay,
+not full-size reference quality, full flow, comparative speed or serving. See
+[block evidence](experiments/m36-shared-spatial-execution/README.md#conditioned-transformer-block).
+
 The head reads only the step's output rows, so `BuildStep` narrows (slice
 G1b): with a head, the stage's last component that mixes rows (a
 definition's `row_local` false; `attention.dense`, whose `narrows` says it

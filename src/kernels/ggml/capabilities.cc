@@ -1118,6 +1118,13 @@ bool AcceptsSpatialUp(const ex::CapabilityQuery& q) {
          std::ranges::all_of(o->ne, [](auto axis) { return axis <= (1ULL << 24U); }) &&
          o->ne == ir::ShapeOf({2 * x->ne[0], 2 * x->ne[1], x->ne[2], x->ne[3]}).ne;
 }
+bool AcceptsLayerNorm(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::NormParams>(q);
+  const auto* x = Operand(q, 0);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  return Built(q) && p && std::isfinite(p->eps) && p->eps >= 0.0F && SpatialPackedF32(x) &&
+         SpatialPackedF32(out) && x->ne == out->ne && x->ne[2] <= 65535 && x->ne[3] <= 65535;
+}
 bool AcceptsL2Norm(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::NormParams>(q);
   const auto* x = Operand(q, 0);
@@ -1272,6 +1279,9 @@ const std::array kEntries = {
           Cap(P(Op::kSelectedMask), kSelectedMaskRules, &AcceptsSelectedMask, true), kBuilt},
     Entry{kTopKName, Operation::kTopK, Cap(P(Op::kTopK), kF32In, &AcceptsTopK, true),
           "; selectable for the build's SASS architectures: F32 rows within I32 counts"},
+    Entry{"ggml.norm", Operation::kLayerNorm,
+          Cap(P(Op::kLayerNorm), kF32In, &AcceptsLayerNorm, true),
+          "; locked centered F32 normalization over packed rows; finite nonnegative epsilon"},
     Entry{"ggml.l2_norm", Operation::kL2Norm, Cap(P(Op::kL2Norm), kF32In, &AcceptsL2Norm, true),
           kBuilt},
     Entry{"ggml.rms_norm", Operation::kRmsNorm, Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true),

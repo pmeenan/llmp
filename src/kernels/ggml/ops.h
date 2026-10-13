@@ -30,6 +30,9 @@
 
 namespace llmp::kernels::ggml {
 
+// The locked centered F32 LayerNorm over packed rows.
+std::expected<void, KernelFailure> LayerNorm(LaunchContext& launch, ggml_tensor* norm);
+
 // The locked F32 L2 normalization, with a clamped L2 denominator.
 std::expected<void, KernelFailure> L2Norm(LaunchContext& launch, ggml_tensor* norm);
 

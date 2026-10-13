@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string_view>
@@ -262,5 +263,112 @@ std::expected<SpatialComposition, std::string> ImageTimestepSpec(
   Canonicalize(spec);
   if (auto valid = Validate(spec); !valid) return std::unexpected(valid.error());
   return SpatialComposition{std::move(spec), {{0, {}}, {1, {}}, {2, {}}, {2, {}}}, {3, 4}};
+}
+std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
+    const model::QwenImageDenoiserProfile& p, std::uint32_t block, std::uint32_t text_rows,
+    std::span<const model::QwenImageTensor> tensors) {
+  const std::uint64_t width = p.width, dim = p.head_dim;
+  if (block >= p.blocks || !p.heads || !dim || dim > 512 || width != std::uint64_t{p.heads} * dim ||
+      !p.mlp || p.mlp > 65536 || text_rows > 4096 || !std::isfinite(p.eps) || p.eps <= 0 ||
+      p.eps > 1 || !std::isfinite(p.rope_theta) || p.rope_theta < 1 || p.rope_theta > 1e10 ||
+      std::uint64_t{p.rope_axes[0]} + p.rope_axes[1] + p.rope_axes[2] != dim ||
+      std::ranges::any_of(p.rope_axes, [](auto n) { return n < 2 || n % 2; }))
+    return std::unexpected("image block profile exceeds the shared mathematical domain");
+  // Validate all borrowed names/roles before copying the conditioning mapping.
+  const auto prefix = "transformer_blocks." + std::to_string(block) + ".";
+  constexpr std::array<std::string_view, 9> suffixes{
+      "attn.to_q.weight",          "attn.to_k.weight",    "attn.to_v.weight",
+      "attn.to_out.0.weight",      "attn.norm_q.weight",  "attn.norm_k.weight",
+      "img_mlp.gate_layer.weight", "img_mlp.proj.weight", "img_mlp.out.weight"};
+  if (tensors.size() > 4096) return std::unexpected("image block source inventory is unbounded");
+  std::array<const model::QwenImageTensor*, 9> sources{};
+  for (const auto& t : tensors) {
+    if (t.name.empty() || t.name.size() > 256 || t.shape.empty() || t.shape.size() > 4)
+      return std::unexpected("image block source descriptor exceeds mapping allowance");
+    if (!t.name.starts_with(prefix)) continue;
+    const auto suffix = std::string_view(t.name).substr(prefix.size());
+    for (std::size_t i = 0; i < suffixes.size(); ++i) {
+      if (suffix != suffixes[i]) continue;
+      const bool norm = i == 4 || i == 5;
+      const auto input = i == 8 ? std::uint64_t{p.mlp} : width;
+      const auto output = i == 6 || i == 7 ? std::uint64_t{p.mlp} : width;
+      if (sources[i] || t.dtype != "BF16" ||
+          (norm ? t.shape.size() != 1 || t.shape[0] != dim
+                : t.shape.size() != 2 || t.shape[0] != output || t.shape[1] != input))
+        return std::unexpected("image block source encoding or role geometry differs");
+      sources[i] = &t;
+    }
+  }
+  if (std::ranges::find(sources, nullptr) != sources.end())
+    return std::unexpected("image block source role is absent");
+  auto out = ImageTimestepSpec(p, tensors);
+  if (!out) return std::unexpected(out.error());
+  auto& stage = out->spec.stages[0];
+  stage.name = "conditioned";
+  stage.stream.width = p.width;
+  auto& components = stage.layers[0].components;
+  components.reserve(28);
+  out->links.reserve(28);
+  out->links[0].input_port = 0;
+  const auto add = [&](ComponentRef c, GraphLink link) {
+    components.push_back(std::move(c));
+    out->links.push_back(link);
+    return static_cast<std::uint16_t>(components.size());
+  };
+  const auto projection = [&](std::size_t role, std::uint16_t input) {
+    return add({.kind = "projection.spatial",
+                .version = 1,
+                .params = {{"in_channels", static_cast<std::int64_t>(sources[role]->shape[1])},
+                           {"out_channels", static_cast<std::int64_t>(sources[role]->shape[0])}},
+                .weights = {{.role = "weight", .tensor = sources[role]->name}}},
+               {input, {}});
+  };
+  std::array<std::uint16_t, 4> condition{};
+  for (std::size_t i = 0; i < condition.size(); ++i)
+    condition[i] = add({.kind = "condition.rows",
+                        .version = 1,
+                        .params = {{"quarter", static_cast<std::int64_t>(i)},
+                                   {"prefix_rows", std::int64_t{text_rows}}}},
+                       {0, 3});
+  const auto adaptive = [&](std::uint16_t input, std::uint16_t side) {
+    return add({.kind = "norm.adaptive",
+                .version = 1,
+                .params = {{"side", std::string("scale")}, {"eps", double{p.eps}}}},
+               {input, side});
+  };
+  const auto gated = [&](std::uint16_t input, std::uint16_t side, std::uint16_t carry) {
+    return add({.kind = "residual.gated", .version = 1, .params = {{"side", std::string("gate")}}},
+               {.input = input, .auxiliary = side, .carry = carry});
+  };
+  const auto normalized = adaptive(0, condition[0]);
+  const auto q = projection(0, normalized), k = projection(1, normalized),
+             v = projection(2, normalized);
+  const auto rotated = [&](std::uint16_t input, std::size_t role) {
+    return add({.kind = "norm.rope_axes",
+                .version = 1,
+                .params = {{"heads", std::int64_t{p.heads}},
+                           {"axis0", std::int64_t{p.rope_axes[0]}},
+                           {"axis1", std::int64_t{p.rope_axes[1]}},
+                           {"axis2", std::int64_t{p.rope_axes[2]}},
+                           {"base", double{p.rope_theta}},
+                           {"eps", double{p.eps}}},
+                .weights = {{.role = "weight", .tensor = sources[role]->name}}},
+               {.input = input, .auxiliary_port = 1});
+  };
+  const auto rq = rotated(q, 4), rk = rotated(k, 5);
+  const auto qk = add({.kind = "concat.spatial", .version = 1}, {rq, rk});
+  const auto qkv = add({.kind = "concat.spatial", .version = 1}, {qk, v});
+  const auto attention =
+      add({.kind = "attention.spatial", .version = 1, .params = {{"heads", std::int64_t{p.heads}}}},
+          {.input = qkv, .auxiliary_port = 2});
+  const auto residual = gated(projection(3, attention), condition[1], 0);
+  const auto mlp_input = adaptive(residual, condition[2]);
+  const auto gate = projection(6, mlp_input), up = projection(7, mlp_input);
+  const auto glu = add({.kind = "glu.spatial", .version = 1}, {gate, up});
+  const auto result = gated(projection(8, glu), condition[3], residual);
+  out->exports = {result, 4};
+  Canonicalize(out->spec);
+  if (auto valid = Validate(out->spec); !valid) return std::unexpected(valid.error());
+  return out;
 }
 }  // namespace llmp::spec

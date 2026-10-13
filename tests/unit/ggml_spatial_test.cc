@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "components/spatial.h"
@@ -336,4 +337,121 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
   malformed[2].in = mo::kVaeQ;  // uninitialized source at the first residual norm
   EXPECT_FALSE(sp::VaeDecoderSpec(malformed, source));
 }
+
+TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNormalRotations) {
+  const auto& profile = mo::QwenImage21().denoiser;
+  const auto source = mo::DenoiserTensors(profile);
+  auto mapped = sp::ImageTransformerBlockSpec(profile, 0, 2, source);
+  ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+  std::vector<co::BoundTensor> tensors;
+  for (const auto& component : mapped->spec.stages[0].layers[0].components)
+    for (const auto& binding : component.weights) {
+      const auto found = std::ranges::find(source, binding.tensor, &mo::QwenImageTensor::name);
+      ASSERT_NE(found, source.end());
+      fm::Shape shape;
+      shape.rank = static_cast<std::uint8_t>(found->shape.size());
+      for (std::size_t d = 0; d < found->shape.size(); ++d)
+        shape.ne[d] = found->shape[found->shape.size() - d - 1];
+      tensors.push_back({binding.tensor, ir::Dense(fm::Encoding::kBF16, shape)});
+    }
+  ASSERT_EQ(tensors.size(), 13U);
+  const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+  const std::array owners{co::SpatialOwner{2, {1, 6, 4096, 1}}};
+  const std::array ports{co::SpatialInput{2, 0, {1, 2, 256, 1}},
+                         co::SpatialInput{2, 1, {6, 3, 1, 1}, fm::Encoding::kI32},
+                         co::SpatialInput{2, 2, {6, 6, 1, 1}}};
+  Budget budget;
+  auto graph = co::BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                                    {.links = mapped->links,
+                                     .reference_buffers = false,
+                                     .exports = mapped->exports,
+                                     .inputs = ports});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                      graph->weights()};
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  for (const bool measuring : {true, false}) {
+    kn::Addresses addresses;
+    addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+      return 0x100000000ULL + std::uint64_t{ref.component} * (256ULL << 20U);
+    };
+    addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+    addresses.activations = measuring ? 0ULL : 0x10000000ULL;
+    addresses.activation_bytes = 32ULL << 20U;
+    addresses.activation_alignment = 256;
+    auto plan = en::PlanComponentGraph(
+        io, backend, {}, addresses,
+        {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+         .written = kg::WrittenBytes,
+         .within = kg::WithinRoot,
+         .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+    ASSERT_TRUE(plan) << Failed(plan).value_or("");
+    std::vector<std::string> planned_keys;
+    std::size_t fused_norms = 0;
+    for (const auto& node : plan->graph.nodes()) {
+      planned_keys.push_back(ir::OpKeyName(node.key));
+      if (node.key != ir::Primitive(node.key.op)) {
+        EXPECT_EQ(node.key, ir::Fused(ir::FusedKind::kRmsNormMul));
+        ++fused_norms;
+      }
+    }
+    EXPECT_EQ(fused_norms, 2U);
+    std::ranges::sort(planned_keys);
+    planned_keys.erase(std::unique(planned_keys.begin(), planned_keys.end()), planned_keys.end());
+    std::string keys;
+    for (const auto& key : planned_keys) keys += key + ",";
+    ASSERT_LE(keys.size(), 2048U);
+    SCOPED_TRACE(keys);
+    RecordProperty(measuring ? "measured_planned_keys" : "bound_planned_keys", keys);
+    const kn::LowerInput input{*plan, io, addresses};
+    EXPECT_FALSE(input.token);
+    kg::DeviceChoices choices;
+    choices.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+      return kg::MulMatPath::kCublas;
+    };
+    auto lowered = kg::LowerStep(input, *registry, choices);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    ASSERT_EQ(lowered->inputs.size(), 4U);
+    ASSERT_EQ(lowered->outputs.size(), 2U);
+    EXPECT_EQ(lowered->outputs[0].bytes, 6U * 4096U * 4U);
+    EXPECT_EQ(lowered->outputs[1].bytes, 2U * 4096U * 4U);
+    std::size_t rotations = 0, products = 0, softmax = 0, norms = 0;
+    for (const auto& step : lowered->plan.steps) {
+      if (step.implementation == "ggml.norm") {
+        ++norms;
+        auto* norm = step.nodes[0];
+        ASSERT_TRUE(kg::CheckLayerNorm(norm));
+        float eps = 0;
+        std::memcpy(&eps, norm->op_params, sizeof(eps));
+        const float negative = -1.F;
+        std::memcpy(norm->op_params, &negative, sizeof(negative));
+        EXPECT_FALSE(kg::CheckLayerNorm(norm));
+        std::memcpy(norm->op_params, &eps, sizeof(eps));
+        const auto stride = norm->src[0]->nb[0];
+        norm->src[0]->nb[0] = 8;
+        EXPECT_FALSE(kg::CheckLayerNorm(norm));
+        norm->src[0]->nb[0] = stride;
+        const auto type = norm->src[0]->type;
+        norm->src[0]->type = GGML_TYPE_F16;
+        EXPECT_FALSE(kg::CheckLayerNorm(norm));
+        norm->src[0]->type = type;
+        ASSERT_TRUE(kg::CheckLayerNorm(norm));
+      }
+      rotations += step.implementation == "ggml.rope.ext";
+      products += step.implementation == "ggml.mul_mat.cublas";
+      softmax += step.implementation == "ggml.soft_max";
+    }
+    EXPECT_EQ(norms, 2U);
+    EXPECT_EQ(rotations, 6U);
+    EXPECT_EQ(products, 13U);  // eleven source projections and QK/AV
+    EXPECT_EQ(softmax, 1U);
+    for (const auto& slot : lowered->inputs) EXPECT_EQ(slot.kind, kn::InputKind::kStepBytes);
+  }
+}
+
 }  // namespace

@@ -23,9 +23,12 @@
 
 namespace llmp::kernels::ggml {
 
-// A ggml_rms_norm node over packed F32 rows, writing its own output.
+// Packed centered F32 normalization, including current bound extent and alias checks.
+std::expected<void, KernelFailure> CheckLayerNorm(const ggml_tensor* norm);
+
 std::expected<void, KernelFailure> CheckL2Norm(const ggml_tensor* norm);
 
+// A ggml_rms_norm node over packed F32 rows, writing its own output.
 std::expected<void, KernelFailure> CheckRmsNorm(const ggml_tensor* norm);
 // A ggml_rms_norm node and the ggml_mul that scales it, for GGML's fused
 // launcher, which writes the product and never the norm.

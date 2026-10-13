@@ -23,8 +23,8 @@ std::expected<std::uint64_t, std::string> Values(SpatialShape s) {
       return std::unexpected("spatial dimensions exceed the bounded value domain");
   return count;
 }
-format::TensorFormat Format(SpatialShape s) {
-  return {.encoding = format::Encoding::kF32,
+format::TensorFormat Format(SpatialShape s, format::Encoding encoding = format::Encoding::kF32) {
+  return {.encoding = encoding,
           .layout = format::Layout::kDense,
           .shape = ir::ShapeOf({s.width, s.height, s.channels, s.images})};
 }
@@ -191,8 +191,10 @@ std::expected<std::uint64_t, std::string> MetadataBound(
       for (const auto& param : ref.params)
         if (param.name.size() > 64 || (!std::holds_alternative<std::int64_t>(param.value) &&
                                        !std::holds_alternative<double>(param.value) &&
-                                       !std::holds_alternative<bool>(param.value)))
-          return std::unexpected("spatial parameters are bounded scalar numbers or flags");
+                                       !std::holds_alternative<bool>(param.value) &&
+                                       !(std::holds_alternative<std::string>(param.value) &&
+                                         std::get<std::string>(param.value).size() <= 64)))
+          return std::unexpected("spatial parameters are bounded scalar numbers, flags or names");
       for (const auto& weight : ref.weights)
         if (weight.role.size() > 64 || weight.tensor.size() > 256 || !weight.stage.empty())
           return std::unexpected("spatial weight binding exceeds the single-stage domain");
@@ -202,7 +204,10 @@ std::expected<std::uint64_t, std::string> MetadataBound(
     return std::unexpected("spatial links must cover every component");
   for (std::size_t i = 0; i < options.links.size(); ++i)
     if (options.links[i].input > i ||
-        (options.links[i].auxiliary && *options.links[i].auxiliary > i))
+        (options.links[i].auxiliary && *options.links[i].auxiliary > i) ||
+        (options.links[i].carry && *options.links[i].carry > i) ||
+        (options.links[i].input_port && options.links[i].input != 0) ||
+        (options.links[i].auxiliary_port && options.links[i].auxiliary))
       return std::unexpected("spatial links must reference an earlier owner-local value");
   if (options.exports.size() > components)
     return std::unexpected("spatial exports exceed produced values");
@@ -226,15 +231,34 @@ std::expected<std::uint64_t, std::string> MetadataBound(
         owners[i].owner >= ir::kJoinedSegment || (i && owners[i - 1].owner >= owners[i].owner))
       return std::unexpected("spatial owner order or initial channels/dimensions differ");
   }
+  if (options.inputs.size() > kTensors)
+    return std::unexpected("spatial additional root inventory exceeds its bound");
+  for (std::size_t i = 0; i < options.inputs.size(); ++i) {
+    const auto& port = options.inputs[i];
+    if (!Values(port.shape) ||
+        (port.encoding != format::Encoding::kF32 && port.encoding != format::Encoding::kI32) ||
+        std::ranges::find(owners, port.owner, &SpatialOwner::owner) == owners.end() ||
+        (i && options.inputs[i - 1].owner > port.owner) ||
+        port.slot !=
+            (i && options.inputs[i - 1].owner == port.owner ? options.inputs[i - 1].slot + 1U : 0U))
+      return std::unexpected("spatial additional input owner, slot, encoding or shape differs");
+  }
+  for (const auto& owner : owners) {
+    const auto count = std::ranges::count(options.inputs, owner.owner, &SpatialInput::owner);
+    for (const auto& link : options.links)
+      if ((link.input_port && *link.input_port >= count) ||
+          (link.auxiliary_port && *link.auxiliary_port >= count))
+        return std::unexpected("spatial edge references an absent owner-local input port");
+  }
   // <=2 roles/component, one input/owner and the declared primitive limit/component/owner.
   // 4KiB per node/tensor covers graph+clone+rewrite/placement metadata, and
   // 4KiB per source/component covers bounded names/Params/visitor copies.
   static_assert(sizeof(ir::Node) <= 256 && sizeof(ir::TensorDesc) <= 256);
-  const auto nodes = owners.size() * (primitive_count + 1) + 2 * components;
+  const auto nodes = owners.size() * (primitive_count + 1) + options.inputs.size() + 2 * components;
   // Explicit outputs add owned port/shape lists and graph output retention.
   // Legacy single-output metadata payment and identity remain unchanged.
-  return 4096ULL *
-         (2 * nodes + source_count + 4 * components + 16 + owners.size() * options.exports.size());
+  return 4096ULL * (2 * nodes + source_count + 4 * components + 16 +
+                    owners.size() * options.exports.size() + 2 * options.inputs.size());
 }
 struct PaymentOwner {
   SpatialPayment calls;
@@ -306,19 +330,40 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
     auto shape = owner.shape;
     values += *Values(shape);
     std::vector<SpatialShape> inferred{shape};
+    std::vector<const SpatialInput*> ports;
+    for (const auto& port : options.inputs)
+      if (port.owner == owner.owner) {
+        ports.push_back(&port);
+        values += *Values(port.shape);
+      }
     for (std::size_t j = 0; j < chain.size(); ++j) {
       const auto link =
           options.links.empty() ? SpatialLink{static_cast<std::uint16_t>(j), {}} : options.links[j];
       const auto* instance = chain[j];
+      const auto& ops = *instance->def->spatial;
+      const auto source_shape =
+          link.input_port ? ports[*link.input_port]->shape : inferred[link.input];
+      const auto source_encoding =
+          link.input_port ? ports[*link.input_port]->encoding : format::Encoding::kF32;
       const auto auxiliary =
-          link.auxiliary ? std::optional(inferred[*link.auxiliary]) : std::nullopt;
-      auto next = instance->def->spatial->infer(*instance, inferred[link.input], auxiliary);
+          link.auxiliary_port
+              ? std::optional(ports[*link.auxiliary_port]->shape)
+              : (link.auxiliary ? std::optional(inferred[*link.auxiliary]) : std::nullopt);
+      const auto auxiliary_encoding =
+          link.auxiliary_port ? ports[*link.auxiliary_port]->encoding : format::Encoding::kF32;
+      if (source_encoding != ops.input_encoding ||
+          (auxiliary && auxiliary_encoding != ops.auxiliary_encoding) ||
+          link.carry.has_value() != ops.needs_carry ||
+          (link.carry && inferred[*link.carry] != source_shape))
+        return std::unexpected(
+            "spatial typed operands or original carry do not match component contract");
+      auto next = ops.infer(*instance, source_shape, auxiliary);
       if (!next) return std::unexpected(next.error());
       shape = *next;
       inferred.push_back(shape);
       values += *Values(shape);
       if (instance->def->spatial->temporary_values)
-        values += instance->def->spatial->temporary_values(inferred[link.input]);
+        values += instance->def->spatial->temporary_values(*instance, source_shape);
     }
     if (options.exports.empty())
       ends.push_back({owner.owner, shape});
@@ -361,7 +406,8 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
     return std::unexpected("spatial graph/reference buffers were not funded");
   std::size_t primitive_count = 0;
   for (const auto* instance : chain) primitive_count += instance->def->spatial->max_nodes;
-  const auto max_nodes = owners.size() * (primitive_count + 1) + roles.size();
+  const auto max_nodes =
+      owners.size() * (primitive_count + 1) + options.inputs.size() + roles.size();
   ir::Builder builder(max_nodes);
   std::vector<StepWeight> weights;
   std::vector<std::uint64_t> parameters{0x5350415449414cULL, 2, owners.size(), chain.size()};
@@ -376,6 +422,26 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
     parameters.push_back(options.exports.size());
     for (const auto value : options.exports) parameters.push_back(value);
   }
+  const bool extended =
+      !options.inputs.empty() ||
+      std::ranges::any_of(options.links, [](const auto& link) { return link.carry.has_value(); });
+  if (extended) {
+    parameters[1] = 4;
+    parameters.push_back(options.inputs.size());
+    for (const auto& port : options.inputs) {
+      parameters.push_back(port.owner);
+      parameters.push_back(port.slot);
+      parameters.push_back(static_cast<std::uint64_t>(port.encoding));
+      for (auto n : {port.shape.width, port.shape.height, port.shape.channels, port.shape.images})
+        parameters.push_back(n);
+    }
+    for (const auto& link : options.links) {
+      parameters.push_back(link.input_port ? *link.input_port + 1U : 0U);
+      parameters.push_back(link.auxiliary_port ? *link.auxiliary_port + 1U : 0U);
+      parameters.push_back(link.carry ? *link.carry + 1U : 0U);
+    }
+  }
+  std::vector<SpatialOwner> input_ports;
   for (auto& role : roles) {
     const auto prior =
         std::ranges::find_if(weights, [&](const auto& w) { return w.ref == role.ref; });
@@ -393,7 +459,13 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
     builder.SetOwner(owner.owner);
     auto shape = owner.shape;
     auto input = builder.Input(Format(shape));
-    std::vector<SpatialValue> produced{{input, shape}};
+    std::vector<SpatialValue> produced{{input, shape}}, ports;
+    input_ports.push_back(owner);
+    for (const auto& port : options.inputs)
+      if (port.owner == owner.owner) {
+        ports.push_back({builder.Input(Format(port.shape, port.encoding)), port.shape});
+        input_ports.push_back({owner.owner, port.shape});
+      }
     for (std::size_t j = 0; j < chain.size(); ++j) {
       const auto* instance = chain[j];
       const auto link =
@@ -402,13 +474,17 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
       std::array<ir::TensorId, 2> selected{};
       for (const auto& role : roles)
         if (role.component == instance->index) selected.at(role.role) = role.tensor;
+      const auto& source = link.input_port ? ports[*link.input_port] : produced[link.input];
       SpatialFragment fragment{
           builder,
           *instance,
-          produced[link.input].tensor,
-          produced[link.input].shape,
+          source.tensor,
+          source.shape,
           std::span(selected).first(instance->def->roles.size()),
-          link.auxiliary ? std::optional(produced[*link.auxiliary]) : std::nullopt};
+          link.auxiliary_port
+              ? std::optional(ports[*link.auxiliary_port])
+              : (link.auxiliary ? std::optional(produced[*link.auxiliary]) : std::nullopt),
+          link.carry ? std::optional(produced[*link.carry]) : std::nullopt};
       auto emitted = instance->def->spatial->emit(fragment);
       if (!emitted) return std::unexpected(emitted.error());
       input = emitted->tensor;
@@ -437,8 +513,8 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
   auto graph = std::move(builder).Finish();
   if (!graph) return std::unexpected(graph.error().detail);
   return SpatialGraph(std::move(hold), std::move(*graph), std::move(weights),
-                      std::vector<SpatialOwner>(owners.begin(), owners.end()), std::move(ends),
-                      std::move(parameters), *metadata, reference_bytes);
+                      std::move(input_ports), std::move(ends), std::move(parameters), *metadata,
+                      reference_bytes);
 }
 
 }  // namespace llmp::components

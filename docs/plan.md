@@ -2528,6 +2528,20 @@ each is checked against the design as M3.6 proceeds.
             replay (2026-10-12). Full flow, image quality against a same-source
             reference, comparative speed and serving remain open
             ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-timestep-conditioner)).
+      - [x] **Q3d — conditioned transformer block:** complete conditioner and
+            one source-shaped block share typed ports, backward links and saved
+            residual carries. Existing NORMAL rotations implement three axes;
+            explicit F32 attention applies causal-text/all-image masking. Scoped
+            Spark B compilation and all 63 affected host controls pass, including
+            a reduced independent CPU oracle. The actual 13-BF16-part block checks
+            229,376 finite values across seven eager/captured/replayed steps,
+            changed/restored time and image inputs, masked text and zero-time
+            isolation; the existing conditioner regression also passes.
+            Full main Spark B native build and all 452 host cases across 25
+            targets pass; format, boundaries, headers and REUSE checks pass.
+            All 32-block flow, broader shapes, same-source reference quality,
+            speed and serving remain open
+            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#conditioned-transformer-block)).
 - [ ] **Structural techniques land once**: each retired transfer technique
       in its component, pattern or lifecycle piece, adopted where qualified
       comparisons improve speed, quality, reuse, simplicity or resource cost.

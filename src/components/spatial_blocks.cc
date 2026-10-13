@@ -95,65 +95,86 @@ std::expected<void, std::string> DupReference(SpatialRefIO& io) {
   io.output = std::move(out);
   return {};
 }
-std::expected<SpatialShape, std::string> AttentionShape(const Instance&, SpatialShape x,
+constexpr std::array kAttentionParams{ParamSpec{.name = "heads",
+                                                .type = ParamType::kInt,
+                                                .required = false,
+                                                .least = 1,
+                                                .most = 65536,
+                                                .fallback = 1}};
+std::expected<SpatialShape, std::string> AttentionShape(const Instance& in, SpatialShape x,
                                                         std::optional<SpatialShape> auxiliary) {
-  if (!Count(x) || auxiliary || x.images != 1 || x.channels % 3 || x.width * x.height > 4096)
-    return std::unexpected("spatial attention needs one bounded concatenated QKV image");
+  const auto pixels = x.width * x.height;
+  const auto heads = static_cast<std::uint64_t>(in.params.Int("heads"));
+  if (!Count(x) || x.images != 1 || x.channels % 3 || pixels > 4096 || (x.channels / 3) % heads ||
+      heads * pixels * pixels > (1ULL << 24U) ||
+      (auxiliary && *auxiliary != SpatialShape{pixels, pixels, 1, 1}))
+    return std::unexpected("spatial attention QKV, heads or mask geometry differs");
   x.channels /= 3;
   return x;
 }
 std::expected<SpatialValue, std::string> AttentionEmit(SpatialFragment& f) {
   auto shape = AttentionShape(f.instance, f.shape,
                               f.auxiliary ? std::optional(f.auxiliary->shape) : std::nullopt);
-  if (!shape || !f.weights.empty()) return std::unexpected("spatial attention operands differ");
-  const auto pixels = shape->width * shape->height;
-  const auto channels = shape->channels;
+  if (!shape || !f.weights.empty() || f.carry)
+    return std::unexpected("spatial attention operands differ");
+  const auto pixels = shape->width * shape->height, channels = shape->channels;
+  const auto heads = static_cast<std::uint64_t>(f.instance.params.Int("heads")),
+             dim = channels / heads;
   const auto src = f.builder.Reshape(f.input, ir::ShapeOf({pixels, channels * 3}));
-  const std::array<std::uint64_t, 4> strides{4, pixels * 4, pixels * channels * 4,
+  const std::array<std::uint64_t, 4> strides{4, pixels * 4, pixels * dim * 4,
                                              pixels * channels * 4};
-  const auto plane = ir::ShapeOf({pixels, channels});
+  const auto plane = ir::ShapeOf({pixels, dim, heads});
   const auto q = f.builder.Cont(f.builder.Transpose(f.builder.View(src, plane, strides, 0)));
   const auto k = f.builder.Cont(
       f.builder.Transpose(f.builder.View(src, plane, strides, pixels * channels * 4)));
   const auto v = f.builder.Cont(f.builder.View(src, plane, strides, pixels * channels * 8));
   const auto scores = f.builder.MatMul(k, q);
-  const ir::SoftMaxParams soft{
-      .scale = static_cast<float>(1.0 / std::sqrt(static_cast<double>(channels)))};
-  const auto probabilities = f.builder.SoftMax(scores, {}, {}, soft);
-  const auto result = f.builder.MatMul(v, probabilities);
+  const ir::SoftMaxParams soft{.scale =
+                                   static_cast<float>(1.0 / std::sqrt(static_cast<double>(dim)))};
+  const auto probs =
+      f.builder.SoftMax(scores, f.auxiliary ? f.auxiliary->tensor : ir::TensorId{}, {}, soft);
+  const auto result = f.builder.MatMul(v, probs);
   return SpatialValue{f.builder.Cont(f.builder.Transpose(result),
                                      ir::ShapeOf({shape->width, shape->height, channels, 1})),
                       *shape};
 }
 std::expected<void, std::string> AttentionReference(SpatialRefIO& io) {
   auto shape = AttentionShape(io.instance, io.shape, io.auxiliary_shape);
-  if (!shape || io.input.size() != *Count(io.shape) || !io.auxiliary.empty() ||
-      !io.kernel.empty() || !io.bias.empty())
+  if (!shape || io.input.size() != *Count(io.shape) ||
+      io.auxiliary.size() != (io.auxiliary_shape ? *Count(*io.auxiliary_shape) : 0) ||
+      !io.kernel.empty() || !io.bias.empty() || !io.carry.empty())
     return std::unexpected("spatial attention reference sizes differ");
-  const auto p = shape->width * shape->height;
-  const auto c = shape->channels;
-  const double scale = static_cast<float>(1.0 / std::sqrt(static_cast<double>(c)));
-  std::vector<double> out(static_cast<std::size_t>(p * c)), row(static_cast<std::size_t>(p));
-  for (std::uint64_t query = 0; query < p; ++query) {
-    for (std::uint64_t key = 0; key < p; ++key) {
-      double dot = 0;
-      for (std::uint64_t channel = 0; channel < c; ++channel)
-        dot += io.input[query + p * channel] * io.input[key + p * (c + channel)];
-      row[key] = dot * scale;
+  const auto pixels = shape->width * shape->height, channels = shape->channels;
+  const auto heads = static_cast<std::uint64_t>(io.instance.params.Int("heads")),
+             dim = channels / heads;
+  const double scale = static_cast<float>(1.0 / std::sqrt(static_cast<double>(dim)));
+  std::vector<double> out(static_cast<std::size_t>(pixels * channels)),
+      row(static_cast<std::size_t>(pixels));
+  for (std::uint64_t head = 0; head < heads; ++head)
+    for (std::uint64_t query = 0; query < pixels; ++query) {
+      for (std::uint64_t key = 0; key < pixels; ++key) {
+        double dot = 0;
+        for (std::uint64_t channel = 0; channel < dim; ++channel)
+          dot += io.input[query + pixels * (head * dim + channel)] *
+                 io.input[key + pixels * (channels + head * dim + channel)];
+        row[key] = dot * scale + (io.auxiliary.empty() ? 0 : io.auxiliary[key + pixels * query]);
+      }
+      const double max = *std::max_element(row.begin(), row.end());
+      if (!std::isfinite(max))
+        return std::unexpected("attention reference has no finite visible key");
+      double sum = 0;
+      for (auto& value : row) {
+        value = std::exp(value - max);
+        sum += value;
+      }
+      for (std::uint64_t channel = 0; channel < dim; ++channel) {
+        double value = 0;
+        for (std::uint64_t key = 0; key < pixels; ++key)
+          value +=
+              (row[key] / sum) * io.input[key + pixels * (2 * channels + head * dim + channel)];
+        out[query + pixels * (head * dim + channel)] = value;
+      }
     }
-    const double max = *std::max_element(row.begin(), row.end());
-    double sum = 0;
-    for (auto& value : row) {
-      value = std::exp(value - max);
-      sum += value;
-    }
-    for (std::uint64_t channel = 0; channel < c; ++channel) {
-      double value = 0;
-      for (std::uint64_t key = 0; key < p; ++key)
-        value += (row[key] / sum) * io.input[key + p * (2 * c + channel)];
-      out[query + p * channel] = value;
-    }
-  }
   io.output = std::move(out);
   return {};
 }
@@ -220,9 +241,9 @@ std::expected<void, std::string> ProjectionReference(SpatialRefIO& io) {
 const SpatialOps kProjection{ProjectionShape, ProjectionEmit, ProjectionReference, 8};
 const SpatialOps kAdd{AddShape, AddEmit, AddReference};
 const SpatialOps kDup{DupShape, DupEmit, DupReference, 24};
-std::uint64_t AttentionTemporaries(SpatialShape shape) {
+std::uint64_t AttentionTemporaries(const Instance& in, SpatialShape shape) {
   const auto pixels = shape.width * shape.height;
-  return pixels * pixels;
+  return pixels * pixels * static_cast<std::uint64_t>(in.params.Int("heads"));
 }
 const SpatialOps kAttention{AttentionShape, AttentionEmit, AttentionReference, 24,
                             AttentionTemporaries};
@@ -257,6 +278,7 @@ const ComponentDef& ResidualUpsample() {
 }
 const ComponentDef& AttentionSpatial() {
   static const ComponentDef def{.kind = "attention.spatial",
+                                .params = kAttentionParams,
                                 .shapes = NoRoles,
                                 .spatial = &kAttention,
                                 .emit = NoToken,

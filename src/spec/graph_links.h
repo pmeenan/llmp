@@ -11,6 +11,12 @@ namespace llmp::spec {
 struct GraphLink {
   std::uint16_t input = 0;
   std::optional<std::uint16_t> auxiliary{};
+  // Optional typed extra root replaces the corresponding produced-value edge.
+  // Slot numbers are local to the same owner; slot zero is its first extra root.
+  std::optional<std::uint16_t> input_port{};
+  std::optional<std::uint16_t> auxiliary_port{};
+  // Original pre-branch value, independently live through a gated residual.
+  std::optional<std::uint16_t> carry{};
   bool operator==(const GraphLink&) const = default;
 };
 }  // namespace llmp::spec

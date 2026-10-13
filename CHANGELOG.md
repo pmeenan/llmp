@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Compose an image transformer block with its timestep conditioner through shared
+  adaptive normalization, three-axis rotations, masked attention and gated
+  residuals. BF16 source weights and existing fusions are retained; bounded
+  execution passes, while full flow, reference quality and serving remain open.
+
 - Add explicit per-alias `kv_cache_encoding = "q8_0"` for supported shared
   dense attention at D64/D256, with checked blocked state and kept identity.
   F16 remains the default; short paired quality costs are reported and unsupported

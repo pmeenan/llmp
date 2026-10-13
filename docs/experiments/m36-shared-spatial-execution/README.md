@@ -164,7 +164,7 @@ reference quality comparison.
 
 The separate compiler/owner prepayment is32MiB, pinned staging/output/baseline
 storage1MiB, and managed node capacity512MiB. The invocation uses a2GiB zero-swap
-process/cache ceiling,9GiB available-memory preflight and6GiB physical margin.
+process/cache ceiling,9GiB available-memory preflight and 6GiB physical margin.
 Observed process/cache peak is227,135,488 bytes, not total device residency.
 All pre/post source, recipe and binary guards pass; memory limit/OOM events are
 zero, the whole child process group retires and no GPU process remains. Source
@@ -186,3 +186,69 @@ Actual binary SHA-256
 `c218d1392b7e71c69cc08fe2e51b7cd7e7c014834cd8687e0dcd1867c9bb40c2`
 (187,663,232 bytes). Raw logs/XML and preserved failed compile/inventory attempts
 remain in session scratch; the successful main receipt is used unchanged.
+
+
+## Conditioned transformer block
+
+The complete timestep conditioner and source-shaped transformer block 0 execute
+in one shared typed graph. Modulation feeds both adaptive normalizations and
+both gated residuals; the first carry is retained through the MLP. Three existing
+NORMAL RoPE operations per Q/K use source axis widths 16/56/56, including negative
+positions. Explicit F32 attention preserves the source's causal-text/all-image
+mask. Existing packed-F32 LayerNorm and learned RMS scaling fusion use the shared
+GGML lowerer and physical validators. Weights remain BF16; no mandatory legacy
+intermediate casts or new kernels are added.
+
+Reduced independent host arithmetic covers the full conditioner/block formulas,
+multiple owners, both exports, changed inputs and negative positions. Additional
+controls cover malformed ports/geometry, complete source-shaped planning and
+reference-payment refusal before allocation. Scoped Spark B compilation and all
+63 affected host cases pass. The actual existing conditioner regression passes
+204,800 finite values, and the new block passes 229,376 finite values across seven
+steps: one eager execution, one capture and five replays, with no capture refusal.
+Each step checks all 32,768 output values. Changed time affects both output
+branches while zero-time scale and masked text remain unchanged; changed image
+input affects another image row, leaves text and independent final scale intact,
+and restored input restores full output hashes. This uses a synthetic
+preprojected six-row stream (two text/four image), not a complete image pipeline.
+
+The actual block binds 13 BF16 parts containing 639,631,872 source bytes. Their
+closure leases 308 pages (645,922,816 bytes); the containing groups reserve 339
+virtual pages (710,934,528 bytes). The actual plan has 211 graph nodes/tensors and
+13 products, two LayerNorms, two fused learned RMS scalings, six rotations,
+one softmax and one SwiGLU. Both complete outputs are executed.
+
+| Resource | Paid bound | Observation or derived bound |
+| --- | ---: | ---: |
+| Graph metadata | Within 96MiB host allowance | 2,912,256 bytes |
+| Compiler construction | 64MiB within that allowance | 48,085,088-byte source-derived bound |
+| Activation | 8MiB | 1,114,112 bytes |
+| Product pool | 8MiB | 0 bytes |
+| Program host metadata | 4MiB | 229,392 bytes |
+
+The fixed managed node is 1GiB; pinned staging/output/reference-hash storage is 1MiB.
+Compiler/reference payment is established before construction; unused full-size
+scalar weight buffers are omitted. The process/cache ceiling is 2GiB with zero
+swap, 9GiB preflight headroom and 6GiB physical margin. Observed process/cache peaks
+are 399,900,672 bytes for the block and 227,995,648 bytes for the conditioner,
+not total device occupancy. All source/binary/recipe guards pass, memory events
+and remaining compute PIDs are zero, and each whole child process group retires.
+The observed fixture durations 0.618s/0.435s include setup/storage and are not a
+performance comparison. The full main Spark B native build and 452 host cases
+across 25 targets pass in the 127-second supervised build/check job, with no
+failures or skips and the same model binary used by both actual cases. Final
+source quality checks pass: format25, boundaries21, headers2,245 and REUSE6.2.0.
+Failed earlier compile/host attempts are preserved externally.
+
+This qualifies one bounded complete block's finite execution and same-selected
+capture/replay, with reduced independent reference evidence. Full 32-block flow,
+broader geometry, a full-size same-source reference quality comparison, end-to-end
+speed, `EngineImage` admission and the family migration gate remain open.
+
+Provenance: main01 result
+`b7597ce07a8d60949b82a3afc6e90d2d1cfc2cdf1d6cfb6f45be4cc321538f1a`;
+focused03 result `a687ab1319ea59ce24bfd56f338f125d14cf63e6d6615faf113d7ad0203e69e0`;
+block result `7de24f20a05a3f9b221033e5794c887961b174069739faefcb8bfe5651cc22fb`;
+conditioner result `e9b65e31c67548ae1472dfcdb3a04347554d9bd3c717a96c91b0ccbc41d4e1f4`.
+Actual model binary `11d63cadeb6fd1952146721c4b519cceda5396c6ca23b51ba124932dc1aa83de`
+(188,396,320 bytes). Raw XML/logs and sealed recipes remain in session scratch.

@@ -1268,6 +1268,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
           s[0]->type != GGML_TYPE_F32 || !ggml_is_contiguous(s[0]))
         return Refused("spatial upsampling needs contiguous F32 nearest2 input");
       return ggml_upscale(c_, s[0], 2, GGML_SCALE_MODE_NEAREST);
+    case Op::kLayerNorm:
+      return ggml_norm(c_, s[0], n.Params<ir::NormParams>().eps);
     case Op::kL2Norm:
       return ggml_l2_norm(c_, s[0], n.Params<ir::NormParams>().eps);
     case Op::kRmsNorm:
@@ -4118,9 +4120,11 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     // First stateless physical domain. No token/state operation can enter a
     // branch that interprets a StepShape, synthesized inputs or state spans.
     const auto supported = [](const ir::Node& n) {
-      // The sole source-level fused form is stateless and decomposes into the
-      // same checked repeat/view/cont/add primitives below. No token metadata.
-      if (n.key == ir::Fused(FusedKind::kDupUpAdd)) return true;
+      // Closed explicit-operand forms only: the existing VAE shortcut and
+      // learned RMS scaling. Both use the same validated primitive operands;
+      // neither consults token metadata, state, side-input builders or saves.
+      if (n.key == ir::Fused(FusedKind::kDupUpAdd) || n.key == ir::Fused(FusedKind::kRmsNormMul))
+        return true;
       if (n.key != ir::Primitive(n.key.op)) return false;
       switch (n.key.op) {
         case Op::kInput:
@@ -4137,6 +4141,11 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
         case Op::kMul:
         case Op::kScale:
         case Op::kUnary:
+        case Op::kLayerNorm:
+        case Op::kRmsNorm:
+        case Op::kRope:
+        case Op::kGlu:
+        case Op::kConcat:
         case Op::kL2Norm:
         case Op::kMatMul:
         case Op::kSoftMax:
@@ -4145,9 +4154,12 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
           return false;
       }
     };
-    if (!std::ranges::all_of(g_.nodes(), supported) || !std::ranges::all_of(p_.nodes(), supported))
-      return Refused(
-          "this stateless GGML domain requires checked spatial arithmetic and owner ports");
+    for (const ir::Graph* graph : {&g_, &p_}) {
+      const auto bad = std::ranges::find_if_not(graph->nodes(), supported);
+      if (bad != graph->nodes().end())
+        return Refused(std::format("stateless GGML refuses {} in the {} graph",
+                                   ir::OpKeyName(bad->key), graph == &g_ ? "source" : "planned"));
+    }
   }
   if (auto checked = CheckSelectedHc(); !checked) return std::unexpected(checked.error());
   if (auto checked = CheckOwnerProducts(); !checked) return std::unexpected(checked.error());

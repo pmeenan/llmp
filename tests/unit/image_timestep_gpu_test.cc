@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numeric>
@@ -72,6 +73,50 @@ static_assert(12 * (37 * 480ULL + 74 * 192ULL) + 4096 * (37 + 74ULL) +
 static_assert(kOutputOffset + kOutputTotal <= kSavedOffset &&
               kSavedOffset + kOutputTotal <= kPinned);
 
+// Same owner and runner for the complete consumer. Limits are fixed before graph
+// construction; actual measured programs must fit before node Start/admission.
+struct Limits {
+  std::uint64_t domain, metadata, compiler, program, activation, pool;
+  std::uint64_t output_offset, nodes, tensors, graph_metadata, launches;
+  std::size_t parts, selected_pages, reserved_pages;
+  std::array<std::uint64_t, 2> outputs;
+};
+constexpr Limits kConditioning{kDomain,
+                               kMetadata,
+                               kCompilerAndOwner,
+                               kProgram,
+                               kActivation,
+                               kPool,
+                               kOutputOffset,
+                               37,
+                               74,
+                               491520,
+                               64,
+                               4,
+                               99,
+                               130,
+                               kOutputBytes};
+constexpr Limits kBlock{1024 * kMiB, 96 * kMiB, 64 * kMiB, 4 * kMiB, 8 * kMiB,
+                        8 * kMiB,    131072,    250,       500,      2912256,
+                        256,         13,        308,       339,      {98304, 32768}};
+constexpr std::array<std::string_view, 9> kBlockNames{
+    "transformer_blocks.0.attn.to_q.weight",          "transformer_blocks.0.attn.to_k.weight",
+    "transformer_blocks.0.attn.to_v.weight",          "transformer_blocks.0.attn.to_out.0.weight",
+    "transformer_blocks.0.attn.norm_q.weight",        "transformer_blocks.0.attn.norm_k.weight",
+    "transformer_blocks.0.img_mlp.gate_layer.weight", "transformer_blocks.0.img_mlp.proj.weight",
+    "transformer_blocks.0.img_mlp.out.weight"};
+constexpr std::array<std::uint64_t, 9> kBlockBytes{33554432, 33554432,  33554432,  33554432, 256,
+                                                   256,      100663296, 100663296, 100663296};
+static_assert(12 * (250 * 480ULL + 500 * 192ULL) + 4096 * (250 + 500ULL) +
+                  (500 + 13 + 31 * 250ULL + 4) * (512 + 1024 + 32) + 2 * kBlock.program +
+                  262 * en::kGraphNodeHostBytes + 16 * kMiB <
+              kBlock.compiler);
+static_assert(kBlock.output_offset + kBlock.outputs[0] + kBlock.outputs[1] <= kSavedOffset &&
+              kSavedOffset + kBlock.outputs[0] + kBlock.outputs[1] <= kPinned);
+static_assert(645922816ULL + kBlock.metadata + kBlock.activation + kBlock.pool + 32 * kMiB +
+                  kPinned + en::kSlabSlotBytes <
+              kBlock.domain);
+
 en::Status Error(std::string what) { return std::unexpected(std::move(what)); }
 std::string Hash(std::span<const std::byte> bytes) {
   llmp::base::Sha256 hash;
@@ -79,6 +124,10 @@ std::string Hash(std::span<const std::byte> bytes) {
   return llmp::base::ToHex(hash.Finish());
 }
 struct Lifetime final : en::PagedModel {
+  explicit Lifetime(bool complete_block = false)
+      : block(complete_block), limits(block ? kBlock : kConditioning) {}
+  const bool block;
+  const Limits limits;
   en::PagedNode node{{.compute_streams = 1, .slots = 1}};
   std::shared_ptr<en::ExecutionMetadataAllowance> paid;
   en::PagedWeights weights;
@@ -89,13 +138,17 @@ struct Lifetime final : en::PagedModel {
   std::map<std::pair<ir::WeightRef, fm::PartRole>, std::uint32_t> bindings;
   std::unique_ptr<kn::StepProgram> program;
   en::StepPlanRuns runs;
-  std::array<std::uint32_t, 4> resource_ids{};
+  std::array<std::uint32_t, 13> resource_ids{};
+  std::array<std::uint64_t, 13> source_bytes{};
+  std::array<float, 24576> block_input{};
+  std::array<std::int32_t, 18> positions{};
+  std::array<float, 36> mask{};
   std::array<float, 512> input{};
   std::byte* host = nullptr;
   en::StepRuns step_runs{true};
   en::GraphStats stats;
   ca::Closure closure, empty;
-  std::array<std::string, 2> original_sha{}, changed_sha{};
+  std::array<std::string, 2> original_sha{}, changed_sha{}, image_sha{};
   bool opened = false, retirement_attempted = false, retired = false;
 
   std::uint32_t stream() const override { return 0; }
@@ -141,7 +194,7 @@ kn::Addresses Addresses(Lifetime& life, bool measuring) {
   kn::Addresses result;
   result.weight = address;
   result.activations = measuring ? 0 : life.node.activations().base;
-  result.activation_bytes = kActivation;
+  result.activation_bytes = life.limits.activation;
   result.activation_alignment = 256;
   result.weight_alignment = [address](const ir::WeightRef& ref, fm::PartRole part) {
     const auto actual = address(ref, part);
@@ -150,39 +203,52 @@ kn::Addresses Addresses(Lifetime& life, bool measuring) {
   return result;
 }
 en::Status CheckProgram(const Lifetime& life, const kn::StepProgram& program) {
-  if (program.inputs().size() != 1 || program.outputs().size() != 2 ||
-      program.inputs()[0].kind != kn::InputKind::kStepBytes || program.inputs()[0].segment != 0 ||
-      program.inputs()[0].bytes != sizeof(life.input) || program.scratch_bytes() > kActivation ||
-      program.pool_bytes() > kPool || program.host_bytes() > kProgram || program.launches() > 64 ||
+  const auto& limit = life.limits;
+  const std::array<std::uint64_t, 4> block_inputs{98304, 2048, 72, 144};
+  if (program.inputs().size() != (life.block ? 4U : 1U) || program.outputs().size() != 2 ||
+      program.scratch_bytes() > limit.activation || program.pool_bytes() > limit.pool ||
+      program.host_bytes() > limit.program || program.launches() > limit.launches ||
       !program.capturable() || program.routed())
-    return Error("timestep program ports or measured paid envelope differ");
+    return Error("image consumer program ports or measured paid envelope differ");
+  for (std::size_t i = 0; i < program.inputs().size(); ++i)
+    if (program.inputs()[i].kind != kn::InputKind::kStepBytes || program.inputs()[i].segment != 0 ||
+        program.inputs()[i].bytes != (life.block ? block_inputs[i] : sizeof(life.input)) ||
+        program.inputs()[i].tensor != life.graph->graph().inputs()[i])
+      return Error("image consumer input identity/owner/extent differs");
   for (std::size_t i = 0; i < 2; ++i)
-    if (program.outputs()[i].segment != 0 || program.outputs()[i].bytes != kOutputBytes[i] ||
+    if (program.outputs()[i].segment != 0 || program.outputs()[i].bytes != limit.outputs[i] ||
         program.outputs()[i].tensor != life.graph->graph().outputs()[i])
-      return Error("timestep output identity, shape or owner differs");
+      return Error("image consumer output identity, shape or owner differs");
   if (!program.bound()) return {};
-  std::size_t products = 0, silu = 0;
-  if (program.bound()->size() > 64) return Error("bounded selected plan inventory");
+  std::size_t products = 0, unary = 0, rope = 0, softmax = 0, glu = 0, norms = 0;
+  if (program.bound()->size() > limit.launches) return Error("bounded selected plan inventory");
   for (std::size_t i = 0; i < program.bound()->size(); ++i) {
     const auto& name = program.bound()->at(i).name;
     products += name.starts_with("ggml.mul_mat.");
-    silu += name == "ggml.unary";
+    unary += name == "ggml.unary";
+    rope += name == "ggml.rope.ext";
+    softmax += name == "ggml.soft_max";
+    glu += name == "ggml.swiglu";
+    norms += name == "ggml.norm";
   }
-  if (products != 4 || silu != 2) return Error("complete selected timestep source operations");
+  if (products != (life.block ? 13U : 4U) || unary != (life.block ? 4U : 2U) ||
+      rope != (life.block ? 6U : 0U) || softmax != (life.block ? 1U : 0U) ||
+      glu != (life.block ? 1U : 0U) || norms != (life.block ? 2U : 0U))
+    return Error("complete selected conditioner/block operation inventory differs");
   return {};
 }
 en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   auto available = llmp::platform::AvailableMemoryBytes();
-  // 2GiB process/cache +512MiB node, rounded up to3GiB, plus6GiB physical margin.
+  // 2GiB process/cache +at most1GiB node +6GiB physical margin.
   if (!available || *available < (9ULL << 30U)) return Error("physical headroom");
   if (auto r = life.node.Open(); !r) return r;
   life.opened = true;
   life.node.SetHostFloor(0);
   auto paid = en::ExecutionMetadataAllowance::Admit(life.node.catalog(), life.node.domain(),
-                                                    kMetadata, *available, 6ULL << 30U);
+                                                    life.limits.metadata, *available, 6ULL << 30U);
   if (!paid) return Error(paid.error());
   life.paid = *paid;
-  if (!life.paid->Charge(kCompilerAndOwner)) return Error("preconstruction owner payment");
+  if (!life.paid->Charge(life.limits.compiler)) return Error("preconstruction owner payment");
   std::error_code ec;
   if (std::filesystem::file_size(path / "manifest.json", ec) != 1600 || ec ||
       std::filesystem::file_size(path / "index.json", ec) != 531405 || ec)
@@ -200,40 +266,59 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     if (found == all_tensors.end()) return Error("fixed timestep source role");
     tensors.push_back(*found);
   }
+  if (life.block)
+    for (const auto name : kBlockNames) {
+      const auto found = std::ranges::find(all_tensors, name, &mo::QwenImageTensor::name);
+      if (found == all_tensors.end()) return Error("fixed block source role");
+      tensors.push_back(*found);
+    }
   auto ids = mo::BindQwenImageComponent(tensors, "QwenImage21Transformer2DModel", artifact);
   if (!ids) return Error(ids.error());
   auto source = sp::SourceOfV0(artifact);
   if (!source) return Error(source.error());
   std::vector<co::BoundTensor> bound;
   std::vector<en::GroupPlace> groups(33, en::GroupPlace::kNone);
-  for (std::size_t i = 0; i < 4; ++i) {
+  for (std::size_t i = 0; i < life.limits.parts; ++i) {
+    life.source_bytes[i] = i < 4 ? kWeightBytes[i] : kBlockBytes[i - 4];
     life.resource_ids[i] = ids->at(i);
     const auto placement = artifact.ResourcePlacement(life.resource_ids[i]);
-    if (!placement || placement->bytes.value() != kWeightBytes[i] || placement->group != 32)
+    if (!placement || placement->bytes.value() != life.source_bytes[i] ||
+        placement->group != (i < 4 ? 32U : 0U))
       return Error("source role bytes or group differ");
-    groups[32] = en::GroupPlace::kDevice;
-    const auto found = std::ranges::find(source->tensors, kNames[i], &co::BoundTensor::name);
+    groups[placement->group] = en::GroupPlace::kDevice;
+    const auto found = std::ranges::find(source->tensors, tensors[i].name, &co::BoundTensor::name);
     if (found == source->tensors.end() || found->format.encoding != fm::Encoding::kBF16)
       return Error("actual BF16 source format");
     bound.push_back(*found);
   }
   if (auto r = life.weights.Reserve(life.node, groups, {}); !r) return r;
-  if (life.weights.bytes() != 272629760 || life.weights.host_bytes() != 0 ||
-      life.weights.extents().size() != 130)
+  if (life.weights.bytes() != life.limits.reserved_pages * 2 * kMiB ||
+      life.weights.host_bytes() != 0 || life.weights.extents().size() != life.limits.reserved_pages)
     return Error("global group virtual reservation differs");
-  auto mapping = sp::ImageTimestepSpec(profile, tensors);
+  auto mapping = life.block ? sp::ImageTransformerBlockSpec(profile, 0, 2, tensors)
+                            : sp::ImageTimestepSpec(profile, tensors);
   if (!mapping) return Error(mapping.error());
   const std::array<std::span<const co::BoundTensor>, 1> tables{bound};
-  const std::array owners{co::SpatialOwner{0, {1, 2, 256, 1}}};
-  auto graph = co::BuildSpatialStep(
-      mapping->spec, tables, owners,
-      {[paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
-       [paid = life.paid](std::uint64_t n) { paid->Release(n); }},
-      {.links = mapping->links, .reference_buffers = false, .exports = mapping->exports});
+  const std::array owners{co::SpatialOwner{
+      0, life.block ? co::SpatialShape{1, 6, 4096, 1} : co::SpatialShape{1, 2, 256, 1}}};
+  const std::array ports{co::SpatialInput{0, 0, {1, 2, 256, 1}},
+                         co::SpatialInput{0, 1, {6, 3, 1, 1}, fm::Encoding::kI32},
+                         co::SpatialInput{0, 2, {6, 6, 1, 1}}};
+  auto graph =
+      co::BuildSpatialStep(mapping->spec, tables, owners,
+                           {[paid = life.paid](std::uint64_t n) { return paid->Charge(n); },
+                            [paid = life.paid](std::uint64_t n) { paid->Release(n); }},
+                           {.links = mapping->links,
+                            .reference_buffers = false,
+                            .exports = mapping->exports,
+                            .inputs = life.block ? std::span<const co::SpatialInput>(ports)
+                                                 : std::span<const co::SpatialInput>{}});
   if (!graph) return Error(graph.error());
-  if (graph->graph().nodes().size() > 37 || graph->graph().tensor_count() > 74 ||
-      graph->weights().size() != 4 || graph->metadata_bytes() != 491520 ||
-      graph->reference_bytes() != 0 || graph->outputs().size() != 2)
+  if (graph->graph().nodes().size() > life.limits.nodes ||
+      graph->graph().tensor_count() > life.limits.tensors ||
+      graph->weights().size() != life.limits.parts ||
+      graph->metadata_bytes() != life.limits.graph_metadata || graph->reference_bytes() != 0 ||
+      graph->outputs().size() != 2)
     return Error("fixed timestep graph inventory");
   life.graph.emplace(std::move(*graph));
   for (const auto& weight : life.graph->weights()) {
@@ -242,7 +327,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
       return Error("source-resident encoded root");
     const auto& [name, part] = weight.parts[0];
     const auto id = artifact.FindResource(name);
-    if (!id || !std::ranges::contains(life.resource_ids, *id) ||
+    if (!id || !std::ranges::contains(std::span(life.resource_ids).first(life.limits.parts), *id) ||
         !life.bindings.emplace(std::pair{weight.ref, part}, *id).second)
       return Error("exact timestep role binding");
   }
@@ -278,14 +363,14 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     if (!measured) return Error(measured.error());
     if (auto r = CheckProgram(life, **measured); !r) return r;
   }
-  if (auto r = life.node.MapWorkspace(kActivation, kPool); !r) return r;
+  if (auto r = life.node.MapWorkspace(life.limits.activation, life.limits.pool); !r) return r;
   auto launch = life.backend->Launch({life.node.pool().base, Bytes(life.node.pool().bytes)});
   if (!launch) return Error(launch.error());
   life.launch = std::move(*launch);
   auto host = life.resources.Pinned(kPinned);
   if (!host) return Error(host.error());
   life.host = static_cast<std::byte*>(*host);
-  life.step_runs.SetStaging(life.host, 65536);
+  life.step_runs.SetStaging(life.host, life.limits.output_offset);
   life.step_runs.SetLaunch(life.launch.get());
   auto program = build(false);
   if (!program) return Error(program.error());
@@ -294,24 +379,25 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   if (auto r = life.program->Bind(*life.launch); !r) return Error(r.error().detail);
   if (!life.program->bound()) return Error("actual program not bound");
   if (auto r = CheckProgram(life, *life.program); !r) return r;
-  if (auto r = life.node.Start(Bytes(kDomain)); !r) return r;
+  if (auto r = life.node.Start(Bytes(life.limits.domain)); !r) return r;
   if (auto r = life.weights.Register(life.node, 0); !r) return r;
   auto extents = life.resources.extents();
   for (const auto* more : {&life.node.activations().extents, &life.node.pool().extents})
     extents.insert(extents.end(), more->begin(), more->end());
   std::vector<ca::ExtentId> selected;
-  for (std::size_t i = 0; i < 4; ++i) {
+  for (std::size_t i = 0; i < life.limits.parts; ++i) {
     // The128MiB modulation interval is offset0.5MiB into a page:65 pages.
     std::array<ca::ExtentId, 65> pages{};
     auto count = life.weights.ExtentsTouching(life.weights.resource_address(life.resource_ids[i]),
-                                              kWeightBytes[i], pages);
+                                              life.source_bytes[i], pages);
     if (!count) return Error(count.error());
     selected.insert(selected.end(), pages.begin(),
                     pages.begin() + static_cast<std::ptrdiff_t>(*count));
   }
   std::ranges::sort(selected);
   selected.erase(std::unique(selected.begin(), selected.end()), selected.end());
-  if (selected.size() != 99) return Error("complete selected99-page closure");
+  if (selected.size() != life.limits.selected_pages)
+    return Error("complete selected source-page closure");
   extents.insert(extents.end(), selected.begin(), selected.end());
   auto closure = life.node.catalog().ClosureOfExtents(extents);
   if (!closure) return Error("complete timestep owned closure");
@@ -329,7 +415,7 @@ en::Status Execute(Lifetime& life) {
         },
         "timestep catalog coverage");
     if (!coverage) return coverage;
-    for (std::size_t repeat = 0; repeat < 5; ++repeat) {
+    for (std::size_t repeat = 0; repeat < (life.block ? 7U : 5U); ++repeat) {
       const auto input =
           mo::QwenImageTimestepSinusoid(mo::QwenImage21().denoiser, repeat == 3 ? 500.F : 1000.F);
       if (input.size() != 512) return Error("source sinusoid size");
@@ -341,11 +427,33 @@ en::Status Execute(Lifetime& life) {
         unequal = unequal || input[c] != input[256 + c];
       }
       if (!unequal) return Error("two conditioning rows must differ");
+      if (life.block) {
+        for (std::size_t c = 0; c < 4096; ++c)
+          for (std::size_t row = 0; row < 6; ++row)
+            life.block_input[6 * c + row] =
+                static_cast<float>(static_cast<int>((17 * c + 11 * row) % 101) - 50) / 100.F +
+                (repeat == 5 && row == 5 ? .125F : 0.F);
+        life.positions = {0, 1, 2, 2, 2, 2, 0, 1, -1, -1, 0, 0, 0, 1, -1, 0, -1, 0};
+        if (repeat == 5) {
+          life.positions[11] = -2;
+          life.positions[17] = -3;
+        }
+        for (std::size_t query = 0; query < 6; ++query)
+          for (std::size_t key = 0; key < 6; ++key)
+            life.mask[6 * query + key] =
+                query < 2 && key > query ? -std::numeric_limits<float>::infinity() : 0.F;
+      }
       auto copies = life.step_runs.Stage(
           life.program->inputs(),
           [&](std::size_t slot, std::span<std::byte> out) -> en::Status {
-            if (slot != 0 || out.size() != sizeof(life.input)) return Error("input port extent");
-            std::memcpy(out.data(), life.input.data(), out.size());
+            const auto input_bytes = std::as_bytes(std::span(life.input));
+            const std::array<std::span<const std::byte>, 4> block_bytes{
+                std::as_bytes(std::span(life.block_input)), input_bytes,
+                std::as_bytes(std::span(life.positions)), std::as_bytes(std::span(life.mask))};
+            if (slot >= (life.block ? 4U : 1U)) return Error("input port count");
+            const std::span<const std::byte> bytes = life.block ? block_bytes[slot] : input_bytes;
+            if (out.size() != bytes.size()) return Error("input port extent");
+            std::memcpy(out.data(), bytes.data(), bytes.size());
             return {};
           },
           0);
@@ -354,7 +462,7 @@ en::Status Execute(Lifetime& life) {
       std::uint64_t offset = 0;
       for (std::size_t branch = 0; branch < 2; ++branch) {
         const auto& output = life.program->outputs()[branch];
-        outputs[branch] = {en::support::Address(life.host + kOutputOffset + offset),
+        outputs[branch] = {en::support::Address(life.host + life.limits.output_offset + offset),
                            output.device_address, output.bytes};
         offset += output.bytes;
       }
@@ -379,29 +487,54 @@ en::Status Execute(Lifetime& life) {
       en::Count(life.stats, queued.path);
       offset = 0;
       for (std::size_t branch = 0; branch < 2; ++branch) {
-        const auto actual =
-            std::span(reinterpret_cast<const float*>(life.host + kOutputOffset + offset),
-                      kOutputBytes[branch] / 4);
+        const auto actual = std::span(
+            reinterpret_cast<const float*>(life.host + life.limits.output_offset + offset),
+            life.limits.outputs[branch] / 4);
         if (!std::ranges::all_of(actual, [](float n) { return std::isfinite(n); }))
           return Error("nonfinite full conditioning branch");
         const auto sha = Hash(std::as_bytes(actual));
         if (repeat == 0) {
           life.original_sha[branch] = sha;
-          std::memcpy(life.host + kSavedOffset + offset, actual.data(), kOutputBytes[branch]);
+          std::memcpy(life.host + kSavedOffset + offset, actual.data(),
+                      life.limits.outputs[branch]);
         } else if (repeat == 3) {
           const auto saved = reinterpret_cast<const float*>(life.host + kSavedOffset + offset);
           bool changed = false;
-          for (std::size_t c = 0; c < actual.size() / 2; ++c) {
-            changed = changed || actual[2 * c] != saved[2 * c];
-            if (actual[2 * c + 1] != saved[2 * c + 1])
-              return Error("unchanged zero-time row was altered");
+          if (life.block && branch == 0) {
+            for (std::size_t c = 0; c < 4096; ++c)
+              for (std::size_t row = 0; row < 6; ++row) {
+                const auto i = 6 * c + row;
+                if (row < 2 && actual[i] != saved[i]) return Error("causal text row changed");
+                if (row >= 2) changed = changed || actual[i] != saved[i];
+              }
+          } else {
+            for (std::size_t c = 0; c < actual.size() / 2; ++c) {
+              changed = changed || actual[2 * c] != saved[2 * c];
+              if (actual[2 * c + 1] != saved[2 * c + 1])
+                return Error("unchanged zero-time row was altered");
+            }
           }
           if (!changed) return Error("new time did not change the actual branch");
           life.changed_sha[branch] = sha;
+        } else if (life.block && repeat == 5) {
+          if (branch == 1 && sha != life.original_sha[branch])
+            return Error("stream/position change altered independent final scale");
+          if (branch == 0) {
+            const auto saved = reinterpret_cast<const float*>(life.host + kSavedOffset + offset);
+            bool indirect_change = false;
+            for (std::size_t c = 0; c < 4096; ++c) {
+              if (actual[6 * c] != saved[6 * c] || actual[6 * c + 1] != saved[6 * c + 1])
+                return Error("image change escaped the causal text mask");
+              indirect_change = indirect_change || actual[6 * c + 2] != saved[6 * c + 2];
+            }
+            if (!indirect_change)
+              return Error("changed image key did not affect another image row");
+          }
+          life.image_sha[branch] = sha;
         } else if (sha != life.original_sha[branch]) {
           return Error("same source input replay changed its selected-program output");
         }
-        offset += kOutputBytes[branch];
+        offset += life.limits.outputs[branch];
       }
     }
     return {};
@@ -447,6 +580,56 @@ TEST(ImageTimestepGpuTest, CompleteSourceConditioningBranchesReplayChangedInputs
   for (std::size_t i = 0; i < life->program->bound()->size(); ++i)
     implementations += life->program->bound()->at(i).name + ",";
   ASSERT_LE(implementations.size(), 4096U);
+  RecordProperty("implementations", implementations);
+  auto retired = life->Retire();
+  ASSERT_TRUE(retired) << Failed(retired).value_or("");
+}
+TEST(ImageTimestepGpuTest, CompleteSourceBlockConsumesConditioningAndReplaysChangedInputs) {
+  const auto* path = std::getenv("LLMP_TEST_DENOISER_ARTIFACT");
+  ASSERT_NE(path, nullptr);
+  std::unique_ptr<Lifetime, Retire> life(new Lifetime(true));
+  auto setup = SetupFixture(*life, path);
+  ASSERT_TRUE(setup) << Failed(setup).value_or("");
+  auto ran = Execute(*life);
+  ASSERT_TRUE(ran) << Failed(ran).value_or("");
+  EXPECT_EQ(life->stats.eager, 1U);
+  EXPECT_EQ(life->stats.captured, 1U);
+  EXPECT_EQ(life->stats.replayed, 5U);
+  EXPECT_EQ(life->stats.refused, 0U);
+  RecordProperty("source_bytes", "639631872");
+  RecordProperty("source_parts", "13");
+  RecordProperty("selected_pages", "308");
+  RecordProperty("reserved_pages", "339");
+  RecordProperty("selected_weight_page_bytes", "645922816");
+  RecordProperty("reserved_weight_bytes", "710934528");
+  RecordProperty("complete_output_values_per_step", "32768");
+  RecordProperty("finite_values_checked", "229376");
+  RecordProperty("completed_steps", "7");
+  RecordProperty("changed_time_branches", "2");
+  RecordProperty("unchanged_text_rows", "2");
+  RecordProperty("unchanged_zero_time_scale_rows", "1");
+  RecordProperty("changed_image_contribution", "1");
+  RecordProperty("input_boundary", "source BF16 sinusoid widened exactly to F32; F32 stream");
+  RecordProperty("metadata_bytes", std::to_string(life->graph->metadata_bytes()));
+  RecordProperty("scratch_bytes", std::to_string(life->program->scratch_bytes()));
+  RecordProperty("pool_bytes", std::to_string(life->program->pool_bytes()));
+  RecordProperty("program_host_bytes", std::to_string(life->program->host_bytes()));
+  RecordProperty("graph_nodes", std::to_string(life->graph->graph().nodes().size()));
+  RecordProperty("graph_tensors", std::to_string(life->graph->graph().tensor_count()));
+  RecordProperty("plan", llmp::base::ToHex(life->program->bound()->identity()));
+  RecordProperty("eager", std::to_string(life->stats.eager));
+  RecordProperty("captured", std::to_string(life->stats.captured));
+  RecordProperty("replayed", std::to_string(life->stats.replayed));
+  RecordProperty("capture_refused", std::to_string(life->stats.refused));
+  for (std::size_t branch = 0; branch < 2; ++branch) {
+    RecordProperty("branch" + std::to_string(branch) + "_original_sha", life->original_sha[branch]);
+    RecordProperty("branch" + std::to_string(branch) + "_changed_sha", life->changed_sha[branch]);
+    RecordProperty("branch" + std::to_string(branch) + "_image_sha", life->image_sha[branch]);
+  }
+  std::string implementations;
+  for (std::size_t i = 0; i < life->program->bound()->size(); ++i)
+    implementations += life->program->bound()->at(i).name + ",";
+  ASSERT_LE(implementations.size(), 16384U);
   RecordProperty("implementations", implementations);
   auto retired = life->Retire();
   ASSERT_TRUE(retired) << Failed(retired).value_or("");
