@@ -1842,6 +1842,11 @@ each is checked against the design as M3.6 proceeds.
                                     repeating the first prompt reuses 326 tokens
                                     and completes 16 more
                                     ([plain control](experiments/m36-numerical-audit/qwen-joined-mtp.md#supervised-native-target-only-http-c2-control)).
+                                    The same source also passes native C4: four
+                                    overlapping 128-token responses, an actual
+                                    four-owner joined wave and a 325-token reused
+                                    prefix before 16 more outputs
+                                    ([C4 control](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-target-only-http-c4-control)).
                                     Automatic public serving admission, broader
                                     quality and family gates remain open.
             - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,

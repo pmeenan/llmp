@@ -156,8 +156,11 @@ authority for a single native target with speculation disabled. Two native C2
 HTTP requests complete 128 tokens each through 127 joined ordinary waves; an
 exact first-prompt repeat reuses 326 of 331 tokens and completes 16 more. Main
 native compilation and 159 affected host controls pass, with source checks and
-graceful actual retirement. This does not qualify C1/C4, GGUF or broader quality. Public model selection is unchanged; automatic production
-admission, broader same-quantized-reference quality, OS-process/GPU restart and
+graceful actual retirement. A recipe-only native C4 follow-up on the same
+runtime also completes four overlapping 128-token replies with actual four-owner
+joined execution; repeating the first prompt reuses 325 of 330 tokens and
+completes 16 more. This does not qualify C1, GGUF or broader quality. Public
+model selection is unchanged; automatic production admission, broader same-quantized-reference quality, OS-process/GPU restart and
 the family speed/swap gate remain open. The full DeepSeek target screen now
 passes main native build, 307 affected host controls and actual finite-head /
 snapshot continuation on Spark B. The actual spatial-image screen passes

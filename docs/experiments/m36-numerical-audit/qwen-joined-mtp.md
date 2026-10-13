@@ -413,6 +413,52 @@ override label instead of the source-defined `speculation=false (derived)`
 for an alias with no drafter; setup and retirement were successful. The
 correction changed only that observer, not source, configuration or payment.
 
-This is bounded native target-only C2 coverage. C1/C4, GGUF, automatic public
-selection, broader same-quantized-reference quality and the fixed-baseline 1%
-family gate remain open. It makes no quality or comparative speed claim.
+This is bounded native target-only C2 coverage; the C4 follow-up is below. C1,
+GGUF, automatic public selection, broader same-quantized-reference quality and
+the fixed-baseline 1% family gate remain open. It makes no quality or comparative speed claim.
+
+## Native target-only HTTP C4 control
+
+2026-10-13, Spark A. A recipe-only extension of the same qualified native
+runtime uses four configured slots, with context 512, chunk 16, read alignment
+256 and no drafter. Four authenticated natural texts render to 330, 331, 331
+and 331 prompt tokens. All four fresh requests complete their requested 128
+output tokens, and all four streams produce output before any finishes.
+The runtime records 127 joined ordinary waves / 504 units with zero speculation.
+Because each wave has at most four owners and the unit sum exceeds three times
+the wave count, this proves actual four-owner execution. The first prompt's
+repeat completes another 16 tokens, reusing 325 of its 330 prompt tokens. Total
+completion work is 528 tokens; the largest history remains 459 positions.
+
+The source/config-derived startup payment grows to 5,913,968,640 bytes: four
+owners require at most 960 saved roots in the existing graph-capacity bound.
+The 104 GiB node cap, 112 GiB zero-swap process/page-cache ceiling and 6 GiB
+physical margin remain unchanged. Setup measures and admits the larger
+activation/workspace/input/state closure; cached plans and futures retain
+normal accounting. Final cumulative observations are ten plans, five graphs,
+eight eager runs, four captures, 159 replays and zero refusals. Plan-host and
+graph accounting are 144,152,544 and 202,194,944 bytes. Process/page-cache peak
+is 1,372,598,272 bytes, not device residency. TERM exits zero, the whole process
+group retires, source/runtime guards pass, GPU processes and memory-limit/OOM
+events are zero. This is neither a speed comparison nor a memory-saving claim.
+
+The actual prepared identity is
+`e23d604208af841d4733db379ecb16cd8772c8db8b7bf513890df3dcd18574f6`.
+Production, test and tool bytes and runtime SHA-256 remain exactly those of the
+preceding successful main159 build; only four committed Markdown files differ
+in the guarded source map at `ba20c1cb`. No duplicate compilation was needed.
+Recipe SHA-256:
+`ffeba388d0b45199b2f0e00c5a0d5d59d69e071818cf190024ec5245777a0a55`.
+Actual result:
+`3537803621f39e9c8a357d44d8227a1d7c890267217da6a292f068f316e86ea3`.
+Raw evidence and replay inputs are retained in `qwen-plain-c4-models02`; the
+preceding failed receipt preserves four completed responses before a controller
+assumed 331 prompt tokens for every document instead of their actual rendered
+counts, and stopped before the prefix repeat. Only that observer was corrected.
+
+Replay keeps the existing supervised HTTP path, sets four slots and the derived
+startup payment above, and starts all four 128-token requests together before
+the 16-token prefix repeat. Require exact per-document rendered counts, all-four
+output overlap, the four-owner counter witness, positive cached prefix and
+positive retirement. Native C1, GGUF, larger contexts, broader quality, public
+default selection and the fixed-baseline 1% family gate remain open.

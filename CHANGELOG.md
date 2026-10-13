@@ -15,8 +15,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - Extend the explicitly funded shared Qwen diagnostic to native target-only
   serving, deriving ordinary prompt/decode authority from the actual target and
-  configured envelope. Two concurrent HTTP requests and retained-prefix reuse
-  pass; public defaults and composed/scoring routes are unchanged.
+  configured envelope. Two- and four-request HTTP cohorts and retained-prefix
+  reuse pass; public defaults and composed/scoring routes are unchanged.
 
 - Connect the internal, explicitly funded shared Qwen diagnostic to the existing
   HTTP service. Two concurrent streamed MTP requests complete through joined
