@@ -1403,10 +1403,12 @@ each is checked against the design as M3.6 proceeds.
       fixes) holds DeepSeek's DSpark cohort rows and the swap table's
       Qwen3.8-as-A rows (its 32 rows all exact there, worst LLM-to-LLM
       8.494 s).
-- [ ] **Original-model quality and numerical recovery** (owner, 2026-10-12):
-      compare candidate and baseline to the same original source-precision
-      model; keep quantized engines as secondary controls and missing primary
-      evidence explicit. Preserve the 1% speed and same-implementation state gates.
+- [ ] **Reference-model quality and numerical recovery** (owner, 2026-10-12):
+      compare candidate and baseline with a reference implementation of the
+      same quantized checkpoint using NLL/perplexity and behavioral controls.
+      Use original source-precision evidence when available; it is required
+      for a closer-to-original claim, not for same-quantized-model qualification.
+      Preserve the 1% speed and same-implementation state gates.
       - [x] Retrospective numerical-policy audit and prospective gate clarification
             ([audit](experiments/m36-numerical-audit/README.md)).
       - [x] Shared target-only teacher-forced scorer foundation: paid finite
@@ -1427,8 +1429,9 @@ each is checked against the design as M3.6 proceeds.
             refuses. Main native build, 124 affected registrations and all three
             FP16/EXL3 scoring cases pass without skips. Original-model observation
             is bounded, without a quality gate.
-      - [ ] Broader fixed corpus and original-reference comparisons; production-phase,
-            speculation, context and cohort controls for chosen candidates.
+      - [ ] Broader fixed corpus and same-checkpoint reference comparisons;
+            optional original-reference comparisons for original-agreement claims;
+            production-phase, speculation, context and cohort controls for chosen candidates.
       - [x] First Qwen2 fused-attention recovery screen: actual selected attention,
             aligned natural smoke losses and four fresh-fixture ABBA cases pass.
             Timing includes setup/I/O and baseline drift; no quality, serving-speed
@@ -1635,9 +1638,10 @@ each is checked against the design as M3.6 proceeds.
                         - [ ] **G3c2b1 — joined arithmetic:** qualify shared
                               arithmetic and routing for joined MTP steps,
                               including expanded streams and unequal pending
-                              ranges. Use original-model quality as the primary
-                              reference, with missing evidence explicit; retain
-                              legacy comparisons as secondary diagnostics.
+                              ranges. Use a reference implementation of the same
+                              quantized checkpoint as the quality baseline;
+                              original-model evidence is needed for claims of
+                              closer agreement with the original.
                               Preserve owner coverage and every selected expert
                               contribution; prove same-implementation state
                               restoration and changed-input capture replay.
@@ -1803,8 +1807,9 @@ each is checked against the design as M3.6 proceeds.
             - [ ] **G4b2 — fast forms:** add patterns and default policy,
                   then prove graph/source coverage and GPU execution for the
                   fast forms and owner-safe verification. Numerical choices use
-                  original-model quality, measured speed and same-implementation
-                  state controls; external bit equality is diagnostic.
+                  same-checkpoint reference quality, measured speed and
+                  same-implementation state controls; external bit equality
+                  is diagnostic.
                   - [x] **G4b2a — local opt-in forms:** Q-head, compressor
                         pooling, full-carry HC pre and flat-norm HC post;
                         prove guarded fallback and existing-kernel operand
@@ -1947,8 +1952,8 @@ each is checked against the design as M3.6 proceeds.
                                                       Full model admission/fusion remains
                                                       open; no family quality/speed claim.
                   - [ ] **G4b2c — full policy:** output-A and product forms,
-                        mixed encodings and default policy; original-reference
-                        quality, all selected contributions and same-implementation
+                        mixed encodings and default policy; same-checkpoint
+                        reference quality, all selected contributions and same-implementation
                         state/verify correctness, without mandatory legacy bits.
             - [ ] **G4c — serving and gate:** bind hash-routing IDs with
                   expert-count checks, compressor inputs and injection
@@ -2536,9 +2541,11 @@ each is checked against the design as M3.6 proceeds.
   latency, are no more than 1% slower at worst under the fixed protocol,
   and preferably at least as fast.
 - **Quality and state:** prospective numerical improvements are judged
-  against the original unquantized model (owner, 2026-10-12), with frozen
-  reference provenance/coverage/bounds, existing behavioral controls and
-  secondary same-format diagnostics. Missing primary evidence is explicit;
+  against a reference implementation of the same quantized checkpoint
+  (owner clarification, 2026-10-12), with frozen reference provenance,
+  coverage and bounds, NLL/perplexity and existing behavioral controls.
+  Original-model evidence is required only for claims of closer agreement
+  with that original; missing original weights do not block this gate;
   historical completed gates are not reclassified. Exact same-implementation
   state, continuation, spill, restore and kept-state controls pass; the M3
   swap table and the Gemma

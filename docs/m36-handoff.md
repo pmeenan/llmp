@@ -196,7 +196,11 @@ and execution identities. No numerical selection or joined-serving quality/speed
 qualification follows. See [the source integration proof](experiments/m36-numerical-audit/qwen-products.md#owned-backend-configuration).
 
 The owner requested a [retrospective numerical audit](experiments/m36-numerical-audit/README.md)
-and original-unquantized quality as the primary reference. Stop adding
+and quality/performance evaluation rather than mandatory bit parity.
+The subsequent clarification uses the same quantized checkpoint's reference
+implementation as the baseline; original weights are needed only to claim
+closer agreement with the original. Missing original weights do not block
+same-quantized-model qualification. Stop adding
 legacy-rounding corrections solely to satisfy strict diagnostic screens.
 Qwen45 and DS52 completed strict diagnostics with numerical differences;
 DS53/53b remains unapplied/unbuilt. Preserve their raw evidence and unmerged
@@ -214,8 +218,9 @@ and supported seven/one-row tuning; absent three-row tuning explicitly refuses.
 Broader quality
 and performance remain open. Its existing official F16 artifact has no proved original
 conversion lineage. Compare small reversible candidates by quality and matched
-speed; Qwen3.8/DeepSeek original BF16 execution remains missing from inspected
-evidence, and their current quantized comparisons are secondary.
+speed against a reference implementation of the same quantized checkpoint.
+Qwen3.8/DeepSeek original BF16 execution remains missing from inspected
+evidence, limiting original-agreement claims rather than this baseline.
 The selected FP16 fixture now uses fused vector attention (`9b45ecc7`). Its
 1,020-target comparison to the original BF16 model records a +0.003826683%
 perplexity change versus the native baseline, accepted as a fixture-only
@@ -341,8 +346,9 @@ update this section as each slice lands):
   arm's own outputs, full continuation/replay, old/new persistence and bounded
   admission. G3c2b1b and G3c2b1 remain open; native joined admission stays closed.
 
-  Required G3c2b1 qualifies joined MTP quality and routing against the original
-  model, with legacy comparisons as secondary diagnostics. Preserve source
+  Required G3c2b1 qualifies joined MTP quality and routing against a reference
+  implementation of the same quantized checkpoint; original-model evidence
+  is needed for original-agreement claims. Preserve source
   bindings, owner coverage, every selected contribution and same-implementation
   state restoration/capture. Choose kernel widths and arithmetic by quality,
   measured speed, reuse, simplicity and resource cost. Equal quality/speed

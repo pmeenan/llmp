@@ -3,9 +3,12 @@
 
 # M3.6 numerical-policy audit
 
-Owner direction, 2026-10-12: optimize quality and performance against the
-original unquantized model; do not preserve another library's quantized
-rounding merely to obtain identical bits. This clarifies D-107's existing
+Owner direction and clarification, 2026-10-12: optimize quality and performance
+without preserving another library's quantized rounding merely to obtain
+identical bits. A reference implementation of the same quantized checkpoint
+is the baseline. Original unquantized evidence is useful when available and
+required to claim closer agreement with the original, but its absence does
+not block same-quantized-model qualification. This clarifies D-107's existing
 "speed and quality, not bit-exactness" rule. It does not change the matched
 1% migration speed gate or the memory, state and source-integrity contracts.
 
@@ -99,14 +102,13 @@ They are not retrospectively relabeled quality failures or quality passes.
 
 ## Prospective quality and recovery protocol
 
-1. Pin original source-precision weights, conversion provenance, tokenizer,
-   model/config/cache semantics and reference implementation. Compare the
-   candidate and migrated baseline to that same reference; equal-or-better
-   quality does not require a quantized model to reproduce original logits.
-   Quantized
-   legacy engines remain secondary controls; dequantizing their checkpoint
-   does not reconstruct the original model. Existing accepted results stay
-   historical, without a silent reference rebase.
+1. Pin the quantized checkpoint, conversion provenance, tokenizer,
+   model/config/cache semantics and its reference implementation. Compare
+   candidate and migrated baseline using the same weights and histories;
+   equality of bits is diagnostic, not a quality requirement. Original
+   source-precision evidence is optional unless claiming closer agreement
+   with the original; dequantizing a checkpoint does not reconstruct it.
+   Existing accepted results remain historical without a silent reference rebase.
 2. Use identical fixed teacher histories and document/target coordinates.
    Report full-vocabulary next-token NLL, token-weighted perplexity and
    paired losses, alongside existing behavioral and long-context controls.
@@ -143,9 +145,10 @@ publication with unproved original conversion lineage. Inspected Qwen3.8/DeepSee
 stores currently provide quantized references, not authenticated original BF16
 execution. Qwen's catalog lists a possible approximately 354 GB
 BF16 variant as absent; this is not an exhaustive filesystem search or proof
-of a usable reference. Missing primary evidence stays explicit. Secondary
-comparisons and bounded operand/timing experiments can proceed without
-claiming original-model quality qualification or blocking unrelated work.
+of a usable original reference. This limits original-model claims, not
+same-quantized-model qualification. Comparisons with the quantized reference
+and bounded operand/timing experiments can proceed; broader quality gates
+still need their declared corpus and behavioral coverage.
 
 The [four-profile EXL3 observations](../m36-exl3-selected/README.md#grouped-original-reference-observations)
 now cover 1,020 aligned targets per profile against that same original BF16

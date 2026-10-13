@@ -64,8 +64,10 @@ prefill. The corrected source preserves the cap, margin and dead-work omission.
 This qualifies the bounded target factory and same-implementation continuation.
 DSpark, original BF16 quality, durable restart, selected-only expert paging,
 production serving, throughput and matched family speed/swap gates remain open.
+Family quality qualification uses a reference implementation of the same
+quantized checkpoint; bit equality is diagnostic, not its quality criterion.
 The original source-precision model is absent from inspected local/NAS catalog
-evidence; quantized-library bit equality does not replace that reference.
+evidence, limiting original-agreement claims without blocking that baseline.
 
 The separate [composed DSpark screen](dspark.md) now passes its bounded fit,
 complete-proposal and combined snapshot controls. It does not widen this

@@ -50,16 +50,17 @@ The previously recorded M3.5 milestone pin is v0.6.6/cb2ebf0540f42604e2759b2ddef
 (still upstream HEAD on 2026-10-06), with no matching dense Gemma 4 31B CUDA
 GB10/GGUF recipe.
 
-Use the original unquantized model as the primary quality reference for
-prospective numerical improvements (owner, 2026-10-12; D-107). Authenticate
+Use a reference implementation of the same quantized checkpoint as the
+quality baseline (owner clarification, 2026-10-12; D-107). Authenticate
 weights/conversion, tokenizer, configuration and reference arithmetic; freeze
-coverage and acceptance bounds before qualification. Keep same-format engines,
-including applicable TensorFold recipes, as secondary compatibility and
-numerical diagnostics. A different quantization needs its own measured quality
-and cannot establish same-format agreement. Missing original-reference support
-is explicit; dequantized quantized weights are not the original model. Changed
-bits alone do not justify disabling a faster qualified fusion. Historical pins,
-verdicts and optional exact-mode contracts remain intact. The
+coverage and acceptance bounds before qualification. Compare full-vocabulary
+NLL/perplexity and behavioral controls, rather than requiring identical bits.
+The original unquantized model is useful when available and is needed to claim
+that changed arithmetic is closer to or farther from the original. Its absence
+does not block same-quantized-model qualification. A different quantization
+needs its own measured quality; dequantized weights are not the original model.
+Changed bits alone do not justify disabling a qualified fusion. Historical
+pins, verdicts and optional exact-mode contracts remain intact. The
 [M3.6 audit](experiments/m36-numerical-audit/README.md) records current gaps.
 For an applicable TensorFold configuration, meeting the older oracle's
 speed alone does not establish competitiveness: also report the matched

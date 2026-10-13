@@ -2466,9 +2466,10 @@ unequal-pending screen passes complete finite heads, checkpoint/spill restoratio
 and changed-input capture replay. Draft sampling uses the installed head width
 and immutable selected-token mapping; v0 multipart row tables reconstruct their
 logical format through the shared artifact assembler. Joined arithmetic and routing
-qualification is a required follow-on before serving recipes or migration gates: original-model
-quality is primary, legacy comparisons diagnose differences, and state
-restoration must reproduce the same selected implementation. The bounded
+qualification is a required follow-on before serving recipes or migration gates:
+quality uses a reference implementation of the same quantized checkpoint,
+while original-model evidence is needed for claims of closer agreement with
+the original. State restoration must reproduce the same selected implementation. The bounded
 selected-HC recipe screen (G3c2b1b1) is evidence for a default-off native
 recipe correction only: its 09c report found equal K1/K3 head inputs and logits
 across all 47,172 vocabulary logits per owner, while its four K3 products had equal
@@ -2760,8 +2761,9 @@ the format ladder is what keeps every model running on a new platform.
 - **Per-component tests** on the fake backend: state contracts (spill,
   restore, snapshot, rollback), batching joins, partition equivalence.
 - **Per-model controls** keep running on the Sparks: quality against the
-  original source-precision model, secondary same-format comparisons, state
-  and swap controls, matched speed. Reference availability is recorded.
+  same quantized checkpoint's reference implementation, NLL/perplexity,
+  state and swap controls, matched speed. Original source-precision evidence
+  is optional unless claiming closer agreement with the original.
 
 The common target-only corpus scoring foundation is
 `tests/support/corpus_score.{h,cc}`. It reuses the shared scored orchestrator,
@@ -2797,12 +2799,13 @@ baseline:
   matched bookends that resolve 1%: alternating old and new binaries on the
   same host, repeated until the spread is well under the gap judged, with
   the protocol fixed before the first run.
-- **Quality**: compare the candidate and migrated baseline to the same
-  original unquantized model for prospective numerical improvements (owner,
-  2026-10-12); candidate quality must be equal or better, with the family's
-  existing behavioral controls and secondary same-format diagnostics.
-  Freeze reference provenance, coverage and acceptance bounds before new
-  qualification; disclose missing primary evidence. Bit-identity with the
+- **Quality**: compare the candidate and migrated baseline with a reference
+  implementation of the same quantized checkpoint (owner clarification,
+  2026-10-12); candidate quality must be equal or better by NLL/perplexity
+  and the family's existing behavioral controls. Use the original unquantized
+  model when available; it is required for a closer-to-original claim, not
+  for this same-quantized-model gate. Freeze reference provenance, coverage
+  and acceptance bounds before new qualification. Bit-identity with the
   old code is not required. Investigate unexpected differences without
   imposing its reduction order, rounding or kernel choice. Within one
   selected implementation, continuation/restore remains exact. See the
