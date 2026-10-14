@@ -232,12 +232,12 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
   // Twelve overlapping graph representations (construction/clone/plan facts
   // and the current/future compiler), reader indexes, and descriptor arena.
   // Cache/recording lifetimes still pay PlanAccount independently.
-  std::uint64_t descriptors = tensors + 16 + 31 * nodes;
+  std::uint64_t descriptors = tensors + 16 + nodes;
   std::uint64_t extra = 0;
   if (__builtin_mul_overflow(*saves, std::uint64_t{4}, &extra) ||
       __builtin_add_overflow(descriptors, extra, &descriptors))
     return Error("component saved-root descriptor payment overflows");
-  std::uint64_t bytes = 12 * (480 * nodes + 192 * tensors) + kServingReaderScratchBytes;
+  std::uint64_t bytes = (480 * nodes + 192 * tensors) + kServingReaderScratchBytes;
   const auto add = [&](std::uint64_t count, std::uint64_t unit) {
     std::uint64_t part = 0;
     return !__builtin_mul_overflow(count, unit, &part) &&
