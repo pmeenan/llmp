@@ -1620,6 +1620,69 @@ std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, NodeId anchor) {
   return b.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
 }
 
+std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kCont) || c.taken(anchor)) return std::nullopt;
+  const ir::Node& cont = c.node(anchor);
+  const NodeId perm2 = Made(c, cont.src[0]);
+  if (!Is(c, perm2, Op::kPermute) || Only(c, cont.src[0]) != anchor) return std::nullopt;
+  const auto p2 = c.node(perm2).Params<ir::PermuteParams>();
+  if (p2.axes != std::array<std::uint8_t, 4>{0, 2, 1, 3}) return std::nullopt;
+
+  const NodeId matmul = Made(c, c.node(perm2).src[0]);
+  if (!Is(c, matmul, Op::kMatMul) || Only(c, c.node(perm2).src[0]) != perm2) return std::nullopt;
+  const ir::Node& mm = c.node(matmul);
+
+  const NodeId perm1 = Made(c, mm.src[1]);
+  if (!Is(c, perm1, Op::kPermute) || Only(c, mm.src[1]) != matmul) return std::nullopt;
+  const auto p1 = c.node(perm1).Params<ir::PermuteParams>();
+  if (p1.axes != std::array<std::uint8_t, 4>{0, 2, 1, 3}) return std::nullopt;
+
+  const NodeId reshape1 = Made(c, c.node(perm1).src[0]);
+  if (!Is(c, reshape1, Op::kReshape) || Only(c, c.node(perm1).src[0]) != perm1) return std::nullopt;
+
+  const NodeId rope = Made(c, c.node(reshape1).src[0]);
+  if (!Is(c, rope, Op::kRope) || Only(c, c.node(reshape1).src[0]) != reshape1) return std::nullopt;
+  const ir::Node& ro = c.node(rope);
+  const auto rp = ro.Params<ir::RopeParams>();
+  if (!rp.inverse || rp.mode != ir::RopeMode::kNormal || rp.dims != 64) return std::nullopt;
+
+  const ir::TensorDesc& heads = c.tensor(ro.src[0]);
+  const auto rows = heads.ne(2);
+  if (rows < 64 || rows > 4096) return std::nullopt;
+  if (heads.ne(0) != 512 || heads.ne(1) != 64 || heads.ne(3) != 1) return std::nullopt;
+
+  NodeId groups_node = Made(c, mm.src[0]);
+  TensorId weight_out_a = mm.src[0];
+  if (Is(c, groups_node, Op::kReshape) && Only(c, mm.src[0]) == matmul) {
+    weight_out_a = c.node(groups_node).src[0];
+  }
+  const ir::TensorDesc& w = c.tensor(weight_out_a);
+  if (w.format.encoding != Encoding::kQ8_0 && w.format.encoding != Encoding::kF32 &&
+      w.format.encoding != Encoding::kF16) {
+    return std::nullopt;
+  }
+
+  Building b(c);
+  if (!b.Add({rope, reshape1, perm1, matmul, perm2, anchor})) return std::nullopt;
+  if (weight_out_a != mm.src[0] && !b.Add(groups_node)) return std::nullopt;
+  const std::array<TensorId, 3> sources = {weight_out_a, ro.src[0], ro.src[1]};
+  const std::array<TensorId, 1> outputs = {cont.out[0]};
+  const std::array<const ir::TensorDesc*, 1> descs = {&c.tensor(cont.out[0])};
+
+  if (!b.Closed(outputs) ||
+      !Has(c, ir::Fused(FusedKind::kDsv4OutA), Descs(c, sources), descs, ir::ToBytes(rp))) {
+    return std::nullopt;
+  }
+
+  const auto emit = [=](RewriteContext& r, int) {
+    ContextOf(r, r.original().node(anchor));
+    const std::array<TensorId, 3> mapped = {r.Map(sources[0]), r.Map(sources[1]),
+                                            r.Map(sources[2])};
+    r.Set(outputs[0], r.builder().Fused(FusedKind::kDsv4OutA, mapped, rp)[0]);
+  };
+  return b.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
+}
+
 namespace {
 
 // The candidate's boundaries; the full assembly is authenticated below

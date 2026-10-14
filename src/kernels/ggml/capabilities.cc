@@ -25,6 +25,7 @@
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
+#include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/gemma_moe.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
@@ -409,6 +410,11 @@ constexpr std::array<Rule, 6> kDsv4HcPostRules = {
      {.operand = 3, .encodings = kF32, .layouts = kDense},
      {.operand = kOut, .encodings = kF32, .layouts = kDense},
      {.operand = kOut + 1, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 4> kDsv4OutARules = {
+    {{.operand = 0, .encodings = kQ8, .layouts = kGgml},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kI32, .layouts = kDense},
+     {.operand = kOut, .encodings = kF32, .layouts = kDense}}};
 
 // ------------------------------------------------------------- predicates
 
@@ -956,6 +962,30 @@ bool AcceptsDsv4QHead(const ex::CapabilityQuery& q) {
           (r.original_context > 0 && r.beta_fast > 0 && r.beta_slow > 0 && r.base != 1));
 }
 
+bool AcceptsDsv4OutA(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::RopeParams>(q);
+  const auto tokens = Ne(q, 1, 2);
+  if (!Built(q) || !p || tokens < static_cast<std::uint64_t>(kDsv4OutAMinRows) ||
+      tokens > static_cast<std::uint64_t>(kDsv4OutAMaxRows) ||
+      (!ShapedOperand(q, 0, {4096, 8192, 1, 1}) &&
+       !ShapedOperand(q, 0, {4096, 1024, 8, 1}) &&
+       !ShapedOperand(q, 0, {2048, 8192, 1, 1})) ||
+      !ShapedOperand(q, 1, {512, 64, tokens, 1}) ||
+      !ShapedOperand(q, 2, {tokens, 1, 1, 1}) || !ShapedOperand(q, kOut, {8192, tokens, 1, 1}) ||
+      Has(q, 3))
+    return false;
+  const auto& r = *p;
+  const std::array values{r.base, r.scale, r.ext_factor, r.attn_factor, r.beta_fast, r.beta_slow};
+  return r.mode == ir::RopeMode::kNormal && r.inverse && !r.table && r.dims == 64 &&
+         (r.offset == 448 || r.offset == 0) &&
+         r.original_context <=
+             static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) &&
+         std::ranges::all_of(values, [](float v) { return std::isfinite(v); }) && r.base > 0 &&
+         r.scale > 0 && r.ext_factor >= 0 &&
+         (r.ext_factor == 0 ||
+          (r.original_context > 0 && r.beta_fast > 0 && r.beta_slow > 0 && r.base != 1));
+}
+
 bool AcceptsDsv4Compress(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::CompressorParams>(q);
   if (!Built(q) || !p || p->ratio < 1 || p->ratio > 1024) return false;
@@ -1225,7 +1255,8 @@ bool AcceptsSelectedRoute(const ex::CapabilityQuery& q) {
       source->layout != Layout::kDense || (biased && p->scale <= 0.0F))
     return false;
   const auto rows = logits->ne[1];
-  if (rows < 1 || rows > (biased ? 8U : 65535U)) return false;
+  if (rows < 1 || rows > (biased ? static_cast<std::uint64_t>(kVecQMaxTokens) : 65535U))
+    return false;
   const auto packed = [](const ex::OperandFormat& operand, std::uint64_t width,
                          std::uint64_t count) {
     return operand.ne == std::array<std::uint64_t, 4>{width, count, 1, 1} && operand.memory &&
@@ -1277,7 +1308,7 @@ bool AcceptsGroupedVecQ(const ex::CapabilityQuery& q) {
   const auto block = info.ggml->block_elements, bytes = info.ggml->block_bytes;
   if (k == 0 || k > limit - 511 || k % 32 != 0 || k % block != 0 || n == 0 || n > limit ||
       groups < 2 || groups > 256 || tokens == 0 ||
-      tokens > static_cast<std::uint64_t>(kVecQTokens) || w->ne[3] != 1 ||
+      tokens > static_cast<std::uint64_t>(kVecQMaxTokens) || w->ne[3] != 1 ||
       x->ne != std::array<std::uint64_t, 4>{k, groups, tokens, 1} ||
       out->ne != std::array<std::uint64_t, 4>{n, groups, tokens, 1} ||
       n > limit / (k / block) / groups || !w->memory || !x->memory || !out->memory)
@@ -1298,12 +1329,13 @@ bool AcceptsGroupedVecQ(const ex::CapabilityQuery& q) {
 }
 
 bool AcceptsVecQ(const ex::CapabilityQuery& q) {
-  return VecQ(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kVecQTokens);
+  return VecQ(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kVecQMaxTokens);
 }
-// Routed: its (token, slot) pairs within the kernel's 64 (the fast form's).
+// Routed: its (token, slot) pairs within the kernel's 128 (the fast form's).
 bool AcceptsVecQRouted(const ex::CapabilityQuery& q) {
   const std::uint64_t used = Ne(q, q.op == ir::Fused(FusedKind::kMatMulIdGlu) ? 3 : 2, 0);
-  return VecQ(q) && q.rows >= 1 && used >= 1 && q.rows * used <= 64;
+  return VecQ(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kVecQMaxTokens) &&
+         used >= 1 && q.rows * used <= 128;
 }
 // validate_ext.cc CheckGetRowsExt: GGML's decoder has no NVFP4 or
 // multipart split case. Do not let this generic native rung preempt an
@@ -1429,7 +1461,7 @@ bool AcceptsL2Norm(const ex::CapabilityQuery& q) {
 bool AcceptsSelectedCombine(const ex::CapabilityQuery& q) {
   const auto n = Ne(q, 0, 0), used = Ne(q, 0, 1), tokens = Ne(q, 0, 2);
   if (!Built(q) || q.operands.size() != 5 || n == 0 || n > INT32_MAX - 1024 || n % 4 != 0 ||
-      used == 0 || used > 32 || tokens == 0 || tokens > 8 ||
+      used == 0 || used > 32 || tokens == 0 || tokens > 65535 ||
       !ShapedOperand(q, 0, {n, used, tokens, 1}) || !ShapedOperand(q, 1, {used, tokens, 1, 1}) ||
       !ShapedOperand(q, 2, {used, tokens, 1, 1}) || !ShapedOperand(q, 3, {n, tokens, 1, 1}) ||
       !ShapedOperand(q, kOut, {n, tokens, 1, 1}))
@@ -1437,14 +1469,15 @@ bool AcceptsSelectedCombine(const ex::CapabilityQuery& q) {
   for (const auto& o : q.operands) {
     const std::uint64_t alignment = o.operand == 1 || o.operand == 2 ? 4 : 16;
     if (!o.memory || o.memory->view_offset % alignment != 0) return false;
-    if (o.operand == 1 && tokens == 1) {
-      // IDs retain the route's typed [used,1,1,1] view. Only the first
-      // dimension addresses data: unused singleton pitches do not enlarge
-      // its checked contiguous I32 footprint. Multirow IDs stay packed.
-      // The selected-weights kernel does not load IDs; their real source,
-      // view extent and lifetime still belong to the verified graph.
-      if (o.memory->nb[0] != 4 ||
-          o.memory->view_offset > std::numeric_limits<std::uint64_t>::max() - used * 4)
+    if (o.operand == 1) {
+      // IDs retain the route's typed [used,tokens,1,1] view (for example a
+      // strided view of argsort's [experts,tokens,1,1] output). The
+      // selected-weights kernel does not load IDs; their real source, view
+      // extent and lifetime still belong to the verified graph.
+      if (o.memory->nb[0] != 4 || o.memory->nb[1] < used * 4 || o.memory->nb[1] % 4 != 0 ||
+          o.memory->nb[2] < o.memory->nb[1] * tokens || o.memory->nb[3] < o.memory->nb[2] ||
+          o.memory->view_offset >
+              std::numeric_limits<std::uint64_t>::max() - o.memory->nb[1] * tokens)
         return false;
       continue;
     }
@@ -1690,6 +1723,12 @@ const std::array kEntries = {
           Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup, 1), kBuilt},
     Entry{kMulMatIdQ, Operation::kMulMatId,
           Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
+    Entry{kMulMatIdQCompact, Operation::kMulMatId,
+          Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
+    Entry{kMulMatIdQCompactPrequant, Operation::kMulMatId,
+          Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
+    Entry{kMulMatIdQ2D2r, Operation::kMulMatId,
+          Cap(P(Op::kMatMulId), kQuantExperts, &AcceptsAny, false, kMulMatIdGroup), kBuilt},
     Entry{kDsv4RouteName, Operation::kMoeRoute,
           Cap(P(Op::kRoute), kSelectedRouteRules, &AcceptsSelectedRoute, true),
           "; opt-in sqrt-softplus routing of 256 experts, used 1..32: selected IDs rows 1..65535, "
@@ -1786,6 +1825,9 @@ const std::array kEntries = {
     Entry{kDsv4HcPostNormF16Name, Operation::kHcPost,
           Cap(F(FusedKind::kHcNormPost), kDsv4HcPostRules, &AcceptsDsv4HcPost, true),
           "; four 4096-value streams, post and flat F32 norm"},
+    Entry{kDsv4OutAFastPackName, Operation::kMatMul,
+          Cap(F(FusedKind::kDsv4OutA), kDsv4OutARules, &AcceptsDsv4OutA, true),
+          "; paid raw-Q8 packing, inverse tail64 RoPE, staged F16/HMMA grouped output-A"},
     // Qwen3.8's fast forms (slice G3b; qwen38_graph.h): the MXFP8 and BF16
     // products, the n-gram tables' rows, the hyper-connections, Gated
     // DeltaNet, QSA and the routed experts.

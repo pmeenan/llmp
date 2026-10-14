@@ -1188,6 +1188,7 @@ constexpr std::array kRopeAnchors = {Op::kRope};
 constexpr std::array kPoolAnchors = {Op::kPool};
 constexpr std::array kSelectedMaskAnchors = {Op::kSelectedMask};
 constexpr std::array kStoreAnchors = {Op::kCacheStore};
+constexpr std::array kContAnchors = {Op::kCont};
 constexpr std::array kRouteReduce = {ir::Primitive(Op::kRoute), ir::Primitive(Op::kExpertReduce)};
 
 // The table (see the header): its order is priority; where two patterns
@@ -1214,6 +1215,13 @@ constexpr std::array kPatterns = {
             .result = ir::Fused(FusedKind::kDsv4QHead),
             .anchors = kRopeAnchors,
             .match = &fusions::Dsv4QHeadMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "dsv4_out_a",
+            .result = ir::Fused(FusedKind::kDsv4OutA),
+            .anchors = kContAnchors,
+            .match = &fusions::Dsv4OutAMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
             .opt_in = true},

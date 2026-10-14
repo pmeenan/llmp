@@ -414,7 +414,27 @@ bool ModelRunner::Verifies(std::uint32_t slot, std::size_t stage) const {
 pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
   pl::PlanKey key = key_base_;
   key.shape = shape;
-  key.parameters = source_->ShapeParameters(shape);
+  if (shape.stage < slots_.stages()) {
+    const auto& layout = slots_.layout(shape.stage);
+    bool has_kv = false;
+    bool all_ring_reads_whole = true;
+    for (const auto& item : layout.items) {
+      if (item.contract.kind == model::StateKind::kKv) {
+        has_kv = true;
+        if (!item.contract.ring_reads_whole) {
+          all_ring_reads_whole = false;
+          break;
+        }
+      }
+    }
+    if (has_kv && all_ring_reads_whole) {
+      key.shape.read_align = 0;
+      for (auto& seg : key.shape.segments) {
+        seg.read_cells = 0;
+      }
+    }
+  }
+  key.parameters = source_->ShapeParameters(key.shape);
   return key;
 }
 
@@ -1757,14 +1777,14 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
   // Independent optional grants for the distinct missing futures.
-  std::array<const pl::StepShape*, 2> build{};
+  std::array<const pl::StepShape*, 4> build{};
   std::size_t build_count = 0;
   if (node_.threaded()) {
     for (std::size_t k = 0; k < ahead.shapes.size() && build_count < ahead.build; ++k) {
       if (distinct[k] && ahead_cached[k] == nullptr) build[build_count++] = &*ahead.shapes[k];
     }
   }
-  PrefillLookaheadGroup<StepPlanned, 2> future(node_, plan_floor_bytes_);
+  PrefillLookaheadGroup<StepPlanned, 4> future(node_, plan_floor_bytes_);
   bool funded = false;
   for (std::size_t i = 0; i < build_count; ++i) {
     ++lookahead_.attempted;

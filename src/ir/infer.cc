@@ -345,6 +345,7 @@ std::size_t ParamSize(OpKey key) {
       case FusedKind::kDsv4HcPre:
         return sizeof(SinkhornPreParams);
       case FusedKind::kRopeStore:
+      case FusedKind::kDsv4OutA:
         return sizeof(RopeParams);
       case FusedKind::kMatMulGlu:
       case FusedKind::kMoeGlu:
@@ -1440,7 +1441,7 @@ Out InferFused(const Ctx& c) {
   if (c.key().fused == FusedKind::kGroupedStores) {
     return Fail(GraphError::kParams, c, "grouped_stores is a batch key, not a node");
   }
-  if (c.key().fused == FusedKind::kRopeStore) {
+  if (c.key().fused == FusedKind::kRopeStore || c.key().fused == FusedKind::kDsv4OutA) {
     LLMP_TRY(CheckRope(c, c.params<RopeParams>(), 0));
   }
   if (c.key().fused == FusedKind::kRmsNormMulRope || c.key().fused == FusedKind::kQkPrep ||

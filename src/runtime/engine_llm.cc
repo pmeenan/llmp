@@ -306,6 +306,7 @@ Status EngineLlm::SelectBranches(std::span<Branch* const> active) {
     }
     ids[i] = Slot(*active[i]);
   }
+  active_branches_.assign(active.begin(), active.end());
   return runner_->slots().SelectSlots(std::span(ids).first(active.size()));
 }
 
@@ -707,8 +708,9 @@ Status EngineLlm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepar
     const auto width = static_cast<std::uint32_t>(prepared.size());
     const bool sampled =
         std::ranges::any_of(prepared, [this](const auto& unit) { return sampling(*unit.branch); });
-    if (wave_mode_ &&
-        wave_mode_->Choose(width, sampled) == execution::AdaptiveWaveMode::Mode::kPlain) {
+    if ((wave_mode_ &&
+         wave_mode_->Choose(width, sampled) == execution::AdaptiveWaveMode::Mode::kPlain) ||
+        (prepared.size() == 1 && prepared[0].step.left == 1)) {
       // Sessions still consume a speculative result, but this selected form
       // commits one target row. RunPlain retains the ordinary companion/tap
       // writes; no draft state is substituted or copied from another owner.
@@ -726,7 +728,7 @@ Status EngineLlm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepar
         unit.kept = {*token};
         if (unit.step.need_logits) unit.logits.push_back(std::move(unit.row));
       }
-      if (!sampled &&
+      if (wave_mode_ && !sampled &&
           std::ranges::all_of(prepared, [](const auto& unit) { return unit.result.has_value(); }))
         wave_mode_->Observe(width, execution::AdaptiveWaveMode::Mode::kPlain);
     } else {
@@ -874,9 +876,7 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
     const auto push_verify_futures = [&](std::size_t j, std::uint32_t end_past) {
       const PreparedPrefill& unit = prepared[of[j]];
       const bool greedy = device_verify_ && unit.branch != nullptr && !sampling(*unit.branch);
-      const bool adaptive = speculative_ && !speculative_->mode().drafters.empty() &&
-                            speculative_->mode().drafters.front().adaptive;
-      const std::uint32_t min_vrows = adaptive ? 1U : verify_rows_;
+      const std::uint32_t min_vrows = 1U;
       for (std::uint32_t vrows = verify_rows_; vrows >= min_vrows && filled < a.shapes.size();
            --vrows) {
         if (end_past > context_ || vrows > context_ - end_past) continue;
@@ -916,11 +916,47 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
       // device would wait for it.
       push_shape(std::move(near[0]));
       push_shape(std::move(near[1]));
-    } else if (near.empty() && owners.size() == 1 && speculate_ && verify_rows_ > 1) {
+    } else if (near.empty() && owners.size() == 1) {
       const std::size_t j = owners.front();
       const PreparedPrefill& unit = prepared[of[j]];
-      if (unit.past > 0) {
-        push_verify_futures(j, unit.past + unit.rows);
+      const std::uint32_t end_past = unit.past + unit.rows;
+      if (wave_mode_ && active_branches_.size() > 1) {
+        std::vector<en::PendingWork> decode_work;
+        bool all_valid = true;
+        for (Branch* b : active_branches_) {
+          if (b == nullptr) {
+            all_valid = false;
+            break;
+          }
+          const bool is_cur = (b == unit.branch);
+          const std::uint32_t pos = is_cur ? end_past : CursorFor(*b);
+          if (pos == 0 || pos >= context_) {
+            all_valid = false;
+            break;
+          }
+          const bool greedy = device_greedy_ && !sampling(*b);
+          decode_work.push_back({.slot = Slot(*b),
+                                 .stage = 0,
+                                 .phase = pl::Phase::kDecode,
+                                 .past = pos,
+                                 .rows = 1,
+                                 .outputs = 1,
+                                 .want_head = true,
+                                 .greedy = greedy,
+                                 .row_invariant = row_invariant,
+                                 .alone = false});
+        }
+        if (all_valid && decode_work.size() == active_branches_.size()) {
+          en::Composition composed = composer_->Compose(decode_work);
+          if (composed.refused.empty() && composed.steps.size() == 1) {
+            push_shape(std::move(composed.steps.front().shape));
+          }
+        }
+      }
+      if (speculate_ && verify_rows_ > 1) {
+        if (unit.past > 0 || unit.rows > 0) {
+          push_verify_futures(j, end_past);
+        }
       }
     } else if (near.empty() && owners.size() > 1) {
       const bool plain_wave =
@@ -953,7 +989,9 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
         }
       }
     }
-    a.build = std::min<std::uint32_t>(prefill_.lookahead, 2);
+    a.build = (near.empty() && speculate_ && verify_rows_ > 1 && prefill_.lookahead > 0)
+                  ? 4U
+                  : std::min<std::uint32_t>(prefill_.lookahead, 2);
     a.capture_ahead = !near.empty() && prefill_.capture_ahead;
     a.prepare = !near.empty() && prefill_.prepare_ahead;
     return a;

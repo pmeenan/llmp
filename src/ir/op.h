@@ -520,9 +520,12 @@ enum class FusedKind : std::uint16_t {
   // matrix on its input rows; packed F32 [N,G,T]. The decomposition
   // permutes x to [K,T,G], multiplies, permutes back and makes contiguous.
   kGroupedMatMul,
+  // (out_a, heads, positions): RopeParams: inverse tail-64 RoPE and staged
+  // grouped output-A matrix product.
+  kDsv4OutA,
 };
 // The op set's last fused kind (the kinds are 1 to it).
-inline constexpr FusedKind kLastFusedKind = FusedKind::kGroupedMatMul;
+inline constexpr FusedKind kLastFusedKind = FusedKind::kDsv4OutA;
 
 struct OpKey {
   Op op = Op::kInput;

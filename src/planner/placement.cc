@@ -143,8 +143,13 @@ std::expected<Placement, std::string> PlaceActivations(
       return Error(std::format("node {} ({}) is computed by no step", i, ir::OpKeyName(n.key)));
     }
   }
+  std::vector<ir::TensorId> root_of;
+  root_of.reserve(graph.tensor_count());
+  for (std::uint32_t i = 0; i < graph.tensor_count(); ++i) {
+    root_of.push_back(graph.root(ir::TensorId{i}));
+  }
   const auto holder = [&](ir::TensorId t) {
-    const ir::TensorId r = graph.root(t);
+    const ir::TensorId r = root_of[t.v];
     return inside.at(r.v).valid() ? inside.at(r.v) : r;
   };
   const auto read = [&](ir::TensorId t, std::int64_t s) {
@@ -162,9 +167,19 @@ std::expected<Placement, std::string> PlaceActivations(
         }
         read(src, step);
         // A prepared input keeps its source live with it.
-        const ir::Node& made = graph.node(graph.producer(graph.root(src)));
+        const ir::Node& made = graph.node(graph.producer(root_of[src.v]));
         if (made.key == ir::Primitive(ir::Op::kPrepare)) {
           read(made.src[0], step);
+        }
+        // Where an HC post with F16 rows fuses with the MoE combine before it,
+        // the combine's inputs remain live through the post.
+        if (graph.node(id).key == ir::Fused(ir::FusedKind::kHcNormPost) &&
+            made.key == ir::Fused(ir::FusedKind::kMoeCombine)) {
+          for (const ir::TensorId s_in : made.sources()) {
+            if (s_in.valid()) {
+              read(s_in, step);
+            }
+          }
         }
       }
     }
@@ -220,22 +235,24 @@ std::expected<Placement, std::string> PlaceActivations(
   std::ranges::stable_sort(
       order, [&](std::size_t a, std::size_t b) { return lives[a].bytes > lives[b].bytes; });
   Placement placement;
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> busy;  // offset, end
+  struct PlacedSpan {
+    std::uint64_t offset = 0;
+    std::uint64_t end = 0;
+    std::int64_t first = 0;
+    std::int64_t last = 0;
+  };
+  std::vector<PlacedSpan> placed;
+  placed.reserve(lives.size());
   for (const std::size_t i : order) {
     Life& life = lives[i];
-    busy.clear();
-    for (const Life& other : lives) {
-      if (other.placed && other.first <= life.last && life.first <= other.last) {
-        busy.emplace_back(other.offset, other.offset + other.bytes);
-      }
-    }
-    std::ranges::sort(busy);
     std::uint64_t offset = 0;
-    for (const auto& [start, stop] : busy) {
-      if (start >= offset + life.bytes) {
+    for (const auto& b : placed) {
+      if (b.offset >= offset + life.bytes) {
         break;
       }
-      offset = std::max(offset, stop);
+      if (b.first <= life.last && life.first <= b.last) {
+        offset = std::max(offset, b.end);
+      }
     }
     if (offset > kMax - life.bytes) {
       return Error("the activation region overflows");
@@ -243,6 +260,9 @@ std::expected<Placement, std::string> PlaceActivations(
     life.offset = offset;
     life.placed = true;
     placement.extent = std::max(placement.extent, offset + life.bytes);
+    PlacedSpan span{offset, offset + life.bytes, life.first, life.last};
+    auto it = std::ranges::lower_bound(placed, span.offset, {}, &PlacedSpan::offset);
+    placed.insert(it, span);
   }
   placement.offsets.reserve(lives.size());
   for (const Life& life : lives) {

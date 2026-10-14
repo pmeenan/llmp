@@ -21,6 +21,9 @@
 #include "execution/registry.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/dsv4_graph.h"
+#include "kernels/ggml/dsv4_hc_norm.h"
+#include "kernels/ggml/dsv4_outa.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/validate.h"
@@ -233,6 +236,7 @@ kg::DeviceChoices Device() {
     }
     return std::unexpected(kg::KernelFailure{.detail = "no quantized encoding"});
   };
+  d.pair_glu_fits = [](const ggml_tensor*, const ggml_tensor*) { return true; };
   return d;
 }
 
@@ -2329,6 +2333,171 @@ TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold)
     EXPECT_FALSE(found_hc_pre);
     EXPECT_TRUE(found_hc_post);
   }
+}
+
+TEST(GgmlLowerDsv4Test, MultiSlotDecodeLowersSuccessfully) {
+  Fixture f;
+  f.target.swiglu_limit = 7.0f;
+  f.target.swiglu_limit_shared = 7.0f;
+  ASSERT_TRUE(f.Init());
+
+  const auto policy = pl::ParsePolicy(sp::mappings::kDeepSeekServingPolicy);
+  ASSERT_TRUE(policy) << policy.error();
+
+  auto spec = f.spec;
+  spec.stages.resize(1);
+  spec.stages[0].taps.clear();
+
+  const std::array<const md::StateLayoutDerived*, 2> layouts{&f.layouts[0], &f.layouts[1]};
+  const std::array<std::span<const co::BoundTensor>, 2> tensors{f.target_source.tensors,
+                                                                f.draft_source.tensors};
+  const co::Bindings bindings{
+      .tensors = tensors[0], .state = layouts[0], .stages = layouts, .artifacts = tensors};
+
+  const pl::StepShape shape{.phase = pl::Phase::kDecode,
+                            .segments =
+                                {
+                                    {.slot = 0,
+                                     .rows = 1,
+                                     .past = 255,
+                                     .read_cells = 256,
+                                     .outputs = 1,
+                                     .want_head = true},
+                                    {.slot = 1,
+                                     .rows = 1,
+                                     .past = 255,
+                                     .read_cells = 256,
+                                     .outputs = 1,
+                                     .want_head = true},
+                                    {.slot = 2,
+                                     .rows = 1,
+                                     .past = 255,
+                                     .read_cells = 256,
+                                     .outputs = 1,
+                                     .want_head = true},
+                                    {.slot = 3,
+                                     .rows = 1,
+                                     .past = 255,
+                                     .read_cells = 256,
+                                     .outputs = 1,
+                                     .want_head = true},
+                                },
+                            .read_align = 256};
+  auto step = co::BuildStep(spec, 0, shape, bindings, {.narrow = true, .dsv4_lid_mask = true});
+  ASSERT_TRUE(step) << step.error();
+
+  std::vector<ir::TensorId> staged;
+  for (const auto& input : step->inputs) {
+    if (input.kind != co::InputKind::kCellPositions) staged.push_back(input.tensor);
+  }
+
+  pl::LaneTags lane_tags;
+  for (std::uint32_t i = 0; i < step->graph.nodes().size(); ++i) {
+    const auto& node = step->graph.nodes()[i];
+    if (node.batch == ir::Batch::kPerOwner && node.nout > 0) {
+      const auto segment = step->graph.tensor(node.out[0]).segment;
+      if (segment != ir::kJoinedSegment) {
+        lane_tags.push_back(
+            {ir::NodeId{i}, pl::LaneTag{
+                                .lane = static_cast<std::uint8_t>((segment % pl::kMaxLanes) + 1),
+                                .region = static_cast<std::uint32_t>(node.component + 1),
+                            }});
+      }
+    }
+  }
+
+  auto plan =
+      pl::Plan(step->graph.Clone(), f.registry, {.device_class = "sm_121", .arch = 121}, *policy,
+               {.staged = staged,
+                .lanes = std::move(lane_tags),
+                .written = kg::WrittenBytes,
+                .shape = &shape});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  EXPECT_FALSE(plan->regions.empty());
+
+  auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, f.registry, Device());
+  ASSERT_TRUE(lowered) << lowered.error().detail;
+  EXPECT_FALSE(lowered->plan.regions.empty());
+}
+
+TEST(GgmlLowerDsv4Test, Prefill4096LowersWithExpertFusions) {
+  Fixture f;
+  f.target.swiglu_limit = 7.0f;
+  f.target.swiglu_limit_shared = 7.0f;
+  ASSERT_TRUE(f.Init());
+
+  const auto policy = pl::ParsePolicy(sp::mappings::kDeepSeekServingPolicy);
+  ASSERT_TRUE(policy) << policy.error();
+
+  auto spec = f.spec;
+  spec.stages.resize(1);
+  spec.stages[0].taps.clear();
+
+  auto layout4096 = co::StageLayout(spec, 0, 65536, 4096);
+  ASSERT_TRUE(layout4096) << layout4096.error();
+
+  const std::array<const md::StateLayoutDerived*, 2> layouts{&*layout4096, &f.layouts[1]};
+  const std::array<std::span<const co::BoundTensor>, 2> tensors{f.target_source.tensors,
+                                                                f.draft_source.tensors};
+  const co::Bindings bindings{
+      .tensors = tensors[0], .state = layouts[0], .stages = layouts, .artifacts = tensors};
+
+  const pl::StepShape shape{.phase = pl::Phase::kPrefill,
+                            .segments =
+                                {
+                                    {.slot = 0,
+                                     .rows = 4096,
+                                     .past = 0,
+                                     .read_cells = 4096,
+                                     .outputs = 0,
+                                     .want_head = false},
+                                },
+                            .read_align = 256};
+  auto step = co::BuildStep(spec, 0, shape, bindings, {.narrow = true, .dsv4_lid_mask = true});
+  ASSERT_TRUE(step) << step.error();
+
+  std::vector<ir::TensorId> staged;
+  for (const auto& input : step->inputs) {
+    if (input.kind != co::InputKind::kCellPositions) staged.push_back(input.tensor);
+  }
+
+  auto plan = pl::Plan(step->graph.Clone(), f.registry, {.device_class = "sm_121", .arch = 121},
+                       *policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+  ASSERT_TRUE(plan) << plan.error().detail;
+
+  auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, f.registry, Device());
+  ASSERT_TRUE(lowered) << lowered.error().detail;
+
+  bool found_pair_glu = false;
+  bool found_combine = false;
+  bool found_f16_qhead = false;
+  bool found_outa = false;
+  bool found_hc_post_norm_f16 = false;
+  for (const auto& s : lowered->plan.steps) {
+    if (s.implementation == kg::kMulMatIdQPairGluQ8 || s.implementation == kg::kMulMatIdQPairGlu) {
+      found_pair_glu = true;
+    }
+    if (s.implementation == kg::kDsv4CombineName ||
+        s.implementation == kg::kDsv4HcPostExpertsNormF16Name) {
+      found_combine = true;
+    }
+    if (s.implementation == kg::kDsv4QHeadName) {
+      if (!s.nodes.empty() && s.nodes[0]->type == GGML_TYPE_F16) {
+        found_f16_qhead = true;
+      }
+    }
+    if (s.implementation == kg::kDsv4OutAFastPackName || s.implementation == kg::kDsv4OutAName) {
+      found_outa = true;
+    }
+    if (s.implementation == kg::kDsv4HcPostExpertsNormF16Name) {
+      found_hc_post_norm_f16 = true;
+    }
+  }
+  EXPECT_TRUE(found_pair_glu);
+  EXPECT_TRUE(found_combine);
+  EXPECT_TRUE(found_f16_qhead);
+  EXPECT_TRUE(found_outa);
+  EXPECT_TRUE(found_hc_post_norm_f16);
 }
 
 }  // namespace

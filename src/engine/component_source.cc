@@ -512,6 +512,24 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
         input.kind != components::InputKind::kCommitRows)
       aligned_staged.push_back(input.tensor);
   }
+  planner::LaneTags lane_tags;
+  if ((shape.phase == planner::Phase::kDecode || shape.phase == planner::Phase::kVerify ||
+       shape.phase == planner::Phase::kDraft) &&
+      shape.segments.size() > 1) {
+    for (std::uint32_t i = 0; i < step->graph.nodes().size(); ++i) {
+      const auto& node = step->graph.nodes()[i];
+      if (node.batch == ir::Batch::kPerOwner && node.nout > 0) {
+        const auto segment = step->graph.tensor(node.out[0]).segment;
+        if (segment != ir::kJoinedSegment) {
+          lane_tags.push_back({ir::NodeId{i},
+                               planner::LaneTag{
+                                   .lane = static_cast<std::uint8_t>((segment % planner::kMaxLanes) + 1),
+                                   .region = static_cast<std::uint32_t>(node.component + 1),
+                               }});
+        }
+      }
+    }
+  }
   const auto state_spans = StateSpans(shape, addresses);
   const GraphBuildIO io{step->graph, step->graph.inputs(), step->graph.outputs(), step->weights};
   auto program = BuildComponentProgram(
@@ -519,6 +537,7 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
       {.row_invariant = shape.row_invariant,
        .capturable = o_.require_capture,
        .staged = std::move(staged),
+       .lanes = std::move(lane_tags),
        .on_stream = Backend().on_stream,
        .written = Backend().written,
        .within = Backend().within,

@@ -2380,12 +2380,12 @@ std::expected<void, KernelFailure> CheckDsv4Route(const ggml_tensor* node) {
   if (mode != 0 && mode != 1 && mode != 2) return Rejected("an unknown route addressing mode");
   if (mode == 2) {
     const auto* bias = node->src[1];
-    if (hashed || !Vector(bias, 256) || !Bound(bias) || !Packed(bias) || tokens > 8 ||
+    if (hashed || !Vector(bias, 256) || !Bound(bias) || !Packed(bias) || tokens > kVecQMaxTokens ||
         !Aligned(logits, 4) || !Aligned(bias, 4) || !Aligned(node, 4) ||
         !Disjoint(node, bias, false) || !AllCurrent({node, bias}) || !AllSane({bias}) ||
         (LlmpOpInt(node, 1) != 0 && LlmpOpInt(node, 1) != 1) || LlmpOpFloat(node, 2) != 0x1p-14F ||
         !std::isfinite(LlmpOpFloat(node, 3)) || LlmpOpFloat(node, 3) <= 0.0F)
-      return Rejected("packed biased routing, rows 1..8 and positive finite scale");
+      return Rejected("packed biased routing, rows 1..16 and positive finite scale");
     for (std::size_t i = 2; i < GGML_MAX_SRC; ++i)
       if (node->src[i] != nullptr) return Rejected("unexpected biased route operand");
   } else if (mode == 1) {
@@ -2434,11 +2434,12 @@ std::expected<void, KernelFailure> CheckDsv4Combine(const ggml_tensor* node) {
     // Bound products before kernel int/grid arithmetic, then check complete
     // current backing, packed pitches and all output/input disjointness.
     if (!IsF32(down) || !Shaped(down, n, used, tokens) || n <= 0 || n > INT32_MAX - 1024 ||
-        used < 1 || used > 32 || tokens < 1 || tokens > 8 || n % 4 != 0 || !IsF32(route) ||
+        used < 1 || used > 32 || tokens < 1 || tokens > 65535 || n % 4 != 0 || !IsF32(route) ||
         !Shaped(route, used, tokens, 1) || !Aligned(route, 4) || !IsF32(shared) ||
         !Shaped(shared, n, tokens, 1) || !IsF32(node) || !Shaped(node, n, tokens, 1) ||
         !Aligned(down, 16) || !Aligned(shared, 16) || !Aligned(node, 16))
-      return Rejected("packed F32 down [n, used, tokens], weights and shared; used<=32, rows<=8");
+      return Rejected(
+          "packed F32 down [n, used, tokens], weights and shared; used<=32, rows<=65535");
     return CheckDense(node, {down, route, shared});
   }
   if (mode != 0) return Rejected("a known expert combination weight layout");

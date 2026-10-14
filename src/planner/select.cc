@@ -167,13 +167,28 @@ RootAlignment GraphRootAlignments(const ir::Graph& graph,
       return {};
     alignments[fact.root.v] = fact.alignment;
   }
-  return [digest = graph.Digest(), seal = RootSeal(graph), alignments = std::move(alignments)](
-             const ir::Graph& current, ir::TensorId root) {
+  struct CachedGraph {
+    const ir::Node* nodes = nullptr;
+    std::size_t node_count = 0;
+    std::size_t tensor_count = 0;
+    bool ok = false;
+  };
+  return [digest = graph.Digest(), seal = RootSeal(graph),
+          alignments = std::move(alignments),
+          cached = std::make_shared<CachedGraph>()](
+             const ir::Graph& current, ir::TensorId root) -> std::uint64_t {
     if (!root.valid() || root.v >= alignments.size() || alignments[root.v] == 0 ||
-        root.v >= current.tensor_count() || current.tensor(root).is_view() ||
-        current.Digest() != digest || RootSeal(current) != seal)
+        root.v >= current.tensor_count() || current.tensor(root).is_view())
       return std::uint64_t{0};
-    return alignments[root.v];
+    if (cached->nodes != current.nodes().data() ||
+        cached->node_count != current.nodes().size() ||
+        cached->tensor_count != current.tensor_count()) {
+      cached->nodes = current.nodes().data();
+      cached->node_count = current.nodes().size();
+      cached->tensor_count = current.tensor_count();
+      cached->ok = (current.Digest() == digest && RootSeal(current) == seal);
+    }
+    return cached->ok ? alignments[root.v] : std::uint64_t{0};
   };
 }
 
@@ -223,8 +238,12 @@ RootAlignment ForwardRootAlignments(const ir::Graph& before, const ir::Graph& af
   // graph (without hashing it on every query). Exact-ID callbacks return zero
   // after a rewrite, then use the newly sealed map. No old IDs escape.
   return [original = facts, sealed](const ir::Graph& graph, ir::TensorId root) {
+    if (sealed) {
+      const auto from_sealed = sealed(graph, root);
+      if (PowerOfTwo(from_sealed)) return from_sealed;
+    }
     const auto direct = original(graph, root);
-    return PowerOfTwo(direct) ? direct : sealed ? sealed(graph, root) : 0;
+    return PowerOfTwo(direct) ? direct : std::uint64_t{0};
   };
 }
 
@@ -263,6 +282,12 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
         // A batch's member is one store (cache, src, idx).
         const ir::TensorDesc* src = At(sources, 1);
         return src == nullptr ? QueryShape{} : QueryShape{.rows = Rows(*src), .k = src->ne(0)};
+      }
+      case FusedKind::kDsv4OutA: {
+        const ir::TensorDesc* x = At(sources, 1);
+        return x == nullptr
+                   ? QueryShape{}
+                   : QueryShape{.rows = x->ne(2), .k = x->ne(0) * x->ne(1), .n = 8192};
       }
       default:
         break;
@@ -405,7 +430,7 @@ std::vector<std::size_t> SelectionView::ForOperands(
     std::memcpy(&route, params.data(), sizeof(route));
     if (route.kind == ir::RouteKind::kSqrtSoftplusBias &&
         (Disabled(policy_, "biased_route") || sources.empty() || sources[0] == nullptr ||
-         sources[0]->ne(1) > 8))
+         sources[0]->ne(1) > 16))
       return {};
     if (route.kind == ir::RouteKind::kHash && (Disabled(policy_, "hash_route") || sources.empty() ||
                                                sources[0] == nullptr || sources[0]->ne(1) > 8))

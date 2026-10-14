@@ -657,6 +657,22 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const auto p = Get<NormRopeParams>(params);
       return One(b.Rope(b.RmsNorm(d.s(0), p.eps), d.s(1), {}, p.rope));
     }
+    case FusedKind::kDsv4OutA: {
+      if (!d.need(3, 3)) return {};
+      const auto p = Get<RopeParams>(params);
+      const TensorDesc w = d.t(d.s(0));
+      const TensorDesc x = d.t(d.s(1));
+      TensorId rotated = b.Rope(d.s(1), d.s(2), {}, p);
+      const std::uint64_t per = w.ne(0);
+      const std::uint64_t total_features = x.ne(0) * x.ne(1);
+      const std::uint64_t groups = per > 0 ? (total_features / per) : 1;
+      const std::uint64_t o_rank = groups > 0 ? (w.ne(1) / groups) : 512;
+      const std::uint64_t rows = x.ne(2);
+      TensorId out = b.Permute(b.Reshape(rotated, S(per, groups, rows)), {0, 2, 1, 3});
+      TensorId g = w.shape().rank == 3 ? d.s(0) : b.Reshape(d.s(0), S(per, o_rank, groups));
+      TensorId low = b.Permute(b.MatMul(g, out), {0, 2, 1, 3});
+      return One(b.Cont(low, S(o_rank * groups, rows)));
+    }
     case FusedKind::kDsv4Compress: {
       if (!d.need(5, 5)) return {};
       const auto p = Get<CompressorParams>(params);

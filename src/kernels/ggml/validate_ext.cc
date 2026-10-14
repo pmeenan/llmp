@@ -401,8 +401,6 @@ std::expected<void, KernelFailure> CheckMulMatQPairDense(const ggml_tensor* a,
   if (auto checked = CheckMulMatQ(b); !checked) {
     return checked;
   }
-  // The first product's output is written before the second reads its
-  // weights (and the second's while the first's may still be read).
   if (Overlap(a, b) || Overlap(a, b->src[0]) || Overlap(b, a->src[0])) {
     return Rejected("paired dense products overlap each other or the other weights");
   }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <format>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -71,18 +72,25 @@ std::expected<planner::StepPlan, std::string> PlanComponentGraph(
   }
   planner::RootAlignment root_alignment;
   if (!physical_facts.empty()) {
-    root_alignment = [facts = std::move(physical_facts)](const ir::Graph& graph,
-                                                         ir::TensorId root) -> std::uint64_t {
+    const auto key_less = [](const ir::TensorDesc& a, const ir::TensorDesc& b) {
+      return std::tie(a.role, a.segment, a.binding) < std::tie(b.role, b.segment, b.binding);
+    };
+    std::ranges::sort(physical_facts,
+                      [&](const auto& a, const auto& b) { return key_less(a.first, b.first); });
+    root_alignment = [facts = std::move(physical_facts), key_less](
+                         const ir::Graph& graph, ir::TensorId root) -> std::uint64_t {
       if (!root.valid() || root.v >= graph.tensor_count()) return 0;
       const auto& desc = graph.tensor(root);
       const auto op = graph.node(graph.producer(root)).key.op;
       if (desc.is_view() || (op != ir::Op::kState && op != ir::Op::kWeight)) return 0;
       // Exact semantic leaf identity survives authorized rewrites. The format
       // also fixes the single part checked above; no unrelated binding gains it.
-      for (const auto& [saved, alignment] : facts) {
-        if (desc.binding == saved.binding && desc.format == saved.format && desc.nb == saved.nb &&
-            desc.role == saved.role && desc.segment == saved.segment)
-          return alignment;
+      auto it = std::ranges::lower_bound(
+          facts, desc, key_less,
+          [](const auto& entry) -> const ir::TensorDesc& { return entry.first; });
+      for (; it != facts.end() && !key_less(desc, it->first); ++it) {
+        const auto& [saved, alignment] = *it;
+        if (desc.format == saved.format && desc.nb == saved.nb) return alignment;
       }
       return 0;
     };

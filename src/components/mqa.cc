@@ -726,6 +726,8 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
     if (d_.indexer) {
       n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window) +
                                             std::min(compressed_read, d_.top_k));
+    } else if (rounded) {
+      n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window) + compressed_read);
     }
     if (d_.indexer && rounded) {
       auto selected = Selection(s, ir::TensorId{}, MaskRows(*window_mask, seg.rows));

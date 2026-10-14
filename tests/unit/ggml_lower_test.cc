@@ -517,8 +517,8 @@ TEST(GgmlLowerTest, GroupedVecQRejectsUnknownPhysicalAndArithmeticContracts) {
   input.view_offset = 4;
   EXPECT_FALSE(accepts());
   input.view_offset = 0;
-  input = dense({64, 3, 9});
-  output = dense({16, 3, 9});
+  input = dense({64, 3, 17});
+  output = dense({16, 3, 17});
   EXPECT_FALSE(accepts());
   weight.format.shape = ir::ShapeOf({64, 16, 257});
   weight.nb = ir::NaturalStrides(weight.format);
@@ -554,7 +554,7 @@ TEST(GgmlLowerTest, GroupedVecQRequiresClosedSourceRecipeAndPaysBothLaunches) {
     SCOPED_TRACE(scenario);
     const std::uint64_t k = 64, n = 16;
     const std::uint64_t groups = scenario == 8 ? 1 : 3;
-    const std::uint32_t tokens = scenario == 5 ? 9U : 3U;
+    const std::uint32_t tokens = scenario == 5 ? 17U : 3U;
     const auto registry = PlanningRegistry(true, scenario != 2,
                                            scenario == 9    ? kg::kQuantizeQ8Name
                                            : scenario == 10 ? kg::kVecQName
@@ -661,7 +661,7 @@ TEST(GgmlLowerTest, DirectGroupedVecQRequiresPolicySourceAuthorityAndBothLaunche
 }
 
 TEST(GgmlLowerTest, UngatedExpertCombineRequiresOptInAndFallsBackCompletely) {
-  for (const std::uint32_t rows : {1U, 3U, 8U, 9U, 512U}) {
+  for (const std::uint32_t rows : {1U, 3U, 8U, 9U, 65535U, 65536U}) {
     for (const bool padded_ids : {false, true})
       for (const bool direct : {false, true}) {
         for (const unsigned mode : {0U, 1U, 2U}) {
@@ -704,7 +704,7 @@ TEST(GgmlLowerTest, UngatedExpertCombineRequiresOptInAndFallsBackCompletely) {
           const kn::Addresses addresses{};
           auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
           ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
-          const bool native = mode == 1 && rows <= 8 && (!padded_ids || rows == 1);
+          const bool native = mode == 1 && rows <= 65535;
           EXPECT_EQ(std::ranges::count_if(lowered->plan.steps,
                                           [](const auto& item) {
                                             return item.implementation == kg::kDsv4CombineName;
@@ -779,7 +779,9 @@ TEST(GgmlLowerTest, UngatedExpertCombineOnlyIgnoresUnusedSingleColumnIdPitches) 
     output = shared;
     ASSERT_TRUE(accepts());
     ids.nb = {4, 1024, 2048, 2048};
-    EXPECT_FALSE(accepts());  // Real row addressing must retain packed pitches.
+    EXPECT_TRUE(accepts());  // Strided column view across tokens is valid.
+    ids.nb = {4, 1024, 1024, 1024};
+    EXPECT_FALSE(accepts());  // Overlapping token rows are rejected.
   }
 }
 
@@ -928,7 +930,7 @@ TEST(GgmlLowerTest, BiasedRouteNativeChecksRejectInvalidPhysicalAndParameterCont
 }
 
 TEST(GgmlLowerTest, BiasedRouteRequiresOptInAndPaysBothPackedOutputPlanes) {
-  for (const std::uint32_t rows : {1U, 3U, 8U, 9U, 512U}) {
+  for (const std::uint32_t rows : {1U, 3U, 16U, 17U, 512U}) {
     for (const unsigned mode : {0U, 1U, 2U, 3U}) {
       SCOPED_TRACE(rows);
       SCOPED_TRACE(mode);
@@ -951,8 +953,8 @@ TEST(GgmlLowerTest, BiasedRouteRequiresOptInAndPaysBothPackedOutputPlanes) {
       b.Output(route[1]);
       auto graph = std::move(b).Finish();
       ASSERT_TRUE(graph);
-      EXPECT_EQ(kg::WrittenBytes(*graph, route[0]), rows <= 8 ? 2U * 6U * rows * 4U : 0U);
-      EXPECT_EQ(kg::WithinRoot(*graph, route[1]), rows <= 8 ? route[0] : ir::TensorId{});
+      EXPECT_EQ(kg::WrittenBytes(*graph, route[0]), rows <= 16 ? 2U * 6U * rows * 4U : 0U);
+      EXPECT_EQ(kg::WithinRoot(*graph, route[1]), rows <= 16 ? route[0] : ir::TensorId{});
       co::StepGraph step{.graph = std::move(*graph),
                          .inputs = {{.tensor = logits, .kind = co::InputKind::kFeatures},
                                     {.tensor = ids, .kind = co::InputKind::kFeatures}},
@@ -967,7 +969,7 @@ TEST(GgmlLowerTest, BiasedRouteRequiresOptInAndPaysBothPackedOutputPlanes) {
       const kn::Addresses addresses{};
       auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
       ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
-      const bool native = mode == 1 && rows <= 8;
+      const bool native = mode == 1 && rows <= 16;
       EXPECT_EQ(std::ranges::count_if(
                     lowered->plan.steps,
                     [](const auto& entry) { return entry.implementation == kg::kDsv4RouteName; }),
@@ -1046,9 +1048,9 @@ TEST(GgmlLowerTest, BiasedRouteRejectsUnsupportedSourcesAndPhysicalContracts) {
   params.scale = std::numeric_limits<float>::infinity();
   EXPECT_FALSE(accepts());
   params.scale = 1.5F;
-  logits = tensor(llmp::format::Encoding::kF32, 256, 9);
-  out = tensor(llmp::format::Encoding::kI32, 6, 9);
-  weights = tensor(llmp::format::Encoding::kF32, 6, 9);
+  logits = tensor(llmp::format::Encoding::kF32, 256, 17);
+  out = tensor(llmp::format::Encoding::kI32, 6, 17);
+  weights = tensor(llmp::format::Encoding::kF32, 6, 17);
   EXPECT_FALSE(accepts());
 }
 

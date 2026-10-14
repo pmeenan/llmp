@@ -76,6 +76,7 @@ inline constexpr std::string_view kDeepSeekServingPolicy =
     "enable dsv4_hc_post\n"
     "enable dsv4_hc_pre\n"
     "enable dsv4_lid_mask\n"
+    "enable dsv4_out_a\n"
     "enable dsv4_qhead\n"
     "enable grouped_vecq\n"
     "enable hash_route\n"

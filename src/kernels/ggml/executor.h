@@ -104,10 +104,13 @@ class BoundGraph {
       : bound_(std::move(bound)), steps_(std::move(steps)), regions_(std::move(regions)) {}
   std::expected<void, KernelFailure> RunStep(LaunchContext& launch, std::size_t i) const;
   std::expected<void, KernelFailure> RunLanes(LaunchContext& launch) const;
+  std::expected<void, KernelFailure> RunLanesRange(LaunchContext& launch, std::size_t first,
+                                                   std::size_t end) const;
 
   execution::BoundPlan bound_;
   std::vector<Step> steps_;
   std::vector<GraphPlan::Region> regions_;
+  bool has_spatial_ops_ = false;
 };
 
 }  // namespace llmp::kernels::ggml

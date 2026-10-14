@@ -220,6 +220,8 @@ std::string_view FusedKindName(FusedKind kind) {
       return "dsv4_lid_mask";
     case FusedKind::kStateBankAttention:
       return "state_bank_attention";
+    case FusedKind::kDsv4OutA:
+      return "dsv4_out_a";
   }
   return "unknown";
 }
