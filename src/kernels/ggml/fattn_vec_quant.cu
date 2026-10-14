@@ -70,7 +70,7 @@ std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVecQuant(const LaunchCo
   const bool q8 = node->src[1]->type == GGML_TYPE_Q8_0;
   int per_sm = 0;
   const bool capped = softcap != 0.0f;
-  const int head = q->ne[0];
+  const std::int64_t head = q->ne[0];
   const cudaError_t occupancy =
       head == 64
           ? (q8 ? Occupancy<64, GGML_TYPE_Q8_0>(threads, plan.columns_per_block, capped, &per_sm)
@@ -99,7 +99,7 @@ std::expected<void, KernelFailure> FlashAttnVecQuant(LaunchContext& launch, ggml
     return std::unexpected(plan.error());
   }
   const bool q8 = node->src[1]->type == GGML_TYPE_Q8_0;
-  const int head = node->src[0]->ne[0];
+  const std::int64_t head = node->src[0]->ne[0];
   void (*run)(ggml_backend_cuda_context&, ggml_tensor*) =
       head == 64
           ? (q8 ? &RunCase<64, GGML_TYPE_Q8_0> : &RunCase<64, GGML_TYPE_Q4_0>)
