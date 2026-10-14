@@ -827,11 +827,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (!bound) return Error(bound.error());
     if (settings.bound_spec && *settings.bound_spec != *bound)
       return Error("resolved calibration spec differs from the actual component spec");
-    // Each state tensor starts on its own paged extent, as the M3 layouts
-    // did: packed tensors would straddle extents, so their growth would
-    // cross extent boundaries at staggered positions and a prompt would
-    // grow its state (each growth a fixed host cost between steps) every
-    // chunk or two instead of once every extent's worth of cells.
     const auto configured_chunk =
         solo ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
                                 model::Qwen38MostRows(settings.context.value, false))
@@ -843,9 +838,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (speculate && dspark &&
         (depth == 0 || depth == UINT32_MAX || depth > model::DsparkDeepSeekV4Flash().block_size))
       return Error("the resolved draft depth exceeds the bound block drafter");
+    // State tensors pack at StageLayout's standard 256-byte alignment across
+    // all models so contiguous state banks and multi-slot state footprints
+    // behave uniformly.
     for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
-      auto layout = components::StageLayout(hold->spec, stage, settings.context.value,
-                                            configured_chunk, deepseek_serving ? 256ULL : kExtent);
+      auto layout =
+          components::StageLayout(hold->spec, stage, settings.context.value, configured_chunk);
       if (!layout) return Error(layout.error());
       hold->layouts.push_back(std::move(*layout));
     }
