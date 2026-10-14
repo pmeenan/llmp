@@ -519,8 +519,11 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const Pro
       hash.Update(std::to_string(tensor->format.shape.ne[i])).Update(",");
     hash.Update("\n");
   }
-  if (base::ToHex(hash.Finish()) != profile.inventory)
-    return Refused("native tensor inventory differs from the approved checkpoint");
+  const auto actual_hash = base::ToHex(hash.Finish());
+  if (actual_hash != profile.inventory)
+    return Refused(std::format(
+        "native tensor inventory differs from the approved checkpoint (got {}, expected {})",
+        actual_hash, profile.inventory));
   return {};
 }
 
