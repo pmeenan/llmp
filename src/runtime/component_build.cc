@@ -253,7 +253,14 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
   if (!add(canonical.size(), 64) || !add(1, std::uint64_t{64} << 20U))
     return Error("component spec construction payment overflows");
   const auto source = [&](const ja::Artifact& artifact) {
-    if (!add(artifact.resources().size() + artifact.expert_arrays().size(), 16384) ||
+    std::uint64_t non_expert = 0;
+    for (const auto& r : artifact.resources()) {
+      if (r.group < artifact.groups().size() &&
+          artifact.groups()[r.group].kind != ja::GroupKind::kExpert) {
+        ++non_expert;
+      }
+    }
+    if (!add(non_expert + artifact.expert_arrays().size(), 16384) ||
         !add(artifact.layout().groups.size(), 4096) ||
         !add(artifact.files().size() + artifact.sources().size(), 4096))
       return false;
@@ -261,8 +268,6 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
       if (file.role != ja::FileRole::kShard && !add(file.bytes.value(), 8)) return false;
     for (const auto& group : artifact.layout().groups)
       if (!add(group.chunks, 4096)) return false;
-    for (const auto& array : artifact.expert_arrays())
-      if (!add(array.count, 2048)) return false;
     return true;
   };
   if (!source(target) || (draft && !source(*draft)))
@@ -911,12 +916,21 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         add(shape(0, planner::Phase::kDecode, owners, 1, 1, greedy));
       }
       if (speculate && dspark) {
-        // Block proposals produce every head, including short reply tails;
-        // every verify includes its anchor. No autoregressive catch-up pass.
-        for (std::uint32_t rows = 1; rows <= depth; ++rows)
-          add(shape(1, planner::Phase::kDraft, owners, rows, rows, false));
-        for (std::uint32_t rows = 1; rows <= verify_rows; ++rows)
-          add(shape(0, planner::Phase::kVerify, owners, rows, rows, false));
+        if (deepseek_serving) {
+          const std::uint32_t max_rows =
+              caps->max_segment_rows != 0 ? caps->max_segment_rows / owners : verify_rows;
+          const std::uint32_t d_rows = std::min(depth, max_rows);
+          const std::uint32_t v_rows = std::min(verify_rows, max_rows);
+          if (d_rows > 0) add(shape(1, planner::Phase::kDraft, owners, d_rows, d_rows, false));
+          if (v_rows > 0) add(shape(0, planner::Phase::kVerify, owners, v_rows, v_rows, false));
+        } else {
+          // Block proposals produce every head, including short reply tails;
+          // every verify includes its anchor. No autoregressive catch-up pass.
+          for (std::uint32_t rows = 1; rows <= depth; ++rows)
+            add(shape(1, planner::Phase::kDraft, owners, rows, rows, false));
+          for (std::uint32_t rows = 1; rows <= verify_rows; ++rows)
+            add(shape(0, planner::Phase::kVerify, owners, rows, rows, false));
+        }
       } else if (speculate) {
         for (const bool greedy : {false, true}) {
           add(shape(0, planner::Phase::kVerify, owners, verify_rows, verify_rows, greedy));
@@ -960,7 +974,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // its logits' (the head's vocabulary).
     std::vector<engine::LayerSlabs> placements;
     for (std::size_t a = 0; a < hold->sources.size(); ++a) {
-      auto slabs = engine::ExpertSlabsOf(a == 0 ? *artifact : *drafter, solo ? 16 : 256);
+      auto slabs = engine::ExpertSlabsOf(a == 0 ? *artifact : *drafter,
+                                         (solo || deepseek_serving) ? 16 : 256);
       if (!slabs) return Error(slabs.error());
       placements.push_back(std::move(*slabs));
     }
@@ -1037,7 +1052,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                   // The runner stages a frozen read's host mask (its cells'
                   // positions before the rows); the device's are made
                   // anyway.
-                  .frozen_host_masks = true,
+                  .frozen_host_masks = !solo && !deepseek,
                   .index_scratch_limit = deepseek_serving ? kServingReaderScratchBytes
                                          : deepseek ? kDsv4ReaderScratchBytes
                                                     : std::numeric_limits<std::uint64_t>::max(),
