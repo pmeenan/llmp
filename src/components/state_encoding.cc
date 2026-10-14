@@ -73,7 +73,8 @@ std::expected<std::uint64_t, std::string> KvCacheEncodingBytes(const spec::Model
     auto visited = Visit(
         stage,
         [&](const spec::ComponentRef& component, bool layer) -> std::expected<void, std::string> {
-          if (component.kind == "attention.dense" || component.kind == "attention.qsa") {
+          if (component.kind == "attention.dense" || component.kind == "attention.qsa" ||
+              component.kind == "attention.mqa") {
             if (!layer || component.params.size() >= spec::kMaxParams ||
                 ++count > spec::kMaxComponents)
               return std::unexpected("Q8_0 KV parameter inventory exceeds the catalog bound");
@@ -120,7 +121,8 @@ std::expected<void, std::string> ApplyKvCacheEncoding(spec::ModelSpec& model,
         [&](const spec::ComponentRef& component, bool layer) -> std::expected<void, std::string> {
           const auto* definition = Find(component.kind, component.version);
           if (!definition) return std::unexpected("KV encoding encountered an unknown component");
-          if (component.kind != "attention.dense" && component.kind != "attention.qsa") {
+          if (component.kind != "attention.dense" && component.kind != "attention.qsa" &&
+              component.kind != "attention.mqa") {
             if (component.kind == "attention.gdn" || component.kind == "residual.ple") {
               return {};
             }
@@ -156,7 +158,8 @@ std::expected<void, std::string> ApplyKvCacheEncoding(spec::ModelSpec& model,
   for (auto& stage : model.stages)
     for (auto& layer : stage.layers)
       for (auto& component : layer.components)
-        if (component.kind == "attention.dense" || component.kind == "attention.qsa")
+        if (component.kind == "attention.dense" || component.kind == "attention.qsa" ||
+            component.kind == "attention.mqa")
           SetEncoding(component, "q8_0");
   return {};
 }

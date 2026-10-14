@@ -744,8 +744,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       hold->spec = std::move(*synthesized);
     }
     if (settings.kv_cache_encoding.value != "f16") {
-      if (settings.kv_cache_encoding.value != "q8_0" || !drafter_id.empty())
-        return Error("unsupported KV encoding or drafter composition");
+      if (settings.kv_cache_encoding.value != "q8_0") return Error("unsupported KV encoding");
       auto bytes = components::KvCacheEncodingBytes(hold->spec, format::Encoding::kQ8_0);
       if (!bytes) return Error(bytes.error());
       if (!metadata) {

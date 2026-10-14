@@ -143,6 +143,24 @@ TEST(ModelSettings, LossyCacheChoiceRequiresMatchingFactsAndIsNotCalibrated) {
   EXPECT_FALSE(ResolveSettings(image_entry, image_facts, nullptr, false));
 }
 
+TEST(ModelSettings, DrafterCompositionAdmitsQ80WithComposedSpec) {
+  auto entry = Model("ds", true);
+  entry.overrides["kv_cache_encoding"] = std::string("q8_0");
+  auto facts = Facts("deepseek4", "dflash");
+  facts.kv_cache_encoding = "q8_0";
+  facts.target_spec = llmp::base::Sha256Digest{};
+  (*facts.target_spec)[0] = 1;
+  // Without composed_spec, drafter with Q8_0 fails.
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  // With composed_spec, it succeeds.
+  facts.composed_spec = llmp::base::Sha256Digest{};
+  (*facts.composed_spec)[0] = 2;
+  const auto composed = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(composed) << composed.error();
+  EXPECT_EQ(composed->kv_cache_encoding.value, "q8_0");
+  EXPECT_EQ(composed->bound_spec, facts.composed_spec);
+}
+
 TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   const ModelSettings s = Resolved(Model("ds"), Facts("deepseek4"));
   EXPECT_EQ(s.context.value, 262144U);

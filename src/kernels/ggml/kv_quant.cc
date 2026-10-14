@@ -83,8 +83,12 @@ std::expected<void, KernelFailure> CheckFlashAttnVecQuant(const ggml_tensor* nod
   const ggml_tensor* k = node->src[1];
   const ggml_tensor* v = node->src[2];
   const ggml_tensor* mask = node->src[3];
-  if (!Bound(q) || !Bound(k) || !Bound(v) || !Bound(mask) || node->src[4] != nullptr) {
-    return Rejected("attention over bound Q, K, V and mask, without sinks");
+  const ggml_tensor* sinks = node->src[4];
+  if (!Bound(q) || !Bound(k) || !Bound(v) || !Bound(mask)) {
+    return Rejected("attention over bound Q, K, V and mask");
+  }
+  if (sinks != nullptr && (!Bound(sinks) || !IsF32(sinks))) {
+    return Rejected("attention with bound F32 sinks");
   }
   // The instances fattn_vec_quant.cu compiles: ggml_cuda_flash_attn_ext_vec_case<D, T, T>
   // (fattn-vec.cuh) through launch_fattn (fattn-common.cuh): F32 Q and
@@ -95,7 +99,8 @@ std::expected<void, KernelFailure> CheckFlashAttnVecQuant(const ggml_tensor* nod
         "quantized vector attention takes F32 Q, K and V both Q8_0 or both Q4_0, an F16 mask, "
         "and writes F32");
   }
-  if (AnyEmpty({node, q, k, v, mask}) || !AllSane({node, q, k, v, mask})) {
+  if (AnyEmpty({node, q, k, v, mask}) || !AllSane({node, q, k, v, mask}) ||
+      (sinks != nullptr && !AllSane({sinks}))) {
     return Rejected("attention over an empty or unmeasurable tensor");
   }
   const std::int64_t head = q->ne[0];
@@ -110,6 +115,10 @@ std::expected<void, KernelFailure> CheckFlashAttnVecQuant(const ggml_tensor* nod
       !ggml_are_same_shape(k, v) || q->ne[2] % k->ne[2] != 0 || node->ne[0] != head ||
       node->ne[1] != q->ne[2] || node->ne[2] != q->ne[1] || node->ne[3] != 1) {
     return Rejected("vector attention whose shapes do not follow from its operands");
+  }
+  if (sinks != nullptr && (sinks->ne[0] != q->ne[2] || ggml_nelements(sinks) != q->ne[2] ||
+                           sinks->nb[0] != sizeof(float) || !Aligned(sinks, sizeof(float)))) {
+    return Rejected("one F32 sink per query head");
   }
   // The attended cells padded to 256, as the vector kernel requires
   // (fattn.cu's can_use_vector_kernel); one F16 mask row per query over
@@ -149,8 +158,9 @@ std::expected<void, KernelFailure> CheckFlashAttnVecQuant(const ggml_tensor* nod
           kInt32Max / static_cast<std::uint64_t>(std::max<std::int64_t>(1, q->ne[1] - 1))) {
     return Rejected("attention operands beyond the kernel's alignment or 32-bit indexing");
   }
-  if (!AllCurrent({node, q, k, v, mask}) || Overlap(node, q) || Overlap(node, k) ||
-      Overlap(node, v) || Overlap(node, mask)) {
+  if (!AllCurrent({node, q, k, v, mask}) || (sinks != nullptr && !AllCurrent({sinks})) ||
+      Overlap(node, q) || Overlap(node, k) || Overlap(node, v) || Overlap(node, mask) ||
+      (sinks != nullptr && Overlap(node, sinks))) {
     return Rejected("a stale view, or an output overlapping an operand");
   }
   return {};

@@ -109,6 +109,7 @@ namespace {
 using format::Encoding;
 
 constexpr std::array<std::string_view, 3> kCaches{"ring", "full", "injected"};
+constexpr std::array<std::string_view, 2> kKvEncodings{"f16", "q8_0"};
 
 constexpr ParamSpec Optional(std::string_view name, ParamType type, double least, double most,
                              double fallback) {
@@ -147,6 +148,10 @@ constexpr std::array kParams{
     ParamSpec{.name = "cache", .type = ParamType::kName, .required = false, .choices = kCaches},
     // An injected ring's cells.
     Optional("cells", ParamType::kInt, 0, 1 << 24, 0),
+    ParamSpec{.name = "kv_encoding",
+              .type = ParamType::kName,
+              .required = false,
+              .choices = kKvEncodings},
 };
 
 enum : std::uint16_t {
@@ -213,6 +218,7 @@ struct Dims {
   std::uint64_t cells;
   float eps, base;
   Yarn yarn;
+  Encoding kv_encoding;
 };
 Dims DimsOf(const Instance& in) {
   const Params& p = in.params;
@@ -240,7 +246,8 @@ Dims DimsOf(const Instance& in) {
           .yarn = {.factor = F32(p.Real("rope_factor")),
                    .context = static_cast<std::uint32_t>(p.Int("yarn_context")),
                    .beta_fast = F32(p.Real("beta_fast")),
-                   .beta_slow = F32(p.Real("beta_slow"))}};
+                   .beta_slow = F32(p.Real("beta_slow"))},
+          .kv_encoding = p.Name("kv_encoding") == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16};
 }
 
 std::uint64_t Coff(const Dims& d) { return d.overlap ? 2 : 1; }
@@ -248,6 +255,9 @@ bool Yarned(const Dims& d) { return d.yarn.factor > 1.0F; }
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   const Dims d = DimsOf(in);
+  if (d.kv_encoding == Encoding::kQ8_0 && (d.d != 256 && d.d != 512)) {
+    return std::unexpected("Q8_0 KV requires head_dim 256 or 512");
+  }
   if (d.heads % d.groups != 0) return std::unexpected("heads are not a multiple of o_groups");
   if (d.rope_dims % 2 != 0 || d.rope_dims > d.d) {
     return std::unexpected("rope_dims is odd or past a head");
@@ -300,23 +310,22 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
 
 model::StateContract State(const Instance& in) {
   const Dims d = DimsOf(in);
-  const auto f16 = [](std::uint64_t values) {
-    const auto bytes = model::CellBytes(Encoding::kF16, values);
-    base::Check(bytes.has_value(), "an F16 cell of any width");
-    return *bytes;
-  };
+  const auto kv_cell_bytes = model::CellBytes(d.kv_encoding, d.d);
+  base::Check(kv_cell_bytes.has_value(), "a cell of any width");
   model::StateContract c;
   switch (d.cache) {
     case Cache::kFull:
       c.tensors.push_back({.name = "kv",
                            .kind = model::StateKind::kKv,
-                           .cell_bytes = f16(d.d),
+                           .encoding = d.kv_encoding,
+                           .cell_bytes = *kv_cell_bytes,
                            .rollback = model::Rollback::kSnapshot});
       break;
     case Cache::kRing:
       c.tensors.push_back({.name = "kv",
                            .kind = model::StateKind::kRing,
-                           .cell_bytes = f16(d.d),
+                           .encoding = d.kv_encoding,
+                           .cell_bytes = *kv_cell_bytes,
                            .cells = model::CellRule::kRing,
                            .window_or_ratio = static_cast<std::uint32_t>(d.window),
                            .ring_reads_whole = true,
@@ -326,7 +335,8 @@ model::StateContract State(const Instance& in) {
       // Its target's verify saves the cells its injection writes.
       c.tensors.push_back({.name = "kv",
                            .kind = model::StateKind::kDrafterRing,
-                           .cell_bytes = f16(d.d),
+                           .encoding = d.kv_encoding,
+                           .cell_bytes = *kv_cell_bytes,
                            .cells = model::CellRule::kPositionRing,
                            .window_or_ratio = static_cast<std::uint32_t>(d.cells),
                            .rollback = model::Rollback::kSnapshot,
@@ -334,9 +344,13 @@ model::StateContract State(const Instance& in) {
       break;
   }
   const auto compressor = [&](std::string name, model::StateKind kind, std::uint64_t dim) {
+    const Encoding enc = kind == model::StateKind::kCompressed ? d.kv_encoding : Encoding::kF16;
+    const auto bytes = model::CellBytes(enc, dim);
+    base::Check(bytes.has_value(), "a cell of any width");
     c.tensors.push_back({.name = name,
                          .kind = kind,
-                         .cell_bytes = f16(dim),
+                         .encoding = enc,
+                         .cell_bytes = *bytes,
                          .cells = model::CellRule::kPerBlock,
                          .window_or_ratio = d.ratio,
                          .basis = model::BlockBasis::kPositions,
@@ -457,6 +471,12 @@ class Emitter {
   // cells, 1] (llama_kv_cache::get_k).
   ir::TensorId CacheView(ir::TensorId cache, std::uint64_t cells) {
     const ir::TensorDesc cd = Desc(b_, cache);
+    if (b_.tensor(cache).format.encoding == Encoding::kQ8_0) {
+      const format::Shape shape = Shape({cd.ne(0), 1, cells, 1});
+      auto format = b_.tensor(cache).format;
+      format.shape = shape;
+      return b_.View(cache, shape, ir::NaturalStrides(format), 0);
+    }
     const std::uint64_t row = cd.nb[1];
     return b_.View(cache, Shape({cd.ne(0), 1, cells, 1}), {cd.nb[0], row, row, row * cd.ne(1)}, 0);
   }
@@ -567,8 +587,12 @@ void Emitter::Compressor(const Comp& c) {
     if (c.hadamard) pooled = Hadamard(pooled, dim);
     const ir::TensorDesc cd = Desc(b_, pooled);
     const format::Shape rows_shape = Shape({cd.ne(0) * cd.ne(1), cd.ne(2)});
-    const ir::TensorId stored =
+    ir::TensorId stored =
         b_.View(pooled, rows_shape, ViewStrides(cd.nb[0], cd.nb[2], 0, rows_shape), 0);
+    if (c.cache == kCompressed && d_.kv_encoding == Encoding::kQ8_0 &&
+        b_.tensor(stored).format.encoding != Encoding::kF32) {
+      stored = b_.Convert(stored, Encoding::kF32);
+    }
     b_.CacheStore(f_.State(s, c.cache), stored,
                   f_.step.BlockCells(s, KeyOf(s, c.cache), ratio, overlap));
     // The segment's last rows kept in the ring.
@@ -760,8 +784,11 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
     const SegmentRows& seg = segments[s];
     b_.SetOwner(static_cast<std::uint8_t>(s));
     const format::Shape shape = Shape({d_.d, seg.rows});
-    const ir::TensorId rows_of = b_.View(kv_, shape, ViewStrides(kd.nb[0], kd.nb[2], 0, shape),
-                                         std::uint64_t{seg.first_row} * kd.nb[2]);
+    ir::TensorId rows_of = b_.View(kv_, shape, ViewStrides(kd.nb[0], kd.nb[2], 0, shape),
+                                   std::uint64_t{seg.first_row} * kd.nb[2]);
+    if (d_.kv_encoding == Encoding::kQ8_0 && b_.tensor(rows_of).format.encoding != Encoding::kF32) {
+      rows_of = b_.Convert(rows_of, Encoding::kF32);
+    }
     b_.CacheStore(f_.State(s, kWindowKv), rows_of, f_.step.StoreCells(s, KeyOf(s, kWindowKv)));
     b_.SetJoined();
   }
@@ -818,8 +845,11 @@ std::expected<FragmentOut, std::string> Emitter::Inject() {
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b_.SetOwner(static_cast<std::uint8_t>(s));
     const format::Shape shape = Shape({d_.d, kept[s]});
-    const ir::TensorId rows =
+    ir::TensorId rows =
         b_.View(kv, shape, ViewStrides(kd.nb[0], kd.nb[2], 0, shape), first * kd.nb[2]);
+    if (d_.kv_encoding == Encoding::kQ8_0 && b_.tensor(rows).format.encoding != Encoding::kF32) {
+      rows = b_.Convert(rows, Encoding::kF32);
+    }
     const CellKey ring = KeyOf(s, kWindowKv);
     b_.CacheStore(f_.State(s, kWindowKv), rows, f_.step.KeptCells(s, ring));
     b_.SetJoined();
@@ -873,7 +903,10 @@ std::expected<void, std::string> CompressorReference(
     const Dims& d, std::span<const double> kv, std::span<const double> score, std::uint64_t dim,
     bool overlap, bool hadamard, std::span<const float> norm, const RefSegment& seg,
     std::vector<double>& cache, std::uint64_t cache_cells, std::vector<double>& ring_kv,
-    std::vector<double>& ring_score, std::uint64_t ring_cells) {
+    std::vector<double>& ring_score, std::uint64_t ring_cells,
+    Encoding cache_encoding = Encoding::kF16,
+    std::expected<void, std::string> (*store_row)(Encoding, std::span<const double>,
+                                                  std::span<double>) = nullptr) {
   const std::uint64_t ratio = d.ratio;
   const std::uint64_t width = (overlap ? 2 : 1) * dim;
   const std::uint64_t past = seg.past;
@@ -943,8 +976,16 @@ std::expected<void, std::string> CompressorReference(
     RotateNormal(pooled, 1, dim, dim - d.rope_dims, static_cast<std::uint32_t>(d.rope_dims), d.base,
                  d.yarn, block.start);
     if (hadamard) HadamardRows(pooled, dim);
-    for (std::uint64_t c = 0; c < dim; ++c) {
-      cache[(block.cell * dim) + c] = Stored(Encoding::kF16, pooled[c]);
+    if (cache_encoding == Encoding::kQ8_0) {
+      if (store_row == nullptr) {
+        return std::unexpected("Q8_0 compressor reference state requires the block row codec");
+      }
+      auto dst = std::span(cache).subspan(block.cell * dim, dim);
+      if (auto stored = store_row(cache_encoding, pooled, dst); !stored) return stored;
+    } else {
+      for (std::uint64_t c = 0; c < dim; ++c) {
+        cache[(block.cell * dim) + c] = Stored(cache_encoding, pooled[c]);
+      }
     }
   }
   // The segment's last rows into the ring.
@@ -962,6 +1003,9 @@ std::expected<void, std::string> CompressorReference(
 std::expected<void, std::string> Reference(RefIO& io) {
   const Instance& in = *io.instance;
   const Dims d = DimsOf(in);
+  if (d.kv_encoding == Encoding::kQ8_0 && io.store_row == nullptr) {
+    return std::unexpected("Q8_0 reference state requires the block row codec");
+  }
   const std::uint64_t w = d.width;
   const std::uint64_t rows = io.rows();
   const std::size_t tensors = d.ratio == 0 ? 1 : (d.indexer ? 7 : 4);
@@ -1018,7 +1062,8 @@ std::expected<void, std::string> Reference(RefIO& io) {
       auto ok = CompressorReference(d, rows_of(ckv, coff * d.d), rows_of(cscore, coff * d.d), d.d,
                                     d.overlap, false, weight(kCompNorm), seg, st.at(kCompressed),
                                     io.state_cells.at(kCompressed), st.at(kCompressedKv),
-                                    st.at(kCompressedScore), io.state_cells.at(kCompressedKv));
+                                    st.at(kCompressedScore), io.state_cells.at(kCompressedKv),
+                                    d.kv_encoding, io.store_row);
       if (!ok) return ok;
     }
     if (d.indexer) {
@@ -1048,8 +1093,14 @@ std::expected<void, std::string> Reference(RefIO& io) {
       if (d.cache == Cache::kFull && cell >= window_cap) {
         return std::unexpected("mqa reference: a row past the cache");
       }
-      for (std::uint64_t j = 0; j < d.d; ++j) {
-        st.at(kWindowKv)[(cell * d.d) + j] = Stored(Encoding::kF16, kv[(r * d.d) + j]);
+      if (d.kv_encoding == Encoding::kQ8_0) {
+        const auto src = std::span(kv).subspan(r * d.d, d.d);
+        auto dst = std::span(st.at(kWindowKv)).subspan(cell * d.d, d.d);
+        if (auto stored = io.store_row(d.kv_encoding, src, dst); !stored) return stored;
+      } else {
+        for (std::uint64_t j = 0; j < d.d; ++j) {
+          st.at(kWindowKv)[(cell * d.d) + j] = Stored(Encoding::kF16, kv[(r * d.d) + j]);
+        }
       }
     }
     // The cells each row reads: its window's, then its compressed rows'.

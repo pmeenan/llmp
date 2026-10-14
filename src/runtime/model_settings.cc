@@ -489,8 +489,9 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     return Error("unknown KV cache encoding");
   facts.kv_cache_encoding = kv_cache_encoding;
   const bool quantized_kv = kv_cache_encoding == "q8_0";
-  if (quantized_kv && (drafter != nullptr || !OnComponentEngine(target.model().architecture)))
-    return Error("Q8_0 KV requires a supported shared target without a drafter");
+  if (quantized_kv && (!OnComponentEngine(target.model().architecture) ||
+                       (drafter != nullptr && !OnComponentEngine(drafter->model().architecture))))
+    return Error("Q8_0 KV requires a supported shared model");
   const auto configure = [&](spec::ModelSpec& model) -> std::expected<void, std::string> {
     if (!quantized_kv) return components::ApplyKvCacheEncoding(model, format::Encoding::kF16, 0);
     auto bytes = components::KvCacheEncodingBytes(model, format::Encoding::kQ8_0);
@@ -536,11 +537,6 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     auto model = spec::SynthesizeV0(target, *mapping, *values);
     if (!model) return Error(model.error());
     facts.context_ceiling = model->stages.front().context;
-    const std::array<std::string_view, 1> ids{target.id()};
-    if (auto configured = configure(*model); !configured) return Error(configured.error());
-    auto digest = spec::BoundDigest(*model, ids);
-    if (!digest) return Error(digest.error());
-    facts.target_spec = *digest;
     if (drafter != nullptr) {
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
         const auto* draft_mapping = spec::FindMapping(drafter->model().architecture);
@@ -550,6 +546,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
         auto composed =
             spec::ComposeDrafterV0(*model, *mapping, *drafter, *draft_mapping, *draft_values);
         if (!composed) return Error(composed.error());
+        if (auto configured = configure(*composed); !configured) return Error(configured.error());
         const std::array<std::string_view, 2> both{target.id(), drafter->id()};
         return spec::BoundDigest(*composed, both);
       };
@@ -559,6 +556,11 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
       else
         facts.composed_spec_error = composed.error();
     }
+    const std::array<std::string_view, 1> ids{target.id()};
+    if (auto configured = configure(*model); !configured) return Error(configured.error());
+    auto digest = spec::BoundDigest(*model, ids);
+    if (!digest) return Error(digest.error());
+    facts.target_spec = *digest;
   }
   // generation_config.json first: GGUF's general.sampling keys are copied
   // from it where a converter kept them.
@@ -738,8 +740,9 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   const auto kv = entry.Text("kv_cache_encoding").value_or("f16");
   if ((kv != "f16" && kv != "q8_0") || kv != facts.kv_cache_encoding)
     return Error("KV cache setting differs from the authenticated source facts");
-  if (kv == "q8_0" && (facts.composition || entry.drafter || !facts.target_spec))
-    return Error("Q8_0 KV requires an authenticated independent dense target");
+  if (kv == "q8_0" &&
+      (facts.composition || (entry.drafter ? !facts.composed_spec : !facts.target_spec)))
+    return Error("Q8_0 KV requires an authenticated model");
   s.kv_cache_encoding = {
       kv, entry.Text("kv_cache_encoding") ? SettingSource::kOverride : SettingSource::kDerived,
       kv == "f16" ? "exact dense-attention contract encoding"

@@ -736,7 +736,8 @@ TEST_F(GgmlExtValidateTest, ConcatTakesOneUnblockedTypeIntoAPackedOutput) {
       Bound(ggml_concat(c(), ggml_view_3d(c(), wide, 512, 1, 1024, wide->nb[1], wide->nb[2], 0),
                         New(GGML_TYPE_F16, 512, 1, 256), 2))));
   ggml_tensor* q = New(GGML_TYPE_Q8_0, 512, 4);
-  Refused(kg::CheckConcat(Bound(ggml_concat(c(), q, New(GGML_TYPE_Q8_0, 512, 4), 1))));
+  Accepted(kg::CheckConcat(Bound(ggml_concat(c(), q, New(GGML_TYPE_Q8_0, 512, 4), 1))));
+  Refused(kg::CheckConcat(Bound(ggml_concat(c(), q, New(GGML_TYPE_Q8_0, 512, 4), 0))));
   // Overlapping the output with an operand.
   ggml_tensor* over = ggml_concat(c(), a, b, 1);
   TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(a->data));

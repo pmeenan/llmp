@@ -97,6 +97,27 @@ ComponentRef MakeQsaAttention(std::int64_t head_dim, std::string_view kv_encodin
   return ComponentRef{.kind = "attention.qsa", .version = 1, .params = std::move(p)};
 }
 
+ComponentRef MakeMqaAttention(std::int64_t head_dim, std::string_view kv_encoding,
+                              bool with_indexer = false) {
+  std::vector<Param> p{
+      P("eps", R(1e-6)),          P("heads", I(4)),
+      P("head_dim", I(head_dim)), P("rope_dims", I(head_dim <= 64 ? head_dim : 64)),
+      P("q_rank", I(64)),         P("o_rank", I(64)),
+      P("o_groups", I(1)),        P("window", I(64)),
+      P("rope_base", R(10000.0)), P("kv_encoding", N(std::string(kv_encoding))),
+  };
+  if (with_indexer) {
+    p.push_back(P("ratio", I(16)));
+    p.push_back(P("overlap", B(true)));
+    p.push_back(P("indexer", B(true)));
+    p.push_back(P("indexer_heads", I(2)));
+    p.push_back(P("index_dim", I(64)));
+    p.push_back(P("top_k", I(32)));
+  }
+  std::ranges::sort(p, {}, &Param::name);
+  return ComponentRef{.kind = "attention.mqa", .version = 1, .params = std::move(p)};
+}
+
 }  // namespace
 
 // ------------------------------------------------------------- D=512 attention.dense
@@ -382,9 +403,7 @@ TEST(Q8StateTest, ApplyKvCacheEncodingQwen38WithMtpAndExemptComponents) {
   EXPECT_EQ(mtp_qsa_p->value, ParamValue(std::string("q8_0")));
 }
 
-TEST(Q8StateTest, ApplyKvCacheEncodingRejectsMqa) {
-  // DeepSeek V4 uses specialized attention.mqa with sinks, CSA/HCA compression,
-  // and tensor-core MMA execution. It must be rejected.
+TEST(Q8StateTest, ApplyKvCacheEncodingSupportsMqa) {
   spec::ModelSpec model{
       .pipeline = spec::PipelineKind::kLlm,
       .stages =
@@ -399,8 +418,7 @@ TEST(Q8StateTest, ApplyKvCacheEncodingRejectsMqa) {
                           spec::Layer{
                               .components =
                                   {
-                                      ComponentRef{
-                                          .kind = "attention.mqa", .version = 1, .params = {}},
+                                      MakeMqaAttention(512, "f16", true),
                                   },
                           },
                       },
@@ -409,12 +427,97 @@ TEST(Q8StateTest, ApplyKvCacheEncodingRejectsMqa) {
   };
 
   auto bytes = KvCacheEncodingBytes(model, Encoding::kQ8_0);
-  // If KvCacheEncodingBytes succeeds or fails, ApplyKvCacheEncoding must refuse it.
-  if (bytes.has_value()) {
-    EXPECT_FALSE(ApplyKvCacheEncoding(model, Encoding::kQ8_0, *bytes).has_value());
-  } else {
-    EXPECT_FALSE(bytes.has_value());
+  ASSERT_TRUE(bytes.has_value()) << bytes.error();
+  EXPECT_GT(*bytes, 0U);
+  auto applied = ApplyKvCacheEncoding(model, Encoding::kQ8_0, *bytes);
+  ASSERT_TRUE(applied.has_value()) << applied.error();
+  const auto* mqa_p = model.stages[0].layers[0].components[0].Find("kv_encoding");
+  ASSERT_NE(mqa_p, nullptr);
+  EXPECT_EQ(mqa_p->value, ParamValue(std::string("q8_0")));
+}
+
+TEST(Q8StateTest, MqaAttentionD512AndD256ShapesAndState) {
+  // DeepSeek V4 D=512 with indexer:
+  {
+    auto comp = MakeMqaAttention(512, "q8_0", true);
+    auto inst = MakeInstance(comp, kFacts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(inst.has_value()) << inst.error();
+    auto state = inst->def->state(*inst);
+    ASSERT_GE(state.tensors.size(), 5U);
+    EXPECT_EQ(state.tensors[0].name, "kv");
+    EXPECT_EQ(state.tensors[0].encoding, Encoding::kQ8_0);
+    // 1 KV head, head_dim 512: (512 / 32) * 34 = 544 bytes.
+    EXPECT_EQ(state.tensors[0].cell_bytes, 544U);
+
+    EXPECT_EQ(state.tensors[1].name, "compressed");
+    EXPECT_EQ(state.tensors[1].encoding, Encoding::kQ8_0);
+    EXPECT_EQ(state.tensors[1].cell_bytes, 544U);
+
+    EXPECT_EQ(state.tensors[2].name, "compressed_kv");
+    EXPECT_EQ(state.tensors[2].encoding, Encoding::kF32);
+
+    EXPECT_EQ(state.tensors[3].name, "compressed_score");
+    EXPECT_EQ(state.tensors[3].encoding, Encoding::kF32);
+
+    EXPECT_EQ(state.tensors[4].name, "index");
+    EXPECT_EQ(state.tensors[4].encoding, Encoding::kF16);
+    EXPECT_EQ(state.tensors[4].cell_bytes, 64U * 2U);
   }
+
+  // DSpark D=256:
+  {
+    auto comp = MakeMqaAttention(256, "q8_0", false);
+    auto inst = MakeInstance(comp, kFacts, Site::kLayer, 0, 1);
+    ASSERT_TRUE(inst.has_value()) << inst.error();
+    auto state = inst->def->state(*inst);
+    ASSERT_EQ(state.tensors.size(), 1U);
+    EXPECT_EQ(state.tensors[0].name, "kv");
+    EXPECT_EQ(state.tensors[0].encoding, Encoding::kQ8_0);
+    // 1 KV head, head_dim 256: (256 / 32) * 34 = 272 bytes.
+    EXPECT_EQ(state.tensors[0].cell_bytes, 272U);
+  }
+
+  // D=128 rejected for Q8_0:
+  {
+    auto comp = MakeMqaAttention(128, "q8_0", false);
+    auto inst = MakeInstance(comp, kFacts, Site::kLayer, 0, 1);
+    EXPECT_FALSE(inst.has_value());
+  }
+}
+
+TEST(Q8StateTest, MqaAttentionReferenceQ8RequiresStoreRow) {
+  auto comp = MakeMqaAttention(256, "q8_0", false);
+  auto inst = MakeInstance(comp, kFacts, Site::kLayer, 0, 1);
+  ASSERT_TRUE(inst.has_value()) << inst.error();
+
+  RefIO io;
+  io.instance = &*inst;
+  io.segments = {{.rows = 1, .past = 0, .read_cells = 1}};
+  io.stream = std::vector<double>(256, 1.0);
+  io.weights.resize(inst->def->roles.size());
+  io.weights[0] = std::vector<float>(256 * 64, 0.1f);      // q_a
+  io.weights[1] = std::vector<float>(64, 1.0f);            // q_norm
+  io.weights[2] = std::vector<float>(64 * 4 * 256, 0.1f);  // q_b
+  io.weights[3] = std::vector<float>(256 * 256, 0.1f);     // kv
+  io.weights[4] = std::vector<float>(256, 1.0f);           // kv_norm
+  io.weights[5] = std::vector<float>(4, 0.0f);             // sinks
+  io.weights[6] = std::vector<float>(4 * 256 * 64, 0.1f);  // out_a
+  io.weights[7] = std::vector<float>(64 * 256, 0.1f);      // out_b
+  io.state = {{std::vector<double>(64 * 256, 0.0)}};
+  io.state_cells = {64};
+
+  // Without store_row -> Refused.
+  EXPECT_FALSE(inst->def->reference(io).has_value());
+
+  // With store_row -> Accepted.
+  io.store_row = [](Encoding enc, std::span<const double> src,
+                    std::span<double> dst) -> std::expected<void, std::string> {
+    EXPECT_EQ(enc, Encoding::kQ8_0);
+    EXPECT_EQ(src.size(), dst.size());
+    std::ranges::copy(src, dst.begin());
+    return {};
+  };
+  EXPECT_TRUE(inst->def->reference(io).has_value());
 }
 
 // ------------------------------------------------------------- Kernel Checks
@@ -444,10 +547,25 @@ TEST(Q8StateTest, AcceptsQuantAttentionPredicate) {
     EXPECT_FALSE(cap->accepts(q));
   }
 
-  // Rejected when sinks operand is present (operand index 4).
+  // Accepted when F32 dense sinks operand is present (operand index 4).
   {
     std::array<execution::OperandFormat, 5> ops{};
-    ops[4] = execution::OperandFormat{.operand = 4};
+    ops[4] = execution::OperandFormat{
+        .operand = 4, .encoding = Encoding::kF32, .layout = format::Layout::kDense};
+    execution::CapabilityQuery q{
+        .operands = ops,
+        .k = 256,
+        .n = 256,
+        .arch = 121,
+    };
+    EXPECT_TRUE(cap->accepts(q));
+  }
+
+  // Rejected when sinks operand is not F32.
+  {
+    std::array<execution::OperandFormat, 5> ops{};
+    ops[4] = execution::OperandFormat{
+        .operand = 4, .encoding = Encoding::kF16, .layout = format::Layout::kDense};
     execution::CapabilityQuery q{
         .operands = ops,
         .k = 256,
@@ -487,12 +605,13 @@ TEST(Q8StateTest, CheckFlashAttnVecQuantHead512) {
   };
 
   const auto make_attention = [&](ggml_type k_type, ggml_type v_type, std::int64_t d,
-                                  std::int64_t cells, float softcap) {
+                                  std::int64_t cells, float softcap, ggml_tensor* sinks = nullptr) {
     auto* q = bind(ggml_new_tensor_3d(c.ctx, GGML_TYPE_F32, d, 1, 4));
     auto* k = bind(ggml_new_tensor_3d(c.ctx, k_type, d, cells, 2));
     auto* v = bind(ggml_new_tensor_3d(c.ctx, v_type, d, cells, 2));
     auto* m = bind(ggml_new_tensor_2d(c.ctx, GGML_TYPE_F16, cells, 1));
     auto* node = ggml_flash_attn_ext(c.ctx, q, k, v, m, 0.125f, 0.0f, softcap);
+    if (sinks) node->src[4] = sinks;
     bind(node);
     ggml_prec_set_acc(node, GGML_PREC_F32);
     return node;
@@ -517,6 +636,18 @@ TEST(Q8StateTest, CheckFlashAttnVecQuantHead512) {
   EXPECT_TRUE(
       kg::CheckFlashAttnVecQuant(make_attention(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, 256, 256, 5.0f))
           .has_value());
+
+  // With F32 sinks (4 query heads) -> Accepted!
+  auto* sinks = bind(ggml_new_tensor_1d(c.ctx, GGML_TYPE_F32, 4));
+  EXPECT_TRUE(kg::CheckFlashAttnVecQuant(
+                  make_attention(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, 256, 256, 0.0f, sinks))
+                  .has_value());
+
+  // With mismatched sinks count (8 instead of 4) -> Rejected.
+  auto* bad_sinks = bind(ggml_new_tensor_1d(c.ctx, GGML_TYPE_F32, 8));
+  EXPECT_FALSE(kg::CheckFlashAttnVecQuant(
+                   make_attention(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, 256, 256, 0.0f, bad_sinks))
+                   .has_value());
 }
 
 }  // namespace llmp::components

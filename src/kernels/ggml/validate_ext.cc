@@ -626,13 +626,22 @@ std::expected<void, KernelFailure> CheckConcat(const ggml_tensor* node) {
   const ggml_tensor* a = node->src[0];
   const ggml_tensor* b = node->src[1];
   const std::int32_t dim = node->op_params[0];
-  if (a->type != node->type || b->type != node->type || ggml_is_quantized(node->type) ||
-      ggml_blck_size(node->type) != 1 ||
-      (ggml_type_size(node->type) != 2 && ggml_type_size(node->type) != 4)) {
-    return Rejected("concat of one unblocked 2- or 4-byte type");
+  const bool is_q8 = node->type == GGML_TYPE_Q8_0;
+  if (a->type != node->type || b->type != node->type) {
+    return Rejected("concat of operands of the same type");
   }
-  if (dim < 0 || dim > 3) {
-    return Rejected("concat along dimension 0 to 3");
+  if (is_q8) {
+    if (dim <= 0 || dim > 3 || node->ne[0] % ggml_blck_size(node->type) != 0) {
+      return Rejected("quantized concat along a higher dimension with whole blocks");
+    }
+  } else {
+    if (dim < 0 || dim > 3) {
+      return Rejected("concat along dimension 0 to 3");
+    }
+    if (ggml_is_quantized(node->type) || ggml_blck_size(node->type) != 1 ||
+        (ggml_type_size(node->type) != 2 && ggml_type_size(node->type) != 4)) {
+      return Rejected("concat of one unblocked 2- or 4-byte type");
+    }
   }
   if (AnyEmpty({node, a, b}) || !AllSane({node, a, b})) {
     return Rejected("concat of empty or unmeasurable tensors");
@@ -658,13 +667,17 @@ std::expected<void, KernelFailure> CheckConcat(const ggml_tensor* node) {
   }
   const bool dense = dim != 3 ? ggml_is_contiguous_to_3(a) && ggml_is_contiguous_to_3(b)
                               : ggml_is_contiguous(a) && ggml_is_contiguous(b);
+  if (is_q8 && !dense) {
+    return Rejected("quantized concat requires contiguous operands");
+  }
   const auto plane = Product({node->ne[0], node->ne[1], node->ne[2]});
   if (!plane || *plane / 256 >= kInt32Max ||
       (!dense &&
        (std::cmp_greater(node->ne[1], kInt32Max) || node->ne[2] > 65535 || node->ne[3] > 65535))) {
     return Rejected("concat beyond the kernels' grid");
   }
-  if (!AlignedEverywhere(a, size) || !AlignedEverywhere(b, size) || !Aligned(node, size)) {
+  const std::uint64_t align = ggml_is_quantized(node->type) ? 2 : size;
+  if (!AlignedEverywhere(a, align) || !AlignedEverywhere(b, align) || !Aligned(node, align)) {
     return Rejected("concat operands at misaligned addresses");
   }
   if (!AllCurrent({node, a, b}) || !Disjoint(node, a, /*in_place=*/false) ||
