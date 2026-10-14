@@ -122,11 +122,11 @@ constexpr Profile kQwenMlx{ProfileId::kQwenMlx,
                            {},
                            {},
                            0,
-                           2274,
+                           2954,
                            432,
                            model::kQwen38FlashContext,
                            std::numeric_limits<std::uint32_t>::max(),
-                           "8cabbbeebf6a6786dbc52ac0471b5dd34d360f4a9c000de7a806bb9234f57dd5"};
+                           "2d9281bb7d13656bccac99f285180bb96ce6922d7156252e5bf8c8816452a7cd"};
 struct Origin {
   std::string_view name, sha256;
   std::uint64_t bytes;
@@ -402,7 +402,7 @@ std::expected<std::vector<spec::SourceValue>, std::string> Values(const Profile&
                     20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161,
                     20000171}};
       model::Qwen38Profile p = model::Qwen38Flash();
-      p.ple_row = 256;
+      p.ple_row = 160;
       auto values = spec::mappings::Qwen38GgufValues(p, hash);
       if (!values) return std::unexpected(values.error());
       values->push_back(
@@ -490,7 +490,8 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const Pro
             f.params.scale != format::AffineScale::kBF16 || f.params.zero_point ||
             f.params.tensor_scale || f.params.k_bits != 0 ||
             f.params.codebook != format::Exl3Codebook::kNone ||
-            (t.experts ? (f.shape.rank != 3 || f.shape.ne[2] != 512) : (f.shape.rank != 2)))
+            (t.experts ? (f.shape.rank != 3 || f.shape.ne[2] != 512)
+                       : (f.shape.rank < 1 || f.shape.rank > 2)))
           return Refused("native tensor layout, part, parameters or expert geometry differs");
       } else {
         return Refused("native tensor layout, part, parameters or expert geometry differs");

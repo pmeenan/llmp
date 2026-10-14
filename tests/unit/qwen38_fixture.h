@@ -455,7 +455,7 @@ inline NativeMlxFixture NativeMlx() {
       .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
                 20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171}};
   model::Qwen38Profile p = model::Qwen38Flash();
-  p.ple_row = 256;
+  p.ple_row = 160;
   auto values = spec::mappings::Qwen38GgufValues(p, hash);
   EXPECT_TRUE(values.has_value());
   if (values) {

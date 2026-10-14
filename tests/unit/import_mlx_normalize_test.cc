@@ -36,7 +36,7 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   EXPECT_EQ(f.source.architecture, "qwen4exp");
   EXPECT_EQ(f.source.container, "mlx");
   EXPECT_EQ(f.source.folds, std::vector<std::string>{"gdn.value_heads_tiled"});
-  EXPECT_EQ(f.source.tensors.size(), 2274U);
+  EXPECT_EQ(f.source.tensors.size(), 2954U);
 
   // Verify inventory hash computation
   std::vector<const spec::SourceTensor*> sorted;
@@ -54,7 +54,7 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
     hash.Update("\n");
   }
   const auto hex = base::ToHex(hash.Finish());
-  EXPECT_EQ(hex, "8cabbbeebf6a6786dbc52ac0471b5dd34d360f4a9c000de7a806bb9234f57dd5");
+  EXPECT_EQ(hex, "2d9281bb7d13656bccac99f285180bb96ce6922d7156252e5bf8c8816452a7cd");
 
   const auto& mapping = spec::mappings::Qwen38NativeMapping();
   EXPECT_TRUE(mapping.folds.empty());
@@ -176,16 +176,12 @@ TEST(ImportMlxNormalizeModelsTest,
   EXPECT_EQ(checkpoint->files.size(), 24U);
 
   auto bound = MlxTargetBound(*checkpoint);
-  if (!bound && bound.error().rule == Rule::kUnsupported) {
-    GTEST_SKIP() << "staged MLX checkpoint outside closed target domain: "
-                 << bound.error().ToString();
-  }
   ASSERT_TRUE(bound) << bound.error().ToString();
 
   NormalizationLimits limits{bound->metadata_bytes, bound->work_units};
   auto plan = NormalizeMlxTarget(std::move(*checkpoint), limits);
   ASSERT_TRUE(plan) << plan.error().ToString();
-  EXPECT_EQ(plan->canonical().tensors.size(), 2274U);
+  EXPECT_EQ(plan->canonical().tensors.size(), 2954U);
 
 #if defined(LLMP_HAS_CUDA)
   // Verify DecodeSelectedSource supports all Affine split decoders

@@ -25,9 +25,15 @@ bool SameEncoding(const format::TensorFormat& a, const format::TensorFormat& b) 
          a.stacked == b.stacked;
 }
 bool DenseReshape(const format::TensorFormat& a, const format::TensorFormat& b) {
-  if (!SameEncoding(a, b) || a.layout != format::Layout::kDense ||
-      (a.encoding != format::Encoding::kBF16 && a.encoding != format::Encoding::kF32))
-    return false;
+  if (!SameEncoding(a, b)) return false;
+  const bool ok_dense =
+      a.layout == format::Layout::kDense &&
+      (a.encoding == format::Encoding::kBF16 || a.encoding == format::Encoding::kF32);
+  const bool ok_split =
+      a.layout == format::Layout::kSplit &&
+      (a.encoding == format::Encoding::kAffine || a.encoding == format::Encoding::kMxfp8 ||
+       a.encoding == format::Encoding::kNvfp4);
+  if (!ok_dense && !ok_split) return false;
   // Only remove/insert singleton axes, retaining the order of actual axes.
   std::array<std::uint64_t, 4> left{}, right{};
   std::size_t x = 0, y = 0;

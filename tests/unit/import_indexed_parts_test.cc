@@ -216,6 +216,26 @@ TEST(ImportIndexedPartsTest, Bf16SingletonReshapeAndAllMxfp8PartsSharePermutatio
   }
 }
 
+TEST(ImportIndexedPartsTest, AffineSingletonReshapeSucceeds) {
+  Fixture f;
+  const auto destination = Fmt(Encoding::kAffine, {32});
+  const auto source = Fmt(Encoding::kAffine, {32, 1});
+  TensorAssembly out{.name = "gate", .format = destination};
+  Payloads expected;
+  auto parts = format::PartsOf(destination);
+  ASSERT_TRUE(parts);
+  for (const auto& part : parts->parts()) {
+    auto id = f.Add(std::string(format::PartRoleName(part.role)), source, part.role, 9);
+    out.parts.push_back(
+        {.part = part.role, .kind = PartAssemblyKind::kDenseReshape, .sources = {id}});
+    expected[{0, part.role}] = f.payloads[id];
+  }
+  f.outputs.push_back(std::move(out));
+  auto plan = f.Build();
+  ASSERT_TRUE(plan);
+  Reconstruct(*plan, f, expected);
+}
+
 Fixture Dense() {
   Fixture f;
   auto format = Fmt(Encoding::kBF16, {4, 2});
