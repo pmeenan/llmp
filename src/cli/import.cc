@@ -12,6 +12,7 @@
 #include "base/build_info.h"
 #include "cli/cli.h"
 #include "import/archive_input.h"
+#include "import/mlx_qwen38.h"
 #include "import/modelopt_qwen38.h"
 #include "import/qwen_image.h"
 #include "import/reader.h"
@@ -116,6 +117,18 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
                            .reason = "normalization exceeds the requested metadata budget"});
     auto plan = import::NormalizeModelOptTarget(std::move(*input),
                                                 {bound->metadata_bytes, bound->work_units});
+    if (!plan) return Failure(err, plan.error());
+    return publish(*plan, plan->parts().source(), bound->metadata_bytes);
+  }
+  if (input->container == "mlx" && input->architecture == "qwen4_exp" &&
+      input->quantization == "mlx affine") {
+    auto bound = import::MlxTargetBound(*input);
+    if (!bound) return Failure(err, bound.error());
+    if (!funded(*bound))
+      return Failure(err, {.rule = import::Rule::kBounds,
+                           .reason = "normalization exceeds the requested metadata budget"});
+    auto plan =
+        import::NormalizeMlxTarget(std::move(*input), {bound->metadata_bytes, bound->work_units});
     if (!plan) return Failure(err, plan.error());
     return publish(*plan, plan->parts().source(), bound->metadata_bytes);
   }

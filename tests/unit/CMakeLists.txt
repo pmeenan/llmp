@@ -1460,6 +1460,11 @@ add_executable(import_modelopt_normalize_test import_modelopt_normalize_test.cc)
 target_link_libraries(import_modelopt_normalize_test PRIVATE llmp_import llmp_components llmp_model llmp_artifact llmp_json)
 llmp_gtest(import_modelopt_normalize_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# Closed native MLX target normalization and source control.
+add_executable(import_mlx_normalize_test import_mlx_normalize_test.cc)
+target_link_libraries(import_mlx_normalize_test PRIVATE llmp_import llmp_components llmp_model llmp_artifact llmp_json)
+llmp_gtest(import_mlx_normalize_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(import_modelopt_models_test import_modelopt_models_test.cc)
 target_link_libraries(import_modelopt_models_test PRIVATE llmp_cli llmp_import llmp_components llmp_platform)
 llmp_gtest(import_modelopt_models_test TEST_PREFIX unit. PROPERTIES LABELS models)

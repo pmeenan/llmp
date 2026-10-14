@@ -40,7 +40,8 @@ bool DenseReshape(const format::TensorFormat& a, const format::TensorFormat& b) 
 bool GatherEncoding(const format::TensorFormat& f) {
   return f.layout == format::Layout::kDense ||
          (f.layout == format::Layout::kSplit &&
-          (f.encoding == format::Encoding::kNvfp4 || f.encoding == format::Encoding::kMxfp8));
+          (f.encoding == format::Encoding::kNvfp4 || f.encoding == format::Encoding::kMxfp8 ||
+           f.encoding == format::Encoding::kAffine));
 }
 }  // namespace
 

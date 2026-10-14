@@ -1786,8 +1786,13 @@ std::string Canonical(std::string_view pattern, std::uint32_t layer) {
 }
 std::string PartName(std::string_view name, PartRole part) {
   if (part == PartRole::kData || part == PartRole::kCodes) return std::string(name);
-  return std::string(name.substr(0, name.size() - 7)) +
-         (part == PartRole::kBlockScales ? ".weight_scale" : ".weight_scale_2");
+  if (name.ends_with(".weight")) {
+    const auto stem = name.substr(0, name.size() - 7);
+    if (part == PartRole::kBlockScales) return std::string(stem) + ".weight_scale";
+    if (part == PartRole::kBiases) return std::string(stem) + ".weight_bias";
+    if (part == PartRole::kTensorScale) return std::string(stem) + ".weight_scale_2";
+  }
+  return std::string(name);
 }
 format::TensorFormat SourceFormat(const SourceRule& r) {
   format::TensorFormat f{.encoding = Encoding::kBF16};

@@ -44,6 +44,11 @@ constexpr TensorRule Scales(std::string_view pattern, std::string_view slot,
           .part = PartRole::kBlockScales,
           .optional = true};
 }
+constexpr TensorRule Biases(std::string_view pattern, std::string_view slot,
+                            std::string_view role) {
+  return {
+      .pattern = pattern, .slot = slot, .role = role, .part = PartRole::kBiases, .optional = true};
+}
 constexpr TensorRule Plain(std::string_view pattern, std::string_view slot, std::string_view role) {
   return {.pattern = pattern, .slot = slot, .role = role};
 }
@@ -143,27 +148,36 @@ constexpr std::array kTensors = {
     // Gated DeltaNet.
     Matrix("blk.{layer}.attn_qkv.weight", "linear", "qkv"),
     Scales("blk.{layer}.attn_qkv.weight_scale", "linear", "qkv"),
+    Biases("blk.{layer}.attn_qkv.weight_bias", "linear", "qkv"),
     Matrix("blk.{layer}.attn_gate.weight", "linear", "gate"),
     Scales("blk.{layer}.attn_gate.weight_scale", "linear", "gate"),
+    Biases("blk.{layer}.attn_gate.weight_bias", "linear", "gate"),
     Matrix("blk.{layer}.ssm_beta.weight", "linear", "beta"),
     Scales("blk.{layer}.ssm_beta.weight_scale", "linear", "beta"),
+    Biases("blk.{layer}.ssm_beta.weight_bias", "linear", "beta"),
     Matrix("blk.{layer}.ssm_alpha.weight", "linear", "alpha"),
     Scales("blk.{layer}.ssm_alpha.weight_scale", "linear", "alpha"),
+    Biases("blk.{layer}.ssm_alpha.weight_bias", "linear", "alpha"),
     Plain("blk.{layer}.ssm_dt.bias", "linear", "dt_bias"),
     Plain("blk.{layer}.ssm_a", "linear", "a"),
     Plain("blk.{layer}.ssm_conv1d.weight", "linear", "conv"),
     Plain("blk.{layer}.ssm_norm.weight", "linear", "norm"),
     Matrix("blk.{layer}.ssm_out.weight", "linear", "output"),
     Scales("blk.{layer}.ssm_out.weight_scale", "linear", "output"),
+    Biases("blk.{layer}.ssm_out.weight_bias", "linear", "output"),
     // QSA: the indexer's projection fused (ModelOpt) or split (GGUF).
     Matrix("blk.{layer}.attn_q.weight", "attention", "q"),
     Scales("blk.{layer}.attn_q.weight_scale", "attention", "q"),
+    Biases("blk.{layer}.attn_q.weight_bias", "attention", "q"),
     Matrix("blk.{layer}.attn_k.weight", "attention", "k"),
     Scales("blk.{layer}.attn_k.weight_scale", "attention", "k"),
+    Biases("blk.{layer}.attn_k.weight_bias", "attention", "k"),
     Matrix("blk.{layer}.attn_v.weight", "attention", "v"),
     Scales("blk.{layer}.attn_v.weight_scale", "attention", "v"),
+    Biases("blk.{layer}.attn_v.weight_bias", "attention", "v"),
     Matrix("blk.{layer}.attn_output.weight", "attention", "output"),
     Scales("blk.{layer}.attn_output.weight_scale", "attention", "output"),
+    Biases("blk.{layer}.attn_output.weight_bias", "attention", "output"),
     Plain("blk.{layer}.attn_q_norm.weight", "attention", "q_norm"),
     Plain("blk.{layer}.attn_k_norm.weight", "attention", "k_norm"),
     TensorRule{.pattern = "blk.{layer}.indexer.qk_proj.weight",
@@ -172,6 +186,7 @@ constexpr std::array kTensors = {
                .optional = true,
                .any_part = true},
     Scales("blk.{layer}.indexer.qk_proj.weight_scale", "attention", "indexer_qk"),
+    Biases("blk.{layer}.indexer.qk_proj.weight_bias", "attention", "indexer_qk"),
     TensorRule{.pattern = "blk.{layer}.indexer.q_proj.weight",
                .slot = "attention",
                .role = "indexer_q",
@@ -190,10 +205,13 @@ constexpr std::array kTensors = {
     Matrix("blk.{layer}.ffn_gate_inp_shexp.weight", "moe", "shared_gate"),
     Matrix("blk.{layer}.ffn_gate_shexp.weight", "moe", "gate"),
     Scales("blk.{layer}.ffn_gate_shexp.weight_scale", "moe", "gate"),
+    Biases("blk.{layer}.ffn_gate_shexp.weight_bias", "moe", "gate"),
     Matrix("blk.{layer}.ffn_up_shexp.weight", "moe", "up"),
     Scales("blk.{layer}.ffn_up_shexp.weight_scale", "moe", "up"),
+    Biases("blk.{layer}.ffn_up_shexp.weight_bias", "moe", "up"),
     Matrix("blk.{layer}.ffn_down_shexp.weight", "moe", "down"),
     Scales("blk.{layer}.ffn_down_shexp.weight_scale", "moe", "down"),
+    Biases("blk.{layer}.ffn_down_shexp.weight_bias", "moe", "down"),
     TensorRule{.pattern = "blk.{layer}.ffn_gate_exps.weight",
                .slot = "moe",
                .role = "gate_experts",
@@ -436,7 +454,8 @@ constexpr Mapping kMapping{
 // source-owned PLE constants, and the existing GGUF planning semantics.
 constexpr bool GgufTensor(const TensorRule& r) {
   return r.part == PartRole::kData && !r.unbound && !r.pattern.contains("weight_scale") &&
-         !r.pattern.contains("ffn_gate_up_exps") && !r.pattern.contains("indexer.qk_proj");
+         !r.pattern.ends_with(".weight_bias") && !r.pattern.contains("ffn_gate_up_exps") &&
+         !r.pattern.contains("indexer.qk_proj");
 }
 constexpr auto kGgufTensors = [] {
   std::array<TensorRule, std::ranges::count_if(kTensors, GgufTensor)> out{};
@@ -509,7 +528,7 @@ constexpr auto kGgufMapping = [] {
 constexpr auto kNativeTensors = [] {
   // Four legacy CUTLASS alternatives are replaced by four native split-part
   // rules. Keeping both down-scale alternatives would bind one role twice.
-  std::array<TensorRule, kTensors.size()> rules{};
+  std::array<TensorRule, kTensors.size() + 8> rules{};
   std::size_t next = 0;
   for (auto rule : kTensors) {
     if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes" ||
@@ -524,6 +543,9 @@ constexpr auto kNativeTensors = [] {
       rule.part = PartRole::kCodes;
       rule.any_part = false;
     }
+    if (rule.pattern == "token_embd.weight") {
+      rule.any_part = true;
+    }
     if (rule.role == "gate_scale" || rule.role == "up_scale" || rule.role == "down_scale") {
       rule.role = rule.role == "gate_scale" ? "gate_experts"
                   : rule.role == "up_scale" ? "up_experts"
@@ -533,12 +555,25 @@ constexpr auto kNativeTensors = [] {
     }
     rules[next++] = rule;
   }
+  rules[next++] = Scales("token_embd.weight_scale", "embedding", "table");
+  rules[next++] = Biases("token_embd.weight_bias", "embedding", "table");
+  rules[next++] = Scales("output.weight_scale", "output", "weight");
+  rules[next++] = Biases("output.weight_bias", "output", "weight");
   rules[next++] = Scales("per_layer_token_embd.weight_scale", "ngram", "table");
+  rules[next++] = Biases("per_layer_token_embd.weight_bias", "ngram", "table");
   for (const auto& [pattern, role] : std::array<std::pair<std::string_view, std::string_view>, 3>{
            {{"blk.{layer}.ffn_gate_exps.weight_scale", "gate_experts"},
             {"blk.{layer}.ffn_up_exps.weight_scale", "up_experts"},
             {"blk.{layer}.ffn_down_exps.weight_scale", "down_experts"}}}) {
     auto rule = Scales(pattern, "moe", role);
+    rule.experts = true;
+    rules[next++] = rule;
+  }
+  for (const auto& [pattern, role] : std::array<std::pair<std::string_view, std::string_view>, 3>{
+           {{"blk.{layer}.ffn_gate_exps.weight_bias", "gate_experts"},
+            {"blk.{layer}.ffn_up_exps.weight_bias", "up_experts"},
+            {"blk.{layer}.ffn_down_exps.weight_bias", "down_experts"}}}) {
+    auto rule = Biases(pattern, "moe", role);
     rule.experts = true;
     rules[next++] = rule;
   }

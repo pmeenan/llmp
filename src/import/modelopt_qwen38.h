@@ -64,6 +64,8 @@ class ModelOptTargetPlan {
   friend class llmp::test_support::PartPublicationFixture;
   friend std::expected<ModelOptTargetPlan, Error> NormalizeModelOptTarget(
       Checkpoint&& source, NormalizationLimits prepaid);
+  friend std::expected<ModelOptTargetPlan, Error> NormalizeMlxTarget(Checkpoint&& source,
+                                                                     NormalizationLimits prepaid);
   ModelOptTargetPlan() = default;
   std::optional<IndexedPartPlan> parts_{};
   spec::Source canonical_{};

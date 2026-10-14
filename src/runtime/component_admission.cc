@@ -49,6 +49,7 @@ enum class ProfileId {
   kQwen2Exl3_4_5,
   kQwenGguf,
   kQwenModelOpt,
+  kQwenMlx,
   kDsv4Gguf
 };
 struct Profile {
@@ -93,17 +94,26 @@ constexpr Profile kQwenGguf{ProfileId::kQwenGguf,
                             model::kQwen38FlashContext,
                             std::numeric_limits<std::uint32_t>::max(),
                             "ebfde9be4041367912853e848599eb2bbfeb62f853ae373546ceb31416d482f6"};
-constexpr Profile kQwenModelOpt{
-    ProfileId::kQwenModelOpt,
-    "qwen4exp",
-    {},
-    {},
-    0,
-    1886,
-    432,
-    model::kQwen38FlashContext,
-    std::numeric_limits<std::uint32_t>::max(),
-    "8830408a944e1d2cd1d6b30c121ff1d12e73e34c941f59bbd4c052c0308a3264"};
+constexpr Profile kQwenModelOpt{ProfileId::kQwenModelOpt,
+                                "qwen4exp",
+                                {},
+                                {},
+                                0,
+                                1886,
+                                432,
+                                model::kQwen38FlashContext,
+                                std::numeric_limits<std::uint32_t>::max(),
+                                "8830408a944e1d2cd1d6b30c121ff1d12e73e34c941f59bbd4c052c0308a3264"};
+constexpr Profile kQwenMlx{ProfileId::kQwenMlx,
+                           "qwen4exp",
+                           {},
+                           {},
+                           0,
+                           2274,
+                           432,
+                           model::kQwen38FlashContext,
+                           std::numeric_limits<std::uint32_t>::max(),
+                           "8cabbbeebf6a6786dbc52ac0471b5dd34d360f4a9c000de7a806bb9234f57dd5"};
 struct Origin {
   std::string_view name, sha256;
   std::uint64_t bytes;
@@ -192,6 +202,55 @@ constexpr std::array kQwenModelOptOrigins{
            "49c7d04606ff7c8f103b4d1fc9742b44649a2937b25ecc896a5450ab1020f308", 9669936ULL},
     Origin{"model.safetensors.index.json",
            "435eef76fc10fc6e932a208a1f85a86bc9c7ffc389b27b34ba83bb6a5d0371e9", 33074286ULL}};
+constexpr std::array kQwenMlxOrigins{
+    Origin{"config.json", "4efd5f41c47e8de9f55c678df4a237cbbc78e4d517dad42a906889f7d94f79a2",
+           5361ULL},
+    Origin{"model-00001-of-00022.safetensors",
+           "308f20b7e35a3e525f36eca0df286f6d1043cfeb621e7bbcf372a834c99cd66d", 5283195887ULL},
+    Origin{"model-00002-of-00022.safetensors",
+           "8af1a616f2f39dbfe6ee92e959afb2414623fcb299aff1ced55984bfe810d608", 5250035137ULL},
+    Origin{"model-00003-of-00022.safetensors",
+           "519a0472252ac9a51af020686f462aa6be82ce655f948fd5f054d70949de17a6", 5250035154ULL},
+    Origin{"model-00004-of-00022.safetensors",
+           "b1ad7e951969eb8dc4e92762dc2e50bd47353c95990ae207db5da393d441400f", 5250035160ULL},
+    Origin{"model-00005-of-00022.safetensors",
+           "9ca797304c563bb65f2356b67d444511b11744bc5b5c8ec8345ae7d97d3e251c", 5250035164ULL},
+    Origin{"model-00006-of-00022.safetensors",
+           "8aab4c1dce7d8a0af645426b66d1caf30245d422d4c6b7029583959d675a1827", 5250035184ULL},
+    Origin{"model-00007-of-00022.safetensors",
+           "7908da37b2e3fa7f0de8b9734dad0759be7dc445716f3acd59c20c4842638db9", 5067850140ULL},
+    Origin{"model-00008-of-00022.safetensors",
+           "85beff20f250bfe63e95f12c0460512aab92bcde8f7408fe9c20e3de0321bc1d", 5337131618ULL},
+    Origin{"model-00009-of-00022.safetensors",
+           "f7c03ae640e9bf0f7813ef2b2980afa83a883c02b3988e814e9921055fc08a28", 5337131558ULL},
+    Origin{"model-00010-of-00022.safetensors",
+           "6897f52227533e720b243d6aef24c1293ad1eb02a1bb2ec6a6e4dc48d56d0c8f", 4970130103ULL},
+    Origin{"model-00011-of-00022.safetensors",
+           "905d27f9db887284289a043f9638020258c5f90d52122cdce2e7aef941a431f2", 5341257482ULL},
+    Origin{"model-00012-of-00022.safetensors",
+           "c4d2bb76fa4613f7386ddaa7045608c320f9736623211a814aa28fb370530dec", 4967968541ULL},
+    Origin{"model-00013-of-00022.safetensors",
+           "1f20a5e1f2256b2fb6a78fef52f9e66daa970f4318ab1be3abb32a1effedbbf3", 5337131651ULL},
+    Origin{"model-00014-of-00022.safetensors",
+           "860d12691792df5f08c9dfe245dc356773741f1edcc1fd430672ef06ac387635", 5337131799ULL},
+    Origin{"model-00015-of-00022.safetensors",
+           "259fb7577b8248f6dcbe6a932fe5d2f1c8869eda761ef3394fe6ad06065f216c", 4970130195ULL},
+    Origin{"model-00016-of-00022.safetensors",
+           "e931785f9ff4e0a567bf8c06df37639be46b4dae156e0f8b39b9d32a03d75792", 5341257440ULL},
+    Origin{"model-00017-of-00022.safetensors",
+           "4f4610dc4a862bf9d93d70cfd0ec037e8e7943a734794d34eb5c0d748b74747a", 4967968481ULL},
+    Origin{"model-00018-of-00022.safetensors",
+           "afdb4828920186600f9d61537d1465979fb36692f4eddb8c5a961a6b72964b77", 5337131695ULL},
+    Origin{"model-00019-of-00022.safetensors",
+           "869d34c6e8f7db79bd4e54b9833d5b0db45eefac860c9bd64fbd312bf862a667", 5337131801ULL},
+    Origin{"model-00020-of-00022.safetensors",
+           "5ca2f994fec1aa06fefef6646b9f072cf70f7f73aa8dab4c7c1a9a424afb4a52", 4970130135ULL},
+    Origin{"model-00021-of-00022.safetensors",
+           "58def6762f29cc798437e5649a56ee75d053faca69138a2454dbdb34bb8a37c3", 5341257436ULL},
+    Origin{"model-00022-of-00022.safetensors",
+           "30a3c82b573d813a1d2349f1c05c308c0d415f3ca1bb67caa0bfaad8a6afa7a3", 3715570974ULL},
+    Origin{"model.safetensors.index.json",
+           "8848503860c7da8619fdc8d5e65201868f8f1d21d69d2e21166c95522379ff77", 420813ULL}};
 
 constexpr Profile kQwen2Exl3_4_0{
     ProfileId::kQwen2Exl3_4_0,
@@ -251,6 +310,7 @@ const Profile* Approved(std::string_view architecture, std::span<const artifact:
                   std::pair{&kQwen2Exl3_4_5, std::span<const Origin>(kQwen2Exl3_4_5Origins)},
                   std::pair{&kQwenGguf, std::span<const Origin>(kQwenOrigins)},
                   std::pair{&kQwenModelOpt, std::span<const Origin>(kQwenModelOptOrigins)},
+                  std::pair{&kQwenMlx, std::span<const Origin>(kQwenMlxOrigins)},
                   std::pair{&kDsv4Gguf, std::span<const Origin>(kDsv4Origins)}}) {
     if (architecture != profile->architecture || origins.size() != expected_origins.size())
       continue;
@@ -319,6 +379,25 @@ std::expected<std::vector<spec::SourceValue>, std::string> Values(const Profile&
       values->push_back(spec::SourceValue{.key = "llmp.qwen4exp.expert_scales", .value = false});
       return values;
     }
+    case ProfileId::kQwenMlx: {
+      const model::Qwen38PleHash hash{
+          .multipliers = {23703573157769, 20109073645365, 8052911324071},
+          .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
+                      160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114,
+                      300001275},
+          .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
+                    20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161,
+                    20000171}};
+      model::Qwen38Profile p = model::Qwen38Flash();
+      p.ple_row = 256;
+      auto values = spec::mappings::Qwen38GgufValues(p, hash);
+      if (!values) return std::unexpected(values.error());
+      values->push_back(
+          spec::SourceValue{.key = "llmp.qwen4exp.indexer", .value = std::string("fused")});
+      values->push_back(spec::SourceValue{.key = "llmp.qwen4exp.experts_stacked", .value = false});
+      values->push_back(spec::SourceValue{.key = "llmp.qwen4exp.expert_scales", .value = false});
+      return values;
+    }
     case ProfileId::kGemma2:
       return spec::mappings::Gemma2V0Values(model::Gemma2_2B());
     case ProfileId::kGemma3:
@@ -333,6 +412,7 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const Pro
   const bool exl3 =
       profile.id == ProfileId::kQwen2Exl3_4_0 || profile.id == ProfileId::kQwen2Exl3_4_5;
   const bool modelopt = profile.id == ProfileId::kQwenModelOpt;
+  const bool mlx = profile.id == ProfileId::kQwenMlx;
   std::vector<const spec::SourceTensor*> sorted;
   sorted.reserve(source.tensors.size());
   for (const auto& t : source.tensors) {
@@ -367,6 +447,27 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const Pro
             (t.part != format::PartRole::kCodes && t.part != format::PartRole::kBlockScales &&
              t.part != format::PartRole::kTensorScale) ||
             f.params.tensor_scale != nv || f.params.k_bits != 0 ||
+            f.params.codebook != format::Exl3Codebook::kNone ||
+            (t.experts ? (f.shape.rank != 3 || f.shape.ne[2] != 512) : (f.shape.rank != 2)))
+          return Refused("native tensor layout, part, parameters or expert geometry differs");
+      } else {
+        return Refused("native tensor layout, part, parameters or expert geometry differs");
+      }
+    } else if (mlx) {
+      const bool dense = f.layout == format::Layout::kDense;
+      const bool split = f.layout == format::Layout::kSplit;
+      if (dense) {
+        if (f.encoding != format::Encoding::kBF16 || t.part != format::PartRole::kData ||
+            f.params != format::EncodingParams{} || t.experts || f.shape.rank < 1 ||
+            f.shape.rank > 2)
+          return Refused("native tensor layout, part, parameters or expert geometry differs");
+      } else if (split) {
+        if (f.encoding != format::Encoding::kAffine ||
+            (t.part != format::PartRole::kCodes && t.part != format::PartRole::kBlockScales &&
+             t.part != format::PartRole::kBiases) ||
+            f.params.bits != 4 || f.params.group != 32 ||
+            f.params.scale != format::AffineScale::kBF16 || f.params.zero_point ||
+            f.params.tensor_scale || f.params.k_bits != 0 ||
             f.params.codebook != format::Exl3Codebook::kNone ||
             (t.experts ? (f.shape.rank != 3 || f.shape.ne[2] != 512) : (f.shape.rank != 2)))
           return Refused("native tensor layout, part, parameters or expert geometry differs");
@@ -463,10 +564,12 @@ std::expected<void, std::string> CheckComponentAdmission(
   const bool exl3 =
       profile->id == ProfileId::kQwen2Exl3_4_0 || profile->id == ProfileId::kQwen2Exl3_4_5;
   const bool modelopt = profile->id == ProfileId::kQwenModelOpt;
+  const bool mlx = profile->id == ProfileId::kQwenMlx;
   const std::string_view expected_container =
-      exl3 ? "exl3" : (modelopt ? "safetensors" : "gguf");
+      exl3 ? "exl3" : (modelopt ? "safetensors" : (mlx ? "mlx" : "gguf"));
   const std::vector<std::string> expected_folds =
-      modelopt ? std::vector<std::string>{"gdn.value_heads_tiled"} : std::vector<std::string>{};
+      (modelopt || mlx) ? std::vector<std::string>{"gdn.value_heads_tiled"}
+                        : std::vector<std::string>{};
   if (source.container != expected_container || !source.converter.empty() ||
       source.folds != expected_folds || source.tensors.size() != profile->tensors)
     return Refused("source container, transforms or tensor inventory differs from its profile");
@@ -476,7 +579,8 @@ std::expected<void, std::string> CheckComponentAdmission(
   if (auto inventory = Inventory(source, *profile); !inventory) return inventory;
   const auto& stage = model.stages.front();
   if (profile->id != ProfileId::kQwen2Gguf && !exl3 && profile->id != ProfileId::kQwenGguf &&
-      profile->id != ProfileId::kQwenModelOpt && profile->id != ProfileId::kDsv4Gguf &&
+      profile->id != ProfileId::kQwenModelOpt && profile->id != ProfileId::kQwenMlx &&
+      profile->id != ProfileId::kDsv4Gguf &&
       (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
        stage.heads.output->weights.size() != 1 ||
        stage.embedding->weights.front().tensor != stage.heads.output->weights.front().tensor))
@@ -486,11 +590,10 @@ std::expected<void, std::string> CheckComponentAdmission(
   // Profile constants are an approval oracle only. Execute the authenticated
   // stored spec unchanged; never replace a disagreeing spec by this expected one.
   const auto mapping =
-      profile->id == ProfileId::kQwenModelOpt
+      (profile->id == ProfileId::kQwenModelOpt || profile->id == ProfileId::kQwenMlx)
           ? &spec::mappings::Qwen38NativeMapping()
           : spec::FindMapping(profile->architecture);
-  const auto expected =
-      spec::Synthesize(*mapping, source, *values);
+  const auto expected = spec::Synthesize(*mapping, source, *values);
   if (!expected) return Refused(expected.error());
   if (*expected != model) return Refused("stored spec differs from the approved component profile");
   const std::array<std::span<const spec::SourceTensor>, 1> tables{source.tensors};
@@ -505,10 +608,11 @@ std::expected<void, std::string> CheckComponentArtifactAdmission(
   const auto* profile = Approved(artifact.model().architecture, artifact.sources());
   if (profile == nullptr) return Refused("source identity has no approved v1 execution profile");
   const bool modelopt = profile->id == ProfileId::kQwenModelOpt;
-  const bool folds_ok =
-      modelopt ? (artifact.folds().size() == 1 &&
-                  artifact.folds().front().name == "gdn.value_heads_tiled")
-               : artifact.folds().empty();
+  const bool mlx = profile->id == ProfileId::kQwenMlx;
+  const bool folds_ok = (modelopt || mlx)
+                            ? (artifact.folds().size() == 1 &&
+                               artifact.folds().front().name == "gdn.value_heads_tiled")
+                            : artifact.folds().empty();
   if (!folds_ok || !artifact.relayouts().empty() ||
       artifact.resources().size() != profile->tensors - profile->arrays ||
       artifact.expert_arrays().size() != profile->arrays)
@@ -541,7 +645,8 @@ std::expected<spec::PolicyRule, std::string> ComponentAdmissionPolicy(
     return Refused("execution envelope exceeds the approved component profile");
   if (profile->id == ProfileId::kGemma3 && envelope.context > 4096 && envelope.slots != 1)
     return Refused("Gemma3 wider context requires exactly one owner");
-  if (profile->id == ProfileId::kQwenModelOpt) return spec::PolicyRule{};
+  if (profile->id == ProfileId::kQwenModelOpt || profile->id == ProfileId::kQwenMlx)
+    return spec::PolicyRule{};
   // Reuse the approved mapping's policy. These constants have just been
   // proved equal to the complete stored spec, including whether every layer
   // has its routed block. No checkpoint key bag or v0 descriptor is invented.

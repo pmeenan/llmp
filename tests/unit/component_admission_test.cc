@@ -20,7 +20,6 @@
 #include "base/sha256.h"
 #include "dsv4_gguf_normalization_fixture.h"
 #include "import/normalize.h"
-#include "tokenizer_fixtures.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
@@ -33,6 +32,7 @@
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
 #include "spec_fixtures.h"
+#include "tokenizer_fixtures.h"
 
 namespace {
 namespace rt = llmp::runtime;
@@ -450,12 +450,12 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterV0ValuesRejectsMismatchedAnd
   const auto make_plan = [](std::string arch) {
     llmp::test::V1Plan p;
     p.architecture = std::move(arch);
-    p.groups = {
-        llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
-                            .resources = {{.name = "token_embd.weight",
-                                           .format = {.encoding = fm::Encoding::kBF16,
-                                                      .layout = fm::Layout::kDense,
-                                                      .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
+    p.groups = {llmp::test::V1Group{
+        .kind = llmp::artifact::GroupKind::kTable,
+        .resources = {{.name = "token_embd.weight",
+                       .format = {.encoding = fm::Encoding::kBF16,
+                                  .layout = fm::Layout::kDense,
+                                  .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
     return p;
   };
 
@@ -473,12 +473,14 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterV0ValuesRejectsMismatchedAnd
 
   const auto dflash_drafter = llmp::artifact::Artifact::Open(
       llmp::test::Publish(scratch / "dflash", llmp::test::Render(make_plan("dflash"))));
-  ASSERT_TRUE(dflash_drafter.has_value()) << (dflash_drafter ? "" : dflash_drafter.error().ToString());
+  ASSERT_TRUE(dflash_drafter.has_value())
+      << (dflash_drafter ? "" : dflash_drafter.error().ToString());
 
   // Mismatched pairings are rejected with descriptive errors.
   auto mismatched1 = rt::ComponentDrafterV0Values(*gemma_target, *dflash_drafter);
   EXPECT_FALSE(mismatched1.has_value());
-  EXPECT_NE(mismatched1.error().find("no drafter dflash for architecture gemma4"), std::string::npos);
+  EXPECT_NE(mismatched1.error().find("no drafter dflash for architecture gemma4"),
+            std::string::npos);
 
   auto mismatched2 = rt::ComponentDrafterV0Values(*dsv4_target, *gemma_drafter);
   EXPECT_FALSE(mismatched2.has_value());
@@ -522,8 +524,7 @@ TEST(ComponentAdmissionModelOptTest,
   EXPECT_TRUE(policy->text.empty());
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262145, .slots = 1}));
-  EXPECT_FALSE(
-      rt::ComponentAdmissionPolicy(model, source, origins, {.context = 0, .slots = 1}));
+  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 0, .slots = 1}));
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262144, .slots = 0}));
 
@@ -570,10 +571,91 @@ TEST(ComponentAdmissionModelOptTest,
   auto rendered = llmp::test::Render(plan);
   llmp::test::Json::Array source_list;
   for (const auto& o : origins) {
-    source_list.emplace_back(llmp::test::Json::Object{
-        {"bytes", static_cast<std::int64_t>(o.bytes.value())},
-        {"name", o.name},
-        {"sha256", llmp::base::ToHex(o.sha256)}});
+    source_list.emplace_back(
+        llmp::test::Json::Object{{"bytes", static_cast<std::int64_t>(o.bytes.value())},
+                                 {"name", o.name},
+                                 {"sha256", llmp::base::ToHex(o.sha256)}});
+  }
+  rendered.manifest["source"] = llmp::test::Json(std::move(source_list));
+  auto art = llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "artifact", rendered));
+  ASSERT_TRUE(art.has_value()) << (art ? "" : art.error().ToString());
+  EXPECT_FALSE(rt::CheckComponentArtifactAdmission(*art));
+  EXPECT_FALSE(rt::ReadComponentAdmission(*art));
+}
+
+TEST(ComponentAdmissionMlxTest,
+     FullNormalizedTargetPreservesNativeProfilePolicyAndClosedSourceAuthority) {
+  auto fixture = llmp::test_support::qwen38::NativeMlx();
+  auto origins = llmp::test_support::qwen38::MlxOrigins();
+  const auto& model = fixture.model;
+  const auto& source = fixture.source;
+  const auto admitted = rt::CheckComponentAdmission(model, source, origins);
+  ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+
+  auto policy =
+      rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262144, .slots = 8});
+  ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+  EXPECT_TRUE(policy->text.empty());
+  EXPECT_FALSE(
+      rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262145, .slots = 1}));
+  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 0, .slots = 1}));
+  EXPECT_FALSE(
+      rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262144, .slots = 0}));
+
+  for (unsigned mutation = 0; mutation != 9; ++mutation) {
+    auto changed_model = model;
+    auto changed_source = source;
+    auto changed_origins = origins;
+    if (mutation == 0) changed_origins[0].sha256[0] ^= 1;
+    if (mutation == 1)
+      changed_origins[0].bytes = llmp::base::Bytes(changed_origins[0].bytes.value() + 1);
+    if (mutation == 2) changed_source.container = "safetensors";
+    if (mutation == 3) changed_source.folds.clear();
+    if (mutation == 4) changed_model.stages[0].folds.clear();
+    if (mutation == 5) changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
+    if (mutation == 6) {
+      auto it = std::ranges::find_if(changed_source.tensors, [](const auto& t) {
+        return t.format.encoding == fm::Encoding::kAffine;
+      });
+      ASSERT_NE(it, changed_source.tensors.end());
+      it->format.params.bits = 8;
+    }
+    if (mutation == 7) {
+      changed_model.stages[0].heads.output->weights[0].tensor =
+          changed_model.stages[0].embedding->weights[0].tensor;
+    }
+    if (mutation == 8) {
+      auto it = std::ranges::find_if(changed_source.tensors, [](const auto& t) {
+        return t.format.encoding == fm::Encoding::kAffine;
+      });
+      ASSERT_NE(it, changed_source.tensors.end());
+      it->format.params.zero_point = true;
+    }
+    EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
+        << mutation;
+  }
+
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "component-admission-mlx";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  std::filesystem::create_directories(scratch, ec);
+
+  llmp::test::V1Plan plan;
+  plan.architecture = "qwen4exp";
+  plan.groups = {
+      llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
+                          .resources = {{.name = "token_embd.weight",
+                                         .format = {.encoding = fm::Encoding::kBF16,
+                                                    .layout = fm::Layout::kDense,
+                                                    .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
+  auto rendered = llmp::test::Render(plan);
+  llmp::test::Json::Array source_list;
+  for (const auto& o : origins) {
+    source_list.emplace_back(
+        llmp::test::Json::Object{{"bytes", static_cast<std::int64_t>(o.bytes.value())},
+                                 {"name", o.name},
+                                 {"sha256", llmp::base::ToHex(o.sha256)}});
   }
   rendered.manifest["source"] = llmp::test::Json(std::move(source_list));
   auto art = llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "artifact", rendered));
