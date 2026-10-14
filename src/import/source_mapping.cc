@@ -110,6 +110,17 @@ constexpr std::array kDsv4Encodings{format::Encoding::kF32,   format::Encoding::
                                     format::Encoding::kQ6_K,  format::Encoding::kIQ3_XXS,
                                     format::Encoding::kMxfp4, format::Encoding::kQ4_K};
 
+constexpr std::array<std::int64_t, 3> kDsparkRatios{0, 0, 0};
+constexpr std::array<std::int64_t, 3> kDsparkTargetLayers{41, 42, 43};
+constexpr std::array kDsparkRequirements{
+    ScalarRequirement{"dflash.attention.value_length", 512, true},
+    ScalarRequirement{"dflash.block_size", 5, true}};
+constexpr std::array kDsparkLists{
+    ListRequirement{"dflash.attention.compress_ratios", 3, kDsparkRatios},
+    ListRequirement{"dflash.swiglu_clamp_exp", 3},
+    ListRequirement{"dflash.swiglu_clamp_shexp", 3},
+    ListRequirement{"dflash.target_layers", 3, kDsparkTargetLayers}};
+
 bool SameShape(std::string_view a, std::string_view b) {
   return (a.find(spec::kLayerField) == std::string_view::npos) ==
          (b.find(spec::kLayerField) == std::string_view::npos);
@@ -191,6 +202,9 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                                  SourceMapping{.container = "gguf",
                                                .architecture = &spec::mappings::DsparkMapping(),
                                                .auxiliary = kAuxiliary,
+                                               .requirements = kDsparkRequirements,
+                                               .lists = kDsparkLists,
+                                               .encodings = kDsv4Encodings,
                                                .extended_components = true}};
   for (const auto& table : tables)
     if (container == table.container && architecture == table.architecture->architecture)
