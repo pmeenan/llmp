@@ -250,7 +250,7 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
   // The complete spec and canonical/digest copies, parameter/role maps and
   // retained source bindings. Serialization is still inside the parser loan.
   const auto canonical = spec::ToJson(model);
-  if (!add(canonical.size(), 64) || !add(1, std::uint64_t{64} << 20U))
+  if (!add(canonical.size(), 2) || !add(1, std::uint64_t{64} << 20U))
     return Error("component spec construction payment overflows");
   const auto source = [&](const ja::Artifact& artifact) {
     std::uint64_t non_expert = 0;
