@@ -573,8 +573,10 @@ TEST_F(ImportAdversarialTest, FileReplacedWithNewInodeBeforeStreamingRefused) {
 
   const auto& file = plan->source().files.front();
   const auto content = SerializeGguf(TinyGemma2());
-  std::filesystem::remove(file.path);
-  Write(file.path, content);  // New file creation gives a new inode.
+  const auto old_path = file.path.string() + ".replaced";
+  std::filesystem::rename(file.path, old_path);
+  Write(file.path, content);  // New file creation gives a new inode while old file holds old inode.
+  std::filesystem::remove(old_path);
 
   auto result = WriteArtifact(*plan, Options());
   ASSERT_FALSE(result.has_value());
