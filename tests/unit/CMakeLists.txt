@@ -473,8 +473,14 @@ llmp_gtest(reference_decode_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # The device decoders' geometry (kernels/decode/operand.h) against the
 # format layer's, in every profile.
 add_executable(grouped_worklist_test grouped_worklist_test.cc)
-target_link_libraries(grouped_worklist_test PRIVATE llmp_step_common)
+target_link_libraries(grouped_worklist_test PRIVATE llmp_step_common llmp_fake_device_backend)
 llmp_gtest(grouped_worklist_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(q8_state_test q8_state_test.cc)
+target_link_libraries(q8_state_test PRIVATE llmp_components llmp_reference_kernels llmp_spec
+                                           llmp_model llmp_artifact llmp_json llmp_ggml_tensors
+                                           llmp_fake_device_backend llmp_base)
+llmp_gtest(q8_state_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(decode_test decode_test.cc)
 target_link_libraries(decode_test PRIVATE llmp_format)

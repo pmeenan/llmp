@@ -98,7 +98,7 @@ std::expected<void, DecodeError> EncodeRows(const format::TensorFormat& format,
                                             std::span<const float> rows, std::span<std::byte> data);
 
 // Reference component cache row: round complete blocks through EncodeRows /
-// DecodeRows, not per-scalar rounding. At most 256 values; no retained spans.
+// DecodeRows, not per-scalar rounding. At most 512 values; no retained spans.
 std::expected<void, std::string> StoreStateRow(format::Encoding encoding,
                                                std::span<const double> source,
                                                std::span<double> destination);

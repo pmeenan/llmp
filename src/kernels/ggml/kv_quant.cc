@@ -99,8 +99,9 @@ std::expected<void, KernelFailure> CheckFlashAttnVecQuant(const ggml_tensor* nod
     return Rejected("attention over an empty or unmeasurable tensor");
   }
   const std::int64_t head = q->ne[0];
-  if (head != 64 && head != 256) {
-    return Rejected("quantized vector attention is compiled at head sizes 64 and 256");
+  if (head != 64 && head != 256 && (head != 512 || k->type != GGML_TYPE_Q8_0)) {
+    return Rejected(
+        "quantized vector attention is compiled at head sizes 64 and 256 (and 512 for Q8_0)");
   }
   // ggml_flash_attn_ext's shapes (ggml.c) at head size D: Q [D, rows,
   // heads], K and V [D, cells, kv heads], one sample, a whole number of

@@ -77,6 +77,7 @@ using format::Encoding;
 
 constexpr std::array<std::string_view, 2> kIndexers{"fused", "split"};
 constexpr std::array<std::string_view, 2> kRollbacks{"snapshot", "truncate"};
+constexpr std::array<std::string_view, 2> kKvEncodings{"f16", "q8_0"};
 
 constexpr std::array kParams{
     kNormZeroCentered,
@@ -99,6 +100,10 @@ constexpr std::array kParams{
     // rewritten before they are read again (a drafter's own caches).
     ParamSpec{
         .name = "rollback", .type = ParamType::kName, .required = false, .choices = kRollbacks},
+    ParamSpec{.name = "kv_encoding",
+              .type = ParamType::kName,
+              .required = false,
+              .choices = kKvEncodings},
 };
 
 enum : std::uint16_t {
@@ -140,6 +145,7 @@ struct Dims {
   bool fused, snapshot;
   float eps, base;
   std::uint32_t context;
+  Encoding kv_encoding;
 };
 Dims DimsOf(const Instance& in) {
   const Params& p = in.params;
@@ -157,7 +163,8 @@ Dims DimsOf(const Instance& in) {
          .snapshot = p.Name("rollback") == "snapshot",
          .eps = F32(p.Real("eps")),
          .base = F32(p.Real("rope_base")),
-         .context = in.stage.context};
+         .context = in.stage.context,
+         .kv_encoding = p.Name("kv_encoding") == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16};
   const auto s = p.Ints("rope_sections");
   for (std::size_t i = 0; i < s.size() && i < 4; ++i)
     d.sections.at(i) = static_cast<std::uint32_t>(s[i]);
@@ -168,6 +175,9 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if (NormOffsetContradictsFold(in))
     return std::unexpected("zero-centered norms contradict the norm.plus_one fold");
   const Dims d = DimsOf(in);
+  if (d.kv_encoding == Encoding::kQ8_0 && (d.d != 64 && d.d != 256 && d.d != 512)) {
+    return std::unexpected("Q8_0 KV requires head_dim 64, 256, or 512");
+  }
   if (d.heads % d.kvh != 0) return std::unexpected("heads are not a multiple of kv_heads");
   if (in.params.Ints("rope_sections").size() != 4) return std::unexpected("four rope sections");
   if (d.rope_dims % 2 != 0 || d.rope_dims > d.d || d.rope_dims > d.idim) {
@@ -191,24 +201,31 @@ model::StateContract State(const Instance& in) {
   const Dims d = DimsOf(in);
   const model::Rollback rollback =
       d.snapshot ? model::Rollback::kSnapshot : model::Rollback::kTruncate;
-  const auto kv = model::CellBytes(Encoding::kF16, d.kvh * d.d);
-  base::Check(kv.has_value(), "an F16 cell of any width");
-  return {.tensors = {
-              {.name = "k", .kind = model::StateKind::kKv, .cell_bytes = *kv, .rollback = rollback},
-              {.name = "v", .kind = model::StateKind::kKv, .cell_bytes = *kv, .rollback = rollback},
-              {.name = "indexer_k",
-               .kind = model::StateKind::kIndex,
-               .encoding = Encoding::kF32,
-               .cell_bytes = d.idim * 4,
-               .rollback = rollback},
-              {.name = "indexer_blocks",
-               .kind = model::StateKind::kBlockKeys,
-               .encoding = Encoding::kBF16,
-               .cell_bytes = d.idim * 2,
-               .cells = model::CellRule::kPerBlock,
-               .window_or_ratio = static_cast<std::uint32_t>(d.ratio),
-               .basis = model::BlockBasis::kReadCells,
-               .rollback = rollback}}};
+  const auto kv = model::CellBytes(d.kv_encoding, d.kvh * d.d);
+  base::Check(kv.has_value(), "a cell of any width");
+  return {.tensors = {{.name = "k",
+                       .kind = model::StateKind::kKv,
+                       .encoding = d.kv_encoding,
+                       .cell_bytes = *kv,
+                       .rollback = rollback},
+                      {.name = "v",
+                       .kind = model::StateKind::kKv,
+                       .encoding = d.kv_encoding,
+                       .cell_bytes = *kv,
+                       .rollback = rollback},
+                      {.name = "indexer_k",
+                       .kind = model::StateKind::kIndex,
+                       .encoding = Encoding::kF32,
+                       .cell_bytes = d.idim * 4,
+                       .rollback = rollback},
+                      {.name = "indexer_blocks",
+                       .kind = model::StateKind::kBlockKeys,
+                       .encoding = Encoding::kBF16,
+                       .cell_bytes = d.idim * 2,
+                       .cells = model::CellRule::kPerBlock,
+                       .window_or_ratio = static_cast<std::uint32_t>(d.ratio),
+                       .basis = model::BlockBasis::kReadCells,
+                       .rollback = rollback}}};
 }
 
 std::vector<MaskUse> Masks(const Instance&) { return {{.tensor = kCacheK, .window = 0}}; }
@@ -358,7 +375,10 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   const ir::TensorId v_rows = b.Reshape(v, Shape({kv, rows}));
   for (std::size_t s = 0; s < segments.size(); ++s) {
     b.SetOwner(static_cast<std::uint8_t>(s));
-    const ir::TensorId seg_v = rows_of(v_rows, s);
+    ir::TensorId seg_v = rows_of(v_rows, s);
+    if (d.kv_encoding == Encoding::kQ8_0 && b.tensor(seg_v).format.encoding != Encoding::kF32) {
+      seg_v = b.Convert(seg_v, Encoding::kF32);
+    }
     b.CacheStore(f.State(s, kCacheV), seg_v, f.step.StoreCells(s, kv_cells));
     b.SetJoined();
   }
@@ -452,8 +472,14 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
             : b.View(q, q_shape, ViewStrides(qn.nb[0], qn.nb[1], qn.nb[2], q_shape),
                      std::uint64_t{seg.first_row} * qn.nb[2]);
     const ir::TensorId queries = b.Permute(mine, {0, 2, 1, 3});
-    const std::uint64_t el = 2;
     const auto cache_view = [&](ir::TensorId cache) {
+      if (d.kv_encoding == Encoding::kQ8_0) {
+        const format::Shape shape = Shape({d.d, d.kvh, read});
+        auto format = b.tensor(cache).format;
+        format.shape = shape;
+        return b.Permute(b.View(cache, shape, ir::NaturalStrides(format), 0), {0, 2, 1, 3});
+      }
+      const std::uint64_t el = 2;
       return b.View(cache, Shape({d.d, read, d.kvh}), {el, kv * el, d.d * el, d.d * el * d.kvh}, 0);
     };
     const ir::TensorId keys_view = cache_view(f.State(s, kCacheK));
@@ -513,6 +539,9 @@ void Rotate(std::span<double> row, std::uint64_t heads, std::uint64_t dim, const
 std::expected<void, std::string> Reference(RefIO& io) {
   const Instance& in = *io.instance;
   const Dims d = DimsOf(in);
+  if (d.kv_encoding == Encoding::kQ8_0 && io.store_row == nullptr) {
+    return std::unexpected("Q8_0 reference state requires the block row codec");
+  }
   const std::uint64_t w = d.width;
   const std::uint64_t rows = io.rows();
   if (io.stream.size() != w * rows || io.state.size() != io.segments.size() ||
@@ -581,10 +610,22 @@ std::expected<void, std::string> Reference(RefIO& io) {
       Rotate(std::span(iq).subspan(r * d.ih * d.idim, d.ih * d.idim), d.ih, d.idim, d, pos);
       const std::uint64_t cell = seg.past + t;
       if (cell >= capacity) return std::unexpected("qsa reference: a row past the cache");
-      for (std::uint64_t j = 0; j < kv; ++j) {
-        kc[(cell * kv) + j] = Stored(Encoding::kF16, k[(r * kv) + j]);
-        vc[(cell * kv) + j] = Stored(Encoding::kF16, v[(r * kv) + j]);
-      }
+      const auto store =
+          [&](std::vector<double>& cache,
+              const std::vector<double>& values) -> std::expected<void, std::string> {
+        for (std::uint64_t head = 0; head < d.kvh; ++head) {
+          auto dst = std::span(cache).subspan(cell * kv + head * d.d, d.d);
+          const auto src = std::span(values).subspan(r * kv + head * d.d, d.d);
+          if (d.kv_encoding == Encoding::kQ8_0) {
+            if (auto stored = io.store_row(d.kv_encoding, src, dst); !stored) return stored;
+          } else {
+            for (std::size_t j = 0; j < dst.size(); ++j) dst[j] = Stored(d.kv_encoding, src[j]);
+          }
+        }
+        return {};
+      };
+      if (auto stored = store(kc, k); !stored) return stored;
+      if (auto stored = store(vc, v); !stored) return stored;
       for (std::uint64_t j = 0; j < d.idim; ++j) {
         ic[(cell * d.idim) + j] = Stored(Encoding::kF32, raw[(r * d.idim) + j]);
       }

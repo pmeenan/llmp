@@ -1202,9 +1202,9 @@ bool AcceptsL2Norm(const ex::CapabilityQuery& q) {
 bool AcceptsAny(const ex::CapabilityQuery& q) { return Built(q); }
 bool AcceptsPrepared(const ex::CapabilityQuery& q) { return Built(q) && Routed(q); }
 
-// kv_quant.h's: head sizes 64 and 256, no sinks; rows of whole blocks.
+// kv_quant.h's: head sizes 64, 256, and 512, no sinks; rows of whole blocks.
 bool AcceptsQuantAttention(const ex::CapabilityQuery& q) {
-  return Built(q) && (q.k == 64 || q.k == 256) && q.n == q.k && !Has(q, 4);
+  return Built(q) && (q.k == 64 || q.k == 256 || q.k == 512) && q.n == q.k && !Has(q, 4);
 }
 bool AcceptsQuantStore(const ex::CapabilityQuery& q) { return Built(q) && q.k >= 32; }
 bool AcceptsQuantRopeStore(const ex::CapabilityQuery& q) {

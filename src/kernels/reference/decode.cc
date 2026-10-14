@@ -545,11 +545,11 @@ std::expected<void, DecodeError> EncodeRows(const format::TensorFormat& format,
 std::expected<void, std::string> StoreStateRow(format::Encoding encoding,
                                                std::span<const double> source,
                                                std::span<double> destination) {
-  if (encoding != Encoding::kQ8_0 || source.empty() || source.size() > 256 ||
+  if (encoding != Encoding::kQ8_0 || source.empty() || source.size() > 512 ||
       source.size() % 32 != 0 || destination.size() != source.size())
-    return std::unexpected("reference state row requires whole Q8_0 blocks, at most 256 values");
-  std::array<float, 256> values{};
-  std::array<std::byte, 272> bytes{};
+    return std::unexpected("reference state row requires whole Q8_0 blocks, at most 512 values");
+  std::array<float, 512> values{};
+  std::array<std::byte, 544> bytes{};
   for (std::size_t i = 0; i < source.size(); ++i) values[i] = static_cast<float>(source[i]);
   const auto shape = format::ShapeOf(std::array<std::uint64_t, 2>{source.size(), 1});
   if (!shape) return std::unexpected("invalid reference state row shape");

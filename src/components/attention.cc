@@ -210,10 +210,11 @@ Dims DimsOf(const Instance& in) {
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   const Dims d = DimsOf(in);
-  if (d.kv_encoding == Encoding::kQ8_0 && (d.kd != d.vd || (d.kd != 64 && d.kd != 256) ||
-                                           d.explicit_scores || (d.kd == 64 && d.softcap != 0.0F)))
+  if (d.kv_encoding == Encoding::kQ8_0 &&
+      (d.kd != d.vd || (d.kd != 64 && d.kd != 256 && d.kd != 512) || d.explicit_scores ||
+       (d.kd != 256 && d.softcap != 0.0F)))
     return std::unexpected(
-        "Q8_0 KV requires owned D64/D256 attention, equal K/V, "
+        "Q8_0 KV requires owned D64/D256/D512 attention, equal K/V, "
         "no explicit scores and softcap only at D256");
   if (d.heads % d.kv_heads != 0) return std::unexpected("heads are not a multiple of kv_heads");
   if (d.rope_dims > d.kd || d.rope_dims % 2 != 0) {

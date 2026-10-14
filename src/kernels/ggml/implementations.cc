@@ -1127,7 +1127,7 @@ constexpr std::array<Kernel::Entry, 141> kKernels = {{
     // Block-quantized KV caches (kv_quant.h).
     {.name = kFlashAttnVecQ8Name,
      .operation = execution::Operation::kFlashAttn,
-     .variant = "ggml_cuda_flash_attn_ext_vec_case<D, Q8_0, Q8_0> for D 64 and 256: "
+     .variant = "ggml_cuda_flash_attn_ext_vec_case<D, Q8_0, Q8_0> for D 64, 256, and 512: "
                 "flash_attn_mask_to_KV_max<ncols> from 1,024 query rows, flash_attn_ext_vec<D, "
                 "1 or 2, Q8_0, Q8_0, softcap at D 256>, flash_attn_combine_results<D> over "
                 "parallel blocks; Q to Q8_1 in shared memory; upstream launch configuration",

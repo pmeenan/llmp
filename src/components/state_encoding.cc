@@ -55,31 +55,38 @@ std::expected<std::uint64_t, std::string> KvCacheEncodingBytes(const spec::Model
                                                                format::Encoding encoding) {
   if (encoding == format::Encoding::kF16) return 0;
   if (encoding != format::Encoding::kQ8_0 || model.pipeline != spec::PipelineKind::kLlm ||
-      model.stages.size() != 1 || model.stages.front().role != spec::StageRole::kTarget ||
-      !model.stages.front().reads.empty() || !model.stages.front().taps.empty())
+      model.stages.empty() || model.stages.size() > 2 ||
+      model.stages.front().role != spec::StageRole::kTarget ||
+      !model.stages.front().reads.empty() ||
+      (model.stages.size() == 1 && !model.stages.front().taps.empty()))
     return std::unexpected("Q8_0 KV requires a single independent LLM target");
-  const auto& stage = model.stages.front();
-  if (stage.layers.size() > kMaxStageLayers || stage.stream.streams != 1 ||
-      !stage.heads.mtp.empty())
-    return std::unexpected("Q8_0 KV source is outside the dense stage bounds");
+  if (model.stages.size() == 2 && model.stages.back().role != spec::StageRole::kDrafter)
+    return std::unexpected("second stage must be a drafter");
+  for (const auto& stage : model.stages) {
+    if (stage.layers.size() > kMaxStageLayers || stage.stream.streams > 4 ||
+        !stage.heads.mtp.empty())
+      return std::unexpected("Q8_0 KV source is outside the dense stage bounds");
+  }
   std::uint64_t bytes = kValidationBytes;
   std::size_t count = 0;
-  auto visited = Visit(
-      stage,
-      [&](const spec::ComponentRef& component, bool layer) -> std::expected<void, std::string> {
-        if (component.kind == "attention.dense") {
-          if (!layer || component.params.size() >= spec::kMaxParams ||
-              ++count > spec::kMaxComponents)
-            return std::unexpected("Q8_0 KV parameter inventory exceeds the catalog bound");
-          // Current vector and its replacement can coexist during reserve; copied
-          // scalar parameter strings are in the fixed serial validation allowance.
-          const auto added = (component.params.size() + 1) * sizeof(spec::Param) + 512;
-          if (__builtin_add_overflow(bytes, added, &bytes))
-            return std::unexpected("Q8_0 KV parameter payment overflows");
-        }
-        return {};
-      });
-  if (!visited) return std::unexpected(visited.error());
+  for (const auto& stage : model.stages) {
+    auto visited = Visit(
+        stage,
+        [&](const spec::ComponentRef& component, bool layer) -> std::expected<void, std::string> {
+          if (component.kind == "attention.dense" || component.kind == "attention.qsa") {
+            if (!layer || component.params.size() >= spec::kMaxParams ||
+                ++count > spec::kMaxComponents)
+              return std::unexpected("Q8_0 KV parameter inventory exceeds the catalog bound");
+            // Current vector and its replacement can coexist during reserve; copied
+            // scalar parameter strings are in the fixed serial validation allowance.
+            const auto added = (component.params.size() + 1) * sizeof(spec::Param) + 512;
+            if (__builtin_add_overflow(bytes, added, &bytes))
+              return std::unexpected("Q8_0 KV parameter payment overflows");
+          }
+          return {};
+        });
+    if (!visited) return std::unexpected(visited.error());
+  }
   if (count == 0) return std::unexpected("Q8_0 KV source has no owned dense attention");
   return bytes;
 }
@@ -103,45 +110,54 @@ std::expected<void, std::string> ApplyKvCacheEncoding(spec::ModelSpec& model,
     }
     return {};
   }
-  const auto& stage = model.stages.front();
-  const StageFacts facts{
-      .width = stage.stream.width, .context = stage.context, .folds = stage.folds};
-  auto checked = Visit(
-      stage,
-      [&](const spec::ComponentRef& component, bool layer) -> std::expected<void, std::string> {
-        const auto* definition = Find(component.kind, component.version);
-        if (!definition) return std::unexpected("KV encoding encountered an unknown component");
-        if (component.kind != "attention.dense") {
-          if (definition->state != nullptr || definition->inject != nullptr)
-            return std::unexpected(
-                "Q8_0 KV does not cover a borrowed or specialized state consumer");
+  for (const auto& stage : model.stages) {
+    const StageFacts facts{.width = stage.stream.width,
+                           .context = stage.context,
+                           .streams = stage.stream.streams,
+                           .folds = stage.folds};
+    auto checked = Visit(
+        stage,
+        [&](const spec::ComponentRef& component, bool layer) -> std::expected<void, std::string> {
+          const auto* definition = Find(component.kind, component.version);
+          if (!definition) return std::unexpected("KV encoding encountered an unknown component");
+          if (component.kind != "attention.dense" && component.kind != "attention.qsa") {
+            if (component.kind == "attention.gdn" || component.kind == "residual.ple") {
+              return {};
+            }
+            if (definition->state != nullptr || definition->inject != nullptr)
+              return std::unexpected(
+                  "Q8_0 KV does not cover a borrowed or specialized state consumer");
+            return {};
+          }
+          // The dense/qsa catalog has bounded canonical parameters. Reject list inputs
+          // (except rope_sections) before copying so malformed values cannot exceed budget.
+          std::string_view previous;
+          for (const auto& p : component.params) {
+            const auto* text = std::get_if<std::string>(&p.value);
+            const auto* ints = std::get_if<std::vector<std::int64_t>>(&p.value);
+            if (p.name.empty() || p.name.size() > spec::kMaxText ||
+                (!previous.empty() && previous >= p.name) ||
+                (text && text->size() > spec::kMaxText) ||
+                (ints && (ints->size() > spec::kMaxList || p.name != "rope_sections")) ||
+                std::holds_alternative<std::vector<double>>(p.value))
+              return std::unexpected("dense KV parameters must be bounded canonical scalars");
+            previous = p.name;
+          }
+          spec::ComponentRef candidate{
+              .kind = component.kind, .version = component.version, .params = component.params};
+          SetEncoding(candidate, "q8_0");
+          auto instance =
+              MakeInstance(candidate, facts, layer ? Site::kLayer : Site::kEmbedding, 0, 0);
+          if (!instance) return std::unexpected(instance.error());
           return {};
-        }
-        // The dense catalog has only scalar parameters. Reject list inputs before
-        // copying so malformed values cannot exceed the scalar validation budget.
-        std::string_view previous;
-        for (const auto& p : component.params) {
-          const auto* text = std::get_if<std::string>(&p.value);
-          if (p.name.empty() || p.name.size() > spec::kMaxText ||
-              (!previous.empty() && previous >= p.name) ||
-              (text && text->size() > spec::kMaxText) ||
-              std::holds_alternative<std::vector<std::int64_t>>(p.value) ||
-              std::holds_alternative<std::vector<double>>(p.value))
-            return std::unexpected("dense KV parameters must be bounded canonical scalars");
-          previous = p.name;
-        }
-        spec::ComponentRef candidate{
-            .kind = component.kind, .version = component.version, .params = component.params};
-        SetEncoding(candidate, "q8_0");
-        auto instance =
-            MakeInstance(candidate, facts, layer ? Site::kLayer : Site::kEmbedding, 0, 0);
-        if (!instance) return std::unexpected(instance.error());
-        return {};
-      });
-  if (!checked) return checked;
-  for (auto& layer : model.stages.front().layers)
-    for (auto& component : layer.components)
-      if (component.kind == "attention.dense") SetEncoding(component, "q8_0");
+        });
+    if (!checked) return checked;
+  }
+  for (auto& stage : model.stages)
+    for (auto& layer : stage.layers)
+      for (auto& component : layer.components)
+        if (component.kind == "attention.dense" || component.kind == "attention.qsa")
+          SetEncoding(component, "q8_0");
   return {};
 }
 

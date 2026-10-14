@@ -7,11 +7,11 @@
 // and mask pre-pass kernels are GGML's own, from fattn-vec.cuh and
 // fattn-common.cuh at the pin: this unit instantiates exactly the cases
 // llmpalooza's models need, ggml_cuda_flash_attn_ext_vec_case<D, T, T> for
-// D 64 (Qwen2) and 256 (Gemma 2, 3 and 4's local layers, Qwen3.8) and T
-// Q8_0 and Q4_0, as GGML's template-instances/fattn-vec-instance-q8_0-q8_0.cu
-// and -q4_0-q4_0.cu do for D 64, 128 and 256, with GGML's device flags
-// (CMakeLists.txt), as fattn.cu builds its F16 cases. No model's K or V has
-// head size 128 today; above 256 upstream has no quantized vector case.
+// D 64 (Qwen2), 256 (Gemma 2, 3 and 4's local layers, Qwen3.8), and 512
+// (Gemma 4's global layers) and T Q8_0 (and Q4_0 at 64 and 256), as GGML's
+// template-instances/fattn-vec-instance-q8_0-q8_0.cu and -q4_0-q4_0.cu do for
+// D 64, 128 and 256, with GGML's device flags (CMakeLists.txt), as fattn.cu
+// builds its F16 cases. No model's K or V has head size 128 today.
 
 #include <cstdint>
 #include <cstring>
@@ -26,6 +26,7 @@
 
 DECL_FATTN_VEC_CASE(64, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);
 DECL_FATTN_VEC_CASE(256, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);
+DECL_FATTN_VEC_CASE(512, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);
 DECL_FATTN_VEC_CASE(64, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0);
 DECL_FATTN_VEC_CASE(256, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0);
 
@@ -69,12 +70,17 @@ std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVecQuant(const LaunchCo
   const bool q8 = node->src[1]->type == GGML_TYPE_Q8_0;
   int per_sm = 0;
   const bool capped = softcap != 0.0f;
+  const int head = q->ne[0];
   const cudaError_t occupancy =
-      q->ne[0] == 64
+      head == 64
           ? (q8 ? Occupancy<64, GGML_TYPE_Q8_0>(threads, plan.columns_per_block, capped, &per_sm)
                 : Occupancy<64, GGML_TYPE_Q4_0>(threads, plan.columns_per_block, capped, &per_sm))
-          : (q8 ? Occupancy<256, GGML_TYPE_Q8_0>(threads, plan.columns_per_block, capped, &per_sm)
-                : Occupancy<256, GGML_TYPE_Q4_0>(threads, plan.columns_per_block, capped, &per_sm));
+          : (head == 256 ? (q8 ? Occupancy<256, GGML_TYPE_Q8_0>(threads, plan.columns_per_block,
+                                                                capped, &per_sm)
+                               : Occupancy<256, GGML_TYPE_Q4_0>(threads, plan.columns_per_block,
+                                                                capped, &per_sm))
+                         : Occupancy<512, GGML_TYPE_Q8_0>(threads, plan.columns_per_block, capped,
+                                                          &per_sm));
   if (occupancy != cudaSuccess || per_sm <= 0) {
     return std::unexpected(
         KernelFailure{.error = KernelError::kUnknown,
@@ -93,10 +99,12 @@ std::expected<void, KernelFailure> FlashAttnVecQuant(LaunchContext& launch, ggml
     return std::unexpected(plan.error());
   }
   const bool q8 = node->src[1]->type == GGML_TYPE_Q8_0;
+  const int head = node->src[0]->ne[0];
   void (*run)(ggml_backend_cuda_context&, ggml_tensor*) =
-      node->src[0]->ne[0] == 64
+      head == 64
           ? (q8 ? &RunCase<64, GGML_TYPE_Q8_0> : &RunCase<64, GGML_TYPE_Q4_0>)
-          : (q8 ? &RunCase<256, GGML_TYPE_Q8_0> : &RunCase<256, GGML_TYPE_Q4_0>);
+          : (head == 256 ? (q8 ? &RunCase<256, GGML_TYPE_Q8_0> : &RunCase<256, GGML_TYPE_Q4_0>)
+                         : &RunCase<512, GGML_TYPE_Q8_0>);
   return launch.Run(base::Bytes(plan->scratch),
                     [node, run](ggml_backend_cuda_context& context) { run(context, node); });
 }
