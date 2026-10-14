@@ -485,6 +485,8 @@ TEST(ComponentsDsv4Test, WindowAttentionMatchesItsReference) {
   }
 }
 
+// The first main compressor creates its read input; the indexer reuses
+// it. Both complete pooling assemblies must retain their owner's metadata.
 TEST(ComponentsDsv4Test, FirstAndCachedCompressorAssembliesKeepTheirOwner) {
   auto in = MakeInstance(
       Mqa("ring", 4,

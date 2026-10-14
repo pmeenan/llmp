@@ -213,8 +213,7 @@ namespace {
 // PlanGraph owns one temporary reader index per synchronous lowering; current
 // and future retained programs do not retain that index. This named category
 // is both paid by automatic construction and enforced before index allocation.
-constexpr std::uint64_t kServingReaderScratchBytes =
-    4096ULL * (ir::Graph::kMaxNodes + ir::Graph::kMaxTensors);
+constexpr std::uint64_t kServingReaderScratchBytes = 128ULL << 20;
 
 // Called under the Server's parser loan after source/schema validation, and
 // before any BuildStep/lowering. Graph maxima are the existing IR contract;

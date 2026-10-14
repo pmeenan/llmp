@@ -336,6 +336,10 @@ std::size_t ParamSize(OpKey key) {
         return sizeof(NormRopeParams);
       case FusedKind::kDsv4Compress:
         return sizeof(CompressorParams);
+      case FusedKind::kDsv4LidMask:
+        return sizeof(LidMaskParams);
+      case FusedKind::kGroupedMatMul:
+        return sizeof(ProductParams);
       case FusedKind::kStateBankAttention:
         return sizeof(AttnParams);
       case FusedKind::kDsv4HcPre:

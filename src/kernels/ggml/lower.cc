@@ -22,6 +22,7 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "components/step.h"
@@ -64,6 +65,40 @@ using ir::TensorId;
 std::unexpected<KernelFailure> Refused(std::string detail) {
   return std::unexpected(KernelFailure{.error = KernelError::kRejected,
                                        .detail = "lowering onto GGML: " + std::move(detail)});
+}
+
+ggml_tensor* TypedView(ggml_context* c, ggml_tensor* blob, ggml_type type, std::int64_t ne0,
+                       std::int64_t ne1, std::size_t offset);
+
+// A finite native output layout, checked even when callers ask allocation
+// helpers about a directly emitted, unsupported Route. No unchecked product.
+std::uint64_t SelectedRoutePlane(const ir::Graph& graph, const ir::Node& node) {
+  if (node.key != ir::Primitive(Op::kRoute) || node.nout != 2 || !node.src[0].valid()) return 0;
+  const auto p = node.Params<ir::RouteParams>();
+  const bool biased = p.kind == ir::RouteKind::kSqrtSoftplusBias;
+  if ((!biased && p.kind != ir::RouteKind::kHash) || p.experts != 256 || p.used < 1 ||
+      p.used > 32 || !std::isfinite(p.scale) || (biased && p.scale <= 0.0F))
+    return 0;
+  if (biased ? (node.nsrc != 2 || !node.src[1].valid())
+             : (node.nsrc != 3 || node.src[1].valid() || !node.src[2].valid()))
+    return 0;
+  const auto rows = graph.tensor(node.src[0]).ne(1);
+  if (rows < 1 || rows > (biased ? 8U : 65535U)) return 0;
+  const auto packed = [&](TensorId id, Encoding encoding, std::uint64_t width,
+                          std::uint64_t count) {
+    if (!id.valid()) return false;
+    const auto& t = graph.tensor(id);
+    return t.format.encoding == encoding && t.format.layout == format::Layout::kDense &&
+           t.ne(0) == width && t.ne(1) == count && t.ne(2) == 1 && t.ne(3) == 1 &&
+           t.view_offset == 0 && ir::IsContiguous(t);
+  };
+  if (!packed(node.src[0], Encoding::kF32, 256, rows) ||
+      !packed(node.src[biased ? 1 : 2], biased ? Encoding::kF32 : Encoding::kI32,
+              biased ? 256U : p.used, biased ? 1U : rows) ||
+      !packed(node.out[0], Encoding::kI32, p.used, rows) ||
+      !packed(node.out[1], Encoding::kF32, p.used, rows))
+    return 0;
+  return static_cast<std::uint64_t>(p.used) * rows * sizeof(float);
 }
 
 // A commit's input of a verify's save: its saver's layer.
@@ -625,7 +660,15 @@ std::expected<void, KernelFailure> Lowering::Index() {
     const TensorId planned = plan_.tensors[t];
     if (planned.valid()) {
       if (planned.v >= primitive_.size()) return Refused("the plan maps a tensor past its graph");
-      primitive_[planned.v] = TensorId{t};
+      // A decomposition can return an existing leaf unchanged (hash Route's
+      // selected IDs). Its later output is another forward alias, not the
+      // input/weight/state identity used by the step's binding interface.
+      const auto planned_key = p_.node(p_.producer(planned)).key;
+      const bool leaf = planned_key == ir::Primitive(Op::kInput) ||
+                        planned_key == ir::Primitive(Op::kWeight) ||
+                        planned_key == ir::Primitive(Op::kState);
+      if (!leaf || g_.node(g_.producer(TensorId{t})).key == planned_key)
+        primitive_[planned.v] = TensorId{t};
     }
   }
   readers_.assign(p_.tensor_count(), {});
@@ -1237,6 +1280,10 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       return ggml_cont_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3));
     case Op::kConcat:
       return ggml_concat(c_, s[0], s[1], n.Params<ir::ConcatParams>().dim);
+    case Op::kHcPost:
+      if (n.nsrc != 4 || s[3] == nullptr || n.Params<ir::HcParams>().streams != 4)
+        return Refused("native HC post requires four streams and a combination matrix");
+      return ggml_dsv4_hc_post(c_, s[0], s[1], s[2], s[3]);
     case Op::kSsmConv:
       return ggml_ssm_conv(c_, s[0], s[1]);
     case Op::kRepeat:
@@ -1283,6 +1330,20 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       return ggml_norm(c_, s[0], n.Params<ir::NormParams>().eps);
     case Op::kL2Norm:
       return ggml_l2_norm(c_, s[0], n.Params<ir::NormParams>().eps);
+    case Op::kHcMix: {
+      const auto p = n.Params<ir::HcParams>();
+      if (p.mix != ir::HcMixKind::kSinkhorn || p.streams != 4 || p.iterations < 1 ||
+          p.iterations > 100)
+        return Refused("native HC combination requires four-stream Sinkhorn");
+      return ggml_dsv4_hc_comb(c_, s[0], s[1], s[2], p.eps,
+                               static_cast<std::int32_t>(p.iterations));
+    }
+    case Op::kHcPre: {
+      const auto p = n.Params<ir::HcParams>();
+      if (p.fold != ir::HcFold::kWeights || p.streams != 4 || p.scale != 1.0F)
+        return Refused("native HC pre requires four weighted streams");
+      return ggml_dsv4_hc_pre(c_, s[0], s[1]);
+    }
     case Op::kRmsNorm:
       return ggml_rms_norm(c_, s[0], n.Params<ir::NormParams>().eps);
     case Op::kAdd:
@@ -1374,7 +1435,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       return ggml_set_rows(c_, s[0], s[1], s[2]);
     case Op::kAttention: {
       const auto p = n.Params<ir::AttnParams>();
-      if (p.sparse_any) return Refused("a sparse gather at any length");
+      if (p.n_kv_max > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+        return Refused("an attention sparse bound beyond int32");
       // The owned F32 implementation retains the original mask descriptor and
       // privately converts it. GGML's public builder accepts only F16 masks.
       const bool packed_f32 = s[3] != nullptr && s[3]->type == GGML_TYPE_F32;
@@ -1385,6 +1447,7 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       if (s[4] != nullptr) ggml_flash_attn_ext_add_sinks(t, s[4]);
       if (p.n_kv_max != 0)
         ggml_flash_attn_ext_set_n_kv_max(t, static_cast<std::int32_t>(p.n_kv_max));
+      if (p.sparse_any) SetFlashAttnSparseAny(t);
       return t;
     }
     case Op::kMaskBuild:
@@ -1591,6 +1654,26 @@ std::expected<void, KernelFailure> Lowering::MakeOwners(NodeId id, const ir::Nod
 // the weights' places.
 std::expected<void, KernelFailure> Lowering::MakeRoute(NodeId id, const ir::Node& n) {
   const auto p = n.Params<ir::RouteParams>();
+  if (p.kind == ir::RouteKind::kHash || p.kind == ir::RouteKind::kSqrtSoftplusBias) {
+    const auto plane = SelectedRoutePlane(p_, n);
+    if (plane == 0) return Refused("unsupported selected-ID route layout");
+    auto* logits = made_.at(n.src[0].v);
+    const bool biased = p.kind == ir::RouteKind::kSqrtSoftplusBias;
+    auto* selected = made_.at(n.src[biased ? 1 : 2].v);
+    if (!logits || !selected) return Refused("selected-ID route operands were not made");
+    auto* route =
+        biased ? RouteBiasedTopK(c_, logits, selected, p.used, p.normalize, p.scale)
+               : RouteSelectedIds(c_, logits, selected, p.used, p.normalize, 0x1p-14F, p.scale);
+    const auto rows = static_cast<std::int64_t>(p_.tensor(n.src[0]).ne(1));
+    auto* ids = TypedView(c_, route, GGML_TYPE_I32, p.used, rows, 0);
+    auto* weights =
+        TypedView(c_, route, GGML_TYPE_F32, p.used, rows, static_cast<std::size_t>(plane));
+    for (auto* node : {route, ids, weights}) Node(node, id);
+    made_.at(n.out[0].v) = ids;
+    made_.at(n.out[1].v) = weights;
+    placed_root_[n.out[0].v] = route;
+    return {};
+  }
   if (p.kind != ir::RouteKind::kSoftmaxTopK || !p.normalize || p.scale != 1.0F || n.nsrc != 1 ||
       n.nout != 2) {
     return Refused("a routing other than a normalized softmax top-k");
@@ -2726,8 +2809,12 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       return std::ranges::contains(selected_vectors, node) || (prior && prior(node));
     };
   }
+  std::set<const ggml_tensor*> wide_attention;
   for (const planner::Selected& s : plan_.steps) {
     const std::string_view name = registry_.at(s.implementation).name;
+    if (name == kFlashAttnMmaWideName)
+      for (const NodeId id : s.nodes)
+        for (const ggml_tensor* node : launched_.at(id.v)) wide_attention.insert(node);
     choices.fuse_norms = choices.fuse_norms || name == kRmsNormMulFused;
     choices.fuse_norm_rope = choices.fuse_norm_rope || name == kGemmaNormRopeName;
     choices.fuse_norm_add = choices.fuse_norm_add || name == kGemmaNormAddName;
@@ -2752,6 +2839,12 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   if (!float_fusions.empty()) {
     choices.float_product_fusion = [&float_fusions](const ggml_tensor* node) {
       return float_fusions.contains(node);
+    };
+  }
+  if (!wide_attention.empty()) {
+    const auto prior = choices.wide_sparse_attention_node;
+    choices.wide_sparse_attention_node = [prior, &wide_attention](const ggml_tensor* node) {
+      return wide_attention.contains(node) || (prior && prior(node));
     };
   }
   for (const TensorId t : p_.outputs()) out_.keep.push_back(made_.at(t.v));
@@ -3040,7 +3133,9 @@ bool Lowering::Direct(NodeId id) const {
   const ir::Node& n = p_.node(id);
   if (n.key.op != Op::kFused) return false;
   switch (n.key.fused) {
+    case FusedKind::kGroupedMatMul:
     case FusedKind::kStateBankAttention:
+    case FusedKind::kDsv4LidMask:
     case FusedKind::kDsv4QHead:
     case FusedKind::kDsv4Compress:
     case FusedKind::kDsv4HcPre:
@@ -3361,6 +3456,33 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     }
   }
   switch (n.key.fused) {
+    case FusedKind::kGroupedMatMul: {
+      const auto& reshape = p_.node(p_.producer(n.src[0]));
+      if (p_.tensor(n.out[0]).format.encoding != Encoding::kF32 ||
+          Selected(id) != "llmp.vecq.grouped" || reshape.key != ir::Primitive(Op::kReshape) ||
+          reshape.nsrc != 1 || p_.tensor(n.src[0]).view_offset != 0)
+        return Refused("a grouped product requires its complete weight reshape");
+      const auto& leaf = p_.node(p_.producer(reshape.src[0]));
+      const auto& original = p_.tensor(reshape.src[0]);
+      const auto& w = desc(0);
+      const auto parts = format::PartsOf(original.format);
+      const auto* reference = std::get_if<ir::WeightRef>(&original.binding);
+      if (!reference || reference->expert_array || leaf.key != ir::Primitive(Op::kWeight) ||
+          original.is_view() || original.format.shape.rank != 2 || original.format.stacked != 1 ||
+          original.format.layout != format::Layout::kGgmlBlocks || original.ne(0) != w.ne(0) ||
+          w.ne(2) < 2 || original.ne(1) % w.ne(2) != 0 || original.ne(1) / w.ne(2) != w.ne(1) ||
+          !parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData ||
+          !ir::IsContiguous(desc(1)))
+        return Refused("a grouped product lost its immutable complete source binding");
+      ggml_tensor* prepared = QuantizeQ8(c_, src(1));
+      ggml_tensor* result =
+          VecQ(c_, src(0), prepared, nullptr, static_cast<std::int64_t>(desc(1).ne(2)), true);
+      Node(prepared, id);
+      Node(result, id);
+      set(0, result);
+      Inside(prepared, n.out[0], Round(ggml_nbytes(result), 256));
+      return {};
+    }
     case FusedKind::kStateBankAttention: {
       const auto p = n.Params<ir::AttnParams>();
       const auto slices = planner::StateBankSlices(p_, n.src[1], n.src[2]);
@@ -3429,6 +3551,20 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
                      .beta_slow = r.beta_slow});
       Node(out, id);
       set(0, out);
+      return {};
+    }
+    case FusedKind::kDsv4LidMask: {
+      const auto p = n.Params<ir::LidMaskParams>();
+      ggml_tensor* keys = ggml_view_2d(c_, src(1), src(1)->ne[0], src(1)->ne[2], src(1)->nb[2], 0);
+      ggml_tensor* ids = Dsv4LidTopK(c_, src(0), keys, src(2), src(3), p.top);
+      ggml_tensor* mask = Dsv4SparseMask(c_, src(4), ids, nullptr, p.raw_cells, p.cells);
+      Node(keys, id);
+      Node(ids, id);
+      Node(mask, id);
+      // IDs live after the visible mask in its funded root; score/radix
+      // scratch is owned by the ordinary native GraphPlan workspace.
+      Inside(ids, n.out[0], Round(ggml_nbytes(mask), 256));
+      set(0, mask);
       return {};
     }
     case FusedKind::kDsv4Compress: {
@@ -3735,6 +3871,12 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       return {};
     }
     case FusedKind::kMoeCombine: {
+      if (Selected(id) == kDsv4CombineName) {
+        auto* t = CombineSelectedWeights(c_, src(0), src(2), src(3));
+        Node(t, id);
+        set(0, t);
+        return {};
+      }
       const ir::TensorDesc& w = desc(2);
       ggml_tensor* weights = ggml_reshape_3d(c_, src(2), 1, static_cast<std::int64_t>(w.ne(0)),
                                              static_cast<std::int64_t>(w.ne(1)));
@@ -4268,6 +4410,12 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     } else if (step.nodes.size() == 1) {
       const auto* node = step.nodes[0];
       switch (LlmpOpOf(node)) {
+        case LlmpOp::kDsv4LidTopK:
+          valid = CheckDsv4LidTopK(node);
+          break;
+        case LlmpOp::kDsv4SparseMask:
+          valid = CheckDsv4SparseMask(node);
+          break;
         case LlmpOp::kRoundedIndexScore:
           valid = CheckRoundedIndexScore(node);
           break;
@@ -4396,7 +4544,7 @@ ir::TensorId WithinRoot(const ir::Graph& graph, ir::TensorId root) {
   const bool blob =
       n.key == ir::Fused(FusedKind::kHcPrep) || n.key == ir::Fused(FusedKind::kHcFold) ||
       n.key == ir::Fused(FusedKind::kMoeRouter) || n.key == ir::Fused(FusedKind::kGdnGates) ||
-      n.key == ir::Primitive(Op::kGatedDeltaNet);
+      n.key == ir::Primitive(Op::kGatedDeltaNet) || SelectedRoutePlane(graph, n) != 0;
   if (blob && n.nout > 1 && root != n.out[0]) return n.out[0];
   // A preparation into MXFP8 rows of a gated norm's result alone (through
   // its reshape): llmp.gdn.norm_gate writes the rows in the norm's place.
@@ -4442,6 +4590,27 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
       }
     }
     const auto rows = [&](std::size_t i) { return graph.tensor(made.src.at(i)); };
+    if (made.key == ir::Fused(FusedKind::kGroupedMatMul)) {
+      const auto x = rows(1);
+      const auto output = planner::RootBytes(t);
+      // Validate before the padding/product arithmetic, including direct IR
+      // callers whose native capability has not yet been selected.
+      if (!output || *output > UINT64_MAX - 255 || x.ne(0) == 0 || x.ne(0) > INT32_MAX - 511 ||
+          x.ne(0) % 32 != 0 || x.ne(1) < 2 || x.ne(1) > 256 || x.ne(2) == 0 || x.ne(2) > 8 ||
+          x.ne(3) != 1)
+        return UINT64_MAX;
+      const auto prepared =
+          Q8Bytes(static_cast<std::int64_t>(x.ne(0)), static_cast<std::int64_t>(x.ne(1) * x.ne(2)));
+      const auto offset = Round(*output, 256);
+      if (prepared <= 0 || static_cast<std::uint64_t>(prepared) > UINT64_MAX - offset)
+        return UINT64_MAX;
+      return offset + static_cast<std::uint64_t>(prepared);
+    }
+    if (made.key == ir::Fused(FusedKind::kDsv4LidMask)) {
+      const auto p = made.Params<ir::LidMaskParams>();
+      return Round(planner::RootBytes(t).value_or(0), 256) +
+             Round(std::uint64_t{p.top} * t.ne(1) * sizeof(std::int32_t), 256);
+    }
     if (made.key == ir::Fused(FusedKind::kDsv4HcPre)) {
       const auto x = rows(0);
       // First output's root: normalized values and pitched carry tails,
@@ -4488,6 +4657,9 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
   // The fused routing's ids are its whole sort's first slots (MakeRoute):
   // the sort's bytes, a row of every expert.
   if (made.key == ir::Primitive(Op::kRoute) && made.nout == 2 && made.out[0] == root) {
+    if (made.Params<ir::RouteParams>().kind == ir::RouteKind::kHash ||
+        made.Params<ir::RouteParams>().kind == ir::RouteKind::kSqrtSoftplusBias)
+      return 2 * SelectedRoutePlane(graph, made);
     return made.Params<ir::RouteParams>().experts * t.ne(1) * sizeof(std::int32_t);
   }
   // The fused scaled reduce's products take its place (MakeReduce).

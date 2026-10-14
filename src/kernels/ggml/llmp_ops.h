@@ -930,6 +930,15 @@ ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, 
 // products one token a pass, their weights read again from cache.
 void SetVecQOneToken(ggml_tensor* node);
 bool VecQOneToken(const ggml_tensor* node);
+// Same routing arithmetic with explicit per-row IDs. Output planes are
+// packed I32 IDs[used,T], then F32 weights[used,T], rather than legacy rows.
+ggml_tensor* RouteSelectedIds(ggml_context* context, ggml_tensor* logits, ggml_tensor* ids,
+                              std::int64_t used, bool norm, float clamp, float scale);
+
+// Biased sqrt-softplus top-k with packed IDs/weights planes, at most eight rows.
+ggml_tensor* RouteBiasedTopK(ggml_context* context, ggml_tensor* logits, ggml_tensor* bias,
+                             std::int64_t used, bool norm, float scale);
+
 // `logits` F32 [experts, tokens]; `bias` F32 [experts] or null; `table`
 // I32 [used, vocab] and `tokens` I32 [tokens], or both null.
 ggml_tensor* Dsv4Route(ggml_context* context, ggml_tensor* logits, ggml_tensor* bias,
@@ -937,6 +946,10 @@ ggml_tensor* Dsv4Route(ggml_context* context, ggml_tensor* logits, ggml_tensor* 
                        float clamp, float scale);
 // `down` F32 [n, used, tokens], `route` a llmp.dsv4.route node, `shared`
 // F32 [n, tokens]: F32 [n, tokens].
+// Same ordered-FMA combine with independently packed F32 [used, tokens] weights.
+// No ID lookup: down's slot order is already the selected expert order.
+ggml_tensor* CombineSelectedWeights(ggml_context* context, ggml_tensor* down, ggml_tensor* weights,
+                                    ggml_tensor* shared);
 ggml_tensor* Dsv4Combine(ggml_context* context, ggml_tensor* down, ggml_tensor* route,
                          ggml_tensor* shared);
 // `x` F32 [width, hc, tokens] packed, `fn` [width · hc, mixes] of a type

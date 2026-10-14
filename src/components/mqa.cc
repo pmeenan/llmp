@@ -722,26 +722,28 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
   ir::TensorId mask = *window_mask;
   std::uint32_t n_kv_max = 0;
   if (d_.ratio != 0) {
-    auto compressed_mask = f_.step.Mask(s, KeyOf(s, kCompressed), 0);
-    if (!compressed_mask) return std::unexpected(compressed_mask.error());
-    ir::TensorId rows_mask = MaskRows(*compressed_mask, seg.rows);
     if (d_.indexer) {
-      auto selected =
-          Selection(s, rows_mask,
-                    f_.step.rounded_indexer_context() != 0 ? MaskRows(*window_mask, seg.rows)
-                                                           : ir::TensorId{});
-      if (!selected) return std::unexpected(selected.error());
-      rows_mask = *selected;
-      if (f_.step.rounded_indexer_context() != 0 &&
-          Desc(b_, rows_mask).ne(0) != window_read + compressed_read)
-        return std::unexpected("rounded indexer mask differs from the actual attention bank");
       n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window) +
                                             std::min(compressed_read, d_.top_k));
     }
-    // SelectedMask already includes the raw half in the same order as K/V.
-    mask = d_.indexer && f_.step.rounded_indexer_context() != 0
-               ? rows_mask
-               : b_.Concat(MaskRows(*window_mask, seg.rows), rows_mask, 0);
+    if (d_.indexer && f_.step.rounded_indexer_context() != 0) {
+      auto selected = Selection(s, ir::TensorId{}, MaskRows(*window_mask, seg.rows));
+      if (!selected) return std::unexpected(selected.error());
+      const ir::TensorId rows_mask = *selected;
+      if (Desc(b_, rows_mask).ne(0) != window_read + compressed_read)
+        return std::unexpected("rounded indexer mask differs from the actual attention bank");
+      mask = rows_mask;
+    } else {
+      auto compressed_mask = f_.step.Mask(s, KeyOf(s, kCompressed), 0);
+      if (!compressed_mask) return std::unexpected(compressed_mask.error());
+      ir::TensorId rows_mask = MaskRows(*compressed_mask, seg.rows);
+      if (d_.indexer) {
+        auto selected = Selection(s, rows_mask, ir::TensorId{});
+        if (!selected) return std::unexpected(selected.error());
+        rows_mask = *selected;
+      }
+      mask = b_.Concat(MaskRows(*window_mask, seg.rows), rows_mask, 0);
+    }
   }
   const ir::TensorId attention = b_.Attention(queries, keys, values, mask, f_.Weight(kSinks),
                                               {.scale = 1.0F / std::sqrt(static_cast<float>(d_.d)),

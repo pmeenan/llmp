@@ -26,6 +26,8 @@
 namespace llmp::planner::fusions {
 
 // Round 0 (over the step's primitive graph).
+std::optional<Match> GroupedVecQMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> Dsv4LidMaskMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> StateBankAttentionMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> Dsv4CompressMatch(const MatchContext& c, ir::NodeId anchor);

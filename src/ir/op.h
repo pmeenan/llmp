@@ -511,9 +511,18 @@ enum class FusedKind : std::uint16_t {
   // the same K as V, mask, sinks). The formula needs no layout fact;
   // only zero-copy implementations require a proven contiguous state span.
   kStateBankAttention,
+  // (q [D,H,T], k [D,1,C], weights [H,T], visible I32 [T], raw F16 [W,T]):
+  // LidMaskParams. RoundedIndexScore -> VisibleTopK -> SelectedMask, with
+  // the same visible operand throughout. Neither score nor selected IDs
+  // escape this formula. It does not fuse generic IndexScore/TopK semantics.
+  kDsv4LidMask,
+  // (w [K,N,G], x [K,G,T]): ProductParams. Each group uses its own
+  // matrix on its input rows; packed F32 [N,G,T]. The decomposition
+  // permutes x to [K,T,G], multiplies, permutes back and makes contiguous.
+  kGroupedMatMul,
 };
 // The op set's last fused kind (the kinds are 1 to it).
-inline constexpr FusedKind kLastFusedKind = FusedKind::kStateBankAttention;
+inline constexpr FusedKind kLastFusedKind = FusedKind::kGroupedMatMul;
 
 struct OpKey {
   Op op = Op::kInput;
@@ -683,6 +692,12 @@ struct ArgsortParams {
 
 struct TopKParams {
   std::uint32_t k = 0;
+};
+
+struct LidMaskParams {
+  std::uint32_t top = 0;
+  std::uint32_t raw_cells = 0;
+  std::uint32_t cells = 0;
 };
 
 struct SelectedMaskParams {

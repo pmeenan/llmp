@@ -172,6 +172,32 @@ class ExecTest : public testing::Test {
   }
 };
 
+TEST_F(ExecTest, GroupedMatMulHasIndependentCompleteGroupAndTokenFormula) {
+  constexpr std::size_t k = 4, n = 3, groups = 2, tokens = 5;
+  const auto w = F({k, n, groups});
+  const auto x = F({k, groups, tokens});
+  const auto result =
+      b.Fused(ir::FusedKind::kGroupedMatMul, std::array{w, x}, ir::ProductParams{})[0];
+  b.Output(result);
+  ASSERT_TRUE(Finish());
+  std::vector<float> weights(k * n * groups), values(k * groups * tokens);
+  for (std::size_t i = 0; i < weights.size(); ++i) weights[i] = static_cast<float>(i % 7) - 3.0F;
+  for (std::size_t i = 0; i < values.size(); ++i) values[i] = static_cast<float>(i % 11) - 5.0F;
+  Set(w, weights);
+  Set(x, values);
+  ASSERT_TRUE(Run());
+  const auto got = Get(result);
+  ASSERT_EQ(got.size(), n * groups * tokens);
+  for (std::size_t t = 0; t < tokens; ++t)
+    for (std::size_t g = 0; g < groups; ++g)
+      for (std::size_t row = 0; row < n; ++row) {
+        float sum = 0;
+        for (std::size_t col = 0; col < k; ++col)
+          sum += weights[(g * n + row) * k + col] * values[(t * groups + g) * k + col];
+        EXPECT_EQ(got[(t * groups + g) * n + row], sum);
+      }
+}
+
 TEST_F(ExecTest, VisibleTopKHasExactPrefixTieNanAndPaddingSemantics) {
   const auto scores = F({12, 7});
   const auto counts = I({7});

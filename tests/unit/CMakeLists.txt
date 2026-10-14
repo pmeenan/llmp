@@ -1317,7 +1317,8 @@ if(LLMP_CUDA)
   target_include_directories(ggml_lower_dsv4_gpu_test SYSTEM PRIVATE
       "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(ggml_lower_dsv4_gpu_test PRIVATE llmp_ggml_kernels llmp_planner
-                                                        llmp_components llmp_device_runtime llmp_platform llmp_engine_core)
+                                                        llmp_components llmp_cuda_device_memory llmp_engine_core
+                                                        llmp_device_runtime llmp_paging_kernels llmp_platform)
   llmp_gpu_gtest(ggml_lower_dsv4_gpu_test DISCRETE ALL)
 endif()
 add_executable(ggml_lower_qwen38_test ggml_lower_qwen38_test.cc)
@@ -1333,6 +1334,12 @@ target_link_libraries(components_state_test PRIVATE llmp_components llmp_engine_
                                                     llmp_fake_device_backend llmp_platform)
 llmp_gtest(components_state_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
+# Private diagnostic source controls are vendor-free; the actual full-model
+# screen below is a separately selected models test.
+add_executable(dsv4_screen_source_test dsv4_screen_source_test.cc ../support/dsv4_screen_source.cc)
+target_link_libraries(dsv4_screen_source_test PRIVATE llmp_engine_core llmp_components llmp_spec llmp_artifact)
+llmp_gtest(dsv4_screen_source_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The Gemma 2 and Gemma 3 components end to end on the installed artifacts,
 # by the reference executor, against the served model (the server over the
@@ -1438,6 +1445,12 @@ if(LLMP_CUDA)
 
   # The same on the Qwen3.8 imports (ModelOpt's two expert layouts, a
   # GGUF quantization's) against today's runner's fast form, one at a time.
+  add_executable(component_runner_dsv4_screen_test component_runner_dsv4_screen_test.cc
+      ../support/dsv4_screen_source.cc)
+  target_link_libraries(component_runner_dsv4_screen_test PRIVATE llmp_engine llmp_ggml_kernels
+      llmp_components llmp_spec llmp_artifact)
+  llmp_gpu_gtest(component_runner_dsv4_screen_test MODELS
+      ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(component_runner_qwen38_gpu_test component_runner_qwen38_gpu_test.cc)
   target_link_libraries(component_runner_qwen38_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                                  llmp_components llmp_spec

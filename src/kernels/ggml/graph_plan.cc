@@ -931,8 +931,10 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           break;
         }
         add(Operation::kFlashAttn,
-            device.wide_sparse_attention && (LlmpOpOf(node->src[3]) != LlmpOp::kDsv4SparseMask ||
-                                             LlmpOpInt(node->src[3], 1) != 1)
+            (device.wide_sparse_attention ||
+             (device.wide_sparse_attention_node && device.wide_sparse_attention_node(node))) &&
+                    (LlmpOpOf(node->src[3]) != LlmpOp::kDsv4SparseMask ||
+                     LlmpOpInt(node->src[3], 1) != 1)
                 ? kFlashAttnMmaWideName
                 : kFlashAttnMmaName,
             i, {node}, 1);

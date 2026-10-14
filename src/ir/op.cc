@@ -164,6 +164,8 @@ std::string_view FusedKindName(FusedKind kind) {
       return "hc_norm_post";
     case FusedKind::kQkPrep:
       return "qk_prep";
+    case FusedKind::kGroupedMatMul:
+      return "grouped_mul_mat";
     case FusedKind::kPreparedProducts:
       return "prepared_products";
     case FusedKind::kNormGate:
@@ -214,6 +216,8 @@ std::string_view FusedKindName(FusedKind kind) {
       return "dsv4_compress";
     case FusedKind::kDsv4HcPre:
       return "dsv4_hc_pre";
+    case FusedKind::kDsv4LidMask:
+      return "dsv4_lid_mask";
     case FusedKind::kStateBankAttention:
       return "state_bank_attention";
   }

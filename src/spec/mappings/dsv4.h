@@ -71,10 +71,15 @@ std::expected<std::vector<SourceValue>, std::string> DsparkV0Values(
 // The planning policy for DeepSeek serving fast forms.
 inline constexpr std::string_view kDeepSeekServingPolicy =
     "max_decode_rows 16\n"
+    "enable biased_route\n"
     "enable dsv4_compress\n"
     "enable dsv4_hc_post\n"
     "enable dsv4_hc_pre\n"
+    "enable dsv4_lid_mask\n"
     "enable dsv4_qhead\n"
+    "enable grouped_vecq\n"
+    "enable hash_route\n"
+    "enable moe_combine\n"
     "enable owner_row_invariant\n"
     "enable state_bank_attention\n"
     "enable vecq_glu\n"

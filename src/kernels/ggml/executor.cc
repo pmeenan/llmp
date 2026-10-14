@@ -3,8 +3,8 @@
 
 #include "kernels/ggml/executor.h"
 
-#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -32,6 +32,14 @@
 #include "kernels/ggml/tensors.h"
 
 namespace llmp::kernels::ggml {
+namespace {
+std::atomic<FirstAttentionObserver*> first_attention_observer{nullptr};
+}
+bool SetFirstAttentionObserver(FirstAttentionObserver* expected,
+                               FirstAttentionObserver* replacement) {
+  return first_attention_observer.compare_exchange_strong(expected, replacement);
+}
+
 namespace {
 
 // A refused step's last node and its first operand, by name and shape, so
@@ -294,6 +302,21 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
 
 std::expected<void, KernelFailure> BoundGraph::RunStep(LaunchContext& launch, std::size_t i) const {
   const Step& step = steps_[i];
+  auto* observer = first_attention_observer.load();
+  if (observer != nullptr && !observer->active()) observer = nullptr;
+  const auto name = std::visit(
+      [](const auto& k) -> std::string_view {
+        using T = std::decay_t<decltype(k)>;
+        if constexpr (std::is_same_v<T, std::unique_ptr<BoundSelectedCall>>) {
+          return "selected";
+        } else {
+          return k.name();
+        }
+      },
+      step.kernel);
+  if (observer != nullptr)
+    if (auto observed = observer->Observe(launch, step.nodes, name, false); !observed)
+      return observed;
   std::expected<void, KernelFailure> ran;
   if (const auto* rms = std::get_if<RmsNormMulKernel>(&step.kernel)) {
     ran = rms->Run(launch, step.nodes[0], step.nodes[1]);
@@ -306,6 +329,9 @@ std::expected<void, KernelFailure> BoundGraph::RunStep(LaunchContext& launch, st
     return std::unexpected(KernelFailure{
         .error = ran.error().error, .detail = std::format("step {}: {}", i, ran.error().detail)});
   }
+  if (observer != nullptr)
+    if (auto observed = observer->Observe(launch, step.nodes, name, true); !observed)
+      return observed;
   return {};
 }
 
@@ -386,6 +412,12 @@ bool DisjointSpan(const void* a, std::size_t a_bytes, const void* b, std::size_t
 
 std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const {
   if (routed_) return Rejected("routed graph cannot run through the whole-step entry");
+  if (auto* observer = first_attention_observer.load(); observer && observer->active()) {
+    if (launch.capturing() || !regions_.empty())
+      return std::unexpected(KernelFailure{
+          .error = KernelError::kUnknown,
+          .detail = "first attention diagnostic requires an eager single-stream graph"});
+  }
   if (!regions_.empty() && launch.lanes() >= kMaxLanes) {
     return RunLanes(launch);
   }

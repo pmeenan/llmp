@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <map>
 #include <optional>
 #include <print>
@@ -51,13 +52,16 @@
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/kv_quant.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
+#include "planner/select.h"
 #include "planner/step_shape.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma2.h"
@@ -79,9 +83,13 @@ constexpr std::uint32_t kGb10 = 121;
 
 // The GGML module's capabilities as a registry (placeholder identities: a
 // CPU build has no kernels to bind).
-ex::Registry PlanningRegistry() {
+ex::Registry PlanningRegistry(bool hc_post = true, bool grouped = true,
+                              std::string_view missing = {}) {
   std::vector<ex::Implementation> v;
   for (const kg::CapabilityDeclaration& d : kg::CapabilityDeclarations()) {
+    if (!hc_post && d.name == kg::kHcPostName) continue;
+    if (!grouped && d.name == "llmp.vecq.grouped") continue;
+    if (d.name == missing) continue;
     v.push_back({.name = std::string(d.name),
                  .operation = d.operation,
                  .source = "ggml",
@@ -90,6 +98,15 @@ ex::Registry PlanningRegistry() {
                  .variant = std::string(kg::AcceptsTextOf(d.name)),
                  .capability = *d.capability});
   }
+  // VecQ's executable primitive has no standalone IR capability. The
+  // planning registry still needs its availability for composite recipes.
+  if (missing != kg::kVecQName)
+    v.push_back({.name = std::string(kg::kVecQName),
+                 .operation = ex::Operation::kMatMul,
+                 .source = "ggml",
+                 .revision = "planning",
+                 .build = "cpu",
+                 .variant = "native VecQ launch"});
   return std::move(ex::Registry::Create(std::move(v)).value());
 }
 
@@ -462,6 +479,904 @@ void ExpectFamilyLowers() {
       shapes, owner_forms, nodes, steps, biggest);
   EXPECT_GT(shapes, 0U);
   EXPECT_GT(owner_forms, 0U);
+}
+
+TEST(GgmlLowerTest, GroupedVecQRejectsUnknownPhysicalAndArithmeticContracts) {
+  const auto registry = PlanningRegistry();
+  const pl::Policy policy{};
+  const pl::SelectionView selection(registry, Gb10(), policy, false, false);
+  const auto dense = [](std::initializer_list<std::uint64_t> shape) {
+    ir::TensorDesc t{.format = ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf(shape))};
+    t.nb = ir::NaturalStrides(t.format);
+    return t;
+  };
+  ir::TensorDesc weight{.format = {.encoding = llmp::format::Encoding::kQ8_0,
+                                   .layout = llmp::format::Layout::kGgmlBlocks,
+                                   .shape = ir::ShapeOf({64, 16, 3})}};
+  weight.nb = ir::NaturalStrides(weight.format);
+  auto input = dense({64, 3, 3}), output = dense({16, 3, 3});
+  ir::ProductParams params{};
+  const auto accepts = [&] {
+    const std::array<const ir::TensorDesc*, 2> sources{&weight, &input};
+    const std::array<const ir::TensorDesc*, 1> outputs{&output};
+    return !selection
+                .Candidates(ir::Fused(ir::FusedKind::kGroupedMatMul), sources, outputs,
+                            ir::ToBytes(params))
+                .empty();
+  };
+  ASSERT_TRUE(accepts());
+  output.format.encoding = llmp::format::Encoding::kBF16;
+  EXPECT_FALSE(accepts());
+  output = dense({16, 3, 3});
+  params.accumulate = ir::Accumulate::kF32;
+  EXPECT_FALSE(accepts());
+  params = {};
+  weight.nb[2] += 34;
+  EXPECT_FALSE(accepts());
+  weight.nb = ir::NaturalStrides(weight.format);
+  input.view_offset = 4;
+  EXPECT_FALSE(accepts());
+  input.view_offset = 0;
+  input = dense({64, 3, 9});
+  output = dense({16, 3, 9});
+  EXPECT_FALSE(accepts());
+  weight.format.shape = ir::ShapeOf({64, 16, 257});
+  weight.nb = ir::NaturalStrides(weight.format);
+  input = dense({64, 257, 1});
+  output = dense({16, 257, 1});
+  EXPECT_FALSE(accepts());
+  weight.format.encoding = llmp::format::Encoding::kF32;
+  weight.format.layout = llmp::format::Layout::kDense;
+  weight.format.shape = ir::ShapeOf({64, 16, 3});
+  weight.nb = ir::NaturalStrides(weight.format);
+  input = dense({64, 3, 3});
+  output = dense({16, 3, 3});
+  EXPECT_FALSE(accepts());
+}
+
+TEST(GgmlLowerTest, GroupedVecQWorkspaceRejectsOutOfDomainBeforeByteArithmetic) {
+  ir::Builder b;
+  const auto weight = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({64, 16, 257})));
+  const auto input = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({64, 257, 1})));
+  const auto output =
+      b.Fused(ir::FusedKind::kGroupedMatMul, std::array{weight, input}, ir::ProductParams{})[0];
+  b.Output(output);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  EXPECT_EQ(kg::WrittenBytes(*graph, output), UINT64_MAX);
+}
+
+TEST(GgmlLowerTest, GroupedVecQRequiresClosedSourceRecipeAndPaysBothLaunches) {
+  // 0: native, 1: disabled, 2: missing implementation, 3: input weight,
+  // 4: a weight view, 5: excess tokens, 6: wrong permutation despite equal
+  // dimensions, 7: another reader of the product, 8: one group.
+  for (unsigned scenario = 0; scenario < 12; ++scenario) {
+    SCOPED_TRACE(scenario);
+    const std::uint64_t k = 64, n = 16;
+    const std::uint64_t groups = scenario == 8 ? 1 : 3;
+    const std::uint32_t tokens = scenario == 5 ? 9U : 3U;
+    const auto registry = PlanningRegistry(true, scenario != 2,
+                                           scenario == 9    ? kg::kQuantizeQ8Name
+                                           : scenario == 10 ? kg::kVecQName
+                                                            : std::string_view{});
+    ir::Builder b;
+    const llmp::format::TensorFormat format{.encoding = llmp::format::Encoding::kQ8_0,
+                                            .layout = llmp::format::Layout::kGgmlBlocks,
+                                            .shape = ir::ShapeOf({k, n * groups})};
+    const auto leaf =
+        scenario == 3 ? b.Input(format) : b.Weight(format, {.expert_array = scenario == 11});
+    auto weight = leaf;
+    if (scenario == 4) weight = b.View(leaf, format.shape, ir::NaturalStrides(format), 0);
+    weight = b.Reshape(weight, ir::ShapeOf({k, n, groups}));
+    const auto input =
+        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({k, groups, tokens})));
+    const auto shuffled = b.Permute(input, scenario == 6 ? std::array<std::uint8_t, 4>{0, 1, 2, 3}
+                                                         : std::array<std::uint8_t, 4>{0, 2, 1, 3});
+    const auto product = b.MatMul(weight, shuffled);
+    if (scenario == 7) b.Output(product);
+    b.Output(b.Cont(b.Permute(product, {0, 2, 1, 3}), ir::ShapeOf({n * groups, tokens})));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    co::StepGraph step{.graph = std::move(*graph),
+                       .inputs = {{.tensor = input, .kind = co::InputKind::kFeatures}},
+                       .weights = {},
+                       .state = {}};
+    if (scenario != 3)
+      step.weights.push_back(
+          {.tensor = leaf, .ref = {}, .parts = {{"weight", llmp::format::PartRole::kData}}});
+    pl::Policy policy;
+    if (scenario != 1) policy.enabled = {"grouped_vecq"};
+    pl::Canonicalize(policy);
+    std::vector<ir::TensorId> staged{input};
+    if (scenario == 3) staged.push_back(leaf);
+    const pl::StepShape shape{.segments = {{.rows = tokens, .outputs = 0, .want_head = false}}};
+    auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
+                         {.staged = staged, .written = kg::WrittenBytes});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    const bool native = scenario == 0;
+    EXPECT_EQ(std::ranges::count_if(plan->graph.nodes(),
+                                    [](const auto& node) {
+                                      return node.key == ir::Fused(ir::FusedKind::kGroupedMatMul);
+                                    }),
+              native ? 1 : 0);
+    if (!native) continue;
+    for (const auto& node : plan->graph.nodes())
+      if (node.key == ir::Fused(ir::FusedKind::kGroupedMatMul)) {
+        const auto bytes = kg::WrittenBytes(plan->graph, node.out[0]);
+        EXPECT_GT(bytes, n * groups * tokens * sizeof(float));
+        EXPECT_GE(plan->placement.extent, bytes);
+      }
+    const kn::Addresses addresses{};
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    ASSERT_EQ(lowered->plan.steps.size(), 3U);
+    EXPECT_EQ(lowered->plan.steps[0].implementation, kg::kQuantizeQ8Name);
+    EXPECT_EQ(lowered->plan.steps[1].implementation, kg::kVecQName);
+    EXPECT_EQ(lowered->plan.steps[2].implementation, kg::kContName);
+  }
+}
+
+TEST(GgmlLowerTest, DirectGroupedVecQRequiresPolicySourceAuthorityAndBothLaunches) {
+  // Native direct2D reshape, default-off, quantized Input, direct3D Weight,
+  // missing quantizer, missing VecQ, and expert-array WeightRef.
+  for (unsigned scenario = 0; scenario < 7; ++scenario) {
+    SCOPED_TRACE(scenario);
+    const auto registry = PlanningRegistry(true, true,
+                                           scenario == 4   ? kg::kQuantizeQ8Name
+                                           : scenario == 5 ? kg::kVecQName
+                                                           : std::string_view{});
+    ir::Builder b;
+    llmp::format::TensorFormat format{
+        .encoding = llmp::format::Encoding::kQ8_0,
+        .layout = llmp::format::Layout::kGgmlBlocks,
+        .shape = scenario == 3 ? ir::ShapeOf({64, 16, 3}) : ir::ShapeOf({64, 48})};
+    const auto leaf =
+        scenario == 2 ? b.Input(format) : b.Weight(format, {.expert_array = scenario == 6});
+    const auto weight = scenario == 3 ? leaf : b.Reshape(leaf, ir::ShapeOf({64, 16, 3}));
+    const auto input = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({64, 3, 3})));
+    b.Output(
+        b.Fused(ir::FusedKind::kGroupedMatMul, std::array{weight, input}, ir::ProductParams{})[0]);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    pl::Policy policy;
+    if (scenario != 1) policy.enabled = {"grouped_vecq"};
+    pl::Canonicalize(policy);
+    std::vector<ir::TensorId> staged{input};
+    if (scenario == 2) staged.push_back(leaf);
+    auto plan = pl::Plan(std::move(*graph), registry, Gb10(), policy,
+                         {.staged = staged, .written = kg::WrittenBytes});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    EXPECT_EQ(std::ranges::count_if(plan->graph.nodes(),
+                                    [](const auto& node) {
+                                      return node.key == ir::Fused(ir::FusedKind::kGroupedMatMul);
+                                    }),
+              scenario == 0 ? 1 : 0);
+    if (scenario != 0) {
+      EXPECT_GT(std::ranges::count_if(
+                    plan->graph.nodes(),
+                    [](const auto& node) { return node.key == ir::Primitive(ir::Op::kMatMul); }),
+                0);
+    }
+  }
+}
+
+TEST(GgmlLowerTest, UngatedExpertCombineRequiresOptInAndFallsBackCompletely) {
+  for (const std::uint32_t rows : {1U, 3U, 8U, 9U, 512U}) {
+    for (const bool padded_ids : {false, true})
+      for (const bool direct : {false, true}) {
+        for (const unsigned mode : {0U, 1U, 2U}) {
+          SCOPED_TRACE(rows);
+          SCOPED_TRACE(direct);
+          SCOPED_TRACE(padded_ids);
+          SCOPED_TRACE(mode);
+          const auto registry = PlanningRegistry(true, true, mode == 2 ? kg::kDsv4CombineName : "");
+          pl::Policy policy;
+          if (mode != 0) policy.enabled = {"moe_combine"};
+          pl::Canonicalize(policy);
+          ir::Builder b;
+          const auto down =
+              b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({16, 6, rows})));
+          const auto ids_root = b.Input(
+              ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({padded_ids ? 256U : 6U, rows})));
+          const auto ids = padded_ids ? b.View(ids_root, ir::ShapeOf({6, rows}),
+                                               {4, 1024, 1024ULL * rows, 1024ULL * rows}, 0)
+                                      : ids_root;
+          const auto weights =
+              b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({6, rows})));
+          const auto shared =
+              b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({16, rows})));
+          const std::array inputs = {down, ids_root, weights, shared};
+          const std::array sources = {down, ids, weights, shared};
+          b.Output(direct ? b.Fused(ir::FusedKind::kMoeCombine, sources)[0]
+                          : b.Add(b.ExpertReduce(down, weights, ids, {}), shared));
+          b.Output(ids);
+          auto graph = std::move(b).Finish();
+          ASSERT_TRUE(graph);
+          co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+          for (auto input : inputs)
+            step.inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
+          const pl::StepShape shape{.segments = {{.rows = rows, .outputs = 0, .want_head = false}}};
+          auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
+                               {.staged = std::vector<ir::TensorId>(inputs.begin(), inputs.end()),
+                                .written = kg::WrittenBytes,
+                                .within = kg::WithinRoot});
+          ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+          const kn::Addresses addresses{};
+          auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+          ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+          const bool native = mode == 1 && rows <= 8 && (!padded_ids || rows == 1);
+          EXPECT_EQ(std::ranges::count_if(lowered->plan.steps,
+                                          [](const auto& item) {
+                                            return item.implementation == kg::kDsv4CombineName;
+                                          }),
+                    native ? 1 : 0);
+          ASSERT_EQ(lowered->keep.size(), 2U);
+          EXPECT_EQ(ggml_nbytes(lowered->keep[0]), 16U * rows * 4U);
+          EXPECT_EQ(lowered->keep[1]->nb[0], 4U);
+          EXPECT_EQ(lowered->keep[1]->nb[1], padded_ids ? 1024U : 24U);
+          EXPECT_EQ(ggml_nbytes(lowered->keep[1]), (padded_ids ? 1024U : 24U) * (rows - 1U) + 24U);
+          if (native) {
+            ASSERT_EQ(lowered->plan.steps.size(), 1U);
+            EXPECT_EQ(kg::LlmpOpInt(lowered->keep[0], 0), 1);
+            EXPECT_EQ(lowered->keep[0]->src[1]->ne[0], 6);
+          }
+        }
+      }
+  }
+}
+
+TEST(GgmlLowerTest, UngatedExpertCombineOnlyIgnoresUnusedSingleColumnIdPitches) {
+  const auto registry = PlanningRegistry();
+  pl::Policy policy;
+  policy.enabled = {"moe_combine"};
+  pl::Canonicalize(policy);
+  const pl::SelectionView selection(registry, Gb10(), policy, false, false);
+  const auto tensor = [](llmp::format::Encoding encoding,
+                         std::initializer_list<std::uint64_t> shape) {
+    ir::TensorDesc t{.format = ir::Dense(encoding, ir::ShapeOf(shape))};
+    t.nb = ir::NaturalStrides(t.format);
+    return t;
+  };
+  for (const std::uint64_t used : {1U, 6U, 32U}) {
+    SCOPED_TRACE(used);
+    auto down = tensor(llmp::format::Encoding::kF32, {4096, used, 1});
+    auto ids = tensor(llmp::format::Encoding::kI32, {used, 1});
+    auto weights = tensor(llmp::format::Encoding::kF32, {used, 1});
+    auto shared = tensor(llmp::format::Encoding::kF32, {4096, 1});
+    auto output = shared;
+    const std::array<const ir::TensorDesc*, 4> inputs{&down, &ids, &weights, &shared};
+    const std::array<const ir::TensorDesc*, 1> outputs{&output};
+    const auto accepts = [&] {
+      const auto candidates =
+          selection.Candidates(ir::Fused(ir::FusedKind::kMoeCombine), inputs, outputs, {});
+      return std::ranges::any_of(candidates, [&](const auto candidate) {
+        return registry.at(candidate).name == kg::kDsv4CombineName;
+      });
+    };
+    ASSERT_TRUE(accepts());
+    ids.nb = {4, 1024, 1024, 1024};  // Exact first-six-of256 learned-sort view.
+    ASSERT_TRUE(accepts());
+    ids.nb[0] = 8;
+    EXPECT_FALSE(accepts());
+    ids.nb[0] = 4;
+    ids.view_offset = 2;
+    EXPECT_FALSE(accepts());
+    ids.view_offset = std::numeric_limits<std::uint64_t>::max() - 3;
+    EXPECT_FALSE(accepts());  // Aligned offset, overflowing accessed I32 footprint.
+    ids.view_offset = 4;
+    EXPECT_TRUE(accepts());
+    ids.view_offset = 0;
+    weights.nb[1] += 4;
+    EXPECT_FALSE(accepts());  // No relaxation for any other operand.
+    weights.nb[1] -= 4;
+    ids.format.encoding = llmp::format::Encoding::kF32;
+    EXPECT_FALSE(accepts());
+    ids.format.encoding = llmp::format::Encoding::kI32;
+    down = tensor(llmp::format::Encoding::kF32, {4096, used, 2});
+    ids = tensor(llmp::format::Encoding::kI32, {used, 2});
+    weights = tensor(llmp::format::Encoding::kF32, {used, 2});
+    shared = tensor(llmp::format::Encoding::kF32, {4096, 2});
+    output = shared;
+    ASSERT_TRUE(accepts());
+    ids.nb = {4, 1024, 2048, 2048};
+    EXPECT_FALSE(accepts());  // Real row addressing must retain packed pitches.
+  }
+}
+
+TEST(GgmlLowerTest, UngatedExpertCombineKeepsExistingGatedRecipe) {
+  const auto registry = PlanningRegistry();
+  pl::Policy policy;
+  policy.enabled = {"moe_combine"};
+  pl::Canonicalize(policy);
+  for (const std::uint32_t rows : {3U, 9U, 512U})
+    for (const bool direct : {false, true}) {
+      SCOPED_TRACE(rows);
+      SCOPED_TRACE(direct);
+      ir::Builder b;
+      const auto down =
+          b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({16, 6, rows})));
+      const auto ids = b.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({6, rows})));
+      const auto weights = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({6, rows})));
+      const auto shared = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({16, rows})));
+      const auto gate = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({1, rows})));
+      const std::array inputs = {down, ids, weights, shared, gate};
+      b.Output(direct ? b.Fused(ir::FusedKind::kMoeCombine, inputs)[0]
+                      : b.Add(b.ExpertReduce(down, weights, ids, {}),
+                              b.Mul(shared, b.Unary(gate, ir::UnaryFn::kSigmoid))));
+      b.Output(ids);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph);
+      co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+      for (auto input : inputs)
+        step.inputs.push_back({.tensor = input, .kind = co::InputKind::kFeatures});
+      const pl::StepShape shape{.segments = {{.rows = rows, .outputs = 0, .want_head = false}}};
+      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
+                           {.staged = std::vector<ir::TensorId>(inputs.begin(), inputs.end()),
+                            .written = kg::WrittenBytes,
+                            .within = kg::WithinRoot});
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      const kn::Addresses addresses{};
+      auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+      ASSERT_EQ(lowered->plan.steps.size(), 1U);
+      EXPECT_EQ(lowered->plan.steps[0].implementation, kg::kMoeCombineName);
+      ASSERT_EQ(lowered->keep.size(), 2U);
+      EXPECT_EQ(kg::LlmpOpOf(lowered->keep[0]), kg::LlmpOp::kMoeCombine);
+      EXPECT_EQ(lowered->keep[0]->src[4]->ne[0], 1);
+    }
+}
+
+TEST(GgmlLowerTest, UngatedExpertCombineChecksPackedBackingAlignmentAndAliases) {
+  auto arena = kg::TensorArena::Create(16);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  auto* down = ggml_new_tensor_3d(c, GGML_TYPE_F32, 16, 6, 3);
+  auto* weights = ggml_new_tensor_2d(c, GGML_TYPE_F32, 6, 3);
+  auto* shared = ggml_new_tensor_2d(c, GGML_TYPE_F32, 16, 3);
+  auto* result = kg::CombineSelectedWeights(c, down, weights, shared);
+  kg::TensorArena::Bind(down, 0x100000);
+  kg::TensorArena::Bind(weights, 0x200000);
+  kg::TensorArena::Bind(shared, 0x300000);
+  kg::TensorArena::Bind(result, 0x400000);
+  ASSERT_TRUE(kg::CheckDsv4Combine(result));
+  for (auto* operand : {down, weights, shared, result}) {
+    const auto address = reinterpret_cast<std::uintptr_t>(operand->data);
+    kg::TensorArena::Bind(operand, address + 1);
+    EXPECT_FALSE(kg::CheckDsv4Combine(result));
+    kg::TensorArena::Bind(operand, address);
+    ASSERT_TRUE(kg::CheckDsv4Combine(result));
+    operand->nb[1] += 4;
+    EXPECT_FALSE(kg::CheckDsv4Combine(result));
+    operand->nb[1] -= 4;
+    ASSERT_TRUE(kg::CheckDsv4Combine(result));
+  }
+  for (auto* input : {down, weights, shared}) {
+    kg::TensorArena::Bind(result, reinterpret_cast<std::uintptr_t>(input->data));
+    EXPECT_FALSE(kg::CheckDsv4Combine(result));
+  }
+  kg::TensorArena::Bind(result, 0x400000);
+  ASSERT_TRUE(kg::CheckDsv4Combine(result));
+  down->ne[3] = 2;
+  EXPECT_FALSE(kg::CheckDsv4Combine(result));
+  down->ne[3] = 1;
+  weights->type = GGML_TYPE_I32;
+  EXPECT_FALSE(kg::CheckDsv4Combine(result));
+}
+
+TEST(GgmlLowerTest, BiasedRouteNativeChecksRejectInvalidPhysicalAndParameterContracts) {
+  auto arena = kg::TensorArena::Create(32);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  auto* logits = ggml_new_tensor_2d(c, GGML_TYPE_F32, 256, 3);
+  auto* ids = ggml_new_tensor_1d(c, GGML_TYPE_F32, 256);
+  auto* route = kg::RouteBiasedTopK(c, logits, ids, 6, true, 1.5F);
+  kg::TensorArena::Bind(logits, 0x100000);
+  kg::TensorArena::Bind(ids, 0x200000);
+  kg::TensorArena::Bind(route, 0x300000);
+  ASSERT_TRUE(kg::CheckDsv4Route(route));
+  for (auto* operand : {logits, ids, route}) {
+    const auto address = reinterpret_cast<std::uintptr_t>(operand->data);
+    kg::TensorArena::Bind(operand, address + 1);
+    EXPECT_FALSE(kg::CheckDsv4Route(route));
+    kg::TensorArena::Bind(operand, address);
+    ASSERT_TRUE(kg::CheckDsv4Route(route));
+  }
+  kg::TensorArena::Bind(logits, UINT64_MAX - 3);
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  kg::TensorArena::Bind(logits, 0x100000);
+  kg::TensorArena::Bind(route, 0x200000);
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  kg::TensorArena::Bind(route, 0x300000);
+  ids->type = GGML_TYPE_I32;
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  ids->type = GGML_TYPE_F32;
+  route->type = GGML_TYPE_F32;
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  route->type = GGML_TYPE_I32;
+  ids->nb[1] += 4;
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  ids->nb[1] -= 4;
+  kg::TensorArena::Bind(route, 0x100000);
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  kg::TensorArena::Bind(route, 0x300000);
+  route->src[2] = ids;
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  route->src[2] = nullptr;
+  ASSERT_TRUE(kg::CheckDsv4Route(route));
+  for (const auto [index, value] :
+       std::array<std::pair<std::size_t, std::int32_t>, 4>{{{1, 2}, {2, 0}, {3, 0}, {4, 3}}}) {
+    const auto original = route->op_params[8 + index];
+    route->op_params[8 + index] = value;
+    EXPECT_FALSE(kg::CheckDsv4Route(route));
+    route->op_params[8 + index] = original;
+  }
+  const auto scale = route->op_params[11];
+  for (const float value :
+       {-1.0F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+    std::memcpy(&route->op_params[11], &value, sizeof(value));
+    EXPECT_FALSE(kg::CheckDsv4Route(route));
+  }
+  route->op_params[11] = scale;
+  ASSERT_TRUE(kg::CheckDsv4Route(route));
+  auto* down = ggml_new_tensor_3d(c, GGML_TYPE_F32, 16, 6, 3);
+  auto* shared = ggml_new_tensor_2d(c, GGML_TYPE_F32, 16, 3);
+  auto* combine = kg::Dsv4Combine(c, down, route, shared);
+  kg::TensorArena::Bind(down, 0x400000);
+  kg::TensorArena::Bind(shared, 0x500000);
+  kg::TensorArena::Bind(combine, 0x600000);
+  EXPECT_FALSE(kg::CheckDsv4Combine(combine));  // legacy consumer expects interleaved rows
+}
+
+TEST(GgmlLowerTest, BiasedRouteRequiresOptInAndPaysBothPackedOutputPlanes) {
+  for (const std::uint32_t rows : {1U, 3U, 8U, 9U, 512U}) {
+    for (const unsigned mode : {0U, 1U, 2U, 3U}) {
+      SCOPED_TRACE(rows);
+      SCOPED_TRACE(mode);
+      const auto registry = PlanningRegistry(true, true, mode == 2 ? kg::kDsv4RouteName : "");
+      pl::Policy policy;
+      if (mode != 0) policy.enabled = {"biased_route"};
+      if (mode == 3) policy.disabled = {"route_reduce"};
+      pl::Canonicalize(policy);
+      ir::Builder b;
+      const auto logits =
+          b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({256, rows})));
+      const auto ids = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({256})));
+      const auto route = b.Route(logits, ids, {}, {},
+                                 {.kind = ir::RouteKind::kSqrtSoftplusBias,
+                                  .normalize = true,
+                                  .experts = 256,
+                                  .used = 6,
+                                  .scale = 1.5F});
+      b.Output(route[0]);
+      b.Output(route[1]);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph);
+      EXPECT_EQ(kg::WrittenBytes(*graph, route[0]), rows <= 8 ? 2U * 6U * rows * 4U : 0U);
+      EXPECT_EQ(kg::WithinRoot(*graph, route[1]), rows <= 8 ? route[0] : ir::TensorId{});
+      co::StepGraph step{.graph = std::move(*graph),
+                         .inputs = {{.tensor = logits, .kind = co::InputKind::kFeatures},
+                                    {.tensor = ids, .kind = co::InputKind::kFeatures}},
+                         .weights = {},
+                         .state = {}};
+      const pl::StepShape shape{.segments = {{.rows = rows, .outputs = 0, .want_head = false}}};
+      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
+                           {.staged = std::vector<ir::TensorId>{logits, ids},
+                            .written = kg::WrittenBytes,
+                            .within = kg::WithinRoot});
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      const kn::Addresses addresses{};
+      auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+      const bool native = mode == 1 && rows <= 8;
+      EXPECT_EQ(std::ranges::count_if(
+                    lowered->plan.steps,
+                    [](const auto& entry) { return entry.implementation == kg::kDsv4RouteName; }),
+                native ? 1 : 0);
+      ASSERT_EQ(lowered->keep.size(), 2U);
+      const auto ids_leaf = std::ranges::find(lowered->leaves, ids, &kg::LoweredLeaf::primitive);
+      ASSERT_NE(ids_leaf, lowered->leaves.end());
+      EXPECT_EQ(std::ranges::count(lowered->leaves, ids, &kg::LoweredLeaf::primitive), 1);
+      if (native) {
+        ASSERT_EQ(lowered->plan.steps.size(), 1U);
+        const auto* out_ids = lowered->keep[0];
+        const auto* weights = lowered->keep[1];
+        EXPECT_EQ(out_ids->type, GGML_TYPE_I32);
+        EXPECT_EQ(weights->type, GGML_TYPE_F32);
+        EXPECT_EQ(out_ids->view_src, weights->view_src);
+        EXPECT_EQ(out_ids->view_offs, 0U);
+        EXPECT_EQ(weights->view_offs, 6U * rows * 4U);
+        EXPECT_EQ(ggml_nbytes(out_ids->view_src), 2U * 6U * rows * 4U);
+        EXPECT_EQ(out_ids->nb[1], 24U);
+        EXPECT_EQ(weights->nb[1], 24U);
+      }
+    }
+  }
+}
+
+TEST(GgmlLowerTest, BiasedRouteRejectsUnsupportedSourcesAndPhysicalContracts) {
+  const auto registry = PlanningRegistry();
+  pl::Policy policy;
+  policy.enabled = {"biased_route"};
+  pl::Canonicalize(policy);
+  const pl::SelectionView selection(registry, Gb10(), policy, false, false);
+  const auto tensor = [](llmp::format::Encoding encoding, std::uint64_t width, std::uint64_t rows) {
+    ir::TensorDesc t{.format = ir::Dense(encoding, ir::ShapeOf({width, rows}))};
+    t.nb = ir::NaturalStrides(t.format);
+    return t;
+  };
+  auto logits = tensor(llmp::format::Encoding::kF32, 256, 3);
+  auto ids = tensor(llmp::format::Encoding::kF32, 256, 1);
+  auto out = tensor(llmp::format::Encoding::kI32, 6, 3);
+  auto weights = tensor(llmp::format::Encoding::kF32, 6, 3);
+  std::array<const ir::TensorDesc*, 4> inputs{&logits, &ids, nullptr, nullptr};
+  const std::array<const ir::TensorDesc*, 2> outputs{&out, &weights};
+  ir::RouteParams params{.kind = ir::RouteKind::kSqrtSoftplusBias,
+                         .normalize = true,
+                         .experts = 256,
+                         .used = 6,
+                         .scale = 1.5F};
+  const auto accepts = [&] {
+    return !selection
+                .Candidates(ir::Primitive(ir::Op::kRoute), inputs, outputs,
+                            std::as_bytes(std::span(&params, 1)))
+                .empty();
+  };
+  ASSERT_TRUE(accepts());
+  inputs[2] = &logits;
+  EXPECT_FALSE(accepts());
+  inputs[2] = nullptr;
+  inputs[3] = &ids;
+  EXPECT_FALSE(accepts());
+  inputs[3] = nullptr;
+  ids.nb[1] += 4;
+  EXPECT_FALSE(accepts());
+  ids.nb[1] -= 4;
+  weights.view_offset = 4;
+  EXPECT_FALSE(accepts());
+  weights.view_offset = 0;
+  weights.format.encoding = llmp::format::Encoding::kI32;
+  EXPECT_FALSE(accepts());
+  weights.format.encoding = llmp::format::Encoding::kF32;
+  params.experts = 128;
+  EXPECT_FALSE(accepts());
+  params.experts = 256;
+  params.used = 33;
+  EXPECT_FALSE(accepts());
+  params.used = 6;
+  params.scale = std::numeric_limits<float>::infinity();
+  EXPECT_FALSE(accepts());
+  params.scale = 1.5F;
+  logits = tensor(llmp::format::Encoding::kF32, 256, 9);
+  out = tensor(llmp::format::Encoding::kI32, 6, 9);
+  weights = tensor(llmp::format::Encoding::kF32, 6, 9);
+  EXPECT_FALSE(accepts());
+}
+
+TEST(GgmlLowerTest, BiasedRouteBindsOwnedBiasAndRejectsChangedSource) {
+  const auto registry = PlanningRegistry();
+  ir::Builder b;
+  const auto logits = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({256, 3})));
+  const auto bias = b.Weight(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({256})), {});
+  const auto out = b.Route(logits, bias, {}, {},
+                           {.kind = ir::RouteKind::kSqrtSoftplusBias,
+                            .normalize = true,
+                            .experts = 256,
+                            .used = 6,
+                            .scale = 1.5F});
+  b.Output(out[0]);
+  b.Output(out[1]);
+  auto graph = std::move(b).Finish();
+  ASSERT_TRUE(graph);
+  co::StepGraph step{
+      .graph = std::move(*graph),
+      .inputs = {{.tensor = logits, .kind = co::InputKind::kFeatures}},
+      .weights = {{.tensor = bias, .ref = {}, .parts = {{"bias", llmp::format::PartRole::kData}}}},
+      .state = {}};
+  pl::Policy policy;
+  policy.enabled = {"biased_route"};
+  pl::Canonicalize(policy);
+  const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 0, .want_head = false}}};
+  auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
+                       {.staged = std::vector<ir::TensorId>{logits},
+                        .written = kg::WrittenBytes,
+                        .within = kg::WithinRoot});
+  ASSERT_TRUE(plan);
+  const kn::Addresses addresses{
+      .weight = [](const ir::WeightRef& ref, llmp::format::PartRole part) -> std::uint64_t {
+        return ref == ir::WeightRef{} && part == llmp::format::PartRole::kData ? 0x100000U : 0;
+      },
+      .weight_rows = {},
+      .state = {},
+      .save = {},
+      .activations = 0x200000U,
+      .activation_bytes = plan->placement.extent};
+  auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+  ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+  ASSERT_EQ(lowered->plan.steps.size(), 1U);
+  const auto* route = lowered->keep[0]->view_src;
+  ASSERT_NE(route, nullptr);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(route->src[1]->data), 0x100000U);
+  EXPECT_EQ(kg::LlmpOpInt(route, 4), 2);
+  step.weights[0].parts[0].second = llmp::format::PartRole::kBlockScales;
+  EXPECT_FALSE(kg::LowerStep({*plan, step, shape, addresses}, registry, Device()));
+}
+
+TEST(GgmlLowerTest, SelectedHashRouteNativeChecksRejectAliasesAndLegacyCombine) {
+  auto arena = kg::TensorArena::Create(32);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  auto* logits = ggml_new_tensor_2d(c, GGML_TYPE_F32, 256, 3);
+  auto* ids = ggml_new_tensor_2d(c, GGML_TYPE_I32, 6, 3);
+  auto* route = kg::RouteSelectedIds(c, logits, ids, 6, true, 0x1p-14F, 1.5F);
+  kg::TensorArena::Bind(logits, 0x100000);
+  kg::TensorArena::Bind(ids, 0x200000);
+  kg::TensorArena::Bind(route, 0x300000);
+  ASSERT_TRUE(kg::CheckDsv4Route(route));
+  for (auto* operand : {logits, ids, route}) {
+    const auto address = reinterpret_cast<std::uintptr_t>(operand->data);
+    kg::TensorArena::Bind(operand, address + 1);
+    EXPECT_FALSE(kg::CheckDsv4Route(route));
+    kg::TensorArena::Bind(operand, address);
+    ASSERT_TRUE(kg::CheckDsv4Route(route));
+  }
+  ids->nb[1] += 4;
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  ids->nb[1] -= 4;
+  kg::TensorArena::Bind(route, 0x100000);
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  kg::TensorArena::Bind(route, 0x300000);
+  route->src[2] = ids;
+  EXPECT_FALSE(kg::CheckDsv4Route(route));
+  route->src[2] = nullptr;
+  ASSERT_TRUE(kg::CheckDsv4Route(route));
+  auto* down = ggml_new_tensor_3d(c, GGML_TYPE_F32, 16, 6, 3);
+  auto* shared = ggml_new_tensor_2d(c, GGML_TYPE_F32, 16, 3);
+  auto* combine = kg::Dsv4Combine(c, down, route, shared);
+  kg::TensorArena::Bind(down, 0x400000);
+  kg::TensorArena::Bind(shared, 0x500000);
+  kg::TensorArena::Bind(combine, 0x600000);
+  EXPECT_FALSE(kg::CheckDsv4Combine(combine));  // legacy consumer expects interleaved rows
+}
+
+TEST(GgmlLowerTest, SelectedHashRouteRequiresOptInAndPaysBothPackedOutputPlanes) {
+  for (const std::uint32_t rows : {1U, 3U, 8U, 9U, 512U}) {
+    for (const unsigned mode : {0U, 1U, 2U, 3U}) {
+      SCOPED_TRACE(rows);
+      SCOPED_TRACE(mode);
+      const auto registry = PlanningRegistry(true, true, mode == 2 ? kg::kDsv4RouteName : "");
+      pl::Policy policy;
+      if (mode != 0) policy.enabled = {"hash_route"};
+      if (mode == 3) policy.disabled = {"route_reduce"};
+      pl::Canonicalize(policy);
+      ir::Builder b;
+      const auto logits =
+          b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({256, rows})));
+      const auto ids = b.Input(ir::Dense(llmp::format::Encoding::kI32, ir::ShapeOf({6, rows})));
+      const auto route = b.Route(logits, {}, ids, {},
+                                 {.kind = ir::RouteKind::kHash,
+                                  .normalize = true,
+                                  .experts = 256,
+                                  .used = 6,
+                                  .scale = 1.5F});
+      b.Output(route[0]);
+      b.Output(route[1]);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph);
+      EXPECT_EQ(kg::WrittenBytes(*graph, route[0]), 2U * 6U * rows * 4U);
+      EXPECT_EQ(kg::WithinRoot(*graph, route[1]), route[0]);
+      co::StepGraph step{.graph = std::move(*graph),
+                         .inputs = {{.tensor = logits, .kind = co::InputKind::kFeatures},
+                                    {.tensor = ids, .kind = co::InputKind::kFeatures}},
+                         .weights = {},
+                         .state = {}};
+      const pl::StepShape shape{.segments = {{.rows = rows, .outputs = 0, .want_head = false}}};
+      auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
+                           {.staged = std::vector<ir::TensorId>{logits, ids},
+                            .written = kg::WrittenBytes,
+                            .within = kg::WithinRoot});
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      const kn::Addresses addresses{};
+      auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+      const bool native = mode == 1 && rows <= 8;
+      EXPECT_EQ(std::ranges::count_if(
+                    lowered->plan.steps,
+                    [](const auto& entry) { return entry.implementation == kg::kDsv4RouteName; }),
+                native ? 1 : 0);
+      ASSERT_EQ(lowered->keep.size(), 2U);
+      const auto ids_leaf = std::ranges::find(lowered->leaves, ids, &kg::LoweredLeaf::primitive);
+      ASSERT_NE(ids_leaf, lowered->leaves.end());
+      EXPECT_EQ(std::ranges::count(lowered->leaves, ids, &kg::LoweredLeaf::primitive), 1);
+      if (!native) {
+        EXPECT_EQ(plan->tensors.at(route[0].v), plan->tensors.at(ids.v));
+        EXPECT_EQ(lowered->keep[0], ids_leaf->tensor);
+      }
+      if (native) {
+        ASSERT_EQ(lowered->plan.steps.size(), 1U);
+        const auto* out_ids = lowered->keep[0];
+        const auto* weights = lowered->keep[1];
+        EXPECT_EQ(out_ids->type, GGML_TYPE_I32);
+        EXPECT_EQ(weights->type, GGML_TYPE_F32);
+        EXPECT_EQ(out_ids->view_src, weights->view_src);
+        EXPECT_EQ(out_ids->view_offs, 0U);
+        EXPECT_EQ(weights->view_offs, 6U * rows * 4U);
+        EXPECT_EQ(ggml_nbytes(out_ids->view_src), 2U * 6U * rows * 4U);
+        EXPECT_EQ(out_ids->nb[1], 24U);
+        EXPECT_EQ(weights->nb[1], 24U);
+      }
+    }
+  }
+}
+
+TEST(GgmlLowerTest, SelectedHashRouteRejectsUnsupportedSourcesAndPhysicalContracts) {
+  const auto registry = PlanningRegistry();
+  pl::Policy policy;
+  policy.enabled = {"hash_route"};
+  pl::Canonicalize(policy);
+  const pl::SelectionView selection(registry, Gb10(), policy, false, false);
+  const auto tensor = [](llmp::format::Encoding encoding, std::uint64_t width, std::uint64_t rows) {
+    ir::TensorDesc t{.format = ir::Dense(encoding, ir::ShapeOf({width, rows}))};
+    t.nb = ir::NaturalStrides(t.format);
+    return t;
+  };
+  auto logits = tensor(llmp::format::Encoding::kF32, 256, 3);
+  auto ids = tensor(llmp::format::Encoding::kI32, 6, 3);
+  auto out = ids;
+  auto weights = tensor(llmp::format::Encoding::kF32, 6, 3);
+  std::array<const ir::TensorDesc*, 4> inputs{&logits, nullptr, &ids, nullptr};
+  const std::array<const ir::TensorDesc*, 2> outputs{&out, &weights};
+  ir::RouteParams params{
+      .kind = ir::RouteKind::kHash, .normalize = true, .experts = 256, .used = 6, .scale = 1.5F};
+  const auto accepts = [&] {
+    return !selection
+                .Candidates(ir::Primitive(ir::Op::kRoute), inputs, outputs,
+                            std::as_bytes(std::span(&params, 1)))
+                .empty();
+  };
+  ASSERT_TRUE(accepts());
+  inputs[1] = &logits;
+  EXPECT_FALSE(accepts());
+  inputs[1] = nullptr;
+  inputs[3] = &ids;
+  EXPECT_FALSE(accepts());
+  inputs[3] = nullptr;
+  ids.nb[1] += 4;
+  EXPECT_FALSE(accepts());
+  ids.nb[1] -= 4;
+  weights.view_offset = 4;
+  EXPECT_FALSE(accepts());
+  weights.view_offset = 0;
+  weights.format.encoding = llmp::format::Encoding::kI32;
+  EXPECT_FALSE(accepts());
+  weights.format.encoding = llmp::format::Encoding::kF32;
+  params.experts = 128;
+  EXPECT_FALSE(accepts());
+  params.experts = 256;
+  params.used = 33;
+  EXPECT_FALSE(accepts());
+  params.used = 6;
+  params.scale = std::numeric_limits<float>::infinity();
+  EXPECT_FALSE(accepts());
+  params.scale = 1.5F;
+  logits = tensor(llmp::format::Encoding::kF32, 256, 65536);
+  ids = tensor(llmp::format::Encoding::kI32, 6, 65536);
+  out = ids;
+  weights = tensor(llmp::format::Encoding::kF32, 6, 65536);
+  EXPECT_FALSE(accepts());
+}
+
+TEST(GgmlLowerTest, StandaloneHcPostKeepsNativeAndMissingImplementationDecomposes) {
+  for (bool native : {true, false}) {
+    SCOPED_TRACE(native);
+    auto registry = PlanningRegistry(native);
+    ir::Builder b;
+    const auto y = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({17, 3})));
+    const auto x = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({17, 4, 3})));
+    const auto post = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({4, 3})));
+    const auto comb = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({4, 4, 3})));
+    b.Output(b.HcPost(y, x, post, comb, {.streams = 4}));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+    const std::vector<ir::TensorId> staged{y, x, post, comb};
+    for (auto tensor : staged)
+      step.inputs.push_back({.tensor = tensor, .kind = co::InputKind::kFeatures});
+    const pl::StepShape shape{.segments = {{.rows = 3, .outputs = 0, .want_head = false}}};
+    auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                         {.staged = staged, .written = kg::WrittenBytes});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    const kn::Addresses addresses{};
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    EXPECT_EQ(lowered->plan.steps.size(), native ? 1U : 39U);
+    EXPECT_EQ(
+        std::ranges::count_if(lowered->plan.steps,
+                              [](const auto& s) { return s.implementation == kg::kHcPostName; }),
+        native ? 1 : 0);
+    if (native) EXPECT_EQ(lowered->nodes.back()->op, GGML_OP_DSV4_HC_POST);
+  }
+}
+
+TEST(GgmlLowerTest, UnsupportedHcPostFormsStillLowerThroughPrimitives) {
+  const auto registry = PlanningRegistry();
+  for (const std::uint32_t streams : {3U, 4U}) {
+    // Three streams with a combination matrix, or four without one.
+    const bool has_comb = streams == 3;
+    ir::Builder b;
+    const auto y = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({17, 1})));
+    const auto x = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({17, streams, 1})));
+    const auto post = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({streams, 1})));
+    std::vector<ir::TensorId> staged{y, x, post};
+    ir::TensorId comb{};
+    if (has_comb) {
+      comb = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({streams, streams, 1})));
+      staged.push_back(comb);
+    }
+    b.Output(b.HcPost(y, x, post, comb, {.streams = streams}));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    co::StepGraph step{.graph = std::move(*graph), .inputs = {}, .weights = {}, .state = {}};
+    for (auto tensor : staged)
+      step.inputs.push_back({.tensor = tensor, .kind = co::InputKind::kFeatures});
+    const pl::StepShape shape{.segments = {{.rows = 1, .outputs = 0, .want_head = false}}};
+    auto plan = pl::Plan(step.graph.Clone(), registry, Gb10(), {},
+                         {.staged = staged, .written = kg::WrittenBytes});
+    ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+    const kn::Addresses addresses{};
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, Device());
+    ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+    EXPECT_EQ(lowered->plan.steps.size(), has_comb ? 23U : 11U);
+    EXPECT_TRUE(std::ranges::none_of(
+        lowered->plan.steps, [](const auto& s) { return s.implementation == kg::kHcPostName; }));
+  }
+}
+
+TEST(GgmlLowerTest, StandaloneHcPostCapabilityRejectsOutsideNativeContract) {
+  const auto registry = PlanningRegistry();
+  const pl::Policy policy{};
+  const pl::SelectionView selection(registry, Gb10(), policy, false, false);
+  const auto tensor = [](std::initializer_list<std::uint64_t> shape) {
+    ir::TensorDesc t{.format = ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf(shape))};
+    t.nb = ir::NaturalStrides(t.format);
+    return t;
+  };
+  auto y = tensor({17, 3}), x = tensor({17, 4, 3}), post = tensor({4, 3});
+  auto comb = tensor({4, 4, 3}), out = tensor({17, 4, 3});
+  std::array<const ir::TensorDesc*, 4> inputs{&y, &x, &post, &comb};
+  const std::array<const ir::TensorDesc*, 1> outputs{&out};
+  ir::HcParams params{.streams = 4};
+  const auto accepts = [&] {
+    return !selection
+                .Candidates(ir::Primitive(ir::Op::kHcPost), inputs, outputs,
+                            std::as_bytes(std::span(&params, 1)))
+                .empty();
+  };
+  ASSERT_TRUE(accepts());
+  params.streams = 3;
+  EXPECT_FALSE(accepts());
+  params.streams = 4;
+  inputs[3] = nullptr;
+  EXPECT_FALSE(accepts());
+  inputs[3] = &comb;
+  x.nb[0] = 2;
+  EXPECT_FALSE(accepts());
+  x = tensor({17, 4, 3});
+  x.view_offset = 2;
+  EXPECT_FALSE(accepts());
+  x.view_offset = 0;
+  post.format = ir::Dense(llmp::format::Encoding::kF16, ir::ShapeOf({4, 3}));
+  EXPECT_FALSE(accepts());
+  post = tensor({4, 3});
+  out = tensor({17, 4, 2});
+  EXPECT_FALSE(accepts());
+  // No allocation: the logical output exceeds CheckHcPost's grid contract.
+  constexpr std::uint64_t width = 1ULL << 40;
+  y = tensor({width, 1});
+  x = tensor({width, 4, 1});
+  post = tensor({4, 1});
+  comb = tensor({4, 4, 1});
+  out = tensor({width, 4, 1});
+  EXPECT_FALSE(accepts());
 }
 
 TEST(GgmlLowerTest, Gemma2LowersEverySetupShape) { ExpectFamilyLowers<Gemma2Family>(); }
