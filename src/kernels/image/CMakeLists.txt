@@ -2,13 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Llmpalooza's own kernels for the Qwen-Image-2.1 pipeline's BF16 operations
-# (ops.h, conv.cu), its BF16 products on cuBLAS and cuBLASLt (gemm.h), the
-# module's declarations in the implementation registry (implementations.h)
-# and the pipeline's phases dispatched through a bound plan (pipeline.h).
+# (ops.h, conv.cu), its BF16 products on cuBLAS and cuBLASLt (gemm.h) and the
+# module's declarations in the implementation registry (implementations.h).
 # CUDA builds only.
 if(LLMP_CUDA)
   add_library(llmp_image_kernels STATIC ops.cu flash_attention.cu conv.cu gemm.cc
-                                          implementations.cc pipeline.cc)
+                                          implementations.cc)
   target_include_directories(llmp_image_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(llmp_image_kernels SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
@@ -34,7 +33,7 @@ if(LLMP_CUDA)
   # the GGML and EXL3 modules do. A file added here without being listed
   # fails the next configure.
   set(module_files CMakeLists.txt conv.cu flash_attention.cu gemm.cc gemm.h implementations.cc
-                   implementations.h module_digest.cmake ops.cu ops.h pipeline.cc pipeline.h)
+                   implementations.h module_digest.cmake ops.cu ops.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")
   foreach(name IN LISTS present)

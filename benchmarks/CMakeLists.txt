@@ -197,19 +197,6 @@ if(LLMP_CUDA)
                                                    llmp_model llmp_warnings)
   target_link_options(llmp_qwen38_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # M3's third model slice: the Qwen-Image-2.1 BF16 pipeline, native, from
-  # its component artifacts and their composition
-  # (docs/experiments/qwen-image-native/), with the native tokenizer and the
-  # prompt renderer.
-  add_executable(llmp_qwen_image_exec qwen_image_exec.cc)
-  target_include_directories(llmp_qwen_image_exec SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_qwen_image_exec PRIVATE llmp_image_kernels llmp_ggml_kernels
-                                                       llmp_cuda_device_memory llmp_artifact
-                                                       llmp_model llmp_tokenizer llmp_chat
-                                                       llmp_warnings)
-  target_link_options(llmp_qwen_image_exec PRIVATE
-                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   # Its products' cuBLASLt candidates, timed, for the algorithms the image
   # kernels pin (kernels/image/gemm.h).
   add_executable(llmp_qwen_image_gemm_tune qwen_image_gemm_tune.cc)

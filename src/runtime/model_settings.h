@@ -117,7 +117,7 @@ inline constexpr double kQwen38DepthCostRatio = 1.16;
 inline constexpr std::uint32_t kQwen38SharedWaveDepth = 2;
 inline constexpr std::uint32_t kQwen38DraftWaveMax = 2;
 inline constexpr std::uint32_t kQwen38WaveReadAlign = 2048;
-// The image pipeline's generation (engine/qwen_image_runner.h).
+// The image pipeline's generation (runtime/engine_image.h).
 inline constexpr std::uint32_t kImageSize = 1024;
 inline constexpr std::uint32_t kImageSteps = 40;
 // The reasoning markers the runtime looks for in a vocabulary.

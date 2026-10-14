@@ -26,12 +26,10 @@
 #include "base/sha256.h"
 #include "chat/chat.h"
 #include "engine/expert_slab.h"
-#include "engine/qwen_image_runner.h"
 #include "expected_error.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
-#include "kernels/image/pipeline.h"
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
 #include "providers/device_runtime.h"
@@ -91,10 +89,8 @@ struct Lifetime {
   explicit Lifetime(en::PagedNode& server_node) : node(server_node) {}
   std::shared_ptr<en::ExecutionMetadataAllowance> allowance;
   std::shared_ptr<rt::ImageGenerationSource> source;
-  en::QwenImageOptions legacy_options;  // before the runner borrowing it
-  std::unique_ptr<en::QwenImageRunner> legacy;
   std::unique_ptr<rt::EngineImage> image;
-  bool legacy_arm = false, decoder_times = false, tiled = false, masked_attention = false;
+  bool decoder_times = false, tiled = false, masked_attention = false;
   bool rectangular_request = false, replace_requests = false;
   rt::ImageGenerationRequest seed;
   std::vector<std::int32_t> alternate_prompt;
@@ -114,8 +110,7 @@ struct Lifetime {
   std::vector<std::byte> exported;
   double setup_seconds = 0;
   std::array<double, 2> first_seconds{}, finish_seconds{}, generation_seconds{};
-  std::uint64_t legacy_preflight = 0, legacy_staging = 0, export_credit = 0;
-  std::uint64_t legacy_weight_capacity = 0;
+  std::uint64_t export_credit = 0;
   std::string native_report;
   static double Seconds(std::chrono::steady_clock::duration duration) {
     return std::chrono::duration<double>(duration).count();
@@ -203,80 +198,8 @@ struct Lifetime {
     }
     return {};
   }
-  // This preflight runs before QwenImageRunner::Setup maps any own storage.
-  // Artifact/tokenizer copies and source-derived small layout vectors remain
-  // in the separately charged startup construction phase.
-  Status MeasureLegacy() {
-    namespace md = llmp::model;
-    namespace ki = llmp::kernels::image;
-    const auto& profile = md::QwenImage21();
-    const std::array tensors{md::TextEncoderTensors(profile.text),
-                             md::DenoiserTensors(profile.denoiser),
-                             md::VaeDecoderTensors(profile.vae)};
-    const std::array architectures{profile.text_architecture, profile.denoiser_architecture,
-                                   profile.vae_architecture};
-    std::uint64_t weight_bytes = 0;
-    std::vector<std::uint64_t> vae_sizes;
-    for (std::size_t i = 0; i < tensors.size(); ++i) {
-      const auto& artifact = source->weights[i]->artifact();
-      auto bound = md::BindQwenImageComponent(tensors[i], architectures[i], artifact);
-      if (!bound) return Error(bound.error());
-      std::vector<bool> used(artifact.groups().size());
-      for (auto index : *bound) {
-        const auto& resource = artifact.resources()[index];
-        used[resource.group] = true;
-        if (i == 2) vae_sizes.push_back(resource.bytes.value());
-      }
-      for (std::size_t g = 0; g < used.size(); ++g)
-        if (used[g]) weight_bytes += std::uint64_t{artifact.groups()[g].chunks} * en::kPagedExtent;
-    }
-    legacy_weight_capacity = weight_bytes;
-    std::uint64_t own = 0, text = 0, flow = 0, vae = 0;
-    std::vector<std::uint64_t> converted;
-    (void)ki::OwnLayout(0, profile.denoiser, 25, 4096, own);
-    (void)ki::TextLayout(0, profile.text, 39, text);
-    (void)ki::DitLayout(0, profile.denoiser, 4121, flow);
-    (void)ki::VaeLayout(0, profile.vae, 64, vae_sizes, true, converted, vae);
-    auto facts = llmp::providers::QueryDeviceFacts(0);
-    if (!facts) return Error("legacy preflight device facts are unavailable");
-    const auto blas =
-        llmp::kernels::ggml::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture))
-            .value();
-    const auto freqs = md::QwenImageDenoiserRotary(profile.denoiser, 25, 64);
-    const auto align = [](std::uint64_t bytes) { return (bytes + 255) / 256 * 256; };
-    const auto text_in = align(39 * 4) + 2 * align(39 * 256);
-    const auto step_in = align(freqs.size() * 4) + align(4096 * 64 * 2) +
-                         align(2 * std::uint64_t{profile.denoiser.timestep_dim} * 2) + 256;
-    const auto input = std::max<std::uint64_t>({text_in, step_in, 4096});
-    const auto output_bytes =
-        std::max<std::uint64_t>(std::uint64_t{profile.vae.out_channels} * 1024 * 1024 * 2,
-                                4096 * std::uint64_t{profile.denoiser.out_channels} * 2);
-    legacy_staging = input + output_bytes;
-    // Existing legacy Step captures only index>=2; this exact two-step
-    // workload never creates a denoising graph in either generation.
-    constexpr std::uint64_t graph_floor = 0;
-    const auto rounded = [](std::uint64_t bytes) {
-      return (bytes + en::kPagedExtent - 1) / en::kPagedExtent * en::kPagedExtent;
-    };
-    std::uint64_t left = kCap;
-    // Count the actual opening grant and mapped landing zone together.
-    const auto opening = node.catalog().OccupancyOf(node.domain()).Total().value();
-    for (const auto bytes :
-         {opening, weight_bytes, rounded(own), rounded(std::max({text, flow, vae})), rounded(blas),
-          legacy_staging, graph_floor, 3 * en::kPagedExtent}) {
-      if (bytes > left) return Error("source-derived legacy generation exceeds 48GiB");
-      left -= bytes;
-    }
-    legacy_preflight = kCap - left;
-    const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
-    if (legacy_preflight > available || rt::kUncountedMargin > available - legacy_preflight)
-      return Error(
-          "legacy source-derived footprint plus margin lacks physical "
-          "headroom");
-    return {};
-  }
   Status Export(std::string_view expected) {
-    if (output.empty() || legacy_arm) return {};
+    if (output.empty()) return {};
     constexpr std::size_t pixels = 1024 * 1024;
     if (exported.size() != pixels * 16) return Error("completed export extent differs");
     std::vector<std::byte> rgba(pixels * 4);
@@ -314,211 +237,188 @@ struct Lifetime {
     allowance = std::move(*paid);
     if (auto loaded = Load(store, noise); !loaded) return loaded;
     std::uint64_t weights = 0;
-    if (legacy_arm) {
-      // A second artifact/tokenizer construction is simultaneous with Load's
-      // verified source owners. Its separate 1GiB credit stays inside the one
-      // held 4GiB allowance, not another catalog reservation.
-      if (!allowance->Charge(kStartup)) return Error("legacy startup metadata is unpaid");
-      if (auto measured = MeasureLegacy(); !measured) return measured;
-      legacy_options.store = store;
-      legacy_options.composition = kComposition;
-      legacy_options.noise = noise;
-      legacy_options.prompt = kPrompt;
-      legacy_options.steps = 2;
-      legacy_options.out = output;
-      legacy = std::make_unique<en::QwenImageRunner>(node, legacy_options, 0, 0);
-      entered.push_back(legacy.get());  // partial Setup resources retire too
-      if (auto setup = legacy->Setup(); !setup) return setup;
-      selected_weight_bytes = legacy->weight_read_bytes();
-      weights = legacy_weight_capacity;
-      activation = legacy->activations_needed();
-      pool = legacy->pool_needed();
-      plans = 0;  // no legacy denoising graph at two steps
-      staging = legacy_staging;
-    } else {
-      llmp::config::ModelEntry entry;
-      entry.name = "shared-image-generation";
-      entry.artifact = std::string(kComposition);
-      rt::ModelSettings settings;
-      settings.image_size.value = 1024;
-      settings.image_steps.value = rectangular_request || replace_requests ? 1 : 2;
-      settings.name = entry.name;
-      settings.architecture = "qwen_image_pipeline";
-      if (tiled || masked_attention) {
-        // Closed source inventory:113 VaeStep entries and128 tensor names/shapes
-        // produced together by VaeDecoderPlan. Double capacities and512B per
-        // source descriptor include strings, dimensions and bookkeeping. Pay
-        // this temporary phase before any vector construction; no payloads.
-        constexpr std::uint64_t tiled_preparation =
-            2 * 113 * sizeof(llmp::model::VaeStep) + 2 * 128 * 512 +
-            2 * 113 * sizeof(llmp::execution::TunedShape) + 4096;
-        // One temporary tuple, class name, shared owner and callable controls;
-        // the immutable copy and backend declaration are charged separately.
-        constexpr std::uint64_t attention_preparation =
-            2 * sizeof(llmp::execution::TunedShape) + 4096;
-        const auto preparation = tiled ? tiled_preparation : attention_preparation;
-        if (!allowance->Charge(preparation)) return Error("candidate selection preparation unpaid");
-        tuning_credit = preparation;
-        llmp::planner::DeviceFacts facts{.device_class = "sm_121"};
-        if (tiled) {
-          const auto stages = llmp::model::VaeDecoderPlan(llmp::model::QwenImage21().vae, 64, 64);
-          if (stages.size() != 113) return Error("actual decoder tuning inventory changed");
-          facts.tuned.reserve(stages.size());
-          for (const auto& stage : stages) {
-            if (stage.kind != llmp::model::VaeStep::Kind::kConv3x3) continue;
-            llmp::execution::TunedShape key{.implementation = llmp::kernels::ggml::kConv2dTiledF32,
-                                            .rows = std::uint64_t{stage.width} * stage.height,
-                                            .k = 9ULL * stage.in_channels,
-                                            .n = stage.out_channels,
-                                            .output_encoding = llmp::format::Encoding::kF32};
-            if (std::ranges::none_of(facts.tuned, [&](const auto& before) {
-                  return before.rows == key.rows && before.k == key.k && before.n == key.n;
-                }))
-              facts.tuned.push_back(key);
-          }
-        } else {
-          // Explicit approximate F16 transient-operand candidate. This does
-          // not qualify arbitrary F32 ranges or change the dense default.
-          facts.tuned.push_back({.implementation = llmp::kernels::ggml::kAttentionF32,
-                                 .rows = 4121,
-                                 .k = 128,
-                                 .n = 128,
-                                 .output_encoding = llmp::format::Encoding::kF32});
+    llmp::config::ModelEntry entry;
+    entry.name = "shared-image-generation";
+    entry.artifact = std::string(kComposition);
+    rt::ModelSettings settings;
+    settings.image_size.value = 1024;
+    settings.image_steps.value = rectangular_request || replace_requests ? 1 : 2;
+    settings.name = entry.name;
+    settings.architecture = "qwen_image_pipeline";
+    if (tiled || masked_attention) {
+      // Closed source inventory:113 VaeStep entries and128 tensor names/shapes
+      // produced together by VaeDecoderPlan. Double capacities and512B per
+      // source descriptor include strings, dimensions and bookkeeping. Pay
+      // this temporary phase before any vector construction; no payloads.
+      constexpr std::uint64_t tiled_preparation =
+          2 * 113 * sizeof(llmp::model::VaeStep) + 2 * 128 * 512 +
+          2 * 113 * sizeof(llmp::execution::TunedShape) + 4096;
+      // One temporary tuple, class name, shared owner and callable controls;
+      // the immutable copy and backend declaration are charged separately.
+      constexpr std::uint64_t attention_preparation =
+          2 * sizeof(llmp::execution::TunedShape) + 4096;
+      const auto preparation = tiled ? tiled_preparation : attention_preparation;
+      if (!allowance->Charge(preparation)) return Error("candidate selection preparation unpaid");
+      tuning_credit = preparation;
+      llmp::planner::DeviceFacts facts{.device_class = "sm_121"};
+      if (tiled) {
+        const auto stages = llmp::model::VaeDecoderPlan(llmp::model::QwenImage21().vae, 64, 64);
+        if (stages.size() != 113) return Error("actual decoder tuning inventory changed");
+        facts.tuned.reserve(stages.size());
+        for (const auto& stage : stages) {
+          if (stage.kind != llmp::model::VaeStep::Kind::kConv3x3) continue;
+          llmp::execution::TunedShape key{.implementation = llmp::kernels::ggml::kConv2dTiledF32,
+                                          .rows = std::uint64_t{stage.width} * stage.height,
+                                          .k = 9ULL * stage.in_channels,
+                                          .n = stage.out_channels,
+                                          .output_encoding = llmp::format::Encoding::kF32};
+          if (std::ranges::none_of(facts.tuned, [&](const auto& before) {
+                return before.rows == key.rows && before.k == key.k && before.n == key.n;
+              }))
+            facts.tuned.push_back(key);
         }
-        auto bytes = llmp::planner::OwnedDeviceFacts::Bound(facts);
-        if (!bytes || !allowance->Charge(*bytes)) return Error("owned candidate selection unpaid");
-        tuning_credit += *bytes;
-        auto owned = llmp::planner::OwnedDeviceFacts::Create(facts, *bytes);
-        if (!owned) return Error(owned.error());
-        tuning_facts = std::make_shared<llmp::planner::OwnedDeviceFacts>(std::move(*owned));
+      } else {
+        // Explicit approximate F16 transient-operand candidate. This does
+        // not qualify arbitrary F32 ranges or change the dense default.
+        facts.tuned.push_back({.implementation = llmp::kernels::ggml::kAttentionF32,
+                               .rows = 4121,
+                               .k = 128,
+                               .n = 128,
+                               .output_encoding = llmp::format::Encoding::kF32});
       }
-      auto build = rt::ComponentImageGenerationBuild(node, 0, source, allowance, tuning_facts);
-      if (tiled || masked_attention) {
-        build = [this, original = std::move(build),
-                 facts = tuning_facts](const rt::ModelSettings& current)
-            -> std::expected<rt::EngineImageParts, std::string> {
-          auto parts = original(current);
-          if (!parts) return std::unexpected(parts.error());
-          if (!parts->backend || !parts->backend->owner)
-            return std::unexpected(std::string("candidate source lost its actual backend owner"));
-          const auto& actual = parts->backend->owner->backend().device.tuned;
-          const auto& expected = facts->facts().tuned;
-          if (actual.size() != expected.size())
-            return std::unexpected(std::string("owned candidate tuple count changed"));
-          for (std::size_t i = 0; i < expected.size(); ++i)
-            if (actual[i].implementation != expected[i].implementation ||
-                actual[i].rows != expected[i].rows || actual[i].k != expected[i].k ||
-                actual[i].n != expected[i].n ||
-                actual[i].output_encoding != expected[i].output_encoding)
-              return std::unexpected(std::string("owned candidate tuple identity changed"));
-          // Explicit diagnostic candidate, not a serving rank claim for all shapes.
-          if (tiled)
-            parts->policy.ranks.push_back(
-                {"sm_121", std::string(llmp::kernels::ggml::kConv2dTiledF32), 0});
-          if (masked_attention) {
-            // Source witness, not a runtime counter. The existing physical
-            // host control checks selection of these32 identical shapes.
-            attention_source_nodes = 0;
-            for (const auto& stage : parts->stages) {
-              const auto& graph = stage.graph->graph();
-              for (const auto& operation : graph.nodes()) {
-                if (operation.key != llmp::ir::Primitive(llmp::ir::Op::kAttention)) continue;
-                const auto& query = graph.tensor(operation.source(0)).format;
-                if (query.encoding == llmp::format::Encoding::kF32 &&
-                    query.shape.ne == std::array<std::uint64_t, 4>{128, 4121, 32, 1})
-                  ++attention_source_nodes;
-              }
-            }
-            if (attention_source_nodes != 32)
-              return std::unexpected(std::string("actual flow attention source count differs"));
-          }
-          return parts;
-        };
-      }
-      if (rectangular_request) {
-        build = [this, original = std::move(build)](const rt::ModelSettings& current)
-            -> std::expected<rt::EngineImageParts, std::string> {
-          auto parts = original(current);
-          if (!parts) return std::unexpected(parts.error());
-          if (parts->request.sequence.size() != 3 || parts->stages.size() != 3 ||
-              parts->request.first_output != 1 || parts->request.sequence[0].stage != 0 ||
-              parts->request.sequence[1].stage != 1 || parts->request.sequence[1].iteration != 0 ||
-              parts->request.sequence[2].stage != 2 ||
-              parts->stages[0].graph->outputs()[0].shape !=
-                  llmp::components::SpatialShape{1, prompt_rows - dropped_rows, 4096, 1} ||
-              parts->stages[2].graph->outputs()[0].shape !=
-                  llmp::components::SpatialShape{2048, 512, 4, 1})
-            return std::unexpected(std::string("actual rectangular request composition differs"));
-          request_sequence = parts->request.sequence.size();
-          request_pixel_values = 2048ULL * 512 * 4;
-          request_identity = llmp::base::ToHex(parts->request.identity);
-          return parts;
-        };
-      }
-      if (replace_requests) {
-        build = [this, original = std::move(build)](const rt::ModelSettings& current)
-            -> std::expected<rt::EngineImageParts, std::string> {
-          auto parts = original(current);
-          if (!parts) return std::unexpected(parts.error());
-          if (parts->request.sequence.size() != 3 || parts->stages.size() != 3)
-            return std::unexpected(std::string("initial replacement request stage inventory"));
-          request_layout = parts->request.layout;
-          initial_request_identity = parts->request.identity;
-          request_owner = parts->request.keep;
-          return parts;
-        };
-      }
-      if (!output.empty()) {
-        export_credit = 20 * kMiB;
-        if (!allowance->Charge(export_credit)) return Error("quality export credit is unavailable");
-        exported.resize(16 * kMiB);
-        build = [this, original = std::move(build)](const rt::ModelSettings& current)
-            -> std::expected<rt::EngineImageParts, std::string> {
-          auto parts = original(current);
-          if (!parts) return std::unexpected(parts.error());
-          auto finish = std::move(parts->request.finish);
-          parts->request.finish =
-              [this, finish = std::move(finish)](
-                  std::span<const std::byte> bytes) -> std::expected<std::string, std::string> {
-            auto digest = finish(bytes);
-            if (!digest) return digest;
-            if (bytes.size() != exported.size())
-              return std::unexpected(std::string("quality observation extent differs"));
-            std::ranges::copy(bytes, exported.begin());
-            return digest;
-          };
-          return parts;
-        };
-      }
-      if (decoder_times) {
-        build = [original = std::move(build)](const rt::ModelSettings& current)
-            -> std::expected<rt::EngineImageParts, std::string> {
-          auto parts = original(current);
-          if (!parts) return std::unexpected(parts.error());
-          if (parts->request.sequence.size() != 4 || parts->request.first_output != 1 ||
-              parts->request.sequence[0].stage != 0 || parts->request.sequence[1].stage != 1 ||
-              parts->request.sequence[2].stage != 1 || parts->request.sequence[3].stage != 2)
-            return std::unexpected(
-                std::string("decoder observation needs the complete four-stage sequence"));
-          // Test-only boundary: same four programs and always-present copies.
-          // FirstOutput now completes both flow iterations; Finish is decoder
-          // only.
-          parts->request.first_output = 2;
-          return parts;
-        };
-      }
-      image = std::make_unique<rt::EngineImage>(node, entry, settings, 0, std::move(build));
-      const auto setup = image->Setup();
-      if (image->has_paged()) entered.push_back(&image->paged());
-      if (!setup) return setup;
-      weights = image->weight_read_bytes();
-      selected_weight_bytes = weights;
-      if (weights != kSelectedWeights) return Error("complete source closure page union differs");
-      activation = image->activations_needed();
-      pool = std::max<std::uint64_t>(image->pool_needed(), en::kPagedExtent);
-      staging = image->host_input_bytes();
-      plans = image->plan_floor_bytes();
+      auto bytes = llmp::planner::OwnedDeviceFacts::Bound(facts);
+      if (!bytes || !allowance->Charge(*bytes)) return Error("owned candidate selection unpaid");
+      tuning_credit += *bytes;
+      auto owned = llmp::planner::OwnedDeviceFacts::Create(facts, *bytes);
+      if (!owned) return Error(owned.error());
+      tuning_facts = std::make_shared<llmp::planner::OwnedDeviceFacts>(std::move(*owned));
     }
+    auto build = rt::ComponentImageGenerationBuild(node, 0, source, allowance, tuning_facts);
+    if (tiled || masked_attention) {
+      build = [this, original = std::move(build),
+               facts = tuning_facts](const rt::ModelSettings& current)
+          -> std::expected<rt::EngineImageParts, std::string> {
+        auto parts = original(current);
+        if (!parts) return std::unexpected(parts.error());
+        if (!parts->backend || !parts->backend->owner)
+          return std::unexpected(std::string("candidate source lost its actual backend owner"));
+        const auto& actual = parts->backend->owner->backend().device.tuned;
+        const auto& expected = facts->facts().tuned;
+        if (actual.size() != expected.size())
+          return std::unexpected(std::string("owned candidate tuple count changed"));
+        for (std::size_t i = 0; i < expected.size(); ++i)
+          if (actual[i].implementation != expected[i].implementation ||
+              actual[i].rows != expected[i].rows || actual[i].k != expected[i].k ||
+              actual[i].n != expected[i].n ||
+              actual[i].output_encoding != expected[i].output_encoding)
+            return std::unexpected(std::string("owned candidate tuple identity changed"));
+        // Explicit diagnostic candidate, not a serving rank claim for all shapes.
+        if (tiled)
+          parts->policy.ranks.push_back(
+              {"sm_121", std::string(llmp::kernels::ggml::kConv2dTiledF32), 0});
+        if (masked_attention) {
+          // Source witness, not a runtime counter. The existing physical
+          // host control checks selection of these32 identical shapes.
+          attention_source_nodes = 0;
+          for (const auto& stage : parts->stages) {
+            const auto& graph = stage.graph->graph();
+            for (const auto& operation : graph.nodes()) {
+              if (operation.key != llmp::ir::Primitive(llmp::ir::Op::kAttention)) continue;
+              const auto& query = graph.tensor(operation.source(0)).format;
+              if (query.encoding == llmp::format::Encoding::kF32 &&
+                  query.shape.ne == std::array<std::uint64_t, 4>{128, 4121, 32, 1})
+                ++attention_source_nodes;
+            }
+          }
+          if (attention_source_nodes != 32)
+            return std::unexpected(std::string("actual flow attention source count differs"));
+        }
+        return parts;
+      };
+    }
+    if (rectangular_request) {
+      build = [this, original = std::move(build)](const rt::ModelSettings& current)
+          -> std::expected<rt::EngineImageParts, std::string> {
+        auto parts = original(current);
+        if (!parts) return std::unexpected(parts.error());
+        if (parts->request.sequence.size() != 3 || parts->stages.size() != 3 ||
+            parts->request.first_output != 1 || parts->request.sequence[0].stage != 0 ||
+            parts->request.sequence[1].stage != 1 || parts->request.sequence[1].iteration != 0 ||
+            parts->request.sequence[2].stage != 2 ||
+            parts->stages[0].graph->outputs()[0].shape !=
+                llmp::components::SpatialShape{1, prompt_rows - dropped_rows, 4096, 1} ||
+            parts->stages[2].graph->outputs()[0].shape !=
+                llmp::components::SpatialShape{2048, 512, 4, 1})
+          return std::unexpected(std::string("actual rectangular request composition differs"));
+        request_sequence = parts->request.sequence.size();
+        request_pixel_values = 2048ULL * 512 * 4;
+        request_identity = llmp::base::ToHex(parts->request.identity);
+        return parts;
+      };
+    }
+    if (replace_requests) {
+      build = [this, original = std::move(build)](const rt::ModelSettings& current)
+          -> std::expected<rt::EngineImageParts, std::string> {
+        auto parts = original(current);
+        if (!parts) return std::unexpected(parts.error());
+        if (parts->request.sequence.size() != 3 || parts->stages.size() != 3)
+          return std::unexpected(std::string("initial replacement request stage inventory"));
+        request_layout = parts->request.layout;
+        initial_request_identity = parts->request.identity;
+        request_owner = parts->request.keep;
+        return parts;
+      };
+    }
+    if (!output.empty()) {
+      export_credit = 20 * kMiB;
+      if (!allowance->Charge(export_credit)) return Error("quality export credit is unavailable");
+      exported.resize(16 * kMiB);
+      build = [this, original = std::move(build)](const rt::ModelSettings& current)
+          -> std::expected<rt::EngineImageParts, std::string> {
+        auto parts = original(current);
+        if (!parts) return std::unexpected(parts.error());
+        auto finish = std::move(parts->request.finish);
+        parts->request.finish =
+            [this, finish = std::move(finish)](
+                std::span<const std::byte> bytes) -> std::expected<std::string, std::string> {
+          auto digest = finish(bytes);
+          if (!digest) return digest;
+          if (bytes.size() != exported.size())
+            return std::unexpected(std::string("quality observation extent differs"));
+          std::ranges::copy(bytes, exported.begin());
+          return digest;
+        };
+        return parts;
+      };
+    }
+    if (decoder_times) {
+      build = [original = std::move(build)](const rt::ModelSettings& current)
+          -> std::expected<rt::EngineImageParts, std::string> {
+        auto parts = original(current);
+        if (!parts) return std::unexpected(parts.error());
+        if (parts->request.sequence.size() != 4 || parts->request.first_output != 1 ||
+            parts->request.sequence[0].stage != 0 || parts->request.sequence[1].stage != 1 ||
+            parts->request.sequence[2].stage != 1 || parts->request.sequence[3].stage != 2)
+          return std::unexpected(
+              std::string("decoder observation needs the complete four-stage sequence"));
+        // Test-only boundary: same four programs and always-present copies.
+        // FirstOutput now completes both flow iterations; Finish is decoder
+        // only.
+        parts->request.first_output = 2;
+        return parts;
+      };
+    }
+    image = std::make_unique<rt::EngineImage>(node, entry, settings, 0, std::move(build));
+    const auto setup = image->Setup();
+    if (image->has_paged()) entered.push_back(&image->paged());
+    if (!setup) return setup;
+    weights = image->weight_read_bytes();
+    selected_weight_bytes = weights;
+    if (weights != kSelectedWeights) return Error("complete source closure page union differs");
+    activation = image->activations_needed();
+    pool = std::max<std::uint64_t>(image->pool_needed(), en::kPagedExtent);
+    staging = image->host_input_bytes();
+    plans = image->plan_floor_bytes();
     fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
     std::uint64_t left = kCap;
     const auto take = [&left](std::uint64_t bytes) {
@@ -533,8 +433,6 @@ struct Lifetime {
         !take(2 * en::kPagedExtent))
       return Error("measured complete generation exceeds the 48GiB paid node envelope");
     footprint = kCap - left;
-    if (legacy_arm && footprint > legacy_preflight)
-      return Error("actual legacy allocation exceeds the source-derived preflight");
     const auto available = llmp::platform::AvailableMemoryBytes().value_or(0);
     if (footprint > available || rt::kUncountedMargin > available - footprint)
       return Error("actual generation footprint plus physical margin lacks headroom");
@@ -553,9 +451,8 @@ struct Lifetime {
     const auto dynamic = current_fixed + (now - reserve) / en::kPagedExtent * en::kPagedExtent;
     if (auto valid = rt::CheckDiagnosticBudgetCap(guard, dynamic, kCap, 0); !valid) return valid;
     if (auto started = node.Start(llmp::base::Bytes(kCap)); !started) return started;
-    if (auto registered = legacy_arm ? legacy->Register() : image->Register(); !registered)
-      return registered;
-    if (auto bound = legacy_arm ? legacy->Bind() : image->Bind(); !bound) return bound;
+    if (auto registered = image->Register(); !registered) return registered;
+    if (auto bound = image->Bind(); !bound) return bound;
     node.Run();
     node.SetHostFloor(0);
     setup_seconds = Seconds(std::chrono::steady_clock::now() - setup_started);
@@ -565,16 +462,14 @@ struct Lifetime {
     for (std::size_t run = 0; run < first.size(); ++run) {
       const auto started = std::chrono::steady_clock::now();
       auto first_done = started;
-      auto complete = node.WithRequest(
-          0, legacy_arm ? legacy->everything() : image->request_closure(), "image migration screen",
-          [&]() -> Status {
+      auto complete =
+          node.WithRequest(0, image->request_closure(), "image migration screen", [&]() -> Status {
             if (decoder_times) (void)node.TakeTimes(0);
-            auto step =
-                legacy_arm ? legacy->FirstOutput(first[run]) : image->FirstOutput(first[run]);
+            auto step = image->FirstOutput(first[run]);
             first_done = std::chrono::steady_clock::now();
             if (!step) return step;
             if (decoder_times) (void)node.TakeTimes(0);
-            auto output_done = legacy_arm ? legacy->Finish(final[run]) : image->Finish(final[run]);
+            auto output_done = image->Finish(final[run]);
             if (decoder_times) decoder_job_times[run] = node.TakeTimes(0);
             return output_done;
           });
@@ -589,10 +484,7 @@ struct Lifetime {
             "complete generation did not publish both completed "
             "output boundaries");
     }
-    if (legacy_arm)
-      native_report = legacy->Report();
-    else
-      native_report = image->extra();
+    native_report = image->extra();
     if (first[0] != first[1] || final[0] != final[1])
       return Error("same selected complete generation differs on retained replay");
     return {};
@@ -859,18 +751,17 @@ TEST(ImageGenerationGpu, CompletedRequestsReplaceContentAndReuseRetainedCaptures
   RecordProperty("original_restored_pixels_sha256", life->final[0]);
   RecordProperty("changed_pixels_sha256", life->changed_pixels);
 }
-// One driver, two existing implementations; no serving selection or kernel
-// changes. Output mode is a quality observation, never a timing sample.
+// Direct fixture runs the shared pipeline against the verified source.
+// Output mode is a quality observation, never a timing sample.
 TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
   const char* arm = std::getenv("LLMP_IMAGE_SCREEN_ARM");
   if (arm == nullptr) GTEST_SKIP() << "explicit same-source migration screen required";
-  ASSERT_TRUE(std::string_view(arm) == "legacy" || std::string_view(arm) == "shared");
+  ASSERT_EQ(std::string_view(arm), "shared");
   const char* store = std::getenv("LLMP_IMAGE_GENERATION_STORE");
   const char* noise = std::getenv("LLMP_IMAGE_GENERATION_NOISE");
   ASSERT_NE(store, nullptr);
   ASSERT_NE(noise, nullptr);
   auto life = std::make_unique<Lifetime>();
-  life->legacy_arm = std::string_view(arm) == "legacy";
   if (const char* output = std::getenv("LLMP_IMAGE_SCREEN_OUTPUT")) {
     std::error_code error;
     ASSERT_TRUE(fs::is_directory(output, error));
@@ -878,15 +769,12 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
     life->output = output;
   }
   life->tiled = std::getenv("LLMP_IMAGE_SCREEN_TILED_CONV") != nullptr;
-  if (life->tiled) ASSERT_FALSE(life->legacy_arm);
   life->masked_attention = std::getenv("LLMP_IMAGE_SCREEN_MASKED_ATTENTION") != nullptr;
   if (life->masked_attention) {
-    ASSERT_FALSE(life->legacy_arm);
     ASSERT_FALSE(life->tiled);  // one changed implementation per screen
   }
   life->decoder_times = std::getenv("LLMP_IMAGE_SCREEN_DECODER_TIMES") != nullptr;
   if (life->decoder_times) {
-    ASSERT_FALSE(life->legacy_arm);
     ASSERT_TRUE(life->output.empty());
   }
   const auto result = life->Run(store, noise);
@@ -936,10 +824,7 @@ TEST(ImageGenerationGpu, SameSourceMigrationScreen) {
                    std::format("{:.9f}", life->generation_seconds[i]));
   }
   RecordProperty("setup_paid_footprint_bytes", std::to_string(life->footprint));
-  RecordProperty("legacy_preflight_bytes", std::to_string(life->legacy_preflight));
-  RecordProperty("legacy_weight_capacity_bytes", std::to_string(life->legacy_weight_capacity));
   RecordProperty("selected_weight_bytes", std::to_string(life->selected_weight_bytes));
-  RecordProperty("legacy_denoising_captures", 0);
   RecordProperty("quality_counters_are_timing_samples", "false");
   RecordProperty("export_credit_bytes", std::to_string(life->export_credit));
   RecordProperty("construction_used_bytes", std::to_string(life->allowance->used()));

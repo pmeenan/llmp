@@ -11,10 +11,8 @@
 // replace, bit for bit (the gated residual with its norm, the vectorized
 // SwiGLU, the Euler step reading dt on the device); its pinned cuBLASLt
 // products against cublasGemmEx's, bit for bit, at every pinned shape on the
-// GB10 the pins were tuned on; the implicit-GEMM convolution against FP64
-// and the im2col path; and the pipeline's plans bound through the registry
-// (kernels/image/pipeline.h), with the refusals of a plan that names what a
-// role does not take or an implementation this build lacks.
+// GB10 the pins were tuned on; and the implicit-GEMM convolution against FP64
+// and the im2col path.
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -39,7 +37,6 @@
 #include "kernels/image/gemm.h"
 #include "kernels/image/implementations.h"
 #include "kernels/image/ops.h"
-#include "kernels/image/pipeline.h"
 #include "model/qwen_image.h"
 
 namespace {
@@ -929,80 +926,6 @@ TEST_F(ImageKernelsTest, APinCublasLtRefusesFallsBackToItsHeuristic) {
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   lt->reset();
   (void)cudaFree(workspace);
-}
-
-TEST(ImagePlanTest, BothPlansBindAndAWrongOrMissingImplementationIsRefused) {
-  namespace ex = llmp::execution;
-  auto registry = ex::Registry::Create(ki::Implementations());
-  ASSERT_TRUE(registry.has_value()) << registry.error().detail;
-  const auto& profile = llmp::model::QwenImage21();
-  std::vector<std::string> identities;
-  for (const ki::PlanKind kind : {ki::PlanKind::kLegacy, ki::PlanKind::kFast}) {
-    auto choices = ki::QwenImageChoices(kind);
-    ASSERT_TRUE(choices.has_value()) << choices.error();
-    auto plan = ex::Plan::Build(*registry, *choices);
-    ASSERT_TRUE(plan.has_value()) << plan.error().detail;
-    auto pipeline = ki::QwenImagePipeline::Bind(*registry, *plan, profile);
-    ASSERT_TRUE(pipeline.has_value()) << pipeline.error();
-    identities.push_back((*pipeline)->Describe());
-    const bool fast = kind == ki::PlanKind::kFast;
-    EXPECT_EQ((*pipeline)->bound(ki::Role::kDitLinear),
-              fast ? ki::Impl::kLinearCublasLt : ki::Impl::kLinearCublas);
-    EXPECT_EQ((*pipeline)->bound(ki::Role::kVaeConv3x3),
-              fast ? ki::Impl::kConvImplicit : ki::Impl::kConvIm2col);
-  }
-  EXPECT_NE(identities[0], identities[1]);
-  // Each declared implementation's name is its own.
-  for (int i = 0; i < static_cast<int>(ki::Impl::kCount); ++i) {
-    const auto impl = static_cast<ki::Impl>(i);
-    const auto found = registry->Find(ki::ImplName(impl));
-    if (!found.has_value()) {
-      ADD_FAILURE() << ki::ImplName(impl) << " is not declared";
-      continue;
-    }
-    EXPECT_EQ(ki::Bind(registry->at(*found)).value(), impl);
-  }
-  // One lever back: the legacy products in the fast plan.
-  const std::vector<std::string> back = {"dit.linear=image.linear.cublas"};
-  auto choices = ki::QwenImageChoices(ki::PlanKind::kFast, back);
-  ASSERT_TRUE(choices.has_value());
-  auto plan = ex::Plan::Build(*registry, *choices);
-  ASSERT_TRUE(plan.has_value());
-  auto one = ki::QwenImagePipeline::Bind(*registry, *plan, profile);
-  ASSERT_TRUE(one.has_value());
-  EXPECT_EQ((*one)->bound(ki::Role::kDitLinear), ki::Impl::kLinearCublas);
-  // A role given an implementation of its operation that it does not take,
-  // an implicit convolution over plainly laid out weights, and an unknown
-  // role or implementation.
-  for (const std::string& wrong : {std::string("dit.attention=image.attention.short"),
-                                   std::string("vae.convert_3x3=image.convert")}) {
-    const std::vector<std::string> o = {wrong};
-    auto c = ki::QwenImageChoices(ki::PlanKind::kFast, o);
-    ASSERT_TRUE(c.has_value()) << wrong;
-    auto p = ex::Plan::Build(*registry, *c);
-    ASSERT_TRUE(p.has_value()) << wrong;
-    EXPECT_FALSE(ki::QwenImagePipeline::Bind(*registry, *p, profile).has_value()) << wrong;
-  }
-  for (const std::string& unknown :
-       {std::string("dit.nothing=image.add"), std::string("dit.linear=image.linear.nothing")}) {
-    const std::vector<std::string> o = {unknown};
-    EXPECT_FALSE(ki::QwenImageChoices(ki::PlanKind::kFast, o).has_value()) << unknown;
-  }
-  // A registry without the pinned products: the fast plan is unsupported
-  // there, never bound to another product.
-  std::vector<ex::Implementation> fewer;
-  for (auto& d : ki::Implementations()) {
-    if (d.name != "image.linear.cublaslt") {
-      fewer.push_back(std::move(d));
-    }
-  }
-  auto smaller = ex::Registry::Create(std::move(fewer));
-  ASSERT_TRUE(smaller.has_value());
-  auto fast = ki::QwenImageChoices(ki::PlanKind::kFast);
-  ASSERT_TRUE(fast.has_value());
-  const auto refused = ex::Plan::Build(*smaller, *fast);
-  ASSERT_FALSE(refused.has_value());
-  EXPECT_EQ(refused.error().error, ex::PlanError::kUnsupported);
 }
 
 }  // namespace

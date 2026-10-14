@@ -12,7 +12,6 @@
 #include "engine/dsv4_runner.h"
 #include "engine/qwen38_plan.h"
 #include "engine/qwen38_runner.h"
-#include "engine/qwen_image_runner.h"
 
 namespace llmp::benchmarks {
 
@@ -31,8 +30,6 @@ using engine::Qwen38Options;
 using engine::Qwen38Planned;
 using engine::Qwen38Runner;
 using engine::Qwen38Sources;
-using engine::QwenImageOptions;
-using engine::QwenImageRunner;
 
 }  // namespace llmp::benchmarks
 

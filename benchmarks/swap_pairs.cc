@@ -4,19 +4,17 @@
 // M3's swap pairs (docs/plan.md, the swap acceptance table;
 // docs/experiments/fast-swap/swap.md): two of the three M3 models on one
 // paged node — DeepSeek V4 Flash (dsv4_runner.h), Qwen3.8 Flash Next
-// (qwen38_runner.h, its n-gram table paged by rows) and the Qwen-Image-2.1
-// pipeline (qwen_image_runner.h) — and full swaps A→B→A between them in one
+// (qwen38_runner.h, its n-gram table paged by rows) — and full swaps A→B→A between them in one
 // process, each part of each swap timed. A harness binary, not
 // llmp-runtime (yet: D-088 now clears the native tokenizer it links).
 //
-//   llmp_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR
+//   llmp_swap_pairs --a dsv4|qwen38 --b dsv4|qwen38 --out DIR
 //                     [--dsv4-artifact DIR] [--qwen38-artifact DIR]
-//                     [--image-store DIR --image-composition ID --image-noise FILE]
 //                     [--text FILE] [--qwen38-tokenizer FILE]
 //                     [--dsv4-prompt FILE] [--qwen38-prompt FILE]
 //                     [--context-tokens N] [--continue N] [--cycles N]
 //                     [--zero-context on|off] [--handoff on|off] [--context N]
-//                     [--image-expect SHA256] [--release-first on|off]
+//                     [--release-first on|off]
 //                     [--prompts FILE --expect DIR --generate N]
 //                     [--poison-probe on|off] [--scrub-probe on|off]
 //                     [--graphs on|off] [--bench N] [--poll-us N]
@@ -314,10 +312,6 @@ class Model {
   virtual Status Scrub(std::uint8_t /*value*/, bool /*slabs*/, bool /*dense*/) {
     return Error("no scrub for this model");
   }
-
-  // The image.
-  virtual Status FirstOutput(std::string& /*sha*/) { return Error("not the image"); }
-  virtual Status Finish(std::string& /*sha*/) { return Error("not the image"); }
 };
 
 class Dsv4 final : public Model {
@@ -432,30 +426,6 @@ class Qwen38 final : public Model {
   const jb::Qwen38Options& o_;
 };
 
-class Image final : public Model {
- public:
-  Image(ts::PagedNode& node, const jb::QwenImageOptions& o, int owner)
-      : r_(node, o, owner, static_cast<std::uint32_t>(owner)) {}
-  std::string_view name() const override { return "Qwen-Image-2.1"; }
-  ts::PagedModel& paged() override { return r_; }
-  Status Setup() override { return r_.Setup(); }
-  std::uint64_t activations_needed() const override { return r_.activations_needed(); }
-  std::uint64_t pool_needed() const override { return jb::QwenImageRunner::pool_needed(); }
-  Status Register() override { return r_.Register(); }
-  Status Bind() override { return r_.Bind(); }
-  std::vector<catalog::ExtentId> weights() const override { return r_.weights(); }
-  const catalog::Closure& everything() const override { return r_.everything(); }
-  std::uint64_t weight_read_bytes() const override { return r_.weight_read_bytes(); }
-  std::vector<std::filesystem::path> data() const override { return r_.data(); }
-  bool llm() const override { return false; }
-  std::string extra() const override { return r_.Report(); }
-  Status FirstOutput(std::string& sha) override { return r_.FirstOutput(sha); }
-  Status Finish(std::string& sha) override { return r_.Finish(sha); }
-
- private:
-  jb::QwenImageRunner r_;
-};
-
 // ------------------------------------------------------------------ options
 
 struct Options {
@@ -464,7 +434,6 @@ struct Options {
   std::filesystem::path out;
   jb::Dsv4Options dsv4;
   jb::Qwen38Options qwen38;
-  jb::QwenImageOptions image;
   std::filesystem::path text;
   std::filesystem::path qwen38_tokenizer;
   std::filesystem::path dsv4_prompt;
@@ -475,7 +444,6 @@ struct Options {
   bool zero_context = true;
   bool handoff = true;
   std::uint32_t context = 8704;
-  std::string image_expect;
   bool poison_probe = false;
   bool scrub_probe = false;
   bool release_first = false;
@@ -517,12 +485,6 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.dsv4.artifact = v;
     } else if (a == "--qwen38-artifact") {
       o.qwen38.artifact = v;
-    } else if (a == "--image-store") {
-      o.image.store = v;
-    } else if (a == "--image-composition") {
-      o.image.composition = v;
-    } else if (a == "--image-noise") {
-      o.image.noise = v;
     } else if (a == "--text") {
       o.text = v;
     } else if (a == "--qwen38-tokenizer") {
@@ -551,8 +513,6 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = on_off(o.release_first);
     } else if (a == "--graphs") {
       ok = on_off(o.dsv4.graphs);
-    } else if (a == "--image-expect") {
-      o.image_expect = v;
     } else if (a == "--prompts") {
       o.prompts = v;
     } else if (a == "--expect") {
@@ -576,27 +536,21 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       return Error(std::format("{} does not take {}", a, v));
     }
   }
-  const auto known = [](const std::string& m) {
-    return m == "dsv4" || m == "qwen38" || m == "image";
-  };
+  const auto known = [](const std::string& m) { return m == "dsv4" || m == "qwen38"; };
   const auto needs = [&](const std::string& m) {
-    return (m == "dsv4" && o.dsv4.artifact.empty()) ||
-           (m == "qwen38" && o.qwen38.artifact.empty()) ||
-           (m == "image" &&
-            (o.image.store.empty() || o.image.composition.empty() || o.image.noise.empty()));
+    return (m == "dsv4" && o.dsv4.artifact.empty()) || (m == "qwen38" && o.qwen38.artifact.empty());
   };
   if (!known(o.a) || !known(o.b) || o.a == o.b || o.out.empty() || needs(o.a) || needs(o.b) ||
       (o.prompts.empty() != o.expect.empty())) {
     return Error(
-        "usage: llmp_swap_pairs --a dsv4|qwen38|image --b dsv4|qwen38|image --out DIR "
-        "[--dsv4-artifact DIR] [--qwen38-artifact DIR] [--image-store DIR "
-        "--image-composition ID --image-noise FILE] [--text FILE] [--qwen38-tokenizer FILE] "
+        "usage: llmp_swap_pairs --a dsv4|qwen38 --b dsv4|qwen38 --out DIR "
+        "[--dsv4-artifact DIR] [--qwen38-artifact DIR] [--text FILE] [--qwen38-tokenizer FILE] "
         "[--dsv4-prompt FILE] [--qwen38-prompt FILE] [--context-tokens N] [--continue N] "
         "[--cycles N] [--zero-context on|off] [--handoff on|off] [--context N] "
-        "[--image-expect SHA256] [--prompts FILE --expect DIR --generate N] "
+        "[--prompts FILE --expect DIR --generate N] "
         "[--graphs on|off] [--bench N] [--poll-us N] [--spin-ahead-us N]");
   }
-  const bool a_llm = o.a != "image";
+  const bool a_llm = true;
   if (a_llm && (o.cycles > 0 || o.bench > 0) &&
       (o.text.empty() || (o.a == "qwen38" && o.qwen38_tokenizer.empty()))) {
     return Error("an LLM A needs --text (and Qwen3.8 --qwen38-tokenizer)");
@@ -744,10 +698,7 @@ class Swapper {
     if (which == "dsv4") {
       return std::make_unique<Dsv4>(node_, o_.dsv4, owner);
     }
-    if (which == "qwen38") {
-      return std::make_unique<Qwen38>(node_, o_.qwen38, owner);
-    }
-    return std::make_unique<Image>(node_, o_.image, owner);
+    return std::make_unique<Qwen38>(node_, o_.qwen38, owner);
   }
   Status Tokenize();
   Status Prompts();
@@ -1161,18 +1112,7 @@ Status Swapper::SwapToA(SwapTimes& t, bool with_state, bool continuing) {
   t.plan_seconds = a_->plan_seconds() - planned_before;
   t.demand = a_->demand_seconds() - demand_before;
   t.demand_bytes = a_->demand_bytes() - demand_bytes_before;
-  if (!a_->llm()) {
-    // The rest of the generation: its pixels equal to the control's.
-    std::string pixels;
-    if (auto r = a_->Finish(pixels); !r) {
-      return r;
-    }
-    t.exact = pixels == control_pixels_;
-    if (!t.exact) {
-      problems_.push_back(
-          std::format("{}: the regenerated image ({}) differs from the control's", t.name, pixels));
-    }
-  } else if (continuing) {
+  if (continuing) {
     // The rest of the continuation: every step equal to the same state's
     // unswapped continuation's; against the process's control, noted.
     if (auto r = Decode(o_.continue_tokens - 1, steps); !r) {
@@ -1630,30 +1570,6 @@ Status Swapper::Run() {
       return r;
     }
   }
-  if (!a_->llm() && (o_.cycles > 0 || !o_.image_expect.empty())) {
-    // The control: one full generation, one request.
-    start = Clock::now();
-    std::string first;
-    if (auto r = Begin(*a_); !r) {
-      return r;
-    }
-    if (auto r = a_->FirstOutput(first); !r) {
-      return r;
-    }
-    if (auto r = a_->Finish(control_pixels_); !r) {
-      return r;
-    }
-    if (auto r = End(*a_); !r) {
-      return r;
-    }
-    control_prefill_seconds_ = Seconds(Clock::now() - start);
-    std::println("control: the image generated in {:.2f} s, pixels {}", control_prefill_seconds_,
-                 control_pixels_);
-    if (!o_.image_expect.empty() && control_pixels_ != o_.image_expect) {
-      problems_.push_back(std::format("the image's pixels ({}) are not the resident harness's ({})",
-                                      control_pixels_, o_.image_expect));
-    }
-  }
   if (a_->llm() && o_.cycles > 0) {
     // The control: A's context, then its continuation, never swapped; one
     // request.
@@ -1687,8 +1603,7 @@ Status Swapper::Run() {
   }
   for (int cycle = 0; cycle < o_.cycles; ++cycle) {
     const std::string use = cycle == 0 ? "first use" : "prepared";
-    const std::string held =
-        a_->llm() ? std::format("{} context tokens", context_.size()) : std::string("image");
+    const std::string held = std::format("{} context tokens", context_.size());
     if (a_->llm()) {
       // One request: the prefill, and this state's own continuation.
       if (auto r = Begin(*a_); !r) {

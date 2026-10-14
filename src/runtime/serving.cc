@@ -43,7 +43,6 @@
 #include "engine/dsv4_runner.h"
 #include "engine/paged_weights.h"
 #include "engine/qwen38_runner.h"
-#include "engine/qwen_image_runner.h"
 #include "execution/adaptive_depth.h"
 #include "execution/adaptive_wave_mode.h"
 #include "kernels/ggml/cublas.h"
@@ -1653,73 +1652,6 @@ class Qwen38 final : public Llm {
   std::array<engine::Qwen38Runner::Slot*, engine::Qwen38Runner::kRequestSlots> native_slots_{};
 };
 
-// The Qwen-Image-2.1 pipeline (engine/qwen_image_runner.h).
-class QwenImage final : public Image {
- public:
-  QwenImage(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-            const config::RuntimeRoles& roles, const ServingOptions& serving, int index)
-      : composition_id_(entry.composition.value_or("")),
-        store_(roles.installed),
-        runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
-    name_ = entry.name;
-    settings_ = settings;
-    options_.store = roles.installed;
-    options_.composition = composition_id_;
-    options_.noise = serving.image_noise;
-    options_.prompt = serving.image_prompt;
-    options_.size = settings.image_size.value;
-    options_.steps = settings.image_steps.value;
-  }
-
-  engine::PagedModel& paged() override { return runner_; }
-  Status Setup() override {
-    // Every component opened and checked first.
-    const fs::path root = store_ / composition_id_;
-    auto composition = ja::OpenComposition(root, composition_id_);
-    if (!composition) {
-      return Error(
-          std::format("composition {}: {}", composition_id_, composition.error().ToString()));
-    }
-    for (const ja::CompositionComponent& c : composition->components()) {
-      if (auto opened = OpenInstalled(store_, c.artifact); !opened) {
-        return std::unexpected(opened.error());
-      }
-    }
-    return runner_.Setup();
-  }
-  std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
-  std::uint64_t pool_needed() const override { return engine::QwenImageRunner::pool_needed(); }
-  Status Register() override { return runner_.Register(); }
-  Status Bind() override { return runner_.Bind(); }
-  std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
-  const catalog::Closure& everything() const override { return runner_.everything(); }
-  std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
-  std::string extra() const override { return runner_.Report(); }
-  std::string plan_report() const override { return runner_.plan_report(); }
-  std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
-  void ReclaimCandidates(std::uint32_t owner, bool running,
-                         std::vector<memory::ReclaimCandidate>& out) override {
-    runner_.ReclaimCandidates(owner, running, out);
-  }
-  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
-    return runner_.Reclaim(kind, id);
-  }
-  Status PrepareRequest(const ImageInput& input) override {
-    if (input.prompt != options_.prompt || input.width || input.height || input.steps ||
-        !input.noise.empty() || !input.output.empty())
-      return Error("legacy image request differs from its registered prompt/settings");
-    return {};
-  }
-  Status FirstOutput(std::string& sha) override { return runner_.FirstOutput(sha); }
-  Status Finish(std::string& sha) override { return runner_.Finish(sha); }
-
- private:
-  std::string composition_id_;
-  fs::path store_;
-  engine::QwenImageOptions options_;  // before the runner, which keeps a reference
-  engine::QwenImageRunner runner_;
-};
-
 }  // namespace
 
 // ---------------------------------------------------------------- memory
@@ -1828,8 +1760,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                      (options_.diagnostic_component_all && settings.architecture == "deepseek4"));
   const bool component_existing = options_.diagnostic_component_all && !entry.composition &&
                                   OnComponentEngine(settings.architecture);
-  const bool component_image =
-      options_.diagnostic_component_all && entry.composition && settings.composition;
+  const bool component_image = entry.composition && settings.composition;
   if (options_.diagnostic_component_all && !options_.diagnostic_component_solo)
     return Error("the generic component route requires the funded diagnostic selector");
   if (options_.diagnostic_component_solo && ((!solo && !component_existing && !component_image) ||
@@ -1901,20 +1832,6 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                         (*prepared)->construction)));
       return {};
     }
-    if (options_.diagnostic_component_all) {
-      auto parser =
-          options_.diagnostic_auto_startup
-              ? StartupBootstrapBytes(config_.models.size())
-              : std::expected<std::uint64_t, std::string>(options_.diagnostic_startup_host_bytes);
-      const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
-      if (!parser || !*parser || cap == 0 || options_.image_noise.empty())
-        return Error("shared image serving requires paid startup and its configured noise input");
-      models_.push_back(std::make_unique<EngineImage>(
-          node_, entry, settings, index,
-          ComponentImageServingBuild(node_, roles_.installed, *entry.composition, index,
-                                     options_.image_prompt, options_.image_noise, *parser, cap)));
-      return {};
-    }
     if (options_.image_noise.empty()) {
       Log(
           std::format("model {}: not registered: an image pipeline needs --image-noise (its "
@@ -1922,7 +1839,17 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                       entry.name));
       return {};
     }
-    models_.push_back(std::make_unique<QwenImage>(node_, entry, settings, roles_, options_, index));
+    auto parser =
+        options_.diagnostic_auto_startup
+            ? StartupBootstrapBytes(config_.models.size())
+            : std::expected<std::uint64_t, std::string>(options_.diagnostic_startup_host_bytes);
+    const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
+    if (!parser || !*parser || cap == 0)
+      return Error("image serving requires paid startup host memory");
+    models_.push_back(std::make_unique<EngineImage>(
+        node_, entry, settings, index,
+        ComponentImageServingBuild(node_, roles_.installed, *entry.composition, index,
+                                   options_.image_prompt, options_.image_noise, *parser, cap)));
     return {};
   }
   if (settings.architecture == "deepseek4") {
