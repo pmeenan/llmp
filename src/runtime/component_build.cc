@@ -707,7 +707,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       }
       std::expected<std::vector<spec::SourceValue>, std::string> dvalues;
       if (solo) {
-        if (qwen->gguf()) return Error("the GGUF target has no qualified component MTP recipe");
+        if (qwen && qwen->gguf())
+          return Error("the GGUF target has no qualified component MTP recipe");
         auto binding = model::BindQwen38Mtp(model::Qwen38Flash(), *drafter);
         if (!binding) return Error(binding.error());
         if (binding->selected_head()) {

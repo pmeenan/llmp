@@ -1026,7 +1026,7 @@ if(LLMP_CUDA)
   llmp_gtest(exl3_tables_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(decode_selected_grouped_test decode_selected_grouped_test.cc)
-  target_link_libraries(decode_selected_grouped_test PRIVATE llmp_decode_selected)
+  target_link_libraries(decode_selected_grouped_test PRIVATE llmp_decode_selected llmp_planner)
   llmp_gtest(decode_selected_grouped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(decode_selected_products_test decode_selected_products_test.cc)

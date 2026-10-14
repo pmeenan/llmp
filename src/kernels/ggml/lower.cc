@@ -1980,7 +1980,9 @@ std::expected<void, KernelFailure> Lowering::Bind() {
       const auto named = std::ranges::find(w->parts, role, [](const auto& p) { return p.second; });
       if (named != w->parts.end()) {
         const auto binding = addresses.expert_part(w->ref.stage, named->first);
-        if (binding && binding->format.encoding == Encoding::kNvfp4 &&
+        if (binding &&
+            (binding->format.encoding == Encoding::kNvfp4 ||
+             binding->format.encoding == Encoding::kAffine) &&
             binding->format.layout == format::Layout::kSplit) {
           if (address != 0 && address != binding->address)
             return Refused("split source binding differs from the ordinary weight address");

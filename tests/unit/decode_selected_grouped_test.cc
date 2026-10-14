@@ -7,18 +7,31 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <span>
+#include <string_view>
+#include <vector>
 
+#include "components/step.h"
+#include "ir/builder.h"
+#include "kernels/common/step_program.h"
 #include "kernels/decode/operand.h"
 #include "kernels/decode/selected_grouped.h"
 #include "kernels/decode/selected_rows.h"
+#include "kernels/ggml/implementations.h"
+#include "kernels/ggml/step_program.h"
 #include "kernels/ggml/tensors.h"
+#include "planner/plan.h"
 
 namespace {
+namespace co = llmp::components;
 namespace de = llmp::kernels::decode;
-namespace kg = llmp::kernels::ggml;
-namespace ir = llmp::ir;
+namespace ex = llmp::execution;
 namespace fmt = llmp::format;
+namespace ir = llmp::ir;
+namespace kg = llmp::kernels::ggml;
+namespace kn = llmp::kernels;
+namespace pl = llmp::planner;
 using Role = fmt::PartRole;
 constexpr ir::WeightRef kWeight{.stage = 0, .component = 2, .role = 8, .expert_array = true};
 struct Inputs {
@@ -283,4 +296,125 @@ TEST(DecodeSelectedGrouped, ExplicitIdentityIncludesRecipeAndDefaultSourcesRemai
   const auto impl = (*first)->Implementations();
   EXPECT_NE(*(*first)->ExecutionIdentity(), llmp::execution::IdentityOf(impl[0]));
 }
+
+TEST(DecodeSelectedGrouped, AffineSplitExpertPartBindsLeavesInLowerStep) {
+  auto source = de::GroupedSelectedSource();
+  ASSERT_TRUE(source);
+  auto implementations = kg::Implementations();
+  const auto native = (*source)->Implementations();
+  implementations.insert(implementations.end(), native.begin(), native.end());
+  auto registry = ex::Registry::Create(implementations);
+  ASSERT_TRUE(registry) << registry.error().detail;
+
+  ir::Builder builder;
+  const fmt::TensorFormat format = {
+      .encoding = fmt::Encoding::kAffine,
+      .params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16},
+      .layout = fmt::Layout::kSplit,
+      .shape = ir::ShapeOf({32, 64, 4}),
+      .stacked = 1};
+  const auto weight = builder.Weight(format, kWeight);
+  const auto x = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({32, 1, 3})));
+  const auto logits = builder.Input(ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({4, 3})));
+  const auto route = builder.Route(logits, {}, {}, {},
+                                   ir::RouteParams{.normalize = true, .experts = 4, .used = 2});
+  const auto out = builder.MatMulId(weight, x, route[0]);
+  builder.Output(out);
+  auto graph = std::move(builder).Finish();
+  ASSERT_TRUE(graph) << graph.error().detail;
+
+  co::StepGraph step{
+      .graph = std::move(*graph),
+      .inputs = {{.tensor = x, .kind = co::InputKind::kFeatures, .component = kWeight.component},
+                 {.tensor = logits,
+                  .kind = co::InputKind::kFeatures,
+                  .component = kWeight.component}},
+      .weights = {{.tensor = weight,
+                   .ref = kWeight,
+                   .parts = {{"codes", Role::kCodes},
+                             {"scales", Role::kBlockScales},
+                             {"biases", Role::kBiases}}}},
+      .state = {},
+      .logits = {}};
+
+  const pl::DeviceFacts device{.device_class = "sm_121", .arch = 121, .features = ex::kBf16Mma};
+  auto plan = pl::Plan(step.graph.Clone(), *registry, device, {});
+  ASSERT_TRUE(plan) << plan.error().detail;
+  EXPECT_TRUE(std::ranges::any_of(plan->steps, [&](const auto& s) {
+    return registry->at(s.implementation).name == "llmp.decode.grouped.affine.split";
+  }));
+
+  auto one = format;
+  one.shape.rank = 2;
+  one.shape.ne[2] = one.shape.ne[3] = 1;
+  const auto extents = fmt::PartsOf(one);
+  ASSERT_TRUE(extents);
+  constexpr std::uint64_t kPitch = 4096;
+  constexpr std::uint64_t kMatrices = 4;
+
+  const pl::StepShape shape{
+      .stage = 0,
+      .phase = pl::Phase::kDecode,
+      .segments =
+          {{.slot = 0, .rows = 3, .past = 0, .read_cells = 2048, .outputs = 3, .want_head = false}},
+      .read_align = 256,
+  };
+
+  class TestOwner final : public kn::BackendOwner {
+   public:
+    const kn::StepBackend& backend() const override {
+      static const kn::StepBackend b{};
+      return b;
+    }
+    bool Charge(std::uint64_t) const override { return true; }
+    void Release(std::uint64_t) const override {}
+    std::expected<ex::BackendDeclaration, std::string> Ready() const override {
+      return ex::BackendDeclaration{};
+    }
+  };
+  const auto funder = std::make_shared<TestOwner>();
+
+  for (int mode = 0; mode != 3; ++mode) {
+    SCOPED_TRACE(mode);
+    kn::Addresses addresses{};
+    addresses.activations = 0x800000;
+    addresses.activation_bytes = 1048576;
+    if (mode == 2) {
+      addresses.weight = [](const ir::WeightRef&, Role) -> std::uint64_t { return 0x999999; };
+    }
+    addresses.expert_part = [mode, extents = *extents, one](
+                                std::uint16_t stage,
+                                std::string_view name) -> std::optional<kn::ExpertPartBinding> {
+      if (mode == 1 || stage != kWeight.stage) return std::nullopt;
+      for (const auto& e : extents.parts()) {
+        if ((e.role == Role::kCodes && name == "codes") ||
+            (e.role == Role::kBlockScales && name == "scales") ||
+            (e.role == Role::kBiases && name == "biases")) {
+          const std::uint64_t total_bytes = (kMatrices - 1) * kPitch + e.readable;
+          std::uint64_t base_addr = 0x100000;
+          if (e.role == Role::kBlockScales) base_addr = 0x200000;
+          if (e.role == Role::kBiases) base_addr = 0x300000;
+          return kn::ExpertPartBinding{
+              .address = base_addr,
+              .bytes = total_bytes,
+              .pitch = kPitch,
+              .format = one,
+              .role = e.role,
+          };
+        }
+      }
+      return std::nullopt;
+    };
+
+    auto lowered = kg::LowerStep({*plan, step, shape, addresses, 2048}, *registry, {},
+                                 {.routed_funder = funder, .selected_source = source->get()});
+    if (mode == 0) {
+      ASSERT_TRUE(lowered) << lowered.error().detail;
+      EXPECT_EQ(lowered->selected.size(), 1U);
+    } else {
+      ASSERT_FALSE(lowered);
+    }
+  }
+}
+
 }  // namespace
