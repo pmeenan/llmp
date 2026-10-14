@@ -132,7 +132,7 @@ TEST(SlabLayoutTest, AShardChangeTheGapCannotAlignIsRefused) {
   CheckCovers(*whole, one, consecutive, stored);
 }
 
-// Qwen3.8's slabs (engine/qwen38_runner.h): 512 groups of 2,768,896
+// Qwen3.8's slabs: 512 groups of 2,768,896
 // stored bytes at a stride of 2,768,976, an 80-byte gap. Where the change
 // of shard needs δ ≡ r (mod 256) with r's remainder leaving more than 80
 // bytes to the next 256, the default alignment is refused; at the stride's

@@ -761,145 +761,6 @@ std::expected<Qwen38PleHash, std::string> ReadQwen38GgufHash(const Qwen38Profile
   return ReadQwen38GgufHash(p, std::as_bytes(std::span(*bytes)), table_rows);
 }
 
-// ---------------------------------------------------------------- state
-
-std::int64_t Qwen38StateLayout::Find(std::uint32_t layer, Qwen38StateTensor::Kind kind) const {
-  for (std::size_t i = 0; i < tensors.size(); ++i) {
-    if (tensors[i].layer == layer && tensors[i].kind == kind) {
-      return static_cast<std::int64_t>(i);
-    }
-  }
-  return -1;
-}
-
-std::vector<StateRepresentation> Qwen38StateLayout::Representations() const {
-  using K = Qwen38StateTensor::Kind;
-  std::uint64_t kv = 0;
-  std::uint64_t indexer = 0;
-  std::uint64_t recurrent = 0;
-  for (const Qwen38StateTensor& t : tensors) {
-    if (t.kind == K::kK || t.kind == K::kV) {
-      kv += t.bytes;
-    } else if (t.kind == K::kIndexerK || t.kind == K::kIndexerBlocks) {
-      indexer += t.bytes;
-    } else {
-      recurrent += t.bytes;
-    }
-  }
-  const auto fixed = [](std::string name, std::uint64_t bytes) {
-    return StateRepresentation{.name = std::move(name),
-                               .block_positions = 0,
-                               .block_bytes = Bytes(bytes),
-                               .capabilities = static_cast<std::uint8_t>(StateCapability::kAppend),
-                               .max_snapshots = 0,
-                               .snapshot_bytes = Bytes(0)};
-  };
-  return {fixed("qwen38.kv", kv), fixed("qwen38.indexer", indexer),
-          fixed("qwen38.recurrent", recurrent)};
-}
-
-std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p,
-                                                          std::uint32_t context,
-                                                          std::uint32_t max_rows, bool host_masks) {
-  if (!ProfileIsSane(p)) {
-    return Refused("the profile is not a Qwen3.8 model's");
-  }
-  // The reference and unfused graphs' [n_kv, rows] tensors (the host-built
-  // masks, F16 and F32, and the indexer's expanded F32 scores) have planes
-  // of up to n_kv x rows x 4 bytes, a stride GGML's flash attention takes as
-  // a 32-bit int and ggml_permute truncates to one (RE-037): for them the
-  // chunk bound and the padded context are bounded together by those bytes.
-  if (context == 0 || context > kQwen38FlashContext || max_rows == 0 || max_rows > context ||
-      max_rows > kQwen38MaxRows ||
-      context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255 ||
-      (host_masks && Pad(context, 256) * max_rows * kMaskBytes >
-                         std::uint64_t{std::numeric_limits<std::int32_t>::max()})) {
-    return Refused(std::format("no state for {} positions in chunks of {}", context, max_rows));
-  }
-  using K = Qwen38StateTensor::Kind;
-  Qwen38StateLayout s;
-  s.context = context;
-  s.max_rows = max_rows;
-  s.cells = static_cast<std::uint32_t>(Pad(context, 256));
-  const auto add = [&](K kind, std::uint32_t layer, bool f16, std::uint64_t ne0,
-                       std::uint64_t ne1) {
-    const std::uint64_t bytes = ne0 * ne1 * (f16 ? 2 : 4);
-    s.tensors.push_back({.kind = kind,
-                         .layer = layer,
-                         .f16 = f16,
-                         .ne0 = ne0,
-                         .ne1 = ne1,
-                         .offset = s.bytes,
-                         .bytes = bytes});
-    s.bytes = Pad(s.bytes + bytes, 256);
-  };
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    if (p.linear(il)) {
-      add(K::kConv, il, false, std::uint64_t{p.conv - 1} * p.conv_channels(), 1);
-      add(K::kRecurrent, il, false, std::uint64_t{p.lin_head_dim} * p.lin_head_dim * p.lin_v_heads,
-          1);
-      if (il == p.ple_layer) {
-        add(K::kPleConv, il, false, std::uint64_t{p.ple_history()} * p.hc_width(), 1);
-      }
-    } else {
-      add(K::kK, il, true, std::uint64_t{p.head_dim} * p.kv_heads, s.cells);
-      add(K::kV, il, true, std::uint64_t{p.head_dim} * p.kv_heads, s.cells);
-      add(K::kIndexerK, il, false, p.indexer_head_dim, s.cells);
-      add(K::kIndexerBlocks, il, true, p.indexer_head_dim,
-          (std::uint64_t{s.cells} + p.indexer_ratio - 1) / p.indexer_ratio);
-    }
-  }
-  return s;
-}
-
-std::expected<std::vector<StateRange>, std::string> Qwen38UsedState(const Qwen38Profile& p,
-                                                                    const Qwen38StateLayout& state,
-                                                                    std::uint32_t positions,
-                                                                    std::uint32_t read_align) {
-  if (positions > state.context || p.indexer_ratio == 0 || read_align == 0 ||
-      read_align % 256 != 0) {
-    return Refused("used state passes the Qwen3.8 context");
-  }
-  using K = Qwen38StateTensor::Kind;
-  const std::uint64_t read = std::min<std::uint64_t>(state.cells, Pad(positions, read_align));
-  std::vector<StateRange> ranges;
-  for (const Qwen38StateTensor& t : state.tensors) {
-    std::uint64_t rows = t.ne1;
-    if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
-      rows = std::min(t.ne1, read);
-    } else if (t.kind == K::kIndexerBlocks) {
-      rows = std::min(t.ne1, (read + p.indexer_ratio - 1) / p.indexer_ratio);
-    }
-    if (rows != 0) {
-      ranges.push_back({.offset = t.offset, .bytes = t.ne0 * rows * (t.f16 ? 2 : 4)});
-    }
-  }
-  return ranges;
-}
-
-std::expected<std::vector<StateRange>, std::string> Qwen38CheckpointWrites(
-    const Qwen38Profile& p, const Qwen38StateLayout& state, std::uint32_t positions) {
-  if (positions > state.context || p.indexer_ratio == 0) {
-    return Refused("checkpoint passes the Qwen3.8 context");
-  }
-  using K = Qwen38StateTensor::Kind;
-  std::vector<StateRange> writes;
-  for (const Qwen38StateTensor& t : state.tensors) {
-    std::uint64_t first = 0;
-    if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
-      first = positions;
-    } else if (t.kind == K::kIndexerBlocks) {
-      first = positions / p.indexer_ratio;  // a partly filled pool block is mutable
-    }
-    first = std::min(first, t.ne1);
-    const std::uint64_t row = t.ne0 * (t.f16 ? 2 : 4);
-    if (first < t.ne1) {
-      writes.push_back({.offset = t.offset + (first * row), .bytes = (t.ne1 - first) * row});
-    }
-  }
-  return writes;
-}
-
 std::uint32_t Qwen38MostRows(std::uint32_t context, bool host_masks) {
   if (context == 0 || context > kQwen38FlashContext ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
@@ -944,280 +805,42 @@ std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& p, const Qwen38PleH
   return rows;
 }
 
-std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
-    const Qwen38Profile& p, const Qwen38StateLayout& state, const Qwen38PleHash& hash,
-    std::span<const std::int32_t> history, std::uint32_t n_past, std::uint32_t rows,
-    bool selection_masks, std::uint32_t read_align, bool materialize_masks) {
-  const std::uint64_t end = std::uint64_t{n_past} + rows;
-  if (rows == 0 || rows > state.max_rows || end > state.context || read_align == 0 ||
-      read_align % 256 != 0) {
-    return Refused(
-        std::format("a chunk of {} rows at {} does not fit a context of {} in chunks "
-                    "of {}",
-                    rows, n_past, state.context, state.max_rows));
-  }
-  if (history.size() != end) {
-    return Refused(std::format("the history holds {} tokens, not {}", history.size(), end));
-  }
-  if (hash.multipliers.size() != p.ngram || hash.offsets.size() != p.ple_heads() ||
-      hash.vocab.size() != p.ple_heads()) {
-    return Refused("n-gram hash constants that are not the profile's");
-  }
-  // Every head's rows inside the table and the I32 index (as
-  // CheckQwen38PleHash), so no row the hash yields is out of range.
-  const std::uint64_t limit =
-      std::min<std::uint64_t>(hash.table_rows, std::numeric_limits<std::int32_t>::max());
-  for (std::size_t i = 0; i < hash.vocab.size(); ++i) {
-    if (hash.vocab[i] == 0 || hash.offsets[i] > limit || hash.vocab[i] > limit - hash.offsets[i]) {
-      return Refused(std::format("n-gram head {}'s rows are outside the table", i));
-    }
-  }
-  for (const std::int32_t t : history) {
-    if (t < 0 || std::cmp_greater_equal(t, p.vocab)) {
-      return Refused(std::format("token {} is outside the vocabulary", t));
-    }
-  }
-  auto placed = Qwen38Rows(
-      p, state.cells, n_past, rows,
-      static_cast<std::uint32_t>(std::min<std::uint64_t>(Pad(end, read_align), state.cells)),
-      selection_masks, materialize_masks);
-  if (!placed) {
-    return placed;
-  }
-  Qwen38ChunkInputs in = std::move(*placed);
-  in.tokens.assign(history.begin() + n_past, history.end());
-  in.ple_rows.resize(std::size_t{p.ple_heads()} * rows);
-  for (std::uint32_t i = 0; i < rows; ++i) {
-    const auto r = Qwen38PleRows(p, hash, history, n_past + i);
-    std::ranges::copy(r, in.ple_rows.begin() + (std::ptrdiff_t{i} * p.ple_heads()));
-  }
-  return in;
-}
-
-std::expected<Qwen38ChunkInputs, std::string> Qwen38RowGeometry(const Qwen38Profile& p,
-                                                                std::uint32_t cells,
-                                                                std::uint32_t n_past,
-                                                                std::uint32_t rows,
-                                                                std::uint32_t read) {
-  const std::uint64_t end = std::uint64_t{n_past} + rows;
-  if (rows == 0 || end > cells || end > std::numeric_limits<std::int32_t>::max() ||
-      read < Pad(end, 256) || read > cells || read % 256 != 0 || p.indexer_ratio == 0)
-    return Refused("rows do not fit the Qwen cache geometry");
-  Qwen38ChunkInputs in;
-  in.n_past = n_past;
-  in.rows = rows;
-  in.n_kv = read;
-  in.qsa_select = std::uint64_t{read} > std::uint64_t{p.indexer_budget} + p.indexer_ratio - 1;
-  if (in.qsa_select)
-    in.qsa.blocks =
-        static_cast<std::uint32_t>((std::uint64_t{read} + p.indexer_ratio - 1) / p.indexer_ratio);
-  return in;
-}
-
-std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& p,
-                                                         std::uint32_t cells, std::uint32_t n_past,
-                                                         std::uint32_t rows, std::uint32_t read,
-                                                         bool selection_masks,
-                                                         bool materialize_masks) {
-  const std::uint64_t end = std::uint64_t{n_past} + rows;
-  auto geometry = Qwen38RowGeometry(p, cells, n_past, rows, read);
-  if (!geometry) return Refused(geometry.error());
-  Qwen38ChunkInputs in = std::move(*geometry);
-  in.positions.resize(4 * std::size_t{rows});
-  in.cells.resize(rows);
-  for (std::uint32_t i = 0; i < rows; ++i) {
-    const auto pos = static_cast<std::int32_t>(n_past + i);
-    for (std::size_t sec = 0; sec < 4; ++sec) {
-      in.positions[(sec * rows) + i] = pos;
-    }
-    in.cells[i] = pos;
-  }
-  const std::size_t n_kv = in.n_kv;
-  // QSA: the budget keeps indexer_budget + ratio - 1 cells (whole blocks,
-  // plus the tail); a chunk whose attention reads no more keeps every cell,
-  // so the selection changes nothing and is not built.
-  const std::uint32_t ratio = p.indexer_ratio;
-  if (materialize_masks && (!in.qsa_select || selection_masks)) {
-    in.mask.assign(n_kv * rows, kQwen38HalfNegInf);
-    for (std::uint32_t i = 0; i < rows; ++i) {
-      std::fill_n(in.mask.begin() + static_cast<std::ptrdiff_t>(i * n_kv),
-                  static_cast<std::ptrdiff_t>(std::uint64_t{n_past} + i + 1), kQwen38HalfZero);
-    }
-  }
-  if (materialize_masks && selection_masks) {
-    in.mask_f32.assign(n_kv * rows, -std::numeric_limits<float>::infinity());
-    for (std::uint32_t i = 0; i < rows; ++i) {
-      std::fill_n(in.mask_f32.begin() + static_cast<std::ptrdiff_t>(i * n_kv),
-                  static_cast<std::ptrdiff_t>(std::uint64_t{n_past} + i + 1), 0.0f);
-    }
-  }
-  // The fast graph selects from the cached block keys on the device: no
-  // block tables.
-  if (in.qsa_select && selection_masks) {
-    Qwen38QsaInputs& q = in.qsa;
-    // Cell j holds position j; the full blocks are those every one of whose
-    // ratio positions is written.
-    const auto full = static_cast<std::uint32_t>(end / ratio);
-    const bool have_dead = full < q.blocks;
-    const std::uint32_t dead = have_dead ? full : q.blocks - 1;
-    q.cell_block.resize(n_kv);
-    for (std::size_t j = 0; j < n_kv; ++j) {
-      const auto b = static_cast<std::uint32_t>(j / ratio);
-      q.cell_block[j] = static_cast<std::int32_t>(j < end && b < full ? b : dead);
-    }
-    q.block_cells.assign(std::size_t{ratio} * q.blocks, 0);
-    q.block_pos.assign(4 * std::size_t{q.blocks}, 0);
-    for (std::uint32_t b = 0; b < full; ++b) {
-      for (std::uint32_t k = 0; k < ratio; ++k) {
-        q.block_cells[(std::size_t{b} * ratio) + k] = static_cast<std::int32_t>((b * ratio) + k);
-      }
-      for (std::size_t sec = 0; sec < 4; ++sec) {
-        q.block_pos[(sec * q.blocks) + b] = static_cast<std::int32_t>(b * ratio);
-      }
-    }
-    q.bias.assign(std::size_t{q.blocks} * rows, 0.0f);
-    for (std::uint32_t i = 0; i < rows; ++i) {
-      const std::uint64_t pos = std::uint64_t{n_past} + i;
-      // Complete blocks before this query are visible; the incomplete
-      // tail and the first dead block keep their finite selection sentinel.
-      FillHostQsaBias(std::span{q.bias}.subspan(std::size_t{i} * q.blocks, q.blocks), full,
-                      (pos + 1) / ratio);
-    }
-  }
-  return in;
-}
-
-// ---------------------------------------------------------------- the MTP drafter
-
-std::vector<StateRepresentation> Qwen38MtpState::Representations() const {
-  return {StateRepresentation{.name = "qwen38.mtp.kv",
-                              .block_positions = 0,
-                              .block_bytes = Bytes(hidden - k),
-                              .capabilities = static_cast<std::uint8_t>(StateCapability::kAppend),
-                              .max_snapshots = 0,
-                              .snapshot_bytes = Bytes(0)},
-          StateRepresentation{.name = "qwen38.mtp.streams",
-                              .block_positions = 0,
-                              .block_bytes = Bytes(bytes - hidden),
-                              .capabilities = static_cast<std::uint8_t>(StateCapability::kAppend),
-                              .max_snapshots = 0,
-                              .snapshot_bytes = Bytes(0)}};
-}
-
-std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile& p,
-                                                            const Qwen38StateLayout& state) {
-  if (!ProfileIsSane(p) || state.cells == 0 || state.max_rows == 0 ||
-      state.max_rows > kQwen38MaxRows) {
-    return Refused("no MTP state for that target state");
-  }
-  Qwen38MtpState s;
-  s.context = state.context;
-  s.cells = state.cells;
-  s.hidden_rows = state.max_rows + 1;
-  const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * s.cells * 2;
-  s.k = 0;
-  s.v = Pad(kv, 256);
-  s.indexer = s.v + Pad(kv, 256);
-  s.blocks = s.indexer + Pad(std::uint64_t{p.indexer_head_dim} * s.cells * 4, 256);
-  s.hidden =
-      s.blocks + Pad(std::uint64_t{p.indexer_head_dim} *
-                         ((std::uint64_t{s.cells} + p.indexer_ratio - 1) / p.indexer_ratio) * 2,
-                     256);
-  s.bytes = s.hidden + Pad(std::uint64_t{p.hc_width()} * s.hidden_rows * 4, 256);
-  return s;
-}
-
-std::vector<Qwen38VerifySave> Qwen38VerifySaves(const Qwen38Profile& profile,
-                                                const Qwen38StateLayout& state,
-                                                const Qwen38MtpState& mtp, std::uint32_t n_past,
-                                                std::uint32_t rows) {
-  using K = Qwen38StateTensor::Kind;
-  std::vector<Qwen38VerifySave> out;
-  // The cells it writes (each QSA layer's K, V and indexer rows).
-  for (std::uint32_t i = 0; i < rows; ++i) {
-    const std::uint64_t cell = std::uint64_t{n_past} + i;
-    for (const Qwen38StateTensor& t : state.tensors) {
-      if (t.kind != K::kK && t.kind != K::kV && t.kind != K::kIndexerK) {
-        continue;
-      }
-      const std::uint64_t bytes = t.ne0 * (t.f16 ? 2 : 4);
-      out.push_back(
-          {.drafter = false, .offset = t.offset + (cell * bytes), .bytes = bytes, .row = i});
-    }
-  }
-  // Each block key it writes: the row that completes the block writes it,
-  // so a rejected row's block is restored with its cells.
-  const std::uint32_t ratio = profile.indexer_ratio;
-  for (std::uint64_t b = n_past / ratio; b < (std::uint64_t{n_past} + rows) / ratio; ++b) {
-    const auto row = static_cast<std::uint32_t>(((b + 1) * ratio) - 1 - n_past);
-    for (const Qwen38StateTensor& t : state.tensors) {
-      if (t.kind != K::kIndexerBlocks) {
-        continue;
-      }
-      const std::uint64_t bytes = t.ne0 * 2;
-      out.push_back(
-          {.drafter = false, .offset = t.offset + (b * bytes), .bytes = bytes, .row = row});
-    }
-  }
-  // The streams rows it exports (rows 1 ..), which hold the pending rows
-  // before it.
-  const std::uint64_t stream_row = std::uint64_t{profile.hc_width()} * sizeof(float);
-  for (std::uint32_t i = 0; i < rows; ++i) {
-    out.push_back({.drafter = true,
-                   .offset = mtp.hidden + (std::uint64_t{i + 1} * stream_row),
-                   .bytes = stream_row,
-                   .row = i});
-  }
-  return out;
-}
-
-std::expected<Qwen38Injection, std::string> Qwen38InjectionOf(const Qwen38MtpState& state,
-                                                              std::uint32_t n_past,
-                                                              std::uint32_t rows,
-                                                              std::uint32_t pending) {
-  if (rows == 0 || std::uint64_t{rows} + 1 > state.hidden_rows ||
-      std::uint64_t{n_past} + rows > state.context) {
-    return Refused(std::format("no injection for a chunk of {} rows at {}", rows, n_past));
-  }
-  Qwen38Injection in;
-  if (n_past == 0) {
-    // Nothing precedes the sequence: the chunk's rows but its last.
-    in.rows = rows - 1;
-    in.hidden_row = 1;
-    return in;
-  }
-  if (pending >= state.hidden_rows || pending > n_past) {
-    return Refused(std::format("{} pending streams rows before position {}", pending, n_past));
-  }
-  if (pending > 1) {
-    in.catch_up_first = n_past - pending;
-    in.catch_up_rows = pending - 1;
-  }
-  in.carry = pending;
-  in.first = n_past - 1;
-  in.rows = rows;
-  in.hidden_row = 0;
-  return in;
-}
-
-std::expected<Qwen38CommitLayout, std::string> Qwen38Commit(const Qwen38Profile& p,
-                                                            std::uint32_t rows) {
-  if (!ProfileIsSane(p) || rows == 0 || rows > 8) {
-    return Refused(std::format("no commit layout for verifies of {} rows", rows));
-  }
-  Qwen38CommitLayout c;
-  c.rows = rows;
-  c.channels = p.conv_channels();
-  c.v_heads = p.lin_v_heads;
-  c.hc_width = p.hc_width();
+std::uint64_t Qwen38StateBytes(const Qwen38Profile& p, std::uint32_t context,
+                               std::uint32_t /*max_rows*/) {
+  const std::uint64_t cells = Pad(context, 256);
+  std::uint64_t bytes = 0;
   for (std::uint32_t il = 0; il < p.layers; ++il) {
     if (p.linear(il)) {
-      c.layers.push_back(il);
+      bytes = Pad(bytes + (std::uint64_t{p.conv - 1} * p.conv_channels() * 4), 256);
+      bytes =
+          Pad(bytes + (std::uint64_t{p.lin_head_dim} * p.lin_head_dim * p.lin_v_heads * 4), 256);
+      if (il == p.ple_layer) {
+        bytes = Pad(bytes + (std::uint64_t{p.ple_history()} * p.hc_width() * 4), 256);
+      }
+    } else {
+      bytes = Pad(bytes + (std::uint64_t{p.head_dim} * p.kv_heads * cells * 2), 256);
+      bytes = Pad(bytes + (std::uint64_t{p.head_dim} * p.kv_heads * cells * 2), 256);
+      bytes = Pad(bytes + (p.indexer_head_dim * cells * 4), 256);
+      bytes =
+          Pad(bytes + (p.indexer_head_dim * ((cells + p.indexer_ratio - 1) / p.indexer_ratio) * 2),
+              256);
     }
   }
-  c.layer_bytes = (2 * c.Part(c.channels)) + (2 * c.Part(c.v_heads));
-  c.bytes = c.ple() + c.Part(c.hc_width);
-  return c;
+  return bytes;
 }
 
+std::uint64_t Qwen38MtpStateBytes(const Qwen38Profile& p, std::uint32_t context,
+                                  std::uint32_t max_rows) {
+  const std::uint64_t cells = Pad(context, 256);
+  const std::uint64_t hidden_rows = max_rows + 1;
+  const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * cells * 2;
+  std::uint64_t bytes = 0;
+  bytes = Pad(bytes + kv, 256);                                // k
+  bytes = Pad(bytes + kv, 256);                                // v
+  bytes = Pad(bytes + (cells * p.indexer_head_dim * 4), 256);  // indexer
+  bytes = Pad(bytes + (((cells + p.indexer_ratio - 1) / p.indexer_ratio) * p.indexer_head_dim * 2),
+              256);                                                           // blocks
+  bytes = Pad(bytes + (std::uint64_t{p.hc_width()} * hidden_rows * 4), 256);  // hidden
+  return bytes;
+}
 }  // namespace llmp::model

@@ -19,8 +19,7 @@
 // (CheckQwen38PleHash).
 //
 // The model layer holds no vendor or kernel-module types; the GGML graph is
-// built from this adapter by the GGML kernel module
-// (kernels/ggml/qwen38_graph.h).
+// lowered through the GGML kernel module.
 
 #ifndef LLMP_MODEL_QWEN38_H_
 #define LLMP_MODEL_QWEN38_H_
@@ -33,8 +32,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include "model/state.h"
 
 namespace llmp::artifact {
 class Artifact;
@@ -263,163 +260,23 @@ std::expected<Qwen38PleHash, std::string> ReadQwen38GgufHash(const Qwen38Profile
                                                              std::span<const std::byte> metadata,
                                                              std::uint64_t table_rows);
 
-// ---------------------------------------------------------------- state
-
-// One sequence's state for `context` positions and chunks of at most
-// `max_rows` rows, in one region at 256-byte aligned offsets. The QSA
-// caches hold a cell per position, cells = pad(context, 256), position p in
-// cell p (as llama.cpp's unified cache places one sequence); attention reads
-// the first pad(positions, 256) cells, masking the rest. Everything starts
-// zeroed: the recurrent and convolution state of an empty sequence is zero,
-// as llama.cpp's cleared state rows are.
-struct Qwen38StateTensor {
-  enum class Kind : std::uint8_t {
-    kK,         // F16 [head_dim · kv_heads, cells]
-    kV,         // F16 [head_dim · kv_heads, cells]
-    kIndexerK,  // F32 [indexer_head_dim, cells]: the indexer's raw keys
-    // BF16 [indexer_head_dim, cells / indexer_ratio]: each complete block's
-    // pooled key, normalized and rotated (the fast graph writes each once,
-    // when its block completes, and reads them; kernels/ggml/llmp_ops.h
-    // llmp.qsa.pool)
-    kIndexerBlocks,
-    kConv,       // F32 [(conv - 1) · channels]: the last conv - 1 inputs, time fastest
-    kRecurrent,  // F32 [head_dim · head_dim · v_heads]
-    kPleConv,    // F32 [ple_history · hc_width]: the n-gram layer's
-  };
-  Kind kind = Kind::kK;
-  std::uint32_t layer = 0;
-  bool f16 = false;  // two-byte elements (F16, or kIndexerBlocks' BF16)
-  std::uint64_t ne0 = 0;
-  std::uint64_t ne1 = 0;
-  std::uint64_t offset = 0;
-  std::uint64_t bytes = 0;
-};
-
-struct Qwen38StateLayout {
-  std::uint32_t context = 0;
-  std::uint32_t max_rows = 0;
-  std::uint32_t cells = 0;
-  std::vector<Qwen38StateTensor> tensors;
-  std::uint64_t bytes = 0;
-
-  std::int64_t Find(std::uint32_t layer, Qwen38StateTensor::Kind kind) const;
-  // As D-068 representations: the attention and indexer caches (one
-  // fixed-size block sized for the context, append only) and the recurrent
-  // and convolution state (one fixed-size block, overwritten each chunk:
-  // rollback needs the snapshot planes a drafter brings).
-  std::vector<StateRepresentation> Representations() const;
-};
-
 // The widest chunk a state admits (the harness measures up to 2,048 rows).
 inline constexpr std::uint32_t kQwen38MaxRows = 8192;
 
-// Refused if the context or chunk bound is zero, the context is past the
-// graph's I32 positions, a chunk is longer than the context or than
-// kQwen38MaxRows, or the profile is not Qwen3.8's; and, with `host_masks`
-// (the graphs that select over masks of every cell by every row: the
-// reference and unfused forms, kernels/ggml/qwen38_graph.h), if a chunk's
-// F32 [padded context, rows] tensors (x 4 bytes, a 32-bit stride in GGML's
-// flash attention and ggml_permute: RE-037) would pass I32 bytes. The fast
-// graph builds no such tensor.
-std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& profile,
-                                                          std::uint32_t context,
-                                                          std::uint32_t max_rows,
-                                                          bool host_masks = true);
-
-// The padded cache prefixes and fixed recurrent/convolution state used
-// through `positions`, the caches read through `positions` rounded up to
-// `read_align` (Qwen38Chunk's; a multiple of 256). No extent beyond these
-// ranges is accessed.
-std::expected<std::vector<StateRange>, std::string> Qwen38UsedState(const Qwen38Profile& profile,
-                                                                    const Qwen38StateLayout& state,
-                                                                    std::uint32_t positions,
-                                                                    std::uint32_t read_align = 256);
-std::expected<std::vector<StateRange>, std::string> Qwen38CheckpointWrites(
-    const Qwen38Profile& profile, const Qwen38StateLayout& state, std::uint32_t positions);
-
-// The widest chunk Qwen38State admits at `context`: the context,
-// kQwen38MaxRows and, with `host_masks`, the F32 [n_kv, rows] tensors' I32
-// bytes (0 when none, or when the context is refused whatever the chunk).
+// The widest chunk Qwen38 admits at `context`.
 std::uint32_t Qwen38MostRows(std::uint32_t context, bool host_masks = true);
 
-// ---------------------------------------------------------------- chunk inputs
-
-// QSA's block tables for a chunk (llama_memory_hybrid_idx::set_input_qsa,
-// one sequence, cell = position): which block each cell pools into, each
-// block's cells and RoPE position, and each token's per-block bias.
-struct Qwen38QsaInputs {
-  std::uint32_t blocks = 0;               // ceil(n_kv / ratio)
-  std::vector<std::int32_t> cell_block;   // n_kv
-  std::vector<std::int32_t> block_cells;  // ratio x blocks
-  std::vector<std::int32_t> block_pos;    // 4 x blocks, section-major
-  std::vector<float> bias;                // blocks x rows
-};
-
-struct Qwen38ChunkInputs {
-  std::uint32_t n_past = 0;
-  std::uint32_t rows = 0;
-  std::uint32_t n_kv = 0;               // cells attention reads, pad(n_past + rows, 256)
-  std::vector<std::int32_t> tokens;     // rows
-  std::vector<std::int32_t> positions;  // 4 x rows (mrope sections, all the position)
-  std::vector<std::int64_t> cells;      // rows: each token's cache cell
-  std::vector<std::uint16_t> mask;      // F16 bits [n_kv, rows]: 0 visible, -inf not
-  std::vector<float> mask_f32;          // the same in F32, for the indexer's scores
-                                        // (both empty where not asked for)
-  std::vector<std::int32_t> ple_rows;   // ple_heads x rows: the n-gram table's rows
-  bool qsa_select = false;              // the indexer's budget is below n_kv
-  Qwen38QsaInputs qsa;                  // when qsa_select
-};
-
-// A chunk's inputs: `rows` tokens at positions n_past onwards; `history`
-// holds the sequence's tokens from position 0 through the chunk's last (the
-// n-gram hash reads each token's predecessors). Refused if the chunk is
-// empty, runs past the layout's context, is longer than its chunk bound,
-// the history is not n_past + rows tokens, or a token is outside the
-// vocabulary. With `selection_masks` false, a chunk whose QSA selects gets
-// neither host-built masks nor block tables (only `qsa_select` and
-// `qsa.blocks`): the fast graph selects on the device from the cached block
-// keys and attends the kept cells alone (kernels/ggml/qwen38_graph.h).
-// With materialize_masks=false only mask matrices are omitted; selection
-// metadata still follows selection_masks. State/MostRows consumer bounds
-// remain unchanged. The masks are [n_kv, rows] and the bias
-// [n_kv / ratio, rows]: at a context of 8,192, 192 MiB a chunk, growing with the context. Attention
-// reads the cells through the chunk's end rounded up to `read_align` (a multiple of 256): cells
-// past a row's position are masked, or hidden from the device's selection by position, so a coarser
-// alignment changes no result, only how often the shape (and a wave's graph) changes. Those cells
-// are still read: back them (Qwen38UsedState at the same alignment).
-std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
-    const Qwen38Profile& profile, const Qwen38StateLayout& state, const Qwen38PleHash& hash,
-    std::span<const std::int32_t> history, std::uint32_t n_past, std::uint32_t rows,
-    bool selection_masks = true, std::uint32_t read_align = 256, bool materialize_masks = true);
+// State region byte size at context and chunk bounds.
+std::uint64_t Qwen38StateBytes(const Qwen38Profile& profile, std::uint32_t context,
+                               std::uint32_t max_rows);
+std::uint64_t Qwen38MtpStateBytes(const Qwen38Profile& profile, std::uint32_t context,
+                                  std::uint32_t max_rows);
 
 // The n-gram rows of the token at `position` (exposed for tests):
 // ple_heads rows, llm_graph_input_ple::set_input's hash.
 std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& profile, const Qwen38PleHash& hash,
                                         std::span<const std::int32_t> history,
                                         std::uint32_t position);
-
-// The positions, cells, masks and QSA tables of `rows` rows at n_past over
-// a cache of `cells` cells (position p in cell p), attention reading `read`
-// cells (the chunk's n_kv: at least pad(n_past + rows, 256), at most
-// `cells`, a multiple of 256): Qwen38Chunk's, without tokens or n-gram rows
-// (the MTP drafter's passes, which share one n_kv). Refused if the rows do
-// not fit.
-// Allocation-free row geometry, shared with actual Qwen38Rows. Positions,
-// cells, masks and token/PLE history remain actual-call inputs.
-std::expected<Qwen38ChunkInputs, std::string> Qwen38RowGeometry(const Qwen38Profile& profile,
-                                                                std::uint32_t cells,
-                                                                std::uint32_t n_past,
-                                                                std::uint32_t rows,
-                                                                std::uint32_t read);
-
-std::expected<Qwen38ChunkInputs, std::string> Qwen38Rows(const Qwen38Profile& profile,
-                                                         std::uint32_t cells, std::uint32_t n_past,
-                                                         std::uint32_t rows, std::uint32_t read,
-                                                         bool selection_masks,
-                                                         bool materialize_masks = true);
-
-inline constexpr std::uint16_t kQwen38HalfZero = 0x0000;
-inline constexpr std::uint16_t kQwen38HalfNegInf = 0xFC00;
 
 // ---------------------------------------------------------------- the MTP drafter
 
@@ -454,109 +311,6 @@ std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(const Qwen38Profile& 
 
 std::expected<void, std::string> CheckQwen38DraftIds(std::span<const std::int32_t> ids,
                                                      std::uint32_t vocab);
-
-// The drafter's state, one region: its layer's F16 K and V caches and F32
-// indexer keys (a cell per position, as the target's QSA layers'), its BF16
-// block keys (kIndexerBlocks' layout), and the streams it reads:
-// `hidden_rows` rows of the target's streams before the head's mix (F32
-// [hc_width]), row 0 the pending one a prefill chunk leaves
-// (docs/experiments/qwen38-mtp/). A D-068 representation: the caches append,
-// and cells past the committed positions (a draft's) are rewritten before
-// any row reads them, a block's key when the pass that writes its last cell
-// runs.
-struct Qwen38MtpState {
-  std::uint32_t context = 0;
-  std::uint32_t cells = 0;
-  std::uint32_t hidden_rows = 0;
-  std::uint64_t k = 0;  // offsets
-  std::uint64_t v = 0;
-  std::uint64_t indexer = 0;
-  std::uint64_t blocks = 0;
-  std::uint64_t hidden = 0;
-  std::uint64_t bytes = 0;
-  std::vector<StateRepresentation> Representations() const;
-};
-// For the target's `state` (its context and chunk bound): hidden_rows =
-// max_rows + 1.
-std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile& profile,
-                                                            const Qwen38StateLayout& state);
-
-// What a verify of `rows` rows after `n_past` saves before it writes (D-068
-// truncation through a snapshot), in the order the runner saves it: each
-// row's cell of every QSA layer's K, V and indexer keys (row by row, in the
-// layout's order), then each block key a row completes (by that row), then
-// the drafter's streams rows the verify exports (row i's in H[i + 1]). The
-// recurrent and convolution state is not written by a verify (its commit
-// rebuilds it). `drafter`: an offset in the drafter's region, else the
-// target's.
-struct Qwen38VerifySave {
-  bool drafter = false;
-  std::uint64_t offset = 0;
-  std::uint64_t bytes = 0;
-  std::uint32_t row = 0;
-};
-std::vector<Qwen38VerifySave> Qwen38VerifySaves(const Qwen38Profile& profile,
-                                                const Qwen38StateLayout& state,
-                                                const Qwen38MtpState& mtp, std::uint32_t n_past,
-                                                std::uint32_t rows);
-
-// The drafter's work in a prefill chunk with the injection: the chunk's
-// `rows` rows from `n_past`, its export writing their streams to H[1 ..
-// rows], with `pending` rows' streams in H[1 .. pending] before it (the
-// rows the last verify kept, or the pending row the last injected chunk
-// left, then in H[0] too), at the positions before n_past. All pending
-// rows but the last catch up first, in a pass of their own before the
-// chunk overwrites their streams (`catch_up_rows` from `catch_up_first`,
-// streams from H[1]); the last's streams are copied to H[0] (`carry`, its
-// H row; 0: none) before the chunk's target rows run. Then one pass after
-// them over the positions whose next token the chunk holds (`rows` from
-// `first`, streams from H[hidden_row]): the pending row's from H[0] and the
-// chunk's rows but its last. With none pending, H[0] is as the last
-// injected chunk left it; at the sequence's start no row precedes the
-// chunk. Each pending row's drafter cell is so written from its own
-// streams, as a draft's catch-up writes it.
-struct Qwen38Injection {
-  std::uint32_t catch_up_first = 0;
-  std::uint32_t catch_up_rows = 0;  // 0: no catch-up pass
-  std::uint32_t carry = 0;
-  std::uint32_t first = 0;
-  std::uint32_t rows = 0;  // 0: no pass
-  std::uint32_t hidden_row = 0;
-};
-std::expected<Qwen38Injection, std::string> Qwen38InjectionOf(const Qwen38MtpState& state,
-                                                              std::uint32_t n_past,
-                                                              std::uint32_t rows,
-                                                              std::uint32_t pending);
-
-// What a speculative verify saves so that its accepted rows' writes, and
-// nothing else, reach the target's recurrent, convolution and n-gram
-// state (Qwen38Commit replays them; the verify writes none of that state):
-// per linear-attention layer, each row's convolution output (the
-// recurrence's q, k and v, F32 [channels]), its input (the QKV rows, F32
-// [channels], for the convolution history), its gate and beta (F32
-// [v_heads] each); and the n-gram layer's convolution input rows (F32
-// [hc_width]). Each part a [width, rows] block at a 256-byte aligned offset.
-struct Qwen38CommitLayout {
-  std::uint32_t rows = 0;
-  std::uint32_t channels = 0;
-  std::uint32_t v_heads = 0;
-  std::uint32_t hc_width = 0;
-  std::vector<std::uint32_t> layers;  // the linear-attention layers, in order
-  std::uint64_t layer_bytes = 0;      // one layer's block
-  std::uint64_t bytes = 0;
-  // Layer `layers[i]`'s parts.
-  std::uint64_t conv_out(std::size_t i) const { return i * layer_bytes; }
-  std::uint64_t qkv(std::size_t i) const { return conv_out(i) + Part(channels); }
-  std::uint64_t gate(std::size_t i) const { return qkv(i) + Part(channels); }
-  std::uint64_t beta(std::size_t i) const { return gate(i) + Part(v_heads); }
-  std::uint64_t ple() const { return layers.size() * layer_bytes; }
-  std::uint64_t Part(std::uint32_t width) const {
-    return ((std::uint64_t{width} * rows * 4) + 255) / 256 * 256;
-  }
-};
-// For verifies of at most `rows` rows (1 to 8).
-std::expected<Qwen38CommitLayout, std::string> Qwen38Commit(const Qwen38Profile& profile,
-                                                            std::uint32_t rows);
 
 }  // namespace llmp::model
 

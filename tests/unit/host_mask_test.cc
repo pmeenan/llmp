@@ -120,25 +120,26 @@ TEST(HostMaskTest, QwenDenseAndThreeValuedQsaBuffersMatchOldBits) {
     for (const auto rows : {1U, 17U, 257U}) {
       const auto end = past + rows;
       const auto read = (end + 255) / 256 * 256;
-      auto in = md::Qwen38Rows(p, 8192, past, rows, read, true, true);
-      ASSERT_TRUE(in);
+      const auto full = end / p.indexer_ratio;
+      const auto blocks = (read + p.indexer_ratio - 1) / p.indexer_ratio;
       for (std::uint32_t r = 0; r < rows; ++r) {
+        auto prefix = md::HostMaskPrefix(read, past + r + 1);
+        ASSERT_TRUE(prefix);
+        std::vector<std::uint16_t> mask(read, 0xFC00);
+        ASSERT_TRUE(md::FillHostMaskVisible(std::span{mask}, *prefix, std::uint16_t{0}));
         for (std::uint32_t c = 0; c < read; ++c) {
-          EXPECT_EQ(in->mask[std::size_t{r} * read + c], c <= past + r ? 0 : 0xFC00);
-          const auto expected = c <= past + r ? 0.0f : -std::numeric_limits<float>::infinity();
-          EXPECT_EQ(std::bit_cast<std::uint32_t>(in->mask_f32[std::size_t{r} * read + c]),
-                    std::bit_cast<std::uint32_t>(expected));
+          EXPECT_EQ(mask[c], c <= past + r ? 0 : 0xFC00);
         }
-        if (!in->qsa_select) continue;
-        const auto full = end / p.indexer_ratio;
-        const auto tail = (std::uint64_t{past} + r + 1) / p.indexer_ratio * p.indexer_ratio;
-        for (std::uint32_t b = 0; b < in->qsa.blocks; ++b) {
-          auto expected = b >= full ? -std::numeric_limits<float>::infinity()
-                          : std::uint64_t{b} * p.indexer_ratio >= tail ? 1e9f
-                                                                       : 0.0f;
-          if (full < in->qsa.blocks && b == full) expected = 1e9f;
-          EXPECT_EQ(std::bit_cast<std::uint32_t>(in->qsa.bias[std::size_t{r} * in->qsa.blocks + b]),
-                    std::bit_cast<std::uint32_t>(expected));
+        if (full == 0) continue;
+        const auto tail = (std::uint64_t{past} + r + 1) / p.indexer_ratio;
+        std::vector<float> bias(blocks);
+        ASSERT_TRUE(md::FillHostQsaBias(std::span{bias}, full, tail));
+        for (std::uint32_t b = 0; b < blocks; ++b) {
+          auto expected = b >= full                  ? -std::numeric_limits<float>::infinity()
+                          : std::uint64_t{b} >= tail ? 1e9f
+                                                     : 0.0f;
+          if (full < blocks && b == full) expected = 1e9f;
+          EXPECT_EQ(std::bit_cast<std::uint32_t>(bias[b]), std::bit_cast<std::uint32_t>(expected));
         }
       }
     }

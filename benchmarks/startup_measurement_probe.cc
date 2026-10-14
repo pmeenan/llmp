@@ -20,7 +20,6 @@
 #include "engine/dsv4_runner.h"
 #include "engine/paged_node.h"
 #include "engine/planned.h"
-#include "engine/qwen38_runner.h"
 
 namespace {
 namespace en = llmp::engine;
@@ -32,45 +31,13 @@ std::string Stats(const en::StartupPlacementStats& s) {
       s.max_nodes);
 }
 
-std::string Budget(const en::Qwen38SetupBudget& b) {
-  std::string out = "{";
-#define BUDGET_FIELD(name) out += std::format("\"" #name "\":{},", b.name)
-  BUDGET_FIELD(scalar_activations);
-  BUDGET_FIELD(scalar_scratch);
-  BUDGET_FIELD(scalar_staging_inputs);
-  BUDGET_FIELD(scalar_host_inputs);
-  BUDGET_FIELD(scalar_ple_mapped);
-  BUDGET_FIELD(scalar_pinned);
-  BUDGET_FIELD(scalar_snapshot_per_branch);
-  BUDGET_FIELD(activations);
-  BUDGET_FIELD(scratch);
-  BUDGET_FIELD(staging_inputs);
-  BUDGET_FIELD(host_inputs);
-  BUDGET_FIELD(ple_mapped);
-  BUDGET_FIELD(pinned);
-  BUDGET_FIELD(wave_output_pinned);
-  BUDGET_FIELD(snapshot_per_branch);
-  BUDGET_FIELD(runner_mapped);
-  BUDGET_FIELD(target_per_branch);
-  BUDGET_FIELD(drafter_per_branch);
-  BUDGET_FIELD(virtual_per_branch);
-  BUDGET_FIELD(initialized_logical);
-  BUDGET_FIELD(initialized_extent_bytes);
-#undef BUDGET_FIELD
-  out.back() = '}';
-  return out;
-}
-
-template <typename Runner>
 struct Lifetime {
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  Runner runner;
-  template <typename Options>
-  explicit Lifetime(const Options& options) : runner(node, options, 0, 0) {}
+  en::Dsv4Runner runner;
+  explicit Lifetime(const en::Dsv4Options& options) : runner(node, options, 0, 0) {}
 };
 
-template <typename Runner>
-int Measure(std::unique_ptr<Lifetime<Runner>> owner, const std::filesystem::path& result,
+int Measure(std::unique_ptr<Lifetime> owner, const std::filesystem::path& result,
             std::string_view recipe, bool threshold) {
   auto& node = owner->node;
   auto& runner = owner->runner;
@@ -88,25 +55,13 @@ int Measure(std::unique_ptr<Lifetime<Runner>> owner, const std::filesystem::path
   std::string scalar;
   std::string wave = "null";
   if (setup) {
-    if constexpr (std::is_same_v<Runner, en::Dsv4Runner>) {
-      budget = std::format(
-          R"({{"activations":{},"scratch":{},"lane_scratch":{},"host_inputs":{},"plan_floor":{},"scratch_arena":{},"initialized_logical":{}}})",
-          runner.activations_needed(), runner.pool_needed(), runner.lane_pool_needed(),
-          runner.host_input_bytes(), runner.plan_floor_bytes(), en::ScratchArenaBytes(),
-          runner.used_state_bytes());
-      scalar = Stats(runner.startup_placement_stats());
-      std::println("plan budget: {}", runner.plan_report());
-    } else {
-      budget = Budget(runner.setup_budget());
-      // The host graph-index allowance and node-based plan floor are separate
-      // from the setup budget's device and staging bounds.
-      budget.pop_back();
-      budget += std::format(",\"scratch_arena\":{},\"plan_floor\":{}}}", en::ScratchArenaBytes(),
-                            runner.plan_floor_bytes());
-      scalar = Stats(runner.scalar_startup_placement_stats());
-      wave = Stats(runner.wave_startup_placement_stats());
-      std::println("plan budget: {}", runner.plan_report());
-    }
+    budget = std::format(
+        R"({{"activations":{},"scratch":{},"lane_scratch":{},"host_inputs":{},"plan_floor":{},"scratch_arena":{},"initialized_logical":{}}})",
+        runner.activations_needed(), runner.pool_needed(), runner.lane_pool_needed(),
+        runner.host_input_bytes(), runner.plan_floor_bytes(), en::ScratchArenaBytes(),
+        runner.used_state_bytes());
+    scalar = Stats(runner.startup_placement_stats());
+    std::println("plan budget: {}", runner.plan_report());
   } else {
     std::println(stderr, "setup failed: {}", setup.error());
   }
@@ -137,46 +92,29 @@ int Measure(std::unique_ptr<Lifetime<Runner>> owner, const std::filesystem::path
 int main(int argc, char** argv) {
   if (argc != 6) {
     std::println(stderr,
-                 "usage: llmp_startup_measurement_probe ds|dspark|qn|qmtp|qg TARGET DRAFTER|- "
+                 "usage: llmp_startup_measurement_probe ds|dspark TARGET DRAFTER|- "
                  "NEW_OUT off|on");
     return 2;
   }
   const std::string_view recipe = argv[1];
   const std::string_view policy = argv[5];
-  if ((recipe != "ds" && recipe != "dspark" && recipe != "qn" && recipe != "qmtp" &&
-       recipe != "qg") ||
-      (policy != "off" && policy != "on"))
-    return 2;
-  const bool drafted = recipe == "dspark" || recipe == "qmtp";
+  if ((recipe != "ds" && recipe != "dspark") || (policy != "off" && policy != "on")) return 2;
+  const bool drafted = recipe == "dspark";
   if (drafted == (std::string_view(argv[3]) == "-")) return 2;
   std::error_code ec;
   const std::filesystem::path out = argv[4];
   if (!std::filesystem::create_directory(out, ec) || ec) return 2;
   const bool threshold = policy == "on";
-  if (recipe == "ds" || recipe == "dspark") {
-    en::Dsv4Options options;
-    options.artifact = argv[2];
-    options.out = out;
-    options.context = 8704;
-    options.max_rows = 512;
-    options.wave_slots = 2;
-    options.frontier_head = true;
-    options.prefill_outa_hca = true;
-    options.prefill_outa_hca_partial = true;
-    if (drafted) options.drafter = argv[3];
-    options.startup_activation_threshold = threshold;
-    return Measure(std::make_unique<Lifetime<en::Dsv4Runner>>(options), out / "result.json", recipe,
-                   threshold);
-  }
-  en::Qwen38Options options;
+  en::Dsv4Options options;
   options.artifact = argv[2];
   options.out = out;
-  options.context = 8192;
+  options.context = 8704;
   options.max_rows = 512;
-  options.wave_slots = 4;
-  options.request_slots = 4;
+  options.wave_slots = 2;
+  options.frontier_head = true;
+  options.prefill_outa_hca = true;
+  options.prefill_outa_hca_partial = true;
   if (drafted) options.drafter = argv[3];
   options.startup_activation_threshold = threshold;
-  return Measure(std::make_unique<Lifetime<en::Qwen38Runner>>(options), out / "result.json", recipe,
-                 threshold);
+  return Measure(std::make_unique<Lifetime>(options), out / "result.json", recipe, threshold);
 }

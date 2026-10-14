@@ -215,9 +215,7 @@ TEST(ComponentsQwen38Models, EveryInstalledImportMakesItsSpec) {
     // Today's state, and every target step kind builds.
     const auto layout = co::StageLayout(t->spec, 0, 8192, 512);
     ASSERT_TRUE(layout.has_value()) << layout.error();
-    const auto want = md::Qwen38State(p, 8192, 512, false);
-    ASSERT_TRUE(want.has_value());
-    EXPECT_EQ(layout->bytes, want->bytes);
+    EXPECT_EQ(layout->bytes, md::Qwen38StateBytes(p, 8192, 512));
     const std::array<const md::StateLayoutDerived*, 1> layouts{&*layout};
     const std::array<std::span<const co::BoundTensor>, 1> artifacts{t->source.tensors};
     const co::Bindings bindings{
@@ -279,15 +277,12 @@ TEST(ComponentsQwen38Models, TheMtpDrafterComposesWithItsTargets) {
     EXPECT_EQ(std::ranges::any_of(head->weights,
                                   [](const sp::WeightBinding& w) { return w.role == "ids"; }),
               mb->selected_head());
-    // Today's layouts.
-    const auto want = md::Qwen38State(p, 8192, 512, false);
-    ASSERT_TRUE(want.has_value());
-    const auto mtp_want = md::Qwen38MtpStateOf(p, *want);
-    ASSERT_TRUE(mtp_want.has_value());
+    // State layouts.
     const auto t_layout = co::StageLayout(*spec, 0, 8192, 512);
     const auto d_layout = co::StageLayout(*spec, 1, 8192, 512);
     ASSERT_TRUE(t_layout.has_value() && d_layout.has_value());
-    EXPECT_EQ(d_layout->bytes, mtp_want->bytes);
+    EXPECT_EQ(t_layout->bytes, md::Qwen38StateBytes(p, 8192, 512));
+    EXPECT_EQ(d_layout->bytes, md::Qwen38MtpStateBytes(p, 8192, 512));
     const std::array<const md::StateLayoutDerived*, 2> layouts{&*t_layout, &*d_layout};
     // The target writes the drafter's streams; the drafter's pass and its
     // catch-up build.

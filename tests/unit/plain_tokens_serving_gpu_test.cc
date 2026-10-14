@@ -18,7 +18,6 @@
 
 #include "base/sha256.h"
 #include "engine/dsv4_runner.h"
-#include "engine/qwen38_runner.h"
 #include "model/dsv4.h"
 #include "plain_token_serving_checks.h"
 #include "runtime/serving.h"
@@ -40,23 +39,17 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   rt::Llm* model = nullptr;
   std::filesystem::path scratch;
   void SetUp() override {
-    const bool gguf = GetParam() == 1, deepseek = GetParam() >= 2;
     // Case 4 (FourSlotDsparkGpu): DeepSeek with DSpark at four request slots
     // and a context whose end is past HCA's 256 compressed cells.
     const bool adaptive = GetParam() >= 3, four = GetParam() == 4;
     const std::filesystem::path models = llmp::test_support::ModelsDir();
-    const auto installed = models / (gguf ? "qgguf-artifacts" : "m3-artifacts");
-    const char* artifact =
-        deepseek ? "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
-        : gguf   ? "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"
-                 : "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
+    const auto installed = models / "m3-artifacts";
+    const char* artifact = "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
     const char* drafter = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
-    const auto checkpoint = models / "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
     std::error_code error;
     if (!std::filesystem::exists(installed / artifact, error) ||
-        (adaptive && !std::filesystem::exists(installed / drafter, error)) ||
-        (!deepseek && !std::filesystem::exists(checkpoint / "tokenizer.json", error))) {
-      GTEST_SKIP() << "no artifact or tokenizer for case " << GetParam() << " in " << models;
+        (adaptive && !std::filesystem::exists(installed / drafter, error))) {
+      GTEST_SKIP() << "no artifact for case " << GetParam() << " in " << models;
     }
     // Spill files need direct I/O: scratch in the build tree.
     const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
@@ -79,12 +72,8 @@ class PlainTokensServingGpu : public ::testing::TestWithParam<std::uint32_t> {
       entry.drafter = drafter;
       entry.overrides["wave_form"] = std::string("plain");
     }
-    if (!deepseek) {
-      entry.tokenizer = checkpoint / "tokenizer.json";
-      entry.chat_template = checkpoint / "chat_template.jinja";
-    }
-    entry.overrides["context"] = std::int64_t{four ? 65536 : deepseek ? 8704 : 2048};
-    entry.overrides["prefill_chunk"] = std::int64_t{deepseek ? 4096 : 512};
+    entry.overrides["context"] = std::int64_t{four ? 65536 : 8704};
+    entry.overrides["prefill_chunk"] = std::int64_t{4096};
     entry.overrides["max_slots"] = std::int64_t{four ? 4 : 2};
     life->config.models.push_back(entry);
     life->options.plain = !adaptive;
@@ -148,8 +137,7 @@ TEST_P(PlainTokensServingGpu, ScalarJoinedMixedAndSpilledRowsMatchDeviceTokens) 
         [&] { return runner.device_token_outputs(); },
         GetParam() == 3 ? std::array<std::uint64_t, 2>{0, 4} : std::array<std::uint64_t, 2>{3, 5});
   };
-  const auto r = GetParam() >= 2 ? exercise(dynamic_cast<en::Dsv4Runner&>(model->paged()))
-                                 : exercise(dynamic_cast<en::Qwen38Runner&>(model->paged()));
+  const auto r = exercise(dynamic_cast<en::Dsv4Runner&>(model->paged()));
   ASSERT_TRUE(r) << (r ? "" : r.error());
   if (GetParam() == 3) {
     // The ordinary scalar path still speculates after C2 -> C1 departure.
@@ -267,14 +255,8 @@ TEST_P(PlainTokensServingGpu, ScalarJoinedMixedAndSpilledRowsMatchDeviceTokens) 
 // check, rt::CompleteContinuationRows), which for Qwen3.8's tokenizer.json is
 // wider than the tokenizer.
 TEST_P(PlainTokensServingGpu, LogitRowsAreTheModelsWidthNotTheTokenizers) {
-  const std::uint32_t vocab = GetParam() >= 2
-                                  ? dynamic_cast<en::Dsv4Runner&>(model->paged()).vocab()
-                                  : dynamic_cast<en::Qwen38Runner&>(model->paged()).vocab();
+  const std::uint32_t vocab = dynamic_cast<en::Dsv4Runner&>(model->paged()).vocab();
   ASSERT_EQ(model->logit_width(), vocab);
-  if (GetParam() == 0) {
-    EXPECT_EQ(vocab, 248320U);
-    EXPECT_LT(model->tokenizer().size(), vocab);
-  }
   ASSERT_TRUE(life->server->node().ChargeHost(64ULL << 20U, false));
   struct Charge {
     en::PagedNode& node;
@@ -393,5 +375,5 @@ TEST_P(FourSlotDsparkGpu, SpeculativeWavesFitTheStartupAllowance) {
       stats.eager + stats.captured + stats.replayed);
 }
 
-INSTANTIATE_TEST_SUITE_P(ApprovedTargets, PlainTokensServingGpu, ::testing::Values(0U, 1U, 2U, 3U));
+INSTANTIATE_TEST_SUITE_P(ApprovedTargets, PlainTokensServingGpu, ::testing::Values(2U, 3U));
 INSTANTIATE_TEST_SUITE_P(DeepSeekFourSlots, FourSlotDsparkGpu, ::testing::Values(4U));

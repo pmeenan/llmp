@@ -364,10 +364,10 @@ constexpr std::array kParams = {
     RequireInt("qwen4exp.full_attention_interval", 4, false),
 };
 
-// The default planning policies (planner/policy.h, slice G3b): today's
-// fast forms (kernels/ggml/qwen38_graph.h: the fused graph, not exact),
+// The default planning policies (planner/policy.h, slice G3b): the
+// fast forms (the fused graph, not exact),
 // each a form's own fusions enabled and the norms' and owners' patterns
-// (which today's Qwen3.8 graphs do not take) off; the same in every
+// (which Qwen3.8 graphs do not take) off; the same in every
 // serving envelope. The ModelOpt import with its experts in the CUTLASS
 // layout (stacked), in GGML's NVFP4 blocks (scaled, not stacked), and a
 // GGUF quantization's (neither).

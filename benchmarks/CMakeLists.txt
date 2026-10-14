@@ -58,11 +58,6 @@ target_link_libraries(llmp_gemma_tokenize PRIVATE llmp_tokenizer llmp_chat
 # Storage queue depth and request size, direct into host VMM through the
 # providers (docs/experiments/storage-queue/). Needs a CUDA device.
 if(LLMP_CUDA)
-  add_executable(llmp_plain_token_probe plain_token_probe.cc)
-  target_link_libraries(llmp_plain_token_probe PRIVATE llmp_engine llmp_base llmp_warnings)
-  target_link_options(llmp_plain_token_probe PRIVATE
-                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-
   add_executable(llmp_turn_reuse turn_reuse.cc)
   target_link_libraries(llmp_turn_reuse PRIVATE llmp_runtime_serving llmp_base llmp_warnings)
   target_link_options(llmp_turn_reuse PRIVATE
@@ -186,17 +181,6 @@ if(LLMP_CUDA)
                                                  llmp_long_context_tasks)
   target_link_options(llmp_dsv4_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # M3's second model slice: Qwen3.8 Flash Next (Mia's NVFP4 and MXFP8
-  # checkpoint), native and resident (docs/experiments/qwen38-native/),
-  # planning through the path the paged runner shares (engine/qwen38_plan.h).
-  add_executable(llmp_qwen38_exec qwen38_exec.cc)
-  target_include_directories(llmp_qwen38_exec SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_qwen38_exec PRIVATE llmp_engine llmp_ggml_kernels
-                                                   llmp_cuda_device_memory llmp_artifact
-                                                   llmp_model llmp_warnings)
-  target_link_options(llmp_qwen38_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
   # Its products' cuBLASLt candidates, timed, for the algorithms the image
   # kernels pin (kernels/image/gemm.h).
   add_executable(llmp_qwen_image_gemm_tune qwen_image_gemm_tune.cc)
@@ -266,14 +250,6 @@ if(LLMP_CUDA)
   # part timed (docs/experiments/fast-swap/swap.md), over the engine's
   # runners. The harness beside llmp-runtime's swap-table, which runs the
   # same protocol over the configured models in one process.
-  add_executable(llmp_swap_pairs swap_pairs.cc)
-  target_include_directories(llmp_swap_pairs SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_swap_pairs PRIVATE llmp_paged_runners llmp_launch_recorder
-                                                  llmp_image_kernels llmp_tokenizer
-                                                  llmp_chat llmp_warnings)
-  target_link_options(llmp_swap_pairs PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
   # Kernel-level replays of attention and dense-FFN operands captured from
   # the retired M3 Gemma 4 runner (docs/experiments/gemma-attention-c4,
   # gemma-dense-ffn); they name no runner.
@@ -318,30 +294,6 @@ if(LLMP_CUDA)
   add_executable(llmp_startup_measurement_probe startup_measurement_probe.cc)
   target_link_libraries(llmp_startup_measurement_probe PRIVATE llmp_engine llmp_warnings)
   target_link_options(llmp_startup_measurement_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  add_executable(llmp_qwen38_spec qwen38_spec.cc)
-  target_include_directories(llmp_qwen38_spec SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_qwen38_spec PRIVATE llmp_paged_runners llmp_launch_recorder
-                                                   llmp_tokenizer llmp_chat llmp_sampling
-                                                   llmp_draft_vocab_contract
-                                                   llmp_vocab_reference
-                                                   llmp_runtime
-                                                   llmp_warnings)
-  target_link_options(llmp_qwen38_spec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # GGUF target waves: fixed-history logits/state against solo or unjoined steps.
-  add_executable(llmp_qwen38_gguf_wave qwen38_gguf_wave.cc)
-  target_link_libraries(llmp_qwen38_gguf_wave PRIVATE llmp_paged_runners
-                        llmp_base llmp_warnings)
-  target_link_options(llmp_qwen38_gguf_wave PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Temporary C2 shared-row mechanism proof, no serving/default selection.
-  add_executable(llmp_qwen38_batch qwen38_batch_main.cc qwen38_batch.cc
-                 qwen38_batch_graph.cc qwen38_batch_generation.cc)
-  target_link_libraries(llmp_qwen38_batch PRIVATE llmp_paged_runners
-                        llmp_vocab_reference llmp_json llmp_base llmp_warnings)
-  target_link_options(llmp_qwen38_batch PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # Backend-proof P3, the per-linear sweep (BP-N5): every real projection of
   # an EXL3 fixture through llmpalooza's launchers at upstream's forced plans,

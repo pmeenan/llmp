@@ -129,13 +129,13 @@ struct ServingOptions {
   // overrides for matched controls only.
   bool zero_state = true;
   std::optional<std::size_t> handle_reserve;  // unset: the node's default
-  // Selected scalar DS/Qwen prediction; no public setting or output-policy
-  // change. Both mechanisms have independent internal matched controls.
-  bool dsv4_prefill_lookahead = true, qwen38_prefill_lookahead = true;
-  bool dsv4_prepare_state = true, qwen38_prepare_state = true;
+  // Selected scalar DS prediction; no public setting or output-policy
+  // change.
+  bool dsv4_prefill_lookahead = true;
+  bool dsv4_prepare_state = true;
   // Unset selects ordinary non-speculative prefill only; required-stream
   // drafter consumers remain explicit opt-ins.
-  std::optional<bool> dsv4_state_only_prefill, qwen38_state_only_prefill;
+  std::optional<bool> dsv4_state_only_prefill;
   // Hint-delivery control for matched DS/Qwen tests with identical provisioning.
   // It changes no required work.
   bool predicted_prefill_hints = true;

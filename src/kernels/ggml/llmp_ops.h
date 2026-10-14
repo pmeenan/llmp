@@ -32,7 +32,7 @@
 //
 // and, for Qwen3.8's prefill, fusions of the elementwise work the
 // hyper-connections and the MoE output do at four streams' width, each the
-// same arithmetic as the GGML nodes it replaces (qwen38_graph.cc), in the
+// same arithmetic as the GGML nodes it replaces, in the
 // same order and with GGML's device flags (-use_fast_math), so that its
 // result equals theirs bit for bit (tests/unit/qwen38_ops_test.cc):
 //
@@ -239,10 +239,10 @@ std::int32_t LlmpOpInt(const ggml_tensor* node, int index);
 float LlmpOpFloat(const ggml_tensor* node, int index);
 
 // The most columns a graph's own llmp.mxfp8.mul_mat_vec takes: past them
-// a chunk's MXFP8 products run on tensor cores (qwen38_graph.cc).
+// a chunk's MXFP8 products run on tensor cores.
 inline constexpr std::int64_t kMxfp8VecColumns = 8;
 // The most columns the kernel takes: a Qwen3.8 wave's shared products
-// (engine/qwen38_wave_plan.h) join up to four requests' verify rows. Each
+// join up to four requests' verify rows. Each
 // column's arithmetic is the eight-column kernel's.
 inline constexpr std::int64_t kMxfp8VecWaveColumns = 16;
 
@@ -557,7 +557,7 @@ std::expected<void, KernelFailure> RunMoeGluQuantize(LaunchContext& launch, ggml
 std::expected<void, KernelFailure> RunMoeCombineSorted(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMoeGemv(LaunchContext& launch, ggml_tensor* node);
 
-// Qwen3.8's fast path (the graph's default, qwen38_graph.h; D-085: speed
+// Qwen3.8's fast path (D-085: speed
 // before bit exactness): the MXFP8 products on tensor cores (CUTLASS's
 // block-scaled GEMM, mxfp8_cutlass.h), their activations quantized to MXFP8
 // as Mia's vLLM quantizes the checkpoint's MXFP8 linears' (the oracle,
@@ -728,7 +728,7 @@ std::expected<void, KernelFailure> CheckQsaGateQuantize(const ggml_tensor* node)
 std::expected<void, KernelFailure> RunQsaPrep(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunQsaGateQuantize(LaunchContext& launch, ggml_tensor* node);
 
-// And QSA at any depth (qsa_sparse.cu; the fast graph's, qwen38_graph.h),
+// And QSA at any depth (qsa_sparse.cu),
 // which never builds a tensor of every cell by every row:
 //
 //   llmp.qsa.pool   the indexer's block keys, cached: for each block of

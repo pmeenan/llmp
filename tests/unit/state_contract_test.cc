@@ -308,35 +308,139 @@ Layers QwenMtpContracts(const md::Qwen38Profile& p) {
                          .target_writes = true}}}}};
 }
 
+struct QwenTensorRef {
+  std::uint32_t layer = 0;
+  bool f16 = false;
+  std::uint64_t ne0 = 0, ne1 = 0;
+  std::uint64_t offset = 0, bytes = 0;
+};
+
+struct QwenLayoutRef {
+  std::vector<QwenTensorRef> tensors;
+  std::uint64_t bytes = 0;
+  std::uint32_t cells = 0;
+};
+
+QwenLayoutRef QwenRef(const md::Qwen38Profile& p, std::uint32_t context, std::uint32_t /*rows*/) {
+  QwenLayoutRef s;
+  s.cells = static_cast<std::uint32_t>(PadTo(context, 256));
+  const auto add = [&](std::uint32_t layer, bool f16, std::uint64_t ne0, std::uint64_t ne1) {
+    const std::uint64_t bytes = ne0 * ne1 * (f16 ? 2 : 4);
+    s.tensors.push_back(
+        {.layer = layer, .f16 = f16, .ne0 = ne0, .ne1 = ne1, .offset = s.bytes, .bytes = bytes});
+    s.bytes = PadTo(s.bytes + bytes, 256);
+  };
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    if (p.linear(il)) {
+      add(il, false, std::uint64_t{p.conv - 1} * p.conv_channels(), 1);
+      add(il, false, std::uint64_t{p.lin_head_dim} * p.lin_head_dim * p.lin_v_heads, 1);
+      if (il == p.ple_layer) {
+        add(il, false, std::uint64_t{p.ple_history()} * p.hc_width(), 1);
+      }
+    } else {
+      add(il, true, std::uint64_t{p.head_dim} * p.kv_heads, s.cells);
+      add(il, true, std::uint64_t{p.head_dim} * p.kv_heads, s.cells);
+      add(il, false, p.indexer_head_dim, s.cells);
+      add(il, true, p.indexer_head_dim,
+          (std::uint64_t{s.cells} + p.indexer_ratio - 1) / p.indexer_ratio);
+    }
+  }
+  return s;
+}
+
+std::vector<StateRange> QwenUsedRef(const md::Qwen38Profile& p, const QwenLayoutRef& layout,
+                                    std::uint32_t positions, std::uint32_t read_align) {
+  const std::uint64_t read = std::min<std::uint64_t>(layout.cells, PadTo(positions, read_align));
+  std::vector<StateRange> ranges;
+  for (const auto& t : layout.tensors) {
+    std::uint64_t rows = t.ne1;
+    if (t.ne1 == layout.cells) {
+      rows = std::min(t.ne1, read);
+    } else if (t.ne1 == (std::uint64_t{layout.cells} + p.indexer_ratio - 1) / p.indexer_ratio) {
+      rows = std::min(t.ne1, (read + p.indexer_ratio - 1) / p.indexer_ratio);
+    }
+    if (rows != 0) {
+      ranges.push_back({.offset = t.offset, .bytes = t.ne0 * rows * (t.f16 ? 2 : 4)});
+    }
+  }
+  return ranges;
+}
+
+std::vector<StateRange> QwenCheckpointRef(const md::Qwen38Profile& p, const QwenLayoutRef& layout,
+                                          std::uint32_t positions) {
+  std::vector<StateRange> writes;
+  for (const auto& t : layout.tensors) {
+    std::uint64_t first = 0;
+    if (t.ne1 == layout.cells) {
+      first = positions;
+    } else if (t.ne1 == (std::uint64_t{layout.cells} + p.indexer_ratio - 1) / p.indexer_ratio) {
+      first = positions / p.indexer_ratio;
+    }
+    first = std::min(first, t.ne1);
+    const std::uint64_t row = t.ne0 * (t.f16 ? 2 : 4);
+    if (first < t.ne1) {
+      writes.push_back({.offset = t.offset + (first * row), .bytes = (t.ne1 - first) * row});
+    }
+  }
+  return writes;
+}
+
+struct QwenMtpRef {
+  std::uint32_t cells = 0;
+  std::uint32_t hidden_rows = 0;
+  std::uint64_t k = 0;
+  std::uint64_t v = 0;
+  std::uint64_t indexer = 0;
+  std::uint64_t blocks = 0;
+  std::uint64_t hidden = 0;
+  std::uint64_t bytes = 0;
+};
+
+QwenMtpRef QwenMtp(const md::Qwen38Profile& p, std::uint32_t context, std::uint32_t max_rows) {
+  QwenMtpRef s;
+  s.cells = static_cast<std::uint32_t>(PadTo(context, 256));
+  s.hidden_rows = max_rows + 1;
+  const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * s.cells * 2;
+  s.k = 0;
+  s.v = PadTo(kv, 256);
+  s.indexer = s.v + PadTo(kv, 256);
+  s.blocks = s.indexer + PadTo(std::uint64_t{p.indexer_head_dim} * s.cells * 4, 256);
+  s.hidden =
+      s.blocks + PadTo(std::uint64_t{p.indexer_head_dim} *
+                           ((std::uint64_t{s.cells} + p.indexer_ratio - 1) / p.indexer_ratio) * 2,
+                       256);
+  s.bytes = s.hidden + PadTo(std::uint64_t{p.hc_width()} * s.hidden_rows * 4, 256);
+  return s;
+}
+
 TEST(StateContractTest, Qwen38ContractsReproduceItsLayoutUsedStateAndCheckpointWrites) {
   const auto& p = md::Qwen38Flash();
   for (const auto& [context, rows] : {std::pair{8192U, 512U}, {262144U, 2048U}, {4000U, 300U}}) {
-    auto want = md::Qwen38State(p, context, rows, false);
-    ASSERT_TRUE(want.has_value()) << want.error();
+    const auto want = QwenRef(p, context, rows);
     const Layers contracts = QwenContracts(p);
     auto got = md::Layout(contracts, context, rows);
     ASSERT_TRUE(got.has_value()) << got.error();
-    ASSERT_EQ(got->items.size(), want->tensors.size());
+    ASSERT_EQ(got->items.size(), want.tensors.size());
     for (std::size_t i = 0; i < got->items.size(); ++i) {
-      EXPECT_EQ(got->items[i].offset, want->tensors[i].offset) << i;
-      EXPECT_EQ(got->items[i].bytes, want->tensors[i].bytes) << i;
-      EXPECT_EQ(got->items[i].cells, want->tensors[i].ne1) << i;
+      EXPECT_EQ(got->items[i].offset, want.tensors[i].offset) << i;
+      EXPECT_EQ(got->items[i].bytes, want.tensors[i].bytes) << i;
+      EXPECT_EQ(got->items[i].cells, want.tensors[i].ne1) << i;
     }
-    EXPECT_EQ(got->bytes, want->bytes);
+    EXPECT_EQ(got->bytes, want.bytes);
     for (const std::uint32_t align : {256U, 2048U}) {
       for (const std::uint32_t positions :
            {0U, 1U, 63U, 64U, 65U, 256U, 2049U, context - 1, context}) {
         auto used = md::UsedThrough(*got, positions, align);
-        auto old = md::Qwen38UsedState(p, *want, positions, align);
-        ASSERT_TRUE(used.has_value() && old.has_value());
-        ExpectSame(*used, *old, std::format("Qwen3.8 {} positions align {}", positions, align));
+        auto old = QwenUsedRef(p, want, positions, align);
+        ASSERT_TRUE(used.has_value());
+        ExpectSame(*used, old, std::format("Qwen3.8 {} positions align {}", positions, align));
       }
     }
     for (const std::uint32_t positions : {0U, 1U, 64U, 100U, context}) {
       auto writes = md::CheckpointWrites(*got, positions);
-      auto old = md::Qwen38CheckpointWrites(p, *want, positions);
-      ASSERT_TRUE(writes.has_value() && old.has_value());
-      ExpectSame(*writes, *old, std::format("Qwen3.8 checkpoint at {}", positions));
+      auto old = QwenCheckpointRef(p, want, positions);
+      ASSERT_TRUE(writes.has_value());
+      ExpectSame(*writes, old, std::format("Qwen3.8 checkpoint at {}", positions));
     }
   }
 }
@@ -344,29 +448,26 @@ TEST(StateContractTest, Qwen38ContractsReproduceItsLayoutUsedStateAndCheckpointW
 // The MTP drafter's own region: a stage of its own.
 TEST(StateContractTest, Qwen38MtpContractReproducesItsDrafterRegion) {
   const auto& p = md::Qwen38Flash();
-  auto target = md::Qwen38State(p, 8192, 512, false);
-  ASSERT_TRUE(target.has_value());
-  auto want = md::Qwen38MtpStateOf(p, *target);
-  ASSERT_TRUE(want.has_value());
+  const auto want = QwenMtp(p, 8192, 512);
   const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * 2;
   const Layers mtp = QwenMtpContracts(p);
   auto got = md::Layout(mtp, 8192, 512);
   ASSERT_TRUE(got.has_value()) << got.error();
   ASSERT_EQ(got->items.size(), 5U);
-  EXPECT_EQ(got->items[0].offset, want->k);
-  EXPECT_EQ(got->items[1].offset, want->v);
-  EXPECT_EQ(got->items[2].offset, want->indexer);
-  EXPECT_EQ(got->items[3].offset, want->blocks);
-  EXPECT_EQ(got->items[4].offset, want->hidden);
-  EXPECT_EQ(got->items[4].cells, want->hidden_rows);
-  EXPECT_EQ(got->bytes, want->bytes);
-  // The runner's drafter ranges (Qwen38Runner::StateRanges) for its caches.
+  EXPECT_EQ(got->items[0].offset, want.k);
+  EXPECT_EQ(got->items[1].offset, want.v);
+  EXPECT_EQ(got->items[2].offset, want.indexer);
+  EXPECT_EQ(got->items[3].offset, want.blocks);
+  EXPECT_EQ(got->items[4].offset, want.hidden);
+  EXPECT_EQ(got->items[4].cells, want.hidden_rows);
+  EXPECT_EQ(got->bytes, want.bytes);
+  // The drafter ranges for its caches.
   for (const std::uint32_t positions : {1U, 300U, 8192U}) {
     for (const std::uint32_t align : {256U, 2048U}) {
       auto used = md::UsedThrough(*got, positions, align);
       ASSERT_TRUE(used.has_value());
       const std::uint64_t cells =
-          std::min<std::uint64_t>(want->cells, (positions + align - 1) / align * align);
+          std::min<std::uint64_t>(want.cells, (positions + align - 1) / align * align);
       const std::uint64_t blocks = (cells + p.indexer_ratio - 1) / p.indexer_ratio;
       EXPECT_EQ((*used)[0].bytes, cells * kv);
       EXPECT_EQ((*used)[1].bytes, cells * kv);
@@ -374,9 +475,9 @@ TEST(StateContractTest, Qwen38MtpContractReproducesItsDrafterRegion) {
       EXPECT_EQ((*used)[3].bytes, blocks * p.indexer_head_dim * 2);
       // The streams whole: the runner names their padded bytes, the same
       // 2 MiB extents.
-      EXPECT_EQ((*used)[4].offset, want->hidden);
+      EXPECT_EQ((*used)[4].offset, want.hidden);
       EXPECT_EQ(((*used)[4].offset + (*used)[4].bytes + kExtent - 1) / kExtent,
-                (want->bytes + kExtent - 1) / kExtent);
+                (want.bytes + kExtent - 1) / kExtent);
     }
   }
 }
@@ -815,52 +916,6 @@ TEST(StateContractTest, VerifyScopesCommitsPositionRingsAndTheTargetsWritesIntoA
   auto elsewhere = view->borrowed[0];
   elsewhere.contract.target_layer = 3;
   EXPECT_EQ(md::BorrowedItem(*layout, elsewhere), nullptr);
-}
-
-// Qwen3.8's verify (qwen38_runner.cc, through Qwen38VerifySaves): its
-// contracts' WritesFor, the target's with its commit and the MTP stage's
-// as the target's verify writes it, plus the shared runner's chunk-tail carry.
-TEST(StateContractTest, Qwen38VerifySavesAreItsContractsWritesByteForByte) {
-  const auto& p = md::Qwen38Flash();
-  for (const auto& [context, max_rows] : {std::pair{8192U, 512U}, {4000U, 300U}}) {
-    auto state = md::Qwen38State(p, context, max_rows, false);
-    ASSERT_TRUE(state.has_value()) << state.error();
-    auto mtp = md::Qwen38MtpStateOf(p, *state);
-    ASSERT_TRUE(mtp.has_value());
-    auto target = md::Layout(QwenContracts(p), context, max_rows);
-    auto drafter = md::Layout(QwenMtpContracts(p), context, max_rows);
-    ASSERT_TRUE(target.has_value() && drafter.has_value());
-    // Its linear layers' state needs the commit.
-    EXPECT_FALSE(md::WritesFor(*target, 0, 4).has_value());
-    for (const std::uint32_t past : {0U, 1U, 62U, 63U, 64U, 65U, 127U, 1000U, context - 8}) {
-      for (std::uint32_t rows = 1; rows <= 8; ++rows) {
-        const auto saves = md::Qwen38VerifySaves(p, *state, *mtp, past, rows);
-        std::vector<std::vector<StateRange>> want_target(rows), want_drafter(rows);
-        for (const auto& s : saves) {
-          ASSERT_LT(s.row, rows);
-          (s.drafter ? want_drafter : want_target)[s.row].push_back(
-              {.offset = s.offset, .bytes = s.bytes});
-        }
-        // The shared runner also carries the preceding chunk's last
-        // feature into cell zero. It survives acceptance but is restored
-        // when the entire verify is discarded.
-        const auto* tap = md::FeatureTap(*drafter);
-        ASSERT_NE(tap, nullptr);
-        want_drafter[0].push_back({.offset = tap->offset, .bytes = tap->contract.cell_bytes});
-        auto got = md::WritesFor(*target, past, rows, {.commits = true, .drafter = false});
-        auto streams = md::WritesFor(*drafter, past, rows, {.commits = false, .drafter = true});
-        ASSERT_TRUE(got.has_value()) << got.error();
-        ASSERT_TRUE(streams.has_value()) << streams.error();
-        EXPECT_TRUE(got->scratch.empty());
-        EXPECT_TRUE(streams->scratch.empty());
-        for (std::uint32_t i = 0; i < rows; ++i) {
-          const auto what = std::format("Qwen3.8 verify {}+{} row {}", past, rows, i);
-          ExpectSameSet(got->rows[i], want_target[i], what);
-          ExpectSameSet(streams->rows[i], want_drafter[i], what + " streams");
-        }
-      }
-    }
-  }
 }
 
 // DeepSeek V4's verify (Dsv4Runner::PlanSnapshot over Dsv4ChunkWrites):

@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Qwen3.8's QSA at any depth (llmp_ops.h llmp.qsa.pool, .topk and
-// .attn; the fast graph's, qwen38_graph.h): llmpalooza's own kernels, none of
+// .attn): llmpalooza's own kernels, none of
 // them GGML's arithmetic bit for bit, each deterministic (no atomics on
 // floats, every sum in a fixed order), so a run repeats bit for bit.
 //
 // - The pool writes each block's key once, when the block completes, as
-//   llmp.qsa.prep computes a pooled key (qwen38_graph.cc's reference
-//   form pools every block again at every step).
+//   llmp.qsa.prep computes a pooled key.
 // - The selection scores every complete block against the token's four
 //   indexer heads (a thread a block up to kQsaTopKVecRows tokens; past them
 //   BF16 tensor-core products, the block keys held in registers while the

@@ -72,8 +72,7 @@ struct Qwen38PleHash;
 
 namespace llmp::spec::mappings {
 
-// The draft head's rows a pass reads by default (engine/qwen38_runner.h
-// Qwen38Options::draft_vocab's default).
+// The draft head's rows a pass reads by default.
 inline constexpr std::uint64_t kQwen38DraftVocab = 65536;
 
 const Mapping& Qwen38Mapping();

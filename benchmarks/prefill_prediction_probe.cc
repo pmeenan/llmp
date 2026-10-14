@@ -32,7 +32,6 @@
 #include "base/json.h"
 #include "base/sha256.h"
 #include "engine/dsv4_runner.h"
-#include "engine/qwen38_runner.h"
 #include "runtime/serving.h"
 
 namespace {
@@ -151,11 +150,10 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
                 const std::filesystem::path& out, std::string_view recipe, bool hints,
                 std::optional<bool> output_cut) {
   auto& server = *life.server;
-  const bool ds = recipe == "ds" || recipe == "dspark";
-  const bool spec = recipe == "dspark" || recipe == "qmtp";
+  const bool spec = recipe == "dspark";
   const auto& settings = model.settings();
-  const std::uint32_t context = ds ? 16384U : 2048U;
-  const std::uint32_t chunk = ds ? 4096U : 512U;
+  const std::uint32_t context = 16384U;
+  const std::uint32_t chunk = 4096U;
   if (settings.context.value != context || model.context() != context ||
       settings.prefill_chunk.value != chunk || model.configured_rows() != chunk ||
       model.max_rows() != chunk || settings.max_slots.value != 2 ||
@@ -226,7 +224,7 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
   const auto prep = runner.state_preparation_stats();
   const auto output_after = runner.prefill_output_stats();
   if (output_cut) {
-    const std::uint64_t chunks = ds ? 4 : 6;
+    const std::uint64_t chunks = 4;
     const std::uint64_t no_head = *output_cut ? chunks - 2 : 0;
     const std::uint64_t cut = spec ? 0 : no_head;
     if (output_after.headed - output_before.headed != chunks - no_head ||
@@ -249,10 +247,6 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
   if (hints && (prep.submitted <= prep_before.submitted ||
                 prep.adopted_extents <= prep_before.adopted_extents))
     return std::unexpected("short boundary did not prepare fresh backing");
-  if constexpr (std::is_same_v<Runner, en::Qwen38Runner>) {
-    if (hints && runner.speculative() && plans.mtp_cached <= plans_before.mtp_cached)
-      return std::unexpected("injected MTP companion prediction not exercised");
-  }
   for (std::uint32_t id = 0; id < 2; ++id) {
     heads[id] = prompts.owned[id]->last();
     runs[id] = prompts.owned[id]->run();
@@ -321,8 +315,6 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
     }
     if (count == 2) {
       ++joined_calls;
-      if constexpr (std::is_same_v<Runner, en::Qwen38Runner>)
-        paired_slots |= runner.last_wave().paired_slots;
     }
     if (solo) {
       // Observation borrows peer1 again only after owner0 work retired. The
@@ -335,13 +327,9 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
   }
   if (!departed || joined_calls == 0)
     return std::unexpected("actual joined/owner departure missing");
-  if constexpr (std::is_same_v<Runner, en::Qwen38Runner>) {
-    if (paired_slots != 3) return std::unexpected("actual joined Qwen products missing");
-  } else {
-    const auto& wave = runner.wave_stats();
-    if (wave.eager + wave.captured + wave.replayed == 0)
-      return std::unexpected("actual joined DeepSeek work missing");
-  }
+  const auto& wave = runner.wave_stats();
+  if (wave.eager + wave.captured + wave.replayed == 0)
+    return std::unexpected("actual joined DeepSeek work missing");
   for (std::uint32_t id = 0; id < 2; ++id) {
     if (!finished[id]) return std::unexpected("finished generation settlement missing");
     sessions.owned[id].reset();
@@ -506,15 +494,14 @@ Status Exercise(Lifetime& life, rt::Llm& model, Runner& runner,
 int main(int argc, char** argv) {
   if (argc != 10 && argc != 11) {
     std::println(stderr,
-                 "usage: prefill_prediction_probe ds|dspark|qn|qmtp|qg STORE TARGET DRAFTER|- "
+                 "usage: prefill_prediction_probe ds|dspark STORE TARGET DRAFTER|- "
                  "TOKENIZER_DIR|- IDS0 IDS1 NEW_OUT off|on [headed|state-only]");
     return 2;
   }
   const std::string_view recipe = argv[1], policy = argv[9];
   const bool ds = recipe == "ds" || recipe == "dspark";
-  const bool spec = recipe == "dspark" || recipe == "qmtp";
-  if ((!ds && recipe != "qn" && recipe != "qmtp" && recipe != "qg") ||
-      (policy != "off" && policy != "on") || spec == (std::string_view(argv[4]) == "-"))
+  const bool spec = recipe == "dspark";
+  if (!ds || (policy != "off" && policy != "on") || spec == (std::string_view(argv[4]) == "-"))
     return 2;
   std::optional<bool> output_cut;
   if (argc == 11) {
@@ -525,8 +512,7 @@ int main(int argc, char** argv) {
   const std::filesystem::path out = argv[8];
   std::error_code ec;
   if (!std::filesystem::create_directory(out, ec) || ec || chmod(out.c_str(), 0700) != 0) return 2;
-  const std::array<std::uint32_t, 2> counts =
-      ds ? std::array<std::uint32_t, 2>{4352, 4608} : std::array<std::uint32_t, 2>{1536, 1280};
+  const std::array<std::uint32_t, 2> counts = {4352, 4608};
   std::array<std::vector<std::int32_t>, 2> tokens;
   for (std::uint32_t id = 0; id < 2; ++id) {
     auto read = Tokens(argv[6 + id], counts[id]);
@@ -550,22 +536,15 @@ int main(int argc, char** argv) {
   // Off-paid companion proof must exercise DSpark joined verification even
   // when its public adaptive policy would choose a plain wave.
   if (recipe == "dspark") entry.overrides["wave_form"] = std::string("speculative");
-  if (!ds) {
-    entry.tokenizer = std::filesystem::path(argv[5]) / "tokenizer.json";
-    entry.chat_template = std::filesystem::path(argv[5]) / "chat_template.jinja";
-  }
-  entry.overrides["context"] = std::int64_t{ds ? 16384 : 2048};
-  entry.overrides["prefill_chunk"] = std::int64_t{ds ? 4096 : 512};
+  entry.overrides["context"] = std::int64_t{16384};
+  entry.overrides["prefill_chunk"] = std::int64_t{4096};
   entry.overrides["max_slots"] = std::int64_t{2};
   life->config.models.push_back(entry);
   life->options.plain = !spec;
   life->options.dsv4_prefill_lookahead = true;
   life->options.dsv4_prepare_state = true;
-  life->options.qwen38_prefill_lookahead = true;
-  life->options.qwen38_prepare_state = true;
   life->options.predicted_prefill_hints = policy == "on";
   life->options.dsv4_state_only_prefill = output_cut.has_value();
-  life->options.qwen38_state_only_prefill = output_cut.has_value();
   life->options.prefill_output_intent = output_cut.value_or(true);
   life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, stderr);
   Status ran = life->server->Start(true);
@@ -579,10 +558,12 @@ int main(int argc, char** argv) {
     ran = life->server->Activate(*model, parts);
   }
   if (ran) {
-    ran = ds ? Exercise(*life, *model, dynamic_cast<en::Dsv4Runner&>(model->paged()), tokens, out,
-                        recipe, policy == "on", output_cut)
-             : Exercise(*life, *model, dynamic_cast<en::Qwen38Runner&>(model->paged()), tokens, out,
-                        recipe, policy == "on", output_cut);
+    auto* dsv4 = dynamic_cast<en::Dsv4Runner*>(&model->paged());
+    if (!dsv4) {
+      ran = std::unexpected("target is not Dsv4Runner");
+    } else {
+      ran = Exercise(*life, *model, *dsv4, tokens, out, recipe, policy == "on", output_cut);
+    }
   }
   if (!ran) std::println(stderr, "probe failed: {}", ran.error());
   const auto retired = life->server->TearDown();

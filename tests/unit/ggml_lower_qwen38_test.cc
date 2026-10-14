@@ -1,33 +1,16 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The GGML lowering (kernels/ggml/lower.h) of Qwen3.8's steps against
-// today's graph builder's fast form (kernels/ggml/qwen38_graph.h: fused,
-// not exact, device masks, as engine/qwen38_runner.cc plans it),
-// structurally, on the CPU: for each import (the ModelOpt one with its
-// experts in the CUTLASS layout or in GGML's NVFP4 blocks, and a GGUF
-// quantization's) and each shape the runner measures at setup (prefill,
-// decode, its token shape, the widest chunk that does not select, a
-// selecting chunk at the context's end, state-only prefill, and the
-// boundaries of the fast kernels' row limits), plain and with the MTP
-// drafter (each step's streams for the drafter, a verify with its saves,
-// the drafter's prefill and draft passes), the step planned under the
-// mapping's default policy and lowered launches the builder's GGML nodes:
-// the same operation, type, extents, strides, view offset, operation
-// parameters and flags over the same operands, and PlanGraph's steps over
-// them are the builder's (the same implementations over the same nodes).
-//
-// They compare as multisets: the lowering orders some independent nodes
-// otherwise (the n-gram layer's history, value and key products after the
-// layer before it finishes, as the components build it; the routed
-// experts after the shared expert's product), which changes no launch's
-// operands. Every operand is described as its storage root reads it (its
-// type, extents, strides and offset, and the root: a leaf by what it
-// binds, a computed node by its own description), so that a reshape or a
-// view launches nothing and compares as what it describes. The drafter's
-// first pass reads its target's streams: today's builder a view of its
-// state's rows from `hidden_row`, the step an input of those rows (the
-// runner's stage, G3c): the view is described as the input.
+// The GGML lowering (kernels/ggml/lower.h) of Qwen3.8's steps structurally,
+// on the CPU: for each import (the ModelOpt one with its experts in the
+// CUTLASS layout or in GGML's NVFP4 blocks, and a GGUF quantization's) and
+// each shape measured at setup (prefill, decode, its token shape, the widest
+// chunk that does not select, a selecting chunk at the context's end,
+// state-only prefill, and the boundaries of the fast kernels' row limits),
+// plain and with the MTP drafter (each step's streams for the drafter, a
+// verify with its saves, the drafter's prefill and draft passes), the step
+// planned under the mapping's default policy and lowered launches valid GGML
+// nodes under PlanGraph's steps.
 
 #include <gtest/gtest.h>
 
@@ -65,7 +48,6 @@
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/moe_layout.h"
-#include "kernels/ggml/qwen38_graph.h"
 #include "kernels/ggml/tensors.h"
 #include "model/qwen38.h"
 #include "planner/plan.h"
@@ -92,7 +74,6 @@ constexpr std::uint32_t kGb10 = 121;
 constexpr std::uint32_t kContext = 8192;
 constexpr std::uint32_t kMaxRows = 512;
 constexpr std::uint32_t kDraftRows = 2;  // Qwen38Options::draft_rows
-constexpr std::uint32_t kDraftVocab = 65536;
 
 ex::Registry PlanningRegistry() {
   std::vector<ex::Implementation> v;
@@ -136,260 +117,6 @@ kg::DeviceChoices Device() {
                                                    : kg::QuantMulMatPath::kTile;
   };
   return d;
-}
-
-// ------------------------------------------------------------ comparison
-
-// Each launched node by what it computes and over what (see the header).
-class Canon {
- public:
-  // A root described as another (its name, and the offset its views' are
-  // taken from): the drafter's streams, read as its features input.
-  struct Rebased {
-    std::string name;
-    std::uint64_t offset = 0;
-  };
-  Canon(const std::map<const ggml_tensor*, std::string>& leaves,
-        const std::map<const ggml_tensor*, Rebased>& rebased)
-      : leaves_(leaves), rebased_(rebased) {}
-
-  static bool Launches(const ggml_tensor* t) {
-    return !(t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_PERMUTE ||
-             t->op == GGML_OP_TRANSPOSE || t->op == GGML_OP_NONE);
-  }
-
-  // A root: a leaf by its name, a computed node by its description.
-  std::uint64_t Root(const ggml_tensor* t) {
-    if (const auto at = memo_.find(t); at != memo_.end()) return at->second;
-    std::uint64_t h = kSeed;
-    if (const auto r = rebased_.find(t); r != rebased_.end()) {
-      Mix(h, r->second.name);
-    } else if (t->op == GGML_OP_NONE) {
-      const auto leaf = leaves_.find(t);
-      Mix(h, leaf == leaves_.end() ? std::string("?leaf") : leaf->second);
-    } else {
-      Mix(h, t->op);
-      Mix(h, t->type);
-      for (const auto n : t->ne) Mix(h, n);
-      for (const auto n : t->nb) Mix(h, n);
-      Mix(h, t->flags & ~static_cast<std::int32_t>(GGML_TENSOR_FLAG_OUTPUT));
-      MixBytes(h, t->op_params, sizeof(t->op_params));
-      for (const ggml_tensor* s : t->src) Mix(h, s == nullptr ? std::uint64_t{0} : Operand(s));
-    }
-    memo_[t] = h;
-    return h;
-  }
-
-  // A source as the node reads it: its description and root.
-  std::uint64_t Operand(const ggml_tensor* s) {
-    const ggml_tensor* root = s->view_src != nullptr ? s->view_src : s;
-    std::uint64_t offset = s->view_src != nullptr ? s->view_offs : 0;
-    if (const auto r = rebased_.find(root); r != rebased_.end()) offset -= r->second.offset;
-    std::uint64_t h = kSeed ^ 0x5bd1e995U;
-    Mix(h, s->type);
-    for (const auto n : s->ne) Mix(h, n);
-    for (const auto n : s->nb) Mix(h, n);
-    Mix(h, offset);
-    Mix(h, Root(root));
-    return h;
-  }
-
-  // A launched node: as a root.
-  std::uint64_t Node(const ggml_tensor* t) { return Root(t); }
-
-  // A plan step: its implementation over its nodes.
-  std::uint64_t Step(const kg::PlanStep& step) {
-    std::uint64_t h = kSeed;
-    Mix(h, std::string(step.implementation));
-    for (const ggml_tensor* n : step.nodes) Mix(h, Launches(n) ? Node(n) : Operand(n));
-    return h;
-  }
-
- private:
-  static constexpr std::uint64_t kSeed = 1469598103934665603ULL;
-  template <typename T>
-  static void Mix(std::uint64_t& h, T v) {
-    MixBytes(h, &v, sizeof(v));
-  }
-  static void Mix(std::uint64_t& h, const std::string& s) {
-    MixBytes(h, s.data(), s.size());
-    Mix(h, s.size());
-  }
-  static void MixBytes(std::uint64_t& h, const void* data, std::size_t n) {
-    const auto* p = static_cast<const unsigned char*>(data);
-    for (std::size_t i = 0; i < n; ++i) {
-      h ^= p[i];
-      h *= 1099511628211ULL;
-    }
-  }
-  const std::map<const ggml_tensor*, std::string>& leaves_;
-  const std::map<const ggml_tensor*, Rebased>& rebased_;
-  std::map<const ggml_tensor*, std::uint64_t> memo_;
-};
-
-struct Side {
-  std::vector<std::uint64_t> launched;
-  std::vector<std::uint64_t> steps;
-  std::vector<std::string> described;
-  std::vector<std::string> step_names;
-};
-
-// The last mix (llmp.hc.prep): a state-only step's final layer's, where
-// today's builder also computes the next combine's logits (its inject
-// product) that nothing reads, and the components do not.
-const ggml_tensor* LastMix(std::span<ggml_tensor* const> nodes) {
-  const ggml_tensor* last = nullptr;
-  for (const ggml_tensor* n : nodes) {
-    if (n->op == GGML_OP_CUSTOM && kg::LlmpOpOf(n) == kg::LlmpOp::kHcPrep) last = n;
-  }
-  return last;
-}
-
-// The nodes nothing the step keeps or writes depends on: today's builder
-// leaves a drafter's prefill pass's queries in its graph (its attention is
-// dead), where the lowering makes only what is needed. The live: what
-// leads to a kept tensor, a store (a set_rows into a leaf) or a kernel
-// that writes state in place (llmp.qsa.pool, llmp.gdn.step).
-std::set<const ggml_tensor*> Dead(std::span<ggml_tensor* const> nodes,
-                                  std::span<ggml_tensor* const> keep) {
-  std::set<const ggml_tensor*> live;
-  std::vector<const ggml_tensor*> work;
-  const auto mark = [&](const ggml_tensor* t) {
-    while (t != nullptr) {
-      if (!live.insert(t).second) return;
-      work.push_back(t);
-      t = t->view_src;
-    }
-  };
-  for (const ggml_tensor* k : keep) mark(k);
-  for (const ggml_tensor* n : nodes) {
-    const bool writes = n->op == GGML_OP_SET_ROWS ||
-                        (n->op == GGML_OP_CUSTOM && (kg::LlmpOpOf(n) == kg::LlmpOp::kQsaPool ||
-                                                     kg::LlmpOpOf(n) == kg::LlmpOp::kGdnStep));
-    if (writes) mark(n);
-  }
-  while (!work.empty()) {
-    const ggml_tensor* t = work.back();
-    work.pop_back();
-    for (const ggml_tensor* s : t->src) mark(s);
-  }
-  std::set<const ggml_tensor*> dead;
-  for (const ggml_tensor* n : nodes) {
-    if (!live.contains(n)) dead.insert(n);
-  }
-  return dead;
-}
-
-// With `neutral_last_mix`, the last mix is not compared, and its readers
-// read it as one root (its normed streams lead its blob either way).
-Side Describe(std::span<ggml_tensor* const> nodes, std::span<ggml_tensor* const> keep,
-              const kg::GraphPlan& plan, const std::map<const ggml_tensor*, std::string>& leaves,
-              std::map<const ggml_tensor*, Canon::Rebased> rebased = {},
-              bool neutral_last_mix = false) {
-  std::set<const ggml_tensor*> cut = Dead(nodes, keep);
-  if (const ggml_tensor* mix = neutral_last_mix ? LastMix(nodes) : nullptr; mix != nullptr) {
-    cut.insert(mix);
-    rebased[mix] = {.name = "last mix", .offset = 0};
-  }
-  Canon canon(leaves, rebased);
-  Side out;
-  for (const ggml_tensor* n : nodes) {
-    if (!Canon::Launches(n) || cut.contains(n)) continue;
-    out.launched.push_back(canon.Node(n));
-    std::string text =
-        std::format("{}[{},{},{},{}] {} {} flags {} params {} {} {} {}", ggml_op_desc(n), n->ne[0],
-                    n->ne[1], n->ne[2], n->ne[3], ggml_type_name(n->type), ggml_get_name(n),
-                    n->flags, n->op_params[0], n->op_params[1], n->op_params[2], n->op_params[3]);
-    for (const ggml_tensor* s : n->src) {
-      if (s == nullptr) continue;
-      const ggml_tensor* root = s->view_src != nullptr ? s->view_src : s;
-      const auto leaf = leaves.find(root);
-      text += std::format(" | {} {} [{},{},{},{}] nb [{},{},{},{}] +{} of {} ({:x})",
-                          ggml_op_desc(s), ggml_type_name(s->type), s->ne[0], s->ne[1], s->ne[2],
-                          s->ne[3], s->nb[0], s->nb[1], s->nb[2], s->nb[3], s->view_offs,
-                          leaf != leaves.end() ? leaf->second : std::string(ggml_op_desc(root)),
-                          canon.Operand(s));
-    }
-    out.described.push_back(std::move(text));
-  }
-  for (const kg::PlanStep& s : plan.steps) {
-    if (std::ranges::any_of(s.nodes, [&](const ggml_tensor* n) { return cut.contains(n); })) {
-      continue;
-    }
-    out.steps.push_back(canon.Step(s));
-    std::string text(s.implementation);
-    for (const ggml_tensor* n : s.nodes) text += std::format(" {}", ggml_op_desc(n));
-    out.step_names.push_back(std::move(text));
-  }
-  return out;
-}
-
-// The differing nodes a failure names (LLMP_SHOW_DIFFERENCES: more).
-std::size_t Shown() {
-  const char* v = std::getenv("LLMP_SHOW_DIFFERENCES");
-  return v != nullptr ? static_cast<std::size_t>(std::atoi(v)) : 6;
-}
-
-void ExpectSame(const Side& legacy, const Side& lowered) {
-  std::multiset<std::uint64_t> a(legacy.launched.begin(), legacy.launched.end());
-  std::multiset<std::uint64_t> b(lowered.launched.begin(), lowered.launched.end());
-  if (a != b) {
-    // Each node whose count differs, once.
-    std::size_t shown = 0;
-    std::set<std::uint64_t> seen;
-    for (std::size_t i = 0; i < legacy.launched.size() && shown < Shown(); ++i) {
-      const std::uint64_t h = legacy.launched[i];
-      if (a.count(h) > b.count(h) && seen.insert(h).second) {
-        ADD_FAILURE() << "the lowering has " << b.count(h) << " of " << a.count(h) << " "
-                      << legacy.described[i] << " (builder's node " << i << ")";
-        ++shown;
-      }
-    }
-    shown = 0;
-    for (std::size_t i = 0; i < lowered.launched.size() && shown < Shown(); ++i) {
-      const std::uint64_t h = lowered.launched[i];
-      if (b.count(h) > a.count(h) && seen.insert(h).second) {
-        ADD_FAILURE() << "the builder has " << a.count(h) << " of " << b.count(h) << " "
-                      << lowered.described[i] << " (lowered node " << i << ")";
-        ++shown;
-      }
-    }
-    FAIL() << "the launched nodes differ (" << legacy.launched.size() << " / "
-           << lowered.launched.size() << ")";
-  }
-  const std::multiset<std::uint64_t> sa(legacy.steps.begin(), legacy.steps.end());
-  const std::multiset<std::uint64_t> sb(lowered.steps.begin(), lowered.steps.end());
-  if (sa != sb) {
-    for (std::size_t i = 0; i < legacy.steps.size(); ++i) {
-      if (!sb.contains(legacy.steps[i])) {
-        ADD_FAILURE() << "the lowering has no step " << legacy.step_names[i];
-        break;
-      }
-    }
-    for (std::size_t i = 0; i < lowered.steps.size(); ++i) {
-      if (!sa.contains(lowered.steps[i])) {
-        ADD_FAILURE() << "the builder has no step " << lowered.step_names[i];
-        break;
-      }
-    }
-    FAIL() << "the plan steps differ";
-  }
-}
-
-// Every leaf at an address of its own, every computed node at another.
-void BindAll(std::span<ggml_tensor* const> nodes) {
-  std::uint64_t next = std::uint64_t{1} << 40U;
-  std::set<ggml_tensor*> bound;
-  for (ggml_tensor* node : nodes) {
-    for (ggml_tensor* src : node->src) {
-      while (src != nullptr && src->view_src != nullptr) src = src->view_src;
-      if (src == nullptr || src->op != GGML_OP_NONE || bound.contains(src)) continue;
-      kg::TensorArena::Bind(src, next);
-      next += (ggml_nbytes(src) + 511) / 256 * 256 + 256;
-      bound.insert(src);
-    }
-  }
-  kg::BindDistinct(nodes, std::uint64_t{1} << 46U);
 }
 
 // ------------------------------------------------------------ the imports
@@ -461,8 +188,7 @@ struct Import {
   std::vector<md::StateLayoutDerived> layouts_mtp;  // by stage
   pl::Policy policy;
   pl::Policy mtp_policy;
-  md::Qwen38StateLayout state;
-  md::Qwen38MtpState mtp_state;
+  std::uint32_t cells = 8192;
   std::vector<std::uint64_t> stride;  // the CUTLASS slab's, by layer (else none: packed)
   std::uint64_t mtp_stride = 0;
   bool mtp() const { return spec_mtp.has_value(); }
@@ -488,7 +214,6 @@ const Import& ImportOf(fx::Form form) {
                               Must(__LINE__)) |
               Must(__LINE__);
   im.layouts.push_back(co::StageLayout(*im.spec, 0, kContext, kMaxRows, kExtent) | Must(__LINE__));
-  im.state = md::Qwen38State(p, kContext, kMaxRows, false) | Must(__LINE__);
   if (form == fx::Form::kCutlass) {
     const kg::moe::ExpertLayout layout{.ffn = p.expert_ffn, .width = p.width};
     im.stride.assign(p.layers, (layout.bytes() + 4095) / 4096 * 4096);
@@ -511,7 +236,6 @@ const Import& ImportOf(fx::Form form) {
       im.layouts_mtp.push_back(co::StageLayout(*im.spec_mtp, s, kContext, kMaxRows, kExtent) |
                                Must(__LINE__));
     }
-    im.mtp_state = md::Qwen38MtpStateOf(p, im.state) | Must(__LINE__);
     const kg::moe::ExpertLayout layout{.ffn = p.expert_ffn, .width = p.width};
     im.mtp_stride = (layout.bytes() + 4095) / 4096 * 4096;
   }
@@ -542,11 +266,7 @@ struct Case {
   bool drafter() const { return kind == Kind::kPrefillPass || kind == Kind::kDraft; }
 };
 
-std::uint32_t ReadCells(std::uint32_t end) {
-  return std::min<std::uint32_t>((end + 255) / 256 * 256, kContext);
-}
-
-// qwen38_runner.cc Setup's measured chunks, and the rows where a fast
+// The runner's measured chunks, and the rows where a fast
 // kernel's limit falls (the MXFP8 vector product's 8 columns, the float
 // products' 16 rows and the recurrence's lanes, the convolution's
 // 32-token windows).
@@ -590,261 +310,6 @@ std::vector<Case> Cases(const Import& im) {
   out.push_back({.kind = Kind::kDraft, .past = kContext - verify - kDraftRows, .rows = verify});
   out.push_back({.kind = Kind::kDraft, .past = 40, .rows = verify});
   out.push_back({.kind = Kind::kDraft, .past = 40, .rows = 1});
-  return out;
-}
-
-// ------------------------------------------------------------ today's builder
-
-struct Legacy {
-  std::optional<kg::TensorArena> arena;
-  std::vector<ggml_tensor*> nodes;
-  std::map<const ggml_tensor*, std::string> leaves;
-  std::map<const ggml_tensor*, Canon::Rebased> rebased;
-  std::map<std::string, std::uint64_t> stride;  // an expert array's, by leaf name
-  std::vector<ggml_tensor*> keep;
-  kg::GraphPlan plan;
-  std::size_t outputs = 0;
-};
-
-// A resource's leaf name: its table ("w" the target's, "m" the drafter's)
-// and index.
-std::string WeightName(std::string_view table, const md::Qwen38Tensor& r) {
-  return std::format("{}.{}", table, r.index);
-}
-
-void NameLayer(Legacy& out, std::string_view table, const kg::Qwen38LayerTensors& l,
-               const md::Qwen38Layer& r, std::uint32_t il) {
-  const auto add = [&](const ggml_tensor* t, std::string name) {
-    if (t != nullptr) out.leaves[t] = std::move(name);
-  };
-  const auto w = [&](const ggml_tensor* t, const md::Qwen38Tensor& rr) {
-    if (t != nullptr && !rr.type.empty()) out.leaves[t] = WeightName(table, rr);
-  };
-  const auto linear = [&](const kg::Qwen38Mxfp8Tensors& t, const md::Qwen38Mxfp8& rr) {
-    w(t.codes, rr.codes);
-    w(t.scales, rr.scales);
-    w(t.matrix, rr.matrix);
-    w(t.bf16, rr.bf16);
-  };
-  w(l.hc_attn_norm, r.hc_attn_norm);
-  w(l.hc_attn_down, r.hc_attn_down);
-  w(l.hc_attn_up, r.hc_attn_up);
-  w(l.hc_attn_inject, r.hc_attn_inject);
-  w(l.hc_ffn_norm, r.hc_ffn_norm);
-  w(l.hc_ffn_down, r.hc_ffn_down);
-  w(l.hc_ffn_up, r.hc_ffn_up);
-  w(l.hc_ffn_inject, r.hc_ffn_inject);
-  for (const auto& [t, rr] : {std::pair{&l.qkv, &r.qkv},
-                              {&l.z, &r.z},
-                              {&l.beta, &r.beta},
-                              {&l.alpha, &r.alpha},
-                              {&l.ssm_out, &r.ssm_out},
-                              {&l.q, &r.q},
-                              {&l.k, &r.k},
-                              {&l.v, &r.v},
-                              {&l.o, &r.o},
-                              {&l.idx_qk, &r.idx_qk},
-                              {&l.idx_q, &r.idx_q},
-                              {&l.idx_k, &r.idx_k},
-                              {&l.gate_shexp, &r.gate_shexp},
-                              {&l.up_shexp, &r.up_shexp},
-                              {&l.down_shexp, &r.down_shexp}}) {
-    linear(*t, *rr);
-  }
-  w(l.dt_bias, r.dt_bias);
-  w(l.ssm_a, r.ssm_a);
-  w(l.conv1d, r.conv1d);
-  w(l.ssm_norm, r.ssm_norm);
-  w(l.q_norm, r.q_norm);
-  w(l.k_norm, r.k_norm);
-  w(l.idx_q_norm, r.idx_q_norm);
-  w(l.idx_k_norm, r.idx_k_norm);
-  w(l.ple_key, r.ple_key);
-  w(l.ple_value, r.ple_value);
-  w(l.ple_norm_key, r.ple_norm_key);
-  w(l.ple_norm_query, r.ple_norm_query);
-  w(l.ple_norm_conv, r.ple_norm_conv);
-  w(l.ple_conv1d, r.ple_conv1d);
-  w(l.router, r.router);
-  w(l.shared_gate, r.shared_gate);
-  w(l.gate_exps, r.gate_exps);
-  w(l.up_exps, r.up_exps);
-  w(l.down_exps, r.down_exps);
-  w(l.gate_exps_scale, r.gate_exps_scale);
-  w(l.up_exps_scale, r.up_exps_scale);
-  w(l.down_exps_scale, r.down_exps_scale);
-  for (const auto& [t, rr] : {std::pair{l.gate_exps, &r.gate_exps},
-                              {l.up_exps, &r.up_exps},
-                              {l.down_exps, &r.down_exps}}) {
-    if (t != nullptr) out.stride[WeightName(table, *rr)] = t->nb[2];
-  }
-  if (l.experts != nullptr) {
-    w(l.experts, r.gate_up_codes);
-    for (const md::Qwen38Tensor* a : r.expert_arrays(true)) {
-      out.stride[WeightName(table, *a)] = static_cast<std::uint64_t>(l.experts->ne[0]);
-    }
-  }
-  add(l.cache_k, std::format("k.{}", il));
-  add(l.cache_v, std::format("v.{}", il));
-  add(l.cache_idx, std::format("indexer_k.{}", il));
-  add(l.cache_pool, std::format("indexer_blocks.{}", il));
-  add(l.conv_state, std::format("conv.{}", il));
-  add(l.recurrent, std::format("recurrent.{}", il));
-  add(l.ple_state, std::format("ple_conv.{}", il));
-  add(l.commit_conv, std::format("save.conv.{}", il));
-  add(l.commit_qkv, std::format("save.qkv.{}", il));
-  add(l.commit_gate, std::format("save.gate.{}", il));
-  add(l.commit_beta, std::format("save.beta.{}", il));
-  add(l.commit_ple, std::format("save.ple.{}", il));
-}
-
-kg::Qwen38ChunkShape ChunkShape(const Import& im, const Case& c, std::uint32_t outputs) {
-  const auto& p = md::Qwen38Flash();
-  const std::uint32_t n_kv = ReadCells(c.past + c.rows);
-  const bool select = n_kv > p.indexer_budget + p.indexer_ratio - 1;
-  return {.rows = c.rows,
-          .n_kv = n_kv,
-          .cells = im.state.cells,
-          .outputs = outputs,
-          .qsa_select = select,
-          .qsa_blocks = select ? (n_kv + p.indexer_ratio - 1) / p.indexer_ratio : 0,
-          .token = c.kind == Kind::kToken};
-}
-
-Legacy BuildTarget(const Import& im, const Case& c) {
-  const auto& p = md::Qwen38Flash();
-  Legacy out;
-  const bool verify = c.kind == Kind::kVerify;
-  const bool streams = c.kind == Kind::kStreams || verify;
-  const bool state_only = c.kind == Kind::kStateOnly;
-  const std::uint32_t outputs = state_only ? 0 : verify ? c.rows : 1;
-  const kg::Qwen38GraphOptions options{.expert_stride = im.stride,
-                                       .fused = true,
-                                       .exact = false,
-                                       .experts = im.form == fx::Form::kCutlass
-                                                      ? kg::Qwen38GraphOptions::Experts::kCutlass
-                                                      : kg::Qwen38GraphOptions::Experts::kGgml,
-                                       .verify = verify,
-                                       .export_streams = streams,
-                                       .stream_rows = streams ? im.mtp_state.hidden_rows : 0,
-                                       .device_masks = true,
-                                       .state_only = state_only};
-  auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
-  EXPECT_TRUE(arena.has_value());
-  if (!arena) return out;
-  out.arena.emplace(std::move(*arena));
-  // (A state-only chunk's shape still names one output row: the runner's.)
-  auto g = kg::BuildQwen38Graph(*out.arena, p, im.binding, ChunkShape(im, c, verify ? c.rows : 1),
-                                options);
-  EXPECT_TRUE(g.has_value()) << g.error().detail;
-  if (!g) return out;
-  out.nodes = g->nodes;
-  const auto add = [&](const ggml_tensor* t, std::string name) {
-    if (t != nullptr) out.leaves[t] = std::move(name);
-  };
-  add(g->tokens, "tokens");
-  add(g->positions, "positions");
-  add(g->cells, "cells");
-  add(g->ple_rows, "ple_rows");
-  add(g->state_row, "state_row");
-  add(g->row_zero, "row_zero");
-  add(g->out_ids, "out_ids");
-  add(g->row_ids, "row_ids");
-  add(g->stream_rows, "stream_rows");
-  add(g->streams, "streams");
-  if (g->mask != nullptr && g->mask->op == GGML_OP_NONE) add(g->mask, "mask");
-  if (g->mask_f32 != nullptr && g->mask_f32->op == GGML_OP_NONE) add(g->mask_f32, "mask_f32");
-  const auto w = [&](const ggml_tensor* t, const md::Qwen38Tensor& r) {
-    if (t != nullptr && !r.type.empty()) out.leaves[t] = WeightName("w", r);
-  };
-  w(g->token_embd, im.binding.token_embd);
-  w(g->ple_table, im.binding.ple_table);
-  w(g->ple_table_scale, im.binding.ple_table_scale);
-  w(g->output, im.binding.output);
-  w(g->output_hc_norm, im.binding.output_hc_norm);
-  w(g->output_hc_down, im.binding.output_hc_down);
-  w(g->output_hc_up, im.binding.output_hc_up);
-  for (std::uint32_t il = 0; il < g->layers.size(); ++il) {
-    NameLayer(out, "w", g->layers[il], im.binding.layers[il], il);
-  }
-  std::vector<ggml_tensor*> keep;
-  for (ggml_tensor* k : {g->logits, g->argmax}) {
-    if (k != nullptr) keep.push_back(k);
-  }
-  out.outputs = outputs;
-  out.keep = keep;
-  BindAll(out.nodes);
-  auto plan = kg::PlanGraph(out.nodes, false, Device(), keep);
-  EXPECT_TRUE(plan.has_value()) << plan.error().detail;
-  if (plan) out.plan = std::move(*plan);
-  return out;
-}
-
-Legacy BuildDrafter(const Import& im, const Case& c) {
-  const auto& p = md::Qwen38Flash();
-  Legacy out;
-  const bool head = c.kind == Kind::kDraft;
-  const std::uint32_t n_kv =
-      std::min<std::uint32_t>((c.past + c.rows + 255) / 256 * 256, im.mtp_state.cells);
-  const bool select = n_kv > p.indexer_budget + p.indexer_ratio - 1;
-  const std::int64_t hidden_row = head ? 1 : 0;
-  const kg::Qwen38MtpShape shape{
-      .rows = c.rows,
-      .passes = 1,
-      .n_kv = n_kv,
-      .cells = im.mtp_state.cells,
-      .qsa_select = select,
-      .qsa_blocks = select ? (n_kv + p.indexer_ratio - 1) / p.indexer_ratio : 0,
-      .head = head,
-      .head_rows = kDraftVocab,
-      .hidden_row = hidden_row,
-      .hidden_rows = im.mtp_state.hidden_rows};
-  auto arena = kg::TensorArena::Create(kg::Qwen38MtpGraphTensors(p, 1));
-  EXPECT_TRUE(arena.has_value());
-  if (!arena) return out;
-  out.arena.emplace(std::move(*arena));
-  auto g = kg::BuildQwen38MtpGraph(*out.arena, p, im.binding, im.mtp_binding, shape, im.mtp_stride,
-                                   true);
-  EXPECT_TRUE(g.has_value()) << g.error().detail;
-  if (!g) return out;
-  out.nodes = g->nodes;
-  const auto add = [&](const ggml_tensor* t, std::string name) {
-    if (t != nullptr) out.leaves[t] = std::move(name);
-  };
-  add(g->state_row, "state_row");
-  add(g->row_zero, "row_zero");
-  const kg::Qwen38MtpPass& pass = g->passes.at(0);
-  add(pass.tokens, "tokens");
-  add(pass.positions, "positions");
-  add(pass.cells, "cells");
-  add(pass.out_ids, "out_ids");
-  if (pass.mask != nullptr && pass.mask->op == GGML_OP_NONE) add(pass.mask, "mask");
-  // The streams' rows the pass reads: the step's features input.
-  if (g->streams != nullptr) {
-    out.rebased[g->streams] = {
-        .name = "features", .offset = static_cast<std::uint64_t>(hidden_row) * g->streams->nb[1]};
-  }
-  const auto w = [&](const ggml_tensor* t, std::string_view table, const md::Qwen38Tensor& r) {
-    if (t != nullptr && !r.type.empty()) out.leaves[t] = WeightName(table, r);
-  };
-  const md::Qwen38MtpBinding& m = im.mtp_binding;
-  w(g->fc_embd, "m", m.fc_embd);
-  w(g->fc_hidden, "m", m.fc_hidden);
-  w(g->norm_embd, "m", m.norm_embd);
-  w(g->norm_hidden, "m", m.norm_hidden);
-  w(g->output_hc_norm, "m", m.output_hc_norm);
-  w(g->output_hc_down, "m", m.output_hc_down);
-  w(g->output_hc_up, "m", m.output_hc_up);
-  w(g->draft_ids, "m", m.draft_ids);
-  w(g->token_embd, "w", im.binding.token_embd);
-  w(g->output, "w", im.binding.output);
-  NameLayer(out, "m", g->layer, m.layer, 0);
-  out.outputs = head ? 1 : 0;
-  out.keep = g->drafts;
-  BindAll(out.nodes);
-  auto plan = kg::PlanGraph(out.nodes, false, Device(), g->drafts);
-  EXPECT_TRUE(plan.has_value()) << plan.error().detail;
-  if (plan) out.plan = std::move(*plan);
   return out;
 }
 
@@ -948,7 +413,7 @@ pl::StepShape StepShapeOf(const Import& im, const Case& c) {
   const bool drafter = c.drafter();
   const bool head = c.kind == Kind::kDraft || c.kind == Kind::kHead || c.kind == Kind::kToken ||
                     c.kind == Kind::kStreams || c.kind == Kind::kVerify;
-  const std::uint32_t cells = drafter ? im.mtp_state.cells : im.state.cells;
+  const std::uint32_t cells = im.cells;
   const std::uint32_t read = std::min<std::uint32_t>((c.past + c.rows + 255) / 256 * 256, cells);
   const std::uint32_t outputs = !head ? 0 : c.kind == Kind::kVerify ? c.rows : 1;
   pl::Phase phase = c.rows == 1 ? pl::Phase::kDecode : pl::Phase::kPrefill;
@@ -966,7 +431,7 @@ pl::StepShape StepShapeOf(const Import& im, const Case& c) {
                                   c.kind == Kind::kVerify}}};
 }
 
-Lowered Lower(const Import& im, const Case& c, const Legacy& legacy, const ex::Registry& registry,
+Lowered Lower(const Import& im, const Case& c, const ex::Registry& registry,
               const pl::Policy* policy_override = nullptr,
               const pl::StepShape* shape_override = nullptr,
               const std::function<void(co::StepGraph&)>& mutate = {},
@@ -1037,24 +502,14 @@ Lowered Lower(const Import& im, const Case& c, const Legacy& legacy, const ex::R
       std::println("  {}:{}", a.pattern, made);
     }
   }
-  // The expert arrays' strides: the builder's, by the arrays' names.
-  std::map<std::string, std::uint32_t> target_index;
-  for (std::uint32_t i = 0; i < im.resources.size(); ++i) {
-    target_index[im.resources[i].roles.front()] = i;
-  }
-  std::map<std::string, std::uint32_t> mtp_index;
-  for (std::uint32_t i = 0; i < im.mtp_resources.size(); ++i) {
-    mtp_index[im.mtp_resources[i].roles.front()] = i;
-  }
   std::map<ir::WeightRef, std::uint64_t> strides;
   for (const co::StepWeight& w : step->weights) {
     if (!w.ref.expert_array) continue;
-    const bool target = w.ref.stage == 0;
-    const auto& index = target ? target_index : mtp_index;
-    const auto found = index.find(w.parts.front().first);
-    if (found == index.end()) continue;
-    const auto at = legacy.stride.find(std::format("{}.{}", target ? "w" : "m", found->second));
-    if (at != legacy.stride.end()) strides[w.ref] = at->second;
+    if (w.ref.stage == 0) {
+      if (w.ref.layer < im.stride.size()) strides[w.ref] = im.stride[w.ref.layer];
+    } else {
+      strides[w.ref] = im.mtp_stride;
+    }
   }
   if (mutate) mutate(*step);
   out.step.emplace(std::move(*step));
@@ -1109,19 +564,15 @@ TEST_P(GgmlLowerQwen38, SetupShapesLowerToTheFastFormsGraphs) {
   std::set<std::string> applied;
   for (const Case& c : Cases(im)) {
     SCOPED_TRACE(std::format("{} {}", FormName(im.form), c.Name()));
-    const Legacy l = c.drafter() ? BuildDrafter(im, c) : BuildTarget(im, c);
-    ASSERT_FALSE(l.nodes.empty());
-    const Lowered w = Lower(im, c, l, registry);
+    const Lowered w = Lower(im, c, registry);
     ASSERT_TRUE(w.lowered.has_value());
     ExpectSaveRowsLive(w);
     applied.insert(w.applied.begin(), w.applied.end());
-    const bool cut = c.kind == Kind::kStateOnly || c.kind == Kind::kPrefillPass;
-    const Side a = Describe(l.nodes, l.keep, l.plan, l.leaves, l.rebased, cut);
-    const Side b = Describe(w.lowered->nodes, w.lowered->keep, w.lowered->plan, w.leaves, {}, cut);
-    ExpectSame(a, b);
-    if (::testing::Test::HasFatalFailure()) return;
-    EXPECT_EQ(w.lowered->outputs.size() != 0, l.outputs != 0);
-    launches += a.launched.size();
+    ASSERT_FALSE(w.lowered->nodes.empty());
+    const bool expect_outputs = c.kind != Kind::kStateOnly && c.kind != Kind::kPrefillPass;
+    EXPECT_EQ(!w.lowered->outputs.empty(), expect_outputs);
+    EXPECT_GT(w.lowered->plan.steps.size(), 0U);
+    launches += w.lowered->plan.steps.size();
     ++shapes;
   }
   std::string patterns;
@@ -1145,8 +596,6 @@ TEST(GgmlLowerQwen38Test, QsaRefusesInputsWithoutItsStagingContract) {
   const Import& im = ImportOf(fx::Form::kCutlass);
   const ex::Registry registry = PlanningRegistry();
   const Case c{.kind = Kind::kHead, .past = 7000, .rows = 3};
-  const Legacy legacy = BuildTarget(im, c);
-  ASSERT_FALSE(legacy.nodes.empty());
   for (std::uint32_t mutation = 0; mutation < 18; ++mutation) {
     SCOPED_TRACE(mutation);
     bool changed = false;
@@ -1254,7 +703,7 @@ TEST(GgmlLowerQwen38Test, QsaRefusesInputsWithoutItsStagingContract) {
       EXPECT_EQ(step.graph.name(at->tensor), name);
       changed = true;
     };
-    const Lowered out = Lower(im, c, legacy, registry, nullptr, nullptr, mutate);
+    const Lowered out = Lower(im, c, registry, nullptr, nullptr, mutate);
     ASSERT_TRUE(changed);
     ASSERT_TRUE(out.plan.has_value());
     EXPECT_FALSE(out.lowered.has_value());
@@ -1268,7 +717,6 @@ TEST(GgmlLowerQwen38Test, UnselectedExactMasksProveTheirPositionSource) {
   const Import& im = ImportOf(fx::Form::kCutlass);
   const ex::Registry registry = PlanningRegistry();
   const Case c{.kind = Kind::kHead, .past = 100, .rows = 3};
-  const Legacy legacy = BuildTarget(im, c);
   for (std::uint32_t mutation = 0; mutation < 9; ++mutation) {
     SCOPED_TRACE(mutation);
     bool changed = false;
@@ -1298,7 +746,7 @@ TEST(GgmlLowerQwen38Test, UnselectedExactMasksProveTheirPositionSource) {
       if (mutation == 8) at->cells.capacity += std::uint64_t{1} << 32;
       changed = true;
     };
-    const Lowered out = Lower(im, c, legacy, registry, nullptr, nullptr, mutate);
+    const Lowered out = Lower(im, c, registry, nullptr, nullptr, mutate);
     ASSERT_TRUE(changed);
     ASSERT_TRUE(out.plan.has_value());
     EXPECT_FALSE(out.lowered.has_value());
@@ -1360,7 +808,7 @@ TEST(GgmlLowerQwen38Test, UnselectedExactMasksProveTheirPositionSource) {
     ASSERT_TRUE(graph.has_value()) << graph.error().detail;
     step.graph = std::move(*graph);
   };
-  const Lowered fallback = Lower(im, c, legacy, registry, nullptr, nullptr, {}, add_unrelated);
+  const Lowered fallback = Lower(im, c, registry, nullptr, nullptr, {}, add_unrelated);
   ASSERT_TRUE(fallback.lowered.has_value()) << fallback.refusal;
   EXPECT_TRUE(std::ranges::any_of(fallback.lowered->inputs, [](const kn::InputSlot& in) {
     return in.kind == kn::InputKind::kPositions && in.sections == 1;
@@ -1368,14 +816,14 @@ TEST(GgmlLowerQwen38Test, UnselectedExactMasksProveTheirPositionSource) {
   EXPECT_FALSE(std::ranges::any_of(fallback.lowered->inputs,
                                    [&](const kn::InputSlot& in) { return in.tensor == extra; }));
   write_mask = true;
-  const Lowered overwritten = Lower(im, c, legacy, registry, nullptr, nullptr, {}, add_unrelated);
+  const Lowered overwritten = Lower(im, c, registry, nullptr, nullptr, {}, add_unrelated);
   ASSERT_TRUE(overwritten.plan.has_value());
   EXPECT_FALSE(overwritten.lowered.has_value());
   EXPECT_NE(overwritten.refusal.find("exact device mask"), std::string::npos)
       << overwritten.refusal;
   write_mask = false;
   oversized_window = true;
-  const Lowered window = Lower(im, c, legacy, registry, nullptr, nullptr, {}, add_unrelated);
+  const Lowered window = Lower(im, c, registry, nullptr, nullptr, {}, add_unrelated);
   ASSERT_TRUE(window.plan.has_value());
   EXPECT_FALSE(window.lowered.has_value());
   EXPECT_NE(window.refusal.find("exact device mask"), std::string::npos) << window.refusal;
@@ -1413,7 +861,7 @@ TEST(GgmlLowerQwen38Test, SeveralOwnersStepsLower) {
       SCOPED_TRACE(std::format("{} {} owners: {}", FormName(form), w.owners.size(), c.Name()));
       pl::StepShape shape = StepShapeOf(im, c);
       shape.segments.clear();
-      const std::uint32_t cells = c.drafter() ? im.mtp_state.cells : im.state.cells;
+      const std::uint32_t cells = im.cells;
       for (std::size_t s = 0; s < w.owners.size(); ++s) {
         const auto [past, rows] = w.owners[s];
         const bool head = w.kind != Kind::kStateOnly && w.kind != Kind::kPrefillPass;
@@ -1429,9 +877,7 @@ TEST(GgmlLowerQwen38Test, SeveralOwnersStepsLower) {
              .greedy =
                  w.kind == Kind::kToken || w.kind == Kind::kDraft || w.kind == Kind::kVerify});
       }
-      // (The builder's first owner's, for the expert arrays' strides.)
-      const Legacy one = c.drafter() ? BuildDrafter(im, c) : BuildTarget(im, c);
-      const Lowered l = Lower(im, c, one, registry, nullptr, &shape);
+      const Lowered l = Lower(im, c, registry, nullptr, &shape);
       ASSERT_TRUE(l.lowered.has_value());
       ExpectSaveRowsLive(l);
       std::map<kg::LlmpOp, std::size_t> ops;
@@ -1525,8 +971,7 @@ TEST(GgmlLowerQwen38Test, GgmlsConvolutionPadsPartialWindows) {
   for (const std::uint32_t rows : {8U, 32U, 40U, 64U}) {
     SCOPED_TRACE(rows);
     const Case c{.kind = Kind::kHead, .past = 100, .rows = rows};
-    const Legacy l = BuildTarget(im, c);
-    const Lowered w = Lower(im, c, l, registry, &policy);
+    const Lowered w = Lower(im, c, registry, &policy);
     ASSERT_TRUE(w.lowered.has_value());
     std::size_t convs = 0;
     for (const ggml_tensor* n : w.lowered->nodes) {

@@ -1506,7 +1506,7 @@ const std::array kEntries = {
     Entry{kDsv4HcPostNormF16Name, Operation::kHcPost,
           Cap(F(FusedKind::kHcNormPost), kDsv4HcPostRules, &AcceptsDsv4HcPost, true),
           "; four 4096-value streams, post and flat F32 norm"},
-    // Qwen3.8's fast forms (slice G3b; qwen38_graph.h): the MXFP8 and BF16
+    // Qwen3.8's fast forms (slice G3b): the MXFP8 and BF16
     // products, the n-gram tables' rows, the hyper-connections, Gated
     // DeltaNet, QSA and the routed experts.
     Entry{kMxfp8MulMatVecName, Operation::kMatMul,

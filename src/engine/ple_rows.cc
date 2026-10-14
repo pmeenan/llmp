@@ -156,7 +156,7 @@ std::expected<void, std::string> ReadPleRows(providers::Storage& storage, int fd
       std::this_thread::yield();
       if (std::chrono::steady_clock::now() - progressed > kStall) {
         // Reads still in flight may yet land: the caller must not reuse
-        // the landing or destroy the ring (Qwen38Runner stops its rows).
+        // the landing or destroy the ring.
         return Error(
             std::format("{} n-gram row reads made no progress in {} s", in_flight, kStall.count()));
       }

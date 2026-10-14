@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A Qwen3.8 speculative verify's commit (docs/experiments/qwen38-mtp/).
-// A verify in the fast graph's verify form (qwen38_graph.h
-// Qwen38GraphOptions::verify) reads the recurrent, convolution and n-gram
+// A verify in its verify form reads the recurrent, convolution and n-gram
 // state but writes none of it; it saves each row's inputs instead
 // (model/qwen38.h Qwen38CommitLayout). Once the host knows how many rows it
 // keeps, the commit leaves the state those rows alone would have left,

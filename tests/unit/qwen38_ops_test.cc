@@ -283,7 +283,7 @@ TEST_F(Qwen38OpsTest, SmallMxfp8ProductsMatchLoneColumnsBitForBit) {
   }
 }
 
-// A Qwen3.8 wave's shared products (engine/qwen38_wave_plan.h) of 9 to 16
+// A Qwen3.8 wave's shared products of 9 to 16
 // columns take the wide kernels (staged x for wide outputs, x through L1
 // for small ones): every output is the lone column's bit for bit, at the
 // model's shapes and at row counts that leave a block's last warps short

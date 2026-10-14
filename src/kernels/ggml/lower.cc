@@ -590,8 +590,8 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
 
 // Several owners' rows joined in a llmp.vecq product (the plan's
 // owner_row_invariant): each token's reduction and weight reads as it is
-// alone (one a pass, never shared with another token's), as today's waves
-// keep each slot's results its lone step's (qwen38_wave_plan.cc).
+// alone (one a pass, never shared with another token's), keeping
+// each slot's results its lone step's.
 void Lowering::OwnersAlone(ggml_tensor* vecq) const {
   if (plan_.owner_row_invariant) SetVecQOneToken(vecq);
 }

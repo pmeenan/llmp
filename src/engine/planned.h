@@ -16,7 +16,7 @@
 // of the class it should.
 //
 // The model's graph builder, binding and inputs stay the model's own
-// (dsv4_plan.h, qwen38_plan.h); only the mechanics are here.
+// (dsv4_plan.h); only the mechanics are here.
 
 #ifndef LLMP_ENGINE_PLANNED_H_
 #define LLMP_ENGINE_PLANNED_H_

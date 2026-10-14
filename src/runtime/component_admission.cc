@@ -25,6 +25,7 @@
 #include "model/qwen2.h"
 #include "model/qwen2_exl3.h"
 #include "model/qwen38.h"
+#include "platform/direct_io.h"
 #include "runtime/gemma_profile.h"
 #include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
@@ -536,9 +537,80 @@ static_assert(sizeof(spec::Param) <= 128 && sizeof(spec::WeightBinding) <= 128);
 static_assert(sizeof(spec::ComponentRef) <= 128 && sizeof(spec::SourceTensor) <= 256);
 static_assert(sizeof(spec::V0Tensor) <= 128 && sizeof(spec::Stage) <= 2048);
 
+template <class T>
+std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const artifact::Artifact& artifact,
+                                                              std::uint32_t resource,
+                                                              std::uint64_t count) {
+  auto place = artifact.ResourcePlacement(resource);
+  if (!place || place->bytes.value() != count * sizeof(T))
+    return std::unexpected("integer recipe metadata has an inconsistent byte count");
+  const auto& group = artifact.groups()[place->group];
+  const auto& shard = artifact.shards()[group.shard];
+  const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
+  const auto end = begin + place->bytes.value();
+  auto file = artifact.OpenShardForDirectRead(group.shard);
+  if (!file) return std::unexpected(file.error().ToString());
+  std::vector<T> out(count);
+  alignas(4096) std::array<std::byte, 4096> window{};
+  for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
+    if (at > shard.data_offset.value() + shard.data_bytes.value() ||
+        window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
+      return std::unexpected("integer recipe metadata's direct read passes its shard");
+    if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
+      return std::unexpected(
+          std::format("reading integer recipe metadata: errno {}", read.error()));
+    const auto first = std::max(at, begin), last = std::min(at + window.size(), end);
+    std::memcpy(reinterpret_cast<std::byte*>(out.data()) + first - begin,
+                window.data() + first - at, last - first);
+  }
+  return out;
+}
+
+template <class T>
+std::expected<std::vector<T>, std::string> RecipeIntegers(const artifact::Artifact& artifact,
+                                                          const model::Qwen38Tensor& tensor,
+                                                          std::uint32_t maximum,
+                                                          std::string_view type) {
+  const bool vector = type == "I64" && tensor.plain && tensor.ne.size() == 1;
+  const bool table = type == "I32" && !tensor.plain && tensor.ne.size() == 2 && tensor.ne[0] == 1;
+  if (tensor.type != type || (!vector && !table))
+    return std::unexpected("integer recipe metadata has an unsupported type or shape");
+  const auto count = tensor.ne[table ? 1 : 0];
+  if (count == 0 || count > maximum)
+    return std::unexpected("integer recipe metadata exceeds its bound");
+  return ReadRecipeIntegers<T>(artifact, tensor.index, count);
+}
+
+template std::expected<std::vector<std::int32_t>, std::string> ReadRecipeIntegers<std::int32_t>(
+    const artifact::Artifact& artifact, std::uint32_t resource, std::uint64_t count);
+template std::expected<std::vector<std::int64_t>, std::string> ReadRecipeIntegers<std::int64_t>(
+    const artifact::Artifact& artifact, std::uint32_t resource, std::uint64_t count);
+template std::expected<std::vector<std::int32_t>, std::string> RecipeIntegers<std::int32_t>(
+    const artifact::Artifact& artifact, const model::Qwen38Tensor& tensor, std::uint32_t maximum,
+    std::string_view type);
+template std::expected<std::vector<std::int64_t>, std::string> RecipeIntegers<std::int64_t>(
+    const artifact::Artifact& artifact, const model::Qwen38Tensor& tensor, std::uint32_t maximum,
+    std::string_view type);
+
+std::expected<model::Qwen38PleHash, std::string> RecipeHash(const artifact::Artifact& artifact,
+                                                            const model::Qwen38Binding& binding) {
+  const auto& p = model::Qwen38Flash();
+  if (binding.gguf()) return model::ReadQwen38GgufHash(p, artifact, binding.ple_table.ne.at(1));
+  const auto& layer = binding.layers.at(p.ple_layer);
+  auto multipliers = RecipeIntegers<std::int64_t>(artifact, layer.ple_multipliers, p.ngram, "I64");
+  auto offsets =
+      RecipeIntegers<std::int64_t>(artifact, layer.ple_head_offsets, p.ple_heads(), "I64");
+  auto vocab = RecipeIntegers<std::int64_t>(artifact, layer.ple_head_vocab, p.ple_heads(), "I64");
+  if (!multipliers) return std::unexpected(multipliers.error());
+  if (!offsets) return std::unexpected(offsets.error());
+  if (!vocab) return std::unexpected(vocab.error());
+  return model::CheckQwen38PleHash(p, *multipliers, *offsets, *vocab, binding.ple_table.ne.at(1));
+}
+
 bool OnComponentEngine(std::string_view architecture) {
   return architecture == "gemma2" || architecture == "gemma3" || architecture == "gemma4" ||
-         architecture == "gemma4-assistant";
+         architecture == "gemma4-assistant" || architecture == "qwen4exp" ||
+         architecture == "qwen4exp-mtp";
 }
 
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
@@ -550,6 +622,13 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
     auto profile = ApprovedGemmaProfile(artifact);
     if (!profile) return std::unexpected(profile.error());
     return spec::mappings::Gemma4V0Values(**profile);
+  }
+  if (architecture == "qwen4exp") {
+    auto binding = model::BindQwen38(model::Qwen38Flash(), artifact);
+    if (!binding) return std::unexpected(binding.error());
+    auto hash = RecipeHash(artifact, *binding);
+    if (!hash) return std::unexpected(hash.error());
+    return spec::mappings::Qwen38V0Values(model::Qwen38Flash(), *binding, *hash);
   }
   return std::unexpected(
       std::format("the component engine has no recipe for architecture {} yet", architecture));
@@ -577,6 +656,11 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Val
       return std::unexpected(bound.error());
     }
     return spec::mappings::DsparkV0Values(companion);
+  }
+  if (drafter.model().architecture == "qwen4exp-mtp" && target.model().architecture == "qwen4exp") {
+    auto binding = model::BindQwen38Mtp(model::Qwen38Flash(), drafter);
+    if (!binding) return std::unexpected(binding.error());
+    return spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), *binding);
   }
   return std::unexpected(std::format("the component engine has no drafter {} for architecture {}",
                                      drafter.model().architecture, target.model().architecture));

@@ -34,6 +34,7 @@
 #include "runtime/gemma_profile.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
@@ -513,7 +514,9 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
         const auto* target_mapping = spec::FindMapping(facts.architecture);
         if (target_mapping == nullptr) return Error("component calibration has no target mapping");
-        const auto* draft_mapping = spec::FindMapping(drafter->model().architecture);
+        const auto* draft_mapping = drafter->model().architecture == "qwen4exp-mtp"
+                                        ? &spec::mappings::Qwen38MtpReplayMapping()
+                                        : spec::FindMapping(drafter->model().architecture);
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
         auto draft_values = ComponentDrafterValues(target, *drafter);
         if (!draft_values) return Error(draft_values.error());
@@ -561,7 +564,9 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     facts.context_ceiling = model->stages.front().context;
     if (drafter != nullptr) {
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
-        const auto* draft_mapping = spec::FindMapping(drafter->model().architecture);
+        const auto* draft_mapping = drafter->model().architecture == "qwen4exp-mtp"
+                                        ? &spec::mappings::Qwen38MtpReplayMapping()
+                                        : spec::FindMapping(drafter->model().architecture);
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
         auto draft_values = ComponentDrafterValues(target, *drafter);
         if (!draft_values) return Error(draft_values.error());

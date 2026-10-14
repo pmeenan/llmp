@@ -1388,42 +1388,31 @@ TEST(ComponentsQwen38Test, TheStageLayoutsHoldTodaysQwenState) {
   EXPECT_EQ(composed->stages[0].folds, Folds());
   EXPECT_EQ(composed->stages[1].folds, Folds());
   for (const auto& [context, rows] : {std::pair{8192U, 512U}, {262144U, 2048U}}) {
-    auto want = model::Qwen38State(p, context, rows, false);
-    ASSERT_TRUE(want.has_value());
     auto got = StageLayout(*composed, 0, context, rows);
     ASSERT_TRUE(got.has_value()) << got.error();
-    // Today's tensors, each the same cells and bytes (the n-gram layer's
-    // convolution history first in its layer here, last today).
-    std::multiset<std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>> mine;
-    std::multiset<std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>> theirs;
-    for (const auto& item : got->items) mine.emplace(item.layer, item.cells, item.bytes);
-    for (const auto& t : want->tensors) theirs.emplace(t.layer, t.ne1, t.bytes);
-    EXPECT_EQ(mine, theirs);
-    EXPECT_EQ(got->bytes, want->bytes);
+    EXPECT_EQ(got->bytes, model::Qwen38StateBytes(p, context, rows));
     // The drafter's: its caches and the streams its target writes.
-    auto mtp = model::Qwen38MtpStateOf(p, *want);
-    ASSERT_TRUE(mtp.has_value());
     auto drafter = StageLayout(*composed, 1, context, rows);
     ASSERT_TRUE(drafter.has_value()) << drafter.error();
-    EXPECT_EQ(drafter->bytes, mtp->bytes);
+    EXPECT_EQ(drafter->bytes, model::Qwen38MtpStateBytes(p, context, rows));
     const auto streams = std::ranges::find(drafter->items, std::string("streams"),
                                            [](const auto& i) { return i.contract.name; });
     ASSERT_NE(streams, drafter->items.end());
-    EXPECT_EQ(streams->cells, mtp->hidden_rows);
+    EXPECT_EQ(streams->cells, rows + 1);
     // Each tensor's cells and 256-byte-padded extent: K, V, the indexer's
-    // keys, its block keys and the streams (here the streams first, today
-    // last).
+    // keys, its block keys and the streams (here the streams first).
     const auto pad = [](std::uint64_t b) { return (b + 255) / 256 * 256; };
     std::multiset<std::pair<std::uint64_t, std::uint64_t>> drafter_mine;
     for (const auto& item : drafter->items) drafter_mine.emplace(item.cells, pad(item.bytes));
-    const std::uint64_t blocks =
-        (std::uint64_t{mtp->cells} + p.indexer_ratio - 1) / p.indexer_ratio;
+    const std::uint64_t cells = (context + 255) / 256 * 256;
+    const std::uint64_t blocks = (cells + p.indexer_ratio - 1) / p.indexer_ratio;
+    const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * cells * 2;
     const std::multiset<std::pair<std::uint64_t, std::uint64_t>> drafter_theirs{
-        {mtp->cells, mtp->v - mtp->k},
-        {mtp->cells, mtp->indexer - mtp->v},
-        {mtp->cells, mtp->blocks - mtp->indexer},
-        {blocks, mtp->hidden - mtp->blocks},
-        {mtp->hidden_rows, mtp->bytes - mtp->hidden}};
+        {cells, pad(kv)},
+        {cells, pad(kv)},
+        {cells, pad(cells * p.indexer_head_dim * 4)},
+        {blocks, pad(blocks * p.indexer_head_dim * 2)},
+        {rows + 1, pad(std::uint64_t{rows + 1} * p.hc_width() * 4)}};
     EXPECT_EQ(drafter_mine, drafter_theirs);
   }
 }

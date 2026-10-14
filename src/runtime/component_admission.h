@@ -19,11 +19,13 @@
 
 namespace llmp::model {
 struct Gemma4Profile;
-}
+struct Qwen38Binding;
+struct Qwen38PleHash;
+struct Qwen38Tensor;
+}  // namespace llmp::model
 namespace llmp::runtime {
 
-// One authority for current production component serving. Diagnostic Qwen/DS
-// paths remain separate until their serving migration is qualified.
+// One authority for current production component serving.
 bool OnComponentEngine(std::string_view architecture);
 // Existing v0 recipe values shared by registration facts and actual execution.
 // These do not parse a spec or change admission/default policy.
@@ -33,6 +35,20 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Val
     const artifact::Artifact& target, const artifact::Artifact& drafter);
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
     const artifact::Artifact& target, const artifact::Artifact& drafter);
+
+template <class T>
+std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const artifact::Artifact& artifact,
+                                                              std::uint32_t resource,
+                                                              std::uint64_t count);
+
+template <class T>
+std::expected<std::vector<T>, std::string> RecipeIntegers(const artifact::Artifact& artifact,
+                                                          const model::Qwen38Tensor& tensor,
+                                                          std::uint32_t maximum,
+                                                          std::string_view type);
+
+std::expected<model::Qwen38PleHash, std::string> RecipeHash(const artifact::Artifact& artifact,
+                                                            const model::Qwen38Binding& binding);
 
 struct ComponentAdmission {
   spec::ModelSpec model;

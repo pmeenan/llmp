@@ -110,7 +110,7 @@ inline constexpr std::uint32_t kDsv4DraftRows = 3;
 // depth 2's (execution/adaptive_depth.h), a wave's drafts a request (C2/C4
 // HTTP screens: +8%/+15% over adaptive depth), how many requests draft in
 // one joined wave (past two each drafts alone: 3.6% faster at C4), and the
-// state a wave reads, rounded up (engine/qwen38_runner.cc).
+// state a wave reads, rounded up.
 inline constexpr std::uint32_t kQwen38DraftRows = 3;
 inline constexpr std::uint32_t kQwen38DraftVocab = 65536;
 inline constexpr double kQwen38DepthCostRatio = 1.16;

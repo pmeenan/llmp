@@ -376,14 +376,8 @@ std::expected<void, std::string> Prepare(const Preparation& paths) {
       return Error("prepared manifests are immutable; a fresh output directory is required");
     }
   }
-  const auto state = model::Qwen38State(model::Qwen38Flash(), kContext, 8192, false);
-  if (!state) {
-    return Error("CPU state layout planning failed");
-  }
-  const auto mtp = model::Qwen38MtpStateOf(model::Qwen38Flash(), *state);
-  if (!mtp) {
-    return Error("CPU state layout planning failed");
-  }
+  const auto state_bytes = model::Qwen38StateBytes(model::Qwen38Flash(), kContext, 8192);
+  const auto mtp_bytes = model::Qwen38MtpStateBytes(model::Qwen38Flash(), kContext, 8192);
   for (std::string_view split : {"calibration", "held_out"}) {
     std::vector<Example> prepared;
     std::string records;
@@ -472,8 +466,8 @@ std::expected<void, std::string> Prepare(const Preparation& paths) {
     const std::string text = std::format(
         R"({{"format":"llmp-qwen-own-vocab-prepared-v1","split":"{}","target_signal":"native_control_natural_argmax","source_sha256":"{}","tokenizer_sha256":"{}","template_sha256":"{}","stop_metadata_sha256":"{}","stop_token_ids":{},"context_capacity":33792,"prefill_chunk":8192,"draft_depth":3,"target_state_capacity_bytes":{},"mtp_state_capacity_bytes":{},"model_loaded":false,"cuda_initialized":false,"examples":[{}]}})",
         split, Digest(*source_text), Digest(*tokenizer_text), Digest(*template_text),
-        Digest(*metadata_text), Numbers(std::span<const std::int32_t>(*stops)), state->bytes,
-        mtp->bytes, records);
+        Digest(*metadata_text), Numbers(std::span<const std::int32_t>(*stops)), state_bytes,
+        mtp_bytes, records);
     std::ofstream file(paths.output / std::format("{}.json", split),
                        std::ios::binary | std::ios::noreplace);
     file << text << '\n';

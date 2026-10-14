@@ -302,55 +302,6 @@ struct ComponentHold {
 };
 static_assert(sizeof(ComponentHold) <= 4096);  // StoredBindingBytes fixed owner inventory.
 
-// Small integer recipe metadata read through the artifact's authenticated
-// shard descriptor. The synchronous direct read retires before its aligned
-// stack window is reused. Shape/type and exact byte count precede allocation.
-template <class T>
-std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const ja::Artifact& artifact,
-                                                              std::uint32_t resource,
-                                                              std::uint64_t count64) {
-  if (count64 == 0 || count64 > std::numeric_limits<std::size_t>::max() / sizeof(T))
-    return Error("integer recipe metadata exceeds its addressable extent");
-  const auto count = static_cast<std::size_t>(count64);
-  auto place = artifact.ResourcePlacement(resource);
-  if (!place || place->bytes.value() != count * sizeof(T))
-    return Error("integer recipe metadata has an inconsistent byte count");
-  const auto& group = artifact.groups()[place->group];
-  const auto& shard = artifact.shards()[group.shard];
-  // Validated artifact extents bound every addition by the shard length.
-  const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
-  const auto end = begin + place->bytes.value();
-  auto file = artifact.OpenShardForDirectRead(group.shard);
-  if (!file) return Error(file.error().ToString());
-  std::vector<T> out(count);
-  alignas(4096) std::array<std::byte, 4096> window{};
-  for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
-    if (at > shard.data_offset.value() + shard.data_bytes.value() ||
-        window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
-      return Error("integer recipe metadata's direct read passes its shard");
-    if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
-      return Error(std::format("reading integer recipe metadata: errno {}", read.error()));
-    const auto first = std::max(at, begin), last = std::min(at + window.size(), end);
-    std::memcpy(reinterpret_cast<std::byte*>(out.data()) + first - begin,
-                window.data() + first - at, last - first);
-  }
-  return out;
-}
-
-template <class T>
-std::expected<std::vector<T>, std::string> RecipeIntegers(const ja::Artifact& artifact,
-                                                          const model::Qwen38Tensor& tensor,
-                                                          std::uint32_t maximum,
-                                                          std::string_view type) {
-  const bool vector = type == "I64" && tensor.plain && tensor.ne.size() == 1;
-  const bool table = type == "I32" && !tensor.plain && tensor.ne.size() == 2 && tensor.ne[0] == 1;
-  if (tensor.type != type || (!vector && !table))
-    return Error("integer recipe metadata has an unsupported type or shape");
-  const auto count = tensor.ne[table ? 1 : 0];
-  if (count == 0 || count > maximum) return Error("integer recipe metadata exceeds its bound");
-  return ReadRecipeIntegers<T>(artifact, tensor.index, count);
-}
-
 std::expected<void, std::string> CheckHashTables(const ja::Artifact& artifact,
                                                  const model::Dsv4Binding& binding) {
   const auto& profile = model::Dsv4Flash();
@@ -406,21 +357,6 @@ std::expected<void, std::string> CheckStoredHashTables(const ja::Artifact& artif
     }
   }
   return {};
-}
-
-std::expected<model::Qwen38PleHash, std::string> RecipeHash(const ja::Artifact& artifact,
-                                                            const model::Qwen38Binding& binding) {
-  const auto& p = model::Qwen38Flash();
-  if (binding.gguf()) return model::ReadQwen38GgufHash(p, artifact, binding.ple_table.ne.at(1));
-  const auto& layer = binding.layers.at(p.ple_layer);
-  auto multipliers = RecipeIntegers<std::int64_t>(artifact, layer.ple_multipliers, p.ngram, "I64");
-  auto offsets =
-      RecipeIntegers<std::int64_t>(artifact, layer.ple_head_offsets, p.ple_heads(), "I64");
-  auto vocab = RecipeIntegers<std::int64_t>(artifact, layer.ple_head_vocab, p.ple_heads(), "I64");
-  if (!multipliers) return Error(multipliers.error());
-  if (!offsets) return Error(offsets.error());
-  if (!vocab) return Error(vocab.error());
-  return model::CheckQwen38PleHash(p, *multipliers, *offsets, *vocab, binding.ple_table.ne.at(1));
 }
 
 // A v0 artifact's values for its architecture's mapping: its compiled
@@ -674,7 +610,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       hold->place = std::move(stored_bindings->places);
     } else {
       std::expected<std::vector<spec::SourceValue>, std::string> values;
-      if (solo) {
+      if (solo || settings.architecture == "qwen4exp") {
         auto binding = model::BindQwen38(model::Qwen38Flash(), *artifact);
         if (!binding) return Error(binding.error());
         qwen.emplace(std::move(*binding));
@@ -709,7 +645,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                  drafter->model().architecture));
       }
       std::expected<std::vector<spec::SourceValue>, std::string> dvalues;
-      if (solo) {
+      if (solo || settings.architecture == "qwen4exp") {
         if (qwen && qwen->gguf())
           return Error("the GGUF target has no qualified component MTP recipe");
         auto binding = model::BindQwen38Mtp(model::Qwen38Flash(), *drafter);

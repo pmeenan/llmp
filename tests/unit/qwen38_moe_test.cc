@@ -759,8 +759,8 @@ TEST_F(Qwen38MoeTest, SeveralTokensGetEachTokensOwnProducts) {
   }
 }
 
-// A Qwen3.8 wave's routed products join up to four requests' verify rows
-// (engine/qwen38_wave_plan.h): past four tokens the expert-major kernel
+// A Qwen3.8 wave's routed products join up to four requests' verify rows:
+// past four tokens the expert-major kernel
 // reads each chosen expert's rows once for every slot that chose it. Each
 // slot's outputs are the per-slot kernel's (at most four tokens a launch)
 // bit for bit: the SwiGLU form; the plain form over part of the up rows,

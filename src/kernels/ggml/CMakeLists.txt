@@ -38,7 +38,7 @@ else()
 endif()
 list(JOIN architectures "," architecture_text)
 add_library(llmp_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc llmp_ops.cc
-                                       qwen38_graph.cc tensors.cc validate.cc
+                                       tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(llmp_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_sources(llmp_ggml_tensors PRIVATE dsv4_weighted_reduce.cc gemma_moe.cc)
@@ -204,8 +204,8 @@ if(LLMP_CUDA)
                    conv2d_tiled.h conv2d_tiled.cc conv2d_tiled.cu mul_mat_cublas_internal.h
                    attention_f32.h attention_f32.cc attention_f32.cu
                    mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
-                   ops_ext.h qwen38_commit.h qwen38_graph.cc
-                   qwen38_graph.h tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
+                   ops_ext.h qwen38_commit.h
+                   tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h shared_q8.h)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")

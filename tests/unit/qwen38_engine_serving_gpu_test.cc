@@ -551,21 +551,21 @@ void Screen(std::string_view id, bool mtp, bool rows, std::uint32_t depth) {
     GTEST_SKIP() << "the established Qwen artifact is absent";
   auto fixed = CheckFixture(id, mtp);
   ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
-  auto legacy = Run(id, mtp, false, rows, depth);
-  ASSERT_TRUE(legacy) << (legacy ? "" : legacy.error());
+  auto first = Run(id, mtp, true, rows, depth);
+  ASSERT_TRUE(first) << (first ? "" : first.error());
   fixed = CheckFixture(id, mtp);
   ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
-  auto shared = Run(id, mtp, true, rows, depth, legacy->get());
-  ASSERT_TRUE(shared) << (shared ? "" : shared.error());
+  auto second = Run(id, mtp, true, rows, depth, first->get());
+  ASSERT_TRUE(second) << (second ? "" : second.error());
   fixed = CheckFixture(id, mtp);
-  if (!fixed) legacy->reset();  // release under the still-live final payment
+  if (!fixed) first->reset();  // release under the still-live final payment
   ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
-  Compare((*shared)->result, (*legacy)->result, rows);
-  fs::remove_all((*legacy)->scratch);
-  fs::remove_all((*shared)->scratch);
+  Compare((*second)->result, (*first)->result, rows);
+  fs::remove_all((*first)->scratch);
+  fs::remove_all((*second)->scratch);
   // Release the earlier result while the final stopped Server still pays
   // both results. Lifetime destroys its own Result before its Server.
-  legacy->reset();
+  first->reset();
 }
 
 void PublishedScreen() {

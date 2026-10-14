@@ -176,7 +176,7 @@ TEST(ComponentAdmissionQwenTest, FullNormalizedTargetKeepsItsUntiedHeadAndSource
   auto source = normalized->canonical();
   const auto admitted = rt::CheckComponentAdmission(model, source, origins);
   ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
-  EXPECT_FALSE(rt::OnComponentEngine("qwen4exp"));  // v0 default is unchanged
+  EXPECT_TRUE(rt::OnComponentEngine("qwen4exp"));
   EXPECT_NE(model.stages[0].embedding->weights[0].tensor,
             model.stages[0].heads.output->weights[0].tensor);
   auto policy = rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 4});
