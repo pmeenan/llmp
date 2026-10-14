@@ -24,6 +24,7 @@
 #include "components/step.h"
 #include "import/modelopt_qwen38.h"
 #include "import/route.h"
+#include "import/source_mapping.h"
 #include "import/stream.h"
 #include "platform/lock_file.h"
 #include "platform/sockets.h"
@@ -396,6 +397,49 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
     if (stage.heads.final_norm) bind(*stage.heads.final_norm, {3, 0});
     if (stage.heads.output) bind(*stage.heads.output, {3, 0});
     for (const auto& c : stage.heads.mtp) bind(c, {3, 0});
+  }
+  if (const auto* source_mapping =
+          FindSourceMapping(plan.source().container, plan.source().architecture);
+      source_mapping && source_mapping->architecture) {
+    const auto& mapping = *source_mapping->architecture;
+    for (const auto& r : mapping.tensors) {
+      if (!r.unbound) continue;
+      GroupKey key{3, 0};
+      for (const auto& slot : mapping.slots) {
+        if (slot.slot == r.slot) {
+          switch (slot.site) {
+            case spec::Site::kEmbedding:
+              key = {0, 0};
+              break;
+            case spec::Site::kMixing:
+            case spec::Site::kSide:
+              key = {1, 0};
+              break;
+            case spec::Site::kFinalNorm:
+            case spec::Site::kOutput:
+              key = {3, 0};
+              break;
+            case spec::Site::kLayer:
+              key = {2, 0};
+              break;
+          }
+          break;
+        }
+      }
+      if (r.pattern.contains("{layer}")) {
+        const std::size_t layers =
+            stages_to_bind.empty() ? 0 : stages_to_bind.front().layers.size();
+        for (std::uint32_t l = 0; l < layers; ++l) {
+          std::string name = std::string(r.pattern);
+          const auto pos = name.find("{layer}");
+          if (pos != std::string::npos) name.replace(pos, 7, std::to_string(l));
+          owners.try_emplace(std::move(name),
+                             GroupKey{key.order == 2 ? 2U : key.order, key.order == 2 ? l : key.layer});
+        }
+      } else {
+        owners.try_emplace(std::string(r.pattern), key);
+      }
+    }
   }
   std::map<GroupKey, std::vector<std::uint32_t>> batches;
   for (std::size_t i = 0; i < tensors.size(); ++i) {
