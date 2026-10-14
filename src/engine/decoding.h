@@ -87,10 +87,6 @@ struct DrafterSpec {
   std::uint32_t max_depth = 1;  // proposals a unit, at most
   // Proposals a unit in a wave of more than one slot (0: max_depth).
   std::uint32_t shared_wave_depth = 0;
-  // Above this many active draft slots (0 = any width), each slot drafts
-  // alone instead of in a joined draft step (the M3 Qwen runner's
-  // draft_wave_max).
-  std::uint32_t draft_wave_max = 0;
   // Autoregressive: its first pass of a unit starts where its state stops
   // being the committed tokens' (its catch-up: MTP).
   bool catch_up = false;

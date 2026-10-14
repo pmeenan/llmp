@@ -559,9 +559,6 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
         of.push_back(i);
       }
       if (pending.empty()) break;
-      if (spec.draft_wave_max > 0 && pending.size() > spec.draft_wave_max) {
-        for (PendingWork& w : pending) w.alone = true;
-      }
       std::vector<SegmentWork> segments;
       for (std::size_t j = 0; j < tokens.size(); ++j) {
         segments.push_back(
@@ -645,9 +642,6 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
            .feature = {.kind = FeatureFrom::Kind::kTap, .position = rows.feature_first},
            .history = work[i].history});
       owners.push_back(i);
-    }
-    if (mode_.drafters[d].draft_wave_max > 0 && catchup.size() > mode_.drafters[d].draft_wave_max) {
-      for (PendingWork& w : catchup) w.alone = true;
     }
     runner_->authorized_drafts_.clear();
     for (std::size_t j = 0; j < catchup.size(); ++j)

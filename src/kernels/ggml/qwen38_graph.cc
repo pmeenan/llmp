@@ -157,7 +157,7 @@ class Builder {
       }
       return Mm(w.matrix, in.x);
     }
-    if (in.x->ne[1] <= kMxfp8VecColumns) {
+    if (in.x->ne[1] <= kMxfp8VecWaveColumns) {
       return Mxfp8MulMatVec(c_, w.codes, w.scales, in.x);
     }
     if (fast_) {
@@ -196,7 +196,7 @@ class Builder {
   // The type the fast graph's products into the recurrences' rows give:
   // BF16 past the vector product's columns.
   ggml_type RowsType(std::int64_t rows) const {
-    return fast_ && rows > kMxfp8VecColumns ? GGML_TYPE_BF16 : GGML_TYPE_F32;
+    return fast_ && rows > kMxfp8VecWaveColumns ? GGML_TYPE_BF16 : GGML_TYPE_F32;
   }
   // A product with BF16 weights: llmpalooza's over x in BF16 where the fused
   // graph converts it, else GGML's (and GGML's for any other type, a GGUF
@@ -862,7 +862,7 @@ Builder::Input Builder::HcFast(ggml_tensor*& res, ggml_tensor* out, ggml_tensor*
     *inject = TypedView(blob, GGML_TYPE_F32, hc, nt, layout.logits());
   }
   // (The head's mix, which has no inject weight, feeds no MXFP8 product.)
-  if (nt <= kMxfp8VecColumns || n_embd % 128 != 0 || inject == nullptr) {
+  if (nt <= kMxfp8VecWaveColumns || n_embd % 128 != 0 || inject == nullptr) {
     ggml_tensor* mixed = HcMixBf16(c_, xn, gate, hc);
     Name(mixed, "hc_mixed", il);
     return {.x = mixed};
@@ -1145,7 +1145,7 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   if (fast_ && d == 128) {
     // build_norm_gated as llmp.gdn.norm_gate, quantized to MXFP8 for the
     // tensor-core product (in F32 for a GGUF checkpoint's GGML product).
-    const bool wide = nt > kMxfp8VecColumns && Mxfp8(l.ssm_out);
+    const bool wide = nt > kMxfp8VecWaveColumns && Mxfp8(l.ssm_out);
     ggml_tensor* normed = GdnNormGate(c_, output, l.ssm_norm, ggml_reshape_2d(c_, z, d * hv, nt),
                                       p_.rms_eps, wide ? GGML_TYPE_I8 : GGML_TYPE_F32);
     out = wide ? LinearMxfp8(l.ssm_out, normed, nt) : Linear(l.ssm_out, normed);
@@ -1341,7 +1341,7 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   }
   Name(attn, "attn_pregate", il);
   ggml_tensor* out = nullptr;
-  if (fast_ && nt > kMxfp8VecColumns && Mxfp8(l.o)) {
+  if (fast_ && nt > kMxfp8VecWaveColumns && Mxfp8(l.o)) {
     // The gate and the output projection's quantization in one pass.
     out = LinearMxfp8(l.o, QsaGateQuantize(c_, attn, q_full, d), nt);
   } else {
@@ -1410,7 +1410,7 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
     ggml_tensor* sh_up = Linear(l.up_shexp, in);
     ggml_tensor* sh_gate = Linear(l.gate_shexp, in);
     ggml_tensor* sh = Linear(l.down_shexp, ggml_swiglu_split(c_, sh_gate, sh_up));
-    if (nt <= kMoeGemvTokens) {
+    if (nt <= kMoeGemvWaveTokens) {
       // Decode: each slot's products straight from the layout (gate and up
       // with their SwiGLU in one), then the same weighted sum as GGML's
       // products feed.

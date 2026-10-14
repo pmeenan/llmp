@@ -834,7 +834,7 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     // The MXFP8 products: the vector product up to 8 rows; past them the
     // tensor-core product over quantized activations (the fast form) or the
     // weights dequantized to BF16.
-    const bool wide = rows > 8;
+    const bool wide = rows > kg::kMxfp8VecWaveColumns;
     EXPECT_EQ(used.contains(kg::kMxfp8MulMatVecName), !wide) << rows;
     EXPECT_EQ(used.contains(kg::kMxfp8DequantName), wide && !fast) << rows;
     for (const std::string_view name : {kg::kMxfp8GemmName, kg::kMxfp8QuantizeName,
@@ -845,12 +845,13 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     // CUTLASS layout, the vector products up to 8 rows, else the grouped
     // GEMM path.
     const bool vector = rows <= 8;
+    const bool moe_gemv = rows <= kg::kMoeGemvWaveTokens;
     EXPECT_EQ(used.contains(kg::kMulMatIdVecQ), !cutlass && vector) << rows;
     EXPECT_EQ(used.contains(kg::kMulMatIdQ), !cutlass && !vector) << rows;
-    EXPECT_EQ(used.contains(kg::kMoeGemvName), cutlass && vector) << rows;
+    EXPECT_EQ(used.contains(kg::kMoeGemvName), cutlass && moe_gemv) << rows;
     for (const std::string_view name : {kg::kMoeRouteName, kg::kMoeQuantizeName, kg::kMoeGemmName,
                                         kg::kMoeGluQuantizeName, kg::kMoeCombineSortedName}) {
-      EXPECT_EQ(used.contains(name), cutlass && !vector) << name << " at " << rows << " rows";
+      EXPECT_EQ(used.contains(name), cutlass && !moe_gemv) << name << " at " << rows << " rows";
     }
     // The fusions replace the hyper-connections' and the MoE output's
     // elementwise nodes; past 16 rows the float products read BF16 once.
@@ -865,7 +866,7 @@ TEST(Qwen38Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
     }
     // (Over the CUTLASS layout decode's SwiGLU is the vector product's.)
     EXPECT_EQ(used.contains(kg::kMoeGluName), fused && !cutlass) << rows;
-    EXPECT_EQ(used.contains(kg::kMoeCombineName), fused && (!cutlass || vector)) << rows;
+    EXPECT_EQ(used.contains(kg::kMoeCombineName), fused && (!cutlass || moe_gemv)) << rows;
     // The linear-attention layers: GGML's convolution unless fused over
     // whole histories of rows; the recurrence as the plan picks by rows.
     // (The fast form's at every width: its history reads the old one below 3

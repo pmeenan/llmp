@@ -2687,10 +2687,7 @@ std::optional<Match> HcFoldInputsMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   const std::uint64_t rows = c.tensor(x).ne(1);
-  const bool router = std::ranges::any_of(c.readers(n.out[0]), [&](NodeId q) {
-    return c.node(q).key == ir::Fused(FusedKind::kMoeRouter) || Is(c, q, Op::kRoute);
-  });
-  if (rows <= (router ? 8U : 16U)) {
+  if (rows <= 16U) {
     return std::nullopt;
   }
   const std::array<const ir::TensorDesc*, 2> s = {&c.tensor(n.src[0]), &c.tensor(rounded)};

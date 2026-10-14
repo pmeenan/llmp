@@ -1092,7 +1092,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                             .max_depth = depth,
                             .shared_wave_depth =
                                 solo ? std::min(settings.shared_wave_depth.value, depth) : 0,
-                            .draft_wave_max = solo ? settings.draft_wave_max.value : 0,
                             .catch_up = solo,
                             .fill = dspark ? model::DsparkDeepSeekV4Flash().mask_token : 0,
                             .borrows_target = !solo && !dspark,
