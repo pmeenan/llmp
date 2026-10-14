@@ -2302,9 +2302,11 @@ Status Server::Start(bool snapshot) {
     if (reserve > std::numeric_limits<std::uint64_t>::max() / kExtent)
       return Error("diagnostic budget cap handle reserve overflows");
     const auto requested = *options_.diagnostic_budget_cap_bytes;
-    // A diagnostic ceiling cannot enlarge ordinary admission. Keep extent
-    // alignment when current measured headroom selects a smaller budget.
-    const auto cap = std::min(requested, dynamic_budget_ / kExtent * kExtent);
+    // An automatic startup ceiling cannot enlarge ordinary admission. Keep
+    // extent alignment when current measured headroom selects a smaller budget.
+    const auto cap = options_.diagnostic_auto_startup
+                         ? std::min(requested, dynamic_budget_ / kExtent * kExtent)
+                         : requested;
     if (auto checked = CheckDiagnosticBudgetCap(bounds, dynamic_budget_, cap, reserve * kExtent);
         !checked)
       return std::unexpected(checked.error());

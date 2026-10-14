@@ -1067,6 +1067,7 @@ TEST_P(Gemma4ServingGpu, CapacityRefusalPreservesCompletedPrefixAndPeerProgress)
       sessions[slot] = std::move(*began);
     }
     std::array<rt::Llm::GenerationSession*, 2> work{sessions[0].get(), sessions[1].get()};
+    (void)server->node().AskReclaim(128U << 20U, en::PagedNode::ReclaimFor::kGraph);
     const auto available = server->node().FreeBytes();
     if (!available || *available <= (16U << 20U))
       return std::unexpected("test capacity unavailable");

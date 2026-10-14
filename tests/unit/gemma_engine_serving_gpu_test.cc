@@ -1437,8 +1437,8 @@ TEST_P(GemmaEngineGemma3Gpu, UnprovenPreparationStopsServerBeforeOwnerDestructio
         (void)life->server->TearDown();
         std::_Exit(70);
       }()),
-      ::testing::ExitedWithCode(llmp::platform::kFatalSignalExitBase + SIGABRT),
-      "unretired state preparation; aborting before owner destruction");
+      ::testing::ExitedWithCode(llmp::runtime::kExitFailure),
+      "unproven service retirement; exiting before owner destruction:");
 }
 
 INSTANTIATE_TEST_SUITE_P(Q8Cache, GemmaEngineQ8CacheGpu, ::testing::Values(2U),
