@@ -68,6 +68,27 @@ std::expected<std::vector<SourceValue>, std::string> Dsv4V0Values(
 std::expected<std::vector<SourceValue>, std::string> DsparkV0Values(
     const model::DsparkProfile& profile);
 
+// The planning policy for DeepSeek serving fast forms.
+inline constexpr std::string_view kDeepSeekServingPolicy =
+    "max_decode_rows 16\n"
+    "enable dsv4_compress\n"
+    "enable dsv4_hc_post\n"
+    "enable dsv4_hc_pre\n"
+    "enable dsv4_qhead\n"
+    "enable owner_row_invariant\n"
+    "enable state_bank_attention\n"
+    "enable vecq_glu\n"
+    "enable vecq_inputs\n"
+    "disable grouped_stores\n"
+    "disable mul_mat_glu\n"
+    "disable narrow_final\n"
+    "disable owner_attention\n"
+    "disable prepared_inputs\n"
+    "disable rms_norm_mul_add\n"
+    "disable rms_norm_mul_rope\n"
+    "disable rope_store\n"
+    "disable route_reduce\n";
+
 }  // namespace llmp::spec::mappings
 
 #endif  // LLMP_SPEC_MAPPINGS_DSV4_H_

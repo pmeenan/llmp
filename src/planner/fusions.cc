@@ -1703,6 +1703,7 @@ std::optional<Match> Dsv4HcPreMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, fold, Op::kHcPre)) return std::nullopt;
   const TensorId x = c.node(fold).src[0];
   const auto& xd = c.tensor(x);
+  if (c.max_decode_rows() > 1 && xd.ne(2) > c.max_decode_rows()) return std::nullopt;
   const NodeId pre = Made(c, c.node(fold).src[1]);
   const NodeId sigmoid = Is(c, pre, Op::kScale) ? Made(c, c.node(pre).src[0]) : NodeId{};
   const NodeId add =

@@ -825,7 +825,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     const auto configured_chunk =
         solo ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
                                 model::Qwen38MostRows(settings.context.value, false))
-             : settings.prefill_chunk.value;
+        : deepseek_serving
+            ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
+                               model::Dsv4MostRows(model::Dsv4Flash(), settings.context.value))
+            : settings.prefill_chunk.value;
     const auto depth = solo     ? (configured_chunk >= 4 ? settings.draft_rows.value
                                                          : std::min(settings.draft_rows.value, 2U))
                        : dspark ? settings.draft_rows.value
@@ -859,7 +862,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (!rule) return Error(rule.error());
       if (*rule != nullptr) composition = **rule;
     }
-    if (composition.prompts_alone) caps->join_prefill = false;
+    if (composition.prompts_alone || deepseek_serving) caps->join_prefill = false;
     if (composition.owners_alone) caps->max_segments = 1;
     if (joined_score && caps->max_segments < 4)
       return Error("the actual component capability cannot join the scoring cohort");
@@ -1124,11 +1127,13 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         return Error(declared.error());
     }
 
+    constexpr std::string_view kDeepSeekServingPolicy = spec::mappings::kDeepSeekServingPolicy;
     // A harness's matched recipe in place of the target's mapping's.
     std::optional<planner::Policy> target_policy;
-    if ((stored && !composition.text.empty()) || options.target_policy) {
-      auto parsed =
-          planner::ParsePolicy(options.target_policy ? *options.target_policy : composition.text);
+    if ((stored && !composition.text.empty()) || options.target_policy || deepseek_serving) {
+      auto parsed = planner::ParsePolicy(
+          options.target_policy ? *options.target_policy
+                                : (deepseek_serving ? kDeepSeekServingPolicy : composition.text));
       if (!parsed) return Error(std::format("the target's policy: {}", parsed.error()));
       target_policy = std::move(*parsed);
     }
@@ -1146,7 +1151,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
            .values = stage == 0 ? std::span<const spec::SourceValue>(hold->values)
                                 : std::span<const spec::SourceValue>(hold->drafter_values),
            .slots = slots,
-           .policy = stage == 0 ? target_policy : std::nullopt,
+           .policy = stage == 0 || deepseek_serving ? target_policy : std::nullopt,
            .backend = hold->backend->Backend(),
            .execution_domain = execution_domain,
            .validate_program = options.validate_program,

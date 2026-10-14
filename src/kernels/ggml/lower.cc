@@ -3795,8 +3795,11 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     case FusedKind::kMatMulGlu: {
       // llmp.vecq's GLU form: up's product with gate's (weights, then gate).
       const ir::TensorDesc& x = desc(2);
+      const auto glu = n.Params<ir::GluParams>();
+      const VecQGlu kind =
+          glu.kind == ir::GluKind::kSwiGluClamp ? VecQGlu::kSwigluClamp : VecQGlu::kSwiglu;
       ggml_tensor* t = VecQ(c_, src(1), src(2), nullptr, static_cast<std::int64_t>(x.ne(1)), false,
-                            src(0), VecQGlu::kSwiglu);
+                            src(0), kind, glu.limit);
       OwnersAlone(t);
       Node(t, id);
       set(0, t);
@@ -3804,8 +3807,11 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     }
     case FusedKind::kMatMulIdGlu: {
       const ir::TensorDesc& ids = desc(3);
+      const auto glu = n.Params<ir::MoeExpertsParams>().glu;
+      const VecQGlu kind =
+          glu.kind == ir::GluKind::kSwiGluClamp ? VecQGlu::kSwigluClamp : VecQGlu::kSwiglu;
       ggml_tensor* t = VecQ(c_, src(1), src(2), src(3), static_cast<std::int64_t>(ids.ne(1)), false,
-                            src(0), VecQGlu::kSwiglu);
+                            src(0), kind, glu.limit);
       OwnersAlone(t);
       Node(t, id);
       set(0, t);

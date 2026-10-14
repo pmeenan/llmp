@@ -120,6 +120,7 @@ class MatchContext {
   const SelectionView& view() const { return view_; }
   const StepShape* shape() const { return shape_; }
   const StateSpans& state_spans() const { return state_spans_; }
+  std::uint32_t max_decode_rows() const { return view_.policy().max_decode_rows; }
   const ir::Node& node(ir::NodeId id) const { return graph_.node(id); }
   const ir::TensorDesc& tensor(ir::TensorId id) const { return graph_.tensor(id); }
   const ir::Node& producer(ir::TensorId id) const { return graph_.node(graph_.producer(id)); }

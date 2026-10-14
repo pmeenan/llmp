@@ -712,6 +712,7 @@ TEST(GgmlLowerDsv4Test, OptInLocalFormsLowerActualTargetAndDraftFragments) {
     for (const auto& form : forms) {
       if (shape.stage == 1 && form == "dsv4_compress") continue;
       if (shape.rows() < 16 && form == "dsv4_qhead") continue;
+      if (shape.rows() > 16 && form == "dsv4_hc_pre") continue;
       SCOPED_TRACE(form);
       pl::Policy policy;
       policy.enabled = {form};
@@ -1707,6 +1708,110 @@ TEST(GgmlLowerDsv4Test, ArenaFactsSelectRoundedScoreAndRejectBrokenPhysicalBase)
       if (offset != 0 && !bound)
         EXPECT_NE(bound.error().detail.find("alignment promise"), std::string::npos);
     }
+  }
+}
+
+TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold) {
+  Fixture f;
+  f.target.swiglu_limit = 7.0f;
+  f.target.swiglu_limit_shared = 7.0f;
+  ASSERT_TRUE(f.Init());
+
+  const auto policy = pl::ParsePolicy(sp::mappings::kDeepSeekServingPolicy);
+  ASSERT_TRUE(policy) << policy.error();
+
+  auto spec = f.spec;
+  spec.stages.resize(1);
+  spec.stages[0].taps.clear();
+
+  const std::array<const md::StateLayoutDerived*, 2> layouts{&f.layouts[0], &f.layouts[1]};
+  const std::array<std::span<const co::BoundTensor>, 2> tensors{f.target_source.tensors,
+                                                                f.draft_source.tensors};
+  const co::Bindings bindings{
+      .tensors = tensors[0], .state = layouts[0], .stages = layouts, .artifacts = tensors};
+
+  // A step with rows <= 16 (e.g. 8) lowers dsv4_hc_pre and vecq_glu with
+  // VecQGlu::kSwigluClamp (limit = 7.0f).
+  {
+    const pl::StepShape shape{.segments = {{.rows = 8, .read_cells = 768, .outputs = 1}}};
+    auto step = co::BuildStep(spec, 0, shape, bindings, {.narrow = false});
+    ASSERT_TRUE(step) << step.error();
+
+    std::vector<ir::TensorId> staged;
+    for (const auto& input : step->inputs) {
+      if (input.kind != co::InputKind::kCellPositions) staged.push_back(input.tensor);
+    }
+
+    auto plan = pl::Plan(step->graph.Clone(), f.registry, {.device_class = "sm_121", .arch = 121},
+                         *policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+    ASSERT_TRUE(plan) << plan.error().detail;
+
+    const auto hc_pre_count = std::ranges::count_if(
+        plan->applied, [](const auto& a) { return a.pattern == "dsv4_hc_pre"; });
+    const auto vecq_glu_count =
+        std::ranges::count_if(plan->applied, [](const auto& a) { return a.pattern == "vecq_glu"; });
+    EXPECT_GT(hc_pre_count, 0);
+    EXPECT_GT(vecq_glu_count, 0);
+
+    auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, f.registry, Device());
+    ASSERT_TRUE(lowered) << lowered.error().detail;
+
+    bool found_hc_pre = false;
+    bool found_vecq_clamp = false;
+    for (const auto* node : lowered->nodes) {
+      if (kg::LlmpOpOf(node) == kg::LlmpOp::kDsv4HcPre) {
+        found_hc_pre = true;
+      }
+      if (kg::LlmpOpOf(node) == kg::LlmpOp::kVecQ) {
+        const auto glu = static_cast<kg::VecQGlu>(kg::LlmpOpInt(node, 2));
+        const float limit = kg::LlmpOpFloat(node, 3);
+        if (glu == kg::VecQGlu::kSwigluClamp && limit == 7.0f) {
+          found_vecq_clamp = true;
+        }
+      }
+    }
+    EXPECT_TRUE(found_hc_pre);
+    EXPECT_TRUE(found_vecq_clamp);
+  }
+
+  // A step with rows = 130 lowers dsv4_hc_post instead of dsv4_hc_pre.
+  {
+    const pl::StepShape shape{
+        .segments = {{.rows = 130, .past = 127, .read_cells = 768, .outputs = 1}}};
+    auto step = co::BuildStep(spec, 0, shape, bindings, {.narrow = false});
+    ASSERT_TRUE(step) << step.error();
+
+    std::vector<ir::TensorId> staged;
+    for (const auto& input : step->inputs) {
+      if (input.kind != co::InputKind::kCellPositions) staged.push_back(input.tensor);
+    }
+
+    auto plan = pl::Plan(step->graph.Clone(), f.registry, {.device_class = "sm_121", .arch = 121},
+                         *policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+    ASSERT_TRUE(plan) << plan.error().detail;
+
+    const auto hc_pre_count = std::ranges::count_if(
+        plan->applied, [](const auto& a) { return a.pattern == "dsv4_hc_pre"; });
+    const auto hc_post_count = std::ranges::count_if(
+        plan->applied, [](const auto& a) { return a.pattern == "dsv4_hc_post"; });
+    EXPECT_EQ(hc_pre_count, 0);
+    EXPECT_GT(hc_post_count, 0);
+
+    auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, f.registry, Device());
+    ASSERT_TRUE(lowered) << lowered.error().detail;
+
+    bool found_hc_pre = false;
+    bool found_hc_post = false;
+    for (const auto* node : lowered->nodes) {
+      if (kg::LlmpOpOf(node) == kg::LlmpOp::kDsv4HcPre) {
+        found_hc_pre = true;
+      }
+      if (node->op == GGML_OP_DSV4_HC_POST) {
+        found_hc_post = true;
+      }
+    }
+    EXPECT_FALSE(found_hc_pre);
+    EXPECT_TRUE(found_hc_post);
   }
 }
 
