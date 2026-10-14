@@ -819,12 +819,138 @@ std::optional<Match> HcCombineMatch(const MatchContext& c, NodeId anchor) {
 
 // ------------------------------------------------------------ Gated DeltaNet
 
+// gdn_history: an owner's history update alone (components/gdn.cc Commit:
+// the state and its segment's rows into the next history, stored back to
+// the state) as llmp.gdn.history.
+std::optional<Match> GdnHistoryMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kCacheStore) || c.taken(anchor)) {
+    return std::nullopt;
+  }
+  const ir::Node& st = c.node(anchor);
+  const TensorId state = st.src[0];
+  if (!state.valid() || c.producer(state).key != Prim(Op::kState)) {
+    return std::nullopt;
+  }
+  const TensorId kept = st.src[1];
+  if (!kept.valid()) {
+    return std::nullopt;
+  }
+  const NodeId r3 = Made(c, kept);
+  if (!Is(c, r3, Op::kReshape) || c.taken(r3) || Only(c, kept) != anchor) {
+    return std::nullopt;
+  }
+  const TensorId c2_out = c.node(r3).src[0];
+  if (!c2_out.valid()) {
+    return std::nullopt;
+  }
+  const NodeId c2 = Made(c, c2_out);
+  if (!Is(c, c2, Op::kCont) || c.taken(c2) || Only(c, c2_out) != r3) {
+    return std::nullopt;
+  }
+  const TensorId tv_out = c.node(c2).src[0];
+  if (!tv_out.valid()) {
+    return std::nullopt;
+  }
+  const NodeId tv = Made(c, tv_out);
+  if (!Is(c, tv, Op::kView) || c.taken(tv) || Only(c, tv_out) != c2) {
+    return std::nullopt;
+  }
+  const TensorId cat_out = c.node(tv).src[0];
+  if (!cat_out.valid()) {
+    return std::nullopt;
+  }
+  const NodeId cat = Made(c, cat_out);
+  if (!Is(c, cat, Op::kConcat) || c.taken(cat) || Only(c, cat_out) != tv) {
+    return std::nullopt;
+  }
+  const ir::Node& k = c.node(cat);
+  if (k.Params<ir::ConcatParams>().dim != 0) {
+    return std::nullopt;
+  }
+  const NodeId h = Made(c, k.src[0]);
+  const NodeId cont = Made(c, k.src[1]);
+  if (!Is(c, h, Op::kReshape) || !Is(c, cont, Op::kCont) || c.taken(h) || c.taken(cont) ||
+      Only(c, k.src[0]) != cat || Only(c, k.src[1]) != cat) {
+    return std::nullopt;
+  }
+  if (c.node(h).src[0] != state) {
+    return std::nullopt;
+  }
+  const NodeId tr = Made(c, c.node(cont).src[0]);
+  if (!Is(c, tr, Op::kPermute) || c.taken(tr) || c.readers(c.node(cont).src[0]).size() != 1) {
+    return std::nullopt;
+  }
+  if (c.node(tr).Params<ir::PermuteParams>().axes != std::array<std::uint8_t, 4>{1, 0, 2, 3}) {
+    return std::nullopt;
+  }
+  const TensorId rows3 = c.node(tr).src[0];
+  const ir::TensorDesc& rd = c.tensor(rows3);
+  const std::uint64_t ch = rd.ne(0);
+  const std::uint64_t n = rd.ne(1);
+  if (ch == 0 || rd.ne(2) != 1 || rd.ne(3) != 1 || c.tensor(state).ne(0) % ch != 0 ||
+      c.tensor(state).ne(1) != 1 || c.tensor(state).ne(2) != 1 || c.tensor(state).ne(3) != 1) {
+    return std::nullopt;
+  }
+  const std::uint64_t taps = c.tensor(state).ne(0) / ch;
+  if (c.tensor(k.src[0]).shape().ne != ir::ShapeOf({taps, ch, 1}).ne) {
+    return std::nullopt;
+  }
+  const ir::TensorDesc& tail = c.tensor(c.node(tv).out[0]);
+  const ir::TensorDesc& input = c.tensor(k.out[0]);
+  if (tail.shape().ne != ir::ShapeOf({taps, ch, 1}).ne || tail.view_offset != n * input.nb[0] ||
+      tail.nb[0] != input.nb[0] || tail.nb[1] != input.nb[1]) {
+    return std::nullopt;
+  }
+  if (c.tensor(c.node(r3).out[0]).shape().ne != ir::ShapeOf({taps * ch, 1}).ne) {
+    return std::nullopt;
+  }
+  Building b(c);
+  if (!b.Add({h, tr, cont, cat, tv, c2, r3, anchor})) {
+    return std::nullopt;
+  }
+  if (!st.outputs().empty() && c.external(st.out[0])) {
+    return std::nullopt;
+  }
+  std::vector<TensorId> outs;
+  if (!st.outputs().empty()) {
+    outs.push_back(st.out[0]);
+  }
+  if (!b.Closed(outs)) {
+    return std::nullopt;
+  }
+  const ir::GdnHistoryParams hparams{.taps = static_cast<std::uint32_t>(taps)};
+  const bool with_history = n < taps;
+  const ir::TensorDesc hist_d = DenseDesc(Encoding::kF32, {taps * ch, 1});
+  const ir::TensorDesc rows_d = DenseDesc(rd.format.encoding, {ch, n});
+  const std::array<const ir::TensorDesc*, 2> s = {&rows_d,
+                                                  with_history ? &c.tensor(state) : nullptr};
+  const std::array<const ir::TensorDesc*, 1> o = {&hist_d};
+  if (!Has(c, ir::Fused(FusedKind::kGdnHistory), s, o, ir::ToBytes(hparams))) {
+    return std::nullopt;
+  }
+  auto emit = [=](RewriteContext& r, int) {
+    const ir::Graph& g = r.original();
+    ContextOf(r, g.node(anchor));
+    ir::Builder& b = r.builder();
+    const TensorId rows = b.Reshape(r.Map(rows3), ir::ShapeOf({ch, n}));
+    const TensorId hist =
+        b.Fused(FusedKind::kGdnHistory, std::array{rows, with_history ? r.Map(state) : TensorId{}},
+                hparams)[0];
+    const ir::Node& st_node = g.node(anchor);
+    r.Set(st_node.out[0], b.CacheStore(r.Map(state), hist, r.Map(st_node.src[2])));
+  };
+  return b.Finish({{anchor, 0}}, emit);
+}
+
 // gdn_conv: an owner's convolution (components/gdn.cc Emit: its input the
 // history then its rows transposed, the history's store, the convolution
 // and SiLU, q and k L2-normed, v; a verify's save of the three) as
 // llmp.gdn.conv over the rows and the history, and the next history
 // (llmp.gdn.history) stored after it.
 std::optional<Match> GdnConvMatch(const MatchContext& c, NodeId anchor) {
+  if (Is(c, anchor, Op::kCacheStore)) {
+    return GdnHistoryMatch(c, anchor);
+  }
   if (!Is(c, anchor, Op::kSsmConv) || c.taken(anchor)) {
     return std::nullopt;
   }

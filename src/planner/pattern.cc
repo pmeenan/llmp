@@ -1173,7 +1173,7 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
 
 constexpr std::array kNormAnchors = {Op::kRmsNorm};
 constexpr std::array kAddAnchors = {Op::kAdd};
-constexpr std::array kSsmConvAnchors = {Op::kSsmConv};
+constexpr std::array kGdnConvAnchors = {Op::kSsmConv, Op::kCacheStore};
 constexpr std::array kDeltaAnchors = {Op::kGatedDeltaNet};
 constexpr std::array kMulAnchors = {Op::kMul};
 constexpr std::array kGluAnchors = {Op::kGlu};
@@ -1252,7 +1252,7 @@ constexpr std::array kPatterns = {
             .opt_in = true},
     Pattern{.name = "gdn_conv",
             .result = ir::Fused(FusedKind::kGdnConv),
-            .anchors = kSsmConvAnchors,
+            .anchors = kGdnConvAnchors,
             .match = &fusions::GdnConvMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,

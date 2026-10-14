@@ -35,6 +35,7 @@ std::optional<Match> HcPrepMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> HcMixMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> HcCombineMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> GdnConvMatch(const MatchContext& c, ir::NodeId anchor);
+std::optional<Match> GdnHistoryMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> GdnGatesMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> GdnStepMatch(const MatchContext& c, ir::NodeId anchor);
 std::optional<Match> GdnNormGateMatch(const MatchContext& c, ir::NodeId anchor);

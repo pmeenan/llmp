@@ -1496,13 +1496,16 @@ TEST(GgmlLowerQwen38Test, CommitsOfKeptRowsLower) {
         const kn::LowerInput input{*plan, *commit, kept, addresses, kContext};
         auto lowered = kg::LowerStep(input, registry, Device(), {.device_masks = true});
         ASSERT_TRUE(lowered.has_value()) << lowered.error().detail;
-        std::size_t steps = 0, stores = 0;
+        std::size_t steps = 0, histories = 0, stores = 0;
         for (const ggml_tensor* n : lowered->nodes) {
           steps += n->op == GGML_OP_CUSTOM && kg::LlmpOpOf(n) == kg::LlmpOp::kGdnStep ? 1 : 0;
+          histories +=
+              n->op == GGML_OP_CUSTOM && kg::LlmpOpOf(n) == kg::LlmpOp::kGdnHistory ? 1 : 0;
           stores += n->op == GGML_OP_SET_ROWS ? 1 : 0;
         }
         // Each layer's recurrence and history, and the n-gram layer's.
         EXPECT_EQ(steps, 36U * owners);
+        EXPECT_EQ(histories, 36U * owners);
         EXPECT_EQ(stores, ((36U + 1U) * owners));
         EXPECT_TRUE(lowered->outputs.empty());
       }

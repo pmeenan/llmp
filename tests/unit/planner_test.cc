@@ -870,6 +870,74 @@ TEST(PlannerPatternTest, GdnConvolutionChecksBothNormalizedSlicesAndHistoryTail)
   }
 }
 
+TEST(PlannerPatternTest, GdnHistoryChecksStandaloneCommitTail) {
+  for (int mutation : {0, 1, 2, 3, 4, 5, 6, 7, 8}) {
+    SCOPED_TRACE(mutation);
+    auto implementations = Everything();
+    if (mutation != 6) {
+      implementations.push_back(Fake("t.gdn_history", Any(ir::Fused(FusedKind::kGdnHistory))));
+    }
+    const auto registry = Registry(std::move(implementations));
+    const Policy policy{};
+    const SelectionView selection(registry, kDevice, policy, false, false);
+
+    ir::Builder b;
+    const TensorId state = b.State(F32({18, 1}), ir::StateRef{.tensor = 0});
+    const TensorId other_state = b.State(F32({18, 1}), ir::StateRef{.tensor = 1});
+    const TensorId rows = b.Input(F32({6, 3, 1}));
+    const TensorId history = b.Reshape(mutation == 3 ? other_state : state, ir::ShapeOf({3, 6, 1}));
+    const TensorId transposed = b.Cont(b.Transpose(rows));
+    const std::uint8_t cat_dim = mutation == 4 ? 1 : 0;
+    const TensorId input =
+        mutation == 2 ? b.Concat(transposed, history, 0) : b.Concat(history, transposed, cat_dim);
+    const std::uint64_t offset = mutation == 1 ? 0 : 12;
+    const std::array<std::uint64_t, 4> tail_strides =
+        mutation == 4 ? std::array<std::uint64_t, 4>{4, 12, 144, 144}
+                      : std::array<std::uint64_t, 4>{4, 24, 144, 144};
+    const TensorId tail =
+        b.View(input, ir::ShapeOf({3, 6, 1}), tail_strides, mutation == 4 ? 0 : offset);
+    if (mutation == 5) {
+      b.Keep(tail);
+    }
+    const TensorId kept = b.Reshape(b.Cont(tail), ir::ShapeOf({18, 1}));
+    if (mutation == 7) {
+      b.Keep(kept);
+    }
+    const TensorId ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({1})));
+    const TensorId store = b.CacheStore(state, kept, ids);
+    if (mutation == 8) {
+      b.Keep(store);
+    }
+    const auto g = Finish(b);
+    const MatchContext c(g, selection, nullptr);
+    const bool valid = (mutation == 0);
+    EXPECT_EQ(fusions::GdnHistoryMatch(c, g.producer(store)).has_value(), valid);
+    EXPECT_EQ(fusions::GdnConvMatch(c, g.producer(store)).has_value(), valid);
+    if (!valid) continue;
+
+    Policy on;
+    on.enabled = {"gdn_conv"};
+    const SelectionView enabled(registry, kDevice, on, false, false);
+    auto rewritten = ApplyPatterns(g, enabled, nullptr);
+    ASSERT_TRUE(rewritten) << (rewritten ? "" : rewritten.error().detail);
+    ASSERT_EQ(rewritten->applied.size(), 1U);
+    EXPECT_EQ(rewritten->applied[0].pattern, "gdn_conv");
+    EXPECT_EQ(rewritten->applied[0].replaced.size(), 8U);
+    bool found_history = false;
+    for (const ir::Node& n : rewritten->graph.nodes()) {
+      if (n.key == ir::Fused(FusedKind::kGdnHistory)) {
+        found_history = true;
+        EXPECT_EQ(n.Params<ir::GdnHistoryParams>().taps, 3U);
+      }
+    }
+    EXPECT_TRUE(found_history);
+
+    auto disabled = ApplyPatterns(g, selection, nullptr);
+    ASSERT_TRUE(disabled);
+    EXPECT_TRUE(disabled->applied.empty());
+  }
+}
+
 TEST(PlannerPatternTest, QsaSelectionChecksItsFixedWeightsMasksAndBias) {
   auto implementations = Everything();
   implementations.push_back(Fake("t.qsa_attention", Any(ir::Fused(FusedKind::kQsaAttention))));
