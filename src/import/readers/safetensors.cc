@@ -91,7 +91,8 @@ const Dtype* FindDtype(std::string_view name) {
 
 bool PlainName(std::string_view name) {
   return !name.empty() && name.size() <= kMaxShardName && name != "." && name != ".." &&
-         !name.contains('/') && !name.contains('\0');
+         !name.contains('/') && !name.contains('\\') && !name.contains('\0') &&
+         NoControlCharacters(name);
 }
 
 bool TensorName(std::string_view name) {

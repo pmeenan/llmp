@@ -273,7 +273,10 @@ std::expected<File, Error> Interpret(const gg::Header& header, std::uint64_t siz
       return Fail(Rule::kBounds, "more metadata than the reader's cap", file, ItemKind::kKey, k);
     }
     budget.metadata -= Cost(kv);
-    out.metadata.emplace(std::string(kv.key), ValueOf(kv));
+    auto [it, inserted] = out.metadata.emplace(std::string(kv.key), ValueOf(kv));
+    if (!inserted) {
+      return Fail(Rule::kContainer, "duplicate metadata key", file, ItemKind::kKey, k);
+    }
   }
   if (split_count || split_no || split_tensors) {
     out.split = Split{

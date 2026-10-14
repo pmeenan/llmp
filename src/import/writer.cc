@@ -904,9 +904,20 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   const bool exists = fs::exists(destination, error);
   if (error) return Bad("cannot inspect an existing artifact");
   if (exists) {
-    auto previous = artifact::Artifact::Open(destination);
+    auto previous = artifact::Artifact::Open(destination, {.expected_id = id});
     if (!previous) return Bad("the existing artifact is damaged");
-    if (auto ok = Deep(destination, *previous); !ok) return std::unexpected(ok.error());
+    if (auto ok = Deep(destination, *previous); !ok) return Bad("the existing artifact is damaged");
+    if (!is_drafter) {
+      auto prev_stored = spec::StoredSpec(*previous);
+      if (!prev_stored || *prev_stored != plan.spec())
+        return Bad("the existing artifact is damaged");
+      auto prev_source = spec::SourceOf(*previous);
+      if (!prev_source || !components::ValidateSpec(*prev_stored, prev_source->tensors))
+        return Bad("the existing artifact is damaged");
+    } else {
+      auto prev_source = spec::SourceOf(*previous);
+      if (!prev_source) return Bad("the existing artifact is damaged");
+    }
     return WriteResult{id, destination, true};
   }
   fs::rename(job, destination, error);
