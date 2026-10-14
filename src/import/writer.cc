@@ -17,6 +17,7 @@
 #include <tuple>
 #include <vector>
 
+#include "artifact/composition.h"
 #include "artifact/format_json.h"
 #include "base/gguf.h"
 #include "base/json.h"
@@ -134,13 +135,18 @@ struct PublicationView {
   std::uint64_t payload = 0;
   const NormalizedPlan* copy = nullptr;
   const IndexedPartPlan* parts = nullptr;
+  std::span<const CopyRoute> copy_routes{};
   std::span<const NormalizedPartBinding> bindings{};
   std::span<const SemanticReceipt> semantic{};
   std::span<const PlannedPartFold> planned_folds{};
   const Checkpoint& source() const { return checkpoint; }
   const spec::Source& canonical() const { return canonical_source; }
   const spec::ModelSpec& spec() const { return model_spec; }
-  std::size_t members() const { return copy ? copy->routes().size() : parts->members().size(); }
+  std::size_t members() const {
+    if (copy) return copy->routes().size();
+    if (!copy_routes.empty()) return copy_routes.size();
+    return parts ? parts->members().size() : 0;
+  }
 };
 struct Copy {
   std::uint32_t file = 0, tensor = 0;
@@ -248,11 +254,11 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
                              route.output_bytes(), std::move(*cursor)});
     return {};
   };
-  if (plan.copy) {
-    if (plan.copy->routes().size() != tensors.size())
-      return Bad("copy publication route count", Rule::kConfig);
+  const auto routes = plan.copy ? plan.copy->routes() : plan.copy_routes;
+  if (!routes.empty()) {
+    if (routes.size() != tensors.size()) return Bad("copy publication route count", Rule::kConfig);
     for (std::size_t i = 0; i < tensors.size(); ++i) {
-      const auto& route = plan.copy->routes()[i];
+      const auto& route = routes[i];
       auto checked = PartRoutePlan::Copy(route.extent.bytes);
       if (!checked) return std::unexpected(checked.error());
       if (auto ok =
@@ -940,5 +946,155 @@ std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
                   .semantic = plan.semantic(),
                   .planned_folds = plan.planned_folds()},
                  options);
+}
+std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
+                                                const WriteOptions& options) {
+  return Publish({.checkpoint = plan.checkpoint,
+                  .canonical_source = plan.canonical,
+                  .model_spec = plan.spec,
+                  .payload = plan.payload_bytes,
+                  .copy_routes = plan.routes},
+                 options);
+}
+
+std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions& options) {
+  if (options.store.empty() || !SafeName(options.build) || options.architecture.empty() ||
+      options.components.empty() || options.components.size() > artifact::kMaxComponents) {
+    return Bad("invalid composition write options", Rule::kConfig);
+  }
+  if (!options.expected.empty() && options.expected.size() != options.files.size()) {
+    return Bad("expected identities count disagrees with composition files", Rule::kConfig);
+  }
+  for (std::size_t i = 0; i < options.components.size(); ++i) {
+    const auto& c = options.components[i];
+    if (c.role.empty() || c.role.size() > 64 || c.artifact.size() != 64 || c.architecture.empty()) {
+      return Bad("invalid component descriptor in composition", Rule::kConfig);
+    }
+    if (i > 0 && options.components[i - 1].role >= c.role) {
+      return Bad("components must be sorted uniquely by role in composition", Rule::kConfig);
+    }
+  }
+
+  std::error_code error;
+  if (auto ok = CreateImportDirectory(options.store, true); !ok) return std::unexpected(ok.error());
+  const fs::path staging = options.store / ".staging";
+  auto status = fs::symlink_status(staging, error);
+  if (error && error != std::errc::no_such_file_or_directory)
+    return Bad("cannot examine staging directory");
+  if (fs::is_symlink(status)) return Bad("composition staging must not be a symlink");
+  error.clear();
+  if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
+  auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
+  if (!lock) return Bad("another import owns this store or its lock cannot be opened");
+  std::array<std::byte, 32> random{};
+  if (!platform::FillRandom(random)) return Bad("cannot generate a private staging name");
+  const fs::path job = staging / ("job-" + base::ToHex(base::Sha256().Update(random).Finish()));
+  if (!fs::create_directory(job, error) || error)
+    return Bad("cannot create private staging directory");
+  Cleanup cleanup{job};
+  if (::chmod(job.c_str(), 0700) != 0) return Bad("cannot protect staging directory");
+  if (!options.files.empty()) {
+    fs::create_directory(job / "meta", error);
+    if (error) return Bad("cannot create metadata directory");
+  }
+
+  struct KeptFileEntry {
+    std::string name;
+    std::uint64_t bytes = 0;
+    std::string sha256;
+  };
+  std::vector<KeptFileEntry> kept_entries;
+  std::set<std::string> seen_names;
+  std::vector<std::byte> buffer(65536);
+  for (std::size_t f = 0; f < options.files.size(); ++f) {
+    const auto& file = options.files[f];
+    const std::string name = fs::path(file.name).filename().string();
+    if (!SafeName(name) || !seen_names.insert(name).second) {
+      return Bad("invalid or duplicate metadata filename in composition", Rule::kConfig);
+    }
+    auto in = OpenCheckpointFile(file.path, f);
+    if (!in) return std::unexpected(in.error());
+    if (in->bytes != file.bytes || in->bytes > artifact::kMaxMetadataBytes) {
+      return Bad("composition metadata file size mismatch or exceeds cap", Rule::kBounds);
+    }
+    const fs::path out_path = job / "meta" / name;
+    auto out = Create(out_path);
+    if (!out) return std::unexpected(out.error());
+    base::Sha256 hash;
+    for (std::uint64_t at = 0; at < file.bytes;) {
+      const auto count = std::min<std::uint64_t>(buffer.size(), file.bytes - at);
+      auto chunk = std::span(buffer).first(static_cast<std::size_t>(count));
+      if (auto ok = ReadExactly(in->fd.get(), at, chunk, f); !ok)
+        return std::unexpected(ok.error());
+      if (auto ok = Write(out->get(), at, chunk); !ok) return std::unexpected(ok.error());
+      hash.Update(chunk);
+      at += count;
+    }
+    if (::fsync(out->get()) != 0) return Bad("cannot sync metadata file");
+    const auto digest = hash.Finish();
+    if (!options.expected.empty() && options.expected[f] && *options.expected[f] != digest) {
+      return Bad("metadata file digest disagrees with expected archive identity");
+    }
+    kept_entries.push_back({.name = name, .bytes = file.bytes, .sha256 = base::ToHex(digest)});
+  }
+  std::ranges::sort(kept_entries, {}, &KeptFileEntry::name);
+
+  std::vector<std::string> comp_jsons;
+  for (const auto& c : options.components) {
+    comp_jsons.push_back(
+        O({{"architecture", Q(c.architecture)}, {"artifact", Q(c.artifact)}, {"role", Q(c.role)}}));
+  }
+  std::vector<std::string> source_jsons;
+  std::vector<std::string> file_jsons;
+  for (const auto& k : kept_entries) {
+    source_jsons.push_back(
+        O({{"bytes", N(k.bytes)}, {"name", Q(k.name)}, {"sha256", Q(k.sha256)}}));
+    file_jsons.push_back(O({{"bytes", N(k.bytes)},
+                            {"path", Q("meta/" + k.name)},
+                            {"role", Q("source-metadata")},
+                            {"sha256", Q(k.sha256)}}));
+  }
+  const auto manifest = O({{"components", A(comp_jsons)},
+                           {"experimental", "true"},
+                           {"files", A(file_jsons)},
+                           {"format", Q("llmp-composition")},
+                           {"format_version", "1"},
+                           {"importer", O({{"build", Q(options.build)},
+                                           {"name", Q("llmp-import")},
+                                           {"options_sha256", Q(Hex(""))},
+                                           {"version", Q("1")}})},
+                           {"model", O({{"architecture", Q(options.architecture)}})},
+                           {"source", A(source_jsons)}}) +
+                        '\n';
+  if (manifest.size() > artifact::kMaxManifestBytes) {
+    return Bad("composition manifest exceeds its cap", Rule::kBounds);
+  }
+  if (auto ok = Save(job / "manifest.json", manifest); !ok) return std::unexpected(ok.error());
+  const std::string id = Hex(manifest);
+
+  auto opened = artifact::OpenComposition(job, id);
+  if (!opened) return Bad("the produced composition failed verification", Rule::kConfig);
+
+  if (!options.files.empty()) {
+    if (auto ok = Sync(job / "meta"); !ok) return std::unexpected(ok.error());
+  }
+  if (auto ok = Sync(job); !ok) return std::unexpected(ok.error());
+
+  const auto destination = options.store / id;
+  const bool exists = fs::exists(destination, error);
+  if (error) return Bad("cannot inspect an existing composition");
+  if (exists) {
+    auto previous = artifact::OpenComposition(destination);
+    if (!previous) return Bad("the existing composition is damaged");
+    return WriteResult{id, destination, true};
+  }
+  fs::rename(job, destination, error);
+  if (error) return Bad("cannot publish composition");
+  cleanup.path.clear();
+  if (auto ok = Sync(staging); !ok)
+    return Bad("composition published; staging directory durability sync failed");
+  if (auto ok = Sync(options.store); !ok)
+    return Bad("composition published; store directory durability sync failed");
+  return WriteResult{id, destination, false};
 }
 }  // namespace llmp::import

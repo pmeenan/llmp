@@ -10,11 +10,28 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
+#include "artifact/composition.h"
 #include "import/normalize.h"
 
 namespace llmp::import {
 class ModelOptTargetPlan;
+struct ComponentPlan {
+  const Checkpoint& checkpoint;
+  spec::Source canonical{};
+  spec::ModelSpec spec{};
+  std::vector<CopyRoute> routes{};
+  std::uint64_t payload_bytes = 0;
+};
+struct CompositionWriteOptions {
+  std::filesystem::path store{};
+  std::string build{};
+  std::string architecture{};
+  std::vector<artifact::CompositionComponent> components{};
+  std::vector<SourceFile> files{};
+  std::span<const std::optional<base::Sha256Digest>> expected{};
+};
 struct WriteOptions {
   std::filesystem::path store{};
   std::string build{};
@@ -36,6 +53,9 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
                                                 const WriteOptions& options);
 std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
                                                 const WriteOptions& options);
+std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
+                                                const WriteOptions& options);
+std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions& options);
 namespace publication_detail {
 // Internal metadata-only check of the exact placement/transfer planner used by
 // WriteArtifact. No file opens, payload reads, or publication effects. The

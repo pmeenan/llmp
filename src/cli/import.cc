@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "cli/import.h"
 
+#include <algorithm>
 #include <charconv>
 #include <filesystem>
 #include <format>
@@ -12,6 +13,7 @@
 #include "cli/cli.h"
 #include "import/archive_input.h"
 #include "import/modelopt_qwen38.h"
+#include "import/qwen_image.h"
 #include "import/reader.h"
 #include "import/writer.h"
 
@@ -116,6 +118,77 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
                                                 {bound->metadata_bytes, bound->work_units});
     if (!plan) return Failure(err, plan.error());
     return publish(*plan, plan->parts().source(), bound->metadata_bytes);
+  }
+  if (input->container == "diffusers" && input->architecture == "QwenImage21Pipeline") {
+    auto bound = import::QwenImagePipelineBound(*input);
+    if (!bound) return Failure(err, bound.error());
+    if (!funded(*bound))
+      return Failure(err, {.rule = import::Rule::kBounds,
+                           .reason = "normalization exceeds the requested metadata budget"});
+    auto plan = import::PlanQwenImagePipeline(*input);
+    if (!plan) return Failure(err, plan.error());
+
+    const auto& info = base::GetBuildInfo();
+    const std::string build = info.commit.empty()
+                                  ? "unknown"
+                                  : std::string(info.commit) + (info.modified ? ".dirty" : "");
+    std::vector<artifact::CompositionComponent> published_components;
+    published_components.reserve(3);
+
+    for (std::size_t i = 0; i < 3; ++i) {
+      const auto& comp_plan = plan->components[i];
+      std::vector<std::optional<base::Sha256Digest>> comp_expected;
+      if (*archive) {
+        auto comp_identities = import::ArchiveFileIdentities(**archive, comp_plan.checkpoint.files);
+        if (!comp_identities) return Failure(err, comp_identities.error());
+        comp_expected = std::move(*comp_identities);
+      }
+      auto result =
+          import::WriteArtifact(comp_plan, {.store = store,
+                                            .build = build,
+                                            .expected = comp_expected,
+                                            .metadata_bytes = metadata - bound->metadata_bytes});
+      if (!result) return Failure(err, result.error());
+      published_components.push_back({
+          .role = comp_plan.checkpoint.role,
+          .artifact = result->id,
+          .architecture = comp_plan.checkpoint.architecture,
+      });
+    }
+
+    std::ranges::sort(published_components, {}, &artifact::CompositionComponent::role);
+
+    auto comp_result = import::WriteComposition({
+        .store = store,
+        .build = build,
+        .architecture = input->architecture,
+        .components = std::move(published_components),
+        .files = input->files,
+        .expected = expected,
+    });
+    if (!comp_result) return Failure(err, comp_result.error());
+
+    if (!Print(out, std::format("{} {}\n", comp_result->reused ? "verified" : "published",
+                                comp_result->id))) {
+      Print(err, "llmp import: composition published; cannot write result to standard output\n");
+      return kExitFailure;
+    }
+
+    if (*archive) {
+      auto opened = artifact::OpenComposition(comp_result->path);
+      if (!opened) {
+        Print(err,
+              "llmp import: composition published, but it could not be reopened for catalog "
+              "recording\n");
+        return kExitFailure;
+      }
+      if (auto recorded = import::RecordArchiveImport(**archive, *input, *opened); !recorded) {
+        Print(err, "llmp import: composition published; catalog event failed: " +
+                       recorded.error().ToString() + '\n');
+        return kExitFailure;
+      }
+    }
+    return kExitOk;
   }
   auto bound = import::NormalizationBound(*input);
   if (!bound) return Failure(err, bound.error());

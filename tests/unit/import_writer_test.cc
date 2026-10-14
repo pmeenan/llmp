@@ -18,6 +18,7 @@
 #include "import/archive_input.h"
 #include "import/modelopt_qwen38.h"
 #include "import/normalize.h"
+#include "import/qwen_image.h"
 #include "import/reader.h"
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
@@ -1052,6 +1053,166 @@ TEST_F(ImportWriterTest, Qwen2Exl3PlacementAndMultipartCopyCoverageAreFundedBefo
         {.store = destination, .build = "test", .metadata_bytes = layout->metadata_bytes - 1}));
     EXPECT_FALSE(std::filesystem::exists(destination));
   }
+}
+
+TEST_F(ImportWriterTest, CompositionPublicationAndReuse) {
+  auto plan = Plan();
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  auto written = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(written) << test_support::Failed(written, &Error::ToString).value_or("");
+  const std::string art_id = written->id;
+
+  const std::string meta_bytes = R"({"beta_start": 0.00085, "beta_end": 0.012})";
+  Write(dir_ / "source/scheduler_config.json", meta_bytes);
+  auto meta_file = OpenCheckpointFile(dir_ / "source/scheduler_config.json", 0);
+  ASSERT_TRUE(meta_file);
+
+  CompositionWriteOptions opts{
+      .store = dir_ / "store",
+      .build = "test",
+      .architecture = "QwenImage21Pipeline",
+      .components =
+          {
+              {.role = "text_encoder",
+               .artifact = art_id,
+               .architecture = "Qwen2_5_VLForConditionalGeneration"},
+              {.role = "transformer",
+               .artifact = art_id,
+               .architecture = "QwenImageTransformer2DModel"},
+          },
+      .files =
+          {
+              {.name = "scheduler/scheduler_config.json",
+               .path = dir_ / "source/scheduler_config.json",
+               .bytes = static_cast<std::uint64_t>(meta_bytes.size())},
+          },
+  };
+
+  auto comp = WriteComposition(opts);
+  ASSERT_TRUE(comp) << test_support::Failed(comp, &Error::ToString).value_or("");
+  EXPECT_FALSE(comp->reused);
+  EXPECT_FALSE(comp->id.empty());
+
+  auto opened = artifact::OpenComposition(comp->path, comp->id);
+  ASSERT_TRUE(opened) << opened.error().ToString();
+  EXPECT_EQ(opened->architecture(), "QwenImage21Pipeline");
+  EXPECT_EQ(opened->components().size(), 2U);
+  EXPECT_EQ(opened->components()[0].role, "text_encoder");
+  EXPECT_EQ(opened->components()[1].role, "transformer");
+  auto meta = opened->Metadata("scheduler_config.json");
+  ASSERT_TRUE(meta.has_value());
+  EXPECT_EQ(*meta, meta_bytes);
+
+  // Re-publishing detects reuse
+  auto again = WriteComposition(opts);
+  ASSERT_TRUE(again) << test_support::Failed(again, &Error::ToString).value_or("");
+  EXPECT_TRUE(again->reused);
+  EXPECT_EQ(again->id, comp->id);
+
+  // Refusal: unsorted components
+  auto unsorted_opts = opts;
+  std::swap(unsorted_opts.components[0], unsorted_opts.components[1]);
+  EXPECT_FALSE(WriteComposition(unsorted_opts));
+
+  // Refusal: expected archive identity mismatch
+  auto bad_expected_opts = opts;
+  const std::array<std::optional<base::Sha256Digest>, 1> bad_digest{base::Sha256Digest{}};
+  bad_expected_opts.expected = bad_digest;
+  EXPECT_FALSE(WriteComposition(bad_expected_opts));
+}
+
+TEST_F(ImportWriterTest, QwenImagePipelineValidationAndBound) {
+  Checkpoint invalid_container{.container = "gguf", .architecture = "QwenImage21Pipeline"};
+  EXPECT_FALSE(QwenImagePipelineBound(invalid_container));
+  EXPECT_FALSE(PlanQwenImagePipeline(invalid_container));
+
+  Checkpoint invalid_arch{.container = "diffusers", .architecture = "FluxPipeline"};
+  EXPECT_FALSE(QwenImagePipelineBound(invalid_arch));
+  EXPECT_FALSE(PlanQwenImagePipeline(invalid_arch));
+
+  Checkpoint missing_comp{.container = "diffusers", .architecture = "QwenImage21Pipeline"};
+  missing_comp.components.push_back({.role = "text_encoder"});
+  EXPECT_FALSE(PlanQwenImagePipeline(missing_comp));
+
+  // Bound calculation sums tensor bytes
+  Checkpoint pipeline{.container = "diffusers", .architecture = "QwenImage21Pipeline"};
+  Checkpoint comp{.role = "text_encoder"};
+  comp.tensors.push_back({.name = "t1", .extent = {.bytes = 100}});
+  comp.tensors.push_back({.name = "t2", .extent = {.bytes = 200}});
+  pipeline.components.push_back(comp);
+  auto bound = QwenImagePipelineBound(pipeline);
+  ASSERT_TRUE(bound);
+  EXPECT_EQ(bound->payload_bytes, 300U);
+  EXPECT_EQ(bound->work_units, 2U);
+  EXPECT_EQ(bound->metadata_bytes, 512U << 20U);
+}
+
+TEST_F(ImportWriterTest, DiffusersArchiveEventRecorded) {
+  const auto root = dir_ / "archive";
+  const auto revision = root / "hf/owner/model@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const auto bytes = Gguf(Tiny());
+  Write(root / "llmp-archive-root.json", R"({"format":"llmp-archive-root","format_version":1})");
+  const std::string model_index_json = R"({"_class_name":"QwenImage21Pipeline"})";
+  Write(revision / "model_index.json", model_index_json);
+  Write(revision / "text_encoder/model.safetensors", bytes);
+
+  const std::string text_safetensors = "text_encoder/model.safetensors";
+  const std::vector<std::pair<std::string, std::vector<std::byte>>> archive_files = {
+      {"model_index.json",
+       {reinterpret_cast<const std::byte*>(model_index_json.data()),
+        reinterpret_cast<const std::byte*>(model_index_json.data()) + model_index_json.size()}},
+      {text_safetensors, {bytes.begin(), bytes.end()}},
+  };
+  Write(revision / "llmp-archive.json", ArchiveManifestFiles(archive_files));
+
+  Checkpoint source{.container = "diffusers", .architecture = "QwenImage21Pipeline"};
+  source.files.push_back({.name = "model_index.json",
+                          .path = revision / "model_index.json",
+                          .bytes = model_index_json.size()});
+  Checkpoint comp{.role = "text_encoder"};
+  comp.files.push_back(
+      {.name = text_safetensors, .path = revision / text_safetensors, .bytes = bytes.size()});
+  source.components.push_back(comp);
+
+  auto archive = FindArchiveInput(revision / "model_index.json");
+  ASSERT_TRUE(archive && *archive);
+  auto identities = ArchiveIdentities(**archive, source);
+  ASSERT_TRUE(identities) << test_support::Failed(identities, &Error::ToString).value_or("");
+  EXPECT_EQ(identities->size(), 1U);
+
+  CompositionWriteOptions opts{
+      .store = dir_ / "store",
+      .build = "test",
+      .architecture = "QwenImage21Pipeline",
+      .components =
+          {
+              {.role = "text_encoder", .artifact = std::string(64, 'a'), .architecture = "Arch"},
+          },
+      .files = source.files,
+  };
+  auto comp_result = WriteComposition(opts);
+  ASSERT_TRUE(comp_result) << test_support::Failed(comp_result, &Error::ToString).value_or("");
+  auto opened = artifact::OpenComposition(comp_result->path);
+  ASSERT_TRUE(opened);
+
+  EXPECT_TRUE(RecordArchiveImport(**archive, source, *opened));
+
+  std::size_t count = 0;
+  for (const auto& item : std::filesystem::directory_iterator(root / "catalog/events")) {
+    ASSERT_EQ(item.path().extension(), ".json");
+    auto file = OpenCheckpointFile(item.path(), 0);
+    ASSERT_TRUE(file);
+    auto text = ReadDocument(*file, 65536, 0);
+    ASSERT_TRUE(text);
+    const auto json = base::json::Parse(*text);
+    ASSERT_TRUE(json);
+    EXPECT_EQ(json->root().find("kind")->string(), "import");
+    EXPECT_EQ(json->root().find("body")->find("artifact")->find("format")->string(),
+              "llmp-composition");
+    EXPECT_EQ(json->root().find("body")->find("variant")->string(), "model");
+    ++count;
+  }
+  EXPECT_EQ(count, 1U);
 }
 
 }  // namespace

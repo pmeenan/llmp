@@ -325,18 +325,54 @@ std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
 std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
     std::span<const QwenImageTensor> tensors, std::string_view want,
     const artifact::Artifact& artifact) {
-  if (auto v0 = RequireV0Artifact(artifact, "Qwen-Image-2.1"); !v0) {
-    return std::unexpected(v0.error());
+  if (artifact.format_version() == 0) {
+    std::vector<QwenImageResource> resources;
+    resources.reserve(artifact.resources().size());
+    for (const artifact::Resource& r : artifact.resources()) {
+      resources.push_back({.roles = r.roles,
+                           .family = artifact::FamilyName(r.repr.family),
+                           .dtype = r.repr.type,
+                           .shape = r.repr.dims});
+    }
+    return BindQwenImageComponent(tensors, want, artifact.model().architecture, resources);
   }
-  std::vector<QwenImageResource> resources;
-  resources.reserve(artifact.resources().size());
-  for (const artifact::Resource& r : artifact.resources()) {
-    resources.push_back({.roles = r.roles,
-                         .family = artifact::FamilyName(r.repr.family),
-                         .dtype = r.repr.type,
-                         .shape = r.repr.dims});
+  if (artifact.format_version() == 1) {
+    if (!artifact.expert_arrays().empty() || !artifact.folds().empty() ||
+        !artifact.relayouts().empty()) {
+      return Refused("Qwen-Image-2.1 component cannot have expert arrays, folds, or relayouts");
+    }
+    std::vector<QwenImageResource> resources;
+    resources.reserve(artifact.resources().size());
+    for (const artifact::Resource& r : artifact.resources()) {
+      const bool is_plain = r.format && r.part == format::PartRole::kData &&
+                            r.format->layout == format::Layout::kDense &&
+                            r.format->params == format::EncodingParams{} && r.format->stacked == 1;
+      std::string_view dtype;
+      if (r.format) {
+        if (r.format->encoding == format::Encoding::kBF16) {
+          dtype = "BF16";
+        } else if (r.format->encoding == format::Encoding::kF32) {
+          dtype = "F32";
+        }
+      }
+      std::vector<std::uint64_t> shape;
+      if (r.format) {
+        shape.reserve(r.format->shape.rank);
+        for (std::size_t d = 0; d < r.format->shape.rank; ++d) {
+          shape.push_back(r.format->shape.ne[r.format->shape.rank - 1 - d]);
+        }
+      }
+      resources.push_back({.roles = r.roles,
+                           .family = is_plain ? "plain" : "other",
+                           .dtype = dtype,
+                           .shape = std::move(shape)});
+    }
+    return BindQwenImageComponent(tensors, want, artifact.model().architecture, resources);
   }
-  return BindQwenImageComponent(tensors, want, artifact.model().architecture, resources);
+  return Refused(
+      std::format("Qwen-Image-2.1 reads version 0 or 1 prepared artifacts; artifact {} is format "
+                  "version {} (D-113)",
+                  artifact.id(), artifact.format_version()));
 }
 
 // ---------------------------------------------------------------- host arithmetic

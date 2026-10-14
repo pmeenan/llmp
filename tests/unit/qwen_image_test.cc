@@ -27,6 +27,7 @@
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
+#include "artifact_writer.h"
 
 namespace {
 
@@ -267,6 +268,70 @@ TEST(QwenImage, InstalledComponentsBind) {
     const auto bound = md::BindQwenImageComponent(roles[i].second, archs[i], *a);
     EXPECT_TRUE(bound.has_value()) << roles[i].first << ": " << bound.error();
   }
+}
+
+TEST(QwenImage, BindsV1Artifact) {
+  namespace ts = llmp::test;
+  namespace fmt = llmp::format;
+  const std::filesystem::path store =
+      std::filesystem::temp_directory_path() / "llmp-test-qwen-image-v1";
+  std::error_code error;
+  std::filesystem::remove_all(store, error);
+
+  ts::V1Plan plan;
+  plan.architecture = "toy_arch";
+  ts::V1Resource r1;
+  r1.name = "weight_a";
+  // ne = {128, 64} (in GGML order: innermost first: ne[0]=128, ne[1]=64)
+  // which corresponds to outer-to-inner shape {64, 128}
+  r1.format.encoding = fmt::Encoding::kBF16;
+  r1.format.layout = fmt::Layout::kDense;
+  r1.format.shape.rank = 2;
+  r1.format.shape.ne[0] = 128;
+  r1.format.shape.ne[1] = 64;
+  r1.part = fmt::PartRole::kData;
+
+  ts::V1Group group{.kind = llmp::artifact::GroupKind::kLayer, .layer = 0};
+  group.resources.push_back(std::move(r1));
+  plan.groups.push_back(std::move(group));
+
+  const auto root = ts::Publish(store, ts::Render(plan));
+  auto artifact = llmp::artifact::Artifact::Open(root);
+  ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
+  EXPECT_EQ(artifact->format_version(), 1U);
+
+  // Successful binding
+  const std::vector<md::QwenImageTensor> want = {
+      {.name = "weight_a", .dtype = "BF16", .shape = {64, 128}},
+  };
+  auto bound = md::BindQwenImageComponent(want, "toy_arch", *artifact);
+  ASSERT_TRUE(bound.has_value()) << bound.error();
+  EXPECT_EQ(bound->size(), 1U);
+
+  // Refusal: architecture mismatch
+  EXPECT_FALSE(md::BindQwenImageComponent(want, "wrong_arch", *artifact).has_value());
+
+  // Refusal: shape mismatch
+  const std::vector<md::QwenImageTensor> bad_shape = {
+      {.name = "weight_a", .dtype = "BF16", .shape = {128, 64}},
+  };
+  EXPECT_FALSE(md::BindQwenImageComponent(bad_shape, "toy_arch", *artifact).has_value());
+
+  // Refusal: dtype mismatch
+  const std::vector<md::QwenImageTensor> bad_dtype = {
+      {.name = "weight_a", .dtype = "F32", .shape = {64, 128}},
+  };
+  EXPECT_FALSE(md::BindQwenImageComponent(bad_dtype, "toy_arch", *artifact).has_value());
+
+  // Refusal: artifact with folds
+  ts::V1Plan plan_with_folds = plan;
+  plan_with_folds.folds = {{"norm.plus_one", {"weight_a"}}};
+  const auto root_folds = ts::Publish(store, ts::Render(plan_with_folds));
+  auto artifact_folds = llmp::artifact::Artifact::Open(root_folds);
+  ASSERT_TRUE(artifact_folds.has_value());
+  EXPECT_FALSE(md::BindQwenImageComponent(want, "toy_arch", *artifact_folds).has_value());
+
+  std::filesystem::remove_all(store, error);
 }
 
 }  // namespace

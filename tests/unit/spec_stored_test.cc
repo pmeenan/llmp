@@ -319,7 +319,6 @@ TEST(SpecStoredTest, LegacyFamiliesRefuseV1Artifacts) {
   refused(model::BindQwen38Mtp(model::Qwen38Flash(), a), "Qwen3.8 MTP");
   refused(model::BindQwen2(model::Qwen25Instruct05B(), a), "Qwen2");
   refused(model::BindQwen2Exl3(model::Qwen25Instruct05BExl3(), a), "Qwen2 EXL3");
-  refused(model::BindQwenImageComponent({}, "toy", a), "Qwen-Image-2.1");
   // The v0 source reader too; SourceOf reads both versions.
   refused(spec::SourceOfV0(a), "SourceOfV0");
   EXPECT_TRUE(spec::SourceOf(a).has_value());

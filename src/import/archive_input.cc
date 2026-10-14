@@ -280,12 +280,11 @@ std::expected<fs::path, Error> SelectArchiveSource(const ArchiveInput& archive,
   return path;
 }
 
-std::expected<std::vector<std::optional<base::Sha256Digest>>, Error> ArchiveIdentities(
-    const ArchiveInput& archive, const Checkpoint& source) {
+std::expected<std::vector<std::optional<base::Sha256Digest>>, Error> ArchiveFileIdentities(
+    const ArchiveInput& archive, std::span<const SourceFile> files) {
   std::vector<std::optional<base::Sha256Digest>> expected;
-  expected.reserve(source.files.size());
-  std::set<std::string> weights;
-  for (const auto& file : source.files) {
+  expected.reserve(files.size());
+  for (const auto& file : files) {
     auto path = Relative(archive, file);
     if (!path) return std::unexpected(path.error());
     const auto entry = archive.files.find(*path);
@@ -293,36 +292,45 @@ std::expected<std::vector<std::optional<base::Sha256Digest>>, Error> ArchiveIden
         entry->second.bytes != file.bytes)
       return Bad("a source file is not present with matching size in the archive manifest");
     expected.push_back(entry->second.sha256);
-    if (path->ends_with(".gguf") || path->ends_with(".safetensors")) weights.insert(*path);
+  }
+  return expected;
+}
+
+std::expected<std::vector<std::optional<base::Sha256Digest>>, Error> ArchiveIdentities(
+    const ArchiveInput& archive, const Checkpoint& source) {
+  auto expected = ArchiveFileIdentities(archive, source.files);
+  if (!expected) return expected;
+  std::set<std::string> weights;
+  for (const auto& file : source.files) {
+    auto path = Relative(archive, file);
+    if (path && (path->ends_with(".gguf") || path->ends_with(".safetensors"))) {
+      weights.insert(std::move(*path));
+    }
+  }
+  if (source.container == "diffusers") {
+    for (const auto& comp : source.components) {
+      for (const auto& file : comp.files) {
+        auto path = Relative(archive, file);
+        if (!path) return std::unexpected(path.error());
+        const auto entry = archive.files.find(*path);
+        if (entry == archive.files.end() || !entry->second.present || !entry->second.sha256 ||
+            entry->second.bytes != file.bytes)
+          return Bad("a source file is not present with matching size in the archive manifest");
+        if (path->ends_with(".safetensors")) weights.insert(*path);
+      }
+    }
   }
   if (auto selected = SelectedVariant(archive, weights); !selected)
     return std::unexpected(selected.error());
   return expected;
 }
 
-std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
-                                               const Checkpoint& source,
-                                               const artifact::Artifact& artifact) {
-  if (archive.root.empty()) return {};
-  if (artifact.sources().size() != source.files.size())
-    return Bad("published artifact source list disagrees with the archive input");
-  std::set<std::string> source_names;
-  for (const auto& file : source.files) {
-    auto relative = Relative(archive, file);
-    if (!relative) return std::unexpected(relative.error());
-    const auto expected = archive.files.find(*relative);
-    const auto actual = std::ranges::find(artifact.sources(), file.name, &artifact::Source::name);
-    if (expected == archive.files.end() || !expected->second.present || !expected->second.sha256 ||
-        actual == artifact.sources().end() || actual->bytes.value() != expected->second.bytes ||
-        actual->sha256 != *expected->second.sha256)
-      return Bad("published artifact source identity disagrees with the archive manifest");
-    source_names.insert(std::move(*relative));
-  }
-  std::erase_if(source_names, [](const auto& name) {
-    return !name.ends_with(".gguf") && !name.ends_with(".safetensors");
-  });
-  auto variant = SelectedVariant(archive, source_names);
-  if (!variant) return std::unexpected(variant.error());
+namespace {
+std::expected<void, Error> WriteArchiveEvent(const ArchiveInput& archive,
+                                             std::string_view format_name,
+                                             const std::string& artifact_id,
+                                             const artifact::Converter& importer,
+                                             std::string_view variant) {
   std::array<char, 256> hostname{};
   if (::gethostname(hostname.data(), hostname.size() - 1) != 0)
     return Bad("cannot name import host", Rule::kIo);
@@ -340,17 +348,16 @@ std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
   const auto time = std::format("{:%FT%TZ}", now);
   const auto id = std::format("{:%Y%m%dT%H%M%SZ}-{}-{}-{}", now, host, ::getpid(),
                               base::ToHex(base::Sha256().Update(random).Finish()).substr(0, 16));
-  const auto& importer = artifact.converter();
   const auto importer_json = std::format(
       "{{\"build\":{},\"name\":{},\"options_sha256\":{},\"version\":{}}}", Q(importer.build),
       Q(importer.name), Q(base::ToHex(importer.options_sha256)), Q(importer.version));
   const auto text = std::format(
-      "{{\"body\":{{\"artifact\":{{\"format\":\"llmp-artifact\",\"format_version\":1,\"id\":{},"
+      "{{\"body\":{{\"artifact\":{{\"format\":{},\"format_version\":1,\"id\":{},"
       "\"importer\":{}}},\"commit\":{},\"host\":{},\"repo\":{},\"variant\":{}}},\"format\":\"llmp-"
       "archive-event\",\"format_version\":1,\"host\":{},\"id\":{},\"kind\":\"import\",\"time\":{},"
       "\"tool\":\"llmp-import/1\"}}\n",
-      Q(artifact.id()), importer_json, Q(archive.commit), Q(host), Q(archive.repo), Q(*variant),
-      Q(host), Q(id), Q(time));
+      Q(format_name), Q(artifact_id), importer_json, Q(archive.commit), Q(host), Q(archive.repo),
+      Q(variant), Q(host), Q(id), Q(time));
   auto marker = Marker(archive.root);
   if (!marker || !*marker)
     return Bad("archive root disappeared before event publication", Rule::kIo);
@@ -396,5 +403,65 @@ std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
   if (!directory.valid() || ::fsync(directory.get()) != 0)
     return Bad("cannot sync archive event directory", Rule::kIo);
   return {};
+}
+}  // namespace
+
+std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
+                                               const Checkpoint& source,
+                                               const artifact::Artifact& artifact) {
+  if (archive.root.empty()) return {};
+  if (artifact.sources().size() != source.files.size())
+    return Bad("published artifact source list disagrees with the archive input");
+  std::set<std::string> source_names;
+  for (const auto& file : source.files) {
+    auto relative = Relative(archive, file);
+    if (!relative) return std::unexpected(relative.error());
+    const auto expected = archive.files.find(*relative);
+    const auto actual = std::ranges::find(artifact.sources(), file.name, &artifact::Source::name);
+    if (expected == archive.files.end() || !expected->second.present || !expected->second.sha256 ||
+        actual == artifact.sources().end() || actual->bytes.value() != expected->second.bytes ||
+        actual->sha256 != *expected->second.sha256)
+      return Bad("published artifact source identity disagrees with the archive manifest");
+    source_names.insert(std::move(*relative));
+  }
+  std::erase_if(source_names, [](const auto& name) {
+    return !name.ends_with(".gguf") && !name.ends_with(".safetensors");
+  });
+  auto variant = SelectedVariant(archive, source_names);
+  if (!variant) return std::unexpected(variant.error());
+  return WriteArchiveEvent(archive, "llmp-artifact", artifact.id(), artifact.converter(), *variant);
+}
+
+std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
+                                               const Checkpoint& source,
+                                               const artifact::Composition& composition) {
+  if (archive.root.empty()) return {};
+  if (composition.sources().size() != source.files.size())
+    return Bad("published composition source list disagrees with the archive input");
+  for (const auto& file : source.files) {
+    auto relative = Relative(archive, file);
+    if (!relative) return std::unexpected(relative.error());
+    const auto expected = archive.files.find(*relative);
+    const std::string name = fs::path(file.name).filename().string();
+    const auto actual = std::ranges::find(composition.sources(), name, &artifact::Source::name);
+    if (expected == archive.files.end() || !expected->second.present || !expected->second.sha256 ||
+        actual == composition.sources().end() || actual->bytes.value() != expected->second.bytes ||
+        actual->sha256 != *expected->second.sha256)
+      return Bad("published composition source identity disagrees with the archive manifest");
+  }
+  std::set<std::string> source_names;
+  for (const auto& comp : source.components) {
+    for (const auto& file : comp.files) {
+      auto relative = Relative(archive, file);
+      if (!relative) return std::unexpected(relative.error());
+      if (relative->ends_with(".safetensors")) {
+        source_names.insert(std::move(*relative));
+      }
+    }
+  }
+  auto variant = SelectedVariant(archive, source_names);
+  if (!variant) return std::unexpected(variant.error());
+  return WriteArchiveEvent(archive, "llmp-composition", composition.id(), composition.converter(),
+                           *variant);
 }
 }  // namespace llmp::import

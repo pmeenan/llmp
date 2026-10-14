@@ -994,7 +994,7 @@ llmp_gtest(composition_test TEST_PREFIX unit.
 # and binding, the VAE's plan, rotary tables, sinusoid and pixels; the
 # installed components bound where the M3 store holds them (a Spark).
 add_executable(qwen_image_test qwen_image_test.cc)
-target_link_libraries(qwen_image_test PRIVATE llmp_model llmp_artifact)
+target_link_libraries(qwen_image_test PRIVATE llmp_model llmp_artifact llmp_test_artifact_writer)
 llmp_gtest(qwen_image_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The locked ExLlamaV3 subset: the device context's sizes and the

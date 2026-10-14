@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "artifact/composition.h"
 #include "import/checkpoint.h"
 
 namespace llmp::import {
@@ -37,6 +38,8 @@ std::expected<std::optional<ArchiveInput>, Error> FindArchiveInput(
 // selected safetensors directory; ambiguity is refused, never guessed.
 std::expected<std::filesystem::path, Error> SelectArchiveSource(
     const ArchiveInput& archive, const std::filesystem::path& requested);
+std::expected<std::vector<std::optional<base::Sha256Digest>>, Error> ArchiveFileIdentities(
+    const ArchiveInput& archive, std::span<const SourceFile> files);
 std::expected<std::vector<std::optional<base::Sha256Digest>>, Error> ArchiveIdentities(
     const ArchiveInput& archive, const Checkpoint& source);
 // Called only after publication. Returns no event for a staged copy. An
@@ -45,5 +48,8 @@ std::expected<std::vector<std::optional<base::Sha256Digest>>, Error> ArchiveIden
 std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
                                                const Checkpoint& source,
                                                const artifact::Artifact& artifact);
+std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
+                                               const Checkpoint& source,
+                                               const artifact::Composition& composition);
 }  // namespace llmp::import
 #endif  // LLMP_IMPORT_ARCHIVE_INPUT_H_
