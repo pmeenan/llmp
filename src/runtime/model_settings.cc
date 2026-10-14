@@ -34,6 +34,7 @@
 #include "runtime/gemma_profile.h"
 #include "spec/mapping.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/stored.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
 
@@ -503,13 +504,34 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
   facts.architecture = target.model().architecture;
   std::optional<std::uint32_t> declared_context;
   if (target.format_version() == 1) {
-    if (drafter != nullptr)
-      return Error("native v1 component admission has no qualified drafter composition");
     auto admitted = ReadComponentAdmission(target);
     if (!admitted) return Error(admitted.error());
     declared_context = admitted->model.stages.front().context;
     facts.context_ceiling = admitted->model.stages.front().context;
     facts.gemma_profile = admitted->gemma_profile;
+    if (drafter != nullptr) {
+      const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
+        const auto* target_mapping = spec::FindMapping(facts.architecture);
+        if (target_mapping == nullptr) return Error("component calibration has no target mapping");
+        const auto* draft_mapping = spec::FindMapping(drafter->model().architecture);
+        if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
+        auto draft_values = ComponentDrafterValues(target, *drafter);
+        if (!draft_values) return Error(draft_values.error());
+        auto draft_source = spec::SourceOf(*drafter, draft_mapping);
+        if (!draft_source) return Error(draft_source.error());
+        auto composed = spec::ComposeDrafter(admitted->model, *target_mapping, *draft_mapping,
+                                             *draft_source, *draft_values);
+        if (!composed) return Error(composed.error());
+        if (auto configured = configure(*composed); !configured) return Error(configured.error());
+        const std::array<std::string_view, 2> both{target.id(), drafter->id()};
+        return spec::BoundDigest(*composed, both);
+      };
+      auto composed = compose();
+      if (composed)
+        facts.composed_spec = *composed;
+      else
+        facts.composed_spec_error = composed.error();
+    }
     const std::array<std::string_view, 1> ids{target.id()};
     if (auto configured = configure(admitted->model); !configured) return Error(configured.error());
     auto digest = spec::BoundDigest(admitted->model, ids);
@@ -541,10 +563,12 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
         const auto* draft_mapping = spec::FindMapping(drafter->model().architecture);
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
-        auto draft_values = ComponentDrafterV0Values(target, *drafter);
+        auto draft_values = ComponentDrafterValues(target, *drafter);
         if (!draft_values) return Error(draft_values.error());
+        auto draft_source = spec::SourceOf(*drafter, draft_mapping);
+        if (!draft_source) return Error(draft_source.error());
         auto composed =
-            spec::ComposeDrafterV0(*model, *mapping, *drafter, *draft_mapping, *draft_values);
+            spec::ComposeDrafter(*model, *mapping, *draft_mapping, *draft_source, *draft_values);
         if (!composed) return Error(composed.error());
         if (auto configured = configure(*composed); !configured) return Error(configured.error());
         const std::array<std::string_view, 2> both{target.id(), drafter->id()};
@@ -597,8 +621,12 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     facts.trained_context_from = "the admitted stored spec";
   }
   if (drafter != nullptr) {
-    if (drafter->format_version() != 0)
-      return Error("native v1 component admission has no qualified drafter composition");
+    if (drafter->format_version() == 1) {
+      if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
+        return Error(admitted.error());
+    } else if (drafter->format_version() != 0) {
+      return Error("drafter format version must be 0 or 1");
+    }
     facts.drafter_architecture = drafter->model().architecture;
     if (facts.drafter_architecture == "qwen4exp-mtp") {
       const auto head = drafter->FindResource("draft_output.weight");

@@ -31,6 +31,8 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
     const artifact::Artifact& artifact);
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Values(
     const artifact::Artifact& target, const artifact::Artifact& drafter);
+std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
+    const artifact::Artifact& target, const artifact::Artifact& drafter);
 
 struct ComponentAdmission {
   spec::ModelSpec model;
@@ -44,6 +46,8 @@ struct ComponentAdmission {
 std::expected<void, std::string> CheckComponentAdmission(const spec::ModelSpec& model,
                                                          const spec::Source& source,
                                                          std::span<const artifact::Source> origins);
+std::expected<void, std::string> CheckComponentDrafterAdmission(
+    const spec::Source& source, std::span<const artifact::Source> origins);
 
 // Artifact-only prerequisite, before owned spec/source construction.
 std::expected<void, std::string> CheckComponentArtifactAdmission(

@@ -56,6 +56,7 @@
 #include "spec/mappings/gemma4.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
+#include "spec/stored.h"
 
 namespace llmp::runtime {
 namespace {
@@ -433,12 +434,12 @@ std::expected<std::vector<spec::SourceValue>, std::string> V0Values(std::string_
   return ComponentV0Values(artifact);
 }
 
-// A drafter's v0 values (its compiled profile's, by its target's): the
+// A drafter's values (its compiled profile's, by its target's): the
 // Gemma 4 assistant's of its target's approved profile, its tensors bound
 // to that profile.
-std::expected<std::vector<spec::SourceValue>, std::string> DrafterV0Values(
+std::expected<std::vector<spec::SourceValue>, std::string> DrafterValues(
     const ja::Artifact& target, const ja::Artifact& drafter) {
-  return ComponentDrafterV0Values(target, drafter);
+  return ComponentDrafterValues(target, drafter);
 }
 
 // What of a family's chat template its chat route serves (the M3 classes'
@@ -615,8 +616,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (!artifact) return Error(artifact.error());
     const bool stored = artifact->format_version() == 1;
 
-    if (stored && !drafter_id.empty())
-      return Error("native v1 component admission has no qualified drafter composition");
     const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
     if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
     if (settings.architecture != artifact->model().architecture)
@@ -697,6 +696,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto opened = OpenInstalled(store, drafter_id);
       if (!opened) return Error(opened.error());
       drafter.emplace(std::move(*opened));
+      if (drafter->format_version() == 1) {
+        if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
+          return Error(admitted.error());
+      }
       drafter_mapping = spec::FindMapping(drafter->model().architecture);
       if (drafter_mapping == nullptr || drafter_mapping->role != spec::StageRole::kDrafter) {
         return Error(std::format("the drafter's architecture {} has no drafter mapping",
@@ -730,15 +733,15 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
               value.value = static_cast<std::int64_t>(hold->draft_head_rows);
             }
       } else
-        dvalues = DrafterV0Values(*artifact, *drafter);
+        dvalues = DrafterValues(*artifact, *drafter);
       if (!dvalues) return Error(dvalues.error());
       hold->drafter_values = std::move(*dvalues);
-      auto composed = spec::ComposeDrafterV0(*synthesized, *mapping, *drafter, *drafter_mapping,
-                                             hold->drafter_values);
+      auto dsource = spec::SourceOf(*drafter, drafter_mapping);
+      if (!dsource) return Error(dsource.error());
+      auto composed = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
+                                           hold->drafter_values);
       if (!composed) return Error(composed.error());
       hold->spec = std::move(*composed);
-      auto dsource = spec::SourceOfV0(*drafter, drafter_mapping);
-      if (!dsource) return Error(dsource.error());
       hold->sources.push_back(std::move(*dsource));
     } else {
       hold->spec = std::move(*synthesized);
@@ -973,8 +976,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     // v0 retains its established synthesis path. Stored v1 maps came from the
     // validated component roles above; no discovery-only graphs are built.
-    if (!stored) {
+    if (!stored || speculate) {
       for (const planner::StepShape& s : setup) {
+        if (stored && s.stage == 0) continue;
         auto step = components::BuildStep(hold->spec, s.stage, s,
                                           {.tensors = hold->tables.at(s.stage),
                                            .state = &hold->layouts.at(s.stage),

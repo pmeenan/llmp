@@ -24,6 +24,7 @@
 #include "expected_error.h"
 #include "gemma2_fixture.h"
 #include "gemma3_fixture.h"
+#include "gemma4_assistant_fixture.h"
 #include "gemma4_fixture.h"
 #include "import/normalize.h"
 #include "import/readers/gguf.h"
@@ -106,6 +107,82 @@ void AddTensor(Checkpoint& s, std::string name, std::initializer_list<std::uint6
                        .dtype = info.name,
                        .dims = std::vector<std::uint64_t>(ne)});
   s.files[0].bytes = offset + (*parts)[0].bytes;
+}
+void AddTensor(Checkpoint& s, std::string name, std::span<const std::uint64_t> ne,
+               Encoding encoding = Encoding::kF32) {
+  const auto shape = format::ShapeOf(ne);
+  base::Check(shape.has_value(), "test shape");
+  const auto& info = format::Info(encoding);
+  format::TensorFormat f{
+      .encoding = encoding,
+      .layout = info.quantized ? format::Layout::kGgmlBlocks : format::Layout::kDense,
+      .shape = *shape};
+  const auto parts = format::PartsOf(f);
+  base::Check(parts.has_value(), "test format");
+  const auto offset = (s.files[0].bytes + 31) / 32 * 32;
+  s.tensors.push_back({.name = std::move(name),
+                       .format = f,
+                       .extent = {.offset = offset, .bytes = (*parts)[0].bytes},
+                       .dtype = info.name,
+                       .dims = std::vector<std::uint64_t>(ne.begin(), ne.end())});
+  s.files[0].bytes = offset + (*parts)[0].bytes;
+}
+
+Checkpoint AssistantCheckpoint(std::uint32_t size) {
+  const auto* dir = std::getenv("LLMP_TEST_DATA");
+  base::Check(dir != nullptr, "missing assistant fixtures");
+  std::ifstream file(std::string(dir) + "/gemma4-assistant/assistant" + std::to_string(size) +
+                     ".json");
+  std::string text(std::istreambuf_iterator<char>{file}, {});
+  auto doc = base::json::Parse(text);
+  base::Check(doc.has_value(), "invalid assistant fixtures");
+  Checkpoint s{.container = "gguf",
+               .architecture = "gemma4-assistant",
+               .files = {{.name = "mtp-gemma-4-" + std::to_string(size) +
+                                  (size == 26 ? "B-A4B-it.gguf" : "B-it.gguf"),
+                          .bytes = 0}}};
+  const auto meta = test_support::gemma4::Get(doc->root(), "metadata");
+  for (std::size_t i = 0; i < meta.size(); ++i) {
+    const auto key = meta.key(i);
+    if (key != "general.architecture" && !key.starts_with("gemma4-assistant.")) continue;
+    const auto val = meta.member(i);
+    if (val.is_bool()) {
+      Value(s, std::string(key), val.boolean());
+    } else if (val.is_number()) {
+      if (val.is_integer()) {
+        Value(s, std::string(key), *val.int64());
+      } else {
+        Value(s, std::string(key), *val.float64());
+      }
+    } else if (val.is_string()) {
+      Value(s, std::string(key), std::string(val.string()));
+    } else if (val.is_array()) {
+      if (val.size() > 0 && val.at(0).is_bool()) {
+        std::vector<std::int64_t> list;
+        for (std::size_t j = 0; j < val.size(); ++j) list.push_back(val.at(j).boolean() ? 1 : 0);
+        Value(s, std::string(key), list);
+      } else if (val.size() > 0 && val.at(0).is_number() && val.at(0).is_integer()) {
+        std::vector<std::int64_t> list;
+        for (std::size_t j = 0; j < val.size(); ++j) list.push_back(*val.at(j).int64());
+        Value(s, std::string(key), list);
+      }
+    }
+  }
+  Ordered(s);
+  const auto tensors = test_support::gemma4::Get(doc->root(), "tensors");
+  for (std::size_t i = 0; i < tensors.size(); ++i) {
+    const auto t = tensors.at(i);
+    const std::string name = std::string(test_support::gemma4::Get(t, "name").string());
+    const std::string type_name = std::string(test_support::gemma4::Get(t, "type").string());
+    const auto ne = test_support::gemma4::Get(t, "ne");
+    std::vector<std::uint64_t> dims;
+    for (std::size_t j = 0; j < ne.size(); ++j)
+      dims.push_back(static_cast<std::uint64_t>(*ne.at(j).int64()));
+    Encoding enc = Encoding::kF32;
+    if (type_name == "Q8_0") enc = Encoding::kQ8_0;
+    AddTensor(s, name, dims, enc);
+  }
+  return s;
 }
 Checkpoint Tiny(bool gemma3 = false, bool untied = false) {
   const std::string arch = gemma3 ? "gemma3" : "gemma2";
@@ -1101,6 +1178,56 @@ TEST(ImportNormalizeDrafterTest, ApprovedGgufDrafterMappingsValidateAndRejectMal
   bad_m.stage = "";
   bad_gemma.architecture = &bad_m;
   EXPECT_FALSE(ValidateSourceMapping(bad_gemma));
+}
+
+TEST(ImportNormalizeDrafterTest, NormalizesGemma4AssistantCheckpointsIntoComposedSpecs) {
+  for (std::uint32_t size : {26U, 31U}) {
+    auto cp = AssistantCheckpoint(size);
+    const auto count = cp.tensors.size();
+    EXPECT_EQ(count, 49U);
+
+    auto cost = NormalizationBound(cp);
+    ASSERT_TRUE(cost) << test_support::Failed(cost, &Error::ToString).value_or("");
+    auto plan = Normalize(std::move(cp), {cost->metadata_bytes, cost->work_units});
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+
+    // Drafter spec is composed: stage 0 is target, stage 1 is drafter.
+    ASSERT_EQ(plan->spec().stages.size(), 2U);
+    EXPECT_EQ(plan->spec().stages[0].role, spec::StageRole::kTarget);
+    EXPECT_EQ(plan->spec().stages[0].artifact, 0U);
+    EXPECT_EQ(plan->spec().stages[1].role, spec::StageRole::kDrafter);
+    EXPECT_EQ(plan->spec().stages[1].artifact, 1U);
+
+    // Target width matches embedding_length_out (2816 for 26B, 5376 for 31B).
+    const std::uint32_t expected_target_width = size == 26 ? 2816 : 5376;
+    EXPECT_EQ(plan->spec().stages[0].stream.width, expected_target_width);
+    EXPECT_EQ(plan->spec().stages[1].stream.width, 1024U);
+
+    // embedding.table reads target stage.
+    ASSERT_TRUE(plan->spec().stages[1].embedding.has_value());
+    const auto table_w = std::ranges::find(plan->spec().stages[1].embedding->weights, "table",
+                                           &spec::WeightBinding::role);
+    ASSERT_NE(table_w, plan->spec().stages[1].embedding->weights.end());
+    EXPECT_EQ(table_w->stage, "target");
+
+    // Routes cover all 49 drafter tensors.
+    EXPECT_EQ(plan->routes().size(), 49U);
+  }
+}
+
+TEST(ImportNormalizeDrafterTest, RejectsMissingDrafterKeysAndMismatchedParentWidth) {
+  auto cp = AssistantCheckpoint(26);
+  // Remove embedding_length_out
+  auto it =
+      std::ranges::find(cp.metadata, "gemma4-assistant.embedding_length_out", &MetaEntry::key);
+  ASSERT_NE(it, cp.metadata.end());
+  cp.metadata.erase(it);
+  EXPECT_FALSE(Normalize(std::move(cp), kFunded));
+
+  // Invalid embedding_length_out (neither 2816 nor 5376)
+  cp = AssistantCheckpoint(26);
+  Value(cp, "gemma4-assistant.embedding_length_out", std::int64_t{1024});
+  EXPECT_FALSE(Normalize(std::move(cp), kFunded));
 }
 
 }  // namespace

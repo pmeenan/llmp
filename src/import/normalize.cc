@@ -15,6 +15,10 @@
 #include "components/component.h"
 #include "components/step.h"
 #include "import/readers/gguf.h"
+#include "model/dsv4.h"
+#include "model/gemma4.h"
+#include "spec/mappings/dsv4.h"
+#include "spec/mappings/gemma4.h"
 
 namespace llmp::import {
 namespace nd = normalization_detail;
@@ -569,6 +573,143 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   return NormalizationCost{bytes, work, payload, static_cast<std::uint32_t>(layers)};
 }
 
+spec::Source SyntheticGemma4TargetSource(const model::Gemma4Profile& p) {
+  spec::Source s{.architecture = "gemma4", .container = "gguf"};
+  const auto add = [&](std::string name, std::vector<std::uint64_t> ne, bool experts = false) {
+    const auto encoding = ne.size() == 1 ? format::Encoding::kF32 : format::Encoding::kBF16;
+    format::TensorFormat f{
+        .encoding = encoding,
+        .layout = format::Layout::kDense,
+        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())},
+    };
+    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
+    s.tensors.push_back({.name = std::move(name),
+                         .format = f,
+                         .part = format::PartRole::kData,
+                         .experts = experts});
+  };
+  add("token_embd.weight", {p.width, p.vocab});
+  add("output_norm.weight", {p.width});
+  add("output.weight", {p.width, p.vocab});
+  add("rope_freqs.weight", {p.global_head_dim / 2});
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    const std::string prefix = std::format("blk.{}.", il);
+    const auto d = p.head_dim(il), kv = p.kv_heads(il) * d, q = p.heads * d;
+    add(prefix + "attn_norm.weight", {p.width});
+    add(prefix + "attn_q.weight", {p.width, q});
+    add(prefix + "attn_k.weight", {p.width, kv});
+    if (p.local(il)) {
+      add(prefix + "attn_v.weight", {p.width, kv});
+    }
+    add(prefix + "attn_q_norm.weight", {d});
+    add(prefix + "attn_k_norm.weight", {d});
+    add(prefix + "attn_output.weight", {q, p.width});
+    add(prefix + "post_attention_norm.weight", {p.width});
+    add(prefix + "layer_output_scale.weight", {1});
+    if (p.experts != 0) {
+      add(prefix + "ffn_norm.weight", {p.width});
+      add(prefix + "ffn_gate.weight", {p.width, p.ffn});
+      add(prefix + "ffn_up.weight", {p.width, p.ffn});
+      add(prefix + "ffn_down.weight", {p.ffn, p.width});
+      add(prefix + "post_ffw_norm_1.weight", {p.width});
+      add(prefix + "ffn_gate_inp.weight", {p.width, p.experts});
+      add(prefix + "ffn_gate_inp.scale", {p.width});
+      add(prefix + "pre_ffw_norm_2.weight", {p.width});
+      add(prefix + "ffn_gate_up_exps.weight", {p.width, 2U * p.expert_ffn, p.experts}, true);
+      add(prefix + "ffn_down_exps.weight", {p.expert_ffn, p.width, p.experts}, true);
+      add(prefix + "ffn_down_exps.scale", {p.experts});
+      add(prefix + "post_ffw_norm_2.weight", {p.width});
+      add(prefix + "post_ffw_norm.weight", {p.width});
+    } else {
+      add(prefix + "ffn_norm.weight", {p.width});
+      add(prefix + "ffn_gate.weight", {p.width, p.ffn});
+      add(prefix + "ffn_up.weight", {p.width, p.ffn});
+      add(prefix + "ffn_down.weight", {p.ffn, p.width});
+      add(prefix + "post_ffw_norm.weight", {p.width});
+    }
+  }
+  return s;
+}
+
+spec::Source SyntheticDsv4TargetSource(const model::Dsv4Profile& p) {
+  spec::Source s{.architecture = "deepseek4", .container = "gguf"};
+  const auto add = [&](std::string name, std::vector<std::uint64_t> ne, bool experts = false,
+                       std::optional<format::Encoding> enc = std::nullopt) {
+    const auto encoding =
+        enc.value_or(ne.size() == 1 ? format::Encoding::kF32 : format::Encoding::kBF16);
+    format::TensorFormat f{
+        .encoding = encoding,
+        .layout = format::Layout::kDense,
+        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())},
+    };
+    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
+    s.tensors.push_back({.name = std::move(name),
+                         .format = f,
+                         .part = format::PartRole::kData,
+                         .experts = experts});
+  };
+  add("token_embd.weight", {p.width, p.vocab});
+  add("output_norm.weight", {p.width});
+  add("output.weight", {p.width, p.vocab});
+  add("output_hc_fn.weight", {p.hc_width(), p.hc});
+  add("output_hc_base.weight", {p.hc});
+  add("output_hc_scale.weight", {1});
+  const std::uint64_t w = p.width;
+  const std::uint64_t head = p.head_dim;
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    const std::string prefix = std::format("blk.{}.", il);
+    add(prefix + "attn_norm.weight", {w});
+    add(prefix + "attn_sinks.weight", {p.heads});
+    add(prefix + "attn_q_a.weight", {w, p.q_lora});
+    add(prefix + "attn_q_a_norm.weight", {p.q_lora});
+    add(prefix + "attn_q_b.weight", {p.q_lora, std::uint64_t{p.heads} * head});
+    add(prefix + "attn_kv.weight", {w, head});
+    add(prefix + "attn_kv_a_norm.weight", {head});
+    add(prefix + "attn_output_a.weight",
+        {std::uint64_t{p.heads} * head / p.o_groups, std::uint64_t{p.o_lora} * p.o_groups});
+    add(prefix + "attn_output_b.weight", {std::uint64_t{p.o_lora} * p.o_groups, w});
+    add(prefix + "hc_attn_fn.weight", {p.hc_width(), p.hc_mix()});
+    add(prefix + "hc_attn_base.weight", {p.hc_mix()});
+    add(prefix + "hc_attn_scale.weight", {3});
+    add(prefix + "hc_ffn_fn.weight", {p.hc_width(), p.hc_mix()});
+    add(prefix + "hc_ffn_base.weight", {p.hc_mix()});
+    add(prefix + "hc_ffn_scale.weight", {3});
+    const std::uint32_t ratio = p.compress_ratios.at(il);
+    if (ratio != 0) {
+      const std::uint64_t coff = ratio == model::kDsv4CsaRatio ? 2 : 1;
+      add(prefix + "attn_compressor_kv.weight", {w, coff * head});
+      add(prefix + "attn_compressor_gate.weight", {w, coff * head});
+      add(prefix + "attn_compressor_ape.weight", {coff * head, ratio});
+      add(prefix + "attn_compressor_norm.weight", {head});
+    }
+    if (ratio == model::kDsv4CsaRatio) {
+      const std::uint64_t ih = p.indexer_head_dim;
+      add(prefix + "indexer.attn_q_b.weight", {p.q_lora, std::uint64_t{p.indexer_heads} * ih});
+      add(prefix + "indexer.proj.weight", {w, p.indexer_heads});
+      add(prefix + "indexer_compressor_kv.weight", {w, 2 * ih});
+      add(prefix + "indexer_compressor_gate.weight", {w, 2 * ih});
+      add(prefix + "indexer_compressor_ape.weight", {2 * ih, model::kDsv4CsaRatio});
+      add(prefix + "indexer_compressor_norm.weight", {ih});
+    }
+    add(prefix + "ffn_norm.weight", {w});
+    add(prefix + "ffn_gate_inp.weight", {w, p.experts});
+    if (il < p.hash_layers) {
+      add(prefix + "ffn_gate_tid2eid.weight", {p.experts_used, p.vocab}, false,
+          format::Encoding::kI32);
+    } else {
+      add(prefix + "exp_probs_b.bias", {p.experts});
+    }
+    const std::uint64_t shared = std::uint64_t{p.expert_ffn} * p.shared_experts;
+    add(prefix + "ffn_gate_shexp.weight", {w, shared});
+    add(prefix + "ffn_up_shexp.weight", {w, shared});
+    add(prefix + "ffn_down_shexp.weight", {shared, w});
+    add(prefix + "ffn_gate_exps.weight", {w, p.expert_ffn, p.experts}, true);
+    add(prefix + "ffn_up_exps.weight", {w, p.expert_ffn, p.experts}, true);
+    add(prefix + "ffn_down_exps.weight", {p.expert_ffn, w, p.experts}, true);
+  }
+  return s;
+}
+
 std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMapping& table,
                                            NormalizationLimits limits) {
   const auto cost = Bound(source, table);
@@ -664,11 +805,66 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
     }
     plan.metadata_.push_back({static_cast<std::uint32_t>(i), key.kind, destination});
   }
-  auto spec = spec::Synthesize(*table.architecture, plan.canonical_, plan.values_);
-  if (!spec) return Bad("source does not satisfy the architecture mapping");
-  if (auto valid = components::ValidateSpec(*spec, plan.canonical_.tensors); !valid)
-    return Bad("normalized tensors do not satisfy their components");
-  plan.spec_ = std::move(*spec);
+  if (table.architecture->role == spec::StageRole::kDrafter) {
+    const spec::Mapping* target_mapping = nullptr;
+    std::expected<std::vector<spec::SourceValue>, std::string> target_values;
+    spec::Source target_source;
+    if (table.architecture->architecture == "gemma4-assistant") {
+      std::optional<std::int64_t> out_len;
+      for (const auto& v : plan.values_) {
+        if (v.key == "gemma4-assistant.embedding_length_out") {
+          if (const auto* i = std::get_if<std::int64_t>(&v.value)) {
+            out_len = *i;
+          }
+        }
+      }
+      if (!out_len) {
+        for (const auto& e : input.metadata) {
+          if (e.key == "gemma4-assistant.embedding_length_out" ||
+              e.key == "gemma4-assistant.Parent.embedding_length") {
+            if (const auto* i = std::get_if<std::int64_t>(&e.value)) {
+              out_len = *i;
+            }
+          }
+        }
+      }
+      const model::Gemma4Profile* target_profile = nullptr;
+      if (out_len == 2816) {
+        target_profile = &model::Gemma4_26BA4B();
+      } else if (out_len == 5376) {
+        target_profile = &model::Gemma4_31B();
+      } else {
+        return Bad("unsupported assistant parent width", ItemKind::kNone, kNoItem,
+                   Rule::kUnsupported);
+      }
+      target_mapping = &spec::mappings::Gemma4Mapping();
+      target_values = spec::mappings::Gemma4V0Values(*target_profile);
+      if (!target_values) return Bad(target_values.error());
+      target_source = SyntheticGemma4TargetSource(*target_profile);
+    } else if (table.architecture->architecture == "dflash") {
+      target_mapping = &spec::mappings::Dsv4Mapping();
+      target_values = spec::mappings::Dsv4V0Values(model::Dsv4Flash());
+      if (!target_values) return Bad(target_values.error());
+      target_source = SyntheticDsv4TargetSource(model::Dsv4Flash());
+    } else {
+      return Bad("unsupported drafter architecture", ItemKind::kNone, kNoItem, Rule::kUnsupported);
+    }
+    auto target_spec = spec::Synthesize(*target_mapping, target_source, *target_values);
+    if (!target_spec) return Bad("drafter target synthesis failed");
+    auto composed = spec::ComposeDrafter(*target_spec, *target_mapping, *table.architecture,
+                                         plan.canonical_, plan.values_);
+    if (!composed) return Bad("drafter composition failed");
+    const std::array<std::span<const spec::SourceTensor>, 2> tables{target_source.tensors,
+                                                                    plan.canonical_.tensors};
+    if (auto valid = components::ValidateSpec(*composed, tables); !valid) return Bad(valid.error());
+    plan.spec_ = std::move(*composed);
+  } else {
+    auto spec = spec::Synthesize(*table.architecture, plan.canonical_, plan.values_);
+    if (!spec) return Bad("source does not satisfy the architecture mapping");
+    if (auto valid = components::ValidateSpec(*spec, plan.canonical_.tensors); !valid)
+      return Bad("normalized tensors do not satisfy their components");
+    plan.spec_ = std::move(*spec);
+  }
   plan.folds_.reserve(table.architecture->folds.size());
   for (const auto& fold : table.architecture->folds)
     if (fold.container == input.container && fold.converter.empty())

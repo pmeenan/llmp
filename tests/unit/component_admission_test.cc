@@ -509,6 +509,110 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterV0ValuesRejectsMismatchedAnd
   }
 }
 
+TEST(ComponentAdmissionDrafterTest, CheckComponentDrafterAdmissionApprovesGemma4Assistants) {
+  for (std::uint32_t size : {26U, 31U}) {
+    auto source = llmp::test_support::Gemma4AssistantSource(size);
+    auto origins =
+        size == 26 ? Origins("mtp-gemma-4-26B-A4B-it.gguf", 461766816ULL,
+                             "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b")
+                   : Origins("mtp-gemma-4-31B-it.gguf", 514687104ULL,
+                             "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de");
+    auto check = rt::CheckComponentDrafterAdmission(source, origins);
+    EXPECT_TRUE(check.has_value()) << (check ? "" : check.error());
+
+    // Mutations must fail admission
+    auto bad_source = source;
+    bad_source.container = "safetensors";
+    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(bad_source, origins));
+
+    bad_source = source;
+    bad_source.folds = {"some_fold"};
+    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(bad_source, origins));
+
+    auto bad_origins = origins;
+    bad_origins[0].sha256[0] ^= 1;
+    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(source, bad_origins));
+  }
+}
+
+TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndRejectsMismatches) {
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "component-drafter-values-v1";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  std::filesystem::create_directories(scratch, ec);
+
+  const auto make_v1 = [&](const std::filesystem::path& path, std::string arch,
+                           std::string source_name, std::uint64_t bytes, std::string sha256) {
+    llmp::test::V1Plan p;
+    p.architecture = std::move(arch);
+    p.groups = {llmp::test::V1Group{
+        .kind = llmp::artifact::GroupKind::kTable,
+        .resources = {{.name = "token_embd.weight",
+                       .format = {.encoding = fm::Encoding::kBF16,
+                                  .layout = fm::Layout::kDense,
+                                  .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
+    auto rendered = llmp::test::Render(p);
+    llmp::test::Json::Array source_list;
+    source_list.emplace_back(llmp::test::Json::Object{{"bytes", static_cast<std::int64_t>(bytes)},
+                                                      {"name", std::move(source_name)},
+                                                      {"sha256", std::move(sha256)}});
+    rendered.manifest["source"] = llmp::test::Json(std::move(source_list));
+    return llmp::artifact::Artifact::Open(llmp::test::Publish(path, rendered));
+  };
+
+  const auto g26_target =
+      make_v1(scratch / "g26", "gemma4", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", 16947541728ULL,
+              "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f");
+  ASSERT_TRUE(g26_target.has_value()) << (g26_target ? "" : g26_target.error().ToString());
+
+  const auto g31_target =
+      make_v1(scratch / "g31", "gemma4", "gemma-4-31B-it-UD-Q4_K_XL.gguf", 18822970304ULL,
+              "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575");
+  ASSERT_TRUE(g31_target.has_value()) << (g31_target ? "" : g31_target.error().ToString());
+
+  const auto g26_asst =
+      make_v1(scratch / "a26", "gemma4-assistant", "mtp-gemma-4-26B-A4B-it.gguf", 461766816ULL,
+              "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b");
+  ASSERT_TRUE(g26_asst.has_value()) << (g26_asst ? "" : g26_asst.error().ToString());
+
+  const auto g31_asst =
+      make_v1(scratch / "a31", "gemma4-assistant", "mtp-gemma-4-31B-it.gguf", 514687104ULL,
+              "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de");
+  ASSERT_TRUE(g31_asst.has_value()) << (g31_asst ? "" : g31_asst.error().ToString());
+
+  const auto dflash =
+      make_v1(scratch / "dflash", "dflash", "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
+              10896057440ULL, "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249");
+  ASSERT_TRUE(dflash.has_value()) << (dflash ? "" : dflash.error().ToString());
+
+  // Matched v1 target and drafter produce valid values.
+  auto g26_pair = rt::ComponentDrafterValues(*g26_target, *g26_asst);
+  EXPECT_TRUE(g26_pair.has_value()) << (g26_pair ? "" : g26_pair.error());
+
+  auto g31_pair = rt::ComponentDrafterValues(*g31_target, *g31_asst);
+  EXPECT_TRUE(g31_pair.has_value()) << (g31_pair ? "" : g31_pair.error());
+
+  // Size mismatches are refused.
+  auto size_mismatch1 = rt::ComponentDrafterValues(*g26_target, *g31_asst);
+  EXPECT_FALSE(size_mismatch1.has_value());
+  EXPECT_NE(size_mismatch1.error().find("does not match the target model size"), std::string::npos);
+
+  auto size_mismatch2 = rt::ComponentDrafterValues(*g31_target, *g26_asst);
+  EXPECT_FALSE(size_mismatch2.has_value());
+  EXPECT_NE(size_mismatch2.error().find("does not match the target model size"), std::string::npos);
+
+  // Architecture mismatch is refused.
+  auto arch_mismatch = rt::ComponentDrafterValues(*g26_target, *dflash);
+  EXPECT_FALSE(arch_mismatch.has_value());
+  EXPECT_NE(arch_mismatch.error().find("no drafter dflash for architecture gemma4"),
+            std::string::npos);
+
+  // ComponentDrafterV0Values refuses v1 artifacts.
+  auto v0_attempt = rt::ComponentDrafterV0Values(*g26_target, *g26_asst);
+  EXPECT_FALSE(v0_attempt.has_value());
+}
+
 TEST(ComponentAdmissionModelOptTest,
      FullNormalizedTargetPreservesNativeProfilePolicyAndClosedSourceAuthority) {
   auto fixture = llmp::test_support::qwen38::NativeModelOpt();

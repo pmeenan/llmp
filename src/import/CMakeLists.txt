@@ -15,4 +15,4 @@ add_library(llmp_import STATIC
             readers/mlx.cc readers/safetensors.cc)
 target_include_directories(llmp_import PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_import PUBLIC llmp_format llmp_spec llmp_artifact llmp_json llmp_base
-                                  PRIVATE llmp_chat llmp_gguf llmp_components llmp_platform llmp_model llmp_warnings)
+                                  PRIVATE llmp_chat llmp_gguf llmp_components llmp_model llmp_platform llmp_warnings)

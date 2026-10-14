@@ -161,6 +161,65 @@ TEST(ModelSettings, DrafterCompositionAdmitsQ80WithComposedSpec) {
   EXPECT_EQ(composed->bound_spec, facts.composed_spec);
 }
 
+TEST(ModelSettings, Gemma4AssistantDrafterCompositionResolvesSettingsAndPlainMode) {
+  auto entry = Model("gemma4_asst", true);
+  auto facts = Facts("gemma4", "gemma4-assistant");
+  facts.target_spec = llmp::base::Sha256Digest{};
+  (*facts.target_spec)[0] = 42;
+  facts.composed_spec = llmp::base::Sha256Digest{};
+  (*facts.composed_spec)[0] = 84;
+
+  const auto composed = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(composed) << (composed ? "" : composed.error());
+  EXPECT_TRUE(composed->speculation.value);
+  EXPECT_EQ(composed->bound_spec, facts.composed_spec);
+  EXPECT_EQ(composed->architecture, "gemma4");
+  EXPECT_EQ(composed->drafter, true);
+
+  // Plain mode disables speculation and uses target_spec.
+  const auto plain = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(plain) << (plain ? "" : plain.error());
+  EXPECT_FALSE(plain->speculation.value);
+  EXPECT_EQ(plain->bound_spec, facts.target_spec);
+
+  // Override speculation=false also selects target_spec.
+  entry.overrides["speculation"] = false;
+  const auto no_spec = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(no_spec) << (no_spec ? "" : no_spec.error());
+  EXPECT_FALSE(no_spec->speculation.value);
+  EXPECT_EQ(no_spec->bound_spec, facts.target_spec);
+
+  // When composed_spec is absent and error is set, resolution fails unless plain is requested.
+  entry.overrides.erase("speculation");
+  facts.composed_spec.reset();
+  facts.composed_spec_error = "unqualified drafter";
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  EXPECT_TRUE(ResolveSettings(entry, facts, nullptr, true));
+}
+
+TEST(ModelSettings, DflashCompositionResolvesSettingsAndCapabilities) {
+  auto entry = Model("ds_dflash", true);
+  auto facts = Facts("deepseek4", "dflash");
+  facts.target_spec = llmp::base::Sha256Digest{};
+  (*facts.target_spec)[0] = 11;
+  facts.composed_spec = llmp::base::Sha256Digest{};
+  (*facts.composed_spec)[0] = 22;
+
+  const auto composed = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(composed) << (composed ? "" : composed.error());
+  EXPECT_TRUE(composed->speculation.value);
+  EXPECT_EQ(composed->bound_spec, facts.composed_spec);
+  EXPECT_TRUE(composed->prefill_outa_hca.value);
+  EXPECT_EQ(composed->draft_rows.value, 3U);
+  EXPECT_EQ(composed->wave_form.value, llmp::config::WaveForm::kAuto);
+
+  // Plain mode selects target_spec and disables speculation.
+  const auto plain = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(plain) << (plain ? "" : plain.error());
+  EXPECT_FALSE(plain->speculation.value);
+  EXPECT_EQ(plain->bound_spec, facts.target_spec);
+}
+
 TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   const ModelSettings s = Resolved(Model("ds"), Facts("deepseek4"));
   EXPECT_EQ(s.context.value, 262144U);

@@ -357,11 +357,17 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
                               plan.source().tensors.size() * 32 + plan.semantic.size() * 256 +
                               fold_outputs * 8192 + 65536;
   if (funding < bound) return Bad("artifact metadata has not been funded", Rule::kBounds);
-  if (!components::ValidateSpec(plan.spec(), tensors))
-    return Bad("publication spec does not bind canonical tensors", Rule::kConfig);
+  const bool is_drafter = plan.spec().stages.size() == 2 &&
+                          plan.spec().stages[1].role == spec::StageRole::kDrafter &&
+                          plan.spec().stages[1].artifact == 1;
+  if (!is_drafter) {
+    if (!components::ValidateSpec(plan.spec(), tensors))
+      return Bad("publication spec does not bind canonical tensors", Rule::kConfig);
+  }
   std::map<std::string, GroupKey, std::less<>> owners;
   const auto bind = [&](const spec::ComponentRef& component, GroupKey key) {
     for (const auto& w : component.weights) {
+      if (is_drafter && !w.stage.empty()) continue;
       auto [it, inserted] = owners.try_emplace(w.tensor, key);
       if (!inserted && it->second != key) {
         // A tied embedding remains a row table; other shared weights are global.
@@ -372,7 +378,10 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
       }
     }
   };
-  for (const auto& stage : plan.spec().stages) {
+  const std::span<const spec::Stage> stages_to_bind =
+      is_drafter ? std::span<const spec::Stage>(&plan.spec().stages[1], 1)
+                 : std::span<const spec::Stage>(plan.spec().stages);
+  for (const auto& stage : stages_to_bind) {
     if (stage.embedding) bind(*stage.embedding, {0, 0});
     if (stage.stream.mixing) bind(*stage.stream.mixing, {1, 0});
     for (std::size_t i = 0; i < stage.side.size(); ++i) {
@@ -824,13 +833,20 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                                {"resources", A(resources)},
                                {"shards", A(shards)}}) +
                             '\n';
-  const auto spec = spec::ToJson(plan.spec());
-  if (index.size() > artifact::kMaxIndexBytes || spec.size() > artifact::kMaxSpecBytes)
+  const bool is_drafter = plan.spec().stages.size() == 2 &&
+                          plan.spec().stages[1].role == spec::StageRole::kDrafter &&
+                          plan.spec().stages[1].artifact == 1;
+  if (!is_drafter) {
+    const auto spec = spec::ToJson(plan.spec());
+    if (spec.size() > artifact::kMaxSpecBytes)
+      return Bad("an artifact document exceeds its cap", Rule::kBounds);
+    if (auto ok = Save(job / "spec.json", spec); !ok) return std::unexpected(ok.error());
+    files.emplace("spec.json", FileJson("spec.json", "spec", spec.size(), Hex(spec)));
+  }
+  if (index.size() > artifact::kMaxIndexBytes)
     return Bad("an artifact document exceeds its cap", Rule::kBounds);
   if (auto ok = Save(job / "index.json", index); !ok) return std::unexpected(ok.error());
-  if (auto ok = Save(job / "spec.json", spec); !ok) return std::unexpected(ok.error());
   files.emplace("index.json", FileJson("index.json", "index", index.size(), Hex(index)));
-  files.emplace("spec.json", FileJson("spec.json", "spec", spec.size(), Hex(spec)));
   std::vector<std::string> file_list, source_list;
   for (const auto& [path, json] : files) file_list.push_back(json);
   for (const auto& [path, json] : sources) source_list.push_back(json);
@@ -870,12 +886,17 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   const std::string id = Hex(manifest);
   auto opened = artifact::Artifact::Open(job, {.expected_id = id});
   if (!opened) return Bad("the produced artifact failed structural verification", Rule::kConfig);
-  auto stored = spec::StoredSpec(*opened);
-  if (!stored || *stored != plan.spec())
-    return Bad("the produced artifact has an invalid embedded spec", Rule::kConfig);
-  auto stored_source = spec::SourceOf(*opened);
-  if (!stored_source || !components::ValidateSpec(*stored, stored_source->tensors))
-    return Bad("the produced artifact does not bind its embedded spec", Rule::kConfig);
+  if (!is_drafter) {
+    auto stored = spec::StoredSpec(*opened);
+    if (!stored || *stored != plan.spec())
+      return Bad("the produced artifact has an invalid embedded spec", Rule::kConfig);
+    auto stored_source = spec::SourceOf(*opened);
+    if (!stored_source || !components::ValidateSpec(*stored, stored_source->tensors))
+      return Bad("the produced artifact does not bind its embedded spec", Rule::kConfig);
+  } else {
+    auto stored_source = spec::SourceOf(*opened);
+    if (!stored_source) return Bad("the produced artifact does not bind its source", Rule::kConfig);
+  }
   if (auto ok = Deep(job, *opened); !ok) return std::unexpected(ok.error());
   for (const auto& directory : {job / "data", job / "meta", job})
     if (auto ok = Sync(directory); !ok) return std::unexpected(ok.error());

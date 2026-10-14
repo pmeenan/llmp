@@ -348,7 +348,9 @@ constexpr std::array kAssistantParams = {
     // Every row an output (a drafter's), projected back to the target's width.
     Flag("output", "gather", false),
     FromKey("output", "features", kAOut, kInt),
+    RequireInt("gemma4-assistant.attention.shared_kv_layers", 4, true),
     RequireInt("gemma4-assistant.embedding_length_per_layer_input", 0, true),
+    RequireInt("gemma4-assistant.nextn_predict_layers", 4, true),
 };
 
 constexpr std::array kAssistantReads = {

@@ -50,7 +50,10 @@ enum class ProfileId {
   kQwenGguf,
   kQwenModelOpt,
   kQwenMlx,
-  kDsv4Gguf
+  kDsv4Gguf,
+  kGemma4Assistant26,
+  kGemma4Assistant31,
+  kDsparkGguf
 };
 struct Profile {
   ProfileId id;
@@ -79,7 +82,17 @@ constexpr std::array kProfiles{
             0, 8192, 4, "a5ba88997fe0b72a54148526573c38e6a619f5a91980c59dcb5cbc5123760f52"},
     Profile{ProfileId::kQwen2Gguf, "qwen2", "qwen2.5-0.5b-instruct-fp16.gguf",
             "8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc", 1266425696ULL, 291,
-            0, 8192, 1, "0ac91b5fa50d1a17c55de9011431cb67b0224dff6d018e1e8c3e8d6112a5adbe"}};
+            0, 8192, 1, "0ac91b5fa50d1a17c55de9011431cb67b0224dff6d018e1e8c3e8d6112a5adbe"},
+    Profile{ProfileId::kGemma4Assistant26, "gemma4-assistant", "mtp-gemma-4-26B-A4B-it.gguf",
+            "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b", 461766816ULL, 49, 0,
+            262144, 4, "5762a622394aae1fa4092013fae5333471158416b98efc5af46f40e45bb0865c"},
+    Profile{ProfileId::kGemma4Assistant31, "gemma4-assistant", "mtp-gemma-4-31B-it.gguf",
+            "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de", 514687104ULL, 49, 0,
+            262144, 4, "cf1cbbffb8974c67423242e2902ecbd7efbe94c945234be0277ae1313c9c6455"},
+    Profile{ProfileId::kDsparkGguf, "dflash", "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
+            "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249", 10896057440ULL, 81,
+            9, model::kDsv4FlashContext, std::numeric_limits<std::uint32_t>::max(),
+            "3a44227ddb6d8d72bcbf91d1c026da750f4ae41be0a8ef21e40936c87bfaa7f0"}};
 
 // Pinned three-shard UD-IQ3_XXS source. The ordinary writer verifies these
 // whole streams while publishing; runtime admission checks their declared
@@ -405,6 +418,14 @@ std::expected<std::vector<spec::SourceValue>, std::string> Values(const Profile&
     case ProfileId::kGemma26:
     case ProfileId::kGemma31:
       return spec::mappings::Gemma4V0Values(*GemmaProfile(profile));
+    case ProfileId::kGemma4Assistant26:
+      return spec::mappings::Gemma4AssistantV0Values(model::Gemma4Assistant26(),
+                                                     model::Gemma4_26BA4B());
+    case ProfileId::kGemma4Assistant31:
+      return spec::mappings::Gemma4AssistantV0Values(model::Gemma4Assistant31(),
+                                                     model::Gemma4_31B());
+    case ProfileId::kDsparkGguf:
+      return spec::mappings::DsparkV0Values(model::DsparkDeepSeekV4Flash());
   }
   return Refused("unknown profile");
 }
@@ -512,7 +533,8 @@ static_assert(sizeof(spec::ComponentRef) <= 128 && sizeof(spec::SourceTensor) <=
 static_assert(sizeof(spec::V0Tensor) <= 128 && sizeof(spec::Stage) <= 2048);
 
 bool OnComponentEngine(std::string_view architecture) {
-  return architecture == "gemma2" || architecture == "gemma3" || architecture == "gemma4";
+  return architecture == "gemma2" || architecture == "gemma3" || architecture == "gemma4" ||
+         architecture == "gemma4-assistant";
 }
 
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
@@ -554,6 +576,74 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Val
   }
   return std::unexpected(std::format("the component engine has no drafter {} for architecture {}",
                                      drafter.model().architecture, target.model().architecture));
+}
+
+std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
+    const artifact::Artifact& target, const artifact::Artifact& drafter) {
+  if (target.format_version() == 0 && drafter.format_version() == 0) {
+    return ComponentDrafterV0Values(target, drafter);
+  }
+  if (drafter.model().architecture == "gemma4-assistant" &&
+      target.model().architecture == "gemma4") {
+    const model::Gemma4Profile* target_profile = nullptr;
+    if (target.format_version() == 1) {
+      const auto* p = Approved(target.model().architecture, target.sources());
+      if (p == nullptr)
+        return Refused("target source identity has no approved v1 execution profile");
+      target_profile = GemmaProfile(*p);
+    } else {
+      auto p = ApprovedGemmaProfile(target);
+      if (!p) return std::unexpected(p.error());
+      target_profile = *p;
+    }
+    if (target_profile == nullptr) return Refused("unknown gemma4 target profile");
+    const model::Gemma4AssistantProfile& assistant = *target_profile == model::Gemma4_31B()
+                                                         ? model::Gemma4Assistant31()
+                                                         : model::Gemma4Assistant26();
+    if (drafter.format_version() == 1) {
+      const auto* dp = Approved(drafter.model().architecture, drafter.sources());
+      if (dp == nullptr)
+        return Refused("drafter source identity has no approved v1 execution profile");
+      if (*target_profile == model::Gemma4_31B() && dp->id != ProfileId::kGemma4Assistant31) {
+        return Refused("the approved assistant does not match the target model size");
+      }
+      if (*target_profile == model::Gemma4_26BA4B() && dp->id != ProfileId::kGemma4Assistant26) {
+        return Refused("the approved assistant does not match the target model size");
+      }
+      return spec::mappings::Gemma4AssistantV0Values(assistant, *target_profile);
+    }
+    return ComponentDrafterV0Values(target, drafter);
+  }
+  if (drafter.model().architecture == "dflash" && target.model().architecture == "deepseek4") {
+    if (drafter.format_version() == 1) {
+      const auto* dp = Approved(drafter.model().architecture, drafter.sources());
+      if (dp == nullptr)
+        return Refused("drafter source identity has no approved v1 execution profile");
+      if (dp->id != ProfileId::kDsparkGguf) {
+        return Refused("unknown dflash profile");
+      }
+      return spec::mappings::DsparkV0Values(model::DsparkDeepSeekV4Flash());
+    }
+    return ComponentDrafterV0Values(target, drafter);
+  }
+  return std::unexpected(std::format("the component engine has no drafter {} for architecture {}",
+                                     drafter.model().architecture, target.model().architecture));
+}
+
+std::expected<void, std::string> CheckComponentDrafterAdmission(
+    const spec::Source& source, std::span<const artifact::Source> origins) {
+  const auto* profile = Approved(source.architecture, origins);
+  if (profile == nullptr) return Refused("source identity has no approved v1 execution profile");
+  if (profile->id != ProfileId::kGemma4Assistant26 &&
+      profile->id != ProfileId::kGemma4Assistant31 && profile->id != ProfileId::kDsparkGguf) {
+    return Refused("not an approved drafter execution profile");
+  }
+  const std::string_view expected_container = "gguf";
+  if (source.container != expected_container || !source.converter.empty() ||
+      !source.folds.empty() || source.tensors.size() != profile->tensors)
+    return Refused("source container, transforms or tensor inventory differs from its profile");
+  if (auto inventory = Inventory(source, *profile); !inventory) return inventory;
+  return {};
 }
 
 std::expected<void, std::string> CheckComponentAdmission(
