@@ -92,7 +92,7 @@ constexpr std::array kProfiles{
     Profile{ProfileId::kDsparkGguf, "dflash", "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
             "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249", 10896057440ULL, 81,
             9, model::kDsv4FlashContext, std::numeric_limits<std::uint32_t>::max(),
-            "3a44227ddb6d8d72bcbf91d1c026da750f4ae41be0a8ef21e40936c87bfaa7f0"}};
+            "aa2938d65ee98872ab3c919b912f2e7f069f7e3c6ded06995450967249ea0a8d"}};
 
 // Pinned three-shard UD-IQ3_XXS source. The ordinary writer verifies these
 // whole streams while publishing; runtime admission checks their declared
