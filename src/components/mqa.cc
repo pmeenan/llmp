@@ -174,7 +174,7 @@ enum : std::uint16_t {
   kIdxApe,
   kIdxNorm,
 };
-constexpr std::array<Encoding, 2> kApe{Encoding::kF32, Encoding::kF16};
+constexpr std::array<Encoding, 3> kApe{Encoding::kF32, Encoding::kF16, Encoding::kBF16};
 constexpr std::array kRoles{
     WeightRole{.name = "q_a"},
     WeightRole{.name = "q_norm", .encodings = kF32Only},
