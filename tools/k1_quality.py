@@ -1,0 +1,688 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 llmpalooza contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Slice K1 long-context Q8_0 vs F16 KV quality evaluation tool.
+
+Evaluates opt-in lossy KV cache encoding (kv_cache_encoding = "q8_0") against
+baseline (kv_cache_encoding = "f16") on migrated LLM families across long contexts.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import hashlib
+import http.client
+import json
+import math
+import os
+import pathlib
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+
+PORT = 18114
+DEFAULT_SHARE = "~/.local/share/llmp"
+DEFAULT_CORPUS = "~/.local/share/llmp/corpus/m3-reference-corpus.txt"
+DIAGNOSTIC_PREFIX = "LLMP_DIAGNOSTIC_"
+
+QUALITY_PROMPTS = (
+    "Explain, step by step, how a hash table handles collisions.",
+    "Write a short story about a lighthouse keeper who finds a map.",
+)
+
+DSV4 = "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
+DSPARK = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
+QWEN = "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93"
+QWEN_MTP = "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40"
+QWEN_GGUF = "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"
+GEMMA2 = "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870"
+GEMMA3 = "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
+GEMMA26 = "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+GEMMA26_ASSISTANT = "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42"
+GEMMA31 = "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+GEMMA31_ASSISTANT = "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120"
+QWEN_TOKENIZER = "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6"
+
+
+def _qwen_files() -> str:
+    return (
+        f'tokenizer = "{{share}}/{QWEN_TOKENIZER}/tokenizer.json"\n'
+        f'chat_template = "{{share}}/{QWEN_TOKENIZER}/chat_template.jinja"\n'
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class Family:
+    name: str
+    model: str
+    store: str
+    models_toml: str
+    prompt_chars: int
+
+
+FAMILIES: dict[str, Family] = {
+    f.name: f
+    for f in (
+        Family(
+            "gemma2",
+            "gemma2",
+            "m3-artifacts",
+            f'[models.gemma2]\nartifact = "{GEMMA2}"\ncontext = 8192\nprefill_chunk = 128\n'
+            "max_slots = 2\n",
+            prompt_chars=26000,
+        ),
+        Family(
+            "gemma3",
+            "gemma3",
+            "m3-artifacts",
+            f'[models.gemma3]\nartifact = "{GEMMA3}"\ncontext = 4096\nprefill_chunk = 128\n'
+            "max_slots = 2\n",
+            prompt_chars=11500,
+        ),
+        Family(
+            "gemma26",
+            "gemma26",
+            "m3-artifacts",
+            f'[models.gemma26]\nartifact = "{GEMMA26}"\ncontext = 8192\nprefill_chunk = 1024\n'
+            "max_slots = 4\n",
+            prompt_chars=26000,
+        ),
+        Family(
+            "gemma26-assistant",
+            "gemma26",
+            "m3-artifacts",
+            f'[models.gemma26]\nartifact = "{GEMMA26}"\ndrafter = "{GEMMA26_ASSISTANT}"\n'
+            "speculation = true\ncontext = 8192\nprefill_chunk = 1024\nmax_slots = 4\n",
+            prompt_chars=26000,
+        ),
+        Family(
+            "gemma31",
+            "gemma31",
+            "m3-artifacts",
+            f'[models.gemma31]\nartifact = "{GEMMA31}"\ncontext = 8192\nprefill_chunk = 256\n'
+            "max_slots = 4\n",
+            prompt_chars=26000,
+        ),
+        Family(
+            "gemma31-assistant",
+            "gemma31",
+            "m3-artifacts",
+            f'[models.gemma31]\nartifact = "{GEMMA31}"\ndrafter = "{GEMMA31_ASSISTANT}"\n'
+            "speculation = true\ncontext = 8192\nprefill_chunk = 256\nmax_slots = 4\n",
+            prompt_chars=26000,
+        ),
+        Family(
+            "qwen38",
+            "qwen3.8",
+            "m3-artifacts",
+            f'[models."qwen3.8"]\nartifact = "{QWEN}"\ndrafter = "{QWEN_MTP}"\nspeculation = true\n'
+            "draft_vocab = 65536\ndepth_cost_ratio = 1.16\ncontext = 33792\nprefill_chunk = 4096\n"
+            "max_slots = 4\n" + _qwen_files(),
+            prompt_chars=30000,
+        ),
+        Family(
+            "qwen38-gguf",
+            "qwen3.8-gguf",
+            "qgguf-artifacts",
+            f'[models."qwen3.8-gguf"]\nartifact = "{QWEN_GGUF}"\ncontext = 33792\n'
+            "prefill_chunk = 4096\nmax_slots = 4\n" + _qwen_files(),
+            prompt_chars=30000,
+        ),
+        Family(
+            "deepseek",
+            "deepseek",
+            "m3-artifacts",
+            f'[models.deepseek]\nartifact = "{DSV4}"\ndrafter = "{DSPARK}"\nspeculation = true\n'
+            'wave_form = "plain"\ncontext = 262144\nprefill_chunk = 4096\nmax_slots = 4\n',
+            prompt_chars=30000,
+        ),
+    )
+}
+
+STANDARD_LLM_FAMILIES = (
+    "gemma2",
+    "gemma3",
+    "gemma26",
+    "gemma31",
+    "qwen38",
+    "qwen38-gguf",
+    "deepseek",
+)
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_corpus(path: pathlib.Path) -> str:
+    data = path.read_bytes()
+    return data.decode("utf-8")
+
+
+def passage(corpus: str, index: int, chars: int) -> str:
+    """The index-th passage: `chars` characters from a line start, spread over the corpus."""
+    span = len(corpus) - chars - 1
+    if span <= 0:
+        return corpus[:chars]
+    start = (index * 7919 * 211) % span
+    newline = corpus.find("\n", start)
+    start = newline + 1 if 0 <= newline < span else start
+    return corpus[start : start + chars]
+
+
+def parse_runtime_env(pairs: list[str] | None) -> dict[str, str]:
+    """Diagnostic switches, NAME=VALUE each, sorted by name."""
+    env: dict[str, str] = {}
+    for pair in pairs or []:
+        name, sep, value = pair.partition("=")
+        if not sep or not name.startswith(DIAGNOSTIC_PREFIX) or name in env:
+            raise SystemExit(f"--runtime-env {pair!r}: not a single {DIAGNOSTIC_PREFIX}*=VALUE")
+        env[name] = value
+    return dict(sorted(env.items()))
+
+
+def arm_env(runtime_env: dict[str, str]) -> dict[str, str]:
+    """The runtime process's environment."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(DIAGNOSTIC_PREFIX)}
+    env.update(runtime_env, CUDA_DISABLE_PTX_JIT="1")
+    return env
+
+
+def make_config(
+    family: Family, encoding: str, share: pathlib.Path, data: pathlib.Path, port: int
+) -> str:
+    template = (
+        'schema_version = 2\n[storage]\ndata_dir = "{data}"\n'
+        f'installed = "{{share}}/{family.store}"\n'
+        "[client]\nbind = [\"loopback\"]\nport = {port}\n"
+        + family.models_toml.rstrip()
+        + f'\nkv_cache_encoding = "{encoding}"\n'
+    )
+    return (
+        template.replace("{share}", str(share))
+        .replace("{data}", str(data))
+        .replace("{port}", str(port))
+    )
+
+
+def port_open(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def host_facts() -> dict:
+    facts = {"host": os.uname().nodename, "time": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    try:
+        apps = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        facts["gpu_compute_apps"] = apps.splitlines() if apps else []
+        facts["driver"] = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        facts["gpu_error"] = str(e)
+    return facts
+
+
+def fresh_run_dir(out: pathlib.Path, name: str) -> pathlib.Path:
+    run_dir = out / "work" / name
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
+    run_dir.mkdir(parents=True)
+    os.chmod(run_dir, 0o700)
+    return run_dir
+
+
+class Service:
+    def __init__(
+        self,
+        runtime: pathlib.Path,
+        config: pathlib.Path,
+        run_dir: pathlib.Path,
+        port: int,
+        runtime_env: dict[str, str],
+    ):
+        self.port = port
+        if port_open(port):
+            raise RuntimeError(f"something already listens on port {port}")
+        self.log = open(run_dir / "runtime.log", "wb")
+        env = arm_env(runtime_env)
+        self.started = time.monotonic()
+        self.proc = subprocess.Popen(
+            [str(runtime), "--config", str(config), "--anchor", str(run_dir / "enrollment")],
+            stdout=self.log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+
+    def wait_ready(self, timeout: float = 900) -> float:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                raise RuntimeError(f"the runtime exited with {self.proc.returncode} before ready")
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+                conn.request("GET", "/v1/models")
+                status = conn.getresponse().status
+                conn.close()
+                if status == 200:
+                    if self.proc.poll() is not None:
+                        raise RuntimeError(f"the runtime exited with {self.proc.returncode}")
+                    return time.monotonic() - self.started
+            except OSError:
+                pass
+            time.sleep(0.2)
+        raise RuntimeError("the runtime was not ready in time")
+
+    def stop(self, timeout: float = 180) -> dict:
+        ended = {"signal": "TERM"}
+        if self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGTERM)
+            try:
+                self.proc.wait(timeout)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+                ended["signal"] = "KILL"
+        ended["returncode"] = self.proc.returncode
+        self.log.close()
+        return ended
+
+
+def stream_chat(port: int, body: dict) -> dict:
+    """One streamed chat request: timings, usage, and reply digest."""
+    record: dict = {"error": None}
+    payload = json.dumps(body).encode()
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
+    try:
+        conn.connect()
+        record["t_send"] = time.monotonic()
+        conn.request("POST", "/v1/chat/completions", payload, {"Content-Type": "application/json"})
+        response = conn.getresponse()
+        if response.status != 200:
+            record["error"] = f"HTTP {response.status}: {response.read()[:400]!r}"
+            return record
+        digest = hashlib.sha256()
+        times: list[float] = []
+        for raw in response:
+            line = raw.strip()
+            if not line.startswith(b"data: "):
+                continue
+            data = line[6:]
+            now = time.monotonic()
+            if data == b"[DONE]":
+                record["t_end"] = now
+                break
+            event = json.loads(data)
+            if event.get("usage"):
+                record["usage"] = event["usage"]
+            for choice in event.get("choices", []):
+                delta = choice.get("delta") or {}
+                text = (delta.get("reasoning") or "") + (delta.get("content") or "")
+                if text:
+                    times.append(now)
+                    digest.update(text.encode())
+                    record.setdefault("t_first", now)
+                    record["t_last"] = now
+                if choice.get("finish_reason"):
+                    record["finish"] = choice["finish_reason"]
+        record["chunks"] = len(times)
+        record["times"] = times
+        record["reply_sha256"] = digest.hexdigest()
+        for key in ("t_first", "t_end", "usage"):
+            if key not in record:
+                record["error"] = f"the stream ended without {key}"
+    except Exception as e:
+        record["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        conn.close()
+    return record
+
+
+def compute_metrics(scores: list[float]) -> dict:
+    n = len(scores)
+    if n == 0:
+        raise ValueError("no scored tokens")
+
+    overall_nll = -sum(scores) / n
+    overall_ppl = math.exp(overall_nll)
+
+    early_n = min(1024, n)
+    early_scores = scores[:early_n]
+    early_nll = -sum(early_scores) / early_n
+    early_ppl = math.exp(early_nll)
+
+    late_n = min(2048, n)
+    late_scores = scores[n - late_n :]
+    late_nll = -sum(late_scores) / late_n
+    late_ppl = math.exp(late_nll)
+
+    return {
+        "tokens": n,
+        "overall_nll": overall_nll,
+        "overall_ppl": overall_ppl,
+        "early_tokens": early_n,
+        "early_nll": early_nll,
+        "early_ppl": early_ppl,
+        "late_tokens": late_n,
+        "late_nll": late_nll,
+        "late_ppl": late_ppl,
+    }
+
+
+def evaluate_arm(
+    family: Family,
+    encoding: str,
+    runtime: pathlib.Path,
+    share: pathlib.Path,
+    corpus: str,
+    out: pathlib.Path,
+    port: int,
+    runtime_env: dict[str, str],
+    timeout: float,
+    keep_data: bool,
+) -> dict:
+    name = f"{family.name}-k1-{encoding}"
+    run_dir = fresh_run_dir(out, name)
+    config = run_dir / "node.toml"
+    cfg_text = make_config(family, encoding, share, run_dir / "data", port)
+    config.write_text(cfg_text)
+
+    record: dict = {
+        "encoding": encoding,
+        "config_sha256": hashlib.sha256(cfg_text.encode()).hexdigest(),
+        "error": None,
+    }
+
+    service = None
+    try:
+        service = Service(runtime, config, run_dir, port, runtime_env)
+        record["ready_s"] = service.wait_ready(timeout)
+
+        # 1. Long-context completions evaluation
+        text = passage(corpus, 100003, family.prompt_chars)
+        record["prompt_chars"] = len(text)
+        record["prompt_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
+        req_body = json.dumps(
+            {
+                "model": family.model,
+                "prompt": text,
+                "max_tokens": 0,
+                "prompt_logprobs": 0,
+                "echo": True,
+                "logprobs": 0,
+                "return_tokens_as_token_ids": True,
+            }
+        )
+        conn.request("POST", "/v1/completions", req_body, {"Content-Type": "application/json"})
+        response = conn.getresponse()
+        resp_bytes = response.read()
+        conn.close()
+
+        if response.status != 200:
+            raise RuntimeError(f"scoring: HTTP {response.status}: {resp_bytes[:400]!r}")
+
+        resp_json = json.loads(resp_bytes)
+        rows = resp_json["choices"][0]["prompt_logprobs"]
+        scores = [next(iter(row.values()))["logprob"] for row in rows if row]
+        if not scores:
+            raise RuntimeError("scoring: 0 tokens scored in prompt_logprobs")
+
+        metrics = compute_metrics(scores)
+        record.update(metrics)
+
+        # 2. Greedy stream_chat validation
+        chat_body = {
+            "model": family.model,
+            "stream": True,
+            "temperature": 0,
+            "stream_options": {"include_usage": True},
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": QUALITY_PROMPTS[0]}],
+        }
+        chat_res = stream_chat(port, chat_body)
+        if chat_res.get("error"):
+            raise RuntimeError(f"chat stream failed: {chat_res['error']}")
+
+        record["chat_reply_sha256"] = chat_res.get("reply_sha256")
+        record["chat_tokens"] = chat_res.get("usage", {}).get("completion_tokens", 0)
+        record["chat_chunks"] = chat_res.get("chunks", 0)
+
+    except Exception as e:
+        record["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        if service is not None:
+            record["stop"] = service.stop()
+        if not keep_data:
+            shutil.rmtree(run_dir / "data", ignore_errors=True)
+
+    return record
+
+
+def evaluate_family(
+    family: Family,
+    runtime: pathlib.Path,
+    share: pathlib.Path,
+    corpus: str,
+    out: pathlib.Path,
+    port: int,
+    runtime_env: dict[str, str],
+    timeout: float,
+    keep_data: bool,
+) -> dict:
+    f16 = evaluate_arm(
+        family, "f16", runtime, share, corpus, out, port, runtime_env, timeout, keep_data
+    )
+    if f16.get("error"):
+        print(f"ERROR: {family.name} arm f16 failed: {f16['error']}", file=sys.stderr)
+        return {"family": family.name, "error": f"f16: {f16['error']}", "f16": f16}
+
+    q8_0 = evaluate_arm(
+        family, "q8_0", runtime, share, corpus, out, port, runtime_env, timeout, keep_data
+    )
+    if q8_0.get("error"):
+        print(f"ERROR: {family.name} arm q8_0 failed: {q8_0['error']}", file=sys.stderr)
+        return {
+            "family": family.name,
+            "error": f"q8_0: {q8_0['error']}",
+            "f16": f16,
+            "q8_0": q8_0,
+        }
+
+    overall_nll_delta = q8_0["overall_nll"] - f16["overall_nll"]
+    overall_ppl_change_pct = (
+        (q8_0["overall_ppl"] - f16["overall_ppl"]) / f16["overall_ppl"] * 100.0
+    )
+
+    early_nll_delta = q8_0["early_nll"] - f16["early_nll"]
+    early_ppl_change_pct = (q8_0["early_ppl"] - f16["early_ppl"]) / f16["early_ppl"] * 100.0
+
+    late_nll_delta = q8_0["late_nll"] - f16["late_nll"]
+    late_ppl_change_pct = (q8_0["late_ppl"] - f16["late_ppl"]) / f16["late_ppl"] * 100.0
+
+    record = {
+        "format": "llmp-k1-quality/1",
+        "family": family.name,
+        "model": family.model,
+        "runtime": str(runtime),
+        "runtime_sha256": sha256_file(runtime),
+        "prompt_chars": f16["prompt_chars"],
+        "prompt_sha256": f16["prompt_sha256"],
+        "tokens": f16["tokens"],
+        "f16": f16,
+        "q8_0": q8_0,
+        "delta": {
+            "overall_nll_delta": overall_nll_delta,
+            "overall_ppl_change_pct": overall_ppl_change_pct,
+            "early_nll_delta": early_nll_delta,
+            "early_ppl_change_pct": early_ppl_change_pct,
+            "late_nll_delta": late_nll_delta,
+            "late_ppl_change_pct": late_ppl_change_pct,
+        },
+        "facts": host_facts(),
+        "error": None,
+    }
+
+    out_file = out / f"{family.name}-k1.json"
+    out_file.write_text(json.dumps(record, indent=2) + "\n")
+
+    chat_ok = (
+        f16.get("chat_reply_sha256") is not None and q8_0.get("chat_reply_sha256") is not None
+    )
+    summary = {
+        "family": family.name,
+        "tokens": f16["tokens"],
+        "f16_overall_ppl": round(f16["overall_ppl"], 4),
+        "q8_0_overall_ppl": round(q8_0["overall_ppl"], 4),
+        "overall_ppl_change_pct": round(overall_ppl_change_pct, 4),
+        "early_ppl_change_pct": round(early_ppl_change_pct, 4),
+        "late_ppl_change_pct": round(late_ppl_change_pct, 4),
+        "chat_verified": chat_ok,
+    }
+    print(json.dumps(summary), flush=True)
+
+    chat_pass = "PASS" if chat_ok else "FAIL"
+    print(
+        f"| {family.name} | {f16['tokens']} | {f16['overall_ppl']:.4f} | {q8_0['overall_ppl']:.4f} | "
+        f"{overall_ppl_change_pct:+.3f}% | {early_ppl_change_pct:+.3f}% | {late_ppl_change_pct:+.3f}% | {chat_pass} |",
+        flush=True,
+    )
+    return record
+
+
+def print_table_header() -> None:
+    print(
+        "| Family | Scored Tokens | F16 Overall PPL | Q8_0 Overall PPL | Overall PPL Δ | "
+        "Early PPL Δ (0-1K) | Late PPL Δ (last 2K) | Chat Verified |",
+        flush=True,
+    )
+    print(
+        "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |",
+        flush=True,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Slice K1 long-context Q8_0 vs F16 KV quality evaluation tool."
+    )
+    parser.add_argument(
+        "--family",
+        required=True,
+        help=f"model family to evaluate, or 'all'. Choices: {sorted(FAMILIES)} or 'all'",
+    )
+    parser.add_argument(
+        "--with-assistant",
+        action="store_true",
+        help="for gemma26 and gemma31, evaluate with assistant drafter enabled",
+    )
+    parser.add_argument("--runtime", required=True, help="path to llmp-runtime binary")
+    parser.add_argument("--out", required=True, help="output directory for evaluation results")
+    parser.add_argument(
+        "--share", default=DEFAULT_SHARE, help=f"share directory (default {DEFAULT_SHARE})"
+    )
+    parser.add_argument(
+        "--corpus", default=DEFAULT_CORPUS, help=f"reference corpus path (default {DEFAULT_CORPUS})"
+    )
+    parser.add_argument("--port", type=int, default=PORT, help=f"serving port (default {PORT})")
+    parser.add_argument(
+        "--runtime-env",
+        action="append",
+        metavar="NAME=VALUE",
+        help="diagnostic switch (LLMP_DIAGNOSTIC_*) for the runtime (repeatable)",
+    )
+    parser.add_argument(
+        "--keep-data", action="store_true", help="retain run data directories after execution"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=900.0,
+        help="timeout in seconds for waiting until runtime is ready (default 900.0)",
+    )
+
+    args = parser.parse_args(argv)
+
+    out = pathlib.Path(args.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    share = pathlib.Path(args.share).expanduser().resolve()
+    corpus_path = pathlib.Path(args.corpus).expanduser().resolve()
+    if not corpus_path.exists():
+        raise SystemExit(f"corpus file not found: {corpus_path}")
+    corpus = load_corpus(corpus_path)
+
+    runtime = pathlib.Path(args.runtime).resolve()
+    if not runtime.exists():
+        raise SystemExit(f"runtime binary not found: {runtime}")
+
+    runtime_env = parse_runtime_env(args.runtime_env)
+
+    target_families: list[str]
+    if args.family == "all":
+        target_families = list(STANDARD_LLM_FAMILIES)
+        if args.with_assistant:
+            target_families = [
+                "gemma26-assistant"
+                if f == "gemma26"
+                else "gemma31-assistant"
+                if f == "gemma31"
+                else f
+                for f in target_families
+            ]
+    else:
+        fam_name = args.family
+        if args.with_assistant:
+            if fam_name == "gemma26":
+                fam_name = "gemma26-assistant"
+            elif fam_name == "gemma31":
+                fam_name = "gemma31-assistant"
+        if fam_name not in FAMILIES:
+            raise SystemExit(f"unknown family: {fam_name!r}. Choices: {sorted(FAMILIES)} or 'all'")
+        target_families = [fam_name]
+
+    print_table_header()
+
+    has_error = False
+    for fam_name in target_families:
+        family = FAMILIES[fam_name]
+        res = evaluate_family(
+            family,
+            runtime,
+            share,
+            corpus,
+            out,
+            args.port,
+            runtime_env,
+            args.timeout,
+            args.keep_data,
+        )
+        if res.get("error"):
+            has_error = True
+
+    return 1 if has_error else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
