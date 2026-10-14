@@ -150,10 +150,6 @@ struct ModelKeySpec {
   // False for what names a model's files (artifact, composition, drafter,
   // tokenizer, chat_template); true for a setting the runtime resolves.
   bool setting = true;
-  // The architectures that use the setting, space-separated ("deepseek4",
-  // "qwen4exp"); empty, every one of its kinds. Registration logs an
-  // override that the model's architecture does not use, and ignores it.
-  std::string_view architectures{};
   std::int64_t least = 0;
   std::int64_t most = 0;
   std::int64_t multiple = 1;
@@ -172,8 +168,6 @@ struct ModelKeySpec {
 // Every [models.<name>] key, in the order the settings command lists them.
 std::span<const ModelKeySpec> ModelKeys();
 const ModelKeySpec* FindModelKey(std::string_view key);
-// Whether `spec` applies to a model of `architecture` (its kinds aside).
-bool KeyAppliesTo(const ModelKeySpec& spec, std::string_view architecture);
 
 // One model: the name the CLI (and later the API) asks for, and what the
 // installed store holds for it. Nothing here has touched the store.

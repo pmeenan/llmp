@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // What serving chooses from a model's binding. (A model's context ceiling
-// is its settings', model_settings.h RunnerContextCeiling and the trained
-// context, checked before the node opens.)
+// is its settings', derived from the model spec and the trained context,
+// checked before the node opens.)
 
 #ifndef LLMP_RUNTIME_MODEL_LIMITS_H_
 #define LLMP_RUNTIME_MODEL_LIMITS_H_

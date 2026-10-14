@@ -253,17 +253,114 @@ std::string_view SourceName(SettingSource source) {
   return "fallback";
 }
 
-std::uint32_t RunnerContextCeiling(std::string_view architecture) {
-  if (architecture == "deepseek4") {
-    return model::kDsv4FlashContext;
+namespace {
+
+std::uint32_t ContextCeilingOf(const ArtifactFacts& facts) {
+  if (facts.context_ceiling != 0) {
+    return facts.context_ceiling;
   }
-  if (architecture == "qwen4exp") {
-    return model::kQwen38FlashContext;
-  }
-  if (architecture == "gemma4") return model::kGemma4Context;
-  if (architecture == "gemma3") return 8448;
-  if (architecture == "gemma2") return model::Gemma2_2B().context;
+  if (facts.architecture == "deepseek4") return model::kDsv4FlashContext;
+  if (facts.architecture == "qwen4exp") return model::kQwen38FlashContext;
+  if (facts.architecture == "gemma4") return model::kGemma4Context;
+  if (facts.architecture == "gemma3") return 8448;
+  if (facts.architecture == "gemma2") return model::Gemma2_2B().context;
   return 0;
+}
+
+}  // namespace
+
+bool SupportsSpeculativeDrafting(const ArtifactFacts& facts) {
+  return !facts.drafter_architecture.empty() || facts.architecture == "deepseek4" ||
+         facts.architecture == "qwen4exp";
+}
+
+bool SupportsWaveForm(const ArtifactFacts& facts) { return facts.architecture == "deepseek4"; }
+
+bool SupportsWaveCosts(const ArtifactFacts& facts) { return facts.architecture == "deepseek4"; }
+
+bool SupportsHcaPrefill(const ArtifactFacts& facts) { return facts.architecture == "deepseek4"; }
+
+bool SupportsMtpDrafting(const ArtifactFacts& facts) { return facts.architecture == "qwen4exp"; }
+
+bool SupportsSpeculativeDrafting(const ModelSettings& settings) {
+  return settings.drafter || settings.architecture == "deepseek4" ||
+         settings.architecture == "qwen4exp";
+}
+
+bool SupportsWaveForm(const ModelSettings& settings) {
+  return settings.architecture == "deepseek4";
+}
+
+bool SupportsWaveCosts(const ModelSettings& settings) {
+  return settings.architecture == "deepseek4";
+}
+
+bool SupportsHcaPrefill(const ModelSettings& settings) {
+  return settings.architecture == "deepseek4";
+}
+
+bool SupportsMtpDrafting(const ModelSettings& settings) {
+  return settings.architecture == "qwen4exp";
+}
+
+bool KeyAppliesTo(std::string_view key, const ArtifactFacts& facts) {
+  if (facts.composition) {
+    return key == "image_size" || key == "image_steps";
+  }
+  if (key == "image_size" || key == "image_steps") {
+    return false;
+  }
+  if (key == "draft_rows") {
+    return SupportsSpeculativeDrafting(facts);
+  }
+  if (key == "wave_form") {
+    return SupportsWaveForm(facts);
+  }
+  if (key == "wave_costs") {
+    return SupportsWaveCosts(facts);
+  }
+  if (key == "prefill_outa_hca" || key == "prefill_outa_hca_partial") {
+    return SupportsHcaPrefill(facts);
+  }
+  if (key == "draft_vocab" || key == "depth_cost_ratio" || key == "shared_wave_depth" ||
+      key == "draft_wave_max" || key == "wave_lanes" || key == "wave_read_align") {
+    return SupportsMtpDrafting(facts);
+  }
+  return true;
+}
+
+bool KeyAppliesTo(std::string_view key, const ModelSettings& settings) {
+  if (settings.composition) {
+    return key == "image_size" || key == "image_steps";
+  }
+  if (key == "image_size" || key == "image_steps") {
+    return false;
+  }
+  if (key == "draft_rows") {
+    return SupportsSpeculativeDrafting(settings);
+  }
+  if (key == "wave_form") {
+    return SupportsWaveForm(settings);
+  }
+  if (key == "wave_costs") {
+    return SupportsWaveCosts(settings);
+  }
+  if (key == "prefill_outa_hca" || key == "prefill_outa_hca_partial") {
+    return SupportsHcaPrefill(settings);
+  }
+  if (key == "draft_vocab" || key == "depth_cost_ratio" || key == "shared_wave_depth" ||
+      key == "draft_wave_max" || key == "wave_lanes" || key == "wave_read_align") {
+    return SupportsMtpDrafting(settings);
+  }
+  return true;
+}
+
+bool KeyAppliesTo(const config::ModelKeySpec& spec, const ArtifactFacts& facts) {
+  return KeyAppliesTo(spec.key, facts);
+}
+
+bool KeyAppliesTo(const config::ModelKeySpec& spec, const ModelSettings& settings) {
+  return KeyAppliesTo(spec.key, settings);
 }
 
 std::expected<ja::Artifact, std::string> OpenInstalled(const fs::path& store,
@@ -410,6 +507,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     auto admitted = ReadComponentAdmission(target);
     if (!admitted) return Error(admitted.error());
     declared_context = admitted->model.stages.front().context;
+    facts.context_ceiling = admitted->model.stages.front().context;
     facts.gemma_profile = admitted->gemma_profile;
     const std::array<std::string_view, 1> ids{target.id()};
     if (auto configured = configure(admitted->model); !configured) return Error(configured.error());
@@ -437,6 +535,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     if (!values) return Error(values.error());
     auto model = spec::SynthesizeV0(target, *mapping, *values);
     if (!model) return Error(model.error());
+    facts.context_ceiling = model->stages.front().context;
     const std::array<std::string_view, 1> ids{target.id()};
     if (auto configured = configure(*model); !configured) return Error(configured.error());
     auto digest = spec::BoundDigest(*model, ids);
@@ -661,14 +760,15 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     return Error("Gemma3 maximum-context qualification needs trained-context metadata");
   const std::uint32_t runner = gemma3_trained_max && arch == "gemma3"
                                    ? model::Gemma3_4BQat().context
-                                   : RunnerContextCeiling(arch);
+                                   : ContextCeilingOf(facts);
   if (runner == 0) {
     return Error(std::format("no runner for architecture {}", arch));
   }
   for (const auto& [key, value] : entry.overrides) {
     const config::ModelKeySpec* spec = config::FindModelKey(key);
-    if (spec != nullptr && !config::KeyAppliesTo(*spec, arch)) {
-      s.ignored.push_back(std::format("{} (a setting of {} only)", key, spec->architectures));
+    if (spec != nullptr && !KeyAppliesTo(key, facts)) {
+      s.ignored.push_back(
+          std::format("{} (a setting unsupported by this model's capabilities)", key));
     }
   }
 
@@ -979,7 +1079,7 @@ std::vector<ModelSettings::Line> ModelSettings::Lines() const {
       continue;
     }
     const std::uint8_t kind = composition ? config::kCompositionModels : config::kArtifactModels;
-    if ((spec.kinds & kind) == 0 || (!composition && !config::KeyAppliesTo(spec, architecture))) {
+    if ((spec.kinds & kind) == 0 || !KeyAppliesTo(spec, *this)) {
       continue;
     }
     const std::string_view k = spec.key;

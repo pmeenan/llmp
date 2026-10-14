@@ -491,15 +491,6 @@ TEST(ModelContext, FrontierHeadSelectionStaysWithinTheMeasuredFormatAndShape) {
   EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
 }
 
-// The runners' own ceilings (model_settings.h; resolution refuses a
-// context past them before setup: model_settings_test).
-TEST(ModelContext, TheRunnersCeilings) {
-  using llmp::runtime::RunnerContextCeiling;
-  EXPECT_EQ(RunnerContextCeiling("deepseek4"), 1048576U);
-  EXPECT_EQ(RunnerContextCeiling("qwen4exp"), 262144U);
-  EXPECT_EQ(RunnerContextCeiling("unknown"), 0U);
-}
-
 // A prefill's chunk (runtime/prefill.h): the configured or default rows,
 // capped by the model and below the context.
 TEST(PrefillChunk, TakesTheConfiguredOrDefaultRowsWithinTheModelAndContext) {

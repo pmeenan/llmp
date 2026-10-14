@@ -20,7 +20,10 @@
 #include <vector>
 
 #include "config/node_config.h"
+#include "model/dsv4.h"
+#include "model/gemma2.h"
 #include "model/gemma4.h"
+#include "model/qwen38.h"
 
 namespace {
 
@@ -48,6 +51,17 @@ ArtifactFacts Facts(std::string architecture, std::string drafter = {}) {
   ArtifactFacts facts;
   facts.architecture = std::move(architecture);
   facts.drafter_architecture = std::move(drafter);
+  if (facts.architecture == "deepseek4") {
+    facts.context_ceiling = llmp::model::kDsv4FlashContext;
+  } else if (facts.architecture == "qwen4exp") {
+    facts.context_ceiling = llmp::model::kQwen38FlashContext;
+  } else if (facts.architecture == "gemma4") {
+    facts.context_ceiling = llmp::model::kGemma4Context;
+  } else if (facts.architecture == "gemma3") {
+    facts.context_ceiling = 8448;
+  } else if (facts.architecture == "gemma2") {
+    facts.context_ceiling = llmp::model::Gemma2_2B().context;
+  }
   return facts;
 }
 
@@ -833,8 +847,7 @@ TEST(ModelSettings, ListsEverySettingOfTheSchema) {
     for (const auto& spec : llmp::config::ModelKeys()) {
       const auto kind =
           composition ? llmp::config::kCompositionModels : llmp::config::kArtifactModels;
-      if (spec.setting && (spec.kinds & kind) != 0 &&
-          (composition || llmp::config::KeyAppliesTo(spec, architecture))) {
+      if (spec.setting && (spec.kinds & kind) != 0 && llmp::runtime::KeyAppliesTo(spec, s)) {
         expected.push_back(spec.key);
       }
     }
@@ -869,6 +882,61 @@ TEST(ModelSettings, ListsEverySettingOfTheSchema) {
   EXPECT_THAT(s.Summary(), HasSubstr("context=262144 (fallback)"));
   EXPECT_THAT(s.Summary(), HasSubstr("wave_form=\"auto\" (fallback)"));
   EXPECT_THAT(s.Summary(), HasSubstr("speculation=false (derived)"));
+}
+
+TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
+  using llmp::runtime::KeyAppliesTo;
+  using llmp::runtime::SupportsHcaPrefill;
+  using llmp::runtime::SupportsMtpDrafting;
+  using llmp::runtime::SupportsSpeculativeDrafting;
+  using llmp::runtime::SupportsWaveCosts;
+  using llmp::runtime::SupportsWaveForm;
+
+  ArtifactFacts ds_facts = Facts("deepseek4");
+  EXPECT_TRUE(SupportsSpeculativeDrafting(ds_facts));
+  EXPECT_TRUE(SupportsWaveForm(ds_facts));
+  EXPECT_TRUE(SupportsWaveCosts(ds_facts));
+  EXPECT_TRUE(SupportsHcaPrefill(ds_facts));
+  EXPECT_FALSE(SupportsMtpDrafting(ds_facts));
+  EXPECT_TRUE(KeyAppliesTo("draft_rows", ds_facts));
+  EXPECT_TRUE(KeyAppliesTo("wave_form", ds_facts));
+  EXPECT_TRUE(KeyAppliesTo("wave_costs", ds_facts));
+  EXPECT_TRUE(KeyAppliesTo("prefill_outa_hca", ds_facts));
+  EXPECT_FALSE(KeyAppliesTo("draft_vocab", ds_facts));
+  EXPECT_FALSE(KeyAppliesTo("image_size", ds_facts));
+
+  ArtifactFacts qwen_facts = Facts("qwen4exp");
+  EXPECT_TRUE(SupportsSpeculativeDrafting(qwen_facts));
+  EXPECT_FALSE(SupportsWaveForm(qwen_facts));
+  EXPECT_FALSE(SupportsWaveCosts(qwen_facts));
+  EXPECT_FALSE(SupportsHcaPrefill(qwen_facts));
+  EXPECT_TRUE(SupportsMtpDrafting(qwen_facts));
+  EXPECT_TRUE(KeyAppliesTo("draft_rows", qwen_facts));
+  EXPECT_FALSE(KeyAppliesTo("wave_form", qwen_facts));
+  EXPECT_TRUE(KeyAppliesTo("draft_vocab", qwen_facts));
+  EXPECT_TRUE(KeyAppliesTo("depth_cost_ratio", qwen_facts));
+
+  ArtifactFacts gemma_facts = Facts("gemma4");
+  EXPECT_FALSE(SupportsSpeculativeDrafting(gemma_facts));
+  EXPECT_FALSE(SupportsWaveForm(gemma_facts));
+  EXPECT_FALSE(SupportsWaveCosts(gemma_facts));
+  EXPECT_FALSE(SupportsHcaPrefill(gemma_facts));
+  EXPECT_FALSE(SupportsMtpDrafting(gemma_facts));
+  EXPECT_FALSE(KeyAppliesTo("draft_rows", gemma_facts));
+  EXPECT_FALSE(KeyAppliesTo("wave_form", gemma_facts));
+  EXPECT_FALSE(KeyAppliesTo("draft_vocab", gemma_facts));
+  EXPECT_TRUE(KeyAppliesTo("context", gemma_facts));
+
+  ArtifactFacts gemma_drafted = Facts("gemma4", "gemma4-assistant");
+  EXPECT_TRUE(SupportsSpeculativeDrafting(gemma_drafted));
+  EXPECT_TRUE(KeyAppliesTo("draft_rows", gemma_drafted));
+
+  ArtifactFacts image_facts;
+  image_facts.composition = true;
+  EXPECT_TRUE(KeyAppliesTo("image_size", image_facts));
+  EXPECT_TRUE(KeyAppliesTo("image_steps", image_facts));
+  EXPECT_FALSE(KeyAppliesTo("context", image_facts));
+  EXPECT_FALSE(KeyAppliesTo("draft_rows", image_facts));
 }
 
 }  // namespace

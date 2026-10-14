@@ -161,11 +161,31 @@ struct ArtifactFacts {
   // Qwen MTP selected-head rows: the packed BF16 matrix and matching I32
   // token map limit every request, even a larger nominal draft_vocab.
   std::optional<std::uint32_t> drafter_selected_rows;
+  // The runner's context ceiling derived from the spec's stage context /
+  // position limits (0: no runner / unsupported).
+  std::uint32_t context_ceiling = 0;
 };
 
-// The runner's own ceiling of an architecture's context (the position
-// tables it supports), or 0 for an architecture without a runner.
-std::uint32_t RunnerContextCeiling(std::string_view architecture);
+struct ModelSettings;
+
+// Capability predicates over a model's facts or settings.
+bool SupportsSpeculativeDrafting(const ArtifactFacts& facts);
+bool SupportsWaveForm(const ArtifactFacts& facts);
+bool SupportsWaveCosts(const ArtifactFacts& facts);
+bool SupportsHcaPrefill(const ArtifactFacts& facts);
+bool SupportsMtpDrafting(const ArtifactFacts& facts);
+
+bool SupportsSpeculativeDrafting(const ModelSettings& settings);
+bool SupportsWaveForm(const ModelSettings& settings);
+bool SupportsWaveCosts(const ModelSettings& settings);
+bool SupportsHcaPrefill(const ModelSettings& settings);
+bool SupportsMtpDrafting(const ModelSettings& settings);
+
+// Whether a setting key applies to a model with the given facts or settings.
+bool KeyAppliesTo(std::string_view key, const ArtifactFacts& facts);
+bool KeyAppliesTo(std::string_view key, const ModelSettings& settings);
+bool KeyAppliesTo(const config::ModelKeySpec& spec, const ArtifactFacts& facts);
+bool KeyAppliesTo(const config::ModelKeySpec& spec, const ModelSettings& settings);
 
 // An installed artifact, opened and its ID checked (who may change the
 // store is the filesystem's business, D-073 as amended on 2026-10-09).

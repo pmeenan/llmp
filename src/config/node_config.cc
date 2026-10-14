@@ -1325,62 +1325,51 @@ constexpr std::array kModelKeys = std::to_array<ModelKeySpec>({
      .most = 256,
      .summary = "the token closing reasoning (empty: none)"},
     {.key = "draft_rows",
-     .architectures = "deepseek4 qwen4exp",
      .least = 1,
      .most = 16,
      .unit = " rows",
      .summary = "drafts a speculative step proposes at most"},
     {.key = "wave_form",
      .type = ModelKeyType::kChoice,
-     .architectures = "deepseek4",
      .choices = kWaveForms,
      .summary = "a speculative wave's form: chosen, or forced"},
     {.key = "wave_costs",
      .type = ModelKeyType::kReals,
-     .architectures = "deepseek4",
      .real_least = 0,
      .real_most = 1000,
      .most_items = kMaxWaveCostWidths,
      .summary = "draft-verify wave time over plain, widths 2 up (0: always speculate)"},
     {.key = "prefill_outa_hca",
      .type = ModelKeyType::kBool,
-     .architectures = "deepseek4",
      .summary = "output-A/HCA prefill on full 4,096-row chunks (quality-qualified)"},
     {.key = "prefill_outa_hca_partial",
      .type = ModelKeyType::kBool,
-     .architectures = "deepseek4",
      .summary = "and on every chunk of 64 rows or more (quality-qualified)"},
     {.key = "draft_vocab",
-     .architectures = "qwen4exp",
      .least = 0,
      .most = std::int64_t{1} << 22,
      .unit = " rows",
      .summary = "the draft head's vocabulary rows (0: all)"},
     {.key = "depth_cost_ratio",
      .type = ModelKeyType::kReal,
-     .architectures = "qwen4exp",
      .real_least = 0,
      .real_most = 100,
      .real_open = true,
      .summary = "a three-draft step's time over a two-draft step's"},
     {.key = "shared_wave_depth",
-     .architectures = "qwen4exp",
      .least = 1,
      .most = 16,
      .unit = " drafts",
      .summary = "drafts a request in a wave of several"},
     {.key = "draft_wave_max",
-     .architectures = "qwen4exp",
      .least = 1,
      .most = 16,
      .unit = " requests",
      .summary = "requests drafting in one joined wave; past it each drafts alone"},
     {.key = "wave_lanes",
      .type = ModelKeyType::kBool,
-     .architectures = "qwen4exp",
      .summary = "run a wave's independent request operations on concurrent streams"},
     {.key = "wave_read_align",
-     .architectures = "qwen4exp",
      .least = 256,
      .most = 65536,
      .power_of_two = true,
@@ -1418,21 +1407,6 @@ std::span<const ModelKeySpec> ModelKeys() { return kModelKeys; }
 const ModelKeySpec* FindModelKey(std::string_view key) {
   const auto* const it = std::ranges::find(kModelKeys, key, &ModelKeySpec::key);
   return it == kModelKeys.end() ? nullptr : it;
-}
-
-bool KeyAppliesTo(const ModelKeySpec& spec, std::string_view architecture) {
-  if (spec.architectures.empty()) {
-    return true;
-  }
-  std::string_view rest = spec.architectures;
-  while (!rest.empty()) {
-    const std::size_t space = rest.find(' ');
-    if (rest.substr(0, space) == architecture) {
-      return true;
-    }
-    rest = space == std::string_view::npos ? std::string_view() : rest.substr(space + 1);
-  }
-  return false;
 }
 
 std::optional<bool> ModelEntry::Bool(std::string_view key) const {
