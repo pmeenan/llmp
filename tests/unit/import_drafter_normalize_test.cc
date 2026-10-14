@@ -289,63 +289,66 @@ TEST(ImportDrafterNormalizeModelsTest,
     EXPECT_EQ(plan->spec().stages[1].stream.width, 1024U);
     EXPECT_EQ(plan->routes().size(), 49U);
 
-    const std::filesystem::path scratch =
-        std::filesystem::path(testing::TempDir()) /
-        ("import-gemma4-assistant-" + std::to_string(size) + "-models-test");
-    std::filesystem::remove_all(scratch, ec);
-    std::filesystem::create_directories(scratch, ec);
+    const char* store_root = std::getenv("LLMP_TEST_PUBLICATION_STORE");
+    if (store_root != nullptr && *store_root != '\0') {
+      const std::filesystem::path scratch =
+          std::filesystem::path(store_root) /
+          ("import-gemma4-assistant-" + std::to_string(size) + "-models-test");
+      std::filesystem::remove_all(scratch, ec);
+      std::filesystem::create_directories(scratch, ec);
 
-    WriteOptions options{
-        .store = scratch / ("gemma4-asst-" + std::to_string(size) + "-v1"),
-        .build = "test",
-        .metadata_bytes = std::max(bound->metadata_bytes, std::uint64_t{1} << 30U),
-    };
-    auto written = WriteArtifact(*plan, options);
-    ASSERT_TRUE(written) << written.error().ToString();
-    EXPECT_FALSE(written->reused);
+      WriteOptions options{
+          .store = scratch / ("gemma4-asst-" + std::to_string(size) + "-v1"),
+          .build = "test",
+          .metadata_bytes = std::max(bound->metadata_bytes, std::uint64_t{1} << 30U),
+      };
+      auto written = WriteArtifact(*plan, options);
+      ASSERT_TRUE(written) << written.error().ToString();
+      EXPECT_FALSE(written->reused);
 
-    // Opening the published drafter artifact
-    auto drafter_art = artifact::Artifact::Open(written->path, {.expected_id = written->id});
-    ASSERT_TRUE(drafter_art) << drafter_art.error().ToString();
-    EXPECT_EQ(drafter_art->model().architecture, "gemma4-assistant");
+      // Opening the published drafter artifact
+      auto drafter_art = artifact::Artifact::Open(written->path, {.expected_id = written->id});
+      ASSERT_TRUE(drafter_art) << drafter_art.error().ToString();
+      EXPECT_EQ(drafter_art->model().architecture, "gemma4-assistant");
 
-    // Drafter artifact omits standalone spec.json
-    EXPECT_FALSE(std::filesystem::exists(written->path / "spec.json"));
+      // Drafter artifact omits standalone spec.json
+      EXPECT_FALSE(std::filesystem::exists(written->path / "spec.json"));
 
-    // Verify drafter admission
-    auto drafter_source = spec::SourceOf(*drafter_art);
-    ASSERT_TRUE(drafter_source) << drafter_source.error();
-    auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, drafter_art->sources());
-    ASSERT_TRUE(admission) << (admission ? "" : admission.error());
+      // Verify drafter admission
+      auto drafter_source = spec::SourceOf(*drafter_art);
+      ASSERT_TRUE(drafter_source) << drafter_source.error();
+      auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, drafter_art->sources());
+      ASSERT_TRUE(admission) << (admission ? "" : admission.error());
 
-    // Verify target composition
-    const auto target_art = MakeTargetV1(
-        scratch / "target", "gemma4",
-        size == 26 ? "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf" : "gemma-4-31B-it-UD-Q4_K_XL.gguf",
-        size == 26 ? 16947541728ULL : 18822970304ULL,
-        size == 26 ? "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
-                   : "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575");
-    ASSERT_TRUE(target_art) << (target_art ? "" : target_art.error().ToString());
+      // Verify target composition
+      const auto target_art = MakeTargetV1(
+          scratch / "target", "gemma4",
+          size == 26 ? "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf" : "gemma-4-31B-it-UD-Q4_K_XL.gguf",
+          size == 26 ? 16947541728ULL : 18822970304ULL,
+          size == 26 ? "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
+                     : "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575");
+      ASSERT_TRUE(target_art) << (target_art ? "" : target_art.error().ToString());
 
-    auto vals = rt::ComponentDrafterValues(*target_art, *drafter_art);
-    ASSERT_TRUE(vals) << (vals ? "" : vals.error());
+      auto vals = rt::ComponentDrafterValues(*target_art, *drafter_art);
+      ASSERT_TRUE(vals) << (vals ? "" : vals.error());
 
-    // Refusal: target width mismatch (e.g. 26B target with 31B assistant)
-    const auto bad_target_art = MakeTargetV1(
-        scratch / "bad_target", "gemma4",
-        size == 26 ? "gemma-4-31B-it-UD-Q4_K_XL.gguf" : "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
-        size == 26 ? 18822970304ULL : 16947541728ULL,
-        size == 26 ? "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575"
-                   : "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f");
-    ASSERT_TRUE(bad_target_art);
-    auto mismatch = rt::ComponentDrafterValues(*bad_target_art, *drafter_art);
-    EXPECT_FALSE(mismatch.has_value());
+      // Refusal: target width mismatch (e.g. 26B target with 31B assistant)
+      const auto bad_target_art = MakeTargetV1(
+          scratch / "bad_target", "gemma4",
+          size == 26 ? "gemma-4-31B-it-UD-Q4_K_XL.gguf" : "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+          size == 26 ? 18822970304ULL : 16947541728ULL,
+          size == 26 ? "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575"
+                     : "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f");
+      ASSERT_TRUE(bad_target_art);
+      auto mismatch = rt::ComponentDrafterValues(*bad_target_art, *drafter_art);
+      EXPECT_FALSE(mismatch.has_value());
 
-    RecordProperty("drafter_id", written->id);
-    RecordProperty("drafter_path", written->path.string());
-    RecordProperty("routes", "49");
+      RecordProperty("drafter_id", written->id);
+      RecordProperty("drafter_path", written->path.string());
+      RecordProperty("routes", "49");
 
-    std::filesystem::remove_all(scratch, ec);
+      std::filesystem::remove_all(scratch, ec);
+    }
   }
 }
 
@@ -380,76 +383,79 @@ TEST(ImportDrafterNormalizeModelsTest,
   EXPECT_EQ(plan->spec().stages[1].role, spec::StageRole::kDrafter);
   EXPECT_EQ(plan->spec().stages[1].artifact, 1U);
 
-  const std::filesystem::path scratch =
-      std::filesystem::path(testing::TempDir()) / "import-dspark-models-test";
-  std::filesystem::remove_all(scratch, ec);
-  std::filesystem::create_directories(scratch, ec);
+  const char* store_root = std::getenv("LLMP_TEST_PUBLICATION_STORE");
+  if (store_root != nullptr && *store_root != '\0') {
+    const std::filesystem::path scratch =
+        std::filesystem::path(store_root) / "import-dspark-models-test";
+    std::filesystem::remove_all(scratch, ec);
+    std::filesystem::create_directories(scratch, ec);
 
-  WriteOptions options{
-      .store = scratch / "dspark-v1",
-      .build = "test",
-      .metadata_bytes = std::max(bound->metadata_bytes, std::uint64_t{1} << 30U),
-  };
-  auto written = WriteArtifact(*plan, options);
-  ASSERT_TRUE(written) << written.error().ToString();
-  EXPECT_FALSE(written->reused);
+    WriteOptions options{
+        .store = scratch / "dspark-v1",
+        .build = "test",
+        .metadata_bytes = std::max(bound->metadata_bytes, std::uint64_t{1} << 30U),
+    };
+    auto written = WriteArtifact(*plan, options);
+    ASSERT_TRUE(written) << written.error().ToString();
+    EXPECT_FALSE(written->reused);
 
-  auto drafter_art = artifact::Artifact::Open(written->path, {.expected_id = written->id});
-  ASSERT_TRUE(drafter_art) << drafter_art.error().ToString();
-  EXPECT_EQ(drafter_art->model().architecture, "dflash");
+    auto drafter_art = artifact::Artifact::Open(written->path, {.expected_id = written->id});
+    ASSERT_TRUE(drafter_art) << drafter_art.error().ToString();
+    EXPECT_EQ(drafter_art->model().architecture, "dflash");
 
-  // Drafter artifact omits standalone spec.json
-  EXPECT_FALSE(std::filesystem::exists(written->path / "spec.json"));
+    // Drafter artifact omits standalone spec.json
+    EXPECT_FALSE(std::filesystem::exists(written->path / "spec.json"));
 
-  // Verify drafter admission
-  auto drafter_source = spec::SourceOf(*drafter_art);
-  ASSERT_TRUE(drafter_source) << drafter_source.error();
-  auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, drafter_art->sources());
-  ASSERT_TRUE(admission) << (admission ? "" : admission.error());
+    // Verify drafter admission
+    auto drafter_source = spec::SourceOf(*drafter_art);
+    ASSERT_TRUE(drafter_source) << drafter_source.error();
+    auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, drafter_art->sources());
+    ASSERT_TRUE(admission) << (admission ? "" : admission.error());
 
-  // Verify target composition with Dsv4 target
-  llmp::test::V1Plan p;
-  p.architecture = "deepseek4";
-  p.groups = {
-      llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
-                          .resources = {{.name = "token_embd.weight",
-                                         .format = {.encoding = fm::Encoding::kBF16,
-                                                    .layout = fm::Layout::kDense,
-                                                    .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
-  auto rendered = llmp::test::Render(p);
-  llmp::test::Json::Array source_list;
-  source_list.emplace_back(llmp::test::Json::Object{
-      {"bytes", static_cast<std::int64_t>(5257664ULL)},
-      {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf")},
-      {"sha256", std::string("de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b")}});
-  source_list.emplace_back(llmp::test::Json::Object{
-      {"bytes", static_cast<std::int64_t>(49437013568ULL)},
-      {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf")},
-      {"sha256", std::string("c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327")}});
-  source_list.emplace_back(llmp::test::Json::Object{
-      {"bytes", static_cast<std::int64_t>(47390237120ULL)},
-      {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf")},
-      {"sha256", std::string("a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4")}});
-  rendered.manifest["source"] = llmp::test::Json(std::move(source_list));
-  auto target_art =
-      llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "target_dsv4", rendered));
-  ASSERT_TRUE(target_art) << (target_art ? "" : target_art.error().ToString());
+    // Verify target composition with Dsv4 target
+    llmp::test::V1Plan p;
+    p.architecture = "deepseek4";
+    p.groups = {
+        llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
+                            .resources = {{.name = "token_embd.weight",
+                                           .format = {.encoding = fm::Encoding::kBF16,
+                                                      .layout = fm::Layout::kDense,
+                                                      .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
+    auto rendered = llmp::test::Render(p);
+    llmp::test::Json::Array source_list;
+    source_list.emplace_back(llmp::test::Json::Object{
+        {"bytes", static_cast<std::int64_t>(5257664ULL)},
+        {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf")},
+        {"sha256", std::string("de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b")}});
+    source_list.emplace_back(llmp::test::Json::Object{
+        {"bytes", static_cast<std::int64_t>(49437013568ULL)},
+        {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf")},
+        {"sha256", std::string("c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327")}});
+    source_list.emplace_back(llmp::test::Json::Object{
+        {"bytes", static_cast<std::int64_t>(47390237120ULL)},
+        {"name", std::string("DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf")},
+        {"sha256", std::string("a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4")}});
+    rendered.manifest["source"] = llmp::test::Json(std::move(source_list));
+    auto target_art =
+        llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / "target_dsv4", rendered));
+    ASSERT_TRUE(target_art) << (target_art ? "" : target_art.error().ToString());
 
-  auto vals = rt::ComponentDrafterValues(*target_art, *drafter_art);
-  ASSERT_TRUE(vals) << (vals ? "" : vals.error());
+    auto vals = rt::ComponentDrafterValues(*target_art, *drafter_art);
+    ASSERT_TRUE(vals) << (vals ? "" : vals.error());
 
-  // Refusal: architecture mismatch (gemma4 target with dflash drafter)
-  auto gemma_target_art = MakeTargetV1(
-      scratch / "target_gemma", "gemma4", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", 16947541728ULL,
-      "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f");
-  ASSERT_TRUE(gemma_target_art);
-  auto arch_mismatch = rt::ComponentDrafterValues(*gemma_target_art, *drafter_art);
-  EXPECT_FALSE(arch_mismatch.has_value());
+    // Refusal: architecture mismatch (gemma4 target with dflash drafter)
+    auto gemma_target_art = MakeTargetV1(
+        scratch / "target_gemma", "gemma4", "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf", 16947541728ULL,
+        "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f");
+    ASSERT_TRUE(gemma_target_art);
+    auto arch_mismatch = rt::ComponentDrafterValues(*gemma_target_art, *drafter_art);
+    EXPECT_FALSE(arch_mismatch.has_value());
 
-  RecordProperty("drafter_id", written->id);
-  RecordProperty("drafter_path", written->path.string());
+    RecordProperty("drafter_id", written->id);
+    RecordProperty("drafter_path", written->path.string());
 
-  std::filesystem::remove_all(scratch, ec);
+    std::filesystem::remove_all(scratch, ec);
+  }
 }
 
 }  // namespace
