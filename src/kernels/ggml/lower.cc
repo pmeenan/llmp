@@ -3903,7 +3903,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       Node(weights, id);
       std::vector<ggml_tensor*> inner;
       ggml_tensor* t = nullptr;
-      if (nt <= kMoeGemvTokens) {
+      if (nt <= kMoeGemvWaveTokens) {
         ggml_tensor* x = ggml_reshape_3d(c_, src(2), width, 1, nt);
         Node(x, id);
         ggml_tensor* act =
@@ -4494,7 +4494,7 @@ std::uint64_t KernelBytes(const ir::Graph& graph, const ir::Node& n) {
     ggml_tensor* weights = ggml_new_tensor_3d(c, GGML_TYPE_F32, 1, used, nt);
     ggml_tensor* shared = ggml_new_tensor_2d(c, GGML_TYPE_F32, width, nt);
     ggml_tensor* gate = ggml_new_tensor_2d(c, GGML_TYPE_F32, 1, nt);
-    if (nt <= kMoeGemvTokens) {
+    if (nt <= kMoeGemvWaveTokens) {
       ggml_tensor* x3 = ggml_reshape_3d(c, x, width, 1, nt);
       ggml_tensor* act = MoeGemvSwiglu(c, experts, x3, ids, f, scale, scale,
                                        moe::ExpertLayout::gate_up_codes(), layout.gate_up_scales());

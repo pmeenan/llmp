@@ -1568,13 +1568,13 @@ TEST(GgmlLowerQwen38Test, KeptNormResultsAreNotReplacedByPreparedRows) {
     SCOPED_TRACE(retained);
     ir::Builder b;
     const ir::TensorId x =
-        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 9, 1})));
+        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 17, 1})));
     const ir::TensorId norm = b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128})));
     const ir::TensorId gate =
-        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 9, 1})));
+        b.Input(ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({128, 1, 17, 1})));
     const std::array sources{x, norm, gate};
     const ir::TensorId value = b.Fused(ir::FusedKind::kNormGate, sources, ir::NormParams{})[0];
-    const ir::TensorId flat = b.Reshape(value, ir::ShapeOf({128, 9}));
+    const ir::TensorId flat = b.Reshape(value, ir::ShapeOf({128, 17}));
     const ir::TensorId prepared =
         b.Prepare(flat, llmp::format::Encoding::kMxfp8, llmp::format::Layout::kCutlassScaleAtoms);
     b.Output(prepared);

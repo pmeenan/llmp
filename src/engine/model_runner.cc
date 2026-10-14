@@ -1383,8 +1383,9 @@ const ModelRunner::CompanionStep* ModelRunner::CompanionFor(std::uint32_t slot,
 
 std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& request) {
   if (routed_flight_) return Refused("a routed step retains unproven effects", false);
-  if (routed_ && (request.ahead.build || request.ahead.capture_ahead || request.ahead.prepare ||
-                  request.ahead.shapes[0] || request.ahead.shapes[1]))
+  if (routed_ &&
+      (request.ahead.build || request.ahead.capture_ahead || request.ahead.prepare ||
+       std::ranges::any_of(request.ahead.shapes, [](const auto& s) { return s.has_value(); })))
     return Refused("routed continuation does not admit asynchronous lookahead");
   if (!bound_ || released_) return Refused("the model runner is not bound");
   const pl::StepShape& shape = request.shape;
@@ -1696,9 +1697,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // The futures: deduplicated against this shape and each other, and the
   // cached ones protected (found) before any optional funding.
   const StepAhead& ahead = request.ahead;
-  std::array<Plans::Entry*, 2> ahead_cached{};
-  std::array<std::optional<pl::PlanKey>, 2> ahead_keys{};
-  std::array<bool, 2> distinct{};
+  std::array<Plans::Entry*, 4> ahead_cached{};
+  std::array<std::optional<pl::PlanKey>, 4> ahead_keys{};
+  std::array<bool, 4> distinct{};
   for (std::size_t k = 0; k < ahead.shapes.size(); ++k) {
     if (!ahead.shapes[k] || !CheckShape(*ahead.shapes[k])) continue;
     ahead_keys[k] = KeyOf(*ahead.shapes[k]);

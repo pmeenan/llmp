@@ -1080,13 +1080,13 @@ bool AcceptsDsv4HcPost(const ex::CapabilityQuery& q) {
 // llmp.mxfp8.mul_mat_vec: up to kMxfp8VecColumns columns (a wave's to
 // kMxfp8VecWaveColumns).
 bool AcceptsMxfp8Vec(const ex::CapabilityQuery& q) {
-  return Built(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kMxfp8VecColumns) &&
+  return Built(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kMxfp8VecWaveColumns) &&
          q.k % 32 == 0;
 }
 // llmp.mxfp8.gemm.cutlass: past the vector product's columns, on the GB10.
 bool AcceptsMxfp8Gemm(const ex::CapabilityQuery& q) {
   return Built(q) && q.arch == kCutlassArch &&
-         q.rows > static_cast<std::uint64_t>(kMxfp8VecColumns) && q.k % 128 == 0;
+         q.rows > static_cast<std::uint64_t>(kMxfp8VecWaveColumns) && q.k % 128 == 0;
 }
 bool AcceptsMxfp8Quantize(const ex::CapabilityQuery& q) {
   return Built(q) && q.arch == kCutlassArch && Ne(q, 0, 0) % 128 == 0 && Ne(q, 0, 2) <= 1 &&
@@ -1129,7 +1129,7 @@ bool AcceptsHcFold(const ex::CapabilityQuery& q) {
   const std::uint64_t rows = Ne(q, 0, 1);
   // The prepared and rounded rows past the vector product's columns, of
   // whole 128-value MXFP8 rows (HcMixLayout), rounded only beside prepared.
-  if (p->prepared && (rows <= static_cast<std::uint64_t>(kMxfp8VecColumns) || width % 128 != 0))
+  if (p->prepared && (rows <= static_cast<std::uint64_t>(kMxfp8VecWaveColumns) || width % 128 != 0))
     return false;
   return !p->rounded || p->prepared;
 }
@@ -1790,10 +1790,10 @@ const std::array kEntries = {
     // DeltaNet, QSA and the routed experts.
     Entry{kMxfp8MulMatVecName, Operation::kMatMul,
           Cap(P(Op::kMatMul), kMxfp8Vec, &AcceptsMxfp8Vec, false, {}, 4),
-          "; selectable for the build's SASS architectures: up to 8 columns"},
+          "; selectable for the build's SASS architectures: up to 16 columns"},
     Entry{kMxfp8GemmName, Operation::kMatMul,
           Cap(P(Op::kMatMul), kMxfp8Gemm, &AcceptsMxfp8Gemm, false, {}, 4, {}, 0, kMxfp8GemmSteps),
-          "; selectable on sm_121 past 8 columns, K of whole 128-value rows"},
+          "; selectable on sm_121 past 16 columns, K of whole 128-value rows"},
     Entry{kMxfp8QuantizeName, Operation::kQuantize,
           Cap(P(Op::kPrepare), kMxfp8Prepare, &AcceptsMxfp8Quantize, true),
           "; selectable on sm_121: rows of whole 128 values"},
@@ -1819,7 +1819,7 @@ const std::array kEntries = {
           "1 to 8 streams"},
     Entry{kHcMixBf16Name, Operation::kHcMix,
           Cap(F(FusedKind::kHcFold), kHcFoldRules, &AcceptsHcFold, true),
-          "; selectable for the build's SASS architectures: 2 to 8 streams; prepared past 8 "
+          "; selectable for the build's SASS architectures: 2 to 8 streams; prepared past 16 "
           "rows of whole 128-value rows"},
     Entry{kHcCombineName, Operation::kHcCombine,
           Cap(F(FusedKind::kHcCombine), kHcCombineRules, &AcceptsHcCombine, true), kBuilt},
