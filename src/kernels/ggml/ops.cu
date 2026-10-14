@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -34,6 +35,100 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 // read when the context was created.
 const ggml_cuda_device_info::cuda_device_info& Device(const LaunchContext& launch) {
   return ggml_cuda_info().devices[launch.device()];
+}
+
+bool CanShiftLeft(const ggml_tensor& t) {
+  const std::size_t elem = ggml_type_size(t.type);
+  return t.ne[0] == 1 && (t.ne[1] == 1 || t.nb[1] == elem);
+}
+
+void ShiftLeftOne(ggml_tensor& t) {
+  const std::size_t elem = ggml_type_size(t.type);
+  for (int d = 0; d < 3; ++d) {
+    t.ne[d] = t.ne[d + 1];
+    t.nb[d] = t.nb[d + 1];
+  }
+  t.ne[3] = 1;
+  t.nb[3] = t.nb[2] * static_cast<std::size_t>(t.ne[2]);
+  if (t.ne[0] == 1) t.nb[0] = elem;
+}
+
+void ShiftBinaryLeft(ggml_tensor& dst, ggml_tensor& s0, ggml_tensor& s1) {
+  dst.src[0] = &s0;
+  dst.src[1] = &s1;
+  while ((dst.ne[1] > 1 || dst.ne[2] > 1 || dst.ne[3] > 1) && CanShiftLeft(dst) &&
+         CanShiftLeft(s0) && CanShiftLeft(s1)) {
+    ShiftLeftOne(dst);
+    ShiftLeftOne(s0);
+    ShiftLeftOne(s1);
+  }
+}
+
+struct CollapsedCont {
+  std::size_t dims = 0;
+  std::array<std::int64_t, 4> ne{1, 1, 1, 1};
+  std::array<std::size_t, 4> nb{sizeof(float), sizeof(float), sizeof(float), sizeof(float)};
+};
+
+CollapsedCont CollapseF32Cont(const ggml_tensor* src) {
+  CollapsedCont c{};
+  for (int d = 0; d < 4; ++d) {
+    if (src->ne[d] > 1) {
+      if (c.dims > 0 &&
+          src->nb[d] == static_cast<std::size_t>(c.ne[c.dims - 1]) * c.nb[c.dims - 1]) {
+        c.ne[c.dims - 1] *= src->ne[d];
+      } else {
+        c.ne[c.dims] = src->ne[d];
+        c.nb[c.dims] = src->nb[d];
+        ++c.dims;
+      }
+    }
+  }
+  if (c.dims == 0) c.dims = 1;
+  return c;
+}
+
+__global__ void Transpose2dKernel(const char* __restrict__ src, float* __restrict__ dst,
+                                  std::int64_t ne0, std::int64_t ne1, std::size_t nb0,
+                                  std::size_t nb2) {
+  __shared__ float tile[32][33];
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const std::int64_t base1 = static_cast<std::int64_t>(blockIdx.x) * 32;
+  const std::int64_t base0 = static_cast<std::int64_t>(blockIdx.y) * 32;
+  const std::int64_t i2 = blockIdx.z;
+  const char* batch_src = src + static_cast<std::size_t>(i2) * nb2;
+  float* batch_dst = dst + i2 * ne0 * ne1;
+  for (int j = 0; j < 32; j += 8) {
+    const std::int64_t i0 = base0 + ty + j;
+    const std::int64_t i1 = base1 + tx;
+    if (i0 < ne0 && i1 < ne1) {
+      const auto* row =
+          reinterpret_cast<const float*>(batch_src + static_cast<std::size_t>(i0) * nb0);
+      tile[ty + j][tx] = row[i1];
+    }
+  }
+  __syncthreads();
+  for (int j = 0; j < 32; j += 8) {
+    const std::int64_t i1 = base1 + ty + j;
+    const std::int64_t i0 = base0 + tx;
+    if (i1 < ne1 && i0 < ne0) {
+      batch_dst[i0 + ne0 * i1] = tile[tx][ty + j];
+    }
+  }
+}
+
+__global__ void Copy3dContigDim0Kernel(const char* __restrict__ src, float* __restrict__ dst,
+                                       std::int64_t ne0, std::int64_t ne1, std::size_t nb1,
+                                       std::size_t nb2) {
+  const std::int64_t i0 = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::int64_t i1 = blockIdx.y;
+  const std::int64_t i2 = blockIdx.z;
+  if (i0 < ne0) {
+    const auto* row = reinterpret_cast<const float*>(src + static_cast<std::size_t>(i1) * nb1 +
+                                                     static_cast<std::size_t>(i2) * nb2);
+    dst[i0 + ne0 * (i1 + ne1 * i2)] = row[i0];
+  }
 }
 
 }  // namespace
@@ -87,7 +182,9 @@ std::expected<void, KernelFailure> Add(LaunchContext& launch, ggml_tensor* node)
     return checked;
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
-    ggml_cuda_op_add(context, node);
+    ggml_tensor dst = *node, s0 = *node->src[0], s1 = *node->src[1];
+    ShiftBinaryLeft(dst, s0, s1);
+    ggml_cuda_op_add(context, &dst);
   });
 }
 
@@ -96,7 +193,9 @@ std::expected<void, KernelFailure> Mul(LaunchContext& launch, ggml_tensor* node)
     return checked;
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
-    ggml_cuda_op_mul(context, node);
+    ggml_tensor dst = *node, s0 = *node->src[0], s1 = *node->src[1];
+    ShiftBinaryLeft(dst, s0, s1);
+    ggml_cuda_op_mul(context, &dst);
   });
 }
 
@@ -238,8 +337,46 @@ std::expected<void, KernelFailure> Cont(LaunchContext& launch, ggml_tensor* node
   if (auto checked = CheckCont(node); !checked) {
     return std::unexpected(checked.error());
   }
-  return launch.Run(base::Bytes(0),
-                    [node](ggml_backend_cuda_context& context) { ggml_cuda_dup(context, node); });
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* src = node->src[0];
+    if (src->type == GGML_TYPE_F32 && node->type == GGML_TYPE_F32 && ggml_is_contiguous(node)) {
+      const CollapsedCont c = CollapseF32Cont(src);
+      cudaStream_t stream = context.stream();
+      if (c.dims == 1 && c.nb[0] == sizeof(float)) {
+        CUDA_CHECK(cudaMemcpyAsync(node->data, src->data, ggml_nbytes(node),
+                                   cudaMemcpyDeviceToDevice, stream));
+        return;
+      }
+      if (c.dims == 2 && c.nb[0] == sizeof(float)) {
+        const std::size_t width = static_cast<std::size_t>(c.ne[0]) * sizeof(float);
+        CUDA_CHECK(cudaMemcpy2DAsync(node->data, width, src->data, c.nb[1], width,
+                                     static_cast<std::size_t>(c.ne[1]), cudaMemcpyDeviceToDevice,
+                                     stream));
+        return;
+      }
+      if ((c.dims == 2 || (c.dims == 3 && c.ne[2] <= 65535)) && c.nb[1] == sizeof(float) &&
+          ((c.ne[0] + 31) / 32) <= 65535 && ((c.ne[1] + 31) / 32) <= 65535) {
+        const dim3 grid(static_cast<unsigned>((c.ne[1] + 31) / 32),
+                        static_cast<unsigned>((c.ne[0] + 31) / 32),
+                        static_cast<unsigned>(c.dims == 3 ? c.ne[2] : 1));
+        Transpose2dKernel<<<grid, dim3(32, 8), 0, stream>>>(
+            static_cast<const char*>(src->data), static_cast<float*>(node->data), c.ne[0], c.ne[1],
+            c.nb[0], c.dims == 3 ? c.nb[2] : 0);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+      }
+      if (c.dims == 3 && c.nb[0] == sizeof(float) && c.ne[1] <= 65535 && c.ne[2] <= 65535) {
+        const dim3 grid(static_cast<unsigned>((c.ne[0] + 255) / 256),
+                        static_cast<unsigned>(c.ne[1]), static_cast<unsigned>(c.ne[2]));
+        Copy3dContigDim0Kernel<<<grid, 256, 0, stream>>>(static_cast<const char*>(src->data),
+                                                         static_cast<float*>(node->data), c.ne[0],
+                                                         c.ne[1], c.nb[1], c.nb[2]);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+      }
+    }
+    ggml_cuda_dup(context, node);
+  });
 }
 
 std::expected<void, KernelFailure> Convert(LaunchContext& launch, ggml_tensor* node) {
@@ -256,7 +393,11 @@ std::expected<void, KernelFailure> SwiGlu(LaunchContext& launch, ggml_tensor* no
     return checked;
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
-    ggml_cuda_op_swiglu(context, node);
+    ggml_tensor dst = *node;
+    ggml_tensor s0 = *node->src[0];
+    ggml_tensor s1 = *node->src[1];
+    ShiftBinaryLeft(dst, s0, s1);
+    ggml_cuda_op_swiglu(context, &dst);
   });
 }
 
@@ -265,7 +406,11 @@ std::expected<void, KernelFailure> GeGlu(LaunchContext& launch, ggml_tensor* nod
     return checked;
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
-    ggml_cuda_op_geglu(context, node);
+    ggml_tensor dst = *node;
+    ggml_tensor s0 = *node->src[0];
+    ggml_tensor s1 = *node->src[1];
+    ShiftBinaryLeft(dst, s0, s1);
+    ggml_cuda_op_geglu(context, &dst);
   });
 }
 

@@ -32,5 +32,7 @@ std::expected<Conv2dTilePlan, KernelFailure> CheckConv2dTiledF32(
 std::expected<std::uint64_t, KernelFailure> PlanConv2dTiledF32(const LaunchContext& launch,
                                                                const ggml_tensor* node);
 std::expected<void, KernelFailure> Conv2dTiledF32(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> Conv2dTiledF32WithBias(LaunchContext& launch, ggml_tensor* node,
+                                                          const ggml_tensor* bias);
 }  // namespace llmp::kernels::ggml
 #endif  // LLMP_KERNELS_GGML_CONV2D_TILED_H_

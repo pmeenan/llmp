@@ -314,6 +314,8 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
       // Explicit diagnostic arm selection, not a measured production rank.
       item.policy.ranks.push_back(
           {"sm_121", i == 0 ? "ggml.conv2d.f32" : std::string(kg::kConv2dTiledF32), 0});
+    } else if (!pointwise && i == 0) {
+      item.policy.ranks.push_back({"sm_121", "ggml.conv2d.f32", 0});
     }
     auto spec = sp::VaeSpatialSpec(spans[i], tensors);
     if (!spec) return Error(spec.error());

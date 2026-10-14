@@ -185,6 +185,55 @@ std::expected<void, KernelFailure> RopeExt(LaunchContext& launch, ggml_tensor* n
 std::expected<void, KernelFailure> GetRowsExt(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> SetRowsExt(LaunchContext& launch, ggml_tensor* node);
 
+// Fused spatial block operations for BoundGraph execution.
+struct SplitBroadcastWhc {
+  const float* vec0 = nullptr;
+  const float* vec1 = nullptr;
+  int split_row = 0;
+};
+
+std::expected<void, KernelFailure> LayerNormModulateF32(
+    LaunchContext& launch, const ggml_tensor* x_in, const ggml_tensor* side_whc,
+    ggml_tensor* dst_rows, float eps, bool x_is_whc = false, bool write_bf16_workspace = false,
+    bool skip_f32_dst = false, SplitBroadcastWhc side_bcast = {});
+std::expected<void, KernelFailure> GatedResidualF32(
+    LaunchContext& launch, const ggml_tensor* carry, const ggml_tensor* branch,
+    const ggml_tensor* gate, ggml_tensor* dst, bool branch_is_rows = false,
+    bool carry_is_rows = false, SplitBroadcastWhc gate_bcast = {}, bool branch_is_bf16 = false,
+    bool carry_is_bf16 = false);
+std::expected<void, KernelFailure> GatedResidualLayerNormModulateF32(
+    LaunchContext& launch, const ggml_tensor* carry, const ggml_tensor* branch_rows,
+    const ggml_tensor* gate_whc, ggml_tensor* residual_out, const ggml_tensor* side_whc,
+    ggml_tensor* norm_dst_rows, float eps, bool carry_is_rows, bool write_bf16_workspace,
+    bool skip_f32_dst, SplitBroadcastWhc gate_bcast = {}, SplitBroadcastWhc side_bcast = {},
+    bool branch_is_bf16 = false, bool carry_is_bf16 = false, bool residual_out_is_bf16 = false);
+std::expected<void, KernelFailure> RmsNormMulRope3d(
+    LaunchContext& launch, const ggml_tensor* x_in, const ggml_tensor* weight, float eps,
+    std::span<const ggml_tensor* const> pos_views, std::span<const int> axis_dims, float freq_base,
+    bool neox, ggml_tensor* dst, bool transpose_out = false, bool x_is_bf16 = false,
+    bool dst_is_f16 = false, int padded_rows = 0, bool dst_in_workspace = false);
+std::expected<void, KernelFailure> RmsNormMulRope3dQKInplaceBf16(
+    LaunchContext& launch, ggml_tensor* q_inout, const ggml_tensor* q_weight, float q_eps,
+    ggml_tensor* k_inout, const ggml_tensor* k_weight, float k_eps,
+    std::span<const ggml_tensor* const> pos_views, std::span<const int> axis_dims, float freq_base,
+    bool neox, std::uint64_t freqs_ws_offset = UINT64_MAX, bool freqs_precomputed = false);
+std::expected<void, KernelFailure> SpatialChannelNormF32(LaunchContext& launch,
+                                                         const ggml_tensor* x_whc,
+                                                         const ggml_tensor* gamma,
+                                                         ggml_tensor* dst_whc, float eps,
+                                                         float scale, bool silu);
+std::expected<void, KernelFailure> DupUpAddF32(LaunchContext& launch, const ggml_tensor* x,
+                                               const ggml_tensor* sc, ggml_tensor* dst, int ft,
+                                               int repeats);
+std::expected<void, KernelFailure> SpatialConv1x1F32(LaunchContext& launch,
+                                                     const ggml_tensor* x_whc,
+                                                     const ggml_tensor* weight,
+                                                     const ggml_tensor* bias, ggml_tensor* dst_whc);
+std::expected<void, KernelFailure> SwiGluToBf16(LaunchContext& launch, const ggml_tensor* gate,
+                                                const ggml_tensor* up, bool swapped = false,
+                                                bool bf16_inputs = false,
+                                                void* dst_override = nullptr);
+
 // MoE routing and the indexer's selection, in llmpalooza's build without CUB
 // (third_party/patches/ggml/0001). Argsort takes the bitonic kernel only,
 // refused if a padded row does not fit the device's shared memory. Top-k

@@ -15,6 +15,7 @@
 #include "base/json.h"
 #include "chat/chat.h"
 #include "engine/support.h"
+#include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
 #include "platform/files.h"
@@ -238,19 +239,42 @@ Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, st
       return {};
     }
     if (slot == 3 && exact(3ULL * joint)) {
-      for (std::uint32_t row = 0; row < joint; ++row)
+      if (invocation.iteration > 0 && joint >= 2) {
+        const auto pos0 = md::QwenImageDenoiserPosition(text, held.request.grid_height,
+                                                        held.request.grid_width, 0);
+        const auto pos_last = md::QwenImageDenoiserPosition(text, held.request.grid_height,
+                                                            held.request.grid_width, joint - 1);
+        std::int32_t cur0 = -1, cur_last = -1;
+        std::memcpy(&cur0, bytes.data(), sizeof(std::int32_t));
+        std::memcpy(&cur_last, bytes.data() + (3ULL * joint - 1) * sizeof(std::int32_t),
+                    sizeof(std::int32_t));
+        if (cur0 == pos0[0] && cur_last == pos_last[2]) return {};
+      }
+      for (std::uint32_t row = 0; row < joint; ++row) {
+        const auto positions = md::QwenImageDenoiserPosition(text, held.request.grid_height,
+                                                             held.request.grid_width, row);
         for (std::uint32_t axis = 0; axis < 3; ++axis) {
-          const auto positions = md::QwenImageDenoiserPosition(text, held.request.grid_height,
-                                                               held.request.grid_width, row);
-          const auto pos = positions[axis];
-          put(row + std::size_t{joint} * axis, pos);
+          put(row + std::size_t{joint} * axis, positions[axis]);
         }
+      }
       return {};
     }
     if (slot == 4 && exact(std::uint64_t{joint} * joint)) {
-      for (std::uint32_t q = 0; q < joint; ++q)
-        for (std::uint32_t k = 0; k < joint; ++k)
-          put(k + std::size_t{joint} * q, q < text && k > q ? -INFINITY : 0.F);
+      if (invocation.iteration > 0 && joint >= 2 && text >= 1) {
+        float v0 = 1.0f, v1 = 0.0f, vlast = 1.0f;
+        std::memcpy(&v0, bytes.data(), sizeof(float));
+        std::memcpy(&v1, bytes.data() + sizeof(float), sizeof(float));
+        std::memcpy(&vlast, bytes.data() + (std::size_t{joint} * joint - 1) * sizeof(float),
+                    sizeof(float));
+        if (v0 == 0.0f && std::isinf(v1) && v1 < 0.0f && vlast == 0.0f) return {};
+      }
+      std::memset(bytes.data(), 0, bytes.size());
+      const std::uint32_t masked_rows = std::min(text, joint);
+      for (std::uint32_t q = 0; q < masked_rows; ++q) {
+        for (std::uint32_t k = q + 1; k < joint; ++k) {
+          put(k + std::size_t{joint} * q, -INFINITY);
+        }
+      }
       return {};
     }
     if (slot == 5 && exact(1)) {
@@ -539,8 +563,25 @@ EngineImageBuild ComponentImageGenerationBuild(
     if (!facts) return Error("image device facts unavailable");
     const auto blas_bytes =
         kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
-    const auto tuples = tuning ? std::span<const execution::TunedShape>(tuning->facts().tuned)
-                               : std::span<const execution::TunedShape>{};
+    const auto joint = std::uint64_t{request->text_rows} + request->rows;
+    const std::array<execution::TunedShape, 2> default_tuned{{
+        {.implementation = kg::kAttentionF32,
+         .rows = 4121,
+         .k = 128,
+         .n = 128,
+         .output_encoding = format::Encoding::kF32},
+        {.implementation = kg::kAttentionF32,
+         .rows = joint,
+         .k = 128,
+         .n = 128,
+         .output_encoding = format::Encoding::kF32},
+    }};
+    const std::size_t default_count = (!tuning && facts->architecture / 10 == 121)
+                                          ? (joint != 4121 && request->rows == 4096 ? 2U : 1U)
+                                          : 0U;
+    const auto tuples =
+        tuning ? std::span<const execution::TunedShape>(tuning->facts().tuned)
+               : std::span<const execution::TunedShape>(default_tuned.data(), default_count);
     auto declared = held->backend->Declare(
         tuples, blas_bytes,
         [construction, source](std::uint64_t bytes) {
