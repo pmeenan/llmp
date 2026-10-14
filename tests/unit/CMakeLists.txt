@@ -1028,6 +1028,10 @@ if(LLMP_CUDA)
   add_executable(decode_selected_grouped_test decode_selected_grouped_test.cc)
   target_link_libraries(decode_selected_grouped_test PRIVATE llmp_decode_selected)
   llmp_gtest(decode_selected_grouped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+  add_executable(decode_selected_products_test decode_selected_products_test.cc)
+  target_link_libraries(decode_selected_products_test PRIVATE llmp_decode_selected)
+  llmp_gtest(decode_selected_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
   add_executable(routed_component_gpu_test routed_component_gpu_test.cc)
   target_link_libraries(routed_component_gpu_test PRIVATE llmp_decode_selected llmp_engine
                                                          llmp_test_artifact_writer)

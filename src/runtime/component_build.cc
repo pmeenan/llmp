@@ -27,6 +27,7 @@
 #include "engine/decoding.h"
 #include "engine/expert_slab.h"
 #include "engine/paged_weights.h"
+#include "kernels/decode/selected_source.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
 #include "model/dspark.h"
@@ -1024,20 +1025,37 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (solo && !row_table && (!stored_bindings || stored_bindings->rows.empty()))
       return Error("the component recipe has no n-gram row table");
     ComponentHold* held = hold.get();
+    kernels::ggml::GgmlBackendOptions backend_options{
+        .lower = {.device_masks = true,
+                  // The runner stages a frozen read's host mask (its cells'
+                  // positions before the rows); the device's are made
+                  // anyway.
+                  .frozen_host_masks = true,
+                  .index_scratch_limit = deepseek_serving ? kServingReaderScratchBytes
+                                         : deepseek ? kDsv4ReaderScratchBytes
+                                                    : std::numeric_limits<std::uint64_t>::max(),
+                  .expert_stride = [held](const ir::WeightRef& ref) -> std::uint64_t {
+                    const auto at = held->pitch.find(ref);
+                    return at == held->pitch.end() ? 0 : at->second;
+                  }}};
+    bool has_affine = false;
+    for (const auto& table : hold->tables) {
+      for (const auto& tensor : table) {
+        if (tensor.format.encoding == format::Encoding::kAffine) {
+          has_affine = true;
+          break;
+        }
+      }
+      if (has_affine) break;
+    }
+    if (has_affine) {
+      auto decode_source = kernels::decode::DecodeSelectedSource();
+      if (!decode_source) return Error(decode_source.error());
+      backend_options.selected = *decode_source;
+    }
     auto backend = kernels::ggml::GgmlBackend::Create(
         0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,
-        {.lower = {.device_masks = true,
-                   // The runner stages a frozen read's host mask (its cells'
-                   // positions before the rows); the device's are made
-                   // anyway.
-                   .frozen_host_masks = true,
-                   .index_scratch_limit = deepseek_serving ? kServingReaderScratchBytes
-                                          : deepseek ? kDsv4ReaderScratchBytes
-                                                     : std::numeric_limits<std::uint64_t>::max(),
-                   .expert_stride = [held](const ir::WeightRef& ref) -> std::uint64_t {
-                     const auto at = held->pitch.find(ref);
-                     return at == held->pitch.end() ? 0 : at->second;
-                   }}});
+        std::move(backend_options));
     if (!backend) return Error(backend.error());
     hold->backend = std::move(*backend);
     const providers::DeviceFacts facts =

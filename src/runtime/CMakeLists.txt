@@ -45,7 +45,8 @@ if(LLMP_CUDA)
                                           serve_api.cc)
   target_link_libraries(llmp_runtime_serving PUBLIC llmp_runtime llmp_runtime_llm llmp_engine
                                                       llmp_sampling
-                        PRIVATE llmp_base llmp_build_info llmp_platform llmp_warnings)
+                        PRIVATE llmp_base llmp_build_info llmp_platform llmp_decode_selected
+                                llmp_warnings)
 else()
   add_library(llmp_runtime_serving STATIC serving_none.cc)
   target_link_libraries(llmp_runtime_serving PUBLIC llmp_runtime PRIVATE llmp_warnings)

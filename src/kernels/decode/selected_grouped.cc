@@ -21,7 +21,8 @@ namespace llmp::kernels::decode {
 namespace {
 namespace kg = ggml;
 using Failure = kg::KernelFailure;
-constexpr std::string_view kName = "llmp.decode.grouped.nvfp4.split";
+constexpr std::string_view kNvfp4Name = "llmp.decode.grouped.nvfp4.split";
+constexpr std::string_view kAffineName = "llmp.decode.grouped.affine.split";
 std::unexpected<Failure> Reject(std::string detail) {
   return std::unexpected(Failure{.detail = std::move(detail)});
 }
@@ -51,8 +52,8 @@ std::expected<Geometry, Failure> Shape(const ir::Node& n,
   const auto& y = outputs[0];
   const auto& f = w.desc.format;
   if (!w.expert_weight || !w.expert_weight->expert_array ||
-      f.encoding != format::Encoding::kNvfp4 || f.layout != format::Layout::kSplit ||
-      f.shape.rank != 3 || x.desc.ne(0) != f.shape.ne[0] ||
+      (f.encoding != format::Encoding::kNvfp4 && f.encoding != format::Encoding::kAffine) ||
+      f.layout != format::Layout::kSplit || f.shape.rank != 3 || x.desc.ne(0) != f.shape.ne[0] ||
       y.desc.format.encoding != format::Encoding::kF32 ||
       y.desc.format.layout != format::Layout::kDense || !ir::IsContiguous(y.desc) ||
       x.desc.format.encoding != format::Encoding::kF32 ||
@@ -276,7 +277,8 @@ class Call final : public kg::SelectedCall {
       kg::SelectedWorkspace) const override {
     const auto native = decode::Bind(implementation);
     if (launch.owner() != owner() || execution::IdentityOf(implementation) != identity_ ||
-        !native || native->tmpl != Template::kGrouped || native->gate != DecoderId::kNvfp4Split ||
+        !native || native->tmpl != Template::kGrouped ||
+        (native->gate != DecoderId::kNvfp4Split && native->gate != DecoderId::kAffineSplit) ||
         !place_->assigned)
       return Reject("grouped selection lacks its exact routed native declaration");
     if (auto parts = Parts(geometry_); !parts) return std::unexpected(parts.error());
@@ -290,34 +292,47 @@ class Call final : public kg::SelectedCall {
 };
 class Source final : public kg::SelectedSource {
  public:
-  explicit Source(execution::Implementation implementation)
-      : implementation_(std::move(implementation)) {}
+  explicit Source(std::vector<execution::Implementation> implementations)
+      : implementations_(std::move(implementations)) {}
   std::vector<execution::Implementation> Implementations() const override {
-    return {implementation_};
+    return implementations_;
   }
   std::vector<execution::TunedShape> Tuning(std::uint32_t) const override { return {}; }
-  bool Owns(std::string_view name) const override { return name == kName; }
+  bool Owns(std::string_view name) const override {
+    return std::ranges::any_of(implementations_,
+                               [&](const auto& impl) { return impl.name == name; });
+  }
   std::uint64_t persistent_bytes() const override { return 0; }
   std::optional<base::Sha256Digest> ExecutionIdentity() const override {
     base::Sha256 hash;
-    hash.Update("llmp-native-nvfp4-split-routed-group-v1");
+    hash.Update("llmp-native-split-routed-group-v2");
     hash.Update(
         "direct-weight-parts;original-route-ids;complete-read-inventory;"
-        "pitched-stacked-experts;token-or-original-slot;inverse-output-slot");
-    const auto implementation = execution::IdentityOf(implementation_);
-    hash.Update(std::as_bytes(std::span(implementation)));
+        "pitched-stacked-experts;token-or-original-slot;inverse-output-slot;affine-and-nvfp4");
+    for (const auto& impl : implementations_) {
+      const auto implementation = execution::IdentityOf(impl);
+      hash.Update(std::as_bytes(std::span(implementation)));
+    }
     return hash.Finish();
   }
   std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
       std::span<const kg::SelectedOperand> inputs,
       std::span<const kg::SelectedOperand> outputs) const override {
-    if (execution::IdentityOf(implementation) != execution::IdentityOf(implementation_))
+    const auto at =
+        std::ranges::find(implementations_, implementation.name, &execution::Implementation::name);
+    if (at == implementations_.end() ||
+        execution::IdentityOf(implementation) != execution::IdentityOf(*at))
       return Reject("foreign grouped declaration");
     auto geometry = Shape(node, inputs, outputs);
     if (!geometry) return std::unexpected(geometry.error());
+    if (implementation.name == kNvfp4Name && geometry->format.encoding != format::Encoding::kNvfp4)
+      return Reject("grouped implementation and weight encoding differ");
+    if (implementation.name == kAffineName &&
+        geometry->format.encoding != format::Encoding::kAffine)
+      return Reject("grouped implementation and weight encoding differ");
     return std::make_unique<Call>(this, std::move(*geometry),
-                                  execution::IdentityOf(implementation_));
+                                  execution::IdentityOf(implementation));
   }
   std::expected<std::unique_ptr<kg::SelectedLaunch>, Failure> Launch(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
@@ -330,14 +345,20 @@ class Source final : public kg::SelectedSource {
   }
 
  private:
-  execution::Implementation implementation_;
+  std::vector<execution::Implementation> implementations_;
 };
 }  // namespace
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> GroupedSelectedSource() {
+std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> GroupedSelectedSource(
+    std::optional<format::Encoding> encoding) {
   auto implementations = decode::Implementations();
-  const auto at = std::ranges::find(implementations, kName, &execution::Implementation::name);
-  if (at == implementations.end())
-    return std::unexpected("native split grouped implementation missing");
-  return std::make_shared<Source>(std::move(*at));
+  std::vector<execution::Implementation> matched;
+  for (const auto& impl : implementations) {
+    if (impl.name == kNvfp4Name && (!encoding || *encoding == format::Encoding::kNvfp4))
+      matched.push_back(impl);
+    else if (impl.name == kAffineName && (!encoding || *encoding == format::Encoding::kAffine))
+      matched.push_back(impl);
+  }
+  if (matched.empty()) return std::unexpected("native split grouped implementation missing");
+  return std::make_shared<Source>(std::move(matched));
 }
 }  // namespace llmp::kernels::decode

@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/sha256.h"
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/products.h"
 #include "kernels/ggml/validate_util.h"
@@ -21,7 +22,8 @@ namespace {
 namespace kg = ggml;
 using Failure = kg::KernelFailure;
 using Role = format::PartRole;
-constexpr std::string_view kName = "llmp.decode.rows.nvfp4.split";
+constexpr std::string_view kNvfp4Name = "llmp.decode.rows.nvfp4.split";
+constexpr std::string_view kAffineName = "llmp.decode.rows.affine.split";
 std::unexpected<Failure> Reject(std::string message) {
   return std::unexpected(Failure{.detail = std::move(message)});
 }
@@ -37,6 +39,7 @@ bool Packed(const ggml_tensor* t, ggml_type type, std::uint64_t width, std::uint
 struct Geometry {
   format::TensorFormat effective;
   std::array<ggml_tensor*, 3> parts{};
+  std::array<format::PartRole, 3> roles{};
   std::size_t count = 0;
   ggml_tensor* ids = nullptr;
   ggml_tensor* out = nullptr;
@@ -53,11 +56,12 @@ std::expected<Geometry, Failure> Shape(const ir::Node& node,
   const auto& out = outputs[0];
   const auto& f = w.desc.format;
   const auto parts = format::PartsOf(f);
-  if (!parts || f.encoding != format::Encoding::kNvfp4 || f.layout != format::Layout::kSplit ||
-      f.shape.rank != 2 || f.stacked != 1 || f.shape.ne[0] >= (1ULL << 30) ||
-      f.shape.ne[1] >= (1ULL << 31) || !w.paged_weight || w.paged_weight->expert_array ||
-      !ids.side_rows_component || *ids.side_rows_component != w.paged_weight->component ||
-      w.parts.size() != parts->size())
+  if (!parts ||
+      (f.encoding != format::Encoding::kNvfp4 && f.encoding != format::Encoding::kAffine) ||
+      f.layout != format::Layout::kSplit || f.shape.rank != 2 || f.stacked != 1 ||
+      f.shape.ne[0] >= (1ULL << 30) || f.shape.ne[1] >= (1ULL << 31) || !w.paged_weight ||
+      w.paged_weight->expert_array || !ids.side_rows_component ||
+      *ids.side_rows_component != w.paged_weight->component || w.parts.size() != parts->size())
     return Reject("selected rows require a complete split table and its checked side-row input");
   if (ids.desc.format.encoding != format::Encoding::kI32 ||
       ids.desc.format.layout != format::Layout::kDense || ids.desc.shape().rank != 1 ||
@@ -68,6 +72,7 @@ std::expected<Geometry, Failure> Shape(const ir::Node& node,
     return Reject("selected rows require complete dense I32 IDs and F32 output rows");
   Geometry g{.effective = f,
              .parts = {},
+             .roles = {},
              .count = parts->size(),
              .ids = ids.tensor,
              .out = out.tensor,
@@ -75,42 +80,55 @@ std::expected<Geometry, Failure> Shape(const ir::Node& node,
   if (!Packed(g.ids, GGML_TYPE_I32, g.rows, 1) ||
       !Packed(g.out, GGML_TYPE_F32, f.shape.ne[0], g.rows))
     return Reject("selected row input or output physical geometry differs");
-  constexpr std::array roles{Role::kCodes, Role::kBlockScales, Role::kTensorScale};
   std::uint64_t resident = 0;
   for (std::size_t i = 0; i < g.count; ++i) {
-    const auto at = std::ranges::find(w.parts, roles[i], &kg::SelectedPart::role);
-    if (at == w.parts.end() ||
-        std::ranges::count(w.parts, roles[i], &kg::SelectedPart::role) != 1 ||
+    const auto role = (*parts)[i].role;
+    const auto at = std::ranges::find(w.parts, role, &kg::SelectedPart::role);
+    if (at == w.parts.end() || std::ranges::count(w.parts, role, &kg::SelectedPart::role) != 1 ||
         at->tensor == nullptr)
       return Reject("selected row part missing or duplicated");
     g.parts[i] = at->tensor;
+    g.roles[i] = role;
     if (i == 0) {
       if (at->tensor->ne[1] <= 0) return Reject("selected row slots are empty");
       resident = static_cast<std::uint64_t>(at->tensor->ne[1]);
       if (resident > f.shape.ne[1]) return Reject("selected row slots exceed their table");
     }
-    if (!Packed(at->tensor, i == 2 ? GGML_TYPE_F32 : GGML_TYPE_I8,
-                i == 0   ? f.shape.ne[0] / 2
-                : i == 1 ? f.shape.ne[0] / 16
-                         : 1,
-                i == 2 ? 1 : resident))
-      return Reject("selected row part has inconsistent physical geometry");
+    if (role == Role::kTensorScale) {
+      if (!Packed(at->tensor, GGML_TYPE_F32, 1, 1))
+        return Reject("selected row part has inconsistent physical geometry");
+    } else {
+      const auto row_bytes = format::RowBytes(f, role);
+      if (!row_bytes || !Packed(at->tensor, GGML_TYPE_I8, *row_bytes, resident))
+        return Reject("selected row part has inconsistent physical geometry");
+    }
   }
   g.effective.shape.ne[1] = resident;
   return g;
 }
 std::expected<std::array<DevicePart, 3>, Failure> BindParts(const Geometry& g) {
-  constexpr std::array roles{Role::kCodes, Role::kBlockScales, Role::kTensorScale};
-  if (!Packed(g.parts[0], GGML_TYPE_I8, g.effective.shape.ne[0] / 2, g.effective.shape.ne[1]) ||
-      !Packed(g.parts[1], GGML_TYPE_I8, g.effective.shape.ne[0] / 16, g.effective.shape.ne[1]) ||
-      (g.count == 3 && !Packed(g.parts[2], GGML_TYPE_F32, 1, 1)) ||
-      !Packed(g.ids, GGML_TYPE_I32, g.rows, 1) ||
+  for (std::size_t i = 0; i < g.count; ++i) {
+    if (g.roles[i] == Role::kTensorScale) {
+      if (!Packed(g.parts[i], GGML_TYPE_F32, 1, 1))
+        return Reject("selected row geometry changed after lowering");
+    } else {
+      const auto row_bytes = format::RowBytes(g.effective, g.roles[i]);
+      if (!row_bytes || !Packed(g.parts[i], GGML_TYPE_I8, *row_bytes, g.effective.shape.ne[1]))
+        return Reject("selected row geometry changed after lowering");
+    }
+  }
+  if (!Packed(g.ids, GGML_TYPE_I32, g.rows, 1) ||
       !Packed(g.out, GGML_TYPE_F32, g.effective.shape.ne[0], g.rows))
     return Reject("selected row geometry changed after lowering");
   std::array<DevicePart, 3> result{};
-  std::array<const ggml_tensor*, 5> all{g.parts[0], g.parts[1], g.ids, g.out, g.parts[2]};
-  const std::size_t count = g.count + 2;
-  for (std::size_t i = 0; i < count; ++i) {
+  std::array<const ggml_tensor*, 5> all{};
+  std::size_t all_count = 0;
+  for (std::size_t i = 0; i < g.count; ++i) {
+    all[all_count++] = g.parts[i];
+  }
+  all[all_count++] = g.ids;
+  all[all_count++] = g.out;
+  for (std::size_t i = 0; i < all_count; ++i) {
     const auto* t = all[i];
     if (!kg::detail::Current(t) || Address(t) == 0)
       return Reject("selected rows require current physical bindings");
@@ -125,7 +143,7 @@ std::expected<std::array<DevicePart, 3>, Failure> BindParts(const Geometry& g) {
   if (Address(g.ids) % 4 != 0 || Address(g.out) % 4 != 0)
     return Reject("selected row IDs or output are misaligned");
   for (std::size_t i = 0; i < g.count; ++i)
-    result[i] = {roles[i], g.parts[i]->data, ggml_nbytes(g.parts[i])};
+    result[i] = {g.roles[i], g.parts[i]->data, ggml_nbytes(g.parts[i])};
   auto operand = OperandOf({g.effective, std::span(result).first(g.count), 0});
   if (!operand) return Reject(operand.error());
   return result;
@@ -183,7 +201,8 @@ class Call final : public kg::SelectedCall {
     if (launch.owner() != owner() || execution::IdentityOf(implementation) != identity_)
       return Reject("selected row source or implementation identity changed");
     const auto bound = decode::Bind(implementation);
-    if (!bound || bound->tmpl != Template::kRows || bound->gate != DecoderId::kNvfp4Split)
+    if (!bound || bound->tmpl != Template::kRows ||
+        (bound->gate != DecoderId::kNvfp4Split && bound->gate != DecoderId::kAffineSplit))
       return Reject("selected row declaration is not the native split decoder");
     if (auto parts = BindParts(geometry_); !parts) return std::unexpected(parts.error());
     return std::make_unique<BoundCall>(static_cast<Runtime&>(launch), geometry_);
@@ -195,23 +214,35 @@ class Call final : public kg::SelectedCall {
 };
 class Source final : public kg::SelectedSource {
  public:
-  explicit Source(execution::Implementation implementation)
-      : implementation_(std::move(implementation)) {}
+  explicit Source(std::vector<execution::Implementation> implementations)
+      : implementations_(std::move(implementations)) {}
   std::vector<execution::Implementation> Implementations() const override {
-    return {implementation_};
+    return implementations_;
   }
   std::vector<execution::TunedShape> Tuning(std::uint32_t) const override { return {}; }
-  bool Owns(std::string_view name) const override { return name == kName; }
+  bool Owns(std::string_view name) const override {
+    return std::ranges::any_of(implementations_,
+                               [&](const auto& impl) { return impl.name == name; });
+  }
   std::uint64_t persistent_bytes() const override { return 0; }
   std::expected<std::unique_ptr<kg::SelectedCall>, Failure> Lower(
       const execution::Implementation& implementation, const ir::Node& node,
       std::span<const kg::SelectedOperand> inputs,
       std::span<const kg::SelectedOperand> outputs) const override {
-    if (execution::IdentityOf(implementation) != execution::IdentityOf(implementation_))
-      return Reject("selected rows received a foreign declaration");
+    const auto at =
+        std::ranges::find(implementations_, implementation.name, &execution::Implementation::name);
+    if (at == implementations_.end() ||
+        execution::IdentityOf(implementation) != execution::IdentityOf(*at))
+      return Reject("foreign rows declaration");
     auto geometry = Shape(node, inputs, outputs);
     if (!geometry) return std::unexpected(geometry.error());
-    return std::make_unique<Call>(this, *geometry, execution::IdentityOf(implementation_));
+    if (implementation.name == kNvfp4Name &&
+        geometry->effective.encoding != format::Encoding::kNvfp4)
+      return Reject("rows implementation and weight encoding differ");
+    if (implementation.name == kAffineName &&
+        geometry->effective.encoding != format::Encoding::kAffine)
+      return Reject("rows implementation and weight encoding differ");
+    return std::make_unique<Call>(this, *geometry, execution::IdentityOf(implementation));
   }
   std::expected<std::unique_ptr<kg::SelectedLaunch>, Failure> Launch(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
@@ -225,13 +256,20 @@ class Source final : public kg::SelectedSource {
   }
 
  private:
-  execution::Implementation implementation_;
+  std::vector<execution::Implementation> implementations_;
 };
 }  // namespace
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> RowsSelectedSource() {
+std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> RowsSelectedSource(
+    std::optional<format::Encoding> encoding) {
   auto implementations = decode::Implementations();
-  const auto at = std::ranges::find(implementations, kName, &execution::Implementation::name);
-  if (at == implementations.end()) return std::unexpected("split NVFP4 rows are unavailable");
-  return std::make_shared<Source>(std::move(*at));
+  std::vector<execution::Implementation> matched;
+  for (const auto& impl : implementations) {
+    if (impl.name == kNvfp4Name && (!encoding || *encoding == format::Encoding::kNvfp4))
+      matched.push_back(impl);
+    else if (impl.name == kAffineName && (!encoding || *encoding == format::Encoding::kAffine))
+      matched.push_back(impl);
+  }
+  if (matched.empty()) return std::unexpected("native split rows implementation missing");
+  return std::make_shared<Source>(std::move(matched));
 }
 }  // namespace llmp::kernels::decode

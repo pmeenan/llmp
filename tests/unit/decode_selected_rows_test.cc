@@ -102,11 +102,14 @@ TEST(DecodeSelectedRows, CompletePartsKeepOriginalLogicalShapeAndBoundedPhysical
   auto source = de::RowsSelectedSource();
   ASSERT_TRUE(source) << source.error();
   const auto impl = (*source)->Implementations();
-  ASSERT_EQ(impl.size(), 1U);
-  EXPECT_EQ(impl[0].name, "llmp.decode.rows.nvfp4.split");
+  ASSERT_EQ(impl.size(), 2U);
+  const auto at = std::ranges::find(impl, "llmp.decode.rows.nvfp4.split",
+                                    &llmp::execution::Implementation::name);
+  ASSERT_NE(at, impl.end());
+  const auto& nvfp4_impl = *at;
   for (bool scale : {false, true}) {
     Descriptors d(scale);
-    auto call = (*source)->Lower(impl[0], d.node, d.inputs, d.outputs);
+    auto call = (*source)->Lower(nvfp4_impl, d.node, d.inputs, d.outputs);
     ASSERT_TRUE(call) << call.error().detail;
     EXPECT_EQ((*call)->launches(), 1U);
     EXPECT_EQ((*call)->scratch_bytes(), 0U);
@@ -119,6 +122,10 @@ TEST(DecodeSelectedRows, MissingDuplicateGeometryAndUncheckedIdsRefuse) {
   auto source = de::RowsSelectedSource();
   ASSERT_TRUE(source);
   const auto impl = (*source)->Implementations();
+  const auto at = std::ranges::find(impl, "llmp.decode.rows.nvfp4.split",
+                                    &llmp::execution::Implementation::name);
+  ASSERT_NE(at, impl.end());
+  const auto& nvfp4_impl = *at;
   for (int bad = 0; bad != 9; ++bad) {
     SCOPED_TRACE(bad);
     Descriptors d(true);
@@ -151,18 +158,82 @@ TEST(DecodeSelectedRows, MissingDuplicateGeometryAndUncheckedIdsRefuse) {
         d.inputs[0].parts[0].tensor->nb[1] += 8;
         break;
     }
-    EXPECT_FALSE((*source)->Lower(impl[0], d.node, d.inputs, d.outputs));
+    EXPECT_FALSE((*source)->Lower(nvfp4_impl, d.node, d.inputs, d.outputs));
   }
 }
 
-TEST(DecodeSelectedRows, AffineEncodingRefusedBySelectedRowsSource) {
+TEST(DecodeSelectedRows, Nvfp4ImplementationRefusesAffineEncodingAndViceVersa) {
   auto source = de::RowsSelectedSource();
   ASSERT_TRUE(source);
   const auto impl = (*source)->Implementations();
+  const auto nvfp4 = std::ranges::find(impl, "llmp.decode.rows.nvfp4.split",
+                                       &llmp::execution::Implementation::name);
+  ASSERT_NE(nvfp4, impl.end());
+  const auto affine = std::ranges::find(impl, "llmp.decode.rows.affine.split",
+                                        &llmp::execution::Implementation::name);
+  ASSERT_NE(affine, impl.end());
+
   Descriptors d(false);
   d.inputs[0].desc.format.encoding = fmt::Encoding::kAffine;
   d.inputs[0].desc.format.params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16};
-  EXPECT_FALSE((*source)->Lower(impl[0], d.node, d.inputs, d.outputs));
+  // nvfp4 implementation refuses affine weight
+  EXPECT_FALSE((*source)->Lower(*nvfp4, d.node, d.inputs, d.outputs));
+
+  Descriptors nvfp4_d(false);
+  // affine implementation refuses nvfp4 weight
+  EXPECT_FALSE((*source)->Lower(*affine, nvfp4_d.node, nvfp4_d.inputs, nvfp4_d.outputs));
+}
+
+TEST(DecodeSelectedRows, AffineSplitRowsLowerSuccessfully) {
+  auto source = de::RowsSelectedSource();
+  ASSERT_TRUE(source);
+  const auto impl = (*source)->Implementations();
+  const auto affine = std::ranges::find(impl, "llmp.decode.rows.affine.split",
+                                        &llmp::execution::Implementation::name);
+  ASSERT_NE(affine, impl.end());
+
+  kg::TensorArena arena(std::move(*kg::TensorArena::Create(8)));
+  auto* ctx = arena.context();
+  std::array<kg::SelectedOperand, 2> inputs;
+  std::array<kg::SelectedOperand, 1> outputs;
+  ir::Node node;
+
+  auto& w = inputs[0];
+  w.desc.format = {.encoding = fmt::Encoding::kAffine,
+                   .params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16},
+                   .layout = fmt::Layout::kSplit,
+                   .shape = ir::ShapeOf({kWidth, kTableRows})};
+  w.paged_weight = kWeight;
+  w.parts = {{Role::kCodes, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, kWidth / 2, kRows)},
+             {Role::kBlockScales, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, 2, kRows)},
+             {Role::kBiases, ggml_new_tensor_2d(ctx, GGML_TYPE_I8, 2, kRows)}};
+  for (std::size_t i = 0; i < w.parts.size(); ++i) {
+    kg::TensorArena::Bind(w.parts[i].tensor, 0x100000ULL + i * 0x1000ULL);
+  }
+  w.tensor = w.parts.front().tensor;
+
+  auto& ids = inputs[1];
+  ids.desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({kRows}));
+  ids.desc.nb = ir::NaturalStrides(ids.desc.format);
+  ids.tensor = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kRows);
+  ids.side_rows_component = kWeight.component;
+  kg::TensorArena::Bind(ids.tensor, 0x200000ULL);
+
+  auto& out = outputs[0];
+  out.desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({kWidth, kRows}));
+  out.desc.nb = ir::NaturalStrides(out.desc.format);
+  out.tensor = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, kWidth, kRows);
+  kg::TensorArena::Bind(out.tensor, 0x300000ULL);
+
+  node.key = ir::Primitive(ir::Op::kGetRows);
+  node.nsrc = 2;
+  node.nout = 1;
+
+  auto call = (*source)->Lower(*affine, node, inputs, outputs);
+  ASSERT_TRUE(call) << call.error().detail;
+  EXPECT_EQ((*call)->launches(), 1U);
+  EXPECT_EQ((*call)->scratch_bytes(), 0U);
+  EXPECT_LE((*call)->host_bytes(), 2048U);
 }
 
 TEST(DecodeSelectedRows, LoweringRequiresTheDirectSideInputAndPagedComponent) {
@@ -257,12 +328,16 @@ TEST(DecodeSelectedRows, MisalignedOverlappingAndChangedPhysicalBindingsRefuse) 
   auto source = de::RowsSelectedSource();
   ASSERT_TRUE(source);
   const auto impl = (*source)->Implementations();
+  const auto at = std::ranges::find(impl, "llmp.decode.rows.nvfp4.split",
+                                    &llmp::execution::Implementation::name);
+  ASSERT_NE(at, impl.end());
+  const auto& nvfp4_impl = *at;
   RefusalLaunch launch(source->get());
   EXPECT_FALSE(launch.capturable());
   for (int bad = 0; bad != 7; ++bad) {
     SCOPED_TRACE(bad);
     Descriptors d(true);
-    auto call = (*source)->Lower(impl[0], d.node, d.inputs, d.outputs);
+    auto call = (*source)->Lower(nvfp4_impl, d.node, d.inputs, d.outputs);
     ASSERT_TRUE(call);
     std::array<ggml_tensor*, 5> tensors{d.inputs[0].parts[0].tensor, d.inputs[0].parts[1].tensor,
                                         d.inputs[0].parts[2].tensor, d.inputs[1].tensor,
@@ -279,7 +354,7 @@ TEST(DecodeSelectedRows, MisalignedOverlappingAndChangedPhysicalBindingsRefuse) 
     } else {
       tensors[1]->ne[1] += 1;
     }
-    EXPECT_FALSE((*call)->Bind(impl[0], launch, {}));
+    EXPECT_FALSE((*call)->Bind(nvfp4_impl, launch, {}));
   }
 }
 

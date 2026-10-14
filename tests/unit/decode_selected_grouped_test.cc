@@ -67,10 +67,14 @@ TEST(DecodeSelectedGrouped, StackedPaddedExpertsRetainEveryPhysicalPart) {
   auto source = de::GroupedSelectedSource();
   ASSERT_TRUE(source);
   const auto implementations = (*source)->Implementations();
-  ASSERT_EQ(implementations.size(), 1U);
+  ASSERT_EQ(implementations.size(), 2U);
+  const auto at = std::ranges::find(implementations, "llmp.decode.grouped.nvfp4.split",
+                                    &llmp::execution::Implementation::name);
+  ASSERT_NE(at, implementations.end());
+  const auto& impl = *at;
   for (const bool routed : {false, true}) {
     Inputs d(routed);
-    auto call = (*source)->Lower(implementations[0], d.node, d.input, d.output);
+    auto call = (*source)->Lower(impl, d.node, d.input, d.output);
     ASSERT_TRUE(call) << call.error().detail;
     ASSERT_TRUE((*call)->route());
     EXPECT_EQ((*call)->route()->weight, kWeight);
@@ -95,7 +99,11 @@ TEST(DecodeSelectedGrouped, StackedPaddedExpertsRetainEveryPhysicalPart) {
 TEST(DecodeSelectedGrouped, PitchedRouterIdsRetainExactSourceGeometry) {
   auto source = de::GroupedSelectedSource();
   ASSERT_TRUE(source);
-  const auto impl = (*source)->Implementations()[0];
+  const auto impls = (*source)->Implementations();
+  const auto at = std::ranges::find(impls, "llmp.decode.grouped.nvfp4.split",
+                                    &llmp::execution::Implementation::name);
+  ASSERT_NE(at, impls.end());
+  const auto& impl = *at;
   for (int bad = 0; bad != 5; ++bad) {
     SCOPED_TRACE(bad);
     Inputs d;
@@ -182,11 +190,87 @@ TEST(DecodeSelectedGrouped, WorklistPlacementIsAlignedSingleAssignment) {
   auto source = de::GroupedSelectedSource();
   ASSERT_TRUE(source);
   Inputs d;
-  auto call = (*source)->Lower((*source)->Implementations()[0], d.node, d.input, d.output);
+  const auto impls = (*source)->Implementations();
+  const auto at = std::ranges::find(impls, "llmp.decode.grouped.nvfp4.split",
+                                    &llmp::execution::Implementation::name);
+  ASSERT_NE(at, impls.end());
+  auto call = (*source)->Lower(*at, d.node, d.input, d.output);
   ASSERT_TRUE(call);
   EXPECT_FALSE((*call)->RouteBuffers({0x300001, 0x301000, 0x302000, 0x303000}));
   EXPECT_TRUE((*call)->RouteBuffers({0x300000, 0x301000, 0x302000, 0x303000}));
   EXPECT_FALSE((*call)->RouteBuffers({0x400000, 0x401000, 0x402000, 0x403000}));
+}
+TEST(DecodeSelectedGrouped, AffineGroupedExpertsLowerAndStageDescriptors) {
+  auto source = de::GroupedSelectedSource();
+  ASSERT_TRUE(source);
+  const auto impls = (*source)->Implementations();
+  const auto affine_at = std::ranges::find(impls, "llmp.decode.grouped.affine.split",
+                                           &llmp::execution::Implementation::name);
+  ASSERT_NE(affine_at, impls.end());
+  const auto nvfp4_at = std::ranges::find(impls, "llmp.decode.grouped.nvfp4.split",
+                                          &llmp::execution::Implementation::name);
+  ASSERT_NE(nvfp4_at, impls.end());
+
+  kg::TensorArena arena(std::move(*kg::TensorArena::Create(8)));
+  auto* c = arena.context();
+  std::array<kg::SelectedOperand, 3> input{};
+  std::array<kg::SelectedOperand, 1> output{};
+  ir::Node node;
+
+  auto& w = input[0];
+  w.desc.format = {.encoding = fmt::Encoding::kAffine,
+                   .params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16},
+                   .layout = fmt::Layout::kSplit,
+                   .shape = ir::ShapeOf({32, 64, 4}),
+                   .stacked = 1};
+  w.expert_weight = kWeight;
+  // K=32, bits=4: codes = 16 bytes/row, N=64 -> 1024 bytes per expert
+  // group=32, BF16: scales = 2 bytes/row, N=64 -> 128 bytes per expert
+  // biases: 128 bytes per expert
+  w.parts = {{Role::kCodes, ggml_new_tensor_2d(c, GGML_TYPE_I8, 1024, 4)},
+             {Role::kBlockScales, ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4)},
+             {Role::kBiases, ggml_new_tensor_2d(c, GGML_TYPE_I8, 128, 4)}};
+  const std::array<std::uint64_t, 3> at{0, 1024, 1152};
+  for (std::size_t i = 0; i != w.parts.size(); ++i) {
+    auto* t = w.parts[i].tensor;
+    t->nb[1] = 4096;
+    t->nb[2] = t->nb[3] = 3 * 4096 + static_cast<std::uint64_t>(t->ne[0]);
+    kg::TensorArena::Bind(t, 0x100000ULL + at[i]);
+  }
+  w.tensor = w.parts[0].tensor;
+  input[1].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({32, 1, 3}));
+  input[1].desc.nb = ir::NaturalStrides(input[1].desc.format);
+  input[1].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 32, 1, 3);
+  kg::TensorArena::Bind(input[1].tensor, 0x200000);
+  input[2].desc.format = ir::Dense(fmt::Encoding::kI32, ir::ShapeOf({2, 3}));
+  input[2].desc.nb = ir::NaturalStrides(input[2].desc.format);
+  input[2].tensor = ggml_new_tensor_2d(c, GGML_TYPE_I32, 2, 3);
+  kg::TensorArena::Bind(input[2].tensor, 0x210000);
+  output[0].desc.format = ir::Dense(fmt::Encoding::kF32, ir::ShapeOf({64, 2, 3}));
+  output[0].desc.nb = ir::NaturalStrides(output[0].desc.format);
+  output[0].tensor = ggml_new_tensor_3d(c, GGML_TYPE_F32, 64, 2, 3);
+  kg::TensorArena::Bind(output[0].tensor, 0x220000);
+  node.key = ir::Primitive(ir::Op::kMatMulId);
+  node.nsrc = 3;
+  node.nout = 1;
+
+  // NVFP4 implementation rejects affine weight
+  EXPECT_FALSE((*source)->Lower(*nvfp4_at, node, input, output));
+
+  // Affine implementation accepts affine weight
+  auto call = (*source)->Lower(*affine_at, node, input, output);
+  ASSERT_TRUE(call) << call.error().detail;
+  alignas(256) std::array<de::Operand, 4> descriptors{};
+  ASSERT_TRUE((*call)->StageDescriptors(std::as_writable_bytes(std::span(descriptors))));
+  for (std::size_t e = 0; e != descriptors.size(); ++e) {
+    const auto& x = descriptors[e];
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(x.data), 0x100000U + e * 4096);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(x.scales), 0x100400U + e * 4096);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(x.biases), 0x100480U + e * 4096);
+    EXPECT_EQ(x.k, 32U);
+    EXPECT_EQ(x.rows, 64U);
+    EXPECT_EQ(x.row_bytes, 16U);
+  }
 }
 TEST(DecodeSelectedGrouped, ExplicitIdentityIncludesRecipeAndDefaultSourcesRemainUnqualified) {
   const auto first = de::GroupedSelectedSource(), second = de::GroupedSelectedSource();

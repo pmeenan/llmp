@@ -4,12 +4,15 @@
 #define LLMP_KERNELS_DECODE_SELECTED_ROWS_H_
 #include <expected>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "format/encoding.h"
 #include "kernels/ggml/selected_operation.h"
 namespace llmp::kernels::decode {
-// Only NVFP4 split GetRows over the runner's checked, multipart row slots.
+// NVFP4 and Affine split GetRows over the runner's checked, multipart row slots.
 // Does not admit models or advertise products. The source outlives all calls.
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> RowsSelectedSource();
+std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> RowsSelectedSource(
+    std::optional<format::Encoding> encoding = std::nullopt);
 }  // namespace llmp::kernels::decode
 #endif  // LLMP_KERNELS_DECODE_SELECTED_ROWS_H_

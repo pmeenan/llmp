@@ -1031,7 +1031,8 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
         return Refused("missing, duplicate or oversized selected weight part");
       part(extent.role, bytes(static_cast<std::int64_t>(extent.readable), 1, 1));
     }
-  } else if (options_.selected_source != nullptr && d.format.encoding == Encoding::kNvfp4 &&
+  } else if (options_.selected_source != nullptr &&
+             (d.format.encoding == Encoding::kNvfp4 || d.format.encoding == Encoding::kAffine) &&
              d.format.layout == format::Layout::kSplit && w.ref.expert_array) {
     if (!in_.addresses.expert_part) return Refused("split expert parts have no source binding");
     auto one = d.format;
@@ -1063,13 +1064,21 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
       t->nb[2] = t->nb[3] = part_bytes;
       part(e.role, t);
     }
-  } else if (options_.selected_source != nullptr && d.format.encoding == Encoding::kNvfp4 &&
+  } else if (options_.selected_source != nullptr &&
+             (d.format.encoding == Encoding::kNvfp4 || d.format.encoding == Encoding::kAffine) &&
              d.format.layout == format::Layout::kSplit && matrices == 1 && !w.ref.expert_array &&
              d.format.stacked == 1) {
-    part(format::PartRole::kCodes, bytes(k / 2, rows, 1));
-    part(format::PartRole::kBlockScales, bytes(k / 16, rows, 1));
-    if (d.format.params.tensor_scale)
-      part(format::PartRole::kTensorScale, ggml_new_tensor_1d(c_, GGML_TYPE_F32, 1));
+    const auto extents = format::PartsOf(d.format);
+    if (!extents) return Refused("invalid split weight format");
+    for (const auto& extent : extents->parts()) {
+      if (extent.role == format::PartRole::kTensorScale) {
+        part(extent.role, ggml_new_tensor_1d(c_, GGML_TYPE_F32, 1));
+      } else {
+        const auto rb = format::RowBytes(d.format, extent.role);
+        if (!rb) return Refused("invalid split weight part row bytes");
+        part(extent.role, bytes(static_cast<std::int64_t>(*rb), rows, 1));
+      }
+    }
   } else if (d.format.encoding == Encoding::kMxfp8 && d.format.layout == format::Layout::kSplit &&
              matrices == 1) {
     // E4M3 codes [k, n] and E8M0 scales [k / 32, n], each a byte.
