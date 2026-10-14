@@ -261,13 +261,11 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
       }
     }
     if (!add(non_expert + artifact.expert_arrays().size(), 16384) ||
-        !add(artifact.layout().groups.size(), 4096) ||
+        !add(artifact.resources().size(), 256) || !add(artifact.layout().groups.size(), 256) ||
         !add(artifact.files().size() + artifact.sources().size(), 4096))
       return false;
-    for (const auto& file : artifact.files())
-      if (file.role != ja::FileRole::kShard && !add(file.bytes.value(), 8)) return false;
     for (const auto& group : artifact.layout().groups)
-      if (!add(group.chunks, 4096)) return false;
+      if (!add(group.chunks, 128)) return false;
     return true;
   };
   if (!source(target) || (draft && !source(*draft)))
