@@ -997,3 +997,59 @@ Runtime `44d867c6…` (`276,366,768` bytes, source `f4c30163…`), build receipt
 pre/post guards with zero memory-limit/OOM events and positive process/GPU
 retirement.
 
+## Standalone GDN commit history fusion and C1 recovery — 2026-10-13
+
+While `qwen-c4-fix-models01` solved the C4 and C2 decode regressions (+2.69% and
++4.08% over legacy), C1 decode remained **−3.85% slower** (45.94 vs 47.78 tokens/s).
+Step tracing and kernel analysis of the commit phase isolated the remaining gap:
+
+In `SlotLifecycle::Settle` (`Phase::kCommit`), each accepted wave step runs the
+GDN state update across 36 recurrent layers to advance the SSM conv history buffer.
+In legacy, this ran as a single fused `gdn_conv` kernel launch per layer. In the
+component engine, however, `GdnConvMatch` only matched patterns anchored on
+`Op::kSsmConv`, which only appears during prefill and verify/decode evaluation —
+not in the standalone history-only commit graph. Consequently, the commit phase
+executed 36 unfused subgraph chains:
+`Reshape(state) + Permute(qkv) -> Cont -> Concat -> View(tail) -> Cont -> Reshape -> CacheStore`
+totalling 252 separate kernel launches taking `~1.85 ms` per wave (versus `0.21 ms`
+in the legacy fused path).
+
+Commit `7ad389b5` introduced `GdnHistoryMatch` in `src/planner/fusions.cc` and
+`src/planner/pattern.cc`, recognizing standalone GDN commit history chains and
+fusing them into `llmp.gdn.history` (`FusedKind::kGdnHistory`).
+
+On Spark A (`qwen-c4-fix-models02`), the serial current-legacy/shared locator
+(`context = 33,792`, `chunk = 4,096`, C4, draft vocab 47,172, one warm and two
+measured C1/C2/C4 passes per arm, 42 requests and 5,376 outputs) records:
+
+| Cohort | Legacy prefill s | Shared prefill s | Legacy decode tokens/s | Shared decode tokens/s | Legacy wall tokens/s | Shared wall tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C1 | 3.2136 | 3.1649 (−1.52%) | 48.0466 | 48.6697 (+1.30%) | 21.8164 | 22.1132 (+1.36%) |
+| C2 | 7.1362 | 7.1074 (−0.40%) | 64.5118 | 67.8254 (+5.14%) | 22.9368 | 23.1736 (+1.03%) |
+| C4 | 15.7142 | 15.6131 (−0.64%) | 82.5867 | 86.0204 (+4.16%) | 23.7632 | 23.4115 (−1.48%) |
+
+Shared component engine throughput now exceeds the legacy reference across all
+three cohorts:
+- **C1 decode** is **+1.30% faster** (48.67 vs 48.05 tokens/s; wall **+1.36% faster**),
+  fully eliminating the earlier −3.85% deficit;
+- **C2 decode** is **+5.14% faster** (67.83 vs 64.51 tokens/s; wall **+1.03% faster**);
+- **C4 decode** is **+4.16% faster** (86.02 vs 82.59 tokens/s; Pass 1 and Pass 2 are
+  86.67 and 85.37 tokens/s in `shared` versus 84.93 and 80.24 tokens/s in `legacy`);
+- **Prefill duration** is faster across all three cohorts (−1.52% C1, −0.40% C2,
+  −0.64% C4).
+
+All 42 requests completed their 128 output tokens with zero reused prompt tokens;
+all per-pass completion token outputs match expected lengths.
+Shared joined waves reached 290 (796 units), with 306 retained plans (`1,427,089,872` bytes)
+and 160 captured graphs (`1,886,584,832` bytes), with zero plan/graph reclaims,
+zero refusals and zero coverage violations. Retained startup host grant is
+`5,846,859,776` bytes.
+Runtime SHA-256 `2ed24ff94bcbb47efeea22b618cc99c73b1c8e8d6c4826b9c80a7506f8d25b2a`
+(`276,366,768` bytes, execution identity `c9ea53bfba6565fe3cbb4e2c61a9172f5beb4857134a997c8de3aca132956f85`),
+build receipt `750a17946d63802a95ffb1ccc0719e02de88bcd9008795ffb6e51a87c1f6518c` (456 host controls pass),
+recipe SHA-256 `9536c009ad9fd0a6436f3dc9a51363ad478004cdb822b5c010389df811d7f990`,
+and result SHA-256 `e7b2905270c4e9a8f074ecfe9b42e749fe68e68c46c44880ec861cba7eff9a5f`.
+All pre/post guards pass, memory-limit/OOM events remain zero, and process groups
+and GPU work positively retire.
+
+

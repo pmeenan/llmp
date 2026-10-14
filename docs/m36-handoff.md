@@ -34,13 +34,16 @@ blocked. See the [ordinary service report](experiments/m36-shared-spatial-execut
 
 DeepSeek's ordinary source/compiler foundation landed in `adb0686e`, and its
 256-byte serving state layout and bounded chat-template startup accounting
-now resolve the C2 capacity wall (`m36-serving-union-main11` /
+landed in `4cc1d215`, resolving the C2 capacity wall (`m36-serving-union-main11` /
 `dsv4-serving-actual08` on Spark A): C1/C2 speculative HTTP completes with 31
 joined waves / 62 joined units (324 drafted, 271 accepted), C2 plain HTTP
 completes with 118 joined waves / 236 joined units, and the two-cycle
 `dspark:gemma` 8K/16 swap passes all four rows (`0.342 s` / `8.655 s` first-use,
 `0.358 s` / `8.243 s` prepared) with exact restored 102,711,296-byte state and
 full-head continuations ([report](experiments/m36-dsv4-target/dspark.md#c2-concurrent-serving-and-dsparkgemma-8k16-swap)).
+Uniform 256-byte state tensor alignment across all models in `ComponentLlmBuild`
+landed in `ef215344`, with GPU serving and state alignment expectations updated
+in `021ccdd6` and test fixes in `5e8b40f2`.
 Native DeepSeek GGUF publication and target serving landed in `926a4f40`
 (N4b9). Artifact
 `698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd`
@@ -53,6 +56,26 @@ final admission, with all physical/footprint checks intact. Empty admitted
 policy directives now use the existing mapping default. Earlier three setup
 refusals are preserved; this is target integrity evidence, not a speed gate.
 See the [native publication report](experiments/m36-dsv4-target/README.md#native-gguf-publication-and-stored-target--2026-10-13).
+
+Native import normalization and admission advanced for Qwen2: split affine
+GDN head permutation landed in `359887e6`, native Qwen2 FP16 GGUF normalization
+and v1 admission landed in `b8ed7a44`, and native Qwen2 EXL3 4.0/4.5 target
+normalization and v1 admission landed in `67eed4b6`.
+
+Qwen MTP decode recovery landed in `25711ad9` (`qwen-c4-fix-models01`) and
+`7ad389b5` (`qwen-c4-fix-models02`): capping multi-slot draft depth to 2,
+bounding MoE scale memset by `std::min(slots, experts)`, and fusing standalone
+GDN commit history chains under `gdn_conv` (`GdnHistoryMatch` -> `llmp.gdn.history`)
+eliminated C4, C2, and C1 deficits. Shared component engine now beats legacy
+decode across all cohorts: C1 decode is **48.67 vs 48.05 tok/s (+1.30%)**,
+C2 decode is **67.83 vs 64.51 tok/s (+5.14%)**, C4 decode is **86.02 vs
+82.59 tok/s (+4.16%)**, with faster prefill across all cohorts (−1.52%, −0.40%, −0.64%).
+See the [Qwen joined MTP audit](experiments/m36-numerical-audit/qwen-joined-mtp.md#standalone-gdn-commit-history-fusion-and-c1-recovery--2026-10-13).
+
+Slice R1 re-keying cleanup landed in `e3d7be83`: removed `ModelKeySpec::architectures`
+(replaced by spec capability predicates) and `RunnerContextCeiling` (derived from
+component position limits); derived `ArtifactFactsOf` `context_ceiling` and
+settings capabilities from the model spec.
 
 The final integrated source passes main09's full native build, 48 runtime/memory
 admission controls, 17 stored-admission controls and one request-input control
@@ -86,13 +109,19 @@ never change guarded source while an actual run is active.
   attention, layout/product traffic and repeated mask/position staging or graph
   digests are possible speed/reuse targets, not established causes. Do not repeat
   the forty-step quality run or expand timing ladders before attribution.
-- Qwen's C4 decode gap (`65.5694` vs `77.6404` tok/s, −15.55%) is resolved in
-  `qwen-c4-fix-models01` on Spark A by wiring `DrafterSpec::shared_wave_depth`
-  (`= 2` in multi-slot waves, matching `serving.cc:1464-1465`) and bounding
-  `moe::QuantLayout::scale_rows_max()` by `std::min(slots, experts)` (−457.5 MiB
-  `cudaMemsetAsync` per 4-way Verify step): shared C4 decode is now **78.4439 vs
-  76.3917 tok/s (+2.69%)**, C2 decode is **+4.08%** (+2.32% wall), and C1/C2/C4
-  prefill is −0.88%/−1.76%/−0.58% faster ([report](experiments/m36-numerical-audit/qwen-joined-mtp.md#multi-slot-mtp-wave-depth-cap-and-moe-scale-memset-bound--2026-10-13)).
+- Qwen's decode gaps are fully resolved in `25711ad9` (`qwen-c4-fix-models01`)
+  and `7ad389b5` (`qwen-c4-fix-models02`) on Spark A: wiring
+  `DrafterSpec::shared_wave_depth` (`= 2` in multi-slot waves, matching
+  `serving.cc:1464-1465`) and bounding `moe::QuantLayout::scale_rows_max()`
+  by `std::min(slots, experts)` (−457.5 MiB `cudaMemsetAsync` per 4-way Verify
+  step) resolved C4 (+2.69%) and C2 (+4.08%), while fusing standalone GDN commit
+  history chains into `llmp.gdn.history` under `gdn_conv` (`GdnHistoryMatch`)
+  eliminated the remaining C1 decode gap (−3.85% → +1.30%). Shared component
+  engine now beats legacy across all cohorts: C1 decode is **48.67 vs 48.05
+  tok/s (+1.30%)**, C2 decode is **67.83 vs 64.51 tok/s (+5.14%)**, C4 decode
+  is **86.02 vs 82.59 tok/s (+4.16%)**, and prefill is faster across all three
+  cohorts (−1.52% C1, −0.40% C2, −0.64% C4)
+  ([report](experiments/m36-numerical-audit/qwen-joined-mtp.md#standalone-gdn-commit-history-fusion-and-c1-recovery--2026-10-13)).
   Combine remaining reference-quality, own-state, restart, mixed swap and
   matched 1% controls in one family closeout batch.
 - Resolve DeepSeek/DSpark's measured concurrent-state capacity wall, then finish
@@ -935,7 +964,7 @@ Each `a` slice is about a day of CPU work. Each `b` slice is one to two slices p
 | N2a–e | Readers: GGUF; safetensors + `config.json` (ModelOpt NVFP4/MXFP8, AWQ/GPTQ, compressed-tensors); diffusers → D-089 composition; MLX; EXL3 | `src/import/readers/*`; parallel, disjoint |
 | N3 | Fold catalog and mapping application, reusing wave 3's tables | Partial: N3a implemented; N3b remains open |
 | N3a | Internal BF16-to-F32 `norm.plus_one` / `ssm.a_neg_exp` primitives and F32/MXFP8 `gdn.value_heads_tiled` permutation cursors | Reviewed primitive scope only; validation status above |
-| N3b | Source normalization and remaining folds: fused-QK splitting, ties, expert slicing, NVFP4 scale-atom relayout and the other migrated family/container mappings | Open; N3b1 GGUF Gemma 2/3/4 targets complete and reviewed; 70 focused host + four actual targets, 2,516 native + 1,971 CPU + all 114 model tests passed, no skips; main build and integration checks passed |
+| N3b | Source normalization and remaining folds: fused-QK splitting, ties, expert slicing, NVFP4 scale-atom relayout and the other migrated family/container mappings | Open; N3b1 GGUF Gemma 2/3/4 targets complete and reviewed; split affine GDN head permutation landed in `359887e6`; native Qwen2 FP16 GGUF normalization and v1 admission landed in `b8ed7a44`; native Qwen2 EXL3 4.0/4.5 normalization and v1 admission landed in `67eed4b6` |
 | N4 | Writer (deterministic, one rename), `llmp import` CLI, admission-gate harness; import from verified archive or staged source and record catalog import event | Public CLI → decision; native `llmp install` is M5 (D-114) |
 | N5 | Re-import every artifact; lossless-equivalence checks against v0 bytes; family gates; the owner-chosen MLX checkpoint | After G3/G4/G5 and Q execution paths and N3/N4; Qwen2 fixture correctness gate follows the protocol exception below |
 | N6 | Adversarial challenge rounds | |
@@ -1017,7 +1046,7 @@ these fixtures where applicable.
   `qwen_image_runner.*` and `pipeline.cc` roles after their replacements qualify.
 - **T-slices, structural techniques.** One per row of `engine-components.md`'s retired table: format layer T04/T11/T58/T95; wave composer T15/T16/T20/T29/T59/T64/T88; patterns T10/T31/T56/T86/T92 (+T09/T41/T57 adoption); prefill T23/T26/T55/T93; state T67; decoding T39/T45/T81; components T22/T69/T54/T71/T72/T61; planner T96; pager T68. Adopt where qualified comparisons improve speed, quality, reuse, simplicity or resource cost.
 - **K1, state encodings run.** A lossy KV encoding as a per-alias setting (public config key → D-entry), plus the long-context quality report.
-- **R1, re-keying cleanup.** Remove `ModelKeySpec::architectures` (replaced by spec capability predicates); remove `RunnerContextCeiling` (from components' position limits); `ArtifactFactsOf` from the spec. The layout-ID bump itself already lands per family through `KeptLayoutId`.
+- **R1, re-keying cleanup.** (Landed in `e3d7be83`) Removed `ModelKeySpec::architectures` (replaced by spec capability predicates), removed `RunnerContextCeiling` (derived from components' position limits), and derived `ArtifactFactsOf` `context_ceiling` and settings capabilities from the model spec. The layout-ID bump itself already lands per family through `KeptLayoutId`.
 
 #### Dependency graph (critical path)
 
