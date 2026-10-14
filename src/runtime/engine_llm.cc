@@ -866,22 +866,62 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
                                  std::span<const std::size_t> owners) {
     en::StepAhead a;
     if (prefill_.lookahead == 0 && !prefill_.capture_ahead && !prefill_.prepare_ahead) return a;
+    std::size_t filled = 0;
+    const auto push_shape = [&](pl::StepShape&& s) {
+      if (filled < a.shapes.size()) a.shapes[filled++] = std::move(s);
+    };
+    const auto push_verify_futures = [&](std::size_t j, std::uint32_t end_past) {
+      const PreparedPrefill& unit = prepared[of[j]];
+      const bool greedy = device_verify_ && unit.branch != nullptr && !sampling(*unit.branch);
+      const bool row_invariant = speculative_ && speculative_->mode().row_invariant;
+      for (std::uint32_t vrows = verify_rows_; vrows >= 1 && filled < a.shapes.size(); --vrows) {
+        if (end_past > context_ || vrows > context_ - end_past) continue;
+        const en::PendingWork vw{.slot = pending[j].slot,
+                                 .stage = 0,
+                                 .phase = pl::Phase::kVerify,
+                                 .past = end_past,
+                                 .rows = vrows,
+                                 .outputs = vrows,
+                                 .want_head = true,
+                                 .greedy = greedy,
+                                 .row_invariant = row_invariant,
+                                 .alone = false};
+        en::Composition composed = composer_->Compose(std::span(&vw, 1));
+        if (composed.refused.empty() && composed.steps.size() == 1) {
+          push_shape(std::move(composed.steps.front().shape));
+        }
+      }
+    };
     std::vector<pl::StepShape> near = future(owners, false);
     if (near.size() == 1) {
-      a.shapes[0] = std::move(near.front());
+      push_shape(std::move(near.front()));
       std::vector<pl::StepShape> far = future(owners, true);
-      if (far.size() == 1) a.shapes[1] = std::move(far.front());
+      if (far.size() == 1) {
+        push_shape(std::move(far.front()));
+      } else if (far.empty() && owners.size() == 1 && speculate_ && verify_rows_ > 1) {
+        const std::size_t j = owners.front();
+        const PreparedPrefill& unit = prepared[of[j]];
+        if (unit.past > 0 || unit.next.rows > 0) {
+          push_verify_futures(j, unit.past + unit.rows + unit.next.rows);
+        }
+      }
     } else if (near.size() > 1) {
       // The owners' next chunks step apart (a prompt's last chunk is
       // shorter than its peer's): the first two of those steps, each built
       // while this one runs rather than on its own first run, when the
       // device would wait for it.
-      a.shapes[0] = std::move(near[0]);
-      a.shapes[1] = std::move(near[1]);
+      push_shape(std::move(near[0]));
+      push_shape(std::move(near[1]));
+    } else if (near.empty() && owners.size() == 1 && speculate_ && verify_rows_ > 1) {
+      const std::size_t j = owners.front();
+      const PreparedPrefill& unit = prepared[of[j]];
+      if (unit.past > 0) {
+        push_verify_futures(j, unit.past + unit.rows);
+      }
     }
     a.build = std::min<std::uint32_t>(prefill_.lookahead, 2);
-    a.capture_ahead = prefill_.capture_ahead;
-    a.prepare = prefill_.prepare_ahead;
+    a.capture_ahead = !near.empty() && prefill_.capture_ahead;
+    a.prepare = !near.empty() && prefill_.prepare_ahead;
     return a;
   };
   if (!pending.empty()) {
