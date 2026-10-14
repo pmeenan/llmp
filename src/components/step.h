@@ -607,6 +607,7 @@ struct StepOptions {
   // Internal compiler experiment, not execution qualification.
   bool owner_products = false;
   bool rounded_indexer = false;
+  bool dsv4_lid_mask = false;
 };
 std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std::uint16_t stage,
                                                 const planner::StepShape& shape,

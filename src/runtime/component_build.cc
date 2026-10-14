@@ -1000,7 +1000,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                            .state = &hold->layouts.at(s.stage),
                                            .stages = hold->stages,
                                            .artifacts = hold->tables},
-                                          {.narrow = true});
+                                          {.narrow = true, .dsv4_lid_mask = deepseek_serving});
         if (!step) return Error(step.error());
         for (const components::StepWeight& weight : step->weights) {
           const ja::Artifact& a = weight.ref.stage == 0 ? *artifact : *drafter;

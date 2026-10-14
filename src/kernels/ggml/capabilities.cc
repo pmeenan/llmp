@@ -610,10 +610,11 @@ bool AcceptsStateBankAttention(const ex::CapabilityQuery& q) {
   const auto* mask = Operand(q, 3);
   const auto* sinks = Operand(q, 4);
   constexpr std::uint64_t limit = std::numeric_limits<std::int32_t>::max();
-  if (!AcceptsAttention(q) || !p || p->sparse_any || p->softcap != 0 || p->max_bias != 0 ||
-      p->n_kv_max > limit || !raw || !compressed || !query || !mask || query->ne[2] <= 4 ||
-      query->ne[2] > limit || query->ne[1] > limit / 4 / q.k / query->ne[2] ||
-      raw->ne[2] > limit / 2 || compressed->ne[2] > limit / 2 - raw->ne[2])
+  if (!AcceptsAttention(q) || !p || (p->sparse_any && (q.k != 512 || p->n_kv_max == 0)) ||
+      p->softcap != 0 || p->max_bias != 0 || p->n_kv_max > limit || !raw || !compressed || !query ||
+      !mask || query->ne[2] <= 4 || query->ne[2] > limit ||
+      query->ne[1] > limit / 4 / q.k / query->ne[2] || raw->ne[2] > limit / 2 ||
+      compressed->ne[2] > limit / 2 - raw->ne[2])
     return false;
   const auto cells = raw->ne[2] + compressed->ne[2];
   if (sinks &&

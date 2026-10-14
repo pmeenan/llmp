@@ -2812,7 +2812,9 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   std::set<const ggml_tensor*> wide_attention;
   for (const planner::Selected& s : plan_.steps) {
     const std::string_view name = registry_.at(s.implementation).name;
-    if (name == kFlashAttnMmaWideName)
+    if (name == kFlashAttnMmaWideName ||
+        (name == "ggml.state_bank_attention" && s.nodes.size() == 1 &&
+         p_.node(s.nodes.front()).Params<ir::AttnParams>().sparse_any))
       for (const NodeId id : s.nodes)
         for (const ggml_tensor* node : launched_.at(id.v)) wide_attention.insert(node);
     choices.fuse_norms = choices.fuse_norms || name == kRmsNormMulFused;
@@ -3486,7 +3488,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
     case FusedKind::kStateBankAttention: {
       const auto p = n.Params<ir::AttnParams>();
       const auto slices = planner::StateBankSlices(p_, n.src[1], n.src[2]);
-      if (!slices || !in_.token->state_spans || p.sparse_any ||
+      if (!slices || !in_.token->state_spans ||
+          (p.sparse_any && (src(0)->ne[0] != 512 || p.n_kv_max == 0)) ||
           p.n_kv_max > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
         return Refused("a state-bank attention without a supported span proof");
       const auto fact = in_.token->state_spans(*slices);
@@ -3529,6 +3532,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       if (src(4) != nullptr) ggml_flash_attn_ext_add_sinks(out, src(4));
       if (p.n_kv_max != 0)
         ggml_flash_attn_ext_set_n_kv_max(out, static_cast<std::int32_t>(p.n_kv_max));
+      if (p.sparse_any) SetFlashAttnSparseAny(out);
       if (auto match = Matches(p_.tensor(n.out[0]), out, "a state-bank attention"); !match)
         return std::unexpected(match.error());
       bank_attentions_.insert(out);

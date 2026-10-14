@@ -721,12 +721,13 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
   if (!window_mask) return std::unexpected(window_mask.error());
   ir::TensorId mask = *window_mask;
   std::uint32_t n_kv_max = 0;
+  const bool rounded = f_.step.rounded_indexer_context() != 0;
   if (d_.ratio != 0) {
     if (d_.indexer) {
       n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window) +
                                             std::min(compressed_read, d_.top_k));
     }
-    if (d_.indexer && f_.step.rounded_indexer_context() != 0) {
+    if (d_.indexer && rounded) {
       auto selected = Selection(s, ir::TensorId{}, MaskRows(*window_mask, seg.rows));
       if (!selected) return std::unexpected(selected.error());
       const ir::TensorId rows_mask = *selected;
@@ -744,11 +745,15 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
       }
       mask = b_.Concat(MaskRows(*window_mask, seg.rows), rows_mask, 0);
     }
+  } else if (rounded && d_.cache == Cache::kRing) {
+    n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window));
   }
+  const bool sparse_any = rounded && d_.d == 512 && n_kv_max != 0;
   const ir::TensorId attention = b_.Attention(queries, keys, values, mask, f_.Weight(kSinks),
                                               {.scale = 1.0F / std::sqrt(static_cast<float>(d_.d)),
                                                .sinks = true,
                                                .accumulate = ir::Accumulate::kF32,
+                                               .sparse_any = sparse_any,
                                                .n_kv_max = n_kv_max});
   return b_.Reshape(attention, Shape({d_.d * d_.heads, seg.rows}));
 }

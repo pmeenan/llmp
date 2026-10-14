@@ -870,11 +870,15 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
     const auto push_shape = [&](pl::StepShape&& s) {
       if (filled < a.shapes.size()) a.shapes[filled++] = std::move(s);
     };
+    const bool row_invariant = speculative_ && speculative_->mode().row_invariant;
     const auto push_verify_futures = [&](std::size_t j, std::uint32_t end_past) {
       const PreparedPrefill& unit = prepared[of[j]];
       const bool greedy = device_verify_ && unit.branch != nullptr && !sampling(*unit.branch);
-      const bool row_invariant = speculative_ && speculative_->mode().row_invariant;
-      for (std::uint32_t vrows = verify_rows_; vrows >= 1 && filled < a.shapes.size(); --vrows) {
+      const bool adaptive = speculative_ && !speculative_->mode().drafters.empty() &&
+                            speculative_->mode().drafters.front().adaptive;
+      const std::uint32_t min_vrows = adaptive ? 1U : verify_rows_;
+      for (std::uint32_t vrows = verify_rows_; vrows >= min_vrows && filled < a.shapes.size();
+           --vrows) {
         if (end_past > context_ || vrows > context_ - end_past) continue;
         const en::PendingWork vw{.slot = pending[j].slot,
                                  .stage = 0,
@@ -917,6 +921,36 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
       const PreparedPrefill& unit = prepared[of[j]];
       if (unit.past > 0) {
         push_verify_futures(j, unit.past + unit.rows);
+      }
+    } else if (near.empty() && owners.size() > 1) {
+      const bool plain_wave =
+          !speculate_ ||
+          (wave_mode_ && wave_mode_->Choose(static_cast<std::uint32_t>(owners.size())) ==
+                             execution::AdaptiveWaveMode::Mode::kPlain);
+      if (plain_wave) {
+        std::vector<en::PendingWork> decode_work;
+        for (const std::size_t j : owners) {
+          const PreparedPrefill& unit = prepared[of[j]];
+          const std::uint32_t end_past = unit.past + unit.rows;
+          if (end_past >= context_) continue;
+          const bool greedy = device_greedy_ && unit.branch != nullptr && !sampling(*unit.branch);
+          decode_work.push_back({.slot = pending[j].slot,
+                                 .stage = 0,
+                                 .phase = pl::Phase::kDecode,
+                                 .past = end_past,
+                                 .rows = 1,
+                                 .outputs = 1,
+                                 .want_head = true,
+                                 .greedy = greedy,
+                                 .row_invariant = row_invariant,
+                                 .alone = false});
+        }
+        if (decode_work.size() == owners.size()) {
+          en::Composition composed = composer_->Compose(decode_work);
+          if (composed.refused.empty() && composed.steps.size() == 1) {
+            push_shape(std::move(composed.steps.front().shape));
+          }
+        }
       }
     }
     a.build = std::min<std::uint32_t>(prefill_.lookahead, 2);

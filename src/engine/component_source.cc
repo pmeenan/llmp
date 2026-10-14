@@ -499,7 +499,8 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
                   : components::BuildStep(
                         *o_.spec, o_.stage, shape, o_.bindings,
                         {.narrow = !planner::Disabled(policy_, "narrow_final"),
-                         .rounded_indexer = !planner::Disabled(policy_, "rounded_indexer")});
+                         .rounded_indexer = !planner::Disabled(policy_, "rounded_indexer"),
+                         .dsv4_lid_mask = !planner::Disabled(policy_, "dsv4_lid_mask")});
   if (!step) return std::unexpected(std::move(step.error()));
   // Keep the existing placement set. Cell positions are synthesized by
   // masks; commit rows retain their legacy reserved place but are bound to
