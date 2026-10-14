@@ -73,6 +73,7 @@ using Layers = std::vector<std::pair<std::uint32_t, md::StateContract>>;
 constexpr std::uint64_t kExtent = en::kPagedExtent;
 constexpr std::uint32_t kContext = 1024;
 constexpr std::uint32_t kSlots = 3;
+constexpr std::uint32_t kMaxSlots = 4;
 constexpr std::uint32_t kChunk = 64;
 constexpr std::uint32_t kVerifyRows = 8;
 constexpr std::int32_t kFill = -7;
@@ -228,9 +229,9 @@ pl::Segment Seg(std::uint8_t slot, std::uint32_t past, std::uint32_t rows, std::
           .greedy = false};
 }
 
-md::Batching Caps() {
+md::Batching Caps(std::uint32_t slots = kSlots) {
   md::Batching caps;
-  caps.max_segments = kSlots;
+  caps.max_segments = slots;
   return caps;
 }
 
@@ -247,6 +248,8 @@ en::DrafterSpec Block(std::uint32_t depth) {
 
 class DecodingFixture : public ::testing::Test {
  protected:
+  virtual std::uint32_t Slots() const { return kSlots; }
+
   en::PagedNode node_{
       en::NodeSettings{.compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent}};
   std::unique_ptr<en::ModelRunner> runner_;
@@ -255,16 +258,16 @@ class DecodingFixture : public ::testing::Test {
   std::optional<en::WaveComposer> composer_;
 
   // The fake judge's and drafters' record.
-  std::array<std::uint32_t, kSlots> accept_{kAll, kAll, kAll};  // drafts a verify may keep
+  std::array<std::uint32_t, kMaxSlots> accept_{kAll, kAll, kAll, kAll};  // drafts a verify may keep
   bool refuse_judge_ = false;
-  std::array<std::vector<std::int32_t>, kSlots> verified_{};
-  std::array<std::vector<ts::FakeRow>, kSlots> verify_rows_{};
+  std::array<std::vector<std::int32_t>, kMaxSlots> verified_{};
+  std::array<std::vector<ts::FakeRow>, kMaxSlots> verify_rows_{};
   std::map<std::pair<std::uint32_t, std::size_t>, std::vector<ts::FakeRow>> draft_rows_;
   std::function<void(std::uint32_t slot, std::size_t drafter)> in_propose_;
   std::uint64_t commits_ = 0;
   bool fail_commit_ = false;  // the commit refuses (nothing queued)
   // Each slot's tokens through its anchor.
-  std::array<std::vector<std::int32_t>, kSlots> history_{};
+  std::array<std::vector<std::int32_t>, kMaxSlots> history_{};
 
   virtual md::Rollback KvRollback() const = 0;
   // The target's fixed state (a snapshot its commit rebuilds); without it
@@ -290,9 +293,10 @@ class DecodingFixture : public ::testing::Test {
     for (const auto& s : stages) o.layouts.push_back(s.layout);
     auto source = std::make_unique<ts::FakeStepSource>(std::move(o));
     source_ = source.get();
+    const std::uint32_t slots = Slots();
     en::RunnerConfig config;
     config.slots = {.model = "Fake",
-                    .slots = kSlots,
+                    .slots = slots,
                     .stages = stages,
                     .spec = {},
                     .read_align = 256,
@@ -300,10 +304,10 @@ class DecodingFixture : public ::testing::Test {
                     .spill_directory = scratch,
                     .invalidate = {},
                     .drop_plans = {}};
-    const auto wide = [](std::uint16_t stage, pl::Phase phase, std::uint32_t rows,
-                         std::uint32_t align) {
+    const auto wide = [slots](std::uint16_t stage, pl::Phase phase, std::uint32_t rows,
+                              std::uint32_t align) {
       std::vector<pl::Segment> segments;
-      for (std::uint8_t s = 0; s < kSlots; ++s)
+      for (std::uint8_t s = 0; s < slots; ++s)
         segments.push_back(Seg(s, kContext - rows, rows, align));
       return Shape(stage, phase, std::move(segments), align);
     };
@@ -365,10 +369,12 @@ class DecodingFixture : public ::testing::Test {
     node_.Run();
     auto bound = runner_->Bind();
     ASSERT_TRUE(bound) << llmp::test_support::Failed(bound).value_or("");
-    auto selected = runner_->slots().SelectSlots(std::vector<std::uint32_t>{0, 1, 2});
+    std::vector<std::uint32_t> selected_slots;
+    for (std::uint32_t s = 0; s < slots; ++s) selected_slots.push_back(s);
+    auto selected = runner_->slots().SelectSlots(selected_slots);
     ASSERT_TRUE(selected) << llmp::test_support::Failed(selected).value_or("");
     ASSERT_TRUE(node_.BeginRequest(0, runner_->slots().execution(), "test request"));
-    auto composer = en::WaveComposer::For(Caps(), runner_->slots());
+    auto composer = en::WaveComposer::For(Caps(slots), runner_->slots());
     ASSERT_TRUE(composer.has_value()) << composer.error();
     composer_.emplace(std::move(*composer));
   }
@@ -1751,6 +1757,77 @@ TEST_F(DecodingTest, SharedWaveDepthCapsMultiSlotWavesAndLeavesLoneWavesAdaptive
   ASSERT_EQ(observations.size(), 2U);
   EXPECT_EQ(observations[0], (std::tuple{0U, 2U, 2U, false}));
   EXPECT_EQ(observations[1], (std::tuple{1U, 2U, 2U, false}));
+}
+
+class FourSlotDecodingTest : public DecodingTest {
+ protected:
+  std::uint32_t Slots() const override { return 4; }
+};
+
+TEST_F(FourSlotDecodingTest, DraftWaveMaxExecutesAloneDraftsWhileVerifyJoins) {
+  auto spec = Mtp(2);
+  spec.draft_wave_max = 2;
+  spec.catch_up = true;
+  auto decoding = Make({.kind = en::DecodingMode::Kind::kSpeculative, .drafters = {spec}});
+  const std::array<std::uint32_t, 4> prompts{40, 41, 42, 43};
+  Prefill(prompts, &decoding);
+
+  // Unit 1: First speculative unit across all 4 slots.
+  // 4 active slots > draft_wave_max (2), so every draft step runs alone (1 segment).
+  // Target verify runs with all 4 slots joined into 1 step (4 segments).
+  // 4 alone pass 0 drafts + 4 alone pass 1 drafts + 1 joined verify = 9 steps total.
+  const std::size_t from_first = source_->built().size();
+  const auto unit1 = Unit(decoding, {0, 1, 2, 3});
+  EXPECT_EQ(unit1.steps, 9U);
+  for (std::uint32_t slot = 0; slot < 4; ++slot) {
+    ASSERT_FALSE(unit1.outcomes[slot].refusal);
+    EXPECT_EQ(unit1.outcomes[slot].kept, 3U);
+    EXPECT_EQ(unit1.outcomes[slot].drafts.size(), 1U);
+    EXPECT_EQ(unit1.outcomes[slot].drafts[0].steps, 2U);
+  }
+
+  std::uint32_t first_draft_steps = 0;
+  std::uint32_t first_verify_steps = 0;
+  for (std::size_t i = from_first; i < source_->built().size(); ++i) {
+    const auto& b = source_->built()[i];
+    if (b.measuring) continue;
+    if (b.shape.phase == pl::Phase::kDraft && b.shape.stage == kMtp) {
+      EXPECT_EQ(b.shape.segments.size(), 1U);
+      ++first_draft_steps;
+    } else if (b.shape.phase == pl::Phase::kVerify && b.shape.stage == 0) {
+      EXPECT_EQ(b.shape.segments.size(), 4U);
+      ++first_verify_steps;
+    }
+  }
+  EXPECT_GT(first_draft_steps, 0U);
+  EXPECT_GT(first_verify_steps, 0U);
+
+  // Unit 2: The next speculative unit across all 4 slots.
+  // The first pass of MTP is a catch-up step that catches up the kept tokens from unit 1
+  // (rows = 4) and proposes the first draft token.
+  // Because 4 active slots > draft_wave_max (2), catch-up draft steps also run alone (1 segment).
+  // 4 alone pass 0 catch-up drafts + 4 alone pass 1 drafts + 1 joined verify = 9 steps total.
+  const std::size_t from_second = source_->built().size();
+  const auto unit2 = Unit(decoding, {0, 1, 2, 3});
+  EXPECT_EQ(unit2.steps, 9U);
+  for (std::uint32_t slot = 0; slot < 4; ++slot) {
+    ASSERT_FALSE(unit2.outcomes[slot].refusal);
+    EXPECT_EQ(unit2.outcomes[slot].kept, 3U);
+    EXPECT_EQ(unit2.outcomes[slot].drafts.size(), 1U);
+    EXPECT_EQ(unit2.outcomes[slot].drafts[0].steps, 2U);
+  }
+
+  std::uint32_t second_catchup_steps = 0;
+  for (std::size_t i = from_second; i < source_->built().size(); ++i) {
+    const auto& b = source_->built()[i];
+    if (b.measuring) continue;
+    if (b.shape.phase == pl::Phase::kDraft && b.shape.stage == kMtp) {
+      EXPECT_EQ(b.shape.segments.size(), 1U);
+      EXPECT_EQ(b.shape.segments.front().rows, 4U);
+      ++second_catchup_steps;
+    }
+  }
+  EXPECT_GT(second_catchup_steps, 0U);
 }
 
 }  // namespace
