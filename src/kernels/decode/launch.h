@@ -80,10 +80,11 @@ struct DecoderKernels {
 };
 
 // Each per-encoding unit's decoders (null for another unit's).
-const DecoderKernels* DenseKernels(DecoderId id);  // decode_dense.cu: BF16, F16
-const DecoderKernels* Q8_0Kernels(DecoderId id);   // decode_q8_0.cu
-const DecoderKernels* Nvfp4Kernels(DecoderId id);  // decode_nvfp4.cu
-const DecoderKernels* Mxfp8Kernels(DecoderId id);  // decode_mxfp8.cu
+const DecoderKernels* DenseKernels(DecoderId id);   // decode_dense.cu: BF16, F16
+const DecoderKernels* Q8_0Kernels(DecoderId id);    // decode_q8_0.cu
+const DecoderKernels* Nvfp4Kernels(DecoderId id);   // decode_nvfp4.cu
+const DecoderKernels* Mxfp8Kernels(DecoderId id);   // decode_mxfp8.cu
+const DecoderKernels* AffineKernels(DecoderId id);  // decode_affine.cu
 // The GLU of two different decoders, where decode_mixed.cu instantiates
 // the pair (null otherwise); a pair of one decoder is in its unit's table.
 Launcher MixedGluLauncher(DecoderId gate, DecoderId up);

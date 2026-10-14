@@ -155,6 +155,16 @@ TEST(DecodeSelectedRows, MissingDuplicateGeometryAndUncheckedIdsRefuse) {
   }
 }
 
+TEST(DecodeSelectedRows, AffineEncodingRefusedBySelectedRowsSource) {
+  auto source = de::RowsSelectedSource();
+  ASSERT_TRUE(source);
+  const auto impl = (*source)->Implementations();
+  Descriptors d(false);
+  d.inputs[0].desc.format.encoding = fmt::Encoding::kAffine;
+  d.inputs[0].desc.format.params = {.bits = 4, .group = 32, .scale = fmt::AffineScale::kBF16};
+  EXPECT_FALSE((*source)->Lower(impl[0], d.node, d.inputs, d.outputs));
+}
+
 TEST(DecodeSelectedRows, LoweringRequiresTheDirectSideInputAndPagedComponent) {
   auto source = de::RowsSelectedSource();
   ASSERT_TRUE(source);

@@ -9,7 +9,7 @@
 # builds only. Device code takes the format geometry from operand.h's
 # local copies, which decode_test checks against the format layer.
 if(LLMP_CUDA)
-  add_library(llmp_decode_kernels STATIC decode_dense.cu decode_q8_0.cu decode_nvfp4.cu
+  add_library(llmp_decode_kernels STATIC decode_affine.cu decode_dense.cu decode_q8_0.cu decode_nvfp4.cu
                                          decode_mxfp8.cu decode_mixed.cu products.cc
                                          implementations.cc grouped_binding.cc)
   target_include_directories(llmp_decode_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -32,7 +32,7 @@ if(LLMP_CUDA)
   # And llmpalooza's own code in the module: every file in this directory,
   # hashed at build time into a generated source (module_digest.cmake). A
   # file added here without being listed fails the next configure.
-  set(module_files CMakeLists.txt decode_dense.cu decode_mixed.cu decode_mxfp8.cu decode_nvfp4.cu
+  set(module_files CMakeLists.txt decode_affine.cu decode_dense.cu decode_mixed.cu decode_mxfp8.cu decode_nvfp4.cu
                    decode_q8_0.cu decoders.cuh grouped_binding.cc grouped_binding.h implementations.cc implementations.h launch.h
                    module_digest.cmake operand.h products.cc products.h selected_rows.cc selected_rows.h selected_grouped.cc selected_grouped.h templates.cuh)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"

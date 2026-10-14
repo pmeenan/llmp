@@ -76,17 +76,21 @@ using format::PartRole;
 using format::TensorFormat;
 using llmp::test_support::Failed;
 
-constexpr std::array kDecoders = {
-    DecoderId::kBf16Dense,       DecoderId::kF16Dense,   DecoderId::kQ8_0Blocks,
-    DecoderId::kNvfp4Split,      DecoderId::kNvfp4Atoms, DecoderId::kNvfp4Interleaved,
-    DecoderId::kNvfp4GgmlBlocks, DecoderId::kMxfp8Split, DecoderId::kMxfp8Atoms};
+constexpr std::array kDecoders = {DecoderId::kBf16Dense,       DecoderId::kF16Dense,
+                                  DecoderId::kQ8_0Blocks,      DecoderId::kNvfp4Split,
+                                  DecoderId::kNvfp4Atoms,      DecoderId::kNvfp4Interleaved,
+                                  DecoderId::kNvfp4GgmlBlocks, DecoderId::kMxfp8Split,
+                                  DecoderId::kMxfp8Atoms,      DecoderId::kAffineSplit};
 constexpr std::array<std::uint64_t, 5> kVectorRows = {1, 2, 3, 8, 16};
 constexpr std::array<std::uint64_t, 9> kRows = {1, 2, 3, 8, 16, 64, 100, 512, 2048};
 constexpr std::uint64_t kN = 136;
 constexpr std::uint64_t kFirst = 4;
 constexpr std::uint64_t kOutputs = kN - 9;
 
-std::uint64_t KFor(DecoderId id) { return 256 + decode::DecoderKMultiple(id); }
+std::uint64_t KFor(DecoderId id) {
+  if (id == DecoderId::kAffineSplit) return 256 + 32;
+  return 256 + decode::DecoderKMultiple(id);
+}
 
 // Device memory, freed on scope exit.
 class Buffer {
@@ -161,6 +165,10 @@ HostWeight MakeWeight(DecoderId id, std::uint64_t k, std::uint64_t n, std::uint6
   if (f.encoding == Encoding::kNvfp4) {
     f.params.tensor_scale = true;
     f.stacked = 2;
+  } else if (f.encoding == Encoding::kAffine) {
+    f.params.bits = 4;
+    f.params.group = 32;
+    f.params.scale = format::AffineScale::kBF16;
   }
   const format::PartList extents = format::PartsOf(f).value();
   for (const format::PartExtent& e : extents.parts()) {
@@ -198,8 +206,21 @@ HostWeight MakeWeight(DecoderId id, std::uint64_t k, std::uint64_t n, std::uint6
         }
         break;
       case PartRole::kBlockScales:
-        for (std::byte& b : bytes) {
-          b = f.encoding == Encoding::kMxfp8 ? B(ScaleE8m0(rng)) : B(Scale4m3(rng));
+        if (f.encoding == Encoding::kAffine) {
+          for (std::size_t i = 0; i < bytes.size(); i += 2) {
+            const std::uint16_t s = static_cast<std::uint16_t>(0x3c00U + (rng() % 0x0380U));
+            std::memcpy(bytes.data() + i, &s, 2);
+          }
+        } else {
+          for (std::byte& b : bytes) {
+            b = f.encoding == Encoding::kMxfp8 ? B(ScaleE8m0(rng)) : B(Scale4m3(rng));
+          }
+        }
+        break;
+      case PartRole::kBiases:
+        for (std::size_t i = 0; i < bytes.size(); i += 2) {
+          const std::uint16_t b = static_cast<std::uint16_t>(0x3a00U + (rng() % 0x0400U));
+          std::memcpy(bytes.data() + i, &b, 2);
         }
         break;
       case PartRole::kTensorScale: {
@@ -475,8 +496,11 @@ TEST_F(DecodeGpuTest, GluOfEveryDecoderAndMixedPairs) {
   cases.push_back({DecoderId::kMxfp8Split, DecoderId::kBf16Dense});
   cases.push_back({DecoderId::kNvfp4Split, DecoderId::kQ8_0Blocks});
   for (const Case& c : cases) {
-    const std::uint64_t k =
+    std::uint64_t k =
         256 + std::max(decode::DecoderKMultiple(c.gate), decode::DecoderKMultiple(c.up));
+    if (c.gate == DecoderId::kAffineSplit || c.up == DecoderId::kAffineSplit) {
+      k = 256 + 32;
+    }
     // One weight is both (gate rows [0, 68), up rows [68, 136), as a
     // stacked gate and up); two weights for a mixed pair.
     const auto gate = Upload(MakeWeight(c.gate, k, kN, 1, rng_));

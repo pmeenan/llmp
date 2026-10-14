@@ -27,12 +27,16 @@ TEST(DecodeGeometryTest, BlocksMatchTheFormatLayer) {
   EXPECT_EQ(decode::kQ8_0BlockBytes, format::Info(format::Encoding::kQ8_0).ggml->block_bytes);
   EXPECT_EQ(decode::kGgmlNvfp4Block, format::Info(format::Encoding::kNvfp4).ggml->block_elements);
   EXPECT_EQ(decode::kGgmlNvfp4BlockBytes, format::Info(format::Encoding::kNvfp4).ggml->block_bytes);
+  EXPECT_EQ(decode::kAffineBlock, format::Info(format::Encoding::kAffine).block_elements);
   EXPECT_EQ(format::Info(format::Encoding::kNvfp4).element_bits, 4U);
   EXPECT_EQ(format::Info(format::Encoding::kMxfp8).element_bits, 8U);
   // Every block a whole number of segments.
   for (const std::uint32_t block :
        {decode::kNvfp4Block, decode::kMxfp8Block, decode::kQ8_0Block, decode::kGgmlNvfp4Block}) {
     EXPECT_EQ(block % decode::kSegment, 0U) << block;
+  }
+  for (const std::uint32_t group : {32U, 64U, 128U}) {
+    EXPECT_EQ(group % decode::kSegment, 0U) << group;
   }
 }
 

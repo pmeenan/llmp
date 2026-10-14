@@ -33,6 +33,7 @@ enum class DecoderId : std::uint8_t {
   kNvfp4GgmlBlocks,   // GGML's block_nvfp4: four E4M3 scales, then 32 bytes
   kMxfp8Split,        // E4M3 codes K bytes a row, E8M0 scales K / 32 a row
   kMxfp8Atoms,        // codes as split, scales in CUTLASS's SM1xx atoms
+  kAffineSplit,       // MLX affine: 4/8-bit codes, BF16/F16 scales and biases per group
   kCount
 };
 
@@ -46,6 +47,7 @@ inline constexpr std::uint32_t kQ8_0Block = 32;       // GGML's QK8_0
 inline constexpr std::uint32_t kQ8_0BlockBytes = 34;  // sizeof(block_q8_0)
 inline constexpr std::uint32_t kGgmlNvfp4Block = 64;  // GGML's QK_NVFP4
 inline constexpr std::uint32_t kGgmlNvfp4BlockBytes = 36;
+inline constexpr std::uint32_t kAffineBlock = 8;  // format::Info(kAffine).block_elements
 
 // CUTLASS's SM1xx scale atoms (format/layout.h's).
 inline constexpr std::uint64_t kAtomRows = 128;
@@ -72,12 +74,19 @@ struct Operand {
   // F32 tensor scales (NVFP4's per matrix), or null: row r takes
   // tensor_scale[r / rows_per_scale].
   const float* tensor_scale = nullptr;
+  // kBiases (or kZeros) for the affine encoding; unused otherwise.
+  const std::uint8_t* biases = nullptr;
   std::uint32_t k = 0;               // values a row
   std::uint32_t rows = 0;            // rows of the matrix (ne[1])
   std::uint32_t rows_per_scale = 0;  // ne[1] / stacked
   std::uint32_t pad = 0;
-  std::uint64_t row_bytes = 0;  // bytes of a row of `data`
+  std::uint64_t row_bytes = 0;        // bytes of a row of `data`
+  std::uint32_t scale_row_bytes = 0;  // bytes of a row of `scales` (and `biases`)
+  std::uint16_t group = 0;            // values a group (affine: 32, 64, 128)
+  std::uint8_t bits = 0;              // 4 or 8 bits a code (affine)
+  std::uint8_t scale_type = 0;        // 1: F16, 2: BF16, 3: F32 (affine); | 0x80 if zero_point
 };
+static_assert(sizeof(Operand) == 64, "Operand descriptor must be 64 bytes");
 
 }  // namespace llmp::kernels::decode
 

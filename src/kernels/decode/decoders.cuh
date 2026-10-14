@@ -239,6 +239,111 @@ struct Mxfp8Atoms {
   }
 };
 
+// Affine integer quantization: unsigned codes q (4 or 8 bits) per row,
+// scale s and bias b (or zero point z) per group of `group` values along a row.
+// Each 16-value segment lies entirely within one group g = (seg * 16) / group.
+// Arithmetic matches kernels/reference/decode.h:
+// s * q + b (std::fma) or s * (q - z).
+struct AffineSplit {
+  static constexpr DecoderId kId = DecoderId::kAffineSplit;
+  using Mma = __nv_bfloat16;
+
+  __device__ static void Load(const Operand& p, std::uint32_t row, std::uint32_t seg, Values& v) {
+    const std::uint32_t g = (seg * kSegment) / p.group;
+    const std::uint64_t scale_row_offset = row * static_cast<std::uint64_t>(p.scale_row_bytes);
+
+    float s = 0.0f;
+    const std::uint8_t scale_elem = p.scale_type & 0x7FU;
+    if (scale_elem == 3U) {
+      s = __ldg(reinterpret_cast<const float*>(p.scales + scale_row_offset + (g * 4U)));
+    } else if (scale_elem == 2U) {
+      const auto u =
+          __ldg(reinterpret_cast<const unsigned short*>(p.scales + scale_row_offset + (g * 2U)));
+      s = __uint_as_float(static_cast<std::uint32_t>(u) << 16U);
+    } else {
+      const auto u =
+          __ldg(reinterpret_cast<const unsigned short*>(p.scales + scale_row_offset + (g * 2U)));
+      s = __half2float(__ushort_as_half(u));
+    }
+
+    const bool zero_point = (p.scale_type & 0x80U) != 0;
+    std::int32_t z = 0;
+    float b = 0.0f;
+    if (zero_point) {
+      const std::uint64_t groups = p.k / p.group;
+      const std::uint64_t zero_row = ((groups * p.bits) + 7) / 8;
+      const std::uint8_t* z_base = p.biases + (row * zero_row);
+      if (p.bits == 4) {
+        const std::uint32_t zb = Byte(z_base + (g / 2U));
+        z = static_cast<std::int32_t>((g & 1U) != 0 ? (zb >> 4U) & 15U : (zb & 15U));
+      } else {
+        z = static_cast<std::int32_t>(Byte(z_base + g));
+      }
+    } else if (p.biases != nullptr) {
+      if (scale_elem == 3U) {
+        b = __ldg(reinterpret_cast<const float*>(p.biases + scale_row_offset + (g * 4U)));
+      } else if (scale_elem == 2U) {
+        const auto u =
+            __ldg(reinterpret_cast<const unsigned short*>(p.biases + scale_row_offset + (g * 2U)));
+        b = __uint_as_float(static_cast<std::uint32_t>(u) << 16U);
+      } else {
+        const auto u =
+            __ldg(reinterpret_cast<const unsigned short*>(p.biases + scale_row_offset + (g * 2U)));
+        b = __half2float(__ushort_as_half(u));
+      }
+    }
+
+    if (p.bits == 4) {
+      const auto* src = p.data + (row * p.row_bytes) + (seg * 8U);
+      const uint2 c = __ldg(reinterpret_cast<const uint2*>(src));
+      if (zero_point) {
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+          const std::uint32_t pair = (c.x >> (8 * i)) & 0xFFU;
+          v[2 * i] = s * static_cast<float>(static_cast<std::int32_t>(pair & 15U) - z);
+          v[(2 * i) + 1] = s * static_cast<float>(static_cast<std::int32_t>(pair >> 4U) - z);
+        }
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+          const std::uint32_t pair = (c.y >> (8 * i)) & 0xFFU;
+          v[8 + (2 * i)] = s * static_cast<float>(static_cast<std::int32_t>(pair & 15U) - z);
+          v[8 + (2 * i) + 1] = s * static_cast<float>(static_cast<std::int32_t>(pair >> 4U) - z);
+        }
+      } else {
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+          const std::uint32_t pair = (c.x >> (8 * i)) & 0xFFU;
+          v[2 * i] = fmaf(s, static_cast<float>(pair & 15U), b);
+          v[(2 * i) + 1] = fmaf(s, static_cast<float>(pair >> 4U), b);
+        }
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+          const std::uint32_t pair = (c.y >> (8 * i)) & 0xFFU;
+          v[8 + (2 * i)] = fmaf(s, static_cast<float>(pair & 15U), b);
+          v[8 + (2 * i) + 1] = fmaf(s, static_cast<float>(pair >> 4U), b);
+        }
+      }
+    } else {
+      const auto* src = p.data + (row * p.row_bytes) + (seg * 16U);
+      const uint4 c = __ldg(reinterpret_cast<const uint4*>(src));
+      const std::uint32_t w[4] = {c.x, c.y, c.z, c.w};
+      if (zero_point) {
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+          const std::uint32_t code = (w[i / 4] >> (8 * (i % 4))) & 0xFFU;
+          v[i] = s * static_cast<float>(static_cast<std::int32_t>(code) - z);
+        }
+      } else {
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+          const std::uint32_t code = (w[i / 4] >> (8 * (i % 4))) & 0xFFU;
+          v[i] = fmaf(s, static_cast<float>(code), b);
+        }
+      }
+    }
+  }
+};
+
 }  // namespace llmp::kernels::decode
 
 #endif  // LLMP_KERNELS_DECODE_DECODERS_CUH_

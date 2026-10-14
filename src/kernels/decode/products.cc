@@ -55,6 +55,8 @@ constexpr std::array<DecoderRow, static_cast<std::size_t>(DecoderId::kCount)> kD
      16},
     {DecoderId::kMxfp8Atoms, Encoding::kMxfp8, Layout::kCutlassScaleAtoms,
      "mxfp8.cutlass_scale_atoms", kMxfp8Block * kAtomBlocks, "bf16", 16},
+    {DecoderId::kAffineSplit, Encoding::kAffine, Layout::kSplit, "affine.split", kSegment, "bf16",
+     8},
 }};
 
 constexpr bool InIdOrder() {
@@ -85,7 +87,7 @@ bool Aligned(const void* p, std::uint64_t alignment) {
 
 const DecoderKernels* KernelsFor(DecoderId id) {
   for (const DecoderKernels* k :
-       {DenseKernels(id), Q8_0Kernels(id), Nvfp4Kernels(id), Mxfp8Kernels(id)}) {
+       {DenseKernels(id), Q8_0Kernels(id), Nvfp4Kernels(id), Mxfp8Kernels(id), AffineKernels(id)}) {
     if (k != nullptr) {
       return k;
     }
@@ -156,6 +158,20 @@ std::expected<Operand, std::string> OperandOf(const Weight& weight) {
     return Refused(std::format("{}: {} parts given for a format of {}", d.name, weight.parts.size(),
                                extents->size()));
   }
+  if (f.encoding == Encoding::kAffine) {
+    if (f.params.bits != 4 && f.params.bits != 8) {
+      return Refused(
+          std::format("{}: affine decoder supports 4 or 8 bits, got {}", d.name, f.params.bits));
+    }
+    if (f.params.group != 32 && f.params.group != 64 && f.params.group != 128) {
+      return Refused(std::format("{}: affine decoder supports group 32, 64, or 128, got {}", d.name,
+                                 f.params.group));
+    }
+    if (f.params.scale != format::AffineScale::kBF16 &&
+        f.params.scale != format::AffineScale::kF16) {
+      return Refused(std::format("{}: affine decoder supports BF16 or F16 scales", d.name));
+    }
+  }
   Operand op;
   op.k = static_cast<std::uint32_t>(k);
   op.rows = static_cast<std::uint32_t>(n);
@@ -189,12 +205,29 @@ std::expected<Operand, std::string> OperandOf(const Weight& weight) {
       case PartRole::kTensorScale:
         op.tensor_scale = reinterpret_cast<const float*>(base);
         break;
+      case PartRole::kBiases:
+      case PartRole::kZeros:
+        op.biases = base;
+        break;
       default:
         return Refused(
             std::format("{}: unexpected part {}", d.name, format::PartRoleName(extent.role)));
     }
   }
+  if (f.encoding == Encoding::kAffine) {
+    op.group = static_cast<std::uint16_t>(f.params.group);
+    op.bits = f.params.bits;
+    op.scale_type = static_cast<std::uint8_t>(f.params.scale);
+    if (f.params.zero_point) {
+      op.scale_type |= 0x80U;
+    }
+    const std::uint64_t groups = k / f.params.group;
+    const std::uint64_t scale_elem_bytes = f.params.scale == format::AffineScale::kF32 ? 4 : 2;
+    op.scale_row_bytes = static_cast<std::uint32_t>(groups * scale_elem_bytes);
+  }
   if (!Aligned(op.data, d.align) || op.row_bytes % d.align != 0 ||
+      (op.scales != nullptr && !Aligned(op.scales, 2)) ||
+      (op.biases != nullptr && !Aligned(op.biases, 2)) ||
       (op.tensor_scale != nullptr && !Aligned(op.tensor_scale, 4))) {
     return Refused(
         std::format("{}: parts must be {}-byte aligned (tensor scales 4)", d.name, d.align));
