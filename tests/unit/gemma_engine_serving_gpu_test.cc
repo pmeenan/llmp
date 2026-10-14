@@ -68,6 +68,7 @@
 #include "plain_token_serving_checks.h"
 #include "platform/crash_policy.h"
 #include "runtime/engine_llm.h"
+#include "runtime/runtime.h"
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
 
