@@ -4,15 +4,26 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
+#include "artifact/artifact.h"
 #include "base/sha256.h"
 #include "components/step.h"
 #include "import/mlx_qwen38.h"
+#include "import/reader.h"
+#include "import/writer.h"
+#if defined(LLMP_HAS_CUDA)
+#include "kernels/decode/selected_source.h"
+#endif
 #include "qwen38_fixture.h"
+#include "runtime/component_admission.h"
 #include "spec/mappings/qwen38.h"
+#include "tokenizer_fixtures.h"
 
 namespace llmp::import {
 namespace {
@@ -144,6 +155,95 @@ TEST(ImportMlxNormalizeTest, UnknownSourceRefusalKeepsSourceOwnership) {
   EXPECT_EQ(source.tensors.data(), owned);
   ASSERT_EQ(source.tensors.size(), 1U);
   EXPECT_EQ(source.tensors[0].name, "owned source");
+}
+
+TEST(ImportMlxNormalizeModelsTest,
+     RealStagedCheckpointNormalizesPublishesAdmitsAndPlansAffineSplitWeights) {
+  const char* env_path = std::getenv("LLMP_MLX_QWEN38_SOURCE");
+  const std::filesystem::path path =
+      env_path != nullptr ? std::filesystem::path(env_path)
+                          : std::filesystem::path(test_support::ModelsDir()) /
+                                "models/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80";
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    GTEST_SKIP() << "no staged MLX Qwen3.8 source: " << path;
+  }
+  auto checkpoint = ReadCheckpoint(path);
+  ASSERT_TRUE(checkpoint) << checkpoint.error().ToString();
+  EXPECT_EQ(checkpoint->container, "mlx");
+  EXPECT_EQ(checkpoint->architecture, "qwen4_exp");
+  EXPECT_EQ(checkpoint->quantization, "mlx affine");
+  EXPECT_EQ(checkpoint->files.size(), 24U);
+
+  auto bound = MlxTargetBound(*checkpoint);
+  ASSERT_TRUE(bound) << bound.error().ToString();
+
+  NormalizationLimits limits{bound->metadata_bytes, bound->work_units};
+  auto plan = NormalizeMlxTarget(std::move(*checkpoint), limits);
+  ASSERT_TRUE(plan) << plan.error().ToString();
+  EXPECT_EQ(plan->canonical().tensors.size(), 2274U);
+
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "import-mlx-qwen38-models-test";
+  std::filesystem::remove_all(scratch, ec);
+  std::filesystem::create_directories(scratch, ec);
+
+  WriteOptions options{
+      .store = scratch / "mlx-qwen38-v1",
+      .build = "test",
+      .metadata_bytes = std::max(bound->metadata_bytes, std::uint64_t{1} << 30U),
+  };
+  auto published = WriteArtifact(*plan, options);
+  ASSERT_TRUE(published) << published.error().ToString();
+  RecordProperty("artifact_id", published->id);
+  RecordProperty("artifact_path", published->path.string());
+
+  auto artifact = artifact::Artifact::Open(published->path, {.expected_id = published->id});
+  ASSERT_TRUE(artifact) << artifact.error().ToString();
+
+  // Verify admission
+  auto artifact_admitted = runtime::CheckComponentArtifactAdmission(*artifact);
+  ASSERT_TRUE(artifact_admitted) << (artifact_admitted ? "" : artifact_admitted.error());
+
+  auto admission = runtime::ReadComponentAdmission(*artifact);
+  ASSERT_TRUE(admission) << (admission ? "" : admission.error());
+  EXPECT_EQ(admission->model.pipeline, spec::PipelineKind::kLlm);
+  EXPECT_EQ(admission->model.stages.size(), 1U);
+  EXPECT_EQ(admission->model.stages[0].layers.size(), 48U);
+  EXPECT_EQ(admission->model.stages[0].folds, std::vector<std::string>{"gdn.value_heads_tiled"});
+  EXPECT_EQ(admission->source.container, "mlx");
+  EXPECT_EQ(admission->source.architecture, "qwen4exp");
+
+  spec::Envelope envelope{.context = 8192, .slots = 1};
+  auto policy = runtime::ComponentAdmissionPolicy(admission->model, admission->source,
+                                                  artifact->sources(), envelope);
+  ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+
+#if defined(LLMP_HAS_CUDA)
+  // Verify DecodeSelectedSource supports all Affine split decoders
+  auto decode_source = kernels::decode::DecodeSelectedSource(format::Encoding::kAffine);
+  ASSERT_TRUE(decode_source) << (decode_source ? "" : decode_source.error());
+  EXPECT_TRUE((*decode_source)->Owns("llmp.decode.grouped.affine.split"));
+  EXPECT_TRUE((*decode_source)->Owns("llmp.decode.rows.affine.split"));
+  EXPECT_TRUE((*decode_source)->Owns("llmp.decode.vector.affine.split"));
+  EXPECT_TRUE((*decode_source)->Owns("llmp.decode.vector_glu.affine.split"));
+  EXPECT_TRUE((*decode_source)->Owns("llmp.decode.matrix.affine.split"));
+  EXPECT_TRUE((*decode_source)->Owns("llmp.decode.matrix_fma.affine.split"));
+#endif
+
+  // Verify component spec validation and stage layout for admitted spec
+  const std::array<std::span<const spec::SourceTensor>, 1> tables{admission->source.tensors};
+  auto valid_spec = components::ValidateSpec(admission->model, tables);
+  ASSERT_TRUE(valid_spec) << (valid_spec ? "" : valid_spec.error());
+
+  auto stage_layout = components::StageLayout(admission->model, 0, 8192, 512);
+  ASSERT_TRUE(stage_layout) << (stage_layout ? "" : stage_layout.error());
+  EXPECT_GT(stage_layout->bytes, 0U);
+
+  RecordProperty("published_tensors", std::to_string(admission->source.tensors.size()));
+  RecordProperty("stage_layout_bytes", std::to_string(stage_layout->bytes));
+
+  std::filesystem::remove_all(scratch, ec);
 }
 
 }  // namespace

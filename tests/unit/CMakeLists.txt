@@ -1462,8 +1462,18 @@ llmp_gtest(import_modelopt_normalize_test TEST_PREFIX unit. PROPERTIES LABELS un
 
 # Closed native MLX target normalization and source control.
 add_executable(import_mlx_normalize_test import_mlx_normalize_test.cc)
-target_link_libraries(import_mlx_normalize_test PRIVATE llmp_import llmp_components llmp_model llmp_artifact llmp_json)
-llmp_gtest(import_mlx_normalize_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+target_link_libraries(import_mlx_normalize_test PRIVATE llmp_import llmp_components llmp_model llmp_artifact llmp_runtime llmp_json)
+if(LLMP_CUDA)
+  target_link_libraries(import_mlx_normalize_test PRIVATE llmp_decode_selected)
+  target_compile_definitions(import_mlx_normalize_test PRIVATE LLMP_HAS_CUDA=1)
+endif()
+llmp_gtest(import_mlx_normalize_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
+
+# Native v1 drafter normalization, publication and target composition.
+add_executable(import_drafter_normalize_test import_drafter_normalize_test.cc)
+target_link_libraries(import_drafter_normalize_test PRIVATE llmp_cli llmp_import llmp_components llmp_model llmp_spec llmp_artifact llmp_runtime llmp_test_artifact_writer llmp_json llmp_base)
+llmp_gtest(import_drafter_normalize_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models"
+             ENVIRONMENT "LLMP_TEST_DATA=${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 add_executable(import_modelopt_models_test import_modelopt_models_test.cc)
 target_link_libraries(import_modelopt_models_test PRIVATE llmp_cli llmp_import llmp_components llmp_platform)
