@@ -139,6 +139,12 @@ bool Structural(std::string_view key) {
   return key == "general.architecture" || key == "general.alignment" || key == "split.no" ||
          key == "split.count" || key == "split.tensors.count" || key == "model_type";
 }
+bool IsName(std::string_view s) {
+  return !s.empty() && s.size() <= spec::kMaxText && (s.front() >= 'a' && s.front() <= 'z') &&
+         std::ranges::all_of(s, [](char c) {
+           return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+         });
+}
 }  // namespace
 
 const SourceMapping* FindSourceMapping(std::string_view container, std::string_view architecture) {
@@ -152,6 +158,9 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                                                .requirements = kGemma3Requirements},
                                  SourceMapping{.container = "gguf",
                                                .architecture = &spec::mappings::Gemma4Mapping(),
+                                               .auxiliary = kAuxiliary},
+                                 SourceMapping{.container = "gguf",
+                                               .architecture = &spec::mappings::Gemma4AssistantMapping(),
                                                .auxiliary = kAuxiliary},
                                  SourceMapping{.container = "gguf",
                                                .architecture = &spec::mappings::Qwen2GgufMapping(),
@@ -178,6 +187,10 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                                                .requirements = kDsv4Requirements,
                                                .lists = kDsv4Lists,
                                                .encodings = kDsv4Encodings,
+                                               .extended_components = true},
+                                 SourceMapping{.container = "gguf",
+                                               .architecture = &spec::mappings::DsparkMapping(),
+                                               .auxiliary = kAuxiliary,
                                                .extended_components = true}};
   for (const auto& table : tables)
     if (container == table.container && architecture == table.architecture->architecture)
@@ -218,6 +231,8 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key) {
   }
   for (const auto& slot : m.slots)
     if (!slot.layers_key.empty() && key == slot.layers_key) add(kIntegers);
+  for (const auto& read : m.reads)
+    if (!read.layers_key.empty() && key == read.layers_key) add(kIntegers);
   for (const auto& rule : m.slots)
     if ((!rule.gate.empty() && key == rule.gate) ||
         (!rule.count_key.empty() && key == rule.count_key))
@@ -299,11 +314,17 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
                rule.require_equal == required.require_equal;
     if (!found) return Invalid();
   }
+  const bool drafter = m.role == spec::StageRole::kDrafter;
+  if ((m.role != spec::StageRole::kTarget && !drafter) ||
+      (drafter ? m.stage.empty() || !IsName(m.stage) || m.stage == "target" ||
+                     m.reads.size() > 8
+               : !m.stage.empty() || !m.reads.empty()))
+    return Invalid();
   if (m.slots.empty() || m.slots.size() > (table.extended_components ? 16U : 8U) ||
       m.tensors.size() > nd::kRuleLimit || m.params.size() > 128 || m.folds.size() > 8 ||
-      m.policies.size() > 8 || !m.reads.empty() || !m.v0_assembly.empty() ||
-      m.pipeline != spec::PipelineKind::kLlm || m.role != spec::StageRole::kTarget ||
-      (!table.extended_components && !m.layer_type_key.empty()) || !m.stage.empty() ||
+      m.policies.size() > 8 || !m.v0_assembly.empty() ||
+      m.pipeline != spec::PipelineKind::kLlm ||
+      (!table.extended_components && !m.layer_type_key.empty()) ||
       !spec::IsSourceKey(m.layer_count_key))
     return Invalid();
   for (const auto& slot : m.slots)
@@ -317,7 +338,8 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
         (!table.extended_components && p.type == spec::ValueType::kInts))
       return Invalid();
   for (const auto& r : m.tensors)
-    if (!nd::Pattern(r.pattern) || r.target || r.any_part || r.unbound ||
+    if (!nd::Pattern(r.pattern) || (!drafter && r.target) || r.any_part ||
+        (!drafter && r.unbound) || (r.target && r.unbound) ||
         (table.container == "gguf" && r.part != format::PartRole::kData) ||
         (table.container == "exl3" && r.part != format::PartRole::kData &&
          r.part != format::PartRole::kCodes && r.part != format::PartRole::kInputSigns &&
@@ -330,7 +352,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
   for (const auto& a : table.tensors) {
     if (!nd::Pattern(a.source) || !SameShape(a.source, a.canonical)) return Invalid();
     std::size_t matches = 0;
-    for (const auto& r : m.tensors) matches += r.pattern == a.canonical;
+    for (const auto& r : m.tensors) matches += (!r.target && r.pattern == a.canonical);
     if (matches == 0) return Invalid();
   }
   // Equal canonical names can describe opposite sides of one declared gate.
@@ -348,9 +370,12 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
             (!left->count_key.empty() && left->count_key == right->count_key &&
              left->count_above != right->count_above));
   };
+  const auto is_target = [&](std::size_t k) {
+    return k < m.tensors.size() && m.tensors[k].target;
+  };
   for (std::size_t i = 0; i < count; ++i)
     for (std::size_t j = 0; j < i; ++j)
-      if (Overlap(spelling(i), spelling(j)) &&
+      if (is_target(i) == is_target(j) && Overlap(spelling(i), spelling(j)) &&
           !(i < m.tensors.size() && exclusive(m.tensors[i], m.tensors[j])))
         return Invalid();
   for (std::size_t i = 0; i < table.keys.size(); ++i) {
@@ -374,6 +399,8 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
       return Invalid();
     for (const auto& slot : m.slots)
       if (!slot.gate.empty() && matches_aux(slot.gate)) return Invalid();
+    for (const auto& read : m.reads)
+      if (!read.layers_key.empty() && matches_aux(read.layers_key)) return Invalid();
     for (const auto& policy : m.policies)
       if (!policy.gate.empty() && matches_aux(policy.gate)) return Invalid();
     for (const auto& p : m.params)

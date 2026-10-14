@@ -437,15 +437,6 @@ std::expected<std::vector<spec::SourceValue>, std::string> V0Values(std::string_
 // to that profile.
 std::expected<std::vector<spec::SourceValue>, std::string> DrafterV0Values(
     const ja::Artifact& target, const ja::Artifact& drafter) {
-  if (drafter.model().architecture == "dflash" && target.model().architecture == "deepseek4") {
-    const auto& profile = model::Dsv4Flash();
-    auto target_binding = model::BindDsv4(profile, target);
-    if (!target_binding) return Error(target_binding.error());
-    const auto& companion = model::DsparkDeepSeekV4Flash();
-    if (auto bound = model::BindDspark(companion, drafter, profile, *target_binding); !bound)
-      return Error(bound.error());
-    return spec::mappings::DsparkV0Values(companion);
-  }
   return ComponentDrafterV0Values(target, drafter);
 }
 

@@ -16,6 +16,7 @@
 
 #include "base/sha256.h"
 #include "components/step.h"
+#include "model/dspark.h"
 #include "model/dsv4.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
@@ -310,6 +311,16 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Val
       return std::unexpected(bound.error());
     }
     return spec::mappings::Gemma4AssistantV0Values(assistant, **profile);
+  }
+  if (drafter.model().architecture == "dflash" && target.model().architecture == "deepseek4") {
+    const auto& profile = model::Dsv4Flash();
+    auto target_binding = model::BindDsv4(profile, target);
+    if (!target_binding) return std::unexpected(target_binding.error());
+    const auto& companion = model::DsparkDeepSeekV4Flash();
+    if (auto bound = model::BindDspark(companion, drafter, profile, *target_binding); !bound) {
+      return std::unexpected(bound.error());
+    }
+    return spec::mappings::DsparkV0Values(companion);
   }
   return std::unexpected(std::format("the component engine has no drafter {} for architecture {}",
                                      drafter.model().architecture, target.model().architecture));

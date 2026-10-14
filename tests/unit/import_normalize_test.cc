@@ -1070,5 +1070,38 @@ TEST(ImportNormalizeQwen2Exl3Test, RefusesMalformedPartRolesRatesCodebooksAndMet
   }
 }
 
+TEST(ImportNormalizeDrafterTest, ApprovedGgufDrafterMappingsValidateAndRejectMalformedRoles) {
+  const auto* gemma_asst = FindSourceMapping("gguf", "gemma4-assistant");
+  ASSERT_NE(gemma_asst, nullptr);
+  EXPECT_TRUE(ValidateSourceMapping(*gemma_asst));
+  EXPECT_EQ(gemma_asst->architecture->role, spec::StageRole::kDrafter);
+  EXPECT_EQ(gemma_asst->architecture->stage, "assistant");
+  EXPECT_FALSE(gemma_asst->architecture->reads.empty());
+
+  const auto* dspark = FindSourceMapping("gguf", "dflash");
+  ASSERT_NE(dspark, nullptr);
+  EXPECT_TRUE(ValidateSourceMapping(*dspark));
+  EXPECT_EQ(dspark->architecture->role, spec::StageRole::kDrafter);
+  EXPECT_EQ(dspark->architecture->stage, "dspark");
+  EXPECT_FALSE(dspark->architecture->reads.empty());
+  EXPECT_TRUE(dspark->extended_components);
+
+  auto bad_gemma = *gemma_asst;
+  auto bad_m = *gemma_asst->architecture;
+  bad_m.stage = "target";
+  bad_gemma.architecture = &bad_m;
+  EXPECT_FALSE(ValidateSourceMapping(bad_gemma));
+
+  bad_m = *gemma_asst->architecture;
+  bad_m.role = spec::StageRole::kTarget;
+  bad_gemma.architecture = &bad_m;
+  EXPECT_FALSE(ValidateSourceMapping(bad_gemma));
+
+  bad_m = *gemma_asst->architecture;
+  bad_m.stage = "";
+  bad_gemma.architecture = &bad_m;
+  EXPECT_FALSE(ValidateSourceMapping(bad_gemma));
+}
+
 }  // namespace
 }  // namespace llmp::import

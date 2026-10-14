@@ -1133,7 +1133,7 @@ llmp_gtest(component_bindings_test TEST_PREFIX unit. PROPERTIES LABELS unit
 # Closed native-v1 admission over actual descriptor formats and stored specs.
 add_executable(component_admission_test component_admission_test.cc)
 target_link_libraries(component_admission_test PRIVATE llmp_runtime llmp_components llmp_json
-                                                       llmp_import)
+                                                       llmp_import llmp_test_artifact_writer)
 llmp_gtest(component_admission_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 

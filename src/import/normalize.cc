@@ -137,16 +137,18 @@ struct ResolvedName {
 std::optional<ResolvedName> TensorName(const SourceMapping& t, std::string_view name,
                                        std::uint32_t layers) {
   std::optional<ResolvedName> found;
-  for (const auto& rule : t.architecture->tensors)
+  for (const auto& rule : t.architecture->tensors) {
+    if (rule.target) continue;
     if (const auto match = nd::Match(rule.pattern, name, layers)) {
       if (found && found->pattern != rule.pattern) return std::nullopt;
       found = ResolvedName{rule.pattern, match->digits, rule.part, rule.experts};
     }
+  }
   for (const auto& alias : t.tensors)
     if (const auto match = nd::Match(alias.source, name, layers)) {
       if (found) return std::nullopt;
       for (const auto& rule : t.architecture->tensors)
-        if (rule.pattern == alias.canonical)
+        if (!rule.target && rule.pattern == alias.canonical)
           found = ResolvedName{alias.canonical, match->digits, rule.part, rule.experts};
     }
   return found;
@@ -422,8 +424,10 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     return Bad("split structure disagrees with checkpoint files", ItemKind::kNone, kNoItem,
                Rule::kShards);
   std::uint64_t maximum = 0;
-  for (const auto& rule : m.tensors)
+  for (const auto& rule : m.tensors) {
+    if (rule.target) continue;
     maximum = a.Add(maximum, rule.pattern.contains(spec::kLayerField) ? layers : 1);
+  }
   if (s.tensors.empty() || s.tensors.size() > maximum)
     return Bad("tensor count exceeds the complete mapping", ItemKind::kNone, kNoItem,
                Rule::kBounds);

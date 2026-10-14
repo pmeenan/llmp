@@ -9,15 +9,18 @@
 #include <array>
 #include <charconv>
 #include <cstdint>
+#include <filesystem>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "artifact_writer.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "dsv4_gguf_normalization_fixture.h"
 #include "import/normalize.h"
+#include "tokenizer_fixtures.h"
 #include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
@@ -432,6 +435,73 @@ TEST(ComponentAdmissionQwen2Exl3Test,
       if (mutation == 5) changed_model.stages[0].folds.push_back("norm.plus_one");
       EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
           << mutation;
+    }
+  }
+}
+
+TEST(ComponentAdmissionDrafterTest, ComponentDrafterV0ValuesRejectsMismatchedAndInvalidArtifacts) {
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "component-admission-drafters";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  std::filesystem::create_directories(scratch, ec);
+
+  const auto make_plan = [](std::string arch) {
+    llmp::test::V1Plan p;
+    p.architecture = std::move(arch);
+    p.groups = {
+        llmp::test::V1Group{.kind = llmp::artifact::GroupKind::kTable,
+                            .resources = {{.name = "token_embd.weight",
+                                           .format = {.encoding = fm::Encoding::kBF16,
+                                                      .layout = fm::Layout::kDense,
+                                                      .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
+    return p;
+  };
+
+  const auto gemma_target = llmp::artifact::Artifact::Open(
+      llmp::test::Publish(scratch / "target", llmp::test::Render(make_plan("gemma4"))));
+  ASSERT_TRUE(gemma_target.has_value()) << (gemma_target ? "" : gemma_target.error().ToString());
+
+  const auto gemma_drafter = llmp::artifact::Artifact::Open(
+      llmp::test::Publish(scratch / "asst", llmp::test::Render(make_plan("gemma4-assistant"))));
+  ASSERT_TRUE(gemma_drafter.has_value()) << (gemma_drafter ? "" : gemma_drafter.error().ToString());
+
+  const auto dsv4_target = llmp::artifact::Artifact::Open(
+      llmp::test::Publish(scratch / "dsv4", llmp::test::Render(make_plan("deepseek4"))));
+  ASSERT_TRUE(dsv4_target.has_value()) << (dsv4_target ? "" : dsv4_target.error().ToString());
+
+  const auto dflash_drafter = llmp::artifact::Artifact::Open(
+      llmp::test::Publish(scratch / "dflash", llmp::test::Render(make_plan("dflash"))));
+  ASSERT_TRUE(dflash_drafter.has_value()) << (dflash_drafter ? "" : dflash_drafter.error().ToString());
+
+  // Mismatched pairings are rejected with descriptive errors.
+  auto mismatched1 = rt::ComponentDrafterV0Values(*gemma_target, *dflash_drafter);
+  EXPECT_FALSE(mismatched1.has_value());
+  EXPECT_NE(mismatched1.error().find("no drafter dflash for architecture gemma4"), std::string::npos);
+
+  auto mismatched2 = rt::ComponentDrafterV0Values(*dsv4_target, *gemma_drafter);
+  EXPECT_FALSE(mismatched2.has_value());
+  EXPECT_NE(mismatched2.error().find("no drafter gemma4-assistant for architecture deepseek4"),
+            std::string::npos);
+
+  // Matched architectures with invalid (v1 synthetic) artifacts fail through the binders.
+  auto gemma_pair = rt::ComponentDrafterV0Values(*gemma_target, *gemma_drafter);
+  EXPECT_FALSE(gemma_pair.has_value());
+
+  auto dsv4_pair = rt::ComponentDrafterV0Values(*dsv4_target, *dflash_drafter);
+  EXPECT_FALSE(dsv4_pair.has_value());
+  EXPECT_NE(dsv4_pair.error().find("version 0"), std::string::npos);
+
+  // If actual v0 artifacts are installed (e.g. in full models environment), verify success.
+  const std::filesystem::path models = llmp::test_support::ModelsDir();
+  const auto g4_target_path = models / "m3-artifacts/gemma-4-26B-A4B-it-UD-Q4_K_M";
+  const auto g4_asst_path = models / "m3-artifacts/gemma-4-26B-A4B-it-assistant";
+  if (std::filesystem::exists(g4_target_path, ec) && std::filesystem::exists(g4_asst_path, ec)) {
+    auto t = llmp::artifact::Artifact::Open(g4_target_path, {.expected_id = {}});
+    auto a = llmp::artifact::Artifact::Open(g4_asst_path, {.expected_id = {}});
+    if (t && a) {
+      auto vals = rt::ComponentDrafterV0Values(*t, *a);
+      EXPECT_TRUE(vals.has_value()) << (vals ? "" : vals.error());
     }
   }
 }
