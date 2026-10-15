@@ -1245,6 +1245,12 @@ bool AcceptsHeadGate(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::HeadGateParams>(q);
   return Built(q) && q.arch == kCutlassArch && p && p->head % 32 == 0;
 }
+// The policy's bound on the row-at-a-time forms (SelectionPolicy
+// vector_rows), where it sets one.
+std::uint64_t VectorRows(const ex::CapabilityQuery& q) {
+  return q.policy.vector_rows == 0 ? std::numeric_limits<std::uint64_t>::max()
+                                   : q.policy.vector_rows;
+}
 bool AcceptsSelectedRoute(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::RouteParams>(q);
   const auto* logits = Operand(q, 0);
@@ -1260,10 +1266,8 @@ bool AcceptsSelectedRoute(const ex::CapabilityQuery& q) {
       source->layout != Layout::kDense || (biased && p->scale <= 0.0F))
     return false;
   const auto rows = logits->ne[1];
-  const std::uint64_t max_rows =
-      q.policy.max_decode_rows == 8
-          ? 8ULL
-          : (biased ? static_cast<std::uint64_t>(kVecQMaxTokens) : 65535ULL);
+  const std::uint64_t max_rows = std::min<std::uint64_t>(
+      biased ? static_cast<std::uint64_t>(kVecQMaxTokens) : 65535U, VectorRows(q));
   if (rows < 1 || rows > max_rows) return false;
   const auto packed = [](const ex::OperandFormat& operand, std::uint64_t width,
                          std::uint64_t count) {
@@ -1293,7 +1297,7 @@ bool AcceptsMoeGlu(const ex::CapabilityQuery& q) {
   return Built(q) && p && p->kind == ir::GluKind::kSwiGlu && !p->swapped;
 }
 std::uint64_t MaxVecQRows(const ex::CapabilityQuery& q) {
-  return q.policy.max_decode_rows == 8 ? 8ULL : static_cast<std::uint64_t>(kVecQMaxTokens);
+  return std::min<std::uint64_t>(static_cast<std::uint64_t>(kVecQMaxTokens), VectorRows(q));
 }
 // llmp.vecq: decode's quantized products (up to kVecQTokens tokens), of a
 // type it has a kernel for.

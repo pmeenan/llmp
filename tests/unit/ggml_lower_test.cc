@@ -546,6 +546,42 @@ TEST(GgmlLowerTest, GroupedVecQWorkspaceRejectsOutOfDomainBeforeByteArithmetic) 
   EXPECT_EQ(kg::WrittenBytes(*graph, output), UINT64_MAX);
 }
 
+// The vector forms' row bound is the policy's own vector_rows (a mapping's
+// step rule sets it), never read from the decode-shaped bound's value: a
+// VecQ product of 12 rows under max_decode_rows 8 alone remains one, under
+// vector_rows 8 is not; past 16 rows, the kernel's own bound.
+TEST(GgmlLowerTest, VectorRowsBoundTheVectorForms) {
+  if (!kg::CompiledFor(kGb10)) GTEST_SKIP() << "no GB10 kernels in this build";
+  const auto registry = PlanningRegistry();
+  const auto vecq = [&](std::uint64_t rows, ex::SelectionPolicy policy) {
+    const std::array operands{ex::OperandFormat{.operand = 0,
+                                                .encoding = llmp::format::Encoding::kQ8_0,
+                                                .layout = llmp::format::Layout::kGgmlBlocks,
+                                                .ne = {64, 32, 1, 1}},
+                              ex::OperandFormat{.operand = 1,
+                                                .encoding = llmp::format::Encoding::kQ8_1,
+                                                .layout = llmp::format::Layout::kGgmlBlocks,
+                                                .ne = {64, rows, 1, 1}}};
+    const ex::CapabilityQuery query{.op = ir::Primitive(ir::Op::kMatMul),
+                                    .operands = operands,
+                                    .rows = rows,
+                                    .k = 64,
+                                    .n = 32,
+                                    .arch = kGb10,
+                                    .policy = policy};
+    return std::ranges::any_of(ex::Candidates(registry, query), [&](std::size_t i) {
+      return registry.at(i).name == "llmp.vecq.dense";
+    });
+  };
+  EXPECT_TRUE(vecq(12, {}));
+  EXPECT_TRUE(vecq(12, {.max_decode_rows = 8}));
+  EXPECT_FALSE(vecq(12, {.max_decode_rows = 8, .vector_rows = 8}));
+  EXPECT_FALSE(vecq(12, {.vector_rows = 8}));
+  EXPECT_TRUE(vecq(8, {.max_decode_rows = 8, .vector_rows = 8}));
+  EXPECT_TRUE(vecq(16, {.vector_rows = 32}));
+  EXPECT_FALSE(vecq(17, {}));
+}
+
 TEST(GgmlLowerTest, GroupedVecQRequiresClosedSourceRecipeAndPaysBothLaunches) {
   // 0: native, 1: disabled, 2: missing implementation, 3: input weight,
   // 4: a weight view, 5: excess tokens, 6: wrong permutation despite equal

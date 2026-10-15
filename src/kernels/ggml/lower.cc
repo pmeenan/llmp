@@ -62,6 +62,10 @@ namespace co = llmp::components;
 // The measured compact expert scheduling floor for production DeepSeek
 // prefill.
 inline constexpr std::int64_t kDsv4CompactMinRows = 2048;
+// Upstream's product routing groups (capabilities.cc): an IR selection in
+// one is resolved by PlanGraph inside it.
+inline constexpr std::string_view kMulMatGroupName = "ggml.mul_mat";
+inline constexpr std::string_view kMulMatIdGroupName = "ggml.mul_mat_id";
 using format::Encoding;
 using ir::FusedKind;
 using ir::NodeId;
@@ -353,6 +357,11 @@ class Lowering {
   std::vector<bool> needed_;          // by planned node: made
   std::vector<bool> quiet_;           // by planned node: launches nothing of its own
   bool dsv4_fast_ = false;
+  // The queries DeepSeek's query head writes as F16 where the IR records
+  // F32 (MakeDirect's kDsv4QHead), and their views, reshapes,
+  // permutations and contiguous copies: the only tensors Matches takes in
+  // another type than the IR's.
+  std::set<const ggml_tensor*> f16_queries_;
   // A multi-part weight's parts' tensors, by planned tensor.
   std::map<std::uint32_t, std::map<format::PartRole, ggml_tensor*>> parts_;
   std::vector<std::tuple<ggml_tensor*, const co::StepWeight*, format::PartRole>> part_leaves_;
@@ -781,8 +790,10 @@ std::expected<void, KernelFailure> Lowering::Matches(const ir::TensorDesc& want,
                                                      const ggml_tensor* got,
                                                      std::string_view what) const {
   const auto type = TypeOf(want.format.encoding);
-  const bool f16_q =
-      want.format.encoding == Encoding::kF32 && got->type == GGML_TYPE_F16 && got->ne[0] == 512;
+  // DeepSeek's query head writes its F32 result as F16 for its attention
+  // alone (MakeDirect's kDsv4QHead): that tensor and its views only.
+  const bool f16_q = want.format.encoding == Encoding::kF32 && got->type == GGML_TYPE_F16 &&
+                     f16_queries_.contains(got);
   const std::uint64_t scale = f16_q ? 2 : 1;
   bool same = (type.has_value() && got->type == *type) || f16_q;
   for (std::size_t d = 0; d < 4 && same; ++d) {
@@ -1303,20 +1314,36 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
       const ir::TensorDesc& a = graph.tensor(n.src[0]);
       const std::uint64_t base = a.is_view() ? a.view_offset : 0;
       if (out.view_offset < base) return Refused("a view before its source's bytes");
-      const std::uint64_t scale =
-          s[0]->type == GGML_TYPE_F16 && out.format.encoding == Encoding::kF32 ? 2 : 1;
-      return ggml_view_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3), out.nb.at(1) / scale,
-                          out.nb.at(2) / scale, out.nb.at(3) / scale,
-                          (out.view_offset - base) / scale);
+      // A view of the F16 queries the IR records as F32 (Matches): its
+      // strides and offset in F16 elements.
+      const bool f16_q = f16_queries_.contains(s[0]) && s[0]->type == GGML_TYPE_F16 &&
+                         out.format.encoding == Encoding::kF32;
+      const std::uint64_t scale = f16_q ? 2 : 1;
+      if (f16_q && ((out.view_offset - base) % scale != 0 || out.nb.at(1) % scale != 0 ||
+                    out.nb.at(2) % scale != 0 || out.nb.at(3) % scale != 0))
+        return Refused("a view of F16 queries off their elements");
+      ggml_tensor* view = ggml_view_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3), out.nb.at(1) / scale,
+                                       out.nb.at(2) / scale, out.nb.at(3) / scale,
+                                       (out.view_offset - base) / scale);
+      if (f16_q) f16_queries_.insert(view);
+      return view;
     }
-    case Op::kReshape:
-      return ggml_reshape_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3));
+    case Op::kReshape: {
+      ggml_tensor* reshaped = ggml_reshape_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3));
+      if (f16_queries_.contains(s[0])) f16_queries_.insert(reshaped);
+      return reshaped;
+    }
     case Op::kPermute: {
       const auto p = n.Params<ir::PermuteParams>();
-      return ggml_permute(c_, s[0], p.axes[0], p.axes[1], p.axes[2], p.axes[3]);
+      ggml_tensor* permuted = ggml_permute(c_, s[0], p.axes[0], p.axes[1], p.axes[2], p.axes[3]);
+      if (f16_queries_.contains(s[0])) f16_queries_.insert(permuted);
+      return permuted;
     }
-    case Op::kCont:
-      return ggml_cont_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3));
+    case Op::kCont: {
+      ggml_tensor* copied = ggml_cont_4d(c_, s[0], ne(0), ne(1), ne(2), ne(3));
+      if (f16_queries_.contains(s[0])) f16_queries_.insert(copied);
+      return copied;
+    }
     case Op::kConcat:
       return ggml_concat(c_, s[0], s[1], n.Params<ir::ConcatParams>().dim);
     case Op::kHcPost:
@@ -2873,6 +2900,23 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     choices.fuse_gemma_route = choices.fuse_gemma_route || name == kGemmaRouteName;
     choices.fuse_gemma_reduce = choices.fuse_gemma_reduce || name == kGemmaReduceName;
   }
+  // The IR's grouped stores are the groups PlanGraph forms: a joined
+  // step's stores of several owners may sit together in the GGML graph
+  // though the IR, which grouped them around another owner's attention,
+  // did not group them (a greedy run would then be refused below).
+  std::map<const ggml_tensor*, std::size_t> store_groups;
+  for (std::size_t k = 0; k < plan_.steps.size(); ++k) {
+    const auto& name = registry_.at(plan_.steps[k].implementation).name;
+    if (name != kSetRowsGroupedName && name != kSetRowsQuantGroupName) continue;
+    for (const auto id : plan_.steps[k].nodes)
+      for (const ggml_tensor* node : launched_.at(id.v)) store_groups.emplace(node, k + 1);
+  }
+  if (choices.group_set_rows) {
+    choices.set_rows_group = [&store_groups](const ggml_tensor* node) {
+      const auto at = store_groups.find(node);
+      return at == store_groups.end() ? std::size_t{0} : at->second;
+    };
+  }
   std::set<const ggml_tensor*> float_fusions;
   for (const auto& selected : plan_.steps) {
     const auto& name = registry_.at(selected.implementation).name;
@@ -3031,8 +3075,15 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
         continue;
       }
     }
+    // A pair stands for the IR's steps only where the IR selected their
+    // products in the group the pair implements (upstream's routing, inside
+    // which PlanGraph pairs): never another implementation of those nodes.
+    const auto in_group = [&](std::size_t k, std::string_view group) {
+      return k < plan_.steps.size() && plan_.steps[k].group == group;
+    };
     if ((got.implementation == kMulMatIdQPair || got.implementation == kMulMatIdQPairCompact) &&
-        i + 1 < plan_.steps.size() && plan_.steps[i + 1].lane == s.lane) {
+        i + 1 < plan_.steps.size() && plan_.steps[i + 1].lane == s.lane &&
+        in_group(i, kMulMatIdGroupName) && in_group(i + 1, kMulMatIdGroupName)) {
       std::vector<ggml_tensor*> pair_nodes = want;
       for (const NodeId id : plan_.steps[i + 1].nodes) {
         const auto& l = launched_.at(id.v);
@@ -3047,9 +3098,12 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
         continue;
       }
     }
+    // (The activation's step is the GLU over exactly those products: its
+    // nodes are compared below.)
     if ((got.implementation == kMulMatIdQPairGlu || got.implementation == kMulMatIdQPairGluQ8) &&
         i + 2 < plan_.steps.size() && plan_.steps[i + 1].lane == s.lane &&
-        plan_.steps[i + 2].lane == s.lane) {
+        plan_.steps[i + 2].lane == s.lane && in_group(i, kMulMatIdGroupName) &&
+        in_group(i + 1, kMulMatIdGroupName)) {
       std::vector<ggml_tensor*> glu_nodes;
       for (const NodeId id : plan_.steps[i + 1].nodes) {
         const auto& l = launched_.at(id.v);
@@ -3072,7 +3126,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       }
     }
     if (got.implementation == kMulMatQPairDense && got.nodes.size() == 2 && want.size() == 1 &&
-        got.nodes[0] == want[0]) {
+        got.nodes[0] == want[0] && in_group(i, kMulMatGroupName)) {
       std::size_t found_i2 = plan_.steps.size();
       for (std::size_t i2 = i + 1; i2 < plan_.steps.size(); ++i2) {
         if (paired_later[i2]) continue;
@@ -3083,7 +3137,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
           want2.insert(want2.end(), l.begin(), l.end());
         }
         if (want2.size() == 1 && want2[0] == got.nodes[1]) {
-          found_i2 = i2;
+          if (in_group(i2, kMulMatGroupName)) found_i2 = i2;
           break;
         }
       }
@@ -3102,15 +3156,17 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     same = same ||
            ((plan_.owner_row_invariant || dsv4_fast) && got.nodes == want &&
             (((got.implementation == kMulMatVecFRows || got.implementation == kMulMatVecQRows) &&
-              s.group == "ggml.mul_mat") ||
-             (got.implementation == kMulMatIdVecQRows && s.group == "ggml.mul_mat_id")));
+              s.group == kMulMatGroupName) ||
+             (got.implementation == kMulMatIdVecQRows && s.group == kMulMatIdGroupName)));
     if (!same && got.nodes == want && !s.group.empty()) {
       // A member of the selected group, upstream's choice inside it.
       const auto member = registry_.Find(got.implementation);
       same = member && registry_.at(*member).capability &&
              registry_.at(*member).capability->group == s.group;
     }
-    same = same || (got.nodes == want && got.implementation == kMulMatIdQCompactPrequant);
+    // The prequantized compact down product (PlanGraph's pair after a
+    // quantizing GLU) is such a member: it stands only for the IR's
+    // selection in its own group, never for another implementation.
     if (!same) {
       return Refused(std::format(
           "PlanGraph's step {} is {} over{}, where the IR selected {}{} over{}", j,
@@ -3753,6 +3809,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
                      .beta_fast = r.beta_fast,
                      .beta_slow = r.beta_slow},
                     f16_q ? GGML_TYPE_F16 : GGML_TYPE_F32);
+      if (f16_q) f16_queries_.insert(out);
       Node(out, id);
       set(0, out);
       return {};

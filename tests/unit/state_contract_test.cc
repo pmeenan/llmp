@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -987,6 +988,42 @@ TEST(StateContractTest, DsparkVerifySavesAreItsContractsWritesByteForByte) {
       }
     }
   }
+}
+
+// How a stage's plans depend on the read cells: whole where a tensor reads
+// through them, else only up to the largest ring (an injected drafter ring
+// or a whole-reading window reads min(its cells, the read cells)).
+TEST(StateContractTest, ReadCellsBoundFollowsWhatReadsThem) {
+  const auto layout = [](std::vector<StateTensorContract> tensors) {
+    Layers layers{{0, {.tensors = std::move(tensors)}}};
+    auto made = md::Layout(layers, 65536, 16);
+    EXPECT_TRUE(made.has_value()) << made.error();
+    return *made;
+  };
+  const auto ring = [](std::string name, std::uint32_t cells) {
+    return StateTensorContract{.name = std::move(name),
+                               .kind = StateKind::kDrafterRing,
+                               .cell_bytes = 256,
+                               .cells = CellRule::kPositionRing,
+                               .window_or_ratio = cells,
+                               .rollback = Rollback::kSnapshot};
+  };
+  const StateTensorContract whole{.name = "window",
+                                  .kind = StateKind::kRing,
+                                  .cell_bytes = 256,
+                                  .cells = CellRule::kRing,
+                                  .window_or_ratio = 128,
+                                  .ring_reads_whole = true,
+                                  .rollback = Rollback::kSnapshot};
+  EXPECT_EQ(md::ReadCellsBound(layout({ring("injected", 384)})), 384U);
+  // The whole-reading ring's layout cells: pad(128 + 16 rows) = 256.
+  EXPECT_EQ(md::ReadCellsBound(layout({whole, ring("a", 8), ring("b", 128)})), 256U);
+  EXPECT_EQ(md::ReadCellsBound(layout({whole, ring("c", 384)})), 384U);
+  EXPECT_EQ(md::ReadCellsBound(layout({whole})), 256U);
+  EXPECT_EQ(md::ReadCellsBound(layout({ring("d", 8)})), 8U);
+  EXPECT_EQ(md::ReadCellsBound(layout({whole, GemmaKv("k", 256, false, 0)})), std::nullopt);
+  EXPECT_EQ(md::ReadCellsBound(layout({ring("a", 8), GemmaKv("k", 256, true, 512)})), std::nullopt);
+  EXPECT_EQ(md::ReadCellsBound(md::StateLayoutDerived{}), std::nullopt);
 }
 
 TEST(StateContractTest, RepresentationsGroupKindsAndTruncateOnlyWhatCanRollBack) {

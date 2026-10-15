@@ -360,6 +360,34 @@ bool ReadsFrozen(const StateLayoutDerived& layout) {
   });
 }
 
+std::optional<std::uint64_t> ReadCellsBound(const StateLayoutDerived& layout) {
+  if (layout.items.empty() && layout.borrowed.empty()) return std::nullopt;
+  const auto reads_whole = [](const StateTensorContract& c) {
+    return (c.kind == StateKind::kKv && !c.ring_reads_whole) || c.cells == CellRule::kPerPosition ||
+           (c.cells == CellRule::kRing && !c.ring_reads_whole) ||
+           (c.cells == CellRule::kPerBlock && c.basis == BlockBasis::kReadCells);
+  };
+  // A ring that "reads whole" still reads min(its cells, the read cells)
+  // (a step's window read, mqa.cc), so it bounds the key at its layout's
+  // cells; a borrowed one has none here, and keys the read cells whole.
+  std::uint64_t bound = 0;
+  const auto add = [&](const StateTensorContract& c, std::optional<std::uint64_t> cells) {
+    if (reads_whole(c)) return false;
+    if (c.cells == CellRule::kPositionRing)
+      bound = std::max<std::uint64_t>(bound, c.window_or_ratio);
+    if (c.cells == CellRule::kRing) {
+      if (!cells) return false;
+      bound = std::max(bound, *cells);
+    }
+    return true;
+  };
+  for (const Item& item : layout.items)
+    if (!add(item.contract, item.cells)) return std::nullopt;
+  for (const auto& item : layout.borrowed)
+    if (!add(item.contract, std::nullopt)) return std::nullopt;
+  return bound;
+}
+
 const StateLayoutDerived::Item* FeatureTap(const StateLayoutDerived& layout) {
   const Item* found = nullptr;
   for (const Item& item : layout.items) {

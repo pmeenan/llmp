@@ -1006,6 +1006,19 @@ TEST(GgmlLowerQwen38Test, DefaultPoliciesFollowTheImportsForm) {
   }
   EXPECT_FALSE(pl::Disabled(cutlass.mtp_policy, "bf16_inputs"));
   EXPECT_TRUE(pl::Disabled(cutlass.mtp_policy, "mxfp8_inputs"));
+  // No step rules: a solo prompt tail of 9 to 16 rows keeps the GGUF
+  // form's vector GLU and inputs (no other model's row gates apply).
+  for (const Import* im : {&cutlass, &ggml, &gguf}) EXPECT_TRUE(im->policy.rules.empty());
+  for (std::uint64_t rows = 1; rows <= 16; ++rows) {
+    for (const std::size_t segments : {std::size_t{1}, std::size_t{2}}) {
+      const pl::Policy step = pl::ForStep(gguf.policy, rows, segments).value();
+      EXPECT_EQ(step, gguf.policy) << rows << " rows";
+      EXPECT_FALSE(pl::Disabled(step, "vecq_glu")) << rows << " rows";
+      EXPECT_FALSE(pl::Disabled(step, "vecq_inputs")) << rows << " rows";
+      EXPECT_EQ(step.max_decode_rows, 16U);
+      EXPECT_EQ(step.vector_rows, 0U);
+    }
+  }
 }
 
 TEST(GgmlLowerQwen38Test, KeptNormResultsAreNotReplacedByPreparedRows) {

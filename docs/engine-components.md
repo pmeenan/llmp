@@ -375,8 +375,12 @@ primitive ids). It is deterministic. The steps:
   recorded prepared (`ir::PreparedRows`: MXFP8 rows in CUTLASS's scale
   atoms), and capability queries see a node's outputs as operands from
   `execution::kOutputOperand`.
-- **Policy** (`policy.h`): disabled patterns, the decode-row bound,
-  row-invariant plans (D-092), the lossy opt-in and measured ranks per
+- **Policy** (`policy.h`): disabled patterns, the decode-row bound, the
+  vector forms' row bound, row-invariant plans (D-092), the lossy opt-in,
+  step rules (`when <any|solo|joined> <past|under> <n> <action>`: a
+  pattern off or a tighter bound for some steps only, by owners and rows,
+  which the component step source applies per step with `ForStep`; the
+  planner holds no family's row gates) and measured ranks per
   device class, as canonical text whose digest is a plan key's input. The
   first migrations' selections are policies: Gemma 2 serves with
   `disable grouped_stores`, `disable rms_norm_mul_rope` and `disable

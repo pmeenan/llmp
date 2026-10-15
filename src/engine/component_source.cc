@@ -190,6 +190,9 @@ ComponentStepSource::SealExecution(std::span<ComponentStepSource* const> stages)
       if (!text(name)) return std::unexpected("execution policy bound overflows");
     for (const auto& name : stage->policy_.disabled)
       if (!text(name)) return std::unexpected("execution policy bound overflows");
+    for (const auto& rule : stage->policy_.rules)
+      if (!text(rule.pattern) || !add(sizeof(rule) + 128))
+        return std::unexpected("execution step rule bound overflows");
     for (const auto& rank : stage->policy_.ranks)
       if (!text(rank.device_class) || !text(rank.implementation) || !add(sizeof(rank) + 128))
         return std::unexpected("execution rank bound overflows");
@@ -538,21 +541,11 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
     }
   }
   const auto state_spans = StateSpans(shape, addresses);
-  planner::Policy step_policy = policy_;
-  if (shape.rows() < 64U) {
-    std::erase(step_policy.enabled, "dsv4_hc_post");
-  }
-  if (shape.segments.size() == 1 && shape.rows() > 8U) {
-    if (std::ranges::contains(policy_.enabled, "dsv4_lid_mask")) {
-      step_policy.max_decode_rows = 8U;
-    }
-    for (const std::string_view p :
-         {"dsv4_hc_pre", "vecq_glu", "vecq_inputs", "grouped_vecq", "biased_route", "hash_route"}) {
-      std::erase(step_policy.enabled, p);
-    }
-  } else if (shape.rows() > 16U) {
-    std::erase(step_policy.enabled, "dsv4_hc_pre");
-  }
+  // The policy's own step rules (its mapping's data: a fast form taken
+  // only by small solo steps, a tighter row bound past some rows).
+  auto ruled = planner::ForStep(policy_, shape.rows(), shape.segments.size());
+  if (!ruled) return std::unexpected(std::move(ruled.error()));
+  const planner::Policy step_policy = std::move(*ruled);
   const GraphBuildIO io{step->graph, step->graph.inputs(), step->graph.outputs(), step->weights};
   auto program = BuildComponentProgram(
       io, Backend(), step_policy, addresses,

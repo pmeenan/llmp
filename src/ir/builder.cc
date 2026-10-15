@@ -534,6 +534,7 @@ std::expected<Graph, VerifyError> Builder::Finish() && {
   if (auto v = Verify(g); !v) {
     return std::unexpected(v.error());
   }
+  g.identity_ = Graph::NextIdentity();
   return g;
 }
 

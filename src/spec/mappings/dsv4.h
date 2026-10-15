@@ -68,7 +68,11 @@ std::expected<std::vector<SourceValue>, std::string> Dsv4V0Values(
 std::expected<std::vector<SourceValue>, std::string> DsparkV0Values(
     const model::DsparkProfile& profile);
 
-// The planning policy for DeepSeek serving fast forms.
+// The planning policy for DeepSeek serving fast forms. Its step rules: the
+// HC post's fused form from 64 rows; a solo step past 8 rows (a prompt's
+// chunk) without the small-row forms (the HC pre, the vector products and
+// inputs, the selected routing), its decode-shaped and vector bounds at 8
+// rows; a joined step past 16 rows without the HC pre's.
 inline constexpr std::string_view kDeepSeekServingPolicy =
     "max_decode_rows 16\n"
     "enable biased_route\n"
@@ -92,7 +96,17 @@ inline constexpr std::string_view kDeepSeekServingPolicy =
     "disable prepared_inputs\n"
     "disable rms_norm_mul_add\n"
     "disable rms_norm_mul_rope\n"
-    "disable rope_store\n";
+    "disable rope_store\n"
+    "when any under 64 disable dsv4_hc_post\n"
+    "when solo past 8 disable biased_route\n"
+    "when solo past 8 disable dsv4_hc_pre\n"
+    "when solo past 8 disable grouped_vecq\n"
+    "when solo past 8 disable hash_route\n"
+    "when solo past 8 disable vecq_glu\n"
+    "when solo past 8 disable vecq_inputs\n"
+    "when solo past 8 max_decode_rows 8\n"
+    "when solo past 8 vector_rows 8\n"
+    "when joined past 16 disable dsv4_hc_pre\n";
 
 }  // namespace llmp::spec::mappings
 

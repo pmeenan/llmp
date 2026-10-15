@@ -106,6 +106,11 @@ struct DeviceChoices {
   bool fuse_rope_store = false;
   // Group independent consecutive physical KV stores; no producer fusion.
   bool group_set_rows = false;
+  // Where set, the groups a plan's caller already chose (the IR's grouped
+  // stores): a store's group, zero for none; consecutive stores group only
+  // within one nonzero group, never greedily past it (another owner's
+  // attention between them in the IR may sit elsewhere in the graph).
+  std::function<std::size_t(const ggml_tensor*)> set_rows_group = nullptr;
   // Upstream's quantized gate/up/GLU MMVQ fusion without enabling its other
   // fusion gates: where quant_glu_fusible (ops_ext.h MulMatVecQGluFusible)
   // holds and only the GLU reads the products. Default off.

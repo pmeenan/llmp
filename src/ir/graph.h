@@ -192,8 +192,9 @@ class Graph {
   static constexpr std::size_t kMaxTensors = std::size_t{1} << 17;
   using Builder = ir::Builder;
 
-  Graph(Graph&&) noexcept = default;
-  Graph& operator=(Graph&&) noexcept = default;
+  // A move carries the identity; the moved-from graph has none.
+  Graph(Graph&& other) noexcept;
+  Graph& operator=(Graph&& other) noexcept;
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
   ~Graph() = default;
@@ -221,9 +222,16 @@ class Graph {
   // planner consumes one graph while its lowering reads the other.
   Graph Clone() const;
 
+  // This graph's identity in the process: unique to each built or cloned
+  // graph (graphs never change once built), never reused, so a cache of
+  // facts about one graph keyed on it never confuses another, even one
+  // built where a freed graph was. Zero: a moved-from graph.
+  std::uint64_t identity() const { return identity_; }
+
  private:
   friend class ir::Builder;
   Graph() = default;
+  static std::uint64_t NextIdentity();
 
   std::vector<Node> nodes_;
   std::vector<TensorDesc> tensors_;
@@ -232,6 +240,7 @@ class Graph {
   std::vector<TensorId> outputs_;
   std::vector<TensorId> keep_;
   std::vector<std::string> names_;
+  std::uint64_t identity_ = 0;
 };
 
 }  // namespace llmp::ir

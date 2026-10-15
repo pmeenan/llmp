@@ -4,11 +4,13 @@
 #include "planner/policy.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -36,6 +38,36 @@ bool NameChars(std::string_view s, bool dots) {
 }
 
 auto RankOrder(const ClassRank& r) { return std::tie(r.device_class, r.rank, r.implementation); }
+auto RuleOrder(const StepRule& r) {
+  return std::tie(r.scope, r.test, r.rows, r.action, r.pattern, r.value);
+}
+
+constexpr std::array<std::string_view, 3> kScopes{"any", "solo", "joined"};
+constexpr std::array<std::string_view, 2> kTests{"past", "under"};
+constexpr std::array<std::string_view, 3> kActions{"disable", "max_decode_rows", "vector_rows"};
+
+template <typename E, std::size_t N>
+std::optional<E> Named(const std::array<std::string_view, N>& names, std::string_view word) {
+  const auto at = std::ranges::find(names, word);
+  if (at == names.end()) return std::nullopt;
+  return static_cast<E>(at - names.begin());
+}
+
+bool Bound(std::uint32_t n) { return n != 0 && n <= kMaxDecodeRowsBound; }
+
+std::string RuleText(const StepRule& r) {
+  return std::format("when {} {} {} {} {}\n", kScopes.at(static_cast<std::size_t>(r.scope)),
+                     kTests.at(static_cast<std::size_t>(r.test)), r.rows,
+                     kActions.at(static_cast<std::size_t>(r.action)),
+                     r.action == StepAction::kDisable ? r.pattern : std::to_string(r.value));
+}
+
+bool Holds(const StepRule& r, std::uint64_t rows, std::size_t segments) {
+  if ((r.scope == StepScope::kSolo && segments != 1) ||
+      (r.scope == StepScope::kJoined && segments <= 1))
+    return false;
+  return r.test == RowTest::kPast ? rows > r.rows : rows < r.rows;
+}
 
 // A decimal of at most ten digits, no sign or leading zero.
 std::expected<std::uint32_t, std::string> Number(std::string_view s) {
@@ -79,6 +111,9 @@ void Canonicalize(Policy& policy) {
   std::ranges::sort(policy.ranks, [](const ClassRank& a, const ClassRank& b) {
     return RankOrder(a) < RankOrder(b);
   });
+  std::ranges::sort(policy.rules, [](const StepRule& a, const StepRule& b) {
+    return RuleOrder(a) < RuleOrder(b);
+  });
 }
 
 std::expected<void, std::string> Validate(const Policy& policy) {
@@ -86,9 +121,13 @@ std::expected<void, std::string> Validate(const Policy& policy) {
     return Error(std::format("max_decode_rows {} outside 1 to {}", policy.max_decode_rows,
                              kMaxDecodeRowsBound));
   }
+  if (policy.vector_rows != 0 && !Bound(policy.vector_rows)) {
+    return Error(
+        std::format("vector_rows {} outside 1 to {}", policy.vector_rows, kMaxDecodeRowsBound));
+  }
   if (policy.disabled.size() > kMaxDisabled || policy.enabled.size() > kMaxDisabled ||
-      policy.ranks.size() > kMaxRanks) {
-    return Error("more enabled or disabled patterns or ranks than a policy holds");
+      policy.ranks.size() > kMaxRanks || policy.rules.size() > kMaxStepRules) {
+    return Error("more enabled or disabled patterns, ranks or step rules than a policy holds");
   }
   for (std::size_t i = 0; i < policy.enabled.size(); ++i) {
     const std::string& name = policy.enabled[i];
@@ -112,6 +151,24 @@ std::expected<void, std::string> Validate(const Policy& policy) {
       return Error("disabled patterns are not ascending and unique");
     }
   }
+  for (std::size_t i = 0; i < policy.rules.size(); ++i) {
+    const StepRule& r = policy.rules[i];
+    if (static_cast<std::size_t>(r.scope) >= kScopes.size() ||
+        static_cast<std::size_t>(r.test) >= kTests.size() ||
+        static_cast<std::size_t>(r.action) >= kActions.size()) {
+      return Error("a step rule of no scope, test or action");
+    }
+    if (r.test == RowTest::kUnder && r.rows == 0) {
+      return Error("a step rule under no rows holds for no step");
+    }
+    if (r.action == StepAction::kDisable ? (r.value != 0 || FindPattern(r.pattern) == nullptr)
+                                         : (!r.pattern.empty() || !Bound(r.value))) {
+      return Error(std::format("a step rule's action is not one: {}", RuleText(r)));
+    }
+    if (i > 0 && !(RuleOrder(policy.rules[i - 1]) < RuleOrder(r))) {
+      return Error("step rules are not ascending and unique");
+    }
+  }
   for (std::size_t i = 0; i < policy.ranks.size(); ++i) {
     const ClassRank& r = policy.ranks[i];
     if (!NameChars(r.device_class, false) || !NameChars(r.implementation, true)) {
@@ -133,6 +190,9 @@ std::expected<void, std::string> Validate(const Policy& policy) {
 
 std::string ToText(const Policy& policy) {
   std::string text = std::format("max_decode_rows {}\n", policy.max_decode_rows);
+  if (policy.vector_rows != 0) {
+    text += std::format("vector_rows {}\n", policy.vector_rows);
+  }
   if (policy.row_invariant) {
     text += "row_invariant\n";
   }
@@ -144,6 +204,9 @@ std::string ToText(const Policy& policy) {
   }
   for (const std::string& name : policy.disabled) {
     text += std::format("disable {}\n", name);
+  }
+  for (const StepRule& r : policy.rules) {
+    text += RuleText(r);
   }
   for (const ClassRank& r : policy.ranks) {
     text += std::format("rank {} {} {}\n", r.device_class, r.implementation, r.rank);
@@ -173,6 +236,37 @@ std::expected<Policy, std::string> ParsePolicy(std::string_view text) {
       }
       policy.max_decode_rows = *n;
       rows = true;
+    } else if (w.size() == 2 && w[0] == "vector_rows" && policy.vector_rows == 0) {
+      const auto n = Number(w[1]);
+      if (!n) {
+        return std::unexpected(n.error());
+      }
+      if (*n == 0) {
+        return Error("vector_rows 0 is its absence");
+      }
+      policy.vector_rows = *n;
+    } else if (w.size() == 6 && w[0] == "when") {
+      const auto scope = Named<StepScope>(kScopes, w[1]);
+      const auto test = Named<RowTest>(kTests, w[2]);
+      const auto action = Named<StepAction>(kActions, w[4]);
+      const auto n = Number(w[3]);
+      if (!scope || !test || !action || !n) {
+        return Error(std::format("not a step rule: {}", line.substr(0, 64)));
+      }
+      if (policy.rules.size() == kMaxStepRules) {
+        return Error("more step rules than a policy holds");
+      }
+      StepRule rule{.scope = *scope, .test = *test, .rows = *n, .action = *action};
+      if (*action == StepAction::kDisable) {
+        rule.pattern = std::string(w[5]);
+      } else {
+        const auto value = Number(w[5]);
+        if (!value) {
+          return std::unexpected(value.error());
+        }
+        rule.value = *value;
+      }
+      policy.rules.push_back(std::move(rule));
     } else if (w.size() == 1 && w[0] == "row_invariant") {
       policy.row_invariant = true;
     } else if (w.size() == 1 && w[0] == "allow_lossy") {
@@ -208,6 +302,36 @@ std::expected<Policy, std::string> ParsePolicy(std::string_view text) {
     return Error("a policy's text is not canonical");
   }
   return policy;
+}
+
+std::expected<Policy, std::string> ForStep(const Policy& policy, std::uint64_t rows,
+                                           std::size_t segments) {
+  Policy out = policy;
+  out.rules.clear();
+  for (const StepRule& r : policy.rules) {
+    if (!Holds(r, rows, segments)) {
+      continue;
+    }
+    switch (r.action) {
+      case StepAction::kDisable:
+        std::erase(out.enabled, r.pattern);
+        if (!std::ranges::contains(out.disabled, r.pattern)) {
+          out.disabled.push_back(r.pattern);
+        }
+        break;
+      case StepAction::kMaxDecodeRows:
+        out.max_decode_rows = std::min(out.max_decode_rows, r.value);
+        break;
+      case StepAction::kVectorRows:
+        out.vector_rows = out.vector_rows == 0 ? r.value : std::min(out.vector_rows, r.value);
+        break;
+    }
+  }
+  Canonicalize(out);
+  if (auto valid = Validate(out); !valid) {
+    return Error(std::format("a step's policy: {}", valid.error()));
+  }
+  return out;
 }
 
 base::Sha256Digest Digest(const Policy& policy) {

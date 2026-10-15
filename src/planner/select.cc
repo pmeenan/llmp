@@ -167,26 +167,28 @@ RootAlignment GraphRootAlignments(const ir::Graph& graph,
       return {};
     alignments[fact.root.v] = fact.alignment;
   }
+  // The last graph authenticated, by its identity (ir::Graph::identity:
+  // never reused, unlike an address and counts a freed graph's successor
+  // may share): a graph is hashed and sealed once, not on every query.
   struct CachedGraph {
-    const ir::Node* nodes = nullptr;
-    std::size_t node_count = 0;
-    std::size_t tensor_count = 0;
+    std::uint64_t identity = 0;
     bool ok = false;
   };
-  return [digest = graph.Digest(), seal = RootSeal(graph),
-          alignments = std::move(alignments),
-          cached = std::make_shared<CachedGraph>()](
-             const ir::Graph& current, ir::TensorId root) -> std::uint64_t {
+  return [digest = graph.Digest(), seal = RootSeal(graph), alignments = std::move(alignments),
+          cached = std::make_shared<CachedGraph>()](const ir::Graph& current,
+                                                    ir::TensorId root) -> std::uint64_t {
     if (!root.valid() || root.v >= alignments.size() || alignments[root.v] == 0 ||
         root.v >= current.tensor_count() || current.tensor(root).is_view())
       return std::uint64_t{0};
-    if (cached->nodes != current.nodes().data() ||
-        cached->node_count != current.nodes().size() ||
-        cached->tensor_count != current.tensor_count()) {
-      cached->nodes = current.nodes().data();
-      cached->node_count = current.nodes().size();
-      cached->tensor_count = current.tensor_count();
-      cached->ok = (current.Digest() == digest && RootSeal(current) == seal);
+    const std::uint64_t identity = current.identity();
+    if (identity == 0) {
+      // A graph without an identity is authenticated every time.
+      return current.Digest() == digest && RootSeal(current) == seal ? alignments[root.v]
+                                                                     : std::uint64_t{0};
+    }
+    if (cached->identity != identity) {
+      cached->identity = identity;
+      cached->ok = current.Digest() == digest && RootSeal(current) == seal;
     }
     return cached->ok ? alignments[root.v] : std::uint64_t{0};
   };
@@ -285,9 +287,8 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
       }
       case FusedKind::kDsv4OutA: {
         const ir::TensorDesc* x = At(sources, 1);
-        return x == nullptr
-                   ? QueryShape{}
-                   : QueryShape{.rows = x->ne(2), .k = x->ne(0) * x->ne(1), .n = 8192};
+        return x == nullptr ? QueryShape{}
+                            : QueryShape{.rows = x->ne(2), .k = x->ne(0) * x->ne(1), .n = 8192};
       }
       default:
         break;
@@ -478,21 +479,22 @@ std::vector<std::size_t> SelectionView::ForOperands(
                                                                   : 0}});
   }
   const QueryShape shape = ShapeOfNode(key, sources, outputs);
-  const execution::CapabilityQuery query{
-      .op = key,
-      .operands = operands,
-      .rows = shape.rows,
-      .k = shape.k,
-      .n = shape.n,
-      .arch = device_.arch,
-      .features = device_.features,
-      .row_invariant = row_invariant_,
-      .capturable = capturable_,
-      .policy = {.max_decode_rows = policy_.max_decode_rows, .allow_lossy = policy_.allow_lossy},
-      .measured = ranks_,
-      .tuned = device_.tuned,
-      .params = params,
-      .state_span = state_span};
+  const execution::CapabilityQuery query{.op = key,
+                                         .operands = operands,
+                                         .rows = shape.rows,
+                                         .k = shape.k,
+                                         .n = shape.n,
+                                         .arch = device_.arch,
+                                         .features = device_.features,
+                                         .row_invariant = row_invariant_,
+                                         .capturable = capturable_,
+                                         .policy = {.max_decode_rows = policy_.max_decode_rows,
+                                                    .allow_lossy = policy_.allow_lossy,
+                                                    .vector_rows = policy_.vector_rows},
+                                         .measured = ranks_,
+                                         .tuned = device_.tuned,
+                                         .params = params,
+                                         .state_span = state_span};
   return execution::Candidates(registry_, query);
 }
 

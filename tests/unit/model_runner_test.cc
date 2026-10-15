@@ -815,6 +815,56 @@ TEST_F(ModelRunnerTest, CapturesOnTheSecondRunAndReplays) {
   ExpectPrompt(0, all);
 }
 
+// A window ring that "reads whole" (DeepSeek's sliding window) still reads
+// min(its cells, the step's read cells): steps reading 256 and 768 cells of
+// a 512-cell ring are different plans, and past the ring's cells one plan.
+class WholeRingKeyTest : public ModelRunnerTest {
+ protected:
+  std::vector<en::StageState> StateStages() const override {
+    const std::vector<std::pair<std::uint32_t, md::StateContract>> layers = {
+        {0,
+         {.tensors = {{.name = "window",
+                       .kind = md::StateKind::kRing,
+                       .cell_bytes = 4096,
+                       .cells = md::CellRule::kRing,
+                       .window_or_ratio = 128,
+                       .ring_reads_whole = true,
+                       .rollback = md::Rollback::kSnapshot}}}}};
+    return {{.name = "target", .layout = md::Layout(layers, kContext, 256).value()}};
+  }
+  std::vector<pl::StepShape> SetupShapes() override {
+    return {Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}),
+            Shape(pl::Phase::kPrefill, {Seg(0, 0, 256, 1)})};
+  }
+};
+
+TEST_F(WholeRingKeyTest, ReadCellsKeyPlansUpToTheRingsCells) {
+  ASSERT_EQ(runner_->slots().layout(0).items.at(0).cells, 512U);
+  // Decode at 256 read cells, then two prompt chunks to position 512.
+  auto first = Run(Shape(pl::Phase::kDecode, {Seg(0, 0, 1, 1)}), {{40}});
+  ASSERT_TRUE(first) << first.error().what;
+  EXPECT_EQ(Rows(first->outputs.at(0)).at(0).cells, 1);
+  ASSERT_TRUE(Run(Shape(pl::Phase::kPrefill, {Seg(0, 1, 255, 1)}), {Tokens(255, 41)}));
+  ASSERT_TRUE(Run(Shape(pl::Phase::kPrefill, {Seg(0, 256, 256, 1)}), {Tokens(256, 296)}));
+  const std::size_t before = runner_->plans().size();
+  // At 768 read cells the decode reads the whole ring: not the 256-cell plan.
+  auto wide = Run(Shape(pl::Phase::kDecode, {Seg(0, 512, 1, 1)}), {{600}});
+  ASSERT_TRUE(wide) << wide.error().what;
+  EXPECT_EQ(Rows(wide->outputs.at(0)).at(0).cells, 512);
+  EXPECT_EQ(runner_->plans().size(), before + 1);
+  // Past the ring's cells (768, then 1,024 read cells) the same plan.
+  const auto decode = [&](std::uint32_t past) {
+    const std::size_t plans = runner_->plans().size();
+    auto later = Run(Shape(pl::Phase::kDecode, {Seg(0, past, 1, 1)}), {{601}});
+    ASSERT_TRUE(later) << later.error().what;
+    EXPECT_EQ(Rows(later->outputs.at(0)).at(0).cells, 512);
+    EXPECT_EQ(runner_->plans().size(), plans) << past;
+  };
+  decode(513);
+  ASSERT_TRUE(Run(Shape(pl::Phase::kPrefill, {Seg(0, 514, 254, 1)}), {Tokens(254, 700)}));
+  decode(768);
+}
+
 class FirstCaptureTest : public ModelRunnerTest {
  protected:
   std::vector<en::StageState> StateStages() const override {

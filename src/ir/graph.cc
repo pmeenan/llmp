@@ -5,11 +5,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -179,6 +181,35 @@ void Format(Hasher& h, const format::TensorFormat& f) {
 
 }  // namespace
 
+Graph::Graph(Graph&& other) noexcept
+    : nodes_(std::move(other.nodes_)),
+      tensors_(std::move(other.tensors_)),
+      producers_(std::move(other.producers_)),
+      inputs_(std::move(other.inputs_)),
+      outputs_(std::move(other.outputs_)),
+      keep_(std::move(other.keep_)),
+      names_(std::move(other.names_)),
+      identity_(std::exchange(other.identity_, 0)) {}
+
+Graph& Graph::operator=(Graph&& other) noexcept {
+  if (this != &other) {
+    nodes_ = std::move(other.nodes_);
+    tensors_ = std::move(other.tensors_);
+    producers_ = std::move(other.producers_);
+    inputs_ = std::move(other.inputs_);
+    outputs_ = std::move(other.outputs_);
+    keep_ = std::move(other.keep_);
+    names_ = std::move(other.names_);
+    identity_ = std::exchange(other.identity_, 0);
+  }
+  return *this;
+}
+
+std::uint64_t Graph::NextIdentity() {
+  static std::atomic<std::uint64_t> next{1};
+  return next.fetch_add(1, std::memory_order_relaxed);
+}
+
 Graph Graph::Clone() const {
   Graph g;
   g.nodes_ = nodes_;
@@ -188,6 +219,7 @@ Graph Graph::Clone() const {
   g.outputs_ = outputs_;
   g.keep_ = keep_;
   g.names_ = names_;
+  g.identity_ = NextIdentity();
   return g;
 }
 

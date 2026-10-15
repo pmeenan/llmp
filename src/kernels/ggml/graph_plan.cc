@@ -140,6 +140,17 @@ bool LaunchesNothing(const ggml_tensor* node) {
          node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE;
 }
 
+namespace {
+// Whether `candidate` may join the store group `first` starts: always
+// without the caller's groups; with them, only within first's own group.
+bool SameGroup(const DeviceChoices& device, const ggml_tensor* first,
+               const ggml_tensor* candidate) {
+  if (!device.set_rows_group || first == candidate) return true;
+  const std::size_t group = device.set_rows_group(first);
+  return group != 0 && device.set_rows_group(candidate) == group;
+}
+}  // namespace
+
 bool NeedsGraphReadIndex(bool fusion, const DeviceChoices& device) {
   return fusion || device.fuse_norms || device.fuse_norm_rope || device.fuse_norm_add ||
          device.fuse_gemma_route || device.fuse_gemma_reduce || device.pair_glu ||
@@ -543,7 +554,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
               const auto* candidate = graph[j];
               if (LaunchesNothing(candidate)) continue;
               if (candidate->op != GGML_OP_SET_ROWS || !KvQuantType(candidate->type) ||
-                  !CheckSetRowsQuant(candidate))
+                  !CheckSetRowsQuant(candidate) || !SameGroup(device, node, candidate))
                 break;
               if (std::ranges::any_of(keep, [candidate](const auto* kept) {
                     return kept != nullptr && detail::Overlap(candidate, kept);
@@ -571,7 +582,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             if (taken[j]) break;
             const auto* candidate = graph[j];
             if (LaunchesNothing(candidate)) continue;
-            if (candidate->op != GGML_OP_SET_ROWS || !CheckSetRowsForGrouping(candidate)) break;
+            if (candidate->op != GGML_OP_SET_ROWS || !CheckSetRowsForGrouping(candidate) ||
+                !SameGroup(device, node, candidate))
+              break;
             if (std::ranges::any_of(keep, [candidate](const auto* kept) {
                   return kept != nullptr && detail::Overlap(candidate, kept);
                 }))

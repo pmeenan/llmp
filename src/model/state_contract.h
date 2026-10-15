@@ -247,6 +247,15 @@ const StateLayoutDerived::Item* BorrowedItem(const StateLayoutDerived& target,
 // their positions, so its reads cover `past`, not `past + rows`.
 bool ReadsFrozen(const StateLayoutDerived& layout);
 
+// How a stage's steps depend on their segments' read cells (a plan key's
+// part, ModelRunner::KeyOf): nullopt when they depend on them whole (a
+// per-position tensor, a ring or a read-cells block tensor that reads the
+// read cells, a borrowed ring, or a stage with no state); otherwise the
+// most cells a ring reads (a position ring's or a whole-reading ring's
+// layout cells: each reads min(its cells, the read cells), so a step
+// depends only on min(read cells, that)), zero when nothing reads them.
+std::optional<std::uint64_t> ReadCellsBound(const StateLayoutDerived& layout);
+
 // The stage's feature tap: its one tensor of kind kFeatures that the target
 // writes, a position ring or chunk rows (a drafter's input features);
 // none if it has none or several.

@@ -243,6 +243,103 @@ TEST(PlannerPolicyTest, DigestsFollowWhatChanges) {
   EXPECT_EQ(Digest(base), Digest(Policy{}));
 }
 
+TEST(PlannerPolicyTest, StepRulesAreCanonicalAndChecked) {
+  Policy p{
+      .enabled = {"vecq_glu"},
+      .vector_rows = 12,
+      .rules = {
+          {.scope = StepScope::kJoined, .test = RowTest::kPast, .rows = 16, .pattern = "vecq_glu"},
+          {.scope = StepScope::kSolo,
+           .test = RowTest::kPast,
+           .rows = 8,
+           .action = StepAction::kVectorRows,
+           .value = 8},
+          {.scope = StepScope::kAny,
+           .test = RowTest::kUnder,
+           .rows = 64,
+           .pattern = "rope_store"}}};
+  EXPECT_FALSE(Validate(p).has_value());  // not in order
+  Canonicalize(p);
+  ASSERT_TRUE(Validate(p).has_value());
+  const std::string text = ToText(p);
+  EXPECT_EQ(text,
+            "max_decode_rows 16\nvector_rows 12\nenable vecq_glu\n"
+            "when any under 64 disable rope_store\nwhen solo past 8 vector_rows 8\n"
+            "when joined past 16 disable vecq_glu\n");
+  EXPECT_EQ(ParsePolicy(text).value(), p);
+  EXPECT_NE(Digest(p), Digest(Policy{.enabled = {"vecq_glu"}, .vector_rows = 12}));
+  for (const std::string_view bad : {
+           "max_decode_rows 16\nvector_rows 0\n",                          // its absence
+           "max_decode_rows 16\nvector_rows 65537\n",                      // out of range
+           "max_decode_rows 16\nwhen solo past 8 disable nothing_such\n",  // no such pattern
+           "max_decode_rows 16\nwhen some past 8 disable rope_store\n",    // no such scope
+           "max_decode_rows 16\nwhen solo over 8 disable rope_store\n",    // no such test
+           "max_decode_rows 16\nwhen solo past 8 enable rope_store\n",     // no such action
+           "max_decode_rows 16\nwhen solo past 8 vector_rows 0\n",         // no bound
+           "max_decode_rows 16\nwhen solo past 8 max_decode_rows x\n",     // not a number
+           "max_decode_rows 16\nwhen any under 0 disable rope_store\n",    // holds for nothing
+           "max_decode_rows 16\nwhen solo past 8 disable rope_store\n"
+           "when any past 8 disable rope_store\n",  // out of order
+           "max_decode_rows 16\nwhen solo past 8 disable rope_store\n"
+           "when solo past 8 disable rope_store\n",  // twice
+           "max_decode_rows 16\nrank sm_121 x 0\nwhen solo past 8 disable rope_store\n",
+       }) {
+    EXPECT_FALSE(ParsePolicy(bad).has_value()) << bad;
+  }
+}
+
+// A step's policy: the rules that hold for its rows and owners applied,
+// none left; others' patterns and bounds unchanged.
+TEST(PlannerPolicyTest, ForStepAppliesTheRulesThatHold) {
+  const Policy p =
+      ParsePolicy(
+          "max_decode_rows 16\nenable grouped_vecq\nenable vecq_glu\nenable vecq_inputs\n"
+          "when any under 4 disable rope_store\nwhen solo past 8 disable vecq_glu\n"
+          "when solo past 8 max_decode_rows 8\nwhen solo past 8 vector_rows 8\n"
+          "when solo past 12 vector_rows 4\nwhen joined past 16 disable vecq_inputs\n")
+          .value();
+  const auto at = [&](std::uint64_t rows, std::size_t segments) {
+    const Policy step = ForStep(p, rows, segments).value();
+    EXPECT_TRUE(step.rules.empty());
+    EXPECT_TRUE(Validate(step).has_value());
+    EXPECT_FALSE(Disabled(step, "grouped_vecq"));
+    return step;
+  };
+  {
+    const Policy step = at(2, 1);  // a solo step of 2 rows: only rope_store off
+    EXPECT_TRUE(Disabled(step, "rope_store"));
+    EXPECT_FALSE(Disabled(step, "vecq_glu"));
+    EXPECT_EQ(step.max_decode_rows, 16U);
+    EXPECT_EQ(step.vector_rows, 0U);
+  }
+  {
+    const Policy step = at(8, 1);  // the gate is past 8, not at it
+    EXPECT_FALSE(Disabled(step, "rope_store"));
+    EXPECT_FALSE(Disabled(step, "vecq_glu"));
+    EXPECT_EQ(ToText(step), ToText(ForStep(Policy{.enabled = p.enabled}, 8, 1).value()));
+  }
+  {
+    const Policy step = at(9, 1);
+    EXPECT_TRUE(Disabled(step, "vecq_glu"));
+    EXPECT_FALSE(Disabled(step, "vecq_inputs"));
+    EXPECT_EQ(step.max_decode_rows, 8U);
+    EXPECT_EQ(step.vector_rows, 8U);
+  }
+  EXPECT_EQ(at(13, 1).vector_rows, 4U);  // the least bound
+  {
+    const Policy step = at(13, 2);  // joined: the solo rules do not hold
+    EXPECT_FALSE(Disabled(step, "vecq_glu"));
+    EXPECT_FALSE(Disabled(step, "vecq_inputs"));
+    EXPECT_EQ(step.max_decode_rows, 16U);
+    EXPECT_EQ(step.vector_rows, 0U);
+  }
+  EXPECT_TRUE(Disabled(at(17, 3), "vecq_inputs"));
+  EXPECT_FALSE(Disabled(at(17, 3), "vecq_glu"));
+  // Without rules, the policy itself.
+  const Policy plain = ParsePolicy("max_decode_rows 16\nenable vecq_glu\n").value();
+  EXPECT_EQ(ForStep(plain, 4096, 1).value(), plain);
+}
+
 TEST(PlannerPolicyTest, RanksAreTheDeviceClasses) {
   Policy p{.ranks = {{.device_class = "a", .implementation = "x", .rank = 0},
                      {.device_class = "b", .implementation = "y", .rank = 0}}};
@@ -1766,6 +1863,48 @@ TEST(PlannerSelectionTest, RootAlignmentFactsOwnAnExactRootIdentitySeal) {
   auto moved = std::move(*graph);
   EXPECT_EQ(owner(moved, root), 256);
   EXPECT_EQ(owner(moved, view), 0);
+}
+
+// A graph's identity is its own: a clone or another build has another, a
+// move carries it (the moved-from graph has none), and the alignment
+// cache keys on it, so a graph built where a freed one was (equal counts,
+// often the same node storage) is authenticated afresh, never served the
+// freed graph's facts.
+TEST(PlannerSelectionTest, RootAlignmentCacheKeysOnGraphIdentity) {
+  const auto build = [](bool reverse) {
+    ir::Builder b;
+    const ir::StateRef first{.tensor = 0}, second{.tensor = 1};
+    const auto f = ir::Dense(Encoding::kF32, ir::ShapeOf({16}));
+    const auto a = b.State(f, reverse ? second : first);
+    const auto z = b.State(f, reverse ? first : second);
+    b.Output(b.Add(a, z));
+    return std::move(b).Finish();
+  };
+  auto first = build(false);
+  ASSERT_TRUE(first);
+  const std::uint64_t identity = first->identity();
+  EXPECT_NE(identity, 0U);
+  auto clone = first->Clone();
+  EXPECT_NE(clone.identity(), 0U);
+  EXPECT_NE(clone.identity(), identity);
+  ir::Graph moved = std::move(*first);
+  EXPECT_EQ(moved.identity(), identity);
+  EXPECT_EQ(first->identity(), 0U);  // NOLINT(bugprone-use-after-move): its identity is gone
+  const auto aligned =
+      GraphRootAlignments(moved, std::array{RootAlignmentFact{.root = {0}, .alignment = 256}});
+  ASSERT_TRUE(aligned);
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    std::optional<ir::Graph> held = clone.Clone();
+    EXPECT_EQ(aligned(*held, {0}), 256U);
+    const ir::Node* storage = held->nodes().data();
+    held.reset();
+    auto other = build(true);  // the same counts, its roots' meanings swapped
+    ASSERT_TRUE(other);
+    EXPECT_NE(other->identity(), identity);
+    SCOPED_TRACE(other->nodes().data() == storage ? "reused storage" : "new storage");
+    EXPECT_EQ(aligned(*other, {0}), 0U);
+  }
+  EXPECT_EQ(aligned(moved, {0}), 256U);
 }
 
 TEST(PlannerSelectionTest, RootAlignmentQueriesDoNotLendFactsToHypotheticalDescriptors) {

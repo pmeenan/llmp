@@ -415,22 +415,13 @@ pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
   pl::PlanKey key = key_base_;
   key.shape = shape;
   if (shape.stage < slots_.stages()) {
-    const auto& layout = slots_.layout(shape.stage);
-    const auto uses_read_cells = [](const model::StateTensorContract& c) {
-      return (c.kind == model::StateKind::kKv && !c.ring_reads_whole) ||
-             c.cells == model::CellRule::kPerPosition ||
-             (c.cells == model::CellRule::kRing && !c.ring_reads_whole) ||
-             (c.cells == model::CellRule::kPerBlock && c.basis == model::BlockBasis::kReadCells);
-    };
-    const bool any_reads_cells =
-        std::ranges::any_of(layout.items,
-                            [&](const auto& item) { return uses_read_cells(item.contract); }) ||
-        std::ranges::any_of(layout.borrowed,
-                            [&](const auto& item) { return uses_read_cells(item.contract); });
-    if (!any_reads_cells && (!layout.items.empty() || !layout.borrowed.empty())) {
+    // A stage whose steps read only part of their read cells (position
+    // rings, min(their cells, the read cells)) or none keys only that part.
+    if (const auto bound = model::ReadCellsBound(slots_.layout(shape.stage))) {
       key.shape.read_align = 0;
       for (auto& seg : key.shape.segments) {
-        seg.read_cells = 0;
+        seg.read_cells =
+            static_cast<decltype(seg.read_cells)>(std::min<std::uint64_t>(seg.read_cells, *bound));
       }
     }
   }

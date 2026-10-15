@@ -21,6 +21,7 @@
 #include <initializer_list>
 #include <limits>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -780,6 +781,35 @@ TEST(GroupedSetRowsPlan, SplitsLongRunsAndPreservesReadsKeepsAndAliasFallback) {
   EXPECT_EQ(through_view->steps[0].lane, 1U);
   EXPECT_EQ(through_view->steps[1].lane, 2U);
   EXPECT_EQ(through_view->regions.size(), 2U);
+  // With the caller's groups (the IR's grouped stores), runs follow them:
+  // two pairs where the stores are adjacent (a joined step's two owners,
+  // grouped around an attention the GGML graph places elsewhere), a store
+  // of no group alone, and without groups the greedy run of four.
+  const auto four = std::span(stores).first(4);
+  const auto planned = [&](std::array<std::size_t, 4> groups) {
+    kg::DeviceChoices chosen = choices;
+    chosen.set_rows_group = [&](const ggml_tensor* node) {
+      const auto at = std::ranges::find(four, node);
+      return at == four.end() ? std::size_t{0}
+                              : groups.at(static_cast<std::size_t>(at - four.begin()));
+    };
+    auto plan = kg::PlanGraph(four, false, chosen);
+    EXPECT_TRUE(plan);
+    std::vector<std::pair<std::string_view, std::size_t>> out;
+    if (plan)
+      for (const auto& step : plan->steps) out.emplace_back(step.implementation, step.nodes.size());
+    return out;
+  };
+  using Steps = std::vector<std::pair<std::string_view, std::size_t>>;
+  EXPECT_EQ(planned({1, 1, 2, 2}),
+            (Steps{{kg::kSetRowsGroupedName, 2}, {kg::kSetRowsGroupedName, 2}}));
+  EXPECT_EQ(planned({1, 1, 1, 1}), (Steps{{kg::kSetRowsGroupedName, 4}}));
+  EXPECT_EQ(planned({0, 2, 2, 0}),
+            (Steps{{kg::kSetRowsName, 1}, {kg::kSetRowsGroupedName, 2}, {kg::kSetRowsName, 1}}));
+  auto greedy = kg::PlanGraph(four, false, choices);
+  ASSERT_TRUE(greedy);
+  ASSERT_EQ(greedy->steps.size(), 1U);
+  EXPECT_EQ(greedy->steps.front().nodes.size(), 4U);
 }
 
 TEST_F(GgmlOpsValidateTest, SetRowsWritesF32RowsIntoF16AtI64Indices) {

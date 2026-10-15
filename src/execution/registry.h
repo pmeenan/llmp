@@ -273,6 +273,10 @@ struct SelectionPolicy {
   std::uint64_t max_decode_rows = 16;
   // Lossy implementations are candidates only by the alias's opt-in.
   bool allow_lossy = false;
+  // The most rows a row-at-a-time form (a vector product, the selected
+  // routing) takes, where the policy bounds them below their kernels' own
+  // limits (planner/policy.h vector_rows); zero: no such bound.
+  std::uint64_t vector_rows = 0;
 };
 
 // A measured order among implementations (lower first), where one exists;

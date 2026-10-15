@@ -51,6 +51,18 @@ it overstated. Corrections, in force until the closeout lands:
     shared engine (`Dsv4EngineServing`), replacing what the legacy runner's
     serving tests held. The legacy A/B screen was deleted outright. The
     `Dsv4EngineTargetGpu.*` full-model tests remain opt-in bridge diagnostics.
+- **Planner fixes (`m36-planner-fix`): row gates are policy data.** DeepSeek's
+  small-row gates (the `max_decode_rows == 8` sentinel and the solo/joined
+  pattern strips that `d02a65c3` applied to every model) are now step rules
+  in `kDeepSeekServingPolicy` (`when <scope> <past|under> <n> …`,
+  `planner::ForStep`), byte-for-byte the old gates for DeepSeek. Qwen3.8
+  GGUF's 9–16-row solo steps keep `vecq_glu`/`vecq_inputs` again (its gate
+  predates `d02a65c3`), a kept behaviour change. One-run screen on Spark A
+  against the frozen OLD, new arm with the diagnostic tuple: `qwen38-gguf`
+  C2 decode 47.91 vs 41.85 tok/s (+14%), no cell slower (C1/C4 decode
+  +2%/+3%, prefill within 0.3%); `qwen38` C1/C2/C4 decode +5%/+5%/+4%,
+  prefill 2–4% faster; peak 64.1 vs 58.8 GiB (GGUF) and 91.2 vs 82.8 GiB.
+  Raw runs: `spark:~/scratch/planfix-speed/runs/`. Not a gate.
 
 ## Quota handoff — 2026-10-15 (overstated; see the audit above)
 

@@ -9,11 +9,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,6 +38,7 @@
 #include "model/dsv4.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
+#include "planner/policy.h"
 #include "spec/mappings/dsv4.h"
 
 namespace {
@@ -2476,6 +2479,49 @@ TEST(GgmlLowerDsv4Test, MultiSlotDecodeLowersSuccessfully) {
   EXPECT_GE(lowered->plan.regions.size(), 30U);
 }
 
+// The serving policy's step rules are the gates the component step source
+// once applied to every model (d02a65c3): for every solo or joined step up
+// to 256 rows, the same patterns, the same decode-shaped bound, and the
+// vector forms bounded at 8 rows exactly where that bound was 8 (the
+// capabilities' former max_decode_rows == 8 sentinel).
+TEST(GgmlLowerDsv4Test, ServingPolicyStepRulesAreTheFormerGates) {
+  const auto policy = pl::ParsePolicy(sp::mappings::kDeepSeekServingPolicy);
+  ASSERT_TRUE(policy) << policy.error();
+  const auto former = [&](std::uint64_t rows, std::size_t segments) {
+    pl::Policy step = *policy;
+    step.rules.clear();
+    if (rows < 64U) std::erase(step.enabled, "dsv4_hc_post");
+    if (segments == 1 && rows > 8U) {
+      if (std::ranges::contains(policy->enabled, "dsv4_lid_mask")) step.max_decode_rows = 8U;
+      for (const std::string_view p :
+           {"dsv4_hc_pre", "vecq_glu", "vecq_inputs", "grouped_vecq", "biased_route", "hash_route"})
+        std::erase(step.enabled, p);
+    } else if (rows > 16U) {
+      std::erase(step.enabled, "dsv4_hc_pre");
+    }
+    return step;
+  };
+  std::vector<std::string_view> patterns;
+  for (const pl::Pattern& p : pl::Patterns()) patterns.push_back(p.name);
+  for (std::size_t segments = 1; segments <= 4; ++segments) {
+    for (std::uint64_t rows = segments; rows <= 256; ++rows) {
+      SCOPED_TRACE(std::format("{} rows over {} segments", rows, segments));
+      const pl::Policy want = former(rows, segments);
+      const pl::Policy got = pl::ForStep(*policy, rows, segments).value();
+      EXPECT_TRUE(got.rules.empty());
+      ASSERT_TRUE(pl::Validate(got).has_value());
+      for (const std::string_view p : patterns)
+        EXPECT_EQ(pl::Disabled(got, p), pl::Disabled(want, p)) << p;
+      EXPECT_EQ(pl::PatternsDigest(got), pl::PatternsDigest(want));
+      EXPECT_EQ(got.max_decode_rows, want.max_decode_rows);
+      EXPECT_EQ(got.vector_rows, want.max_decode_rows == 8 ? 8U : 0U);
+      EXPECT_EQ(got.row_invariant, want.row_invariant);
+      EXPECT_EQ(got.allow_lossy, want.allow_lossy);
+      EXPECT_EQ(got.ranks, want.ranks);
+    }
+  }
+}
+
 TEST(GgmlLowerDsv4Test, Prefill4096LowersWithExpertFusions) {
   Fixture f;
   f.target.swiglu_limit = 7.0f;
@@ -2529,10 +2575,15 @@ TEST(GgmlLowerDsv4Test, Prefill4096LowersWithExpertFusions) {
   bool found_f16_qhead = false;
   bool found_outa = false;
   bool found_hc_post_norm_f16 = false;
+  // A quantizing write-back's down product is the prequantized compact one,
+  // which stands for the IR's selection in its own group only.
+  int pair_glu_q8 = 0, prequant = 0;
   for (const auto& s : lowered->plan.steps) {
     if (s.implementation == kg::kMulMatIdQPairGluQ8 || s.implementation == kg::kMulMatIdQPairGlu) {
       found_pair_glu = true;
     }
+    pair_glu_q8 += s.implementation == kg::kMulMatIdQPairGluQ8 ? 1 : 0;
+    prequant += s.implementation == kg::kMulMatIdQCompactPrequant ? 1 : 0;
     if (s.implementation == kg::kDsv4CombineName ||
         s.implementation == kg::kDsv4HcPostExpertsNormF16Name) {
       found_combine = true;
@@ -2554,6 +2605,11 @@ TEST(GgmlLowerDsv4Test, Prefill4096LowersWithExpertFusions) {
   EXPECT_TRUE(found_f16_qhead);
   EXPECT_TRUE(found_outa);
   EXPECT_TRUE(found_hc_post_norm_f16);
+  EXPECT_EQ(prequant, pair_glu_q8);
+  const auto prequant_at = f.registry.Find(kg::kMulMatIdQCompactPrequant);
+  ASSERT_TRUE(prequant_at.has_value());
+  ASSERT_TRUE(f.registry.at(*prequant_at).capability.has_value());
+  EXPECT_EQ(f.registry.at(*prequant_at).capability->group, "ggml.mul_mat_id");
 }
 
 }  // namespace
