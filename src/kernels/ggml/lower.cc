@@ -3624,6 +3624,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       ggml_tensor* prepared = QuantizeQ8(c_, src(1));
       ggml_tensor* result =
           VecQ(c_, src(0), prepared, nullptr, static_cast<std::int64_t>(desc(1).ne(2)), true);
+      OwnersAlone(result);
       Node(prepared, id);
       Node(result, id);
       set(0, result);
@@ -4050,8 +4051,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
               return p_.node(r_id).key == ir::Fused(FusedKind::kHcNormPost);
             });
         if (has_hc_norm_post && src(0)->ne[2] > kVecQTokens &&
-            (device_.hc_post_experts || dsv4_fast_) &&
-            Dsv4WeightedReduceFits(src(0), w_down)) {
+            (device_.hc_post_experts || dsv4_fast_) && Dsv4WeightedReduceFits(src(0), w_down)) {
           ggml_tensor* reduce = Dsv4OrderedReduce(c_, src(0), w_down);
           Node(reduce, id);
           ggml_tensor* add = ggml_add(c_, reduce, src(3));
@@ -4883,7 +4883,8 @@ std::uint64_t WrittenBytes(const ir::Graph& graph, ir::TensorId root) {
       return rows(0).ne(0) * rows(0).ne(1) * 2 * sizeof(float);
     }
     if (made.key == ir::Fused(FusedKind::kDsv4OutA)) {
-      return 8192 * static_cast<std::uint64_t>(Dsv4OutARows(static_cast<std::int64_t>(t.ne(1)))) * sizeof(float);
+      return 8192 * static_cast<std::uint64_t>(Dsv4OutARows(static_cast<std::int64_t>(t.ne(1)))) *
+             sizeof(float);
     }
     if ((made.key == ir::Primitive(Op::kSsmConv) && SsmConvPad(graph, made) != 0) ||
         made.key == ir::Fused(FusedKind::kMoeExperts) ||

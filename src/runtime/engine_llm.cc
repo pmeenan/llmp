@@ -808,6 +808,9 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
       unit.result = Error(std::format("{} needs its own nonempty prompt chunks", name_));
       continue;
     }
+    if (unit.next.rows > 0) {
+      prefill_done_pos_.at(Slot(*unit.branch)) = 0;
+    }
     pending.push_back({.slot = Slot(*unit.branch),
                        .stage = 0,
                        .phase = pl::Phase::kPrefill,
@@ -876,7 +879,7 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
     const auto push_verify_futures = [&](std::size_t j, std::uint32_t end_past) {
       const PreparedPrefill& unit = prepared[of[j]];
       const bool greedy = device_verify_ && unit.branch != nullptr && !sampling(*unit.branch);
-      const std::uint32_t min_vrows = 1U;
+      const std::uint32_t min_vrows = branch_depth_ ? 1U : verify_rows_;
       for (std::uint32_t vrows = verify_rows_; vrows >= min_vrows && filled < a.shapes.size();
            --vrows) {
         if (end_past > context_ || vrows > context_ - end_past) continue;
@@ -897,7 +900,11 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
       }
       if (filled < a.shapes.size() && verify_rows_ > 1 && end_past < context_ &&
           verify_rows_ <= context_ - end_past) {
-        const std::uint32_t later_past = std::min(end_past + 128U, context_ - verify_rows_);
+        const std::uint32_t align = std::max<std::uint32_t>(caps_.joined_read_align, 256U);
+        const std::uint32_t next_bucket_past =
+            ((end_past + verify_rows_ + align - 1U) / align) * align;
+        const std::uint32_t later_past =
+            std::min(std::max(end_past + 128U, next_bucket_past), context_ - verify_rows_);
         if (later_past > end_past) {
           const en::PendingWork vw{.slot = pending[j].slot,
                                    .stage = 0,
@@ -919,17 +926,20 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
     const auto push_post_prefill_futures = [&](std::size_t j, std::uint32_t end_past) {
       const PreparedPrefill& unit = prepared[of[j]];
       bool plain_multi = false;
+      std::uint32_t solo_tail_past = end_past;
       if (wave_mode_ && active_branches_.size() > 1) {
         std::vector<en::PendingWork> decode_work;
-        std::optional<std::size_t> earliest_peer;
+        std::vector<std::uint32_t> generated;
         for (Branch* b : active_branches_) {
           if (b == nullptr) continue;
           const bool is_cur = (b == unit.branch);
+          const std::uint32_t slot = Slot(*b);
+          const std::uint32_t done_pos = prefill_done_pos_.at(slot);
+          if (!is_cur && done_pos == 0) continue;
           const std::uint32_t pos = is_cur ? end_past : CursorFor(*b);
-          if (pos == 0 || pos >= context_) continue;
-          if (!is_cur && !earliest_peer) earliest_peer = decode_work.size();
+          if (pos == 0 || pos >= context_ || (!is_cur && pos < done_pos)) continue;
           const bool greedy = device_greedy_ && !sampling(*b);
-          decode_work.push_back({.slot = Slot(*b),
+          decode_work.push_back({.slot = slot,
                                  .stage = 0,
                                  .phase = pl::Phase::kDecode,
                                  .past = pos,
@@ -939,6 +949,7 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
                                  .greedy = greedy,
                                  .row_invariant = row_invariant,
                                  .alone = false});
+          generated.push_back(is_cur ? 0U : (pos - done_pos));
         }
         if (decode_work.size() >= 2 &&
             wave_mode_->Choose(static_cast<std::uint32_t>(decode_work.size())) ==
@@ -951,27 +962,45 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
               push_shape(std::move(composed.steps.front().shape));
             }
           };
+          // 1. Current multi-slot wave at d = 0.
           push_composed(decode_work);
-          std::vector<en::PendingWork> advanced = decode_work;
-          for (auto& w : advanced) {
-            w.past = std::min(w.past + 128U, context_ - 1U);
+          // 2. Future multi-slot waves advancing past compressor boundaries.
+          for (const std::uint32_t d : {64U, 128U}) {
+            std::vector<en::PendingWork> advanced = decode_work;
+            for (auto& w : advanced) w.past = std::min(w.past + d, context_ - 1U);
+            push_composed(advanced);
           }
-          push_composed(advanced);
-          if (decode_work.size() >= 3 && earliest_peer && *earliest_peer < advanced.size()) {
-            std::vector<en::PendingWork> shrunk = advanced;
-            shrunk.erase(shrunk.begin() + static_cast<std::ptrdiff_t>(*earliest_peer));
-            push_composed(shrunk);
+          // 3. Tail waves as peers finish in descending order of already-generated tokens.
+          std::vector<std::size_t> peer_order;
+          for (std::size_t idx = 0; idx < decode_work.size(); ++idx) {
+            if (decode_work[idx].slot != Slot(*unit.branch)) peer_order.push_back(idx);
+          }
+          std::ranges::stable_sort(peer_order, [&](std::size_t a_idx, std::size_t b_idx) {
+            return generated[a_idx] > generated[b_idx];
+          });
+          std::vector<bool> dropped(decode_work.size(), false);
+          for (std::size_t p_i = 0; p_i < peer_order.size(); ++p_i) {
+            const std::size_t drop_idx = peer_order[p_i];
+            dropped[drop_idx] = true;
+            const std::uint32_t gen = generated[drop_idx];
+            const std::uint32_t rem = gen < 128U ? 128U - gen : 1U;
+            solo_tail_past = std::min(end_past + rem,
+                                      context_ > verify_rows_ ? context_ - verify_rows_ : end_past);
+            std::vector<en::PendingWork> surviving;
+            for (std::size_t idx = 0; idx < decode_work.size(); ++idx) {
+              if (dropped[idx]) continue;
+              en::PendingWork w = decode_work[idx];
+              w.past = std::min(w.past + rem, context_ - 1U);
+              surviving.push_back(w);
+            }
+            if (!surviving.empty()) {
+              push_composed(surviving);
+            }
           }
         }
       }
       if (speculate_ && verify_rows_ > 1) {
-        if (plain_multi) {
-          const std::uint32_t tail_past = std::min(
-              end_past + 128U, context_ > verify_rows_ ? context_ - verify_rows_ : end_past);
-          push_verify_futures(j, tail_past);
-        } else {
-          push_verify_futures(j, end_past);
-        }
+        push_verify_futures(j, plain_multi ? solo_tail_past : end_past);
       }
     };
     std::vector<pl::StepShape> near = future(owners, false);
@@ -1032,10 +1061,10 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
         }
       }
     }
-    a.build = ((near.empty() || far.empty()) && speculate_ && verify_rows_ > 1 &&
-               prefill_.lookahead > 0)
-                  ? 4U
-                  : std::min<std::uint32_t>(prefill_.lookahead, 2);
+    a.build =
+        ((near.empty() || far.empty()) && speculate_ && verify_rows_ > 1 && prefill_.lookahead > 0)
+            ? 4U
+            : std::min<std::uint32_t>(prefill_.lookahead, 2);
     a.capture_ahead = !near.empty() && prefill_.capture_ahead;
     a.prepare = !near.empty() && prefill_.prepare_ahead;
     return a;
@@ -1051,6 +1080,11 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
       if (ran.refusal) {
         unit.result = Error(ran.refusal->what);
         continue;
+      }
+      if (unit.next.rows == 0) {
+        prefill_done_pos_.at(Slot(*unit.branch)) = unit.past + unit.rows;
+      } else {
+        prefill_done_pos_.at(Slot(*unit.branch)) = 0;
       }
       ResetDrafters(pending[j].slot);
       if (unit.want_head) {
@@ -1203,6 +1237,7 @@ Status EngineLlm::ClearStateFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   if (branch_depth_)
     BranchDecoding(branch) = execution::AdaptiveDepth(branch_depth_, depth_cost_ratio_);
+  prefill_done_pos_.at(Slot(branch)) = 0;
   return runner_->slots().Clear(Slot(branch));
 }
 
@@ -1221,11 +1256,13 @@ Status EngineLlm::ReleaseIdleStateFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
   if (branch_depth_)
     BranchDecoding(branch) = execution::AdaptiveDepth(branch_depth_, depth_cost_ratio_);
+  prefill_done_pos_.at(Slot(branch)) = 0;
   return runner_->slots().ClearIdle(Slot(branch));
 }
 
 Status EngineLlm::SpillFor(Branch& branch) {
   if (auto built = Built(); !built) return built;
+  prefill_done_pos_.at(Slot(branch)) = 0;
   return runner_->slots().Spill(Slot(branch));
 }
 
@@ -1351,6 +1388,7 @@ Status EngineLlm::PreparePositionRestoreFor(Branch& branch, std::uint32_t positi
   if (auto checked = CheckCheckpointMetadataFor(branch, position, cursor, footprint); !checked) {
     return checked;
   }
+  prefill_done_pos_.at(Slot(branch)) = 0;
   return runner_->slots().PrepareRestore(Slot(branch), position, footprint, layout);
 }
 
@@ -1359,6 +1397,7 @@ Status EngineLlm::CompletePositionRestoreFor(Branch& branch, std::uint32_t posit
   if (auto completed = runner_->slots().CompleteRestore(Slot(branch), position); !completed) {
     return completed;
   }
+  prefill_done_pos_.at(Slot(branch)) = position;
   ResetDrafters(Slot(branch));
   return {};
 }
@@ -1388,6 +1427,7 @@ Status EngineLlm::AdoptPositionFor(Branch& branch, std::span<const std::int32_t>
   if (auto adopted = runner_->slots().Adopt(Slot(branch), cursor, ranges, layout); !adopted) {
     return adopted;
   }
+  prefill_done_pos_.at(Slot(branch)) = cursor;
   ResetDrafters(Slot(branch));
   return {};
 }

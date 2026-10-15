@@ -507,7 +507,7 @@ class Emitter {
   Fragment& f_;
   ir::Builder& b_;
   Dims d_;
-  ir::TensorId q_{}, qr_{}, kv_{}, iq_{}, iw_{};
+  ir::TensorId q_{}, qr_{}, kv_{}, iq_{}, iw_{}, comp_kv_{}, comp_score_{}, idx_kv_{}, idx_score_{};
 };
 
 ir::TensorId Emitter::Hadamard(ir::TensorId t, std::uint64_t n) {
@@ -528,8 +528,8 @@ void Emitter::Compressor(const Comp& c) {
   const std::uint64_t coff = overlap ? 2 : 1;
   const std::uint64_t dim = c.dim;
   const ir::RopeParams rope = Rotation(d_, dim);
-  ir::TensorId kv{};
-  ir::TensorId score{};
+  ir::TensorId kv = c.cache == kIndex ? idx_kv_ : comp_kv_;
+  ir::TensorId score = c.cache == kIndex ? idx_score_ : comp_score_;
   for (std::size_t s = 0; s < f_.step.segments().size(); ++s) {
     const SegmentRows& seg = f_.step.segments()[s];
     b_.SetOwner(static_cast<std::uint8_t>(s));
@@ -763,6 +763,28 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
 std::expected<FragmentOut, std::string> Emitter::Emit() {
   const std::uint64_t rows = f_.step.rows();
   const auto segments = f_.step.segments();
+  if (segments.size() > 1) {
+    b_.SetJoined();
+    if (d_.ratio != 0) {
+      comp_kv_ = b_.MatMul(f_.Weight(kCompKv), f_.stream);
+      const ir::TensorId gate = b_.MatMul(f_.Weight(kCompGate), f_.stream);
+      const ir::TensorId ape = b_.GetRows(f_.Weight(kCompApe), f_.step.PositionPhases(d_.ratio));
+      comp_score_ = b_.Add(gate, ape);
+    }
+    if (d_.indexer) {
+      idx_kv_ = b_.MatMul(f_.Weight(kIdxKv), f_.stream);
+      const ir::TensorId gate = b_.MatMul(f_.Weight(kIdxGate), f_.stream);
+      const ir::TensorId ape = b_.GetRows(f_.Weight(kIdxApe), f_.step.PositionPhases(d_.ratio));
+      idx_score_ = b_.Add(gate, ape);
+    }
+    if (f_.stream_needed) q_ = Query();
+    kv_ = Key();
+    if (f_.stream_needed && d_.ratio != 0 && d_.indexer) {
+      (void)IndexerQueries();
+      iw_ = b_.Scale(b_.MatMul(f_.Weight(kIdxProj), f_.stream),
+                     1.0F / std::sqrt(static_cast<float>(d_.idim * d_.ih)));
+    }
+  }
   // The compressors' stores and ring rows first.
   if (d_.ratio != 0) {
     Compressor({.kv = kCompKv,
@@ -786,8 +808,8 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
                 .dim = d_.idim,
                 .hadamard = true});
   }
-  if (f_.stream_needed) q_ = Query();
-  kv_ = Key();
+  if (f_.stream_needed && !q_.valid()) q_ = Query();
+  if (!kv_.valid()) kv_ = Key();
   const ir::TensorDesc kd = Desc(b_, kv_);
   for (std::size_t s = 0; s < segments.size(); ++s) {
     const SegmentRows& seg = segments[s];
@@ -802,12 +824,17 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
     b_.SetJoined();
   }
   if (!f_.stream_needed) return FragmentOut{.stream = f_.stream};
-  ir::TensorId joined{};
+  std::vector<ir::TensorId> outs;
+  outs.reserve(segments.size());
   for (std::size_t s = 0; s < segments.size(); ++s) {
     auto one = Attend(s);
     b_.SetJoined();
     if (!one) return std::unexpected(one.error());
-    joined = joined.valid() ? b_.Concat(joined, *one, 1) : *one;
+    outs.push_back(*one);
+  }
+  ir::TensorId joined = outs.front();
+  for (std::size_t s = 1; s < outs.size(); ++s) {
+    joined = b_.Concat(joined, outs[s], 1);
   }
   // Each head rotated back, then the grouped output product.
   ir::TensorId out = b_.Reshape(joined, Shape({d_.d, d_.heads, rows}));

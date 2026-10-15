@@ -416,6 +416,7 @@ class EngineLlm final : public Llm {
   std::array<bool, kMaxBranches> want_rows_{};
   std::array<bool, kMaxBranches> verify_tokens_{};
   std::array<std::vector<std::vector<float>>, kMaxBranches> verified_rows_{};
+  std::array<std::uint32_t, kMaxBranches> prefill_done_pos_{};
   Counts counts_;
 };
 

@@ -2392,15 +2392,22 @@ TEST(GgmlLowerDsv4Test, MultiSlotDecodeLowersSuccessfully) {
   }
 
   pl::LaneTags lane_tags;
+  std::uint32_t region = 0;
+  std::uint16_t last_component = co::kFrameworkComponent;
   for (std::uint32_t i = 0; i < step->graph.nodes().size(); ++i) {
     const auto& node = step->graph.nodes()[i];
+    if (node.component == co::kFrameworkComponent) continue;
     if (node.batch == ir::Batch::kPerOwner && node.nout > 0) {
       const auto segment = step->graph.tensor(node.out[0]).segment;
       if (segment != ir::kJoinedSegment) {
+        if (node.component != last_component) {
+          ++region;
+          last_component = node.component;
+        }
         lane_tags.push_back(
             {ir::NodeId{i}, pl::LaneTag{
                                 .lane = static_cast<std::uint8_t>((segment % pl::kMaxLanes) + 1),
-                                .region = static_cast<std::uint32_t>(node.component + 1),
+                                .region = region,
                             }});
       }
     }
@@ -2413,11 +2420,11 @@ TEST(GgmlLowerDsv4Test, MultiSlotDecodeLowersSuccessfully) {
                 .written = kg::WrittenBytes,
                 .shape = &shape});
   ASSERT_TRUE(plan) << plan.error().detail;
-  EXPECT_FALSE(plan->regions.empty());
+  EXPECT_GE(plan->regions.size(), 30U);
 
   auto lowered = kg::LowerStep({*plan, *step, shape, {}, 65536}, f.registry, Device());
   ASSERT_TRUE(lowered) << lowered.error().detail;
-  EXPECT_FALSE(lowered->plan.regions.empty());
+  EXPECT_GE(lowered->plan.regions.size(), 30U);
 }
 
 TEST(GgmlLowerDsv4Test, Prefill4096LowersWithExpertFusions) {

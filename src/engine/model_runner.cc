@@ -1717,9 +1717,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // The futures: deduplicated against this shape and each other, and the
   // cached ones protected (found) before any optional funding.
   const StepAhead& ahead = request.ahead;
-  std::array<Plans::Entry*, 4> ahead_cached{};
-  std::array<std::optional<pl::PlanKey>, 4> ahead_keys{};
-  std::array<bool, 4> distinct{};
+  std::array<Plans::Entry*, 8> ahead_cached{};
+  std::array<std::optional<pl::PlanKey>, 8> ahead_keys{};
+  std::array<bool, 8> distinct{};
   for (std::size_t k = 0; k < ahead.shapes.size(); ++k) {
     if (!ahead.shapes[k] || !CheckShape(*ahead.shapes[k])) continue;
     ahead_keys[k] = KeyOf(*ahead.shapes[k]);
@@ -1780,7 +1780,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   std::array<const pl::StepShape*, 4> build{};
   std::size_t build_count = 0;
   if (node_.threaded()) {
-    for (std::size_t k = 0; k < ahead.shapes.size() && build_count < ahead.build; ++k) {
+    for (std::size_t k = 0;
+         k < ahead.shapes.size() && build_count < std::min<std::size_t>(ahead.build, build.size());
+         ++k) {
       if (distinct[k] && ahead_cached[k] == nullptr) build[build_count++] = &*ahead.shapes[k];
     }
   }
