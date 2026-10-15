@@ -31,7 +31,7 @@ namespace ir = llmp::ir;
 using en::Status;
 using llmp::test_support::Failed;
 struct Trace {
-  bool fail_second = false, capturable = true, fail_position = false;
+  bool fail_second = false, capturable = true, fail_position = false, backend_changed = false;
   std::size_t positioned = 0, prepared_requests = 0;
   std::size_t queued = 0, executed = 0;
   std::size_t live_programs = 0;
@@ -112,19 +112,24 @@ class TypedCopy final : public kn::StepProgram {
 };
 class Owner final : public kn::BackendOwner {
  public:
-  Owner(kn::StepBackend backend, std::shared_ptr<en::ExecutionMetadataAllowance> payment)
-      : backend_(std::move(backend)), payment_(std::move(payment)) {}
+  Owner(kn::StepBackend backend, std::shared_ptr<en::ExecutionMetadataAllowance> payment,
+        std::shared_ptr<Trace> trace)
+      : backend_(std::move(backend)), payment_(std::move(payment)), trace_(std::move(trace)) {}
   const kn::StepBackend& backend() const override { return backend_; }
   bool Charge(std::uint64_t n) const override { return payment_->Charge(n); }
   void Release(std::uint64_t n) const override { payment_->Release(n); }
   std::expected<llmp::execution::BackendDeclaration, std::string> Ready() const override {
-    const auto id = llmp::base::Sha256{}.Update("typed-copy-lifecycle-only").Finish();
+    const auto id = llmp::base::Sha256{}
+                        .Update(trace_->backend_changed ? "typed-copy-changed"
+                                                        : "typed-copy-lifecycle-only")
+                        .Finish();
     return llmp::execution::BackendDeclaration{id, id, id};
   }
 
  private:
   const kn::StepBackend backend_;
   std::shared_ptr<en::ExecutionMetadataAllowance> payment_;
+  std::shared_ptr<Trace> trace_;
 };
 struct Life {
   en::PagedNode node{{.compute_streams = 1, .slots = 1, .slot_bytes = en::kPagedExtent}};
@@ -152,7 +157,7 @@ struct Life {
                               if (input.token) return std::unexpected("unexpected token metadata");
                               return std::make_unique<TypedCopy>(input, trace);
                             }};
-    auto owner = std::make_shared<Owner>(backend, payment);
+    auto owner = std::make_shared<Owner>(backend, payment, trace);
     backend.owner = owner;
     // A copied table is not the immutable owner's execution authority.
     backend.lower =
@@ -600,6 +605,40 @@ TEST_F(EngineImageTest, QueuedFailureQuarantinesTheWholeFlightUntilPositiveDrain
   EXPECT_EQ(life->trace->live_programs, 2U);
   // TearDown owns the positive drain in the common fixture cleanup. No failed
   // completion or destruction is interpreted as a retirement certificate.
+}
+TEST_F(EngineImageTest, ARefusalBetweenStagesReleasesTheLeaseItHeld) {
+  ASSERT_TRUE(life->Start(path));
+  std::string output, original;
+  ASSERT_TRUE(life->image->FirstOutput(output));
+  ASSERT_TRUE(life->image->Finish(original));
+  // Three first-stage runs in one call: the lease is held between them. The
+  // first run's input fill changes the backend, so the second refuses before
+  // queuing anything, with the call's lease still open.
+  auto request = life->Request(1, 3);
+  auto fill = request.fill;
+  request.fill = [fill, trace = life->trace, armed = std::make_shared<bool>(true)](
+                     const rt::ImageInvocation& invocation, std::size_t slot,
+                     std::span<std::byte> data) {
+    if (invocation.stage == 0 && invocation.iteration == 0 && *armed) {
+      trace->backend_changed = true;
+      *armed = false;
+    }
+    return fill(invocation, slot, data);
+  };
+  ASSERT_TRUE(life->image->ReplaceRequest(std::move(request)));
+  const auto refused = life->image->FirstOutput(output);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error(), "image backend identity changed");
+  EXPECT_FALSE(life->node.InRequest(0));
+  // The request is not unknown: the generation runs again from its start
+  // once the backend is back.
+  life->trace->backend_changed = false;
+  const auto resumed = life->image->FirstOutput(output);
+  ASSERT_TRUE(resumed) << Failed(resumed).value_or("");
+  const auto finished = life->image->Finish(output);
+  ASSERT_TRUE(finished) << Failed(finished).value_or("");
+  EXPECT_FALSE(life->node.InRequest(0));
+  ASSERT_TRUE(life->image->PrepareRequest({.prompt = "changed"}));
 }
 TEST_F(EngineImageTest, TypedOwnerMismatchRefusesBeforeAnyProgramLaunch) {
   const auto result = life->Start(path, true);

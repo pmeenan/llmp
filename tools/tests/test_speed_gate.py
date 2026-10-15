@@ -599,6 +599,34 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(env["LLMP_DIAGNOSTIC_A"], "1")
         self.assertEqual(env["CUDA_DISABLE_PTX_JIT"], "1")
 
+    def test_a_switch_the_runtime_does_not_name_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = pathlib.Path(tmp) / "llmp-runtime"
+            runtime.write_bytes(b"\x7fELF...LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS\x00more"
+                                b"XLLMP_DIAGNOSTIC_EMBEDDED\x00")
+            known = {"LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS": "1"}
+            gate.check_runtime_env(runtime, known)
+            gate.check_runtime_env(runtime, {})
+            for bad in ({"LLMP_DIAGNOSTIC_COMPONENT_SERVING": "qwen_image_2_1"},
+                        {"LLMP_DIAGNOSTIC_SKIP_TURN": "1"},  # a prefix is not the name
+                        {"LLMP_DIAGNOSTIC_EMBEDDED": "1"}):  # nor inside a longer one
+                with self.subTest(bad), self.assertRaises(ValueError):
+                    gate.check_runtime_env(runtime, bad)
+            # A run records the refusal as its error, beside no stray run directory.
+            out = pathlib.Path(tmp) / "out"
+            code = gate.main(["run", "--family", "image", "--runtime", str(runtime),
+                              "--label", "new", "--out", str(out), "--block", "1",
+                              "--position", "1", "--runtime-env",
+                              "LLMP_DIAGNOSTIC_COMPONENT_SERVING=qwen_image_2_1"])
+            self.assertEqual(code, 1)
+            record = json.loads((out / "runs" / "image-b01-p1-new.json").read_text())
+            self.assertIn("reads no diagnostic switch", record["error"])
+            # plan refuses it for an existing binary.
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                gate.main(["plan", "--family", "image", "--old", str(runtime),
+                           "--new", str(runtime), "--out", tmp, "--blocks", "1",
+                           "--new-env", "LLMP_DIAGNOSTIC_COMPONENT_SERVING=qwen_image_2_1"])
+
     def test_an_arm_with_one_switch_set_in_every_run_is_valid(self):
         n = gate.FAMILIES["gemma2"].min_blocks
         switch = {"LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS": "1"}

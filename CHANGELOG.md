@@ -29,6 +29,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   lanes (DeepSeek) sizes its scratch pool with the lanes' share, so a
   `prefill_chunk` below the default no longer fails its first chunk ("the
   step's scratch exceeds the pool").
+- The driver's wait for a request step keeps each stream's step history
+  across requests (a refreshed lease or a new turn keeps it), and a
+  stream's first step, if long, no longer keeps a core polling its fence
+  (every model). Image stages keep their lease between steps; a refusal
+  between stages releases it and returns the generation to its start.
 - Normalize and publish the approved DeepSeek V4 GGUF target through the native
   importer, preserving source encodings and exclusive embedding/hash-table
   ownership. Validate stored-target full-head, state and spill-continuation

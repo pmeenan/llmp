@@ -77,6 +77,9 @@ struct EngineImage::State {
   en::ProgramEnvelope measured;
   std::vector<en::ProgramEnvelope> stage_envelopes;
   std::vector<std::uint64_t> stage_capture_nodes;
+  // Each stage's graph digest, its plans' key: the geometry's typed graphs
+  // are immutable for this state's life, hashed once when it is prepared.
+  std::vector<base::Sha256Digest> stage_digests;
   en::GraphStats stats;
   std::byte* input = nullptr;
   std::byte* output = nullptr;
@@ -250,6 +253,9 @@ Status EngineImage::PrepareState(State& s) {
         if (port && *port >= s.parts.request.ports.size())
           return Error("image stage names no device port");
   }
+  s.stage_digests.clear();
+  s.stage_digests.reserve(s.parts.stages.size());
+  for (const auto& stage : s.parts.stages) s.stage_digests.push_back(stage.graph->graph().Digest());
   auto initial_bytes = s.Request(s.parts.request);
   if (!initial_bytes) return Error(initial_bytes.error());
   for (const auto& port : s.parts.request.ports) {
@@ -386,11 +392,34 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
   auto& s = *hold;
   if (s.activation_bytes > node_.activations().bytes || s.pool_bytes > node_.pool().bytes)
     return Error("image execution exceeds the backed workspace prefix");
+  // A request this call opened ends with it; one its caller holds returns
+  // to the common fence. Between stages of this call the lease moves
+  // straight to the next stage's closure (unchanged between flow steps)
+  // rather than ending or dropping to the fence and growing back each step.
+  bool began = false, settled = false;
+  const auto settle = [&]() -> Status {
+    settled = true;
+    return began ? node_.EndRequest(stream()) : node_.RefreshRequest(stream(), s.fence);
+  };
+  // Any other return (a refusal before a stage's work is queued) settles the
+  // lease too, and returns an unfinished generation to its start, so it can
+  // run again or a later preparation or geometry change is not refused.
+  // Unknown work keeps its lease and position (s.unknown, s.flight).
+  struct Settle {
+    const std::function<void()> run;
+    ~Settle() { run(); }
+  } settle_on_exit{[&] {
+    if (s.unknown) return;
+    if (!settled && node_.InRequest(stream()) && !settle()) {
+      s.unknown = true;
+      return;
+    }
+    if (s.next < end && !s.generation_complete) s.next = 0;
+  }};
   for (; s.next < end; ++s.next) {
     const en::PlanStep protect;
     const auto invocation = s.parts.request.sequence[s.next];
     const auto& stage = s.parts.stages[invocation.stage];
-    const auto& graph = stage.graph->graph();
     auto ready = s.model->parts.backend->owner->Ready();
     if (!ready || *ready != s.declaration) return Error("image backend identity changed");
     // Catalog content identities are refreshed between completed stages.
@@ -407,6 +436,7 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     const bool opened = !node_.InRequest(stream());
     auto admitted = opened ? node_.BeginRequest(stream(), *closure, "image stage")
                            : node_.RefreshRequest(stream(), *closure);
+    began = began || (opened && admitted);
     if (!admitted) {
       s.unknown = true;
       s.flight = hold;
@@ -441,7 +471,8 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
       }
       s.flight.reset();
     }
-    const State::Key key{s.parts.identity, graph.Digest(), s.declaration, invocation.stage};
+    const State::Key key{s.parts.identity, s.stage_digests[invocation.stage], s.declaration,
+                         invocation.stage};
     auto* entry = s.plans.Find(key);
     Status checked;
     if (!entry) {
@@ -472,7 +503,7 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
       }
     }
     if (!checked) {
-      auto ended = opened ? node_.EndRequest(stream()) : node_.RefreshRequest(stream(), s.fence);
+      auto ended = settle();
       if (!ended) {
         s.unknown = true;
         s.flight = hold;
@@ -502,7 +533,7 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
       cursor += Round(input.bytes, 256);
     }
     if (!checked) {
-      auto ended = opened ? node_.EndRequest(stream()) : node_.RefreshRequest(stream(), s.fence);
+      auto ended = settle();
       if (!ended) {
         s.unknown = true;
         s.flight = hold;
@@ -561,7 +592,9 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
                    : !queued->result ? queued->result.error().detail
                                      : "image launch faulted");
     }
-    auto ended = opened ? node_.EndRequest(stream()) : node_.RefreshRequest(stream(), s.fence);
+    // The last stage of this call settles the request; an earlier one
+    // leaves it for the next stage's refresh.
+    auto ended = s.next + 1 < end ? Status{} : settle();
     if (!ended) {
       s.unknown = true;
       return ended;

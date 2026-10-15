@@ -935,6 +935,90 @@ missing). Checked against the fixed baseline's `swaps-fixed/{qwenA,rest}` (32
 rows, worst LLM-to-LLM 8.494 s, largest peak 111.19 GiB) and the four Gemma
 reports under `swaps/`: all pass.
 
+## Qwen-Image-2.1 on the shared engine
+
+**`image-check02` is invalid.** Its records (`spark-b:~/scratch/m36-gate/image-check02`)
+show the new arm run with `LLMP_DIAGNOSTIC_COMPONENT_SERVING=qwen_image_2_1`,
+a switch no source reads, and both arms producing the legacy pixels
+`3b7770ca…` in the same time (32.96 s): both ran the legacy pipeline, so
+its PASS judged nothing, and the legacy image runner's deletion
+(`22741330`) rested on no measurement of the shared path. The harness now
+refuses a `--runtime-env` switch the runtime binary does not name (`plan`
+when the binary exists, and every `run`).
+
+**Default configuration.** After `22741330` an image composition served
+only with the internal `LLMP_DIAGNOSTIC_*` startup tuple; from an ordinary
+configuration it was refused ("image serving requires paid startup host
+memory"). Without a diagnostic ceiling the image's parser loan and
+construction ceiling now come from the node's measured memory
+(`OrdinaryStartupBudget`, `runtime/memory_guard.h`). Every run below uses
+the family's ordinary configuration and no diagnostic switch on either
+arm. The new arm runs the shared engine: its pixels are `f4006496…`, not
+the legacy `3b7770ca…`, and its log shows the composition's three shared
+plans.
+
+**Screens (2026-10-15, `spark`, two ABBA blocks each, primed).** Old arm the
+frozen `1facc957` runtime (`28890a54…`), pixels `3b7770ca…` in every run;
+new arm pinned to its own `f4006496…`, reproduced in every run.
+
+| New runtime | Change | Generation, old / new (s) | Slowdown (upper bound) |
+| --- | --- | --- | ---: |
+| `e3e43dde…` | main at `7792be05` plus the default-configuration fix | 33.441 / 34.806 | +4.08% (+6.66%) |
+| `2a6dac2d…` | a direct step with no wall history naps after its first ms | 33.375 / 34.523 | +3.44% (+4.21%) |
+| `4c0ad76f…` | the image keeps its request across stages | 33.520 / 34.378 | +2.56% (+8.10%) |
+| `86d0cc9c…` | each stage's graph digest computed once | 33.355 / 34.186 | +2.49% (+2.59%) |
+| `ced1764c…` | the tiled F32 convolution rounds its prefetched patch after the products | 33.697 / 34.271 | +1.70% (+1.73%) |
+| `cdb599f4…` | rebased on `d36922cb`; per-stream step history; refusals settle the lease | 33.539 / 34.348 | +2.41% (+3.35%) |
+| `6ca53167…` | the same changes rebased on `093efe3c` | 33.384 / 34.100 | +2.14% (+2.57%) |
+
+The later rows include main's changes since `7792be05`. A matched A/B on
+the same session separates them: `093efe3c` itself (`f9829228…`, ordinary
+configuration, the same pixels `f4006496…`) generates in 34.961 s, these
+changes in 34.179 s, 2.26% faster (two ABBA blocks, −2.34% and −2.18%,
+primed).
+
+Attribution (nsys, both arms, run in both orders to cancel the GB10's
+in-run warming; ordinary counters first found the gap):
+
+- *Driver spin.* Each image stage is a request's only step, so the
+  direct-step driver had no wall history and queried its fence back to back
+  for the whole 0.8 s step: 34.2 million `cuEventQuery` calls against the
+  legacy's 0.66 million, and every flow kernel 4–6% slower than the
+  legacy's in that trace. The screened fix napped after a step's first
+  millisecond (0.45 million queries); the landed form keeps each stream's
+  step history across its requests, as the device lanes do, so only a
+  stream's first step lacks one, and that spins 20 ms before backing off
+  from 50 µs, doubling to 1 ms.
+- *Host work between stages*, 12–15 ms each against the legacy's 0.7 ms:
+  the lease cycled down to the common fence and back for every stage, and
+  the stage's IR graph was hashed for its plan key every step (4.4 ms).
+- *The VAE decoder*, about +0.34 s: the shared F32-activation 3×3
+  convolution (`Conv3x3ImplicitF32Kernel`, 490–553 ms for 40 calls)
+  against the legacy's BF16 one (226 ms), and the F32 channel norm. The
+  convolution rounded each prefetched F32 patch to BF16 as it loaded it,
+  stalling on the loads before the chunk's products; it now holds the F32
+  pairs and rounds them when it stores the next stage (same bits, pixels
+  unchanged).
+- *The first step*, about +0.11 s (the text encoder's GGML path and the
+  first flow step's plan build).
+- *Flow-step compute* is at parity with the legacy's (same cuBLAS kernels
+  and grids; layout transposes about +0.06 s over 40 steps).
+
+Almost all of the shared path's speed comes from `BoundGraph::Run`'s
+run-time fusion (`kernels/ggml/executor.cc`, `b37f763f`): with it disabled
+the same generation takes 95.70 s (2.75× the shared path, 2.86× legacy).
+
+Every change above keeps the new arm's pixels `f4006496…`. Quality, on
+the `86d0cc9c…` build (`ImageGenerationGpu.OrdinaryServerConsumesInstalledSourceAndRequests`
+with `LLMP_IMAGE_SERVICE_UPSTREAM_QUALITY`, the same 1,024², 40-step
+request; output `f4006496…`): PSNR 36.456 dB, luma SSIM 0.98944 against the
+retained diffusers reference `9de442f1…` ([compare.py](../qwen-image-native/compare.py),
+floors 32 dB / 0.98), passing.
+
+Status: NOT PASSED; no full gate was run. Raw records stay outside Git on
+`spark`: `~/scratch/m36-image-screen0{1,2,3,4,5,6,7}`, `~/scratch/m36-image-imgab02`, `~/scratch/m36-image-quality01`,
+`~/scratch/m36-image-nsys01` and `~/scratch/m36-image-nofuse01`.
+
 ## Provenance
 
 `spark` (`spark-c4e2`), NVIDIA GB10, driver 580.178.04 (CUDA 13.0 driver

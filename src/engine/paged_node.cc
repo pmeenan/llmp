@@ -62,6 +62,11 @@ constexpr auto kLateSleep = std::chrono::microseconds(200);
 // the step's end, so a likely end predicted too late costs at most this
 // (and a wake, RE-017).
 constexpr auto kDirectNap = std::chrono::microseconds(1000);
+// A direct step on a stream with no step history yet (its first): the
+// driver spins this long, then naps from kFirstNap, doubling to kDirectNap,
+// as the device lanes back off without history (DeviceService).
+constexpr auto kFirstSpin = std::chrono::milliseconds(20);
+constexpr auto kFirstNap = std::chrono::microseconds(50);
 // A fence query or release refused this many times in a row (a pending
 // result in between resets the count) is given up:
 // its work's end unproven (the device lane's DeviceSettings::refusals).
@@ -1854,8 +1859,10 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
   // wakes slowly on the Spark (RE-017), so the driver waits as the
   // runtime's lanes do (docs/experiments/runtime-wake/): asleep through
   // most of the step, spinning around its likely ends (the last few steps'
-  // walls), woken early by the task's report whenever it sleeps.
+  // walls on this stream, whichever request ran them), woken early by the
+  // task's report whenever it sleeps.
   const auto spin_ahead = settings_.spin_ahead.value_or(kSpinAhead);
+  base::Expectation& walls = walls_[stream];
   bool cancelled = false;
   {
     Waiter wait(*this, what);
@@ -1871,10 +1878,10 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
         case WaitVerdict::kWait:
           break;
       }
-      const auto next = open.walls.Next(now - called, kSpinPast);
+      const auto next = walls.Next(now - called, kSpinPast);
       if (threads_.empty()) {
         Round();
-      } else if (open.walls.known() && !next) {
+      } else if (walls.known() && !next) {
         (void)open.channel.reported.WaitFor(kSpinPast);  // longer than any: sleep, woken by it
       } else if (next && now < called + *next - spin_ahead) {
         // Woken by the report; at least every kPatienceCheck, to ask the
@@ -1887,7 +1894,7 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
     }
   }
   (void)open.channel.reported.Consume();
-  open.walls.Add(std::chrono::steady_clock::now() - called);
+  walls.Add(std::chrono::steady_clock::now() - called);
   if (open.channel.steps.load(std::memory_order_acquire) == before) {
     // The request's task ended (cancelled, or failed): nothing holds the
     // job, which never ran, any more.
@@ -1977,9 +1984,12 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
   if (meanwhile && fence && threaded()) meanwhile();
   // The step's result is the next step's input, and a sleeping thread
   // wakes slowly on the Spark (RE-017): asleep through most of the step,
-  // spinning around its likely ends (the last few steps' walls), as the
-  // lanes do (docs/experiments/runtime-wake/).
+  // spinning around its likely ends (the last few steps' walls on this
+  // stream, whichever request ran them: a refreshed lease or a new turn's
+  // request keeps them), as the lanes do (docs/experiments/runtime-wake/).
   const auto spin_ahead = settings_.spin_ahead.value_or(kSpinAhead);
+  base::Expectation& walls = walls_[stream];
+  std::chrono::steady_clock::duration nap = kFirstNap;
   bool seen = !fence;  // nothing to watch: nothing was queued
   bool cancelled = false;
   if (!fence) {
@@ -2011,13 +2021,18 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
         case WaitVerdict::kWait:
           break;
       }
-      const auto next = open.walls.Next(now - called, kSpinPast);
+      const auto next = walls.Next(now - called, kSpinPast);
       if (threads_.empty()) {
         Round();
       } else if (next && now < called + *next - spin_ahead) {
         std::this_thread::sleep_until(std::min(called + *next - spin_ahead, now + kDirectNap));
-      } else if (open.walls.known() && !next) {
+      } else if (walls.known() && !next) {
         std::this_thread::sleep_for(kLateSleep);  // longer than any known: late
+      } else if (!walls.known() && now >= called + kFirstSpin) {
+        // The stream's first step, long: rather than query its fence back
+        // to back throughout, back off.
+        std::this_thread::sleep_for(nap);
+        nap = std::min<std::chrono::steady_clock::duration>(nap * 2, kDirectNap);
       } else {
         std::this_thread::yield();  // around a likely end, or none known yet
       }
@@ -2056,7 +2071,7 @@ Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::Device
     }
     (void)providers::TakeLastError();
   }
-  open.walls.Add(ended);
+  walls.Add(ended);
   if (cancelled) {
     // The step completed after all; the request it belonged to is
     // cancelled (its lease released now: the scheduler is told), and its

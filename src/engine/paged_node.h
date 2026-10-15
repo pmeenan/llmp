@@ -794,7 +794,6 @@ class PagedNode {
     std::uint64_t request = 0;
     scheduler::ProgramDone done;
     scheduler::RequestChannel channel;
-    base::Expectation walls;  // its steps' walls, for the driver's wait (Step)
     // Direct steps: the request was cancelled (its task ends; no step may
     // follow), or a step's end can never be proven (its lease kept).
     bool cancelled = false;
@@ -842,6 +841,10 @@ class PagedNode {
   std::unique_ptr<providers::Storage> storage_;
   std::unique_ptr<CountingStorage> counting_;  // over storage_: what the storage lane calls
   std::vector<providers::StreamId> streams_;   // compute streams, then the copy stream
+  // Each stream's recent step walls, for the driver's wait (Step,
+  // DirectStep): kept across its requests, as the device lanes keep theirs.
+  // The driver's alone.
+  std::map<std::uint32_t, base::Expectation> walls_;
   std::size_t device_class_ = 0;
   std::size_t host_class_ = 0;
 

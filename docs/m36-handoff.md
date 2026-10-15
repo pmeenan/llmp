@@ -21,9 +21,11 @@ it overstated. Corrections, in force until the closeout lands:
   `LLMP_DIAGNOSTIC_COMPONENT_SERVING`, which no source reads; both arms ran
   the legacy pipeline (identical pixels `3b7770ca…`, 32.96 s vs 32.96 s).
   The "29.15 s vs 32.57 s" figure has no traceable source. The legacy
-  pipeline was deleted in `22741330` regardless; the shared image path's
-  speed is unmeasured since `b37f763f` (last valid figure 5.991× slower).
-  Image serving also refuses without `LLMP_DIAGNOSTIC_NODE_CAP_BYTES`.
+  pipeline was deleted in `22741330` regardless. The shared image path now
+  serves from an ordinary configuration (no `LLMP_DIAGNOSTIC_*`), and its
+  valid matched screens, attribution and quality are in
+  [m36-baselines](experiments/m36-baselines/README.md#qwen-image-21-on-the-shared-engine):
+  NOT PASSED, +2.14% on the latest screen.
 - Qwen3.8 native (`qwen38-smoke04`) and GGUF (`qwen38-gguf-check01`) gate
   passes exist only as raw Spark outputs, not in a committed report; all
   gates ran on v0 artifacts and predate later shared-engine changes.
@@ -69,16 +71,16 @@ it overstated. Corrections, in force until the closeout lands:
 **M3.6 is on its final item (`deepseek` C2 decode gate + `G4d` legacy `Dsv4Runner` deletion).**
 All current work from `agy/m36-k1-r1` and `agy/m36-dsv4-c2` is merged and committed cleanly on `main` (`8bc6b7a4`). Both `spark` (Spark A) and `spark-b` (Spark B) are idle with no running jobs.
 
-### 1. What is 100% Complete and Landed on `main` (`8bc6b7a4`)
+### 1. What Landed on `main` (`8bc6b7a4`)
 
-- **7 of 8 Speed-Gate Families Have Passed the 1% Speed Gate & Had Legacy Code Deleted**:
+- **Speed-gate families with legacy code deleted** (6 of 8 passed; the image's legacy code was deleted without a valid pass, and its gate is NOT PASSED):
   1. `gemma2`: PASSED (`G1c`), legacy runner deleted (`4a6710ce`).
   2. `gemma3`: PASSED (`G1c`), legacy runner deleted (`4a6710ce`).
   3. `gemma26`: PASSED (`G2c`), legacy runner deleted (`04339dec`).
   4. `gemma31`: PASSED (`G2c`), legacy runner deleted (`04339dec`).
   5. `qwen38-gguf`: PASSED (`G3c`), legacy runner deleted (`d69c8036`).
   6. `qwen38` (NVFP4/MXFP8 + MTP): PASSED (`qwen38-smoke04`, `bd1a2e9d`), legacy `Qwen38Runner`, `qwen38_plan`, `qwen38_wave_plan`, `qwen38_graph` deleted (`d69c8036`, `G3d`).
-  7. `image` (Qwen-Image-2.1): PASSED (`image-check02`, `29.15s` vs `32.57s` legacy, `-10.5%` faster), legacy `QwenImageRunner` and `kernels/image/pipeline.*` deleted (`22741330`).
+  7. `image` (Qwen-Image-2.1): NOT PASSED. `image-check02` was invalid (its new arm set a switch no source reads and ran the legacy pipeline, as did its old arm), yet legacy `QwenImageRunner` and `kernels/image/pipeline.*` were deleted (`22741330`). Valid screens of the shared path from an ordinary configuration are in [m36-baselines](experiments/m36-baselines/README.md#qwen-image-21-on-the-shared-engine).
 - **Unserved `qwen2` FP16/EXL3 Fixtures (`G5a–d`)**: Migrated to component engine and legacy `Qwen2Runner` deleted (`0d127ac0`).
 - **Slice R1 (Architecture-based settings cleanup)**: Landed (`e3d7be83`).
 - **Native Importer (N3b / N4 / N5 / N6)**: All container/architecture domains (GGUF targets + Gemma 4 / DSpark drafters, ModelOpt NVFP4/MXFP8 + MTP, MLX Qwen3.8, EXL3 4bpw/4.5bpw, diffusers Qwen-Image-2.1) and adversarial suite landed (`7c9279c4`).
@@ -243,13 +245,12 @@ never change guarded source while an actual run is active.
 
 ### Resume in this order
 
-- Resolve the measured image speed gap with one short paired attribution using
-  existing source/fixtures and retained oracles. The external
-  `/tmp/llmp-m36-coordination/image-flow-attribution01` draft is **unsealed and
-  unexecuted**; bind final sources/binaries and review it before use. Dense
-  attention, layout/product traffic and repeated mask/position staging or graph
-  digests are possible speed/reuse targets, not established causes. Do not repeat
-  the forty-step quality run or expand timing ladders before attribution.
+- Image attribution is done
+  ([m36-baselines](experiments/m36-baselines/README.md#qwen-image-21-on-the-shared-engine)):
+  driver fence polling, per-stage lease cycling and graph hashing, the F32 VAE
+  convolution fixed; the remaining ~2.1% (unchanged host inputs re-uploaded,
+  the text encoder's path, the F32 channel norm) and the conversion of
+  `BoundGraph::Run`'s run-time fusion into planner patterns are the next slice.
 - Qwen's decode gaps are fully resolved in `25711ad9` (`qwen-c4-fix-models01`)
   and `7ad389b5` (`qwen-c4-fix-models02`) on Spark A: wiring
   `DrafterSpec::shared_wave_depth` (`= 2` in multi-slot waves, matching

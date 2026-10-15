@@ -223,8 +223,11 @@ __device__ __forceinline__ std::uint16_t F2B(float f) {
   return static_cast<std::uint16_t>(u >> 16U);
 }
 
+// A thread's next patch slice, held as loaded (F32 pairs): it is rounded
+// to BF16 only when stored, after the current chunk's products, so the
+// global loads' latency hides behind them rather than stalling before.
 struct Patch {
-  std::uint32_t v[8];
+  float2 v[8];
   bool active;
 };
 
@@ -260,13 +263,11 @@ __global__ void __launch_bounds__(kThreads, 1)
     p.active = patch_item;
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
-      p.v[j] = 0U;
+      p.v[j] = make_float2(0.0f, 0.0f);
       if (item_inside) {
         const std::int64_t at = (static_cast<std::int64_t>(c0 + (item_group * 8) + j) * plane) +
                                 (static_cast<std::int64_t>(item_y) * width) + item_x;
-        const float2 pair = *reinterpret_cast<const float2*>(x + at);
-        p.v[j] = static_cast<std::uint32_t>(F2B(pair.x)) |
-                 (static_cast<std::uint32_t>(F2B(pair.y)) << 16U);
+        p.v[j] = *reinterpret_cast<const float2*>(x + at);
       }
     }
   };
@@ -275,16 +276,22 @@ __global__ void __launch_bounds__(kThreads, 1)
       return;
     }
     const std::uint32_t patch = base + (stage * kStageBytes);
+    std::uint32_t v[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+      v[j] = static_cast<std::uint32_t>(F2B(p.v[j].x)) |
+             (static_cast<std::uint32_t>(F2B(p.v[j].y)) << 16U);
+    }
     uint4 lo;
     uint4 hi;
-    lo.x = __byte_perm(p.v[0], p.v[1], 0x5410);
-    lo.y = __byte_perm(p.v[2], p.v[3], 0x5410);
-    lo.z = __byte_perm(p.v[4], p.v[5], 0x5410);
-    lo.w = __byte_perm(p.v[6], p.v[7], 0x5410);
-    hi.x = __byte_perm(p.v[0], p.v[1], 0x7632);
-    hi.y = __byte_perm(p.v[2], p.v[3], 0x7632);
-    hi.z = __byte_perm(p.v[4], p.v[5], 0x7632);
-    hi.w = __byte_perm(p.v[6], p.v[7], 0x7632);
+    lo.x = __byte_perm(v[0], v[1], 0x5410);
+    lo.y = __byte_perm(v[2], v[3], 0x5410);
+    lo.z = __byte_perm(v[4], v[5], 0x5410);
+    lo.w = __byte_perm(v[6], v[7], 0x5410);
+    hi.x = __byte_perm(v[0], v[1], 0x7632);
+    hi.y = __byte_perm(v[2], v[3], 0x7632);
+    hi.z = __byte_perm(v[4], v[5], 0x7632);
+    hi.w = __byte_perm(v[6], v[7], 0x7632);
     const int pixel = (item_row * kPw) + (item_pair * 2);
     const std::uint32_t a = patch + Half(pixel, item_group);
     const std::uint32_t b = patch + Half(pixel + 1, item_group);

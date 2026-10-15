@@ -1164,3 +1164,13 @@ no further quality or timing ladder is justified before that attribution.
 Raw three-arm reports and their hashes remain external under
 `image-serving-cli-bookend01/observations`; candidate runtime `6a5404f2…` and
 frozen legacy `f5443363…` retain their distinct identities.
+
+## Default service and the migration screen
+
+The legacy runner was later deleted (`22741330`) on a gate run,
+`image-check02`, that never ran this path: both its arms ran the legacy
+pipeline. That run is invalid. The shared image now serves from an ordinary
+configuration with no diagnostic switch, and the valid matched screens,
+their attribution, and the dependence on `BoundGraph::Run`'s run-time
+fusion are in the
+[baselines record](../m36-baselines/README.md#qwen-image-21-on-the-shared-engine).

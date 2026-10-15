@@ -90,7 +90,9 @@ passes each arm its template, and the records keep its text and digest.
 A runtime's diagnostic switches are environment variables named
 LLMP_DIAGNOSTIC_* (never configuration): `run --runtime-env NAME=VALUE`
 gives an arm's runtime one (repeatable; no other names), `plan
---old-env/--new-env` passes them on, and the records keep them. An arm's
+--old-env/--new-env` passes them on, and the records keep them. A switch
+the runtime binary does not name is refused (`plan` when the binary is
+there, every `run`): it would change nothing and mislabel the arm. An arm's
 runs, and the priming runs of PRIME_ARM, must all have the same ones. The
 gate uses one where the baseline's work differs from the new runtime's by a
 known defect (LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1 for Gemma 2 and
@@ -122,9 +124,11 @@ import hashlib
 import http.client
 import json
 import math
+import mmap
 import os
 import pathlib
 import random
+import re
 import secrets
 import shutil
 import signal
@@ -325,6 +329,26 @@ def parse_runtime_env(pairs: list[str] | None) -> dict[str, str]:
             raise SystemExit(f"--runtime-env {pair!r}: not a single {DIAGNOSTIC_PREFIX}*=VALUE")
         env[name] = value
     return dict(sorted(env.items()))
+
+
+def unknown_runtime_env(runtime: pathlib.Path, runtime_env: dict[str, str]) -> list[str]:
+    """The switches the runtime binary does not name. A switch the runtime never
+    reads changes nothing, so an arm given one is not the arm its records claim
+    (image-check02's LLMP_DIAGNOSTIC_COMPONENT_SERVING, which no source reads)."""
+    if not runtime_env:
+        return []
+    with open(runtime, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        # The whole name as a token, not a prefix or suffix of a longer one.
+        return [name for name in runtime_env
+                if re.search(rb"(?<![A-Za-z0-9_])" + re.escape(name.encode()) + rb"(?![A-Za-z0-9_])",
+                             data) is None]
+
+
+def check_runtime_env(runtime: pathlib.Path, runtime_env: dict[str, str]) -> None:
+    """Raises ValueError (a run records it as the run's error) for a switch the
+    runtime does not name."""
+    if unknown := unknown_runtime_env(runtime, runtime_env):
+        raise ValueError(f"{runtime}: reads no diagnostic switch named {', '.join(unknown)}")
 
 
 def arm_env(runtime_env: dict[str, str]) -> dict[str, str]:
@@ -746,6 +770,7 @@ def cmd_run(args: argparse.Namespace) -> int:
               "family_spec": dataclasses.asdict(family), "facts": host_facts(), "error": None}
     began = time.monotonic()
     try:
+        check_runtime_env(runtime, runtime_env)
         if family.kind == "llm":
             corpus = load_corpus(pathlib.Path(args.corpus).expanduser())
             llm_run(family, runtime, share, corpus, run_dir, args.port, template, runtime_env,
@@ -775,6 +800,10 @@ def cmd_quality(args: argparse.Namespace) -> int:
     share = pathlib.Path(args.share).expanduser().resolve()
     runtime = pathlib.Path(args.runtime).resolve()
     corpus = load_corpus(pathlib.Path(args.corpus).expanduser())
+    try:
+        check_runtime_env(runtime, parse_runtime_env(args.runtime_env))
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
     name = f"{family.name}-quality-{args.label}"
     (out / "quality").mkdir(parents=True, exist_ok=True)
     run_dir = fresh_run_dir(out, name)
@@ -869,6 +898,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
         runtime = args.old if label == "old" else args.new
         template = args.old_config if label == "old" else args.new_config
         env = parse_runtime_env(args.old_env if label == "old" else args.new_env)
+        if pathlib.Path(runtime).is_file():
+            try:
+                check_runtime_env(pathlib.Path(runtime), env)
+            except ValueError as e:
+                raise SystemExit(str(e)) from None
         return (f"python3 -B {me} run --family {family.name} --runtime {runtime} "
                 f"--label {label} --out {args.out} {which}"
                 + (f" --corpus {args.corpus}" if family.kind == "llm" else "")
