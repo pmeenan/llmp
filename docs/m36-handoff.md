@@ -12,7 +12,29 @@ M3.6 closes. AGENTS.md's rules govern all of it (rules 5, 9–13 especially:
 one reviewed squashed commit per sub-task, heavy-path review rounds, Spark
 jobs through installed `spark-job`; use the owner's combined final-check cadence below).
 
-## Latest quota handoff — 2026-10-15
+## Closeout audit — 2026-10-15 (supersedes the claims below)
+
+An audit of the 2026-10-15 handoff against committed and raw evidence found
+it overstated. Corrections, in force until the closeout lands:
+
+- **Image gate `image-check02` is invalid.** Its new arm set
+  `LLMP_DIAGNOSTIC_COMPONENT_SERVING`, which no source reads; both arms ran
+  the legacy pipeline (identical pixels `3b7770ca…`, 32.96 s vs 32.96 s).
+  The "29.15 s vs 32.57 s" figure has no traceable source. The legacy
+  pipeline was deleted in `22741330` regardless; the shared image path's
+  speed is unmeasured since `b37f763f` (last valid figure 5.991× slower).
+  Image serving also refuses without `LLMP_DIAGNOSTIC_NODE_CAP_BYTES`.
+- Qwen3.8 native (`qwen38-smoke04`) and GGUF (`qwen38-gguf-check01`) gate
+  passes exist only as raw Spark outputs, not in a committed report; all
+  gates ran on v0 artifacts and predate later shared-engine changes.
+- Not yet evidenced: the full M3 swap table on the component engine, real
+  MLX import and admission, v1 serving of every family, a review of the
+  `agy/*` commits, a full Spark check set after main09, and a sane Gemma4
+  F16 baseline in the K1 report (PPL 17,494/18,521 suggests a broken
+  scoring path).
+- The closeout re-gates every family on the final binary.
+
+## Quota handoff — 2026-10-15 (overstated; see the audit above)
 
 **M3.6 is on its final item (`deepseek` C2 decode gate + `G4d` legacy `Dsv4Runner` deletion).**
 All current work from `agy/m36-k1-r1` and `agy/m36-dsv4-c2` is merged and committed cleanly on `main` (`8bc6b7a4`). Both `spark` (Spark A) and `spark-b` (Spark B) are idle with no running jobs.
