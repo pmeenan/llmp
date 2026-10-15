@@ -3987,17 +3987,28 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReferen
     }
     ExpectNmse(got, want, kFlashAttnNmse, name);
   }
-  // The checks: a mask, grouped heads, sinks or another head size are the
-  // other kernels' (or none).
-  const auto build = [this](std::int64_t head, std::int64_t heads, std::int64_t kv_heads,
-                            bool mask) {
+  // The checks: an F16 additive mask over every cell is taken (the masked
+  // F32 path packs into this kernel, masked_attention_gpu_test.cc); any other
+  // mask, grouped heads, sinks or another head size are the other kernels'
+  // (or none).
+  const auto build = [this](std::int64_t head, std::int64_t heads, std::int64_t kv_heads, bool mask,
+                            ggml_type mask_type = GGML_TYPE_F16, std::int64_t mask_cells = 300) {
     ggml_tensor* q = Place(ggml_new_tensor_4d(c(), GGML_TYPE_F32, head, 2, heads, 1));
     ggml_tensor* k = Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, head, 300, kv_heads, 1));
-    ggml_tensor* m = mask ? Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, 300, 2, 1, 1)) : nullptr;
+    ggml_tensor* m =
+        mask ? Place(ggml_new_tensor_4d(c(), mask_type, mask_cells, 2, 1, 1)) : nullptr;
     return Place(ggml_flash_attn_ext(c(), q, k, k, m, 0.1f, 0.0f, 0.0f));
   };
   EXPECT_TRUE(kg::CheckFlashAttnMma128(build(128, 4, 4, false)).has_value());
-  EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(build(128, 4, 4, true))), KernelError::kRejected);
+  EXPECT_TRUE(kg::CheckFlashAttnMma128(build(128, 4, 4, true)).has_value());
+  EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(build(128, 4, 4, true, GGML_TYPE_F16, 512))),
+            KernelError::kRejected);
+  {
+    // ggml_flash_attn_ext asserts an F16 mask, so swap one in afterwards.
+    ggml_tensor* node = build(128, 4, 4, false);
+    node->src[3] = Place(ggml_new_tensor_4d(c(), GGML_TYPE_F32, 300, 2, 1, 1));
+    EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(node)), KernelError::kRejected);
+  }
   EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(build(128, 8, 2, false))), KernelError::kRejected);
   EXPECT_EQ(FailedCode(kg::CheckFlashAttnMma128(build(256, 4, 4, false))), KernelError::kRejected);
   ggml_tensor* sinks = build(128, 4, 4, false);

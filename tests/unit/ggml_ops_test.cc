@@ -207,15 +207,23 @@ struct Planned {
   std::array<unsigned, 3> block{};
   std::size_t shared = 0;
   std::size_t bytes = 0;
+  // Where llmpalooza launches its own kernel instead of the recorded plan's:
+  // the kernel's identifier, found in its mangled name (id is then -1).
+  std::string_view own;
 };
 
 Planned PlanLaunch(int id, std::array<unsigned, 3> grid, std::array<unsigned, 3> block,
                    std::size_t shared = 0) {
-  return {.id = id, .grid = grid, .block = block, .shared = shared, .bytes = 0};
+  return {.id = id, .grid = grid, .block = block, .shared = shared, .bytes = 0, .own = {}};
 }
 
 Planned PlanCopy(std::size_t bytes) {
-  return {.id = 0, .grid = {}, .block = {}, .shared = 0, .bytes = bytes};
+  return {.id = 0, .grid = {}, .block = {}, .shared = 0, .bytes = bytes, .own = {}};
+}
+
+Planned OwnLaunch(std::string_view kernel, std::array<unsigned, 3> grid,
+                  std::array<unsigned, 3> block, std::size_t shared = 0) {
+  return {.id = -1, .grid = grid, .block = block, .shared = shared, .bytes = 0, .own = kernel};
 }
 
 class GgmlOpsTest : public ::testing::Test {
@@ -916,9 +924,15 @@ class GgmlOpsPlanMatchTest : public GgmlOpsTest {
         EXPECT_EQ(got[i].bytes, want[i].bytes) << what;
         continue;
       }
-      EXPECT_EQ(llmp::test_support::NormalizedKernelName(got[i].name),
-                llmp::test_support::NormalizedKernelName(PlanKernel(want[i].id)))
-          << what << ": kernel " << want[i].id;
+      if (!want[i].own.empty()) {
+        EXPECT_EQ(got[i].kind, EventKind::kKernel) << what << ": " << got[i].name;
+        EXPECT_NE(got[i].name.find(want[i].own), std::string::npos)
+            << what << ": " << got[i].name << " is not " << want[i].own;
+      } else {
+        EXPECT_EQ(llmp::test_support::NormalizedKernelName(got[i].name),
+                  llmp::test_support::NormalizedKernelName(PlanKernel(want[i].id)))
+            << what << ": kernel " << want[i].id;
+      }
       EXPECT_EQ(got[i].grid, want[i].grid) << what << ": kernel " << want[i].id;
       EXPECT_EQ(got[i].block, want[i].block) << what << ": kernel " << want[i].id;
       EXPECT_EQ(got[i].shared, want[i].shared) << what << ": kernel " << want[i].id;
@@ -1018,12 +1032,15 @@ TEST_F(GgmlOpsPlanMatchTest, PrefillAndDecodeOperationsLaunchAsRecorded) {
     }
 
     // The heads merged back: a 3,584-byte copy at one row (CF/CU 1, HF/HU 2
-    // and 4), else the scalar kernel at [14n, 1, 1].
+    // and 4). Over more rows the recorded plan ran the scalar kernel (3) at
+    // [14n, 1, 1]; Cont now copies an F32 view with contiguous rows by its
+    // own row kernel instead (ops.cu, since b37f763f): a block a 64-value
+    // row, [1, 14, n].
     ggml_tensor* kqv = At(ggml_new_tensor_3d(c, GGML_TYPE_F32, kHead, n, kHeads));
     ggml_tensor* merged = At(ggml_cont_2d(c, ggml_permute(c, kqv, 0, 2, 1, 3), kWidth, n));
     Matches(Record([&] { Launched(llmp::kernels::ggml::Cont(*launch, merged), "cont"); }),
             {n == 1 ? PlanCopy(kWidth * sizeof(float))
-                    : PlanLaunch(3, {U(kHeads * n), 1, 1}, {64, 1, 1})},
+                    : OwnLaunch("Copy3dContigDim0Kernel", {1, U(kHeads), U(n)}, {256, 1, 1})},
             "cont, " + rows);
 
     // SwiGLU (prefill in every arm; decode unfused, CU 1 and HU 2 and 4).

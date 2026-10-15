@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -370,64 +371,56 @@ TEST_F(SnapshotStoreTest, GrowthRefusalInvalidatesOldCaptureAndRetriesOnlyOneAcc
 }
 
 TEST_F(SnapshotStoreTest, PhysicallyReleasedAllocationWithFailedBookkeepingNeverBecomesReusable) {
-  SnapshotLlm model(node_);
-  auto store = std::make_unique<rt::SnapshotStore>(node_, kRoom);
-  auto saved = model.default_branch().CaptureState(*store);
-  ASSERT_TRUE(saved) << Failed(saved).value_or("");
-  const auto original_layout = model.layout;
-  const auto original_capacity = store->capacity();
-  ASSERT_NE(model.last_destination, nullptr);
-  const auto address = reinterpret_cast<std::uintptr_t>(model.last_destination);
-  unsigned physical_frees = 0;
-  struct ClearHook {
-    ~ClearHook() { llmp::providers::fake::ClearPinnedFreeHook(); }
-  } clear_hook;
-  llmp::providers::fake::AfterNextPinnedFree(model.last_destination, [&] {
-    ++physical_frees;
-    // This hook runs only after the actual provider free. Remove its catalog
-    // record now, so PagedNode's subsequent bookkeeping Call fails. Never read
-    // the retired address; the saved integer identifies only its span record.
-    EXPECT_TRUE(node_.Call(
-        [&]() -> en::Status {
-          std::optional<cat::ExtentId> extent;
-          node_.EraseSpans([&](const en::Span& span) {
-            if (span.base != address) return false;
-            extent = span.extent;
-            return true;
-          });
-          if (!extent || !node_.catalog().ReleasePinned(*extent) ||
-              !node_.catalog().RemoveExtent(*extent)) {
-            return std::unexpected("the post-free fixture could not retire its catalog record");
-          }
-          return {};
-        },
-        "injecting a post-free snapshot bookkeeping error"));
-  });
-  model.layout.assign(original_capacity, 'x');  // force growth of the allocation
-  auto growth = model.default_branch().CaptureState(*store);
-  EXPECT_FALSE(growth);
-  ASSERT_EQ(physical_frees, 1U);
-  ASSERT_FALSE(growth) << "the injected bookkeeping failure must reach the caller";
-  EXPECT_NE(growth.error().find("forgetting retired pinned staging"), std::string::npos);
-  // This assertion discriminates the old implementation without executing
-  // its unsafe recapture. A failed release must permanently close the store.
-  ASSERT_FALSE(store->usable());
-  EXPECT_FALSE(store->Digest(*saved));
-  EXPECT_EQ(Occupancy(), fixed_);
-  EXPECT_EQ(node_.kept_pinned(), 0U);  // it was freed, so there is nothing to retain
-  const auto settled = model.settlements;
-  for (const auto& layout : {original_layout, std::string{}}) {
-    model.layout = layout;
-    EXPECT_FALSE(model.default_branch().CaptureState(*store));
-    EXPECT_FALSE(model.default_branch().RestoreState(*store, *saved));
-    EXPECT_EQ(model.settlements, settled);
-    EXPECT_EQ(model.saves, 1U);
-    EXPECT_EQ(model.restores, 0U);
-  }
-  store.reset();
-  EXPECT_EQ(physical_frees, 1U);
-  EXPECT_EQ(Occupancy(), fixed_);
-  EXPECT_EQ(node_.kept_pinned(), 0U);
+  // PagedNode::FreePinned refuses only before the provider free: it takes the
+  // catalog's retirement ticket first, so new borrowers are excluded and its
+  // error means nothing was released. Once the provider has freed the
+  // allocation, failing to forget its catalog record is a broken invariant
+  // and fail-stops, so a released allocation can never come back to a usable
+  // store (or to any other owner).
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_DEATH(
+      {
+        SnapshotLlm model(node_);
+        auto store = std::make_unique<rt::SnapshotStore>(node_, kRoom);
+        auto saved = model.default_branch().CaptureState(*store);
+        if (!saved || model.last_destination == nullptr) {
+          std::abort();  // not the fail-stop the matcher expects
+        }
+        const auto original_capacity = store->capacity();
+        const auto address = reinterpret_cast<std::uintptr_t>(model.last_destination);
+        llmp::providers::fake::AfterNextPinnedFree(model.last_destination, [&] {
+          // This hook runs only after the actual provider free. Finish the
+          // retirement ticket and forget the extent behind PagedNode's back,
+          // so its own completion fails. Never read the retired address; the
+          // saved integer identifies only its span record.
+          (void)node_.Call(
+              [&]() -> en::Status {
+                std::optional<cat::ExtentId> extent;
+                node_.EraseSpans([&](const en::Span& span) {
+                  if (span.base != address) return false;
+                  extent = span.extent;
+                  return true;
+                });
+                if (!extent) return std::unexpected("no span at the freed address");
+                bool completed = false;
+                for (std::uint64_t serial = 1; serial <= 64 && !completed; ++serial) {
+                  completed = node_.catalog()
+                                  .CompleteEvict({.extent = *extent,
+                                                  .operation = cat::Operation::kEvict,
+                                                  .serial = serial})
+                                  .has_value();
+                }
+                if (!completed || !node_.catalog().RemoveExtent(*extent)) {
+                  return std::unexpected("the post-free fixture could not retire its record");
+                }
+                return {};
+              },
+              "injecting a post-free snapshot bookkeeping error");
+        });
+        model.layout.assign(original_capacity, 'x');  // force growth of the allocation
+        (void)model.default_branch().CaptureState(*store);
+      },
+      "freed pinned staging must leave the catalog");
 }
 
 TEST_F(SnapshotStoreTest,

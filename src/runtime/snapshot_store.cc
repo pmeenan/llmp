@@ -142,8 +142,8 @@ std::expected<void, std::string> SnapshotStore::Prepare(
   ++control_->generation;
   if (allocation_bytes > control_->capacity) {
     if (auto freed = node_->FreePinned(control_->allocation); !freed) {
-      // FreePinned may already have released the physical allocation before
-      // its bookkeeping failed. Never infer ownership or reuse from an error.
+      // FreePinned refuses before any physical release (a failure after it
+      // fail-stops), but never infer ownership or reuse from an error:
       // KeepPinned retains it only if the node still owns the allocation.
       Unproven();
       return freed;

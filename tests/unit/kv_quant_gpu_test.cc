@@ -755,12 +755,28 @@ TEST_F(KvQuantTest, ChecksRefuseWhatTheKernelsWouldNotTake) {
     EXPECT_FALSE(kg::CheckFlashAttnVecQuant(node));
     k->nb[2] -= 2;
   }
-  // Sinks.
+  // Sinks: one F32 sink per query head is taken (the vector kernel reads
+  // them, fattn-vec.cuh); another count or encoding is not.
   {
     auto* node = attention(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, 64, 256, 0);
     auto* sinks = Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 4));
     ggml_flash_attn_ext_add_sinks(node, sinks);
+    EXPECT_TRUE(kg::CheckFlashAttnVecQuant(node));
+  }
+  for (const auto& [type, count] :
+       {std::pair{GGML_TYPE_F32, std::int64_t{3}}, std::pair{GGML_TYPE_F16, std::int64_t{4}}}) {
+    auto* node = attention(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, 64, 256, 0);
+    // ggml_flash_attn_ext_add_sinks asserts both, so attach them directly.
+    node->src[4] = Place(ggml_new_tensor_1d(c(), type, count));
     EXPECT_FALSE(kg::CheckFlashAttnVecQuant(node));
+    EXPECT_EQ(FailedCode(kg::FlashAttnVecQuant(launch(), node)), KernelError::kRejected);
+  }
+  // D 512 is compiled for Q8_0 (Gemma 4's global layers), not for Q4_0.
+  EXPECT_TRUE(kg::CheckFlashAttnVecQuant(attention(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, 512, 256, 0)));
+  {
+    auto* node = attention(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0, 512, 256, 0);
+    EXPECT_FALSE(kg::CheckFlashAttnVecQuant(node));
+    EXPECT_EQ(FailedCode(kg::FlashAttnVecQuant(launch(), node)), KernelError::kRejected);
   }
 
   const auto store = [&](ggml_type values, ggml_type dest, ggml_type ids) {
@@ -862,20 +878,25 @@ TEST_F(KvQuantTest, TheRegistryDeclaresEachWithItsCapability) {
     EXPECT_EQ(attention(Encoding::kQ4_0, 64, rows, arch), Of{std::string(kg::kFlashAttnVecQ4Name)});
   }
   EXPECT_EQ(attention(Encoding::kQ8_0, 128, 1, arch), Of{});
-  EXPECT_EQ(attention(Encoding::kQ8_0, 512, 1, arch), Of{});  // DeepSeek V4: no quantized path
+  // D 512 (Gemma 4's global layers) is compiled for Q8_0 alone.
+  EXPECT_EQ(attention(Encoding::kQ8_0, 512, 1, arch), Of{std::string(kg::kFlashAttnVecQ8Name)});
+  EXPECT_EQ(attention(Encoding::kQ4_0, 512, 1, arch), Of{});
   EXPECT_EQ(attention(Encoding::kQ5_0, 256, 1, arch), Of{});
   EXPECT_EQ(attention(Encoding::kQ8_0, 256, 1, 90), Of{});  // no SASS for sm_90
-  {
+  // F32 sinks are taken; sinks in another encoding are not.
+  for (const auto& [sink, want] :
+       {std::pair{Encoding::kF32, Of{std::string(kg::kFlashAttnVecQ8Name)}},
+        std::pair{Encoding::kF16, Of{}}}) {
     const std::array<ex::OperandFormat, 5> with_sinks = {
         dense(0, Encoding::kF32), blocks(1, Encoding::kQ8_0), blocks(2, Encoding::kQ8_0),
-        dense(3, Encoding::kF16), dense(4, Encoding::kF32)};
+        dense(3, Encoding::kF16), dense(4, sink)};
     EXPECT_EQ(names({.op = ir::Primitive(ir::Op::kAttention),
                      .operands = with_sinks,
                      .rows = 1,
                      .k = 256,
                      .n = 256,
                      .arch = arch}),
-              Of{});
+              want);
   }
   const std::array<ex::OperandFormat, 3> store = {
       blocks(0, Encoding::kQ4_0), dense(1, Encoding::kF32), dense(2, Encoding::kI32)};

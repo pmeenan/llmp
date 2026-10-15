@@ -508,7 +508,11 @@ void PagedCase(int malformed) {
   ASSERT_TRUE(payment) << payment.error();
   life->payment = *payment;
   ASSERT_TRUE(life->payment->Charge(8ULL << 20));
-  life->root = std::filesystem::path("scratch") / "native-split-rows";
+  // One directory per test: CTest runs this file's tests in parallel from
+  // one working directory, and each removes its artifact when it ends.
+  life->root = std::filesystem::path("scratch") /
+               (std::string("native-split-rows-") +
+                ::testing::UnitTest::GetInstance()->current_test_info()->name());
   auto path = MakeArtifact(life->root);
   auto selected = de::RowsSelectedSource();
   ASSERT_TRUE(selected) << selected.error();

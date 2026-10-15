@@ -1502,12 +1502,15 @@ bool AcceptsGatedCombine(const ex::CapabilityQuery& q) { return Built(q) && Has(
 bool AcceptsAny(const ex::CapabilityQuery& q) { return Built(q); }
 bool AcceptsPrepared(const ex::CapabilityQuery& q) { return Built(q) && Routed(q); }
 
-// kv_quant.h's: head sizes 64, 256, and 512, optional sinks; rows of whole blocks.
-bool AcceptsQuantAttention(const ex::CapabilityQuery& q) {
+// kv_quant.h's: head sizes 64 and 256, and 512 for Q8_0 alone (fattn_vec_quant.cu
+// compiles no Q4_0 instance there), optional F32 sinks; rows of whole blocks.
+bool QuantAttention(const ex::CapabilityQuery& q, bool d512) {
   const auto* sinks = Operand(q, 4);
-  return Built(q) && (q.k == 64 || q.k == 256 || q.k == 512) && q.n == q.k &&
+  return Built(q) && (q.k == 64 || q.k == 256 || (d512 && q.k == 512)) && q.n == q.k &&
          (!sinks || (sinks->encoding == Encoding::kF32 && sinks->layout == Layout::kDense));
 }
+bool AcceptsQuantAttention(const ex::CapabilityQuery& q) { return QuantAttention(q, true); }
+bool AcceptsQ4Attention(const ex::CapabilityQuery& q) { return QuantAttention(q, false); }
 bool AcceptsQuantStore(const ex::CapabilityQuery& q) { return Built(q) && q.k >= 32; }
 bool AcceptsQuantRopeStore(const ex::CapabilityQuery& q) {
   const ex::OperandFormat* freq = Operand(q, 4);
@@ -1967,12 +1970,12 @@ const std::array kEntries = {
     // Block-quantized KV caches (kv_quant.h).
     Entry{kFlashAttnVecQ8Name, Operation::kFlashAttn,
           Cap(P(Op::kAttention), kQ8Attention, &AcceptsQuantAttention, false),
-          "; selectable for the build's SASS architectures at head size 64 or 256 (K's and V's), "
-          "without sinks"},
+          "; selectable for the build's SASS architectures at head size 64, 256 or 512 (K's and "
+          "V's), with or without F32 sinks"},
     Entry{kFlashAttnVecQ4Name, Operation::kFlashAttn,
-          Cap(P(Op::kAttention), kQ4Attention, &AcceptsQuantAttention, false),
+          Cap(P(Op::kAttention), kQ4Attention, &AcceptsQ4Attention, false),
           "; selectable for the build's SASS architectures at head size 64 or 256 (K's and V's), "
-          "without sinks"},
+          "with or without F32 sinks"},
     Entry{kSetRowsQuantName, Operation::kSetRows,
           Cap(P(Op::kCacheStore), kQuantStore, &AcceptsQuantStore, true, {}, 0, {.k_multiple = 32}),
           "; selectable for the build's SASS architectures, rows of whole 32-value blocks"},

@@ -1594,7 +1594,7 @@ TEST_F(Qwen38FastTest, QsaAttnRequiresMatchingCacheRowStrides) {
     TensorArena::Bind(out, Allocate(ggml_nbytes(out)));
     const auto checked = kg::CheckQsaAttn(out);
     ASSERT_FALSE(checked.has_value());
-    EXPECT_EQ(checked.error().detail, "F16 key and value caches with equal row strides");
+    EXPECT_EQ(checked.error().detail, "key and value caches with equal row strides");
   }
 }
 

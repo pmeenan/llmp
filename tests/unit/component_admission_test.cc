@@ -341,7 +341,8 @@ TEST(ComponentAdmissionDsv4Test, FullStoredTargetPreservesProfilePolicyAndClosed
   const auto& source = normalized->canonical();
   const auto admitted = rt::CheckComponentAdmission(model, source, origins);
   ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
-  EXPECT_FALSE(rt::OnComponentEngine("deepseek4"));
+  // Served on the component engine since c96deafd (K1).
+  EXPECT_TRUE(rt::OnComponentEngine("deepseek4"));
   auto policy =
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 1048576, .slots = 8});
   ASSERT_TRUE(policy) << (policy ? "" : policy.error());

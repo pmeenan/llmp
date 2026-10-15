@@ -1039,7 +1039,9 @@ TEST(Dsv4EngineTargetInputs, AutomaticServingRefusesUnpaidOrMixedAuthorityBefore
 }
 
 TEST(Dsv4EngineTargetInputs, RejectsUnpaidOrDifferentEnvelopeBeforeArtifactRead) {
-  EXPECT_FALSE(rt::OnComponentEngine("deepseek4"));
+  // Served on the component engine since c96deafd (K1); a diagnostic build
+  // still needs its paid single-owner envelope.
+  EXPECT_TRUE(rt::OnComponentEngine("deepseek4"));
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
   auto domain = Domain();
   ASSERT_TRUE(domain) << Failed(domain).value_or("");
