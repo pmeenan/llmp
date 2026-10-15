@@ -676,7 +676,9 @@ chosen on the device. Any other architecture is refused at Setup with
 that reason, and so is speculation on with no drafter in the parts. The
 Gemma 4 chat route keeps the slice its retired M3 class served: thinking off by default
 and refused on, tool declarations refused, its channel and tool-call
-openers ending a reply. A conversation an M3 class kept across a restart
+openers ending a reply. DeepSeek V4's, like its M3 class's, thinks unless
+a request turns thinking off (llama-server's `/apply-template` default,
+which rendered its references' prompts). A conversation an M3 class kept across a restart
 (record version 1) is refused by the engine's start and its files
 discarded, once ([below](#conversations-kept-across-a-restart)).
 

@@ -283,7 +283,12 @@ std::string EngineLlm::extra() const {
 // ------------------------------------------------------------------ the LLM
 
 void EngineLlm::Defaults(chat::Conversation& conversation) const {
-  if (!chat_.thinking && !conversation.enable_thinking) conversation.enable_thinking = false;
+  if (conversation.enable_thinking) return;
+  if (!chat_.thinking) {
+    conversation.enable_thinking = false;
+  } else if (chat_.default_thinking) {
+    conversation.enable_thinking = *chat_.default_thinking;
+  }
 }
 
 Status EngineLlm::CheckConversation(const chat::Conversation& conversation) const {

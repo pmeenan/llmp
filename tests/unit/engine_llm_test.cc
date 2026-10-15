@@ -1664,6 +1664,46 @@ TEST_F(EngineLlmTest, SetupRefusesWhatItCannotBuild) {
   EXPECT_FALSE(refused.has_paged());
 }
 
+// A request's thinking when it names none: the slice's default (DeepSeek
+// V4's on, as its M3 class served it), the template's own when unset, and
+// off where thinking is not served; a request's own choice is kept.
+TEST_F(EngineLlmTest, ConversationDefaultsFollowTheChatSlice) {
+  struct Case {
+    bool thinking;
+    std::optional<bool> default_thinking;
+    std::optional<bool> asked;
+    std::optional<bool> expected;
+  };
+  for (const auto c :
+       {Case{true, std::nullopt, std::nullopt, std::nullopt}, Case{true, true, std::nullopt, true},
+        Case{true, false, std::nullopt, false}, Case{true, true, false, false},
+        Case{true, false, true, true}, Case{false, std::nullopt, std::nullopt, false},
+        Case{false, true, std::nullopt, false}, Case{false, true, true, true}}) {
+    SCOPED_TRACE(
+        std::format("{} {} {}", c.thinking, c.default_thinking.has_value(), c.asked.has_value()));
+    en::PagedNode node(en::NodeSettings{
+        .compute_streams = 1, .slots = 2, .copy_lane = true, .slot_bytes = kExtent});
+    ASSERT_TRUE(node.Open());
+    auto build = Build(false);
+    rt::EngineLlm llm(
+        node, entry_, Settings(false), roles_, 0,
+        [build,
+         c](const rt::ModelSettings& settings) -> std::expected<rt::EngineLlmParts, std::string> {
+          auto parts = build(settings);
+          if (!parts) return parts;
+          parts->chat.thinking = c.thinking;
+          parts->chat.default_thinking = c.default_thinking;
+          return parts;
+        });
+    const auto set = llm.Setup();
+    ASSERT_TRUE(set) << Why(set);
+    llmp::chat::Conversation conversation;
+    conversation.enable_thinking = c.asked;
+    llm.Defaults(conversation);
+    EXPECT_EQ(conversation.enable_thinking, c.expected);
+  }
+}
+
 TEST_F(EngineLlmTest, CompleteDraftScheduleReservesOnlyItsEnabledDepth) {
   struct Case {
     bool enabled;

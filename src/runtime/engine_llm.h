@@ -112,11 +112,15 @@ struct EngineLlmParts {
   // slice): thought-channel output off by default and refused on, tool
   // declarations refused, and control tokens that end a chat reply beside
   // the template's own stops (Gemma 4's channel and tool-call openers,
-  // which no parser here reads).
+  // which no parser here reads). `default_thinking` is a request's
+  // thinking when it names none and thinking is served (DeepSeek V4's on,
+  // as llama-server's /apply-template rendered its references' prompts);
+  // unset, the template's own default.
   struct ChatSlice {
     bool thinking = true;
     bool tools = true;
     std::vector<std::string> stops;
+    std::optional<bool> default_thinking;
   };
   ChatSlice chat;
   // What the step source and the launch borrow (the spec, the artifact's

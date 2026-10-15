@@ -382,10 +382,19 @@ std::expected<std::vector<spec::SourceValue>, std::string> DrafterValues(
 
 // What of a family's chat template its chat route serves (the M3 classes'
 // qualified slices): Gemma 4's thought channel and tool calls, which no
-// parser here reads, are off, and their openers end a reply.
+// parser here reads, are off, and their openers end a reply; DeepSeek V4
+// thinks unless a request says otherwise, as its M3 class served it (the
+// references' prompts were llama-server's /apply-template renderings,
+// whose default turns the template's thinking on).
 EngineLlmParts::ChatSlice ChatSliceOf(std::string_view architecture) {
   if (architecture == "gemma4") {
-    return {.thinking = false, .tools = false, .stops = {"<|channel>", "<|tool_call>"}};
+    return {.thinking = false,
+            .tools = false,
+            .stops = {"<|channel>", "<|tool_call>"},
+            .default_thinking = std::nullopt};
+  }
+  if (architecture == "deepseek4") {
+    return {.thinking = true, .tools = true, .stops = {}, .default_thinking = true};
   }
   return {};
 }

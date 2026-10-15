@@ -76,6 +76,24 @@ Current `dsv4-fast-screen19` vs `OLD` (`deepseek-smoke10` `p0-old` / `p3-old` me
 - `C4.wall_tok_s`: `11.3527` vs `11.3053 tok/s` (**`+0.42%`**, PASS)
 - `peak_gib`: `109.64 GiB` vs `109.96 GiB` (**`-0.29%`**, PASS)
 
+**Resolved (Option B, 2026-10-15; the analysis below is superseded).**
+The cause was not numerics or scheduling: the component engine dropped the
+DeepSeek M3 class's chat default (`Defaults` in `serving.cc`: thinking on,
+llama-server's `/apply-template` default), so NEW rendered `</think>` and
+answered the gate's prompts directly ("Here is the rewritten text…") while
+OLD reasoned ("We need to rewrite…"): a different workload from the first
+token, in every cell (it also inflated C1 decode to +21.75%). Pass 1's C2
+prompts are 8 and 9, not 10 and 11. The fix gives `EngineLlmParts::ChatSlice`
+a `default_thinking` (on for `deepseek4` in `ChatSliceOf`). With it
+(`llmp-runtime-fix1`, `0da8ebe3…`) `dsv4-fast-screen21` gives C2 decode
++0.88%, C1 +1.79%, C4 +2.93%, and the 2-block bookended `deepseek-smoke11`
+(spark-b) is INCOMPLETE only by `min_blocks` 3: every rate is at or above
+OLD (C2 decode −0.77% slowdown, upper +1.22%), prefill within +0.25%/+0.60%
+(C2/C4), peak +0.64 GiB. Remaining texts still differ from OLD at varying
+depths (near-tie numerics; OLD also differs from itself between solo and
+joined forms). The gate's own command is `speed_gate.py plan … --steps`
+then `spark-job start --steps` (the form in item 5 below does not parse).
+
 **Why `C2.decode_tok_s` was `-3.09%` in Pass 1 despite `58.8–59.0 ms/step` joined step time (and `37.58 tok/s` in Pass 0)**:
 - In C2 Pass 0 (`warmup=True`), `NEW` achieved **`37.58 tok/s`** (`r0_chunks=116, r1_chunks=116`), matching `OLD`'s **`37.60 tok/s`** (`r0_chunks=115, r1_chunks=117`).
 - In C2 Pass 1 (`warmup=False`), Request 0 (`prompt 10`, `7,112` tokens) finishes prefill at `t = 8.32s` while Request 1 (`prompt 11`, `7,732` tokens) prefills until `t = 17.54s`. Between Request 1's prefill chunks, Request 0 runs **5 solo speculative DSpark steps** (`t0[1..5]`), and after Request 0 finishes its 128th token (`t = 24.26s`), Request 1 runs **4–6 solo speculative DSpark steps** (`t1[-5:]`).
