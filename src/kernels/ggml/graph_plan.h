@@ -143,6 +143,9 @@ struct DeviceChoices {
   // selected-list CSA and window masks may use sharing when opted in.
   // Unknown/reference graphs retain the original column selection.
   bool wide_sparse_attention = false;
+  // The shared IR can select the same recipe for individual operations.
+  // This does not opt neighboring attention nodes into a different recipe.
+  std::function<bool(const ggml_tensor*)> wide_sparse_attention_node = nullptr;
   // The ds4 prefill stage mechanisms (docs/experiments/ds4-prefill-stages),
   // each byte-identical to the plan without it and each under its own
   // shape guard; the fast DeepSeek plan's defaults (SetDsv4PrefillStages).

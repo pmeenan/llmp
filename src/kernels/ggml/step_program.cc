@@ -717,15 +717,24 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> GgmlBackend::L
   options.routed_funder = declaration_;
   auto lowered = LowerStep(input, *registry_, DeviceChoicesOf(*measuring_), options);
   if (!lowered) return std::unexpected(lowered.error().detail);
-  auto pool = PlanScratchOn(*measuring_, lowered->plan, false);
-  if (!pool) return std::unexpected(pool.error().detail);
+  auto scratch = PlanScratch(*measuring_, lowered->plan);
+  if (!scratch) return std::unexpected(scratch.error().detail);
+  std::uint64_t pool = *scratch;
+  if (!lowered->plan.regions.empty()) {
+    auto lane = PlanLaneScratch(*measuring_, lowered->plan);
+    if (!lane) return std::unexpected(lane.error().detail);
+    uint64_t lane_total = 0;
+    if (__builtin_mul_overflow(static_cast<uint64_t>(kMaxLanes), *lane, &lane_total) ||
+        __builtin_add_overflow(pool, lane_total, &pool))
+      return std::unexpected("step lane scratch pool overflows");
+  }
   for (const auto& selected : lowered->selected)
-    *pool = std::max(*pool, selected.call->scratch_bytes());
+    pool = std::max(pool, selected.call->scratch_bytes());
   const std::uint64_t prefix = options_.selected ? options_.selected->persistent_bytes() : 0;
-  if (__builtin_add_overflow(*pool, prefix, &*pool))
+  if (__builtin_add_overflow(pool, prefix, &pool))
     return std::unexpected("selected-source workspace extent overflows");
   return std::make_unique<GgmlStepProgram>(&launch_, &launch_generation_, *registry_,
-                                           std::move(*lowered), *pool, declaration_);
+                                           std::move(*lowered), pool, declaration_);
 }
 
 }  // namespace llmp::kernels::ggml

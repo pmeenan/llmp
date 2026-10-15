@@ -1231,6 +1231,8 @@ std::size_t Count(const ir::Graph& g, ir::Op op) {
       std::ranges::count_if(g.nodes(), [op](const ir::Node& n) { return n.key.op == op; }));
 }
 
+// A framework input has its own declared owner, but may be requested
+// while a component emits either joined or per-owner computation.
 TEST(ComponentsTest, LazyFrameworkInputsPreserveCallerContextOnMissAndHit) {
   for (const bool joined : {false, true}) {
     ir::Builder b;

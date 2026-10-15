@@ -1171,6 +1171,7 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
   c.Set(layer.out, joined);
 }
 
+constexpr std::array kGroupedProductAnchors{Op::kPermute};
 constexpr std::array kNormAnchors = {Op::kRmsNorm};
 constexpr std::array kAddAnchors = {Op::kAdd};
 constexpr std::array kGdnConvAnchors = {Op::kSsmConv, Op::kCacheStore};
@@ -1185,7 +1186,9 @@ constexpr std::array kAttentionAnchors = {Op::kAttention};
 constexpr std::array kProductAnchors = {Op::kMatMul};
 constexpr std::array kRopeAnchors = {Op::kRope};
 constexpr std::array kPoolAnchors = {Op::kPool};
+constexpr std::array kSelectedMaskAnchors = {Op::kSelectedMask};
 constexpr std::array kStoreAnchors = {Op::kCacheStore};
+constexpr std::array kContAnchors = {Op::kCont};
 constexpr std::array kRouteReduce = {ir::Primitive(Op::kRoute), ir::Primitive(Op::kExpertReduce)};
 
 // The table (see the header): its order is priority; where two patterns
@@ -1194,6 +1197,13 @@ constexpr std::array kPatterns = {
     // The fast forms' fusions (fusions.h), opt-in: a model's policy enables
     // them. Before the norms', which they take precedence over where a
     // policy enables both.
+    Pattern{.name = "dsv4_lid_mask",
+            .result = ir::Fused(FusedKind::kDsv4LidMask),
+            .anchors = kSelectedMaskAnchors,
+            .match = &fusions::Dsv4LidMaskMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
     Pattern{.name = "state_bank_attention",
             .result = ir::Fused(FusedKind::kStateBankAttention),
             .anchors = kAttentionAnchors,
@@ -1205,6 +1215,13 @@ constexpr std::array kPatterns = {
             .result = ir::Fused(FusedKind::kDsv4QHead),
             .anchors = kRopeAnchors,
             .match = &fusions::Dsv4QHeadMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
+    Pattern{.name = "dsv4_out_a",
+            .result = ir::Fused(FusedKind::kDsv4OutA),
+            .anchors = kContAnchors,
+            .match = &fusions::Dsv4OutAMatch,
             .own_checks = true,
             .rewrite = &fusions::Rewrite,
             .opt_in = true},
@@ -1373,6 +1390,13 @@ constexpr std::array kPatterns = {
             .rewrite = &fusions::Rewrite,
             .opt_in = true,
             .round = 1},
+    Pattern{.name = "grouped_vecq",
+            .result = ir::Fused(FusedKind::kGroupedMatMul),
+            .anchors = kGroupedProductAnchors,
+            .match = &fusions::GroupedVecQMatch,
+            .own_checks = true,
+            .rewrite = &fusions::Rewrite,
+            .opt_in = true},
     Pattern{.name = "vecq_inputs",
             .result = ir::Primitive(Op::kPrepare),
             .anchors = kQuantProductAnchors,
@@ -1439,6 +1463,8 @@ constexpr std::array kPatterns = {
             .result = ir::Fused(FusedKind::kGroupedStores),
             .anchors = kStoreAnchors,
             .match = &GroupedStoresMatch},
+    Pattern{.name = "biased_route", .kind = PatternKind::kOption, .opt_in = true},
+    Pattern{.name = "hash_route", .kind = PatternKind::kOption, .opt_in = true},
     Pattern{.name = "route_reduce", .kind = PatternKind::kComposite, .composites = kRouteReduce},
     Pattern{
         .name = "owner_bounded_roots", .kind = PatternKind::kOption, .parent = "owner_attention"},

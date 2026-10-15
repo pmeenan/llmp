@@ -14,6 +14,8 @@
 
 #include <cstdint>
 #include <expected>
+#include <span>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -45,6 +47,22 @@ std::expected<std::uint64_t, KernelFailure> PlanLaneScratch(const LaunchContext&
                                                             const GraphPlan& plan);
 std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& launch,
                                                           const GraphPlan& plan, bool lanes);
+
+// SCRATCH DIAGNOSTIC ONLY: an installed observer sees the existing bound
+// launches without adding uses or changing placement. Its owning arm and
+// paid readback storage survive until submission completion, or forever on
+// an unknown result. Install/remove only between completed jobs.
+class FirstAttentionObserver {
+ public:
+  virtual ~FirstAttentionObserver() = default;
+  virtual bool active() const = 0;
+  virtual std::expected<void, KernelFailure> Observe(LaunchContext& launch,
+                                                     std::span<ggml_tensor* const> nodes,
+                                                     std::string_view implementation,
+                                                     bool after) = 0;
+};
+bool SetFirstAttentionObserver(FirstAttentionObserver* expected,
+                               FirstAttentionObserver* replacement);
 
 // A plan whose every step is bound to an implementation of this build.
 class BoundGraph {
@@ -86,10 +104,13 @@ class BoundGraph {
       : bound_(std::move(bound)), steps_(std::move(steps)), regions_(std::move(regions)) {}
   std::expected<void, KernelFailure> RunStep(LaunchContext& launch, std::size_t i) const;
   std::expected<void, KernelFailure> RunLanes(LaunchContext& launch) const;
+  std::expected<void, KernelFailure> RunLanesRange(LaunchContext& launch, std::size_t first,
+                                                   std::size_t end) const;
 
   execution::BoundPlan bound_;
   std::vector<Step> steps_;
   std::vector<GraphPlan::Region> regions_;
+  bool has_spatial_ops_ = false;
 };
 
 }  // namespace llmp::kernels::ggml

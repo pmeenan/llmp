@@ -407,6 +407,7 @@ class EngineLlm final : public Llm {
   EngineLlmParts::ChatSlice chat_;
   std::vector<std::int32_t> chat_stops_;
   std::uint32_t slots_ = 1;
+  std::vector<Branch*> active_branches_;
   std::uint32_t verify_rows_ = 1;
   // Per slot: its drafters' cursors to reset before its next speculative
   // unit; and the judge's record of a verify's kept rows' logits, when the
@@ -415,6 +416,7 @@ class EngineLlm final : public Llm {
   std::array<bool, kMaxBranches> want_rows_{};
   std::array<bool, kMaxBranches> verify_tokens_{};
   std::array<std::vector<std::vector<float>>, kMaxBranches> verified_rows_{};
+  std::array<std::uint32_t, kMaxBranches> prefill_done_pos_{};
   Counts counts_;
 };
 

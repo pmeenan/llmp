@@ -1183,7 +1183,7 @@ void StepContext::Save(const Instance& in, std::string_view what, ir::TensorId t
     // Lowerings store saves after the IR launches; the indices stay live
     // through those stores even though no IR node reads them.
     b_.Keep(rows);
-    // (Input leaves the builder joined: the saver's owner again.)
+    // The save's explicitly named owner also applies to subsequent emission.
     if (segment != ir::kJoinedSegment) b_.SetOwner(segment);
   }
   saves_.push_back({.layer = in.layer,
@@ -1589,10 +1589,24 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
     }
     if (!indexed) return Refused("rounded indexer policy names no indexed attention");
   }
+  bool has_indexer = false;
+  if (options.dsv4_lid_mask) {
+    for (const auto& layer : instances->layers) {
+      for (const auto& in : layer) {
+        if (in.def->kind == "attention.mqa" && in.params.Flag("indexer")) {
+          has_indexer = true;
+          break;
+        }
+      }
+    }
+  }
   StepBuilder sb(stage, shape);
   StepContext& ctx = sb.ctx();
   ctx.EnableOwnerProducts(options.owner_products);
-  if (options.rounded_indexer) ctx.SetRoundedIndexerContext(bindings.state->context);
+  if (options.rounded_indexer ||
+      (options.dsv4_lid_mask && has_indexer && bindings.state != nullptr)) {
+    ctx.SetRoundedIndexerContext(bindings.state->context);
+  }
   const bool head = ctx.outputs() > 0;
   if (head && !instances->output) return Refused("outputs from a stage without an output head");
   TensorTables tables{.own = bindings.tensors, .stages = {}};
@@ -1674,6 +1688,10 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
       }
       if (in.def->masks != nullptr) {
         for (const MaskUse& m : in.def->masks(in)) {
+          if ((options.rounded_indexer || (options.dsv4_lid_mask && in.params.Flag("indexer"))) &&
+              st.contract.tensors.at(m.tensor).kind == model::StateKind::kCompressed) {
+            continue;
+          }
           masks.push_back({.cells = KeyOf(st.contract.tensors.at(m.tensor), st.cells.at(m.tensor)),
                            .window = m.window,
                            .ahead = m.ahead,

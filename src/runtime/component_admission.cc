@@ -610,7 +610,8 @@ std::expected<model::Qwen38PleHash, std::string> RecipeHash(const artifact::Arti
 bool OnComponentEngine(std::string_view architecture) {
   return architecture == "gemma2" || architecture == "gemma3" || architecture == "gemma4" ||
          architecture == "gemma4-assistant" || architecture == "qwen4exp" ||
-         architecture == "qwen4exp-mtp";
+         architecture == "qwen4exp-mtp" || architecture == "deepseek4" ||
+         architecture == "dflash";
 }
 
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
@@ -629,6 +630,11 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
     auto hash = RecipeHash(artifact, *binding);
     if (!hash) return std::unexpected(hash.error());
     return spec::mappings::Qwen38V0Values(model::Qwen38Flash(), *binding, *hash);
+  }
+  if (architecture == "deepseek4") {
+    auto binding = model::BindDsv4(model::Dsv4Flash(), artifact);
+    if (!binding) return std::unexpected(binding.error());
+    return spec::mappings::Dsv4V0Values(model::Dsv4Flash());
   }
   return std::unexpected(
       std::format("the component engine has no recipe for architecture {} yet", architecture));

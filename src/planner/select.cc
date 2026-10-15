@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -13,9 +14,11 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "execution/registry.h"
+#include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "planner/pattern.h"
@@ -164,13 +167,28 @@ RootAlignment GraphRootAlignments(const ir::Graph& graph,
       return {};
     alignments[fact.root.v] = fact.alignment;
   }
-  return [digest = graph.Digest(), seal = RootSeal(graph), alignments = std::move(alignments)](
-             const ir::Graph& current, ir::TensorId root) {
+  struct CachedGraph {
+    const ir::Node* nodes = nullptr;
+    std::size_t node_count = 0;
+    std::size_t tensor_count = 0;
+    bool ok = false;
+  };
+  return [digest = graph.Digest(), seal = RootSeal(graph),
+          alignments = std::move(alignments),
+          cached = std::make_shared<CachedGraph>()](
+             const ir::Graph& current, ir::TensorId root) -> std::uint64_t {
     if (!root.valid() || root.v >= alignments.size() || alignments[root.v] == 0 ||
-        root.v >= current.tensor_count() || current.tensor(root).is_view() ||
-        current.Digest() != digest || RootSeal(current) != seal)
+        root.v >= current.tensor_count() || current.tensor(root).is_view())
       return std::uint64_t{0};
-    return alignments[root.v];
+    if (cached->nodes != current.nodes().data() ||
+        cached->node_count != current.nodes().size() ||
+        cached->tensor_count != current.tensor_count()) {
+      cached->nodes = current.nodes().data();
+      cached->node_count = current.nodes().size();
+      cached->tensor_count = current.tensor_count();
+      cached->ok = (current.Digest() == digest && RootSeal(current) == seal);
+    }
+    return cached->ok ? alignments[root.v] : std::uint64_t{0};
   };
 }
 
@@ -220,8 +238,12 @@ RootAlignment ForwardRootAlignments(const ir::Graph& before, const ir::Graph& af
   // graph (without hashing it on every query). Exact-ID callbacks return zero
   // after a rewrite, then use the newly sealed map. No old IDs escape.
   return [original = facts, sealed](const ir::Graph& graph, ir::TensorId root) {
+    if (sealed) {
+      const auto from_sealed = sealed(graph, root);
+      if (PowerOfTwo(from_sealed)) return from_sealed;
+    }
     const auto direct = original(graph, root);
-    return PowerOfTwo(direct) ? direct : sealed ? sealed(graph, root) : 0;
+    return PowerOfTwo(direct) ? direct : std::uint64_t{0};
   };
 }
 
@@ -260,6 +282,12 @@ QueryShape ShapeOfNode(ir::OpKey key, std::span<const ir::TensorDesc* const> sou
         // A batch's member is one store (cache, src, idx).
         const ir::TensorDesc* src = At(sources, 1);
         return src == nullptr ? QueryShape{} : QueryShape{.rows = Rows(*src), .k = src->ne(0)};
+      }
+      case FusedKind::kDsv4OutA: {
+        const ir::TensorDesc* x = At(sources, 1);
+        return x == nullptr
+                   ? QueryShape{}
+                   : QueryShape{.rows = x->ne(2), .k = x->ne(0) * x->ne(1), .n = 8192};
       }
       default:
         break;
@@ -392,6 +420,27 @@ std::vector<std::size_t> SelectionView::ForOperands(
   if (!CompositeImplemented(policy_, key)) {
     return {};
   }
+  // Selected-ID hash routing is the opt-in small-row recipe (at most eight
+  // rows). Larger products retain separately rounded primitive routing;
+  // a kernel's larger launch limit is not authority to change that recipe.
+  // Biased top-k has its own default-off small-row recipe. Other kinds
+  // retain their existing native eligibility.
+  if (key == ir::Primitive(Op::kRoute) && params.size() >= sizeof(ir::RouteParams)) {
+    ir::RouteParams route{};
+    std::memcpy(&route, params.data(), sizeof(route));
+    if (route.kind == ir::RouteKind::kSqrtSoftplusBias &&
+        (Disabled(policy_, "biased_route") || sources.empty() || sources[0] == nullptr ||
+         sources[0]->ne(1) > 16))
+      return {};
+    if (route.kind == ir::RouteKind::kHash && (Disabled(policy_, "hash_route") || sources.empty() ||
+                                               sources[0] == nullptr || sources[0]->ne(1) > 8))
+      return {};
+  }
+  // The ungated four-input combination is a distinct ordered-FMA recipe.
+  // Direct composites obey the same explicit opt-in as the primitive matcher.
+  if (key == ir::Fused(ir::FusedKind::kMoeCombine) &&
+      (sources.size() <= 4 || sources[4] == nullptr) && Disabled(policy_, "moe_combine"))
+    return {};
   std::vector<execution::OperandFormat> operands;
   operands.reserve(sources.size());
   for (std::size_t i = 0; i < sources.size(); ++i) {
@@ -454,6 +503,28 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph,
 
 std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const ir::Node& node,
                                                    ir::OpKey key) const {
+  // Direct composites need the same immutable source authority as the
+  // primitive matcher. Refuse native selection early so ordinary expansion
+  // remains available for otherwise valid grouped products.
+  const bool grouped = key == ir::Fused(FusedKind::kGroupedMatMul);
+  if (grouped) {
+    if (Disabled(policy_, "grouped_vecq") || node.nsrc != 2 || !node.src[0].valid()) return {};
+    const auto& reshape = graph.node(graph.producer(node.src[0]));
+    if (reshape.key != ir::Primitive(Op::kReshape) || reshape.nsrc != 1) return {};
+    const auto& weight = graph.tensor(reshape.src[0]);
+    const auto& physical = graph.tensor(node.src[0]);
+    const auto* ref = std::get_if<ir::WeightRef>(&weight.binding);
+    if (!ref || ref->expert_array ||
+        graph.node(graph.producer(reshape.src[0])).key != ir::Primitive(Op::kWeight) ||
+        weight.is_view() || weight.format.shape.rank != 2 || weight.format.stacked != 1 ||
+        weight.format.layout != format::Layout::kGgmlBlocks || physical.view_offset != 0 ||
+        physical.ne(0) != weight.ne(0) || physical.ne(2) == 0 ||
+        weight.ne(1) / physical.ne(2) != physical.ne(1) || weight.ne(1) % physical.ne(2) != 0 ||
+        !ir::IsContiguous(physical))
+      return {};
+    const auto parts = format::PartsOf(weight.format);
+    if (!parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData) return {};
+  }
   std::vector<const ir::TensorDesc*> sources;
   for (const ir::TensorId s : node.sources()) {
     sources.push_back(s.valid() ? &graph.tensor(s) : nullptr);
@@ -481,7 +552,16 @@ std::vector<std::size_t> SelectionView::Candidates(const ir::Graph& graph, const
   };
   for (const auto tensor : node.sources()) alignments.push_back(alignment(tensor));
   for (const auto tensor : node.outputs()) alignments.push_back(alignment(tensor));
-  return ForOperands(key, sources, outputs, node.params, state_span, alignments);
+  auto candidates = ForOperands(key, sources, outputs, node.params, state_span, alignments);
+  if (grouped) {
+    std::erase_if(candidates, [&](std::size_t index) {
+      const auto& capability = registry_.at(index).capability;
+      return !capability || !std::ranges::all_of(capability->launches, [&](std::string_view name) {
+        return registry_.Find(name).has_value();
+      });
+    });
+  }
+  return candidates;
 }
 
 }  // namespace llmp::planner

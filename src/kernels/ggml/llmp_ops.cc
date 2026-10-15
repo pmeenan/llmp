@@ -2083,10 +2083,35 @@ ggml_tensor* Dsv4Route(ggml_context* context, ggml_tensor* logits, ggml_tensor* 
   return WithFloat(node, 3, scale);
 }
 
+ggml_tensor* RouteSelectedIds(ggml_context* context, ggml_tensor* logits, ggml_tensor* ids,
+                              std::int64_t used, bool norm, float clamp, float scale) {
+  auto* node = Custom(context, GGML_TYPE_I32, {2 * used, logits->ne[1], 1, 1}, {logits, ids},
+                      kTagDsv4Route.data());
+  WithInts(node, {used, norm ? 1 : 0, 0, 0, 1});
+  WithFloat(node, 2, clamp);
+  return WithFloat(node, 3, scale);
+}
+
+ggml_tensor* RouteBiasedTopK(ggml_context* context, ggml_tensor* logits, ggml_tensor* bias,
+                             std::int64_t used, bool norm, float scale) {
+  auto* node = Custom(context, GGML_TYPE_I32, {2 * used, logits->ne[1], 1, 1}, {logits, bias},
+                      kTagDsv4Route.data());
+  WithInts(node, {used, norm ? 1 : 0, 0, 0, 2});
+  WithFloat(node, 2, 0x1p-14F);
+  return WithFloat(node, 3, scale);
+}
+
 ggml_tensor* Dsv4Combine(ggml_context* context, ggml_tensor* down, ggml_tensor* route,
                          ggml_tensor* shared) {
   return Custom(context, GGML_TYPE_F32, {down->ne[0], down->ne[2], 1, 1}, {down, route, shared},
                 kTagDsv4Combine.data());
+}
+
+ggml_tensor* CombineSelectedWeights(ggml_context* context, ggml_tensor* down, ggml_tensor* weights,
+                                    ggml_tensor* shared) {
+  return WithInts(Custom(context, GGML_TYPE_F32, {down->ne[0], down->ne[2], 1, 1},
+                         {down, weights, shared}, kTagDsv4Combine.data()),
+                  {1});
 }
 
 ggml_tensor* Dsv4OrderedReduce(ggml_context* context, ggml_tensor* down, ggml_tensor* weights) {
@@ -2356,7 +2381,30 @@ std::expected<void, KernelFailure> CheckDsv4Route(const ggml_tensor* node) {
       !Packed(node)) {
     return Rejected("F32 logits [256, tokens] into I32 [2 · used, tokens], at most 32 used");
   }
-  if (hashed) {
+  const auto mode = LlmpOpInt(node, 4);
+  if (mode != 0 && mode != 1 && mode != 2) return Rejected("an unknown route addressing mode");
+  if (mode == 2) {
+    const auto* bias = node->src[1];
+    if (hashed || !Vector(bias, 256) || !Bound(bias) || !Packed(bias) || tokens > kVecQMaxTokens ||
+        !Aligned(logits, 4) || !Aligned(bias, 4) || !Aligned(node, 4) ||
+        !Disjoint(node, bias, false) || !AllCurrent({node, bias}) || !AllSane({bias}) ||
+        (LlmpOpInt(node, 1) != 0 && LlmpOpInt(node, 1) != 1) || LlmpOpFloat(node, 2) != 0x1p-14F ||
+        !std::isfinite(LlmpOpFloat(node, 3)) || LlmpOpFloat(node, 3) <= 0.0F)
+      return Rejected("packed biased routing, rows 1..16 and positive finite scale");
+    for (std::size_t i = 2; i < GGML_MAX_SRC; ++i)
+      if (node->src[i] != nullptr) return Rejected("unexpected biased route operand");
+  } else if (mode == 1) {
+    const auto* ids = node->src[1];
+    if (hashed || ids == nullptr || ids->type != GGML_TYPE_I32 || !Bound(ids) ||
+        !Aligned(logits, 4) || !Aligned(ids, 4) || !Aligned(node, 4) || !Packed(ids) ||
+        !Shaped(ids, used, tokens, 1) || !Disjoint(node, ids, false) || !AllCurrent({node, ids}) ||
+        !AllSane({ids}) || (LlmpOpInt(node, 1) != 0 && LlmpOpInt(node, 1) != 1) ||
+        !std::isfinite(LlmpOpFloat(node, 2)) || LlmpOpFloat(node, 2) < 0.0F ||
+        !std::isfinite(LlmpOpFloat(node, 3)))
+      return Rejected("packed selected IDs [used,tokens] and finite route parameters");
+    for (std::size_t i = 2; i < GGML_MAX_SRC; ++i)
+      if (node->src[i] != nullptr) return Rejected("unexpected selected-ID route operand");
+  } else if (hashed) {
     const ggml_tensor* table = node->src[1];
     const ggml_tensor* ids = node->src[2];
     if (table == nullptr || table->type != GGML_TYPE_I32 || !Bound(table) || !Packed(table) ||
@@ -2386,10 +2434,24 @@ std::expected<void, KernelFailure> CheckDsv4Combine(const ggml_tensor* node) {
   const std::int64_t n = down->ne[0];
   const std::int64_t used = down->ne[1];
   const std::int64_t tokens = down->ne[2];
-  if (!IsF32(down) || LlmpOpOf(route) != LlmpOp::kDsv4Route || LlmpOpInt(route, 0) != used ||
-      !Shaped(route, 2 * used, tokens, 1) || !IsF32(shared) || !Shaped(shared, n, tokens, 1) ||
-      !IsF32(node) || !Shaped(node, n, tokens, 1) || n % 4 != 0 || !Aligned(down, 16) ||
-      !Aligned(shared, 16) || !Aligned(node, 16) || tokens > 65535) {
+  const auto mode = LlmpOpInt(node, 0);
+  if (mode == 1) {
+    // Bound products before kernel int/grid arithmetic, then check complete
+    // current backing, packed pitches and all output/input disjointness.
+    if (!IsF32(down) || !Shaped(down, n, used, tokens) || n <= 0 || n > INT32_MAX - 1024 ||
+        used < 1 || used > 32 || tokens < 1 || tokens > 65535 || n % 4 != 0 || !IsF32(route) ||
+        !Shaped(route, used, tokens, 1) || !Aligned(route, 4) || !IsF32(shared) ||
+        !Shaped(shared, n, tokens, 1) || !IsF32(node) || !Shaped(node, n, tokens, 1) ||
+        !Aligned(down, 16) || !Aligned(shared, 16) || !Aligned(node, 16))
+      return Rejected(
+          "packed F32 down [n, used, tokens], weights and shared; used<=32, rows<=65535");
+    return CheckDense(node, {down, route, shared});
+  }
+  if (mode != 0) return Rejected("a known expert combination weight layout");
+  if (!IsF32(down) || LlmpOpOf(route) != LlmpOp::kDsv4Route || LlmpOpInt(route, 4) != 0 ||
+      LlmpOpInt(route, 0) != used || !Shaped(route, 2 * used, tokens, 1) || !IsF32(shared) ||
+      !Shaped(shared, n, tokens, 1) || !IsF32(node) || !Shaped(node, n, tokens, 1) || n % 4 != 0 ||
+      !Aligned(down, 16) || !Aligned(shared, 16) || !Aligned(node, 16) || tokens > 65535) {
     return Rejected("down F32 [n, used, tokens], its routing, shared F32 [n, tokens]");
   }
   return CheckDense(node, {down, route, shared});

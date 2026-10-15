@@ -256,10 +256,24 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   if (owners) {
     for (auto& a : rewritten->applied)
       for (auto& n : a.replaced) n = owners->rewrite.from.at(n.v);
+    std::size_t max_from = 0;
+    for (const auto& nid : rewritten->from) {
+      if (nid.v >= max_from) max_from = nid.v + 1;
+    }
+    std::vector<std::vector<NodeId>> by_old(max_from);
+    for (std::uint32_t i = 0; i < rewritten->from.size(); ++i) {
+      if (rewritten->from[i].v < max_from) {
+        by_old[rewritten->from[i].v].push_back(NodeId{i});
+      }
+    }
     for (auto& a : owners->rewrite.applied) {
       std::vector<NodeId> made;
-      for (std::uint32_t i = 0; i < rewritten->from.size(); ++i)
-        if (std::ranges::contains(a.made, rewritten->from[i])) made.push_back(NodeId{i});
+      for (const NodeId old_id : a.made) {
+        if (old_id.v < by_old.size()) {
+          made.insert(made.end(), by_old[old_id.v].begin(), by_old[old_id.v].end());
+        }
+      }
+      std::ranges::sort(made, {}, &NodeId::v);
       a.made = std::move(made);
     }
     for (auto& n : rewritten->from) n = owners->rewrite.from.at(n.v);
@@ -316,13 +330,22 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     for (std::size_t j = 0; j < back.size(); ++j) {
       composed[j] = from.at(back[j].v);
     }
+    std::size_t max_back = 0;
+    for (const auto& nid : back) {
+      if (nid.v >= max_back) max_back = nid.v + 1;
+    }
+    std::vector<std::vector<NodeId>> by_old(max_back);
+    for (std::uint32_t j = 0; j < back.size(); ++j) {
+      if (back[j].v < max_back) by_old[back[j].v].push_back(NodeId{j});
+    }
     for (Applied& a : applied) {
       std::vector<NodeId> made;
-      for (std::uint32_t j = 0; j < back.size(); ++j) {
-        if (std::ranges::contains(a.made, back[j])) {
-          made.push_back(NodeId{j});
+      for (const NodeId old_id : a.made) {
+        if (old_id.v < by_old.size()) {
+          made.insert(made.end(), by_old[old_id.v].begin(), by_old[old_id.v].end());
         }
       }
+      std::ranges::sort(made, {}, &NodeId::v);
       a.made = std::move(made);
     }
     from = std::move(composed);
@@ -338,11 +361,24 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   // Lane tags follow the primitive nodes into what stands for them.
   LaneTags tags;
   if (!options.lanes.empty()) {
+    std::uint32_t max_node = 0;
+    for (const auto& [node, _] : options.lanes) {
+      if (node.valid()) {
+        max_node = std::max(max_node, node.v);
+      }
+    }
+    std::vector<LaneTag> lane_lut(max_node + 1);
+    std::vector<bool> has_lane(max_node + 1, false);
+    for (const auto& [node, tag] : options.lanes) {
+      if (node.valid()) {
+        lane_lut[node.v] = tag;
+        has_lane[node.v] = true;
+      }
+    }
     for (std::uint32_t j = 0; j < from.size(); ++j) {
-      const auto tag =
-          std::ranges::find(options.lanes, from[j], &std::pair<NodeId, LaneTag>::first);
-      if (tag != options.lanes.end()) {
-        tags.emplace_back(NodeId{j}, tag->second);
+      const NodeId fn = from[j];
+      if (fn.valid() && fn.v < lane_lut.size() && has_lane[fn.v]) {
+        tags.emplace_back(NodeId{j}, lane_lut[fn.v]);
       }
     }
   }
@@ -364,14 +400,31 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     return Failed(PlanError::kPlacement, placement.error());
   }
   auto alignments = view.Alignments(graph);
-  for (const auto& fact : alignments) {
-    const auto placed = std::ranges::find(placement->offsets, fact.root,
-                                          &std::pair<TensorId, std::uint64_t>::first);
-    if (placed != placement->offsets.end() &&
-        (placed->second % fact.alignment != 0 ||
-         (options.activation_alignment != 0 && options.activation_alignment % fact.alignment != 0)))
-      return Failed(PlanError::kPlacement,
-                    "an activation's placement breaks its alignment promise");
+  if (!alignments.empty()) {
+    std::uint32_t max_tensor = 0;
+    for (const auto& [tid, _] : placement->offsets) {
+      if (tid.valid()) {
+        max_tensor = std::max(max_tensor, tid.v);
+      }
+    }
+    std::vector<std::uint64_t> offset_lut(max_tensor + 1, 0);
+    std::vector<bool> has_offset(max_tensor + 1, false);
+    for (const auto& [tid, off] : placement->offsets) {
+      if (tid.valid()) {
+        offset_lut[tid.v] = off;
+        has_offset[tid.v] = true;
+      }
+    }
+    for (const auto& fact : alignments) {
+      if (fact.root.valid() && fact.root.v < has_offset.size() && has_offset[fact.root.v]) {
+        const std::uint64_t off = offset_lut[fact.root.v];
+        if (off % fact.alignment != 0 ||
+            (options.activation_alignment != 0 && options.activation_alignment % fact.alignment != 0)) {
+          return Failed(PlanError::kPlacement,
+                        "an activation's placement breaks its alignment promise");
+        }
+      }
+    }
   }
   return StepPlan{
       .graph = std::move(graph),

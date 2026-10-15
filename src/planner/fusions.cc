@@ -14,7 +14,9 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "format/encoding.h"
@@ -1481,6 +1483,55 @@ TensorId SegmentPositions(RewriteContext& r, const StepShape* shape, TensorId po
 
 // ------------------------------------------------ DeepSeek local fast forms
 
+// The explicit rounded recipe only: generic IndexScore/TopK is a different
+// numerical/visibility contract. Closed() authenticates all eliminated
+// observers and the original read/write ordering, including aliases/stores.
+std::optional<Match> Dsv4LidMaskMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kSelectedMask) || c.taken(anchor)) return std::nullopt;
+  const auto& mask = c.node(anchor);
+  const auto top = Made(c, mask.src[1]);
+  if (!Is(c, top, Op::kVisibleTopK)) return std::nullopt;
+  const auto& select = c.node(top);
+  const auto score = Made(c, select.src[0]);
+  if (!Is(c, score, Op::kRoundedIndexScore)) return std::nullopt;
+  const auto& scored = c.node(score);
+  const auto rounded = scored.Params<ir::RoundedIndexScoreParams>();
+  const auto selected = mask.Params<ir::SelectedMaskParams>();
+  if (rounded.query != ir::QueryRounding::kF16 || rounded.reserved[0] || rounded.reserved[1] ||
+      rounded.reserved[2] || scored.src[3] != select.src[1] ||
+      c.tensor(scored.src[1]).ne(2) != selected.cells || mask.component != scored.component ||
+      select.component != scored.component || mask.batch != scored.batch ||
+      select.batch != scored.batch)
+    return std::nullopt;
+  const ir::LidMaskParams params{.top = select.Params<ir::TopKParams>().k,
+                                 .raw_cells = selected.raw_cells,
+                                 .cells = selected.cells};
+  const std::array sources{scored.src[0], scored.src[1], scored.src[2], scored.src[3], mask.src[0]};
+  const std::array outputs{mask.out[0]};
+  // These are existing boundary tensors, so preserve their authenticated
+  // graph roots when querying the native recipe. Descriptor-only queries
+  // deliberately have unknown alignment and cannot select this kernel.
+  ir::Node candidate = mask;
+  candidate.key = ir::Fused(FusedKind::kDsv4LidMask);
+  candidate.SetParams(params);
+  candidate.src = {};
+  std::ranges::copy(sources, candidate.src.begin());
+  candidate.nsrc = static_cast<std::uint8_t>(sources.size());
+  Building b(c);
+  if (!b.Add({score, top, anchor}) || !b.Closed(outputs) ||
+      c.view().Candidates(c.graph(), candidate).empty())
+    return std::nullopt;
+  return b.Finish(
+      {{anchor, 0}},
+      [=](RewriteContext& r, int) {
+        ContextOf(r, r.original().node(anchor));
+        std::array<TensorId, 5> mapped{};
+        for (std::size_t i = 0; i < sources.size(); ++i) mapped[i] = r.Map(sources[i]);
+        r.Set(mask.out[0], r.builder().Fused(FusedKind::kDsv4LidMask, mapped, params)[0]);
+      },
+      std::vector<TensorId>(sources.begin(), sources.end()));
+}
+
 // Keep the entire score/TopK/mask path as operands. Only the exact K/V
 // concatenation and its two permutations disappear, at Attention's place.
 std::optional<Match> StateBankAttentionMatch(const MatchContext& c, NodeId anchor) {
@@ -1565,6 +1616,69 @@ std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, NodeId anchor) {
     ContextOf(r, r.original().node(anchor));
     const std::array<TensorId, 2> mapped{r.Map(sources[0]), r.Map(sources[1])};
     r.Set(outputs[0], r.builder().Fused(FusedKind::kDsv4QHead, mapped, p)[0]);
+  };
+  return b.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
+}
+
+std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kCont) || c.taken(anchor)) return std::nullopt;
+  const ir::Node& cont = c.node(anchor);
+  const NodeId perm2 = Made(c, cont.src[0]);
+  if (!Is(c, perm2, Op::kPermute) || Only(c, cont.src[0]) != anchor) return std::nullopt;
+  const auto p2 = c.node(perm2).Params<ir::PermuteParams>();
+  if (p2.axes != std::array<std::uint8_t, 4>{0, 2, 1, 3}) return std::nullopt;
+
+  const NodeId matmul = Made(c, c.node(perm2).src[0]);
+  if (!Is(c, matmul, Op::kMatMul) || Only(c, c.node(perm2).src[0]) != perm2) return std::nullopt;
+  const ir::Node& mm = c.node(matmul);
+
+  const NodeId perm1 = Made(c, mm.src[1]);
+  if (!Is(c, perm1, Op::kPermute) || Only(c, mm.src[1]) != matmul) return std::nullopt;
+  const auto p1 = c.node(perm1).Params<ir::PermuteParams>();
+  if (p1.axes != std::array<std::uint8_t, 4>{0, 2, 1, 3}) return std::nullopt;
+
+  const NodeId reshape1 = Made(c, c.node(perm1).src[0]);
+  if (!Is(c, reshape1, Op::kReshape) || Only(c, c.node(perm1).src[0]) != perm1) return std::nullopt;
+
+  const NodeId rope = Made(c, c.node(reshape1).src[0]);
+  if (!Is(c, rope, Op::kRope) || Only(c, c.node(reshape1).src[0]) != reshape1) return std::nullopt;
+  const ir::Node& ro = c.node(rope);
+  const auto rp = ro.Params<ir::RopeParams>();
+  if (!rp.inverse || rp.mode != ir::RopeMode::kNormal || rp.dims != 64) return std::nullopt;
+
+  const ir::TensorDesc& heads = c.tensor(ro.src[0]);
+  const auto rows = heads.ne(2);
+  if (rows < 64 || rows > 4096) return std::nullopt;
+  if (heads.ne(0) != 512 || heads.ne(1) != 64 || heads.ne(3) != 1) return std::nullopt;
+
+  NodeId groups_node = Made(c, mm.src[0]);
+  TensorId weight_out_a = mm.src[0];
+  if (Is(c, groups_node, Op::kReshape) && Only(c, mm.src[0]) == matmul) {
+    weight_out_a = c.node(groups_node).src[0];
+  }
+  const ir::TensorDesc& w = c.tensor(weight_out_a);
+  if (w.format.encoding != Encoding::kQ8_0 && w.format.encoding != Encoding::kF32 &&
+      w.format.encoding != Encoding::kF16) {
+    return std::nullopt;
+  }
+
+  Building b(c);
+  if (!b.Add({rope, reshape1, perm1, matmul, perm2, anchor})) return std::nullopt;
+  if (weight_out_a != mm.src[0] && !b.Add(groups_node)) return std::nullopt;
+  const std::array<TensorId, 3> sources = {weight_out_a, ro.src[0], ro.src[1]};
+  const std::array<TensorId, 1> outputs = {cont.out[0]};
+  const std::array<const ir::TensorDesc*, 1> descs = {&c.tensor(cont.out[0])};
+
+  if (!b.Closed(outputs) ||
+      !Has(c, ir::Fused(FusedKind::kDsv4OutA), Descs(c, sources), descs, ir::ToBytes(rp))) {
+    return std::nullopt;
+  }
+
+  const auto emit = [=](RewriteContext& r, int) {
+    ContextOf(r, r.original().node(anchor));
+    const std::array<TensorId, 3> mapped = {r.Map(sources[0]), r.Map(sources[1]),
+                                            r.Map(sources[2])};
+    r.Set(outputs[0], r.builder().Fused(FusedKind::kDsv4OutA, mapped, rp)[0]);
   };
   return b.Finish({{anchor, 0}}, emit, std::vector<TensorId>(sources.begin(), sources.end()));
 }
@@ -2385,6 +2499,31 @@ std::optional<Match> MoeCombineMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   const ir::Node& er = c.node(anchor);
+  const auto sum = SharedSumAt(c, anchor);
+  // Prefer the existing gated recipe whenever its complete dataflow matches.
+  // An ungated shared output plus an unscaled ordered expert reduction.
+  // Keep the exact add order and closed intermediate; no ID sorting or weight
+  // normalization is introduced by the replacement.
+  if (!er.source(3).valid() && !sum) {
+    const auto add = OnlyOf(c, er.out[0], Op::kAdd);
+    if (add && c.node(*add).src[0] == er.out[0]) {
+      const auto shared = c.node(*add).src[1];
+      const std::array<TensorId, 4> sources = {er.src[0], er.src[2], er.src[1], shared};
+      const std::array<TensorId, 1> outs = {c.node(*add).out[0]};
+      const std::array<const ir::TensorDesc*, 1> outputs = {&c.tensor(outs[0])};
+      Building plain(c);
+      if (plain.Add({anchor, *add}) && plain.Closed(outs) &&
+          Has(c, ir::Fused(FusedKind::kMoeCombine), Descs(c, sources), outputs, {})) {
+        auto emit = [=](RewriteContext& r, int) {
+          ContextOf(r, r.original().node(*add));
+          std::array<TensorId, 4> mapped{};
+          for (std::size_t i = 0; i < sources.size(); ++i) mapped[i] = r.Map(sources[i]);
+          r.Set(outs[0], r.builder().Fused(FusedKind::kMoeCombine, mapped)[0]);
+        };
+        return plain.Finish({{*add, 0}}, emit);
+      }
+    }
+  }
   const TensorId ids = er.src[2];
   std::optional<Gathered> gd;
   if (er.source(3).valid()) {
@@ -2393,7 +2532,6 @@ std::optional<Match> MoeCombineMatch(const MatchContext& c, NodeId anchor) {
       return std::nullopt;
     }
   }
-  const auto sum = SharedSumAt(c, anchor);
   if (!sum) {
     return std::nullopt;
   }
@@ -2899,6 +3037,88 @@ std::optional<Match> VecQInputsMatch(const MatchContext& c, NodeId anchor) {
   const ir::TensorDesc prepared = Q8Rows(xd);
   return PreparedInputs(c, anchor, x, prepared, takes, Encoding::kQ8_1,
                         format::Layout::kGgmlBlocks);
+}
+
+// A grouped product's actual layout chain, over an immutable 2D weight
+// resource reshaped into its complete groups. No equal-shape authority.
+std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
+  if (!Is(c, anchor, Op::kPermute) || c.taken(anchor)) return std::nullopt;
+  constexpr std::array<std::uint8_t, 4> swap{0, 2, 1, 3};
+  const auto& output = c.node(anchor);
+  if (output.Params<ir::PermuteParams>().axes != swap) return std::nullopt;
+  const auto product_id = Made(c, output.src[0]);
+  if (!Is(c, product_id, Op::kMatMul) || Only(c, output.src[0]) != anchor) return std::nullopt;
+  const auto& product = c.node(product_id);
+  const auto input_id = Made(c, product.src[1]);
+  const auto weight_id = Made(c, product.src[0]);
+  if (!Is(c, input_id, Op::kPermute) || !Is(c, weight_id, Op::kReshape) ||
+      c.node(input_id).Params<ir::PermuteParams>().axes != swap ||
+      Only(c, product.src[1]) != product_id)
+    return std::nullopt;
+  const auto x = c.node(input_id).src[0];
+  const auto w = product.src[0];
+  const auto leaf = c.node(weight_id).src[0];
+  const auto& original = c.tensor(leaf);
+  const auto& grouped = c.tensor(w);
+  const auto& input = c.tensor(x);
+  const auto params = product.Params<ir::ProductParams>();
+  const auto* reference = std::get_if<ir::WeightRef>(&original.binding);
+  if (!reference || reference->expert_array ||
+      c.tensor(product.out[0]).format.encoding != Encoding::kF32 ||
+      c.tensor(output.out[0]).format.encoding != Encoding::kF32 ||
+      c.producer(leaf).key != Prim(Op::kWeight) || original.is_view() ||
+      original.format.shape.rank != 2 || original.format.stacked != 1 ||
+      original.format.layout != format::Layout::kGgmlBlocks || grouped.view_offset != 0 ||
+      grouped.ne(0) != original.ne(0) || grouped.ne(2) == 0 ||
+      original.ne(1) / grouped.ne(2) != grouped.ne(1) || original.ne(1) % grouped.ne(2) != 0 ||
+      !ir::IsContiguous(grouped) || input.format.encoding != Encoding::kF32 ||
+      !ir::IsContiguous(input) || params.accumulate != ir::Accumulate::kDefault ||
+      params.hint != ir::ProductHint::kNone)
+    return std::nullopt;
+  const auto parts = format::PartsOf(original.format);
+  if (!parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData)
+    return std::nullopt;
+  // The final packed assembly remains an ordinary Cont when it is a graph
+  // output; otherwise its contiguous grouped result reshapes in place.
+  const auto consumer = Only(c, output.out[0]);
+  if (!consumer || !Is(c, *consumer, Op::kCont) || !Unwritten(c, input_id, anchor, x))
+    return std::nullopt;
+  const std::array<TensorId, 2> sources{w, x};
+  const auto result = DenseDesc(Encoding::kF32, {grouped.ne(1), grouped.ne(2), input.ne(2)});
+  const std::array<const ir::TensorDesc*, 1> outputs{&result};
+  const auto candidates = c.view().Candidates(ir::Fused(FusedKind::kGroupedMatMul),
+                                              Descs(c, sources), outputs, product.params);
+  const bool available = std::ranges::any_of(candidates, [&](std::size_t index) {
+    const auto& capability = c.view().registry().at(index).capability;
+    return capability && std::ranges::all_of(capability->launches, [&](std::string_view name) {
+             return c.view().registry().Find(name).has_value();
+           });
+  });
+  if (!available) return std::nullopt;
+  const ir::Node& cont_node = c.node(*consumer);
+  const TensorId cont_out = cont_node.out[0];
+  const bool fold_cont = !std::ranges::contains(c.graph().outputs(), cont_out);
+  Building b(c);
+  if (fold_cont) {
+    if (!b.Add({input_id, product_id, anchor, *consumer}) || !b.Closed(std::array{cont_out}))
+      return std::nullopt;
+    const auto shape = c.tensor(cont_out).shape();
+    auto emit = [=](RewriteContext& r, int) {
+      ContextOf(r, r.original().node(anchor));
+      const std::array src{r.Map(w), r.Map(x)};
+      const TensorId grouped_out = r.builder().Fused(FusedKind::kGroupedMatMul, src, params)[0];
+      r.Set(cont_out, r.builder().Reshape(grouped_out, shape));
+    };
+    return b.Finish({{*consumer, 0}}, emit, {w, x});
+  }
+  if (!b.Add({input_id, product_id, anchor}) || !b.Closed(std::array{output.out[0]}))
+    return std::nullopt;
+  auto emit = [=](RewriteContext& r, int) {
+    ContextOf(r, r.original().node(anchor));
+    const std::array src{r.Map(w), r.Map(x)};
+    r.Set(output.out[0], r.builder().Fused(FusedKind::kGroupedMatMul, src, params)[0]);
+  };
+  return b.Finish({{anchor, 0}}, emit, {w, x});
 }
 
 // ---------------------------------------------------------------- rewrite

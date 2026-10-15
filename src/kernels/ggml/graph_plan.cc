@@ -410,12 +410,13 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                 continue;
               }
               const auto other_path = device.quant(other);
-              if (other_path && *other_path == QuantMulMatPath::kTile) {
+              if (other_path && *other_path == QuantMulMatPath::kTile &&
+                  CheckMulMatQPairDense(node, other)) {
                 add(Operation::kMatMul, kMulMatQPairDense, i, {node, other}, 1);
                 taken[k] = true;
                 paired = true;
+                break;
               }
-              break;
             }
             if (paired) {
               break;
@@ -931,8 +932,10 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           break;
         }
         add(Operation::kFlashAttn,
-            device.wide_sparse_attention && (LlmpOpOf(node->src[3]) != LlmpOp::kDsv4SparseMask ||
-                                             LlmpOpInt(node->src[3], 1) != 1)
+            (device.wide_sparse_attention ||
+             (device.wide_sparse_attention_node && device.wide_sparse_attention_node(node))) &&
+                    (LlmpOpOf(node->src[3]) != LlmpOp::kDsv4SparseMask ||
+                     LlmpOpInt(node->src[3], 1) != 1)
                 ? kFlashAttnMmaWideName
                 : kFlashAttnMmaName,
             i, {node}, 1);
@@ -1238,26 +1241,31 @@ std::expected<Placement, KernelFailure> MeasureActivations(GraphNodes graph, con
   std::ranges::stable_sort(
       order, [&](std::size_t a, std::size_t b) { return lives[a].bytes > lives[b].bytes; });
   Placement placement;
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> busy;  // offset, end
+  struct PlacedSpan {
+    std::uint64_t offset = 0;
+    std::uint64_t end = 0;
+    std::int64_t first = 0;
+    std::int64_t last = 0;
+  };
+  std::vector<PlacedSpan> placed;
+  placed.reserve(lives.size());
   for (const std::size_t i : order) {
     Life& life = lives[i];
-    busy.clear();
-    for (const Life& other : lives) {
-      if (other.placed && other.first <= life.last && life.first <= other.last) {
-        busy.emplace_back(other.offset, other.offset + other.bytes);
-      }
-    }
-    std::ranges::sort(busy);
     std::uint64_t offset = 0;
-    for (const auto& [start, end] : busy) {
-      if (start >= offset + life.bytes) {
+    for (const auto& b : placed) {
+      if (b.offset >= offset + life.bytes) {
         break;
       }
-      offset = std::max(offset, end);
+      if (b.first <= life.last && life.first <= b.last) {
+        offset = std::max(offset, b.end);
+      }
     }
     life.offset = offset;
     life.placed = true;
     placement.extent = std::max(placement.extent, offset + life.bytes);
+    PlacedSpan span{offset, offset + life.bytes, life.first, life.last};
+    auto it = std::ranges::lower_bound(placed, span.offset, {}, &PlacedSpan::offset);
+    placed.insert(it, span);
   }
   placement.offsets.reserve(lives.size());
   for (const Life& life : lives) {

@@ -268,7 +268,7 @@ struct SegmentWork {
 struct StepAhead {
   // The next step's shape and the one after it, from this step's owners
   // continuing (the prefill lookahead's near and far futures).
-  std::array<std::optional<planner::StepShape>, 4> shapes{};
+  std::array<std::optional<planner::StepShape>, 8> shapes{};
   // Distinct missing futures built while the device runs this step (0 to
   // 2; a threaded node only), each under its own optional allowance.
   std::uint32_t build = 0;

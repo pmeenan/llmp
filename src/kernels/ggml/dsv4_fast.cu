@@ -946,6 +946,8 @@ constexpr int kRouteWarps = 4;
 struct RouteArgs {
   const float* logits = nullptr;
   int logits_stride = 0;  // floats between tokens
+  bool selected_ids = false;
+  bool planar_output = false;
   const float* bias = nullptr;
   const std::int32_t* table = nullptr;  // the hash layers' [used, vocab]
   const std::int32_t* tokens = nullptr;
@@ -982,7 +984,7 @@ __global__ void __launch_bounds__(32 * kRouteWarps) RouteKernel(const RouteArgs 
     int best = 0;
     float weight = 0.0f;
     if (a.table != nullptr) {
-      best = a.table[(a.tokens[t] * a.used) + k];
+      best = a.table[((a.selected_ids ? t : a.tokens[t]) * a.used) + k];
       const int owner = best & 31;
       const int slot = (best >> 5) & (kPerLane - 1);
       float mine = 0.0f;
@@ -1033,26 +1035,34 @@ __global__ void __launch_bounds__(32 * kRouteWarps) RouteKernel(const RouteArgs 
   }
   my_weight *= a.scale;
   if (lane < a.used) {
-    std::int32_t* row = a.out + (static_cast<std::ptrdiff_t>(t) * 2 * a.used);
-    row[lane] = my_id;
-    row[a.used + lane] = __float_as_int(my_weight);
+    if (a.planar_output) {
+      const auto at = static_cast<std::ptrdiff_t>(t) * a.used + lane;
+      a.out[at] = my_id;
+      a.out[static_cast<std::ptrdiff_t>(a.n_tokens) * a.used + at] = __float_as_int(my_weight);
+    } else {
+      std::int32_t* row = a.out + (static_cast<std::ptrdiff_t>(t) * 2 * a.used);
+      row[lane] = my_id;
+      row[a.used + lane] = __float_as_int(my_weight);
+    }
   }
 }
 
 // ---------------------------------------------------------------- combine
 
 __global__ void CombineKernel(const float4* down, const std::int32_t* route, const float4* shared,
-                              float4* out, int n4, int used) {
+                              float4* out, int n4, int used, const float* selected_weights) {
   ggml_cuda_pdl_sync();
   const int c = static_cast<int>((blockIdx.x * blockDim.x) + threadIdx.x);
   const int t = static_cast<int>(blockIdx.y);
   if (c >= n4) {
     return;
   }
-  const std::int32_t* weights = route + (static_cast<std::ptrdiff_t>(t) * 2 * used) + used;
+  const std::int32_t* weights =
+      selected_weights ? nullptr : route + (static_cast<std::ptrdiff_t>(t) * 2 * used) + used;
   float4 sum = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
   for (int k = 0; k < used; ++k) {
-    const float w = __int_as_float(weights[k]);
+    const float w = selected_weights ? selected_weights[static_cast<std::ptrdiff_t>(t) * used + k]
+                                     : __int_as_float(weights[k]);
     const float4 d = down[(static_cast<std::ptrdiff_t>((t * used) + k) * n4) + c];
     sum.x += d.x * w;
     sum.y += d.y * w;
@@ -1442,13 +1452,16 @@ std::expected<void, KernelFailure> RunDsv4Route(LaunchContext& launch, ggml_tens
   }
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* logits = node->src[0];
-    const bool hashed = node->src[2] != nullptr;
+    const bool selected = LlmpOpInt(node, 4) == 1;
+    const bool hashed = selected || node->src[2] != nullptr;
     RouteArgs a;
+    a.selected_ids = selected;
+    a.planar_output = LlmpOpInt(node, 4) != 0;
     a.logits = static_cast<const float*>(logits->data);
     a.logits_stride = static_cast<int>(logits->nb[1] / sizeof(float));
     a.bias = hashed ? nullptr : static_cast<const float*>(node->src[1]->data);
     a.table = hashed ? static_cast<const std::int32_t*>(node->src[1]->data) : nullptr;
-    a.tokens = hashed ? static_cast<const std::int32_t*>(node->src[2]->data) : nullptr;
+    a.tokens = hashed && !selected ? static_cast<const std::int32_t*>(node->src[2]->data) : nullptr;
     a.out = static_cast<std::int32_t*>(node->data);
     a.n_tokens = static_cast<int>(logits->ne[1]);
     a.used = LlmpOpInt(node, 0);
@@ -1470,12 +1483,13 @@ std::expected<void, KernelFailure> RunDsv4Combine(LaunchContext& launch, ggml_te
     const ggml_tensor* down = node->src[0];
     const int n4 = static_cast<int>(down->ne[0] / 4);
     const dim3 grid(static_cast<unsigned>((n4 + 255) / 256), static_cast<unsigned>(down->ne[2]));
-    ggml_cuda_kernel_launch(CombineKernel,
-                            ggml_cuda_kernel_launch_params(grid, dim3(256), 0, context.stream()),
-                            static_cast<const float4*>(down->data),
-                            static_cast<const std::int32_t*>(node->src[1]->data),
-                            static_cast<const float4*>(node->src[2]->data),
-                            static_cast<float4*>(node->data), n4, static_cast<int>(down->ne[1]));
+    ggml_cuda_kernel_launch(
+        CombineKernel, ggml_cuda_kernel_launch_params(grid, dim3(256), 0, context.stream()),
+        static_cast<const float4*>(down->data),
+        static_cast<const std::int32_t*>(node->src[1]->data),
+        static_cast<const float4*>(node->src[2]->data), static_cast<float4*>(node->data), n4,
+        static_cast<int>(down->ne[1]),
+        LlmpOpInt(node, 0) == 1 ? static_cast<const float*>(node->src[1]->data) : nullptr);
   });
 }
 

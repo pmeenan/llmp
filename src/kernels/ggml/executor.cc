@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -32,6 +33,14 @@
 #include "kernels/ggml/tensors.h"
 
 namespace llmp::kernels::ggml {
+namespace {
+std::atomic<FirstAttentionObserver*> first_attention_observer{nullptr};
+}
+bool SetFirstAttentionObserver(FirstAttentionObserver* expected,
+                               FirstAttentionObserver* replacement) {
+  return first_attention_observer.compare_exchange_strong(expected, replacement);
+}
+
 namespace {
 
 // A refused step's last node and its first operand, by name and shape, so
@@ -229,8 +238,14 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
   static_assert(sizeof(CachedWrapper) <= 16);
   std::vector<CachedWrapper> wrappers;
   wrappers.reserve(std::min(plan.steps.size(), execution::Registry::kMaxImplementations));
+  bool has_spatial_ops = false;
   for (std::size_t i = 0; i < plan.steps.size(); ++i) {
     const PlanStep& planned = plan.steps[i];
+    if (planned.implementation == kAttentionF32 || planned.implementation == kConv2dTiledF32 ||
+        planned.implementation == "ggml.l2_norm" || planned.implementation == "ggml.norm" ||
+        planned.implementation == "ggml.repeat") {
+      has_spatial_ops = true;
+    }
     const execution::Implementation& implementation = bound->at(i);
     const auto external = planned.nodes.size() == 1
                               ? std::ranges::find(selected, planned.nodes[0], &SelectedNode::tensor)
@@ -239,7 +254,9 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
       if (external->call->route() && !routed)
         return Rejected("routed selected calls require a segmented owned program");
       if (native == nullptr || native->owner() != external->call->owner() || planned.lane != 0 ||
-          external->implementation != &implementation || !plan.regions.empty())
+          external->implementation != &implementation ||
+          std::ranges::any_of(plan.regions,
+                              [i](const auto& r) { return i >= r.first && i <= r.last; }))
         return Rejected("a selected-source call has foreign binding or concurrent lanes");
       auto call = external->call->Bind(implementation, *native, scratch);
       if (!call) return std::unexpected(call.error());
@@ -289,11 +306,27 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
   }
   BoundGraph result(std::move(*bound), std::move(steps), plan.regions);
   result.routed_ = routed;
+  result.has_spatial_ops_ = has_spatial_ops;
   return result;
 }
 
 std::expected<void, KernelFailure> BoundGraph::RunStep(LaunchContext& launch, std::size_t i) const {
   const Step& step = steps_[i];
+  auto* observer = first_attention_observer.load();
+  if (observer != nullptr && !observer->active()) observer = nullptr;
+  const auto name = std::visit(
+      [](const auto& k) -> std::string_view {
+        using T = std::decay_t<decltype(k)>;
+        if constexpr (std::is_same_v<T, std::unique_ptr<BoundSelectedCall>>) {
+          return "selected";
+        } else {
+          return k.name();
+        }
+      },
+      step.kernel);
+  if (observer != nullptr)
+    if (auto observed = observer->Observe(launch, step.nodes, name, false); !observed)
+      return observed;
   std::expected<void, KernelFailure> ran;
   if (const auto* rms = std::get_if<RmsNormMulKernel>(&step.kernel)) {
     ran = rms->Run(launch, step.nodes[0], step.nodes[1]);
@@ -306,6 +339,9 @@ std::expected<void, KernelFailure> BoundGraph::RunStep(LaunchContext& launch, st
     return std::unexpected(KernelFailure{
         .error = ran.error().error, .detail = std::format("step {}: {}", i, ran.error().detail)});
   }
+  if (observer != nullptr)
+    if (auto observed = observer->Observe(launch, step.nodes, name, true); !observed)
+      return observed;
   return {};
 }
 
@@ -386,8 +422,20 @@ bool DisjointSpan(const void* a, std::size_t a_bytes, const void* b, std::size_t
 
 std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const {
   if (routed_) return Rejected("routed graph cannot run through the whole-step entry");
+  if (auto* observer = first_attention_observer.load(); observer && observer->active()) {
+    if (launch.capturing() || !regions_.empty())
+      return std::unexpected(KernelFailure{
+          .error = KernelError::kUnknown,
+          .detail = "first attention diagnostic requires an eager single-stream graph"});
+  }
   if (!regions_.empty() && launch.lanes() >= kMaxLanes) {
     return RunLanes(launch);
+  }
+  if (regions_.empty() && !has_spatial_ops_) {
+    for (std::size_t i = 0; i < steps_.size(); ++i) {
+      if (auto r = RunStep(launch, i); !r) return r;
+    }
+    return {};
   }
 
   const auto is_kernel = [&](std::size_t idx, std::string_view name) -> ggml_tensor* {
@@ -2098,8 +2146,11 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
 
 std::expected<void, KernelFailure> BoundGraph::RunRange(LaunchContext& launch, std::size_t first,
                                                         std::size_t end) const {
-  if (!routed_ || !regions_.empty() || first > end || end > steps_.size())
+  if (!routed_ || first > end || end > steps_.size())
     return Rejected("invalid owned routed segment");
+  if (!regions_.empty() && launch.lanes() >= kMaxLanes) {
+    return RunLanesRange(launch, first, end);
+  }
   for (auto i = first; i != end; ++i)
     if (auto r = RunStep(launch, i); !r) return r;
   return {};
@@ -2111,9 +2162,18 @@ std::expected<void, KernelFailure> BoundGraph::RunRange(LaunchContext& launch, s
 // lane that last wrote what it reads or writes, or read what it writes
 // since, and at the region's last step the stream waits for every lane.
 std::expected<void, KernelFailure> BoundGraph::RunLanes(LaunchContext& launch) const {
+  return RunLanesRange(launch, 0, steps_.size());
+}
+
+std::expected<void, KernelFailure> BoundGraph::RunLanesRange(LaunchContext& launch,
+                                                             std::size_t first,
+                                                             std::size_t end) const {
   constexpr std::size_t kLanes = LaneOrder::kLanes;
   LaneOrder order;
   std::size_t region = 0;
+  while (region < regions_.size() && regions_[region].last < first) {
+    ++region;
+  }
   bool open = false;
   const auto storage = [](const ggml_tensor* t) {
     while (t->view_src != nullptr) {
@@ -2180,11 +2240,12 @@ std::expected<void, KernelFailure> BoundGraph::RunLanes(LaunchContext& launch) c
     return {};
   };
   std::expected<void, KernelFailure> result;
-  for (std::size_t i = 0; i < steps_.size() && result; ++i) {
+  for (std::size_t i = first; i < end && result; ++i) {
     while (region < regions_.size() && regions_[region].last < i) {
       ++region;
     }
-    const bool inside = region < regions_.size() && i >= regions_[region].first;
+    const bool inside = region < regions_.size() && i >= regions_[region].first &&
+                        i <= regions_[region].last;
     if (inside && !open) {
       result = fork();
       if (!result) {

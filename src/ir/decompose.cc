@@ -634,6 +634,16 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const auto p = Get<NormRopeParams>(params);
       return One(b.Rope(b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1)), d.s(2), d.s(3), p.rope));
     }
+    case FusedKind::kDsv4LidMask: {
+      if (!d.need(5, 5)) return {};
+      const auto p = Get<LidMaskParams>(params);
+      if (!d.check(p.cells == d.t(d.s(1)).ne(2), GraphError::kShape,
+                   "the selected mask and rounded score have the same compressed cells"))
+        return {};
+      const auto scores = b.RoundedIndexScore(d.s(0), d.s(1), d.s(2), d.s(3));
+      const auto selected = b.VisibleTopK(scores, d.s(3), p.top);
+      return One(b.SelectedMask(d.s(4), selected, {.raw_cells = p.raw_cells, .cells = p.cells}));
+    }
     case FusedKind::kStateBankAttention: {
       if (!d.need(3, 5)) return {};
       const auto p = Get<AttnParams>(params);
@@ -646,6 +656,22 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       if (!d.need(2, 2)) return {};
       const auto p = Get<NormRopeParams>(params);
       return One(b.Rope(b.RmsNorm(d.s(0), p.eps), d.s(1), {}, p.rope));
+    }
+    case FusedKind::kDsv4OutA: {
+      if (!d.need(3, 3)) return {};
+      const auto p = Get<RopeParams>(params);
+      const TensorDesc w = d.t(d.s(0));
+      const TensorDesc x = d.t(d.s(1));
+      TensorId rotated = b.Rope(d.s(1), d.s(2), {}, p);
+      const std::uint64_t per = w.ne(0);
+      const std::uint64_t total_features = x.ne(0) * x.ne(1);
+      const std::uint64_t groups = per > 0 ? (total_features / per) : 1;
+      const std::uint64_t o_rank = groups > 0 ? (w.ne(1) / groups) : 512;
+      const std::uint64_t rows = x.ne(2);
+      TensorId out = b.Permute(b.Reshape(rotated, S(per, groups, rows)), {0, 2, 1, 3});
+      TensorId g = w.shape().rank == 3 ? d.s(0) : b.Reshape(d.s(0), S(per, o_rank, groups));
+      TensorId low = b.Permute(b.MatMul(g, out), {0, 2, 1, 3});
+      return One(b.Cont(low, S(o_rank * groups, rows)));
     }
     case FusedKind::kDsv4Compress: {
       if (!d.need(5, 5)) return {};
@@ -872,6 +898,17 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const TensorId q = b.Rope(b.Mul(b.RmsNorm(d.s(0), p.eps), d.s(1)), d.s(4), d.s(5), p.rope);
       const TensorId k = b.Rope(b.Mul(b.RmsNorm(d.s(2), p.eps), d.s(3)), d.s(4), d.s(5), p.rope);
       return Many({q, k});
+    }
+    case FusedKind::kGroupedMatMul: {
+      if (!d.need(2, 2)) return {};
+      const auto& w = d.t(d.s(0));
+      const auto& x = d.t(d.s(1));
+      if (!d.check(w.ne(0) == x.ne(0) && w.ne(2) == x.ne(1) && w.ne(3) == 1 && x.ne(3) == 1,
+                   GraphError::kShape, "grouped product requires [K,N,G] and [K,G,T]"))
+        return {};
+      const auto product =
+          b.MatMul(d.s(0), b.Permute(d.s(1), {0, 2, 1, 3}), Get<ProductParams>(params));
+      return One(b.Cont(b.Permute(product, {0, 2, 1, 3})));
     }
     case FusedKind::kPreparedProducts: {
       if (!d.need(2, 5)) {

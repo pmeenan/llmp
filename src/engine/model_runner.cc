@@ -414,7 +414,27 @@ bool ModelRunner::Verifies(std::uint32_t slot, std::size_t stage) const {
 pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
   pl::PlanKey key = key_base_;
   key.shape = shape;
-  key.parameters = source_->ShapeParameters(shape);
+  if (shape.stage < slots_.stages()) {
+    const auto& layout = slots_.layout(shape.stage);
+    const auto uses_read_cells = [](const model::StateTensorContract& c) {
+      return (c.kind == model::StateKind::kKv && !c.ring_reads_whole) ||
+             c.cells == model::CellRule::kPerPosition ||
+             (c.cells == model::CellRule::kRing && !c.ring_reads_whole) ||
+             (c.cells == model::CellRule::kPerBlock && c.basis == model::BlockBasis::kReadCells);
+    };
+    const bool any_reads_cells =
+        std::ranges::any_of(layout.items,
+                            [&](const auto& item) { return uses_read_cells(item.contract); }) ||
+        std::ranges::any_of(layout.borrowed,
+                            [&](const auto& item) { return uses_read_cells(item.contract); });
+    if (!any_reads_cells && (!layout.items.empty() || !layout.borrowed.empty())) {
+      key.shape.read_align = 0;
+      for (auto& seg : key.shape.segments) {
+        seg.read_cells = 0;
+      }
+    }
+  }
+  key.parameters = source_->ShapeParameters(key.shape);
   return key;
 }
 
@@ -1697,9 +1717,9 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // The futures: deduplicated against this shape and each other, and the
   // cached ones protected (found) before any optional funding.
   const StepAhead& ahead = request.ahead;
-  std::array<Plans::Entry*, 4> ahead_cached{};
-  std::array<std::optional<pl::PlanKey>, 4> ahead_keys{};
-  std::array<bool, 4> distinct{};
+  std::array<Plans::Entry*, 8> ahead_cached{};
+  std::array<std::optional<pl::PlanKey>, 8> ahead_keys{};
+  std::array<bool, 8> distinct{};
   for (std::size_t k = 0; k < ahead.shapes.size(); ++k) {
     if (!ahead.shapes[k] || !CheckShape(*ahead.shapes[k])) continue;
     ahead_keys[k] = KeyOf(*ahead.shapes[k]);
@@ -1757,14 +1777,16 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
   // Independent optional grants for the distinct missing futures.
-  std::array<const pl::StepShape*, 2> build{};
+  std::array<const pl::StepShape*, 4> build{};
   std::size_t build_count = 0;
   if (node_.threaded()) {
-    for (std::size_t k = 0; k < ahead.shapes.size() && build_count < ahead.build; ++k) {
+    for (std::size_t k = 0;
+         k < ahead.shapes.size() && build_count < std::min<std::size_t>(ahead.build, build.size());
+         ++k) {
       if (distinct[k] && ahead_cached[k] == nullptr) build[build_count++] = &*ahead.shapes[k];
     }
   }
-  PrefillLookaheadGroup<StepPlanned, 2> future(node_, plan_floor_bytes_);
+  PrefillLookaheadGroup<StepPlanned, 4> future(node_, plan_floor_bytes_);
   bool funded = false;
   for (std::size_t i = 0; i < build_count; ++i) {
     ++lookahead_.attempted;

@@ -213,8 +213,7 @@ namespace {
 // PlanGraph owns one temporary reader index per synchronous lowering; current
 // and future retained programs do not retain that index. This named category
 // is both paid by automatic construction and enforced before index allocation.
-constexpr std::uint64_t kServingReaderScratchBytes =
-    4096ULL * (ir::Graph::kMaxNodes + ir::Graph::kMaxTensors);
+constexpr std::uint64_t kServingReaderScratchBytes = 128ULL << 20;
 
 // Called under the Server's parser loan after source/schema validation, and
 // before any BuildStep/lowering. Graph maxima are the existing IR contract;
@@ -803,6 +802,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     }
     if (composition.prompts_alone || deepseek_serving) caps->join_prefill = false;
     if (composition.owners_alone) caps->max_segments = 1;
+    if (solo || deepseek_serving) {
+      caps->common_read = true;
+      caps->joined_read_align = settings.wave_read_align.value;
+    }
     if (joined_score && caps->max_segments < 4)
       return Error("the actual component capability cannot join the scoring cohort");
     // A verify's rows: the anchor and every draft.
@@ -811,7 +814,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           return verify_rows > layout.max_rows;
         }))
       return Error("the complete drafter verify exceeds its actual stage row bounds");
-    const std::uint32_t read_align = solo ? settings.wave_read_align.value : 256;
+    const std::uint32_t read_align =
+        (solo || deepseek_serving) ? settings.wave_read_align.value : 256;
     // The widest steps (the setup measurement): every owner's rows at the
     // end of its context, reading all of it.
     const auto shape = [&](std::uint16_t stage, planner::Phase phase, std::uint32_t owners,
@@ -855,7 +859,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
               caps->max_segment_rows != 0 ? caps->max_segment_rows / owners : verify_rows;
           const std::uint32_t d_rows = std::min(depth, max_rows);
           const std::uint32_t v_rows = std::min(verify_rows, max_rows);
-          if (d_rows > 0) add(shape(1, planner::Phase::kDraft, owners, d_rows, d_rows, false));
+          if (d_rows > 0) add(shape(1, planner::Phase::kDraft, owners, d_rows, d_rows, true));
           if (v_rows > 0) add(shape(0, planner::Phase::kVerify, owners, v_rows, v_rows, false));
         } else {
           // Block proposals produce every head, including short reply tails;
@@ -937,7 +941,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                            .state = &hold->layouts.at(s.stage),
                                            .stages = hold->stages,
                                            .artifacts = hold->tables},
-                                          {.narrow = true});
+                                          {.narrow = true, .dsv4_lid_mask = deepseek_serving});
         if (!step) return Error(step.error());
         for (const components::StepWeight& weight : step->weights) {
           const ja::Artifact& a = weight.ref.stage == 0 ? *artifact : *drafter;
@@ -1036,8 +1040,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                             .features = !dspark,
                             .adaptive = solo && depth >= 3,
                             .depth_cost = solo ? settings.depth_cost_ratio.value : 1.16,
-                            .device_tokens = solo,
-                            .draft_before_limit = solo,
+                            .device_tokens = solo || deepseek_serving,
+                            .draft_before_limit = solo || deepseek_serving,
                             .head_ids = hold->draft_head_ids,
                             .head_rows = hold->draft_head_rows}},
               .combine = engine::DecodingMode::Drafters::kCascade,
@@ -1193,8 +1197,21 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     };
     parts.config.launch =
         [&node, held]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
-      return held->backend->Launch(
-          {.base = node.pool().base, .size = base::Bytes(node.pool().bytes)});
+      auto made =
+          held->backend->Launch({.base = node.pool().base, .size = base::Bytes(node.pool().bytes)});
+      if (!made) return made;
+      auto* ggml_launch = static_cast<kernels::ggml::GgmlStepLaunch*>(made->get());
+      constexpr std::uint64_t kLaneScratchBytes = 4ULL * 1024ULL * 1024ULL;
+      const std::uint64_t lane_bytes =
+          std::min<std::uint64_t>(kLaneScratchBytes, node.pool().bytes / 16);
+      if (lane_bytes >= 256 * 1024) {
+        if (auto r = ggml_launch->context().ConfigureLanes(kernels::ggml::kMaxLanes,
+                                                           base::Bytes(lane_bytes));
+            !r) {
+          return Error(std::format("ConfigureLanes: {}", r.error().detail));
+        }
+      }
+      return made;
     };
     parts.config.weight_address = [held, paged, drafter_paged](
                                       const ir::WeightRef& ref,
@@ -1210,7 +1227,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     parts.caps = *caps;
     parts.logit_width = logit_width;
     parts.device_greedy = true;
-    parts.device_verify = solo;
+    parts.device_verify = solo || deepseek_serving;
     parts.branch_depth = solo ? 3U : 0U;
     parts.prefill = {.chunk_rows = chunk,
                      .lookahead = composition.prefill_lookahead,
@@ -1225,7 +1242,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       parts.prefill.prepare_ahead = false;
       parts.prefill.state_only = false;
     }
-    if (solo || deepseek_serving) {
+    if (deepseek_serving) {
+      parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
+      parts.prefill.capture_ahead = false;
+      parts.prefill.prepare_ahead = options.prepare_state;
+      parts.prefill.state_only = options.state_only_prefill.value_or(!speculate);
+    } else if (solo) {
       parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
       parts.prefill.prepare_ahead = options.prepare_state;
       parts.prefill.state_only = options.state_only_prefill.value_or(!speculate);

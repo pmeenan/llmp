@@ -596,6 +596,25 @@ TEST(IrTest, ExpandLeavesOnlyPrimitives) {
   }
 }
 
+TEST(IrTest, GroupedMatMulRequiresActualMatchingGroupsAndExpandsCompletely) {
+  for (bool matching : {true, false}) {
+    Builder b;
+    const auto w = b.Input(F32({8, 5, 3}));
+    const auto x = b.Input(F32({8, matching ? 3U : 2U, 4}));
+    const auto out = b.Fused(FusedKind::kGroupedMatMul, std::array{w, x}, ProductParams{})[0];
+    EXPECT_EQ(b.ok(), matching);
+    if (!matching) continue;
+    EXPECT_EQ(b.tensor(out).shape().ne, ShapeOf({5, 3, 4}).ne);
+    EXPECT_TRUE(IsContiguous(b.tensor(out)));
+    b.Output(out);
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph);
+    auto expanded = Expand(*graph, true);
+    ASSERT_TRUE(expanded);
+    for (const auto& node : expanded->nodes()) EXPECT_NE(node.key.op, Op::kFused);
+  }
+}
+
 TEST(IrTest, EveryFusedKindAndCompositeDecomposes) {
   // Every fused kind but grouped_stores, a batch key that is never a node.
   for (std::uint16_t k = 1; k <= static_cast<std::uint16_t>(kLastFusedKind); ++k) {

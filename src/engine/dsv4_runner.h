@@ -197,6 +197,8 @@ enum class Dsv4ChunkKind : std::uint8_t {
 };
 
 class Dsv4Runner final : public PagedModel {
+  friend struct Dsv4RunnerTestAccess;  // definition exists only in test support
+
  public:
   using Status = engine::Status;
   static constexpr std::size_t kRequestSlots = RequestCohort::kSlots;

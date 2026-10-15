@@ -507,7 +507,7 @@ class Emitter {
   Fragment& f_;
   ir::Builder& b_;
   Dims d_;
-  ir::TensorId q_{}, qr_{}, kv_{}, iq_{}, iw_{};
+  ir::TensorId q_{}, qr_{}, kv_{}, iq_{}, iw_{}, comp_kv_{}, comp_score_{}, idx_kv_{}, idx_score_{};
 };
 
 ir::TensorId Emitter::Hadamard(ir::TensorId t, std::uint64_t n) {
@@ -528,8 +528,8 @@ void Emitter::Compressor(const Comp& c) {
   const std::uint64_t coff = overlap ? 2 : 1;
   const std::uint64_t dim = c.dim;
   const ir::RopeParams rope = Rotation(d_, dim);
-  ir::TensorId kv{};
-  ir::TensorId score{};
+  ir::TensorId kv = c.cache == kIndex ? idx_kv_ : comp_kv_;
+  ir::TensorId score = c.cache == kIndex ? idx_score_ : comp_score_;
   for (std::size_t s = 0; s < f_.step.segments().size(); ++s) {
     const SegmentRows& seg = f_.step.segments()[s];
     b_.SetOwner(static_cast<std::uint8_t>(s));
@@ -721,32 +721,41 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
   if (!window_mask) return std::unexpected(window_mask.error());
   ir::TensorId mask = *window_mask;
   std::uint32_t n_kv_max = 0;
+  const bool rounded = f_.step.rounded_indexer_context() != 0;
   if (d_.ratio != 0) {
-    auto compressed_mask = f_.step.Mask(s, KeyOf(s, kCompressed), 0);
-    if (!compressed_mask) return std::unexpected(compressed_mask.error());
-    ir::TensorId rows_mask = MaskRows(*compressed_mask, seg.rows);
     if (d_.indexer) {
-      auto selected =
-          Selection(s, rows_mask,
-                    f_.step.rounded_indexer_context() != 0 ? MaskRows(*window_mask, seg.rows)
-                                                           : ir::TensorId{});
-      if (!selected) return std::unexpected(selected.error());
-      rows_mask = *selected;
-      if (f_.step.rounded_indexer_context() != 0 &&
-          Desc(b_, rows_mask).ne(0) != window_read + compressed_read)
-        return std::unexpected("rounded indexer mask differs from the actual attention bank");
       n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window) +
                                             std::min(compressed_read, d_.top_k));
+    } else if (rounded) {
+      n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window) + compressed_read);
     }
-    // SelectedMask already includes the raw half in the same order as K/V.
-    mask = d_.indexer && f_.step.rounded_indexer_context() != 0
-               ? rows_mask
-               : b_.Concat(MaskRows(*window_mask, seg.rows), rows_mask, 0);
+    if (d_.indexer && rounded) {
+      auto selected = Selection(s, ir::TensorId{}, MaskRows(*window_mask, seg.rows));
+      if (!selected) return std::unexpected(selected.error());
+      const ir::TensorId rows_mask = *selected;
+      if (Desc(b_, rows_mask).ne(0) != window_read + compressed_read)
+        return std::unexpected("rounded indexer mask differs from the actual attention bank");
+      mask = rows_mask;
+    } else {
+      auto compressed_mask = f_.step.Mask(s, KeyOf(s, kCompressed), 0);
+      if (!compressed_mask) return std::unexpected(compressed_mask.error());
+      ir::TensorId rows_mask = MaskRows(*compressed_mask, seg.rows);
+      if (d_.indexer) {
+        auto selected = Selection(s, rows_mask, ir::TensorId{});
+        if (!selected) return std::unexpected(selected.error());
+        rows_mask = *selected;
+      }
+      mask = b_.Concat(MaskRows(*window_mask, seg.rows), rows_mask, 0);
+    }
+  } else if (rounded && d_.cache == Cache::kRing) {
+    n_kv_max = static_cast<std::uint32_t>(std::min(window_read, d_.window));
   }
+  const bool sparse_any = rounded && d_.d == 512 && n_kv_max != 0;
   const ir::TensorId attention = b_.Attention(queries, keys, values, mask, f_.Weight(kSinks),
                                               {.scale = 1.0F / std::sqrt(static_cast<float>(d_.d)),
                                                .sinks = true,
                                                .accumulate = ir::Accumulate::kF32,
+                                               .sparse_any = sparse_any,
                                                .n_kv_max = n_kv_max});
   return b_.Reshape(attention, Shape({d_.d * d_.heads, seg.rows}));
 }
@@ -754,6 +763,28 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
 std::expected<FragmentOut, std::string> Emitter::Emit() {
   const std::uint64_t rows = f_.step.rows();
   const auto segments = f_.step.segments();
+  if (segments.size() > 1) {
+    b_.SetJoined();
+    if (d_.ratio != 0) {
+      comp_kv_ = b_.MatMul(f_.Weight(kCompKv), f_.stream);
+      const ir::TensorId gate = b_.MatMul(f_.Weight(kCompGate), f_.stream);
+      const ir::TensorId ape = b_.GetRows(f_.Weight(kCompApe), f_.step.PositionPhases(d_.ratio));
+      comp_score_ = b_.Add(gate, ape);
+    }
+    if (d_.indexer) {
+      idx_kv_ = b_.MatMul(f_.Weight(kIdxKv), f_.stream);
+      const ir::TensorId gate = b_.MatMul(f_.Weight(kIdxGate), f_.stream);
+      const ir::TensorId ape = b_.GetRows(f_.Weight(kIdxApe), f_.step.PositionPhases(d_.ratio));
+      idx_score_ = b_.Add(gate, ape);
+    }
+    if (f_.stream_needed) q_ = Query();
+    kv_ = Key();
+    if (f_.stream_needed && d_.ratio != 0 && d_.indexer) {
+      (void)IndexerQueries();
+      iw_ = b_.Scale(b_.MatMul(f_.Weight(kIdxProj), f_.stream),
+                     1.0F / std::sqrt(static_cast<float>(d_.idim * d_.ih)));
+    }
+  }
   // The compressors' stores and ring rows first.
   if (d_.ratio != 0) {
     Compressor({.kv = kCompKv,
@@ -777,8 +808,8 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
                 .dim = d_.idim,
                 .hadamard = true});
   }
-  if (f_.stream_needed) q_ = Query();
-  kv_ = Key();
+  if (f_.stream_needed && !q_.valid()) q_ = Query();
+  if (!kv_.valid()) kv_ = Key();
   const ir::TensorDesc kd = Desc(b_, kv_);
   for (std::size_t s = 0; s < segments.size(); ++s) {
     const SegmentRows& seg = segments[s];
@@ -793,12 +824,17 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
     b_.SetJoined();
   }
   if (!f_.stream_needed) return FragmentOut{.stream = f_.stream};
-  ir::TensorId joined{};
+  std::vector<ir::TensorId> outs;
+  outs.reserve(segments.size());
   for (std::size_t s = 0; s < segments.size(); ++s) {
     auto one = Attend(s);
     b_.SetJoined();
     if (!one) return std::unexpected(one.error());
-    joined = joined.valid() ? b_.Concat(joined, *one, 1) : *one;
+    outs.push_back(*one);
+  }
+  ir::TensorId joined = outs.front();
+  for (std::size_t s = 1; s < outs.size(); ++s) {
+    joined = b_.Concat(joined, outs[s], 1);
   }
   // Each head rotated back, then the grouped output product.
   ir::TensorId out = b_.Reshape(joined, Shape({d_.d, d_.heads, rows}));
