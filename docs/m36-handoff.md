@@ -12,7 +12,78 @@ M3.6 closes. AGENTS.md's rules govern all of it (rules 5, 9–13 especially:
 one reviewed squashed commit per sub-task, heavy-path review rounds, Spark
 jobs through installed `spark-job`; use the owner's combined final-check cadence below).
 
-## Latest quota handoff — 2026-10-13
+## Latest quota handoff — 2026-10-15
+
+**M3.6 is on its final item (`deepseek` C2 decode gate + `G4d` legacy `Dsv4Runner` deletion).**
+All current work from `agy/m36-k1-r1` and `agy/m36-dsv4-c2` is merged and committed cleanly on `main` (`8bc6b7a4`). Both `spark` (Spark A) and `spark-b` (Spark B) are idle with no running jobs.
+
+### 1. What is 100% Complete and Landed on `main` (`8bc6b7a4`)
+
+- **7 of 8 Speed-Gate Families Have Passed the 1% Speed Gate & Had Legacy Code Deleted**:
+  1. `gemma2`: PASSED (`G1c`), legacy runner deleted (`4a6710ce`).
+  2. `gemma3`: PASSED (`G1c`), legacy runner deleted (`4a6710ce`).
+  3. `gemma26`: PASSED (`G2c`), legacy runner deleted (`04339dec`).
+  4. `gemma31`: PASSED (`G2c`), legacy runner deleted (`04339dec`).
+  5. `qwen38-gguf`: PASSED (`G3c`), legacy runner deleted (`d69c8036`).
+  6. `qwen38` (NVFP4/MXFP8 + MTP): PASSED (`qwen38-smoke04`, `bd1a2e9d`), legacy `Qwen38Runner`, `qwen38_plan`, `qwen38_wave_plan`, `qwen38_graph` deleted (`d69c8036`, `G3d`).
+  7. `image` (Qwen-Image-2.1): PASSED (`image-check02`, `29.15s` vs `32.57s` legacy, `-10.5%` faster), legacy `QwenImageRunner` and `kernels/image/pipeline.*` deleted (`22741330`).
+- **Unserved `qwen2` FP16/EXL3 Fixtures (`G5a–d`)**: Migrated to component engine and legacy `Qwen2Runner` deleted (`0d127ac0`).
+- **Slice R1 (Architecture-based settings cleanup)**: Landed (`e3d7be83`).
+- **Native Importer (N3b / N4 / N5 / N6)**: All container/architecture domains (GGUF targets + Gemma 4 / DSpark drafters, ModelOpt NVFP4/MXFP8 + MTP, MLX Qwen3.8, EXL3 4bpw/4.5bpw, diffusers Qwen-Image-2.1) and adversarial suite landed (`7c9279c4`).
+- **Slice K1 (`kv_cache_encoding = "q8_0"` across all migrated LLMs)**:
+  - Completed across all 9 LLM configurations (`gemma2`, `gemma3`, `gemma26`, `gemma26-assistant`, `gemma31`, `gemma31-assistant`, `qwen38`, `qwen38-gguf`, `deepseek`) on Spark A (`spark`).
+  - Raw receipts are in `/tmp/llmp-m36-coordination/k1-quality01/` (`spark:/home/pmeenan/scratch/m36-gate/k1-quality01/`) and the full report is committed in [docs/experiments/m36-numerical-audit/q8-state.md](experiments/m36-numerical-audit/q8-state.md) (`78cd2f8a`).
+
+---
+
+### 2. Remaining Work to Finish M3.6 (Owner Selected Option B)
+
+#### Step 1: Resolve `deepseek` `C2.decode_tok_s` Solo-Transition Trajectory / Chunk-Count Gap (`Option B`) & Run Bookended Speed Gate
+
+In `dsv4-fast-screen19` (`/tmp/llmp-m36-coordination/dsv4-fast-screen19/runs/deepseek-b01-p1-new.json`, built from `d02a65c3` / `8bc6b7a4` on `spark-b`), removing `"disable route_reduce"` in `src/spec/mappings/dsv4.h`, adding `vecq_inputs` in `src/components/inject.cc`, and eliding solo `HcPre` carry copies in `src/kernels/ggml/lower.cc` reduced the 2-slot joined decode wave from **4,087 steps to 3,117 steps** (vs **3,121** in `OLD`) and brought the steady-state 2-slot joined decode step latency down from `63.2 ms/step` to **`58.8–59.0 ms/step`**, matching `OLD` (`58.8 ms/step`).
+
+Current `dsv4-fast-screen19` vs `OLD` (`deepseek-smoke10` `p0-old` / `p3-old` mean on `spark-b`):
+- `C1.prefill_s`: `8.0723 s` vs `8.1652 s` (**`-1.14%`**, PASS)
+- `C1.decode_tok_s`: `39.7547` vs `32.6534 tok/s` (**`+21.75%`**, PASS)
+- `C1.wall_tok_s`: `11.3581` vs `10.6161 tok/s` (**`+6.99%`**, PASS)
+- `C2.prefill_s`: `17.5405 s` vs `17.7232 s` (**`-1.03%`**, PASS)
+- `C2.decode_tok_s`: `36.3472` vs `37.5046 tok/s` (**`-3.09%`**, only remaining gap)
+- `C2.wall_tok_s`: `10.4013` vs `10.3673 tok/s` (**`+0.33%`**, PASS)
+- `C4.prefill_s`: `35.0953 s` vs `35.2130 s` (**`-0.33%`**, PASS)
+- `C4.decode_tok_s`: `49.9336` vs `49.6769 tok/s` (**`+0.52%`**, PASS)
+- `C4.wall_tok_s`: `11.3527` vs `11.3053 tok/s` (**`+0.42%`**, PASS)
+- `peak_gib`: `109.64 GiB` vs `109.96 GiB` (**`-0.29%`**, PASS)
+
+**Why `C2.decode_tok_s` was `-3.09%` in Pass 1 despite `58.8–59.0 ms/step` joined step time (and `37.58 tok/s` in Pass 0)**:
+- In C2 Pass 0 (`warmup=True`), `NEW` achieved **`37.58 tok/s`** (`r0_chunks=116, r1_chunks=116`), matching `OLD`'s **`37.60 tok/s`** (`r0_chunks=115, r1_chunks=117`).
+- In C2 Pass 1 (`warmup=False`), Request 0 (`prompt 10`, `7,112` tokens) finishes prefill at `t = 8.32s` while Request 1 (`prompt 11`, `7,732` tokens) prefills until `t = 17.54s`. Between Request 1's prefill chunks, Request 0 runs **5 solo speculative DSpark steps** (`t0[1..5]`), and after Request 0 finishes its 128th token (`t = 24.26s`), Request 1 runs **4–6 solo speculative DSpark steps** (`t1[-5:]`).
+- In Pass 1, a trajectory divergence (`r0` `reply_sha256 = 4b8b885a` vs `OLD` `499d4b5a`; `r1` `0d8b3d8a` vs `OLD` `789e7285`) caused DSpark to accept 4–5 fewer draft tokens during those solo speculative steps (`r0_chunks=120, r1_chunks=119` in `NEW` vs `r0_chunks=115, r1_chunks=116` in `OLD`). Those 4 extra steps (`4 * 59 ms = 236 ms` over a `7.0s` window) account for the entire `-3.09%` `C2.decode_tok_s` difference.
+- **What to check for Option B**:
+  1. Compare how `OLD` (`Dsv4Runner` / `ServingState` in `src/engine/dsv4_runner.cc` and `src/runtime/serving.cc`) vs `NEW` (`ModelRunner` / `PrefillOrchestrator` / `EngineLlm` in `src/engine/model_runner.cc`, `src/engine/prefill_lookahead.cc`, `src/runtime/engine_llm.cc`) schedules C2 prefill chunks + interleaved solo Request 0 steps, and how `7,112`-token and `7,732`-token prompts are split into prefill chunks (`4096` + remainder + `raw_ring = 256` lookahead).
+  2. Check why `r0` (`prompt 10`) and `r1` (`prompt 11`) produce a different `reply_sha256` in `NEW` vs `OLD` (check whether the first divergent token occurs at the end of prefill `t0[0]`, during the 5 solo speculative steps `t0[1..5]`, or during the 2-slot joined plain decode wave `t0[6..]`, e.g., due to `grouped_vecq` / `vecq_inputs` / `dsv4_qhead` / `AdaptiveDepth` state across solo-to-joined transitions).
+  3. Also check if any small per-step difference remains in the 2-slot joined wave (`58.95 ms` vs `58.85 ms`, e.g. `DirectHcPreCarries` when `n.src[0]` is a per-owner slice of joined `hc_pre` in `src/kernels/ggml/lower.cc:138`).
+  4. Fast single-arm screen command on `spark-b` (~3 min):
+     ```bash
+     /home/pmeenan/.local/bin/spark-job start --host spark-b --gpu --name dsv4-fast-screen20 --timeout 900 --cwd /home/pmeenan/src/m36-main -- python3 -B tools/speed_gate.py run --family deepseek --runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-new --label new --block 1 --position 1 --out /home/pmeenan/scratch/m36-gate/dsv4-fast-screen20 --runtime-env LLMP_DIAGNOSTIC_COMPONENT_ENGINE=1 --runtime-env LLMP_DIAGNOSTIC_NODE_CAP_BYTES=120259084288 --runtime-env LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto
+     /home/pmeenan/.local/bin/spark-job wait --host spark-b dsv4-fast-screen20
+     ```
+  5. Once `C2.decode_tok_s` clears the gate, run the 2-block bookended `deepseek` gate (`deepseek-smoke11`) on `spark-b`:
+     ```bash
+     /home/pmeenan/.local/bin/spark-job start --host spark-b --gpu --name deepseek-smoke11 --timeout 2400 --cwd /home/pmeenan/src/m36-main -- python3 -B tools/speed_gate.py --out /home/pmeenan/scratch/m36-gate/deepseek-smoke11 --old-runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-old --new-runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-new --new-env LLMP_DIAGNOSTIC_COMPONENT_ENGINE=1 --new-env LLMP_DIAGNOSTIC_NODE_CAP_BYTES=120259084288 --new-env LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto --models deepseek --blocks 2
+     /home/pmeenan/.local/bin/spark-job wait --host spark-b deepseek-smoke11
+     ```
+
+#### Step 2: Delete Legacy `Dsv4Runner` / `dsv4_*` / `dspark.*` (`G4d`)
+- Make `OnComponentEngine` in `src/runtime/component_admission.cc` unconditional (`return true;` for all architectures) and remove the `LLMP_DIAGNOSTIC_COMPONENT_ENGINE` gate.
+- Delete `src/engine/dsv4_runner.*`, `src/engine/dsv4_plan.*`, `src/kernels/ggml/dsv4_graph.*`, `src/model/dsv4.*`, `src/model/dspark.*`, and legacy `Dsv4Runner` serving/benchmark code in `src/runtime/serving.cc` and `benchmarks/`, mirroring `G3d` (`d69c8036`).
+
+#### Step 3: Final M3.6 Documentation & Verification
+- Update `docs/plan.md`, `CHANGELOG.md`, and `AGENTS.md` to record M3.6 completion and delete `docs/m36-handoff.md`.
+- Run final verification (`mise run check` / Spark native build + test check).
+
+---
+
+## Earlier quota handoff — 2026-10-13
 
 **M3.6 is incomplete.** The owner requested completion of the in-flight work
 and handoff, rather than new development or performance experiments. This section
