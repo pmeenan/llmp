@@ -66,7 +66,9 @@ runs are valid: none failed or recorded a problem (token counts, cached
 prompt tokens, pixels, another GPU process), each ran in a session whose
 priming run succeeded before it, and every old run used one
 runtime and configuration, every new run one, and the protocol's current
-family constants; otherwise its verdict is INVALID (rerun the block: its
+family constants, and the arms paid the same work: every cell's prompt indices,
+width and per-request prompt_tokens equal in every run (a tokenizer difference
+between the arms' artifacts); otherwise its verdict is INVALID (rerun the block: its
 records are replaced). `verdict` exits 0 only when every family judged
 passes, 2 while one needs more blocks, 1 otherwise.
 
@@ -958,6 +960,54 @@ def run_spec(spec: dict) -> dict:
             if k not in ("min_blocks", "max_blocks")}
 
 
+def workload_identity(record: dict) -> dict:
+    """What workload a run's cells actually paid, as recorded: per pass and cell, the prompts
+    drawn, the width and each request's prompt token count. Two arms given the same prompts
+    but tokenizing them differently (a v1 against a v0 artifact) did different work."""
+    identity = {}
+    for index, p in enumerate(record.get("passes") or []):
+        for name, cell in sorted((p.get("cells") or {}).items()):
+            tokens = cell.get("prompt_tokens")
+            if tokens is None:
+                tokens = [(r.get("usage") or {}).get("prompt_tokens")
+                          for r in cell.get("requests") or []]
+                if not tokens or any(t is None for t in tokens):
+                    continue
+            identity[f"pass {index}{' (warm-up)' if p.get('warmup') else ''} {name}"] = {
+                "prompts": cell.get("prompts"), "width": cell.get("width"),
+                "prompt_tokens": tokens}
+    return identity
+
+
+def workload_problems(runs: list[dict]) -> list[str]:
+    """Cells whose workload identity differs between runs, old against new first. The first
+    old run is the reference; any other run that differs from it is one more mismatch."""
+    reference = next((r for r in runs if r["label"] == "old" and workload_identity(r)), None)
+    if reference is None:
+        return []
+    base = workload_identity(reference)
+    reasons = []
+    for r in runs:
+        if r is reference:
+            continue
+        here = workload_identity(r)
+        if not here:
+            continue
+        for cell, mine in sorted(here.items()):
+            theirs = base.get(cell)
+            if theirs is None:
+                continue
+            for field in ("prompts", "width", "prompt_tokens"):
+                if mine[field] != theirs[field]:
+                    reasons.append(
+                        f"{r['label']} block {r.get('block')} position {r.get('position')} "
+                        f"{cell}: {field} {mine[field]} differ from the {reference['label']} "
+                        f"reference's {theirs[field]} (block {reference.get('block')} position "
+                        f"{reference.get('position')}): the arms did different work "
+                        "(a tokenizer or prompt difference)")
+    return reasons
+
+
 def validity(family: Family, mine: list[dict], primes: dict) -> list[str]:
     """Why a family's counted runs cannot be judged, if they cannot: a failed or
     incomplete run, a recorded problem, a run outside a session whose priming run
@@ -1012,6 +1062,9 @@ def validity(family: Family, mine: list[dict], primes: dict) -> list[str]:
         for where, r in members:
             if began is None or r.get("started_unix") is None or r["started_unix"] < began:
                 reasons.append(f"session {session}: {where} did not start after its priming run")
+    # The same prompts must tokenize to the same counts in both arms (and within one).
+    reasons += workload_problems([r for b in mine for _, r in sorted(b.items())
+                                  if not r["error"]])
     for label in ("old", "new"):
         runs = [r for b in mine for r in b.values() if r["label"] == label]
         for key, what in zip(ARM_KEYS, ("runtimes", "configurations", "diagnostic switch sets",

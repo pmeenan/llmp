@@ -144,6 +144,93 @@ class ImagePins(unittest.TestCase):
                        "--out", "/out", "--new-image-pixels-sha256", self.CANDIDATE])
 
 
+class WorkloadIdentity(unittest.TestCase):
+    """Both arms must have paid the same work: the same prompts tokenize to the same counts."""
+
+    FAMILY = "gemma2"
+
+    def passes(self, tokens):
+        family = gate.FAMILIES[self.FAMILY]
+        first = 0
+        passes = []
+        for p in range(1 + family.repeats):
+            cells = {}
+            for width in family.cells:
+                cells[f"C{width}"] = {"width": width, "problems": [], "requests": [],
+                                      "prompts": list(range(first, first + width)),
+                                      "prompt_tokens": [tokens + first + i for i in range(width)]}
+                first += width
+            passes.append({"warmup": p == 0, "cells": cells})
+        return passes
+
+    def write(self, out, new_tokens, blocks=None):
+        family = gate.FAMILIES[self.FAMILY]
+        write_blocks(out, self.FAMILY, [({}, {})] * (blocks or family.min_blocks))
+        for path in sorted((out / "runs").glob("*.json")):
+            r = json.loads(path.read_text())
+            r["passes"] = self.passes(new_tokens if r["label"] == "new" else 8000)
+            r["memory"] = {"peak_gib": 10.0}
+            path.write_text(json.dumps(r))
+
+    def test_same_token_counts_are_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            self.write(out, 8000)
+            report = gate.verdicts(out, self.FAMILY)[self.FAMILY]
+            self.assertEqual([x for x in report["invalid"] if "differ" in x], [])
+
+    def test_a_tokenizer_difference_between_arms_makes_the_family_invalid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            self.write(out, 8003)  # the new arm counts three more tokens a prompt
+            report = gate.verdicts(out, self.FAMILY)[self.FAMILY]
+            self.assertEqual(report["verdict"], "INVALID")
+            mismatches = [x for x in report["invalid"] if "prompt_tokens" in x]
+            self.assertTrue(mismatches)
+            self.assertTrue(all("new block" in x and "tokenizer" in x for x in mismatches))
+            self.assertEqual(gate.verdict_status({self.FAMILY: report}), 1)
+
+    def test_one_run_whose_count_differs_is_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp)
+            self.write(out, 8000)
+            path = out / "runs" / f"{self.FAMILY}-b02-p2-new.json"
+            r = json.loads(path.read_text())
+            r["passes"][1]["cells"]["C1"]["prompt_tokens"] = [1]
+            path.write_text(json.dumps(r))
+            invalid = gate.verdicts(out, self.FAMILY)[self.FAMILY]["invalid"]
+            self.assertEqual(len([x for x in invalid if "differ" in x]), 1)
+            self.assertIn("block 2 position 2 pass 1 C1", next(x for x in invalid if "differ" in x))
+
+    def test_different_prompts_or_widths_are_a_mismatch(self):
+        family = gate.FAMILIES[self.FAMILY]
+        old = {"label": "old", "block": 1, "position": 0, "passes": self.passes(8000)}
+        for field, value in (("prompts", [99]), ("width", 7)):
+            with self.subTest(field=field):
+                new = {"label": "new", "block": 1, "position": 1, "passes": self.passes(8000)}
+                new["passes"][0]["cells"]["C1"][field] = value
+                reasons = gate.workload_problems([old, new])
+                self.assertEqual(len(reasons), 1)
+                self.assertIn(field, reasons[0])
+
+    def test_records_without_passes_or_token_counts_are_not_compared(self):
+        old = {"label": "old", "block": 1, "position": 0, "passes": self.passes(8000)}
+        bare = {"label": "new", "block": 1, "position": 1}
+        self.assertEqual(gate.workload_problems([old, bare]), [])
+        self.assertEqual(gate.workload_problems([bare]), [])
+        partial = {"label": "new", "block": 1, "position": 1,
+                   "passes": [{"warmup": True, "cells": {"C1": {"requests": [{"error": "x"}]}}}]}
+        self.assertEqual(gate.workload_problems([old, partial]), [])
+
+    def test_usage_in_the_requests_stands_in_for_the_cell_list(self):
+        def run(label, tokens):
+            return {"label": label, "block": 1, "position": 0, "passes": [{"warmup": False, "cells": {
+                "C1": {"width": 1, "prompts": [0],
+                       "requests": [{"usage": {"prompt_tokens": tokens}}]}}}]}
+        self.assertEqual(gate.workload_problems([run("old", 5), run("new", 5)]), [])
+        self.assertEqual(len(gate.workload_problems([run("old", 5), run("new", 6)])), 1)
+
+
 class Judge(unittest.TestCase):
     def test_identical_blocks_pass(self):
         row = gate.judge([0.0, 0.0, 0.0], MARGIN, 3, 6)

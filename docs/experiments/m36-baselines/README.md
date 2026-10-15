@@ -821,6 +821,120 @@ Raw records stay outside the repository on `spark`:
 `~/scratch/m36-gate/g2c-c9f7f2db` (with `assistant31/`) and
 `~/scratch/m36-gate/g2c-c9f7f2db-{quality,swaps,kept}`.
 
+## The gate's tools
+
+The final verification pass (M3.6's exit gate) runs on four committed tools, all
+under [`tools/`](../../../tools/) with unit tests in `tools/tests/` (the workstation
+runs those; the tools themselves run on a Spark, in jobs of at most 600 s). Each
+header holds its full contract.
+
+**Same work in both arms (`speed_gate.py verdict`).** Besides the validity rules
+above, `verdict` compares every run's recorded workload with the first old run's:
+per pass and cell, the prompt indices, the width and each request's
+`prompt_tokens`. The arms read the same prompts, so a different token count is a
+tokenizer difference (a re-imported v1 artifact against the v0 one, say) and the
+arms did different work: the family is INVALID, with each mismatching cell
+under `invalid` (and `verdict`'s exit status 1), never a silent pass. Records
+without recorded passes (images, failed runs) are not compared; their own rules
+apply.
+
+**The 31B assistant screen (`assistant_gate.py`).**
+
+    assistant_gate.py steps --out DIR --old BIN --new BIN \
+        --old-artifacts STORE --new-artifacts STORE --target ID --assistant ID \
+        --inputs inputs.i32 [--new-target ID --new-assistant ID] [--first B] [--blocks N] > FILE
+    assistant_gate.py verdict DIR [--min 8] [--max 11] [--json]
+
+`BIN` is `llmp_gemma_greedy_reference` (old, the frozen install) and
+`llmp_gemma_engine_greedy` (new); each arm reads the target and assistant from
+its own store (`STORE/ID`; `--new-target/--new-assistant` when a re-imported store
+names them differently), so v0 and v1 artifacts are compared in one set of blocks.
+`steps` prints a supervised job's steps (a priming old run, then ABBA blocks; two
+blocks a job, `--first 1`, `--first 3`, ...; the baseline's eight-block
+minimum is the default `--min`), and records `DIR/plan.json` (binaries'
+and inputs' SHA-256, artifact paths). `verdict` is `speed_gate.py`'s rule on the
+screen's metric (the mean of the two timed rounds' seconds for 32 committed
+tokens): 1% margin, one-sided 97.5% bound at each look, only the first `--max`
+blocks count. It is INVALID when a log is incomplete or missing, a priming log is
+incomplete, or the retired line's workload identity (profile, mode, C, P, prefill
+query, emitted, endpoint, warm/quality/timed rounds) differs between any two runs.
+Exit 0 PASS, 2 CONTINUE, 1 otherwise.
+
+**Quality pairing (`quality_pair.py`).**
+
+    quality_pair.py pair --candidate FILE --reference FILE --prereg PREREG.json \
+        [--report OUT.json] [--json]
+    quality_pair.py extract --candidate FILE --out LOSSES.jsonl
+
+Pairs the native literal route's per-target losses with retained reference losses,
+keyed by (document, position) and the target token ID, against bounds fixed in a
+pre-registration before the run. The candidate and reference are each a
+`losses.jsonl` (`{"document","position","target","nll"}` a line, the form
+[`collect-qwen-reference.py`](../m36-numerical-audit/collect-qwen-reference.py) writes
+and `extract` writes from a native record, to retain one), a `speed_gate.py quality`
+record (its sibling score-response file, hash-verified, holds every target ID and
+loss), or a K1 arm record (`FAMILY-k1-ENCODING.json`: per-token scores and
+`ids_sha256`; it keeps no IDs, so it pairs with a reference that has them, whose IDs
+over those positions must hash to the recorded digest). The pairing refuses (exit 2)
+different coverage, a target ID that differs at any position (a tokenizer or
+history difference), non-finite or positive log-probabilities, duplicates, an
+echoed token that disagrees with its scored target, a changed score response, a
+failed record and a reference whose SHA-256 is not the pre-registered one.
+`speed_gate.py quality` records of the frozen baseline predate per-target
+retention (they keep the aggregate NLL and `scores_sha256` only), so a reference
+for them is a rerun of the current `quality` command, or the Mia losses in the
+[numerical audit](../m36-numerical-audit/qwen-quantized-reference.md).
+
+The report gives each side's mean NLL and perplexity, the NLL delta (with its
+paired standard error) and PPL delta in percent, per-document PPL deltas, the mean
+and maximum absolute per-target difference and where the largest is, how many
+targets are lower, higher and identical, the agreement (the fraction within a
+tolerance), and each bound's outcome. Exit 0 every bound holds, 1 one fails.
+
+    {"format": "llmp-quality-prereg/1", "name": "qwen3.8 v1 against Mia, 4 docs",
+     "reference_sha256": "...",
+     "bounds": {"expected_targets": 1016, "max_abs_ppl_delta_pct": 1.0,
+                "max_abs_doc_ppl_delta_pct": 4.0, "max_mean_abs_diff": 0.05,
+                "max_abs_diff": 2.0, "min_agreement": 0.9, "agreement_tolerance": 0.1}}
+
+The bounds are `expected_targets`, `min_targets`, `max_ppl_increase_pct` (candidate
+worse only), `max_abs_ppl_delta_pct`, `max_abs_nll_delta`,
+`max_abs_doc_ppl_delta_pct`, `max_mean_abs_diff`, `max_abs_diff`, `min_agreement`
+with its `agreement_tolerance`; at least one, an unknown key refused. The values
+are the judgment of whoever registers them from the measured baselines, committed
+before the run they govern (docs/workflow.md); the tool supplies none.
+
+**The swap table (`swap_table.py`).**
+
+    swap_table.py plan --case m3|gemma2|gemma3|gemma26|gemma31 --runtime R --store DIR \
+        --out DIR [--ids FILE] [--image-pin SHA256] [--pairs-per-job 2] > STEPS
+    swap_table.py run  --case CASE ... --name NAME [--pairs A:B,...]
+    swap_table.py check DIR... --case CASE [--partial] [--json]
+
+Replaces the baseline's `swaps.sh` and `swaps-fixed.sh`. `plan` prints the steps
+of a spark-job (three runs of two ordered pairs for M3, each well inside 600 s;
+one run for a Gemma case), `run` renders the node configuration (the M3 artifact
+IDs by default; `--ids` overrides IDs, tokenizer files and extra model settings
+for re-imported artifacts, `--config-template` replaces the whole file), verifies
+the pinned inputs (context text `6b159ff2…` / Gemma `4e41c6aa…`, latents
+`eb733389…`), runs `llmp-runtime swap-table` with the baseline's arguments and
+keeps `table.out`, `table.log`, `report.json` and the runtime's SHA-256. `check`
+reads the runs of one case together: all 32 rows (six rows for each LLM A, four
+for the image A; six for a Gemma case) once each, every row exact and
+state-exact, the report's `problems` empty, every restored 8K state hash equal to
+the one A left with, the unswapped and continued logit hashes equal over the
+report's 16 (M3) or 64 (Gemma) continuation tokens and the full target
+vocabulary, every prepared LLM return to A having kept graphs (and with context
+replayed them, capturing and running eagerly none), every image control equal to
+the pin and present for an image A, prepared rows at most 20 s and first-use rows
+at most 40 s, and one runtime, context text and length across the runs. It prints
+each row's seconds and `peak_bytes`, the worst LLM-to-LLM row and the worst
+prepared one (the table's headline), the largest peak and the lowest
+`MemAvailable`. Exit 0 PASS, 1 FAIL, 2 INCOMPLETE (`--partial` with only rows
+missing). Checked against the fixed baseline's `swaps-fixed/{qwenA,rest}` (32
+rows, worst LLM-to-LLM 8.494 s, largest peak 111.19 GiB) and the four Gemma
+reports under `swaps/`: all pass.
+
 ## Provenance
 
 `spark` (`spark-c4e2`), NVIDIA GB10, driver 580.178.04 (CUDA 13.0 driver
