@@ -680,7 +680,13 @@ void EngineLlm::RunSpeculative(std::span<PreparedGeneration> units) {
     }
     counts_.accepted += out.kept - 1;
     unit.kept = out.tokens;
-    if (unit.step.need_logits) unit.logits = std::move(verified_rows_.at(slot));
+    if (unit.step.need_logits) {
+      unit.logits = std::move(verified_rows_.at(slot));
+      // A whole-block verify (DSpark) may judge more rows than the request
+      // has tokens left; the orchestrator keeps only `left` of them, and
+      // the rows beyond are not the request's (a row a kept token).
+      if (unit.logits.size() > unit.kept.size()) unit.logits.resize(unit.kept.size());
+    }
     verified_rows_.at(slot).clear();
     unit.result = {};
   }

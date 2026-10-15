@@ -364,6 +364,13 @@ if(LLMP_CUDA)
                                                         llmp_runtime_serving)
   llmp_gpu_gtest(dsv4_engine_target_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+  # DeepSeek V4 Flash through the server on the shared engine: the plain-token
+  # oracle, DSpark's joined waves and features, four slots' speculative waves,
+  # prefill lookahead on and off, and the fixed prompt's head.
+  add_executable(dsv4_engine_serving_gpu_test dsv4_engine_serving_gpu_test.cc)
+  target_link_libraries(dsv4_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
+  llmp_gpu_gtest(dsv4_engine_serving_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(image_generation_gpu_test image_generation_gpu_test.cc)
   target_link_libraries(image_generation_gpu_test PRIVATE llmp_runtime_serving)
   llmp_gpu_gtest(image_generation_gpu_test MODELS
