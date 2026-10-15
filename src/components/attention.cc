@@ -135,6 +135,10 @@ constexpr auto kParams = WithCommon(std::array{
 });
 
 constexpr auto kBorrowedParams = WithCommon(std::array{
+    ParamSpec{.name = "kv_encoding",
+              .type = ParamType::kName,
+              .required = false,
+              .choices = kKvEncodings},
     // The target layer whose K and V it reads.
     ParamSpec{.name = "target_layer", .type = ParamType::kInt, .least = 0, .most = 4095},
 });
@@ -180,8 +184,7 @@ struct Dims {
 Dims DimsOf(const Instance& in) {
   const Params& p = in.params;
   const bool borrowed = in.def->kind == "attention.borrowed";
-  return {.kv_encoding =
-              !borrowed && p.Name("kv_encoding") == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16,
+  return {.kv_encoding = p.Name("kv_encoding") == "q8_0" ? Encoding::kQ8_0 : Encoding::kF16,
           .width = in.stage.width,
           .heads = static_cast<std::uint64_t>(p.Int("heads")),
           .kv_heads = static_cast<std::uint64_t>(p.Int("kv_heads")),

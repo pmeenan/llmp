@@ -284,9 +284,19 @@ TEST(Q8StateTest, QsaQ8ReferenceRequiresAndUsesStoreRow) {
 // ------------------------------------------------------------- ApplyKvCacheEncoding
 
 TEST(Q8StateTest, ApplyKvCacheEncodingGemma4MultiLayer) {
-  // Construct a model spec mimicking Gemma 4:
-  // Layer 0: SWA attention.dense (D=256)
-  // Layer 1: Global attention.dense (D=512, softcap=0.0)
+  // Construct a model spec mimicking Gemma 4 + assistant drafter:
+  // Target:
+  //   Layer 0: SWA attention.dense (D=256)
+  //   Layer 1: Global attention.dense (D=512, softcap=0.0)
+  // Drafter:
+  //   embedding.projected + Layer 0: attention.borrowed (D=512, target_layer=1)
+  auto borrowed = MakeDenseAttention(512, "f16", 0.0);
+  borrowed.kind = "attention.borrowed";
+  borrowed.params.push_back(P("target_layer", I(1)));
+  std::ranges::sort(borrowed.params, {}, &Param::name);
+  std::vector<Param> proj_params{P("eps", R(1e-6)), P("target_width", I(256)), P("vocab", I(1024))};
+  std::ranges::sort(proj_params, {}, &Param::name);
+
   spec::ModelSpec model{
       .pipeline = spec::PipelineKind::kLlm,
       .stages =
@@ -301,6 +311,23 @@ TEST(Q8StateTest, ApplyKvCacheEncodingGemma4MultiLayer) {
                           spec::Layer{.components = {MakeDenseAttention(256, "f16", 0.0)}},
                           spec::Layer{.components = {MakeDenseAttention(512, "f16", 0.0)}},
                       },
+                  .taps = {{.name = "features", .layer = 1, .point = spec::TapPoint::kStream}},
+              },
+              spec::Stage{
+                  .name = "assistant",
+                  .role = spec::StageRole::kDrafter,
+                  .context = 4096,
+                  .stream = {.streams = 1, .width = 256},
+                  .embedding =
+                      ComponentRef{
+                          .kind = "embedding.projected", .version = 1, .params = proj_params},
+                  .layers =
+                      {
+                          spec::Layer{.components = {borrowed}},
+                      },
+                  .reads = {{.stage = "gemma4", .kind = spec::ReadKind::kTap, .name = "features"},
+                            {.stage = "gemma4", .kind = spec::ReadKind::kState, .name = "k"},
+                            {.stage = "gemma4", .kind = spec::ReadKind::kState, .name = "v"}},
               },
           },
   };
@@ -314,15 +341,17 @@ TEST(Q8StateTest, ApplyKvCacheEncodingGemma4MultiLayer) {
   EXPECT_FALSE(ApplyKvCacheEncoding(model, Encoding::kQ8_0, *bytes - 1).has_value());
   EXPECT_EQ(model.Digest(), old_digest);
 
-  // Sufficient bytes admitted: both D=256 and D=512 layers quantized.
+  // Sufficient bytes admitted: both D=256 and D=512 layers (plus borrowed) quantized.
   ASSERT_TRUE(ApplyKvCacheEncoding(model, Encoding::kQ8_0, *bytes).has_value());
   EXPECT_NE(model.Digest(), old_digest);
 
-  for (const auto& layer : model.stages[0].layers) {
-    for (const auto& comp : layer.components) {
-      const auto* p = comp.Find("kv_encoding");
-      ASSERT_NE(p, nullptr);
-      EXPECT_EQ(p->value, ParamValue(std::string("q8_0")));
+  for (const auto& stage : model.stages) {
+    for (const auto& layer : stage.layers) {
+      for (const auto& comp : layer.components) {
+        const auto* p = comp.Find("kv_encoding");
+        ASSERT_NE(p, nullptr);
+        EXPECT_EQ(p->value, ParamValue(std::string("q8_0")));
+      }
     }
   }
 }
@@ -333,13 +362,19 @@ TEST(Q8StateTest, ApplyKvCacheEncodingQwen38WithMtpAndExemptComponents) {
   //   Layer 0: attention.gdn (recurrent, unquantized)
   //   Layer 1: attention.qsa (D=256, full attention with indexer)
   // Drafter stage (MTP, 1 stream):
-  //   Layer 0: attention.qsa (D=256)
+  //   embedding.mtp + Layer 0: attention.qsa (D=256)
   std::vector<Param> gdn_params{
       P("head_dim", I(128)),
       P("heads", I(2)),
       P("width", I(256)),
   };
   std::ranges::sort(gdn_params, {}, &Param::name);
+  std::vector<Param> mtp_emb_params{
+      P("eps", R(1e-6)),
+      P("norm_zero_centered", B(true)),
+      P("vocab", I(1024)),
+  };
+  std::ranges::sort(mtp_emb_params, {}, &Param::name);
 
   spec::ModelSpec model{
       .pipeline = spec::PipelineKind::kLlm,
@@ -369,6 +404,8 @@ TEST(Q8StateTest, ApplyKvCacheEncodingQwen38WithMtpAndExemptComponents) {
                   .role = spec::StageRole::kDrafter,
                   .context = 4096,
                   .stream = {.streams = 1, .width = 256},
+                  .embedding =
+                      ComponentRef{.kind = "embedding.mtp", .version = 1, .params = mtp_emb_params},
                   .layers =
                       {
                           spec::Layer{
@@ -404,6 +441,13 @@ TEST(Q8StateTest, ApplyKvCacheEncodingQwen38WithMtpAndExemptComponents) {
 }
 
 TEST(Q8StateTest, ApplyKvCacheEncodingSupportsMqa) {
+  std::vector<Param> inject_params{
+      P("eps", R(1e-6)),
+      P("taps", I(1)),
+      P("target_width", I(256)),
+      P("vocab", I(1024)),
+  };
+  std::ranges::sort(inject_params, {}, &Param::name);
   spec::ModelSpec model{
       .pipeline = spec::PipelineKind::kLlm,
       .stages =
@@ -422,6 +466,26 @@ TEST(Q8StateTest, ApplyKvCacheEncodingSupportsMqa) {
                                   },
                           },
                       },
+                  .taps = {{.name = "tap0", .layer = 0, .point = spec::TapPoint::kStream}},
+              },
+              spec::Stage{
+                  .name = "dflash",
+                  .role = spec::StageRole::kDrafter,
+                  .context = 4096,
+                  .stream = {.streams = 1, .width = 256},
+                  .embedding =
+                      ComponentRef{
+                          .kind = "embedding.inject", .version = 1, .params = inject_params},
+                  .layers =
+                      {
+                          spec::Layer{
+                              .components =
+                                  {
+                                      MakeMqaAttention(256, "f16", false),
+                                  },
+                          },
+                      },
+                  .reads = {{.stage = "dsv4", .kind = spec::ReadKind::kTap, .name = "tap0"}},
               },
           },
   };
@@ -434,6 +498,9 @@ TEST(Q8StateTest, ApplyKvCacheEncodingSupportsMqa) {
   const auto* mqa_p = model.stages[0].layers[0].components[0].Find("kv_encoding");
   ASSERT_NE(mqa_p, nullptr);
   EXPECT_EQ(mqa_p->value, ParamValue(std::string("q8_0")));
+  const auto* dflash_p = model.stages[1].layers[0].components[0].Find("kv_encoding");
+  ASSERT_NE(dflash_p, nullptr);
+  EXPECT_EQ(dflash_p->value, ParamValue(std::string("q8_0")));
 }
 
 TEST(Q8StateTest, MqaAttentionD512AndD256ShapesAndState) {

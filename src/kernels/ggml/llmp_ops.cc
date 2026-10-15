@@ -1882,16 +1882,23 @@ std::expected<void, KernelFailure> CheckQsaAttn(const ggml_tensor* node) {
   if (!IsF32(q) || !Shaped(q, d, heads, t) || !Packed(q) || !Aligned(q, 16)) {
     return Rejected("F32 queries [256, heads, t], packed");
   }
+  const bool q8 = k->type == GGML_TYPE_Q8_0;
+  const std::size_t unit = q8 ? ggml_type_size(GGML_TYPE_Q8_0) : sizeof(ggml_fp16_t);
+  const std::size_t row_bytes =
+      q8 ? static_cast<std::size_t>((d * kv_heads) / QK8_0) * ggml_type_size(GGML_TYPE_Q8_0)
+         : static_cast<std::size_t>(d * kv_heads) * sizeof(ggml_fp16_t);
+  const std::size_t align = q8 ? 2 : 16;
   for (const ggml_tensor* cache : {k, v}) {
-    if (cache->type != GGML_TYPE_F16 || cache->ne[0] != d * kv_heads || cache->ne[1] < 1 ||
-        cache->ne[2] != 1 || cache->ne[3] != 1 || cache->nb[0] != 2 ||
-        cache->nb[1] < static_cast<std::size_t>(d * kv_heads) * 2 || cache->nb[1] % 16 != 0 ||
-        !Aligned(cache, 16) || std::cmp_greater(cache->ne[1], kInt32Max)) {
-      return Rejected("F16 caches [256 · kv heads, cells], rows 16-byte aligned");
+    if (cache->type != k->type || (cache->type != GGML_TYPE_F16 && cache->type != GGML_TYPE_Q8_0) ||
+        cache->ne[0] != d * kv_heads || cache->ne[1] < 1 || cache->ne[2] != 1 ||
+        cache->ne[3] != 1 || cache->nb[0] != unit || cache->nb[1] < row_bytes ||
+        cache->nb[1] % align != 0 || !Aligned(cache, align) ||
+        std::cmp_greater(cache->ne[1], kInt32Max)) {
+      return Rejected("F16 or Q8_0 caches [256 · kv heads, cells], rows aligned");
     }
   }
   if (k->nb[1] != v->nb[1]) {
-    return Rejected("F16 key and value caches with equal row strides");
+    return Rejected("key and value caches with equal row strides");
   }
   if (k->ne[1] != v->ne[1] || cells->type != GGML_TYPE_I32 || !Shaped(cells, row, t, 1) ||
       !Packed(cells) || !Aligned(cells, 16) || !IsF32(node) || !Shaped(node, d * heads, t, 1) ||

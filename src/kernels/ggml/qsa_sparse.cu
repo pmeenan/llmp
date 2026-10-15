@@ -778,9 +778,10 @@ constexpr std::size_t kAttnShared = static_cast<std::size_t>(2) * kGather * kAtt
 // one's V is used and its V while the next K is), S = Q K^T, the online
 // softmax per head, O += P V. One share writes the output; several write
 // partial results that QsaAttnCombineKernel sums in share order.
+template <bool kQuantized>
 __global__ void __launch_bounds__(32)
-    QsaAttnKernel(const float* __restrict__ q, const __half* __restrict__ k,
-                  const __half* __restrict__ v, std::int64_t kv_row, int cells,
+    QsaAttnKernel(const float* __restrict__ q, const char* __restrict__ k,
+                  const char* __restrict__ v, std::int64_t kv_row_bytes, int cells,
                   const std::int32_t* __restrict__ idx, int row, float* __restrict__ out,
                   float* __restrict__ partial, int heads, int kv_heads, int shares, float scale) {
   extern __shared__ __align__(16) __half gathered[];
@@ -835,19 +836,39 @@ __global__ void __launch_bounds__(32)
   const std::int64_t head_offset = static_cast<std::int64_t>(kh) * kHead;
   // One gather's rows of `base` (K or V) into `buf`; a cell outside the
   // cache (the -1 past a token's cells) is zeros.
-  const auto gather = [&](int c, __half* buf, const __half* base) {
+  const auto gather = [&](int c, __half* buf, const char* base) {
     const int mine = lane < kGather ? list[(c * kGather) + lane] : -1;
 #pragma unroll
     for (int i = 0; i < kGather; ++i) {
       const int cell = __shfl_sync(kFull, mine, i);
       const bool valid = cell >= 0 && cell < cells;
-      CopyAsync16(buf + (i * kAttnStride) + (lane * 8),
-                  valid
-                      ? base + (static_cast<std::int64_t>(cell) * kv_row) + head_offset + (lane * 8)
-                      : base,
-                  valid);
+      if constexpr (kQuantized) {
+        uint4 packed{0, 0, 0, 0};
+        if (valid) {
+          const auto* b = reinterpret_cast<const block_q8_0*>(
+                              base + (static_cast<std::int64_t>(cell) * kv_row_bytes)) +
+                          (kh * (kHead / 32)) + (lane / 4);
+          const float d = __half2float(b->d);
+          const int8_t* qs = b->qs + ((lane % 4) * 8);
+          packed.x = PackHalf2(static_cast<float>(qs[0]) * d, static_cast<float>(qs[1]) * d);
+          packed.y = PackHalf2(static_cast<float>(qs[2]) * d, static_cast<float>(qs[3]) * d);
+          packed.z = PackHalf2(static_cast<float>(qs[4]) * d, static_cast<float>(qs[5]) * d);
+          packed.w = PackHalf2(static_cast<float>(qs[6]) * d, static_cast<float>(qs[7]) * d);
+        }
+        *reinterpret_cast<uint4*>(buf + (i * kAttnStride) + (lane * 8)) = packed;
+      } else {
+        const auto* base_f16 = reinterpret_cast<const __half*>(base);
+        CopyAsync16(buf + (i * kAttnStride) + (lane * 8),
+                    valid ? reinterpret_cast<const __half*>(
+                                base + (static_cast<std::int64_t>(cell) * kv_row_bytes)) +
+                                head_offset + (lane * 8)
+                          : base_f16,
+                    valid);
+      }
     }
-    CopyCommit();
+    if constexpr (!kQuantized) {
+      CopyCommit();
+    }
   };
   if (c0 < c1) {
     gather(c0, kbuf, k);
@@ -861,7 +882,9 @@ __global__ void __launch_bounds__(32)
       break;
     }
     const bool more = c + 1 < c1 && list[(c + 1) * kGather] >= 0;
-    CopyWait<1>();  // this gather's K (its V may still be in flight)
+    if constexpr (!kQuantized) {
+      CopyWait<1>();  // this gather's K (its V may still be in flight)
+    }
     __syncwarp();
     float sc[2][4];
 #pragma unroll
@@ -933,10 +956,12 @@ __global__ void __launch_bounds__(32)
     }
     const std::uint32_t pa[4] = {PackHalf2(p[0][0], p[0][1]), PackHalf2(p[0][2], p[0][3]),
                                  PackHalf2(p[1][0], p[1][1]), PackHalf2(p[1][2], p[1][3])};
-    if (more) {
-      CopyWait<1>();  // this gather's V (the next K may still be in flight)
-    } else {
-      CopyWait<0>();
+    if constexpr (!kQuantized) {
+      if (more) {
+        CopyWait<1>();  // this gather's V (the next K may still be in flight)
+      } else {
+        CopyWait<0>();
+      }
     }
     __syncwarp();
 #pragma unroll
@@ -952,7 +977,9 @@ __global__ void __launch_bounds__(32)
       gather(c + 1, vbuf, v);
     }
   }
-  CopyWait<0>();
+  if constexpr (!kQuantized) {
+    CopyWait<0>();
+  }
   if (shares == 1) {
     const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f;
     const float i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
@@ -1141,12 +1168,19 @@ std::expected<void, KernelFailure> RunQsaAttn(LaunchContext& launch, ggml_tensor
       partial = pool.get();
     }
     auto* out = static_cast<float*>(node->data);
-    QsaAttnKernel<<<static_cast<unsigned>(items), 32, kAttnShared, context.stream()>>>(
-        static_cast<const float*>(node->src[0]->data), static_cast<const __half*>(k->data),
-        static_cast<const __half*>(node->src[2]->data),
-        static_cast<std::int64_t>(k->nb[1] / sizeof(__half)), static_cast<int>(k->ne[1]),
-        static_cast<const std::int32_t*>(node->src[3]->data), row, out, partial, heads, kv_heads,
-        shares, LlmpOpFloat(node, 4));
+    if (k->type == GGML_TYPE_Q8_0) {
+      QsaAttnKernel<true><<<static_cast<unsigned>(items), 32, kAttnShared, context.stream()>>>(
+          static_cast<const float*>(node->src[0]->data), static_cast<const char*>(k->data),
+          static_cast<const char*>(node->src[2]->data), static_cast<std::int64_t>(k->nb[1]),
+          static_cast<int>(k->ne[1]), static_cast<const std::int32_t*>(node->src[3]->data), row,
+          out, partial, heads, kv_heads, shares, LlmpOpFloat(node, 4));
+    } else {
+      QsaAttnKernel<false><<<static_cast<unsigned>(items), 32, kAttnShared, context.stream()>>>(
+          static_cast<const float*>(node->src[0]->data), static_cast<const char*>(k->data),
+          static_cast<const char*>(node->src[2]->data), static_cast<std::int64_t>(k->nb[1]),
+          static_cast<int>(k->ne[1]), static_cast<const std::int32_t*>(node->src[3]->data), row,
+          out, partial, heads, kv_heads, shares, LlmpOpFloat(node, 4));
+    }
     if (shares > 1) {
       QsaAttnCombineKernel<<<static_cast<unsigned>(t * heads), kHead, 0, context.stream()>>>(
           partial, out, heads, kv_heads, shares);

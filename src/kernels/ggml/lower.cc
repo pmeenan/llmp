@@ -561,9 +561,12 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
     const auto canonical_cache = [&](TensorId t) {
       const ir::TensorDesc& td = p_.tensor(t);
       const ir::TensorDesc& root = p_.tensor(p_.root(t));
+      const bool q8 =
+          td.format.encoding == Encoding::kQ8_0 && root.format.encoding == Encoding::kQ8_0;
+      const std::uint64_t head_bytes = q8 ? (td.ne(0) / 32) * 34 : td.ne(0) * 2;
       return stored(t, segment, id) && td.view_offset == 0 && td.ne(3) == 1 &&
-             root.ne(0) == td.ne(0) * td.ne(2) && td.nb[0] == 2 && td.nb[1] == root.nb[1] &&
-             td.nb[2] == td.ne(0) * 2;
+             root.ne(0) == td.ne(0) * td.ne(2) && td.nb[0] == (q8 ? 34 : 2) &&
+             td.nb[1] == root.nb[1] && td.nb[2] == head_bytes;
     };
     if (!positions(n.source(8), segment, false) || pool == nullptr ||
         pool->key != ir::Fused(FusedKind::kQsaPool) ||
@@ -574,7 +577,7 @@ std::expected<void, KernelFailure> Lowering::CheckQsaInputs() {
         blocks.view_offset != 0 || blocks.nb[0] != 2 || blocks.nb[1] != blocks.ne(0) * 2 ||
         blocks.ne(2) != 1 || blocks.ne(3) != 1 || cells != blocks.ne(1) * ap.ratio ||
         p_.tensor(pool->src[3]).ne(0) != 4 * blocks.ne(1) || !canonical_cache(n.src[1]) ||
-        !canonical_cache(n.src[2]) ||
+        !canonical_cache(n.src[2]) || keys.format.encoding != values.format.encoding ||
         p_.tensor(p_.root(n.src[1])).ne(1) != p_.tensor(p_.root(n.src[2])).ne(1) ||
         values.shape().ne != keys.shape().ne ||
         !mask(n.src[5], segment, cells, p_.tensor(p_.root(n.src[1])).ne(1), 0, Encoding::kF32) ||

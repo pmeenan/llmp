@@ -303,10 +303,12 @@ constexpr std::array<Rule, 3> kHeadGateRules = {
 constexpr std::array<Rule, 2> kQsaPoolRules = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
      {.operand = 1, .encodings = kBf16, .layouts = kDense}}};
+constexpr std::array kF16Q8 = {Encoding::kF16, Encoding::kQ8_0};
+constexpr std::array kDenseGgml = {Layout::kDense, Layout::kGgmlBlocks};
 constexpr std::array<Rule, 5> kQsaAttnRules = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
-     {.operand = 1, .encodings = kF16, .layouts = kDense},
-     {.operand = 2, .encodings = kF16, .layouts = kDense},
+     {.operand = 1, .encodings = kF16Q8, .layouts = kDenseGgml},
+     {.operand = 2, .encodings = kF16Q8, .layouts = kDenseGgml},
      {.operand = 3, .encodings = kF32, .layouts = kDense},
      {.operand = 4, .encodings = kBf16, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kMoeRouterRules = {
@@ -1026,8 +1028,13 @@ bool AcceptsQsaPool(const ex::CapabilityQuery& q) {
 // an indexer of 4 heads of 128, the selection within its tiles.
 bool AcceptsQsaAttention(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::QsaAttnParams>(q);
+  const ex::OperandFormat* k_op = Operand(q, 1);
+  const ex::OperandFormat* v_op = Operand(q, 2);
   if (!Built(q) || !p || !Has(q, 8) || p->attn.softcap != 0.0F || p->attn.max_bias != 0.0F ||
-      p->attn.window != 0 || p->attn.sinks)
+      p->attn.window != 0 || p->attn.sinks || !k_op || !v_op || k_op->encoding != v_op->encoding ||
+      k_op->layout != v_op->layout ||
+      (k_op->encoding == Encoding::kF16 && k_op->layout != Layout::kDense) ||
+      (k_op->encoding == Encoding::kQ8_0 && k_op->layout != Layout::kGgmlBlocks))
     return false;
   const std::uint64_t heads = Ne(q, 0, 1);
   const std::uint64_t kv = Ne(q, 1, 2);
