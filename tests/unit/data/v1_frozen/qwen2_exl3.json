@@ -1,0 +1,18 @@
+{
+ "digests": {
+  "40g.checkpoint_state": "aa7b3de16d1a2acdc2653b1eaaf42d061b7bc431f5b5abd268514027e1a0256d:6291456:3",
+  "40g.final_state": "a1bf2a9b74ff38ee629073d9ea46a5d0441594d3775fb1f0628bf30dcd06a856:6291456:3",
+  "40g.rows": "17f007a66fa3dd5e09afc7b1b1b51b2c441feba67b80f8876f96e1fcfdd4186e",
+  "40o.checkpoint_state": "aa7b3de16d1a2acdc2653b1eaaf42d061b7bc431f5b5abd268514027e1a0256d:6291456:3",
+  "40o.final_state": "6eef64b9c779d0baf0462ce4f5a963d1377d09981b873c86d0daee5fcd66ff67:6291456:3",
+  "40o.rows": "cbd40f459cf34cf5cb28b316bfc809557a4182723f0155ee2cced707bb798f5e",
+  "45g.checkpoint_state": "57e5e6b5e27a6a3b55d5b1b3a5fc79e6324cafe0d8338ae5b2525db3cb80b7dc:6291456:3",
+  "45g.final_state": "8e9d9c59221c545fbec40893ee268bd113184759a8b26d2cdafd6320c9542fcf:6291456:3",
+  "45g.rows": "bc7fb522a2384b566736f9a6e06b66a7e684d63ca91eb247bbd74f2ffa662486",
+  "45o.checkpoint_state": "57e5e6b5e27a6a3b55d5b1b3a5fc79e6324cafe0d8338ae5b2525db3cb80b7dc:6291456:3",
+  "45o.final_state": "eeb7cfae15885bd421e17605b959c5a739d82a663f79850c9329721b2e188849:6291456:3",
+  "45o.rows": "692ae3f2c91788522f69a473e887d5de17e6e3cd7ed46cee200a959be8f019d0"
+ },
+ "family": "qwen2_exl3",
+ "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+}

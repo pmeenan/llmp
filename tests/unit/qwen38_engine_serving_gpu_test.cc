@@ -58,6 +58,7 @@
 #include "runtime/state_keeper.h"
 #include "spec/mappings/qwen38.h"
 #include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace fs = std::filesystem;
@@ -579,22 +580,65 @@ void Screen(std::string_view id, bool mtp, bool rows, std::uint32_t depth) {
 
 void PublishedScreen() {
   const char* root = std::getenv("LLMP_TEST_QWEN_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
-  const char* id = std::getenv("LLMP_TEST_QWEN_V1_ID");       // NOLINT(concurrency-mt-unsafe)
+  if (root == nullptr) root = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
+  const char* given = std::getenv("LLMP_TEST_QWEN_V1_ID");  // NOLINT(concurrency-mt-unsafe)
+  std::string id = given != nullptr ? given : "";
+  if (id.empty()) {
+    const auto mapped = llmp::test_support::V1IdFor(kGguf);
+    if (mapped) id = *mapped;
+  }
   ASSERT_NE(root, nullptr);
-  ASSERT_NE(id, nullptr);
-  ASSERT_EQ(std::strlen(id), 64U);
+  ASSERT_EQ(id.size(), 64U);
   ASSERT_TRUE(std::ranges::all_of(std::string_view(id), [](char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
   }));
-  auto fixed = CheckFixture(kGguf, false);
-  ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
-  auto old = Run(kGguf, false, true, true, 2, nullptr, {}, true);
-  ASSERT_TRUE(old) << (old ? "" : old.error());
-  auto native = Run(id, false, true, true, 2, old->get(), root, true);
+  // The v0 arm needs the established artifact; without it (or with
+  // LLMP_TEST_V1_FROZEN_ONLY) only the v1 arm runs, against the frozen digests.
+  std::error_code v0_error;
+  const bool have_v0 = std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&  // NOLINT
+                       fs::exists(fs::path(llmp::test_support::ModelsDir()) / "qgguf-artifacts" /
+                                      std::string(kGguf),
+                                  v0_error);
+  std::unique_ptr<Lifetime> old;
+  if (have_v0) {
+    auto fixed = CheckFixture(kGguf, false);
+    ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
+    auto first = Run(kGguf, false, true, true, 2, nullptr, {}, true);
+    ASSERT_TRUE(first) << (first ? "" : first.error());
+    old = std::move(*first);
+  }
+  auto native = Run(id, false, true, true, 2, old.get(), root, true);
   ASSERT_TRUE(native) << (native ? "" : native.error());
-  Compare((*native)->result, (*old)->result, true);
-  EXPECT_EQ((*native)->result.states, (*old)->result.states);
-  for (const auto* result : {&(*old)->result, &(*native)->result}) {
+  llmp::test_support::FrozenDigests frozen("qwen38_gguf");
+  for (const auto* life : {old.get(), native->get()}) {
+    if (life == nullptr) continue;
+    SCOPED_TRACE(life == old.get() ? "v0 against frozen" : "v1 against frozen");
+    const auto& r = life->result;
+    using llmp::test_support::HexOfFloats;
+    using llmp::test_support::HexOfInts;
+    using llmp::test_support::HexOfRows;
+    const auto state_text = [](const StateImage& state) {
+      return llmp::base::ToHex(state.digest) + ':' + std::to_string(state.positions) + ':' +
+             std::to_string(state.ranges.size());
+    };
+    for (std::size_t turn = 0; turn < 2; ++turn) {
+      const auto t = std::to_string(turn);
+      frozen.Expect("heads." + t, HexOfFloats(r.heads[turn]));
+      frozen.Expect("tokens." + t, llmp::test_support::JoinTokens(r.generations[turn].tokens));
+      frozen.Expect("logits." + t, HexOfRows(r.generations[turn].logits));
+      frozen.Expect("history." + t, HexOfInts(r.history[turn]));
+    }
+    // States: 0 after the first turn, 1 after spill and restore, 2 after the second.
+    for (std::size_t i = 0; i < r.states.size(); ++i)
+      frozen.Expect("state." + std::to_string(i), state_text(r.states[i]));
+    if (frozen.recording()) break;  // one arm records
+  }
+  if (have_v0) {
+    Compare((*native)->result, old->result, true);
+    EXPECT_EQ((*native)->result.states, old->result.states);
+  }
+  for (const auto* result : {have_v0 ? &old->result : nullptr, &(*native)->result}) {
+    if (result == nullptr) continue;
     for (const auto& head : result->heads)
       EXPECT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
     for (const auto& generation : result->generations)
@@ -606,16 +650,17 @@ void PublishedScreen() {
   testing::Test::RecordProperty("complete_state_images", 6);
   testing::Test::RecordProperty("restored_owners", 2);
   testing::Test::RecordProperty("native_artifact", id);
-  fs::remove_all((*old)->scratch);
+  if (old) fs::remove_all(old->scratch);
   fs::remove_all((*native)->scratch);
-  old->reset();
+  old.reset();
 }
 class PublishedCase : public testing::Test {
   void TestBody() override { PublishedScreen(); }
 };
 [[maybe_unused]] const auto* published_case = []() -> testing::TestInfo* {
-  if (std::getenv("LLMP_TEST_QWEN_V1_STORE") == nullptr)
-    return nullptr;  // NOLINT(concurrency-mt-unsafe)
+  if (std::getenv("LLMP_TEST_QWEN_V1_STORE") == nullptr &&  // NOLINT(concurrency-mt-unsafe)
+      std::getenv("LLMP_TEST_V1_STORE") == nullptr)         // NOLINT(concurrency-mt-unsafe)
+    return nullptr;
   return testing::RegisterTest("Qwen38EngineServingGpu", "PublishedGgufMatchesV0HeadsStateAndSpill",
                                nullptr, nullptr, __FILE__, __LINE__,
                                []() -> testing::Test* { return new PublishedCase; });

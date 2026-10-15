@@ -470,7 +470,9 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   UD-Q2_K_XL, three shards
   ([pins.json](experiments/fast-swap/pins.json)).
 - **Artifact:** v0 `8a355bfb…`, from the GGUF by `import_m3.py`
-  ([dsv4-native](experiments/dsv4-native/README.md#what-runs)).
+  ([dsv4-native](experiments/dsv4-native/README.md#what-runs)); v1 `698b1cd8…`
+  from the staged, manifest-verified GGUF by `llmp import`, bit-identical to
+  v0 ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
 - **Components:** the target; optionally [DSpark](#dspark) as its drafter
   (the configuration's `drafter` key).
 - **Template:** `e643c31f…` (above), read from the artifact.
@@ -640,7 +642,9 @@ seeded-sampling evidence in this study.
 - **Checkpoint:** `dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf` in the same
   pinned repository and revision.
 - **Artifact:** v0 `dd2d3f9c…`, its own artifact; it binds the target's
-  token table and head at load (no composition document, D-089's note).
+  token table and head at load (no composition document, D-089's note); v1
+  `5c9d95e2…`, equally its own, bit-identical to v0 with its target
+  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
 - **Components:** drafter only; runs with DeepSeek V4 Flash 0731.
 - **Template and tokenizer:** its target's.
 - **Decoding:** as its target's speculative rows above.
@@ -781,7 +785,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   experts (IQ3_S on one layer), IQ4_NL down experts and n-gram table,
   Q6_K and Q8_0 matrices, BF16 indexer projections, F32 norms and routers.
 - **Artifact:** v0 `5356b5b0…`, imported verbatim by `import_m3.py build`
-  ([artifact-format](artifact-format.md#qwen38-flash-next-gguf)); the
+  ([artifact-format](artifact-format.md#qwen38-flash-next-gguf)); v1
+  `18a67153…` by `llmp import`, bit-identical to v0
+  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)); the
   n-gram hash and the hyperparameters come from its kept GGUF metadata,
   checked against the profile.
 - **Other quantizations:** the binding takes any GGML type; the graph
@@ -894,7 +900,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 - **Checkpoint:** `bartowski/gemma-2-2b-it-GGUF@855f67ca`,
   `gemma-2-2b-it-Q8_0.gguf`, 2,784,495,456 bytes.
 - **Artifact:** v0 `eb18d30d…`, deep-verified
-  ([gemma2-execution](experiments/gemma2-execution/README.md)).
+  ([gemma2-execution](experiments/gemma2-execution/README.md)); v1 `f176f912…`
+  by `llmp import`, bit-identical to v0
+  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
 - **Template:** `ecd6ae51…` (above), through the interpreter; it refuses a
   system message.
 - **Tokenizer:** classic SentencePiece from the GGUF (256,000 tokens);
@@ -929,7 +937,8 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   record version 2.
 - **Checkpoint:** `ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d0`,
   `gemma-3-4b-it-qat-Q4_0.gguf`, 2,526,080,992 bytes.
-- **Artifact:** v0 `8c710341…`, deep-verified
+- **Artifact:** v0 `8c710341…`, deep-verified; v1 `634bc193…` by `llmp import`,
+  bit-identical to v0 ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md))
   ([gemma3-execution](experiments/gemma3-execution/README.md)).
 - **Template:** `7de1c58e…` (above), native.
 - **Tokenizer:** classic SentencePiece from the GGUF (262,208 tokens);
@@ -960,7 +969,11 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`; `unsloth/gemma-4-31B-it-GGUF@c1ac76e9`
   `gemma-4-31B-it-UD-Q4_K_XL.gguf`.
 - **Artifacts:** v0 `4ddb360c…` (26B-A4B) and `32c92e07…` (31B)
-  ([gemma31-serving](experiments/gemma31-serving/README.md#identities-and-memory)).
+  ([gemma31-serving](experiments/gemma31-serving/README.md#identities-and-memory));
+  v1 `f0f72ab3…` (26B-A4B) and `4d9a255a…` (31B) by `llmp import`, each
+  bit-identical to v0, and the assistants' v1 `23aa1c35…` (26B-A4B) and
+  `07067ae0…` (31B) bit-identical to their v0 with the targets
+  ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)).
 - **Template:** `845f1ee4…` (above), native by probe; plain chat disables
   thinking.
 - **Tokenizer:** Gemma 4 raw UTF-8 BPE from the GGUF (262,144 tokens in
@@ -1026,7 +1039,8 @@ in the table below describe the historical implementations.
 | --- | --- | --- |
 | Architecture | `qwen2` (`model/qwen2.h`), GGML FP16 | `qwen2` with EXL3 linears (`model/qwen2_exl3.h`) |
 | Checkpoint | `Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db` `qwen2.5-0.5b-instruct-fp16.gguf` ([pins](experiments/first-slice/pins.json)) | `blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw@7009334d` and `-4.5bpw@030d3a41` ([pins](experiments/exl3-reference/pins.json)) |
-| Artifact | v0 `b93cdc32…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)) |
+| Artifact | v0 `b93cdc32…`; v1 `a96092c9…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)); v1 `ce8defd9…` / `b62e2d22…` |
+| v0 against v1 | bit-identical ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)) | bit-identical (same) |
 | Template hash (no renderer) | `d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4`, the GGUF's `tokenizer.chat_template` ([first-slice](first-slice.md)) | `cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f`, `tokenizer_config.json`'s `chat_template`, both rates ([runtime.json](experiments/exl3-reference/runtime.json)) |
 | Tokenizer | the GGUF's Qwen2 BPE; the native tokenizer not verified on it | `tokenizer.json`; the native tokenizer not verified on it |
 | Decoding | teacher-forced trajectories only | teacher-forced trajectories only |

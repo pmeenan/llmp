@@ -962,11 +962,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         placements.at(hold->spec.stages.at(row.weight.stage).artifact)
             .places.at(artifact->resources()[row.resource].group) = engine::GroupPlace::kNone;
     }
-    // v0 retains its established synthesis path. Stored v1 maps came from the
-    // validated component roles above; no discovery-only graphs are built.
+    // v0 retains its established synthesis path. Stored v1 target maps came
+    // from the validated component roles above; only a speculating model
+    // builds the setup graphs, to place its drafter's weights.
     if (!stored || speculate) {
       for (const planner::StepShape& s : setup) {
-        if (stored && s.stage == 0) continue;
         auto step = components::BuildStep(hold->spec, s.stage, s,
                                           {.tensors = hold->tables.at(s.stage),
                                            .state = &hold->layouts.at(s.stage),
@@ -975,6 +975,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                           {.narrow = true, .dsv4_lid_mask = deepseek_serving});
         if (!step) return Error(step.error());
         for (const components::StepWeight& weight : step->weights) {
+          // A stored target's weights are placed above from its validated
+          // roles. A target-stage step also binds the drafter's weights (the
+          // feature projection a prompt chunk runs when the model speculates),
+          // and those have no other source of places.
+          if (stored && weight.ref.stage == 0) continue;
           const ja::Artifact& a = weight.ref.stage == 0 ? *artifact : *drafter;
           for (const auto& [name, role] : weight.parts) {
             const auto found =

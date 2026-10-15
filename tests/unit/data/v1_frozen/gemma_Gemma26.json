@@ -1,0 +1,22 @@
+{
+ "digests": {
+  "continued.0": "b46a89084651612a8ec07a2143b1c56affe30fef6933522d38eab2a86c10b68c",
+  "continued.1": "04d21e39b97393c1652ee7ddfffe4b97c91699cd3c4f31d53d90673e5a749cc7",
+  "heads.0": "fc5e202e0e502484b26bd64828b153e453d25d874ff0f356d7535dccae0362cb",
+  "heads.1": "16401b9159e5588f3a8f24c0ba2f6fcbcfca7c40d448018809a542d892160209",
+  "history.0": "f34b8e0ffda7425698a6fae9ed25c36a7e583657b83c1cf4916384132845de18",
+  "history.1": "870107af51139b2ac0511a824b5d77c6a5f1e86c7d639e4f48914ed6992be27e",
+  "logits.0": "ba5ce53c145e845cd14d3baebcb3451ae15d137f7620595e526ff5dd5ca2aaff",
+  "logits.1": "7413fbeafe04c9e4f230d36e9075ac41f120dbd8b1cca26c793cc5a7977d27d0",
+  "restored.0": "55bf1c18b81cf1ee61a4b71a1300ef44fb5e83c0fd12b84e9ab609414624c067:125829120:10",
+  "restored.1": "4cbeef539320638b1adf963d5e5401c50f5a390c8a69937806f04e3c5dcc8322:125829120:10",
+  "resumed.0": "6b70c2b53ccc458eb4b53fbc9cf2f52d6ac10569ec43dc3beeaf9904646759d2:125829120:11",
+  "resumed.1": "65ac7a2879602e1789026c42e79c3208ac424496c2f47e839de1c1800035e83c:125829120:11",
+  "state.0": "55bf1c18b81cf1ee61a4b71a1300ef44fb5e83c0fd12b84e9ab609414624c067:125829120:10",
+  "state.1": "4cbeef539320638b1adf963d5e5401c50f5a390c8a69937806f04e3c5dcc8322:125829120:10",
+  "tokens.0": "1595,236786,2677,236786",
+  "tokens.1": "506,3640,4184,563"
+ },
+ "family": "gemma_Gemma26",
+ "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+}

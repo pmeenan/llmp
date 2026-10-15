@@ -62,6 +62,8 @@
 #include "runtime/memory_guard.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen2.h"
+#include "spec/stored.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace fs = std::filesystem;
@@ -876,6 +878,19 @@ TEST(ComponentRunnerExl3Inputs, ReloadWitnessRefusesUnpaidOrChangedIdentity) {
   EXPECT_NE(ProfileName(SelectedProfile::k45G), ProfileName(SelectedProfile::k45O));
 }
 
+// SHA-256 over the saved state's page coordinates and bytes.
+std::string CheckpointDigest(const Lifetime& life) {
+  llmp::base::Sha256 digest;
+  for (const auto& range : life.saved_pages) {
+    digest.Update(std::as_bytes(std::span(&range.region, 1)));
+    digest.Update(std::as_bytes(std::span(&range.offset, 1)));
+    digest.Update(std::as_bytes(std::span(&range.bytes, 1)));
+  }
+  digest.Update(std::span(static_cast<const std::byte*>(life.saved_state),
+                          static_cast<std::size_t>(life.saved_bytes)));
+  return llmp::base::ToHex(digest.Finish()) + ':' + std::to_string(life.saved_bytes) + ':' +
+         std::to_string(life.saved_pages.size());
+}
 // Every output row is requested so narrowing
 // cannot change the legacy chunk's matrix shapes.
 void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool lifecycle = false,
@@ -983,11 +998,22 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
     ASSERT_LE(corpus_charge, 21108224U);
   }
   if (!corpus) ASSERT_EQ(oracle.size(), token_rows * row_bytes);
+  // The v0 fixture, or with LLMP_TEST_QWEN2_ARM=v1 the published v1 import of
+  // the same checkpoint (LLMP_TEST_V1_STORE and its v1-ids.json). The sealed
+  // oracle and the frozen digests hold both arms to the same bits.
+  const bool v1 = Env("LLMP_TEST_QWEN2_ARM") == "v1";
   std::string store = Env("LLMP_EXL3_FIXTURE_STORE");
   if (store.empty()) store = Env("HOME") + "/.local/share/llmp/artifact-layout-20260922/installed";
-  const auto artifact_id = mixed_rate
-                               ? "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a"
-                               : "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4";
+  const std::string v0_artifact_id =
+      mixed_rate ? "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a"
+                 : "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4";
+  std::string artifact_id = v0_artifact_id;
+  if (v1) {
+    store = ts::V1Store();
+    const auto mapped = ts::V1IdFor(v0_artifact_id);
+    if (store.empty() || !mapped) GTEST_SKIP() << "no published v1 EXL3 fixture (LLMP_TEST_V1_STORE)";
+    artifact_id = *mapped;
+  }
   const fs::path root = fs::path(store) / artifact_id;
   if (!fs::is_directory(root)) GTEST_SKIP() << "fixture not installed: " << root;
   // These pure filesystem bounds precede both artifact parser calls. The
@@ -995,7 +1021,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   std::error_code metadata_error;
   const auto manifest_bytes = fs::file_size(root / "manifest.json", metadata_error);
   ASSERT_FALSE(metadata_error);
-  ASSERT_LE(manifest_bytes, 16 * 1024U);
+  ASSERT_LE(manifest_bytes, v1 ? 64 * 1024U : 16 * 1024U);
   const auto index_bytes = fs::file_size(root / "index.json", metadata_error);
   ASSERT_FALSE(metadata_error);
   ASSERT_LE(index_bytes, kMiB);
@@ -1003,6 +1029,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   ASSERT_TRUE(headers.has_value()) << headers.error();
   auto opened = ar::Artifact::Open(root, {.expected_id = artifact_id});
   ASSERT_TRUE(opened.has_value()) << opened.error().ToString();
+  ASSERT_EQ(opened->format_version(), v1 ? 1U : 0U);
   life->artifact.emplace(std::move(*opened));
   auto& artifact = life->artifact;
   ASSERT_EQ(profile.layers, 24U);
@@ -1015,14 +1042,24 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   ASSERT_LE(artifact->resources().size(), 1024U);
   ASSERT_LE(artifact->groups().size(), 64U);
   ASSERT_LE(artifact->chunk_sha256().size(), 1024U);
-  ASSERT_TRUE(llmp::model::BindQwen2Exl3(profile, *artifact));
   const auto& mapping = sp::mappings::Qwen2Mapping();
   auto mapped_values = sp::mappings::Qwen2V0Values(profile);
   ASSERT_TRUE(mapped_values.has_value()) << mapped_values.error();
   life->values = std::move(*mapped_values);
-  auto bound_source = sp::SourceOfV0(*artifact, &mapping);
-  ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
-  life->source.emplace(std::move(*bound_source));
+  if (v1) {
+    // The stored spec and the artifact's own tensor formats and parts execute unchanged.
+    auto bound_source = sp::SourceOf(*artifact);
+    ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
+    life->source.emplace(std::move(*bound_source));
+    auto stored = sp::StoredSpec(*artifact);
+    ASSERT_TRUE(stored.has_value()) << stored.error();
+    life->spec.emplace(std::move(*stored));
+  } else {
+    ASSERT_TRUE(llmp::model::BindQwen2Exl3(profile, *artifact));
+    auto bound_source = sp::SourceOfV0(*artifact, &mapping);
+    ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
+    life->source.emplace(std::move(*bound_source));
+  }
   auto& source = life->source;
   ASSERT_LE(source->tensors.size(), 1024U);
   if (corpus || lifecycle) {
@@ -1064,9 +1101,11 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
                                   "codes:169,input_signs:169,output_signs:169,marker:169");
   }
   for (const auto& tensor : source->tensors) ASSERT_LE(tensor.name.size(), 128U);
-  auto synthesized = sp::Synthesize(mapping, *source, life->values);
-  ASSERT_TRUE(synthesized.has_value()) << synthesized.error();
-  life->spec.emplace(std::move(*synthesized));
+  if (!v1) {
+    auto synthesized = sp::Synthesize(mapping, *source, life->values);
+    ASSERT_TRUE(synthesized.has_value()) << synthesized.error();
+    life->spec.emplace(std::move(*synthesized));
+  }
   auto& spec = life->spec;
   ASSERT_EQ(spec->stages.size(), 1U);
   ASSERT_EQ(spec->stages.front().layers.size(), 24U);
@@ -1154,6 +1193,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   auto& kernel = life->kernel;
   auto& runner = life->runner;
   auto& entered = life->entered;
+  ts::FrozenDigests frozen("qwen2_exl3");
   const auto ran = [&]() -> en::Status {
     entered.push_back(kernel.get());
     if (auto x = kernel->resources->OpenCublas("EXL3 shared cuBLAS workspace"); !x) return x;
@@ -1712,6 +1752,13 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
             if (life->saved_positions != 161) return std::unexpected("baseline state position");
             life->final_pages = life->saved_pages;
             life->final_bytes = life->saved_bytes;
+            // The 161 baseline rows and the final state, frozen: v0 and v1
+            // are held to the same digests (the later passes equal the baseline).
+            frozen.Expect(std::string(ProfileName(life->selected_profile)) + ".rows",
+                          ts::HexOfBytes(std::as_bytes(
+                              std::span(life->oracle.data(), std::size_t{161} * row_bytes))));
+            frozen.Expect(std::string(ProfileName(life->selected_profile)) + ".final_state",
+                          CheckpointDigest(*life));
             for (const auto id : paged->extents()) {
               const auto extent = node.catalog().Describe(id);
               if (!extent || extent->state != llmp::catalog::ExtentState::kResident)
@@ -1765,6 +1812,8 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
                 if (auto x = SaveState(*life, true); !x) return x;
                 if (life->saved_positions != 145)
                   return std::unexpected("EXL3 checkpoint position");
+                frozen.Expect(std::string(ProfileName(life->selected_profile)) + ".checkpoint_state",
+                              CheckpointDigest(*life));
               }
             }
             if (slots.positions(0) != 161 || compared_rows != 169 || executed_steps != 42 ||

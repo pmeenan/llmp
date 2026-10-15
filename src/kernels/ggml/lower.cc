@@ -2079,7 +2079,9 @@ std::expected<void, KernelFailure> Lowering::Bind() {
   for (const auto& [t, w] : weight_leaves_) {
     const std::uint64_t address =
         addresses.weight ? addresses.weight(w->ref, w->parts.front().second) : 0;
-    if (address == 0 && !addresses.measuring()) return Refused("a weight has no address");
+    if (address == 0 && !addresses.measuring())
+      return Refused(std::format("a weight has no address (stage {}, {})", w->ref.stage,
+                                 w->parts.front().first));
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
   }
   for (const auto& [t, s] : state_leaves_) {
@@ -2139,7 +2141,9 @@ std::expected<void, KernelFailure> Lowering::Bind() {
         }
       }
     }
-    if (address == 0 && !addresses.measuring()) return Refused("a weight's part has no address");
+    if (address == 0 && !addresses.measuring())
+      return Refused(std::format("a weight's part has no address (stage {}, {})", w->ref.stage,
+                                 w->parts.front().first));
     TensorArena::Bind(t, address != 0 ? address : placeholder(t));
   }
   // A verify's saves and a commit's rows of them: the caller's buffers.

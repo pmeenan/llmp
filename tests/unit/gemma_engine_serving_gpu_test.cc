@@ -71,6 +71,7 @@
 #include "runtime/runtime.h"
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -125,6 +126,8 @@ class GemmaEngineServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   bool log_to_stderr = false;
   rt::SwapParts first_activation;
 
+  // Whether the v0 artifact must be present (not for the frozen v1 proof).
+  virtual bool NeedsV0() const { return true; }
   std::uint32_t Vocab() const { return GetParam() == 2 ? 256000U : 262208U; }
   // A ring cell count that two owners' prompts pass: the local layers'
   // ring (window and chunk, padded to 256 cells).
@@ -135,7 +138,7 @@ class GemmaEngineServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     const fs::path installed = Models() / (GetParam() == 2 ? "gemma2-import-20261007/artifacts"
                                                            : "gemma3-import-20261007/artifacts");
     std::error_code error;
-    if (!fs::exists(installed / (GetParam() == 2 ? kGemma2 : kGemma3), error)) {
+    if (!fs::exists(installed / (GetParam() == 2 ? kGemma2 : kGemma3), error) && NeedsV0()) {
       GTEST_SKIP() << "no Gemma" << GetParam() << " artifact in " << installed;
     }
     // Spill files need direct I/O: scratch in the build tree.
@@ -394,15 +397,36 @@ class GemmaEngineServingGpu : public ::testing::TestWithParam<std::uint32_t> {
 // skipped whatever else it printed).
 class GemmaEngineGemma3Gpu : public GemmaEngineServingGpu {};
 
-class GemmaEngineNativeV1Gpu : public GemmaEngineServingGpu {};
+class GemmaEngineNativeV1Gpu : public GemmaEngineServingGpu {
+ protected:
+  bool NeedsV0() const override { return false; }
+};
 
 TEST_P(GemmaEngineNativeV1Gpu, PublishedGemma2MatchesV0HeadsTokensStateAndSpillContinuation) {
-  constexpr std::string_view id =
-      "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076";
   // A published native artifact is provided explicitly by the bounded
   // acceptance recipe; this test never imports or rewrites model payloads.
+  // The store is LLMP_TEST_GEMMA2_V1_STORE or LLMP_TEST_V1_STORE; the ID
+  // LLMP_TEST_GEMMA2_V1_ID or the store's v1-ids.json entry for the v0 ID.
   const char* imported = std::getenv("LLMP_TEST_GEMMA2_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
+  if (imported == nullptr) {
+    const auto shared = llmp::test_support::V1Store();
+    if (!shared.empty()) imported = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
+  }
   if (imported == nullptr) GTEST_SKIP() << "no published Gemma2 v1 store configured";
+  std::string id;
+  if (const char* given = std::getenv("LLMP_TEST_GEMMA2_V1_ID"); given != nullptr) {  // NOLINT
+    id = given;
+  } else if (const auto mapped = llmp::test_support::V1IdFor(kGemma2); mapped) {
+    id = *mapped;
+  } else {
+    GTEST_SKIP() << "no published Gemma2 v1 ID configured";
+  }
+  ASSERT_EQ(id.size(), 64U);
+  // The v0 arm needs the pinned v0 artifact; without it (or with
+  // LLMP_TEST_V1_FROZEN_ONLY) only the v1 arm runs, against the frozen digests.
+  std::error_code v0_error;
+  const bool have_v0 = std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&  // NOLINT
+                       fs::exists(life->roles.installed / kGemma2, v0_error);
   // Start admits the actual native artifact through the same runtime check
   // used by registration and execution. Avoid a second external metadata
   // parse: this harness payment inventories only retained observation rows.
@@ -425,8 +449,9 @@ TEST_P(GemmaEngineNativeV1Gpu, PublishedGemma2MatchesV0HeadsTokensStateAndSpillC
   std::unique_ptr<rt::Server> retired_server;
   std::array<Result, 2> result;
   for (std::size_t arm = 0; arm < result.size(); ++arm) {
+    if (arm == 0 && !have_v0) continue;
     life->roles.installed = arm == 0 ? legacy_store : fs::path(imported);
-    life->config.models.front().artifact = arm == 0 ? std::string(kGemma2) : std::string(id);
+    life->config.models.front().artifact = arm == 0 ? std::string(kGemma2) : id;
     const auto started = Start();
     ASSERT_TRUE(started) << (started ? "" : started.error());
     retired_server.reset();
@@ -472,6 +497,27 @@ TEST_P(GemmaEngineNativeV1Gpu, PublishedGemma2MatchesV0HeadsTokensStateAndSpillC
       ClearStorage();
     }
   }
+  // Both arms (the v0 one while it exists) against the frozen digests.
+  llmp::test_support::FrozenDigests frozen("gemma_Gemma2");
+  for (std::size_t arm = have_v0 ? 0 : 1; arm < result.size(); ++arm) {
+    SCOPED_TRACE(arm == 0 ? "v0 against frozen" : "v1 against frozen");
+    const auto& r = result[arm];
+    for (std::uint32_t owner = 0; owner < 2; ++owner) {
+      const auto o = std::to_string(owner);
+      using llmp::test_support::HexOfFloats;
+      using llmp::test_support::HexOfInts;
+      using llmp::test_support::HexOfRows;
+      frozen.Expect("heads." + o, HexOfFloats(r.heads[owner]));
+      frozen.Expect("tokens." + o, llmp::test_support::JoinTokens(r.generated[owner].tokens));
+      frozen.Expect("logits." + o, HexOfRows(r.generated[owner].logits));
+      frozen.Expect("history." + o, HexOfInts(r.histories[owner]));
+      frozen.Expect("state." + o, llmp::base::ToHex(r.state[owner]));
+      frozen.Expect("continued." + o, HexOfFloats(r.continued[owner]));
+      frozen.Expect("resumed." + o, llmp::base::ToHex(r.resumed[owner]));
+    }
+    if (frozen.recording()) break;  // one arm records
+  }
+  if (!have_v0) return;
   for (std::uint32_t owner = 0; owner < 2; ++owner) {
     for (const auto& arm : result) {
       ASSERT_TRUE(Finite(arm.heads[owner], Vocab()));

@@ -4,6 +4,10 @@
 // Published native Gemma 3/4 artifacts against the pinned v0 imports, through
 // the same component engine and settings. This is a short acceptance screen,
 // not a migration performance gate or permission for another artifact family.
+// Both arms are also asserted against the frozen digests under
+// tests/unit/data/v1_frozen (tests/support/v1_frozen.h), so the v1 proof
+// outlives the v0 artifacts: without the v0 artifact (or with
+// LLMP_TEST_V1_FROZEN_ONLY set) only the v1 arm runs, against them.
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -33,6 +37,7 @@
 #include "runtime/engine_llm.h"
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace fs = std::filesystem;
@@ -120,14 +125,25 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
   rt::Llm* model = nullptr;
   bool uncertain = false;
   const Profile& profile() const { return kProfiles.at(GetParam()); }
+  bool have_v0 = true;
   rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
   rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
 
   void SetUp() override {
     const char* store = std::getenv(profile().native_store_env);  // NOLINT(concurrency-mt-unsafe)
     if (store == nullptr)
-      store = std::getenv("LLMP_TEST_GEMMA_V1_STORE");      // NOLINT(concurrency-mt-unsafe)
+      store = std::getenv("LLMP_TEST_GEMMA_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
+    if (store == nullptr)
+      store = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
     const char* id = std::getenv(profile().native_id_env);  // NOLINT(concurrency-mt-unsafe)
+    std::string mapped_id;
+    if (id == nullptr) {
+      // The store's v1-ids.json names the v1 ID of each pinned v0 artifact.
+      if (const auto mapped = llmp::test_support::V1IdFor(profile().legacy_id); mapped) {
+        mapped_id = *mapped;
+        id = mapped_id.c_str();
+      }
+    }
     if (store == nullptr || id == nullptr) GTEST_SKIP() << "published native store/ID not supplied";
     life->native_id = id;
     ASSERT_EQ(life->native_id.size(), 64U);
@@ -136,7 +152,9 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
     life->native_store = store;
     life->legacy_store = fs::path(llmp::test_support::ModelsDir()) / profile().legacy_store;
     std::error_code error;
-    ASSERT_TRUE(fs::is_directory(life->legacy_store / profile().legacy_id, error));
+    // NOLINTNEXTLINE(concurrency-mt-unsafe)
+    have_v0 = std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&
+              fs::is_directory(life->legacy_store / profile().legacy_id, error);
     ASSERT_TRUE(fs::is_directory(life->native_store / life->native_id, error));
     const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const fs::path root = base != nullptr ? base : ::testing::TempDir();
@@ -426,6 +444,7 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
 
 TEST_P(GemmaNativeV1ServingGpu, PublishedMatchesV0FullRowsStateAndSpillContinuation) {
   for (std::size_t arm = 0; arm < life->result.size(); ++arm) {
+    if (arm == 0 && !have_v0) continue;
     SCOPED_TRACE(arm);
     const auto started = Start(arm);
     ASSERT_TRUE(started) << (started ? "" : started.error());
@@ -485,6 +504,33 @@ TEST_P(GemmaNativeV1ServingGpu, PublishedMatchesV0FullRowsStateAndSpillContinuat
       ASSERT_FALSE(HasFatalFailure());
     }
   }
+  // The frozen digests: both arms (the v0 one while it exists) against what
+  // the pinned imports produced when they were recorded.
+  llmp::test_support::FrozenDigests frozen(std::string("gemma_") + profile().name);
+  for (std::size_t arm = have_v0 ? 0 : 1; arm < life->result.size(); ++arm) {
+    SCOPED_TRACE(arm == 0 ? "v0 against frozen" : "v1 against frozen");
+    const auto& r = life->result[arm];
+    const auto state_text = [](const State& state) {
+      return llmp::base::ToHex(state.digest) + ':' + std::to_string(state.bytes) + ':' +
+             std::to_string(state.positions);
+    };
+    for (std::uint32_t owner = 0; owner < 2; ++owner) {
+      const auto o = std::to_string(owner);
+      using llmp::test_support::HexOfFloats;
+      using llmp::test_support::HexOfInts;
+      using llmp::test_support::HexOfRows;
+      frozen.Expect("heads." + o, HexOfFloats(r.heads[owner]));
+      frozen.Expect("tokens." + o, llmp::test_support::JoinTokens(r.generated[owner].tokens));
+      frozen.Expect("logits." + o, HexOfRows(r.generated[owner].logits));
+      frozen.Expect("history." + o, HexOfInts(r.histories[owner]));
+      frozen.Expect("state." + o, state_text(r.state[owner]));
+      frozen.Expect("restored." + o, state_text(r.restored[owner]));
+      frozen.Expect("continued." + o, HexOfFloats(r.continued[owner]));
+      frozen.Expect("resumed." + o, state_text(r.resumed[owner]));
+    }
+    if (frozen.recording()) break;  // one arm records
+  }
+  if (!have_v0) return;
   const auto& a = life->result[0];
   const auto& b = life->result[1];
   for (std::uint32_t owner = 0; owner < 2; ++owner) {

@@ -1,0 +1,22 @@
+{
+ "digests": {
+  "accepted.0": "35",
+  "accepted.1": "11",
+  "drafted.0": "35",
+  "drafted.1": "11",
+  "heads.0": "a967052393cbf16690c9cf1c383a3332434b21910407ad55f1a72f19641215a7",
+  "heads.1": "3b6b200131d83a8ce785005336c84c335b7f07f108c3e789a77868139b2eca6d",
+  "history.0": "aa57c583dd6542a250a137547b49970c2294271ca8310ea21fc0f082488755c1",
+  "history.1": "830866e8bab9db1c4fbc1a0aac58e9383540c1af1e0e8b8c7bfa35d93c8bb58e",
+  "restored.0": "eb23c03a765f3935fa13ef51cbbf4efce66ff5038bf06e036e5395ff252d692b:252002304:121:191",
+  "rows.0": "48:c9819e760f9efb0c69e061fbdbf9845e2194aa6d0d688ff3c93cb8bff7a16340",
+  "rows.1": "16:5a21ce277808e7eb2dc1b688c7b3c547e8780eff8b84243e6016ed014cbde50f",
+  "state.0": "eb23c03a765f3935fa13ef51cbbf4efce66ff5038bf06e036e5395ff252d692b:252002304:121:191",
+  "state.1": "3951f7cbfd3d7b087624187bb236ab20afd31be4c0e407be069ecc00fdd79483:252002304:121:207",
+  "steps.0": "12",
+  "tokens.0": "818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529",
+  "tokens.1": "7001,563,818,5279,529,7001,563,818,5279,529,7001,563,818,5279,529,7001"
+ },
+ "family": "gemma_assistant_Gemma31",
+ "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+}

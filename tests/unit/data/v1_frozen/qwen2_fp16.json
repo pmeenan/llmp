@@ -1,0 +1,8 @@
+{
+ "digests": {
+  "fused.control.checkpoint_state": "bd1596986e7106a11b4e23b550f9b6aa2978a66dc7a19b1311a296b376f94593:6291456:3",
+  "unfused.control.checkpoint_state": "bd1596986e7106a11b4e23b550f9b6aa2978a66dc7a19b1311a296b376f94593:6291456:3"
+ },
+ "family": "qwen2_fp16",
+ "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+}

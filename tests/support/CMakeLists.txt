@@ -13,6 +13,12 @@
 add_library(llmp_test_expected INTERFACE)
 target_include_directories(llmp_test_expected INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 
+# Frozen digests and the published v1 store's ID map for the v1 equivalence
+# proofs (v1_frozen.h).
+add_library(llmp_test_v1_frozen INTERFACE)
+target_include_directories(llmp_test_v1_frozen INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(llmp_test_v1_frozen INTERFACE llmp_json llmp_base)
+
 # The recording's events and JSON lines, in every profile.
 add_library(llmp_plan_record STATIC plan_record.cc)
 target_include_directories(llmp_plan_record PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

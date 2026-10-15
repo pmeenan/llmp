@@ -1,0 +1,17 @@
+{
+ "digests": {
+  "heads.0": "c7ca9ba4a6dad835b782fb53e3b05e6e0e03a87db5268b2a121dc26b2cb24253",
+  "heads.1": "f36d410d1c26df9adf2bfee19238045331fdf8a90671cde968173cd031236f41",
+  "history.0": "191d466a178125f34d6c3889c6a015b88c0b78503e357317484223eebac4e431",
+  "history.1": "1ccd00ab09d887e21ae6c9dad8f51c97f844ac2b1894da48cfffd1681f256c0a",
+  "logits.0": "106c877337a64baeb00fbf880b63c8607852b6cd687419afed95f3ff53cee377",
+  "logits.1": "51926f62f0909bbde18a71422074c4aea67f2ccae6eded3f69543f5538d8d454",
+  "state.0": "5727302fd10bad9ebb48fb9c1eef5fd5198620ac3401ecf723806553e726b736:14:64",
+  "state.1": "5727302fd10bad9ebb48fb9c1eef5fd5198620ac3401ecf723806553e726b736:14:64",
+  "state.2": "63979f2f4cf30c8566071b623abab394c57f36de69de2a6a3b79205fd7222a5d:22:64",
+  "tokens.0": "5628,59,77,63,30,632,12,12626",
+  "tokens.1": "11069,8032,30,6558,728,1716,25,1510"
+ },
+ "family": "qwen38_gguf",
+ "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+}

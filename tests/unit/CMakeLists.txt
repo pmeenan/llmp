@@ -351,15 +351,18 @@ if(LLMP_CUDA)
                                "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Default-off Qwen single-slot serving qualification.
   add_executable(qwen38_engine_serving_gpu_test qwen38_engine_serving_gpu_test.cc)
-  target_link_libraries(qwen38_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
+  target_link_libraries(qwen38_engine_serving_gpu_test PRIVATE llmp_runtime_serving
+                                                               llmp_test_v1_frozen)
   llmp_gpu_gtest(qwen38_engine_serving_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
   # Fixed default-off full DeepSeek target factory/state diagnostic.
   add_executable(dsv4_engine_target_gpu_test dsv4_engine_target_gpu_test.cc)
   target_link_libraries(dsv4_engine_target_gpu_test PRIVATE llmp_corpus_score llmp_engine_core
-                                                        llmp_runtime_serving)
+                                                        llmp_runtime_serving llmp_test_v1_frozen)
   llmp_gpu_gtest(dsv4_engine_target_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
   # DeepSeek V4 Flash through the server on the shared engine: the plain-token
   # oracle, DSpark's joined waves and features, four slots' speculative waves,
   # prefill lookahead on and off, and the fixed prompt's head.
@@ -374,14 +377,26 @@ if(LLMP_CUDA)
   # Gemma 2 and Gemma 3 on the shared engine through the server: heads,
   # state, spill, restart, the near-8K context and the swap transactions.
   add_executable(gemma_engine_serving_gpu_test gemma_engine_serving_gpu_test.cc)
-  target_link_libraries(gemma_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
+  target_link_libraries(gemma_engine_serving_gpu_test PRIVATE llmp_runtime_serving
+                                                              llmp_test_v1_frozen)
   llmp_gpu_gtest(gemma_engine_serving_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
   # Native v1 admission: approved Gemma3/26/31, compared with pinned v0 imports.
   add_executable(gemma_native_v1_serving_gpu_test gemma_native_v1_serving_gpu_test.cc)
-  target_link_libraries(gemma_native_v1_serving_gpu_test PRIVATE llmp_runtime_serving)
+  target_link_libraries(gemma_native_v1_serving_gpu_test PRIVATE llmp_runtime_serving
+                                                                 llmp_test_v1_frozen)
   llmp_gpu_gtest(gemma_native_v1_serving_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
+  # Gemma 4 with its assistant as the drafter: published v1 artifacts against
+  # the pinned v0 imports and the frozen digests (tests/support/v1_frozen.h).
+  add_executable(gemma_assistant_v1_gpu_test gemma_assistant_v1_gpu_test.cc)
+  target_link_libraries(gemma_assistant_v1_gpu_test PRIVATE llmp_runtime_serving
+                                                            llmp_test_v1_frozen)
+  llmp_gpu_gtest(gemma_assistant_v1_gpu_test MODELS
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
   # Weight files across real switches between Gemma 2 and Gemma 3: only the
   # resident model's shards open (engine/paged_node.h SetActive).
   add_executable(weight_files_serving_gpu_test weight_files_serving_gpu_test.cc)
@@ -1355,9 +1370,10 @@ if(LLMP_CUDA)
   target_link_libraries(component_runner_qwen2_exl3_gpu_test PRIVATE llmp_corpus_score llmp_engine llmp_exl3_selected
                                                                      llmp_runtime
                                                                      llmp_components llmp_spec
-                                                                     llmp_artifact)
+                                                                     llmp_artifact llmp_test_v1_frozen)
   llmp_gpu_gtest(component_runner_qwen2_exl3_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
 
   add_executable(fp16_benchmark_gpu_test fp16_benchmark_gpu_test.cc)
   target_link_libraries(fp16_benchmark_gpu_test PRIVATE llmp_paged_runners llmp_base)
@@ -1367,9 +1383,10 @@ if(LLMP_CUDA)
   add_executable(component_runner_qwen2_gpu_test component_runner_qwen2_gpu_test.cc)
   target_link_libraries(component_runner_qwen2_gpu_test PRIVATE llmp_corpus_score llmp_engine llmp_ggml_kernels
                                                                 llmp_components llmp_spec
-                                                                llmp_artifact)
+                                                                llmp_artifact llmp_test_v1_frozen)
   llmp_gpu_gtest(component_runner_qwen2_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
 
   add_executable(component_runner_gpu_test component_runner_gpu_test.cc)
   target_link_libraries(component_runner_gpu_test PRIVATE llmp_engine llmp_ggml_kernels

@@ -1,0 +1,17 @@
+{
+ "digests": {
+  "heads.0": "279196f175b0c2bb31e84e77eac0e086f81c9a4a749d553a28a383ca6e9cd745",
+  "heads.1": "55b6109e0b81a0811ed206d3ed651589177778e2fcc557322c80d09c6792b443",
+  "history.0": "150e2732948e66b09cc1a20163bea7e8a7b86a145f564b2b7d28f81ee0660451",
+  "history.1": "22d0207b70d27b7a530c3b928ca58824b613d270b15f91404cc9b98477b66b60",
+  "logits.0": "441aaeee8fed75b616f06a5ad9c6b237e95a1e5a6e7554549c30e93beb745b87",
+  "logits.1": "ae243d620d60c76f8828983b874c441b7c0777babd927b0385f868dcfa741f8b",
+  "state.0": "84e74e9fcab67fb287bc55e82eb2bbbe8ee1cec9b70d9a3578c0cd1f6a68b173:2567:35",
+  "state.1": "84e74e9fcab67fb287bc55e82eb2bbbe8ee1cec9b70d9a3578c0cd1f6a68b173:2567:35",
+  "state.2": "42d10f86a051d5371f15621f672a4cb9683d411abff3bee7c47f4ed2a45becdd:2575:35",
+  "tokens.0": "223,22,16,20,16,20,16,20",
+  "tokens.1": "16,20,16,20,16,20,16,20"
+ },
+ "family": "dsv4_target",
+ "provenance": "Recorded 2026-10-15 on Spark A (GB10, spark-native build of main ba2d4b19 plus the v1-import slice) from the v0 arm, with the v1 arm compared bit for bit in the same run; v1 artifacts imported by llmp import from the staged, manifest-verified sources (IDs in the store's v1-ids.json). A change that legitimately moves bits re-records these."
+}

@@ -46,6 +46,7 @@
 #include "runtime/memory_guard.h"
 #include "runtime/serving.h"
 #include "runtime/snapshot_store.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace fs = std::filesystem;
@@ -1487,7 +1488,8 @@ std::expected<StateImage, std::string> ReadState(Owner& life, rt::EngineLlm& mod
 }
 
 std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, std::string_view id,
-                                                       Owner* previous = nullptr) {
+                                                       Owner* previous = nullptr,
+                                                       std::string_view drafter = {}) {
   const auto* scratch = std::getenv("LLMP_TEST_SCRATCH");
   if (!scratch) return std::unexpected("missing publication scratch");
   auto life = std::make_unique<Owner>();
@@ -1507,6 +1509,7 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
   cfg::ModelEntry entry;
   entry.name = "deepseek";
   entry.artifact = id;
+  if (!drafter.empty()) entry.drafter = std::string(drafter);
   entry.overrides["context"] = std::int64_t{kContext};
   entry.overrides["prefill_chunk"] = std::int64_t{kChunk};
   entry.overrides["max_slots"] = std::int64_t{1};
@@ -1514,7 +1517,8 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
   life->options.diagnostic_component_solo = true;
   life->options.diagnostic_component_all = true;
   life->options.diagnostic_auto_startup = true;
-  life->options.diagnostic_budget_cap_bytes = kCap;
+  // DSpark's weights and state need the node's full 112 GiB (the speed gate's cap).
+  life->options.diagnostic_budget_cap_bytes = drafter.empty() ? kCap : 120259084288ULL;
   life->log = std::tmpfile();
   if (!life->log) return std::unexpected("opening native target log");
   life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, life->log);
@@ -1565,9 +1569,12 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
       if (auto generated = (*branch)->Generate(life->result.heads[turn], options, generation);
           !generated)
         return generated;
-      if (generation.tokens.size() != 8 || generation.logits.size() != 8 || generation.drafted ||
+      if (generation.tokens.size() != 8 || generation.logits.size() != 8 ||
+          (drafter.empty() ? generation.drafted != 0 : generation.drafted == 0) ||
           generation.stopped || generation.cancelled)
-        return std::unexpected("native target returned incomplete plain generation");
+        return std::unexpected(drafter.empty()
+                                   ? "native target returned incomplete plain generation"
+                                   : "native target did not speculate with its drafter");
       life->result.history[turn] = (*branch)->history();
       auto state = ReadState(*life, *model);
       if (!state) return std::unexpected(state.error());
@@ -1622,42 +1629,111 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
   }
   return life;
 }
+// The v0 target (and DSpark) against the published v1 artifacts, both against
+// the frozen digests. The v0 arm needs its artifacts; without them (or with
+// LLMP_TEST_V1_FROZEN_ONLY) only the v1 arm runs.
 class PublishedCase : public testing::Test {
+ public:
+  explicit PublishedCase(bool dspark) : dspark_(dspark) {}
+
+ private:
   void TestBody() override {
-    const auto* old_store = std::getenv("LLMP_DSV4_TARGET_STORE");
-    const auto* native_store = std::getenv("LLMP_TEST_DSV4_V1_STORE");
-    const auto* id = std::getenv("LLMP_TEST_DSV4_V1_ID");
-    ASSERT_NE(old_store, nullptr);
+    const char* old_env = std::getenv("LLMP_DSV4_TARGET_STORE");
+    const char* native_store = std::getenv("LLMP_TEST_DSV4_V1_STORE");
+    if (native_store == nullptr) native_store = std::getenv("LLMP_TEST_V1_STORE");
     ASSERT_NE(native_store, nullptr);
-    ASSERT_NE(id, nullptr);
-    ASSERT_EQ(std::strlen(id), 64U);
-    ASSERT_TRUE(std::ranges::all_of(std::string_view(id), [](char c) {
+    const char* home = std::getenv("HOME");
+    const std::string old_store = old_env != nullptr
+                                      ? old_env
+                                      : std::string(home != nullptr ? home : "") +
+                                            "/.local/share/llmp/m3-artifacts";
+    const char* given = std::getenv("LLMP_TEST_DSV4_V1_ID");
+    std::string id = given != nullptr ? given : "";
+    if (id.empty()) {
+      const auto mapped = llmp::test_support::V1IdFor(kArtifact);
+      if (mapped) id = *mapped;
+    }
+    ASSERT_EQ(id.size(), 64U);
+    std::string drafter;
+    if (dspark_) {
+      const auto mapped = llmp::test_support::V1IdFor(kDsparkArtifact);
+      ASSERT_TRUE(mapped) << "no v1 DSpark ID in the store's v1-ids.json";
+      drafter = *mapped;
+    }
+    ASSERT_TRUE(std::ranges::all_of(id, [](char c) {
       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
     }));
-    auto checked = Metadata(fs::path(old_store) / kArtifact);
-    ASSERT_TRUE(checked) << Failed(checked).value_or("");
-    auto old = native_target::Run(old_store, kArtifact);
-    ASSERT_TRUE(old) << Failed(old).value_or("");
-    auto native = native_target::Run(native_store, id, old->get());
+    std::error_code ec;
+    const bool have_v0 = std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&
+                         fs::exists(fs::path(old_store) / kArtifact, ec) &&
+                         (!dspark_ || fs::exists(fs::path(old_store) / kDsparkArtifact, ec));
+    std::unique_ptr<Owner> old;
+    if (have_v0) {
+      auto checked = Metadata(fs::path(old_store) / kArtifact);
+      ASSERT_TRUE(checked) << Failed(checked).value_or("");
+      auto first = native_target::Run(old_store, kArtifact, nullptr,
+                                      dspark_ ? kDsparkArtifact : std::string_view());
+      ASSERT_TRUE(first) << Failed(first).value_or("");
+      old = std::move(*first);
+    }
+    auto native = native_target::Run(native_store, id, old.get(), drafter);
     ASSERT_TRUE(native) << Failed(native).value_or("");
-    const auto& a = (*old)->result;
+    llmp::test_support::FrozenDigests frozen(dspark_ ? "dsv4_dspark" : "dsv4_target");
+    for (const auto* owner : {old.get(), native->get()}) {
+      if (owner == nullptr) continue;
+      SCOPED_TRACE(owner == old.get() ? "v0 against frozen" : "v1 against frozen");
+      const auto& r = owner->result;
+      using llmp::test_support::HexOfFloats;
+      using llmp::test_support::HexOfInts;
+      using llmp::test_support::HexOfRows;
+      for (unsigned turn = 0; turn != 2; ++turn) {
+        const auto t = std::to_string(turn);
+        frozen.Expect("heads." + t, HexOfFloats(r.heads[turn]));
+        frozen.Expect("tokens." + t, llmp::test_support::JoinTokens(r.generations[turn].tokens));
+        frozen.Expect("logits." + t, HexOfRows(r.generations[turn].logits));
+        frozen.Expect("history." + t, HexOfInts(r.history[turn]));
+        if (dspark_) {
+          frozen.Expect("drafted." + t, std::to_string(r.generations[turn].drafted));
+          frozen.Expect("accepted." + t, std::to_string(r.generations[turn].accepted));
+        }
+      }
+      // States: 0 after the first turn, 1 after spill and restore, 2 after the second.
+      for (std::size_t i = 0; i < r.states.size(); ++i)
+        frozen.Expect("state." + std::to_string(i),
+                      llmp::base::ToHex(r.states[i].digest) + ':' +
+                          std::to_string(r.states[i].positions) + ':' +
+                          std::to_string(r.states[i].ranges.size()));
+      if (frozen.recording()) break;  // one arm records
+    }
     const auto& b = (*native)->result;
-    EXPECT_EQ(a.states, b.states);
-    const auto compare = [](std::span<const float> a, std::span<const float> b) {
-      ASSERT_EQ(a.size(), kVocab);
-      ASSERT_EQ(b.size(), kVocab);
-      EXPECT_TRUE(std::ranges::all_of(a, [](float f) { return std::isfinite(f); }));
-      EXPECT_TRUE(std::ranges::all_of(b, [](float f) { return std::isfinite(f); }));
-      EXPECT_EQ(std::memcmp(a.data(), b.data(), a.size_bytes()), 0);
+    const auto finite = [](std::span<const float> row) {
+      EXPECT_EQ(row.size(), kVocab);
+      EXPECT_TRUE(std::ranges::all_of(row, [](float f) { return std::isfinite(f); }));
     };
     for (unsigned turn = 0; turn != 2; ++turn) {
-      compare(a.heads[turn], b.heads[turn]);
-      EXPECT_EQ(a.history[turn], b.history[turn]);
-      EXPECT_EQ(a.generations[turn].tokens, b.generations[turn].tokens);
-      ASSERT_EQ(a.generations[turn].logits.size(), 8U);
-      ASSERT_EQ(b.generations[turn].logits.size(), 8U);
-      for (unsigned row = 0; row != 8; ++row)
-        compare(a.generations[turn].logits[row], b.generations[turn].logits[row]);
+      finite(b.heads[turn]);
+      for (const auto& row : b.generations[turn].logits) finite(row);
+    }
+    if (have_v0) {
+      const auto& a = old->result;
+      EXPECT_EQ(a.states, b.states);
+      const auto compare = [&](std::span<const float> x, std::span<const float> y) {
+        ASSERT_EQ(x.size(), kVocab);
+        ASSERT_EQ(y.size(), kVocab);
+        EXPECT_EQ(std::memcmp(x.data(), y.data(), x.size_bytes()), 0);
+      };
+      for (unsigned turn = 0; turn != 2; ++turn) {
+        compare(a.heads[turn], b.heads[turn]);
+        EXPECT_EQ(a.history[turn], b.history[turn]);
+        EXPECT_EQ(a.generations[turn].tokens, b.generations[turn].tokens);
+        EXPECT_EQ(a.generations[turn].drafted, b.generations[turn].drafted);
+        EXPECT_EQ(a.generations[turn].accepted, b.generations[turn].accepted);
+        ASSERT_EQ(a.generations[turn].logits.size(), 8U);
+        ASSERT_EQ(b.generations[turn].logits.size(), 8U);
+        for (unsigned row = 0; row != 8; ++row)
+          compare(a.generations[turn].logits[row], b.generations[turn].logits[row]);
+      }
+      RecordProperty("v0_selected_node_budget", std::to_string(a.selected_budget));
     }
     RecordProperty("complete_head_rows", 36);
     RecordProperty("head_values_per_row", kVocab);
@@ -1665,18 +1741,22 @@ class PublishedCase : public testing::Test {
     RecordProperty("restored_owners", 2);
     RecordProperty("prompt_tokens", kPrefix);
     RecordProperty("native_artifact", id);
-    RecordProperty("v0_selected_node_budget", std::to_string(a.selected_budget));
+    if (dspark_) RecordProperty("native_drafter", drafter);
     RecordProperty("v1_selected_node_budget", std::to_string(b.selected_budget));
-    fs::remove_all((*old)->scratch);
+    if (old) fs::remove_all(old->scratch);
     fs::remove_all((*native)->scratch);
-    old->reset();
+    old.reset();
   }
+  bool dspark_;
 };
 [[maybe_unused]] const auto* published = []() -> testing::TestInfo* {
-  if (!std::getenv("LLMP_TEST_DSV4_V1_STORE")) return nullptr;
+  if (!std::getenv("LLMP_TEST_DSV4_V1_STORE") && !std::getenv("LLMP_TEST_V1_STORE")) return nullptr;
+  testing::RegisterTest("Dsv4EngineTargetGpu", "PublishedDsparkMatchesV0HeadsStateAndSpill",
+                        nullptr, nullptr, __FILE__, __LINE__,
+                        []() -> testing::Test* { return new PublishedCase(true); });
   return testing::RegisterTest("Dsv4EngineTargetGpu", "PublishedGgufMatchesV0HeadsStateAndSpill",
                                nullptr, nullptr, __FILE__, __LINE__,
-                               []() -> testing::Test* { return new PublishedCase; });
+                               []() -> testing::Test* { return new PublishedCase(false); });
 }();
 }  // namespace native_target
 
