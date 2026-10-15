@@ -348,6 +348,12 @@ the commit gate.
       filesystem access control is the user's job. Files the runtime creates
       are private (0600/0700); another owner or looser modes are warned about,
       not refused (D-073, D-105 as amended).
+    - *Platform-specific work happens at import* (owner, 2026-10-15): lossless
+      relayouts a fast kernel needs (e.g. block-scale atom order for stacked
+      NVFP4 experts) are done once by the importer, chosen by tensor role and
+      encoding (never architecture), recorded as layouts (D-108, D-113), and
+      decodable by the CPU references; never at load time, and never when
+      the loaded form would use more memory than the source encoding.
 12. **License tags follow provenance.** A file that reformats or ports
     upstream code into our classes (for example llama.cpp's graph builders as
     components) carries the upstream license tag beside Apache-2.0
