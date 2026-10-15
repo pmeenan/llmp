@@ -225,6 +225,10 @@ struct GraphPlan {
     std::uint32_t last = 0;
   };
   std::vector<Region> regions;
+  // The roots of the tensors PlanGraph was told to keep (the step's outputs
+  // and kept tensors), read after the graph: BoundGraph::Run's run-time
+  // matchers must never leave them unwritten.
+  std::vector<const ggml_tensor*> kept;
 
   // The plan as the registry takes it (execution/registry.h).
   std::vector<execution::Choice> Choices() const;
@@ -365,6 +369,8 @@ inline constexpr std::string_view kMxfp8SwizzleName = "llmp.mxfp8.swizzle";
 inline constexpr std::string_view kMxfp8GemmName = "llmp.mxfp8.gemm.cutlass";
 inline constexpr std::string_view kHcPrepName = "llmp.hc.prep";
 inline constexpr std::string_view kHcLoName = "llmp.hc.lo";
+inline constexpr std::string_view kSpatialChannelNormName = "llmp.image.spatial_channel_norm";
+inline constexpr std::string_view kNormRopeSectionsName = "llmp.image.rms_norm_mul_rope_sections";
 inline constexpr std::string_view kHcMixBf16Name = "llmp.hc.mix_bf16";
 inline constexpr std::string_view kMoeRouterName = "llmp.moe.router";
 inline constexpr std::string_view kGdnHistoryName = "llmp.gdn.history";

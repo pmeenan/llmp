@@ -99,6 +99,12 @@ constexpr std::array<Rule, 4> kSpatialConvRules = {
      {.operand = 1, .encodings = kF32, .layouts = kDense},
      {.operand = 2, .encodings = kF32, .layouts = kDense},
      {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
+// fused.rms_norm_mul_rope_sections' (x, w, pos0[, pos1, pos2]): the
+// later sections' positions are checked by its predicate.
+constexpr std::array<Rule, 3> kNormRopeSectionsRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = 2, .encodings = kI32, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kSpatialUpRules = {
     {{.operand = 0, .encodings = kF32, .layouts = kDense},
      {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
@@ -1471,6 +1477,53 @@ bool AcceptsL2Norm(const ex::CapabilityQuery& q) {
   return Built(q) && p && p->eps >= 1e-18F && p->eps <= 1e18F && SpatialPackedF32(x) &&
          SpatialPackedF32(out) && x->ne == out->ne && x->ne[2] <= 65535 && x->ne[3] <= 65535;
 }
+// fused.spatial_channel_norm's (x [W, H, C, 1], gamma [C]): packed F32, a
+// pixel a thread over a grid of 256-thread blocks (llmp_ops.h
+// CheckSpatialChannelNorm's bounds).
+bool AcceptsSpatialChannelNorm(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::SpatialNormParams>(q);
+  const auto* x = Operand(q, 0);
+  const auto* gamma = Operand(q, 1);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  // The L2 norm's floor bounds, as ggml.l2_norm's (validate.cc CheckL2Norm):
+  // a floor below 1e-18 underflows its square.
+  if (!Built(q) || !p || !(p->eps >= 1e-18F && p->eps <= 1e18F) || !std::isfinite(p->scale) ||
+      !SpatialPackedF32(x) || !SpatialPackedF32(out) || x->ne != out->ne || x->ne[3] != 1 ||
+      gamma == nullptr || gamma->encoding != Encoding::kF32 || gamma->layout != Layout::kDense ||
+      gamma->ne[0] != x->ne[2] || gamma->ne[1] != 1 || gamma->ne[2] != 1 || gamma->ne[3] != 1)
+    return false;
+  return x->ne[2] <= static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+}
+// fused.rms_norm_mul_rope_sections' (CheckNormRopeSections' bounds):
+// packed F32 heads [D, heads, rows] (D even, at most 512), a packed [D]
+// weight, one to three plain sections covering D in one mode, each with
+// packed I32 positions [rows].
+bool AcceptsNormRopeSections(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::RopeSectionsParams>(q);
+  const auto* x = Operand(q, 0);
+  const auto* w = Operand(q, 1);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || !p || p->sections < 1 || p->sections > 3 ||
+      (p->mode != ir::RopeMode::kNormal && p->mode != ir::RopeMode::kNeox) ||
+      !std::isfinite(p->eps) || p->eps < 0.0F || !std::isfinite(p->base) || p->base <= 0.0F ||
+      !SpatialPackedF32(x) || !SpatialPackedF32(out) || x->ne != out->ne || w == nullptr ||
+      !w->memory || w->ne != ir::ShapeOf({x->ne[0]}).ne ||
+      w->memory->nb[0] != (w->encoding == Encoding::kF32 ? 4U : 2U))
+    return false;
+  const std::uint64_t dim = x->ne[0], heads = x->ne[1], rows = x->ne[2];
+  if (dim == 0 || dim % 2 != 0 || dim > 512 || heads > 65535 || rows > 65535 || x->ne[3] != 1)
+    return false;
+  std::uint64_t covered = 0;
+  for (std::size_t i = 0; i < p->sections; ++i) {
+    const auto* pos = Operand(q, static_cast<std::uint8_t>(2 + i));
+    if (p->dims.at(i) == 0 || p->dims.at(i) % 2 != 0 || pos == nullptr ||
+        pos->encoding != Encoding::kI32 || pos->layout != Layout::kDense || !pos->memory ||
+        pos->ne != ir::ShapeOf({rows}).ne || pos->memory->nb[0] != sizeof(std::int32_t))
+      return false;
+    covered += p->dims.at(i);
+  }
+  return covered == dim && Operand(q, static_cast<std::uint8_t>(2 + p->sections)) == nullptr;
+}
 bool AcceptsSelectedCombine(const ex::CapabilityQuery& q) {
   const auto n = Ne(q, 0, 0), used = Ne(q, 0, 1), tokens = Ne(q, 0, 2);
   if (!Built(q) || q.operands.size() != 5 || n == 0 || n > INT32_MAX - 1024 || n % 4 != 0 ||
@@ -1677,6 +1730,15 @@ const std::array kEntries = {
           "; locked centered F32 normalization over packed rows; finite nonnegative epsilon"},
     Entry{"ggml.l2_norm", Operation::kL2Norm, Cap(P(Op::kL2Norm), kF32In, &AcceptsL2Norm, true),
           kBuilt},
+    Entry{kSpatialChannelNormName, Operation::kSpatialChannelNorm,
+          Cap(F(FusedKind::kSpatialChannelNorm), kF32Binary, &AcceptsSpatialChannelNorm, true),
+          "; selectable for the build's SASS architectures: packed F32 [W, H, C, 1] and an F32 "
+          "[C] gamma"},
+    Entry{kNormRopeSectionsName, Operation::kRmsNormMulRopeSections,
+          Cap(F(FusedKind::kRmsNormMulRopeSections), kNormRopeSectionsRules,
+              &AcceptsNormRopeSections, true),
+          "; selectable for the build's SASS architectures: packed F32 heads of D at most 512, "
+          "an F32 or BF16 [D] weight, one to three plain sections covering D"},
     Entry{"ggml.rms_norm", Operation::kRmsNorm, Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true),
           kBuilt},
     Entry{"ggml.rms_norm_mul.fused", Operation::kRmsNormMul,

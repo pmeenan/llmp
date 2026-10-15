@@ -132,6 +132,9 @@ enum class Operation : std::uint8_t {
   kGemmaScaledReduce,  // eight scaled/weighted experts summed in selected order
   kL2Norm,             // x / max(sqrt(sum(x*x)), eps), distinct from RMS normalization
   kLayerNorm,          // centered rows divided by sqrt(variance + eps)
+  // Shared image component kernels (M3.6).
+  kSpatialChannelNorm,      // each pixel's channels L2-normed, scaled, times a weight (+SiLU)
+  kRmsNormMulRopeSections,  // a head's RMS norm times a weight, then 1-3 rotated sections
 };
 
 std::string_view OperationName(Operation operation);

@@ -35,10 +35,40 @@
 namespace llmp::kernels::ggml {
 namespace {
 std::atomic<FirstAttentionObserver*> first_attention_observer{nullptr};
-}
+std::atomic<RuntimeFusionControl*> runtime_fusion_control{nullptr};
+}  // namespace
 bool SetFirstAttentionObserver(FirstAttentionObserver* expected,
                                FirstAttentionObserver* replacement) {
   return first_attention_observer.compare_exchange_strong(expected, replacement);
+}
+bool SetRuntimeFusionControl(RuntimeFusionControl* expected, RuntimeFusionControl* replacement) {
+  return runtime_fusion_control.compare_exchange_strong(expected, replacement);
+}
+std::string_view RuntimeFusionName(RuntimeFusion fusion) {
+  static constexpr std::array<std::string_view, kRuntimeFusions> kNames{"split_broadcast",
+                                                                        "spatial_norm",
+                                                                        "modulate",
+                                                                        "modulate_rows",
+                                                                        "norm_rope",
+                                                                        "gated_residual_modulate",
+                                                                        "gated_residual_rows",
+                                                                        "gated_residual",
+                                                                        "rows_projections",
+                                                                        "spatial_projections",
+                                                                        "qkv_attention",
+                                                                        "mlp",
+                                                                        "conv_bias",
+                                                                        "dup_up_add",
+                                                                        "conv1x1",
+                                                                        "qkv_bf16",
+                                                                        "query_norm_in_attention",
+                                                                        "attention_bf16_out",
+                                                                        "mask_prepacked",
+                                                                        "reuse_converted_input",
+                                                                        "skip_f32_modulation",
+                                                                        "bf16_branch"};
+  const auto index = static_cast<std::size_t>(fusion);
+  return index < kNames.size() ? kNames[index] : "unknown";
 }
 
 namespace {
@@ -242,8 +272,9 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
   for (std::size_t i = 0; i < plan.steps.size(); ++i) {
     const PlanStep& planned = plan.steps[i];
     if (planned.implementation == kAttentionF32 || planned.implementation == kConv2dTiledF32 ||
-        planned.implementation == "ggml.l2_norm" || planned.implementation == "ggml.norm" ||
-        planned.implementation == "ggml.repeat") {
+        planned.implementation == "ggml.l2_norm" ||
+        planned.implementation == kSpatialChannelNormName ||
+        planned.implementation == "ggml.norm" || planned.implementation == "ggml.repeat") {
       has_spatial_ops = true;
     }
     const execution::Implementation& implementation = bound->at(i);
@@ -307,6 +338,8 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
   BoundGraph result(std::move(*bound), std::move(steps), plan.regions);
   result.routed_ = routed;
   result.has_spatial_ops_ = has_spatial_ops;
+  result.kept_ = plan.kept;
+
   return result;
 }
 
@@ -444,9 +477,34 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
     if (k == nullptr || k->name() != name || steps_[idx].nodes.size() != 1) return nullptr;
     return steps_[idx].nodes[0];
   };
-
+  // A test's control (executor.h): which matchers may apply, and their hits.
+  RuntimeFusionControl* const control = runtime_fusion_control.load();
+  const auto allow = [control](RuntimeFusion fusion) {
+    return control == nullptr || control->enabled[static_cast<std::size_t>(fusion)];
+  };
+  const auto hit = [control](RuntimeFusion fusion) {
+    if (control != nullptr)
+      control->hits[static_cast<std::size_t>(fusion)].fetch_add(1, std::memory_order_relaxed);
+  };
+  using RF = RuntimeFusion;
+  // A matcher reads its operands when its launch runs, which may be after
+  // the plan's last reader of one (a step it skips): from there the plan
+  // may place another tensor in those bytes. The bytes a matcher's own
+  // launches write before or while reading an operand must therefore be the
+  // operand's, element for element, or disjoint from it.
+  const auto aliased_or_disjoint = [](const ggml_tensor* a, const ggml_tensor* b) {
+    return DisjointBytes(a, b) ||
+           (a != nullptr && b != nullptr && a->data == b->data && ggml_are_same_shape(a, b) &&
+            ggml_is_contiguous(a) && ggml_is_contiguous(b) && a->type == b->type);
+  };
+  // The step's outputs and kept tensors (executor.h kept_) are read after it.
+  const auto kept = [&](const ggml_tensor* t) {
+    return t != nullptr && std::ranges::find(kept_, RootTensor(t)) != kept_.end();
+  };
   const auto used_after = [&](std::size_t after_idx, const ggml_tensor* target) -> bool {
     if (target == nullptr) return false;
+    // A step's output or kept tensor is read after the step.
+    if (kept(target)) return true;
     const ggml_tensor* root_target = RootTensor(target);
     for (std::size_t j = after_idx + 1; j < steps_.size(); ++j) {
       for (const ggml_tensor* node : steps_[j].nodes) {
@@ -493,6 +551,22 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
   };
 
   const auto match_rope_3d = [&](std::size_t start_idx, Rope3dMatch* out) -> bool {
+    // The planner's rms_norm_mul_rope_sections: one step, its own operands.
+    if (ggml_tensor* fused = is_kernel(start_idx, kNormRopeSectionsName)) {
+      const auto args = CheckNormRopeSections(fused);
+      if (!args) return false;
+      *out = Rope3dMatch{.x_in = fused->src[0],
+                         .weight = fused->src[1],
+                         .last_rope = fused,
+                         .eps = args->eps,
+                         .freq_base = args->base,
+                         .neox = args->neox,
+                         .pos_views = args->positions,
+                         .axis_dims = args->dims,
+                         .num_axes = args->sections,
+                         .end_idx = start_idx};
+      return true;
+    }
     ggml_tensor* weight_conv = is_kernel(start_idx, "ggml.convert");
     const std::size_t rms_idx = (weight_conv != nullptr) ? (start_idx + 1) : start_idx;
     if (rms_idx >= steps_.size() ||
@@ -639,6 +713,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
   const auto match_mlp_swiglu = [&](std::size_t gate_cont_idx, const ggml_tensor* mm_gate,
                                     const ggml_tensor* spatial_src,
                                     ggml_tensor** out_gate_tensor) -> bool {
+    if (!allow(RF::kMlp)) return false;
     ggml_tensor* gate = is_kernel(gate_cont_idx, kContName);
     ggml_tensor* in_up = is_kernel(gate_cont_idx + 1, kContName);
     ggml_tensor* mm_up = is_kernel(gate_cont_idx + 2, kMulMatCublas);
@@ -763,6 +838,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
           const ggml_tensor* q_src1_override, bool reuse_q_bf16, std::size_t* out_attn_idx,
           bool* out_attn_bf16_direct, std::expected<void, KernelFailure>* out_status) -> bool {
     *out_attn_bf16_direct = false;
+    if (!allow(RF::kQkvAttention)) return false;
     ggml_tensor* q = is_kernel(q_cont_idx, kContName);
     ggml_tensor* in_k = is_kernel(q_cont_idx + 1, kContName);
     ggml_tensor* mm_k = is_kernel(q_cont_idx + 2, kMulMatCublas);
@@ -1004,7 +1080,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
             IsPermute1203(in_next->src[0]) && in_next->src[0]->src[0] == spatial_next &&
             RootTensor(mm_next->src[1]) == in_next && mm_next->src[0] != nullptr &&
             mm_next->src[0]->type == GGML_TYPE_BF16 && !used_after(attn_idx + 1, attn) &&
-            !used_after(attn_idx + 3, spatial_next) && !used_after(attn_idx + 3, in_next);
+            !used_after(attn_idx + 3, spatial_next) && !used_after(attn_idx + 3, in_next) &&
+            allow(RF::kRowsProjections);
 
         AttentionF32Options attn_opts{
             .mask_prepacked = mask_prepacked,
@@ -1029,6 +1106,11 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
             cached_rope_pos[a] = rope_q.pos_views[a]->data;
           }
         }
+        hit(RF::kQkvAttention);
+        hit(RF::kQkvBf16);
+        if (norm_q_in_attn) hit(RF::kQueryNormInAttention);
+        if (attn_bf16_direct) hit(RF::kAttentionBf16Out);
+        if (mask_prepacked) hit(RF::kMaskPrepacked);
         *out_attn_idx = attn_idx;
         *out_attn_bf16_direct = attn_bf16_direct;
         *out_status = {};
@@ -1114,7 +1196,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
           IsPermute1203(in_next->src[0]) && in_next->src[0]->src[0] == spatial_next &&
           RootTensor(mm_next->src[1]) == in_next && mm_next->src[0] != nullptr &&
           mm_next->src[0]->type == GGML_TYPE_BF16 && !used_after(attn_idx + 1, attn) &&
-          !used_after(attn_idx + 3, spatial_next) && !used_after(attn_idx + 3, in_next);
+          !used_after(attn_idx + 3, spatial_next) && !used_after(attn_idx + 3, in_next) &&
+          allow(RF::kRowsProjections);
 
       const bool mask_prepacked = attn->src[3] != nullptr && attn->src[3] == cached_attn_mask &&
                                   cached_attn_rows == rows && cached_attn_heads_k == heads_k &&
@@ -1136,6 +1219,10 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
         cached_attn_heads_k = heads_k;
         cached_attn_dim = dim;
       }
+      hit(RF::kQkvAttention);
+      hit(RF::kQkvBf16);
+      if (attn_bf16_direct) hit(RF::kAttentionBf16Out);
+      if (mask_prepacked) hit(RF::kMaskPrepacked);
       *out_attn_idx = attn_idx;
       *out_attn_bf16_direct = attn_bf16_direct;
       *out_status = {};
@@ -1207,6 +1294,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
       *out_status = wrap_err(attn_idx, r);
       return true;
     }
+    hit(RF::kQkvAttention);
     *out_attn_idx = attn_idx;
     *out_status = {};
     return true;
@@ -1214,6 +1302,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
 
   const auto can_elide_concat_bcast = [&](std::size_t concat_idx, const ggml_tensor* c) -> bool {
     if (c == nullptr || c->data == nullptr) return false;
+    if (kept(c)) return false;  // a step output or kept tensor is read after the step
     bool has_consumer = false;
     for (std::size_t j = concat_idx + 1; j < steps_.size(); ++j) {
       bool reads_c = false;
@@ -1232,7 +1321,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
         if (side_cont != nullptr && IsPermute1203(side_cont->src[0]) &&
             RootTensor(side_cont->src[0]->src[0]) == c &&
             is_kernel(j + 1, "ggml.norm") != nullptr && is_kernel(j + 2, kScaleName) != nullptr &&
-            is_kernel(j + 3, kMulName) != nullptr && !used_after(j + 3, side_cont)) {
+            is_kernel(j + 3, kMulName) != nullptr && !used_after(j + 3, side_cont) &&
+            allow(RF::kModulate) && allow(RF::kModulateRows) && allow(RF::kGatedResidualModulate)) {
           has_consumer = true;
         } else {
           ggml_tensor* t = is_kernel(j, kUnaryName);
@@ -1240,7 +1330,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               ggml_get_unary_op(t) == GGML_UNARY_OP_TANH && RootTensor(t->src[0]) == c &&
               IsSpatialFromRowsCont(is_kernel(j - 1, kContName)) &&
               is_kernel(j + 1, kMulName) != nullptr && is_kernel(j + 2, kAddName) != nullptr &&
-              !used_after(j + 2, t)) {
+              !used_after(j + 2, t) && allow(RF::kGatedResidualRows) &&
+              allow(RF::kGatedResidualModulate) && allow(RF::kGatedResidual)) {
             has_consumer = true;
           } else {
             return false;
@@ -1260,7 +1351,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
 
   const auto can_skip_mod_f32_dst = [&](std::size_t mod_idx, const ggml_tensor* mod,
                                         bool write_bf16) -> bool {
-    if (!write_bf16 || mod == nullptr) return false;
+    if (!write_bf16 || mod == nullptr || !allow(RF::kRowsProjections)) return false;
     ggml_tensor* spatial_in = is_kernel(mod_idx + 1, kContName);
     ggml_tensor* in_0 = is_kernel(mod_idx + 2, kContName);
     ggml_tensor* mm_0 = is_kernel(mod_idx + 3, kMulMatCublas);
@@ -1305,7 +1396,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
 
   const auto only_used_by_norm_and_next_residual = [&](std::size_t out_idx,
                                                        const ggml_tensor* out) -> bool {
-    if (out == nullptr || out->data == nullptr) return false;
+    if (out == nullptr || out->data == nullptr || !allow(RF::kGatedResidualRows)) return false;
+    if (kept(out)) return false;  // a step output or kept tensor is read after the step
     for (std::size_t j = out_idx + 1; j < steps_.size(); ++j) {
       bool reads_out = false;
       for (const ggml_tensor* node : steps_[j].nodes) {
@@ -1347,7 +1439,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
 
   const auto only_used_by_gated_residual = [&](std::size_t mm_idx,
                                                const ggml_tensor* mm_out) -> bool {
-    if (mm_out == nullptr) return false;
+    if (mm_out == nullptr || !allow(RF::kGatedResidualRows) || !allow(RF::kGatedResidualModulate))
+      return false;
     ggml_tensor* branch_cont = is_kernel(mm_idx + 1, kContName);
     ggml_tensor* t = is_kernel(mm_idx + 2, kUnaryName);
     ggml_tensor* m = is_kernel(mm_idx + 3, kMulName);
@@ -1404,7 +1497,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
             c->ne[0] == r0->ne[0] + r1->ne[0] && c->ne[1] == v0->ne[1] && c->ne[2] == 1 &&
             c->ne[3] == 1 && c->ne[0] >= 2 && v0->src[0] != nullptr && v1->src[0] != nullptr &&
             !used_after(i + 4, v0) && !used_after(i + 4, r0) && !used_after(i + 4, v1) &&
-            !used_after(i + 4, r1) && can_elide_concat_bcast(i + 4, c)) {
+            !used_after(i + 4, r1) && allow(RF::kSplitBroadcast) &&
+            can_elide_concat_bcast(i + 4, c)) {
           const std::size_t cols = static_cast<std::size_t>(v0->ne[1]);
           const std::size_t rows = static_cast<std::size_t>(c->ne[0]);
           const std::size_t vec_bytes = cols * sizeof(float);
@@ -1430,6 +1524,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                         .split_row = static_cast<int>(r0->ne[0]),
                     },
             });
+            hit(RF::kSplitBroadcast);
             i += 4;
             return {};
           }
@@ -1469,7 +1564,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               gamma->ne[0] == x_whc->ne[2] && ggml_nelements(gamma) == x_whc->ne[2] &&
               bias_v == 0.0f && !used_after(out_idx, rows_cont) && !used_after(out_idx, l2) &&
               !used_after(out_idx, sc) && !used_after(out_idx, mul) &&
-              (!has_silu || !used_after(out_idx, silu))) {
+              (!has_silu || !used_after(out_idx, silu)) && aliased_or_disjoint(x_whc, out_whc) &&
+              allow(RF::kSpatialNorm)) {
             float eps = 0.0f;
             std::memcpy(&eps, l2->op_params, sizeof(float));
             if (auto r =
@@ -1477,6 +1573,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                 !r) {
               return wrap_err(i + 1, r);
             }
+            hit(RF::kSpatialNorm);
             i = out_idx;
             return {};
           }
@@ -1513,7 +1610,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                (mod->src[0] == sc && mod->src[1] == ln)) &&
               DisjointBytes(x_whc, mod) && DisjointBytes(side_whc, mod) &&
               !used_after(i + 4, x_cont) && !used_after(i + 4, side_cont) &&
-              !used_after(i + 4, ln) && !used_after(i + 4, sc)) {
+              !used_after(i + 4, ln) && !used_after(i + 4, sc) && allow(RF::kModulate)) {
             float eps = 0.0f;
             std::memcpy(&eps, ln->op_params, sizeof(float));
             const bool write_bf16 = static_cast<std::uint64_t>(ggml_nelements(mod)) * 2U <=
@@ -1526,6 +1623,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                 !r) {
               return wrap_err(i + 2, r);
             }
+            hit(RF::kModulate);
+            if (skip_f32) hit(RF::kSkipF32Modulation);
             ws_bf16_spatial = nullptr;
             ws_bf16_rows = write_bf16 ? mod : nullptr;
             ws_bf16_ne0 = mod->ne[0];
@@ -1560,7 +1659,14 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               ((mod->src[0] == ln && mod->src[1] == sc) ||
                (mod->src[0] == sc && mod->src[1] == ln)) &&
               DisjointBytes(side_whc, mod) && !used_after(i + 3, side_cont) &&
-              !used_after(i + 3, ln) && !used_after(i + 3, sc)) {
+              !used_after(i + 3, ln) && !used_after(i + 3, sc) && allow(RF::kModulateRows) &&
+              (aliased_or_disjoint(x_rows, mod) || get_split_bcast(side_whc).vec0 != nullptr)) {
+            // The rows input shares the output's bytes, but the side input's
+            // broadcast was elided, which only this kernel can read.
+            if (!aliased_or_disjoint(x_rows, mod))
+              return Rejected(std::format(
+                  "step {}: a modulation's rows share its output's bytes past an elided broadcast",
+                  i));
             float eps = 0.0f;
             std::memcpy(&eps, ln->op_params, sizeof(float));
             const bool write_bf16 = static_cast<std::uint64_t>(ggml_nelements(mod)) * 2U <=
@@ -1572,6 +1678,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                 !r) {
               return wrap_err(i + 1, r);
             }
+            hit(RF::kModulateRows);
             ws_bf16_spatial = nullptr;
             ws_bf16_rows = write_bf16 ? mod : nullptr;
             ws_bf16_ne0 = mod->ne[0];
@@ -1586,7 +1693,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
       // Pattern 2: RmsNormMul + 1..3 (Cont(pos), RopeExt) -> RmsNormMulRope3d
       {
         Rope3dMatch rope;
-        if (match_rope_3d(i, &rope)) {
+        if (allow(RF::kNormRope) && is_kernel(i, kNormRopeSectionsName) == nullptr &&
+            match_rope_3d(i, &rope) && aliased_or_disjoint(rope.x_in, rope.last_rope)) {
           if (auto r =
                   RmsNormMulRope3d(launch, rope.x_in, rope.weight, rope.eps,
                                    std::span(rope.pos_views).first(rope.num_axes),
@@ -1595,6 +1703,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               !r) {
             return wrap_err(i, r);
           }
+          hit(RF::kNormRope);
           i = rope.end_idx;
           return {};
         }
@@ -1695,7 +1804,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                   (!need_stage_carry_1a || carry_scratch_1a != nullptr) &&
                   !used_after(i + 8, x_cont) && !used_after(i + 8, side_cont) &&
                   !used_after(i + 8, ln) && !used_after(i + 8, sc) &&
-                  only_used_by_norm_and_next_residual(i + 3, out)) {
+                  only_used_by_norm_and_next_residual(i + 3, out) &&
+                  allow(RF::kGatedResidualModulate)) {
                 ggml_tensor staged_carry{};
                 auto actual_carry = stage_into(carry, carry_scratch_1a, &staged_carry);
                 if (!actual_carry) return wrap_err(i, std::unexpected(actual_carry.error()));
@@ -1714,6 +1824,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                     !r) {
                   return wrap_err(i + 1, r);
                 }
+                hit(RF::kGatedResidualModulate);
+                if (skip_f32) hit(RF::kSkipF32Modulation);
                 rows_layout_tensor = out;
                 rows_layout_is_bf16 = out_rows_bf16;
                 bf16_branch_tensor = nullptr;
@@ -1739,7 +1851,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                                  : nullptr;
             if ((!need_stage_branch || branch_scratch != nullptr) &&
                 (!need_stage_carry || carry_scratch != nullptr) &&
-                (gate_bcast.vec0 == nullptr || DisjointBytes(gate, out))) {
+                (gate_bcast.vec0 == nullptr || DisjointBytes(gate, out)) &&
+                allow(RF::kGatedResidualRows)) {
               ggml_tensor staged_branch{};
               auto actual_branch = stage_into(branch_rows, branch_scratch, &staged_branch);
               if (!actual_branch) return wrap_err(i, std::unexpected(actual_branch.error()));
@@ -1753,6 +1866,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                   !r) {
                 return wrap_err(i + 1, r);
               }
+              hit(RF::kGatedResidualRows);
               rows_layout_tensor = nullptr;
               rows_layout_is_bf16 = false;
               bf16_branch_tensor = nullptr;
@@ -1780,15 +1894,29 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               ggml_is_contiguous(gate) && ggml_is_contiguous(branch) && ggml_is_contiguous(carry) &&
               ggml_is_contiguous(out) && ggml_are_same_shape(carry, branch) &&
               ggml_are_same_shape(carry, gate) && ggml_are_same_shape(carry, out) &&
-              !used_after(i + 2, t) && !used_after(i + 2, m)) {
-            if (auto r = GatedResidualF32(launch, carry, branch, gate, out,
-                                          /*branch_is_rows=*/false, /*carry_is_rows=*/false,
-                                          get_split_bcast(gate));
-                !r) {
-              return wrap_err(i, r);
+              !used_after(i + 2, t) && !used_after(i + 2, m) && allow(RF::kGatedResidual)) {
+            // The kernel reads the gate after the plan's last reader of it
+            // (the tanh it replaces). An operand sharing the output's bytes
+            // other than element for element declines, except a gate whose
+            // broadcast was elided, which only this kernel can read: refused.
+            const SplitBroadcastWhc gate_bcast = get_split_bcast(gate);
+            const bool fits = aliased_or_disjoint(gate, out) && aliased_or_disjoint(branch, out) &&
+                              aliased_or_disjoint(carry, out) &&
+                              (gate_bcast.vec0 == nullptr || DisjointBytes(gate, out));
+            if (!fits && gate_bcast.vec0 != nullptr)
+              return Rejected(std::format(
+                  "step {}: an elided broadcast gate shares its gated residual's output bytes", i));
+            if (fits) {
+              if (auto r = GatedResidualF32(launch, carry, branch, gate, out,
+                                            /*branch_is_rows=*/false, /*carry_is_rows=*/false,
+                                            gate_bcast);
+                  !r) {
+                return wrap_err(i, r);
+              }
+              hit(RF::kGatedResidual);
+              i += 2;
+              return {};
             }
-            i += 2;
-            return {};
           }
         }
       }
@@ -1802,7 +1930,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
             IsPermute1203(in_0->src[0]) && in_0->src[0]->src[0] == spatial_in &&
             RootTensor(mm_0->src[1]) == in_0 && mm_0->src[1]->ne[0] == spatial_in->ne[2] &&
             mm_0->src[1]->ne[1] == spatial_in->ne[1] && mm_0->src[1]->ne[2] == 1 &&
-            mm_0->src[1]->ne[3] == 1 && !used_after(i + 2, in_0)) {
+            mm_0->src[1]->ne[3] == 1 && !used_after(i + 2, in_0) && allow(RF::kRowsProjections)) {
           const ggml_tensor* prev_rows = RootTensor(spatial_in->src[0]);
           std::size_t num_proj = 1;
           for (std::size_t p = 1; p < 3; ++p) {
@@ -1835,6 +1963,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                 try_qkv_rope_attn(i + 3, mm_0, spatial_in, &src1_view, reuse_first_bf16, &attn_idx,
                                   &attn_bf16_direct, &qkv_status)) {
               if (!qkv_status) return qkv_status;
+              hit(RF::kRowsProjections);
+              if (reuse_first_bf16) hit(RF::kReuseConvertedInput);
               ws_bf16_spatial = nullptr;
               ws_bf16_rows = nullptr;
               direct_bf16_rows = attn_bf16_direct ? is_kernel(attn_idx, kAttentionF32) : nullptr;
@@ -1869,6 +1999,10 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                   !r) {
                 return r;
               }
+              hit(RF::kRowsProjections);
+              hit(RF::kMlp);
+              if (reuse_first_bf16) hit(RF::kReuseConvertedInput);
+              if (down_bf16_dst) hit(RF::kBf16Branch);
               ws_bf16_spatial = nullptr;
               ws_bf16_rows = nullptr;
               direct_bf16_rows = nullptr;
@@ -1886,6 +2020,9 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                 !r) {
               return wrap_err(i + 2, r);
             }
+            hit(RF::kRowsProjections);
+            if (reuse_first_bf16) hit(RF::kReuseConvertedInput);
+            if (single_bf16_dst) hit(RF::kBf16Branch);
             if (!first_src1_is_bf16) {
               ws_bf16_spatial = spatial_in;
               ws_bf16_rows = prev_rows;
@@ -1907,7 +2044,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
       if (ggml_tensor* in_p = is_kernel(i, kContName)) {
         ggml_tensor* mm_p = is_kernel(i + 1, kMulMatCublas);
         if (mm_p != nullptr && IsPermute1203(in_p->src[0]) && RootTensor(mm_p->src[1]) == in_p &&
-            mm_p->src[1]->ne[2] == 1 && mm_p->src[1]->ne[3] == 1 && !used_after(i + 1, in_p)) {
+            mm_p->src[1]->ne[2] == 1 && mm_p->src[1]->ne[3] == 1 && !used_after(i + 1, in_p) &&
+            allow(RF::kSpatialProjections)) {
           const ggml_tensor* spatial_in = in_p->src[0]->src[0];
           if (spatial_in != nullptr && spatial_in == ws_bf16_spatial &&
               mm_p->src[1]->ne[0] == ws_bf16_ne0 && mm_p->src[1]->ne[1] == ws_bf16_ne1) {
@@ -1917,6 +2055,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                 !r) {
               return wrap_err(i + 1, r);
             }
+            hit(RF::kSpatialProjections);
+            hit(RF::kReuseConvertedInput);
             i += 1;
             return {};
           }
@@ -1930,6 +2070,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               try_qkv_rope_attn(i + 2, mm_p, spatial_in, nullptr, /*reuse_q_bf16=*/false, &attn_idx,
                                 &attn_bf16_direct, &qkv_status)) {
             if (!qkv_status) return qkv_status;
+            hit(RF::kSpatialProjections);
             ws_bf16_spatial = nullptr;
             ws_bf16_rows = nullptr;
             direct_bf16_rows = attn_bf16_direct ? is_kernel(attn_idx, kAttentionF32) : nullptr;
@@ -1951,6 +2092,8 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
                 !r) {
               return r;
             }
+            hit(RF::kSpatialProjections);
+            hit(RF::kMlp);
             ws_bf16_spatial = nullptr;
             ws_bf16_rows = nullptr;
             direct_bf16_rows = nullptr;
@@ -1958,6 +2101,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
             return {};
           }
           if (auto r = RunStep(launch, i + 1); !r) return r;
+          hit(RF::kSpatialProjections);
           ws_bf16_spatial = spatial_in;
           ws_bf16_rows = nullptr;
           ws_bf16_ne0 = mm_p->src[1]->ne[0];
@@ -1975,12 +2119,13 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               add->src[0] == conv ? add->src[1] : (add->src[1] == conv ? add->src[0] : nullptr);
           if (bias != nullptr && add->data == conv->data && bias->type == GGML_TYPE_F32 &&
               ggml_is_contiguous(bias) && bias->ne[0] == 1 && bias->ne[1] == 1 &&
-              bias->ne[2] == conv->ne[2] && bias->ne[3] == 1) {
+              bias->ne[2] == conv->ne[2] && bias->ne[3] == 1 && allow(RF::kConvBias)) {
             ws_bf16_spatial = nullptr;
             ws_bf16_rows = nullptr;
             direct_bf16_rows = nullptr;
             cached_attn_mask = nullptr;
             auto r = Conv2dTiledF32WithBias(launch, conv, bias);
+            if (r) hit(RF::kConvBias);
             i += 1;
             return r;
           }
@@ -2018,7 +2163,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               (rep->ne[1] * sc->ne[2]) % (x->ne[2] * 4) == 0 &&
               (add->data == x->data || DisjointBytes(x, add)) && !used_after(i + 5, c0) &&
               !used_after(i + 5, rep) && !used_after(i + 5, frame) && !used_after(i + 5, dx) &&
-              !used_after(i + 5, out_up)) {
+              !used_after(i + 5, out_up) && allow(RF::kDupUpAdd)) {
             const int repeats = static_cast<int>(rep->ne[1]);
             const int ft = static_cast<int>((rep->ne[1] * sc->ne[2]) / (x->ne[2] * 4));
             const std::size_t expected_offs = static_cast<std::size_t>(ft - 1) * 4 *
@@ -2034,6 +2179,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               if (auto r = DupUpAddF32(launch, x, actual_sc, add, ft, repeats); !r) {
                 return wrap_err(i + 5, r);
               }
+              hit(RF::kDupUpAdd);
               i += 5;
               return {};
             }
@@ -2070,7 +2216,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               bias->ne[1] == 1 && bias->ne[2] == add->ne[2] && bias->ne[3] == 1 &&
               DisjointBytes(weight, add) && DisjointBytes(bias, add) &&
               !used_after(i + 3, in_cont) && !used_after(i + 3, mm) &&
-              !used_after(i + 3, out_cont)) {
+              !used_after(i + 3, out_cont) && allow(RF::kConv1x1)) {
             const ggml_tensor* actual_x = x_whc;
             ggml_tensor staged_x{};
             bool can_run = DisjointBytes(x_whc, add);
@@ -2098,6 +2244,7 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
               ws_bf16_rows = nullptr;
               direct_bf16_rows = nullptr;
               auto r = SpatialConv1x1F32(launch, actual_x, weight, bias, add);
+              if (r) hit(RF::kConv1x1);
               i += 3;
               return r;
             }

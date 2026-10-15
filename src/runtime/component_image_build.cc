@@ -18,6 +18,7 @@
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
+#include "planner/policy.h"
 #include "platform/files.h"
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
@@ -601,6 +602,9 @@ EngineImageBuild ComponentImageGenerationBuild(
                                                            settings, construction);
     if (!geometry_parts) return Error(geometry_parts.error());
     EngineImageParts out;
+    auto policy = planner::ParsePolicy(spec::kImagePlanningPolicy);
+    if (!policy) return Error(std::format("the image planning policy: {}", policy.error()));
+    out.policy = std::move(*policy);
     out.keep = held;
     out.construction = construction;
     out.architecture = p.pipeline_architecture;

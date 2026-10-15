@@ -12,6 +12,9 @@
 #ifndef LLMP_KERNELS_GGML_EXECUTOR_H_
 #define LLMP_KERNELS_GGML_EXECUTOR_H_
 
+#include <array>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <span>
@@ -64,6 +67,54 @@ class FirstAttentionObserver {
 bool SetFirstAttentionObserver(FirstAttentionObserver* expected,
                                FirstAttentionObserver* replacement);
 
+// The run-time fusions BoundGraph::Run applies to a spatial or region graph
+// (docs/experiments/m36-runtime-fusion/README.md), to be replaced by planner
+// patterns: the matchers it tries in order, and the variants they record.
+enum class RuntimeFusion : std::uint8_t {
+  kSplitBroadcast,         // 0B: two repeated vectors' concat kept as two rows
+  kSpatialNorm,            // 0: channel RMS norm (+ SiLU) of a spatial tensor
+  kModulate,               // 1A: layer norm · (1 + scale), spatial input
+  kModulateRows,           // 1B: the same, rows input
+  kNormRope,               // 2: RMS norm · w and up to three rotations
+  kGatedResidualModulate,  // 3A with 1A: x + tanh(g) · y, then its modulation
+  kGatedResidualRows,      // 3A: x + tanh(g) · y with the branch in rows
+  kGatedResidual,          // 3B: x + tanh(g) · y
+  kRowsProjections,        // 4A: 1 to 3 products of one rows input
+  kSpatialProjections,     // 4B: a product of a spatial input
+  kQkvAttention,           // in 4A/4B: QKV products, norm-rope, attention
+  kMlp,                    // in 4A/4B: gate/up products, SwiGLU, down
+  kConvBias,               // 5: tiled 3x3 convolution and its bias
+  kDupUpAdd,               // 6: x plus the duplicate-up of a shortcut
+  kConv1x1,                // 7: 1x1 convolution and its bias
+  // Variants (counted, not separately controlled).
+  kQkvBf16,               // the QKV group with BF16 operands
+  kQueryNormInAttention,  // the query's norm and rotation inside attention
+  kAttentionBf16Out,      // attention writing the next product's BF16 input
+  kMaskPrepacked,         // an attention reusing the previous packed mask
+  kReuseConvertedInput,   // a product reusing a BF16 conversion in workspace
+  kSkipF32Modulation,     // a modulation writing only its BF16 copy
+  kBf16Branch,            // a product writing BF16 for the gated residual
+};
+inline constexpr std::size_t kRuntimeFusions = 22;
+static_assert(kRuntimeFusions == static_cast<std::size_t>(RuntimeFusion::kBf16Branch) + 1,
+              "kRuntimeFusions counts every RuntimeFusion");
+std::string_view RuntimeFusionName(RuntimeFusion fusion);
+// TESTS ONLY: which matchers may apply (a disabled one's steps run as
+// planned) and how often each applied. One control at a time, process-wide;
+// install/remove only between completed jobs.
+struct RuntimeFusionControl {
+  std::array<bool, kRuntimeFusions> enabled = [] {
+    std::array<bool, kRuntimeFusions> all{};
+    all.fill(true);
+    return all;
+  }();
+  std::array<std::atomic<std::uint64_t>, kRuntimeFusions> hits{};
+};
+// TESTS ONLY: installs `replacement` where `expected` is installed (false
+// otherwise); nullptr removes it. Production code never installs one, and
+// with none installed every matcher may apply.
+bool SetRuntimeFusionControl(RuntimeFusionControl* expected, RuntimeFusionControl* replacement);
+
 // A plan whose every step is bound to an implementation of this build.
 class BoundGraph {
  public:
@@ -111,6 +162,11 @@ class BoundGraph {
   std::vector<Step> steps_;
   std::vector<GraphPlan::Region> regions_;
   bool has_spatial_ops_ = false;
+  // The roots of the step's outputs and kept tensors (GraphPlan::kept, from
+  // PlanGraph's keep), which Run's run-time matchers must never leave
+  // unwritten (until they are planner patterns, whose liveness the
+  // placement gives).
+  std::vector<const ggml_tensor*> kept_;
 };
 
 }  // namespace llmp::kernels::ggml

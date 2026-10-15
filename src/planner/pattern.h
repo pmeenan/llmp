@@ -31,8 +31,22 @@
 // (plan.h), over the rewritten graph. The table, with what each reproduces
 // of today's production plans (kernels/ggml/graph_plan.h DeviceChoices):
 //
+//   spatial_channel_norm fused.spatial_channel_norm: a spatial tensor's
+//                      channels L2-normed through channel rows, scaled, times
+//                      a weight, SiLU or not, and back (the spatial
+//                      components' channel norm; BoundGraph::Run's run-time
+//                      spatial norm until M3.6's image patterns)
 //   rms_norm_mul_rope  fused.rms_norm_mul_rope: an RMS norm, its weight and
 //                      the rotation of the result (fuse_norm_rope; QK norms)
+//   rms_norm_mul_rope_sections fused.rms_norm_mul_rope_sections: an RMS
+//                      norm, its weight (with its widening) and one to three
+//                      rotations of consecutive sections covering the head,
+//                      each by its own positions (with their packed copies):
+//                      the multi-axis rotation (BoundGraph::Run's run-time
+//                      norm_rope until M3.6's image patterns). Opt-in: a
+//                      model whose policy disables rms_norm_mul_rope keeps
+//                      its primitive rotations; the image enables it
+//                      (spec/image_spatial.h kImagePlanningPolicy)
 //   rms_norm_mul_add   fused.rms_norm_mul_add: an RMS norm, its weight and a
 //                      residual add of its shape, one after another (or
 //                      the residual's gather between the mul and the add)

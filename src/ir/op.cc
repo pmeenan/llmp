@@ -180,6 +180,10 @@ std::string_view FusedKindName(FusedKind kind) {
       return "euler_step";
     case FusedKind::kDupUpAdd:
       return "dup_up_add";
+    case FusedKind::kSpatialChannelNorm:
+      return "spatial_channel_norm";
+    case FusedKind::kRmsNormMulRopeSections:
+      return "rms_norm_mul_rope_sections";
     case FusedKind::kHcPrep:
       return "hc_prep";
     case FusedKind::kScaledUnary:

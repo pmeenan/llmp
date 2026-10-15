@@ -356,6 +356,10 @@ std::size_t ParamSize(OpKey key) {
         return sizeof(HcNormPostParams);
       case FusedKind::kDupUpAdd:
         return sizeof(DupUpParams);
+      case FusedKind::kSpatialChannelNorm:
+        return sizeof(SpatialNormParams);
+      case FusedKind::kRmsNormMulRopeSections:
+        return sizeof(RopeSectionsParams);
       case FusedKind::kHcPrep:
       case FusedKind::kHcMixNorm:
         return sizeof(HcNormPostParams);

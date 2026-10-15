@@ -223,6 +223,157 @@ std::optional<Match> NormMulRopeMatch(const MatchContext& c, NodeId anchor) {
   return m;
 }
 
+// A head's RMS norm times its weight, then one to three plain rotations of
+// consecutive sections covering the head, each by its own I32 positions:
+// the multi-axis rotation (components/conditioning_blocks.cc RopeEmit).
+// It also takes a widening Convert of the weight and a Cont of each
+// section's packed positions where only the match reads them: neither
+// rounds (own_checks: an I32 copy is not an F32 intermediate).
+std::optional<Match> NormRopeSectionsMatch(const MatchContext& c, NodeId anchor) {
+  const auto nm = NormMulAt(c, anchor);
+  if (!nm) return std::nullopt;
+  const ir::Graph& g = c.graph();
+  const ir::TensorDesc& xd = c.tensor(nm->x);
+  if (xd.format.encoding != format::Encoding::kF32) return std::nullopt;
+  const std::uint64_t dim = xd.ne(0), rows = xd.ne(2);
+  std::vector<NodeId> nodes{nm->norm, nm->mul};
+  TensorId w = nm->w;
+  if (c.tensor(w).shape().ne != ir::ShapeOf({dim}).ne) return std::nullopt;
+  if (const NodeId convert = g.producer(w); convert.valid() &&
+                                            c.node(convert).key == Prim(Op::kConvert) &&
+                                            !c.taken(convert) && c.OnlyReader(w) == nm->mul) {
+    const TensorId wide = c.node(convert).src[0];
+    if (c.tensor(wide).format.encoding == format::Encoding::kBF16 &&
+        c.tensor(w).format.encoding == format::Encoding::kF32 &&
+        SameShape(c.tensor(wide), c.tensor(w))) {
+      nodes.push_back(convert);
+      w = wide;
+    }
+  }
+  ir::RopeSectionsParams params{.eps = nm->eps};
+  std::vector<TensorId> sources{nm->x, w};
+  TensorId last = c.node(nm->mul).out[0];
+  std::uint64_t covered = 0;
+  while (covered < dim && params.sections < params.dims.size()) {
+    const auto rope = Next(c, last);
+    if (!rope) return std::nullopt;
+    const ir::Node& r = c.node(*rope);
+    if (r.key != Prim(Op::kRope) || r.src[0] != last || r.source(2).valid() ||
+        !SameShape(c.tensor(r.out[0]), xd))
+      return std::nullopt;
+    const auto p = r.Params<ir::RopeParams>();
+    if ((p.mode != ir::RopeMode::kNormal && p.mode != ir::RopeMode::kNeox) || p.inverse ||
+        p.table || p.offset != covered || p.dims == 0 || p.scale != 1.0F || p.ext_factor != 0.0F ||
+        p.attn_factor != 1.0F || p.sections != std::array<std::uint32_t, 4>{} ||
+        (params.sections != 0 && (p.mode != params.mode || p.base != params.base)))
+      return std::nullopt;
+    params.mode = p.mode;
+    params.base = p.base;
+    params.dims.at(params.sections++) = p.dims;
+    covered += p.dims;
+    TensorId pos = r.src[1];
+    if (c.tensor(pos).format.encoding != format::Encoding::kI32 ||
+        c.tensor(pos).shape().ne != ir::ShapeOf({rows}).ne)
+      return std::nullopt;
+    if (const NodeId cont = g.producer(pos);
+        cont.valid() && c.node(cont).key == Prim(Op::kCont) && !c.taken(cont) &&
+        c.OnlyReader(pos) == *rope &&
+        c.tensor(c.node(cont).src[0]).shape().ne == c.tensor(pos).shape().ne &&
+        c.tensor(c.node(cont).src[0]).format.encoding == format::Encoding::kI32) {
+      nodes.push_back(cont);
+      pos = c.node(cont).src[0];
+    }
+    sources.push_back(pos);
+    nodes.push_back(*rope);
+    last = r.out[0];
+  }
+  if (covered != dim) return std::nullopt;
+  std::ranges::sort(nodes);
+  Match match = Fusion(std::move(nodes), std::move(sources), params);
+  // Every elided intermediate but the positions' copies F32 (the
+  // decomposition's), and no read moved past a write.
+  for (std::size_t i = 0; i + 1 < match.nodes.size(); ++i) {
+    const ir::Node& n = c.node(match.nodes[i]);
+    if (n.key == Prim(Op::kCont) && c.tensor(n.out[0]).format.encoding == format::Encoding::kI32)
+      continue;
+    if (c.tensor(n.out[0]).format.encoding != format::Encoding::kF32) return std::nullopt;
+  }
+  if (!KeepsOrder(c, match) ||
+      !Implemented(c, ir::Fused(FusedKind::kRmsNormMulRopeSections), match.sources,
+                   c.node(match.nodes.back()).outputs(), match.params))
+    return std::nullopt;
+  return match;
+}
+
+// The spatial channel norm as the spatial components emit it (components/
+// image_blocks.cc SpatialNorm): x [W, H, C, N] to channel rows, L2-normed
+// over C, scaled, times gamma [C], with or without SiLU, and back, each
+// intermediate read by the next node only.
+std::optional<Match> SpatialChannelNormMatch(const MatchContext& c, NodeId anchor) {
+  const ir::Node& l2 = c.node(anchor);
+  if (l2.key != Prim(Op::kL2Norm) || c.taken(anchor)) return std::nullopt;
+  const auto permuted = [&](const ir::Node& n, std::array<std::uint8_t, 4> axes) {
+    return n.key == Prim(Op::kPermute) && n.Params<ir::PermuteParams>().axes == axes;
+  };
+  // Back to the input: l2 <- cont <- permute(x, {1, 2, 0, 3}).
+  const ir::Graph& g = c.graph();
+  const NodeId cont_in = g.producer(l2.src[0]);
+  const ir::Node& ci = c.node(cont_in);
+  if (ci.key != Prim(Op::kCont) || c.taken(cont_in)) return std::nullopt;
+  const NodeId permute_in = g.producer(ci.src[0]);
+  const ir::Node& pi = c.node(permute_in);
+  if (!permuted(pi, {1, 2, 0, 3}) || c.taken(permute_in) || c.OnlyReader(pi.out[0]) != cont_in ||
+      c.OnlyReader(ci.out[0]) != anchor)
+    return std::nullopt;
+  const TensorId x = pi.src[0];
+  const ir::TensorDesc& xd = c.tensor(x);
+  if (xd.format.encoding != format::Encoding::kF32) return std::nullopt;
+  // Forward: scale, mul by gamma, SiLU or not, permute(.., {2, 0, 1, 3}), cont.
+  const auto scale = Next(c, l2.out[0]);
+  if (!scale || c.node(*scale).key != Prim(Op::kScale) ||
+      c.node(*scale).Params<ir::ScaleParams>().bias != 0.0f)
+    return std::nullopt;
+  const TensorId scaled = c.node(*scale).out[0];
+  const auto mul = Next(c, scaled);
+  if (!mul || c.node(*mul).key != Prim(Op::kMul)) return std::nullopt;
+  const ir::Node& m = c.node(*mul);
+  const TensorId gamma = m.src[0] == scaled ? m.src[1] : m.src[1] == scaled ? m.src[0] : TensorId{};
+  // Ranks are canonical (trailing ones drop): gamma is [C] by its extents.
+  if (!gamma.valid() || c.tensor(gamma).shape().ne != ir::ShapeOf({xd.ne(2)}).ne ||
+      !SameShape(c.tensor(m.out[0]), c.tensor(scaled)))
+    return std::nullopt;
+  std::vector<NodeId> nodes{permute_in, cont_in, anchor, *scale, *mul};
+  TensorId last = m.out[0];
+  bool silu = false;
+  auto next = Next(c, last);
+  if (next && c.node(*next).key == Prim(Op::kUnary) &&
+      c.node(*next).Params<ir::UnaryParams>().fn == ir::UnaryFn::kSilu) {
+    silu = true;
+    nodes.push_back(*next);
+    last = c.node(*next).out[0];
+    next = Next(c, last);
+  }
+  if (!next || !permuted(c.node(*next), {2, 0, 1, 3})) return std::nullopt;
+  nodes.push_back(*next);
+  const auto cont_out = Next(c, c.node(*next).out[0]);
+  if (!cont_out || c.node(*cont_out).key != Prim(Op::kCont)) return std::nullopt;
+  nodes.push_back(*cont_out);
+  const ir::Node& out = c.node(*cont_out);
+  if (!SameShape(c.tensor(out.out[0]), xd) ||
+      c.tensor(out.out[0]).format.encoding != format::Encoding::kF32)
+    return std::nullopt;
+  std::ranges::sort(nodes);
+  Match match =
+      Fusion(std::move(nodes), {x, gamma},
+             ir::SpatialNormParams{.eps = l2.Params<ir::NormParams>().eps,
+                                   .scale = c.node(*scale).Params<ir::ScaleParams>().scale,
+                                   .silu = silu});
+  if (!Implemented(c, ir::Fused(FusedKind::kSpatialChannelNorm), match.sources, out.outputs(),
+                   match.params))
+    return std::nullopt;
+  return match;
+}
+
 std::optional<Match> NormMulAddMatch(const MatchContext& c, NodeId anchor) {
   const auto nm = NormMulAt(c, anchor);
   if (!nm) {
@@ -1173,6 +1324,7 @@ void OwnerRewrite(RewriteContext& c, const Match& m, std::size_t index) {
 
 constexpr std::array kGroupedProductAnchors{Op::kPermute};
 constexpr std::array kNormAnchors = {Op::kRmsNorm};
+constexpr std::array kL2NormAnchors = {Op::kL2Norm};
 constexpr std::array kAddAnchors = {Op::kAdd};
 constexpr std::array kGdnConvAnchors = {Op::kSsmConv, Op::kCacheStore};
 constexpr std::array kDeltaAnchors = {Op::kGatedDeltaNet};
@@ -1405,11 +1557,23 @@ constexpr std::array kPatterns = {
             .rewrite = &fusions::Rewrite,
             .opt_in = true,
             .round = 1},
+    Pattern{.name = "spatial_channel_norm",
+            .result = ir::Fused(FusedKind::kSpatialChannelNorm),
+            .anchors = kL2NormAnchors,
+            .match = &SpatialChannelNormMatch,
+            .rewrite = &Fused<FusedKind::kSpatialChannelNorm>},
     Pattern{.name = "rms_norm_mul_rope",
             .result = ir::Fused(FusedKind::kRmsNormMulRope),
             .anchors = kNormAnchors,
             .match = &NormMulRopeMatch,
             .rewrite = &Fused<FusedKind::kRmsNormMulRope>},
+    Pattern{.name = "rms_norm_mul_rope_sections",
+            .result = ir::Fused(FusedKind::kRmsNormMulRopeSections),
+            .anchors = kNormAnchors,
+            .match = &NormRopeSectionsMatch,
+            .own_checks = true,
+            .rewrite = &Fused<FusedKind::kRmsNormMulRopeSections>,
+            .opt_in = true},
     Pattern{.name = "rms_norm_mul_add",
             .result = ir::Fused(FusedKind::kRmsNormMulAdd),
             .anchors = kNormAnchors,

@@ -967,6 +967,60 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
     }
     case FusedKind::kDupUpAdd:
       return DupUpAdd(d, Get<DupUpParams>(params));
+    case FusedKind::kSpatialChannelNorm: {
+      if (!d.need(2, 2)) {
+        return {};
+      }
+      const auto p = Get<SpatialNormParams>(params);
+      const TensorDesc& x = d.t(d.s(0));
+      const TensorDesc& gamma = d.t(d.s(1));
+      // Ranks are canonical (a trailing extent of one drops one): gamma's
+      // extents, not its rank, say it is a vector.
+      if (!d.check(gamma.shape().ne == ShapeOf({x.ne(2)}).ne, GraphError::kShape,
+                   "a [W, H, C, N] input and a [C] gamma")) {
+        return {};
+      }
+      // As the spatial channel norm component emits it (components/
+      // image_blocks.cc SpatialNorm): channel rows, normed, back.
+      const TensorId rows = b.Cont(b.Permute(d.s(0), {1, 2, 0, 3}));
+      TensorId out = b.Mul(b.Scale(b.L2Norm(rows, p.eps), p.scale), d.s(1));
+      if (p.silu) {
+        out = b.Unary(out, UnaryFn::kSilu);
+      }
+      return One(b.Cont(b.Permute(out, {2, 0, 1, 3})));
+    }
+    case FusedKind::kRmsNormMulRopeSections: {
+      const auto p = Get<RopeSectionsParams>(params);
+      if (!d.need(2 + std::size_t{p.sections}, 2 + std::size_t{p.sections})) {
+        return {};
+      }
+      const TensorDesc& x = d.t(d.s(0));
+      std::uint64_t dims = 0;
+      for (std::size_t i = 0; i < p.dims.size(); ++i) {
+        dims += i < p.sections ? p.dims.at(i) : 0;
+      }
+      if (!d.check(p.sections >= 1 && p.sections <= 3 &&
+                       (p.mode == RopeMode::kNormal || p.mode == RopeMode::kNeox) &&
+                       dims == x.ne(0) && d.t(d.s(1)).shape().ne == ShapeOf({x.ne(0)}).ne,
+                   GraphError::kParams,
+                   "one to three sections covering the head and a [D] weight")) {
+        return {};
+      }
+      // The weight read as F32 (a widening, exact), as components/defs.h
+      // NormScale converts it.
+      TensorId w = d.s(1);
+      if (d.t(w).format.encoding != format::Encoding::kF32) {
+        w = b.Convert(w, format::Encoding::kF32);
+      }
+      TensorId out = b.Mul(b.RmsNorm(d.s(0), p.eps), w);
+      std::uint32_t offset = 0;
+      for (std::size_t i = 0; i < p.sections; ++i) {
+        out = b.Rope(out, d.s(2 + i), {},
+                     {.mode = p.mode, .dims = p.dims.at(i), .offset = offset, .base = p.base});
+        offset += p.dims.at(i);
+      }
+      return One(out);
+    }
     case FusedKind::kHcPrep: {
       if (!d.need(2, 5)) {
         return {};

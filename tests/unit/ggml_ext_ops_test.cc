@@ -1521,7 +1521,8 @@ TEST_F(GgmlExtOpsTest, RawQ2D2rPreservesItsOwnCapturedProductAndPlansAllScratch)
                                       .implementation = kg::kMulMatIdQ2D2r,
                                       .nodes = {product},
                                       .lane = 0}},
-                           .regions = {}};
+                           .regions = {},
+                           .kept = {}};
   const auto planned = kg::PlanScratch(launch(), plan);
   ASSERT_TRUE(planned.has_value()) << (planned ? "" : planned.error().detail);
   EXPECT_EQ(*planned, *scratch);
@@ -3864,7 +3865,8 @@ TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeScratchRefusesCaptureAndPreservesOwnRe
                                         .implementation = kg::kDsv4HcaTokentileName,
                                         .nodes = {node},
                                         .lane = 0}},
-                             .regions = {}};
+                             .regions = {},
+                             .kept = {}};
     const auto planned = kg::PlanScratch(launch(), plan);
     ASSERT_TRUE(planned.has_value());
     EXPECT_EQ(*planned, *scratch);

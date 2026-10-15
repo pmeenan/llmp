@@ -27,6 +27,7 @@
 #include "fwht.cuh"
 #include "gated_delta_net.cuh"
 #include "getrows.cuh"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -1469,6 +1470,21 @@ std::expected<void, KernelFailure> SpatialChannelNormF32(LaunchContext& launch,
     }
     CUDA_CHECK(cudaGetLastError());
   });
+}
+
+std::expected<void, KernelFailure> RunSpatialChannelNorm(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckSpatialChannelNorm(node); !checked) return checked;
+  return SpatialChannelNormF32(launch, node->src[0], node->src[1], node, LlmpOpFloat(node, 0),
+                               LlmpOpFloat(node, 1), LlmpOpInt(node, 2) != 0);
+}
+
+std::expected<void, KernelFailure> RunNormRopeSections(LaunchContext& launch, ggml_tensor* node) {
+  const auto args = CheckNormRopeSections(node);
+  if (!args) return std::unexpected(args.error());
+  return RmsNormMulRope3d(launch, node->src[0], node->src[1], args->eps,
+                          std::span(args->positions).first(args->sections),
+                          std::span(args->dims).first(args->sections), args->base, args->neox,
+                          node);
 }
 
 std::expected<void, KernelFailure> DupUpAddF32(LaunchContext& launch, const ggml_tensor* x,

@@ -7,6 +7,7 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "model/qwen_image.h"
@@ -14,6 +15,11 @@
 #include "spec/spec.h"
 
 namespace llmp::spec {
+// The Qwen-Image pipeline's planning policy (planner/policy.h canonical text), every
+// stage's: the text encoder's and the flow's QK norms take the opt-in
+// sectioned norm and rotation (planner/pattern.h rms_norm_mul_rope_sections).
+inline constexpr std::string_view kImagePlanningPolicy =
+    "max_decode_rows 16\nenable rms_norm_mul_rope_sections\n";
 // Mapping only, over an already-owned, paid VaeDecoderPlan/tensor inventory.
 // Consumes a closed serial conv/nearest span, preserving source tensor names
 // and F32 shapes. Graph inference owns the actual spatial input geometry;

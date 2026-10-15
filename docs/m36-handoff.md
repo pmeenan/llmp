@@ -250,7 +250,16 @@ never change guarded source while an actual run is active.
   driver fence polling, per-stage lease cycling and graph hashing, the F32 VAE
   convolution fixed; the remaining ~2.1% (unchanged host inputs re-uploaded,
   the text encoder's path, the F32 channel norm) and the conversion of
-  `BoundGraph::Run`'s run-time fusion into planner patterns are the next slice.
+  `BoundGraph::Run`'s run-time fusion into planner patterns are the next slice,
+  in progress: the matcher inventory, its reference tests and group 2a (the
+  spatial channel norm and the sectioned norm and rotation as planner
+  patterns, liveness from the step's outputs and kept tensors) are done
+  ([m36-runtime-fusion](experiments/m36-runtime-fusion/README.md)); 2b-2e,
+  deleting the run-time path, the profile constants and the gap follow.
+  Open: finding 1 (a declined QKV or MLP matcher refuses the step) stays
+  until 2b/2c; `rms_norm_mul_rope_sections` is opt-in and only the image's
+  policy enables it, so measuring it for LLM families (Gemma 4's local
+  layers match it) is open; the image pin is now `2ee8f010…`.
 - Qwen's decode gaps are fully resolved in `25711ad9` (`qwen-c4-fix-models01`)
   and `7ad389b5` (`qwen-c4-fix-models02`) on Spark A: wiring
   `DrafterSpec::shared_wave_depth` (`= 2` in multi-slot waves, matching

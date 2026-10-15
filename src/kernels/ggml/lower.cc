@@ -3396,6 +3396,8 @@ bool Lowering::Direct(NodeId id) const {
     case FusedKind::kMoeCombine:
     case FusedKind::kMatMulIdGlu:
     case FusedKind::kDsv4OutA:
+    case FusedKind::kSpatialChannelNorm:
+    case FusedKind::kRmsNormMulRopeSections:
       return true;
     case FusedKind::kRmsNormMulRope:
       return Selected(id) == kQsaPrepName;
@@ -4181,6 +4183,25 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       set(0, t);
       return {};
     }
+    case FusedKind::kSpatialChannelNorm: {
+      const auto p = n.Params<ir::SpatialNormParams>();
+      ggml_tensor* t = SpatialChannelNorm(c_, src(0), src(1), p.eps, p.scale, p.silu);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kRmsNormMulRopeSections: {
+      const auto p = n.Params<ir::RopeSectionsParams>();
+      if (p.sections < 1 || p.sections > 3) return Refused("one to three rotated sections");
+      std::array<ggml_tensor*, 3> positions{};
+      for (std::size_t i = 0; i < p.sections; ++i) positions.at(i) = src(2 + i);
+      ggml_tensor* t = NormRopeSections(c_, src(0), src(1), std::span(positions).first(p.sections),
+                                        p.eps, p.base, p.mode == ir::RopeMode::kNeox,
+                                        std::span(p.dims).first(p.sections));
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
     case FusedKind::kDsv4OutA: {
       const auto p = n.Params<ir::RopeParams>();
       const Dsv4OutAParams outa_params{
@@ -4634,10 +4655,14 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     // First stateless physical domain. No token/state operation can enter a
     // branch that interprets a StepShape, synthesized inputs or state spans.
     const auto supported = [](const ir::Node& n) {
-      // Closed explicit-operand forms only: the existing VAE shortcut and
-      // learned RMS scaling. Both use the same validated primitive operands;
-      // neither consults token metadata, state, side-input builders or saves.
-      if (n.key == ir::Fused(FusedKind::kDupUpAdd) || n.key == ir::Fused(FusedKind::kRmsNormMul))
+      // Closed explicit-operand forms only: the existing VAE shortcut,
+      // learned RMS scaling, the spatial channel norm and the sectioned
+      // head norm and rotation. Each uses the same validated primitive
+      // operands; none consults token metadata, state, side-input builders
+      // or saves.
+      if (n.key == ir::Fused(FusedKind::kDupUpAdd) || n.key == ir::Fused(FusedKind::kRmsNormMul) ||
+          n.key == ir::Fused(FusedKind::kSpatialChannelNorm) ||
+          n.key == ir::Fused(FusedKind::kRmsNormMulRopeSections))
         return true;
       if (n.key != ir::Primitive(n.key.op)) return false;
       switch (n.key.op) {

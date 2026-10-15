@@ -332,6 +332,10 @@ std::string_view OperationName(Operation operation) {
       return "upsample";
     case Operation::kDupUpAdd:
       return "dup_up_add";
+    case Operation::kSpatialChannelNorm:
+      return "spatial_channel_norm";
+    case Operation::kRmsNormMulRopeSections:
+      return "rms_norm_mul_rope_sections";
   }
   return "unknown";
 }
@@ -453,6 +457,10 @@ ir::OpKey OpKeyOf(Operation operation) {
       return Primitive(Op::kUpsample);
     case Operation::kDupUpAdd:
       return Fused(FusedKind::kDupUpAdd);
+    case Operation::kSpatialChannelNorm:
+      return Fused(FusedKind::kSpatialChannelNorm);
+    case Operation::kRmsNormMulRopeSections:
+      return Fused(FusedKind::kRmsNormMulRopeSections);
     case Operation::kRmsNormMulRope:
       return Fused(FusedKind::kRmsNormMulRope);
     case Operation::kRmsNormMulAdd:

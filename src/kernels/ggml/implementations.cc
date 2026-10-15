@@ -112,7 +112,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 141> kKernels = {{
+constexpr std::array<Kernel::Entry, 143> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -924,6 +924,23 @@ constexpr std::array<Kernel::Entry, 141> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckHcPrep(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunHcPrep(launch, n[0]); }},
+    {.name = kSpatialChannelNormName,
+     .operation = execution::Operation::kSpatialChannelNorm,
+     .variant = "SpatialChannelNormF32Kernel: a pixel a thread, its channels' sum of squares, then "
+                "each channel normed, scaled by the factor and gamma, SiLU where asked",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSpatialChannelNorm(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunSpatialChannelNorm(launch, n[0]); }},
+    {.name = kNormRopeSectionsName,
+     .operation = execution::Operation::kRmsNormMulRopeSections,
+     .variant = "RmsNormMulRope3dKernel: a row a block, a head a warp; each head's RMS norm times "
+                "its F32 or BF16 weight, then each section's pairs rotated by its own positions",
+     .arity = 1,
+     .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
+       if (auto args = CheckNormRopeSections(n[0]); !args) return std::unexpected(args.error());
+       return {};
+     },
+     .run = [](LaunchContext& launch, Nodes n) { return RunNormRopeSections(launch, n[0]); }},
     {.name = "llmp.hc.lo",
      .operation = execution::Operation::kUnary,
      .variant = "HcLoKernel: silu(lo / hc) into BF16, an element a thread",

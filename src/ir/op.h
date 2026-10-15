@@ -523,9 +523,20 @@ enum class FusedKind : std::uint16_t {
   // (out_a, heads, positions): RopeParams: inverse tail-64 RoPE and staged
   // grouped output-A matrix product.
   kDsv4OutA,
+  // (x [W, H, C, N], gamma [C]): SpatialNormParams: each pixel's channels
+  // L2-normed (over C, eps the norm's floor), times scale and gamma, and
+  // with silu SiLU: the decomposition takes x to channel rows ([C, W, H,
+  // N]), normalizes and returns to [W, H, C, N].
+  kSpatialChannelNorm,
+  // (x [D, heads, rows], w [D], pos0 [rows], pos1, pos2): RopeSectionsParams:
+  // the RMS norm of each head times w (any float encoding, read as F32),
+  // then `sections` plain rotations, each of its own I32 positions over
+  // the next dims[i] values of the head (offsets 0, dims[0], dims[0] +
+  // dims[1]), together the whole head: a multi-axis rotation.
+  kRmsNormMulRopeSections,
 };
 // The op set's last fused kind (the kinds are 1 to it).
-inline constexpr FusedKind kLastFusedKind = FusedKind::kDsv4OutA;
+inline constexpr FusedKind kLastFusedKind = FusedKind::kRmsNormMulRopeSections;
 
 struct OpKey {
   Op op = Op::kInput;
@@ -815,6 +826,22 @@ struct DupUpParams {
   std::uint32_t factor_t = 1;
 };
 
+struct SpatialNormParams {
+  float eps = 0.0f;
+  float scale = 1.0f;
+  bool silu = false;
+  std::array<std::uint8_t, 3> reserved{};
+};
+
+struct RopeSectionsParams {
+  float eps = 0.0f;
+  float base = 10000.0f;
+  RopeMode mode = RopeMode::kNormal;  // kNormal or kNeox, every section's
+  std::uint8_t sections = 0;          // 1 to 3
+  std::array<std::uint8_t, 2> reserved{};
+  std::array<std::uint32_t, 3> dims{};  // each section's rotated values
+};
+
 struct ScaledUnaryParams {
   float scale = 1.0f;
   UnaryFn fn = UnaryFn::kSilu;
@@ -884,13 +911,15 @@ static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskPa
               kIsParams<GdnHistoryParams> && kIsParams<GdnStepParams> &&
               kIsParams<HeadGateParams> && kIsParams<QsaPoolParams> && kIsParams<QsaAttnParams> &&
               kIsParams<MoeExpertsParams> && kIsParams<CompressorParams> &&
-              kIsParams<SinkhornPreParams>);
+              kIsParams<SinkhornPreParams> && kIsParams<SpatialNormParams> &&
+              kIsParams<RopeSectionsParams>);
 static_assert(sizeof(CompressorParams) == 8 && sizeof(ScaledUnaryParams) == 8 &&
               sizeof(HcFoldParams) == 8 && sizeof(GdnConvParams) == 16 &&
               sizeof(GdnStepParams) == 4 && sizeof(QsaPoolParams) == 8 + sizeof(RopeParams) &&
               sizeof(QsaAttnParams) == sizeof(AttnParams) + 8 &&
               sizeof(MoeExpertsParams) == sizeof(GluParams) + 4);
-static_assert(sizeof(SinkhornPreParams) == 16);
+static_assert(sizeof(SinkhornPreParams) == 16 && sizeof(SpatialNormParams) == 12 &&
+              sizeof(RopeSectionsParams) == 24);
 
 // No implicit padding: each struct's size is the sum of its fields'.
 static_assert(sizeof(RopeParams) == 4 + (3 * 4) + (6 * 4) + 16);

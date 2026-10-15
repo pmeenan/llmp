@@ -179,7 +179,9 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
   for (std::size_t i = 0; i < bound.size(); ++i) {
     conv += bound.at(i).name == "ggml.conv2d.f32";
     products += bound.at(i).name.starts_with("ggml.mul_mat.");
-    norm += bound.at(i).name == "ggml.l2_norm";
+    // Every channel norm is the planner's spatial_channel_norm.
+    norm += bound.at(i).name == "llmp.image.spatial_channel_norm";
+    if (bound.at(i).name == "ggml.l2_norm") return Error("a primitive channel norm remains");
     softmax += bound.at(i).name == "ggml.soft_max";
   }
   if (products != (index == 0 ? 1U : 8U) || conv != (index == 0 ? 1U : 40U) ||

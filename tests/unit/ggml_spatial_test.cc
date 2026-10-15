@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -17,9 +18,12 @@
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
+#include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
+#include "planner/policy.h"
 #include "spec/image_spatial.h"
 
 namespace {
@@ -34,6 +38,12 @@ namespace mo = llmp::model;
 namespace sp = llmp::spec;
 using llmp::test_support::Failed;
 
+// The image's planning policy, as the served pipeline plans it.
+llmp::planner::Policy ImagePolicy() {
+  auto policy = llmp::planner::ParsePolicy(sp::kImagePlanningPolicy);
+  EXPECT_TRUE(policy) << (policy ? "" : policy.error());
+  return policy.value_or(llmp::planner::Policy{});
+}
 std::expected<ex::Registry, ex::PlanRejection> Registry() {
   std::vector<ex::Implementation> entries;
   for (const auto& declaration : kg::CapabilityDeclarations()) {
@@ -201,7 +211,7 @@ TEST(GgmlSpatialTest, RaggedTypedPortsLowerWithoutTokenMetadataInBothBindingMode
     addresses.activation_alignment = 256;
     addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
     auto plan = en::PlanComponentGraph(
-        io, backend, {}, addresses,
+        io, backend, ImagePolicy(), addresses,
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = kg::WrittenBytes,
          .within = kg::WithinRoot,
@@ -349,7 +359,7 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
       addresses.activation_bytes = 8ULL << 30U;
       addresses.activation_alignment = 256;
       auto plan = en::PlanComponentGraph(
-          io, backend, {}, addresses,
+          io, backend, ImagePolicy(), addresses,
           {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
            .written = kg::WrittenBytes,
            .within = kg::WithinRoot,
@@ -370,22 +380,31 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
       ASSERT_EQ(lowered->outputs.size(), 1U);
       EXPECT_EQ(lowered->outputs[0].segment, 2U);
       EXPECT_EQ(lowered->outputs[0].bytes, 16ULL * latent * 16ULL * latent * 4ULL * sizeof(float));
-      std::size_t norms = 0, convolutions = 0;
+      // Every channel norm is the planner's spatial_channel_norm pattern
+      // (one launch a norm, no layout round trip); its check refuses an
+      // underflowing or non-finite eps, as the primitive L2 norm's does.
+      std::size_t norms = 0, primitive_norms = 0, convolutions = 0;
       for (auto& step : lowered->plan.steps) {
         convolutions +=
             step.implementation == "ggml.conv2d.f32" || step.implementation == kg::kConv2dTiledF32;
-        if (step.implementation != "ggml.l2_norm") continue;
+        primitive_norms += step.implementation == "ggml.l2_norm";
+        if (step.implementation != kg::kSpatialChannelNormName) continue;
         ++norms;
         auto* norm = step.nodes[0];
-        ASSERT_TRUE(kg::CheckL2Norm(norm));
+        ASSERT_TRUE(kg::CheckSpatialChannelNorm(norm));
+        // The eps sits after GGML's custom parameters (llmp_ops.cc kEpsOffset).
+        auto* eps = reinterpret_cast<char*>(norm->op_params) + 32;
         float original = 0;
-        std::memcpy(&original, norm->op_params, sizeof(original));
-        const float underflow = 1e-30F;
-        std::memcpy(norm->op_params, &underflow, sizeof(underflow));
-        EXPECT_FALSE(kg::CheckL2Norm(norm));
-        std::memcpy(norm->op_params, &original, sizeof(original));
+        std::memcpy(&original, eps, sizeof(original));
+        EXPECT_EQ(original, kg::LlmpOpFloat(norm, 0));
+        for (const float bad : {1e-30F, std::numeric_limits<float>::infinity()}) {
+          std::memcpy(eps, &bad, sizeof(bad));
+          EXPECT_FALSE(kg::CheckSpatialChannelNorm(norm)) << bad;
+        }
+        std::memcpy(eps, &original, sizeof(original));
       }
       EXPECT_EQ(norms, 36U);
+      EXPECT_EQ(primitive_norms, 0U);
       EXPECT_EQ(convolutions, 40U);
     }
     auto malformed = steps;
@@ -441,22 +460,28 @@ TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNo
     addresses.activation_bytes = 32ULL << 20U;
     addresses.activation_alignment = 256;
     auto plan = en::PlanComponentGraph(
-        io, backend, {}, addresses,
+        io, backend, ImagePolicy(), addresses,
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = kg::WrittenBytes,
          .within = kg::WithinRoot,
          .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
     ASSERT_TRUE(plan) << Failed(plan).value_or("");
     std::vector<std::string> planned_keys;
-    std::size_t fused_norms = 0;
+    // The QK norms are the planner's rms_norm_mul_rope_sections (with
+    // their three rotations); the other RMS norms fuse with their weight.
+    std::size_t fused_norms = 0, sectioned = 0;
     for (const auto& node : plan->graph.nodes()) {
       planned_keys.push_back(ir::OpKeyName(node.key));
-      if (node.key != ir::Primitive(node.key.op)) {
+      if (node.key == ir::Fused(ir::FusedKind::kRmsNormMulRopeSections)) {
+        EXPECT_EQ(node.Params<ir::RopeSectionsParams>().sections, 3U);
+        ++sectioned;
+      } else if (node.key != ir::Primitive(node.key.op)) {
         EXPECT_EQ(node.key, ir::Fused(ir::FusedKind::kRmsNormMul));
         ++fused_norms;
       }
     }
-    EXPECT_EQ(fused_norms, 2U);
+    EXPECT_EQ(sectioned, 2U);
+    EXPECT_EQ(fused_norms, 0U);
     std::ranges::sort(planned_keys);
     planned_keys.erase(std::unique(planned_keys.begin(), planned_keys.end()), planned_keys.end());
     std::string keys;
@@ -499,6 +524,11 @@ TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNo
         ASSERT_TRUE(kg::CheckLayerNorm(norm));
       }
       rotations += step.implementation == "ggml.rope.ext";
+      if (step.implementation == kg::kNormRopeSectionsName) {
+        const auto sections = kg::CheckNormRopeSections(step.nodes.front());
+        ASSERT_TRUE(sections) << Failed(sections, &kg::KernelFailure::detail).value_or("");
+        rotations += sections->sections;
+      }
       products += step.implementation == "ggml.mul_mat.cublas";
       softmax += step.implementation == "ggml.soft_max";
     }
@@ -559,22 +589,28 @@ TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) 
     addresses.activation_bytes = 32ULL << 20U;
     addresses.activation_alignment = 256;
     auto plan = en::PlanComponentGraph(
-        io, backend, {}, addresses,
+        io, backend, ImagePolicy(), addresses,
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = kg::WrittenBytes,
          .within = kg::WithinRoot,
          .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
     ASSERT_TRUE(plan) << Failed(plan).value_or("");
     std::vector<std::string> planned_keys;
-    std::size_t fused_norms = 0;
+    // The QK norms are the planner's rms_norm_mul_rope_sections (with
+    // their three rotations); the other RMS norms fuse with their weight.
+    std::size_t fused_norms = 0, sectioned = 0;
     for (const auto& node : plan->graph.nodes()) {
       planned_keys.push_back(ir::OpKeyName(node.key));
-      if (node.key != ir::Primitive(node.key.op)) {
+      if (node.key == ir::Fused(ir::FusedKind::kRmsNormMulRopeSections)) {
+        EXPECT_EQ(node.Params<ir::RopeSectionsParams>().sections, 3U);
+        ++sectioned;
+      } else if (node.key != ir::Primitive(node.key.op)) {
         EXPECT_EQ(node.key, ir::Fused(ir::FusedKind::kRmsNormMul));
         ++fused_norms;
       }
     }
-    EXPECT_EQ(fused_norms, 65U);
+    EXPECT_EQ(sectioned, 64U);
+    EXPECT_EQ(fused_norms, 1U);
     std::ranges::sort(planned_keys);
     planned_keys.erase(std::unique(planned_keys.begin(), planned_keys.end()), planned_keys.end());
     std::string keys;
@@ -601,6 +637,11 @@ TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) 
         EXPECT_TRUE(kg::CheckLayerNorm(step.nodes[0]));
       }
       rotations += step.implementation == "ggml.rope.ext";
+      if (step.implementation == kg::kNormRopeSectionsName) {
+        const auto sections = kg::CheckNormRopeSections(step.nodes.front());
+        ASSERT_TRUE(sections) << Failed(sections, &kg::KernelFailure::detail).value_or("");
+        rotations += sections->sections;
+      }
       products += step.implementation == "ggml.mul_mat.cublas";
       softmax += step.implementation == "ggml.soft_max";
     }
@@ -656,7 +697,7 @@ TEST(GgmlSpatialTest, ActualTextEncoderUsesTypedIdsNeoxAndGqaWithoutTokenMetadat
     addresses.activation_bytes = 128ULL << 20;
     addresses.activation_alignment = 256;
     auto plan = en::PlanComponentGraph(
-        io, backend, {}, addresses,
+        io, backend, ImagePolicy(), addresses,
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = kg::WrittenBytes,
          .within = kg::WithinRoot,
@@ -675,6 +716,13 @@ TEST(GgmlSpatialTest, ActualTextEncoderUsesTypedIdsNeoxAndGqaWithoutTokenMetadat
     std::size_t rotations = 0, products = 0, softmax = 0, rows = 0;
     for (const auto& step : lowered->plan.steps) {
       rotations += step.implementation == "ggml.rope.neox";
+      if (step.implementation == kg::kNormRopeSectionsName) {
+        // The QK norms and their whole-head NEOX rotations, one section.
+        const auto sections = kg::CheckNormRopeSections(step.nodes.front());
+        ASSERT_TRUE(sections) << Failed(sections, &kg::KernelFailure::detail).value_or("");
+        EXPECT_TRUE(sections->neox);
+        rotations += sections->sections;
+      }
       products += step.implementation == "ggml.mul_mat.cublas";
       if (step.implementation == "ggml.mul_mat.cublas") {
         // Lowering alone does not plan the physical cuBLAS scratch. Validate
@@ -860,7 +908,9 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
       }
       EXPECT_EQ(count, 40U);
       EXPECT_EQ(peak, 64880640U);
-      EXPECT_EQ(launches, 7707U);
+      // The 36 spatial channel norms fold their layout copies, L2 norm,
+      // scale, gamma and SiLU into one launch each: 179 fewer than 7707.
+      EXPECT_EQ(launches, 7528U);
       EXPECT_EQ(lowered->extent, 3623878656ULL);
       if (mode == 2) {
         tuned_steps = plan->steps;

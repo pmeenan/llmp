@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1256,6 +1257,161 @@ TEST(PlannerPatternTest, NothingFusesWithoutAnImplementationOrWhenDisabled) {
     const StepPlan p = PlanOf(Finish(b), Registry());
     EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"rms_norm_mul"});
   }
+}
+
+// The spatial channel norm as components/image_blocks.cc emits it: the
+// pixels' channel rows, L2-normed, scaled, times gamma, SiLU or not, and
+// back. Packed [W, H, C] pixels (rank 3: an image extent of one drops).
+TEST(PlannerPatternTest, SpatialChannelNormTakesTheWholeLayoutRoundTrip) {
+  std::vector<ex::Implementation> everything = Everything();
+  for (const Op op : {Op::kL2Norm, Op::kCont, Op::kUnary})
+    everything.push_back(
+        Fake(std::string("t.") + std::string(ir::OpName(op)), Any(ir::Primitive(op))));
+  const ex::Registry r = Registry(everything);
+  everything.push_back(
+      Fake("t.spatial_channel_norm", Any(ir::Fused(FusedKind::kSpatialChannelNorm))));
+  const ex::Registry fused = Registry(std::move(everything));
+  struct Variant {
+    bool silu = false;
+    bool rows_read = false;  // the channel rows also a step output
+    float bias = 0.0F;       // a scale with a bias is not the norm's
+    std::array<std::uint8_t, 4> back{2, 0, 1, 3};
+  };
+  const auto graph = [](const Variant& v) {
+    ir::Builder b;
+    const TensorId x = b.Scale(b.Input(F32({4, 3, 8})), 2.0F);
+    const TensorId gamma = b.Weight(F32({8}), W(0));
+    const TensorId rows = b.Cont(b.Permute(x, {1, 2, 0, 3}));
+    TensorId out = b.Mul(b.Scale(b.L2Norm(rows, 1e-6F), std::sqrt(8.0F), v.bias), gamma);
+    if (v.silu) out = b.Unary(out, ir::UnaryFn::kSilu);
+    b.Output(b.Cont(b.Permute(out, v.back)));
+    if (v.rows_read) b.Output(rows);
+    return Finish(b);
+  };
+  for (const bool silu : {false, true}) {
+    const StepPlan p = PlanOf(graph({.silu = silu}), fused);
+    EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"spatial_channel_norm"}) << silu;
+    ASSERT_EQ(p.applied.size(), 1U);
+    EXPECT_EQ(p.applied[0].replaced.size(), silu ? 8U : 7U);
+    EXPECT_EQ(Keys(p.graph),
+              (std::vector{ir::Primitive(Op::kScale), ir::Fused(FusedKind::kSpatialChannelNorm)}));
+    const ir::Node& norm = p.graph.node(p.graph.producer(p.graph.outputs()[0]));
+    const auto params = norm.Params<ir::SpatialNormParams>();
+    EXPECT_EQ(params.eps, 1e-6F);
+    EXPECT_EQ(params.scale, std::sqrt(8.0F));
+    EXPECT_EQ(params.silu, silu);
+    EXPECT_EQ(p.graph.tensor(p.graph.outputs()[0]).shape(), ir::ShapeOf({4, 3, 8}));
+    // Without an implementation, or disabled: the primitives stay.
+    EXPECT_TRUE(Patterns(PlanOf(graph({.silu = silu}), r)).empty());
+    EXPECT_TRUE(Patterns(PlanOf(graph({.silu = silu}), fused, Disabling({"spatial_channel_norm"})))
+                    .empty());
+  }
+  EXPECT_TRUE(Patterns(PlanOf(graph({.rows_read = true}), fused)).empty());
+  EXPECT_TRUE(Patterns(PlanOf(graph({.bias = 1.0F}), fused)).empty());
+  EXPECT_TRUE(Patterns(PlanOf(graph({.back = {1, 2, 0, 3}}), fused)).empty());
+}
+
+// The multi-axis rotation as components/conditioning_blocks.cc RopeEmit
+// emits it: heads normed, times a BF16 weight widened to F32, then three
+// sections rotated by packed copies of their positions' views.
+TEST(PlannerPatternTest, RotatedSectionsTakeTheWeightWideningAndPositionCopies) {
+  std::vector<ex::Implementation> everything = Everything();
+  for (const Op op : {Op::kCont, Op::kConvert})
+    everything.push_back(
+        Fake(std::string("t.") + std::string(ir::OpName(op)), Any(ir::Primitive(op))));
+  const ex::Registry r = Registry(everything);
+  everything.push_back(
+      Fake("t.rms_norm_mul_rope_sections", Any(ir::Fused(FusedKind::kRmsNormMulRopeSections))));
+  const ex::Registry fused = Registry(std::move(everything));
+  Policy on{.enabled = {"rms_norm_mul_rope_sections"}};
+  Canonicalize(on);
+  struct Variant {
+    std::array<std::uint32_t, 3> dims{4, 2, 2};
+    float last_base = 50.0F;  // the third section's
+    bool copy_read = false;   // the second positions' copy also an output
+  };
+  const auto graph = [](const Variant& v) {
+    ir::Builder b;
+    const TensorId x = b.Scale(b.Input(F32({8, 2, 3})), 2.0F);
+    const TensorId aux = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3, 3})));
+    const TensorId w =
+        b.Convert(b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({8})), W(0)), Encoding::kF32);
+    TensorId out = b.Mul(b.RmsNorm(x, 1e-6F), w);
+    std::uint32_t offset = 0;
+    for (std::uint64_t i = 0; i < 3; ++i) {
+      const TensorId pos = b.Cont(b.View(aux, ir::ShapeOf({3}), {4, 12, 12, 12}, i * 12));
+      if (v.copy_read && i == 1) b.Output(pos);
+      out = b.Rope(out, pos, {},
+                   {.mode = ir::RopeMode::kNeox,
+                    .dims = v.dims.at(i),
+                    .offset = offset,
+                    .base = i == 2 ? v.last_base : 50.0F});
+      offset += v.dims.at(i);
+    }
+    b.Output(out);
+    return Finish(b);
+  };
+  {
+    const StepPlan p = PlanOf(graph({}), fused, on);
+    EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"rms_norm_mul_rope_sections"});
+    ASSERT_EQ(p.applied.size(), 1U);
+    EXPECT_EQ(p.applied[0].replaced.size(), 9U);  // norm, mul, widening, 3 copies, 3 rotations
+    EXPECT_EQ(Keys(p.graph), (std::vector{ir::Primitive(Op::kScale),
+                                          ir::Fused(FusedKind::kRmsNormMulRopeSections)}));
+    const ir::Node& n = p.graph.node(p.graph.producer(p.graph.outputs()[0]));
+    const auto params = n.Params<ir::RopeSectionsParams>();
+    EXPECT_EQ(params.sections, 3U);
+    EXPECT_EQ(params.dims, (std::array<std::uint32_t, 3>{4, 2, 2}));
+    EXPECT_EQ(params.mode, ir::RopeMode::kNeox);
+    EXPECT_EQ(params.base, 50.0F);
+    EXPECT_EQ(p.graph.tensor(n.src[1]).format.encoding, Encoding::kBF16);
+    for (std::size_t i = 2; i < 5; ++i) EXPECT_TRUE(p.graph.tensor(n.src[i]).is_view()) << i;
+  }
+  {
+    // A copy read elsewhere stays; the match reads it.
+    const StepPlan p = PlanOf(graph({.copy_read = true}), fused, on);
+    EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"rms_norm_mul_rope_sections"});
+    ASSERT_EQ(p.applied.size(), 1U);
+    EXPECT_EQ(p.applied[0].replaced.size(), 8U);
+  }
+  // Not enabled (it is opt-in), without an implementation, with sections
+  // that leave part of the head, or of different bases: no sections (the
+  // norm and weight still fuse).
+  const std::vector<std::string_view> norm_only{"rms_norm_mul"};
+  EXPECT_EQ(Patterns(PlanOf(graph({}), fused)), norm_only);
+  EXPECT_EQ(Patterns(PlanOf(graph({}), r, on)), norm_only);
+  EXPECT_EQ(Patterns(PlanOf(graph({.dims = {2, 2, 2}}), fused, on)), norm_only);
+  EXPECT_EQ(Patterns(PlanOf(graph({.last_base = 60.0F}), fused, on)), norm_only);
+}
+
+// A model whose policy disables rms_norm_mul_rope (Gemma 4's) keeps its
+// rotations primitive: the sectioned form, which would take the same
+// whole-head rotation, is opt-in, so it does not stand in.
+TEST(PlannerPatternTest, DisablingNormRopeIsNotUndoneByTheSectionedForm) {
+  std::vector<ex::Implementation> everything = Everything();
+  everything.push_back(
+      Fake("t.rms_norm_mul_rope_sections", Any(ir::Fused(FusedKind::kRmsNormMulRopeSections))));
+  const ex::Registry r = Registry(std::move(everything));
+  const auto graph = [] {
+    ir::Builder b;
+    const TensorId x = b.Input(F32({64, 2, 3}));
+    const TensorId pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+    const ir::RopeParams rope{.mode = ir::RopeMode::kNeox, .dims = 64, .base = 10000.0f};
+    b.Output(b.Rope(b.Mul(b.RmsNorm(x, 1e-6f), b.Weight(F32({64}), W(0))), pos, {}, rope));
+    return Finish(b);
+  };
+  // Both fused fakes take this graph.
+  EXPECT_EQ(Patterns(PlanOf(graph(), r)), std::vector<std::string_view>{"rms_norm_mul_rope"});
+  const StepPlan off = PlanOf(graph(), r, Disabling({"rms_norm_mul_rope"}));
+  EXPECT_EQ(Patterns(off), std::vector<std::string_view>{"rms_norm_mul"});
+  EXPECT_EQ(Keys(off.graph),
+            (std::vector{ir::Fused(FusedKind::kRmsNormMul), ir::Primitive(Op::kRope)}));
+  EXPECT_EQ(Names(off, r), (std::vector<std::string>{"t.rms_norm_mul", "t.rope"}));
+  // Only a policy that enables it (the image's) takes the sectioned form.
+  Policy image{.enabled = {"rms_norm_mul_rope_sections"}, .disabled = {"rms_norm_mul_rope"}};
+  Canonicalize(image);
+  EXPECT_EQ(Patterns(PlanOf(graph(), r, image)),
+            std::vector<std::string_view>{"rms_norm_mul_rope_sections"});
 }
 
 TEST(PlannerPatternTest, TheLongerChainComesFirst) {

@@ -1006,7 +1006,8 @@ in-run warming; ordinary counters first found the gap):
 
 Almost all of the shared path's speed comes from `BoundGraph::Run`'s
 run-time fusion (`kernels/ggml/executor.cc`, `b37f763f`): with it disabled
-the same generation takes 95.70 s (2.75× the shared path, 2.86× legacy).
+the same generation takes 95.70 s (2.75× the shared path, 2.86× legacy). Its matchers, their dependencies and their reference tests are recorded in
+[m36-runtime-fusion](../m36-runtime-fusion/README.md).
 
 Every change above keeps the new arm's pixels `f4006496…`. Quality, on
 the `86d0cc9c…` build (`ImageGenerationGpu.OrdinaryServerConsumesInstalledSourceAndRequests`
@@ -1015,8 +1016,22 @@ request; output `f4006496…`): PSNR 36.456 dB, luma SSIM 0.98944 against the
 retained diffusers reference `9de442f1…` ([compare.py](../qwen-image-native/compare.py),
 floors 32 dB / 0.98), passing.
 
+The first planner patterns that replace run-time matchers (group 2a,
+[m36-runtime-fusion](../m36-runtime-fusion/README.md)) change the pixels to
+`2ee8f010…`: the text encoder's QK norms and rotations now take the fused
+`llmp.image.rms_norm_mul_rope_sections` (the flow's and the decoder's
+fusions are the same kernels, now selected by the plan). Quality on that
+state (Spark A, 2026-10-15, the same test and request): PSNR 40.687 dB,
+luma SSIM 0.99418 against `9de442f1…`, passing. Speed: a two-block screen
+against the frozen legacy arm reads +2.03% (upper bound +2.30%; the
+pre-2a screen07 read +2.14%), and an ABBA A/B against `b29380a7` (its
+pixels `f4006496…`) reads −0.01% in both blocks (2a 36.292 s, `b29380a7`
+36.296 s): no measurable change. Peak memory is unchanged (+1.59 GiB over
+legacy, +1.63 GiB before).
+
 Status: NOT PASSED; no full gate was run. Raw records stay outside Git on
-`spark`: `~/scratch/m36-image-screen0{1,2,3,4,5,6,7}`, `~/scratch/m36-image-imgab02`, `~/scratch/m36-image-quality01`,
+`spark`: `~/scratch/m36-image-screen0{1,2,3,4,5,6,7,8}`, `~/scratch/m36-image-imgab02`, `~/scratch/m36-image-2aab01`,
+`~/scratch/m36-image-quality01`, `~/scratch/m36-image-plan/q2a`,
 `~/scratch/m36-image-nsys01` and `~/scratch/m36-image-nofuse01`.
 
 ## Provenance

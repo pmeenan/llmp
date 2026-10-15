@@ -11,6 +11,7 @@
 #include <cstring>
 #include <expected>
 #include <initializer_list>
+#include <span>
 #include <utility>
 
 #include "cutlass/version.h"
@@ -98,6 +99,8 @@ constinit std::array kTagQsaAttn = std::to_array("llmp.qsa.attn");
 constinit std::array kTagMmvqPrepared = std::to_array("llmp.mmvq.prepared");
 constinit std::array kTagQuantizeQ8 = std::to_array("llmp.q8_1");
 constinit std::array kTagVecQ = std::to_array("llmp.vecq");
+constinit std::array kTagSpatialChannelNorm = std::to_array("llmp.image.spatial_channel_norm");
+constinit std::array kTagNormRopeSections = std::to_array("llmp.image.rms_norm_mul_rope_sections");
 constinit std::array kTagDsv4Route = std::to_array("llmp.dsv4.route");
 constinit std::array kTagDsv4Combine = std::to_array("llmp.dsv4.combine");
 constinit std::array kTagDsv4WeightedReduce = std::to_array("llmp.dsv4.weighted_reduce");
@@ -206,7 +209,9 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return LlmpOp::kArgmax;
   }
-  const std::array<std::pair<const char*, LlmpOp>, 51> fused = {{
+  const std::array<std::pair<const char*, LlmpOp>, 53> fused = {{
+      {kTagSpatialChannelNorm.data(), LlmpOp::kSpatialChannelNorm},
+      {kTagNormRopeSections.data(), LlmpOp::kNormRopeSections},
       {kTagDsv4F16Copy.data(), LlmpOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), LlmpOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), LlmpOp::kDsv4WeightedReduce},
@@ -831,6 +836,110 @@ std::expected<void, KernelFailure> CheckHcNorm(const ggml_tensor* node) {
     return Rejected("an aligned F32 or BF16 output [width · hc, t]");
   }
   return CheckDense(node, {x, weight});
+}
+
+ggml_tensor* SpatialChannelNorm(ggml_context* context, ggml_tensor* x, ggml_tensor* gamma,
+                                float eps, float scale, bool silu) {
+  ggml_tensor* node = Custom(context, GGML_TYPE_F32, {x->ne[0], x->ne[1], x->ne[2], x->ne[3]},
+                             {x, gamma}, kTagSpatialChannelNorm.data());
+  const std::array<float, 2> reals{eps, scale};
+  const std::int32_t flag = silu ? 1 : 0;
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, reals.data(), sizeof(reals));
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + sizeof(reals), &flag,
+              sizeof(flag));
+  return node;
+}
+
+ggml_tensor* NormRopeSections(ggml_context* context, ggml_tensor* x, ggml_tensor* weight,
+                              std::span<ggml_tensor* const> positions, float eps, float base,
+                              bool neox, std::span<const std::uint32_t> dims) {
+  std::array<ggml_tensor*, GGML_MAX_SRC> args{};
+  args[0] = x;
+  args[1] = weight;
+  const std::size_t sections = std::min({positions.size(), dims.size(), std::size_t{3}});
+  for (std::size_t i = 0; i < sections; ++i) args[2 + i] = positions[i];
+  ggml_tensor* node = ggml_custom_4d(context, GGML_TYPE_F32, x->ne[0], x->ne[1], x->ne[2], x->ne[3],
+                                     args.data(), static_cast<int>(2 + sections), &LlmpCustomTag, 1,
+                                     kTagNormRopeSections.data());
+  const std::array<float, 2> reals{eps, base};
+  std::array<std::int32_t, 5> ints{neox ? 1 : 0, static_cast<std::int32_t>(sections)};
+  for (std::size_t i = 0; i < sections; ++i) ints[2 + i] = static_cast<std::int32_t>(dims[i]);
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, reals.data(), sizeof(reals));
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + sizeof(reals), ints.data(),
+              sizeof(ints));
+  return node;
+}
+
+std::expected<NormRopeSectionsArgs, KernelFailure> CheckNormRopeSections(const ggml_tensor* node) {
+  const std::int32_t sections = node != nullptr ? LlmpOpInt(node, 3) : 0;
+  if (sections < 1 || sections > 3) {
+    return Rejected("one to three rotated sections");
+  }
+  if (auto checked = CheckCustom(node, LlmpOp::kNormRopeSections, 2 + sections); !checked) {
+    return std::unexpected(checked.error());
+  }
+  const ggml_tensor* x = node->src[0];
+  const ggml_tensor* weight = node->src[1];
+  NormRopeSectionsArgs args{.eps = LlmpOpFloat(node, 0),
+                            .base = LlmpOpFloat(node, 1),
+                            .neox = LlmpOpInt(node, 2) == 1,
+                            .sections = static_cast<std::size_t>(sections)};
+  // RmsNormMulRope3dKernel: a block a row, a warp's lanes over a head's
+  // values, a pair a thread of 256 for the head's angles (D at most 512).
+  const std::int64_t dim = x->ne[0], heads = x->ne[1], rows = x->ne[2];
+  std::int64_t covered = 0;
+  for (std::int32_t i = 0; i < sections; ++i) {
+    const std::int32_t d = LlmpOpInt(node, 4 + i);
+    args.dims.at(static_cast<std::size_t>(i)) = d;
+    covered += d;
+    const ggml_tensor* pos = node->src[2 + i];
+    if (d <= 0 || d % 2 != 0 || pos->type != GGML_TYPE_I32 || !Shaped(pos, rows, 1, 1) ||
+        !Aligned(pos, sizeof(std::int32_t))) {
+      return Rejected("even section widths, each with I32 positions [rows]");
+    }
+    args.positions.at(static_cast<std::size_t>(i)) = pos;
+  }
+  if (!IsF32(x) || !IsF32(node) || !ggml_are_same_shape(node, x) || x->ne[3] != 1 || dim <= 0 ||
+      dim % 2 != 0 || dim > 512 || covered != dim || heads <= 0 || heads > 65535 || rows <= 0 ||
+      rows > 65535 || (weight->type != GGML_TYPE_F32 && weight->type != GGML_TYPE_BF16) ||
+      !Shaped(weight, dim, 1, 1) || LlmpOpInt(node, 2) < 0 || LlmpOpInt(node, 2) > 1 ||
+      !std::isfinite(args.eps) || !(args.eps >= 0.0f) || !std::isfinite(args.base) ||
+      !(args.base > 0.0f) || !Aligned(x, sizeof(float)) || !Aligned(node, sizeof(float)) ||
+      !Aligned(weight, ggml_type_size(weight->type))) {
+    return Rejected(
+        "F32 heads [D <= 512 even, heads, rows, 1] whose sections cover D, an F32 or BF16 [D] "
+        "weight, a finite eps and positive base");
+  }
+  if (auto dense = sections == 1 ? CheckDense(node, {x, weight, node->src[2]})
+                   : sections == 2
+                       ? CheckDense(node, {x, weight, node->src[2], node->src[3]})
+                       : CheckDense(node, {x, weight, node->src[2], node->src[3], node->src[4]});
+      !dense) {
+    return std::unexpected(dense.error());
+  }
+  return args;
+}
+
+std::expected<void, KernelFailure> CheckSpatialChannelNorm(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kSpatialChannelNorm, 2); !checked) {
+    return checked;
+  }
+  const ggml_tensor* x = node->src[0];
+  const ggml_tensor* gamma = node->src[1];
+  const float eps = LlmpOpFloat(node, 0);
+  const float scale = LlmpOpFloat(node, 1);
+  const std::int32_t silu = LlmpOpInt(node, 2);
+  // A thread a pixel over a 1-D grid of 256-thread blocks; the channel
+  // count an int.
+  const std::int64_t pixels = x->ne[0] * x->ne[1];
+  if (!IsF32(x) || !IsF32(node) || !ggml_are_same_shape(node, x) || x->ne[3] != 1 ||
+      !Vector(gamma, x->ne[2]) || pixels <= 0 || std::cmp_greater(x->ne[2], kInt32Max) ||
+      std::cmp_greater((pixels + 255) / 256, kInt32Max) || !(eps >= 1e-18f && eps <= 1e18f) ||
+      !std::isfinite(scale) || (silu != 0 && silu != 1) || !Aligned(x, sizeof(float)) ||
+      !Aligned(gamma, sizeof(float)) || !Aligned(node, sizeof(float))) {
+    return Rejected("F32 [W, H, C, 1], an F32 [C] gamma, an eps of 1e-18 to 1e18, a finite scale");
+  }
+  return CheckDense(node, {x, gamma});
 }
 
 std::expected<void, KernelFailure> CheckHcMix(const ggml_tensor* node) {

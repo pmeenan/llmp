@@ -2403,6 +2403,38 @@ TEST(ReferenceDecompositionTest, FusedKindsRunAsThePrimitivesTheyName) {
   // DeepSeek V4's shared expert has no gate.
   pair(b.Fused(ir::FusedKind::kMoeCombine, std::array{moe[0], ids, weights, shared, TensorId{}})[0],
        b.Add(b.ExpertReduce(moe[0], weights, ids, {}), shared));
+  // A head's norm and weight, then sections rotated by their own positions
+  // (the multi-axis rotation), in both pair modes.
+  const TensorId sx = in({8, 2, 3});
+  const TensorId sw = in({8});
+  const std::array spos{index({3}, {0, 5, 2}), index({3}, {7, 1, 1}), index({3}, {3, 3, 9})};
+  for (const ir::RopeMode mode : {ir::RopeMode::kNormal, ir::RopeMode::kNeox}) {
+    TensorId hand = b.Mul(b.RmsNorm(sx, 1e-6F), sw);
+    std::uint32_t offset = 0;
+    for (std::size_t i = 0; i < 3; ++i) {
+      const std::uint32_t dims = i == 0 ? 4 : 2;
+      hand = b.Rope(hand, spos.at(i), {},
+                    {.mode = mode, .dims = dims, .offset = offset, .base = 50.0F});
+      offset += dims;
+    }
+    pair(b.Fused(
+             ir::FusedKind::kRmsNormMulRopeSections, std::array{sx, sw, spos[0], spos[1], spos[2]},
+             ir::RopeSectionsParams{
+                 .eps = 1e-6F, .base = 50.0F, .mode = mode, .sections = 3, .dims = {4, 2, 2}})[0],
+         hand);
+  }
+  // The spatial channel norm over [W, H, C] pixels (rank 3: the trailing
+  // image extent of one drops), as components/image_blocks.cc emits it.
+  const TensorId pixels = in({4, 3, 5});
+  const TensorId cg = in({5});
+  for (const bool silu : {false, true}) {
+    TensorId rows = b.Mul(
+        b.Scale(b.L2Norm(b.Cont(b.Permute(pixels, {1, 2, 0, 3})), 1e-6F), std::sqrt(5.0F)), cg);
+    if (silu) rows = b.Unary(rows, ir::UnaryFn::kSilu);
+    pair(b.Fused(ir::FusedKind::kSpatialChannelNorm, std::array{pixels, cg},
+                 ir::SpatialNormParams{.eps = 1e-6F, .scale = std::sqrt(5.0F), .silu = silu})[0],
+         b.Cont(b.Permute(rows, {2, 0, 1, 3})));
+  }
   auto g = std::move(b).Finish();
   ASSERT_TRUE(g.has_value()) << g.error().detail;
   auto e = Executor::Create(*g);

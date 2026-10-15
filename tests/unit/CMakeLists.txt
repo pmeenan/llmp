@@ -1343,6 +1343,25 @@ llmp_gpu_gtest(image_timestep_gpu_test MODELS)
 add_executable(image_whole_vae_gpu_test image_whole_vae_gpu_test.cc)
 target_link_libraries(image_whole_vae_gpu_test PRIVATE llmp_engine llmp_components llmp_spec)
 llmp_gpu_gtest(image_whole_vae_gpu_test MODELS)
+
+# BoundGraph::Run's run-time fusions on synthetic flow/decoder graphs
+# against the reference executor (docs/experiments/m36-runtime-fusion).
+add_executable(image_fusion_gpu_test image_fusion_gpu_test.cc)
+target_include_directories(image_fusion_gpu_test SYSTEM PRIVATE
+    "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+target_link_libraries(image_fusion_gpu_test PRIVATE llmp_engine llmp_components llmp_spec
+                                                    llmp_reference_kernels llmp_ggml_kernels
+                                                    llmp_cuda_device_memory)
+llmp_gpu_gtest(image_fusion_gpu_test)
+
+# llmp.image.rms_norm_mul_rope_sections against the reference executor's
+# decomposition of its fused kind.
+add_executable(norm_rope_sections_gpu_test norm_rope_sections_gpu_test.cc)
+target_include_directories(norm_rope_sections_gpu_test SYSTEM PRIVATE
+    "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
+target_link_libraries(norm_rope_sections_gpu_test PRIVATE llmp_reference_kernels llmp_ir
+                                                          llmp_ggml_kernels llmp_cuda_device_memory)
+llmp_gpu_gtest(norm_rope_sections_gpu_test)
 endif()
 if(LLMP_CUDA)
   add_executable(components_models_gpu_test components_models_gpu_test.cc)

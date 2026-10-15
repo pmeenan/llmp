@@ -84,8 +84,10 @@
 #define LLMP_KERNELS_GGML_LLMP_OPS_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <span>
 
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
@@ -151,6 +153,8 @@ enum class LlmpOp : std::uint8_t {
   kSelectedMask,
   kPrefixOverwrite,
   kRoundedIndexScore,
+  kSpatialChannelNorm,
+  kNormRopeSections,
 };
 
 class LaunchContext;
@@ -672,6 +676,37 @@ std::expected<void, KernelFailure> CheckHcMixBf16(const ggml_tensor* node);
 std::expected<void, KernelFailure> RunHcPrep(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunHcLo(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunHcMixBf16(LaunchContext& launch, ggml_tensor* node);
+
+// The spatial channel norm (ir FusedKind::kSpatialChannelNorm), as
+// llmp.image.spatial_channel_norm: each pixel's channels of `x` F32 [W, H,
+// C, 1] (packed) L2-normed with `eps` the norm's floor, times `scale` and
+// `gamma` F32 [C], with `silu` SiLU, into F32 of x's shape, disjoint from
+// its operands (ops_ext.h SpatialChannelNormF32, a pixel a thread).
+ggml_tensor* SpatialChannelNorm(ggml_context* context, ggml_tensor* x, ggml_tensor* gamma,
+                                float eps, float scale, bool silu);
+std::expected<void, KernelFailure> CheckSpatialChannelNorm(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunSpatialChannelNorm(LaunchContext& launch, ggml_tensor* node);
+
+// A head's RMS norm times its weight, then 1 to 3 rotated sections (ir
+// FusedKind::kRmsNormMulRopeSections), as llmp.image.rms_norm_mul_rope_sections:
+// `x` F32 [D, heads, rows, 1] (packed, D even and at most 512), `weight`
+// F32 or BF16 [D], section i rotating dims[i] values from the sum of the
+// earlier ones by `positions[i]` I32 [rows], NEOX or normal pairs, at
+// `base`; the sections cover D. F32 of x's shape, disjoint from its
+// operands (ops_ext.h RmsNormMulRope3d, a block a row).
+ggml_tensor* NormRopeSections(ggml_context* context, ggml_tensor* x, ggml_tensor* weight,
+                              std::span<ggml_tensor* const> positions, float eps, float base,
+                              bool neox, std::span<const std::uint32_t> dims);
+struct NormRopeSectionsArgs {
+  float eps = 0.0f;
+  float base = 0.0f;
+  bool neox = false;
+  std::size_t sections = 0;
+  std::array<int, 3> dims{};
+  std::array<const ggml_tensor*, 3> positions{};
+};
+std::expected<NormRopeSectionsArgs, KernelFailure> CheckNormRopeSections(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunNormRopeSections(LaunchContext& launch, ggml_tensor* node);
 
 // And the fast path's routing:
 //

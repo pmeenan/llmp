@@ -32,6 +32,7 @@
 #include "engine/support.h"
 #include "expected_error.h"
 #include "kernels/ggml/step_program.h"
+#include "planner/policy.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "spec/image_spatial.h"
@@ -242,20 +243,23 @@ en::Status CheckProgram(const Lifetime& life, const kn::StepProgram& program) {
         program.outputs()[i].tensor != life.graph->graph().outputs()[i])
       return Error("image consumer output identity, shape or owner differs");
   if (!program.bound()) return {};
-  std::size_t products = 0, unary = 0, rope = 0, softmax = 0, glu = 0, norms = 0;
+  std::size_t products = 0, unary = 0, rope = 0, sectioned = 0, softmax = 0, glu = 0, norms = 0;
   if (program.bound()->size() > limit.launches) return Error("bounded selected plan inventory");
   for (std::size_t i = 0; i < program.bound()->size(); ++i) {
     const auto& name = program.bound()->at(i).name;
     products += name.starts_with("ggml.mul_mat.");
     unary += name == "ggml.unary";
     rope += name == "ggml.rope.ext";
+    // The QK norms with their three rotated sections (planner pattern
+    // rms_norm_mul_rope_sections), one launch each.
+    sectioned += name == "llmp.image.rms_norm_mul_rope_sections";
     softmax += name == "ggml.soft_max";
     glu += name == "ggml.swiglu";
     norms += name == "ggml.norm";
   }
   if (products != (life.flow ? 296U : (life.block ? 13U : 4U)) ||
-      unary != (life.flow ? 67U : (life.block ? 4U : 2U)) ||
-      rope != (life.flow ? 192U : (life.block ? 6U : 0U)) ||
+      unary != (life.flow ? 67U : (life.block ? 4U : 2U)) || rope != 0U ||
+      sectioned != (life.flow ? 64U : (life.block ? 2U : 0U)) ||
       softmax != (life.flow ? 32U : (life.block ? 1U : 0U)) ||
       glu != (life.flow ? 32U : (life.block ? 1U : 0U)) ||
       norms != (life.flow ? 65U : (life.block ? 2U : 0U)))
@@ -406,9 +410,12 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   const auto& table = owned.owner->backend();
   en::GraphBuildIO io{life.graph->graph(), life.graph->graph().inputs(),
                       life.graph->graph().outputs(), life.graph->weights()};
+  // The image's own planning policy, as the served pipeline plans it.
+  const auto policy = llmp::planner::ParsePolicy(sp::kImagePlanningPolicy);
+  if (!policy) return Error(policy.error());
   const auto build = [&](bool measuring) {
     return en::BuildComponentProgram(
-        io, table, {}, Addresses(life, measuring),
+        io, table, *policy, Addresses(life, measuring),
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = table.written,
          .within = table.within,

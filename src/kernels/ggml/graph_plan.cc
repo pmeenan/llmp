@@ -795,6 +795,12 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case LlmpOp::kHcLo:
             add(Operation::kUnary, kHcLoName, i, {node}, 1);
             break;
+          case LlmpOp::kSpatialChannelNorm:
+            add(Operation::kSpatialChannelNorm, kSpatialChannelNormName, i, {node}, 1);
+            break;
+          case LlmpOp::kNormRopeSections:
+            add(Operation::kRmsNormMulRopeSections, kNormRopeSectionsName, i, {node}, 1);
+            break;
           case LlmpOp::kHcMixBf16:
             add(Operation::kHcMix, kHcMixBf16Name, i, {node}, 1);
             break;
@@ -956,6 +962,10 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       default:
         return Rejected(std::format("{}: no implementation of this operation", Where(graph, i)));
     }
+  }
+  for (const ggml_tensor* t : keep) {
+    while (t != nullptr && t->view_src != nullptr) t = t->view_src;
+    if (t != nullptr && !std::ranges::contains(plan.kept, t)) plan.kept.push_back(t);
   }
   return plan;
 }
