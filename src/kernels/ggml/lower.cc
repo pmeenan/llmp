@@ -2830,7 +2830,9 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     const std::string_view name = registry_.at(s.implementation).name;
     if (name == kFlashAttnMmaWideName ||
         (name == "ggml.state_bank_attention" && s.nodes.size() == 1 &&
-         p_.node(s.nodes.front()).Params<ir::AttnParams>().sparse_any))
+         p_.node(s.nodes.front()).Params<ir::AttnParams>().sparse_any &&
+         (!p_.node(s.nodes.front()).source(3).valid() ||
+          p_.node(p_.producer(p_.node(s.nodes.front()).src[3])).key != ir::Primitive(Op::kConcat))))
       for (const NodeId id : s.nodes)
         for (const ggml_tensor* node : launched_.at(id.v)) wide_attention.insert(node);
     choices.fuse_norms = choices.fuse_norms || name == kRmsNormMulFused;
