@@ -1500,8 +1500,10 @@ each is checked against the design as M3.6 proceeds.
                   checkpoint/spill/kept restoration. PPL rises 4.598%/1.452%
                   in the two short samples; no quality threshold or speed
                   claim. [Evidence](experiments/m36-numerical-audit/q8-state.md).
-            Broader-context quality, all migrated families, D512 and
-            specialized/borrowed state remain open.
+            K1 extends it to every migrated LLM (D512, QSA, MQA, borrowed
+            and drafter state) with 6K–16K-token quality against F16;
+            Qwen3.8/DeepSeek at their full contexts remain open
+            ([report](experiments/m36-numerical-audit/q8-state.md#long-context-q8_0-vs-f16-quality-across-migrated-llms-k1)).
 - [x] **Shared slot lifecycle, one runner interface, one serving adapter
       per pipeline kind**, derived from state contracts; reconcile today's
       divergent copies (Gemma2's restore guards against Gemma3's).

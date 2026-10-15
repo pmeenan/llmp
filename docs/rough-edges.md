@@ -28,6 +28,29 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-056: Gemma 4 instruct checkpoints are not raw-text language models  (2026-10-15, status: worked-around)
+
+**Environment and finding.** Spark A; the approved Gemma 4 26B-A4B
+UD-Q4_K_M and 31B UD-Q4_K_XL GGUFs. Teacher-forced over 6,955 tokens of the
+corpus markdown as bare text after BOS (the literal route, as K1's first
+run did), llmpalooza gives perplexities of 17,494 and 18,521; llama.cpp
+v0.6.0 (`d812350`) `llama-perplexity -c 3072` on the same text gives 18,990
+and 25,131, while Gemma 3 4B QAT gives 29.79 there (llmpalooza 29.75).
+Both engines tokenize it to the same 6,956 IDs. It is not a scoring bug:
+the instruct model predicts badly outside its turn format (top-1 accuracy
+18%; it guesses `-` on a third of the rows). Scored as the model's own
+turn (`<|turn>user\n…<turn|>\n<|turn>model\n<|channel>thought\n<channel|>`
+before the same text, only the text's rows counted), the 26B's perplexity
+is 31.12 (top-1 45.7%), the same to the last bit in the frozen M3 runtime.
+
+**Workaround.** Quality comparisons of Gemma 4 score the passage in its turn
+format (`tools/k1_quality.py`'s `GEMMA4_TURN`). Raw-text Gemma 4 NLLs in
+earlier reports (the M3.6 runtime control's 9.79 and 9.57 nats, the 10.60 and
+11.19 corpus controls) remain valid engine-parity checks but say nothing
+about quality, and a small relative change there measures noise in a
+degenerate regime. See the
+[K1 report](experiments/m36-numerical-audit/q8-state.md#why-the-first-gemma-4-rows-were-withdrawn).
+
 ## RE-055: CUDA SoftMax needs an explicit empty-row result  (2026-10-13, status: worked-around)
 
 **Environment and finding.** Source inspection of the actual Spark B prepared

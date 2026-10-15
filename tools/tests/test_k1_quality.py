@@ -70,6 +70,36 @@ class TestK1Quality(unittest.TestCase):
         # Offset passage
         p2 = k1.passage(corpus, 100003, 15)
         self.assertEqual(len(p2), 15)
+        # A shorter passage is a prefix of a longer one from the same start.
+        big = "".join(f"line {i} of the corpus\n" for i in range(20000))
+        long = k1.passage(big, 100003, 5000)
+        self.assertEqual(k1.passage(big, 100003, 700), long[:700])
+        self.assertTrue(big[big.index(long) - 1] == "\n")
+        with self.assertRaises(ValueError):
+            k1.passage(big, 1, k1.MAX_PASSAGE_CHARS + 1)
+
+    def test_gemma4_scored_in_its_turn_format(self):
+        for name in ("gemma26", "gemma26-assistant", "gemma31", "gemma31-assistant"):
+            self.assertEqual(k1.FAMILIES[name].prefix, k1.GEMMA4_TURN)
+            self.assertTrue(k1.GEMMA4_TURN.endswith("<channel|>"))
+        for name in ("gemma2", "gemma3", "qwen38", "qwen38-gguf", "deepseek"):
+            self.assertEqual(k1.FAMILIES[name].prefix, "")
+
+    def test_score_rows_skip_the_prefix(self):
+        rows = [None] + [{str(10 + i): {"logprob": -0.5 * i}} for i in range(1, 6)]
+        ids, scores = k1.score_rows(rows, 1)
+        self.assertEqual(ids, [11, 12, 13, 14, 15])
+        ids, scores = k1.score_rows(rows, 3)
+        self.assertEqual(ids, [13, 14, 15])
+        self.assertEqual(scores, [-1.5, -2.0, -2.5])
+        with self.assertRaises(RuntimeError):
+            k1.score_rows([None, {"1": {"logprob": 0}, "2": {"logprob": -1}}], 1)
+
+    def test_combine_refuses_different_passages(self):
+        arm = {"prompt_sha256": "a", "ids_sha256": "b"}
+        with self.assertRaises(RuntimeError):
+            k1.combine(k1.FAMILIES["gemma2"], pathlib.Path("/x"), arm,
+                       {"prompt_sha256": "a", "ids_sha256": "c"})
 
     def test_compute_metrics(self):
         # 3000 tokens: overall, early (first 1024), late (last 2048)
@@ -91,6 +121,9 @@ class TestK1Quality(unittest.TestCase):
         expected_late_nll = (72 * 1.0 + 1976 * 2.0) / 2048
         self.assertAlmostEqual(metrics["late_nll"], expected_late_nll)
         self.assertAlmostEqual(metrics["late_ppl"], math.exp(expected_late_nll))
+
+        self.assertEqual([b["tokens"] for b in metrics["buckets"]], [2048, 952])
+        self.assertAlmostEqual(metrics["buckets"][1]["nll"], 2.0)
 
         # Overall: sum = 1024 * (-1.0) + 1976 * (-2.0) = -1024 - 3952 = -4976
         expected_overall_nll = (1024 * 1.0 + 1976 * 2.0) / 3000
@@ -126,8 +159,9 @@ class TestK1Quality(unittest.TestCase):
                     mock_resp.status = 200
 
                     # 1500 tokens
-                    logprobs = [None] + [{"t": {"logprob": -1.5}} for _ in range(1500)]
-                    resp_data = json.dumps({"choices": [{"prompt_logprobs": logprobs}]}).encode()
+                    logprobs = [None] + [{"7": {"logprob": -1.5}} for _ in range(1500)]
+                    resp_data = json.dumps({"choices": [{"prompt_logprobs": logprobs}],
+                                            "usage": {"prompt_tokens": 1501}}).encode()
                     mock_resp.read.return_value = resp_data
                     mock_conn.getresponse.return_value = mock_resp
                     return mock_conn
@@ -158,6 +192,10 @@ class TestK1Quality(unittest.TestCase):
 
                     self.assertIsNone(record["error"])
                     self.assertEqual(record["tokens"], 1500)
+                    self.assertEqual(record["prefix_tokens"], 1)
+                    self.assertEqual(record["delta"]["max_abs_logprob_diff"], 0.0)
+                    self.assertTrue((out / "gemma2-k1-f16.json").exists())
+                    self.assertTrue((out / "gemma2-k1-q8_0.json").exists())
                     self.assertAlmostEqual(record["f16"]["overall_nll"], 1.5)
                     self.assertAlmostEqual(record["q8_0"]["overall_nll"], 1.5)
                     self.assertAlmostEqual(record["delta"]["overall_ppl_change_pct"], 0.0)
@@ -171,6 +209,16 @@ class TestK1Quality(unittest.TestCase):
                     output = stdout.getvalue()
                     self.assertIn('"family": "gemma2"', output)
                     self.assertIn("| gemma2 | 1500 |", output)
+
+                    # The q8_0 arm alone reuses the saved f16 arm's passage.
+                    (out / "gemma2-k1-q8_0.json").unlink()
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        again = k1.evaluate_family(
+                            family=family, runtime=fake_runtime, share=share, corpus=corpus,
+                            out=out, port=18114, runtime_env={}, timeout=10.0,
+                            keep_data=False, arms=("q8_0",))
+                    self.assertIsNone(again["error"])
+                    self.assertEqual(again["prompt_sha256"], record["prompt_sha256"])
 
 
 if __name__ == "__main__":

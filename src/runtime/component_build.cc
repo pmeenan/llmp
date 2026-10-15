@@ -1202,10 +1202,15 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       held->cublas.reset();
     };
     parts.config.launch =
-        [&node, held]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
+        [&node, held,
+         deepseek_serving]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
       auto made =
           held->backend->Launch({.base = node.pool().base, .size = base::Bytes(node.pool().bytes)});
-      if (!made) return made;
+      if (!made || !deepseek_serving) return made;
+      // Lanes take their pools from the shared pool's end, so the stream's
+      // own scratch shrinks by kMaxLanes of them. Only DeepSeek's serving
+      // plans run lanes (wave regions); every other model's pool is sized to
+      // its stream's scratch alone, and its regions run on the stream.
       auto* ggml_launch = static_cast<kernels::ggml::GgmlStepLaunch*>(made->get());
       constexpr std::uint64_t kLaneScratchBytes = 4ULL * 1024ULL * 1024ULL;
       const std::uint64_t lane_bytes =

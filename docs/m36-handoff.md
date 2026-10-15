@@ -29,9 +29,13 @@ it overstated. Corrections, in force until the closeout lands:
   gates ran on v0 artifacts and predate later shared-engine changes.
 - Not yet evidenced: the full M3 swap table on the component engine, real
   MLX import and admission, v1 serving of every family, a review of the
-  `agy/*` commits, a full Spark check set after main09, and a sane Gemma4
-  F16 baseline in the K1 report (PPL 17,494/18,521 suggests a broken
-  scoring path).
+  `agy/*` commits and a full Spark check set after main09. The K1 report's
+  Gemma4 rows were rerun in the model's turn format (bare-text Gemma 4
+  instruct perplexity is ~18K in llama.cpp too, RE-056), with longer
+  contexts and per-layer Q8 coverage
+  ([q8-state.md](experiments/m36-numerical-audit/q8-state.md)); that rerun
+  also fixed long-prompt prefill on every non-DeepSeek component model
+  (lanes carved from the shared pool since `a0e874cf`).
 - The closeout re-gates every family on the final binary.
 - **G4d (legacy DeepSeek V4/DSpark runner deletion), in review on `m36-g4d`.**
   - Step 1 below (the `deepseek` C2 decode gate) is resolved by `495a1cdb`. The

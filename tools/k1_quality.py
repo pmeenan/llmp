@@ -57,13 +57,27 @@ def _qwen_files() -> str:
     )
 
 
+# Gemma 4's instruction-tuned checkpoints are not raw-text language models:
+# scored as bare text after BOS (as llama.cpp's llama-perplexity does), both
+# engines put most of the mass on control tokens and give perplexities in the
+# tens of thousands. The passage is therefore scored as the model's own turn
+# of its chat format (enable_thinking off: an empty thought channel), and only
+# the passage's rows count. The wrapper ends with a special token, so the
+# passage's tokenization does not depend on it.
+GEMMA4_TURN = (
+    "<|turn>user\nWrite the next part of the project documentation.<turn|>\n"
+    "<|turn>model\n<|channel>thought\n<channel|>"
+)
+
+
 @dataclasses.dataclass(frozen=True)
 class Family:
     name: str
     model: str
     store: str
     models_toml: str
-    prompt_chars: int
+    target_tokens: int  # the passage's tokens to score, at most
+    prefix: str = ""  # text before the passage, not scored (chat-format wrapper)
 
 
 FAMILIES: dict[str, Family] = {
@@ -75,15 +89,15 @@ FAMILIES: dict[str, Family] = {
             "m3-artifacts",
             f'[models.gemma2]\nartifact = "{GEMMA2}"\ncontext = 8192\nprefill_chunk = 128\n'
             "max_slots = 2\n",
-            prompt_chars=26000,
+            target_tokens=8000,
         ),
         Family(
             "gemma3",
             "gemma3",
             "m3-artifacts",
-            f'[models.gemma3]\nartifact = "{GEMMA3}"\ncontext = 4096\nprefill_chunk = 128\n'
-            "max_slots = 2\n",
-            prompt_chars=11500,
+            f'[models.gemma3]\nartifact = "{GEMMA3}"\ncontext = 8448\nprefill_chunk = 128\n'
+            "max_slots = 1\n",
+            target_tokens=8000,
         ),
         Family(
             "gemma26",
@@ -91,7 +105,8 @@ FAMILIES: dict[str, Family] = {
             "m3-artifacts",
             f'[models.gemma26]\nartifact = "{GEMMA26}"\ncontext = 8192\nprefill_chunk = 1024\n'
             "max_slots = 4\n",
-            prompt_chars=26000,
+            target_tokens=8000,
+            prefix=GEMMA4_TURN,
         ),
         Family(
             "gemma26-assistant",
@@ -99,7 +114,8 @@ FAMILIES: dict[str, Family] = {
             "m3-artifacts",
             f'[models.gemma26]\nartifact = "{GEMMA26}"\ndrafter = "{GEMMA26_ASSISTANT}"\n'
             "speculation = true\ncontext = 8192\nprefill_chunk = 1024\nmax_slots = 4\n",
-            prompt_chars=26000,
+            target_tokens=1024,
+            prefix=GEMMA4_TURN,
         ),
         Family(
             "gemma31",
@@ -107,7 +123,8 @@ FAMILIES: dict[str, Family] = {
             "m3-artifacts",
             f'[models.gemma31]\nartifact = "{GEMMA31}"\ncontext = 8192\nprefill_chunk = 256\n'
             "max_slots = 4\n",
-            prompt_chars=26000,
+            target_tokens=8000,
+            prefix=GEMMA4_TURN,
         ),
         Family(
             "gemma31-assistant",
@@ -115,7 +132,8 @@ FAMILIES: dict[str, Family] = {
             "m3-artifacts",
             f'[models.gemma31]\nartifact = "{GEMMA31}"\ndrafter = "{GEMMA31_ASSISTANT}"\n'
             "speculation = true\ncontext = 8192\nprefill_chunk = 256\nmax_slots = 4\n",
-            prompt_chars=26000,
+            target_tokens=1024,
+            prefix=GEMMA4_TURN,
         ),
         Family(
             "qwen38",
@@ -124,7 +142,7 @@ FAMILIES: dict[str, Family] = {
             f'[models."qwen3.8"]\nartifact = "{QWEN}"\ndrafter = "{QWEN_MTP}"\nspeculation = true\n'
             "draft_vocab = 65536\ndepth_cost_ratio = 1.16\ncontext = 33792\nprefill_chunk = 4096\n"
             "max_slots = 4\n" + _qwen_files(),
-            prompt_chars=30000,
+            target_tokens=16000,
         ),
         Family(
             "qwen38-gguf",
@@ -132,7 +150,7 @@ FAMILIES: dict[str, Family] = {
             "qgguf-artifacts",
             f'[models."qwen3.8-gguf"]\nartifact = "{QWEN_GGUF}"\ncontext = 33792\n'
             "prefill_chunk = 4096\nmax_slots = 4\n" + _qwen_files(),
-            prompt_chars=30000,
+            target_tokens=16000,
         ),
         Family(
             "deepseek",
@@ -140,7 +158,7 @@ FAMILIES: dict[str, Family] = {
             "m3-artifacts",
             f'[models.deepseek]\nartifact = "{DSV4}"\ndrafter = "{DSPARK}"\nspeculation = true\n'
             'wave_form = "plain"\ncontext = 262144\nprefill_chunk = 4096\nmax_slots = 4\n',
-            prompt_chars=30000,
+            target_tokens=16000,
         ),
     )
 }
@@ -169,9 +187,18 @@ def load_corpus(path: pathlib.Path) -> str:
     return data.decode("utf-8")
 
 
+MAX_PASSAGE_CHARS = 200_000
+
+
 def passage(corpus: str, index: int, chars: int) -> str:
-    """The index-th passage: `chars` characters from a line start, spread over the corpus."""
-    span = len(corpus) - chars - 1
+    """The index-th passage's first `chars` characters, from a line start.
+
+    The start does not depend on `chars`, so a shorter passage is a prefix of
+    a longer one with the same index.
+    """
+    if chars > MAX_PASSAGE_CHARS:
+        raise ValueError(f"a passage of at most {MAX_PASSAGE_CHARS} characters")
+    span = len(corpus) - MAX_PASSAGE_CHARS - 1
     if span <= 0:
         return corpus[:chars]
     start = (index * 7919 * 211) % span
@@ -359,23 +386,30 @@ def stream_chat(port: int, body: dict) -> dict:
     return record
 
 
+BUCKET_TOKENS = 2048
+
+
+def nll_ppl(scores: list[float]) -> tuple[float, float]:
+    nll = -sum(scores) / len(scores)
+    return nll, math.exp(nll)
+
+
 def compute_metrics(scores: list[float]) -> dict:
     n = len(scores)
     if n == 0:
         raise ValueError("no scored tokens")
 
-    overall_nll = -sum(scores) / n
-    overall_ppl = math.exp(overall_nll)
-
+    overall_nll, overall_ppl = nll_ppl(scores)
     early_n = min(1024, n)
-    early_scores = scores[:early_n]
-    early_nll = -sum(early_scores) / early_n
-    early_ppl = math.exp(early_nll)
-
+    early_nll, early_ppl = nll_ppl(scores[:early_n])
     late_n = min(2048, n)
-    late_scores = scores[n - late_n :]
-    late_nll = -sum(late_scores) / late_n
-    late_ppl = math.exp(late_nll)
+    late_nll, late_ppl = nll_ppl(scores[n - late_n :])
+    # Depth buckets: passage positions [i, i + BUCKET_TOKENS).
+    buckets = [
+        {"first": i, "tokens": len(scores[i : i + BUCKET_TOKENS]),
+         "nll": nll_ppl(scores[i : i + BUCKET_TOKENS])[0]}
+        for i in range(0, n, BUCKET_TOKENS)
+    ]
 
     return {
         "tokens": n,
@@ -387,7 +421,64 @@ def compute_metrics(scores: list[float]) -> dict:
         "late_tokens": late_n,
         "late_nll": late_nll,
         "late_ppl": late_ppl,
+        "buckets": buckets,
     }
+
+
+def post_json(port: int, path: str, body: dict) -> dict:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
+    try:
+        conn.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
+        response = conn.getresponse()
+        data = response.read()
+    finally:
+        conn.close()
+    if response.status != 200:
+        raise RuntimeError(f"{path}: HTTP {response.status}: {data[:400]!r}")
+    return json.loads(data)
+
+
+def prompt_tokens(port: int, model: str, text: str) -> int:
+    """The prompt's token count (BOS included), by a one-token completion."""
+    body = {"model": model, "prompt": text, "max_tokens": 1, "temperature": 0}
+    return int(post_json(port, "/v1/completions", body)["usage"]["prompt_tokens"])
+
+
+def fit_passage(port: int, family: Family, corpus: str, prefix_tokens: int) -> str:
+    """The longest passage (index 100003) whose tokens fit target_tokens.
+
+    Sized from the server's own token counts (a cheap prefill each), so every
+    tokenizer gets its own length and the context is never exceeded.
+    """
+    chars = family.target_tokens * 3
+    best = ""
+    for _ in range(8):
+        text = passage(corpus, 100003, chars)
+        tokens = prompt_tokens(port, family.model, family.prefix + text) - prefix_tokens
+        if tokens <= family.target_tokens:
+            best = text if len(text) > len(best) else best
+            if tokens >= family.target_tokens * 0.98:
+                break
+        chars = int(len(text) * family.target_tokens * 0.99 / max(tokens, 1))
+    if not best:
+        raise RuntimeError("no passage fits the target token count")
+    return best
+
+
+def score_rows(rows: list, first: int) -> tuple[list[int], list[float]]:
+    """The scored targets' IDs and log-probabilities from row `first` on.
+
+    With prompt_logprobs = 0 each row holds its own target only (keyed by ID).
+    """
+    ids: list[int] = []
+    scores: list[float] = []
+    for row in rows[max(first, 1) :]:
+        if not row or len(row) != 1:
+            raise RuntimeError("a scored row without exactly its target")
+        token, value = next(iter(row.items()))
+        ids.append(int(token))
+        scores.append(float(value["logprob"]))
+    return ids, scores
 
 
 def evaluate_arm(
@@ -401,7 +492,9 @@ def evaluate_arm(
     runtime_env: dict[str, str],
     timeout: float,
     keep_data: bool,
+    text: str | None = None,
 ) -> dict:
+    """One arm; `text` is the passage the other arm scored (None: fit it here)."""
     name = f"{family.name}-k1-{encoding}"
     run_dir = fresh_run_dir(out, name)
     config = run_dir / "node.toml"
@@ -419,39 +512,38 @@ def evaluate_arm(
         service = Service(runtime, config, run_dir, port, runtime_env)
         record["ready_s"] = service.wait_ready(timeout)
 
-        # 1. Long-context completions evaluation
-        text = passage(corpus, 100003, family.prompt_chars)
+        # 1. Teacher-forced scoring of the passage (behind its chat-format
+        # wrapper, if any; only the passage's rows count).
+        prefix_tokens = prompt_tokens(port, family.model, family.prefix) if family.prefix else 1
+        if text is None:
+            text = fit_passage(port, family, corpus, prefix_tokens)
+        record["prefix_tokens"] = prefix_tokens
+        record["prefix_sha256"] = hashlib.sha256(family.prefix.encode()).hexdigest()
         record["prompt_chars"] = len(text)
         record["prompt_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+        record["passage"] = text
 
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
-        req_body = json.dumps(
+        started = time.monotonic()
+        resp_json = post_json(
+            port,
+            "/v1/completions",
             {
                 "model": family.model,
-                "prompt": text,
+                "prompt": family.prefix + text,
                 "max_tokens": 0,
                 "prompt_logprobs": 0,
-                "echo": True,
-                "logprobs": 0,
                 "return_tokens_as_token_ids": True,
-            }
+            },
         )
-        conn.request("POST", "/v1/completions", req_body, {"Content-Type": "application/json"})
-        response = conn.getresponse()
-        resp_bytes = response.read()
-        conn.close()
-
-        if response.status != 200:
-            raise RuntimeError(f"scoring: HTTP {response.status}: {resp_bytes[:400]!r}")
-
-        resp_json = json.loads(resp_bytes)
+        record["score_s"] = time.monotonic() - started
         rows = resp_json["choices"][0]["prompt_logprobs"]
-        scores = [next(iter(row.values()))["logprob"] for row in rows if row]
+        record["prompt_tokens"] = len(rows)
+        ids, scores = score_rows(rows, prefix_tokens)
         if not scores:
             raise RuntimeError("scoring: 0 tokens scored in prompt_logprobs")
-
-        metrics = compute_metrics(scores)
-        record.update(metrics)
+        record["ids_sha256"] = hashlib.sha256(json.dumps(ids).encode()).hexdigest()
+        record["scores"] = scores
+        record.update(compute_metrics(scores))
 
         # 2. Greedy stream_chat validation
         chat_body = {
@@ -481,6 +573,47 @@ def evaluate_arm(
     return record
 
 
+def arm_path(out: pathlib.Path, family: Family, encoding: str) -> pathlib.Path:
+    return out / f"{family.name}-k1-{encoding}.json"
+
+
+def combine(family: Family, runtime: pathlib.Path, f16: dict, q8_0: dict) -> dict:
+    if f16["prompt_sha256"] != q8_0["prompt_sha256"] or f16["ids_sha256"] != q8_0["ids_sha256"]:
+        raise RuntimeError("the arms scored different passages")
+    delta = {}
+    for part in ("overall", "early", "late"):
+        delta[f"{part}_nll_delta"] = q8_0[f"{part}_nll"] - f16[f"{part}_nll"]
+        delta[f"{part}_ppl_change_pct"] = (
+            (q8_0[f"{part}_ppl"] - f16[f"{part}_ppl"]) / f16[f"{part}_ppl"] * 100.0
+        )
+    delta["bucket_nll_delta"] = [
+        {"first": a["first"], "tokens": a["tokens"], "nll_delta": b["nll"] - a["nll"]}
+        for a, b in zip(f16["buckets"], q8_0["buckets"])
+    ]
+    pairs = list(zip(f16["scores"], q8_0["scores"]))
+    delta["mean_abs_logprob_diff"] = sum(abs(a - b) for a, b in pairs) / len(pairs)
+    delta["max_abs_logprob_diff"] = max(abs(a - b) for a, b in pairs)
+    slim = {k: v for k, v in f16.items() if k not in ("scores", "passage")}
+    slim_q8 = {k: v for k, v in q8_0.items() if k not in ("scores", "passage")}
+    return {
+        "format": "llmp-k1-quality/2",
+        "family": family.name,
+        "model": family.model,
+        "runtime": str(runtime),
+        "runtime_sha256": sha256_file(runtime),
+        "prefix_tokens": f16["prefix_tokens"],
+        "prompt_chars": f16["prompt_chars"],
+        "prompt_sha256": f16["prompt_sha256"],
+        "prompt_tokens": f16["prompt_tokens"],
+        "tokens": f16["tokens"],
+        "f16": slim,
+        "q8_0": slim_q8,
+        "delta": delta,
+        "facts": host_facts(),
+        "error": None,
+    }
+
+
 def evaluate_family(
     family: Family,
     runtime: pathlib.Path,
@@ -491,82 +624,57 @@ def evaluate_family(
     runtime_env: dict[str, str],
     timeout: float,
     keep_data: bool,
+    arms: tuple[str, ...] = ("f16", "q8_0"),
 ) -> dict:
-    f16 = evaluate_arm(
-        family, "f16", runtime, share, corpus, out, port, runtime_env, timeout, keep_data
-    )
-    if f16.get("error"):
-        print(f"ERROR: {family.name} arm f16 failed: {f16['error']}", file=sys.stderr)
-        return {"family": family.name, "error": f"f16: {f16['error']}", "f16": f16}
+    """Runs the named arms (each saved alone) and combines both when present.
 
-    q8_0 = evaluate_arm(
-        family, "q8_0", runtime, share, corpus, out, port, runtime_env, timeout, keep_data
-    )
-    if q8_0.get("error"):
-        print(f"ERROR: {family.name} arm q8_0 failed: {q8_0['error']}", file=sys.stderr)
-        return {
-            "family": family.name,
-            "error": f"q8_0: {q8_0['error']}",
-            "f16": f16,
-            "q8_0": q8_0,
-        }
+    An arm not named is read from its saved file, so the two arms of a long
+    family can run as separately supervised jobs; an arm scores its saved
+    twin's passage when there is one.
+    """
+    results: dict[str, dict] = {}
+    for encoding in ("f16", "q8_0"):
+        path = arm_path(out, family, encoding)
+        if encoding not in arms:
+            if path.exists():
+                results[encoding] = json.loads(path.read_text())
+            continue
+        twin = "q8_0" if encoding == "f16" else "f16"
+        other = results.get(twin) or (
+            json.loads(arm_path(out, family, twin).read_text())
+            if arm_path(out, family, twin).exists()
+            else None
+        )
+        text = other.get("passage") if other and not other.get("error") else None
+        record = evaluate_arm(
+            family, encoding, runtime, share, corpus, out, port, runtime_env, timeout, keep_data,
+            text,
+        )
+        path.write_text(json.dumps(record) + "\n")
+        if record.get("error"):
+            print(f"ERROR: {family.name} arm {encoding} failed: {record['error']}", file=sys.stderr)
+            return {"family": family.name, "error": f"{encoding}: {record['error']}"}
+        results[encoding] = record
+        print(
+            json.dumps({"family": family.name, "encoding": encoding, "tokens": record["tokens"],
+                        "overall_ppl": round(record["overall_ppl"], 4),
+                        "score_s": round(record["score_s"], 1)}),
+            flush=True,
+        )
+    if "f16" not in results or "q8_0" not in results:
+        return {"family": family.name, "error": None, "partial": sorted(results)}
 
-    overall_nll_delta = q8_0["overall_nll"] - f16["overall_nll"]
-    overall_ppl_change_pct = (
-        (q8_0["overall_ppl"] - f16["overall_ppl"]) / f16["overall_ppl"] * 100.0
-    )
-
-    early_nll_delta = q8_0["early_nll"] - f16["early_nll"]
-    early_ppl_change_pct = (q8_0["early_ppl"] - f16["early_ppl"]) / f16["early_ppl"] * 100.0
-
-    late_nll_delta = q8_0["late_nll"] - f16["late_nll"]
-    late_ppl_change_pct = (q8_0["late_ppl"] - f16["late_ppl"]) / f16["late_ppl"] * 100.0
-
-    record = {
-        "format": "llmp-k1-quality/1",
-        "family": family.name,
-        "model": family.model,
-        "runtime": str(runtime),
-        "runtime_sha256": sha256_file(runtime),
-        "prompt_chars": f16["prompt_chars"],
-        "prompt_sha256": f16["prompt_sha256"],
-        "tokens": f16["tokens"],
-        "f16": f16,
-        "q8_0": q8_0,
-        "delta": {
-            "overall_nll_delta": overall_nll_delta,
-            "overall_ppl_change_pct": overall_ppl_change_pct,
-            "early_nll_delta": early_nll_delta,
-            "early_ppl_change_pct": early_ppl_change_pct,
-            "late_nll_delta": late_nll_delta,
-            "late_ppl_change_pct": late_ppl_change_pct,
-        },
-        "facts": host_facts(),
-        "error": None,
-    }
-
-    out_file = out / f"{family.name}-k1.json"
-    out_file.write_text(json.dumps(record, indent=2) + "\n")
-
+    record = combine(family, runtime, results["f16"], results["q8_0"])
+    (out / f"{family.name}-k1.json").write_text(json.dumps(record, indent=2) + "\n")
+    f16, q8_0, d = record["f16"], record["q8_0"], record["delta"]
     chat_ok = (
         f16.get("chat_reply_sha256") is not None and q8_0.get("chat_reply_sha256") is not None
     )
-    summary = {
-        "family": family.name,
-        "tokens": f16["tokens"],
-        "f16_overall_ppl": round(f16["overall_ppl"], 4),
-        "q8_0_overall_ppl": round(q8_0["overall_ppl"], 4),
-        "overall_ppl_change_pct": round(overall_ppl_change_pct, 4),
-        "early_ppl_change_pct": round(early_ppl_change_pct, 4),
-        "late_ppl_change_pct": round(late_ppl_change_pct, 4),
-        "chat_verified": chat_ok,
-    }
-    print(json.dumps(summary), flush=True)
-
-    chat_pass = "PASS" if chat_ok else "FAIL"
+    chat = "same" if f16.get("chat_reply_sha256") == q8_0.get("chat_reply_sha256") else "differs"
     print(
         f"| {family.name} | {f16['tokens']} | {f16['overall_ppl']:.4f} | {q8_0['overall_ppl']:.4f} | "
-        f"{overall_ppl_change_pct:+.3f}% | {early_ppl_change_pct:+.3f}% | {late_ppl_change_pct:+.3f}% | {chat_pass} |",
+        f"{d['overall_ppl_change_pct']:+.3f}% | {d['early_ppl_change_pct']:+.3f}% | "
+        f"{d['late_ppl_change_pct']:+.3f}% | {'PASS' if chat_ok else 'FAIL'} ({chat}) |",
         flush=True,
     )
     return record
@@ -575,7 +683,7 @@ def evaluate_family(
 def print_table_header() -> None:
     print(
         "| Family | Scored Tokens | F16 Overall PPL | Q8_0 Overall PPL | Overall PPL Δ | "
-        "Early PPL Δ (0-1K) | Late PPL Δ (last 2K) | Chat Verified |",
+        "Early PPL Δ (0-1K) | Late PPL Δ (last 2K) | Chat |",
         flush=True,
     )
     print(
@@ -622,6 +730,15 @@ def main(argv: list[str] | None = None) -> int:
         default=900.0,
         help="timeout in seconds for waiting until runtime is ready (default 900.0)",
     )
+    parser.add_argument(
+        "--arm",
+        choices=("both", "f16", "q8_0"),
+        default="both",
+        help="run one arm only (the other is read from its saved file when present)",
+    )
+    parser.add_argument(
+        "--target-tokens", type=int, help="override the family's passage token budget"
+    )
 
     args = parser.parse_args(argv)
 
@@ -638,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"runtime binary not found: {runtime}")
 
     runtime_env = parse_runtime_env(args.runtime_env)
+    arms = ("f16", "q8_0") if args.arm == "both" else (args.arm,)
 
     target_families: list[str]
     if args.family == "all":
@@ -667,6 +785,8 @@ def main(argv: list[str] | None = None) -> int:
     has_error = False
     for fam_name in target_families:
         family = FAMILIES[fam_name]
+        if args.target_tokens:
+            family = dataclasses.replace(family, target_tokens=args.target_tokens)
         res = evaluate_family(
             family,
             runtime,
@@ -677,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime_env,
             args.timeout,
             args.keep_data,
+            arms,
         )
         if res.get("error"):
             has_error = True
