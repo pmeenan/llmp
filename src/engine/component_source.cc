@@ -539,7 +539,18 @@ std::expected<std::unique_ptr<kernels::StepProgram>, std::string> ComponentStepS
   }
   const auto state_spans = StateSpans(shape, addresses);
   planner::Policy step_policy = policy_;
-  if (shape.rows() > (shape.segments.size() == 1 ? 8U : 16U)) {
+  if (shape.rows() < 64U) {
+    std::erase(step_policy.enabled, "dsv4_hc_post");
+  }
+  if (shape.segments.size() == 1 && shape.rows() > 8U) {
+    if (std::ranges::contains(policy_.enabled, "dsv4_lid_mask")) {
+      step_policy.max_decode_rows = 8U;
+    }
+    for (const std::string_view p :
+         {"dsv4_hc_pre", "vecq_glu", "vecq_inputs", "grouped_vecq", "biased_route", "hash_route"}) {
+      std::erase(step_policy.enabled, p);
+    }
+  } else if (shape.rows() > 16U) {
     std::erase(step_policy.enabled, "dsv4_hc_pre");
   }
   const GraphBuildIO io{step->graph, step->graph.inputs(), step->graph.outputs(), step->weights};

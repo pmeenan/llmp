@@ -59,7 +59,7 @@ constexpr std::array kBatch{
     BatchClass{.op = ir::Op::kMatMul, .batch = ir::Batch::kJoined},
     BatchClass{.op = ir::Op::kRmsNorm, .batch = ir::Batch::kJoined},
 };
-constexpr std::array<std::string_view, 1> kPatterns{"rms_norm_mul"};
+constexpr std::array<std::string_view, 2> kPatterns{"rms_norm_mul", "vecq_inputs"};
 
 std::uint64_t Taps(const Instance& in) { return static_cast<std::uint64_t>(in.params.Int("taps")); }
 

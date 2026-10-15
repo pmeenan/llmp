@@ -135,8 +135,7 @@ bool PackedProductPair(const ir::Graph& graph, const ir::Node& n) {
 }
 
 bool DirectHcPreCarries(const ir::Graph& graph, const ir::Node& n) {
-  if (n.key != ir::Fused(FusedKind::kDsv4HcPre) || n.nsrc < 1 || n.nout != 3 ||
-      graph.tensor(n.src[0]).ne(2) <= 1) {
+  if (n.key != ir::Fused(FusedKind::kDsv4HcPre) || n.nsrc < 1 || n.nout != 3) {
     return false;
   }
   for (const ir::TensorId out : {n.out[1], n.out[2]}) {
@@ -2900,15 +2899,16 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     }
   }
   if (dsv4_fast) {
+    const bool draft = in_.token && in_.token->shape.stage != 0;
     choices.vector_floats = true;
-    choices.d2r_experts = true;
+    choices.d2r_experts = !draft;
     choices.pair_experts = true;
-    choices.compact_experts = in_.token && in_.token->shape.rows() >= kDsv4CompactMinRows;
+    choices.compact_experts = !draft && in_.token && in_.token->shape.rows() >= kDsv4CompactMinRows;
     choices.pair_glu = choices.compact_experts;
     choices.pair_glu_q8 = choices.compact_experts;
-    choices.dense_pair = true;
-    choices.hc_post_experts = true;
-    choices.outa_fast_pack = true;
+    choices.dense_pair = !draft;
+    choices.hc_post_experts = !draft;
+    choices.outa_fast_pack = !draft;
   }
   for (const TensorId t : p_.outputs()) out_.keep.push_back(made_.at(t.v));
   for (const TensorId t : p_.keep()) out_.keep.push_back(made_.at(t.v));

@@ -2426,6 +2426,7 @@ TEST(GgmlLowerDsv4Test, MultiSlotDecodeLowersSuccessfully) {
                {.staged = staged,
                 .lanes = std::move(lane_tags),
                 .written = kg::WrittenBytes,
+                .within = kg::WithinRoot,
                 .shape = &shape});
   ASSERT_TRUE(plan) << plan.error().detail;
   EXPECT_GE(plan->regions.size(), 30U);

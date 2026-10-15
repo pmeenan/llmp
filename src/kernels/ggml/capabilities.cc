@@ -967,12 +967,10 @@ bool AcceptsDsv4OutA(const ex::CapabilityQuery& q) {
   const auto tokens = Ne(q, 1, 2);
   if (!Built(q) || !p || tokens < static_cast<std::uint64_t>(kDsv4OutAMinRows) ||
       tokens > static_cast<std::uint64_t>(kDsv4OutAMaxRows) ||
-      (!ShapedOperand(q, 0, {4096, 8192, 1, 1}) &&
-       !ShapedOperand(q, 0, {4096, 1024, 8, 1}) &&
+      (!ShapedOperand(q, 0, {4096, 8192, 1, 1}) && !ShapedOperand(q, 0, {4096, 1024, 8, 1}) &&
        !ShapedOperand(q, 0, {2048, 8192, 1, 1})) ||
-      !ShapedOperand(q, 1, {512, 64, tokens, 1}) ||
-      !ShapedOperand(q, 2, {tokens, 1, 1, 1}) || !ShapedOperand(q, kOut, {8192, tokens, 1, 1}) ||
-      Has(q, 3))
+      !ShapedOperand(q, 1, {512, 64, tokens, 1}) || !ShapedOperand(q, 2, {tokens, 1, 1, 1}) ||
+      !ShapedOperand(q, kOut, {8192, tokens, 1, 1}) || Has(q, 3))
     return false;
   const auto& r = *p;
   const std::array values{r.base, r.scale, r.ext_factor, r.attn_factor, r.beta_fast, r.beta_slow};
@@ -1255,8 +1253,11 @@ bool AcceptsSelectedRoute(const ex::CapabilityQuery& q) {
       source->layout != Layout::kDense || (biased && p->scale <= 0.0F))
     return false;
   const auto rows = logits->ne[1];
-  if (rows < 1 || rows > (biased ? static_cast<std::uint64_t>(kVecQMaxTokens) : 65535U))
-    return false;
+  const std::uint64_t max_rows =
+      q.policy.max_decode_rows == 8
+          ? 8ULL
+          : (biased ? static_cast<std::uint64_t>(kVecQMaxTokens) : 65535ULL);
+  if (rows < 1 || rows > max_rows) return false;
   const auto packed = [](const ex::OperandFormat& operand, std::uint64_t width,
                          std::uint64_t count) {
     return operand.ne == std::array<std::uint64_t, 4>{width, count, 1, 1} && operand.memory &&
@@ -1284,6 +1285,9 @@ bool AcceptsMoeGlu(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::GluParams>(q);
   return Built(q) && p && p->kind == ir::GluKind::kSwiGlu && !p->swapped;
 }
+std::uint64_t MaxVecQRows(const ex::CapabilityQuery& q) {
+  return q.policy.max_decode_rows == 8 ? 8ULL : static_cast<std::uint64_t>(kVecQMaxTokens);
+}
 // llmp.vecq: decode's quantized products (up to kVecQTokens tokens), of a
 // type it has a kernel for.
 bool VecQ(const ex::CapabilityQuery& q) {
@@ -1307,8 +1311,7 @@ bool AcceptsGroupedVecQ(const ex::CapabilityQuery& q) {
   constexpr std::uint64_t limit = INT32_MAX;
   const auto block = info.ggml->block_elements, bytes = info.ggml->block_bytes;
   if (k == 0 || k > limit - 511 || k % 32 != 0 || k % block != 0 || n == 0 || n > limit ||
-      groups < 2 || groups > 256 || tokens == 0 ||
-      tokens > static_cast<std::uint64_t>(kVecQMaxTokens) || w->ne[3] != 1 ||
+      groups < 2 || groups > 256 || tokens == 0 || tokens > MaxVecQRows(q) || w->ne[3] != 1 ||
       x->ne != std::array<std::uint64_t, 4>{k, groups, tokens, 1} ||
       out->ne != std::array<std::uint64_t, 4>{n, groups, tokens, 1} ||
       n > limit / (k / block) / groups || !w->memory || !x->memory || !out->memory)
@@ -1329,13 +1332,12 @@ bool AcceptsGroupedVecQ(const ex::CapabilityQuery& q) {
 }
 
 bool AcceptsVecQ(const ex::CapabilityQuery& q) {
-  return VecQ(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kVecQMaxTokens);
+  return VecQ(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q);
 }
 // Routed: its (token, slot) pairs within the kernel's 128 (the fast form's).
 bool AcceptsVecQRouted(const ex::CapabilityQuery& q) {
   const std::uint64_t used = Ne(q, q.op == ir::Fused(FusedKind::kMatMulIdGlu) ? 3 : 2, 0);
-  return VecQ(q) && q.rows >= 1 && q.rows <= static_cast<std::uint64_t>(kVecQMaxTokens) &&
-         used >= 1 && q.rows * used <= 128;
+  return VecQ(q) && q.rows >= 1 && q.rows <= MaxVecQRows(q) && used >= 1 && q.rows * used <= 128;
 }
 // validate_ext.cc CheckGetRowsExt: GGML's decoder has no NVFP4 or
 // multipart split case. Do not let this generic native rung preempt an

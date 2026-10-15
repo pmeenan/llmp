@@ -92,8 +92,7 @@ inline constexpr std::string_view kDeepSeekServingPolicy =
     "disable prepared_inputs\n"
     "disable rms_norm_mul_add\n"
     "disable rms_norm_mul_rope\n"
-    "disable rope_store\n"
-    "disable route_reduce\n";
+    "disable rope_store\n";
 
 }  // namespace llmp::spec::mappings
 
