@@ -2262,8 +2262,9 @@ TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold)
       if (input.kind != co::InputKind::kCellPositions) staged.push_back(input.tensor);
     }
 
-    auto plan = pl::Plan(step->graph.Clone(), f.registry, {.device_class = "sm_121", .arch = 121},
-                         *policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+    auto plan = pl::Plan(
+        step->graph.Clone(), f.registry, {.device_class = "sm_121", .arch = 121}, *policy,
+        {.staged = staged, .written = kg::WrittenBytes, .within = kg::WithinRoot, .shape = &shape});
     ASSERT_TRUE(plan) << plan.error().detail;
 
     const auto hc_pre_count = std::ranges::count_if(
@@ -2278,9 +2279,15 @@ TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold)
 
     bool found_hc_pre = false;
     bool found_vecq_clamp = false;
+    bool found_direct_hc_post = false;
     for (const auto* node : lowered->nodes) {
       if (kg::LlmpOpOf(node) == kg::LlmpOp::kDsv4HcPre) {
         found_hc_pre = true;
+      }
+      if (node->op == GGML_OP_DSV4_HC_POST) {
+        EXPECT_EQ(node->src[2]->op, GGML_OP_VIEW);
+        EXPECT_EQ(node->src[3]->op, GGML_OP_VIEW);
+        found_direct_hc_post = true;
       }
       if (kg::LlmpOpOf(node) == kg::LlmpOp::kVecQ) {
         const auto glu = static_cast<kg::VecQGlu>(kg::LlmpOpInt(node, 2));
@@ -2292,6 +2299,7 @@ TEST(GgmlLowerDsv4Test, DeepSeekServingPolicySelectsFastFormsAndDecodeThreshold)
     }
     EXPECT_TRUE(found_hc_pre);
     EXPECT_TRUE(found_vecq_clamp);
+    EXPECT_TRUE(found_direct_hc_post);
   }
 
   // A step with rows = 130 lowers dsv4_hc_post instead of dsv4_hc_pre.
