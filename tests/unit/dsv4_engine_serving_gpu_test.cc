@@ -17,6 +17,14 @@
 //   consumes the features the token-only waves injected, exactly as after
 //   waves that returned rows (complete state, tokens, drafts, heads);
 //   joined draft/verify waves return the same with rows and with tokens;
+// - the conversation kept across a restart (D-105, D-112): two owners'
+//   prompts, a turn checkpoint each and a first turn, spilled and kept; the
+//   server stopped and another started on the same directories adopts them,
+//   restores them and continues (joined, after a new message, and a fork from
+//   the checkpoint) exactly as an uninterrupted run does (the target alone;
+//   DSpark's joined plain and speculative wave forms, rows and device
+//   tokens): restored state hash, heads, tokens, drafts, every logit row,
+//   history and settled state hash (kept_restart_serving_checks.h);
 // - four slots' speculative waves at CSA and HCA block alignments with
 //   mixed verify rows, inside the startup graph and metadata allowance;
 // - prefill lookahead on and off: the same heads and states at prompts
@@ -58,6 +66,7 @@
 #include "base/sha256.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
+#include "kept_restart_serving_checks.h"
 #include "plain_token_serving_checks.h"
 #include "runtime/commands.h"
 #include "runtime/engine_llm.h"
@@ -149,6 +158,7 @@ class Dsv4EngineBase : public testing::Test {
     std::uint32_t slots = 2;
     bool lookahead = true;
     bool diagnostic_tuple = false;  // the speed gate's `auto` + cap
+    bool keep = false;              // conversations kept across a restart (D-105)
   };
   struct Lifetime {
     cfg::NodeConfig config;
@@ -204,6 +214,7 @@ class Dsv4EngineBase : public testing::Test {
     entry.overrides["max_slots"] = std::int64_t{shape.slots};
     life->config.models.push_back(entry);
     life->options = {};  // the service's defaults
+    life->options.keep_conversations = shape.keep;
     if (shape.diagnostic_tuple) {
       if (auto r =
               rt::ApplyServiceDiagnostics(life->options, "all", "auto", kNodeCap, std::nullopt);
@@ -264,6 +275,16 @@ class Dsv4EngineBase : public testing::Test {
   }
   rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
   rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
+  std::string Log() const {
+    std::string text;
+    (void)std::fflush(log);
+    std::rewind(log);
+    std::array<char, 4096> buffer{};
+    for (std::size_t n = 0; (n = std::fread(buffer.data(), 1, buffer.size(), log)) > 0;)
+      text.append(buffer.data(), n);
+    (void)std::fseek(log, 0, SEEK_END);  // the server appends after this read
+    return text;
+  }
 
   // Every stage's used state of `slot`, hashed (the engine's slots).
   std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t slot) {
@@ -278,7 +299,9 @@ class Dsv4EngineBase : public testing::Test {
     for (std::size_t stage = 0; stage < slots.stages(); ++stage) {
       for (const en::LiveState::Range& range : slots.live(slot, stage).used_ranges()) {
         for (std::uint64_t at = 0; at < range.bytes; at += kPart) {
-          const en::LiveState::Range part{.region = range.region,
+          // `region` of a copied range is the stage (each stage's state is one
+          // region); the range's own region is the stage's, always 0.
+          const en::LiveState::Range part{.region = stage,
                                           .offset = range.offset + at,
                                           .bytes = std::min(kPart, range.bytes - at)};
           en::LiveState::CopyRetirement retired = en::LiveState::CopyRetirement::kUnproven;
@@ -333,6 +356,42 @@ class Dsv4EngineBase : public testing::Test {
       sessions.owned[id].reset();
     }
     return {};
+  }
+
+  // The conversations kept across a restart continue exactly
+  // (kept_restart_serving_checks.h): `shape`'s server, two owners.
+  void KeptRestartContinuesExactly(Shape shape, bool device_tokens) {
+    shape.keep = true;
+    struct Harness {
+      Dsv4EngineBase& test;
+      Shape shape;
+      rt::Server& server() { return *test.life->server; }
+      rt::Llm& model() { return *test.model; }
+      rt::Llm::Branch& Branch(std::uint32_t id) { return test.Branch(id); }
+      std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t slot) {
+        return test.StateHash(slot);
+      }
+      std::string Log() const { return test.Log(); }
+      rt::Status Restart() {
+        // The graceful stop's order: settle and write the records, then
+        // stop; the next server adopts what validates.
+        test.life->server->Persist(rt::Clock::now() + std::chrono::seconds(120), {});
+        if (auto r = test.Retire(); !r) return r;
+        return test.Start(shape, 2);
+      }
+    } harness{*this, shape};
+    const auto started = Start(shape, 2);
+    ASSERT_TRUE(started) << (started ? "" : started.error());
+    EXPECT_EQ(model->logit_width(), kVocab);
+    llmp::test::KeptRestartPlan plan;
+    plan.vocab = kVocab;
+    plan.expect_drafts = shape.drafter;
+    plan.device_tokens = device_tokens;
+    plan.tokens = [](std::uint32_t owner, std::size_t rows) { return Tokens(owner, rows); };
+    const auto r = llmp::test::CheckKeptRestart(harness, plan);
+    ASSERT_TRUE(r) << (r ? "" : r.error());
+    EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+    if (device_tokens) EXPECT_GT(Engine().counts().greedy_tokens, 0U);
   }
 };
 
@@ -389,6 +448,34 @@ TEST_F(Dsv4EngineDspark, PlainTokensAndRowsAgreeWithDspark) {
       [&] { return Engine().counts().greedy_tokens; }, {1, 5});
   ASSERT_TRUE(r) << (r ? "" : r.error());
   EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+}
+
+// ---------------------------------------------------------------- kept
+
+// The conversation kept across a restart (D-105, D-112) continues exactly:
+// the target alone, and with DSpark (whose stage-1 state and pending
+// drafter boundary are kept too) with its joined waves forced plain or
+// speculative, rows kept or tokens chosen on the device.
+TEST_F(Dsv4EngineTarget, KeptConversationRestartContinuesExactly) {
+  KeptRestartContinuesExactly({}, false);
+}
+TEST_F(Dsv4EngineDspark, KeptConversationRestartContinuesExactlyPlainWaves) {
+  Shape shape;
+  shape.drafter = true;
+  shape.wave_form = "plain";
+  KeptRestartContinuesExactly(shape, false);
+}
+TEST_F(Dsv4EngineDspark, KeptConversationRestartContinuesExactlyPlainWavesDeviceTokens) {
+  Shape shape;
+  shape.drafter = true;
+  shape.wave_form = "plain";
+  KeptRestartContinuesExactly(shape, true);
+}
+TEST_F(Dsv4EngineDspark, KeptConversationRestartContinuesExactlySpeculativeWaves) {
+  Shape shape;
+  shape.drafter = true;
+  shape.wave_form = "speculative";
+  KeptRestartContinuesExactly(shape, false);
 }
 
 // A logit row is the model's logit width (the swap table's continuation

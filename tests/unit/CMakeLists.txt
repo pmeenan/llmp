@@ -858,7 +858,8 @@ if(LLMP_CUDA)
   # decoders against the CPU reference, with device memory checked; meant
   # for the discrete sm_86 target. The artifacts' roots come from
   # LLMP_QWEN38_PROOF_ARTIFACT (and _GGML_ARTIFACT), by default the M3
-  # store; without them it skips.
+  # store's v0 IDs, or those of LLMP_QWEN38_PROOF_ARTIFACT_ID (and
+  # _GGML_ARTIFACT_ID); without them it skips.
   add_executable(qwen38_decode_proof_test qwen38_decode_proof_test.cc)
   target_include_directories(qwen38_decode_proof_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")

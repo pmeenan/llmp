@@ -32,9 +32,14 @@
 // before the baseline (CUDA_MODULE_LOADING=EAGER).
 //
 // The artifacts: LLMP_QWEN38_PROOF_ARTIFACT, the CUTLASS-layout import
-// (c4fb47a9...), and optionally LLMP_QWEN38_PROOF_GGML_ARTIFACT, the GGML
-// one (67617f87...); by default the M3 store under ~/.local/share/llmp
-// (a Spark). A partial copy serves: manifest, index and meta whole, each
+// (c4fb47a9..., the v0 default), and optionally
+// LLMP_QWEN38_PROOF_GGML_ARTIFACT, the GGML one (67617f87...); by default
+// the M3 store under ~/.local/share/llmp (a Spark). Each variable names a
+// root directory and wins over the store. To run against another artifact
+// (a v1 import, say) in that store instead, set
+// LLMP_QWEN38_PROOF_ARTIFACT_ID (and LLMP_QWEN38_PROOF_GGML_ARTIFACT_ID) to
+// its 64-hex ID: the store lookup and the skip messages use it; unset, the
+// v0 IDs above. A partial copy serves: manifest, index and meta whole, each
 // shard at full size with its header and the groups and table rows above
 // present (the rest may be holes); the test reads nothing else. Without
 // the CUTLASS import the test skips, naming the variable.
@@ -110,6 +115,16 @@ std::vector<std::uint32_t> Experts() {
     out.push_back(17 * i);
   }
   return out;
+}
+
+// The artifact ID: `variable`'s value if set and non-empty, else the v0
+// default `fallback`.
+std::string ArtifactId(const char* variable, std::string_view fallback) {
+  if (const char* p = std::getenv(variable);
+      p != nullptr && *p != '\0') {  // NOLINT(concurrency-mt-unsafe)
+    return p;
+  }
+  return std::string(fallback);
 }
 
 fs::path Root(const char* variable, std::string_view id) {
@@ -491,9 +506,10 @@ class Qwen38DecodeProofTest : public ::testing::Test {
     if (cudaGetDeviceCount(&count) != cudaSuccess || count == 0) {
       GTEST_SKIP() << "no CUDA device";
     }
-    root_ = Root("LLMP_QWEN38_PROOF_ARTIFACT", kCutlassId);
+    const std::string id = ArtifactId("LLMP_QWEN38_PROOF_ARTIFACT_ID", kCutlassId);
+    root_ = Root("LLMP_QWEN38_PROOF_ARTIFACT", id);
     if (root_.empty()) {
-      GTEST_SKIP() << "no Qwen3.8 native import (" << kCutlassId
+      GTEST_SKIP() << "no Qwen3.8 native import (" << id
                    << "): set LLMP_QWEN38_PROOF_ARTIFACT to its root, or a partial copy of it";
     }
     auto opened = ar::Artifact::Open(root_);
@@ -855,15 +871,15 @@ TEST_F(Qwen38DecodeProofTest, RoutedExpertsMatchTheReferenceInBothLayouts) {
   ExpertSet cutlass = LoadCutlassExperts(root_, *artifact_);
   std::unique_ptr<ar::Artifact> ggml_artifact;
   ExpertSet ggml;
-  const fs::path ggml_root = Root("LLMP_QWEN38_PROOF_GGML_ARTIFACT", kGgmlId);
+  const std::string ggml_id = ArtifactId("LLMP_QWEN38_PROOF_GGML_ARTIFACT_ID", kGgmlId);
+  const fs::path ggml_root = Root("LLMP_QWEN38_PROOF_GGML_ARTIFACT", ggml_id);
   if (!ggml_root.empty()) {
     auto opened = ar::Artifact::Open(ggml_root);
     ASSERT_TRUE(opened.has_value()) << ggml_root;
     ggml_artifact = std::make_unique<ar::Artifact>(std::move(*opened));
     ggml = LoadGgmlExperts(ggml_root, *ggml_artifact);
   } else {
-    std::printf("no GGML-layout import (%s): its experts are not compared\n",
-                std::string(kGgmlId).c_str());
+    std::printf("no GGML-layout import (%s): its experts are not compared\n", ggml_id.c_str());
   }
   const std::uint64_t f = model::Qwen38Flash().expert_ffn;
   const std::uint64_t w = model::Qwen38Flash().width;

@@ -4,6 +4,12 @@
 // Default-off single-slot migration screen through the real Server and Llm.
 // Both arms draft and judge their own outputs. No graph/source wrapper or
 // teacher-forced proposals. This small screen is not the 1% migration gate.
+//
+// Also (label `models`, the ordinary Server with its default options and
+// no diagnostic tuple): the GGUF import's conversations kept across a
+// restart (D-105, D-112) continue exactly (Qwen38GgufKeptGpu, below;
+// kept_restart_serving_checks.h). It skips, naming the artifact, when the
+// GGUF import or the tokenizer assets are absent.
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
@@ -25,6 +31,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -35,6 +43,7 @@
 #include "engine/paged_weights.h"
 #include "engine/plan_cache.h"
 #include "execution/registry.h"
+#include "kept_restart_serving_checks.h"
 #include "kernels/common/step_program.h"
 #include "kernels/ggml/graph_plan.h"
 #include "model/qwen38.h"
@@ -2051,3 +2060,199 @@ const bool speed_registered = [] {
   return true;
 }();
 }  // namespace c2_server
+
+// The GGUF import's conversations kept across a restart (D-105, D-112),
+// through the ordinary Server with its default options (the service's, with
+// conversations kept): two owners' prompts, a turn checkpoint each and a
+// first turn, spilled and kept; the server stopped and another started on
+// the same directories adopts, restores and continues them exactly as an
+// uninterrupted run does (kept_restart_serving_checks.h).
+class Qwen38GgufKeptGpu : public testing::Test {
+ public:  // the harness of the check reaches the fixture
+  struct Lifetime {
+    cfg::NodeConfig config;
+    cfg::RuntimeRoles roles;
+    rt::ServingOptions options;
+    std::unique_ptr<rt::Server> server;
+  };
+  std::unique_ptr<Lifetime> life = std::make_unique<Lifetime>();
+  rt::Llm* model = nullptr;
+  fs::path scratch;
+  std::FILE* log = nullptr;
+  bool retirement_failed = false;
+
+  static fs::path Store() { return fs::path(llmp::test_support::ModelsDir()) / "qgguf-artifacts"; }
+
+  void SetUp() override {
+    const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
+                            "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+    std::error_code error;
+    if (!fs::exists(Store() / kGguf, error))
+      GTEST_SKIP() << "no Qwen3.8 GGUF artifact " << kGguf << " in " << Store();
+    if (!fs::exists(checkpoint / "tokenizer.json", error) ||
+        !fs::exists(checkpoint / "chat_template.jinja", error))
+      GTEST_SKIP() << "no Qwen3.8 tokenizer assets in " << checkpoint;
+    const auto fixed = CheckFixture(kGguf, false);
+    ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
+    // Spill files need direct I/O: scratch in the build tree.
+    const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+    const fs::path root = base != nullptr ? base : ::testing::TempDir();
+    fs::create_directories(root, error);
+    std::string name = (root / "qwen-gguf-kept-XXXXXX").string();
+    ASSERT_NE(mkdtemp(name.data()), nullptr);
+    scratch = name;
+    life->roles.installed = Store();
+    life->roles.spill = scratch / "spill";
+    life->roles.state = scratch / "state";
+    for (const auto& path : {life->roles.spill, life->roles.state}) {
+      ASSERT_TRUE(fs::create_directory(path));
+      ASSERT_EQ(chmod(path.c_str(), 0700), 0);
+    }
+    cfg::ModelEntry entry;
+    entry.name = "qwen";
+    entry.artifact = kGguf;
+    entry.tokenizer = checkpoint / "tokenizer.json";
+    entry.chat_template = checkpoint / "chat_template.jinja";
+    entry.overrides["context"] = std::int64_t{2048};
+    entry.overrides["max_slots"] = std::int64_t{2};
+    life->config.models.push_back(std::move(entry));
+    log = std::tmpfile();
+    ASSERT_NE(log, nullptr);
+  }
+
+  // A server on the ordinary defaults (conversations kept, as the service
+  // keeps them) with both owners selected.
+  rt::Status Start() {
+    life->options = {};
+    life->options.keep_conversations = true;
+    life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, log);
+    if (auto r = life->server->Start(true); !r) return r;
+    model = dynamic_cast<rt::Llm*>(life->server->Find("qwen"));
+    if (model == nullptr) return std::unexpected("configured Qwen3.8 model missing");
+    if (dynamic_cast<rt::EngineLlm*>(model) == nullptr)
+      return std::unexpected("Qwen3.8 is not on the component engine");
+    if (model->logit_width() != kVocab || model->generation_wave_capacity() != 2)
+      return std::unexpected("wrong serving envelope");
+    rt::SwapParts parts;
+    if (auto r = life->server->Activate(*model, parts); !r) return r;
+    std::array<rt::Llm::Branch*, 2> branches{};
+    for (std::uint32_t id = 0; id < 2; ++id) {
+      auto branch = model->branch(id);
+      if (!branch) return std::unexpected(branch.error());
+      branches[id] = *branch;
+    }
+    return life->server->SelectRequestBranches(*model, branches);
+  }
+  rt::Status Retire() {
+    if (retirement_failed) return std::unexpected("prior server retirement unproven");
+    if (!life->server) return {};
+    const auto r = life->server->TearDown();
+    retirement_failed = !r;
+    if (r) {
+      life->server.reset();
+      model = nullptr;
+    }
+    return r;
+  }
+  void TearDown() override {
+    const auto r = Retire();
+    EXPECT_TRUE(r) << (r ? "" : r.error());
+    if (!r) {
+      std::ignore = life.release();
+      return;
+    }
+    if (log != nullptr) {
+      if (HasFailure()) {
+        std::array<char, 4096> buffer{};
+        (void)std::fflush(log);
+        std::rewind(log);
+        std::string text;
+        for (std::size_t n = 0; (n = std::fread(buffer.data(), 1, buffer.size(), log)) > 0;)
+          text.append(buffer.data(), n);
+        std::fprintf(stderr, "--- server log ---\n%s\n", text.c_str());
+      }
+      (void)std::fclose(log);
+    }
+    if (!scratch.empty()) fs::remove_all(scratch);
+  }
+  rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
+  rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
+  std::string Log() const {
+    std::string text;
+    (void)std::fflush(log);
+    std::rewind(log);
+    std::array<char, 4096> buffer{};
+    for (std::size_t n = 0; (n = std::fread(buffer.data(), 1, buffer.size(), log)) > 0;)
+      text.append(buffer.data(), n);
+    (void)std::fseek(log, 0, SEEK_END);  // the server appends after this read
+    return text;
+  }
+
+  // Every stage's used state of `slot`, hashed. A copied range's region is
+  // the stage (each stage's state is one region).
+  std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t slot) {
+    auto& slots = Engine().runner().slots();
+    auto& node = life->server->node();
+    constexpr std::uint64_t kPart = 1ULL << 20U;
+    std::vector<llmp::catalog::ExtentId> staging;
+    auto buffer = node.Pinned(kPart, 0, staging);
+    if (!buffer) return std::unexpected(buffer.error());
+    llmp::base::Sha256 hash;
+    std::uint64_t bytes = 0;
+    for (std::size_t stage = 0; stage < slots.stages(); ++stage) {
+      for (const auto& range : slots.live(slot, stage).used_ranges()) {
+        for (std::uint64_t at = 0; at < range.bytes; at += kPart) {
+          const en::LiveState::Range part{.region = stage,
+                                          .offset = range.offset + at,
+                                          .bytes = std::min(kPart, range.bytes - at)};
+          auto retired = en::LiveState::CopyRetirement::kUnproven;
+          const auto copied = slots.CopyState(slot, *buffer, std::span(&part, 1), true, &retired);
+          if (retired == en::LiveState::CopyRetirement::kUnproven) node.KeepPinned(*buffer);
+          if (!copied) {
+            if (retired == en::LiveState::CopyRetirement::kProven) (void)node.FreePinned(*buffer);
+            return std::unexpected(copied.error());
+          }
+          hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
+          bytes += part.bytes;
+        }
+      }
+    }
+    if (auto r = node.FreePinned(*buffer); !r) return std::unexpected(r.error());
+    if (bytes == 0) return std::unexpected("no state");
+    return hash.Finish();
+  }
+};
+
+TEST_F(Qwen38GgufKeptGpu, ConversationKeptAcrossARestartContinuesExactly) {
+  struct Harness {
+    Qwen38GgufKeptGpu& test;
+    rt::Server& server() { return *test.life->server; }
+    rt::Llm& model() { return *test.model; }
+    rt::Llm::Branch& Branch(std::uint32_t id) { return test.Branch(id); }
+    std::expected<llmp::base::Sha256Digest, std::string> StateHash(std::uint32_t slot) {
+      return test.StateHash(slot);
+    }
+    std::string Log() const { return test.Log(); }
+    rt::Status Restart() {
+      // The graceful stop's order: settle and write the records, then stop;
+      // the next server adopts what validates.
+      test.life->server->Persist(rt::Clock::now() + std::chrono::seconds(120), {});
+      if (auto r = test.Retire(); !r) return r;
+      return test.Start();
+    }
+  } harness{*this};
+  const auto started = Start();
+  ASSERT_TRUE(started) << (started ? "" : started.error());
+  llmp::test::KeptRestartPlan plan;
+  plan.vocab = kVocab;
+  plan.tokens = [](std::uint32_t owner, std::size_t count) {
+    std::vector<std::int32_t> out;
+    out.reserve(count);
+    for (std::size_t p = 0; p < count; ++p)
+      out.push_back(static_cast<std::int32_t>(100 + ((p * 7919U + 13U + owner * 17U) % 150000U)));
+    return out;
+  };
+  const auto r = llmp::test::CheckKeptRestart(harness, plan);
+  ASSERT_TRUE(r) << (r ? "" : r.error());
+  EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+}
