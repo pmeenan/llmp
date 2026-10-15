@@ -311,16 +311,16 @@ TEST(Q8StateTest, ApplyKvCacheEncodingGemma4MultiLayer) {
                           spec::Layer{.components = {MakeDenseAttention(256, "f16", 0.0)}},
                           spec::Layer{.components = {MakeDenseAttention(512, "f16", 0.0)}},
                       },
-                  .taps = {{.name = "features", .layer = 1, .point = spec::TapPoint::kStream}},
+                  .taps = {{.name = "features", .layer = 1, .point = spec::TapPoint::kStreams}},
               },
               spec::Stage{
                   .name = "assistant",
                   .role = spec::StageRole::kDrafter,
                   .context = 4096,
-                  .stream = {.streams = 1, .width = 256},
                   .embedding =
                       ComponentRef{
                           .kind = "embedding.projected", .version = 1, .params = proj_params},
+                  .stream = {.streams = 1, .width = 256},
                   .layers =
                       {
                           spec::Layer{.components = {borrowed}},
@@ -403,9 +403,9 @@ TEST(Q8StateTest, ApplyKvCacheEncodingQwen38WithMtpAndExemptComponents) {
                   .name = "mtp",
                   .role = spec::StageRole::kDrafter,
                   .context = 4096,
-                  .stream = {.streams = 1, .width = 256},
                   .embedding =
                       ComponentRef{.kind = "embedding.mtp", .version = 1, .params = mtp_emb_params},
+                  .stream = {.streams = 1, .width = 256},
                   .layers =
                       {
                           spec::Layer{
@@ -466,16 +466,16 @@ TEST(Q8StateTest, ApplyKvCacheEncodingSupportsMqa) {
                                   },
                           },
                       },
-                  .taps = {{.name = "tap0", .layer = 0, .point = spec::TapPoint::kStream}},
+                  .taps = {{.name = "tap0", .layer = 0, .point = spec::TapPoint::kStreams}},
               },
               spec::Stage{
                   .name = "dflash",
                   .role = spec::StageRole::kDrafter,
                   .context = 4096,
-                  .stream = {.streams = 1, .width = 256},
                   .embedding =
                       ComponentRef{
                           .kind = "embedding.inject", .version = 1, .params = inject_params},
+                  .stream = {.streams = 1, .width = 256},
                   .layers =
                       {
                           spec::Layer{
