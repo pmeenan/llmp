@@ -57,6 +57,7 @@ and separate quality controls; they do not replace those oracles.
 | 12 | Ornith 1.5 35B-A3B (Ornith, M7) | MoE 36B/3B | GGUF Q4_K_M, llama.cpp | 262,144 | Qwen3.5 MoE (256 experts top-8 + shared) without QSA, hyper-connections or PLE; M7's daily driver |
 | 13 | GLM-4.7-Flash (Z.ai) | MoE 31B/3B | GGUF Q8_0, llama.cpp | 202,752 | MTP on MLA, the GLM tokenizer and template; M4's GLM-5.3 path |
 
+Owner-requested: Nemotron 3.5 Super VL ([below](#owner-requested-addition-nemotron-35-super-vl)).
 Optional, by usage or a feature a smaller set already covers: MiniMax
 M2.7 (IQ3_XXS), Laguna S 2.1, Step 3.7 Flash, Ling 3.0 flash, Nemotron 3.5
 Lightning, Cohere North Mini Code and Mistral Medium 3.5
@@ -102,6 +103,36 @@ and public request/response/client contracts remain unverified. The listing
 supplies a concrete embedding/media workload for API assessment; D-042's
 embedding API schedule and D-044's workload-driven generic-pooling deferral
 remain unchanged until separately decided.
+
+## Owner-requested addition: Nemotron 3.5 Super VL
+
+**Listed at the owner's request, 2026-10-15 (its release day); a supported
+family for M3.5's bring-up on the component engine, in whatever quants fit
+one Spark then.** NVIDIA's [announcement](https://blogs.nvidia.com/blog/nemotron-3-5-super-vl/)
+and model cards ([BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16),
+[NVFP4](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4),
+[Base BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Base-BF16))
+describe a Mamba-2/Transformer hybrid MoE, 120B total/12B active, 512 routed
+experts, up to 1M context, with a C-RADIO vision encoder and connector
+(images, documents as page images, MP4 video up to 2 minutes). Community
+GGUFs exist ([unsloth](https://huggingface.co/unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF),
+[ggml-org](https://huggingface.co/ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF)).
+Weights: OpenMDW-1.1 (recorded, never blocking, D-087).
+
+What it adds beyond Nemotron 3 Super (row 4): a native recursive MTP head,
+and for DGX Spark a separate **LiLiCorr** drafter (`…-NVFP4-LiLiCorr`) that
+drafts several tokens in parallel and picks candidates with a correlation
+head, served by vLLM through its `dflash` method at 7 draft tokens; the
+vision/video input pipeline (M3.5's media inputs); ModelOpt mixed NVFP4
+(W4A4 on Blackwell) with BF16 vision, connector, Mamba convolutions and
+embeddings and an FP32 router; an F16 Mamba SSM cache. The card's DGX Spark
+recipes disagree (MTP with 5 drafts at 1M versus LiLiCorr with 7 at 131,072)
+and vLLM's day-0 post names MTP only; resolve against reference code.
+
+At bring-up: pin immutable revisions into the archive (D-114), choose
+same-format references (vLLM ≥ the card's version for NVFP4 and LiLiCorr;
+llama.cpp for GGUF), and qualify LiLiCorr against MTP on the GB10 before
+picking the default drafter. Nothing here is verified yet.
 
 ## Capability matrix
 
