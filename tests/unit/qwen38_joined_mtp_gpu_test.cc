@@ -465,8 +465,11 @@ en::Status SetUp(Lifetime& life) {
   // require that whole inventory, real measured workspace and all three
   // state-copy buffers fit together before registration/first request.
   for (std::size_t stage = 0; stage < 2; ++stage) {
-    const auto bytes = life.runner->slots().layout(stage).bytes;
-    if (!bytes || bytes > 512 * kMiB || bytes % en::kPagedExtent)
+    // A region packs its tensors at 256 bytes; its copy buffer takes whole
+    // extents (a region's size need not be one).
+    const auto region = life.runner->slots().layout(stage).bytes;
+    const auto bytes = (region + en::kPagedExtent - 1) / en::kPagedExtent * en::kPagedExtent;
+    if (!region || bytes > 512 * kMiB)
       return std::unexpected("state copy capacity exceeds the admitted physical domain");
     life.state_capacity += bytes;
   }
@@ -753,9 +756,28 @@ TEST(Qwen38JoinedMtpGpu, OwnedUnequalPendingRestoresAndChangedInputCapture) {
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available);
   ASSERT_GE(*available, kDomain + rt::kUncountedMargin);
+  // Its spill directory: LLMP_JOINED_MTP_SCRATCH names one to make, or it
+  // makes its own under the test scratch (CTest's), removed when it ends
+  // (after the owner below retires).
+  struct Made {
+    fs::path root;
+    ~Made() {
+      std::error_code ignored;
+      if (!root.empty()) fs::remove_all(root, ignored);
+    }
+  } made;
   Owner life(new Lifetime);
   life->scratch = Env("LLMP_JOINED_MTP_SCRATCH");
-  ASSERT_FALSE(life->scratch.empty());
+  if (life->scratch.empty()) {
+    const auto base = Env("LLMP_TEST_SCRATCH");
+    const fs::path root = base.empty() ? fs::path(testing::TempDir()) : fs::path(base);
+    std::error_code made_ec;
+    fs::create_directories(root, made_ec);
+    std::string name = (root / "joined-mtp-XXXXXX").string();
+    ASSERT_NE(mkdtemp(name.data()), nullptr) << name;
+    made.root = name;
+    life->scratch = made.root / "run";
+  }
   std::error_code ec;
   ASSERT_TRUE(fs::create_directory(life->scratch, ec));
   ASSERT_FALSE(ec);

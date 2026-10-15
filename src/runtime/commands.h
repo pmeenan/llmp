@@ -74,23 +74,26 @@ struct Turn {
 struct ServingOptions {
   // Decode plainly even where a model has a drafter.
   bool plain = false;
-  // Internal component migration screen, including declared composed
-  // sources with multiple owners. Only an explicitly funded service diagnostic
-  // can select it in HTTP or local commands; normal defaults are unchanged.
+  // The funded service diagnostic's alias selector (every family serves on
+  // the component engine regardless): set, it logs each alias's execution
+  // identity; without diagnostic_component_all (the historical Qwen-only
+  // selector) it refuses every LLM but Qwen3.8.
   bool diagnostic_component_solo = false;
-  // The generic selector additionally admits qualified component pipelines. The
-  // historical Qwen-only selector keeps its narrower alias contract.
+  // The generic selector admits every qualified component pipeline.
   bool diagnostic_component_all = false;
   // Internal default-off experiment, only with the paid shared service route.
   bool diagnostic_capture_first_verify = false;
   // Internal prepared-image migration route, absent from CLI/TOML/HTTP. Each
   // owner was paid on this Server's stopped node; legacy defaults are unchanged.
   std::vector<std::shared_ptr<const PreparedImageGeneration>> diagnostic_prepared_images;
-  // Prepaid host compiler/result allowance for bounded startup screens.
-  // Cataloged before artifact metadata or Setup, retained until node death.
-  // Requires a known physical budget cap; zero leaves ordinary starts alone.
+  // Prepaid host compiler/result allowance for bounded startup screens, in
+  // place of the default automatic payment. Cataloged before artifact
+  // metadata or Setup, retained until node death. Requires a known physical
+  // budget cap; zero selects the automatic payment (Server::Start).
   std::uint64_t diagnostic_startup_host_bytes = 0;
-  // Internal auto mode derives a parser loan and actual source construction.
+  // The automatic payment (a parser loan, then each alias's actual source
+  // construction), which zero startup bytes select anyway; the service's
+  // LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto.
   bool diagnostic_auto_startup = false;
   // The image pipeline's generation, fixed when it registers (this slice's
   // image runner takes its prompt at setup): its prompt, and its initial
@@ -121,6 +124,7 @@ struct ServingOptions {
   // Internal budget ceiling only; no production config/CLI option. Admission
   // selects at most the ordinary dynamic budget, with required footprint intact.
   // Matched controls must record the actual selected capacity of each arm.
+  // Unset, startup's execution cap is the node's measured headroom.
   std::optional<std::uint64_t> diagnostic_budget_cap_bytes;
   // engine::NodeSettings::zero_state and handle_reserve; internal
   // overrides for matched controls only.

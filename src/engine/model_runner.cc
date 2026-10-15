@@ -704,7 +704,9 @@ Status ModelRunner::Setup() {
   // A quarter's margin over the widest measured, as every family's.
   activations_needed_ =
       Round(std::max<std::uint64_t>(activations + activations / 4, 1), kPagedExtent);
-  pool_needed_ = pool == 0 ? 0 : Round(pool + pool / 4, kPagedExtent);
+  // The launch's own part comes out of the pool before any step draws on
+  // it (a small step's pool otherwise loses its margin and more to it).
+  pool_needed_ = pool == 0 ? 0 : Round(pool + pool / 4 + config_.launch_pool_reserve, kPagedExtent);
   inputs_staging_bytes_ = Round(std::max<std::uint64_t>(inputs + inputs / 4, 256), 256);
   outputs_staging_bytes_ = Round(std::max<std::uint64_t>(outputs + outputs / 4, 256), 256);
   host_input_bytes_ =

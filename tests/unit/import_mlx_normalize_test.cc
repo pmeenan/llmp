@@ -207,46 +207,47 @@ TEST(ImportMlxNormalizeModelsTest,
 
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read-only test environment.
   const char* store_root = std::getenv("LLMP_TEST_MLX_PUBLICATION_STORE");
-  if (store_root != nullptr && *store_root != '\0') {
-    const std::filesystem::path scratch(store_root);
-    std::filesystem::remove_all(scratch, ec);
-    std::filesystem::create_directories(scratch, ec);
+  if (store_root == nullptr || *store_root == '\0')
+    GTEST_SKIP() << "normalization checked; publication and admission need "
+                    "LLMP_TEST_MLX_PUBLICATION_STORE (a scratch store for a v1 artifact)";
+  const std::filesystem::path scratch(store_root);
+  std::filesystem::remove_all(scratch, ec);
+  std::filesystem::create_directories(scratch, ec);
 
-    WriteOptions options{
-        .store = scratch / "mlx-qwen38-v1",
-        .build = "test",
-        .metadata_bytes = std::max(bound->metadata_bytes, std::uint64_t{1} << 30U),
-    };
-    auto published = WriteArtifact(*plan, options);
-    ASSERT_TRUE(published) << published.error().ToString();
-    RecordProperty("artifact_id", published->id);
-    RecordProperty("artifact_path", published->path.string());
+  WriteOptions options{
+      .store = scratch / "mlx-qwen38-v1",
+      .build = "test",
+      .metadata_bytes = std::max(bound->metadata_bytes, std::uint64_t{1} << 30U),
+  };
+  auto published = WriteArtifact(*plan, options);
+  ASSERT_TRUE(published) << published.error().ToString();
+  RecordProperty("artifact_id", published->id);
+  RecordProperty("artifact_path", published->path.string());
 
-    auto artifact = artifact::Artifact::Open(published->path, {.expected_id = published->id});
-    ASSERT_TRUE(artifact) << artifact.error().ToString();
+  auto artifact = artifact::Artifact::Open(published->path, {.expected_id = published->id});
+  ASSERT_TRUE(artifact) << artifact.error().ToString();
 
-    // Verify admission
-    auto artifact_admitted = runtime::CheckComponentArtifactAdmission(*artifact);
-    ASSERT_TRUE(artifact_admitted) << (artifact_admitted ? "" : artifact_admitted.error());
+  // Verify admission
+  auto artifact_admitted = runtime::CheckComponentArtifactAdmission(*artifact);
+  ASSERT_TRUE(artifact_admitted) << (artifact_admitted ? "" : artifact_admitted.error());
 
-    auto admission = runtime::ReadComponentAdmission(*artifact);
-    ASSERT_TRUE(admission) << (admission ? "" : admission.error());
-    EXPECT_EQ(admission->model.pipeline, spec::PipelineKind::kLlm);
-    EXPECT_EQ(admission->model.stages.size(), 1U);
-    EXPECT_EQ(admission->model.stages[0].layers.size(), 48U);
-    EXPECT_EQ(admission->model.stages[0].folds, std::vector<std::string>{"gdn.value_heads_tiled"});
-    EXPECT_EQ(admission->source.container, "mlx");
-    EXPECT_EQ(admission->source.architecture, "qwen4exp");
+  auto admission = runtime::ReadComponentAdmission(*artifact);
+  ASSERT_TRUE(admission) << (admission ? "" : admission.error());
+  EXPECT_EQ(admission->model.pipeline, spec::PipelineKind::kLlm);
+  EXPECT_EQ(admission->model.stages.size(), 1U);
+  EXPECT_EQ(admission->model.stages[0].layers.size(), 48U);
+  EXPECT_EQ(admission->model.stages[0].folds, std::vector<std::string>{"gdn.value_heads_tiled"});
+  EXPECT_EQ(admission->source.container, "mlx");
+  EXPECT_EQ(admission->source.architecture, "qwen4exp");
 
-    spec::Envelope envelope{.context = 8192, .slots = 1};
-    auto policy = runtime::ComponentAdmissionPolicy(admission->model, admission->source,
-                                                    artifact->sources(), envelope);
-    ASSERT_TRUE(policy) << (policy ? "" : policy.error());
+  spec::Envelope envelope{.context = 8192, .slots = 1};
+  auto policy = runtime::ComponentAdmissionPolicy(admission->model, admission->source,
+                                                  artifact->sources(), envelope);
+  ASSERT_TRUE(policy) << (policy ? "" : policy.error());
 
-    RecordProperty("published_tensors", std::to_string(admission->source.tensors.size()));
+  RecordProperty("published_tensors", std::to_string(admission->source.tensors.size()));
 
-    std::filesystem::remove_all(scratch, ec);
-  }
+  std::filesystem::remove_all(scratch, ec);
 }
 
 }  // namespace

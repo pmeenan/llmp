@@ -1255,6 +1255,133 @@ TEST(ComponentsQwen38Test, ServingReplayMappingDeclaresDurableShiftWithoutChangi
             model::KeptLayoutId({}, std::span(&*layout, 1)));
 }
 
+// A verify's saves on Qwen3.8's real component contracts (the serving
+// composition: the target with its replay MTP drafter, as the build makes
+// it; and the original MTP mapping) are what its verify writes, byte for
+// byte: each row's K, V and indexer cells and the indexer block it
+// completes on every attention layer, none of the linear layers' state
+// (its commit rebuilds that), and in the drafter's stage only the streams
+// the target writes, each row's cell, with the carried tail cell on row 0.
+// The reference is the profile's geometry, independent of WritesFor's
+// rules (the retired Qwen38VerifySaves' rule, which the legacy runner's
+// test compared byte for byte).
+TEST(ComponentsQwen38Test, VerifySavesAreTheRealContractsWritesByteForByte) {
+  const auto& p = model::Qwen38Flash();
+  auto target = TargetSpec(Sources().modelopt_cutlass, fx::Form::kCutlass);
+  ASSERT_TRUE(target) << target.error();
+  model::Qwen38MtpBinding binding;
+  auto values = spec::mappings::Qwen38MtpV0Values(p, binding);
+  ASSERT_TRUE(values);
+  const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * 2;  // f16 cells
+  const std::uint64_t index = std::uint64_t{p.indexer_head_dim} * 4;
+  const std::uint64_t block = std::uint64_t{p.indexer_head_dim} * 2;
+  const std::uint64_t stream = std::uint64_t{p.hc_width()} * 4;
+  for (const spec::Mapping* drafter_mapping :
+       {&spec::mappings::Qwen38MtpReplayMapping(), &spec::mappings::Qwen38MtpMapping()}) {
+    auto composed = spec::ComposeDrafter(*target, spec::mappings::Qwen38Mapping(), *drafter_mapping,
+                                         Sources().mtp, *values);
+    ASSERT_TRUE(composed) << composed.error();
+    for (const auto& [context, max_rows] : {std::pair{8192U, 512U}, {4000U, 300U}}) {
+      auto t = StageLayout(*composed, 0, context, max_rows);
+      auto d = StageLayout(*composed, 1, context, max_rows);
+      ASSERT_TRUE(t) << t.error();
+      ASSERT_TRUE(d) << d.error();
+      // The contracts themselves: what the reference below relies on.
+      std::uint32_t attention = 0;
+      for (const auto& item : t->items) {
+        const auto& c = item.contract;
+        if (c.kind == model::StateKind::kRecurrent || c.kind == model::StateKind::kConvolution) {
+          EXPECT_TRUE(p.linear(item.layer)) << c.name;
+          EXPECT_EQ(c.cells, model::CellRule::kFixed) << c.name;
+          EXPECT_EQ(c.rollback, model::Rollback::kCommit) << c.name;
+          continue;
+        }
+        ASSERT_FALSE(p.linear(item.layer)) << item.layer << " " << c.name;
+        EXPECT_EQ(c.rollback, model::Rollback::kSnapshot) << c.name;
+        if (c.name == "k" || c.name == "v") {
+          EXPECT_EQ(c.cell_bytes, kv);
+          ++attention;
+        } else if (c.name == "indexer_k") {
+          EXPECT_EQ(c.cell_bytes, index);
+        } else {
+          ASSERT_EQ(c.name, "indexer_blocks");
+          EXPECT_EQ(c.cell_bytes, block);
+          EXPECT_EQ(c.window_or_ratio, p.indexer_ratio);
+        }
+      }
+      std::uint32_t attention_layers = 0;
+      for (std::uint32_t il = 0; il < p.layers; ++il) attention_layers += p.linear(il) ? 0 : 1;
+      EXPECT_EQ(attention, 2 * attention_layers);
+      const model::StateLayoutDerived::Item* streams = nullptr;
+      for (const auto& item : d->items)
+        if (item.contract.target_writes) {
+          ASSERT_EQ(streams, nullptr) << "one tensor the target writes";
+          streams = &item;
+        }
+      ASSERT_NE(streams, nullptr);
+      ASSERT_EQ(streams->contract.kind, model::StateKind::kFeatures);
+      ASSERT_EQ(streams->contract.cell_bytes, stream);
+      const std::uint64_t carried = streams->contract.window_or_ratio;
+      ASSERT_EQ(carried, 1U);
+      // Its linear layers' state needs the commit.
+      EXPECT_FALSE(model::WritesFor(*t, 0, 4).has_value());
+      for (const std::uint32_t past : {0U, 1U, 62U, 63U, 64U, 65U, 127U, 1000U, context - 8}) {
+        for (std::uint32_t rows = 1; rows <= 8; ++rows) {
+          std::vector<std::vector<model::StateRange>> want_target(rows), want_drafter(rows);
+          for (std::uint32_t i = 0; i < rows; ++i) {
+            const std::uint64_t position = std::uint64_t{past} + i;
+            for (const auto& item : t->items) {
+              const auto& c = item.contract;
+              if (c.name == "k" || c.name == "v") {
+                want_target[i].push_back({.offset = item.offset + (position * kv), .bytes = kv});
+              } else if (c.name == "indexer_k") {
+                want_target[i].push_back(
+                    {.offset = item.offset + (position * index), .bytes = index});
+              } else if (c.name == "indexer_blocks" && (position + 1) % p.indexer_ratio == 0) {
+                want_target[i].push_back(
+                    {.offset = item.offset + ((position / p.indexer_ratio) * block),
+                     .bytes = block});
+              }
+            }
+            want_drafter[i].push_back(
+                {.offset = streams->offset + ((carried + i) * stream), .bytes = stream});
+          }
+          want_drafter[0].push_back({.offset = streams->offset, .bytes = carried * stream});
+          auto got = model::WritesFor(*t, past, rows, {.commits = true, .drafter = false});
+          auto into = model::WritesFor(*d, past, rows, {.commits = false, .drafter = true});
+          ASSERT_TRUE(got) << got.error();
+          ASSERT_TRUE(into) << into.error();
+          // The linear layers' state is the commit's (kCommit): not saved.
+          EXPECT_TRUE(got->scratch.empty());
+          EXPECT_TRUE(into->scratch.empty());
+          ASSERT_EQ(got->rows.size(), rows);
+          ASSERT_EQ(into->rows.size(), rows);
+          const auto sorted = [](std::vector<model::StateRange> v) {
+            std::ranges::sort(v, {}, &model::StateRange::offset);
+            return v;
+          };
+          for (std::uint32_t i = 0; i < rows; ++i) {
+            const auto what = std::format("{} verify {}+{} row {} (context {})",
+                                          drafter_mapping->stage, past, rows, i, context);
+            const auto a = sorted(got->rows[i]), b = sorted(want_target[i]);
+            ASSERT_EQ(a.size(), b.size()) << what;
+            for (std::size_t k = 0; k < a.size(); ++k) {
+              EXPECT_EQ(a[k].offset, b[k].offset) << what;
+              EXPECT_EQ(a[k].bytes, b[k].bytes) << what;
+            }
+            const auto c = sorted(into->rows[i]), e = sorted(want_drafter[i]);
+            ASSERT_EQ(c.size(), e.size()) << what << " streams";
+            for (std::size_t k = 0; k < c.size(); ++k) {
+              EXPECT_EQ(c[k].offset, e[k].offset) << what << " streams";
+              EXPECT_EQ(c[k].bytes, e[k].bytes) << what << " streams";
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 // Each layer's component kinds.
 std::vector<std::vector<std::string>> Kinds(const spec::Stage& s) {
   std::vector<std::vector<std::string>> out;

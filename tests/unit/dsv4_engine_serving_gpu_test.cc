@@ -24,11 +24,11 @@
 // - the fixed prompt's head and greedy tokens against what the engine
 //   gave on the M3.6 reference run.
 //
-// DeepSeek's serving admission is the paid diagnostic tuple (the service's
-// LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto and _NODE_CAP_BYTES, applied as the
-// service applies them); without it the
-// build refuses. Every test needs roughly 116 GiB of headroom on a quiet
-// host. A missing artifact skips with its reason.
+// Every server here takes the ordinary defaults (no LLMP_DIAGNOSTIC_*
+// tuple): the automatic startup payment against the node's measured
+// headroom; one (the logit-row case) takes the speed gate's diagnostic
+// tuple instead, `auto` under a 112 GiB cap, as the service applies it. Every test needs roughly
+// 116 GiB of headroom on a quiet host. A missing artifact skips with its reason.
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
@@ -74,8 +74,8 @@ namespace fs = std::filesystem;
 constexpr const char* kTarget = "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
 constexpr const char* kDrafter = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
 constexpr std::uint32_t kVocab = 129280;
-// The paid diagnostic envelope the M3.6 gates ran under: the node's cap
-// (112 GiB, 2 MiB aligned) and the automatic startup host payment.
+// The speed gate's diagnostic tuple (its NEW arm): the node's cap (112 GiB,
+// 2 MiB aligned) with the automatic startup payment.
 constexpr const char* kNodeCap = "120259084288";
 
 bool Same(const std::vector<float>& a, const std::vector<float>& b) {
@@ -148,6 +148,7 @@ class Dsv4EngineBase : public testing::Test {
     std::uint32_t chunk = 4096;
     std::uint32_t slots = 2;
     bool lookahead = true;
+    bool diagnostic_tuple = false;  // the speed gate's `auto` + cap
   };
   struct Lifetime {
     cfg::NodeConfig config;
@@ -202,11 +203,13 @@ class Dsv4EngineBase : public testing::Test {
     entry.overrides["prefill_chunk"] = std::int64_t{shape.chunk};
     entry.overrides["max_slots"] = std::int64_t{shape.slots};
     life->config.models.push_back(entry);
-    life->options = {};
-    // The paid diagnostic tuple, as the service applies its environment.
-    if (auto r = rt::ApplyServiceDiagnostics(life->options, "all", "auto", kNodeCap, std::nullopt);
-        !r)
-      return std::unexpected(r.error());
+    life->options = {};  // the service's defaults
+    if (shape.diagnostic_tuple) {
+      if (auto r =
+              rt::ApplyServiceDiagnostics(life->options, "all", "auto", kNodeCap, std::nullopt);
+          !r)
+        return std::unexpected(r.error());
+    }
     life->options.dsv4_prefill_lookahead = shape.lookahead;
     life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, log);
     if (auto r = life->server->Start(true); !r) return r;
@@ -391,7 +394,9 @@ TEST_F(Dsv4EngineDspark, PlainTokensAndRowsAgreeWithDspark) {
 // A logit row is the model's logit width (the swap table's continuation
 // check, rt::CompleteContinuationRows), not the tokenizer's.
 TEST_F(Dsv4EngineTarget, LogitRowsAreTheModelsWidthAndContinuationRowsComplete) {
-  const auto started = Start({}, 1);
+  Shape shape;
+  shape.diagnostic_tuple = true;  // the speed gate's NEW arm's admission
+  const auto started = Start(shape, 1);
   ASSERT_TRUE(started) << (started ? "" : started.error());
   ASSERT_EQ(model->logit_width(), kVocab);
   HostFunding funding(life->server->node());
@@ -774,16 +779,14 @@ TEST_F(Dsv4EngineTarget, PrefillLookaheadOnAndOffGiveTheSameHeadsAndState) {
   EXPECT_EQ(arms[0].state_lone, arms[1].state_lone);
 }
 
-// KNOWN DEFECT, found writing this file (reported, not fixed here): a
-// prefill_chunk override below the default's makes the first chunk of a
-// prompt fail at its bind, "the step's scratch (36700160 bytes) exceeds the
-// pool (34603008 bytes)", at every chunk from 256 to 1,024 rows, one and
-// two slots, 3,072 and 8,704 context, always the same two numbers, so the
-// pool is not sized by the chunk (ModelRunner::Setup sizes it from the
-// setup shapes, component_build.cc: a chunk's rows at the end of the
-// context, a decode row, ...). The default 4,096-row chunk's pool is larger
-// than the step needs. Enable when the pool covers it.
-TEST_F(Dsv4EngineTarget, DISABLED_ASmallPrefillChunkServesItsFirstChunk) {
+// A prefill_chunk override below the default's serves its first chunk. It
+// failed at its bind, "the step's scratch (36700160 bytes) exceeds the pool
+// (34603008 bytes)", at every chunk from 256 to 1,024 rows: the setup shapes
+// measured 35 MiB, the pool took a quarter's margin (44 MiB), and the
+// launch's four concurrent lanes then carved min(4 MiB, pool / 16) each from
+// it, more than the margin. The runner now sizes the pool with the launch's
+// reserve beside the measured need (RunnerConfig::launch_pool_reserve).
+TEST_F(Dsv4EngineTarget, ASmallPrefillChunkServesItsFirstChunk) {
   Shape shape;
   shape.chunk = 512;
   const auto started = Start(shape, 1);

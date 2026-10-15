@@ -1014,6 +1014,23 @@ TEST(StartupHostAllowanceTest, RefusesBeforeNodeOrMetadataEffects) {
   EXPECT_FALSE(CheckStartupHostAllowance(2 * gib, ~std::uint64_t{0}, ~std::uint64_t{0}));
 }
 
+TEST(StartupHostAllowanceTest, OrdinaryBudgetComesFromMeasuredMemory) {
+  using llmp::runtime::OrdinaryStartupBudget;
+  constexpr std::uint64_t gib = std::uint64_t{1} << 30U;
+  constexpr std::uint64_t extent = std::uint64_t{2} << 20U;
+  auto budget = OrdinaryStartupBudget(2, 116 * gib + extent + 5);
+  ASSERT_TRUE(budget) << budget.error();
+  EXPECT_EQ(budget->cap, 110 * gib + extent);  // the margin left, whole extents
+  EXPECT_EQ(budget->parser_loan, *llmp::runtime::StartupBootstrapBytes(2));
+  EXPECT_FALSE(OrdinaryStartupBudget(1, 0));  // unknown availability
+  EXPECT_FALSE(OrdinaryStartupBudget(1, llmp::runtime::kUncountedMargin));
+  EXPECT_FALSE(OrdinaryStartupBudget(1, llmp::runtime::kUncountedMargin + extent - 1));
+  EXPECT_FALSE(OrdinaryStartupBudget(0, 116 * gib));
+  EXPECT_EQ(llmp::runtime::MeasuredStartupCeiling(0), 0U);
+  EXPECT_EQ(llmp::runtime::MeasuredStartupCeiling(llmp::runtime::kUncountedMargin + extent),
+            extent);
+}
+
 }  // namespace
 
 TEST(TokenStorage, GrowthFundsBothAllocationsAndRefusalChangesNothing) {

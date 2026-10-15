@@ -262,17 +262,19 @@ void Server::Log(std::string_view text) {
 
 Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index) {
   // A family on the component engine: the adapter of its spec's pipeline
-  // kind, which its architecture's mapping names.
-  const bool solo = options_.diagnostic_component_solo &&
-                    (settings.architecture == "qwen4exp" ||
-                     (options_.diagnostic_component_all && settings.architecture == "deepseek4"));
-  const bool component_existing = options_.diagnostic_component_all && !entry.composition &&
-                                  OnComponentEngine(settings.architecture);
+  // kind, which its architecture's mapping names. Qwen3.8 and DeepSeek V4
+  // serve on the derived shared route (their domain derived from the actual
+  // spec, state and owners), every LLM under the automatic startup payment
+  // by default (Start). The diagnostic selectors only narrow which aliases a
+  // screen admits: the Qwen-only one admits no other LLM.
+  const bool solo = settings.architecture == "qwen4exp" || settings.architecture == "deepseek4";
   const bool component_image = entry.composition && settings.composition;
   if (options_.diagnostic_component_all && !options_.diagnostic_component_solo)
     return Error("the generic component route requires the funded diagnostic selector");
-  if (options_.diagnostic_component_solo && ((!solo && !component_existing && !component_image) ||
-                                             (entry.composition && !component_image)))
+  if (options_.diagnostic_component_solo &&
+      ((!entry.composition && !options_.diagnostic_component_all &&
+        settings.architecture != "qwen4exp") ||
+       (entry.composition && !component_image)))
     return Error(
         "shared diagnostic requires every selected alias to use a qualified component route");
   if (!entry.composition) {
@@ -286,7 +288,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     }
     switch (mapping->pipeline) {
       case spec::PipelineKind::kLlm: {
-        if (options_.diagnostic_auto_startup && !compiler_)
+        if (AutomaticStartup() && !compiler_)
           compiler_ = std::make_shared<engine::SharedCompilerAllowance>();
         auto llm = std::make_unique<EngineLlm>(
             node_, entry, settings, roles_, index,
@@ -295,9 +297,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                 {.target_policy = {},
                  .diagnostic_solo = solo,
                  .capture_first_verify = options_.diagnostic_capture_first_verify,
-                 .automatic_startup_cap = options_.diagnostic_auto_startup
-                                              ? options_.diagnostic_budget_cap_bytes.value_or(0)
-                                              : 0,
+                 .automatic_startup_cap = AutomaticStartup() ? startup_cap_ : 0,
                  .shared_compiler = compiler_,
                  .prefill_lookahead =
                      settings.architecture == "deepseek4" ? options_.dsv4_prefill_lookahead : true,
@@ -348,17 +348,15 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                     entry.name));
     return {};
   }
-  auto parser =
-      options_.diagnostic_auto_startup
-          ? StartupBootstrapBytes(config_.models.size())
-          : std::expected<std::uint64_t, std::string>(options_.diagnostic_startup_host_bytes);
-  const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
-  if (!parser || !*parser || cap == 0)
+  // Start prepaid the readers' loan (automatic, the default, or a
+  // diagnostic's explicit bytes) under its execution ceiling.
+  if (startup_parser_loan_ == 0 || startup_cap_ == 0)
     return Error("image serving requires paid startup host memory");
   models_.push_back(std::make_unique<EngineImage>(
       node_, entry, settings, index,
       ComponentImageServingBuild(node_, roles_.installed, *entry.composition, index,
-                                 options_.image_prompt, options_.image_noise, *parser, cap)));
+                                 options_.image_prompt, options_.image_noise, startup_parser_loan_,
+                                 startup_cap_)));
   return {};
 }
 
@@ -403,9 +401,9 @@ Status Server::Start(bool snapshot) {
   }
   std::optional<catalog::ExtentId> bootstrap;
   std::uint64_t startup_allowance = options_.diagnostic_startup_host_bytes;
-  if (options_.diagnostic_auto_startup) {
-    if (!options_.diagnostic_component_solo || options_.diagnostic_startup_host_bytes != 0)
-      return Error("automatic startup requires its exclusive shared diagnostic mode");
+  if (AutomaticStartup()) {
+    if (options_.diagnostic_startup_host_bytes != 0)
+      return Error("automatic startup takes no explicit startup host bytes");
     // The already parsed configuration is caller-owned. Its actual capacities
     // bound the copied entries/settings; no reopening or file-size estimate.
     std::uint64_t configured = 0;
@@ -441,7 +439,7 @@ Status Server::Start(bool snapshot) {
   }
   const auto& prepared = options_.diagnostic_prepared_images;
   if (!prepared.empty()) {
-    if (!node_.open_for_setup() || options_.diagnostic_auto_startup || startup_allowance == 0 ||
+    if (!node_.open_for_setup() || AutomaticStartup() || startup_allowance == 0 ||
         prepared.size() > config_.models.size())
       return Error("prepared images require an opened stopped node and separate startup payment");
     for (std::size_t i = 0; i < prepared.size(); ++i) {
@@ -472,10 +470,17 @@ Status Server::Start(bool snapshot) {
   bool prepaid = false;
   if (const auto bytes = startup_allowance; bytes != 0) {
     const auto available = MemorySampler::Available();
-    const auto headroom =
-        available > kUncountedMargin ? (available - kUncountedMargin) / kExtent * kExtent : 0;
-    const auto cap = std::min(options_.diagnostic_budget_cap_bytes.value_or(0), headroom);
+    // The ordinary route's ceiling is the node's measured headroom (D-102);
+    // a diagnostic cap only lowers it. Unknown availability refuses.
+    const auto ceiling = MeasuredStartupCeiling(available);
+    if (AutomaticStartup() && ceiling == 0)
+      return Error("startup needs known physical memory past the uncounted margin");
+    const auto cap = options_.diagnostic_budget_cap_bytes
+                         ? std::min(*options_.diagnostic_budget_cap_bytes, ceiling)
+                         : (AutomaticStartup() ? ceiling : 0);
     if (auto check = CheckStartupHostAllowance(bytes, cap, available); !check) return check;
+    startup_parser_loan_ = bytes;
+    startup_cap_ = cap;
     if (prepared.empty()) {
       if (auto opened = node_.Open(); !opened) return opened;
     }
@@ -494,7 +499,7 @@ Status Server::Start(bool snapshot) {
     const auto after = node_.catalog().OccupancyOf(node_.domain()).Total().value();
     if (after < before || after - before != bytes)
       return Error("startup host allowance has no physical occupancy");
-    if (options_.diagnostic_auto_startup) bootstrap = *extent;
+    if (AutomaticStartup()) bootstrap = *extent;
     prepaid = true;
   }
   // The parser loan above also covers this bounded alias/owner snapshot. Shared
@@ -677,12 +682,10 @@ Status Server::Start(bool snapshot) {
   const std::uint64_t step_plans = plans;
   plans_ = plans + engine::ScratchArenaBytes();
   plans = plans_;
-  const auto measured_available = MemorySampler::Available();
-  if (allowance && measured_available <= allowance)
-    return Error("startup host allowance exhausts physical headroom");
-  // Conservatively subtract the whole allowance even when part is already
-  // reflected in MemAvailable; its unused reservation is not free capacity.
-  const std::uint64_t available = measured_available - allowance;
+  // The startup payments are catalog occupancy now, inside fixed_, which
+  // the budget below counts beside this availability: counted once, there,
+  // not subtracted from the measured availability as well.
+  const std::uint64_t available = MemorySampler::Available();
   MemoryGuard bounds = {.largest = largest,
                         .host_inputs = host_inputs,
                         .plans = plans,
@@ -728,9 +731,8 @@ Status Server::Start(bool snapshot) {
     const auto requested = *options_.diagnostic_budget_cap_bytes;
     // An automatic startup ceiling cannot enlarge ordinary admission. Keep
     // extent alignment when current measured headroom selects a smaller budget.
-    const auto cap = options_.diagnostic_auto_startup
-                         ? std::min(requested, dynamic_budget_ / kExtent * kExtent)
-                         : requested;
+    const auto cap =
+        AutomaticStartup() ? std::min(requested, dynamic_budget_ / kExtent * kExtent) : requested;
     if (auto checked = CheckDiagnosticBudgetCap(bounds, dynamic_budget_, cap, reserve * kExtent);
         !checked)
       return std::unexpected(checked.error());

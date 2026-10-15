@@ -1770,6 +1770,11 @@ class Server {
   const ServingOptions& options_;
   // Retain admitted source owners independently of mutable caller options.
   std::vector<std::shared_ptr<const PreparedImageGeneration>> prepared_images_;
+  // Start's prepaid parser loan and the execution ceiling it was admitted
+  // under (a diagnostic cap, else the node's measured memory): what an image
+  // source's readers and construction are bounded by before the node runs.
+  std::uint64_t startup_parser_loan_ = 0;
+  std::uint64_t startup_cap_ = 0;
   std::FILE* log_;
   MemorySampler memory_;
   ResidentTimes times_;
@@ -1792,6 +1797,16 @@ class Server {
   engine::PagedNode node_;
   // Outlives model sources; its one extent remains pinned through node teardown.
   std::shared_ptr<engine::SharedCompilerAllowance> compiler_;
+  // Startup's construction payment (Start): automatic, the default, pays a
+  // parser loan and each model's construction (an LLM's inventory, an image
+  // source's retained metadata) against startup_cap_, the node's measured
+  // headroom (memory_guard.h MeasuredStartupCeiling) or a diagnostic cap
+  // below it; explicit diagnostic startup bytes select the fixed prepayment
+  // instead.
+  bool AutomaticStartup() const {
+    return options_.diagnostic_auto_startup || (options_.diagnostic_startup_host_bytes == 0 &&
+                                                options_.diagnostic_prepared_images.empty());
+  }
   std::vector<std::unique_ptr<Served>> models_;
   Served* resident_ = nullptr;
   // Extra closure protection during a switch/rollback, also honored by

@@ -12,12 +12,14 @@
 #include "model/qwen_image.h"
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -274,7 +276,8 @@ TEST(QwenImage, BindsV1Artifact) {
   namespace ts = llmp::test;
   namespace fmt = llmp::format;
   const std::filesystem::path store =
-      std::filesystem::temp_directory_path() / "llmp-test-qwen-image-v1";
+      std::filesystem::temp_directory_path() /
+      std::format("llmp-test-qwen-image-v1-{}", ::getpid());  // one per process
   std::error_code error;
   std::filesystem::remove_all(store, error);
 

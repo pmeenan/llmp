@@ -512,11 +512,13 @@ and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profi
 - **Impact:** any context × rows product past 2^29 cells in F32 trips it
   until the pin includes #29227; a sparse attention path with block
   tables instead of dense masks and expanded scores removes the tensors
-  ([long-context](experiments/long-context/README.md)). Since phase 2
-  Qwen3.8's default (fast) graph builds none of them, so its chunks are no
-  longer bounded (the runtime's 4,096 rows at 262,144); the bound stays
-  for its reference and unfused graphs, and the graph builder refuses a
-  chunk of theirs past it. The executor's
+  ([long-context](experiments/long-context/README.md)). The M3 Qwen3.8
+  fast graph built none of them, so its chunks went unbounded; the shared
+  engine's QSA selection (`components/qsa.cc`) builds F32 [read cells,
+  rows] masks and spread scores again, so since M3.6 the serving build
+  bounds Qwen3.8's chunk by `Qwen38MostRows` once more (2,040 rows at
+  262,144; found 2026-10-15, when Qwen3.8 at its default context failed
+  its graph's verification). The executor's
   refusal now names the refused node and its operand, with shapes and
   strides, which is how the second one was found.
 

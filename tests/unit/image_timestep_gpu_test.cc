@@ -630,7 +630,8 @@ en::Status Execute(Lifetime& life) {
 }
 TEST(ImageTimestepGpuTest, CompleteSourceConditioningBranchesReplayChangedInputs) {
   const auto* path = std::getenv("LLMP_TEST_DENOISER_ARTIFACT");
-  ASSERT_NE(path, nullptr);
+  if (path == nullptr)
+    GTEST_SKIP() << "needs LLMP_TEST_DENOISER_ARTIFACT (an installed Qwen-Image denoiser artifact)";
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
   auto setup = SetupFixture(*life, path);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");
@@ -674,7 +675,8 @@ TEST(ImageTimestepGpuTest, CompleteSourceConditioningBranchesReplayChangedInputs
 }
 TEST(ImageTimestepGpuTest, CompleteSourceBlockConsumesConditioningAndReplaysChangedInputs) {
   const auto* path = std::getenv("LLMP_TEST_DENOISER_ARTIFACT");
-  ASSERT_NE(path, nullptr);
+  if (path == nullptr)
+    GTEST_SKIP() << "needs LLMP_TEST_DENOISER_ARTIFACT (an installed Qwen-Image denoiser artifact)";
   std::unique_ptr<Lifetime, Retire> life(new Lifetime(true));
   auto setup = SetupFixture(*life, path);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");
@@ -724,7 +726,8 @@ TEST(ImageTimestepGpuTest, CompleteSourceBlockConsumesConditioningAndReplaysChan
 }
 TEST(ImageTimestepGpuTest, Complete32BlockSourceFlowAndEulerReplayChangedInputs) {
   const auto* path = std::getenv("LLMP_TEST_DENOISER_ARTIFACT");
-  ASSERT_NE(path, nullptr);
+  if (path == nullptr)
+    GTEST_SKIP() << "needs LLMP_TEST_DENOISER_ARTIFACT (an installed Qwen-Image denoiser artifact)";
   std::unique_ptr<Lifetime, Retire> life(new Lifetime(false, true));
   auto setup = SetupFixture(*life, path);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");

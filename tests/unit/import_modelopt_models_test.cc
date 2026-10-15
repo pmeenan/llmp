@@ -390,8 +390,9 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   const char* configured = std::getenv("LLMP_TEST_MODELOPT_SOURCE");
   // NOLINTNEXTLINE(concurrency-mt-unsafe): read-only test environment.
   const char* destination = std::getenv("LLMP_TEST_MODELOPT_PUBLICATION_STORE");
-  ASSERT_NE(configured, nullptr);
-  ASSERT_NE(destination, nullptr);
+  if (configured == nullptr || destination == nullptr)
+    GTEST_SKIP() << "the confined publication recipe needs LLMP_TEST_MODELOPT_SOURCE and "
+                    "LLMP_TEST_MODELOPT_PUBLICATION_STORE";
   ASSERT_EQ(OwnMemoryMax(), kCombined);
   const auto memory = platform::ReadMemoryPressure();
   ASSERT_TRUE(memory.available);

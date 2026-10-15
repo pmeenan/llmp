@@ -43,15 +43,17 @@ bool OnComponentEngine(std::string_view architecture);
 // (planner/policy.h), in place of its mapping's default.
 struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
-  // Qwen and DeepSeek serve only through this funded shared route.
-  // Explicit diagnostic domains retain their closed envelopes. Automatic
-  // service admission derives the domain and payment from its actual source,
-  // state, decoding mode and configured owners. Public defaults stay unchanged.
+  // Qwen3.8 and DeepSeek V4 serve only through this shared route (Server
+  // sets it for them by default). Explicit diagnostic domains retain their
+  // closed envelopes. Automatic service admission derives the domain and
+  // payment from its actual source, state, decoding mode and configured
+  // owners.
   bool diagnostic_solo = false;
   // Default-off capture scheduling experiment; numerical policy is unchanged.
   bool capture_first_verify = false;
-  // Nonzero only under the Server's admitted metadata bootstrap loan.
-  // Derive and pin this source's construction budget before graph construction.
+  // Nonzero only under the Server's admitted metadata bootstrap loan (its
+  // default automatic startup): the node's startup execution cap. Derive and
+  // pin this source's construction budget before graph construction.
   std::uint64_t automatic_startup_cap = 0;
   // One driver-owned transient compiler payment across automatic aliases.
   // Sources retain this owner; per-alias source/spec/chat storage stays separate.
@@ -68,10 +70,10 @@ struct ComponentBuildOptions {
   // this. An explicit complete domain requires the real backend declaration;
   // supplied tuning owns all names and never supplies provider device facts.
   std::shared_ptr<const engine::NumericalDomain> execution_domain{};
-  // Internal serving qualification: derive the complete ordinary or composed domain from
-  // the actual spec, state layouts and configured envelope. The existing
-  // metadata allowance pays before construction; an explicit domain cannot
-  // be combined with this request. No new public setting or default admission.
+  // Derive the complete ordinary or composed domain from the actual spec,
+  // state layouts and configured envelope (Server's default for Qwen3.8 and
+  // DeepSeek V4). The existing metadata allowance pays before construction;
+  // an explicit domain cannot be combined with this request.
   bool derive_execution_domain = false;
   std::shared_ptr<const planner::OwnedDeviceFacts> tuning{};
   // Paid once in the node catalog, before declaration construction. The build

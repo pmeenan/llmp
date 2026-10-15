@@ -549,7 +549,8 @@ en::Status Execute(Lifetime& life) {
 
 TEST(ImageWholeVaeGpuTest, CompleteFirstFrameUsesSharedProgramsAndCompletedReplay) {
   const auto* path = std::getenv("LLMP_TEST_VAE_ARTIFACT");
-  ASSERT_NE(path, nullptr);
+  if (path == nullptr)
+    GTEST_SKIP() << "needs LLMP_TEST_VAE_ARTIFACT (an installed Qwen-Image VAE artifact)";
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
   auto setup = SetupFixture(*life, path);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");

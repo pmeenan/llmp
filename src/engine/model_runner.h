@@ -186,6 +186,10 @@ struct RunnerConfig {
   std::function<void()> retire;
   // The step launch, made at Bind (after the workspace is mapped).
   std::function<std::expected<std::unique_ptr<kernels::StepLaunch>, std::string>()> launch;
+  // What `launch` sets apart of the pool for itself (GGML's concurrent
+  // lanes), at most: added to the pool the setup shapes measured (with its
+  // margin), so what a step draws from the rest never shrinks below it.
+  std::uint64_t launch_pool_reserve = 0;
   // A weight's address by role and part (the spec's binding to the
   // weights); unset: 0, for sources that bind none.
   std::function<std::uint64_t(const ir::WeightRef&, format::PartRole)> weight_address;

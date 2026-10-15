@@ -41,11 +41,12 @@ it overstated. Corrections, in force until the closeout lands:
   - Step 1 below (the `deepseek` C2 decode gate) is resolved by `495a1cdb`. The
     frozen baseline binary is the old arm, so deleting the legacy runner does not
     block measurement.
-  - **OPEN closeout item:** DeepSeek and Qwen3.8 serving still needs the funded
-    diagnostic tuple (`LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES`,
-    `LLMP_DIAGNOSTIC_NODE_CAP_BYTES`); without it registration refuses. The
-    `LLMP_DIAGNOSTIC_COMPONENT_ENGINE` selector is gone (the tuple implies it), so
-    gate commands no longer pass it.
+  - **RESOLVED (`m36-runtime-fix`):** DeepSeek and Qwen3.8 serving needed the
+    funded diagnostic tuple (`LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES`,
+    `LLMP_DIAGNOSTIC_NODE_CAP_BYTES`); every LLM now registers under the
+    automatic startup payment by default, and the tuple is an optional
+    override. The `LLMP_DIAGNOSTIC_COMPONENT_ENGINE` selector is gone, so gate
+    commands no longer pass it.
   - **DONE (`88eb0da4`):** DeepSeek's serving GPU coverage is ported to the
     shared engine (`Dsv4EngineServing`), replacing what the legacy runner's
     serving tests held. The legacy A/B screen was deleted outright. The

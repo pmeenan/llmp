@@ -393,7 +393,11 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
   if (!paid) return Error(paid.error());
   life->paid = *paid;
   if (!life->paid->Charge(limits.compiler + limits.owner)) return Error("preconstruction payment");
-  life->root = std::filesystem::path("scratch") / "routed-component";
+  // One directory per test: CTest runs this file's tests in parallel from
+  // one working directory, and each removes its artifact when it ends.
+  life->root = std::filesystem::path("scratch") /
+               (std::string("routed-component-") +
+                ::testing::UnitTest::GetInstance()->current_test_info()->name());
   life->spec = Spec(ordered);
   if (auto r = sp::Validate(life->spec); !r) return Error(r.error());
   auto weights = std::make_unique<en::PagedWeights>();

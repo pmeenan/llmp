@@ -467,6 +467,35 @@ budget, not set apart again from the guard's margin, so the DeepSeek
 DSpark beside Qwen3.8 configuration can take one). No weights are paged
 yet.
 
+**Startup's construction payment** (`Server::Start`, `ComponentLlmBuild`,
+`ComponentImageServingBuild`; the default for every model, with no setting
+or environment). Before any artifact is opened, a parser loan
+(`StartupBootstrapBytes`: the configured aliases' readers at their caps)
+is cataloged against the node's measured headroom, MemAvailable less the
+6 GiB margin in whole 2 MiB extents (`MeasuredStartupCeiling`); unknown
+availability refuses the start. Each model's build then pays its
+construction before any graph is built: an LLM one compiler payment
+shared by every alias (a step's construction at the IR's maxima, about
+501 MB; compiles run one at a time on the driver), its retained spec,
+source bindings and chat assets; an image composition its retained
+source metadata. The loan is retired once every model holds its payment;
+the payments stay catalog occupancy, inside the fixed memory the budget
+counts. Gemma's ordinary starts pay this too since 2026-10-15 (they paid
+nothing before). Each lowering's graph reader index is held to the
+128 MiB the payment includes. On `spark-b` (2026-10-15), the largest
+single compile grew the resident set by 40.3 MB (DeepSeek V4 with DSpark;
+Qwen3.8 22.3, Gemma 4 23.6, Gemma 2 and 3 under 9), the largest reader
+index was 26.9 MB (DeepSeek), and no model's setup grew it by more than
+64 MB past its cataloged extents, against retained payments of 187 to
+384 MB. Qwen3.8 and DeepSeek V4 serve on the shared derived route; their
+execution domain is derived from the actual spec, state layouts and
+owners, except Qwen3.8 with its MTP drafter at one request slot, which
+plans without a declared execution domain. The internal
+`LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES` and `LLMP_DIAGNOSTIC_NODE_CAP_BYTES`
+pair is an override for matched controls only: explicit startup bytes
+select a fixed prepayment, and the cap lowers the ceiling (an automatic
+start holds a cap past the ordinary budget to it); serving never needs it.
+
 **The reclaim order** (`Server::Reclaim`, `memory/reclaim.h`; D-055 as
 amended 2026-10-02). Whatever can give memory back goes through one
 order: captured graphs, plans, and idle conversations' state (a branch

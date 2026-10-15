@@ -1062,16 +1062,41 @@ TEST_P(GemmaEngineServingGpu, DiagnosticBudgetCapLeavesDefaultsAndChecksActualAd
   EXPECT_EQ(std::memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)), 0);
   ASSERT_TRUE(Retire());
 
+  // A cap below the startup payment refuses before anything is set up (the
+  // default automatic startup pays its parser loan under the cap first).
   life->options.diagnostic_budget_cap_bytes = 1;
   const auto too_small = Start();
   EXPECT_FALSE(too_small);
   if (!too_small)
-    EXPECT_NE(too_small.error().find("required startup footprint"), std::string::npos);
+    EXPECT_NE(too_small.error().find("startup host allowance"), std::string::npos)
+        << too_small.error();
   ASSERT_TRUE(Retire());
+  // A cap above the startup payment but below the fixed memory and the
+  // largest weights (over 3 GiB): the footprint check at the budget refuses.
+  // (Under the automatic payment the parser loan, an inventory of about 9
+  // GB, must fit the cap first, which is then above this model's
+  // footprint; the fixed prepayment's 32 MiB leaves the check reachable.)
+  life->options.diagnostic_startup_host_bytes = 32ULL << 20U;
+  life->options.diagnostic_budget_cap_bytes = std::uint64_t{2} << 30U;
+  const auto footprint = Start();
+  EXPECT_FALSE(footprint);
+  if (!footprint)
+    EXPECT_NE(footprint.error().find("required startup footprint"), std::string::npos)
+        << footprint.error();
+  ASSERT_TRUE(Retire());
+  life->options.diagnostic_startup_host_bytes = 0;
+  // Automatic startup holds a cap past the ordinary dynamic budget to it.
   life->options.diagnostic_budget_cap_bytes = ~std::uint64_t{0};
+  ASSERT_TRUE(Start());
+  EXPECT_EQ(life->server->budget(), life->server->dynamic_budget() / (2ULL << 20U) * (2ULL << 20U));
+  ASSERT_TRUE(Retire());
+  // The fixed prepayment refuses it.
+  life->options.diagnostic_startup_host_bytes = 32ULL << 20U;
   const auto too_large = Start();
   EXPECT_FALSE(too_large);
-  if (!too_large) EXPECT_NE(too_large.error().find("ordinary dynamic budget"), std::string::npos);
+  if (!too_large)
+    EXPECT_NE(too_large.error().find("ordinary dynamic budget"), std::string::npos)
+        << too_large.error();
 }
 
 // Small real adapters exercise Server's shared transaction, not a second

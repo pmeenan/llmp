@@ -80,6 +80,21 @@ std::expected<std::uint64_t, std::string> StartupBootstrapBytes(std::uint64_t al
   return bytes / alignment * alignment;
 }
 
+std::uint64_t MeasuredStartupCeiling(std::uint64_t available) {
+  constexpr std::uint64_t extent = std::uint64_t{2} << 20U;
+  return available > kUncountedMargin ? (available - kUncountedMargin) / extent * extent : 0;
+}
+
+std::expected<StartupBudget, std::string> OrdinaryStartupBudget(std::uint64_t aliases,
+                                                                std::uint64_t available) {
+  auto parser = StartupBootstrapBytes(aliases);
+  if (!parser) return std::unexpected(parser.error());
+  const std::uint64_t cap = MeasuredStartupCeiling(available);
+  if (cap == 0)
+    return std::unexpected("startup needs known physical memory past the uncounted margin");
+  return StartupBudget{.parser_loan = *parser, .cap = cap};
+}
+
 std::expected<void, std::string> CheckStartupHostAllowance(std::uint64_t bytes, std::uint64_t cap,
                                                            std::uint64_t available) {
   constexpr std::uint64_t extent = std::uint64_t{2} << 20U;

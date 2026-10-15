@@ -13,6 +13,22 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Serve Qwen3.8 (native and GGUF), DeepSeek V4 with DSpark and a
+  Qwen-Image-2.1 composition from an ordinary configuration again: since
+  their legacy classes' removal they were refused without the internal
+  `LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES` / `LLMP_DIAGNOSTIC_NODE_CAP_BYTES`
+  pair. Every model now registers under the automatic startup payment by
+  default, its ceiling the node's measured available memory less the
+  uncounted margin; the pair remains an optional diagnostic override. This
+  changes Gemma's admission too: an ordinary Gemma start now pays its
+  construction (a compiler allowance of about 501 MB shared by the aliases,
+  each alias's retained spec, bindings and chat assets) in the catalog, and
+  a start whose available memory is unknown is refused. Qwen3.8 at its default 262,144-token context bounds
+  its prefill chunk by its sparse-attention selection tensors' 32-bit plane
+  strides (2,040 rows) instead of failing to build. A model whose plans run concurrent
+  lanes (DeepSeek) sizes its scratch pool with the lanes' share, so a
+  `prefill_chunk` below the default no longer fails its first chunk ("the
+  step's scratch exceeds the pool").
 - Normalize and publish the approved DeepSeek V4 GGUF target through the native
   importer, preserving source encodings and exclusive embedding/hash-table
   ownership. Validate stored-target full-head, state and spill-continuation

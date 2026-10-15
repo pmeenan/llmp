@@ -70,6 +70,23 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard);
 std::expected<std::uint64_t, std::string> StartupBootstrapBytes(
     std::uint64_t aliases, std::uint64_t configuration_bytes = 0);
 
+// An ordinary startup's budget (no LLMP_DIAGNOSTIC_* ceiling), from the
+// node's real resources only (D-102): the parser loan the configured
+// aliases' readers are bounded by (StartupBootstrapBytes) and the execution
+// ceiling construction is admitted against before Start, the measured
+// physical availability less kUncountedMargin in whole 2 MiB extents.
+// Refused when availability is unknown (0) or leaves nothing past the
+// margin. Once the node runs, its execution budget bounds growth as well.
+struct StartupBudget {
+  std::uint64_t parser_loan = 0;
+  std::uint64_t cap = 0;
+};
+// That ceiling alone: `available` less kUncountedMargin in whole 2 MiB
+// extents; 0 when availability is unknown or leaves no extent.
+std::uint64_t MeasuredStartupCeiling(std::uint64_t available);
+std::expected<StartupBudget, std::string> OrdinaryStartupBudget(std::uint64_t aliases,
+                                                                std::uint64_t available);
+
 // A default-off startup screen prepays host metadata before Setup. Unknown
 // physical availability, unaligned/overflowed allowances and a cap that cannot
 // leave the ordinary driver margin all refuse before opening a node.

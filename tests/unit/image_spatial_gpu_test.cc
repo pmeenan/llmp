@@ -623,7 +623,8 @@ en::Status Execute(Lifetime& life) {
 
 void RunFixture(bool pointwise) {
   const auto* path = std::getenv("LLMP_TEST_VAE_ARTIFACT");
-  ASSERT_NE(path, nullptr);
+  if (path == nullptr)
+    GTEST_SKIP() << "needs LLMP_TEST_VAE_ARTIFACT (an installed Qwen-Image VAE artifact)";
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
   auto setup = SetupFixture(*life, path, pointwise);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");
@@ -891,7 +892,8 @@ en::Status ExecuteTiled(Lifetime& life, bool small) {
 }
 void TiledSourceCase(bool small) {
   const auto* path = std::getenv("LLMP_TEST_VAE_ARTIFACT");
-  ASSERT_NE(path, nullptr);
+  if (path == nullptr)
+    GTEST_SKIP() << "needs LLMP_TEST_VAE_ARTIFACT (an installed Qwen-Image VAE artifact)";
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
   auto setup = SetupFixture(*life, path, false, small ? 7U : 128U, small ? 5U : 128U);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");

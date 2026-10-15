@@ -212,8 +212,14 @@ namespace {
 
 // PlanGraph owns one temporary reader index per synchronous lowering; current
 // and future retained programs do not retain that index. This named category
-// is both paid by automatic construction and enforced before index allocation.
+// is both paid by automatic construction and enforced, for every source,
+// before index allocation (its inventory bound: 1,024 bytes an occurrence).
+// The largest measured (below) is 26.9 MB, DeepSeek V4's.
 constexpr std::uint64_t kServingReaderScratchBytes = 128ULL << 20;
+
+// Each of a launch's concurrent lanes' scratch at most (GGML's
+// ConfigureLanes), carved from the end of the node's pool.
+constexpr std::uint64_t kLaneScratchBytes = 4ULL * 1024ULL * 1024ULL;
 
 // Called under the Server's parser loan after source/schema validation, and
 // before any BuildStep/lowering. Graph maxima are the existing IR contract;
@@ -228,9 +234,19 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
   if (!saves) return Error(saves.error());
   constexpr std::uint64_t nodes = ir::Graph::kMaxNodes;
   constexpr std::uint64_t tensors = ir::Graph::kMaxTensors;
-  // Twelve overlapping graph representations (construction/clone/plan facts
-  // and the current/future compiler), reader indexes, and descriptor arena.
-  // Cache/recording lifetimes still pay PlanAccount independently.
+  // One step's construction at the IR's maxima, whatever the actual graph:
+  // its graph (480 bytes a node and 192 a tensor for the built graph, its
+  // clone and the plan's facts), the lowering's reader index (enforced at
+  // that bound above), and GGML's descriptor arena (a descriptor, its
+  // record and pointer for every tensor, node and saved commit root).
+  // Compiles run one at a time on the driver, so one such payment (shared
+  // across aliases) covers each; what a plan or graph keeps is charged
+  // separately (PlanAccount). Measured on spark-b (2026-10-15, VmHWM reset
+  // before each ComponentStepSource::Build, the largest growth across a
+  // no-diagnostic `llmp-runtime chat` turn of each family; setup shapes
+  // included): DeepSeek V4 + DSpark 40.3 MB, Gemma 4 26B-A4B 23.6 MB, 31B
+  // 20.4 MB, Gemma 3 8.6 MB, Gemma 2 7.1 MB, Qwen3.8 (NVFP4 + MTP, GGUF) 22.2
+  // and 22.3 MB; this charge is about 501 MB.
   std::uint64_t descriptors = tensors + 16 + nodes;
   std::uint64_t extra = 0;
   if (__builtin_mul_overflow(*saves, std::uint64_t{4}, &extra) ||
@@ -248,6 +264,10 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
   bytes = 0;
   // The complete spec and canonical/digest copies, parameter/role maps and
   // retained source bindings. Serialization is still inside the parser loan.
+  // Measured the same way, a model's setup grows the resident set by at
+  // most 64 MB (Gemma 4 31B; DeepSeek 38, Qwen3.8 none) past its cataloged
+  // pinned and runtime extents, against this charge's 187 MB (Gemma 2) to
+  // 384 MB (Gemma 4 31B).
   const auto canonical = spec::ToJson(model);
   if (!add(canonical.size(), 2) || !add(1, std::uint64_t{64} << 20U))
     return Error("component spec construction payment overflows");
@@ -766,9 +786,14 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (!bound) return Error(bound.error());
     if (settings.bound_spec && *settings.bound_spec != *bound)
       return Error("resolved calibration spec differs from the actual component spec");
+    // Qwen3.8's QSA selection builds F32 [read cells, rows] tensors (its
+    // causal selection mask, the spread block scores and the selected mask;
+    // components/qsa.cc), whose plane strides GGML takes in 32 bits
+    // (RE-037): its rows at a long context are bounded as its legacy host
+    // masks' were (262,144 cells: 2,040 rows).
     const auto configured_chunk =
         solo ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
-                                model::Qwen38MostRows(settings.context.value, false))
+                                model::Qwen38MostRows(settings.context.value, true))
         : deepseek_serving
             ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
                                model::Dsv4MostRows(model::Dsv4Flash(), settings.context.value))
@@ -997,9 +1022,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                   // positions before the rows); the device's are made
                   // anyway.
                   .frozen_host_masks = !solo && !deepseek,
-                  .index_scratch_limit = deepseek_serving ? kServingReaderScratchBytes
-                                         : deepseek ? kDsv4ReaderScratchBytes
-                                                    : std::numeric_limits<std::uint64_t>::max(),
+                  // Every source's reader index is bounded by what its
+                  // construction pays (ServingConstructionBytes), the closed
+                  // DeepSeek diagnostic's by its own ceiling.
+                  .index_scratch_limit = deepseek && !deepseek_serving ? kDsv4ReaderScratchBytes
+                                                                       : kServingReaderScratchBytes,
                   .expert_stride = [held](const ir::WeightRef& ref) -> std::uint64_t {
                     const auto at = held->pitch.find(ref);
                     return at == held->pitch.end() ? 0 : at->second;
@@ -1201,18 +1228,20 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       held->backend->LaunchReleased();
       held->cublas.reset();
     };
+    // Concurrent lanes (a joined wave's owner regions on streams of their
+    // own) for the serving plans measured to gain from them, DeepSeek's.
+    // Lanes take their pools from the shared pool's end, so the stream's
+    // own scratch shrinks by kMaxLanes of them: a model that runs lanes sets
+    // them apart beside what its setup shapes measured (the runner's pool
+    // need), and every other model's regions run on its stream.
+    const bool lanes = deepseek_serving;
+    if (lanes) parts.config.launch_pool_reserve = kernels::ggml::kMaxLanes * kLaneScratchBytes;
     parts.config.launch =
-        [&node, held,
-         deepseek_serving]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
+        [&node, held, lanes]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
       auto made =
           held->backend->Launch({.base = node.pool().base, .size = base::Bytes(node.pool().bytes)});
-      if (!made || !deepseek_serving) return made;
-      // Lanes take their pools from the shared pool's end, so the stream's
-      // own scratch shrinks by kMaxLanes of them. Only DeepSeek's serving
-      // plans run lanes (wave regions); every other model's pool is sized to
-      // its stream's scratch alone, and its regions run on the stream.
+      if (!made || !lanes) return made;
       auto* ggml_launch = static_cast<kernels::ggml::GgmlStepLaunch*>(made->get());
-      constexpr std::uint64_t kLaneScratchBytes = 4ULL * 1024ULL * 1024ULL;
       const std::uint64_t lane_bytes =
           std::min<std::uint64_t>(kLaneScratchBytes, node.pool().bytes / 16);
       if (lane_bytes >= 256 * 1024) {
