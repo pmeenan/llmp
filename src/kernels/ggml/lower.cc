@@ -134,6 +134,23 @@ bool PackedProductPair(const ir::Graph& graph, const ir::Node& n) {
          a.ne(3) == 1 && ir::IsContiguous(a) && ir::IsContiguous(b);
 }
 
+bool DirectHcPreCarries(const ir::Graph& graph, const ir::Node& n) {
+  if (n.key != ir::Fused(FusedKind::kDsv4HcPre) || n.nsrc < 1 || n.nout != 3) {
+    return false;
+  }
+  for (const ir::TensorId out : {n.out[1], n.out[2]}) {
+    if (std::ranges::contains(graph.outputs(), out) || std::ranges::contains(graph.keep(), out)) {
+      return false;
+    }
+    for (const ir::Node& reader : graph.nodes()) {
+      for (const ir::TensorId src : reader.sources()) {
+        if (src == out && reader.key != ir::Primitive(Op::kHcPost)) return false;
+      }
+    }
+  }
+  return true;
+}
+
 std::optional<ggml_type> TypeOf(Encoding e) {
   switch (e) {
     case Encoding::kF32:
@@ -2832,8 +2849,13 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   for (const planner::Selected& s : plan_.steps) {
     const std::string_view name = registry_.at(s.implementation).name;
     if (name == kFlashAttnMmaWideName ||
+        (name == kFlashAttnMmaName && s.nodes.size() == 1 &&
+         p_.node(s.nodes.front()).Params<ir::AttnParams>().sparse_any) ||
         (name == "ggml.state_bank_attention" && s.nodes.size() == 1 &&
-         p_.node(s.nodes.front()).Params<ir::AttnParams>().sparse_any))
+         p_.node(s.nodes.front()).Params<ir::AttnParams>().sparse_any &&
+         (!p_.node(s.nodes.front()).source(3).valid() ||
+          p_.node(p_.producer(p_.node(s.nodes.front()).src[3])).key != ir::Primitive(Op::kConcat) ||
+          p_.tensor(p_.node(s.nodes.front()).src[0]).ne(1) > 16)))
       for (const NodeId id : s.nodes)
         for (const ggml_tensor* node : launched_.at(id.v)) wide_attention.insert(node);
     choices.fuse_norms = choices.fuse_norms || name == kRmsNormMulFused;
@@ -2880,15 +2902,16 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     }
   }
   if (dsv4_fast) {
+    const bool draft = in_.token && in_.token->shape.stage != 0;
     choices.vector_floats = true;
-    choices.d2r_experts = true;
+    choices.d2r_experts = !draft;
     choices.pair_experts = true;
-    choices.compact_experts = in_.token && in_.token->shape.rows() >= kDsv4CompactMinRows;
+    choices.compact_experts = !draft && in_.token && in_.token->shape.rows() >= kDsv4CompactMinRows;
     choices.pair_glu = choices.compact_experts;
     choices.pair_glu_q8 = choices.compact_experts;
-    choices.dense_pair = true;
-    choices.hc_post_experts = true;
-    choices.outa_fast_pack = true;
+    choices.dense_pair = !draft;
+    choices.hc_post_experts = !draft;
+    choices.outa_fast_pack = !draft;
   }
   for (const TensorId t : p_.outputs()) out_.keep.push_back(made_.at(t.v));
   for (const TensorId t : p_.keep()) out_.keep.push_back(made_.at(t.v));
@@ -3772,6 +3795,16 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
                                        kDsv4HcTail * sizeof(float), tail + 4 * sizeof(float));
       Node(normed, id);
       Node(post, id);
+      const bool placed_carries = std::ranges::any_of(plan_.placement.offsets, [&](const auto& p) {
+        return p.first == n.out[1] || p.first == n.out[2];
+      });
+      if (!placed_carries && DirectHcPreCarries(p_, n)) {
+        Node(comb, id);
+        set(0, normed);
+        set(1, post);
+        set(2, comb);
+        return {};
+      }
       ggml_tensor* post_packed = ggml_cont(c_, post);
       Node(post_packed, id);
       Node(comb, id);
@@ -4792,7 +4825,8 @@ ir::TensorId WithinRoot(const ir::Graph& graph, ir::TensorId root) {
   const bool blob =
       n.key == ir::Fused(FusedKind::kHcPrep) || n.key == ir::Fused(FusedKind::kHcFold) ||
       n.key == ir::Fused(FusedKind::kMoeRouter) || n.key == ir::Fused(FusedKind::kGdnGates) ||
-      n.key == ir::Primitive(Op::kGatedDeltaNet) || SelectedRoutePlane(graph, n) != 0;
+      n.key == ir::Primitive(Op::kGatedDeltaNet) || SelectedRoutePlane(graph, n) != 0 ||
+      DirectHcPreCarries(graph, n);
   if (blob && n.nout > 1 && root != n.out[0]) return n.out[0];
   // A preparation into MXFP8 rows of a gated norm's result alone (through
   // its reshape): llmp.gdn.norm_gate writes the rows in the norm's place.

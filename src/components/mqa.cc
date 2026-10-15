@@ -495,7 +495,8 @@ class Emitter {
     std::uint64_t dim;
     bool hadamard;
   };
-  void Compressor(const Comp& c);
+  void Compressor(const Comp& c, std::size_t s);
+  void StoreWindow(std::size_t s);
   ir::TensorId Query();
   ir::TensorId Key();
   ir::TensorId IndexerQueries();
@@ -521,7 +522,7 @@ ir::TensorId Emitter::Hadamard(ir::TensorId t, std::uint64_t n) {
   return b_.Reshape(product, Shape({td.ne(0), td.ne(1), td.ne(2), td.ne(3)}));
 }
 
-void Emitter::Compressor(const Comp& c) {
+void Emitter::Compressor(const Comp& c, std::size_t s) {
   const ir::TensorId x = f_.stream;
   const std::uint32_t ratio = d_.ratio;
   const bool overlap = c.cache == kIndex || d_.overlap;
@@ -530,7 +531,7 @@ void Emitter::Compressor(const Comp& c) {
   const ir::RopeParams rope = Rotation(d_, dim);
   ir::TensorId kv = c.cache == kIndex ? idx_kv_ : comp_kv_;
   ir::TensorId score = c.cache == kIndex ? idx_score_ : comp_score_;
-  for (std::size_t s = 0; s < f_.step.segments().size(); ++s) {
+  {
     const SegmentRows& seg = f_.step.segments()[s];
     b_.SetOwner(static_cast<std::uint8_t>(s));
     const CellKey ring = KeyOf(s, c.ring_kv);
@@ -603,6 +604,20 @@ void Emitter::Compressor(const Comp& c) {
     b_.SetJoined();
     (void)seg;
   }
+}
+
+void Emitter::StoreWindow(std::size_t s) {
+  const ir::TensorDesc kd = Desc(b_, kv_);
+  const SegmentRows& seg = f_.step.segments()[s];
+  b_.SetOwner(static_cast<std::uint8_t>(s));
+  const format::Shape shape = Shape({d_.d, seg.rows});
+  ir::TensorId rows_of = b_.View(kv_, shape, ViewStrides(kd.nb[0], kd.nb[2], 0, shape),
+                                 std::uint64_t{seg.first_row} * kd.nb[2]);
+  if (d_.kv_encoding == Encoding::kQ8_0 && b_.tensor(rows_of).format.encoding != Encoding::kF32) {
+    rows_of = b_.Convert(rows_of, Encoding::kF32);
+  }
+  b_.CacheStore(f_.State(s, kWindowKv), rows_of, f_.step.StoreCells(s, KeyOf(s, kWindowKv)));
+  b_.SetJoined();
 }
 
 ir::TensorId Emitter::Query() {
@@ -763,6 +778,26 @@ std::expected<ir::TensorId, std::string> Emitter::Attend(std::size_t s) {
 std::expected<FragmentOut, std::string> Emitter::Emit() {
   const std::uint64_t rows = f_.step.rows();
   const auto segments = f_.step.segments();
+  const Comp comp_c{.kv = kCompKv,
+                    .gate = kCompGate,
+                    .ape = kCompApe,
+                    .norm = kCompNorm,
+                    .cache = kCompressed,
+                    .ring_kv = kCompressedKv,
+                    .ring_score = kCompressedScore,
+                    .dim = d_.d,
+                    .hadamard = false};
+  const Comp idx_c{.kv = kIdxKv,
+                   .gate = kIdxGate,
+                   .ape = kIdxApe,
+                   .norm = kIdxNorm,
+                   .cache = kIndex,
+                   .ring_kv = kIndexKv,
+                   .ring_score = kIndexScore,
+                   .dim = d_.idim,
+                   .hadamard = true};
+  std::vector<ir::TensorId> outs;
+  outs.reserve(segments.size());
   if (segments.size() > 1) {
     b_.SetJoined();
     if (d_.ratio != 0) {
@@ -784,50 +819,27 @@ std::expected<FragmentOut, std::string> Emitter::Emit() {
       iw_ = b_.Scale(b_.MatMul(f_.Weight(kIdxProj), f_.stream),
                      1.0F / std::sqrt(static_cast<float>(d_.idim * d_.ih)));
     }
-  }
-  // The compressors' stores and ring rows first.
-  if (d_.ratio != 0) {
-    Compressor({.kv = kCompKv,
-                .gate = kCompGate,
-                .ape = kCompApe,
-                .norm = kCompNorm,
-                .cache = kCompressed,
-                .ring_kv = kCompressedKv,
-                .ring_score = kCompressedScore,
-                .dim = d_.d,
-                .hadamard = false});
-  }
-  if (d_.indexer) {
-    Compressor({.kv = kIdxKv,
-                .gate = kIdxGate,
-                .ape = kIdxApe,
-                .norm = kIdxNorm,
-                .cache = kIndex,
-                .ring_kv = kIndexKv,
-                .ring_score = kIndexScore,
-                .dim = d_.idim,
-                .hadamard = true});
-  }
-  if (f_.stream_needed && !q_.valid()) q_ = Query();
-  if (!kv_.valid()) kv_ = Key();
-  const ir::TensorDesc kd = Desc(b_, kv_);
-  for (std::size_t s = 0; s < segments.size(); ++s) {
-    const SegmentRows& seg = segments[s];
-    b_.SetOwner(static_cast<std::uint8_t>(s));
-    const format::Shape shape = Shape({d_.d, seg.rows});
-    ir::TensorId rows_of = b_.View(kv_, shape, ViewStrides(kd.nb[0], kd.nb[2], 0, shape),
-                                   std::uint64_t{seg.first_row} * kd.nb[2]);
-    if (d_.kv_encoding == Encoding::kQ8_0 && b_.tensor(rows_of).format.encoding != Encoding::kF32) {
-      rows_of = b_.Convert(rows_of, Encoding::kF32);
+    for (std::size_t s = 0; s < segments.size(); ++s) {
+      if (d_.ratio != 0) Compressor(comp_c, s);
+      if (d_.indexer) Compressor(idx_c, s);
+      StoreWindow(s);
+      if (f_.stream_needed) {
+        auto one = Attend(s);
+        b_.SetJoined();
+        if (!one) return std::unexpected(one.error());
+        outs.push_back(*one);
+      }
     }
-    b_.CacheStore(f_.State(s, kWindowKv), rows_of, f_.step.StoreCells(s, KeyOf(s, kWindowKv)));
-    b_.SetJoined();
-  }
-  if (!f_.stream_needed) return FragmentOut{.stream = f_.stream};
-  std::vector<ir::TensorId> outs;
-  outs.reserve(segments.size());
-  for (std::size_t s = 0; s < segments.size(); ++s) {
-    auto one = Attend(s);
+    if (!f_.stream_needed) return FragmentOut{.stream = f_.stream};
+  } else {
+    // The compressors' stores and ring rows first.
+    if (d_.ratio != 0) Compressor(comp_c, 0);
+    if (d_.indexer) Compressor(idx_c, 0);
+    if (f_.stream_needed && !q_.valid()) q_ = Query();
+    if (!kv_.valid()) kv_ = Key();
+    StoreWindow(0);
+    if (!f_.stream_needed) return FragmentOut{.stream = f_.stream};
+    auto one = Attend(0);
     b_.SetJoined();
     if (!one) return std::unexpected(one.error());
     outs.push_back(*one);
