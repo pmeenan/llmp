@@ -669,10 +669,19 @@ Out InferPrimitive(const Ctx& c) {
       if (p.dim >= 4) {
         return Fail(GraphError::kParams, c, "dim past 3");
       }
-      LLMP_TRY(Want(a.format.layout == format::Layout::kDense &&
-                        a.format.layout == b.format.layout &&
-                        a.format.encoding == b.format.encoding,
-                    c, "joins dense tensors of one encoding"));
+      if (a.format.layout != b.format.layout || a.format.encoding != b.format.encoding ||
+          a.format.params != b.format.params) {
+        return Fail(GraphError::kFormat, c, "joins tensors of matching layout and encoding");
+      }
+      if (a.format.layout == format::Layout::kDense) {
+        // Any dimension is valid for dense tensors.
+      } else if (a.format.layout == format::Layout::kGgmlBlocks) {
+        if (p.dim == 0) {
+          return Fail(GraphError::kFormat, c, "quantized concat requires a higher dimension");
+        }
+      } else {
+        return Fail(GraphError::kFormat, c, "concat requires dense or ggml block layout");
+      }
       std::array<std::uint64_t, 4> ne = a.shape().ne;
       for (std::size_t d = 0; d < 4; ++d) {
         if (d == p.dim) {
@@ -683,7 +692,14 @@ Out InferPrimitive(const Ctx& c) {
                                     Text(b.shape()), p.dim)));
         }
       }
-      return One(Fresh(ShapeOf({ne[0], ne[1], ne[2], ne[3]}), a.format.encoding), false);
+      format::TensorFormat f = a.format;
+      f.shape = ShapeOf({ne[0], ne[1], ne[2], ne[3]});
+      f.stacked = 1;
+      TensorDesc r;
+      r.role = Role::kActivation;
+      r.format = f;
+      r.nb = NaturalStrides(f);
+      return One(r, false);
     }
     case Op::kRepeat: {
       LLMP_TRY(Arity(c, 1, 1));

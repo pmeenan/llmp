@@ -3704,9 +3704,15 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
                             !readers_.at(perm.out[0].v).empty() &&
                             std::ranges::all_of(readers_.at(perm.out[0].v), [&](NodeId attn_id) {
                               const ir::Node& attn = p_.node(attn_id);
-                              return (attn.key == ir::Fused(FusedKind::kStateBankAttention) ||
-                                      attn.key == ir::Primitive(Op::kAttention)) &&
-                                     attn.src[0] == perm.out[0];
+                              if (attn.key == ir::Fused(FusedKind::kStateBankAttention)) {
+                                return attn.src[0] == perm.out[0];
+                              }
+                              if (attn.key == ir::Primitive(Op::kAttention)) {
+                                return attn.src[0] == perm.out[0] &&
+                                       p_.tensor(attn.src[1]).format.encoding == Encoding::kF16 &&
+                                       p_.tensor(attn.src[2]).format.encoding == Encoding::kF16;
+                              }
+                              return false;
                             });
                    });
           });

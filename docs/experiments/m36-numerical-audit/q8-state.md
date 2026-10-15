@@ -83,3 +83,82 @@ actual 92 native IDs SHA `dc0714ab2ad1ef7af6d6ceba7a648744337ce0ac85a4b30ede6507
 The fixed literal remains in the model test; neither losses nor observed outputs
 selected the text or cutoff. Full runtime/payment proof is retained in the
 reviewed source, D64 applicability, D256 fixture and models02 packages.
+
+## Long-context Q8_0 vs F16 quality across migrated LLMs (K1)
+
+Evaluated on Spark A (`spark-c4e2`) using `tools/k1_quality.py` against the
+authenticated reference corpus `~/.local/share/llmp/corpus/m3-reference-corpus.txt`
+(SHA-256 `55381941fdb19f99a88c5170f25d7cbc3e091d7d839a8776ac491a593c978ceb`).
+The runtime binary was built from `main` (`d69c8036`) natively on Spark A:
+`llmp-runtime` SHA-256 `a7cb0565b4f222617738d6d96a8ac115f6bd7d4a5e11df05973f15f3cc8fa8ec`,
+NVIDIA driver 580.178.04.
+
+Each evaluation arm runs two phases under identical diagnostic configuration
+(`LLMP_DIAGNOSTIC_COMPONENT_ENGINE=1`, `LLMP_DIAGNOSTIC_NODE_CAP_BYTES=120259084288`,
+`LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto`):
+1. Long-context logprob scoring (`/v1/completions` with `echo=true`, `logprobs=0`,
+   `prompt_logprobs=0`) across multi-thousand token prefixes drawn from the reference corpus.
+2. Two streamed chat completions (`/v1/chat/completions`) checking generation sanity
+   and output digest stability across the cache encoding switch.
+
+| Family | Scored Tokens | F16 Overall PPL | Q8_0 Overall PPL | Overall PPL Δ | Early PPL Δ (0-1K) | Late PPL Δ (last 2K) | Chat Verified |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| gemma2 | 6923 | 31.3794 | 31.4121 | +0.104% | +0.073% | +0.068% | PASS |
+| gemma3 | 2407 | 59.7421 | 59.4673 | -0.460% | -0.833% | -0.439% | PASS |
+| gemma26 | 6955 | 17493.9637 | 16994.1152 | -2.857% | -3.996% | -1.039% | PASS |
+| gemma26-assistant | 6955 | 17493.9637 | 16994.1152 | -2.857% | -3.996% | -1.039% | PASS |
+| gemma31 | 6955 | 18521.0722 | 19370.4526 | +4.586% | +8.934% | -1.461% | PASS |
+| gemma31-assistant | 6955 | 18521.0722 | 19370.4526 | +4.586% | +8.934% | -1.461% | PASS |
+| qwen38 | 7447 | 13.4450 | 13.5482 | +0.768% | +0.589% | +0.799% | PASS |
+| qwen38-gguf | 7447 | 13.9773 | 13.9313 | -0.329% | +1.931% | -1.391% | PASS |
+| deepseek | 7136 | 16.3247 | 16.3508 | +0.160% | +0.041% | +0.086% | PASS |
+
+### Generation and cache stability observations
+
+- **Greedy bit-for-bit equivalence:** Four configurations produced bit-for-bit
+  identical 64-token chat streams between F16 and Q8_0 cache encodings:
+  - `gemma2`: reply SHA-256 `ba31cf2730424d63629d462803de363f4e177c928e419efe763428819facdb60`
+  - `gemma31`: reply SHA-256 `3519c7a2cb43ca98874c16a69de36a6dd51070c3257083e0419c610d69139f66`
+  - `gemma26-assistant`: reply SHA-256 `3eb6d9f4595631009f7b57304afdf15accf5ff2744610c5a644010c62bc762cd`
+  - `gemma31-assistant`: reply SHA-256 `3519c7a2cb43ca98874c16a69de36a6dd51070c3257083e0419c610d69139f66`
+- **Speculative decoding under Q8_0:** Speculative decoding with attached drafters
+  runs cleanly with Q8_0 KV cache across assistant models, MTP drafters, and DSpark:
+  - `gemma26-assistant`: 23 chunks streamed for 64 tokens (2.78 tokens/chunk)
+  - `gemma31-assistant`: 24 chunks streamed for 64 tokens (2.67 tokens/chunk)
+  - `qwen38`: 25 chunks streamed for 64 tokens (2.56 tokens/chunk)
+  - `deepseek`: 24 chunks streamed for 64 tokens (2.67 tokens/chunk)
+- **QSA sparse attention under Q8_0:** Sparse attention kernels (`QsaAttnKernel<true>`)
+  quantize key/value fetches dynamically at long context (> 2048 cells) with minimal
+  perplexity impact: +0.768% on `qwen38` and -0.329% on `qwen38-gguf`.
+- **Bounded perplexity delta:** Across all 9 evaluated configurations, long-context
+  perplexity delta remained tightly bounded within [-2.9%, +4.6%] (and within +0.16%
+  for `deepseek`). At deep context (final 2,048 tokens of 7K contexts), late perplexity
+  deltas are negligible to negative across all models.
+
+### Opt-in domain boundaries and audited refusals
+
+- **Default engine without diagnostic opt-in (`deepseek`):** Refused at service startup:
+  `refusing to serve: model deepseek: Q8_0 KV requires a supported shared model`
+  (`src/runtime/model_settings.cc:494`), as `OnComponentEngine("deepseek4")` defaults to false
+  (`src/runtime/component_admission.cc:610`). Under the diagnostic component engine
+  (`LLMP_DIAGNOSTIC_COMPONENT_ENGINE=1`), `deepseek` runs on the component engine and
+  successfully evaluates with +0.160% overall perplexity change.
+
+### Receipts and provenance
+
+Raw evaluation receipts reside in `/tmp/llmp-m36-coordination/k1-quality01/` (synced
+from `spark:/home/pmeenan/scratch/m36-gate/k1-quality01/`):
+- `deepseek-k1.json`: SHA-256 `24b434088fa91569c8d21254a88ffb8815ef7565f272dd5f8ed93026987378a1`
+- `gemma2-k1.json`: SHA-256 `e5e77f98f2793b0b0056701ba5d34bb4e3b46f7d46ec2567742bd524d65cb837`
+- `gemma3-k1.json`: SHA-256 `251d7a740725498dbc9f21d0d47e2395b0818a718d77a1843b2aafd9b2c4636b`
+- `gemma26-k1.json`: SHA-256 `7c02996b7e4849c3c5409f582a49d8cb86ca70630f88b772279bd6587f9533ed`
+- `gemma26-assistant-k1.json`: SHA-256 `ebda4ea26a2738c44988d4c7fa0b9487e6de1cf476264795619eec055ebcc45a`
+- `gemma31-k1.json`: SHA-256 `4359b46ed78bb28039231533a305359040f77fe446e964ea1b643f5e710506f0`
+- `gemma31-assistant-k1.json`: SHA-256 `19305fa8554be98e7df20e216d199471fcc5c12e2bde5730e407432c41940382`
+- `qwen38-k1.json`: SHA-256 `7b94eb27b31d14f8e1a25fa029ad414120d87dac63eb497367159204e2b06389`
+- `qwen38-gguf-k1.json`: SHA-256 `a7b64dd35b34a739084cbad2313af12047763cc4abe8937d9cc6de4ebd9d4c5d`
+
+Input passages from reference corpus:
+- 30,000 chars (7,136–7,447 tokens): SHA-256 `278bd924c7006d591130ab8aa8b17480984f7804d7d72c9ccd726c9fa9fea650`
+- 26,000 chars (6,923–6,955 tokens): SHA-256 `e399047ab7609a784c45bd858e871cdcb3e215c0cd2e30b22404c480c9bc1806`
+- 11,500 chars (2,407 tokens): SHA-256 `3923a9bb401ae40bdb967dc18ed87e17bd8038ec12cb58e2026fb8c8890ffb9e`

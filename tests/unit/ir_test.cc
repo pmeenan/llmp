@@ -748,5 +748,49 @@ TEST(IrTest, NothingStoresIntoAWeightOrAConstant) {
   }
 }
 
+TEST(IrTest, ConcatSupportsDenseAndGgmlBlocks) {
+  {
+    // Dense concat along dim 1.
+    Builder b;
+    const TensorId x = b.Input(F32({4, 2, 3}));
+    const TensorId y = b.Input(F32({4, 5, 3}));
+    const TensorId cat = b.Concat(x, y, 1);
+    EXPECT_TRUE(b.ok());
+    EXPECT_EQ(b.tensor(cat).ne(0), 4U);
+    EXPECT_EQ(b.tensor(cat).ne(1), 7U);
+    EXPECT_EQ(b.tensor(cat).ne(2), 3U);
+  }
+  {
+    // GGML blocks (Q8_0) along higher dimension.
+    Builder b;
+    format::TensorFormat f;
+    f.encoding = Encoding::kQ8_0;
+    f.layout = Layout::kGgmlBlocks;
+    f.shape = ShapeOf({64, 4, 8});
+    const TensorId x = b.Input(f);
+    f.shape = ShapeOf({64, 4, 12});
+    const TensorId y = b.Input(f);
+    const TensorId cat = b.Concat(x, y, 2);
+    EXPECT_TRUE(b.ok());
+    EXPECT_EQ(b.tensor(cat).format.layout, Layout::kGgmlBlocks);
+    EXPECT_EQ(b.tensor(cat).format.encoding, Encoding::kQ8_0);
+    EXPECT_EQ(b.tensor(cat).ne(0), 64U);
+    EXPECT_EQ(b.tensor(cat).ne(1), 4U);
+    EXPECT_EQ(b.tensor(cat).ne(2), 20U);
+  }
+  {
+    // GGML blocks along dim 0 is refused.
+    Builder b;
+    format::TensorFormat f;
+    f.encoding = Encoding::kQ8_0;
+    f.layout = Layout::kGgmlBlocks;
+    f.shape = ShapeOf({64, 4, 8});
+    const TensorId x = b.Input(f);
+    const TensorId y = b.Input(f);
+    b.Concat(x, y, 0);
+    EXPECT_EQ(ErrorOf(b), GraphError::kFormat);
+  }
+}
+
 }  // namespace
 }  // namespace llmp::ir
