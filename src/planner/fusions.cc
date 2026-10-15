@@ -3078,7 +3078,8 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
   const auto parts = format::PartsOf(original.format);
   if (!parts || parts->size() != 1 || (*parts)[0].role != format::PartRole::kData)
     return std::nullopt;
-  // The final packed assembly remains an ordinary Cont with its source edge.
+  // The final packed assembly remains an ordinary Cont when it is a graph
+  // output; otherwise its contiguous grouped result reshapes in place.
   const auto consumer = Only(c, output.out[0]);
   if (!consumer || !Is(c, *consumer, Op::kCont) || !Unwritten(c, input_id, anchor, x))
     return std::nullopt;
@@ -3094,7 +3095,22 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
            });
   });
   if (!available) return std::nullopt;
+  const ir::Node& cont_node = c.node(*consumer);
+  const TensorId cont_out = cont_node.out[0];
+  const bool fold_cont = !std::ranges::contains(c.graph().outputs(), cont_out);
   Building b(c);
+  if (fold_cont) {
+    if (!b.Add({input_id, product_id, anchor, *consumer}) || !b.Closed(std::array{cont_out}))
+      return std::nullopt;
+    const auto shape = c.tensor(cont_out).shape();
+    auto emit = [=](RewriteContext& r, int) {
+      ContextOf(r, r.original().node(anchor));
+      const std::array src{r.Map(w), r.Map(x)};
+      const TensorId grouped_out = r.builder().Fused(FusedKind::kGroupedMatMul, src, params)[0];
+      r.Set(cont_out, r.builder().Reshape(grouped_out, shape));
+    };
+    return b.Finish({{*consumer, 0}}, emit, {w, x});
+  }
   if (!b.Add({input_id, product_id, anchor}) || !b.Closed(std::array{output.out[0]}))
     return std::nullopt;
   auto emit = [=](RewriteContext& r, int) {

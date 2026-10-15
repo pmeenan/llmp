@@ -923,7 +923,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
               caps->max_segment_rows != 0 ? caps->max_segment_rows / owners : verify_rows;
           const std::uint32_t d_rows = std::min(depth, max_rows);
           const std::uint32_t v_rows = std::min(verify_rows, max_rows);
-          if (d_rows > 0) add(shape(1, planner::Phase::kDraft, owners, d_rows, d_rows, false));
+          if (d_rows > 0) add(shape(1, planner::Phase::kDraft, owners, d_rows, d_rows, true));
           if (v_rows > 0) add(shape(0, planner::Phase::kVerify, owners, v_rows, v_rows, false));
         } else {
           // Block proposals produce every head, including short reply tails;
@@ -1104,8 +1104,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                             .features = !dspark,
                             .adaptive = solo && depth >= 3,
                             .depth_cost = solo ? settings.depth_cost_ratio.value : 1.16,
-                            .device_tokens = solo,
-                            .draft_before_limit = solo,
+                            .device_tokens = solo || deepseek_serving,
+                            .draft_before_limit = solo || deepseek_serving,
                             .head_ids = hold->draft_head_ids,
                             .head_rows = hold->draft_head_rows}},
               .combine = engine::DecodingMode::Drafters::kCascade,
@@ -1291,7 +1291,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     parts.caps = *caps;
     parts.logit_width = logit_width;
     parts.device_greedy = true;
-    parts.device_verify = solo;
+    parts.device_verify = solo || deepseek_serving;
     parts.branch_depth = solo ? 3U : 0U;
     parts.prefill = {.chunk_rows = chunk,
                      .lookahead = composition.prefill_lookahead,

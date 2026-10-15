@@ -102,7 +102,7 @@ std::expected<FragmentOut, std::string> Inject(Fragment& f) {
   const auto segments = f.step.segments();
   const std::uint64_t cells = Rows(f.instance);
   ir::TensorId x{};
-  if (segments.size() == 1 && segments[0].rows <= cells) {
+  if (std::ranges::all_of(segments, [&](const SegmentRows& seg) { return seg.rows <= cells; })) {
     x = features;
   } else {
     const ir::TensorDesc fd = Desc(b, features);

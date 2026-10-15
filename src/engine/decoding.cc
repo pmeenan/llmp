@@ -155,9 +155,8 @@ std::expected<DecodingOrchestrator, std::string> DecodingOrchestrator::Make(
          d.shape != DrafterSpec::Shape::kAutoregressive ||
          (mode.combine == DecodingMode::Drafters::kCascade && &d != &mode.drafters.front())))
       return Error("repeat-pending stages need feature autoregression first in a cascade");
-    if (d.draft_before_limit &&
-        (mode.drafters.size() != 1 || d.shape != DrafterSpec::Shape::kAutoregressive))
-      return Error("complete passes before verify truncation need one autoregressive drafter");
+    if (d.draft_before_limit && mode.drafters.size() != 1)
+      return Error("complete passes before verify truncation need one drafter");
     seen[d.stage] = true;
     const model::StateLayoutDerived& layout = slots.layout(d.stage);
     if (d.max_depth == 0 || (d.adaptive && d.max_depth > 7)) {
@@ -682,11 +681,17 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
   std::vector<std::vector<std::int32_t>> verified, histories;
   std::vector<std::size_t> of;
   verified.reserve(work.size());
+  const bool full_block_verify = drafters == 1 &&
+                                 mode_.drafters[0].shape == DrafterSpec::Shape::kBlock &&
+                                 mode_.drafters[0].draft_before_limit;
   for (std::size_t i = 0; i < work.size(); ++i) {
     Unit& u = units[i];
     if (!u.live) continue;
-    const auto count = std::min<std::size_t>(
-        u.proposed.size(), std::min(work[i].left, target_context - u.positions) - 1U);
+    const auto count =
+        (full_block_verify && std::uint64_t{u.positions} + 1 + u.proposed.size() <= target_context)
+            ? u.proposed.size()
+            : std::min<std::size_t>(u.proposed.size(),
+                                    std::min(work[i].left, target_context - u.positions) - 1U);
     std::vector<std::int32_t> rows = {work[i].history.back()};
     rows.insert(rows.end(), u.proposed.begin(),
                 u.proposed.begin() + static_cast<std::ptrdiff_t>(count));
@@ -731,6 +736,10 @@ DecodeReport DecodingOrchestrator::Speculate(std::span<const DecodeWork> work) {
     }
     const auto rows = static_cast<std::uint32_t>(verified[j].size());
     auto verdict = policy_.judge(slot, verified[j], out.outputs);
+    if (verdict && full_block_verify && verdict->keep > work[i].left) {
+      verdict->keep = work[i].left;
+      if (verdict->tokens.size() > verdict->keep) verdict->tokens.resize(verdict->keep);
+    }
     std::string refused;
     if (!verdict) {
       refused = verdict.error();

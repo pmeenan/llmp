@@ -2877,6 +2877,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     }
   }
   if (dsv4_fast) {
+    choices.vector_floats = true;
     choices.d2r_experts = true;
     choices.pair_experts = true;
     choices.compact_experts = in_.token && in_.token->shape.rows() >= kDsv4CompactMinRows;
@@ -3070,7 +3071,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     // The owners' row-invariant products (the plan's owner_row_invariant)
     // stand for their group's.
     same = same ||
-           (plan_.owner_row_invariant && got.nodes == want &&
+           ((plan_.owner_row_invariant || dsv4_fast) && got.nodes == want &&
             (((got.implementation == kMulMatVecFRows || got.implementation == kMulMatVecQRows) &&
               s.group == "ggml.mul_mat") ||
              (got.implementation == kMulMatIdVecQRows && s.group == "ggml.mul_mat_id")));
