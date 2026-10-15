@@ -15,7 +15,7 @@
 #include "engine/support.h"
 #include "format/tensor_format.h"
 #include "ggml.h"
-#include "kernels/ggml/dsv4_graph.h"  // GgmlTypeOf
+#include "kernels/ggml/tensors.h"  // GgmlTypeOf
 
 namespace llmp::engine {
 

@@ -46,7 +46,7 @@ bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
 
 // Replaces each of `count` device token ids outside [0, limit) with 0 in
 // place: a drafter's argmax over non-finite logits gives -1, which would
-// index past a token table (engine/dsv4_runner.cc, the drafts' rows).
+// index past a token table (the model runner's drafts' rows).
 bool ClampTokens(std::int32_t* tokens, std::uint32_t count, std::int32_t limit, void* stream);
 
 // Byte ranges copied device to device in one launch, not a graph node: a

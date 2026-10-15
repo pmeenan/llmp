@@ -862,7 +862,7 @@ std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const Range
                                               std::uint32_t count);
 
 // DeepSeek V4's fast decode plan (the owner's policy, 2026-09-28: speed
-// before bit-exactness; dsv4_graph.h Dsv4GraphOptions::fused), llmpalooza's own
+// before bit-exactness; the DeepSeek fused plan), llmpalooza's own
 // kernels (dsv4_fast.cu), none of them GGML's arithmetic bit for bit:
 //
 //   llmp.q8_1         F32 rows quantized once to GGML's Q8_1 blocks
@@ -901,7 +901,7 @@ std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const Range
 // first columns); an id is not checked on the device against the experts
 // (the routing and the hash table's check bound it, as for mul_mat_id).
 // The fast plan's chunks take vecq to kVecQTokens rows; a wave of several
-// sequences' rows (dsv4_graph.h Dsv4WaveGraph) to kVecQMaxTokens, routed
+// sequences' rows (a joined wave) to kVecQMaxTokens, routed
 // products to 128 (token, slot) pairs.
 inline constexpr std::int64_t kVecQTokens = 8;
 inline constexpr std::int64_t kVecQMaxTokens = 16;
@@ -924,9 +924,8 @@ ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, 
                   VecQGlu glu = VecQGlu::kNone, float limit = 0.0f);
 // A vecq node takes the configuration a one-token product of its shape
 // takes (its rows, warps and reduction), whatever its tokens: each token's
-// sums then equal a one-token step's bit for bit (a wave of one-row steps,
-// dsv4_graph.h Dsv4WaveGraph). A dense product without a GLU computes four
-// tokens a pass, reading each weight block once for them; routed and GLU
+// sums then equal a one-token step's bit for bit (a wave of one-row steps). A dense product without
+// a GLU computes four tokens a pass, reading each weight block once for them; routed and GLU
 // products one token a pass, their weights read again from cache.
 void SetVecQOneToken(ggml_tensor* node);
 bool VecQOneToken(const ggml_tensor* node);

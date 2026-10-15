@@ -44,7 +44,7 @@ namespace llmp::engine {
 
 // The most request slots a runner keeps: a model's configured cap
 // (`[models.<name>] max_slots`, docs/runtime-serving.md#request-slots) is at
-// most this. It is the joined products' row capacity (kDsv4WaveRows, the
+// most this. It is the joined products' row capacity (the
 // wave kernels' sixteen columns): sixteen one-row decode steps fill one
 // wave. Wider waves raise it.
 inline constexpr std::size_t kMaxRequestSlots = 16;

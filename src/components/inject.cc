@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // embedding.inject, version 1: a block drafter's input (DeepSeek V4's
-// DSpark: llama.cpp's dflash.cpp graph_dsv4, kernels/ggml/dsv4_graph.cc's
+// DSpark: llama.cpp's dflash.cpp graph_dsv4, the retired kernels/ggml/dsv4_graph.cc's
 // DraftTrunk and Inject). In its own steps, its rows of a token table (its
 // target's, bound by stage), scaled: a draft block's anchor and mask
 // tokens. In its target's steps, its injection (ComponentDef::inject): the
@@ -14,7 +14,7 @@
 // RMS-normed with its weight: the input from which each of its attention
 // layers writes its ring (attention.mqa's injection).
 //
-// The fragments emit what dsv4_graph.cc's reference form records: the
+// The fragments emit what the retired dsv4_graph.cc's reference form recorded: the
 // injection after the target's head, the features joined as each tap is
 // made (llama.cpp's layer_inp extraction), then the projection.
 

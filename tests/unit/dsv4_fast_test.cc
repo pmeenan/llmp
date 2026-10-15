@@ -548,7 +548,7 @@ TEST_F(Dsv4FastTest, DenseAndGroupedProductsMatchGgmlsVectorKernel) {
   }
 }
 
-// A wave's launches (dsv4_graph.h Dsv4WaveGraph): to sixteen tokens a
+// A wave's launches (a joined wave): to sixteen tokens a
 // token's sums equal its sums among two (the multi-token launch, whatever
 // the count), and with SetVecQOneToken each token's equal a one-token
 // product's, bit for bit, dense and routed.

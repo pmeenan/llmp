@@ -209,7 +209,6 @@ TEST(ModelSettings, DflashCompositionResolvesSettingsAndCapabilities) {
   ASSERT_TRUE(composed) << (composed ? "" : composed.error());
   EXPECT_TRUE(composed->speculation.value);
   EXPECT_EQ(composed->bound_spec, facts.composed_spec);
-  EXPECT_TRUE(composed->prefill_outa_hca.value);
   EXPECT_EQ(composed->draft_rows.value, 3U);
   EXPECT_EQ(composed->wave_form.value, llmp::config::WaveForm::kAuto);
 
@@ -240,8 +239,6 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(s.wave_costs.value, (std::vector<double>(llmp::runtime::kDsv4WaveCosts.begin(),
                                                      llmp::runtime::kDsv4WaveCosts.end())));
   EXPECT_EQ(s.wave_costs_override_count, 0U);
-  EXPECT_TRUE(s.prefill_outa_hca.value);
-  EXPECT_TRUE(s.prefill_outa_hca_partial.value);
   EXPECT_TRUE(s.ignored.empty());
 
   const ModelSettings q = Resolved(Model("q"), Facts("qwen4exp"));
@@ -842,11 +839,11 @@ TEST(ModelSettings, RefusesAndIgnoresOverrides) {
   EXPECT_FALSE(ResolveSettings(q, Facts("qwen4exp", "qwen4exp-mtp"), nullptr, false).has_value());
   q.overrides["draft_rows"] = std::int64_t{2};
   q.overrides["wave_form"] = std::string("plain");
-  q.overrides["prefill_outa_hca"] = false;
+  q.overrides["wave_costs"] = std::vector<double>{1.0};
   const ModelSettings s = Resolved(q, Facts("qwen4exp", "qwen4exp-mtp"));
   EXPECT_EQ(s.draft_rows.value, 2U);
   EXPECT_THAT(s.ignored, Contains(HasSubstr("wave_form")));
-  EXPECT_THAT(s.ignored, Contains(HasSubstr("prefill_outa_hca")));
+  EXPECT_THAT(s.ignored, Contains(HasSubstr("wave_costs")));
   EXPECT_EQ(s.ignored.size(), 2U);
 
   ModelEntry lone = Model("lone");
@@ -856,16 +853,8 @@ TEST(ModelSettings, RefusesAndIgnoresOverrides) {
   EXPECT_THAT(no_drafter.ignored, Contains(HasSubstr("speculation")));
 }
 
-// The listing shows what is in effect: the partial output-A/HCA prefill
-// only with the full-chunk form, a wave's drafts at most a step's.
+// The listing shows what is in effect: a wave's drafts at most a step's.
 TEST(ModelSettings, ListsEffectiveValues) {
-  ModelEntry ds = Model("ds", true);
-  ds.overrides["prefill_outa_hca"] = false;
-  const ModelSettings d = Resolved(ds, Facts("deepseek4", "dflash"));
-  EXPECT_FALSE(d.prefill_outa_hca.value);
-  EXPECT_FALSE(d.prefill_outa_hca_partial.value);
-  EXPECT_THAT(d.prefill_outa_hca_partial.basis, HasSubstr("prefill_outa_hca is off"));
-
   ModelEntry q = Model("q", true);
   q.overrides["draft_rows"] = std::int64_t{2};
   q.overrides["shared_wave_depth"] = std::int64_t{3};
@@ -963,7 +952,6 @@ TEST(ModelSettings, ListsEverySettingOfTheSchema) {
 
 TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
   using llmp::runtime::KeyAppliesTo;
-  using llmp::runtime::SupportsHcaPrefill;
   using llmp::runtime::SupportsMtpDrafting;
   using llmp::runtime::SupportsSpeculativeDrafting;
   using llmp::runtime::SupportsWaveCosts;
@@ -973,12 +961,10 @@ TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
   EXPECT_TRUE(SupportsSpeculativeDrafting(ds_facts));
   EXPECT_TRUE(SupportsWaveForm(ds_facts));
   EXPECT_TRUE(SupportsWaveCosts(ds_facts));
-  EXPECT_TRUE(SupportsHcaPrefill(ds_facts));
   EXPECT_FALSE(SupportsMtpDrafting(ds_facts));
   EXPECT_TRUE(KeyAppliesTo("draft_rows", ds_facts));
   EXPECT_TRUE(KeyAppliesTo("wave_form", ds_facts));
   EXPECT_TRUE(KeyAppliesTo("wave_costs", ds_facts));
-  EXPECT_TRUE(KeyAppliesTo("prefill_outa_hca", ds_facts));
   EXPECT_FALSE(KeyAppliesTo("draft_vocab", ds_facts));
   EXPECT_FALSE(KeyAppliesTo("image_size", ds_facts));
 
@@ -986,7 +972,6 @@ TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
   EXPECT_TRUE(SupportsSpeculativeDrafting(qwen_facts));
   EXPECT_FALSE(SupportsWaveForm(qwen_facts));
   EXPECT_FALSE(SupportsWaveCosts(qwen_facts));
-  EXPECT_FALSE(SupportsHcaPrefill(qwen_facts));
   EXPECT_TRUE(SupportsMtpDrafting(qwen_facts));
   EXPECT_TRUE(KeyAppliesTo("draft_rows", qwen_facts));
   EXPECT_FALSE(KeyAppliesTo("wave_form", qwen_facts));
@@ -997,7 +982,6 @@ TEST(ModelSettings, CapabilityPredicatesAndKeyApplicability) {
   EXPECT_FALSE(SupportsSpeculativeDrafting(gemma_facts));
   EXPECT_FALSE(SupportsWaveForm(gemma_facts));
   EXPECT_FALSE(SupportsWaveCosts(gemma_facts));
-  EXPECT_FALSE(SupportsHcaPrefill(gemma_facts));
   EXPECT_FALSE(SupportsMtpDrafting(gemma_facts));
   EXPECT_FALSE(KeyAppliesTo("draft_rows", gemma_facts));
   EXPECT_FALSE(KeyAppliesTo("wave_form", gemma_facts));

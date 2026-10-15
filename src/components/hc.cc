@@ -5,7 +5,8 @@
 // Hyper-connections (Qwen3.8's sigmoid mix, llama.cpp's qwen4exp
 // build_hc_mix and build_hc_combine, kernels/ggml/qwen38_graph.cc; DeepSeek
 // V4's Sinkhorn mix, deepseek4.cpp's build_hc_pre, build_hc_post and
-// build_hc_head, kernels/ggml/dsv4_graph.cc): the residual is `streams`
+// build_hc_head, and the retired reference-form builder
+// kernels/ggml/dsv4_graph.cc): the residual is `streams`
 // streams of the stage's width, F32 [width, streams, rows], and each block
 // reads one stream mixed from them and adds its output back to all of
 // them, weighted.
@@ -43,7 +44,7 @@
 // scale[0], plus base, sigmoid, plus hc_eps), the streams' weighted sum is
 // RMS-normed times `post_norm` (the final norm), the output rows' streams
 // gathered first unless `gather` is off (a drafter's head of every row).
-// The fragments emit what dsv4_graph.cc's reference form records, in
+// The fragments emit what the retired dsv4_graph.cc's reference form recorded, in
 // GGML's graph order but for the carry's: the post weights and the
 // combination right after the mixing product (the order its FFN mix
 // records; its attention mix's are recorded before their combine, which

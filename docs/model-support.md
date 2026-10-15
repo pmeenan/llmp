@@ -480,10 +480,9 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
 
   | Mode | Where |
   | --- | --- |
-  | Greedy, plain | runtime (`--plain`) and harnesses |
-  | Greedy, speculative with DSpark | runtime (the default with a drafter) and `llmp_spec_runner` |
-  | Seeded sampling, plain and speculative | `llmp_spec_runner` and the runtime's chat/literal routes; harness histograms qualify the shared sampler, with serving branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
-  | Exact (reference) mode, `--exact on` | harness only: llama.cpp's graph node for node, unfused, and D-092's row-invariant verify |
+  | Greedy, plain | runtime (`--plain`) |
+  | Greedy, speculative with DSpark | runtime (the default with a drafter) |
+  | Seeded sampling, plain and speculative | the runtime's chat/literal routes; harness histograms qualify the shared sampler, with serving branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
 
 - **Prefill arithmetic:** the runtime serves the output-A/HCA prefill on
   every prefill chunk of 64 to 4,096 rows (both DeepSeek GGUFs), qualified
@@ -570,8 +569,9 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
     continuation remains pending;
     historical phase-2 agreement is not a
     current-path blanket pass.
-  - The reference mode (`--exact on`) keeps GGML's top-k and does not
-    repeat past 4,096 positions (RE-031).
+  - The retired harness reference mode (`--exact on`) kept GGML's top-k and
+    did not repeat past 4,096 positions (RE-031); the runtime serves the fast
+    plan's own indexer, which does.
   - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on
     2 of 184 corpus items (Unicode 16.0 emoji); llmpalooza follows llama.cpp
     and serves the GGUF's.

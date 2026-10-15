@@ -25,8 +25,8 @@
 //   gave on the M3.6 reference run.
 //
 // DeepSeek's serving admission is the paid diagnostic tuple (the service's
-// LLMP_DIAGNOSTIC_COMPONENT_ENGINE, _STARTUP_HOST_BYTES=auto and
-// _NODE_CAP_BYTES, applied as the service applies them); without it the
+// LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto and _NODE_CAP_BYTES, applied as the
+// service applies them); without it the
 // build refuses. Every test needs roughly 116 GiB of headroom on a quiet
 // host. A missing artifact skips with its reason.
 

@@ -8,8 +8,7 @@
 #                        (tensors.h), the implementations' operand checks
 #                        (validate.h), upstream's fusion gates (fusion.h),
 #                        graph planning and activation placement
-#                        (graph_plan.h), the DeepSeek V4 chunk graph
-#                        (dsv4_graph.h), the module's capabilities
+#                        (graph_plan.h), the module's capabilities
 #                        (capabilities.h) and the lowering of planned IR
 #                        steps (lower.h). Every profile.
 #   llmp_ggml_kernels  the K-C launch context (launch.h), llmpalooza's cuBLAS
@@ -37,7 +36,7 @@ else()
   set(architectures 121a-real)
 endif()
 list(JOIN architectures "," architecture_text)
-add_library(llmp_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc llmp_ops.cc
+add_library(llmp_ggml_tensors STATIC fusion.cc graph_plan.cc llmp_ops.cc
                                        tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(llmp_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -173,7 +172,7 @@ if(LLMP_CUDA)
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files CMakeLists.txt capabilities.cc capabilities.h lower.cc lower.h step_program.cc
-                   step_program.h selected_operation.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
+                   step_program.h selected_operation.h cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu
                    graph_read_index.h graph_read_index.cc gemma_moe_fusion.h gemma_moe_fusion.cc
@@ -191,7 +190,7 @@ if(LLMP_CUDA)
                    dsv4_ds4_product_raw.h dsv4_ds4_product_raw.cu
                    dsv4_ds4_product_original.cuh
                    dsv4_ds4_product_source.json dsv4_ds4_product_source.json.license
-                   dsv4_graph.h dsv4_hca_tokentile.cu
+                   dsv4_hca_tokentile.cu
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh

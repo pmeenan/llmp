@@ -33,9 +33,9 @@
 namespace llmp::runtime {
 
 // The architectures served by the component engine's adapter for their
-// pipeline kind (engine_llm.h, engine_image.h; D-107): Gemma 2 and Gemma 3
-// since their migration, Gemma 4 with its assistant since its. A family
-// joins when its migration passes its gate.
+// pipeline kind (engine_llm.h, engine_image.h; D-107): Gemma 2, 3 and 4 with
+// its assistant, Qwen3.8 with its MTP drafter, and DeepSeek V4 with its DSpark
+// drafter. A family joins when its migration passes its gate.
 bool OnComponentEngine(std::string_view architecture);
 
 // What a build may change of its family's recipe (a harness's matched
@@ -43,7 +43,7 @@ bool OnComponentEngine(std::string_view architecture);
 // (planner/policy.h), in place of its mapping's default.
 struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
-  // Internal qualification only; Qwen and DeepSeek remain off in OnComponentEngine.
+  // Qwen and DeepSeek serve only through this funded shared route.
   // Explicit diagnostic domains retain their closed envelopes. Automatic
   // service admission derives the domain and payment from its actual source,
   // state, decoding mode and configured owners. Public defaults stay unchanged.

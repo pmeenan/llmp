@@ -114,8 +114,6 @@ TEST(Calibration, KeysTheSettingsMeasuredWith) {
   s.draft_rows.value = 3;
   s.prefill_chunk.value = 4096;
   s.max_slots.value = 4;
-  s.prefill_outa_hca.value = true;
-  s.prefill_outa_hca_partial.value = true;
   EXPECT_EQ(llmp::runtime::MeasuredWith(s), Key().settings);
   s.speculation.value = false;  // --plain
   EXPECT_THAT(llmp::runtime::MeasuredWith(s), StartsWith("speculation=false"));

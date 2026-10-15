@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4's ds4 prefill stage mechanisms, the fast plan's defaults
-// (graph_plan.h and dsv4_graph.h SetDsv4PrefillStages;
+// (graph_plan.h SetDsv4PrefillStages;
 // docs/experiments/ds4-prefill-stages), on a GB10 (label `gpu`): each
 // against the separate launches it replaces, byte for byte:
 // - the HC mix input as F16 rows: alone, with the HC post before it, and

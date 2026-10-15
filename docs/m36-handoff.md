@@ -33,6 +33,19 @@ it overstated. Corrections, in force until the closeout lands:
   F16 baseline in the K1 report (PPL 17,494/18,521 suggests a broken
   scoring path).
 - The closeout re-gates every family on the final binary.
+- **G4d (legacy DeepSeek V4/DSpark runner deletion), in review on `m36-g4d`.**
+  - Step 1 below (the `deepseek` C2 decode gate) is resolved by `495a1cdb`. The
+    frozen baseline binary is the old arm, so deleting the legacy runner does not
+    block measurement.
+  - **OPEN closeout item:** DeepSeek and Qwen3.8 serving still needs the funded
+    diagnostic tuple (`LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES`,
+    `LLMP_DIAGNOSTIC_NODE_CAP_BYTES`); without it registration refuses. The
+    `LLMP_DIAGNOSTIC_COMPONENT_ENGINE` selector is gone (the tuple implies it), so
+    gate commands no longer pass it.
+  - **DONE (`88eb0da4`):** DeepSeek's serving GPU coverage is ported to the
+    shared engine (`Dsv4EngineServing`), replacing what the legacy runner's
+    serving tests held. The legacy A/B screen was deleted outright. The
+    `Dsv4EngineTargetGpu.*` full-model tests remain opt-in bridge diagnostics.
 
 ## Quota handoff — 2026-10-15 (overstated; see the audit above)
 
@@ -104,12 +117,12 @@ then `spark-job start --steps` (the form in item 5 below does not parse).
   3. Also check if any small per-step difference remains in the 2-slot joined wave (`58.95 ms` vs `58.85 ms`, e.g. `DirectHcPreCarries` when `n.src[0]` is a per-owner slice of joined `hc_pre` in `src/kernels/ggml/lower.cc:138`).
   4. Fast single-arm screen command on `spark-b` (~3 min):
      ```bash
-     /home/pmeenan/.local/bin/spark-job start --host spark-b --gpu --name dsv4-fast-screen20 --timeout 900 --cwd /home/pmeenan/src/m36-main -- python3 -B tools/speed_gate.py run --family deepseek --runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-new --label new --block 1 --position 1 --out /home/pmeenan/scratch/m36-gate/dsv4-fast-screen20 --runtime-env LLMP_DIAGNOSTIC_COMPONENT_ENGINE=1 --runtime-env LLMP_DIAGNOSTIC_NODE_CAP_BYTES=120259084288 --runtime-env LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto
+     /home/pmeenan/.local/bin/spark-job start --host spark-b --gpu --name dsv4-fast-screen20 --timeout 900 --cwd /home/pmeenan/src/m36-main -- python3 -B tools/speed_gate.py run --family deepseek --runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-new --label new --block 1 --position 1 --out /home/pmeenan/scratch/m36-gate/dsv4-fast-screen20 --runtime-env LLMP_DIAGNOSTIC_NODE_CAP_BYTES=120259084288 --runtime-env LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto
      /home/pmeenan/.local/bin/spark-job wait --host spark-b dsv4-fast-screen20
      ```
   5. Once `C2.decode_tok_s` clears the gate, run the 2-block bookended `deepseek` gate (`deepseek-smoke11`) on `spark-b`:
      ```bash
-     /home/pmeenan/.local/bin/spark-job start --host spark-b --gpu --name deepseek-smoke11 --timeout 2400 --cwd /home/pmeenan/src/m36-main -- python3 -B tools/speed_gate.py --out /home/pmeenan/scratch/m36-gate/deepseek-smoke11 --old-runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-old --new-runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-new --new-env LLMP_DIAGNOSTIC_COMPONENT_ENGINE=1 --new-env LLMP_DIAGNOSTIC_NODE_CAP_BYTES=120259084288 --new-env LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto --models deepseek --blocks 2
+     /home/pmeenan/.local/bin/spark-job start --host spark-b --gpu --name deepseek-smoke11 --timeout 2400 --cwd /home/pmeenan/src/m36-main -- python3 -B tools/speed_gate.py --out /home/pmeenan/scratch/m36-gate/deepseek-smoke11 --old-runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-old --new-runtime /home/pmeenan/scratch/m36-gate/bin/llmp-runtime-new --new-env LLMP_DIAGNOSTIC_NODE_CAP_BYTES=120259084288 --new-env LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES=auto --models deepseek --blocks 2
      /home/pmeenan/.local/bin/spark-job wait --host spark-b deepseek-smoke11
      ```
 

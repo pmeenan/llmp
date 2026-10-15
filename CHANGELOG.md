@@ -1404,6 +1404,25 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   `ec8af04` holds the rest
   ([report](docs/experiments/ds4-complete-plan/README.md)).
 
+- The DeepSeek V4 model settings `prefill_outa_hca` and
+  `prefill_outa_hca_partial` are removed from the configuration, the settings
+  listing and the example configuration. Nothing consumed them once DeepSeek
+  moved to the shared engine (an override already refused DeepSeek at start); a
+  configuration that names them is now refused as an unknown setting. The
+  output-A/HCA prefill is the fixed production form, and the calibration
+  fingerprint keeps its `prefill_outa_hca=true/true` token so existing records
+  stay in force. Pre-1.0 minor-release break (D-062).
+
+- The legacy DeepSeek V4/DSpark runner (`Dsv4Runner`, its plans and graph
+  builders, the `Dsv4` serving class and the M3-era DeepSeek harnesses) is
+  deleted with G4d. Its internal `ServingOptions` flags
+  (`diagnostic_plain_device_tokens`, `predicted_prefill_hints`,
+  `prefill_output_intent`) and the `LLMP_DIAGNOSTIC_COMPONENT_ENGINE` selector go
+  with it: the funded diagnostic tuple
+  (`LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES`, `LLMP_DIAGNOSTIC_NODE_CAP_BYTES`) now
+  selects every component pipeline, and `LLMP_DIAGNOSTIC_COMPONENT_QWEN` keeps
+  its narrower scope. None is in the configuration or the command line.
+
 ### Fixed
 
 - Qwen3.8 and DeepSeek V4 no longer bring back a speculative verify's

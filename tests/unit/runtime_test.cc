@@ -36,7 +36,6 @@
 #include <utility>
 #include <vector>
 
-#include "model/dsv4.h"
 #include "platform/crash_policy.h"
 #include "platform/files.h"
 #include "platform/lock_file.h"
@@ -44,7 +43,6 @@
 #include "runtime/commands.h"
 #include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
-#include "runtime/model_limits.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/watchdog.h"
@@ -468,27 +466,6 @@ TEST(NotifyServiceManager, SendsToTheSocket) {
   auto unset = llmp::platform::NotifyServiceManager("READY=1");
   ASSERT_TRUE(unset.has_value());
   EXPECT_FALSE(*unset);
-}
-
-TEST(ModelContext, FrontierHeadSelectionStaysWithinTheMeasuredFormatAndShape) {
-  using llmp::runtime::Dsv4FrontierHeadForServing;
-  llmp::model::Dsv4Binding binding;
-  binding.output = {.type = "Q4_K", .ne = {4096, 129280}};
-  binding.hc_head_fn = {.type = "F32", .ne = {16384, 4}};
-  EXPECT_TRUE(Dsv4FrontierHeadForServing(binding));
-  for (const std::string type : {"Q8_0", "F32", "BF16"}) {
-    binding.output.type = type;
-    EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
-  }
-  binding.output.type = "Q4_K";
-  binding.output.ne[1] = 129281;
-  EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
-  binding.output.ne[1] = 129280;
-  binding.hc_head_fn.type = "F16";
-  EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
-  binding.hc_head_fn.type = "F32";
-  binding.hc_head_fn.ne[0] = 4096;
-  EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
 }
 
 // A prefill's chunk (runtime/prefill.h): the configured or default rows,
@@ -1264,8 +1241,7 @@ TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartia
   const int status = CrashChild([] {
     // This isolated child changes its environment before starting any threads.
     // NOLINTBEGIN(concurrency-mt-unsafe)
-    if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_ENGINE") != 0 ||
-        ::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0 ||
+    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0 ||
         ::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
         ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0 ||
         ::unsetenv("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY") != 0)
@@ -1291,11 +1267,10 @@ TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartia
   EXPECT_EQ(WEXITSTATUS(status), 0);
 }
 
-TEST(ServiceDiagnostics, GenericSelectorExcludesLegacyScopeAndPreservesPaymentAtomicity) {
+TEST(ServiceDiagnostics, FundedTupleSelectsEveryPipelineAndTheQwenSelectorStaysNarrower) {
   const int status = CrashChild([] {
     // NOLINTBEGIN(concurrency-mt-unsafe): isolated child before serving threads
     if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN") != 0 ||
-        ::setenv("LLMP_DIAGNOSTIC_COMPONENT_ENGINE", "1", 1) != 0 ||
         ::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
         ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0 ||
         ::unsetenv("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY") != 0)
@@ -1305,19 +1280,32 @@ TEST(ServiceDiagnostics, GenericSelectorExcludesLegacyScopeAndPreservesPaymentAt
         !options.diagnostic_component_solo || !options.diagnostic_component_all ||
         !options.diagnostic_auto_startup)
       std::_Exit(3);
-    // Ambiguous scopes refuse without mutating the previously resolved tuple.
+    // The Qwen-only selector narrows the scope without changing the payment.
     if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0) std::_Exit(4);
+    llmp::runtime::ServingOptions narrow;
+    if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(narrow) ||
+        narrow.diagnostic_component_all || !narrow.diagnostic_component_solo ||
+        narrow.diagnostic_budget_cap_bytes != 8388608)
+      std::_Exit(5);
+    // A malformed selector refuses without mutating the resolved tuple.
+    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "all", 1) != 0) std::_Exit(6);
     if (llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
         !options.diagnostic_component_all || options.diagnostic_budget_cap_bytes != 8388608)
-      std::_Exit(5);
-    if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_ENGINE") != 0) std::_Exit(6);
-    if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
-        options.diagnostic_component_all || !options.diagnostic_component_solo)
       std::_Exit(7);
-    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "all", 1) != 0) std::_Exit(8);
-    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
-        options.diagnostic_component_all)
+    // A partial tuple refuses, with or without the selector.
+    if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN") != 0 ||
+        ::unsetenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES") != 0)
+      std::_Exit(8);
+    llmp::runtime::ServingOptions partial;
+    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(partial) ||
+        partial.diagnostic_component_solo)
       std::_Exit(9);
+    // The same partial tuple refuses under the Qwen-only selector.
+    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0) std::_Exit(10);
+    llmp::runtime::ServingOptions partial_qwen;
+    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(partial_qwen) ||
+        partial_qwen.diagnostic_component_solo)
+      std::_Exit(11);
     // NOLINTEND(concurrency-mt-unsafe)
     std::_Exit(0);
   });

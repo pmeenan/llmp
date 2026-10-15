@@ -171,16 +171,6 @@ if(LLMP_CUDA)
                                                         llmp_warnings)
   target_link_options(llmp_gemma_attention_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # M3's first model slice: DeepSeek V4 Flash, native and resident, from its
-  # v0 prepared artifact (docs/experiments/dsv4-native/).
-  add_executable(llmp_dsv4_exec dsv4_exec.cc)
-  target_include_directories(llmp_dsv4_exec SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_dsv4_exec PRIVATE llmp_ggml_kernels llmp_cuda_device_memory
-                                                 llmp_artifact llmp_model llmp_warnings
-                                                 llmp_long_context_tasks)
-  target_link_options(llmp_dsv4_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
   # Its products' cuBLASLt candidates, timed, for the algorithms the image
   # kernels pin (kernels/image/gemm.h).
   add_executable(llmp_qwen_image_gemm_tune qwen_image_gemm_tune.cc)
@@ -219,11 +209,9 @@ if(LLMP_CUDA)
   target_link_options(llmp_qwen38_mxfp8_tune PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # The FP16 swap fixture and the M3 harnesses' helpers (dsv4_common.h)
-  # over the engine's M3 runners (src/engine/, under their harness names in engine_names.h).
-  # Their binaries link the launch recorder themselves (an object library,
-  # whose wrappers must be in the link).
-  add_library(llmp_paged_runners STATIC fp16_runner.cc fp16_common.cc dsv4_common.cc)
+  # The FP16 swap fixture. Its binaries link the launch recorder themselves
+  # (an object library, whose wrappers must be in the link).
+  add_library(llmp_paged_runners STATIC fp16_runner.cc fp16_common.cc)
   target_include_directories(llmp_paged_runners SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_include_directories(llmp_paged_runners PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -234,22 +222,6 @@ if(LLMP_CUDA)
                                                     llmp_plan_record llmp_storage
                                              PRIVATE llmp_warnings)
 
-  # M3's swap runner: DeepSeek V4 Flash and the FP16 fixture on one paged
-  # node, full swaps A→B→A with each part timed, state spilled and restored
-  # (docs/experiments/fast-swap/swap.md). A harness: it runs on the test
-  # harness's paged node and links the launch recorder.
-  add_executable(llmp_swap_runner swap_runner.cc)
-  target_include_directories(llmp_swap_runner SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_swap_runner PRIVATE llmp_paged_runners llmp_launch_recorder
-                                                   llmp_tokenizer llmp_warnings)
-  target_link_options(llmp_swap_runner PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # M3's swap pairs: two of DeepSeek V4 Flash, Qwen3.8 Flash Next and the
-  # Qwen-Image-2.1 pipeline on one paged node, full swaps A→B→A with each
-  # part timed (docs/experiments/fast-swap/swap.md), over the engine's
-  # runners. The harness beside llmp-runtime's swap-table, which runs the
-  # same protocol over the configured models in one process.
   # Kernel-level replays of attention and dense-FFN operands captured from
   # the retired M3 Gemma 4 runner (docs/experiments/gemma-attention-c4,
   # gemma-dense-ffn); they name no runner.
@@ -269,31 +241,6 @@ if(LLMP_CUDA)
   target_link_libraries(llmp_gemma_dense_ffn_replay PRIVATE llmp_engine llmp_warnings)
   target_link_options(llmp_gemma_dense_ffn_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # M3's speculation harness: DeepSeek V4 Flash with its DSpark drafter on
-  # the paged node, greedy and sampled speculation, the forced-rejection
-  # checks and speed (docs/experiments/dspark/). A harness for now; it
-  # links the native tokenizer and chat renderer.
-  add_executable(llmp_spec_runner spec_runner.cc)
-  target_include_directories(llmp_spec_runner SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_spec_runner PRIVATE llmp_paged_runners llmp_launch_recorder
-                                                   llmp_tokenizer llmp_chat llmp_sampling
-                                                   llmp_warnings)
-  target_link_options(llmp_spec_runner PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # M3's speculation harness for Qwen3.8 Flash Next with its MTP drafter on
-  # the paged node (docs/experiments/qwen38-mtp/). A harness for now; it
-  # links the native tokenizer and chat renderer.
-  # Actual scalar prompt prediction, initialized state and continuation controls.
-  add_executable(llmp_prefill_prediction_probe prefill_prediction_probe.cc)
-  target_link_libraries(llmp_prefill_prediction_probe PRIVATE llmp_runtime_serving llmp_base llmp_warnings)
-  target_link_options(llmp_prefill_prediction_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
-  # Same-binary descriptor/funding and startup-latency checks; never loads weights.
-  add_executable(llmp_startup_measurement_probe startup_measurement_probe.cc)
-  target_link_libraries(llmp_startup_measurement_probe PRIVATE llmp_engine llmp_warnings)
-  target_link_options(llmp_startup_measurement_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # Backend-proof P3, the per-linear sweep (BP-N5): every real projection of
   # an EXL3 fixture through llmpalooza's launchers at upstream's forced plans,
@@ -338,10 +285,4 @@ if(LLMP_CUDA)
   add_executable(llmp_gemma_engine_greedy gemma_engine_greedy.cc)
   target_link_libraries(llmp_gemma_engine_greedy PRIVATE llmp_runtime_serving llmp_warnings)
   target_link_options(llmp_gemma_engine_greedy PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/llmp")
-endif()
-
-if(LLMP_CUDA)
-  add_executable(llmp_dsv4_mask_probe dsv4_mask_probe.cc)
-  target_link_libraries(llmp_dsv4_mask_probe PRIVATE llmp_engine llmp_platform llmp_warnings)
-  target_link_options(llmp_dsv4_mask_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 endif()

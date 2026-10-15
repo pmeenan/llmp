@@ -67,6 +67,9 @@ void Keep(std::vector<double>& samples, double value) {
 
 }  // namespace
 
+// The fingerprint keeps the retired prefill_outa_hca field as the literal it
+// always carried (the setting is gone; the output-A/HCA prefill is the fixed
+// production form), so records measured before its removal stay in force.
 std::string MeasuredWith(const ModelSettings& s) {
   const auto form = [&] {
     switch (s.wave_form.value) {
@@ -80,10 +83,9 @@ std::string MeasuredWith(const ModelSettings& s) {
     return "auto";
   };
   std::string measured = std::format(
-      "speculation={} draft_rows={} prefill_chunk={} max_slots={} prefill_outa_hca={}/{} "
+      "speculation={} draft_rows={} prefill_chunk={} max_slots={} prefill_outa_hca=true/true "
       "wave_form={} prefill_chunk_override={} max_slots_override={} context={}",
-      s.speculation.value, s.draft_rows.value, s.prefill_chunk.value, s.max_slots.value,
-      s.prefill_outa_hca.value, s.prefill_outa_hca_partial.value, form(),
+      s.speculation.value, s.draft_rows.value, s.prefill_chunk.value, s.max_slots.value, form(),
       s.prefill_chunk.source == SettingSource::kOverride,
       s.max_slots.source == SettingSource::kOverride, s.context.value);
   if (s.architecture == "deepseek4") {

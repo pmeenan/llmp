@@ -9,8 +9,7 @@ It holds the node, one skeleton of shared mechanics every model runner is
 built from, and each model family's runner, which adds only what is that
 family's own. `llmp-runtime` serves through it
 ([runtime-serving.md](runtime-serving.md)) and the paged harnesses drive the
-same code under their old names (`benchmarks/engine_names.h`,
-`tests/support/paged_node.h`).
+same code (`tests/support/paged_node.h`).
 
 **Being replaced (M3.6, D-107).** The per-family runners, plans and graph
 builders described below give way to one engine of shared components over
@@ -224,33 +223,19 @@ The production Qwen and DeepSeek chat backends drive prompt and generation units
 through the shared driver seams; literal completions retain scalar entry points.
 A native fence proves retirement before any borrowed owner is released.
 
-`Dsv4Runner` has the same slots (`Dsv4Options::wave_slots`, up to 16; one,
-the harnesses' default, provisions slot zero alone), each with its own target state,
-DSpark ring, verify snapshot, output staging and plans, its cohort rules from
-`request_cohort.h`. Its waves are not composed from per-slot plans: the graph
-builder takes several slots' chunk shapes (`dsv4_graph.h` `Dsv4WaveGraph`) and
-builds one fast-plan graph whose row-local operations (every quantized product,
-routed experts read once per distinct expert, HC mixes, routing, norms, the
-head) run once over every slot's rows, while each slot's compressors, indexer,
-attention, cache writes and DSpark injection run on its own state. A wave holds
-at most 16 rows and keeps each request's rows bit-identical to its steps alone:
-`llmp.vecq` is count-invariant from 2 to 16 tokens, float products past GGML's
-8-column vector kernel run over groups of whole slots that fit its eight
-columns, GGML's products of quantized
-weights `llmp.vecq` has no kernel for (the dense products, quantized HC
-mixes and the attention output's grouped product) run per slot, a wave of one-row steps takes the vector
-product's one-token configuration (`SetVecQOneToken`: each token's sums its
-step's; dense products four tokens a pass), and the drafter's injection
-(GGML MMVQ) runs per slot. A wave needs every layer in the fused form
-(`Dsv4WaveSupport`: each layer's expert products `llmp.vecq` types; the HC
-mixing weights may be any type). Setup checks it before provisioning slots;
-an artifact that fails it gets one slot and a `serial_reason()` for the
-start's log, so it is served one request at a time rather than refused.
-`DecodeWave` runs one step of each slot (injected
-beside a drafter); `DraftVerifyWave` each slot's draft block and one joined
-verify, whose rows await each slot's `Accept`. A family whose graph builder can
-take per-slot segments gets waves this way at the cost of its stateful
-operations alone ([report](experiments/deepseek-batching/README.md)).
+DeepSeek V4 with DSpark runs on the same shared runner (`model_runner.h`):
+its slots, cohort rules (`request_cohort.h`), wave composer and decoding
+modes are the shared ones, each slot with its own target state, DSpark ring,
+verify snapshot, output staging and plans. A wave holds at most 16 rows. The fast plan's
+row-local operations (quantized products, routed experts, HC mixes, routing,
+norms, the head) run once over every slot's rows through the planner's
+owner-row products (`components/owner_products.h`), while each slot's
+compressors, indexer, attention, cache writes and DSpark injection run on its
+own state. The joined kernels keep each token's sums equal to a one-token
+step's (`Dsv4FastTest.WaveLaunchesKeepEachTokensSumsBitForBit`); whole-model
+equality of a joined wave with its requests' solo steps is not asserted by a
+current test. The retired runner's wave construction and its evidence are in the
+[DeepSeek batching report](experiments/deepseek-batching/README.md).
 
 ## The shared slot lifecycle
 

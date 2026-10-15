@@ -39,15 +39,13 @@
 #include "base/report.h"
 #include "components/step.h"
 #include "engine/component_source.h"
-#include "engine/dsv4_plan.h"
-#include "engine/dsv4_runner.h"
 #include "engine/paged_weights.h"
+#include "engine/planned.h"
 #include "execution/adaptive_depth.h"
 #include "execution/adaptive_wave_mode.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
 #include "memory/reclaim.h"
-#include "model/dsv4.h"
 #include "model/qwen38.h"
 #include "planner/step_shape.h"
 #include "platform/crash_policy.h"
@@ -62,7 +60,6 @@
 #include "runtime/engine_llm.h"
 #include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
-#include "runtime/model_limits.h"
 #include "runtime/prefill.h"
 #include "runtime/runtime.h"
 #include "runtime/serving_support.h"
@@ -92,16 +89,7 @@ constexpr std::size_t kObservedExtents = std::size_t{1} << 18U;
 // engine does too.
 static_assert(Llm::kMaxBranches == engine::kMaxRequestSlots);
 static_assert(config::kMaxModelSlots == engine::kMaxRequestSlots);
-static_assert(kDsv4SpeculativeMostSlots == engine::Dsv4Runner::kWaveRows / 2);
 static_assert(config::kMaxWaveCostWidths + 1 == execution::AdaptiveWaveMode::kMaxWidth);
-
-// A model's request slots for the start's log, and where their number came
-// from (its settings).
-std::string SlotsReport(const ModelSettings& s) {
-  const std::uint32_t slots = s.max_slots.value;
-  return std::format("{} request slot{} ({}: {})", slots, slots == 1 ? "" : "s",
-                     SourceName(s.max_slots.source), s.max_slots.basis);
-}
 
 EngineImageBuild ComponentImageBuild(std::string architecture) {
   return [architecture = std::move(architecture)](
@@ -155,19 +143,6 @@ catalog::ExtentId WeightExtent(std::uint64_t handle) {
   return {static_cast<std::uint32_t>(handle), static_cast<std::uint32_t>(handle >> 32U)};
 }
 
-std::string GraphJson(const GraphCounts& g) {
-  return std::format(R"({{"eager":{},"captured":{},"replayed":{},"refused":{},"kept":{}}})",
-                     g.eager, g.captured, g.replayed, g.refused, g.kept);
-}
-
-GraphCounts Sum(const engine::GraphStats& a, const engine::GraphStats& b, std::size_t kept) {
-  return {.eager = a.eager + b.eager,
-          .captured = a.captured + b.captured,
-          .replayed = a.replayed + b.replayed,
-          .refused = a.refused + b.refused,
-          .kept = kept};
-}
-
 // ------------------------------------------- conversations kept (D-105)
 
 // What this build is, for a kept record: its version and commit, and the
@@ -184,754 +159,6 @@ std::string KeptBuild() {
   return std::format("{};{}{};{};{};exe={}", info.version, info.commit,
                      info.modified ? "+modified" : "", info.sdk, info.target, exe);
 }
-
-// ---------------------------------------------------------------- the models
-
-// DeepSeek V4 Flash (engine/dsv4_runner.h), with DSpark as its drafter.
-class Dsv4 final : public Llm {
- public:
-  Dsv4(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-       const config::RuntimeRoles& roles, int index, std::optional<bool> plain_device_tokens,
-       const ServingOptions& serving)
-      : entry_(entry),
-        artifact_id_(entry.artifact.value_or("")),
-        drafter_id_(entry.drafter.value_or("")),
-        store_(roles.installed),
-        runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
-    name_ = entry.name;
-    settings_ = settings;
-    node_ = &node;
-    checkpoint_directory_ = roles.spill;
-    speculate_ = !drafter_id_.empty() && settings.speculation.value;
-    // DSpark's drafts a step, and its verify's rows: the anchor and them.
-    options_.draft_rows = settings.draft_rows.value;
-    options_.max_verify = settings.draft_rows.value + 1;
-    execution::AdaptiveWaveMode::Costs costs{};
-    for (std::size_t w = 0; w < settings.wave_costs.value.size() && w + 2 < costs.size(); ++w) {
-      costs[w + 2] = settings.wave_costs.value[w];
-    }
-    wave_mode_ = execution::AdaptiveWaveMode(costs, WaveForce(settings.wave_form.value),
-                                             CutRows(options_.max_verify));
-    context_ = settings.context.value;
-    options_.artifact = roles.installed / artifact_id_;
-    options_.out = roles.spill;
-    options_.context = context_;
-    configured_rows_ = settings.prefill_chunk.value;
-    max_rows_ = PrefillChunkRows(context_, std::nullopt, settings.prefill_chunk.value,
-                                 model::Dsv4MostRows(model::Dsv4Flash(), context_));
-    options_.max_rows = max_rows_;
-    options_.graphs = true;
-    if (plain_device_tokens) options_.device_tokens = *plain_device_tokens;
-    options_.prefill_lookahead = serving.dsv4_prefill_lookahead;
-    options_.prepare_state = serving.dsv4_prepare_state;
-    options_.state_only_prefill = serving.dsv4_state_only_prefill.value_or(!speculate_);
-    prefill_hints_ = serving.predicted_prefill_hints;
-    prefill_output_intent_ = serving.prefill_output_intent;
-    // Request slots share the weights and workspace, each with its own
-    // conversation state: concurrent chat requests decode in waves
-    // (engine/dsv4_runner.h), whose row-local products read each weight
-    // once for all of them. With DSpark each request's verify joins a wave
-    // with at least two rows, so a wave of sixteen holds eight (the
-    // settings' cap).
-    options_.wave_slots = settings.max_slots.value;
-    slots_report_ = SlotsReport(settings);
-    // The output-A/HCA prefill: on full 4,096-row chunks, and on every
-    // prefill chunk of 64 rows or more, where it passes every registered
-    // quality control on both GGUFs under the tie-aware rule
-    // (docs/experiments/ds4-output-prefix, "Default-on acceptance"): the
-    // served defaults, which an owner may turn off for exactness.
-    options_.prefill_outa_hca = settings.prefill_outa_hca.value;
-    options_.prefill_outa_hca_partial =
-        settings.prefill_outa_hca.value && settings.prefill_outa_hca_partial.value;
-    if (speculate_) {
-      options_.drafter = roles.installed / drafter_id_;
-    }
-  }
-
-  engine::PagedModel& paged() override { return runner_; }
-
-  Status Setup() override {
-    if (auto opened = OpenArtifacts(); !opened) {
-      return opened;
-    }
-    if (auto setup = runner_.Setup(); !setup) {
-      return setup;
-    }
-    for (std::size_t i = 0; i < runner_.wave_capacity(); ++i) {
-      auto slot = runner_.request_slot(i);
-      if (!slot) {
-        return std::unexpected(slot.error());
-      }
-      native_slots_[i] = *slot;
-    }
-    return PrepareBranches(runner_.wave_capacity(), 1);
-  }
-
-  Status OpenArtifacts() {
-    auto artifact = OpenInstalled(store_, artifact_id_);
-    if (!artifact) {
-      return std::unexpected(artifact.error());
-    }
-    if (artifact->model().architecture != "deepseek4") {
-      return Error(std::format("artifact {} is a {}, not DeepSeek V4 (deepseek4)", artifact_id_,
-                               artifact->model().architecture));
-    }
-    auto binding = model::BindDsv4(model::Dsv4Flash(), *artifact);
-    if (!binding) {
-      return std::unexpected(binding.error());
-    }
-    options_.frontier_head = Dsv4FrontierHeadForServing(*binding);
-    if (speculate_) {
-      if (auto drafter = OpenInstalled(store_, drafter_id_); !drafter) {
-        return std::unexpected(drafter.error());
-      }
-    }
-    // The tokenizer and template from the artifact's kept GGUF metadata
-    // (import rule 7): the first shard's.
-    return UseChatAssets(*artifact, entry_);
-  }
-  std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
-  std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
-  std::uint64_t host_input_bytes() const override { return runner_.host_input_bytes(); }
-  std::uint64_t plan_floor_bytes() const override { return runner_.plan_floor_bytes(); }
-  std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
-  void ReclaimCandidates(std::uint32_t owner, bool running,
-                         std::vector<memory::ReclaimCandidate>& out) override {
-    runner_.ReclaimCandidates(owner, running, out);
-  }
-  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
-    return runner_.Reclaim(kind, id);
-  }
-  std::string plan_report() const override { return runner_.plan_report(); }
-  std::string serial_reason() const override { return runner_.serial_reason(); }
-  std::string slots_report() const override { return slots_report_; }
-  Status Register() override { return runner_.Register(); }
-  Status Bind() override { return runner_.Bind(); }
-  std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
-  std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
-  std::vector<catalog::ExtentId> kept_state() const override { return runner_.kept_state(); }
-  std::vector<catalog::ExtentId> unchanged_state() const override {
-    return runner_.unchanged_state();
-  }
-  void StateWrittenBack(bool whole) override { runner_.StateWrittenBack(whole); }
-  const catalog::Closure& everything() const override { return runner_.everything(); }
-  const catalog::Closure& request_closure() const override { return runner_.execution_closure(); }
-  bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
-  Status PrepareDefaultRequest() override {
-    std::array<Branch*, 1> active{&default_branch()};
-    return SelectBranches(active);
-  }
-  Status SelectBranches(std::span<Branch* const> active) override {
-    if (active.size() > runner_.wave_capacity()) {
-      return Error("too many DeepSeek native conversation branches");
-    }
-    std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> selected{};
-    for (std::size_t i = 0; i < active.size(); ++i) {
-      if (active[i] == nullptr || &active[i]->model() != this) {
-        return Error("a selected DeepSeek conversation belongs to another model");
-      }
-      selected[i] = &NativeSlot(*active[i]);
-    }
-    return runner_.SelectSlots(std::span(selected).first(active.size()));
-  }
-  bool supports_generation_waves() const override { return runner_.waves_provisioned(); }
-  std::size_t generation_wave_capacity() const override { return runner_.wave_capacity(); }
-  std::uint64_t StateBytesThrough(std::uint32_t positions) const override {
-    return runner_.StateBytesThrough(positions).value_or(0);
-  }
-  std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
-  std::uint32_t logit_width() const override { return runner_.vocab(); }
-  Status AfterLoad() override { return runner_.CheckHashRouting(); }
-  Status CheckPlaces() override { return runner_.CheckPlaces(); }
-  void DropPlans() override { runner_.DropPlans(); }
-  double plan_seconds() const override { return runner_.plan_seconds(); }
-  GraphCounts graphs() const override {
-    return Sum(runner_.graph_stats(), runner_.draft_stats(), runner_.graphs());
-  }
-  std::string violations() const override {
-    return runner_.coverage_violations() == 0
-               ? std::string()
-               : std::format("{} bound tensors outside cataloged extents of their class; first {}",
-                             runner_.coverage_violations(), runner_.first_violation());
-  }
-  std::string extra() const override {
-    return std::format(
-        R"({{"turn_checkpoints":{},"turn_checkpoint_bytes":{},"used_state_bytes":{},"architecture":"deepseek4","speculation":{},"coverage_tensors":{},)"
-        R"("slab_padding":{},"state_bytes":{},"drafter_state_bytes":{},"device_raw_mask_plans":{},"draft_graph_steps":{},"graphs":{}}})",
-        turn_checkpoints(), turn_checkpoint_bytes(), runner_.used_state_bytes(),
-        speculate_ ? "\"dspark\"" : "null", runner_.coverage_tensors(), runner_.slab_padding(),
-        runner_.state_bytes(), runner_.drafter_state_bytes(), runner_.bound_raw_masks(),
-        runner_.draft_stats().eager + runner_.draft_stats().captured +
-            runner_.draft_stats().replayed,
-        GraphJson(graphs()));
-  }
-  void Defaults(chat::Conversation& c) const override {
-    // As llama-server's /apply-template rendered the references' prompts:
-    // its default turns the template's thinking on.
-    if (!c.enable_thinking) {
-      c.enable_thinking = true;
-    }
-  }
-
- protected:
-  // The default conversation's scalar entry points forward to its branch.
-  Status RunChunk(std::span<const std::int32_t> all, std::uint32_t n_past, bool inject,
-                  std::vector<float>& logits) override {
-    return RunChunkFor(default_branch(), all, n_past, inject, logits);
-  }
-  Status SpecStep(std::span<const std::int32_t> all, std::uint32_t pos, std::uint32_t left,
-                  std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
-                  std::uint64_t& drafted) override {
-    return SpecStepFor(default_branch(), all, pos, left, kept, logits, drafted);
-  }
-  Status Settle() override { return SettleFor(default_branch()); }
-  Status ClearState() override { return ClearStateFor(default_branch()); }
-  std::uint64_t target_state_base() const override { return TargetStateBaseFor(default_branch()); }
-  std::uint64_t used_state_bytes() const override { return UsedStateBytesFor(default_branch()); }
-  bool StateUsable() const override { return StateUsableFor(default_branch()); }
-  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
-    return PrepareDecodeStateFor(default_branch(), pos, left);
-  }
-  std::vector<engine::LiveState::Range> used_state_ranges() const override {
-    return UsedStateRangesFor(default_branch());
-  }
-  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return SaveUsedStateFor(default_branch(), host, ranges);
-  }
-  Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return RestoreUsedStateFor(default_branch(), host, ranges);
-  }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
-      std::uint32_t positions) const override {
-    return CheckpointRangesFor(default_branch(), positions);
-  }
-  Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) override {
-    return PrepareRestoreStateFor(default_branch(), footprint);
-  }
-  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
-                             bool to_host) override {
-    return CopyCheckpointStateFor(default_branch(), host, ranges, to_host);
-  }
-  std::uint64_t target_state_bytes() const override {
-    return TargetStateBytesFor(default_branch());
-  }
-  std::uint64_t drafter_state_base() const override {
-    return DrafterStateBaseFor(default_branch());
-  }
-  std::uint64_t drafter_state_bytes() const override {
-    return DrafterStateBytesFor(default_branch());
-  }
-
-  // Each conversation branch on its own native request slot.
-  Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
-                     bool inject, std::vector<float>& logits) override {
-    return NativeSlot(branch).Chunk(
-        n_past, all.subspan(n_past), logits,
-        inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain);
-  }
-  Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
-                            bool inject, bool want_head, std::vector<float>& logits,
-                            PrefillHint next) override {
-    if (!prefill_hints_) next = {};
-    if (!prefill_output_intent_) {
-      want_head = true;
-      next.want_head = true;
-      next.after_want_head = true;
-    }
-    if (past >= all.size()) return Error("an empty DeepSeek prefill chunk");
-    return NativeSlot(branch).PrefillChunk(
-        past, all.subspan(past), logits,
-        {.rows = next.rows,
-         .want_head = next.want_head,
-         .after_rows = next.after_rows,
-         .after_want_head = next.after_want_head},
-        inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain, want_head);
-  }
-  std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
-                                          std::uint32_t pos, std::int32_t& token) override {
-    if (!options_.device_tokens || speculate_) return std::nullopt;
-    if (all.size() != std::size_t{pos} + 1)
-      return Error("a DeepSeek greedy step needs one anchor row");
-    return NativeSlot(branch).GreedyChunk(pos, all.subspan(pos), token);
-  }
-  Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
-                     std::uint32_t left, std::vector<std::int32_t>& kept,
-                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
-                     bool* prefix_kept = nullptr) override {
-    const std::uint32_t rows = VerifyRows(pos, left, runner_.max_verify());
-    std::vector<std::int32_t> drafts;
-    std::vector<float> verified;
-    if (auto r = NativeSlot(branch).DraftVerify(pos, all.back(), rows, drafts, verified); !r) {
-      return r;
-    }
-    return Undone(branch, Judge(branch, pos, rows, drafts, verified, kept, logits, drafted),
-                  prefix_kept);
-  }
-  Status SettleFor(Branch& branch) override { return NativeSlot(branch).Rollback(); }
-  Status ClearStateFor(Branch& branch) override { return NativeSlot(branch).Clear(); }
-  // A conversation outside the cohort: its reuse cache cleared for peers
-  // short of state capacity (Branch::ReleaseIdleState).
-  Status ReleaseIdleStateFor(Branch& branch) override { return NativeSlot(branch).ClearIdle(); }
-  Status SpillFor(Branch& branch) override { return NativeSlot(branch).Spill(); }
-  Status RestoreFor(Branch& branch) override { return NativeSlot(branch).Restore(); }
-  bool SpilledFor(const Branch& branch) const override { return NativeSlot(branch).spilled(); }
-  std::uint64_t SpilledBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).spilled_bytes();
-  }
-  std::uint64_t SpillWriteBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).spill_write_bytes();
-  }
-  bool LeasedFor(const Branch& branch) const override { return NativeSlot(branch).held(); }
-  std::uint64_t RefusedBytesFor(const Branch& branch) const override {
-    const auto& slot = NativeSlot(branch);
-    return slot.spilled() ? slot.spilled_bytes() : slot.refused_bytes();
-  }
-  bool StateRefusedFor(const Branch& branch) const override {
-    return NativeSlot(branch).state_refused();
-  }
-  bool StateUsableFor(const Branch& branch) const override {
-    return NativeSlot(branch).state_usable();
-  }
-
- public:
-  // Kept across a restart (D-105).
-  std::string KeptLayout() const override { return runner_.kept_layout(); }
-  std::vector<std::uint64_t> KeptRegions() const override {
-    return KeptRegionsOf(NativeSlot(default_branch()).live(), true);
-  }
-  std::vector<std::uint64_t> KeptLayouts() const override {
-    return KeptRegionsOf(NativeSlot(default_branch()).live(), false);
-  }
-  // D-102's rung 2.
-  Status RecoverInPlace() override {
-    auto discarded = runner_.RecoverInPlace([this](std::uint32_t slot) { UnkeepSlot(slot); });
-    if (!discarded) {
-      return std::unexpected(discarded.error());
-    }
-    ForgetDiscarded(*discarded);
-    return {};
-  }
-
- protected:
-  const engine::LiveState* KeptLiveFor(const Branch& branch) const override {
-    return &NativeSlot(branch).live();
-  }
-  bool KeptWholeFor(const Branch& branch) const override { return NativeSlot(branch).kept_whole(); }
-  bool OwedFor(const Branch& branch) const override { return NativeSlot(branch).owed(); }
-  Status AdoptFor(Branch& branch, std::span<const engine::LiveState::Range> used) override {
-    return NativeSlot(branch).Adopt(used);
-  }
-  void SetSpillPlaces(
-      const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& place) override {
-    options_.spill_place = place;
-  }
-  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
-    const std::uint32_t rows = speculate_ ? VerifyRows(pos, left, runner_.max_verify()) : 1U;
-    return NativeSlot(branch).ReserveStateThrough(pos + rows);
-  }
-  std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
-    return NativeSlot(branch).state_base();
-  }
-  std::uint64_t TargetStateBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).state_bytes();
-  }
-  std::uint64_t DrafterStateBaseFor(const Branch& branch) const override {
-    return NativeSlot(branch).drafter_state_base();
-  }
-  std::uint64_t DrafterStateBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).drafter_state_bytes();
-  }
-  std::uint64_t UsedStateBytesFor(const Branch& branch) const override {
-    return NativeSlot(branch).used_state_bytes();
-  }
-  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const override {
-    return NativeSlot(branch).used_state_ranges();
-  }
-  Status SaveUsedStateFor(Branch& branch, void* host,
-                          std::span<const engine::LiveState::Range> ranges) override {
-    return NativeSlot(branch).SaveUsedState(host, ranges);
-  }
-  Status RestoreUsedStateFor(Branch& branch, void* host,
-                             std::span<const engine::LiveState::Range> ranges) override {
-    return NativeSlot(branch).RestoreUsedState(host, ranges);
-  }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
-      const Branch& branch, std::uint32_t positions) const override {
-    return NativeSlot(branch).CheckpointRanges(positions);
-  }
-  Status PrepareRestoreStateFor(Branch& branch,
-                                std::span<const engine::LiveState::Range> footprint) override {
-    return NativeSlot(branch).PrepareRestoreState(footprint);
-  }
-  Status CopyCheckpointStateFor(Branch& branch, void* host,
-                                std::span<const engine::LiveState::Range> ranges,
-                                bool to_host) override {
-    return NativeSlot(branch).CopyCheckpointState(host, ranges, to_host);
-  }
-
-  // DeepSeek keeps no speculation cursor and no adaptive draft depth: every
-  // branch's are the defaults, saved and restored as no state.
-  std::uint32_t CursorFor(const Branch& branch) const override {
-    (void)BranchIndex(branch);
-    return 0;
-  }
-  void SetCursorFor(Branch& branch, std::uint32_t /*value*/) override { (void)BranchIndex(branch); }
-  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
-  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
-  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
-    return BranchDecoding(branch);
-  }
-  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
-    BranchDecoding(branch) = state;
-  }
-  // A step keeps at most its verify's rows: the anchor and every DSpark
-  // draft, not the branch's adaptive depth (which DeepSeek leaves at 1).
-  std::uint32_t StepTokenBoundFor(const Branch& /*branch*/, std::uint32_t left) const override {
-    return std::min(left, runner_.max_verify());
-  }
-
-  bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
-
-  // Several branches' steps in one wave (engine/dsv4_runner.h): a decode
-  // step of each, or with DSpark each one's draft and one joined verify of
-  // every branch's rows (each branch's share of the wave's rows) or a
-  // decode step of each, as AdaptiveWaveMode chooses. A lone branch keeps
-  // its ordinary step.
-  Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override {
-    if (!runner_.waves_provisioned() || prepared.size() == 1) {
-      return Llm::RunPreparedGenerationWave(prepared);
-    }
-    if (!speculate_) {
-      const bool greedy =
-          options_.device_tokens &&
-          std::ranges::all_of(prepared, [](const auto& unit) { return DeviceGreedy(unit); });
-      std::array<std::int32_t, engine::Dsv4Runner::kRequestSlots> chosen{};
-      std::vector<engine::Dsv4Runner::WaveWork> work;
-      work.reserve(prepared.size());
-      for (PreparedGeneration& unit : prepared) {
-        if (unit.step.all.size() != std::size_t{unit.step.position} + 1) {
-          return Error("a DeepSeek decode wave step is not one anchor row");
-        }
-        work.push_back({.slot = &NativeSlot(*unit.branch),
-                        .pos = unit.step.position,
-                        .anchor = unit.step.all.back(),
-                        .rows = 1,
-                        .drafts = nullptr,
-                        .logits = greedy ? nullptr : &unit.row,
-                        .token = greedy ? &chosen[work.size()] : nullptr});
-      }
-      if (auto ran = runner_.DecodeWave(work); !ran) return ran;
-      if (greedy)
-        for (std::size_t i = 0; i < prepared.size(); ++i) prepared[i].chosen = chosen[i];
-      return {};
-    }
-    // With DSpark, a wave of several requests is a draft-verify wave or a
-    // plain decode wave (the drafter still fed), as the accepted tokens
-    // against the measured cost of each width choose: never by wall time,
-    // so the same waves choose the same forms (execution/adaptive_wave_mode.h).
-    // A sampling member keeps every wave speculative.
-    const auto width = static_cast<std::uint32_t>(prepared.size());
-    const bool sampled = std::ranges::any_of(
-        prepared, [this](const PreparedGeneration& unit) { return sampling(*unit.branch); });
-    const auto mode = wave_cost_exploration_.Choose(wave_mode_.Choose(width, sampled), width,
-                                                    sampled, settings_, calibration_record_.known);
-    std::uint32_t tokens = 0;
-    std::uint32_t complete = 0;
-    const double planned = runner_.plan_seconds();
-    const std::uint64_t captured = runner_.graph_stats().captured + runner_.draft_stats().captured;
-    const auto started = Clock::now();
-    auto waved = mode == execution::AdaptiveWaveMode::Mode::kPlain
-                     ? PlainWave(prepared)
-                     : SpeculativeWave(prepared, tokens, complete);
-    const double seconds = Seconds(Clock::now() - started);
-    // A sampling member's speculation accepts differently: not observed.
-    if (waved && !sampled) {
-      wave_mode_.Observe(width, mode, tokens, complete);
-    }
-    // Each form's wave time at this width: the calibration of its cost
-    // (calibration.h), in force from the next start, never this service's.
-    // Only steady waves count, matched between the forms: none that
-    // planned or captured a graph (a shape's first waves), and a
-    // draft-verify wave only when every member's full verify joined it
-    // (not one cut by a mask width or the reply's end, or run alone).
-    const bool speculative = mode == execution::AdaptiveWaveMode::Mode::kSpeculative;
-    if (waved && runner_.plan_seconds() == planned &&
-        runner_.graph_stats().captured + runner_.draft_stats().captured == captured &&
-        (!speculative || complete == width)) {
-      calibration_samples_.Wave(width, speculative, seconds);
-    }
-    return waved;
-  }
-
- private:
-  // A plain decode wave of a speculative model's requests: one row each,
-  // its token chosen as an ordinary step's (greedy: the argmax). A failed
-  // choice keeps the processed anchor, as an ordinary plain step's does.
-  Status PlainWave(std::span<PreparedGeneration> prepared) {
-    if (prepared.empty() || prepared.size() > engine::Dsv4Runner::kRequestSlots)
-      return Error("a DeepSeek plain wave exceeds its bounded owner outputs");
-    const bool greedy =
-        options_.device_tokens &&
-        std::ranges::all_of(prepared, [](const auto& unit) { return GreedyWithoutRows(unit); });
-    std::array<std::int32_t, engine::Dsv4Runner::kRequestSlots> tokens{};
-    std::vector<engine::Dsv4Runner::WaveWork> work;
-    std::vector<std::vector<float>> rows(prepared.size());
-    work.reserve(prepared.size());
-    for (std::size_t i = 0; i < prepared.size(); ++i) {
-      const PreparedGeneration& unit = prepared[i];
-      if (unit.step.all.size() != std::size_t{unit.step.position} + 1) {
-        return Error("a DeepSeek decode wave step is not one anchor row");
-      }
-      work.push_back({.slot = &NativeSlot(*unit.branch),
-                      .pos = unit.step.position,
-                      .anchor = unit.step.all.back(),
-                      .rows = 1,
-                      .drafts = nullptr,
-                      .logits = greedy ? nullptr : &rows[i],
-                      .token = greedy ? &tokens[i] : nullptr});
-    }
-    if (auto ran = runner_.DecodeWave(work); !ran) {
-      return ran;
-    }
-    // DecodeWave has completed and validated every ID before any owner sees
-    // one. These sessions still apply speculative results, with no draft kept.
-    for (std::size_t i = 0; i < prepared.size(); ++i) {
-      PreparedGeneration& unit = prepared[i];
-      if (greedy) {
-        unit.kept = {tokens[i]};
-        continue;
-      }
-      auto chosen = Choose(*unit.branch, rows[i], std::uint64_t{unit.step.position} + 1);
-      if (!chosen) {
-        unit.result = std::unexpected(chosen.error());
-        unit.anchor_processed = true;
-        continue;
-      }
-      unit.kept = {*chosen};
-      if (unit.step.need_logits) {
-        unit.logits.push_back(std::move(rows[i]));
-      }
-    }
-    return {};
-  }
-
-  // Each request's draft and one joined verify of every request's rows.
-  // `tokens` and `complete`: the tokens kept by, and the count of, the
-  // requests whose verify took its full rows in the joined wave (what the
-  // wave form's acceptance average counts).
-  Status SpeculativeWave(std::span<PreparedGeneration> prepared, std::uint32_t& tokens,
-                         std::uint32_t& complete) {
-    tokens = 0;
-    complete = 0;
-    std::vector<engine::Dsv4Runner::WaveWork> work;
-    work.reserve(prepared.size());
-    // These owners never move once the borrowed descriptors are made.
-    struct Frame {
-      std::uint32_t rows = 0;
-      std::vector<std::int32_t> drafts;
-      std::vector<float> verified;
-    };
-    std::vector<Frame> frames(prepared.size());
-    // A verify of one row (a step ending at a mask width, or the last
-    // token) runs alone: a wave of wider verifies would give it the
-    // multi-row launch, not its own step's arithmetic. So does a lone one.
-    const auto share = [](std::size_t count) { return WaveShare(count); };
-    std::vector<std::size_t> joined;
-    std::vector<std::size_t> alone;
-    for (std::size_t i = 0; i < prepared.size(); ++i) {
-      const PreparedGeneration& unit = prepared[i];
-      const std::uint32_t rows = VerifyRows(unit.step.position, unit.step.left,
-                                            std::min(runner_.max_verify(), share(prepared.size())));
-      (rows == 1 ? alone : joined).push_back(i);
-    }
-    if (joined.size() == 1) {
-      alone.push_back(joined.front());
-      joined.clear();
-    }
-    for (const std::size_t i : alone) {
-      PreparedGeneration& unit = prepared[i];
-      unit.result = SpecStepFor(*unit.branch, unit.step.all, unit.step.position, unit.step.left,
-                                unit.kept, unit.step.need_logits ? &unit.logits : nullptr,
-                                unit.drafted, &unit.failed_prefix_valid);
-      if (!unit.result && !runner_.cohort_usable()) {
-        return std::unexpected(unit.result.error());
-      }
-    }
-    if (joined.empty()) {
-      return {};
-    }
-    const std::uint32_t full = std::min(runner_.max_verify(), share(joined.size()));
-    for (const std::size_t i : joined) {
-      PreparedGeneration& unit = prepared[i];
-      frames[i].rows = VerifyRows(unit.step.position, unit.step.left, full);
-      work.push_back({.slot = &NativeSlot(*unit.branch),
-                      .pos = unit.step.position,
-                      .anchor = unit.step.all.back(),
-                      .rows = frames[i].rows,
-                      .drafts = &frames[i].drafts,
-                      .logits = &frames[i].verified});
-    }
-    if (auto ran = runner_.DraftVerifyWave(work); !ran) {
-      return ran;
-    }
-    for (const std::size_t i : joined) {
-      PreparedGeneration& unit = prepared[i];
-      Frame& frame = frames[i];
-      unit.result =
-          Judge(*unit.branch, unit.step.position, frame.rows, frame.drafts, frame.verified,
-                unit.kept, unit.step.need_logits ? &unit.logits : nullptr, unit.drafted);
-      if (unit.result && frame.rows == full) {
-        tokens += static_cast<std::uint32_t>(unit.kept.size());
-        ++complete;
-      }
-      if (!unit.result) {
-        // The shared wave completed; only this branch's judgement failed.
-        // Undo its own verify before keeping its prefix.
-        if (auto rolled = NativeSlot(*unit.branch).DiscardVerify(); !rolled) {
-          if (!runner_.cohort_usable()) {
-            return Error(
-                std::format("{}; rolling back failed: {}", unit.result.error(), rolled.error()));
-          }
-          unit.result = Error(
-              std::format("{}; rolling back failed: {}", unit.result.error(), rolled.error()));
-        } else {
-          unit.failed_prefix_valid = true;
-        }
-      }
-    }
-    return {};
-  }
-
-  // A failed judgement after the native verify completed: the verify is
-  // undone, so the step's starting prefix still holds (`prefix_kept`, as a
-  // wave's failed_prefix_valid); an undo that fails says so.
-  Status Undone(Branch& branch, Status judged, bool* prefix_kept) {
-    if (judged) {
-      return judged;
-    }
-    if (auto rolled = NativeSlot(branch).DiscardVerify(); !rolled) {
-      return Error(std::format("{}; rolling back failed: {}", judged.error(), rolled.error()));
-    }
-    if (prefix_kept != nullptr) {
-      *prefix_kept = true;
-    }
-    return judged;
-  }
-
-  // The verify's rows from `pos`: the anchor and its drafts, within the
-  // tokens left, `most`, the context and the steps' mask widths (D-092).
-  std::uint32_t VerifyRows(std::uint32_t pos, std::uint32_t left, std::uint32_t most) const {
-    auto rows = std::min<std::uint32_t>({options_.draft_rows + 1, most, left, context_ - pos});
-    rows = std::max<std::uint32_t>(rows, 1);
-    while (rows > 1 && !model::Dsv4SameWidths(runner_.state_layout(), pos, rows)) {
-      --rows;
-    }
-    return rows;
-  }
-  // A completed verify's verdict for `branch`: accept drafts while the
-  // target agrees (greedy: its argmax; sampling: speculative sampling's
-  // verdict); the first disagreement, or the row after the last draft,
-  // gives the next token. Row m predicts the token at pos + m + 1.
-  Status Judge(Branch& branch, std::uint32_t pos, std::uint32_t rows,
-               std::vector<std::int32_t>& drafts, std::span<const float> verified,
-               std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
-               std::uint64_t& drafted) {
-    const std::uint32_t vocab = runner_.vocab();
-    if (rows == 0 || drafts.size() + 1 < rows || verified.size() != std::size_t{rows} * vocab) {
-      return Error("a DeepSeek verify returned inconsistent draft/logit counts");
-    }
-    drafts.resize(rows - 1);
-    const auto row = [&](std::uint32_t i) {
-      return verified.subspan(std::size_t{i} * vocab, vocab);
-    };
-    std::uint32_t m = 0;
-    std::int32_t next = -1;
-    for (; m < rows - 1; ++m) {
-      std::int32_t instead = -1;
-      auto keep = Keep(branch, row(m), drafts[m], std::uint64_t{pos} + m + 1, instead);
-      if (!keep) {
-        return std::unexpected(keep.error());
-      }
-      if (!*keep) {
-        next = instead;
-        break;
-      }
-    }
-    if (next < 0) {
-      auto chosen = Choose(branch, row(m), std::uint64_t{pos} + m + 1);
-      if (!chosen) {
-        return std::unexpected(chosen.error());
-      }
-      next = *chosen;
-    }
-    if (auto r = NativeSlot(branch).Accept(m + 1); !r) {
-      return r;
-    }
-    kept.assign(drafts.begin(), drafts.begin() + m);
-    kept.push_back(next);
-    if (logits != nullptr) {
-      for (std::uint32_t i = 0; i <= m; ++i) {
-        logits->emplace_back(row(i).begin(), row(i).end());
-      }
-    }
-    drafted += rows - 1;
-    return {};
-  }
-  engine::Dsv4Runner::Slot& NativeSlot(Branch& branch) {
-    const auto index = BranchIndex(branch);
-    base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
-    return *native_slots_[index];
-  }
-  const engine::Dsv4Runner::Slot& NativeSlot(const Branch& branch) const {
-    const auto index = BranchIndex(branch);
-    base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
-    return *native_slots_[index];
-  }
-  config::ModelEntry entry_;  // its tokenizer and template files, if named
-  std::string artifact_id_;
-  std::string drafter_id_;  // empty: none
-  fs::path store_;
-  std::string slots_report_;
-  bool prefill_hints_ = true;
-  bool prefill_output_intent_ = true;
-  engine::Dsv4Options options_;  // before the runner, which keeps a reference
-  engine::Dsv4Runner runner_;
-  std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> native_slots_{};
-  // With DSpark: draft-verify or plain waves, by width (RunPreparedGenerationWave),
-  // as the settings' wave_costs (a draft-verify wave's time over a plain
-  // decode wave's, by width; model_settings.h kDsv4WaveCosts measured them
-  // with each form forced) and wave_form choose.
-  // A request's share of a draft-verify wave's rows among `count`: all
-  // sixteen's, at least two (so DSpark takes at most eight requests).
-  static std::uint32_t WaveShare(std::size_t count) {
-    return std::max<std::uint32_t>(
-        2, static_cast<std::uint32_t>(engine::Dsv4Runner::kWaveRows / count));
-  }
-  // By width, a draft-verify wave's verify rows a request where its share
-  // cuts them below the full verify's `most` (AdaptiveWaveMode::Rows).
-  static execution::AdaptiveWaveMode::Rows CutRows(std::uint32_t most) {
-    execution::AdaptiveWaveMode::Rows rows{};
-    for (std::uint32_t w = 2; w <= execution::AdaptiveWaveMode::kMaxWidth; ++w) {
-      rows[w] = WaveShare(w) < most ? WaveShare(w) : 0;
-    }
-    return rows;
-  }
-  // The model's configured wave form (wave_form): chosen, or forced for
-  // exactness controls.
-  static execution::AdaptiveWaveMode::Force WaveForce(config::WaveForm form) {
-    switch (form) {
-      case config::WaveForm::kSpeculative:
-        return execution::AdaptiveWaveMode::Force::kSpeculative;
-      case config::WaveForm::kPlain:
-        return execution::AdaptiveWaveMode::Force::kPlain;
-      case config::WaveForm::kAuto:
-        break;
-    }
-    return execution::AdaptiveWaveMode::Force::kNone;
-  }
-  execution::AdaptiveWaveMode wave_mode_;
-  WaveCostExploration wave_cost_exploration_;
-};
 
 }  // namespace
 
@@ -1048,7 +275,10 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                              (entry.composition && !component_image)))
     return Error(
         "shared diagnostic requires every selected alias to use a qualified component route");
-  if (!entry.composition && (OnComponentEngine(settings.architecture) || solo)) {
+  if (!entry.composition) {
+    if (!OnComponentEngine(settings.architecture) && !solo)
+      return Error(std::format("model {}: no runner for architecture {}", entry.name,
+                               settings.architecture));
     const spec::Mapping* mapping = spec::FindMapping(settings.architecture);
     if (mapping == nullptr) {
       return Error(std::format("model {}: the component engine has no mapping of architecture {}",
@@ -1099,45 +329,36 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                  entry.name, spec::PipelineName(mapping->pipeline)));
     }
   }
-  if (entry.composition) {
-    const auto prepared = std::ranges::find_if(
-        prepared_images_, [&](const auto& source) { return source->alias == entry.name; });
-    if (prepared != prepared_images_.end()) {
-      if ((*prepared)->owner != index)
-        return Error("prepared image owner differs from its registered Server index");
-      models_.push_back(std::make_unique<EngineImage>(
-          node_, entry, settings, index,
-          ComponentImageGenerationBuild(node_, index, (*prepared)->source,
-                                        (*prepared)->construction)));
-      return {};
-    }
-    if (options_.image_noise.empty()) {
-      Log(
-          std::format("model {}: not registered: an image pipeline needs --image-noise (its "
-                      "initial latents) in this build",
-                      entry.name));
-      return {};
-    }
-    auto parser =
-        options_.diagnostic_auto_startup
-            ? StartupBootstrapBytes(config_.models.size())
-            : std::expected<std::uint64_t, std::string>(options_.diagnostic_startup_host_bytes);
-    const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
-    if (!parser || !*parser || cap == 0)
-      return Error("image serving requires paid startup host memory");
+  // Every other entry is a composition: an image pipeline.
+  const auto prepared = std::ranges::find_if(
+      prepared_images_, [&](const auto& source) { return source->alias == entry.name; });
+  if (prepared != prepared_images_.end()) {
+    if ((*prepared)->owner != index)
+      return Error("prepared image owner differs from its registered Server index");
     models_.push_back(std::make_unique<EngineImage>(
         node_, entry, settings, index,
-        ComponentImageServingBuild(node_, roles_.installed, *entry.composition, index,
-                                   options_.image_prompt, options_.image_noise, *parser, cap)));
+        ComponentImageGenerationBuild(node_, index, (*prepared)->source,
+                                      (*prepared)->construction)));
     return {};
   }
-  if (settings.architecture == "deepseek4") {
-    models_.push_back(std::make_unique<Dsv4>(node_, entry, settings, roles_, index,
-                                             options_.diagnostic_plain_device_tokens, options_));
-  } else {
-    return Error(
-        std::format("model {}: no runner for architecture {}", entry.name, settings.architecture));
+  if (options_.image_noise.empty()) {
+    Log(
+        std::format("model {}: not registered: an image pipeline needs --image-noise (its "
+                    "initial latents) in this build",
+                    entry.name));
+    return {};
   }
+  auto parser =
+      options_.diagnostic_auto_startup
+          ? StartupBootstrapBytes(config_.models.size())
+          : std::expected<std::uint64_t, std::string>(options_.diagnostic_startup_host_bytes);
+  const auto cap = options_.diagnostic_budget_cap_bytes.value_or(0);
+  if (!parser || !*parser || cap == 0)
+    return Error("image serving requires paid startup host memory");
+  models_.push_back(std::make_unique<EngineImage>(
+      node_, entry, settings, index,
+      ComponentImageServingBuild(node_, roles_.installed, *entry.composition, index,
+                                 options_.image_prompt, options_.image_noise, *parser, cap)));
   return {};
 }
 

@@ -686,7 +686,7 @@ wave_form = "plain"
 
 // No generic context ceiling (D-102): the configuration takes any 32-bit
 // count from the least; registration checks the checkpoint's own
-// (model_limits.h, runtime_test).
+// (model_settings.h).
 TEST(NodeConfigTest, ContextHasNoGenericCeiling) {
   for (const auto context : {512U, 262144U, 262145U, 1048576U, 1048577U, 4294967295U}) {
     const NodeConfig config =

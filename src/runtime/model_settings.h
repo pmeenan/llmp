@@ -77,7 +77,7 @@ inline constexpr std::uint32_t kQwen38PrefillRows = 4096;
 // Request slots: the knee where another slot stops raising the completed
 // rate enough to pay for slowing every request (D-104; docs/experiments/
 // request-slots). DeepSeek with DSpark takes at most eight: a verify of at
-// least two of a wave's sixteen rows (engine/dsv4_runner.h kWaveRows).
+// least two of a wave's sixteen rows.
 inline constexpr std::uint32_t kDefaultSlots = 4;
 inline constexpr std::uint32_t kDsv4SpeculativeMostSlots = 8;
 // The reclaim order's cost of dropped conversation state, recomputed by
@@ -89,7 +89,7 @@ inline constexpr std::uint32_t kDsv4SpeculativeMostSlots = 8;
 inline constexpr double kRecomputeMsPerToken = 1.4;
 // DeepSeek with DSpark: a draft-verify wave's time over a plain decode
 // wave's, widths 2 to 8 (execution/adaptive_wave_mode.h): the median joined
-// wave of `llmp_spec_runner --check wave --slots N --wave-mode
+// wave of the retired `llmp_spec_runner --check wave --slots N --wave-mode
 // verify|decode` (GB10, community GGUF, wave lanes on, 2026-10-03;
 // docs/experiments/deepseek-batching, "Wave lanes" and "Joined draft
 // blocks"): with joined drafts, 127.5 / 61.3, 180.0 / 71.5, 231.2 / 82.3
@@ -172,13 +172,11 @@ struct ModelSettings;
 bool SupportsSpeculativeDrafting(const ArtifactFacts& facts);
 bool SupportsWaveForm(const ArtifactFacts& facts);
 bool SupportsWaveCosts(const ArtifactFacts& facts);
-bool SupportsHcaPrefill(const ArtifactFacts& facts);
 bool SupportsMtpDrafting(const ArtifactFacts& facts);
 
 bool SupportsSpeculativeDrafting(const ModelSettings& settings);
 bool SupportsWaveForm(const ModelSettings& settings);
 bool SupportsWaveCosts(const ModelSettings& settings);
-bool SupportsHcaPrefill(const ModelSettings& settings);
 bool SupportsMtpDrafting(const ModelSettings& settings);
 
 // Whether a setting key applies to a model with the given facts or settings.
@@ -290,8 +288,6 @@ struct ModelSettings {
   // cannot distinguish equal fallback-valued prefixes that hide different
   // calibrated widths. Internal dependency metadata, not another setting.
   std::size_t wave_costs_override_count = 0;
-  Setting<bool> prefill_outa_hca;
-  Setting<bool> prefill_outa_hca_partial;
   // Qwen3.8.
   Setting<std::uint32_t> draft_vocab;
   Setting<double> depth_cost_ratio;

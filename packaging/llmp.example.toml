@@ -108,11 +108,8 @@ schema_version = 2
 # Drafts a speculative step proposes (DeepSeek: at most its drafter's
 # block; Qwen3.8: 2 or 3).
 # draft_rows = 3
-# DeepSeek's draft-verify wave time over a plain wave's at widths 2 to 8,
-# and its output-A/HCA prefill (qualified; false for ordinary arithmetic).
+# DeepSeek's draft-verify wave time over a plain wave's at widths 2 to 8.
 # wave_costs = [2.08, 2.52, 2.81, 2.40, 2.12, 2.21, 2.23]
-# prefill_outa_hca = true
-# prefill_outa_hca_partial = true
 # The reclaim order's cost of recomputing dropped conversation state, a
 # token of the conversation.
 # recompute_ms_per_token = 1.4

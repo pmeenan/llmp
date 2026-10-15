@@ -51,8 +51,7 @@ target_link_libraries(llmp_fake_device_backend INTERFACE llmp_fake_device_runtim
 
 if(LLMP_CUDA)
   add_library(llmp_engine STATIC planned.cc graph_runs.cc runner_resources.cc expert_slab.cc
-                                   live_state_launch.cc
-                                   dsv4_plan.cc dsv4_runner.cc)
+                                   live_state_launch.cc)
   target_include_directories(llmp_engine PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(llmp_engine PUBLIC llmp_engine_core llmp_scheduler llmp_memory llmp_storage
                                              llmp_device_runtime llmp_ggml_kernels

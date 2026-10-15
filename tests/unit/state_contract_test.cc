@@ -918,7 +918,7 @@ TEST(StateContractTest, VerifyScopesCommitsPositionRingsAndTheTargetsWritesIntoA
   EXPECT_EQ(md::BorrowedItem(*layout, elsewhere), nullptr);
 }
 
-// DeepSeek V4's verify (Dsv4Runner::PlanSnapshot over Dsv4ChunkWrites):
+// DeepSeek V4's verify (the retired runner's snapshot plan over Dsv4ChunkWrites):
 // each row's window cell, the compressor ring rows it persists and the
 // compressed rows it completes, and the dummy rows as scratch, in both
 // window modes.

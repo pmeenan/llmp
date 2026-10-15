@@ -1244,8 +1244,8 @@ width, written every row after their layer, which the MTP drafter reads),
 and reads reach any earlier stage (its target, or the drafter before it
 in a cascade), each name of one stage.
 
-The structural comparison (`components_qwen38_order_test`) holds the
-target's steps, from a GGUF import's tensors and the ModelOpt import's
+The structural comparison (`components_qwen38_order_test`, deleted with G3d
+once the migration passed) held the target's steps, from a GGUF import's tensors and the ModelOpt import's
 with GGML-layout experts, to `BuildQwen38Graph`'s unfused form node for
 node over five one-owner prefill and decode shapes below the indexer's
 budget (the unfused form builds one sequence; its selection rounds in
@@ -1322,8 +1322,8 @@ the constant `kHadamard`. A component's weight formats need cover only
 the roles it uses. The mapped layouts are today's `Dsv4State` (both
 window modes) and `DsparkState` byte for byte.
 
-The structural comparison (`components_dsv4_order_test`) holds the
-target's steps to `BuildDsv4Graph`'s reference form (`fused` false:
+The structural comparison (`components_dsv4_order_test`, deleted with G4d
+once the migration passed) held the target's steps to `BuildDsv4Graph`'s reference form (`fused` false:
 llama.cpp's graph) node for node over one-owner prefill (7 rows; 64 after
 300 with two outputs; 130, an HCA block), decode, greedy decode,
 state-only and an injecting chunk, and DSpark's draft block to

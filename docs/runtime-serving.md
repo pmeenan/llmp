@@ -15,13 +15,12 @@ places) and D-094 (the runtime wake).
 | Layer ([architecture](architecture.md#layers-and-dependency-rules)) | Module | What moved there |
 | --- | --- | --- |
 | Resource core | `scheduler/programs.h` | The task programs a driver posts: run, call, evict, a full swap (`SwapProgram`), a request's lease (`RequestProgram`), BP-S3's acquisition. Vendor-free; the fake backend's tests check them |
-| Engine (new, above the kernels) | `engine/` | The paged node (`paged_node.h`: device 0's providers, streams, io_uring, one catalog domain, the landing zone, the scheduler and its lanes on their threads, the shared workspace, requests), weights as extents (`paged_weights.h`), Qwen3.8's n-gram rows (`ple_rows.h`), DeepSeek V4's chunk planning (`dsv4_plan.h`) and runner (`dsv4_runner.h`, `qwen_image_runner.h`). CUDA builds only (it links the kernels); it reaches the device through the providers and the device runtime (`providers/device_runtime.h`), never the CUDA runtime itself ([portability.md](portability.md)) |
+| Engine (new, above the kernels) | `engine/` | The paged node (`paged_node.h`: device 0's providers, streams, io_uring, one catalog domain, the landing zone, the scheduler and its lanes on their threads, the shared workspace, requests), weights as extents (`paged_weights.h`), Qwen3.8's n-gram rows (`ple_rows.h`), the model runner over step programs (`model_runner.h`). CUDA builds only (it links the kernels); it reaches the device through the providers and the device runtime (`providers/device_runtime.h`), never the CUDA runtime itself ([portability.md](portability.md)) |
 | Services | `config` | The models a node serves: `[models.<name>]` (below) |
 | Programs | `runtime` | `commands.h` (the serving commands' arguments, vendor-free) and `serving.h` (the configured models on one node, the full swap, each model's turns, the commands; CUDA builds, but an LLM's conversation code, `llm.cc`, and the serving adapters over the shared runner, `engine_llm.h` and `engine_image.h`, build in every profile: [engine-backed models](#engine-backed-models)) |
 
-The harnesses (`benchmarks/`) drive the same engine: `engine_names.h`
-gives the engine's runners their harness names, and `tests/support`'s
-`paged_node.h` and `paged_programs.h` do the same for the node and the
+The harnesses (`benchmarks/`) drive the same engine, and `tests/support`'s
+`paged_node.h` and `paged_programs.h` name the node and the
 programs (with `LaunchOnlyProgram`, which only tests post). Nothing in
 `tests/support` is linked into a shipped binary, as before.
 
@@ -289,8 +288,6 @@ artifacts (no process lock, no device), so it runs beside the service.
 | `draft_rows` | DeepSeek, Qwen3.8 | 1 to 16 | DeepSeek: fallback 3 (its verify one row more), derived the drafter's `dflash.block_size` when smaller; more than the block is refused. Qwen3.8: fallback 3, 2 to 3 only (its MTP passes) |
 | `wave_form` | DeepSeek | `"auto"`, `"speculative"`, `"plain"` | fallback `"auto"` (waves, below) |
 | `wave_costs` | DeepSeek | 1 to 7 numbers, 0 to 1,000 | calibrated: each width's measured draft-verify wave time over its plain one's; else fallback, measured on a GB10 with wave lanes and joined drafts (2.08, 2.52, 2.81, 2.40, 2.12, 2.21, 2.23); calibrated widths replace theirs, and an override's widths (from 2) replace both, the rest keeping theirs; 0 always speculates at that width |
-| `prefill_outa_hca` | DeepSeek | boolean | fallback true: the output-A/HCA prefill on full 4,096-row chunks, qualified ([ds4-output-prefix](experiments/ds4-output-prefix/README.md#default-on-acceptance)); false for the ordinary arithmetic |
-| `prefill_outa_hca_partial` | DeepSeek | boolean | fallback true: and on every chunk of 64 rows or more; listed false when `prefill_outa_hca` is off, which it needs |
 | `draft_vocab` | Qwen3.8 | rows, 0 to 4,194,304; 0: all | fallback 65,536; with speculation, a selected head caps the effective rows at its physical row count (0: every selected row). The listing includes the requested cap and keeps an override's source; it does not select a prefix layout |
 | `depth_cost_ratio` | Qwen3.8 | above 0 to 100 | calibrated: a three-draft step's measured time over a two-draft step's; else fallback 1.16 (adaptive depth, below) |
 | `shared_wave_depth` | Qwen3.8 | drafts, 1 to 16 | fallback 2: a request's drafts in a wave of several; at most `draft_rows` (listed so) |
@@ -301,10 +298,7 @@ artifacts (no process lock, no device), so it runs beside the service.
 | `image_steps` | composition | 2 to 100 | fallback 40 |
 
 `artifact`, `composition`, `drafter`, `tokenizer` and `chat_template` name
-the model's files rather than settings. The quality-qualified choices
-(`prefill_outa_hca`, its partial form) keep their qualification (D-085):
-their defaults are what passed, and an owner may turn them off for
-exactness. Kernel schedules (the D2R, IQ2 pair, output-A and MXFP8 tables)
+the model's files rather than settings. Kernel schedules (the D2R, IQ2 pair, output-A and MXFP8 tables)
 are still chosen by hand-tuned tables for the GB10 and the measured
 shapes; their calibration on the machine is later work.
 
@@ -376,7 +370,8 @@ said once, D-105 as amended on 2026-10-09):
 names what the measurements depend on, as resolved without calibration
 (an override, a derived value or the fallback): speculation (off with
 `--plain`), effective context, draft rows, prefill chunk rows, request slots,
-the output-A/HCA prefill and the wave form. Context matters even when the
+the wave form, and a fixed `prefill_outa_hca=true/true` token (the retired output-A/HCA
+settings, kept so earlier records stay in force). Context matters even when the
 configured prefill chunk is unchanged: the runtime caps its actual rows by
 the context. DeepSeek also keys the seven wave costs resolved without
 calibration, override presence and the number of leading widths explicitly
@@ -1038,7 +1033,7 @@ run to run at some chunk sizes (on this prompt, 4,096 and 512 rows, not
 2,048 in 7 runs): RE-031's tie-breaking in GGML's top-k, which its
 indexer used, not the chunking. The fast plan's own indexer
 (long-context phase 2) breaks ties by row and repeats; the reference
-mode (`--exact on`) still does not.
+mode (`--exact on`, a retired harness mode) did not.
 
 **Cancellation.** Whatever ends a chat request (the client gone, the
 runtime stopping on SIGTERM or SIGINT, and where configured a stall with
@@ -1537,7 +1532,7 @@ waves byte for byte with eager execution and graph replay
 ([GGUF qualification](experiments/qwen38-gguf/README.md#one-row-gguf-waves-2026-10-03)).
 
 The production DeepSeek chat backend's active requests (one native slot
-each, `engine/dsv4_runner.h`; [request slots](#request-slots)) decode in
+each, `engine/model_runner.h`; [request slots](#request-slots)) decode in
 waves: plain, one row each. With DSpark, a wave of two or more is either
 each request's own draft block then one joined verify of every request's
 rows (its natural four up to four requests, sixteen in all; past four,

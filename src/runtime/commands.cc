@@ -73,14 +73,17 @@ std::expected<void, std::string> ApplyServiceDiagnosticEnvironment(ServingOption
     const char* text = std::getenv(name);
     return text ? std::optional<std::string_view>(text) : std::nullopt;
   };
+  // The funded tuple selects every component pipeline; the historical Qwen-only
+  // selector keeps its narrower alias contract.
   const auto qwen = value("LLMP_DIAGNOSTIC_COMPONENT_QWEN");
-  const auto generic = value("LLMP_DIAGNOSTIC_COMPONENT_ENGINE");
-  if ((qwen && *qwen != "1") || (generic && (qwen || *generic != "1")))
-    return Error("the generic component selector requires 1 and excludes the Qwen-only selector");
-  return ApplyServiceDiagnostics(options, generic ? std::optional<std::string_view>("all") : qwen,
-                                 value("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES"),
-                                 value("LLMP_DIAGNOSTIC_NODE_CAP_BYTES"),
-                                 value("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY"));
+  if (qwen && *qwen != "1") return Error("the Qwen-only component selector requires 1");
+  const auto startup = value("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES");
+  const auto cap = value("LLMP_DIAGNOSTIC_NODE_CAP_BYTES");
+  const auto capture = value("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY");
+  const bool funded = startup || cap || capture;
+  return ApplyServiceDiagnostics(
+      options, qwen ? qwen : (funded ? std::optional<std::string_view>("all") : std::nullopt),
+      startup, cap, capture);
 }
 
 const std::string_view kCommandUsage =

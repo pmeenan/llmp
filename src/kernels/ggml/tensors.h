@@ -23,6 +23,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ggml.h"
@@ -95,6 +96,10 @@ class TensorArena {
   std::vector<ggml_tensor*> visited_;  // counted by bytes(), retained through Seal
   std::size_t graph_capacity_ = 0;     // every reached tensor, including omitted leaves
 };
+
+// The GGML type of a type name (an artifact index's "Q8_0" or GGML's own
+// "q8_0"), if GGML has one.
+std::expected<ggml_type, KernelFailure> GgmlTypeOf(std::string_view name);
 
 }  // namespace llmp::kernels::ggml
 

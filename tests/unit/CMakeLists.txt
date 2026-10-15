@@ -349,10 +349,6 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(gemma4_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}"
                                "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  add_executable(plain_tokens_serving_gpu_test plain_tokens_serving_gpu_test.cc)
-  target_link_libraries(plain_tokens_serving_gpu_test PRIVATE llmp_runtime_serving)
-  llmp_gpu_gtest(plain_tokens_serving_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Default-off Qwen single-slot serving qualification.
   add_executable(qwen38_engine_serving_gpu_test qwen38_engine_serving_gpu_test.cc)
   target_link_libraries(qwen38_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
@@ -559,20 +555,12 @@ add_executable(ggml_graph_test ggml_graph_test.cc)
 target_link_libraries(ggml_graph_test PRIVATE llmp_ggml_tensors)
 llmp_gtest(ggml_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The DeepSeek V4 adapter: binding, state, chunk inputs, and its chunk graph's
-# plan and placement (model/dsv4.h, kernels/ggml/dsv4_graph.h).
+# The DeepSeek V4 adapter: binding, state and chunk inputs (model/dsv4.h).
 add_executable(dsv4_test dsv4_test.cc)
-target_link_libraries(dsv4_test PRIVATE llmp_ggml_tensors llmp_model)
+target_link_libraries(dsv4_test PRIVATE llmp_model)
 llmp_gtest(dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 if(LLMP_CUDA)
-  add_executable(dsv4_prefill_plan_test dsv4_prefill_plan_test.cc)
-  target_link_libraries(dsv4_prefill_plan_test PRIVATE llmp_engine)
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(dsv4_prefill_plan_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  llmp_gtest(dsv4_prefill_plan_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" PROPERTIES LABELS unit)
-
-
   # A runner's plan and graph caps (engine/planned.h), host-only.
   add_executable(plan_cache_test plan_cache_test.cc)
   target_link_libraries(plan_cache_test PRIVATE llmp_engine)
@@ -694,10 +682,10 @@ add_executable(slab_layout_test slab_layout_test.cc)
 target_link_libraries(slab_layout_test PRIVATE llmp_engine_core llmp_fake_device_backend)
 llmp_gtest(slab_layout_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# DeepSeek V4's DSpark drafter and speculation's parts of the adapter and
-# graph (model/dspark.h; D-092).
+# DeepSeek V4's DSpark drafter and speculation's parts of the adapter
+# (model/dspark.h; D-092).
 add_executable(dspark_test dspark_test.cc)
-target_link_libraries(dspark_test PRIVATE llmp_ggml_tensors llmp_model)
+target_link_libraries(dspark_test PRIVATE llmp_model)
 llmp_gtest(dspark_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 
@@ -941,9 +929,6 @@ add_custom_command(
   COMMENT "Building the artifact reader's corpus with the M0 prototype"
   VERBATIM)
 add_custom_target(artifact_corpus ALL DEPENDS "${artifact_corpus}/stamp")
-if(TARGET dsv4_prefill_plan_test)
-  add_dependencies(dsv4_prefill_plan_test artifact_corpus)
-endif()
 add_executable(artifact_test artifact_test.cc)
 target_link_libraries(artifact_test PRIVATE llmp_artifact)
 add_dependencies(artifact_test artifact_corpus)
@@ -1208,17 +1193,11 @@ llmp_gtest(components_qwen38_models_test TEST_PREFIX unit. PROPERTIES LABELS "un
 # SwiGLU, the token-hash side input, the DSpark drafter's injected input and
 # Markov head) against their references, the compressors' inputs against
 # today's plans, the deepseek4 and dflash mappings over the fixture's
-# tensors, the steps they make and the injection run; and the steps against
-# today's reference-form graph builder, node for node.
+# tensors, the steps they make and the injection run.
 add_executable(components_dsv4_test components_dsv4_test.cc)
 target_link_libraries(components_dsv4_test PRIVATE llmp_components llmp_reference_kernels
                                                    llmp_spec llmp_model llmp_artifact llmp_json)
 llmp_gtest(components_dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-add_executable(components_dsv4_order_test components_dsv4_order_test.cc)
-target_link_libraries(components_dsv4_order_test PRIVATE llmp_components llmp_ggml_tensors
-                                                         llmp_spec llmp_model llmp_artifact
-                                                         llmp_json)
-llmp_gtest(components_dsv4_order_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # The DeepSeek V4 mappings on the installed artifacts: each target's spec
 # and its DSpark drafter's, the fixture's equal to them, today's state
 # layouts, every step kind built.
@@ -1325,12 +1304,6 @@ target_link_libraries(components_state_test PRIVATE llmp_components llmp_engine_
 llmp_gtest(components_state_test TEST_PREFIX unit.fake. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-# Private diagnostic source controls are vendor-free; the actual full-model
-# screen below is a separately selected models test.
-add_executable(dsv4_screen_source_test dsv4_screen_source_test.cc ../support/dsv4_screen_source.cc)
-target_link_libraries(dsv4_screen_source_test PRIVATE llmp_engine_core llmp_components llmp_spec llmp_artifact)
-llmp_gtest(dsv4_screen_source_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
 # The Gemma 2 and Gemma 3 components end to end on the installed artifacts,
 # by the reference executor, against the served model (the server over the
 # shared engine).
@@ -1435,12 +1408,6 @@ if(LLMP_CUDA)
 
   # The same on the Qwen3.8 imports (ModelOpt's two expert layouts, a
   # GGUF quantization's) against today's runner's fast form, one at a time.
-  add_executable(component_runner_dsv4_screen_test component_runner_dsv4_screen_test.cc
-      ../support/dsv4_screen_source.cc)
-  target_link_libraries(component_runner_dsv4_screen_test PRIVATE llmp_engine llmp_ggml_kernels
-      llmp_components llmp_spec llmp_artifact)
-  llmp_gpu_gtest(component_runner_dsv4_screen_test MODELS
-      ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(component_runner_qwen38_gpu_test component_runner_qwen38_gpu_test.cc)
   target_link_libraries(component_runner_qwen38_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                                  llmp_components llmp_spec

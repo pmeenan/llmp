@@ -4,7 +4,7 @@
 
 // attention.mqa, version 1: DeepSeek V4's attention (llama.cpp's
 // deepseek4.cpp build_attention_impl, build_csa_lid_attention, build_*_
-// compressed_kv_from_state and build_lid_top_k; kernels/ggml/dsv4_graph.cc's
+// compressed_kv_from_state and build_lid_top_k; the retired kernels/ggml/dsv4_graph.cc's
 // reference form), inside hyper-connections (its input norm is its mix's).
 // From the stream x:
 //
@@ -62,7 +62,7 @@
 // RMS-normed, rotated at the rows' positions (the drafter's own blocks
 // write the ring as above).
 //
-// The fragment emits what dsv4_graph.cc's reference form records, in
+// The fragment emits what the retired dsv4_graph.cc's reference form recorded, in
 // GGML's graph order: the compressors' stores and ring rows, the query,
 // the key and its store, then attention (its key views, the indexer's
 // selection within the mask) and the output; the multi-segment form runs
@@ -396,7 +396,7 @@ constexpr std::array<std::string_view, 6> kPatterns{"dsv4_qhead",    "dsv4_compr
                                                     "dsv4_lid_topk", "dsv4_sparse_attention",
                                                     "dsv4_out_a",    "rms_norm_mul"};
 
-// The layer's rotation (dsv4_graph.cc's Rope: YaRN where the mapping gives
+// The layer's rotation (the retired dsv4_graph.cc's Rope: YaRN where the mapping gives
 // a factor, its attention factor reciprocal to YaRN's magnitude), over
 // `head` values from head - rope_dims.
 ir::RopeParams Rotation(const Dims& d, std::uint64_t head, bool inverse = false) {

@@ -92,9 +92,6 @@ struct ServingOptions {
   std::uint64_t diagnostic_startup_host_bytes = 0;
   // Internal auto mode derives a parser loan and actual source construction.
   bool diagnostic_auto_startup = false;
-  // Internal matched plain-token qualification; absent from CLI/TOML/HTTP.
-  // Unset uses each runner's ordinary policy.
-  std::optional<bool> diagnostic_plain_device_tokens;
   // The image pipeline's generation, fixed when it registers (this slice's
   // image runner takes its prompt at setup): its prompt, and its initial
   // latents (BF16, the reference's for its seed), without which an image
@@ -136,12 +133,6 @@ struct ServingOptions {
   // Unset selects ordinary non-speculative prefill only; required-stream
   // drafter consumers remain explicit opt-ins.
   std::optional<bool> dsv4_state_only_prefill;
-  // Hint-delivery control for matched DS/Qwen tests with identical provisioning.
-  // It changes no required work.
-  bool predicted_prefill_hints = true;
-  // Internal same-provisioning T54 control: false forces current/future heads.
-  // Scoring remains headed and public settings never expose this override.
-  bool prefill_output_intent = true;
   // Gate-only (owner, 2026-10-09): the component engine's models save no
   // turn checkpoint (Llm::set_turn_checkpoints), so M3.6's speed gate
   // compares equal work with a baseline whose M3 classes never saved one
@@ -179,9 +170,11 @@ struct CommandOptions {
   bool json = false;  // settings --json
 };
 
-// Internal supervised service qualification only. The three environment values
-// are all absent or all valid; an optional first-Verify capture selector requires
-// that complete tuple. Refusal leaves options unchanged. Funding is
+// Internal supervised service qualification only. The component selector,
+// startup bytes and node cap are all absent or all valid (the environment
+// supplies the selector itself, `all` or the Qwen-only `1`); an optional
+// first-Verify capture selector requires that complete tuple. Refusal leaves
+// options unchanged. Funding is
 // derived and source/config-bound by the caller before starting the process.
 std::expected<void, std::string> ApplyServiceDiagnostics(
     ServingOptions& options, std::optional<std::string_view> component,

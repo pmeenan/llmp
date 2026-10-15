@@ -4,7 +4,7 @@
 # The node runtime process (/usr/libexec/llmp/llmp-runtime once
 # packaged, D-063): startup, readiness and stop (runtime.h), the serving
 # commands' arguments (commands.h), a prefill's chunks (prefill.h), the
-# start's memory guard (memory_guard.h), serving's choices from a binding (model_limits.h),
+# start's memory guard (memory_guard.h),
 # a chat cohort's state-capacity policy (cohort_capacity.h) and schedule
 # (cohort_schedule.h), when pressure from outside has it trim
 # (pressure_trim.h), room for a swap (swap_room.h), the chat route's
@@ -18,7 +18,7 @@
 add_library(llmp_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc binding.cc
                                   calibration.cc cohort_capacity.cc cohort_schedule.cc
                                   completion_tokens.cc component_admission.cc hang_ladder.cc intake_limits.cc
-                                  gemma_profile.cc kept_record.cc memory_guard.cc model_limits.cc model_settings.cc
+                                  gemma_profile.cc kept_record.cc memory_guard.cc model_settings.cc
                                   prefill.cc pressure_trim.cc state_keeper.cc swap_room.cc
                                   watchdog.cc)
 target_include_directories(llmp_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")

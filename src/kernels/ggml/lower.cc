@@ -35,7 +35,6 @@
 #include "ir/op.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
-#include "kernels/ggml/dsv4_graph.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
@@ -59,6 +58,10 @@ namespace llmp::kernels::ggml {
 namespace {
 
 namespace co = llmp::components;
+
+// The measured compact expert scheduling floor for production DeepSeek
+// prefill.
+inline constexpr std::int64_t kDsv4CompactMinRows = 2048;
 using format::Encoding;
 using ir::FusedKind;
 using ir::NodeId;

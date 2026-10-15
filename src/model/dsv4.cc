@@ -567,6 +567,14 @@ std::uint32_t Dsv4MostRows(const Dsv4Profile& p, std::uint32_t context) {
 
 // ---------------------------------------------------------------- chunk inputs
 
+namespace {
+
+// Allocation-free dimensions of a compressor's chunk inputs. No future
+// tokens, state writes or read maps are constructed.
+struct Dsv4CompGeometry {
+  std::uint32_t n_kv = 0, blocks = 0, persist = 0;
+};
+
 std::expected<Dsv4CompGeometry, std::string> Dsv4CompressorGeometry(
     std::uint32_t ratio, bool overlap, std::uint32_t state_rows, std::uint32_t cache_rows,
     std::uint32_t n_past, std::uint32_t rows) {
@@ -587,6 +595,8 @@ std::expected<Dsv4CompGeometry, std::string> Dsv4CompressorGeometry(
                                                      : std::max<std::uint64_t>(complete, 1)),
                           .persist = std::min(rows, state_rows)};
 }
+
+}  // namespace
 
 std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio, bool overlap,
                                                             std::uint32_t state_rows,
@@ -768,42 +778,6 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
 
 // ---------------------------------------------------------------- speculation
 
-namespace {
-
-// The widths Dsv4Chunk gives a chunk ending before `total`: the window
-// cells attention reads and each compressor's mask.
-struct Widths {
-  std::uint64_t raw = 0;
-  std::uint64_t csa = 0;
-  std::uint64_t hca = 0;
-  bool operator==(const Widths&) const = default;
-};
-
-Widths WidthsAt(const Dsv4StateLayout& state, std::uint64_t total) {
-  const std::uint64_t cells = state.raw_cells;
-  const auto comp = [&](std::uint32_t ratio) {
-    return std::max<std::uint64_t>(Pad(total / ratio, 256), 256);
-  };
-  return {.raw = state.window == Dsv4Window::kRing
-                     ? cells
-                     : std::min<std::uint64_t>(
-                           cells, std::max<std::uint64_t>(256, Pad(std::min(total, cells), 256))),
-          .csa = comp(kDsv4CsaRatio),
-          .hca = comp(kDsv4HcaRatio)};
-}
-
-}  // namespace
-
-bool Dsv4SameWidths(const Dsv4StateLayout& state, std::uint32_t n_past, std::uint32_t rows) {
-  if (rows == 0) {
-    return false;
-  }
-  // Each width grows with the position: equal at the first and last rows,
-  // equal at every row between.
-  return WidthsAt(state, std::uint64_t{n_past} + 1) ==
-         WidthsAt(state, std::uint64_t{n_past} + rows);
-}
-
 Dsv4Writes Dsv4ChunkWrites(const Dsv4Profile& profile, const Dsv4StateLayout& state,
                            const Dsv4ChunkInputs& chunk) {
   using K = Dsv4StateTensor::Kind;
@@ -857,24 +831,6 @@ Dsv4Writes Dsv4ChunkWrites(const Dsv4Profile& profile, const Dsv4StateLayout& st
     }
   }
   return out;
-}
-
-std::uint64_t Dsv4VerifySnapshotBytes(const Dsv4Profile& profile, const Dsv4StateLayout& state,
-                                      std::uint32_t max_rows) {
-  using K = Dsv4StateTensor::Kind;
-  // At most: every row writes its cell, its ring rows and a compressed row
-  // in every layer, and every compressed cache's scratch row is written.
-  std::uint64_t per_row = 0;
-  std::uint64_t scratch = 0;
-  for (const Dsv4StateTensor& t : state.tensors) {
-    const std::uint64_t row = t.ne0 * (t.f16 ? 2U : 4U);
-    per_row += row;
-    if (t.kind == K::kCsaK || t.kind == K::kLidK || t.kind == K::kHcaK) {
-      scratch += row;
-    }
-  }
-  (void)profile;
-  return (per_row * max_rows) + scratch;
 }
 
 }  // namespace llmp::model

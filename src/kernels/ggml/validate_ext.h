@@ -268,9 +268,9 @@ std::expected<void, KernelFailure> CheckFlashAttnMmaGqa2(const ggml_tensor* node
 // ring mask and floor((first + row + 1) / 128) HCA counts. This is a
 // trusted binder contract, not a content check of arbitrary device
 // masks/counts. The first position is a host scalar read at launch: the
-// fast plan's output-A/HCA prefill (engine/dsv4_plan.h Dsv4PrefillHca, on
-// in serving for full 4,096-row chunks) sets it before each run
-// (SetDsv4HcaFirstPosition), so such a plan runs launch by launch and is
+// fast plan's output-A/HCA prefill (the DeepSeek prefill plan's output-A/HCA
+// form, on in serving for full 4,096-row chunks) sets it before each run
+// (MarkDsv4HcaTokentile), so such a plan runs launch by launch and is
 // never captured; a captured replay would keep the captured position.
 // The operation accepts packed F32 [token, 64, 512] Q/output, one joined
 // F16 K/V ring + compressed prefix and 64 F32 sinks. It changes arithmetic,

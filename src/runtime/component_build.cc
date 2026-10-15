@@ -529,9 +529,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         settings.prefill_chunk.value != 0 &&
         settings.prefill_chunk.value < settings.context.value && settings.max_slots.value != 0 &&
         settings.max_slots.value <= Llm::kMaxBranches && (!settings.speculation.value || dspark);
-    if (deepseek_serving && (settings.prefill_outa_hca.source == SettingSource::kOverride ||
-                             settings.prefill_outa_hca_partial.source == SettingSource::kOverride))
-      return Error("the shared diagnostic does not consume legacy prefill fusion overrides");
     if (deepseek && !deepseek_serving &&
         (!options.diagnostic_solo || !DeepSeekDomain(options, dspark) ||
          !options.construction_metadata || options.target_policy || settings.max_slots.value != 1 ||

@@ -280,8 +280,6 @@ bool SupportsWaveForm(const ArtifactFacts& facts) { return facts.architecture ==
 
 bool SupportsWaveCosts(const ArtifactFacts& facts) { return facts.architecture == "deepseek4"; }
 
-bool SupportsHcaPrefill(const ArtifactFacts& facts) { return facts.architecture == "deepseek4"; }
-
 bool SupportsMtpDrafting(const ArtifactFacts& facts) { return facts.architecture == "qwen4exp"; }
 
 bool SupportsSpeculativeDrafting(const ModelSettings& settings) {
@@ -294,10 +292,6 @@ bool SupportsWaveForm(const ModelSettings& settings) {
 }
 
 bool SupportsWaveCosts(const ModelSettings& settings) {
-  return settings.architecture == "deepseek4";
-}
-
-bool SupportsHcaPrefill(const ModelSettings& settings) {
   return settings.architecture == "deepseek4";
 }
 
@@ -321,9 +315,6 @@ bool KeyAppliesTo(std::string_view key, const ArtifactFacts& facts) {
   if (key == "wave_costs") {
     return SupportsWaveCosts(facts);
   }
-  if (key == "prefill_outa_hca" || key == "prefill_outa_hca_partial") {
-    return SupportsHcaPrefill(facts);
-  }
   if (key == "draft_vocab" || key == "depth_cost_ratio" || key == "shared_wave_depth" ||
       key == "draft_wave_max" || key == "wave_lanes" || key == "wave_read_align") {
     return SupportsMtpDrafting(facts);
@@ -346,9 +337,6 @@ bool KeyAppliesTo(std::string_view key, const ModelSettings& settings) {
   }
   if (key == "wave_costs") {
     return SupportsWaveCosts(settings);
-  }
-  if (key == "prefill_outa_hca" || key == "prefill_outa_hca_partial") {
-    return SupportsHcaPrefill(settings);
   }
   if (key == "draft_vocab" || key == "depth_cost_ratio" || key == "shared_wave_depth" ||
       key == "draft_wave_max" || key == "wave_lanes" || key == "wave_read_align") {
@@ -1024,18 +1012,6 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     s.wave_costs = {std::move(costs), SettingSource::kFallback,
                     "measured on a GB10, widths 2 to 8"};
   }
-  s.prefill_outa_hca =
-      Pick<bool>(entry.Bool("prefill_outa_hca"), basis("prefill_outa_hca"), {}, {}, {}, {}, true,
-                 "the served default, qualified (docs/experiments/ds4-output-prefix)");
-  s.prefill_outa_hca_partial =
-      Pick<bool>(entry.Bool("prefill_outa_hca_partial"), basis("prefill_outa_hca_partial"), {}, {},
-                 {}, {}, true, "the served default, qualified under the tie-aware rule");
-  // In effect only with the full-chunk form (engine/dsv4_plan.h).
-  if (!s.prefill_outa_hca.value && s.prefill_outa_hca_partial.value) {
-    s.prefill_outa_hca_partial.value = false;
-    s.prefill_outa_hca_partial.basis += " (off: prefill_outa_hca is off)";
-  }
-
   // Qwen3.8's MTP and waves.
   s.draft_vocab = Pick<std::uint32_t>(U32(entry.Integer("draft_vocab")), basis("draft_vocab"), {},
                                       {}, {}, {}, kQwen38DraftVocab, "measured on a GB10");
@@ -1153,10 +1129,6 @@ std::vector<ModelSettings::Line> ModelSettings::Lines() const {
       add(k, wave_form);
     } else if (k == "wave_costs") {
       add(k, wave_costs);
-    } else if (k == "prefill_outa_hca") {
-      add(k, prefill_outa_hca);
-    } else if (k == "prefill_outa_hca_partial") {
-      add(k, prefill_outa_hca_partial);
     } else if (k == "draft_vocab") {
       add(k, draft_vocab);
     } else if (k == "depth_cost_ratio") {

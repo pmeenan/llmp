@@ -31,6 +31,19 @@ std::uint64_t Address(const ggml_tensor* tensor) {
   return reinterpret_cast<std::uintptr_t>(tensor->data);
 }
 
+TEST(GgmlTensors, TypeNamesResolveInEitherCaseAndRefuseTheUnknown) {
+  using llmp::kernels::ggml::GgmlTypeOf;
+  const auto lower = GgmlTypeOf("q8_0");
+  const auto upper = GgmlTypeOf("Q8_0");
+  ASSERT_TRUE(lower.has_value());
+  ASSERT_TRUE(upper.has_value());
+  EXPECT_EQ(*lower, GGML_TYPE_Q8_0);
+  EXPECT_EQ(*upper, GGML_TYPE_Q8_0);
+  EXPECT_EQ(*GgmlTypeOf("F16"), GGML_TYPE_F16);
+  EXPECT_FALSE(GgmlTypeOf("not_a_type").has_value());
+  EXPECT_FALSE(GgmlTypeOf("").has_value());
+}
+
 TEST(GgmlTensors, NodesKeepUpstreamShapesAndPointWhereBound) {
   auto arena = TensorArena::Create(8).value();
   ggml_context* context = arena.context();

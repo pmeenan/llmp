@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A v0 artifact's weights as extents on a paged node (paged_node.h), for
-// the DeepSeek V4 runner (dsv4_runner.h;
+// the model runners (model_runner.h;
 // docs/engine.md, docs/experiments/fast-swap/):
 //
 // - The artifact opened, its identity the catalog's content key; its

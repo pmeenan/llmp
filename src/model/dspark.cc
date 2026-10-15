@@ -175,56 +175,7 @@ std::expected<DsparkStateLayout, std::string> DsparkState(const DsparkProfile& p
   return s;
 }
 
-// ---------------------------------------------------------------- inputs
-
-std::expected<DsparkBlockInputs, std::string> DsparkBlock(const DsparkProfile& profile,
-                                                          const DsparkStateLayout& state,
-                                                          std::uint32_t pos0, std::int32_t anchor,
-                                                          std::uint32_t rows,
-                                                          bool materialize_mask) {
-  const Dsv4Profile& p = profile.blocks;
-  if (rows == 0 || rows > profile.block_size || rows > state.max_rows) {
-    return Refused(std::format("a draft block of {} rows (at most {})", rows,
-                               std::min(profile.block_size, state.max_rows)));
-  }
-  if (anchor < 0 || std::cmp_greater_equal(anchor, p.vocab)) {
-    return Refused(std::format("the anchor {} is outside the vocabulary", anchor));
-  }
-  if (std::uint64_t{pos0} + rows >
-      static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
-    return Refused("positions beyond int32");
-  }
-  if (state.ring != profile.ring || p.window == 0 ||
-      std::uint64_t{state.ring} < std::uint64_t{p.window} + rows ||
-      std::uint64_t{rows} * state.ring > INT32_MAX / sizeof(std::uint16_t))
-    return Refused("a draft ring must retain its window and whole block within input bounds");
-  DsparkBlockInputs in;
-  in.pos0 = pos0;
-  in.rows = rows;
-  const std::uint64_t ring = state.ring;
-  const std::uint64_t end = std::uint64_t{pos0} + rows;  // one past the block
-  if (materialize_mask) in.mask.assign(std::size_t{rows} * ring, kHalfNegInf);
-  for (std::uint32_t i = 0; i < rows; ++i) {
-    in.tokens.push_back(i == 0 ? anchor : profile.mask_token);
-    const std::uint64_t pos = std::uint64_t{pos0} + i;
-    in.positions.push_back(static_cast<std::int32_t>(pos));
-    in.cells.push_back(static_cast<std::int64_t>(pos % ring));
-    for (std::uint64_t c = 0; materialize_mask && c < ring; ++c) {
-      if (c >= end) {
-        continue;  // no position has reached this cell yet
-      }
-      // The position cell c holds once the block is written: the latest
-      // one below `end` congruent to it.
-      const std::uint64_t q = c + (((end - 1 - c) / ring) * ring);
-      // Non-causal within the window (llama.cpp's is_masked_swa: masked
-      // when p1 - p0 >= n_swa, never for a later position).
-      if (q > pos || pos - q < p.window) {
-        in.mask[(std::size_t{i} * ring) + c] = kHalfZero;
-      }
-    }
-  }
-  return in;
-}
+// ---------------------------------------------------------------- injection
 
 DsparkInjection DsparkInject(const DsparkStateLayout& state, std::uint32_t n_past,
                              std::uint32_t rows) {

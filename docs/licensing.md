@@ -110,9 +110,9 @@ MMA flash attention and `launch_fattn`, `fattn_mma_q16.cuh` with
 `fattn_mma_d512_q16.cu`, their copy of the compact MMQ kernel,
 `mul_mat_q_glu.cu`, and the HC post and RMS arithmetic in
 `dsv4_hc_norm.cu`), and the ports of llama.cpp's DeepSeek V4
-graph and compressor plan (`src/kernels/ggml/dsv4_graph.cc`,
-`src/model/dsv4.cc`; llama.cpp is MIT like GGML, under the same
-copyright) and of its Qwen3.8 graph (`qwen4exp.cpp`), QSA block tables and
+graph and compressor plan (`src/kernels/ggml/dsv4_graph.cc`, deleted in
+M3.6 slice G4d with the legacy runner, and `src/model/dsv4.cc`; llama.cpp is
+MIT like GGML, under the same copyright) and of its Qwen3.8 graph (`qwen4exp.cpp`), QSA block tables and
 n-gram hash (`src/kernels/ggml/qwen38_graph.cc`, `src/model/qwen38.cc`).
 The Gemma3 descriptor graph (`src/kernels/ggml/gemma3_graph.cc`) ported
 llama.cpp v0.6.0/d81235049384534c167caea52b85a694f6103d14's Gemma3 text and

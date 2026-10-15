@@ -7,27 +7,33 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "components/step.h"
 #include "dsv4_fixture.h"
 #include "engine/component_source.h"
 #include "execution/registry.h"
+#include "ggml.h"
 #include "kernels/ggml/capabilities.h"
-#include "kernels/ggml/dsv4_graph.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
+#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
+#include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
+#include "model/dspark.h"
+#include "model/dsv4.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
 #include "spec/mappings/dsv4.h"
@@ -195,13 +201,47 @@ TEST(GgmlLowerDsv4Test, StateBankLayoutIdentityChangesOnlyOptedInSourceKeys) {
   }
 }
 
-TEST(GgmlLowerDsv4Test, CompressedReadsUseTheContractsPaddingAndHadamardMatchesProduction) {
+// The Hadamard matrix by Sylvester's recursive doubling, H(2k) = [[H, H], [H, -H]],
+// scaled by 1 / sqrt(n): the ordering llama.cpp's ggml_gen_hadamard gives the
+// indexer (the matrix the retired legacy builder produced), so the comparison
+// below is exact entry by entry.
+std::vector<float> SylvesterHadamard(std::size_t n) {
+  std::vector<float> h{1.0F};
+  for (std::size_t k = 1; k < n; k *= 2) {
+    std::vector<float> next(4 * k * k);
+    const std::size_t width = 2 * k;
+    for (std::size_t r = 0; r < k; ++r) {
+      for (std::size_t c = 0; c < k; ++c) {
+        const float v = h[(r * k) + c];
+        next[(r * width) + c] = v;
+        next[(r * width) + k + c] = v;
+        next[((k + r) * width) + c] = v;
+        next[((k + r) * width) + k + c] = -v;
+      }
+    }
+    h = std::move(next);
+  }
+  const float scale = 1.0F / std::sqrt(static_cast<float>(n));
+  for (float& v : h) v *= scale;
+  return h;
+}
+
+TEST(GgmlLowerDsv4Test, CompressedReadsUseTheContractsPaddingAndHadamardMatchesSylvester) {
   EXPECT_EQ(co::CompressedReadCells(1027, 4, 256), 256);
   EXPECT_EQ(co::CompressedReadCells(1028, 4, 256), 512);
   EXPECT_EQ(co::CompressedReadCells(1028, 4, 2048), 2048);
   EXPECT_EQ(co::CompressedReadCells(8196, 4, 2048), 4096);
-  for (const auto n : {32, 64, 128, 256})
-    EXPECT_EQ(co::HadamardValues(static_cast<std::uint64_t>(n)), kg::HadamardMatrix(n));
+  for (const std::size_t n : {2U, 32U, 64U, 128U, 256U}) {
+    const std::vector<float> h = co::HadamardValues(n);
+    const std::vector<float> want = SylvesterHadamard(n);
+    ASSERT_EQ(h.size(), n * n);
+    ASSERT_EQ(want.size(), n * n);
+    for (std::size_t i = 0; i < h.size(); ++i)
+      ASSERT_EQ(h[i], want[i]) << "n " << n << " row " << i / n << " column " << i % n;
+  }
+  // Not a power of two: no matrix, as before.
+  const std::vector<float> none = co::HadamardValues(48);
+  EXPECT_TRUE(std::ranges::all_of(none, [](float v) { return v == 0.0F; }));
 }
 
 TEST(GgmlLowerDsv4Test, InvalidStageIsRejectedBeforeCompilingShapeCallbacks) {

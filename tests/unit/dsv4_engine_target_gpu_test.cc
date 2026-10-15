@@ -1013,7 +1013,7 @@ TEST(Dsv4EngineTargetInputs, AutomaticServingRefusesUnpaidOrMixedAuthorityBefore
   entry.artifact = std::string(kArtifact);
   auto domain = Domain();
   ASSERT_TRUE(domain) << Failed(domain).value_or("");
-  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+  for (unsigned mutation = 0; mutation < 5; ++mutation) {
     auto settings = Settings();
     settings.context.value = 8192;
     settings.max_slots.value = 4;
@@ -1026,15 +1026,12 @@ TEST(Dsv4EngineTargetInputs, AutomaticServingRefusesUnpaidOrMixedAuthorityBefore
     if (mutation == 2) options.diagnostic_solo = false;
     if (mutation == 3) options.target_policy = "";
     if (mutation == 4) settings.speculation.value = true;  // no drafter
-    if (mutation == 5) settings.prefill_outa_hca.source = rt::SettingSource::kOverride;
-    if (mutation == 6) settings.prefill_outa_hca_partial.source = rt::SettingSource::kOverride;
     auto build = rt::ComponentLlmBuild(node, "/nonexistent-dsv4-serving-control", entry, 0,
                                        std::move(options));
     auto parts = build(settings);
     ASSERT_FALSE(parts);
     EXPECT_TRUE(parts.error().find("diagnostic envelope") != std::string::npos ||
-                parts.error().find("internal request") != std::string::npos ||
-                parts.error().find("legacy prefill fusion overrides") != std::string::npos);
+                parts.error().find("internal request") != std::string::npos);
   }
 }
 

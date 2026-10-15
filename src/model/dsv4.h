@@ -20,9 +20,11 @@
 // the artifact's: the binding records each tensor's GGML type, and the
 // kernel module refuses at planning a type it does not compile.
 //
-// The model layer holds no vendor or kernel-module types; the GGML graph
-// that computes a chunk is built from this adapter by the GGML kernel
-// module (kernels/ggml/dsv4_graph.h).
+// The model layer holds no vendor or kernel-module types; the component
+// engine computes a chunk from the model spec its mapping makes
+// (spec/mappings/dsv4.h), and this adapter keeps the profile, the binding of
+// an artifact's tensors, and the state layouts and chunk inputs that the
+// spec's contracts are checked against.
 
 #ifndef LLMP_MODEL_DSV4_H_
 #define LLMP_MODEL_DSV4_H_
@@ -248,7 +250,7 @@ struct Dsv4StateLayout {
   // verify first saves every row it will write (Dsv4ChunkWrites), and a
   // rejection restores the rejected positions' rows and the chunk's scratch
   // rows from that snapshot, which is the request's working state
-  // (Dsv4VerifySnapshotBytes), not a representation's.
+  // (a verify's snapshot), not a representation's.
   std::vector<StateRepresentation> Representations(std::uint32_t max_verify = 0) const;
 };
 
@@ -332,16 +334,8 @@ std::expected<Dsv4ChunkInputs, std::string> Dsv4Chunk(const Dsv4Profile& profile
                                                       std::uint32_t n_past, std::uint32_t rows,
                                                       bool masks = true, bool raw_mask = true);
 
-// One compressor's plan (exposed for tests).
-// Allocation-free dimensions shared by actual compressor inputs and prefill
-// prediction. No future tokens, state writes or read maps are constructed.
-struct Dsv4CompGeometry {
-  std::uint32_t n_kv = 0, blocks = 0, persist = 0;
-};
-std::expected<Dsv4CompGeometry, std::string> Dsv4CompressorGeometry(
-    std::uint32_t ratio, bool overlap, std::uint32_t state_rows, std::uint32_t cache_rows,
-    std::uint32_t n_past, std::uint32_t rows);
-
+// One compressor's plan (exposed for tests). Refused for a geometry that is not
+// a bounded compressor's or exceeds its cache.
 std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio, bool overlap,
                                                             std::uint32_t state_rows,
                                                             std::uint32_t cache_rows,
@@ -367,18 +361,6 @@ struct Dsv4Writes {
 };
 Dsv4Writes Dsv4ChunkWrites(const Dsv4Profile& profile, const Dsv4StateLayout& state,
                            const Dsv4ChunkInputs& chunk);
-// The bytes a verify of up to `max_rows` rows saves at most: the request's
-// rollback snapshot (D-068 working state).
-std::uint64_t Dsv4VerifySnapshotBytes(const Dsv4Profile& profile, const Dsv4StateLayout& state,
-                                      std::uint32_t max_rows);
-
-// Whether a verify of `rows` rows after `n_past` runs at every mask width a
-// one-row step of each of its positions would (the window cells attention
-// reads and the compressed rows each layer's mask spans are padded to 256):
-// only then can its rows equal those steps bit for bit (D-092). A draft
-// that would cross a width is shortened to end before it.
-bool Dsv4SameWidths(const Dsv4StateLayout& state, std::uint32_t n_past, std::uint32_t rows);
-
 inline constexpr std::uint16_t kHalfZero = 0x0000;
 inline constexpr std::uint16_t kHalfNegInf = 0xFC00;
 

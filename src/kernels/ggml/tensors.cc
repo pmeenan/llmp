@@ -10,6 +10,7 @@
 #include <format>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -116,6 +117,29 @@ std::expected<void, KernelFailure> TensorArena::Reserve(std::size_t tensors) con
 
 void TensorArena::Bind(ggml_tensor* tensor, std::uint64_t address) {
   tensor->data = reinterpret_cast<void*>(address);  // NOLINT(performance-no-int-to-ptr)
+}
+
+std::expected<ggml_type, KernelFailure> GgmlTypeOf(std::string_view name) {
+  // GGML names its types in lower case ("q8_0"); the artifact's index in
+  // upper case ("Q8_0"), as GGUF tools print them.
+  const auto same = [](std::string_view a, std::string_view b) {
+    return a.size() == b.size() && std::ranges::equal(a, b, [](char x, char y) {
+             const auto lower = [](char c) {
+               return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+             };
+             return lower(x) == lower(y);
+           });
+  };
+  for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+    const auto type = static_cast<ggml_type>(t);
+    const char* type_name = ggml_type_name(type);
+    if (ggml_blck_size(type) > 0 && ggml_type_size(type) > 0 && type_name != nullptr &&
+        same(name, type_name)) {
+      return type;
+    }
+  }
+  return std::unexpected(KernelFailure{.error = KernelError::kRejected,
+                                       .detail = std::format("{} is not a GGML type", name)});
 }
 
 }  // namespace llmp::kernels::ggml
