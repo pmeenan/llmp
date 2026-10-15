@@ -416,18 +416,18 @@ pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
   key.shape = shape;
   if (shape.stage < slots_.stages()) {
     const auto& layout = slots_.layout(shape.stage);
-    bool has_kv = false;
-    bool all_ring_reads_whole = true;
-    for (const auto& item : layout.items) {
-      if (item.contract.kind == model::StateKind::kKv) {
-        has_kv = true;
-        if (!item.contract.ring_reads_whole) {
-          all_ring_reads_whole = false;
-          break;
-        }
-      }
-    }
-    if (has_kv && all_ring_reads_whole) {
+    const auto uses_read_cells = [](const model::StateTensorContract& c) {
+      return (c.kind == model::StateKind::kKv && !c.ring_reads_whole) ||
+             c.cells == model::CellRule::kPerPosition ||
+             (c.cells == model::CellRule::kRing && !c.ring_reads_whole) ||
+             (c.cells == model::CellRule::kPerBlock && c.basis == model::BlockBasis::kReadCells);
+    };
+    const bool any_reads_cells =
+        std::ranges::any_of(layout.items,
+                            [&](const auto& item) { return uses_read_cells(item.contract); }) ||
+        std::ranges::any_of(layout.borrowed,
+                            [&](const auto& item) { return uses_read_cells(item.contract); });
+    if (!any_reads_cells && (!layout.items.empty() || !layout.borrowed.empty())) {
       key.shape.read_align = 0;
       for (auto& seg : key.shape.segments) {
         seg.read_cells = 0;
