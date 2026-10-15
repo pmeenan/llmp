@@ -1883,10 +1883,8 @@ std::expected<void, KernelFailure> CheckQsaAttn(const ggml_tensor* node) {
     return Rejected("F32 queries [256, heads, t], packed");
   }
   const bool q8 = k->type == GGML_TYPE_Q8_0;
-  const std::size_t unit = q8 ? ggml_type_size(GGML_TYPE_Q8_0) : sizeof(ggml_fp16_t);
-  const std::size_t row_bytes =
-      q8 ? static_cast<std::size_t>((d * kv_heads) / QK8_0) * ggml_type_size(GGML_TYPE_Q8_0)
-         : static_cast<std::size_t>(d * kv_heads) * sizeof(ggml_fp16_t);
+  const std::size_t unit = ggml_type_size(k->type);
+  const std::size_t row_bytes = ggml_row_size(k->type, d * kv_heads);
   const std::size_t align = q8 ? 2 : 16;
   for (const ggml_tensor* cache : {k, v}) {
     if (cache->type != k->type || (cache->type != GGML_TYPE_F16 && cache->type != GGML_TYPE_Q8_0) ||
