@@ -13,6 +13,15 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Planning a new step shape takes about half as long (Gemma 4
+  26B-A4B 23 to 12 ms a plan, 31B 28 to 16 ms), so a decode that meets a
+  new shape (a joined wave whose owners cross a read boundary) stalls less:
+  Gemma 4 26B-A4B's decode was 1.2% (one request) and 2.2% (four) slower
+  than M3, now 0.5%. The planner authenticated the physical alignment
+  facts it carries through each pass by hashing the whole graph four times
+  a plan; facts carried to a pass's graph are now sealed to that graph's
+  identity, which no other graph shares. A plan's GGML metadata arena is
+  no longer zeroed (GGML writes what it makes there in full).
 - DeepSeek V4 with DSpark decodes joined speculative waves at the M3
   speed again on v1 imports: its hash-routing tables (3 MB) were read by
   rows from disk before every step that routed new tokens, a synchronous

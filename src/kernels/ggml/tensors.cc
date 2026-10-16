@@ -44,20 +44,21 @@ std::expected<TensorArena, KernelFailure> TensorArena::CreateBytes(std::size_t b
   }
   if (slots > (std::numeric_limits<std::size_t>::max() - size) / sizeof(ggml_tensor*))
     return std::unexpected(KernelFailure{.detail = "arena and graph traversal bytes overflow"});
-  std::vector<std::byte> buffer(size);
+  auto buffer = std::make_unique_for_overwrite<std::byte[]>(size);
   std::vector<ggml_tensor*> visited(slots, nullptr);
   // GGML requires its memory pool aligned to GGML_MEM_ALIGN (16).
-  base::Check(reinterpret_cast<std::uintptr_t>(buffer.data()) % 16 == 0,
+  base::Check(reinterpret_cast<std::uintptr_t>(buffer.get()) % 16 == 0,
               "operator new returns 16-byte aligned memory");
   ggml_context* context =
-      ggml_init(ggml_init_params{.mem_size = size, .mem_buffer = buffer.data(), .no_alloc = true});
+      ggml_init(ggml_init_params{.mem_size = size, .mem_buffer = buffer.get(), .no_alloc = true});
   TensorArena arena(std::move(buffer), context, size, std::move(visited), graph_capacity);
   arena.stands_for_ = stands_for;
   return arena;
 }
 
-TensorArena::TensorArena(std::vector<std::byte> buffer, ggml_context* context, std::size_t capacity,
-                         std::vector<ggml_tensor*> visited, std::size_t graph_capacity)
+TensorArena::TensorArena(std::unique_ptr<std::byte[]> buffer, ggml_context* context,
+                         std::size_t capacity, std::vector<ggml_tensor*> visited,
+                         std::size_t graph_capacity)
     : buffer_(std::move(buffer)),
       context_(context),
       capacity_(capacity),

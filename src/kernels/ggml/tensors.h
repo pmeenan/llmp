@@ -86,10 +86,14 @@ class TensorArena {
   struct Free {
     void operator()(ggml_context* context) const;
   };
-  TensorArena(std::vector<std::byte> buffer, ggml_context* context, std::size_t capacity,
+  TensorArena(std::unique_ptr<std::byte[]> buffer, ggml_context* context, std::size_t capacity,
               std::vector<ggml_tensor*> visited, std::size_t graph_capacity);
 
-  std::vector<std::byte> buffer_;  // the metadata, before the context that uses it
+  // The metadata, before the context that uses it. Not zeroed: GGML
+  // writes every object it makes there in full (its own contexts take
+  // malloc's memory), and a plan's estimate is several times what its
+  // build uses, so zeroing it was most of an arena's cost.
+  std::unique_ptr<std::byte[]> buffer_;
   std::unique_ptr<ggml_context, Free> context_;
   std::size_t capacity_ = 0;
   std::size_t stands_for_ = 0;         // CreateBytes

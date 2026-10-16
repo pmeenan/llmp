@@ -157,30 +157,46 @@ QueryShape Product(const ir::TensorDesc* w, const ir::TensorDesc* x) {
 
 }  // namespace
 
-RootAlignment GraphRootAlignments(const ir::Graph& graph,
-                                  std::span<const RootAlignmentFact> facts) {
+namespace {
+
+// The facts' table for `graph`, or none when they are malformed.
+std::optional<std::vector<std::uint64_t>> AlignmentTable(const ir::Graph& graph,
+                                                         std::span<const RootAlignmentFact> facts) {
   std::vector<std::uint64_t> alignments(graph.tensor_count(), 0);
   for (const auto& fact : facts) {
     if (!fact.root.valid() || fact.root.v >= graph.tensor_count() ||
         graph.tensor(fact.root).is_view() || fact.alignment == 0 ||
         (fact.alignment & (fact.alignment - 1)) != 0 || alignments[fact.root.v] != 0)
-      return {};
+      return std::nullopt;
     alignments[fact.root.v] = fact.alignment;
   }
-  // The last graph authenticated, by its identity (ir::Graph::identity:
-  // never reused, unlike an address and counts a freed graph's successor
-  // may share): a graph is hashed and sealed once, not on every query.
+  return alignments;
+}
+
+}  // namespace
+
+RootAlignment GraphRootAlignments(const ir::Graph& graph,
+                                  std::span<const RootAlignmentFact> facts) {
+  auto table = AlignmentTable(graph, facts);
+  if (!table) return {};
+  // The graph sealed is the one queried while its identity (ir::Graph::
+  // identity: unique to each built or cloned graph, carried by a move,
+  // never reused; graphs never change once built) is the query's: no
+  // hashing. Any other graph (a clone, an equal rebuild) is authenticated
+  // by digest and root seal, once for each identity seen last.
   struct CachedGraph {
     std::uint64_t identity = 0;
     bool ok = false;
   };
-  return [digest = graph.Digest(), seal = RootSeal(graph), alignments = std::move(alignments),
+  const std::uint64_t sealed = graph.identity();
+  return [sealed, digest = graph.Digest(), seal = RootSeal(graph), alignments = std::move(*table),
           cached = std::make_shared<CachedGraph>()](const ir::Graph& current,
                                                     ir::TensorId root) -> std::uint64_t {
     if (!root.valid() || root.v >= alignments.size() || alignments[root.v] == 0 ||
         root.v >= current.tensor_count() || current.tensor(root).is_view())
       return std::uint64_t{0};
     const std::uint64_t identity = current.identity();
+    if (identity != 0 && identity == sealed) return alignments[root.v];
     if (identity == 0) {
       // A graph without an identity is authenticated every time.
       return current.Digest() == digest && RootSeal(current) == seal ? alignments[root.v]
@@ -188,7 +204,8 @@ RootAlignment GraphRootAlignments(const ir::Graph& graph,
     }
     if (cached->identity != identity) {
       cached->identity = identity;
-      cached->ok = current.Digest() == digest && RootSeal(current) == seal;
+      cached->ok = current.tensor_count() == alignments.size() && RootSeal(current) == seal &&
+                   current.Digest() == digest;
     }
     return cached->ok ? alignments[root.v] : std::uint64_t{0};
   };
@@ -221,7 +238,17 @@ RootAlignment ForwardRootAlignments(const ir::Graph& before, const ir::Graph& af
                                     std::span<const ir::TensorId> tensors,
                                     const RootAlignment& facts) {
   if (!facts || tensors.size() != before.tensor_count()) return {};
-  const bool same = before.Digest() == after.Digest() && RootSeal(before) == RootSeal(after);
+  // Whether the pass changed nothing: needed only for a root that is not a
+  // mapped leaf (a computed root keeps its facts only then), so the graphs
+  // are compared, by digest and root seal, only for such a root.
+  std::optional<bool> unchanged;
+  const auto same = [&] {
+    if (!unchanged)
+      unchanged = (before.identity() != 0 && before.identity() == after.identity()) ||
+                  (before.tensor_count() == after.tensor_count() &&
+                   RootSeal(before) == RootSeal(after) && before.Digest() == after.Digest());
+    return *unchanged;
+  };
   std::vector<std::uint32_t> uses(after.tensor_count());
   for (const auto t : tensors)
     if (t.valid() && t.v < uses.size()) ++uses[t.v];
@@ -229,21 +256,37 @@ RootAlignment ForwardRootAlignments(const ir::Graph& before, const ir::Graph& af
   for (std::uint32_t i = 0; i < tensors.size(); ++i) {
     const ir::TensorId old{i}, next = tensors[i];
     if (!next.valid() || next.v >= after.tensor_count() || uses[next.v] != 1 ||
-        before.tensor(old).is_view() || after.tensor(next).is_view() ||
-        (!(same && old == next) && !SameLeaf(before, old, after, next)))
+        before.tensor(old).is_view() || after.tensor(next).is_view())
       continue;
+    const bool leaf = SameLeaf(before, old, after, next);
+    if (!leaf && old != next) continue;
     const auto alignment = facts(before, old);
-    if (PowerOfTwo(alignment)) mapped.push_back({next, alignment});
+    if (!PowerOfTwo(alignment) || (!leaf && !same())) continue;
+    mapped.push_back({next, alignment});
   }
-  const auto sealed = GraphRootAlignments(after, mapped);
+  // (`mapped` is well formed: one fact a root, each a power of two.)
+  auto table = AlignmentTable(after, mapped).value_or(std::vector<std::uint64_t>{});
+  // The forwarded facts are `after`'s, the graph the planner moves on with
+  // (a move carries its identity): sealed by that identity alone, never
+  // hashed. Any other graph, a later pass's among them, gets none of them
+  // and asks the earlier facts (`facts`), which authenticate it themselves.
+  const std::uint64_t sealed = after.identity();
+  const auto from_sealed = [sealed, alignments = std::move(table),
+                            fallback =
+                                sealed == 0 ? GraphRootAlignments(after, mapped) : RootAlignment{}](
+                               const ir::Graph& graph, ir::TensorId root) -> std::uint64_t {
+    if (fallback) return fallback(graph, root);
+    if (!root.valid() || root.v >= alignments.size() || graph.identity() != sealed ||
+        graph.tensor(root).is_view())
+      return 0;
+    return alignments[root.v];
+  };
   // A semantic binding callback may independently authenticate this current
   // graph (without hashing it on every query). Exact-ID callbacks return zero
   // after a rewrite, then use the newly sealed map. No old IDs escape.
-  return [original = facts, sealed](const ir::Graph& graph, ir::TensorId root) {
-    if (sealed) {
-      const auto from_sealed = sealed(graph, root);
-      if (PowerOfTwo(from_sealed)) return from_sealed;
-    }
+  return [original = facts, from_sealed](const ir::Graph& graph, ir::TensorId root) {
+    const auto value = from_sealed(graph, root);
+    if (PowerOfTwo(value)) return value;
     const auto direct = original(graph, root);
     return PowerOfTwo(direct) ? direct : std::uint64_t{0};
   };

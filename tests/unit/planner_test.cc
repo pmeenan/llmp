@@ -2698,7 +2698,27 @@ TEST(PlannerSelectionTest, RootFactsForwardOnlyThroughAuthenticatedLeafMaps) {
   ASSERT_TRUE(moved);
   EXPECT_EQ(moved(changed, {0}), 4U);
   EXPECT_EQ(moved(changed, {1}), 256U);
+  // The carried facts are sealed to `changed`'s identity, which a move keeps
+  // and a clone does not (a planner pass's graph is never hashed for them).
+  ir::Graph kept = changed.Clone();
+  const auto kept_facts = ForwardRootAlignments(original, kept, map, facts);
+  ir::Graph moved_on = std::move(kept);
+  EXPECT_EQ(kept_facts(moved_on, {0}), 4U);
+  EXPECT_EQ(kept_facts(moved_on.Clone(), {0}), 0U);
   EXPECT_EQ(moved(changed, {2}), 0U);  // computed root cannot inherit old placement
+  // An unchanged graph (an equal clone: another identity, the same digest
+  // and roots) keeps its computed root's fact; a changed one does not.
+  const std::array identity_map{TensorId{0}, TensorId{1}, TensorId{2}};
+  const ir::Graph same = original.Clone();
+  const auto unchanged = ForwardRootAlignments(original, same, identity_map, facts);
+  ASSERT_TRUE(unchanged);
+  EXPECT_EQ(unchanged(same, {2}), 256U);
+  EXPECT_EQ(unchanged(same, {0}), 256U);
+  const ir::Graph extended = make(false, true);
+  const auto altered = ForwardRootAlignments(original, extended, identity_map, facts);
+  ASSERT_TRUE(altered);
+  EXPECT_EQ(altered(extended, {2}), 0U);
+  EXPECT_EQ(altered(extended, {0}), 256U);  // the leaf itself is unchanged
   EXPECT_EQ(moved(changed, {3}), 0U);
   const std::array wrong{TensorId{0}, TensorId{1}, TensorId{2}};
   auto rejected = ForwardRootAlignments(original, changed, wrong, facts);

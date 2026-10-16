@@ -106,6 +106,9 @@ RootAlignment GraphRootAlignments(const ir::Graph& graph, std::span<const RootAl
 // Carries only authenticated external leaves through the exact tensor map.
 // Unchanged graphs also retain their exact root facts. Ambiguous, altered or
 // unmapped roots lose their facts; the old callback never sees borrowed IDs.
+// The carried facts are sealed to `after`'s identity (ir::Graph::identity,
+// which a move carries): no graph is hashed per pass or query, and another
+// graph, even an equal clone, gets only what `facts` itself grants it.
 RootAlignment ForwardRootAlignments(const ir::Graph& before, const ir::Graph& after,
                                     std::span<const ir::TensorId> tensors,
                                     const RootAlignment& facts);
