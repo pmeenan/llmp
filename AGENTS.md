@@ -339,7 +339,9 @@ the commit gate.
       bit-exact reference path may exist where cheap. Anything that trades
       quality for speed (quantized KV or attention, approximate sampling,
       lossy transcodes, FP8 image linears) is a per-alias mode, off by
-      default (D-108, D-085).
+      default (D-108, D-085). No bit or format compatibility with v0
+      artifacts or retired runners is owed: early development, no users
+      (owner, 2026-10-15); judge by the speed gate and reference quality.
     - *The importer is permissive and trusts the environment.* Accept any
       input whose tensors can be described correctly (trailing bytes, unscaled
       weights described by dtype, per-tensor mixed encodings); refuse only
