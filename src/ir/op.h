@@ -534,9 +534,38 @@ enum class FusedKind : std::uint16_t {
   // the next dims[i] values of the head (offsets 0, dims[0], dims[0] +
   // dims[1]), together the whole head: a multi-axis rotation.
   kRmsNormMulRopeSections,
+  // (mask F32 [C, R]): MaskPackParams: the mask in F16, padded with -inf to
+  // [cells, rows] (cells >= C, rows >= R): an attention's mask prepared
+  // once for every attention of a step that reads it. (An implementation
+  // may mark a square mask's whole rows, -0 at their first column, for an
+  // attention whose keys are exactly its columns: kQkAttention's.)
+  kAttentionMaskPack,
+  // (pos0 [R], pos1, pos2): RopeSectionsParams (normal pairs; eps unused):
+  // F32 [2, D / 2, R], each pair's cos and sin of the sections' angles
+  // (kRmsNormMulRopeSections' rotation of (1, 0)): a rotation table.
+  kRopeTable,
+  // (q [D · H, R], wq [D], k [D · Hk, R], v [D · Hk, R], mask [cells, >= R],
+  // table F32 [2, D / 2, R]): QkAttentionParams: attention of q's heads,
+  // each RMS-normed (eps), times wq and rotated by the table (normal
+  // pairs), over k's and v's heads (head h reads h / (H / Hk)) and the
+  // mask's first R rows and columns, scaled: [D · H, R], each row's heads
+  // in order (the channel rows a projection reads).
+  kQkAttention,
+  // (x [C, R], a [C], b [C]): SplitModulateParams: LayerNorm(x) · (1 + s),
+  // s row r a where r < split, else b (a conditioning split between two
+  // row ranges: the image's text and latent rows).
+  kLayerNormModulateSplit,
+  // (carry [C, R], branch [C, R], a [C], b [C]): SplitModulateParams (eps
+  // unused): carry + branch · tanh(g), g row r a where r < split, else b.
+  kGatedResidualSplit,
+  // (carry [C, R], branch [C, R], ga [C], gb [C], ma [C], mb [C]):
+  // SplitModulateParams: x = kGatedResidualSplit(carry, branch, ga, gb),
+  // then kLayerNormModulateSplit(x, ma, mb) (eps): [x, modulated], both
+  // split at one row.
+  kGatedResidualModulateSplit,
 };
 // The op set's last fused kind (the kinds are 1 to it).
-inline constexpr FusedKind kLastFusedKind = FusedKind::kRmsNormMulRopeSections;
+inline constexpr FusedKind kLastFusedKind = FusedKind::kGatedResidualModulateSplit;
 
 struct OpKey {
   Op op = Op::kInput;
@@ -842,6 +871,21 @@ struct RopeSectionsParams {
   std::array<std::uint32_t, 3> dims{};  // each section's rotated values
 };
 
+struct MaskPackParams {
+  std::uint32_t cells = 0;
+  std::uint32_t rows = 0;
+};
+
+struct SplitModulateParams {
+  float eps = 0.0f;
+  std::uint32_t split = 0;
+};
+
+struct QkAttentionParams {
+  float eps = 0.0f;
+  float scale = 1.0f;
+};
+
 struct ScaledUnaryParams {
   float scale = 1.0f;
   UnaryFn fn = UnaryFn::kSilu;
@@ -912,14 +956,16 @@ static_assert(kIsParams<NormParams> && kIsParams<RopeParams> && kIsParams<MaskPa
               kIsParams<HeadGateParams> && kIsParams<QsaPoolParams> && kIsParams<QsaAttnParams> &&
               kIsParams<MoeExpertsParams> && kIsParams<CompressorParams> &&
               kIsParams<SinkhornPreParams> && kIsParams<SpatialNormParams> &&
-              kIsParams<RopeSectionsParams>);
+              kIsParams<RopeSectionsParams> && kIsParams<MaskPackParams> &&
+              kIsParams<QkAttentionParams> && kIsParams<SplitModulateParams>);
 static_assert(sizeof(CompressorParams) == 8 && sizeof(ScaledUnaryParams) == 8 &&
               sizeof(HcFoldParams) == 8 && sizeof(GdnConvParams) == 16 &&
               sizeof(GdnStepParams) == 4 && sizeof(QsaPoolParams) == 8 + sizeof(RopeParams) &&
               sizeof(QsaAttnParams) == sizeof(AttnParams) + 8 &&
               sizeof(MoeExpertsParams) == sizeof(GluParams) + 4);
 static_assert(sizeof(SinkhornPreParams) == 16 && sizeof(SpatialNormParams) == 12 &&
-              sizeof(RopeSectionsParams) == 24);
+              sizeof(RopeSectionsParams) == 24 && sizeof(MaskPackParams) == 8 &&
+              sizeof(QkAttentionParams) == 8 && sizeof(SplitModulateParams) == 8);
 
 // No implicit padding: each struct's size is the sum of its fields'.
 static_assert(sizeof(RopeParams) == 4 + (3 * 4) + (6 * 4) + 16);

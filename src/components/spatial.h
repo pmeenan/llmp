@@ -57,6 +57,9 @@ struct SpatialBuildOptions {
   std::span<const std::uint16_t> exports{};
   // Sorted (owner,slot), slots0..N-1 per owner, after its primary F32 input.
   std::span<const SpatialInput> inputs{};
+  // The graph's layout round trips removed (ir/layout.h SinkLayouts): what
+  // a planning policy enabling layout_sinking asks of the builder.
+  bool sink_layouts = false;
 };
 struct SpatialFragment {
   ir::Builder& builder;

@@ -101,6 +101,15 @@ constinit std::array kTagQuantizeQ8 = std::to_array("llmp.q8_1");
 constinit std::array kTagVecQ = std::to_array("llmp.vecq");
 constinit std::array kTagSpatialChannelNorm = std::to_array("llmp.image.spatial_channel_norm");
 constinit std::array kTagNormRopeSections = std::to_array("llmp.image.rms_norm_mul_rope_sections");
+constinit std::array kTagSwiGluBf16 = std::to_array("llmp.image.swiglu_bf16");
+constinit std::array kTagAttentionMaskPack = std::to_array("llmp.image.attention_mask_pack");
+constinit std::array kTagRopeTable = std::to_array("llmp.image.rope_table");
+constinit std::array kTagQkAttention = std::to_array("llmp.image.qk_attention");
+constinit std::array kTagLayerNormModulateSplit =
+    std::to_array("llmp.image.layer_norm_modulate_split");
+constinit std::array kTagGatedResidualSplit = std::to_array("llmp.image.gated_residual_split");
+constinit std::array kTagDupUpAdd = std::to_array("llmp.image.dup_up_add");
+constinit std::array kTagConv1x1 = std::to_array("llmp.image.conv1x1");
 constinit std::array kTagDsv4Route = std::to_array("llmp.dsv4.route");
 constinit std::array kTagDsv4Combine = std::to_array("llmp.dsv4.combine");
 constinit std::array kTagDsv4WeightedReduce = std::to_array("llmp.dsv4.weighted_reduce");
@@ -209,9 +218,17 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return LlmpOp::kArgmax;
   }
-  const std::array<std::pair<const char*, LlmpOp>, 53> fused = {{
+  const std::array<std::pair<const char*, LlmpOp>, 61> fused = {{
+      {kTagDupUpAdd.data(), LlmpOp::kDupUpAdd},
+      {kTagConv1x1.data(), LlmpOp::kConv1x1},
+      {kTagLayerNormModulateSplit.data(), LlmpOp::kLayerNormModulateSplit},
+      {kTagGatedResidualSplit.data(), LlmpOp::kGatedResidualSplit},
+      {kTagAttentionMaskPack.data(), LlmpOp::kAttentionMaskPack},
+      {kTagRopeTable.data(), LlmpOp::kRopeTable},
+      {kTagQkAttention.data(), LlmpOp::kQkAttention},
       {kTagSpatialChannelNorm.data(), LlmpOp::kSpatialChannelNorm},
       {kTagNormRopeSections.data(), LlmpOp::kNormRopeSections},
+      {kTagSwiGluBf16.data(), LlmpOp::kSwiGluBf16},
       {kTagDsv4F16Copy.data(), LlmpOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), LlmpOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), LlmpOp::kDsv4WeightedReduce},
@@ -459,6 +476,12 @@ bool IsGemvBf16(const ggml_tensor* node) {
 }
 
 void SetGemvBf16Wide(ggml_tensor* node) { WithInts(node, {2}); }
+
+void SetGemmBf16Pinned(ggml_tensor* node) { WithInts(node, {3}); }
+
+bool GemmBf16Pinned(const ggml_tensor* node) {
+  return LlmpOpOf(node) == LlmpOp::kGemmBf16 && LlmpOpInt(node, 0) == 3;
+}
 
 bool GemvBf16Wide(const ggml_tensor* node) {
   return LlmpOpOf(node) == LlmpOp::kGemmBf16 && LlmpOpInt(node, 0) == 2;
@@ -852,13 +875,13 @@ ggml_tensor* SpatialChannelNorm(ggml_context* context, ggml_tensor* x, ggml_tens
 
 ggml_tensor* NormRopeSections(ggml_context* context, ggml_tensor* x, ggml_tensor* weight,
                               std::span<ggml_tensor* const> positions, float eps, float base,
-                              bool neox, std::span<const std::uint32_t> dims) {
+                              bool neox, std::span<const std::uint32_t> dims, ggml_type type) {
   std::array<ggml_tensor*, GGML_MAX_SRC> args{};
   args[0] = x;
   args[1] = weight;
   const std::size_t sections = std::min({positions.size(), dims.size(), std::size_t{3}});
   for (std::size_t i = 0; i < sections; ++i) args[2 + i] = positions[i];
-  ggml_tensor* node = ggml_custom_4d(context, GGML_TYPE_F32, x->ne[0], x->ne[1], x->ne[2], x->ne[3],
+  ggml_tensor* node = ggml_custom_4d(context, type, x->ne[0], x->ne[1], x->ne[2], x->ne[3],
                                      args.data(), static_cast<int>(2 + sections), &LlmpCustomTag, 1,
                                      kTagNormRopeSections.data());
   const std::array<float, 2> reals{eps, base};
@@ -899,16 +922,21 @@ std::expected<NormRopeSectionsArgs, KernelFailure> CheckNormRopeSections(const g
     }
     args.positions.at(static_cast<std::size_t>(i)) = pos;
   }
-  if (!IsF32(x) || !IsF32(node) || !ggml_are_same_shape(node, x) || x->ne[3] != 1 || dim <= 0 ||
-      dim % 2 != 0 || dim > 512 || covered != dim || heads <= 0 || heads > 65535 || rows <= 0 ||
-      rows > 65535 || (weight->type != GGML_TYPE_F32 && weight->type != GGML_TYPE_BF16) ||
+  const auto float_type = [](const ggml_tensor* t) {
+    return t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_BF16;
+  };
+  if (!float_type(x) || !float_type(node) || !ggml_are_same_shape(node, x) || x->ne[3] != 1 ||
+      dim <= 0 || dim % 2 != 0 || dim > 512 || covered != dim || heads <= 0 || heads > 65535 ||
+      rows <= 0 || rows > 65535 ||
+      (weight->type != GGML_TYPE_F32 && weight->type != GGML_TYPE_BF16) ||
       !Shaped(weight, dim, 1, 1) || LlmpOpInt(node, 2) < 0 || LlmpOpInt(node, 2) > 1 ||
       !std::isfinite(args.eps) || !(args.eps >= 0.0f) || !std::isfinite(args.base) ||
-      !(args.base > 0.0f) || !Aligned(x, sizeof(float)) || !Aligned(node, sizeof(float)) ||
+      !(args.base > 0.0f) || !Aligned(x, ggml_type_size(x->type)) ||
+      !Aligned(node, ggml_type_size(node->type)) ||
       !Aligned(weight, ggml_type_size(weight->type))) {
     return Rejected(
-        "F32 heads [D <= 512 even, heads, rows, 1] whose sections cover D, an F32 or BF16 [D] "
-        "weight, a finite eps and positive base");
+        "F32 or BF16 heads [D <= 512 even, heads, rows, 1] whose sections cover D, an F32 or BF16 "
+        "[D] weight, a finite eps and positive base, into F32 or BF16");
   }
   if (auto dense = sections == 1 ? CheckDense(node, {x, weight, node->src[2]})
                    : sections == 2
@@ -918,6 +946,318 @@ std::expected<NormRopeSectionsArgs, KernelFailure> CheckNormRopeSections(const g
     return std::unexpected(dense.error());
   }
   return args;
+}
+
+ggml_tensor* AttentionMaskPack(ggml_context* context, ggml_tensor* mask, std::int64_t cells,
+                               std::int64_t rows) {
+  return Custom(context, GGML_TYPE_F16, {cells, rows, 1, 1}, {mask}, kTagAttentionMaskPack.data());
+}
+
+std::expected<void, KernelFailure> CheckAttentionMaskPack(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kAttentionMaskPack, 1); !checked) return checked;
+  const ggml_tensor* mask = node->src[0];
+  // A block a packed row, 256 threads over its columns.
+  if (!IsF32(mask) || node->type != GGML_TYPE_F16 || mask->ne[2] != 1 || mask->ne[3] != 1 ||
+      node->ne[2] != 1 || node->ne[3] != 1 || node->ne[0] < mask->ne[0] || node->ne[0] % 256 != 0 ||
+      node->ne[1] < mask->ne[1] || mask->ne[0] <= 0 || mask->ne[1] <= 0 ||
+      node->ne[1] > 65535 * 1024 || std::cmp_greater(node->ne[0], kInt32Max) ||
+      mask->nb[0] != sizeof(float) || !Aligned(mask, sizeof(float)) || !Aligned(node, 16)) {
+    return Rejected("an F32 [C, R] mask into F16 [a multiple of 256 >= C, >= R]");
+  }
+  if (!Packed(node) || AnyEmpty({node, mask}) || !AllSane({node, mask}) ||
+      !AllCurrent({node, mask}) || !Disjoint(node, mask, false))
+    return Rejected("a packed result disjoint from its current mask");
+  return {};
+}
+
+ggml_tensor* RopeTable(ggml_context* context, std::span<ggml_tensor* const> positions,
+                       std::span<const std::uint32_t> dims, float base) {
+  std::array<ggml_tensor*, GGML_MAX_SRC> args{};
+  const std::size_t sections = std::min({positions.size(), dims.size(), std::size_t{3}});
+  std::int64_t width = 0;
+  for (std::size_t i = 0; i < sections; ++i) {
+    args[i] = positions[i];
+    width += static_cast<std::int64_t>(dims[i]);
+  }
+  ggml_tensor* node =
+      ggml_custom_4d(context, GGML_TYPE_F32, 2, width / 2, positions[0]->ne[0], 1, args.data(),
+                     static_cast<int>(sections), &LlmpCustomTag, 1, kTagRopeTable.data());
+  std::array<std::int32_t, 4> ints{static_cast<std::int32_t>(sections)};
+  for (std::size_t i = 0; i < sections; ++i) ints[1 + i] = static_cast<std::int32_t>(dims[i]);
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &base, sizeof(base));
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + sizeof(base), ints.data(),
+              sizeof(ints));
+  return node;
+}
+
+std::expected<RopeTableArgs, KernelFailure> CheckRopeTable(const ggml_tensor* node) {
+  const std::int32_t sections = node != nullptr ? LlmpOpInt(node, 1) : 0;
+  if (sections < 1 || sections > 3) return Rejected("one to three rotated sections");
+  if (auto checked = CheckCustom(node, LlmpOp::kRopeTable, sections); !checked)
+    return std::unexpected(checked.error());
+  RopeTableArgs args{.base = LlmpOpFloat(node, 0), .sections = static_cast<std::size_t>(sections)};
+  const std::int64_t rows = node->ne[2];
+  std::int64_t width = 0;
+  for (std::int32_t i = 0; i < sections; ++i) {
+    const std::int32_t d = LlmpOpInt(node, 2 + i);
+    const ggml_tensor* pos = node->src[i];
+    if (d <= 0 || d % 2 != 0 || pos->type != GGML_TYPE_I32 || !Shaped(pos, rows, 1, 1) ||
+        !Aligned(pos, sizeof(std::int32_t)))
+      return Rejected("even section widths, each with I32 positions [rows]");
+    args.dims.at(static_cast<std::size_t>(i)) = d;
+    args.positions.at(static_cast<std::size_t>(i)) = pos;
+    width += d;
+  }
+  if (!IsF32(node) || node->ne[0] != 2 || node->ne[1] * 2 != width || width > 512 ||
+      node->ne[3] != 1 || rows <= 0 || std::cmp_greater(rows, kInt32Max) ||
+      !std::isfinite(args.base) || !(args.base > 0.0f) || !Aligned(node, 8))
+    return Rejected("an F32 [2, D / 2, R] table of D at most 512 and a positive base");
+  if (auto dense = sections == 1   ? CheckDense(node, {node->src[0]})
+                   : sections == 2 ? CheckDense(node, {node->src[0], node->src[1]})
+                                   : CheckDense(node, {node->src[0], node->src[1], node->src[2]});
+      !dense)
+    return std::unexpected(dense.error());
+  return args;
+}
+
+ggml_tensor* QkAttention(ggml_context* context, ggml_tensor* q, ggml_tensor* wq, ggml_tensor* k,
+                         ggml_tensor* v, ggml_tensor* mask, ggml_tensor* table, float eps,
+                         float scale, ggml_type type) {
+  ggml_tensor* node = Custom(context, type, {q->ne[0], q->ne[1], 1, 1}, {q, wq, k, v, mask, table},
+                             kTagQkAttention.data());
+  const std::array<float, 2> reals{eps, scale};
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, reals.data(), sizeof(reals));
+  return node;
+}
+
+std::expected<void, KernelFailure> CheckQkAttention(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kQkAttention, 6); !checked) return checked;
+  const ggml_tensor* q = node->src[0];
+  const ggml_tensor* wq = node->src[1];
+  const ggml_tensor* k = node->src[2];
+  const ggml_tensor* v = node->src[3];
+  const ggml_tensor* mask = node->src[4];
+  const ggml_tensor* table = node->src[5];
+  const std::int64_t rows = q->ne[1];
+  const auto bf16 = [](const ggml_tensor* t) { return t->type == GGML_TYPE_BF16; };
+  // FlashForwardBf16RowMajorKernel: D 128, a block of 128 query rows a
+  // head, its keys in tiles of 64 the mask's columns cover.
+  if (!bf16(q) || !bf16(wq) || !bf16(k) || !bf16(v) || mask->type != GGML_TYPE_F16 ||
+      !IsF32(table) || (node->type != GGML_TYPE_F32 && node->type != GGML_TYPE_BF16) ||
+      q->ne[0] % 128 != 0 || k->ne[0] % 128 != 0 || !ggml_are_same_shape(k, v) ||
+      k->ne[1] != rows || q->ne[2] != 1 || q->ne[3] != 1 || k->ne[2] != 1 || k->ne[3] != 1 ||
+      (q->ne[0] / 128) % (k->ne[0] / 128) != 0 || q->ne[0] / 128 > 65535 ||
+      !Shaped(wq, 128, 1, 1) || !Shaped(table, 2, 64, rows) ||
+      mask->ne[0] < ((rows + 255) / 256) * 256 || mask->ne[1] < rows || mask->ne[2] != 1 ||
+      mask->ne[3] != 1 || !ggml_are_same_shape(node, q) || rows <= 0 ||
+      std::cmp_greater(rows, kInt32Max) || !std::isfinite(LlmpOpFloat(node, 0)) ||
+      !(LlmpOpFloat(node, 0) >= 0.0f) || !std::isfinite(LlmpOpFloat(node, 1)) || !Aligned(q, 16) ||
+      !Aligned(k, 16) || !Aligned(v, 16) || !Aligned(wq, 4) || !Aligned(mask, 16) ||
+      !Aligned(table, 8) || !Aligned(node, 16))
+    return Rejected(
+        "BF16 q [128 H, R], k and v [128 Hk, R], a BF16 [128] weight, a packed F16 mask and an F32 "
+        "[2, 64, R] table into F32 or BF16 [128 H, R]");
+  return CheckDense(node, {q, wq, k, v, mask, table});
+}
+
+ggml_tensor* LayerNormModulateSplit(ggml_context* context, ggml_tensor* x, ggml_tensor* a,
+                                    ggml_tensor* b, float eps, std::int64_t split, ggml_type type) {
+  ggml_tensor* node = Custom(context, type, {x->ne[0], x->ne[1], 1, 1}, {x, a, b},
+                             kTagLayerNormModulateSplit.data());
+  const auto at = static_cast<std::int32_t>(split);
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &eps, sizeof(eps));
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + sizeof(eps), &at, sizeof(at));
+  return node;
+}
+
+namespace {
+// `joined`: the joined pass's, whose norm reads its sum (F32 or BF16) from
+// registers.
+std::expected<void, KernelFailure> CheckModulateOperands(const ggml_tensor* node, bool joined) {
+  if (auto checked = CheckCustom(node, LlmpOp::kLayerNormModulateSplit, 3); !checked)
+    return checked;
+  const ggml_tensor* x = node->src[0];
+  const ggml_tensor* a = node->src[1];
+  const ggml_tensor* b = node->src[2];
+  const std::int64_t cols = x->ne[0], rows = x->ne[1];
+  const std::int32_t split = LlmpOpInt(node, 1);
+  const float eps = LlmpOpFloat(node, 0);
+  // A row a block of 256 threads; up to 8192 values cached in shared memory.
+  if (!(IsF32(x) || (joined && x->type == GGML_TYPE_BF16)) || !Vector(a, cols) ||
+      !Vector(b, cols) || (node->type != GGML_TYPE_F32 && node->type != GGML_TYPE_BF16) ||
+      x->ne[2] != 1 || x->ne[3] != 1 || !ggml_are_same_shape(node, x) || cols <= 0 ||
+      cols > 65536 || rows <= 0 || std::cmp_greater(rows, kInt32Max) || split < 0 || split > rows ||
+      !std::isfinite(eps) || !(eps >= 0.0f) || !Aligned(x, IsF32(x) ? 4 : 2) || !Aligned(a, 4) ||
+      !Aligned(b, 4) || !Aligned(node, 4))
+    return Rejected("F32 rows [C, R], two F32 [C] vectors split within R, into F32 or BF16");
+  return CheckDense(node, {x, a, b});
+}
+}  // namespace
+
+std::expected<void, KernelFailure> CheckLayerNormModulateSplit(const ggml_tensor* node) {
+  return CheckModulateOperands(node, false);
+}
+
+ggml_tensor* GatedResidualSplit(ggml_context* context, ggml_tensor* carry, ggml_tensor* branch,
+                                ggml_tensor* a, ggml_tensor* b, std::int64_t split,
+                                ggml_type type) {
+  ggml_tensor* node = Custom(context, type, {carry->ne[0], carry->ne[1], 1, 1},
+                             {carry, branch, a, b}, kTagGatedResidualSplit.data());
+  const auto at = static_cast<std::int32_t>(split);
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset + 4, &at, sizeof(at));
+  return node;
+}
+
+namespace {
+// A gated residual's operands: F32 or BF16 carry and branch, F32 gates, an
+// F32 sum (`bf16_sum`: or BF16, the joined pass's), in place over a carry
+// of its type only.
+std::expected<void, KernelFailure> CheckGatedOperands(const ggml_tensor* node, bool bf16_sum) {
+  if (auto checked = CheckCustom(node, LlmpOp::kGatedResidualSplit, 4); !checked) return checked;
+  const ggml_tensor* carry = node->src[0];
+  const ggml_tensor* branch = node->src[1];
+  const ggml_tensor* a = node->src[2];
+  const ggml_tensor* b = node->src[3];
+  const std::int64_t cols = carry->ne[0], rows = carry->ne[1];
+  const std::int32_t split = LlmpOpInt(node, 1);
+  const auto float_type = [](const ggml_tensor* t) {
+    return t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_BF16;
+  };
+  if (!float_type(carry) || !float_type(branch) ||
+      !(IsF32(node) || (bf16_sum && node->type == GGML_TYPE_BF16)) || !Vector(a, cols) ||
+      !Vector(b, cols) || !ggml_are_same_shape(carry, branch) ||
+      !ggml_are_same_shape(node, carry) || carry->ne[2] != 1 || carry->ne[3] != 1 || cols <= 0 ||
+      rows <= 0 || std::cmp_greater(cols * rows, kInt32Max) || split < 0 || split > rows ||
+      !Aligned(carry, 2) || !Aligned(branch, 2) || !Aligned(a, 4) || !Aligned(b, 4) ||
+      !Aligned(node, 2))
+    return Rejected("F32 or BF16 rows [C, R] and branch, two F32 [C] gates into F32");
+  if (!Packed(node) || AnyEmpty({node, carry, branch, a, b}) ||
+      !AllSane({node, carry, branch, a, b}) || !AllCurrent({node, carry, branch, a, b}) ||
+      !Disjoint(node, carry, carry->type == node->type) || !Disjoint(node, branch, false) ||
+      !Disjoint(node, a, false) || !Disjoint(node, b, false) || !Packed(carry) || !Packed(branch))
+    return Rejected("packed operands, the result disjoint from all but a carry of its type");
+  return {};
+}
+}  // namespace
+
+std::expected<void, KernelFailure> CheckGatedResidualSplit(const ggml_tensor* node) {
+  return CheckGatedOperands(node, false);
+}
+
+void MarkJoined(ggml_tensor* modulated) {
+  const std::int32_t joined = 1;
+  std::memcpy(reinterpret_cast<char*>(modulated->op_params) + kEpsOffset + 8, &joined,
+              sizeof(joined));
+}
+
+bool Joined(const ggml_tensor* residual, const ggml_tensor* modulated) {
+  return residual != nullptr && modulated != nullptr &&
+         LlmpOpOf(residual) == LlmpOp::kGatedResidualSplit &&
+         LlmpOpOf(modulated) == LlmpOp::kLayerNormModulateSplit && LlmpOpInt(modulated, 2) == 1 &&
+         modulated->src[0] == residual;
+}
+
+std::expected<void, KernelFailure> CheckGatedResidualModulateSplit(const ggml_tensor* residual,
+                                                                   const ggml_tensor* modulated) {
+  if (!Joined(residual, modulated))
+    return Rejected("a gated residual and the modulation of it marked joined");
+  if (auto checked = CheckGatedOperands(residual, true); !checked) return checked;
+  if (auto checked = CheckModulateOperands(modulated, true); !checked) return checked;
+  // A BF16 sum: the norm reads it from registers or shared memory (at most
+  // 8192 columns), never rounded back.
+  if (residual->type == GGML_TYPE_BF16 && residual->ne[0] > 8192)
+    return Rejected("a BF16 sum of at most 8192 columns");
+  // One split; the modulation written apart from every operand the pass
+  // still reads (the residual's own sum it reads back from registers or
+  // shared memory, never from its output).
+  if (LlmpOpInt(residual, 1) != LlmpOpInt(modulated, 1) || !Packed(modulated) ||
+      !Disjoint(modulated, residual, false) || !Disjoint(modulated, residual->src[0], false) ||
+      !Disjoint(modulated, residual->src[1], false) ||
+      !Disjoint(modulated, residual->src[2], false) ||
+      !Disjoint(modulated, residual->src[3], false))
+    return Rejected("one split, the modulation apart from the residual and its operands");
+  return {};
+}
+
+ggml_tensor* DupUpAdd(ggml_context* context, ggml_tensor* x, ggml_tensor* shortcut,
+                      std::int64_t factor_t) {
+  ggml_tensor* node = Custom(context, GGML_TYPE_F32, {x->ne[0], x->ne[1], x->ne[2], x->ne[3]},
+                             {x, shortcut}, kTagDupUpAdd.data());
+  const auto ft = static_cast<std::int32_t>(factor_t);
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &ft, sizeof(ft));
+  return node;
+}
+
+std::expected<void, KernelFailure> CheckDupUpAdd(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kDupUpAdd, 2); !checked) return checked;
+  const ggml_tensor* x = node->src[0];
+  const ggml_tensor* sc = node->src[1];
+  const std::int32_t ft = LlmpOpInt(node, 0);
+  // DupUpAddF32Kernel: an output element a thread over int extents; the
+  // virtual channels (Co · ft · 4) a whole number of each input channel's
+  // repeats.
+  if (!IsF32(x) || !IsF32(sc) || !IsF32(node) || !ggml_are_same_shape(node, x) || x->ne[3] != 1 ||
+      sc->ne[3] != 1 || ft < 1 || ft > 2 || sc->ne[0] <= 0 || sc->ne[1] <= 0 || sc->ne[2] <= 0 ||
+      x->ne[0] != 2 * sc->ne[0] || x->ne[1] != 2 * sc->ne[1] || x->ne[2] <= 0 ||
+      (x->ne[2] * ft * 4) % sc->ne[2] != 0 || std::cmp_greater(ggml_nelements(node), kInt32Max) ||
+      !Aligned(x, 4) || !Aligned(sc, 4) || !Aligned(node, 4))
+    return Rejected("F32 [2W, 2H, Co, 1] and a shortcut [W, H, Ci, 1] whose repeats divide");
+  // In place over x (an element read and written by one thread), never
+  // over the shortcut.
+  if (!Packed(node) || !Packed(x) || !Packed(sc) || AnyEmpty({node, x, sc}) ||
+      !AllSane({node, x, sc}) || !AllCurrent({node, x, sc}) || !Disjoint(node, x, true) ||
+      !Disjoint(node, sc, false))
+    return Rejected("packed operands, the result disjoint from the shortcut");
+  return {};
+}
+
+ggml_tensor* Conv1x1(ggml_context* context, ggml_tensor* kernel, ggml_tensor* x,
+                     ggml_tensor* bias) {
+  return Custom(context, GGML_TYPE_F32, {x->ne[0], x->ne[1], kernel->ne[3], x->ne[3]},
+                {kernel, x, bias}, kTagConv1x1.data());
+}
+
+std::expected<void, KernelFailure> CheckConv1x1(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kConv1x1, 3); !checked) return checked;
+  const ggml_tensor* w = node->src[0];
+  const ggml_tensor* x = node->src[1];
+  const ggml_tensor* bias = node->src[2];
+  // cublasGemmEx's int m (pixels), n (Co) and k (Ci); the bias kernel's
+  // int channel index over an int64 element grid.
+  const std::int64_t pixels = x->ne[0] * x->ne[1];
+  if (!IsF32(w) || !IsF32(x) || !IsF32(bias) || !IsF32(node) || w->ne[0] != 1 || w->ne[1] != 1 ||
+      w->ne[2] != x->ne[2] || x->ne[3] != 1 || ggml_nelements(bias) != w->ne[3] ||
+      node->ne[0] != x->ne[0] || node->ne[1] != x->ne[1] || node->ne[2] != w->ne[3] ||
+      node->ne[3] != 1 || pixels <= 0 || std::cmp_greater(pixels, kInt32Max) || x->ne[2] <= 0 ||
+      std::cmp_greater(x->ne[2], kInt32Max) || w->ne[3] <= 0 ||
+      std::cmp_greater(w->ne[3], kInt32Max) || !Aligned(w, 4) || !Aligned(x, 4) ||
+      !Aligned(bias, 4) || !Aligned(node, 4))
+    return Rejected("F32 [W, H, Ci, 1], a [1, 1, Ci, Co] kernel and a [Co] bias");
+  return CheckDense(node, {w, x, bias});
+}
+
+ggml_tensor* SwiGluBf16(ggml_context* context, ggml_tensor* gate, ggml_tensor* up) {
+  return Custom(context, GGML_TYPE_BF16, {gate->ne[0], gate->ne[1], gate->ne[2], gate->ne[3]},
+                {gate, up}, kTagSwiGluBf16.data());
+}
+
+std::expected<void, KernelFailure> CheckSwiGluBf16(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, LlmpOp::kSwiGluBf16, 2); !checked) {
+    return checked;
+  }
+  const ggml_tensor* gate = node->src[0];
+  const ggml_tensor* up = node->src[1];
+  // SwiGluToBf16Kernel's flat element grid: pairs of an int64 count, a
+  // 256-thread block each.
+  if ((gate->type != GGML_TYPE_F32 && gate->type != GGML_TYPE_BF16) || up->type != gate->type ||
+      node->type != GGML_TYPE_BF16 || !ggml_are_same_shape(gate, up) ||
+      !ggml_are_same_shape(node, gate) || ggml_nelements(node) <= 0 ||
+      std::cmp_greater((ggml_nelements(node) + 511) / 512, kInt32Max) ||
+      !Aligned(gate, ggml_type_size(gate->type)) || !Aligned(up, ggml_type_size(up->type)) ||
+      !Aligned(node, 2)) {
+    return Rejected("F32 or BF16 gate and up of one shape into BF16 of it");
+  }
+  return CheckDense(node, {gate, up});
 }
 
 std::expected<void, KernelFailure> CheckSpatialChannelNorm(const ggml_tensor* node) {

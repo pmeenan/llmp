@@ -83,12 +83,6 @@ std::expected<CublasMulMat, KernelFailure> PlanMulMatCublas(const LaunchContext&
 // which converts F16 or BF16 weights whole into scratch: a plan uses that
 // only for activations (BP-A3).
 std::expected<void, KernelFailure> MulMatCublas(LaunchContext& launch, ggml_tensor* node);
-std::expected<void, KernelFailure> MulMatCublasWithReuse(LaunchContext& launch, ggml_tensor* node,
-                                                         const ggml_tensor* src1_override,
-                                                         bool reuse_converted_src1,
-                                                         bool bf16_dst = false,
-                                                         bool src1_is_bf16 = false,
-                                                         bool allow_lt_pin = false);
 
 // The operations of the FP16 bridge's recorded plan beyond those above
 // (validate.h). None draws scratch. The row indices GetRows, SetRows and

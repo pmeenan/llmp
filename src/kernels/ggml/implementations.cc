@@ -112,7 +112,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 143> kKernels = {{
+constexpr std::array<Kernel::Entry, 153> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -793,6 +793,80 @@ constexpr std::array<Kernel::Entry, 143> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGemmBf16(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGemmBf16(launch, n[0]); }},
+    {.name = kGemmBf16LtName,
+     .operation = execution::Operation::kMatMul,
+     .variant = "llmp.gemm.bf16 with the GB10's pinned cuBLASLt algorithm where its shape has one "
+                "(mul_mat_cublas.cu kGb10LtPins, the image's products), else cublasGemmEx",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGemmBf16(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGemmBf16(launch, n[0]); }},
+    {.name = kAttentionMaskPackName,
+     .operation = execution::Operation::kAttentionMaskPack,
+     .variant =
+         "PackAttentionMaskWholeKernel: a packed row a block, F16 of the mask, -inf past it, "
+         "a whole row marked by its first element",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckAttentionMaskPack(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunAttentionMaskPack(launch, n[0]); }},
+    {.name = kRopeTableName,
+     .operation = execution::Operation::kRopeTable,
+     .variant = "RopeTableKernel: a row a block, each pair's cos and sin of its section's angle",
+     .arity = 1,
+     .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
+       if (auto args = CheckRopeTable(n[0]); !args) return std::unexpected(args.error());
+       return {};
+     },
+     .run = [](LaunchContext& launch, Nodes n) { return RunRopeTable(launch, n[0]); }},
+    {.name = kQkAttentionName,
+     .operation = execution::Operation::kQkAttention,
+     .variant = "FlashForwardBf16RowMajorKernel<2, out, norm q>: BF16 row-major heads, the query's "
+                "RMS norm and table rotation in the kernel, a packed F16 mask",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckQkAttention(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQkAttention(launch, n[0]); }},
+    {.name = kLayerNormModulateSplitName,
+     .operation = execution::Operation::kLayerNormModulateSplit,
+     .variant = "LayerNormModulateRows(4096)Kernel: a row a block, its layer norm times one plus "
+                "its row range's conditioning vector, into F32 or BF16",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckLayerNormModulateSplit(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunLayerNormModulateSplit(launch, n[0]); }},
+    {.name = kGatedResidualSplitName,
+     .operation = execution::Operation::kGatedResidualSplit,
+     .variant = "GatedResidualSplitKernel: an element a thread, carry plus branch times tanh of "
+                "its row range's gate",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGatedResidualSplit(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGatedResidualSplit(launch, n[0]); }},
+    {.name = kGatedResidualModulateSplitName,
+     .operation = execution::Operation::kGatedResidualModulateSplit,
+     .variant = "GatedResidualLayerNormModulateRows(4096)Kernel: a row a block, the residual's "
+                "sum written and kept, its layer norm times one plus its row range's vector",
+     .arity = 2,
+     .check = [](ConstNodes n) { return CheckGatedResidualModulateSplit(n[0], n[1]); },
+     .run = [](LaunchContext& launch,
+               Nodes n) { return RunGatedResidualModulateSplit(launch, n[0], n[1]); }},
+    {.name = kDupUpAddName,
+     .operation = execution::Operation::kDupUpAdd,
+     .variant = "DupUpAddF32Kernel: an output element a thread, x plus its shortcut channel's "
+                "duplicate at that pixel",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDupUpAdd(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDupUpAdd(launch, n[0]); }},
+    {.name = kConv1x1Name,
+     .operation = execution::Operation::kConv2d,
+     .variant = "cublasGemmEx F32 over the pixels ([P, Ci] by [Ci, Co], default algorithm), then "
+                "AddBiasWhcF32Kernel",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckConv1x1(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunConv1x1(launch, n[0]); }},
+    {.name = kSwiGluBf16Name,
+     .operation = execution::Operation::kSwiGlu,
+     .variant = "SwiGluToBf16Kernel: silu(gate) * up of F32 or BF16 operands into BF16, eight "
+                "values a thread where aligned",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckSwiGluBf16(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunSwiGluBf16(launch, n[0]); }},
     {.name = "llmp.gated_delta_net.columns",
      .operation = execution::Operation::kGatedDeltaNet,
      .variant = "GdnColumnsKernel<4>: gated_delta_net_cuda<128>'s per-column arithmetic, four "
@@ -1282,7 +1356,8 @@ bool UsesCublas(std::string_view implementation) {
   // The declarations above whose launchers take the lent cuBLAS handle
   // (MulMatCublas, RunGemmBf16); a new one belongs here.
   return implementation == "ggml.mul_mat.cublas" || implementation == "llmp.gemm.bf16" ||
-         implementation == kConv2dTiledF32;
+         implementation == kGemmBf16LtName || implementation == kConv2dTiledF32 ||
+         implementation == kConv1x1Name;
 }
 
 std::expected<Kernel, KernelFailure> Kernel::Bind(const execution::Implementation& implementation) {

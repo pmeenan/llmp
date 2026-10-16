@@ -359,7 +359,16 @@ std::size_t ParamSize(OpKey key) {
       case FusedKind::kSpatialChannelNorm:
         return sizeof(SpatialNormParams);
       case FusedKind::kRmsNormMulRopeSections:
+      case FusedKind::kRopeTable:
         return sizeof(RopeSectionsParams);
+      case FusedKind::kAttentionMaskPack:
+        return sizeof(MaskPackParams);
+      case FusedKind::kQkAttention:
+        return sizeof(QkAttentionParams);
+      case FusedKind::kLayerNormModulateSplit:
+      case FusedKind::kGatedResidualSplit:
+      case FusedKind::kGatedResidualModulateSplit:
+        return sizeof(SplitModulateParams);
       case FusedKind::kHcPrep:
       case FusedKind::kHcMixNorm:
         return sizeof(HcNormPostParams);

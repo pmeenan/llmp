@@ -133,8 +133,14 @@ enum class Operation : std::uint8_t {
   kL2Norm,             // x / max(sqrt(sum(x*x)), eps), distinct from RMS normalization
   kLayerNorm,          // centered rows divided by sqrt(variance + eps)
   // Shared image component kernels (M3.6).
-  kSpatialChannelNorm,      // each pixel's channels L2-normed, scaled, times a weight (+SiLU)
-  kRmsNormMulRopeSections,  // a head's RMS norm times a weight, then 1-3 rotated sections
+  kSpatialChannelNorm,          // each pixel's channels L2-normed, scaled, times a weight (+SiLU)
+  kRmsNormMulRopeSections,      // a head's RMS norm times a weight, then 1-3 rotated sections
+  kAttentionMaskPack,           // an attention mask in F16, padded
+  kRopeTable,                   // a rotation's cos and sin per row and pair
+  kQkAttention,                 // attention of RMS-normed, rotated queries over packed rows
+  kLayerNormModulateSplit,      // a layer norm times 1 + one of two rows' conditioning vectors
+  kGatedResidualSplit,          // carry + branch times tanh of one of two rows' gate vectors
+  kGatedResidualModulateSplit,  // the two above, the residual's sum modulated
 };
 
 std::string_view OperationName(Operation operation);

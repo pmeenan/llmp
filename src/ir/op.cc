@@ -184,6 +184,18 @@ std::string_view FusedKindName(FusedKind kind) {
       return "spatial_channel_norm";
     case FusedKind::kRmsNormMulRopeSections:
       return "rms_norm_mul_rope_sections";
+    case FusedKind::kAttentionMaskPack:
+      return "attention_mask_pack";
+    case FusedKind::kRopeTable:
+      return "rope_table";
+    case FusedKind::kQkAttention:
+      return "qk_attention";
+    case FusedKind::kLayerNormModulateSplit:
+      return "layer_norm_modulate_split";
+    case FusedKind::kGatedResidualSplit:
+      return "gated_residual_split";
+    case FusedKind::kGatedResidualModulateSplit:
+      return "gated_residual_modulate_split";
     case FusedKind::kHcPrep:
       return "hc_prep";
     case FusedKind::kScaledUnary:

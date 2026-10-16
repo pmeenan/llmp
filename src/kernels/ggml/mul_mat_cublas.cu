@@ -337,9 +337,7 @@ bool UpstreamSelectsCublas(const ggml_tensor* node, int cc, int warp_size) {
 // ggml_cuda_mul_mat_cublas_impl, following `plan`.
 template <ggml_type kCompute>
 void Launch(ggml_backend_cuda_context& ctx, const CublasMulMat& plan, const ggml_tensor* src0,
-            const ggml_tensor* src1, ggml_tensor* dst, bool reuse_converted_src1 = false,
-            bool bf16_dst = false, bool src1_is_bf16 = false, bool allow_lt_pin = false,
-            std::uintptr_t lt_ws_base = 0, std::size_t lt_ws_bytes = 0) {
+            const ggml_tensor* src1, ggml_tensor* dst) {
   using traits = Traits<kCompute>;
   using cuda_t = typename traits::cuda_type;
 
@@ -351,16 +349,12 @@ void Launch(ggml_backend_cuda_context& ctx, const CublasMulMat& plan, const ggml
   ggml_cuda_pool_alloc<cuda_t> src0_alloc(ctx.pool());
   ggml_cuda_pool_alloc<cuda_t> src1_alloc(ctx.pool());
   const auto operand = [main_stream](const ggml_tensor* src, CublasOperand how,
-                                     ggml_cuda_pool_alloc<cuda_t>& alloc,
-                                     bool skip_convert) -> const cuda_t* {
+                                     ggml_cuda_pool_alloc<cuda_t>& alloc) -> const cuda_t* {
     if (how == CublasOperand::kDirect) {
       return static_cast<const cuda_t*>(src->data);
     }
     const std::int64_t elements = ggml_nelements(src);
     alloc.alloc(static_cast<std::size_t>(elements));
-    if (skip_convert) {
-      return alloc.get();
-    }
     if (how == CublasOperand::kConverted) {
       const auto convert = traits::convert(src->type);
       base::Check(convert != nullptr, "GGML converts every planned type");
@@ -376,17 +370,9 @@ void Launch(ggml_backend_cuda_context& ctx, const CublasMulMat& plan, const ggml
     }
     return alloc.get();
   };
-  const cuda_t* src0_ptr = operand(src0, plan.weights, src0_alloc, false);
-  const cuda_t* src1_ptr =
-      (kCompute == GGML_TYPE_BF16 && src1_is_bf16 && plan.weights == CublasOperand::kDirect &&
-       plan.input == CublasOperand::kConverted)
-          ? static_cast<const cuda_t*>(src1->data)
-          : operand(src1, plan.input, src1_alloc,
-                    reuse_converted_src1 && plan.weights == CublasOperand::kDirect &&
-                        plan.input == CublasOperand::kConverted);
+  const cuda_t* src0_ptr = operand(src0, plan.weights, src0_alloc);
+  const cuda_t* src1_ptr = operand(src1, plan.input, src1_alloc);
 
-  const bool direct_bf16_out =
-      (kCompute == GGML_TYPE_BF16 && bf16_dst && plan.gemm == CublasGemm::kGemmEx);
   ggml_cuda_pool_alloc<cuda_t> dst_temp(ctx.pool());
   char* dst_ptr = static_cast<char*>(dst->data);
   std::size_t nbd2 = dst->nb[2];
@@ -397,17 +383,15 @@ void Launch(ggml_backend_cuda_context& ctx, const CublasMulMat& plan, const ggml
   const cudaDataType_t cu_data_type_b = traits::data_type;
   const void* alpha = traits::alpha();
   const void* beta = traits::beta();
-  if (!direct_bf16_out) {
-    if (plan.f32_output) {
-      cu_compute_type = Traits<GGML_TYPE_F32>::compute_type;
-      cu_data_type = Traits<GGML_TYPE_F32>::data_type;
-      alpha = Traits<GGML_TYPE_F32>::alpha();
-      beta = Traits<GGML_TYPE_F32>::beta();
-    } else if constexpr (kCompute != GGML_TYPE_F32) {
-      dst_ptr = reinterpret_cast<char*>(dst_temp.alloc(static_cast<std::size_t>(ne_dst)));
-      nbd2 /= sizeof(float) / sizeof(cuda_t);
-      nbd3 /= sizeof(float) / sizeof(cuda_t);
-    }
+  if (plan.f32_output) {
+    cu_compute_type = Traits<GGML_TYPE_F32>::compute_type;
+    cu_data_type = Traits<GGML_TYPE_F32>::data_type;
+    alpha = Traits<GGML_TYPE_F32>::alpha();
+    beta = Traits<GGML_TYPE_F32>::beta();
+  } else if constexpr (kCompute != GGML_TYPE_F32) {
+    dst_ptr = reinterpret_cast<char*>(dst_temp.alloc(static_cast<std::size_t>(ne_dst)));
+    nbd2 /= sizeof(float) / sizeof(cuda_t);
+    nbd3 /= sizeof(float) / sizeof(cuda_t);
   }
 
   // cuBLAS takes its sizes as int: the plan checked that they fit.
@@ -426,24 +410,11 @@ void Launch(ggml_backend_cuda_context& ctx, const CublasMulMat& plan, const ggml
           reinterpret_cast<const float*>(src0_ptr), lda, reinterpret_cast<const float*>(src1_ptr),
           ldb, static_cast<const float*>(beta), reinterpret_cast<float*>(dst_ptr), ldc));
       break;
-    case CublasGemm::kGemmEx: {
-      bool launched_lt = false;
-      if constexpr (kCompute == GGML_TYPE_BF16) {
-        if (allow_lt_pin) {
-          const auto& dev = ggml_cuda_info().devices[ctx.device];
-          launched_lt = TryLaunchPinnedLtGemm(cublas_h, main_stream, dev.cc, dev.nsm, lt_ws_base,
-                                              lt_ws_bytes, m, n, k, lda, ldb, ldc, src0_ptr,
-                                              src1_ptr, dst_ptr, cu_data_type);
-        }
-      }
-      if (!launched_lt) {
-        CUBLAS_CHECK(cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N, m, n, k, alpha, src0_ptr,
-                                  cu_data_type_a, lda, src1_ptr, cu_data_type_b, ldb, beta, dst_ptr,
-                                  cu_data_type, ldc, cu_compute_type,
-                                  CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-      }
+    case CublasGemm::kGemmEx:
+      CUBLAS_CHECK(cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N, m, n, k, alpha, src0_ptr,
+                                cu_data_type_a, lda, src1_ptr, cu_data_type_b, ldb, beta, dst_ptr,
+                                cu_data_type, ldc, cu_compute_type, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
       break;
-    }
     case CublasGemm::kGemmStridedBatchedEx: {
       // With a [0, 2, 1, 3] permutation and one channel, the matrix
       // strides come from dimension 3.
@@ -486,26 +457,23 @@ void Launch(ggml_backend_cuda_context& ctx, const CublasMulMat& plan, const ggml
   }
 
   // The compute-type output, converted to the node's F32.
-  if (cu_data_type != CUDA_R_32F && !direct_bf16_out) {
+  if (cu_data_type != CUDA_R_32F) {
     const to_fp32_cuda_t to_fp32_cuda = ggml_get_to_fp32_cuda(kCompute);
     to_fp32_cuda(dst_temp.get(), static_cast<float*>(dst->data), ne_dst, main_stream);
   }
 }
 
-void LaunchPlannedWithReuse(ggml_backend_cuda_context& context, const CublasMulMat& plan,
-                            ggml_tensor* node, bool reuse_converted_src1, bool bf16_dst = false,
-                            bool src1_is_bf16 = false, bool allow_lt_pin = false,
-                            std::uintptr_t lt_ws_base = 0, std::size_t lt_ws_bytes = 0) {
+void LaunchPlanned(ggml_backend_cuda_context& context, const CublasMulMat& plan,
+                   ggml_tensor* node) {
   switch (plan.compute) {
     case GGML_TYPE_F16:
-      Launch<GGML_TYPE_F16>(context, plan, node->src[0], node->src[1], node, reuse_converted_src1);
+      Launch<GGML_TYPE_F16>(context, plan, node->src[0], node->src[1], node);
       break;
     case GGML_TYPE_BF16:
-      Launch<GGML_TYPE_BF16>(context, plan, node->src[0], node->src[1], node, reuse_converted_src1,
-                             bf16_dst, src1_is_bf16, allow_lt_pin, lt_ws_base, lt_ws_bytes);
+      Launch<GGML_TYPE_BF16>(context, plan, node->src[0], node->src[1], node);
       break;
     default:
-      Launch<GGML_TYPE_F32>(context, plan, node->src[0], node->src[1], node, false);
+      Launch<GGML_TYPE_F32>(context, plan, node->src[0], node->src[1], node);
       break;
   }
 }
@@ -514,7 +482,16 @@ void LaunchPlannedWithReuse(ggml_backend_cuda_context& context, const CublasMulM
 
 void internal::LaunchPlannedMulMatCublas(ggml_backend_cuda_context& context,
                                          const CublasMulMat& plan, ggml_tensor* node) {
-  LaunchPlannedWithReuse(context, plan, node, false);
+  LaunchPlanned(context, plan, node);
+}
+
+bool internal::TryPinnedBf16Gemm(ggml_backend_cuda_context& context, std::uintptr_t ws_base,
+                                 std::size_t ws_bytes, int m, int n, int k, const void* weights,
+                                 const void* x, void* out, bool bf16_out) {
+  const auto& device = ggml_cuda_info().devices[context.device];
+  return TryLaunchPinnedLtGemm(context.cublas_handle(), context.stream(), device.cc, device.nsm,
+                               ws_base, ws_bytes, m, n, k, k, k, m, weights, x, out,
+                               bf16_out ? CUDA_R_16BF : CUDA_R_32F);
 }
 
 std::expected<CublasMulMat, KernelFailure> PlanMulMatCublas(const LaunchContext& launch,
@@ -533,18 +510,7 @@ std::expected<CublasMulMat, KernelFailure> PlanMulMatCublas(const LaunchContext&
 }
 
 std::expected<void, KernelFailure> MulMatCublas(LaunchContext& launch, ggml_tensor* node) {
-  return MulMatCublasWithReuse(launch, node, nullptr, false);
-}
-
-std::expected<void, KernelFailure> MulMatCublasWithReuse(LaunchContext& launch, ggml_tensor* node,
-                                                         const ggml_tensor* src1_override,
-                                                         bool reuse_converted_src1, bool bf16_dst,
-                                                         bool src1_is_bf16, bool allow_lt_pin) {
-  ggml_tensor adjusted = *node;
-  if (src1_override != nullptr) {
-    adjusted.src[1] = const_cast<ggml_tensor*>(src1_override);
-  }
-  ggml_tensor* target = src1_override != nullptr ? &adjusted : node;
+  ggml_tensor* target = node;
   auto plan = PlanMulMatCublas(launch, target);
   if (!plan) {
     return std::unexpected(plan.error());
@@ -560,13 +526,10 @@ std::expected<void, KernelFailure> MulMatCublasWithReuse(LaunchContext& launch, 
       return clear;
     }
   }
-  const auto lt_ws = launch.cublas()->workspace();
-  return launch.Run(base::Bytes(plan->scratch), [&plan = *plan, target, reuse_converted_src1,
-                                                 bf16_dst, src1_is_bf16, allow_lt_pin,
-                                                 lt_ws](ggml_backend_cuda_context& context) {
-    LaunchPlannedWithReuse(context, plan, target, reuse_converted_src1, bf16_dst, src1_is_bf16,
-                           allow_lt_pin, lt_ws.base, lt_ws.size.value());
-  });
+  return launch.Run(base::Bytes(plan->scratch),
+                    [&plan = *plan, target](ggml_backend_cuda_context& context) {
+                      LaunchPlanned(context, plan, target);
+                    });
 }
 
 }  // namespace llmp::kernels::ggml

@@ -17,6 +17,12 @@ std::expected<Conv2dTilePlan, KernelFailure> CheckConv2dTiledF32(const ggml_tens
   const auto* w = node->src[0];
   if (w->ne[0] != 3 || w->ne[1] != 3 || node->op_params[2] != 1 || node->op_params[3] != 1)
     return detail::Rejected("tiled F32 convolution requires 3x3, stride/dilation1, padding1");
+  // Its bias, where lowered with one (a third source): an F32 [Co].
+  if (const ggml_tensor* bias = node->src[2];
+      bias != nullptr && (bias->type != GGML_TYPE_F32 || !ggml_is_contiguous(bias) ||
+                          ggml_nelements(bias) != node->ne[2] || !detail::AllSane({bias}) ||
+                          !detail::Disjoint(node, bias, false)))
+    return detail::Rejected("tiled convolution bias is not an F32 [Co] apart from its output");
   // Pinned im2col casts IC*KH*KW to int before choosing its block width.
   // cuBLAS also takes K/M/N as int. The common spatial check bounds all
   // original byte spans before these derived products are formed.
@@ -45,7 +51,7 @@ std::expected<Conv2dTilePlan, KernelFailure> CheckConv2dTiledF32(const ggml_tens
   }
   const auto stripes = ((height + lo - 1) / lo) * static_cast<std::uint64_t>(node->ne[3]);
   // Every stripe queues im2col, one product, a packed transpose and a
-  // pitched copy. Bias Add is a separate ordinary plan step.
+  // pitched copy; the bias, where it has one, in the scatter.
   if (stripes > UINT64_MAX / 4) return detail::Rejected("tiled convolution launch count overflow");
   return Conv2dTilePlan{.rows = lo,
                         .columns_bytes = round(4 * width * lo * k),

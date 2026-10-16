@@ -15,8 +15,16 @@ plan-vs-GGML comparison, no placement-derived liveness. With them off the
 This record is sub-task 1 of their move into planner patterns and registry
 implementations: what each matcher does, what it depends on, the test that
 holds it against the reference executor before any code moves, and where
-each lands. `kernels/ggml/executor.h` `RuntimeFusion` names them; a test's
-`RuntimeFusionControl` turns any matcher off and counts what applied.
+each lands. `kernels/ggml/executor.h` `RuntimeFusion` named them; a test's
+`RuntimeFusionControl` turned any matcher off and counted what applied.
+
+**Status: deleted.** Sub-tasks 2a–2e moved every matcher into planner
+patterns and registry implementations, and sub-task 3 made that plan the
+image's production policy and deleted the matchers, `RuntimeFusion` and
+the control (below, "The run-time path deleted"). `BoundGraph::Run` now
+runs its bound steps in order, nothing else. The sections up to
+"Findings" are the record of what the matchers did and what replaced
+them.
 
 ## When it runs
 
@@ -98,6 +106,9 @@ form), `query_norm_in_attention`, `attention_bf16_out`, `mask_prepacked`,
 
 ## The reference tests
 
+(The record of the run-time path's test; since sub-task 3 the test runs the
+planned path only, below.)
+
 [image_fusion_gpu_test](../../../tests/unit/image_fusion_gpu_test.cc)
 builds graphs with the production spatial components and lowers them
 through the production GGML backend, declared as the image source declares
@@ -150,7 +161,7 @@ against `b29380a7`, +2.03% against the frozen legacy arm in a two-block
 screen (+2.14% before) ([m36-baselines](../m36-baselines/README.md#qwen-image-21-on-the-shared-engine)).
 
 Checks and where they ran: `image_fusion_gpu_test`,
-`norm_rope_sections_gpu_test` (the kernel against the decomposition: both
+`norm_rope_sections_gpu_test` (now `image_ops_gpu_test`; the kernel against the decomposition: both
 rotation modes, one to three sections, F32 and BF16 weights), the planner,
 lowering and reference tests, the shared set, the image model tests and
 the Gemma frozen v1 proofs, all on Spark A (`spark`).
@@ -166,7 +177,8 @@ the Gemma frozen v1 proofs, all on Spark A (`spark`).
    this only because, at its shapes, the QKV and MLP matchers always
    apply; whether a fallback collides depends on the placement (with two
    blocks, `flow_source` without the QKV matcher runs). The refusal stays
-   loud until 2b and 2c move those matchers into the plan.
+   loud until 2b and 2c move those matchers into the plan. *Resolved:*
+   with the matchers gone nothing launches outside the plan.
 2. **A silent miscompute at width 256.** With every matcher on, the
    two-head flow's output is 21% off the oracle (and the latent 1.8%). It
    needs both the split broadcast (0B) and the plain gated residual (3B,
@@ -175,12 +187,13 @@ the Gemma frozen v1 proofs, all on Spark A (`spark`).
    not take this path; the planner patterns must not inherit it. Cause: the
    plain gated residual wrote its output over the bytes of the broadcast
    gate the split broadcast had elided (the plan had reused them, as the
-   broadcast was dead to it). 2a's guard refuses that launch.
+   broadcast was dead to it). 2a's guard refuses that launch. *Resolved:*
+   the planned `flow_w256` matches the oracle (2.768e-3).
 3. **The projections matcher depends on the attention being tuned.**
    Without the masked F32 attention selected (an untuned backend), the
    attention decomposes into products and a softmax, the QKV matcher never
    applies, and the projections matcher refuses as in finding 1 (40 and
-   264 rows tried).
+   264 rows tried). *Resolved* with finding 1.
 4. **The decoder's matchers are exact to their unfused forms** (spatial
    norm with SiLU, convolution bias, duplicate-up add, 1×1 convolution);
    the decoder's error is the tiled convolution's BF16 operands, with or
@@ -203,12 +216,123 @@ decomposition as its oracle:
 | Group | Matchers | IR destination |
 |---|---|---|
 | 2a rope/norm (landed) | `norm_rope`, `spatial_norm` | `kRmsNormMulRopeSections` (pattern `rms_norm_mul_rope_sections`: the norm, its weight's widening, one to three rotated sections covering the head and their positions' copies; `RmsNormMulRope3d`) and `kSpatialChannelNorm` (pattern `spatial_channel_norm`; `SpatialChannelNormF32`). The first is opt-in: only the image's planning policy enables it (`spec/image_spatial.h` `kImagePlanningPolicy`), so the only LLM-shaped graph it takes is the image's text encoder (its QK norms and whole-head NEOX rotations); a model whose policy disables `rms_norm_mul_rope` (Gemma 4's, DeepSeek's, Gemma 2's) keeps its plans |
-| 2b GLU | `mlp` | `kMatMulGlu` (gate, up, SwiGLU) and a BF16-input down product |
-| 2c attention | `qkv_attention` and its variants | a fused QK-prep (`kQkPrep`-like, three axes) plus attention with BF16 Q/K/V and a packed mask as a plan input computed once per step |
-| 2d modulation/residual | `modulate`, `modulate_rows`, `gated_residual*` | `kLayerNormModulate`, `kGatedResidual`, `kGatedResidualNorm` |
-| 2e VAE | `conv_bias`, `dup_up_add`, `conv1x1` | a conv-with-bias implementation; `kDupUpAdd` (the components already emit it); 1×1 conv as conv2d |
-| layout | `split_broadcast`, `rows_projections`, `spatial_projections` | an IR pass removing permute round trips between row-wise ops, and BF16 activation storage for BF16 products as a planned conversion (one conversion a value, placed by the planner) |
+| 2b GLU | `mlp` | pattern `bf16_glu`: the gate and up products into BF16 from their input converted once, the SwiGLU into BF16 (`llmp.image.swiglu_bf16`), the down product from BF16 |
+| 2c attention | `qkv_attention` and its variants | pattern `qk_attention` (round 1): BF16 Q/K/V products, the key's sectioned norm and rotation into BF16, and `kQkAttention` (`llmp.image.qk_attention`: the query's norm and rotation inside `FlashForwardBf16RowMajorKernel`, BF16 output where only BF16 products read it) over a packed mask (`kAttentionMaskPack`) and rotation table (`kRopeTable`), each made once per step for every attention that reads it |
+| 2d modulation/residual | `modulate`, `modulate_rows`, `gated_residual*` | patterns `split_modulate` (`kLayerNormModulateSplit`, BF16 where only BF16 products read it), `split_gated_residual` (`kGatedResidualSplit`) and, in round 1, `split_gated_residual_modulate` (`kGatedResidualModulateSplit`: the sum and its modulation in one pass) over the conditioning's two vectors; with them `bf16_branch` (a product a residual adds, into BF16) and the option `bf16_residual` (a sum only later residuals carry, in BF16) |
+| 2e VAE | `conv_bias`, `dup_up_add`, `conv1x1` | the tiled convolution adds its bias (a third source, one step); `llmp.image.dup_up_add` implements `kDupUpAdd`; the components emit a 1×1 convolution as `Conv2d`, which `llmp.image.conv1x1` implements |
+| layout | `split_broadcast`, `rows_projections`, `spatial_projections` | layout sinking (`ir/layout.h`, the option `layout_sinking`): the step's builder follows values as views of packed storage, runs elementwise work in the order its operands are in, re-emits layout-free conditioning rows (repeats of vectors) in their reader's order, and keeps the original graph where it cannot copy fewer bytes; BF16 product inputs are planned conversions (`bf16_inputs`) |
 
 Liveness and scratch then come from the plan's placement (graph outputs and
 kept tensors included), and caches are keyed by the graph's identity or a
 plan input, not by tensor pointers.
+
+## The planned path (2b–2e)
+
+Every pattern above is opt-in; only the image's policy
+(`spec/image_spatial.h` `kImagePlanningPolicy`, production since sub-task
+3) enables them, so no LLM's plan changes (checked below). Each fused kind decomposes to the primitives the components
+emit (`ir/decompose.cc`), and its GGML implementation is tested against that
+decomposition on the reference executor ([image_ops_gpu_test](../../../tests/unit/image_ops_gpu_test.cc):
+the sectioned norm and rotation over BF16 heads, the mask pack, the
+rotation table, the QK attention, both split modulations, the joined
+residual over F32 and BF16 rows, the duplicate-up and the 1×1
+convolution). The planner tests hold each pattern's match, its opt-in and
+its refusals ([planner_test](../../../tests/unit/planner_test.cc)); two
+source-geometry flow blocks plan every attention, MLP, modulation and
+residual fused and lower ([ggml_spatial_test](../../../tests/unit/ggml_spatial_test.cc)
+`PlannedFlowFusesEveryBlock`); the planned flows and decoder run against
+their oracles on the GPU (`image_fusion_gpu_test`, below).
+
+Two choices are on by default in the image's policy: the products a gated
+residual adds write BF16 (`bf16_branch`), and a residual's sum that only
+later residuals carry stays BF16 between blocks (`bf16_residual`). They
+reproduce the shipping path's established BF16 activation numerics (its
+run-time residual wrote the same rows at width 4,096, from BF16 down and
+output projections), and quality against the diffusers reference is equal
+or better (PSNR 41.26 dB / luma SSIM 0.99419 with them, against the
+shipping path's 40.687 dB / 0.99418; the final state's numbers are below),
+so this is speed over bit-exactness at the same quality, not a quality
+trade. Both apply at any geometry and width their kernels take (a BF16
+sum up to 8,192 channels); their quality is qualified at 1024² on the
+model's width (4,096), the one diffusers reference retained; a second
+geometry needs its own reference. The blocks share their conditioning rows, so the
+split patterns read the two vectors directly and leave the shared rows to
+their other readers (two dead row concatenations a step remain, about
+22 ms a generation).
+
+The VAE's three matchers now never apply in production either: the
+decoder's plan selects the tiled convolution with its bias, the
+duplicate-up and the 1×1 convolution, the same kernels (the pixels are
+unchanged, `2ee8f010…`); `ggml_spatial_test`'s 1,024² decoder launches 78
+fewer steps (7,450) in 0.56 GiB less activation extent.
+
+Measured on Spark A, 2026-10-15, before sub-task 3, with an experiment
+tree whose production policy is the planned one and whose run-time matchers are skipped
+(1,024², 40 steps, two primed ABBA blocks against the current production
+path on the same build): 33.908 s against 34.007 s, −0.29% (−0.28% and
+−0.30% by block; an A/A pair of the same binaries read +0.12%), peak memory
+0.07 GiB lower. Before the two BF16 choices the planned path read +3.8%:
+an nsys pair placed it in the F32 residual rows (the joined residual pass
+1.08 ms against the run-time path's 0.59 ms) and the F32 outputs of the
+two products a residual adds. Quality on the planned path (the same
+request and test as above, pixels `9d0b448f…`): PSNR 41.26 dB, luma SSIM
+0.99419 against `9de442f1…` (floors 32 dB / 0.98), passing.
+
+Raw records stay outside Git on `spark`: `~/scratch/m36-image-exp0{2,3,5}`
+(+3.8%, the A/A pair, −0.29%),
+`~/scratch/m36-image-plan/nsys` and `~/scratch/m36-image-plan/q3`.
+
+## The run-time path deleted (sub-task 3)
+
+`kImagePlanningPolicy` is now the planned policy above (the separate
+`kImagePlannedPolicy` is gone), and the image's builders sink layouts
+because it enables `layout_sinking`. Deleted: `BoundGraph::Run`'s matcher
+loop and its helpers (`kernels/ggml/executor.cc` from 2,436 lines to 500),
+`RuntimeFusion`, `RuntimeFusionControl` and `SetRuntimeFusionControl`,
+`GraphPlan::kept` and `BoundGraph::kept_` (2a's liveness fix, which only
+the matchers read), and the launchers only the matchers called:
+`LayerNormModulateF32`, `GatedResidualF32`,
+`GatedResidualLayerNormModulateF32`, `RmsNormMulRope3dQKInplaceBf16`,
+`SpatialConv1x1F32`, `MulMatCublasWithReuse` (and its reuse, BF16-output
+and pinned-cuBLASLt flags, which `llmp.gemm.bf16_lt` replaces) and
+`AttentionF32WithOptions` (`ggml.attention.f32` keeps its default form).
+`Run` runs the bound steps in order (or on the lanes); region graphs of
+LLMs, which used to pass through the matcher loop matching nothing, take
+the same steps.
+
+`image_fusion_gpu_test` is now planned-vs-oracle only: each case is
+planned with the production policy and layout sinking, run once and held
+to its reference, and every fused implementation must appear in some
+plan. `flow_source`, out of the oracle's reach, is held to the same graph
+planned with no patterns and no layout sinking. Spark A, 2026-10-15:
+
+| Case | Reference | Relative RMS (bound) |
+|---|---|---:|
+| `flow_w4096` | oracle | 2.905e-3 (5e-3) |
+| `flow_source` | primitive plan | 3.845e-3 (6e-3) |
+| `decoder` | oracle | 2.963e-3 (5e-3) |
+| `flow_w256` | oracle | 2.768e-3 (5e-3; finding 2's case) |
+
+**LLM plans are unchanged.** With a temporary hook logging every plan
+(its primitive graph's digest, its policy, the planned graph's digest and
+each step's implementation), the LLM lowering tests (`ggml_lower_test`,
+`_gemma4`, `_dsv4`, `_qwen38`, `components_qwen2_test`) and the frozen v1
+proofs of Gemma 4, Qwen3.8 GGUF and DeepSeek V4 planned 3,018 steps (1,601
+distinct) on `7f4b0547` and on this state: identical input digests,
+planned-graph digests and implementations, the only difference the new
+opt-in patterns' names in policies that list every pattern as disabled.
+
+**Final state, Spark A, 2026-10-15.** The full shared set passes (2,830
+tests); the frozen v1 proofs pass (`LLMP_TEST_V1_FROZEN_ONLY=1`: Gemma
+native 3, Gemma 2 1, Gemma assistant 2, Qwen3.8 GGUF 1, DeepSeek V4 1,
+DSpark 1, Qwen2 FP16 3, Qwen2 EXL3 5); the image model tests pass (11 run,
+the six `ImageGenerationGpu` diagnostics skip as they require an explicit
+diagnostic). The production image's pixels are `9d0b448f…` (the new pin):
+PSNR 41.26 dB, luma SSIM 0.99419 against `9de442f1…` (floors 32 dB /
+0.98; the shipping path read 40.687 dB / 0.99418). A two-block screen
+against the frozen legacy arm (`1facc957`, primed, ABBA) reads +1.42%
+(new 33.674 s, legacy 33.203 s; +1.50% and +1.34% by block), down from
++2.03% at 2a; peak memory +0.81 GiB over legacy (+1.59 GiB before).
+
+Raw records on `spark`: `~/scratch/m36-image-screen09`,
+`~/scratch/m36-image-plan/q4`, `~/scratch/m36-image-plan/dg-{old,new}.log`.

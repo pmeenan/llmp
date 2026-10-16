@@ -248,18 +248,19 @@ never change guarded source while an actual run is active.
 - Image attribution is done
   ([m36-baselines](experiments/m36-baselines/README.md#qwen-image-21-on-the-shared-engine)):
   driver fence polling, per-stage lease cycling and graph hashing, the F32 VAE
-  convolution fixed; the remaining ~2.1% (unchanged host inputs re-uploaded,
-  the text encoder's path, the F32 channel norm) and the conversion of
-  `BoundGraph::Run`'s run-time fusion into planner patterns are the next slice,
-  in progress: the matcher inventory, its reference tests and group 2a (the
-  spatial channel norm and the sectioned norm and rotation as planner
-  patterns, liveness from the step's outputs and kept tensors) are done
-  ([m36-runtime-fusion](experiments/m36-runtime-fusion/README.md)); 2b-2e,
-  deleting the run-time path, the profile constants and the gap follow.
-  Open: finding 1 (a declined QKV or MLP matcher refuses the step) stays
-  until 2b/2c; `rms_norm_mul_rope_sections` is opt-in and only the image's
-  policy enables it, so measuring it for LLM families (Gemma 4's local
-  layers match it) is open; the image pin is now `2ee8f010…`.
+  convolution fixed. The conversion of `BoundGraph::Run`'s run-time fusion
+  into planner patterns is done: the matcher inventory and its reference tests, then every matcher
+  as planner patterns (2a–2e: the channel norm, the sectioned norm and
+  rotation, the MLP, the QK attention, the split modulations and residuals,
+  the VAE's three, layout sinking), made the production policy, and
+  `BoundGraph::Run`'s run-time fusion deleted (sub-task 3; findings 1 and 2
+  resolved; [m36-runtime-fusion](experiments/m36-runtime-fusion/README.md)).
+  The image pin is `9d0b448f…` (41.26 dB); the two-block screen against
+  legacy reads +1.42%. Next: sub-task 5 (host inputs that do not change,
+  the text encoder, the channel norm), the ~0.7% main regression, then
+  sub-task 4 (the profile constants as data). Open: every new pattern is
+  opt-in and only the image's policy enables it (LLM plans were checked
+  unchanged by plan digest), so measuring them for LLM families is open.
 - Qwen's decode gaps are fully resolved in `25711ad9` (`qwen-c4-fix-models01`)
   and `7ad389b5` (`qwen-c4-fix-models02`) on Spark A: wiring
   `DrafterSpec::shared_wave_depth` (`= 2` in multi-slot waves, matching

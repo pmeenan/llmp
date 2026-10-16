@@ -13,6 +13,7 @@
 #include "kernels/ggml/fattn_mma.h"
 #include "kernels/ggml/ggml_support.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -871,7 +872,96 @@ __global__ void __launch_bounds__(kF16Threads, 1)
     }
   }
 }
+// llmp.image.attention_mask_pack: every packed row whole (the masked
+// attention's PackAttentionMaskKernel marks a row, writing only its first
+// element): -inf past the mask's columns and rows. With `mark` (a square
+// mask: its columns are the attention's keys, so no key is padding), a row
+// the mask leaves whole is -0 then zeros (the attention reads the -0 as "no
+// mask"); otherwise the zeros alone.
+__global__ void PackAttentionMaskWholeKernel(const float* __restrict__ src, half* __restrict__ dst,
+                                             std::int64_t real_cols, std::int64_t real_rows,
+                                             std::int64_t padded_cols, std::size_t pitch,
+                                             bool mark) {
+  const std::int64_t row = blockIdx.x;
+  half* row_dst = dst + padded_cols * row;
+  if (row >= real_rows) {
+    for (std::int64_t col = threadIdx.x; col < padded_cols; col += 256)
+      row_dst[col] = __float2half(-INFINITY);
+    return;
+  }
+  const float* row_src = src + static_cast<std::size_t>(row) * pitch;
+  int any_nonzero = 0;
+  for (std::int64_t col = threadIdx.x; col < real_cols; col += 256) {
+    if (row_src[col] != 0.0f) {
+      any_nonzero = 1;
+      break;
+    }
+  }
+  const bool whole = __syncthreads_or(any_nonzero) == 0 && mark;
+  for (std::int64_t col = threadIdx.x; col < padded_cols; col += 256) {
+    half val = __float2half(-INFINITY);
+    if (col < real_cols) {
+      const float f = row_src[col];
+      val = (f == 0.0f) ? __ushort_as_half(whole && col == 0 ? 0x8000U : 0x0000U) : __float2half(f);
+    }
+    row_dst[col] = val;
+  }
+}
 }  // namespace
+
+std::expected<void, KernelFailure> RunAttentionMaskPack(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckAttentionMaskPack(node); !checked) return checked;
+  const ggml_tensor* mask = node->src[0];
+  return launch.Run(base::Bytes(0), [node, mask](ggml_backend_cuda_context& context) {
+    PackAttentionMaskWholeKernel<<<static_cast<unsigned>(node->ne[1]), 256, 0, context.stream()>>>(
+        static_cast<const float*>(mask->data), static_cast<half*>(node->data), mask->ne[0],
+        mask->ne[1], node->ne[0], mask->nb[1] / sizeof(float), mask->ne[0] == mask->ne[1]);
+    CUDA_CHECK(cudaGetLastError());
+  });
+}
+
+std::expected<void, KernelFailure> RunQkAttention(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckQkAttention(node); !checked) return checked;
+  static const bool ready = [] {
+    const int smem = SmemForF16(kF16Depth);
+    return cudaFuncSetAttribute(FlashForwardBf16RowMajorKernel<kF16Depth, false, true>,
+                                cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess &&
+           cudaFuncSetAttribute(FlashForwardBf16RowMajorKernel<kF16Depth, true, true>,
+                                cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess;
+  }();
+  if (!ready) return detail::Rejected("attention shared memory limit");
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* q = node->src[0];
+    const ggml_tensor* k = node->src[2];
+    const int rows = static_cast<int>(q->ne[1]);
+    const int heads = static_cast<int>(q->ne[0] / kF16D);
+    const int heads_k = static_cast<int>(k->ne[0] / kF16D);
+    const dim3 grid(static_cast<unsigned>((rows + kF16Br - 1) / kF16Br),
+                    static_cast<unsigned>(heads));
+    const auto smem = static_cast<std::size_t>(SmemForF16(kF16Depth));
+    const auto* qb = static_cast<const nv_bfloat16*>(q->data);
+    const auto* kb = static_cast<const nv_bfloat16*>(k->data);
+    const auto* vb = static_cast<const nv_bfloat16*>(node->src[3]->data);
+    const auto* wq = static_cast<const nv_bfloat16*>(node->src[1]->data);
+    const auto* mask = static_cast<const half*>(node->src[4]->data);
+    const auto* table = static_cast<const float*>(node->src[5]->data);
+    const int cells = static_cast<int>(node->src[4]->ne[0]);
+    const float eps = LlmpOpFloat(node, 0);
+    const float scale = LlmpOpFloat(node, 1);
+    if (node->type == GGML_TYPE_BF16) {
+      FlashForwardBf16RowMajorKernel<kF16Depth, true, true>
+          <<<grid, kF16Threads, smem, context.stream()>>>(qb, kb, vb, mask, node->data, rows, rows,
+                                                          cells, heads, heads_k, scale, wq, table,
+                                                          eps);
+    } else {
+      FlashForwardBf16RowMajorKernel<kF16Depth, false, true>
+          <<<grid, kF16Threads, smem, context.stream()>>>(qb, kb, vb, mask, node->data, rows, rows,
+                                                          cells, heads, heads_k, scale, wq, table,
+                                                          eps);
+    }
+    CUDA_CHECK(cudaGetLastError());
+  });
+}
 std::expected<std::uint64_t, KernelFailure> PlanAttentionF32(const LaunchContext& launch,
                                                              const ggml_tensor* node) {
   auto plan = CheckAttentionF32(node);
@@ -909,10 +999,6 @@ std::expected<std::uint64_t, KernelFailure> PlanAttentionF32(const LaunchContext
   return plan->packing_bytes + flash->scratch;
 }
 std::expected<void, KernelFailure> AttentionF32(LaunchContext& launch, ggml_tensor* node) {
-  return AttentionF32WithOptions(launch, node, {});
-}
-std::expected<void, KernelFailure> AttentionF32WithOptions(LaunchContext& launch, ggml_tensor* node,
-                                                           AttentionF32Options opts) {
   auto plan = CheckAttentionF32(node);
   if (!plan) return std::unexpected(plan.error());
   const auto workspace = launch.workspace();
@@ -925,94 +1011,35 @@ std::expected<void, KernelFailure> AttentionF32WithOptions(LaunchContext& launch
   const auto run = detail::FlashAttnMmaCase128(flash->columns);
   if (run == nullptr) return detail::Rejected("attention has no compiled query tile");
   const float scale = detail::ParamF32(node, 0);
-  return launch.Run(base::Bytes(bytes), [&, opts](ggml_backend_cuda_context& context) {
+  return launch.Run(base::Bytes(bytes), [&](ggml_backend_cuda_context& context) {
     ggml_cuda_pool_alloc<std::byte> memory(context.pool(), plan->packing_bytes);
     base::Check(reinterpret_cast<std::uintptr_t>(memory.get()) == workspace.base,
                 "attention packing starts at the paid pool base");
     PackedAttention packed;
     Make(packed, node, *plan, memory.get());
     cudaStream_t stream = context.stream();
-    if (!opts.qkv_bf16_row_major) {
-      if (!opts.k_prepacked) {
-        LaunchPackAttentionKv(stream, node->src[1], packed.padded[0], false);
-        CUDA_CHECK(cudaGetLastError());
-        if (internal::CudaErrorPending()) return;
-      }
-      LaunchPackAttentionKv(stream, node->src[2], packed.padded[1], opts.v_is_bf16);
-      CUDA_CHECK(cudaGetLastError());
-      if (internal::CudaErrorPending()) return;
-    }
-    if (!opts.mask_prepacked) {
-      LaunchPackAttentionMask(stream, node->src[3], packed.padded[2]);
-      CUDA_CHECK(cudaGetLastError());
-      if (internal::CudaErrorPending()) return;
-    }
+    LaunchPackAttentionKv(stream, node->src[1], packed.padded[0], false);
+    CUDA_CHECK(cudaGetLastError());
+    if (internal::CudaErrorPending()) return;
+    LaunchPackAttentionKv(stream, node->src[2], packed.padded[1], false);
+    CUDA_CHECK(cudaGetLastError());
+    if (internal::CudaErrorPending()) return;
+    LaunchPackAttentionMask(stream, node->src[3], packed.padded[2]);
+    CUDA_CHECK(cudaGetLastError());
+    if (internal::CudaErrorPending()) return;
     const int q_rows = static_cast<int>(node->src[0]->ne[1]);
     const int kv_rows = static_cast<int>(node->src[1]->ne[1]);
     const int padded_kv_cols = static_cast<int>(plan->cells);
     const int heads = static_cast<int>(node->src[0]->ne[2]);
-    const int heads_k = static_cast<int>(node->src[1]->ne[2]);
     const dim3 grid(static_cast<unsigned>((q_rows + kF16Br - 1) / kF16Br),
                     static_cast<unsigned>(heads));
     const auto smem = static_cast<std::size_t>(SmemForF16(kF16Depth));
     const auto* m_ptr = reinterpret_cast<const half*>(packed.padded[2].data);
-    if (opts.qkv_bf16_row_major) {
-      const auto* q_bf16 = static_cast<const nv_bfloat16*>(node->src[0]->data);
-      const auto* k_bf16 = static_cast<const nv_bfloat16*>(node->src[1]->data);
-      const auto* v_bf16 = static_cast<const nv_bfloat16*>(node->src[2]->data);
-      const auto* q_w_bf16 = static_cast<const nv_bfloat16*>(opts.q_weight);
-      const std::uint64_t freqs_bytes =
-          ((static_cast<std::uint64_t>(q_rows) * 128 * sizeof(float)) + 255) & ~std::uint64_t{255};
-      const auto* freqs_ptr = reinterpret_cast<const float*>(
-          reinterpret_cast<const std::byte*>(packed.padded[2].data) - freqs_bytes);
-      if (opts.norm_q_in_attn) {
-        if (opts.bf16_dst) {
-          FlashForwardBf16RowMajorKernel<kF16Depth, true, true>
-              <<<grid, kF16Threads, smem, stream>>>(q_bf16, k_bf16, v_bf16, m_ptr, node->data,
-                                                    q_rows, kv_rows, padded_kv_cols, heads, heads_k,
-                                                    scale, q_w_bf16, freqs_ptr, opts.q_eps);
-        } else {
-          FlashForwardBf16RowMajorKernel<kF16Depth, false, true>
-              <<<grid, kF16Threads, smem, stream>>>(q_bf16, k_bf16, v_bf16, m_ptr, node->data,
-                                                    q_rows, kv_rows, padded_kv_cols, heads, heads_k,
-                                                    scale, q_w_bf16, freqs_ptr, opts.q_eps);
-        }
-      } else if (opts.bf16_dst) {
-        FlashForwardBf16RowMajorKernel<kF16Depth, true, false><<<grid, kF16Threads, smem, stream>>>(
-            q_bf16, k_bf16, v_bf16, m_ptr, node->data, q_rows, kv_rows, padded_kv_cols, heads,
-            heads_k, scale, nullptr, nullptr, 0.0f);
-      } else {
-        FlashForwardBf16RowMajorKernel<kF16Depth, false, false>
-            <<<grid, kF16Threads, smem, stream>>>(q_bf16, k_bf16, v_bf16, m_ptr, node->data, q_rows,
-                                                  kv_rows, padded_kv_cols, heads, heads_k, scale,
-                                                  nullptr, nullptr, 0.0f);
-      }
-      CUDA_CHECK(cudaGetLastError());
-      return;
-    }
     const auto* k_ptr = reinterpret_cast<const half*>(packed.padded[0].data);
     const auto* v_ptr = reinterpret_cast<const half*>(packed.padded[1].data);
-    if (opts.q_is_f16) {
-      if (opts.bf16_dst) {
-        FlashForwardF16Kernel<kF16Depth, true, true><<<grid, kF16Threads, smem, stream>>>(
-            node->src[0]->data, k_ptr, v_ptr, m_ptr, node->data, q_rows, kv_rows, padded_kv_cols,
-            heads, scale);
-      } else {
-        FlashForwardF16Kernel<kF16Depth, true, false><<<grid, kF16Threads, smem, stream>>>(
-            node->src[0]->data, k_ptr, v_ptr, m_ptr, node->data, q_rows, kv_rows, padded_kv_cols,
-            heads, scale);
-      }
-    } else {
-      if (opts.bf16_dst) {
-        FlashForwardF16Kernel<kF16Depth, false, true><<<grid, kF16Threads, smem, stream>>>(
-            node->src[0]->data, k_ptr, v_ptr, m_ptr, node->data, q_rows, kv_rows, padded_kv_cols,
-            heads, scale);
-      } else {
-        FlashForwardF16Kernel<kF16Depth, false, false><<<grid, kF16Threads, smem, stream>>>(
-            node->src[0]->data, k_ptr, v_ptr, m_ptr, node->data, q_rows, kv_rows, padded_kv_cols,
-            heads, scale);
-      }
-    }
+    FlashForwardF16Kernel<kF16Depth, false, false>
+        <<<grid, kF16Threads, smem, stream>>>(node->src[0]->data, k_ptr, v_ptr, m_ptr, node->data,
+                                              q_rows, kv_rows, padded_kv_cols, heads, scale);
     CUDA_CHECK(cudaGetLastError());
   });
 }

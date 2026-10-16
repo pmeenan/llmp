@@ -1174,3 +1174,20 @@ configuration with no diagnostic switch, and the valid matched screens,
 their attribution, and the dependence on `BoundGraph::Run`'s run-time
 fusion are in the
 [baselines record](../m36-baselines/README.md#qwen-image-21-on-the-shared-engine).
+
+## Planned fusion and the BF16 activation choices
+
+Since M3.6's image slice the shared image path's fusions are planner
+patterns over the graph IR, chosen by the image's policy
+(`spec/image_spatial.h` `kImagePlanningPolicy`), and `BoundGraph::Run`
+fuses nothing at run time
+([m36-runtime-fusion](../m36-runtime-fusion/README.md)). Two of the
+policy's choices round activations to BF16 by default: the products a
+gated residual adds write BF16 (`bf16_branch`), and a residual's sum that
+only later residuals carry stays BF16 between blocks (`bf16_residual`).
+They reproduce the shipping path's established BF16 activation numerics,
+and quality against the diffusers reference is equal or better: PSNR
+41.26 dB and luma SSIM 0.99419 against `9de442f1…` with them (pixels
+`9d0b448f…`), against 40.687 dB / 0.99418 for the shipping path before
+the move (floors 32 dB / 0.98). This is speed over bit-exactness at the
+same quality, not a quality trade.

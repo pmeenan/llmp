@@ -1021,6 +1021,123 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       }
       return One(out);
     }
+    case FusedKind::kGatedResidualModulateSplit: {
+      if (!d.need(6, 6)) return {};
+      // The two kinds it joins (a BF16 modulation is cast at the end).
+      const std::array gated{d.s(0), d.s(1), d.s(2), d.s(3)};
+      const std::array f32{format::Encoding::kF32};
+      const TensorId x = b.FusedBytes(FusedKind::kGatedResidualSplit, gated, params, f32)[0];
+      const std::array modulated{x, d.s(4), d.s(5)};
+      return Many({x, b.FusedBytes(FusedKind::kLayerNormModulateSplit, modulated, params, f32)[0]});
+    }
+    case FusedKind::kLayerNormModulateSplit:
+    case FusedKind::kGatedResidualSplit: {
+      const bool gated = kind == FusedKind::kGatedResidualSplit;
+      if (!d.need(gated ? 4 : 3, gated ? 4 : 3)) return {};
+      const auto p = Get<SplitModulateParams>(params);
+      const TensorDesc& x = d.t(d.s(0));
+      const std::uint64_t cols = x.ne(0), rows = x.ne(1);
+      const TensorId a = d.s(gated ? 2 : 1), bv = d.s(gated ? 3 : 2);
+      if (!d.check(x.shape().rank <= 2 && p.split <= rows &&
+                       d.t(a).shape().ne == ShapeOf({cols}).ne &&
+                       d.t(bv).shape().ne == ShapeOf({cols}).ne &&
+                       (!gated || d.t(d.s(1)).shape().ne == x.shape().ne),
+                   GraphError::kShape, "rows [C, R] and two [C] vectors split within R"))
+        return {};
+      // Each vector repeated over its rows.
+      const auto rows_of = [&](TensorId v, std::uint64_t n) {
+        return b.Repeat(b.Reshape(v, ShapeOf({cols, 1})), ShapeOf({cols, n}));
+      };
+      const TensorId side = p.split == 0 ? rows_of(bv, rows)
+                            : p.split == rows
+                                ? rows_of(a, rows)
+                                : b.Concat(rows_of(a, p.split), rows_of(bv, rows - p.split), 1);
+      if (gated) {
+        // A BF16 carry or branch widened (exact).
+        const auto f32 = [&](TensorId t) {
+          return d.t(t).format.encoding == format::Encoding::kF32
+                     ? t
+                     : b.Convert(t, format::Encoding::kF32);
+        };
+        return One(b.Add(f32(d.s(0)), b.Mul(f32(d.s(1)), b.Unary(side, UnaryFn::kTanh))));
+      }
+      return One(b.Mul(b.LayerNorm(d.s(0), p.eps), b.Scale(side, 1.0F, 1.0F)));
+    }
+    case FusedKind::kAttentionMaskPack: {
+      if (!d.need(1, 1)) return {};
+      const auto p = Get<MaskPackParams>(params);
+      const TensorDesc& m = d.t(d.s(0));
+      const std::uint64_t cols = m.ne(0), rows = m.ne(1);
+      if (!d.check(m.shape().rank <= 2 && p.cells >= cols && p.rows >= rows, GraphError::kShape,
+                   "a mask [C, R] padded to at least its extents"))
+        return {};
+      TensorId out = b.Convert(d.s(0), format::Encoding::kF16);
+      const float inf = -std::numeric_limits<float>::infinity();
+      if (p.cells > cols)
+        out =
+            b.Concat(out, b.Fill(ShapeOf({p.cells - cols, rows}), inf, format::Encoding::kF16), 0);
+      if (p.rows > rows)
+        out = b.Concat(out, b.Fill(ShapeOf({p.cells, p.rows - rows}), inf, format::Encoding::kF16),
+                       1);
+      return One(out);
+    }
+    case FusedKind::kRopeTable: {
+      const auto p = Get<RopeSectionsParams>(params);
+      if (!d.need(std::size_t{p.sections}, std::size_t{p.sections})) return {};
+      std::uint64_t dims = 0;
+      for (std::size_t i = 0; i < p.sections && i < p.dims.size(); ++i) dims += p.dims.at(i);
+      const std::uint64_t rows = d.t(d.s(0)).ne(0);
+      if (!d.check(p.sections >= 1 && p.sections <= 3 && p.mode == RopeMode::kNormal && dims != 0 &&
+                       dims % 2 == 0,
+                   GraphError::kParams, "one to three normal sections of an even head"))
+        return {};
+      // (1, 0) in every pair, rotated: each pair's cos and sin.
+      const TensorId pairs = b.Concat(b.Fill(ShapeOf({1, dims / 2, rows}), 1.0F),
+                                      b.Fill(ShapeOf({1, dims / 2, rows}), 0.0F), 0);
+      TensorId out = b.Reshape(b.Cont(pairs), ShapeOf({dims, 1, rows}));
+      std::uint32_t offset = 0;
+      for (std::size_t i = 0; i < p.sections; ++i) {
+        out = b.Rope(
+            out, d.s(i), {},
+            {.mode = RopeMode::kNormal, .dims = p.dims.at(i), .offset = offset, .base = p.base});
+        offset += p.dims.at(i);
+      }
+      return One(b.Reshape(out, ShapeOf({2, dims / 2, rows})));
+    }
+    case FusedKind::kQkAttention: {
+      if (!d.need(6, 6)) return {};
+      const auto p = Get<QkAttentionParams>(params);
+      const TensorDesc& q = d.t(d.s(0));
+      const TensorDesc& k = d.t(d.s(2));
+      const TensorDesc& table = d.t(d.s(5));
+      const std::uint64_t dim = 2 * table.ne(1), rows = q.ne(1);
+      if (!d.check(dim != 0 && q.ne(0) % dim == 0 && k.ne(0) % dim == 0 && k.ne(1) == rows &&
+                       d.t(d.s(3)).shape().ne == k.shape().ne && table.ne(0) == 2 &&
+                       table.ne(2) == rows && (q.ne(0) / dim) % (k.ne(0) / dim) == 0 &&
+                       d.t(d.s(4)).ne(0) >= rows && d.t(d.s(4)).ne(1) >= rows,
+                   GraphError::kShape, "q, k, v heads of the table's width over one set of rows"))
+        return {};
+      const std::uint64_t heads = q.ne(0) / dim, kv_heads = k.ne(0) / dim;
+      TensorId w = d.s(1);
+      if (d.t(w).format.encoding != format::Encoding::kF32)
+        w = b.Convert(w, format::Encoding::kF32);
+      TensorId qh = b.Mul(b.RmsNorm(b.Reshape(d.s(0), ShapeOf({dim, heads, rows})), p.eps), w);
+      qh = b.Rope(
+          qh, d.s(5), {},
+          {.mode = RopeMode::kNormal, .table = true, .dims = static_cast<std::uint32_t>(dim)});
+      const TensorId qa = b.Cont(b.Permute(qh, {0, 2, 1, 3}));
+      const TensorId ka =
+          b.Cont(b.Permute(b.Reshape(d.s(2), ShapeOf({dim, kv_heads, rows})), {0, 2, 1, 3}));
+      const TensorId va =
+          b.Permute(b.Reshape(d.s(3), ShapeOf({dim, kv_heads, rows})), {0, 2, 1, 3});
+      const TensorDesc& packed = d.t(d.s(4));
+      const std::uint64_t unit = UnitBytes(packed.format);
+      const TensorId mask = b.View(
+          d.s(4), ShapeOf({rows, rows}),
+          {unit, unit * packed.ne(0), unit * packed.ne(0) * rows, unit * packed.ne(0) * rows}, 0);
+      const TensorId out = b.Attention(qa, ka, va, mask, {}, {.scale = p.scale});
+      return One(b.Reshape(out, ShapeOf({dim * heads, rows})));
+    }
     case FusedKind::kHcPrep: {
       if (!d.need(2, 5)) {
         return {};

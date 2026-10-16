@@ -155,6 +155,14 @@ enum class LlmpOp : std::uint8_t {
   kRoundedIndexScore,
   kSpatialChannelNorm,
   kNormRopeSections,
+  kSwiGluBf16,
+  kAttentionMaskPack,
+  kRopeTable,
+  kQkAttention,
+  kLayerNormModulateSplit,
+  kGatedResidualSplit,
+  kDupUpAdd,
+  kConv1x1,
 };
 
 class LaunchContext;
@@ -689,14 +697,15 @@ std::expected<void, KernelFailure> RunSpatialChannelNorm(LaunchContext& launch, 
 
 // A head's RMS norm times its weight, then 1 to 3 rotated sections (ir
 // FusedKind::kRmsNormMulRopeSections), as llmp.image.rms_norm_mul_rope_sections:
-// `x` F32 [D, heads, rows, 1] (packed, D even and at most 512), `weight`
-// F32 or BF16 [D], section i rotating dims[i] values from the sum of the
-// earlier ones by `positions[i]` I32 [rows], NEOX or normal pairs, at
-// `base`; the sections cover D. F32 of x's shape, disjoint from its
-// operands (ops_ext.h RmsNormMulRope3d, a block a row).
+// `x` F32 or BF16 [D, heads, rows, 1] (packed, D even and at most 512),
+// `weight` F32 or BF16 [D], section i rotating dims[i] values from the sum
+// of the earlier ones by `positions[i]` I32 [rows], NEOX or normal pairs,
+// at `base`; the sections cover D. F32 or BF16 (`type`) of x's shape,
+// disjoint from its operands (ops_ext.h RmsNormMulRope3d, a block a row).
 ggml_tensor* NormRopeSections(ggml_context* context, ggml_tensor* x, ggml_tensor* weight,
                               std::span<ggml_tensor* const> positions, float eps, float base,
-                              bool neox, std::span<const std::uint32_t> dims);
+                              bool neox, std::span<const std::uint32_t> dims,
+                              ggml_type type = GGML_TYPE_F32);
 struct NormRopeSectionsArgs {
   float eps = 0.0f;
   float base = 0.0f;
@@ -707,6 +716,106 @@ struct NormRopeSectionsArgs {
 };
 std::expected<NormRopeSectionsArgs, KernelFailure> CheckNormRopeSections(const ggml_tensor* node);
 std::expected<void, KernelFailure> RunNormRopeSections(LaunchContext& launch, ggml_tensor* node);
+
+// SwiGLU into BF16 (ir Op::kGlu kSwiGlu recorded in BF16), as
+// llmp.image.swiglu_bf16: silu(gate) · up of packed `gate` and `up` of one
+// shape and float type (F32 or BF16), into packed BF16 of their shape,
+// disjoint from them (ops_ext.h SwiGluToBf16).
+ggml_tensor* SwiGluBf16(ggml_context* context, ggml_tensor* gate, ggml_tensor* up);
+std::expected<void, KernelFailure> CheckSwiGluBf16(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunSwiGluBf16(LaunchContext& launch, ggml_tensor* node);
+
+// An attention mask packed once for a step's attentions (ir FusedKind::
+// kAttentionMaskPack), as llmp.image.attention_mask_pack: `mask` F32 [C, R]
+// (elements packed) into F16 [cells, rows] (cells a multiple of 256 at
+// least C, rows at least R), -inf past the mask, a row the mask leaves
+// whole (all zero) marked by -0 at its first element for the attention to
+// skip (ops_ext.h's kernels; attention_f32.h QkAttention).
+ggml_tensor* AttentionMaskPack(ggml_context* context, ggml_tensor* mask, std::int64_t cells,
+                               std::int64_t rows);
+std::expected<void, KernelFailure> CheckAttentionMaskPack(const ggml_tensor* node);
+
+// A rotation table (ir FusedKind::kRopeTable), as llmp.image.rope_table:
+// F32 [2, D / 2, R], each row's pairs' cos and sin of its sections' angles
+// (normal pairs; `dims` the sections' widths, `positions` their I32 [R]).
+ggml_tensor* RopeTable(ggml_context* context, std::span<ggml_tensor* const> positions,
+                       std::span<const std::uint32_t> dims, float base);
+struct RopeTableArgs {
+  float base = 0.0f;
+  std::size_t sections = 0;
+  std::array<int, 3> dims{};
+  std::array<const ggml_tensor*, 3> positions{};
+};
+std::expected<RopeTableArgs, KernelFailure> CheckRopeTable(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunRopeTable(LaunchContext& launch, ggml_tensor* node);
+
+// Attention of RMS-normed, table-rotated queries over packed BF16 rows (ir
+// FusedKind::kQkAttention), as llmp.image.qk_attention: `q` BF16 [128 · H,
+// R], `wq` BF16 [128], `k` and `v` BF16 [128 · Hk, R] (H a multiple of Hk),
+// `mask` a packed F16 [cells, >= R] (AttentionMaskPack's, cells at least R
+// rounded up to 256), `table` F32 [2, 64, R] (RopeTable's), into F32 or
+// BF16 (`type`) [128 · H, R] (attention_f32.cu's row-major BF16 kernel
+// with the query's norm and rotation in it).
+ggml_tensor* QkAttention(ggml_context* context, ggml_tensor* q, ggml_tensor* wq, ggml_tensor* k,
+                         ggml_tensor* v, ggml_tensor* mask, ggml_tensor* table, float eps,
+                         float scale, ggml_type type);
+std::expected<void, KernelFailure> CheckQkAttention(const ggml_tensor* node);
+
+// A layer norm modulated by one of two rows' vectors (ir FusedKind::
+// kLayerNormModulateSplit), as llmp.image.layer_norm_modulate_split: each
+// row r of packed F32 `x` [C, R] layer-normed (eps) times 1 + (`a` where r
+// < split, else `b`), packed F32 [C], into packed F32 or BF16 (`type`)
+// [C, R] (ops_ext.cu's rows modulation kernels).
+ggml_tensor* LayerNormModulateSplit(ggml_context* context, ggml_tensor* x, ggml_tensor* a,
+                                    ggml_tensor* b, float eps, std::int64_t split, ggml_type type);
+std::expected<void, KernelFailure> CheckLayerNormModulateSplit(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunLayerNormModulateSplit(LaunchContext& launch,
+                                                             ggml_tensor* node);
+// A gated residual by one of two rows' gates (ir FusedKind::
+// kGatedResidualSplit), as llmp.image.gated_residual_split: packed F32 or
+// BF16 `carry` [C, R] + `branch` (packed F32 or BF16 [C, R]) · tanh(`a`
+// where row r < split, else `b`), into packed F32 [C, R] (`type`: or BF16,
+// only joined, below).
+ggml_tensor* GatedResidualSplit(ggml_context* context, ggml_tensor* carry, ggml_tensor* branch,
+                                ggml_tensor* a, ggml_tensor* b, std::int64_t split,
+                                ggml_type type = GGML_TYPE_F32);
+std::expected<void, KernelFailure> CheckGatedResidualSplit(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunGatedResidualSplit(LaunchContext& launch, ggml_tensor* node);
+// The two above joined (ir FusedKind::kGatedResidualModulateSplit), as
+// llmp.image.gated_residual_modulate_split: `residual` a GatedResidualSplit
+// and `modulated` a LayerNormModulateSplit of it (MarkJoined), split at one
+// row, launched as one pass that writes both (ops_ext.cu's residual
+// modulation kernels).
+void MarkJoined(ggml_tensor* modulated);
+bool Joined(const ggml_tensor* residual, const ggml_tensor* modulated);
+std::expected<void, KernelFailure> CheckGatedResidualModulateSplit(const ggml_tensor* residual,
+                                                                   const ggml_tensor* modulated);
+std::expected<void, KernelFailure> RunGatedResidualModulateSplit(LaunchContext& launch,
+                                                                 ggml_tensor* residual,
+                                                                 ggml_tensor* modulated);
+// A shortcut's duplicate-up added (ir FusedKind::kDupUpAdd), as
+// llmp.image.dup_up_add: packed F32 `x` [2W, 2H, Co, 1] plus the last
+// `factor_t` frame of packed F32 `shortcut` [W, H, Ci, 1], each channel
+// repeated Co · factor_t · 4 / Ci times and spread over 2x2 pixels
+// (ops_ext.h DupUpAddF32), into packed F32 [2W, 2H, Co, 1] (in place over
+// `x` allowed).
+ggml_tensor* DupUpAdd(ggml_context* context, ggml_tensor* x, ggml_tensor* shortcut,
+                      std::int64_t factor_t);
+std::expected<void, KernelFailure> CheckDupUpAdd(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunDupUpAdd(LaunchContext& launch, ggml_tensor* node);
+// A 1x1 convolution (ir Op::kConv2d with a 1x1 kernel, no padding), as
+// llmp.image.conv1x1: packed F32 `x` [W, H, Ci, 1], `kernel` [1, 1, Ci, Co]
+// and `bias` [Co] into packed F32 [W, H, Co, 1]: one cuBLAS F32 product over
+// the pixels, then the bias (the lent handle).
+ggml_tensor* Conv1x1(ggml_context* context, ggml_tensor* kernel, ggml_tensor* x, ggml_tensor* bias);
+std::expected<void, KernelFailure> CheckConv1x1(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunConv1x1(LaunchContext& launch, ggml_tensor* node);
+
+// GemmBf16 with the GB10's pinned cuBLASLt algorithms where its shape has
+// one (llmp.gemm.bf16_lt; mul_mat_cublas.cu kGb10LtPins), else GemmBf16's
+// cublasGemmEx.
+void SetGemmBf16Pinned(ggml_tensor* node);
+bool GemmBf16Pinned(const ggml_tensor* node);
 
 // And the fast path's routing:
 //

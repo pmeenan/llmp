@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "components/defs.h"
+#include "ir/layout.h"
 
 namespace llmp::components {
 std::optional<std::uint64_t> SpatialElements(SpatialShape shape) {
@@ -97,22 +98,8 @@ std::expected<SpatialValue, std::string> ConvEmit(SpatialFragment& f) {
   auto out = ConvShape(f.instance, f.shape);
   if (!out || f.weights.size() != 2)
     return std::unexpected("spatial convolution needs its two validated roles");
-  if (f.instance.params.Int("kernel") == 1 && f.instance.params.Int("padding") == 0 &&
-      f.builder.tensor(f.weights[0]).format.encoding == format::Encoding::kF32 &&
-      f.builder.tensor(f.weights[1]).format.encoding == format::Encoding::kF32) {
-    // WHCN stores spatial positions contiguously, whereas the shared product
-    // consumes contiguous reduction channels. Both layout copies are explicit
-    // graph activations, paid by ordinary placement; source weights stay F32.
-    auto& b = f.builder;
-    const auto pixels = f.shape.width * f.shape.height;
-    auto input = b.Reshape(f.input, ir::ShapeOf({pixels, f.shape.channels, f.shape.images}));
-    input = b.Cont(b.Transpose(input));
-    const auto weight = b.Reshape(f.weights[0], ir::ShapeOf({f.shape.channels, out->channels}));
-    auto output = b.MatMul(weight, input);
-    output = b.Cont(b.Transpose(output), Format(*out).shape);
-    const auto bias = b.Reshape(f.weights[1], ir::ShapeOf({1, 1, out->channels, 1}));
-    return SpatialValue{b.Add(output, bias), *out};
-  }
+  // A 1x1 kernel too: its implementations (llmp.image.conv1x1) read the
+  // pixel-contiguous layout directly.
   const ir::Conv2dParams params{
       .stride = 1,
       .padding = static_cast<std::uint32_t>(f.instance.params.Int("padding")),
@@ -286,7 +273,9 @@ std::expected<std::uint64_t, std::string> MetadataBound(
   const auto nodes = owners.size() * (primitive_count + 1) + options.inputs.size() + 2 * components;
   // Explicit outputs add owned port/shape lists and graph output retention.
   // Legacy single-output metadata payment and identity remain unchanged.
-  return 4096ULL * (2 * nodes + source_count + 4 * components + 16 +
+  // Layout sinking makes the graph again: at most a node's own copy, a
+  // view, a permute and a Cont at each of its places.
+  return 4096ULL * ((options.sink_layouts ? 6 : 2) * nodes + source_count + 4 * components + 16 +
                     owners.size() * options.exports.size() + 2 * options.inputs.size());
 }
 struct PaymentOwner {
@@ -549,6 +538,15 @@ std::expected<SpatialGraph, std::string> BuildSpatialStep(
   }
   auto graph = std::move(builder).Finish();
   if (!graph) return std::unexpected(graph.error().detail);
+  if (options.sink_layouts) {
+    auto sunk = ir::SinkLayouts(*graph);
+    if (!sunk) return std::unexpected("layout sinking: " + sunk.error().detail);
+    for (auto& weight : weights) {
+      weight.tensor = sunk->tensors.at(weight.tensor.v);
+      if (!weight.tensor.valid()) return std::unexpected("layout sinking lost a weight");
+    }
+    *graph = std::move(sunk->graph);
+  }
   return SpatialGraph(std::move(hold), std::move(*graph), std::move(weights),
                       std::move(input_ports), std::move(ends), std::move(parameters), *metadata,
                       reference_bytes);

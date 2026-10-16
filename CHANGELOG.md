@@ -898,6 +898,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   default to 8,192 (with the qualified 1,024- and 256-row prompt chunks)
   instead of 262,144, which their admission refused, so a Gemma 4 entry
   without a `context` starts. No other family's default changes.
+- Qwen-Image-2.1 generations change slightly (PSNR 41.26 dB against the
+  diffusers reference, from 40.69 dB): the image's fusions are now chosen
+  by its planning policy, keeping the shipping path's BF16 activations,
+  instead of matched at run time.
 - Gemma 4 26B-A4B and 31B are served by the shared engine (D-107): their
   steps come from the `gemma4` mapping's components and recipes, lowered
   onto the same GGML kernels in the same order, so their replies and

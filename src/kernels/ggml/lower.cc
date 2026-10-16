@@ -1472,6 +1472,15 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::Make(const ir::Graph& graph
     case Op::kGlu: {
       const auto p = n.Params<ir::GluParams>();
       if (s[1] == nullptr || p.swapped) return Refused("a GLU of one source");
+      // Recorded in BF16: the plan's selected llmp.image.swiglu_bf16
+      // (SwiGLU only; D-053, as the convolutions).
+      if (out.format.encoding == Encoding::kBF16) {
+        if (p.kind != ir::GluKind::kSwiGlu) return Refused("a BF16 GLU other than SwiGLU");
+        if (&graph != &p_ ||
+            Selected(NodeId{static_cast<std::uint32_t>(&n - p_.nodes().data())}) != kSwiGluBf16Name)
+          return Refused("a BF16 SwiGLU needs its selected llmp.image.swiglu_bf16");
+        return SwiGluBf16(c_, s[0], s[1]);
+      }
       switch (p.kind) {
         case ir::GluKind::kGeGluTanh:
           return ggml_geglu_split(c_, s[0], s[1]);
@@ -1955,7 +1964,8 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
     }
     case Op::kConv2d: {
       if (n.nsrc != 3 || n.nout != 1 ||
-          (Selected(id) != "ggml.conv2d.f32" && Selected(id) != kConv2dTiledF32))
+          (Selected(id) != "ggml.conv2d.f32" && Selected(id) != kConv2dTiledF32 &&
+           Selected(id) != kConv1x1Name))
         return Refused("spatial convolution needs its selected F32 implementation");
       auto* kernel = made_.at(n.src[0].v);
       auto* input = made_.at(n.src[1].v);
@@ -1972,8 +1982,25 @@ std::expected<void, KernelFailure> Lowering::MakeNode(NodeId id) {
           input->ne[0] + 2 * params.padding < kernel->ne[0] ||
           input->ne[1] + 2 * params.padding < kernel->ne[1])
         return Refused("spatial convolution cannot build these physical operands");
+      if (Selected(id) == kConv1x1Name) {
+        ggml_tensor* t = Conv1x1(c_, kernel, input, bias);
+        if (auto valid = Matches(p_.tensor(n.out[0]), t, "1x1 convolution"); !valid) return valid;
+        Node(t, id);
+        made_.at(n.out[0].v) = t;
+        return {};
+      }
       auto* conv = ggml_conv_2d_direct(c_, kernel, input, 1, 1, static_cast<int>(params.padding),
                                        static_cast<int>(params.padding), 1, 1);
+      if (Selected(id) == kConv2dTiledF32) {
+        // The tiled convolution adds its bias itself: a third source
+        // (conv2d_tiled.h Conv2dTiledF32).
+        conv->src[2] = bias;
+        if (auto valid = Matches(p_.tensor(n.out[0]), conv, "spatial convolution"); !valid)
+          return valid;
+        Node(conv, id);
+        made_.at(n.out[0].v) = conv;
+        return {};
+      }
       auto* broadcast = ggml_reshape_4d(c_, bias, 1, 1, kernel->ne[3], 1);
       auto* result = ggml_add(c_, conv, broadcast);
       if (auto valid = Matches(p_.tensor(n.out[0]), result, "spatial convolution"); !valid)
@@ -3398,7 +3425,15 @@ bool Lowering::Direct(NodeId id) const {
     case FusedKind::kDsv4OutA:
     case FusedKind::kSpatialChannelNorm:
     case FusedKind::kRmsNormMulRopeSections:
+    case FusedKind::kAttentionMaskPack:
+    case FusedKind::kRopeTable:
+    case FusedKind::kQkAttention:
+    case FusedKind::kLayerNormModulateSplit:
+    case FusedKind::kGatedResidualSplit:
+    case FusedKind::kGatedResidualModulateSplit:
       return true;
+    case FusedKind::kDupUpAdd:
+      return Selected(id) == kDupUpAddName;
     case FusedKind::kRmsNormMulRope:
       return Selected(id) == kQsaPrepName;
     case FusedKind::kMatMulGlu:
@@ -3535,6 +3570,7 @@ std::expected<void, KernelFailure> Lowering::MakeSpecial(NodeId id, const ir::No
                         from.key == ir::Fused(FusedKind::kScaledUnary);
         ggml_tensor* t =
             hc ? GemvBf16(c_, src(0), src(1), out_type) : GemmBf16(c_, src(0), src(1), out_type);
+        if (!hc && impl == kGemmBf16LtName) SetGemmBf16Pinned(t);
         if (hc && (plan_.owner_row_invariant ||
                    (selected_hc_ && (selected_hc_->low == id || selected_hc_->high == id))))
           SetGemvBf16Wide(t);
@@ -4183,9 +4219,78 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       set(0, t);
       return {};
     }
+    case FusedKind::kGatedResidualModulateSplit: {
+      // The two nodes it joins, adjacent, the second marked (PlanGraph
+      // launches them as one step).
+      const auto p = n.Params<ir::SplitModulateParams>();
+      const auto sum = TypeOf(p_.tensor(n.out[0]).format.encoding);
+      const auto type = TypeOf(p_.tensor(n.out[1]).format.encoding);
+      if (!sum || !type) return Refused("a residual or modulation of an unknown result type");
+      ggml_tensor* residual = GatedResidualSplit(c_, src(0), src(1), src(2), src(3), p.split, *sum);
+      ggml_tensor* modulated =
+          LayerNormModulateSplit(c_, residual, src(4), src(5), p.eps, p.split, *type);
+      MarkJoined(modulated);
+      Node(residual, id);
+      Node(modulated, id);
+      set(0, residual);
+      set(1, modulated);
+      return {};
+    }
+    case FusedKind::kDupUpAdd: {
+      const auto p = n.Params<ir::DupUpParams>();
+      ggml_tensor* t = DupUpAdd(c_, src(0), src(1), p.factor_t);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
     case FusedKind::kSpatialChannelNorm: {
       const auto p = n.Params<ir::SpatialNormParams>();
       ggml_tensor* t = SpatialChannelNorm(c_, src(0), src(1), p.eps, p.scale, p.silu);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kLayerNormModulateSplit: {
+      const auto p = n.Params<ir::SplitModulateParams>();
+      const auto type = TypeOf(p_.tensor(n.out[0]).format.encoding);
+      if (!type) return Refused("a modulation of an unknown result type");
+      ggml_tensor* t = LayerNormModulateSplit(c_, src(0), src(1), src(2), p.eps, p.split, *type);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kGatedResidualSplit: {
+      const auto p = n.Params<ir::SplitModulateParams>();
+      ggml_tensor* t = GatedResidualSplit(c_, src(0), src(1), src(2), src(3), p.split);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kAttentionMaskPack: {
+      const auto p = n.Params<ir::MaskPackParams>();
+      ggml_tensor* t = AttentionMaskPack(c_, src(0), p.cells, p.rows);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kRopeTable: {
+      const auto p = n.Params<ir::RopeSectionsParams>();
+      if (p.sections < 1 || p.sections > 3 || p.mode != ir::RopeMode::kNormal)
+        return Refused("a rotation table of one to three normal sections");
+      std::array<ggml_tensor*, 3> positions{};
+      for (std::size_t i = 0; i < p.sections; ++i) positions.at(i) = src(i);
+      ggml_tensor* t = RopeTable(c_, std::span(positions).first(p.sections),
+                                 std::span(p.dims).first(p.sections), p.base);
+      Node(t, id);
+      set(0, t);
+      return {};
+    }
+    case FusedKind::kQkAttention: {
+      const auto p = n.Params<ir::QkAttentionParams>();
+      const auto type = TypeOf(p_.tensor(n.out[0]).format.encoding);
+      if (!type) return Refused("an attention of an unknown result type");
+      ggml_tensor* t =
+          QkAttention(c_, src(0), src(1), src(2), src(3), src(4), src(5), p.eps, p.scale, *type);
       Node(t, id);
       set(0, t);
       return {};
@@ -4195,9 +4300,11 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
       if (p.sections < 1 || p.sections > 3) return Refused("one to three rotated sections");
       std::array<ggml_tensor*, 3> positions{};
       for (std::size_t i = 0; i < p.sections; ++i) positions.at(i) = src(2 + i);
+      const auto type = TypeOf(p_.tensor(n.out[0]).format.encoding);
+      if (!type) return Refused("a sectioned rotation of an unknown result type");
       ggml_tensor* t = NormRopeSections(c_, src(0), src(1), std::span(positions).first(p.sections),
                                         p.eps, p.base, p.mode == ir::RopeMode::kNeox,
-                                        std::span(p.dims).first(p.sections));
+                                        std::span(p.dims).first(p.sections), *type);
       Node(t, id);
       set(0, t);
       return {};
@@ -4656,13 +4763,19 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     // branch that interprets a StepShape, synthesized inputs or state spans.
     const auto supported = [](const ir::Node& n) {
       // Closed explicit-operand forms only: the existing VAE shortcut,
-      // learned RMS scaling, the spatial channel norm and the sectioned
-      // head norm and rotation. Each uses the same validated primitive
-      // operands; none consults token metadata, state, side-input builders
-      // or saves.
+      // learned RMS scaling, the spatial channel norm, the sectioned head
+      // norm and rotation, and the image's attention with its packed mask
+      // and rotation table. Each uses the same validated primitive operands;
+      // none consults token metadata, state, side-input builders or saves.
       if (n.key == ir::Fused(FusedKind::kDupUpAdd) || n.key == ir::Fused(FusedKind::kRmsNormMul) ||
           n.key == ir::Fused(FusedKind::kSpatialChannelNorm) ||
-          n.key == ir::Fused(FusedKind::kRmsNormMulRopeSections))
+          n.key == ir::Fused(FusedKind::kRmsNormMulRopeSections) ||
+          n.key == ir::Fused(FusedKind::kAttentionMaskPack) ||
+          n.key == ir::Fused(FusedKind::kRopeTable) ||
+          n.key == ir::Fused(FusedKind::kQkAttention) ||
+          n.key == ir::Fused(FusedKind::kLayerNormModulateSplit) ||
+          n.key == ir::Fused(FusedKind::kGatedResidualSplit) ||
+          n.key == ir::Fused(FusedKind::kGatedResidualModulateSplit))
         return true;
       if (n.key != ir::Primitive(n.key.op)) return false;
       switch (n.key.op) {

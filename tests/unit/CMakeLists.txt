@@ -1245,6 +1245,13 @@ add_executable(planner_test planner_test.cc)
 target_link_libraries(planner_test PRIVATE llmp_planner llmp_ir)
 llmp_gtest(planner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# Layout sinking (ir/layout.h) on the image pipeline's actual graphs at
+# small widths: exact against the reference executor, with fewer copies.
+add_executable(ir_layout_test ir_layout_test.cc)
+target_link_libraries(ir_layout_test PRIVATE llmp_components llmp_spec llmp_model
+                                             llmp_reference_kernels llmp_ir llmp_test_expected)
+llmp_gtest(ir_layout_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Partitioning (D-107): a small Gemma-like spec and a test routed-expert
 # block partitioned by tensor, pipeline and expert parallelism over three
 # to eight simulated devices against the unpartitioned graph; Assign's
@@ -1367,14 +1374,15 @@ target_link_libraries(image_fusion_gpu_test PRIVATE llmp_engine llmp_components 
                                                     llmp_cuda_device_memory)
 llmp_gpu_gtest(image_fusion_gpu_test)
 
-# llmp.image.rms_norm_mul_rope_sections against the reference executor's
-# decomposition of its fused kind.
-add_executable(norm_rope_sections_gpu_test norm_rope_sections_gpu_test.cc)
-target_include_directories(norm_rope_sections_gpu_test SYSTEM PRIVATE
+# The image's planned kernels (llmp.image.*: the sectioned norm and
+# rotation, the attention mask pack, the rotation table, the attention)
+# against the reference executor's decompositions of their fused kinds.
+add_executable(image_ops_gpu_test image_ops_gpu_test.cc)
+target_include_directories(image_ops_gpu_test SYSTEM PRIVATE
     "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-target_link_libraries(norm_rope_sections_gpu_test PRIVATE llmp_reference_kernels llmp_ir
-                                                          llmp_ggml_kernels llmp_cuda_device_memory)
-llmp_gpu_gtest(norm_rope_sections_gpu_test)
+target_link_libraries(image_ops_gpu_test PRIVATE llmp_reference_kernels llmp_ir llmp_ggml_kernels
+                                                 llmp_cuda_device_memory)
+llmp_gpu_gtest(image_ops_gpu_test)
 endif()
 if(LLMP_CUDA)
   add_executable(components_models_gpu_test components_models_gpu_test.cc)

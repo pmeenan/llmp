@@ -225,10 +225,6 @@ struct GraphPlan {
     std::uint32_t last = 0;
   };
   std::vector<Region> regions;
-  // The roots of the tensors PlanGraph was told to keep (the step's outputs
-  // and kept tensors), read after the graph: BoundGraph::Run's run-time
-  // matchers must never leave them unwritten.
-  std::vector<const ggml_tensor*> kept;
 
   // The plan as the registry takes it (execution/registry.h).
   std::vector<execution::Choice> Choices() const;
@@ -371,6 +367,18 @@ inline constexpr std::string_view kHcPrepName = "llmp.hc.prep";
 inline constexpr std::string_view kHcLoName = "llmp.hc.lo";
 inline constexpr std::string_view kSpatialChannelNormName = "llmp.image.spatial_channel_norm";
 inline constexpr std::string_view kNormRopeSectionsName = "llmp.image.rms_norm_mul_rope_sections";
+inline constexpr std::string_view kSwiGluBf16Name = "llmp.image.swiglu_bf16";
+inline constexpr std::string_view kGemmBf16LtName = "llmp.gemm.bf16_lt";
+inline constexpr std::string_view kAttentionMaskPackName = "llmp.image.attention_mask_pack";
+inline constexpr std::string_view kRopeTableName = "llmp.image.rope_table";
+inline constexpr std::string_view kQkAttentionName = "llmp.image.qk_attention";
+inline constexpr std::string_view kLayerNormModulateSplitName =
+    "llmp.image.layer_norm_modulate_split";
+inline constexpr std::string_view kGatedResidualSplitName = "llmp.image.gated_residual_split";
+inline constexpr std::string_view kGatedResidualModulateSplitName =
+    "llmp.image.gated_residual_modulate_split";
+inline constexpr std::string_view kDupUpAddName = "llmp.image.dup_up_add";
+inline constexpr std::string_view kConv1x1Name = "llmp.image.conv1x1";
 inline constexpr std::string_view kHcMixBf16Name = "llmp.hc.mix_bf16";
 inline constexpr std::string_view kMoeRouterName = "llmp.moe.router";
 inline constexpr std::string_view kGdnHistoryName = "llmp.gdn.history";

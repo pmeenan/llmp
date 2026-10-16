@@ -16,22 +16,12 @@ struct AttentionF32Plan {
   // Three fills, three conversions, mask scan, attention and possible fixup.
   static constexpr std::uint64_t kLaunchBound = 9;
 };
-struct AttentionF32Options {
-  bool q_is_f16 = false;
-  bool k_prepacked = false;
-  bool v_is_bf16 = false;
-  bool mask_prepacked = false;
-  bool bf16_dst = false;
-  bool qkv_bf16_row_major = false;
-  bool norm_q_in_attn = false;
-  const void* q_weight = nullptr;
-  float q_eps = 0.0f;
-};
 std::expected<AttentionF32Plan, KernelFailure> CheckAttentionF32(const ggml_tensor* node);
 std::expected<std::uint64_t, KernelFailure> PlanAttentionF32(const LaunchContext& launch,
                                                              const ggml_tensor* node);
 std::expected<void, KernelFailure> AttentionF32(LaunchContext& launch, ggml_tensor* node);
-std::expected<void, KernelFailure> AttentionF32WithOptions(LaunchContext& launch, ggml_tensor* node,
-                                                           AttentionF32Options opts);
+// llmp_ops.h AttentionMaskPack's and QkAttention's launchers.
+std::expected<void, KernelFailure> RunAttentionMaskPack(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunQkAttention(LaunchContext& launch, ggml_tensor* node);
 }  // namespace llmp::kernels::ggml
 #endif

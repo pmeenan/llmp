@@ -6,8 +6,11 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <format>
 #include <limits>
+#include <map>
 #include <span>
 #include <string>
 #include <vector>
@@ -337,8 +340,8 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
       return std::ranges::count_if(graph->graph().nodes(),
                                    [&](const auto& node) { return node.key == ir::Primitive(op); });
     };
-    EXPECT_EQ(count_op(ir::Op::kConv2d), 40);
-    EXPECT_EQ(count_op(ir::Op::kMatMul), 6);
+    EXPECT_EQ(count_op(ir::Op::kConv2d), 46);  // the six 1x1 convolutions too
+    EXPECT_EQ(count_op(ir::Op::kMatMul), 0);
     EXPECT_EQ(count_op(ir::Op::kL2Norm), 36);
     EXPECT_EQ(count_op(ir::Op::kAttention), 1);
     auto registry = Registry();
@@ -540,6 +543,266 @@ TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNo
   }
 }
 
+// The same block built with layout sinking (ir/layout.h): it plans and
+// lowers, with far fewer copies.
+TEST(GgmlSpatialTest, LayoutSunkBlockPlansAndLowersWithFewerCopies) {
+  const auto& profile = mo::QwenImage21().denoiser;
+  const auto source = mo::DenoiserTensors(profile);
+  auto mapped = sp::ImageTransformerBlockSpec(profile, 0, 2, source);
+  ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+  std::vector<co::BoundTensor> tensors;
+  for (const auto& component : mapped->spec.stages[0].layers[0].components)
+    for (const auto& binding : component.weights) {
+      const auto found = std::ranges::find(source, binding.tensor, &mo::QwenImageTensor::name);
+      ASSERT_NE(found, source.end());
+      fm::Shape shape;
+      shape.rank = static_cast<std::uint8_t>(found->shape.size());
+      for (std::size_t d = 0; d < found->shape.size(); ++d)
+        shape.ne[d] = found->shape[found->shape.size() - d - 1];
+      tensors.push_back({binding.tensor, ir::Dense(fm::Encoding::kBF16, shape)});
+    }
+  const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+  const std::array owners{co::SpatialOwner{2, {1, 6, 4096, 1}}};
+  const std::array ports{co::SpatialInput{2, 0, {1, 2, 256, 1}},
+                         co::SpatialInput{2, 1, {6, 3, 1, 1}, fm::Encoding::kI32},
+                         co::SpatialInput{2, 2, {6, 6, 1, 1}}};
+  Budget budget;
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  budget.limit = 256ULL << 20U;
+  std::size_t copies[2] = {0, 0};
+  for (const bool sunk : {false, true}) {
+    auto graph = co::BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                                      {.links = mapped->links,
+                                       .reference_buffers = false,
+                                       .exports = mapped->exports,
+                                       .inputs = ports,
+                                       .sink_layouts = sunk});
+    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+    en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                        graph->weights()};
+    const auto policy = ImagePolicy();
+    kn::Addresses addresses;
+    addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+      return 0x100000000ULL + std::uint64_t{ref.component} * (256ULL << 20U);
+    };
+    addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+    addresses.activations = 0x10000000ULL;
+    addresses.activation_bytes = 32ULL << 20U;
+    addresses.activation_alignment = 256;
+    auto plan = en::PlanComponentGraph(
+        io, backend, policy, addresses,
+        {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+         .written = kg::WrittenBytes,
+         .within = kg::WithinRoot,
+         .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+    ASSERT_TRUE(plan) << Failed(plan).value_or("");
+    const kn::LowerInput input{*plan, io, addresses};
+    kg::DeviceChoices choices;
+    choices.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+      return kg::MulMatPath::kCublas;
+    };
+    auto lowered = kg::LowerStep(input, *registry, choices);
+    ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+    std::string names;
+    for (const auto& step : lowered->plan.steps) {
+      copies[sunk] += step.implementation == "ggml.cont";
+      names += std::string(step.implementation) + " ";
+    }
+    std::printf("%s: %zu steps, %zu copies\n%s\n", sunk ? "sunk" : "original",
+                lowered->plan.steps.size(), copies[sunk], names.c_str());
+  }
+  EXPECT_LE(copies[1] * 3, copies[0] * 2);
+}
+
+// A whole small flow (one block of the source's head geometry) built with
+// layout sinking: it plans and lowers.
+TEST(GgmlSpatialTest, LayoutSunkFlowPlansAndLowers) {
+  mo::QwenImageDenoiserProfile profile;
+  profile.blocks = 1;
+  profile.heads = 32;
+  profile.width = profile.heads * profile.head_dim;
+  profile.mlp = 1024;
+  profile.context = profile.width;
+  constexpr std::uint32_t kText = 8, kGrid = 16, kRows = kText + kGrid * kGrid;
+  const auto source = mo::DenoiserTensors(profile);
+  auto mapped = sp::ImageFlowSpec(profile, kText, kGrid * kGrid, source);
+  ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+  std::vector<co::BoundTensor> tensors;
+  for (const auto& tensor : source) {
+    fm::Shape shape;
+    shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
+    for (std::size_t d = 0; d < tensor.shape.size(); ++d)
+      shape.ne[d] = tensor.shape[tensor.shape.size() - 1 - d];
+    tensors.push_back({tensor.name, ir::Dense(fm::Encoding::kBF16, shape)});
+  }
+  const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+  const std::array owners{co::SpatialOwner{0, {1, kText, profile.context, 1}}};
+  const std::array ports{co::SpatialInput{0, 0, {1, kGrid * kGrid, profile.in_channels, 1}},
+                         co::SpatialInput{0, 1, {1, 2, profile.timestep_dim, 1}},
+                         co::SpatialInput{0, 2, {kRows, 3, 1, 1}, fm::Encoding::kI32},
+                         co::SpatialInput{0, 3, {kRows, kRows, 1, 1}},
+                         co::SpatialInput{0, 4, {1, 1, 1, 1}}};
+  Budget budget;
+  budget.limit = 512ULL << 20U;
+  auto graph = co::BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                                    {.links = mapped->links,
+                                     .reference_buffers = false,
+                                     .exports = mapped->exports,
+                                     .inputs = ports,
+                                     .sink_layouts = true});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                      graph->weights()};
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  const auto policy = ImagePolicy();
+  kn::Addresses addresses;
+  addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+    return 0x100000000ULL + std::uint64_t{ref.component} * (256ULL << 20U);
+  };
+  addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+  addresses.activations = 0x10000000ULL;
+  addresses.activation_bytes = 512ULL << 20U;
+  addresses.activation_alignment = 256;
+  auto plan =
+      en::PlanComponentGraph(io, backend, policy, addresses,
+                             {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+                              .written = kg::WrittenBytes,
+                              .within = kg::WithinRoot,
+                              .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+  ASSERT_TRUE(plan) << Failed(plan).value_or("");
+  const kn::LowerInput input{*plan, io, addresses};
+  kg::DeviceChoices choices;
+  choices.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+    return kg::MulMatPath::kCublas;
+  };
+  auto lowered = kg::LowerStep(input, *registry, choices);
+  if (!lowered) {
+    for (std::uint32_t i = 0; i < plan->graph.nodes().size(); ++i) {
+      const auto& n = plan->graph.nodes()[i];
+      std::string line = std::format("{} {}", i, ir::OpKeyName(n.key));
+      for (const auto src : n.sources())
+        if (src.valid()) line += std::format(" t{}", src.v);
+      for (const auto o : n.outputs()) line += std::format(" -> t{}", o.v);
+      std::printf("%s\n", line.c_str());
+    }
+  }
+  ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+}
+
+// The image's planning policy (spec/image_spatial.h kImagePlanningPolicy) over
+// two flow blocks of the source's head geometry: every block's attention,
+// MLP, modulations (two a block and the output's) and residuals fused by
+// the plan, each residual but the last joined with the modulation of its
+// sum.
+TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
+  mo::QwenImageDenoiserProfile profile;
+  profile.blocks = 2;
+  profile.heads = 32;
+  profile.width = profile.heads * profile.head_dim;
+  profile.mlp = 1024;
+  profile.context = profile.width;
+  constexpr std::uint32_t kText = 25, kGrid = 8, kRows = kText + kGrid * kGrid;
+  const auto source = mo::DenoiserTensors(profile);
+  auto mapped = sp::ImageFlowSpec(profile, kText, kGrid * kGrid, source);
+  ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+  std::vector<co::BoundTensor> tensors;
+  for (const auto& tensor : source) {
+    fm::Shape shape;
+    shape.rank = static_cast<std::uint8_t>(tensor.shape.size());
+    for (std::size_t d = 0; d < tensor.shape.size(); ++d)
+      shape.ne[d] = tensor.shape[tensor.shape.size() - 1 - d];
+    tensors.push_back({tensor.name, ir::Dense(fm::Encoding::kBF16, shape)});
+  }
+  const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
+  const std::array owners{co::SpatialOwner{0, {1, kText, profile.context, 1}}};
+  const std::array ports{co::SpatialInput{0, 0, {1, kGrid * kGrid, profile.in_channels, 1}},
+                         co::SpatialInput{0, 1, {1, 2, profile.timestep_dim, 1}},
+                         co::SpatialInput{0, 2, {kRows, 3, 1, 1}, fm::Encoding::kI32},
+                         co::SpatialInput{0, 3, {kRows, kRows, 1, 1}},
+                         co::SpatialInput{0, 4, {1, 1, 1, 1}}};
+  Budget budget;
+  budget.limit = 512ULL << 20U;
+  auto graph = co::BuildSpatialStep(mapped->spec, tables, owners, budget.Payment(),
+                                    {.links = mapped->links,
+                                     .reference_buffers = false,
+                                     .exports = mapped->exports,
+                                     .inputs = ports,
+                                     .sink_layouts = true});
+  ASSERT_TRUE(graph) << Failed(graph).value_or("");
+  auto registry = Registry();
+  ASSERT_TRUE(registry);
+  en::GraphBuildIO io{graph->graph(), graph->graph().inputs(), graph->graph().outputs(),
+                      graph->weights()};
+  kn::StepBackend backend{.registry = &*registry,
+                          .device = {.arch = 121},
+                          .written = kg::WrittenBytes,
+                          .within = kg::WithinRoot};
+  auto policy = llmp::planner::ParsePolicy(sp::kImagePlanningPolicy);
+  ASSERT_TRUE(policy) << policy.error();
+  kn::Addresses addresses;
+  addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
+    return 0x100000000ULL + std::uint64_t{ref.component} * (256ULL << 20U);
+  };
+  addresses.weight_alignment = [](const ir::WeightRef&, fm::PartRole) { return 256; };
+  addresses.activations = 0x10000000ULL;
+  addresses.activation_bytes = 512ULL << 20U;
+  addresses.activation_alignment = 256;
+  auto plan =
+      en::PlanComponentGraph(io, backend, *policy, addresses,
+                             {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
+                              .written = kg::WrittenBytes,
+                              .within = kg::WithinRoot,
+                              .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+  ASSERT_TRUE(plan) << Failed(plan).value_or("");
+  std::map<std::string, std::size_t> applied;
+  for (const auto& a : plan->applied) ++applied[std::string(a.pattern)];
+  std::string seen;
+  for (const auto& [name, count] : applied) seen += std::format(" {}={}", name, count);
+  std::printf("planned flow:%s\n", seen.c_str());
+  for (const auto& [name, count] : std::initializer_list<std::pair<std::string, std::size_t>>{
+           {"qk_attention", 2},
+           {"bf16_branch", 4},
+           {"bf16_glu", 2},
+           {"split_modulate", 5},
+           {"split_gated_residual", 4},
+           {"split_gated_residual_modulate", 3}})
+    EXPECT_EQ(applied[name], count) << name;
+  if (::testing::Test::HasFailure() || std::getenv("LLMP_PLAN_DUMP") != nullptr) {
+    const ir::Graph& g = graph->graph();
+    for (std::uint32_t i = 0; i < g.nodes().size(); ++i) {
+      const auto& n = g.nodes()[i];
+      std::string line = std::format("{} {}", i, ir::OpKeyName(n.key));
+      for (const auto src : n.sources())
+        if (src.valid()) {
+          const auto& t = g.tensor(src);
+          line += std::format(" t{}[{} {} {} {}|{}]", src.v, t.ne(0), t.ne(1), t.ne(2), t.ne(3),
+                              static_cast<int>(t.format.encoding));
+        }
+      for (const auto o : n.outputs()) line += std::format(" -> t{}", o.v);
+      std::printf("%s\n", line.c_str());
+    }
+  }
+  auto plan_registry = Registry();
+  ASSERT_TRUE(plan_registry);
+  const kn::LowerInput input{*plan, io, addresses};
+  kg::DeviceChoices choices;
+  choices.mul_mat = [](const ggml_tensor*) -> std::expected<kg::MulMatPath, kg::KernelFailure> {
+    return kg::MulMatPath::kCublas;
+  };
+  auto lowered = kg::LowerStep(input, *plan_registry, choices);
+  ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
+}
+
 TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) {
   const auto& profile = mo::QwenImage21().denoiser;
   const auto source = mo::DenoiserTensors(profile);
@@ -713,8 +976,11 @@ TEST(GgmlSpatialTest, ActualTextEncoderUsesTypedIdsNeoxAndGqaWithoutTokenMetadat
     ASSERT_EQ(lowered->inputs.size(), 3U);
     ASSERT_EQ(lowered->outputs.size(), 1U);
     EXPECT_EQ(lowered->outputs[0].bytes, 25ULL * 4096 * 4);
-    std::size_t rotations = 0, products = 0, softmax = 0, rows = 0;
+    std::size_t rotations = 0, products = 0, bf16_products = 0, softmax = 0, rows = 0;
     for (const auto& step : lowered->plan.steps) {
+      // The weights' products from BF16 inputs (bf16_inputs, bf16_glu).
+      bf16_products +=
+          step.implementation == "llmp.gemm.bf16" || step.implementation == kg::kGemmBf16LtName;
       rotations += step.implementation == "ggml.rope.neox";
       if (step.implementation == kg::kNormRopeSectionsName) {
         // The QK norms and their whole-head NEOX rotations, one section.
@@ -738,7 +1004,8 @@ TEST(GgmlSpatialTest, ActualTextEncoderUsesTypedIdsNeoxAndGqaWithoutTokenMetadat
       rows += step.implementation == "ggml.get_rows";
     }
     EXPECT_EQ(rotations, 72U);
-    EXPECT_EQ(products, 324U);
+    EXPECT_EQ(products, 72U);        // the attention's scores and values
+    EXPECT_EQ(bf16_products, 252U);  // seven a layer
     EXPECT_EQ(softmax, 36U);
     EXPECT_EQ(rows, 1U);
     for (const auto& slot : lowered->inputs) EXPECT_EQ(slot.kind, kn::InputKind::kStepBytes);
@@ -910,8 +1177,11 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
       EXPECT_EQ(peak, 64880640U);
       // The 36 spatial channel norms fold their layout copies, L2 norm,
       // scale, gamma and SiLU into one launch each: 179 fewer than 7707.
-      EXPECT_EQ(launches, 7528U);
-      EXPECT_EQ(lowered->extent, 3623878656ULL);
+      // The 40 tiled convolutions add their biases (40 fewer), the six 1x1
+      // convolutions are one launch each, not four (18), and the four
+      // duplicate-ups one, not six (20): 7450.
+      EXPECT_EQ(launches, 7450U);
+      EXPECT_EQ(lowered->extent, 3019898880ULL);
       if (mode == 2) {
         tuned_steps = plan->steps;
         tuned_placement = plan->placement;

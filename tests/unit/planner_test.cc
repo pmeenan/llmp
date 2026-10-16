@@ -1414,6 +1414,294 @@ TEST(PlannerPatternTest, DisablingNormRopeIsNotUndoneByTheSectionedForm) {
             std::vector<std::string_view>{"rms_norm_mul_rope_sections"});
 }
 
+// bf16_glu: the gate and up products of BF16 weights, their SwiGLU and its
+// readers' products in BF16, the products' input converted once.
+TEST(PlannerPatternTest, Bf16GluRecordsTheMlpInBf16) {
+  static constexpr std::array kBf16 = {Encoding::kBF16};
+  static constexpr std::array kBf16Products = {ex::OperandRule{.operand = 0, .encodings = kBf16},
+                                               ex::OperandRule{.operand = 1, .encodings = kBf16}};
+  static constexpr std::array kFloatProducts = {ex::OperandRule{.operand = 0, .encodings = kBf16},
+                                                ex::OperandRule{.operand = 1, .encodings = kF32}};
+  static constexpr std::array kF32Products = {ex::OperandRule{.operand = 0, .encodings = kF32},
+                                              ex::OperandRule{.operand = 1, .encodings = kF32}};
+  std::vector<ex::Implementation> everything = Everything();
+  everything.push_back(Fake("t.convert", Any(ir::Primitive(Op::kConvert))));
+  everything.push_back(Fake("t.mul_mat.float", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                                              .operands = kFloatProducts}));
+  everything.push_back(Fake(
+      "t.mul_mat.f32", ex::Capability{.op = ir::Primitive(Op::kMatMul), .operands = kF32Products}));
+  const ex::Registry plain = Registry(everything);
+  everything.push_back(Fake("t.mul_mat.bf16", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                                             .operands = kBf16Products}));
+  const ex::Registry r = Registry(std::move(everything));
+  Policy on{.enabled = {"bf16_glu"}};
+  Canonicalize(on);
+  struct Variant {
+    bool gate_read = false;   // the gate product also an output
+    bool glu_scaled = false;  // the GLU also read by a scale
+    bool f32_down = false;    // the down product's weight F32
+  };
+  const auto graph = [](const Variant& v) {
+    ir::Builder b;
+    const TensorId x = b.Scale(b.Input(F32({64, 32})), 2.0F);
+    const auto bf16 = [&](std::uint64_t k, std::uint64_t n, std::uint16_t role) {
+      return b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({k, n})), W(role));
+    };
+    const TensorId gate = b.MatMul(bf16(64, 128, 0), x);
+    const TensorId up = b.MatMul(bf16(64, 128, 1), x);
+    const TensorId glu = b.Glu(gate, up, {.kind = ir::GluKind::kSwiGlu});
+    const TensorId wd = v.f32_down ? b.Weight(F32({128, 64}), W(2)) : bf16(128, 64, 2);
+    b.Output(b.MatMul(wd, glu));
+    if (v.gate_read) b.Output(gate);
+    if (v.glu_scaled) b.Output(b.Scale(glu, 2.0F));
+    return Finish(b);
+  };
+  const StepPlan p = PlanOf(graph({}), r, on);
+  EXPECT_EQ(Patterns(p), std::vector<std::string_view>{"bf16_glu"});
+  std::size_t converts = 0, bf16_products = 0;
+  for (const ir::Node& n : p.graph.nodes()) {
+    converts += n.key == ir::Primitive(Op::kConvert);
+    if (n.key == ir::Primitive(Op::kMatMul)) {
+      EXPECT_EQ(p.graph.tensor(n.src[1]).format.encoding, Encoding::kBF16);
+      bf16_products += p.graph.tensor(n.out[0]).format.encoding == Encoding::kBF16;
+    }
+    if (n.key == ir::Primitive(Op::kGlu))
+      EXPECT_EQ(p.graph.tensor(n.out[0]).format.encoding, Encoding::kBF16);
+  }
+  EXPECT_EQ(converts, 1U);       // the products' shared input, once
+  EXPECT_EQ(bf16_products, 2U);  // the gate and the up; the down writes F32
+  EXPECT_EQ(p.graph.tensor(p.graph.outputs()[0]).format.encoding, Encoding::kF32);
+  // Opt-in; without BF16 products; a gate read elsewhere; a GLU read by
+  // other than a product; an F32 down product: nothing.
+  EXPECT_TRUE(Patterns(PlanOf(graph({}), r)).empty());
+  EXPECT_TRUE(Patterns(PlanOf(graph({}), plain, on)).empty());
+  EXPECT_TRUE(Patterns(PlanOf(graph({.gate_read = true}), r, on)).empty());
+  EXPECT_TRUE(Patterns(PlanOf(graph({.glu_scaled = true}), r, on)).empty());
+  EXPECT_TRUE(Patterns(PlanOf(graph({.f32_down = true}), r, on)).empty());
+}
+
+TEST(PlannerPatternTest, SplitModulationAndGatedResidualFuseTheirConditioning) {
+  static constexpr std::array kBf16 = {Encoding::kBF16};
+  static constexpr std::array kBf16Products = {ex::OperandRule{.operand = 0, .encodings = kBf16},
+                                               ex::OperandRule{.operand = 1, .encodings = kBf16}};
+  static constexpr std::array kFloatProducts = {ex::OperandRule{.operand = 0, .encodings = kBf16},
+                                                ex::OperandRule{.operand = 1, .encodings = kF32}};
+  const auto prim = [](Op op) { return Any(ir::Primitive(op)); };
+  std::vector<ex::Implementation> everything = Everything();
+  for (const Op op : {Op::kLayerNorm, Op::kRepeat, Op::kConcat, Op::kUnary, Op::kConvert})
+    everything.push_back(Fake(std::format("t.{}", ir::OpKeyName(ir::Primitive(op))), prim(op)));
+  everything.push_back(Fake("t.mul_mat.float", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                                              .operands = kFloatProducts}));
+  everything.push_back(
+      Fake("t.modulate_split", Any(ir::Fused(FusedKind::kLayerNormModulateSplit))));
+  everything.push_back(Fake("t.gated_split", Any(ir::Fused(FusedKind::kGatedResidualSplit))));
+  const ex::Registry f32_inputs = Registry(everything);
+  everything.push_back(Fake("t.mul_mat.bf16", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                                             .operands = kBf16Products}));
+  const ex::Registry r = Registry(std::move(everything));
+  Policy on{.enabled = {"split_gated_residual", "split_modulate"}};
+  Canonicalize(on);
+  struct Variant {
+    bool one_side = false;     // one conditioning vector over every row
+    bool norm_scaled = false;  // the modulation also read by a scale
+    float bias = 1.0F;         // the conditioning's added one
+  };
+  const auto graph = [](const Variant& v) {
+    ir::Builder b;
+    const TensorId x = b.Scale(b.Input(F32({64, 32})), 2.0F);
+    const auto side = [&] {
+      const TensorId a = b.Input(F32({64}));
+      if (v.one_side) return b.Repeat(a, ir::ShapeOf({64, 32}));
+      const TensorId c = b.Input(F32({64}));
+      return b.Concat(b.Repeat(a, ir::ShapeOf({64, 12})), b.Repeat(c, ir::ShapeOf({64, 20})), 1);
+    };
+    const TensorId m = b.Mul(b.LayerNorm(x, 1e-6F), b.Scale(side(), 1.0F, v.bias));
+    const TensorId w = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({64, 64})), W(0));
+    const TensorId y = b.MatMul(w, m);
+    b.Output(b.Add(x, b.Mul(y, b.Unary(side(), ir::UnaryFn::kTanh))));
+    if (v.norm_scaled) b.Output(b.Scale(m, 2.0F));
+    return Finish(b);
+  };
+  const auto split_of = [](const StepPlan& p, FusedKind kind) -> std::optional<std::uint32_t> {
+    for (const ir::Node& n : p.graph.nodes())
+      if (n.key == ir::Fused(kind)) return n.Params<ir::SplitModulateParams>().split;
+    return std::nullopt;
+  };
+  const auto modulation = [](const StepPlan& p) {
+    for (const ir::Node& n : p.graph.nodes())
+      if (n.key == ir::Fused(FusedKind::kLayerNormModulateSplit))
+        return p.graph.tensor(n.out[0]).format.encoding;
+    return Encoding::kF32;
+  };
+  const auto converts = [](const StepPlan& p) {
+    return std::ranges::count(p.graph.nodes(), ir::Primitive(Op::kConvert), &ir::Node::key);
+  };
+  {
+    const StepPlan p = PlanOf(graph({}), r, on);
+    EXPECT_EQ(Patterns(p),
+              (std::vector<std::string_view>{"split_modulate", "split_gated_residual"}));
+    EXPECT_EQ(split_of(p, FusedKind::kLayerNormModulateSplit), 12U);
+    EXPECT_EQ(split_of(p, FusedKind::kGatedResidualSplit), 12U);
+    // Read only by a product of a BF16 weight that takes BF16 input: made
+    // in BF16, no conversion.
+    EXPECT_EQ(modulation(p), Encoding::kBF16);
+    EXPECT_EQ(converts(p), 0);
+  }
+  {
+    const StepPlan p = PlanOf(graph({.one_side = true}), r, on);
+    EXPECT_EQ(split_of(p, FusedKind::kLayerNormModulateSplit), 32U);
+    EXPECT_EQ(split_of(p, FusedKind::kGatedResidualSplit), 32U);
+  }
+  // F32 where its product takes only F32 input, or another reads it.
+  EXPECT_EQ(modulation(PlanOf(graph({}), f32_inputs, on)), Encoding::kF32);
+  {
+    const StepPlan p = PlanOf(graph({.norm_scaled = true}), r, on);
+    EXPECT_EQ(split_of(p, FusedKind::kLayerNormModulateSplit), 12U);
+    EXPECT_EQ(modulation(p), Encoding::kF32);
+  }
+  // Opt-in; a conditioning without its one: no modulation.
+  EXPECT_TRUE(Patterns(PlanOf(graph({}), r)).empty());
+  EXPECT_EQ(Patterns(PlanOf(graph({.bias = 2.0F}), r, on)),
+            std::vector<std::string_view>{"split_gated_residual"});
+}
+
+TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfItsSum) {
+  const auto prim = [](Op op) { return Any(ir::Primitive(op)); };
+  std::vector<ex::Implementation> everything = Everything();
+  for (const Op op : {Op::kLayerNorm, Op::kRepeat, Op::kConcat, Op::kUnary, Op::kConvert})
+    everything.push_back(Fake(std::format("t.{}", ir::OpKeyName(ir::Primitive(op))), prim(op)));
+  everything.push_back(
+      Fake("t.modulate_split", Any(ir::Fused(FusedKind::kLayerNormModulateSplit))));
+  everything.push_back(Fake("t.gated_split", Any(ir::Fused(FusedKind::kGatedResidualSplit))));
+  const ex::Registry apart = Registry(everything);
+  everything.push_back(
+      Fake("t.gated_modulate_split", Any(ir::Fused(FusedKind::kGatedResidualModulateSplit))));
+  const ex::Registry r = Registry(std::move(everything));
+  Policy on{.enabled = {"split_gated_residual", "split_gated_residual_modulate", "split_modulate"}};
+  Canonicalize(on);
+  const auto graph = [](bool read_between) {
+    ir::Builder b;
+    const TensorId x = b.Scale(b.Input(F32({64, 32})), 2.0F);
+    const TensorId y = b.Scale(b.Input(F32({64, 32})), 3.0F);
+    const auto side = [&] {
+      return b.Concat(b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, 12})),
+                      b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, 20})), 1);
+    };
+    const TensorId sum = b.Add(x, b.Mul(y, b.Unary(side(), ir::UnaryFn::kTanh)));
+    // A reader of the sum before its modulation.
+    if (read_between) b.Output(b.Scale(sum, 2.0F));
+    b.Output(b.Mul(b.LayerNorm(sum, 1e-6F), b.Scale(side(), 1.0F, 1.0F)));
+    b.Output(b.Scale(sum, 4.0F));
+    return Finish(b);
+  };
+  const auto count = [](const StepPlan& p, FusedKind kind) {
+    return std::ranges::count(p.graph.nodes(), ir::Fused(kind), &ir::Node::key);
+  };
+  const StepPlan p = PlanOf(graph(false), r, on);
+  EXPECT_EQ(Patterns(p), (std::vector<std::string_view>{"split_gated_residual", "split_modulate",
+                                                        "split_gated_residual_modulate"}));
+  EXPECT_EQ(count(p, FusedKind::kGatedResidualModulateSplit), 1);
+  EXPECT_EQ(count(p, FusedKind::kGatedResidualSplit), 0);
+  EXPECT_EQ(count(p, FusedKind::kLayerNormModulateSplit), 0);
+  // Opt-in; not implemented; the sum read before its modulation: apart.
+  Policy without = on;
+  without.enabled.erase(std::ranges::find(without.enabled, "split_gated_residual_modulate"));
+  EXPECT_EQ(count(PlanOf(graph(false), r, without), FusedKind::kGatedResidualModulateSplit), 0);
+  EXPECT_EQ(count(PlanOf(graph(false), apart, on), FusedKind::kGatedResidualModulateSplit), 0);
+  const StepPlan between = PlanOf(graph(true), r, on);
+  EXPECT_EQ(count(between, FusedKind::kGatedResidualModulateSplit), 0);
+  EXPECT_EQ(count(between, FusedKind::kGatedResidualSplit), 1);
+}
+
+TEST(PlannerPatternTest, Bf16BranchRecordsTheResidualsBranchInBf16) {
+  static constexpr std::array kBf16 = {Encoding::kBF16};
+  static constexpr std::array kBf16Products = {ex::OperandRule{.operand = 0, .encodings = kBf16},
+                                               ex::OperandRule{.operand = 1, .encodings = kBf16}};
+  static constexpr std::array kFloatProducts = {ex::OperandRule{.operand = 0, .encodings = kBf16},
+                                                ex::OperandRule{.operand = 1, .encodings = kF32}};
+  const auto prim = [](Op op) { return Any(ir::Primitive(op)); };
+  std::vector<ex::Implementation> everything = Everything();
+  for (const Op op : {Op::kRepeat, Op::kConcat, Op::kUnary, Op::kConvert})
+    everything.push_back(Fake(std::format("t.{}", ir::OpKeyName(ir::Primitive(op))), prim(op)));
+  everything.push_back(Fake("t.gated_split", Any(ir::Fused(FusedKind::kGatedResidualSplit))));
+  everything.push_back(Fake("t.mul_mat.float", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                                              .operands = kFloatProducts}));
+  everything.push_back(Fake("t.mul_mat.bf16", ex::Capability{.op = ir::Primitive(Op::kMatMul),
+                                                             .operands = kBf16Products}));
+  const ex::Registry r = Registry(std::move(everything));
+  Policy on{.enabled = {"bf16_branch", "split_gated_residual"}};
+  Canonicalize(on);
+  const auto graph = [](bool read_twice) {
+    ir::Builder b;
+    const TensorId x = b.Scale(b.Input(F32({64, 32})), 2.0F);
+    const TensorId carry = b.Scale(b.Input(F32({64, 32})), 3.0F);
+    const TensorId w = b.Weight(ir::Dense(Encoding::kBF16, ir::ShapeOf({64, 64})), W(0));
+    const TensorId y = b.MatMul(w, x);
+    const TensorId side = b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, 32}));
+    b.Output(b.Add(carry, b.Mul(y, b.Unary(side, ir::UnaryFn::kTanh))));
+    if (read_twice) b.Output(b.Scale(y, 2.0F));
+    return Finish(b);
+  };
+  const auto branch = [](const StepPlan& p) {
+    for (const ir::Node& n : p.graph.nodes())
+      if (n.key == ir::Fused(FusedKind::kGatedResidualSplit))
+        return p.graph.tensor(n.src[1]).format.encoding;
+    return Encoding::kF16;  // none
+  };
+  const StepPlan p = PlanOf(graph(false), r, on);
+  EXPECT_EQ(Patterns(p), (std::vector<std::string_view>{"split_gated_residual", "bf16_branch"}));
+  EXPECT_EQ(branch(p), Encoding::kBF16);
+  // The input converted once, for the product.
+  EXPECT_EQ(std::ranges::count(p.graph.nodes(), ir::Primitive(Op::kConvert), &ir::Node::key), 1);
+  // Opt-in; a product read elsewhere too keeps F32.
+  Policy without{.enabled = {"split_gated_residual"}};
+  Canonicalize(without);
+  EXPECT_EQ(branch(PlanOf(graph(false), r, without)), Encoding::kF32);
+  EXPECT_EQ(branch(PlanOf(graph(true), r, on)), Encoding::kF32);
+}
+
+TEST(PlannerPatternTest, Bf16ResidualKeepsTheSumANextResidualCarriesInBf16) {
+  const auto prim = [](Op op) { return Any(ir::Primitive(op)); };
+  std::vector<ex::Implementation> everything = Everything();
+  for (const Op op : {Op::kLayerNorm, Op::kRepeat, Op::kConcat, Op::kUnary, Op::kConvert})
+    everything.push_back(Fake(std::format("t.{}", ir::OpKeyName(ir::Primitive(op))), prim(op)));
+  everything.push_back(
+      Fake("t.modulate_split", Any(ir::Fused(FusedKind::kLayerNormModulateSplit))));
+  everything.push_back(Fake("t.gated_split", Any(ir::Fused(FusedKind::kGatedResidualSplit))));
+  everything.push_back(
+      Fake("t.gated_modulate_split", Any(ir::Fused(FusedKind::kGatedResidualModulateSplit))));
+  const ex::Registry r = Registry(std::move(everything));
+  Policy on{.enabled = {"bf16_residual", "split_gated_residual", "split_gated_residual_modulate",
+                        "split_modulate"}};
+  Canonicalize(on);
+  const auto graph = [](bool read_elsewhere) {
+    ir::Builder b;
+    const TensorId x = b.Scale(b.Input(F32({64, 32})), 2.0F);
+    const auto side = [&] { return b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, 32})); };
+    const auto gated = [&](TensorId carry) {
+      const TensorId y = b.Scale(b.Input(F32({64, 32})), 3.0F);
+      return b.Add(carry, b.Mul(y, b.Unary(side(), ir::UnaryFn::kTanh)));
+    };
+    const TensorId sum = gated(x);
+    b.Output(b.Mul(b.LayerNorm(sum, 1e-6F), b.Scale(side(), 1.0F, 1.0F)));
+    b.Output(gated(sum));
+    if (read_elsewhere) b.Output(b.Scale(sum, 2.0F));
+    return Finish(b);
+  };
+  const auto sum = [](const StepPlan& p) {
+    for (const ir::Node& n : p.graph.nodes())
+      if (n.key == ir::Fused(FusedKind::kGatedResidualModulateSplit))
+        return p.graph.tensor(n.out[0]).format.encoding;
+    return Encoding::kF16;  // none
+  };
+  EXPECT_EQ(sum(PlanOf(graph(false), r, on)), Encoding::kBF16);
+  // Opt-in; a sum another reader reads stays F32.
+  Policy without = on;
+  without.enabled.erase(std::ranges::find(without.enabled, "bf16_residual"));
+  EXPECT_EQ(sum(PlanOf(graph(false), r, without)), Encoding::kF32);
+  EXPECT_EQ(sum(PlanOf(graph(true), r, on)), Encoding::kF32);
+}
+
 TEST(PlannerPatternTest, TheLongerChainComesFirst) {
   const auto graph = [](std::uint64_t width) {
     ir::Builder b;

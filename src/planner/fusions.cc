@@ -2905,7 +2905,13 @@ std::optional<Match> Bf16InputsMatch(const MatchContext& c, NodeId anchor) {
     const ir::Node& q = g.node(nodes.at(static_cast<std::size_t>(id)));
     ContextOf(r, q);
     ir::Builder& b = r.builder();
-    if (id == 0) r.local().assign(1, b.Convert(r.Map(x), Encoding::kBF16));
+    // Converted once, unless a match of the same round made it in BF16
+    // (qk_attention's output).
+    if (id == 0) {
+      const TensorId mx = r.Map(x);
+      r.local().assign(
+          1, b.tensor(mx).format.encoding == Encoding::kBF16 ? mx : b.Convert(mx, Encoding::kBF16));
+    }
     const std::array<TensorId, 2> src = {r.Map(q.src[0]), r.local()[0]};
     const std::array<ir::TensorDesc, 1> req = {g.tensor(q.out[0])};
     r.Set(q.out[0], b.Emit(q.key, q.params, src, req)[0]);

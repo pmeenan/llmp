@@ -187,13 +187,14 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
       program.pool_bytes() > (item.tiled ? 64 * kMiB : kPool) || program.host_bytes() > kProgram ||
       program.launches() > (item.tiled ? 13U : 8U) || !program.capturable() || program.routed())
     return Error("spatial program ownership, complete ports or paid envelope differ");
-  const std::array<std::string_view, 6> prefix{"ggml.cont", "ggml.mul_mat.cublas", "ggml.cont",
-                                               "ggml.add",  "ggml.conv2d.f32",     "ggml.add"};
+  // The 1x1 and 3x3 convolutions, both the direct one (the span's rank).
+  const std::array<std::string_view, 4> prefix{"ggml.conv2d.f32", "ggml.add", "ggml.conv2d.f32",
+                                               "ggml.add"};
   const std::array<std::string_view, 3> up{"ggml.upsample.nearest", "ggml.conv2d.f32", "ggml.add"};
   const std::array<std::string_view, 2> direct{"ggml.conv2d.f32", "ggml.add"};
-  const std::array<std::string_view, 4> product{"ggml.cont", "ggml.mul_mat.cublas", "ggml.cont",
-                                                "ggml.add"};
-  const std::array<std::string_view, 2> tiled{kg::kConv2dTiledF32, "ggml.add"};
+  // The 1x1 convolution's own implementation; the tiled one adds its bias.
+  const std::array<std::string_view, 1> product{kg::kConv1x1Name};
+  const std::array<std::string_view, 1> tiled{kg::kConv2dTiledF32};
   const std::span<const std::string_view> expected =
       item.tiled       ? (index == 0 ? std::span<const std::string_view>(direct)
                                      : std::span<const std::string_view>(tiled))
@@ -204,7 +205,7 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
   if (item.tiled && index == 1) {
     const bool small = item.shape.width == 7;
     if (program.pool_bytes() != (small ? 403200ULL : 66355200ULL) ||
-        program.launches() != (small ? 5U : 13U))
+        program.launches() != (small ? 4U : 12U))
       return Error("actual tiled workspace/launch partition differs from checked stripes");
   }
   if (!program.bound())
@@ -314,7 +315,9 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
       // Explicit diagnostic arm selection, not a measured production rank.
       item.policy.ranks.push_back(
           {"sm_121", i == 0 ? "ggml.conv2d.f32" : std::string(kg::kConv2dTiledF32), 0});
-    } else if (!pointwise && i == 0) {
+    } else if (i == 0) {
+      // The direct convolution, the baseline the other span's selection
+      // (the 1x1 convolution's own, or the planned default) is held to.
       item.policy.ranks.push_back({"sm_121", "ggml.conv2d.f32", 0});
     }
     auto spec = sp::VaeSpatialSpec(spans[i], tensors);

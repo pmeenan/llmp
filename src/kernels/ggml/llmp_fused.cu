@@ -32,6 +32,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/moe_cutlass.h"
+#include "kernels/ggml/mul_mat_cublas_internal.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
 #include "kernels/ggml/mxfp8_quant.cuh"
 #include "kernels/ggml/qwen38_commit.h"
@@ -2023,12 +2024,19 @@ std::expected<void, KernelFailure> RunGemmBf16(LaunchContext& launch, ggml_tenso
       !clear) {
     return clear;
   }
-  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+  const auto lt = launch.cublas()->workspace();
+  return launch.Run(base::Bytes(0), [node, lt](ggml_backend_cuda_context& context) {
     const ggml_tensor* weights = node->src[0];
     const ggml_tensor* x = node->src[1];
     const int k = static_cast<int>(weights->ne[0]);
     const int n = static_cast<int>(weights->ne[1]);
     const int t = static_cast<int>(x->ne[1]);
+    // llmp.gemm.bf16_lt: the pinned cuBLASLt algorithm where the shape has
+    // one (the image's products).
+    if (GemmBf16Pinned(node) &&
+        internal::TryPinnedBf16Gemm(context, lt.base, lt.size.value(), n, t, k, weights->data,
+                                    x->data, node->data, node->type == GGML_TYPE_BF16))
+      return;
     const float alpha = 1.0f;
     const float beta = 0.0f;
     // ggml_cuda_mul_mat_cublas_impl's call for BF16 weights with F32 output

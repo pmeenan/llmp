@@ -389,6 +389,21 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
   return out;
 }
 
+namespace {
+// The image's planning policy, parsed once: its plans' and its graphs'
+// builder's (the option layout_sinking).
+const auto& ImagePolicy() {
+  static const auto policy = planner::ParsePolicy(spec::kImagePlanningPolicy);
+  return policy;
+}
+// Whether that policy asks the graphs' builder to remove their layout round
+// trips (planner/pattern.h option layout_sinking).
+bool ImageSinksLayouts() {
+  const auto& policy = ImagePolicy();
+  return policy && !planner::Disabled(*policy, "layout_sinking");
+}
+}  // namespace
+
 std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
     const std::shared_ptr<ImageGenerationSource>& source, ImageGenerationRequest&& request_source,
     const ModelSettings& settings, std::shared_ptr<en::ExecutionMetadataAllowance> construction) {
@@ -458,7 +473,8 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
          .reference_buffers = false,
          .input_encoding = i == 0 ? format::Encoding::kI32 : format::Encoding::kF32,
          .exports = mappings[i]->exports,
-         .inputs = inputs[i]});
+         .inputs = inputs[i],
+         .sink_layouts = ImageSinksLayouts()});
     if (!graph) return Error(std::format("image stage {}: {}", i, graph.error()));
     for (const auto& weight : graph->weights()) {
       if (weight.parts.size() != 1 || weight.parts[0].second != format::PartRole::kData)
@@ -602,9 +618,9 @@ EngineImageBuild ComponentImageGenerationBuild(
                                                            settings, construction);
     if (!geometry_parts) return Error(geometry_parts.error());
     EngineImageParts out;
-    auto policy = planner::ParsePolicy(spec::kImagePlanningPolicy);
+    const auto& policy = ImagePolicy();
     if (!policy) return Error(std::format("the image planning policy: {}", policy.error()));
-    out.policy = std::move(*policy);
+    out.policy = *policy;
     out.keep = held;
     out.construction = construction;
     out.architecture = p.pipeline_architecture;

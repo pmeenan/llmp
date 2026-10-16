@@ -336,6 +336,18 @@ std::string_view OperationName(Operation operation) {
       return "spatial_channel_norm";
     case Operation::kRmsNormMulRopeSections:
       return "rms_norm_mul_rope_sections";
+    case Operation::kAttentionMaskPack:
+      return "attention_mask_pack";
+    case Operation::kRopeTable:
+      return "rope_table";
+    case Operation::kQkAttention:
+      return "qk_attention";
+    case Operation::kLayerNormModulateSplit:
+      return "layer_norm_modulate_split";
+    case Operation::kGatedResidualSplit:
+      return "gated_residual_split";
+    case Operation::kGatedResidualModulateSplit:
+      return "gated_residual_modulate_split";
   }
   return "unknown";
 }
@@ -461,6 +473,18 @@ ir::OpKey OpKeyOf(Operation operation) {
       return Fused(FusedKind::kSpatialChannelNorm);
     case Operation::kRmsNormMulRopeSections:
       return Fused(FusedKind::kRmsNormMulRopeSections);
+    case Operation::kAttentionMaskPack:
+      return Fused(FusedKind::kAttentionMaskPack);
+    case Operation::kRopeTable:
+      return Fused(FusedKind::kRopeTable);
+    case Operation::kQkAttention:
+      return Fused(FusedKind::kQkAttention);
+    case Operation::kLayerNormModulateSplit:
+      return Fused(FusedKind::kLayerNormModulateSplit);
+    case Operation::kGatedResidualSplit:
+      return Fused(FusedKind::kGatedResidualSplit);
+    case Operation::kGatedResidualModulateSplit:
+      return Fused(FusedKind::kGatedResidualModulateSplit);
     case Operation::kRmsNormMulRope:
       return Fused(FusedKind::kRmsNormMulRope);
     case Operation::kRmsNormMulAdd:

@@ -751,7 +751,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             add(Operation::kConvert, kBf16Name, i, {node}, 1);
             break;
           case LlmpOp::kGemmBf16:
-            add(Operation::kMatMul, kGemmBf16Name, i, {node}, 1);
+            add(Operation::kMatMul, GemmBf16Pinned(node) ? kGemmBf16LtName : kGemmBf16Name, i,
+                {node}, 1);
             break;
           case LlmpOp::kMoeRoute:
             add(Operation::kMoeRoute, kMoeRouteName, i, {node}, 1);
@@ -800,6 +801,36 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             break;
           case LlmpOp::kNormRopeSections:
             add(Operation::kRmsNormMulRopeSections, kNormRopeSectionsName, i, {node}, 1);
+            break;
+          case LlmpOp::kSwiGluBf16:
+            add(Operation::kSwiGlu, kSwiGluBf16Name, i, {node}, 1);
+            break;
+          case LlmpOp::kAttentionMaskPack:
+            add(Operation::kAttentionMaskPack, kAttentionMaskPackName, i, {node}, 1);
+            break;
+          case LlmpOp::kRopeTable:
+            add(Operation::kRopeTable, kRopeTableName, i, {node}, 1);
+            break;
+          case LlmpOp::kQkAttention:
+            add(Operation::kQkAttention, kQkAttentionName, i, {node}, 1);
+            break;
+          case LlmpOp::kLayerNormModulateSplit:
+            add(Operation::kLayerNormModulateSplit, kLayerNormModulateSplitName, i, {node}, 1);
+            break;
+          case LlmpOp::kGatedResidualSplit:
+            // Joined with the modulation of its sum that follows it (lower.cc).
+            if (i + 1 < graph.size() && Joined(node, graph[i + 1])) {
+              add(Operation::kGatedResidualModulateSplit, kGatedResidualModulateSplitName, i,
+                  {node, graph[i + 1]}, 2);
+            } else {
+              add(Operation::kGatedResidualSplit, kGatedResidualSplitName, i, {node}, 1);
+            }
+            break;
+          case LlmpOp::kDupUpAdd:
+            add(Operation::kDupUpAdd, kDupUpAddName, i, {node}, 1);
+            break;
+          case LlmpOp::kConv1x1:
+            add(Operation::kConv2d, kConv1x1Name, i, {node}, 1);
             break;
           case LlmpOp::kHcMixBf16:
             add(Operation::kHcMix, kHcMixBf16Name, i, {node}, 1);
@@ -963,10 +994,6 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         return Rejected(std::format("{}: no implementation of this operation", Where(graph, i)));
     }
   }
-  for (const ggml_tensor* t : keep) {
-    while (t != nullptr && t->view_src != nullptr) t = t->view_src;
-    if (t != nullptr && !std::ranges::contains(plan.kept, t)) plan.kept.push_back(t);
-  }
   return plan;
 }
 
@@ -985,7 +1012,8 @@ void AssignLanes(GraphPlan& plan, const LaneTags& tags,
   }
   const auto stays = [&](std::string_view implementation) {
     return on_stream ? on_stream(implementation)
-                     : implementation == kMulMatCublas || implementation == kGemmBf16Name;
+                     : implementation == kMulMatCublas || implementation == kGemmBf16Name ||
+                           implementation == kGemmBf16LtName;
   };
   std::unordered_map<const ggml_tensor*, LaneTag> tag;
   tag.reserve(tags.size());

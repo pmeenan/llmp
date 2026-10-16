@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <string>
 #include <utility>
 
@@ -27,6 +28,7 @@
 #include "fwht.cuh"
 #include "gated_delta_net.cuh"
 #include "getrows.cuh"
+#include "kernels/ggml/cublas.h"
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate.h"
@@ -274,215 +276,6 @@ __global__ void LayerNormModulateRowsKernel(const float* __restrict__ x_in,
   }
 }
 
-__global__ void LayerNormModulateWhcTiledKernel(const float* __restrict__ x_in,
-                                                const float* __restrict__ side_whc,
-                                                const float* __restrict__ side_vec0,
-                                                const float* __restrict__ side_vec1,
-                                                int side_split_row, float* __restrict__ dst_rows,
-                                                nv_bfloat16* __restrict__ dst_bf16, int cols,
-                                                int rows, float eps) {
-  __shared__ float s_sum[8][33];
-  __shared__ float s_sum_sq[8][33];
-  __shared__ float s_mean[32];
-  __shared__ float s_inv_std[32];
-  __shared__ float tile[32][33];
-
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  const int row = static_cast<int>(blockIdx.x) * 32 + tx;
-  const bool valid_row = (row < rows);
-
-  const float shift = valid_row ? x_in[row] : 0.0f;
-  float sum_d = 0.0f;
-  float sum_d2 = 0.0f;
-  if (valid_row) {
-    for (int c = ty; c < cols; c += 8) {
-      const float v = x_in[static_cast<std::size_t>(row) + static_cast<std::size_t>(rows) * c];
-      const float d = v - shift;
-      sum_d += d;
-      sum_d2 += d * d;
-    }
-  }
-  s_sum[ty][tx] = sum_d;
-  s_sum_sq[ty][tx] = sum_d2;
-  __syncthreads();
-
-  if (ty == 0) {
-    const float total_d = s_sum[0][tx] + s_sum[1][tx] + s_sum[2][tx] + s_sum[3][tx] + s_sum[4][tx] +
-                          s_sum[5][tx] + s_sum[6][tx] + s_sum[7][tx];
-    const float total_d2 = s_sum_sq[0][tx] + s_sum_sq[1][tx] + s_sum_sq[2][tx] + s_sum_sq[3][tx] +
-                           s_sum_sq[4][tx] + s_sum_sq[5][tx] + s_sum_sq[6][tx] + s_sum_sq[7][tx];
-    const float mean_d = total_d / static_cast<float>(cols);
-    const float var = fmaxf(0.0f, total_d2 / static_cast<float>(cols) - mean_d * mean_d);
-    s_mean[tx] = shift + mean_d;
-    s_inv_std[tx] = rsqrtf(var + eps);
-  }
-  __syncthreads();
-
-  const float mean = s_mean[tx];
-  const float inv_std = s_inv_std[tx];
-  const float* s_vec =
-      (side_vec0 != nullptr) ? (row < side_split_row ? side_vec0 : side_vec1) : nullptr;
-
-  for (int base_c = 0; base_c < cols; base_c += 32) {
-    for (int j = 0; j < 32; j += 8) {
-      const int c = base_c + ty + j;
-      if (valid_row && c < cols) {
-        const std::size_t idx = static_cast<std::size_t>(row) + static_cast<std::size_t>(rows) * c;
-        const float v = x_in[idx];
-        const float s = (s_vec != nullptr) ? __ldg(&s_vec[c]) : side_whc[idx];
-        tile[tx][ty + j] = (v - mean) * inv_std * (s + 1.0f);
-      }
-    }
-    __syncthreads();
-    for (int j = 0; j < 32; j += 8) {
-      const int r = static_cast<int>(blockIdx.x) * 32 + ty + j;
-      const int c = base_c + tx;
-      if (r < rows && c < cols) {
-        const float out_v = tile[ty + j][tx];
-        const std::size_t out_idx =
-            static_cast<std::size_t>(c) + static_cast<std::size_t>(cols) * r;
-        if (dst_rows != nullptr) {
-          dst_rows[out_idx] = out_v;
-        }
-        if (dst_bf16 != nullptr) {
-          dst_bf16[out_idx] = __float2bfloat16(out_v);
-        }
-      }
-    }
-    __syncthreads();
-  }
-}
-
-__global__ void GatedResidualF32Kernel(const float* carry, const float* branch, const float* gate,
-                                       float* dst, std::int64_t n) {
-  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i < n) {
-    dst[i] = carry[i] + branch[i] * tanhf(gate[i]);
-  }
-}
-
-template <bool kBranchIsBf16 = false>
-__global__ void GatedResidualRowsBranchF32Kernel(const float* __restrict__ carry,
-                                                 const void* __restrict__ branch_rows,
-                                                 const float* __restrict__ gate,
-                                                 const float* __restrict__ gate_vec0,
-                                                 const float* __restrict__ gate_vec1,
-                                                 int gate_split_row, float* __restrict__ dst,
-                                                 std::int64_t rows, std::int64_t cols) {
-  __shared__ float tile[32][33];
-  const std::int64_t base_col = static_cast<std::int64_t>(blockIdx.x) * 32;
-  const std::int64_t base_row = static_cast<std::int64_t>(blockIdx.y) * 32;
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  for (int j = 0; j < 32; j += 8) {
-    const std::int64_t r = base_row + ty + j;
-    const std::int64_t c = base_col + tx;
-    if (r < rows && c < cols) {
-      const std::int64_t r_idx = c + cols * r;
-      if constexpr (kBranchIsBf16) {
-        tile[ty + j][tx] = __bfloat162float(static_cast<const nv_bfloat16*>(branch_rows)[r_idx]);
-      } else {
-        tile[ty + j][tx] = static_cast<const float*>(branch_rows)[r_idx];
-      }
-    }
-  }
-  __syncthreads();
-  const std::int64_t r = base_row + tx;
-  const float* g_vec =
-      (gate_vec0 != nullptr) ? (r < gate_split_row ? gate_vec0 : gate_vec1) : nullptr;
-  for (int j = 0; j < 32; j += 8) {
-    const std::int64_t c = base_col + ty + j;
-    if (r < rows && c < cols) {
-      const std::int64_t idx = r + rows * c;
-      const float g = (g_vec != nullptr) ? __ldg(&g_vec[c]) : gate[idx];
-      dst[idx] = carry[idx] + tile[tx][ty + j] * tanhf(g);
-    }
-  }
-}
-
-template <bool kBranchIsBf16 = false, bool kCarryIsBf16 = false>
-__global__ void GatedResidualBothRowsToWhcF32Kernel(const void* __restrict__ carry_rows,
-                                                    const void* __restrict__ branch_rows,
-                                                    const float* __restrict__ gate,
-                                                    const float* __restrict__ gate_vec0,
-                                                    const float* __restrict__ gate_vec1,
-                                                    int gate_split_row, float* __restrict__ dst_whc,
-                                                    std::int64_t rows, std::int64_t cols) {
-  __shared__ float tile[32][33];
-  const std::int64_t base_col = static_cast<std::int64_t>(blockIdx.x) * 32;
-  const std::int64_t base_row = static_cast<std::int64_t>(blockIdx.y) * 32;
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  const std::int64_t c_load = base_col + tx;
-  for (int j = 0; j < 32; j += 8) {
-    const std::int64_t r_load = base_row + ty + j;
-    if (r_load < rows && c_load < cols) {
-      const std::int64_t r_idx = c_load + cols * r_load;
-      const float g = (gate_vec0 != nullptr)
-                          ? __ldg(&(r_load < gate_split_row ? gate_vec0 : gate_vec1)[c_load])
-                          : gate[r_load + rows * c_load];
-      const float b_val =
-          kBranchIsBf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(branch_rows)[r_idx])
-                        : static_cast<const float*>(branch_rows)[r_idx];
-      const float c_val = kCarryIsBf16
-                              ? __bfloat162float(static_cast<const nv_bfloat16*>(carry_rows)[r_idx])
-                              : static_cast<const float*>(carry_rows)[r_idx];
-      tile[ty + j][tx] = c_val + b_val * tanhf(g);
-    }
-  }
-  __syncthreads();
-  const std::int64_t r_store = base_row + tx;
-  for (int j = 0; j < 32; j += 8) {
-    const std::int64_t c_store = base_col + ty + j;
-    if (r_store < rows && c_store < cols) {
-      dst_whc[r_store + rows * c_store] = tile[tx][ty + j];
-    }
-  }
-}
-
-template <bool kBranchIsBf16 = false, bool kOutIsBf16 = false>
-__global__ void GatedResidualWhcCarryToRowsKernel(const float* __restrict__ carry_whc,
-                                                  const void* __restrict__ branch_rows,
-                                                  const float* __restrict__ gate,
-                                                  const float* __restrict__ gate_vec0,
-                                                  const float* __restrict__ gate_vec1,
-                                                  int gate_split_row, void* __restrict__ dst_rows,
-                                                  std::int64_t rows, std::int64_t cols) {
-  __shared__ float tile[32][33];
-  const std::int64_t base_col = static_cast<std::int64_t>(blockIdx.x) * 32;
-  const std::int64_t base_row = static_cast<std::int64_t>(blockIdx.y) * 32;
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  const std::int64_t r_load = base_row + tx;
-  for (int j = 0; j < 32; j += 8) {
-    const std::int64_t c_load = base_col + ty + j;
-    if (r_load < rows && c_load < cols) {
-      tile[tx][ty + j] = carry_whc[r_load + rows * c_load];
-    }
-  }
-  __syncthreads();
-  const std::int64_t c_store = base_col + tx;
-  for (int j = 0; j < 32; j += 8) {
-    const std::int64_t r_store = base_row + ty + j;
-    if (r_store < rows && c_store < cols) {
-      const std::int64_t out_idx = c_store + cols * r_store;
-      const float g = (gate_vec0 != nullptr)
-                          ? __ldg(&(r_store < gate_split_row ? gate_vec0 : gate_vec1)[c_store])
-                          : gate[r_store + rows * c_store];
-      const float b_val =
-          kBranchIsBf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(branch_rows)[out_idx])
-                        : static_cast<const float*>(branch_rows)[out_idx];
-      const float u = tile[ty + j][tx] + b_val * tanhf(g);
-      if constexpr (kOutIsBf16) {
-        static_cast<nv_bfloat16*>(dst_rows)[out_idx] = __float2bfloat16_rn(u);
-      } else {
-        static_cast<float*>(dst_rows)[out_idx] = u;
-      }
-    }
-  }
-}
-
 template <bool kBranchIsBf16 = false, bool kCarryIsBf16 = false, bool kOutRowsIsBf16 = false>
 __global__ void __launch_bounds__(256) GatedResidualLayerNormModulateRows4096Kernel(
     const void* __restrict__ carry_rows, const void* __restrict__ branch_rows,
@@ -605,11 +398,13 @@ __global__ void __launch_bounds__(256) GatedResidualLayerNormModulateRows4096Ker
   }
 }
 
-template <bool kBranchIsBf16 = false>
+// A BF16 residual (kOutIsBf16) only with the row cached (cols <= 8192):
+// the norm reads the unrounded sum.
+template <bool kBranchIsBf16 = false, bool kCarryIsBf16 = false, bool kOutIsBf16 = false>
 __global__ void GatedResidualLayerNormModulateRowsKernel(
-    const float* __restrict__ carry_rows, const void* __restrict__ branch_rows,
+    const void* __restrict__ carry_rows, const void* __restrict__ branch_rows,
     const float* __restrict__ gate_whc, const float* __restrict__ gate_vec0,
-    const float* __restrict__ gate_vec1, int gate_split_row, float* __restrict__ residual_out,
+    const float* __restrict__ gate_vec1, int gate_split_row, void* __restrict__ residual_out,
     const float* __restrict__ side_whc, const float* __restrict__ side_vec0,
     const float* __restrict__ side_vec1, int side_split_row, float* __restrict__ norm_dst_rows,
     nv_bfloat16* __restrict__ dst_bf16, int cols, int rows, float eps) {
@@ -618,7 +413,9 @@ __global__ void GatedResidualLayerNormModulateRowsKernel(
   const int row = blockIdx.x;
   if (row >= rows) return;
   const std::size_t row_off = static_cast<std::size_t>(row) * cols;
-  float* u_row = residual_out + row_off;
+  float* u_row = kOutIsBf16 ? nullptr : static_cast<float*>(residual_out) + row_off;
+  nv_bfloat16* u_row_bf16 =
+      kOutIsBf16 ? static_cast<nv_bfloat16*>(residual_out) + row_off : nullptr;
   float* dst = norm_dst_rows != nullptr ? (norm_dst_rows + row_off) : nullptr;
   nv_bfloat16* dst_b = dst_bf16 != nullptr ? (dst_bf16 + row_off) : nullptr;
   const float* g_vec =
@@ -636,8 +433,15 @@ __global__ void GatedResidualLayerNormModulateRowsKernel(
     const float b_val =
         kBranchIsBf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(branch_rows)[row_off + c])
                       : static_cast<const float*>(branch_rows)[row_off + c];
-    const float u = carry_rows[row_off + c] + b_val * tanhf(g);
-    u_row[c] = u;
+    const float carry =
+        kCarryIsBf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(carry_rows)[row_off + c])
+                     : static_cast<const float*>(carry_rows)[row_off + c];
+    const float u = carry + b_val * tanhf(g);
+    if constexpr (kOutIsBf16) {
+      u_row_bf16[c] = __float2bfloat16(u);
+    } else {
+      u_row[c] = u;
+    }
     if (cache_x) s_x[c] = u;
     sum += u;
   }
@@ -670,7 +474,7 @@ __global__ void RmsNormMulRope3dKernel(const void* __restrict__ x_in, bool x_is_
                                        const std::int32_t* __restrict__ pos2, int d0, int d1,
                                        int d2, float freq_base, bool neox, void* __restrict__ dst,
                                        bool dst_is_f16, int dim, int heads, int rows, int out_rows,
-                                       bool transpose_out) {
+                                       bool transpose_out, bool dst_is_bf16 = false) {
   __shared__ float s_sin[256];
   __shared__ float s_cos[256];
   __shared__ float s_w0[256];
@@ -790,6 +594,10 @@ __global__ void RmsNormMulRope3dKernel(const void* __restrict__ x_in, bool x_is_
         auto* y_h = static_cast<half*>(dst) + out_base;
         y_h[c0] = __float2half_rn(o0);
         y_h[c1] = __float2half_rn(o1);
+      } else if (dst_is_bf16) {
+        auto* y_b = static_cast<nv_bfloat16*>(dst) + out_base;
+        y_b[c0] = __float2bfloat16_rn(o0);
+        y_b[c1] = __float2bfloat16_rn(o1);
       } else {
         auto* y_f = static_cast<float*>(dst) + out_base;
         y_f[c0] = o0;
@@ -799,124 +607,59 @@ __global__ void RmsNormMulRope3dKernel(const void* __restrict__ x_in, bool x_is_
   }
 }
 
-__global__ void RmsNormMulRope3dQKInplaceBf16Kernel(
-    nv_bfloat16* __restrict__ q_inout, const void* __restrict__ q_weight, bool q_weight_is_bf16,
-    float q_eps, nv_bfloat16* __restrict__ k_inout, const void* __restrict__ k_weight,
-    bool k_weight_is_bf16, float k_eps, const std::int32_t* __restrict__ pos0,
-    const std::int32_t* __restrict__ pos1, const std::int32_t* __restrict__ pos2, int d0, int d1,
-    int d2, float freq_base, bool neox, int dim, int heads_q, int heads_k, int rows,
-    float* __restrict__ freqs_ws, bool freqs_precomputed) {
-  __shared__ float s_sin[256];
-  __shared__ float s_cos[256];
-  __shared__ float s_wq0[256];
-  __shared__ float s_wq1[256];
-  __shared__ float s_wk0[256];
-  __shared__ float s_wk1[256];
-  __shared__ int s_c0[256];
-  __shared__ int s_c1[256];
+// llmp.image.gated_residual_split: an element a thread over rows [C, R]:
+// carry + branch · tanh(gate of its row's range).
+template <bool kBranchBf16, bool kCarryBf16>
+__global__ void GatedResidualSplitKernel(const void* __restrict__ carry,
+                                         const void* __restrict__ branch,
+                                         const float* __restrict__ a, const float* __restrict__ b,
+                                         int split, float* __restrict__ out, int cols,
+                                         std::int64_t n) {
+  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  const int c = static_cast<int>(i % cols);
+  const std::int64_t row = i / cols;
+  const float g = row < split ? a[c] : b[c];
+  const float x = kBranchBf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(branch)[i])
+                              : static_cast<const float*>(branch)[i];
+  const float y = kCarryBf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(carry)[i])
+                             : static_cast<const float*>(carry)[i];
+  out[i] = y + x * tanhf(g);
+}
 
-  const int tx = threadIdx.x;
-  const int ty = threadIdx.y;
-  const int tid = ty * 32 + tx;
-  const int block_threads = static_cast<int>(blockDim.y) * 32;
+// llmp.image.rope_table: a row a block, a pair a thread: the pair's cos and
+// sin of its section's angle, at [row][pair] (the layout
+// FlashForwardBf16RowMajorKernel reads its rotation from).
+__global__ void RopeTableKernel(const std::int32_t* __restrict__ pos0,
+                                const std::int32_t* __restrict__ pos1,
+                                const std::int32_t* __restrict__ pos2, int d0, int d1, int d2,
+                                float freq_base, int dim, float* __restrict__ table) {
   const int row = blockIdx.x;
-  if (row >= rows) return;
-
-  const int half_dim = dim / 2;
   const int half0 = d0 / 2;
   const int half1 = d1 / 2;
-  const std::int32_t p0_val = (freqs_ws != nullptr && freqs_precomputed) ? 0 : pos0[row];
-  const std::int32_t p1_val = (freqs_ws != nullptr && freqs_precomputed) ? 0 : pos1[row];
-  const std::int32_t p2_val = (freqs_ws != nullptr && freqs_precomputed) ? 0 : pos2[row];
-
-  for (int pair = tid; pair < half_dim; pair += block_threads) {
+  for (int pair = static_cast<int>(threadIdx.x); pair < dim / 2;
+       pair += static_cast<int>(blockDim.x)) {
     int axis_dim = d0;
     int local_pair = pair;
-    int offset = 0;
-    std::int32_t p = p0_val;
+    std::int32_t p = pos0[row];
     if (pair >= half0 + half1) {
       axis_dim = d2;
       local_pair = pair - (half0 + half1);
-      offset = d0 + d1;
-      p = p2_val;
+      p = pos2[row];
     } else if (pair >= half0) {
       axis_dim = d1;
       local_pair = pair - half0;
-      offset = d0;
-      p = p1_val;
+      p = pos1[row];
     }
+    const float angle =
+        static_cast<float>(p) *
+        powf(freq_base, -static_cast<float>(2 * local_pair) / static_cast<float>(axis_dim));
     float sin_a = 0.0f;
     float cos_a = 1.0f;
-    if (freqs_ws != nullptr && freqs_precomputed) {
-      const float2 cs = *reinterpret_cast<const float2*>(
-          freqs_ws + static_cast<std::size_t>(row) * dim + 2 * pair);
-      cos_a = cs.x;
-      sin_a = cs.y;
-    } else {
-      const float angle =
-          static_cast<float>(p) *
-          powf(freq_base, -static_cast<float>(2 * local_pair) / static_cast<float>(axis_dim));
-      sincosf(angle, &sin_a, &cos_a);
-      if (freqs_ws != nullptr) {
-        *reinterpret_cast<float2*>(freqs_ws + static_cast<std::size_t>(row) * dim + 2 * pair) =
-            make_float2(cos_a, sin_a);
-      }
-    }
-    const int c0 = offset + (neox ? local_pair : 2 * local_pair);
-    const int c1 = c0 + (neox ? axis_dim / 2 : 1);
-    s_sin[pair] = sin_a;
-    s_cos[pair] = cos_a;
-    if (q_inout != nullptr) {
-      s_wq0[pair] = q_weight_is_bf16
-                        ? __bfloat162float(static_cast<const nv_bfloat16*>(q_weight)[c0])
-                        : static_cast<const float*>(q_weight)[c0];
-      s_wq1[pair] = q_weight_is_bf16
-                        ? __bfloat162float(static_cast<const nv_bfloat16*>(q_weight)[c1])
-                        : static_cast<const float*>(q_weight)[c1];
-    }
-    s_wk0[pair] = k_weight_is_bf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(k_weight)[c0])
-                                   : static_cast<const float*>(k_weight)[c0];
-    s_wk1[pair] = k_weight_is_bf16 ? __bfloat162float(static_cast<const nv_bfloat16*>(k_weight)[c1])
-                                   : static_cast<const float*>(k_weight)[c1];
-    s_c0[pair] = c0;
-    s_c1[pair] = c1;
+    sincosf(angle, &sin_a, &cos_a);
+    *reinterpret_cast<float2*>(table + static_cast<std::size_t>(row) * dim + 2 * pair) =
+        make_float2(cos_a, sin_a);
   }
-  __syncthreads();
-
-  auto apply_heads = [&](nv_bfloat16* __restrict__ x_inout, int heads, float eps, const float* s_w0,
-                         const float* s_w1) {
-    for (int head = ty; head < heads; head += static_cast<int>(blockDim.y)) {
-      nv_bfloat16* x_b =
-          x_inout + static_cast<std::size_t>(dim) *
-                        (static_cast<std::size_t>(head) + static_cast<std::size_t>(heads) * row);
-      float sum_sq = 0.0f;
-      for (int c = tx; c < dim; c += 32) {
-        const float v = __bfloat162float(x_b[c]);
-        sum_sq += v * v;
-      }
-      sum_sq = warp_reduce_sum(sum_sq);
-      const float inv_rms = rsqrtf(sum_sq / static_cast<float>(dim) + eps);
-
-      for (int pair = tx; pair < half_dim; pair += 32) {
-        const int c0 = s_c0[pair];
-        const int c1 = s_c1[pair];
-        const float sin_a = s_sin[pair];
-        const float cos_a = s_cos[pair];
-        const float x0 = __bfloat162float(x_b[c0]);
-        const float x1 = __bfloat162float(x_b[c1]);
-        const float a = x0 * inv_rms * s_w0[pair];
-        const float b = x1 * inv_rms * s_w1[pair];
-        const float o0 = a * cos_a - b * sin_a;
-        const float o1 = a * sin_a + b * cos_a;
-        x_b[c0] = __float2bfloat16_rn(o0);
-        x_b[c1] = __float2bfloat16_rn(o1);
-      }
-    }
-  };
-  if (q_inout != nullptr) {
-    apply_heads(q_inout, heads_q, q_eps, s_wq0, s_wq1);
-  }
-  apply_heads(k_inout, heads_k, k_eps, s_wk0, s_wk1);
 }
 
 __global__ void SwiGluToBf16Vec8Kernel(const uint4* __restrict__ gate, const uint4* __restrict__ up,
@@ -1020,6 +763,11 @@ __global__ void AddBiasWhcF32Kernel(float* __restrict__ dst_whc, const float* __
   if (idx >= total) return;
   const int c = static_cast<int>(idx / pixels);
   dst_whc[idx] += __ldg(&bias[c]);
+}
+
+bool Aligned16(std::initializer_list<const void*> pointers) {
+  return std::ranges::all_of(
+      pointers, [](const void* p) { return reinterpret_cast<std::uintptr_t>(p) % 16 == 0; });
 }
 
 }  // namespace
@@ -1163,216 +911,11 @@ std::expected<void, KernelFailure> SetRowsExt(LaunchContext& launch, ggml_tensor
   return RunChecked(launch, node, CheckSetRowsExt(node), &ggml_cuda_op_set_rows);
 }
 
-std::expected<void, KernelFailure> LayerNormModulateF32(
-    LaunchContext& launch, const ggml_tensor* x_in, const ggml_tensor* side_whc,
-    ggml_tensor* dst_rows, float eps, bool x_is_whc, bool write_bf16_workspace, bool skip_f32_dst,
-    SplitBroadcastWhc side_bcast) {
-  const int cols = static_cast<int>(dst_rows->ne[0]);
-  const int rows = static_cast<int>(ggml_nrows(dst_rows));
-  const std::int64_t ne = ggml_nelements(dst_rows);
-  const std::uint64_t bf16_bytes =
-      write_bf16_workspace ? static_cast<std::uint64_t>(ne) * sizeof(nv_bfloat16) : 0U;
-  if (bf16_bytes > launch.workspace().size.value()) {
-    return Rejected("LayerNormModulateF32 BF16 workspace exceeds pool");
-  }
-  const std::size_t smem = (!x_is_whc && cols != 4096 && cols <= 8192)
-                               ? static_cast<std::size_t>(cols) * sizeof(float)
-                               : 0U;
-  return launch.Run(
-      base::Bytes(bf16_bytes),
-      [x_in, side_whc, dst_rows, cols, rows, ne, eps, x_is_whc, write_bf16_workspace, skip_f32_dst,
-       side_bcast, smem](ggml_backend_cuda_context& context) {
-        ggml_cuda_pool_alloc<nv_bfloat16> bf16_alloc(context.pool());
-        nv_bfloat16* dst_bf16 =
-            write_bf16_workspace ? bf16_alloc.alloc(static_cast<std::size_t>(ne)) : nullptr;
-        float* dst_f32 = skip_f32_dst ? nullptr : static_cast<float*>(dst_rows->data);
-        const float* side_ptr =
-            side_whc != nullptr ? static_cast<const float*>(side_whc->data) : nullptr;
-        if (x_is_whc) {
-          const dim3 block(32, 8, 1);
-          const dim3 grid(static_cast<unsigned>((rows + 31) / 32), 1, 1);
-          LayerNormModulateWhcTiledKernel<<<grid, block, 0, context.stream()>>>(
-              static_cast<const float*>(x_in->data), side_ptr, side_bcast.vec0, side_bcast.vec1,
-              side_bcast.split_row, dst_f32, dst_bf16, cols, rows, eps);
-        } else if (cols == 4096) {
-          LayerNormModulateRows4096Kernel<false>
-              <<<static_cast<unsigned>(rows), 256, 0, context.stream()>>>(
-                  x_in->data, side_ptr, side_bcast.vec0, side_bcast.vec1, side_bcast.split_row,
-                  dst_f32, dst_bf16, rows, eps);
-        } else {
-          LayerNormModulateRowsKernel<<<static_cast<unsigned>(rows), 256, smem, context.stream()>>>(
-              static_cast<const float*>(x_in->data), side_ptr, side_bcast.vec0, side_bcast.vec1,
-              side_bcast.split_row, dst_f32, dst_bf16, cols, rows, eps);
-        }
-        CUDA_CHECK(cudaGetLastError());
-      });
-}
-
-std::expected<void, KernelFailure> GatedResidualF32(LaunchContext& launch, const ggml_tensor* carry,
-                                                    const ggml_tensor* branch,
-                                                    const ggml_tensor* gate, ggml_tensor* dst,
-                                                    bool branch_is_rows, bool carry_is_rows,
-                                                    SplitBroadcastWhc gate_bcast,
-                                                    bool branch_is_bf16, bool carry_is_bf16) {
-  const std::int64_t n = ggml_nelements(dst);
-  return launch.Run(
-      base::Bytes(0), [carry, branch, gate, dst, n, branch_is_rows, carry_is_rows, gate_bcast,
-                       branch_is_bf16, carry_is_bf16](ggml_backend_cuda_context& ctx) {
-        const float* gate_ptr = gate != nullptr ? static_cast<const float*>(gate->data) : nullptr;
-        if (branch_is_rows && carry_is_rows) {
-          const std::int64_t rows = dst->ne[0] * dst->ne[1];
-          const std::int64_t cols = dst->ne[2];
-          const dim3 block(32, 8, 1);
-          const dim3 grid(static_cast<unsigned>((cols + 31) / 32),
-                          static_cast<unsigned>((rows + 31) / 32), 1);
-          if (branch_is_bf16 && carry_is_bf16) {
-            GatedResidualBothRowsToWhcF32Kernel<true, true><<<grid, block, 0, ctx.stream()>>>(
-                carry->data, branch->data, gate_ptr, gate_bcast.vec0, gate_bcast.vec1,
-                gate_bcast.split_row, static_cast<float*>(dst->data), rows, cols);
-          } else if (branch_is_bf16) {
-            GatedResidualBothRowsToWhcF32Kernel<true, false><<<grid, block, 0, ctx.stream()>>>(
-                carry->data, branch->data, gate_ptr, gate_bcast.vec0, gate_bcast.vec1,
-                gate_bcast.split_row, static_cast<float*>(dst->data), rows, cols);
-          } else if (carry_is_bf16) {
-            GatedResidualBothRowsToWhcF32Kernel<false, true><<<grid, block, 0, ctx.stream()>>>(
-                carry->data, branch->data, gate_ptr, gate_bcast.vec0, gate_bcast.vec1,
-                gate_bcast.split_row, static_cast<float*>(dst->data), rows, cols);
-          } else {
-            GatedResidualBothRowsToWhcF32Kernel<false, false><<<grid, block, 0, ctx.stream()>>>(
-                carry->data, branch->data, gate_ptr, gate_bcast.vec0, gate_bcast.vec1,
-                gate_bcast.split_row, static_cast<float*>(dst->data), rows, cols);
-          }
-        } else if (branch_is_rows) {
-          const std::int64_t rows = dst->ne[0] * dst->ne[1];
-          const std::int64_t cols = dst->ne[2];
-          const dim3 block(32, 8, 1);
-          const dim3 grid(static_cast<unsigned>((cols + 31) / 32),
-                          static_cast<unsigned>((rows + 31) / 32), 1);
-          if (branch_is_bf16) {
-            GatedResidualRowsBranchF32Kernel<true><<<grid, block, 0, ctx.stream()>>>(
-                static_cast<const float*>(carry->data), branch->data, gate_ptr, gate_bcast.vec0,
-                gate_bcast.vec1, gate_bcast.split_row, static_cast<float*>(dst->data), rows, cols);
-          } else {
-            GatedResidualRowsBranchF32Kernel<false><<<grid, block, 0, ctx.stream()>>>(
-                static_cast<const float*>(carry->data), branch->data, gate_ptr, gate_bcast.vec0,
-                gate_bcast.vec1, gate_bcast.split_row, static_cast<float*>(dst->data), rows, cols);
-          }
-        } else {
-          const unsigned blocks = static_cast<unsigned>((n + 255) / 256);
-          GatedResidualF32Kernel<<<blocks, 256, 0, ctx.stream()>>>(
-              static_cast<const float*>(carry->data), static_cast<const float*>(branch->data),
-              gate_ptr, static_cast<float*>(dst->data), n);
-        }
-        CUDA_CHECK(cudaGetLastError());
-      });
-}
-
-std::expected<void, KernelFailure> GatedResidualLayerNormModulateF32(
-    LaunchContext& launch, const ggml_tensor* carry, const ggml_tensor* branch_rows,
-    const ggml_tensor* gate_whc, ggml_tensor* residual_out, const ggml_tensor* side_whc,
-    ggml_tensor* norm_dst_rows, float eps, bool carry_is_rows, bool write_bf16_workspace,
-    bool skip_f32_dst, SplitBroadcastWhc gate_bcast, SplitBroadcastWhc side_bcast,
-    bool branch_is_bf16, bool carry_is_bf16, bool residual_out_is_bf16) {
-  const int cols = static_cast<int>(norm_dst_rows->ne[0]);
-  const int rows = static_cast<int>(ggml_nrows(norm_dst_rows));
-  const std::int64_t ne = ggml_nelements(norm_dst_rows);
-  const std::uint64_t bf16_bytes =
-      write_bf16_workspace ? static_cast<std::uint64_t>(ne) * sizeof(nv_bfloat16) : 0U;
-  if (bf16_bytes > launch.workspace().size.value()) {
-    return Rejected("GatedResidualLayerNormModulateF32 BF16 workspace exceeds pool");
-  }
-  const std::size_t smem =
-      (cols != 4096 && cols <= 8192) ? static_cast<std::size_t>(cols) * sizeof(float) : 0U;
-  return launch.Run(base::Bytes(bf16_bytes), [=](ggml_backend_cuda_context& ctx) {
-    ggml_cuda_pool_alloc<nv_bfloat16> bf16_alloc(ctx.pool());
-    nv_bfloat16* dst_bf16 =
-        write_bf16_workspace ? bf16_alloc.alloc(static_cast<std::size_t>(ne)) : nullptr;
-    float* dst_f32 = skip_f32_dst ? nullptr : static_cast<float*>(norm_dst_rows->data);
-    const float* gate_ptr =
-        gate_whc != nullptr ? static_cast<const float*>(gate_whc->data) : nullptr;
-    const float* side_ptr =
-        side_whc != nullptr ? static_cast<const float*>(side_whc->data) : nullptr;
-    if (!carry_is_rows) {
-      const dim3 block(32, 8, 1);
-      const dim3 grid(static_cast<unsigned>((cols + 31) / 32),
-                      static_cast<unsigned>((rows + 31) / 32), 1);
-      if (branch_is_bf16 && residual_out_is_bf16 && cols == 4096) {
-        GatedResidualWhcCarryToRowsKernel<true, true><<<grid, block, 0, ctx.stream()>>>(
-            static_cast<const float*>(carry->data), branch_rows->data, gate_ptr, gate_bcast.vec0,
-            gate_bcast.vec1, gate_bcast.split_row, residual_out->data, rows, cols);
-        LayerNormModulateRows4096Kernel<true>
-            <<<static_cast<unsigned>(rows), 256, 0, ctx.stream()>>>(
-                residual_out->data, side_ptr, side_bcast.vec0, side_bcast.vec1,
-                side_bcast.split_row, dst_f32, dst_bf16, rows, eps);
-      } else {
-        if (branch_is_bf16) {
-          GatedResidualWhcCarryToRowsKernel<true, false><<<grid, block, 0, ctx.stream()>>>(
-              static_cast<const float*>(carry->data), branch_rows->data, gate_ptr, gate_bcast.vec0,
-              gate_bcast.vec1, gate_bcast.split_row, residual_out->data, rows, cols);
-        } else {
-          GatedResidualWhcCarryToRowsKernel<false, false><<<grid, block, 0, ctx.stream()>>>(
-              static_cast<const float*>(carry->data), branch_rows->data, gate_ptr, gate_bcast.vec0,
-              gate_bcast.vec1, gate_bcast.split_row, residual_out->data, rows, cols);
-        }
-        if (cols == 4096) {
-          LayerNormModulateRows4096Kernel<false>
-              <<<static_cast<unsigned>(rows), 256, 0, ctx.stream()>>>(
-                  residual_out->data, side_ptr, side_bcast.vec0, side_bcast.vec1,
-                  side_bcast.split_row, dst_f32, dst_bf16, rows, eps);
-        } else {
-          LayerNormModulateRowsKernel<<<static_cast<unsigned>(rows), 256, smem, ctx.stream()>>>(
-              static_cast<const float*>(residual_out->data), side_ptr, side_bcast.vec0,
-              side_bcast.vec1, side_bcast.split_row, dst_f32, dst_bf16, cols, rows, eps);
-        }
-      }
-    } else if (cols == 4096) {
-      if (branch_is_bf16 && carry_is_bf16 && residual_out_is_bf16) {
-        GatedResidualLayerNormModulateRows4096Kernel<true, true, true>
-            <<<static_cast<unsigned>(rows), 256, 0, ctx.stream()>>>(
-                carry->data, branch_rows->data, gate_ptr, gate_bcast.vec0, gate_bcast.vec1,
-                gate_bcast.split_row, residual_out->data, side_ptr, side_bcast.vec0,
-                side_bcast.vec1, side_bcast.split_row, dst_f32, dst_bf16, rows, eps);
-      } else if (branch_is_bf16) {
-        GatedResidualLayerNormModulateRows4096Kernel<true, false, false>
-            <<<static_cast<unsigned>(rows), 256, 0, ctx.stream()>>>(
-                carry->data, branch_rows->data, gate_ptr, gate_bcast.vec0, gate_bcast.vec1,
-                gate_bcast.split_row, residual_out->data, side_ptr, side_bcast.vec0,
-                side_bcast.vec1, side_bcast.split_row, dst_f32, dst_bf16, rows, eps);
-      } else {
-        GatedResidualLayerNormModulateRows4096Kernel<false, false, false>
-            <<<static_cast<unsigned>(rows), 256, 0, ctx.stream()>>>(
-                carry->data, branch_rows->data, gate_ptr, gate_bcast.vec0, gate_bcast.vec1,
-                gate_bcast.split_row, residual_out->data, side_ptr, side_bcast.vec0,
-                side_bcast.vec1, side_bcast.split_row, dst_f32, dst_bf16, rows, eps);
-      }
-    } else {
-      if (branch_is_bf16) {
-        GatedResidualLayerNormModulateRowsKernel<true>
-            <<<static_cast<unsigned>(rows), 256, smem, ctx.stream()>>>(
-                static_cast<const float*>(carry->data), branch_rows->data, gate_ptr,
-                gate_bcast.vec0, gate_bcast.vec1, gate_bcast.split_row,
-                static_cast<float*>(residual_out->data), side_ptr, side_bcast.vec0, side_bcast.vec1,
-                side_bcast.split_row, dst_f32, dst_bf16, cols, rows, eps);
-      } else {
-        GatedResidualLayerNormModulateRowsKernel<false>
-            <<<static_cast<unsigned>(rows), 256, smem, ctx.stream()>>>(
-                static_cast<const float*>(carry->data), branch_rows->data, gate_ptr,
-                gate_bcast.vec0, gate_bcast.vec1, gate_bcast.split_row,
-                static_cast<float*>(residual_out->data), side_ptr, side_bcast.vec0, side_bcast.vec1,
-                side_bcast.split_row, dst_f32, dst_bf16, cols, rows, eps);
-      }
-    }
-    CUDA_CHECK(cudaGetLastError());
-  });
-}
-
-std::expected<void, KernelFailure> RmsNormMulRope3d(LaunchContext& launch, const ggml_tensor* x_in,
-                                                    const ggml_tensor* weight, float eps,
-                                                    std::span<const ggml_tensor* const> pos_views,
-                                                    std::span<const int> axis_dims, float freq_base,
-                                                    bool neox, ggml_tensor* dst, bool transpose_out,
-                                                    bool x_is_bf16, bool dst_is_f16,
-                                                    int padded_rows, bool dst_in_workspace) {
+std::expected<void, KernelFailure> RmsNormMulRope3d(
+    LaunchContext& launch, const ggml_tensor* x_in, const ggml_tensor* weight, float eps,
+    std::span<const ggml_tensor* const> pos_views, std::span<const int> axis_dims, float freq_base,
+    bool neox, ggml_tensor* dst, bool transpose_out, bool x_is_bf16, bool dst_is_f16,
+    int padded_rows, bool dst_in_workspace, bool dst_is_bf16) {
   const int dim = static_cast<int>(x_in->ne[0]);
   const int heads = static_cast<int>(x_in->ne[1]);
   const int rows = static_cast<int>(x_in->ne[2]);
@@ -1400,51 +943,7 @@ std::expected<void, KernelFailure> RmsNormMulRope3d(LaunchContext& launch, const
     const dim3 grid(static_cast<unsigned>(out_rows), 1, 1);
     RmsNormMulRope3dKernel<<<grid, block, 0, ctx.stream()>>>(
         x_in->data, x_is_bf16, weight->data, weight_is_bf16, eps, p0, p1, p2, d0, d1, d2, freq_base,
-        neox, out_ptr, dst_is_f16, dim, heads, rows, out_rows, transpose_out);
-    CUDA_CHECK(cudaGetLastError());
-  });
-}
-
-std::expected<void, KernelFailure> RmsNormMulRope3dQKInplaceBf16(
-    LaunchContext& launch, ggml_tensor* q_inout, const ggml_tensor* q_weight, float q_eps,
-    ggml_tensor* k_inout, const ggml_tensor* k_weight, float k_eps,
-    std::span<const ggml_tensor* const> pos_views, std::span<const int> axis_dims, float freq_base,
-    bool neox, std::uint64_t freqs_ws_offset, bool freqs_precomputed) {
-  const int dim = static_cast<int>(k_inout->ne[0]);
-  const int heads_q = q_inout != nullptr ? static_cast<int>(q_inout->ne[1]) : 0;
-  const int heads_k = static_cast<int>(k_inout->ne[1]);
-  const int rows = static_cast<int>(k_inout->ne[2]);
-  const bool q_weight_is_bf16 = (q_weight != nullptr && q_weight->type == GGML_TYPE_BF16);
-  const bool k_weight_is_bf16 = (k_weight->type == GGML_TYPE_BF16);
-  const auto* p0 = static_cast<const std::int32_t*>(pos_views[0]->data);
-  const auto* p1 = pos_views.size() > 1 ? static_cast<const std::int32_t*>(pos_views[1]->data) : p0;
-  const auto* p2 = pos_views.size() > 2 ? static_cast<const std::int32_t*>(pos_views[2]->data) : p0;
-  const int d0 = axis_dims[0];
-  const int d1 = axis_dims.size() > 1 ? axis_dims[1] : 0;
-  const int d2 = axis_dims.size() > 2 ? axis_dims[2] : 0;
-  const std::uint64_t freqs_bytes =
-      freqs_ws_offset != UINT64_MAX
-          ? ((static_cast<std::uint64_t>(dim) * static_cast<std::uint64_t>(rows) * sizeof(float)) +
-             255) &
-                ~std::uint64_t{255}
-          : 0U;
-  if (freqs_ws_offset != UINT64_MAX &&
-      freqs_ws_offset + freqs_bytes > launch.workspace().size.value()) {
-    return Rejected("RmsNormMulRope3dQKInplaceBf16 freqs workspace exceeds pool");
-  }
-  const std::uint64_t ws_base = launch.workspace().base;
-  return launch.Run(base::Bytes(0), [=](ggml_backend_cuda_context& ctx) {
-    float* freqs_ptr = freqs_ws_offset != UINT64_MAX
-                           ? reinterpret_cast<float*>(ws_base + freqs_ws_offset)
-                           : nullptr;
-    const unsigned warps_y = (q_inout == nullptr && heads_k <= 4) ? 4U : 8U;
-    const dim3 block(32, warps_y, 1);
-    const dim3 grid(static_cast<unsigned>(rows), 1, 1);
-    RmsNormMulRope3dQKInplaceBf16Kernel<<<grid, block, 0, ctx.stream()>>>(
-        q_inout != nullptr ? static_cast<nv_bfloat16*>(q_inout->data) : nullptr,
-        q_weight != nullptr ? q_weight->data : nullptr, q_weight_is_bf16, q_eps,
-        static_cast<nv_bfloat16*>(k_inout->data), k_weight->data, k_weight_is_bf16, k_eps, p0, p1,
-        p2, d0, d1, d2, freq_base, neox, dim, heads_q, heads_k, rows, freqs_ptr, freqs_precomputed);
+        neox, out_ptr, dst_is_f16, dim, heads, rows, out_rows, transpose_out, dst_is_bf16);
     CUDA_CHECK(cudaGetLastError());
   });
 }
@@ -1478,13 +977,199 @@ std::expected<void, KernelFailure> RunSpatialChannelNorm(LaunchContext& launch, 
                                LlmpOpFloat(node, 1), LlmpOpInt(node, 2) != 0);
 }
 
+std::expected<void, KernelFailure> RunLayerNormModulateSplit(LaunchContext& launch,
+                                                             ggml_tensor* node) {
+  if (auto checked = CheckLayerNormModulateSplit(node); !checked) return checked;
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* x = node->src[0];
+    const auto* a = static_cast<const float*>(node->src[1]->data);
+    const auto* b = static_cast<const float*>(node->src[2]->data);
+    const int cols = static_cast<int>(x->ne[0]);
+    const int rows = static_cast<int>(x->ne[1]);
+    const int split = LlmpOpInt(node, 1);
+    const float eps = LlmpOpFloat(node, 0);
+    const bool bf16 = node->type == GGML_TYPE_BF16;
+    float* dst_f32 = bf16 ? nullptr : static_cast<float*>(node->data);
+    auto* dst_bf16 = bf16 ? static_cast<nv_bfloat16*>(node->data) : nullptr;
+    // The 4096-wide kernel's vector loads and stores where aligned.
+    if (cols == 4096 && Aligned16({x->data, a, b}) &&
+        reinterpret_cast<std::uintptr_t>(node->data) % (bf16 ? 8 : 16) == 0) {
+      LayerNormModulateRows4096Kernel<false>
+          <<<static_cast<unsigned>(rows), 256, 0, context.stream()>>>(x->data, nullptr, a, b, split,
+                                                                      dst_f32, dst_bf16, rows, eps);
+    } else {
+      const std::size_t smem = cols <= 8192 ? static_cast<std::size_t>(cols) * sizeof(float) : 0U;
+      LayerNormModulateRowsKernel<<<static_cast<unsigned>(rows), 256, smem, context.stream()>>>(
+          static_cast<const float*>(x->data), nullptr, a, b, split, dst_f32, dst_bf16, cols, rows,
+          eps);
+    }
+    CUDA_CHECK(cudaGetLastError());
+  });
+}
+
+std::expected<void, KernelFailure> RunGatedResidualSplit(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckGatedResidualSplit(node); !checked) return checked;
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* carry = node->src[0];
+    const ggml_tensor* branch = node->src[1];
+    const auto* a = static_cast<const float*>(node->src[2]->data);
+    const auto* b = static_cast<const float*>(node->src[3]->data);
+    const std::int64_t n = ggml_nelements(node);
+    const int cols = static_cast<int>(carry->ne[0]);
+    const int split = LlmpOpInt(node, 1);
+    const auto blocks = static_cast<unsigned>((n + 255) / 256);
+    const auto launch_with = [&]<bool kBranch, bool kCarry>() {
+      GatedResidualSplitKernel<kBranch, kCarry><<<blocks, 256, 0, context.stream()>>>(
+          carry->data, branch->data, a, b, split, static_cast<float*>(node->data), cols, n);
+    };
+    const bool branch_bf16 = branch->type == GGML_TYPE_BF16;
+    const bool carry_bf16 = carry->type == GGML_TYPE_BF16;
+    if (branch_bf16 && carry_bf16) {
+      launch_with.template operator()<true, true>();
+    } else if (branch_bf16) {
+      launch_with.template operator()<true, false>();
+    } else if (carry_bf16) {
+      launch_with.template operator()<false, true>();
+    } else {
+      launch_with.template operator()<false, false>();
+    }
+    CUDA_CHECK(cudaGetLastError());
+  });
+}
+
+std::expected<void, KernelFailure> RunGatedResidualModulateSplit(LaunchContext& launch,
+                                                                 ggml_tensor* residual,
+                                                                 ggml_tensor* modulated) {
+  if (auto checked = CheckGatedResidualModulateSplit(residual, modulated); !checked) return checked;
+  return launch.Run(base::Bytes(0), [residual, modulated](ggml_backend_cuda_context& context) {
+    const ggml_tensor* carry = residual->src[0];
+    const ggml_tensor* branch = residual->src[1];
+    const auto* ga = static_cast<const float*>(residual->src[2]->data);
+    const auto* gb = static_cast<const float*>(residual->src[3]->data);
+    const auto* ma = static_cast<const float*>(modulated->src[1]->data);
+    const auto* mb = static_cast<const float*>(modulated->src[2]->data);
+    const int cols = static_cast<int>(carry->ne[0]);
+    const int rows = static_cast<int>(carry->ne[1]);
+    const int split = LlmpOpInt(residual, 1);
+    const float eps = LlmpOpFloat(modulated, 0);
+    const bool bf16 = modulated->type == GGML_TYPE_BF16;
+    float* dst_f32 = bf16 ? nullptr : static_cast<float*>(modulated->data);
+    auto* dst_bf16 = bf16 ? static_cast<nv_bfloat16*>(modulated->data) : nullptr;
+    const bool branch_bf16 = branch->type == GGML_TYPE_BF16;
+    const bool carry_bf16 = carry->type == GGML_TYPE_BF16;
+    const bool out_bf16 = residual->type == GGML_TYPE_BF16;
+    const auto grid = static_cast<unsigned>(rows);
+    // The 4096-wide kernel's vector loads and stores where aligned.
+    const auto aligned = [](const void* p, bool half) {
+      return reinterpret_cast<std::uintptr_t>(p) % (half ? 8 : 16) == 0;
+    };
+    const bool wide = cols == 4096 && Aligned16({ga, gb, ma, mb}) &&
+                      aligned(carry->data, carry_bf16) && aligned(branch->data, branch_bf16) &&
+                      aligned(residual->data, out_bf16) && aligned(modulated->data, bf16);
+    const std::size_t smem = cols <= 8192 ? static_cast<std::size_t>(cols) * sizeof(float) : 0U;
+    const auto run = [&]<bool kBranch, bool kCarry, bool kOut>() {
+      if (wide) {
+        GatedResidualLayerNormModulateRows4096Kernel<kBranch, kCarry, kOut>
+            <<<grid, 256, 0, context.stream()>>>(carry->data, branch->data, nullptr, ga, gb, split,
+                                                 residual->data, nullptr, ma, mb, split, dst_f32,
+                                                 dst_bf16, rows, eps);
+      } else {
+        GatedResidualLayerNormModulateRowsKernel<kBranch, kCarry, kOut>
+            <<<grid, 256, smem, context.stream()>>>(carry->data, branch->data, nullptr, ga, gb,
+                                                    split, residual->data, nullptr, ma, mb, split,
+                                                    dst_f32, dst_bf16, cols, rows, eps);
+      }
+    };
+    const auto with_out = [&]<bool kBranch, bool kCarry>() {
+      if (out_bf16) {
+        run.template operator()<kBranch, kCarry, true>();
+      } else {
+        run.template operator()<kBranch, kCarry, false>();
+      }
+    };
+    const auto with_carry = [&]<bool kBranch>() {
+      if (carry_bf16) {
+        with_out.template operator()<kBranch, true>();
+      } else {
+        with_out.template operator()<kBranch, false>();
+      }
+    };
+    if (branch_bf16) {
+      with_carry.template operator()<true>();
+    } else {
+      with_carry.template operator()<false>();
+    }
+    CUDA_CHECK(cudaGetLastError());
+  });
+}
+
+std::expected<void, KernelFailure> RunDupUpAdd(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckDupUpAdd(node); !checked) return checked;
+  const ggml_tensor* x = node->src[0];
+  const ggml_tensor* sc = node->src[1];
+  const int ft = LlmpOpInt(node, 0);
+  const auto repeats = static_cast<int>(x->ne[2] * ft * 4 / sc->ne[2]);
+  return DupUpAddF32(launch, x, sc, node, ft, repeats);
+}
+
+std::expected<void, KernelFailure> RunConv1x1(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckConv1x1(node); !checked) return checked;
+  if (launch.cublas() == nullptr) return Rejected("the launch context lends no cuBLAS handle");
+  // cuBLAS writes its workspace while it reads the operands.
+  const auto lt = launch.cublas()->workspace();
+  for (const ggml_tensor* t : {node, node->src[0], node->src[1], node->src[2]})
+    if (auto clear = CheckClearOf(t, lt.base, lt.size.value()); !clear) return clear;
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* w = node->src[0];
+    const ggml_tensor* x = node->src[1];
+    const int pixels = static_cast<int>(x->ne[0] * x->ne[1]);
+    const int in_c = static_cast<int>(x->ne[2]);
+    const int out_c = static_cast<int>(node->ne[2]);
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    // [P, Ci] (pixels contiguous) times [Ci, Co] into [P, Co], column-major.
+    CUBLAS_CHECK(cublasGemmEx(context.cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N, pixels, out_c,
+                              in_c, &alpha, x->data, CUDA_R_32F, pixels, w->data, CUDA_R_32F, in_c,
+                              &beta, node->data, CUDA_R_32F, pixels, CUBLAS_COMPUTE_32F,
+                              CUBLAS_GEMM_DEFAULT));
+    const std::int64_t total = static_cast<std::int64_t>(pixels) * out_c;
+    AddBiasWhcF32Kernel<<<static_cast<unsigned>((total + 255) / 256), 256, 0, context.stream()>>>(
+        static_cast<float*>(node->data), static_cast<const float*>(node->src[2]->data), pixels,
+        out_c);
+    CUDA_CHECK(cudaGetLastError());
+  });
+}
+
+std::expected<void, KernelFailure> RunRopeTable(LaunchContext& launch, ggml_tensor* node) {
+  const auto args = CheckRopeTable(node);
+  if (!args) return std::unexpected(args.error());
+  return launch.Run(base::Bytes(0), [node, a = *args](ggml_backend_cuda_context& ctx) {
+    const auto* p0 = static_cast<const std::int32_t*>(a.positions[0]->data);
+    const auto* p1 = a.sections > 1 ? static_cast<const std::int32_t*>(a.positions[1]->data) : p0;
+    const auto* p2 = a.sections > 2 ? static_cast<const std::int32_t*>(a.positions[2]->data) : p0;
+    const int dim = static_cast<int>(node->ne[1] * 2);
+    RopeTableKernel<<<static_cast<unsigned>(node->ne[2]), 128, 0, ctx.stream()>>>(
+        p0, p1, p2, a.dims[0], a.sections > 1 ? a.dims[1] : 0, a.sections > 2 ? a.dims[2] : 0,
+        a.base, dim, static_cast<float*>(node->data));
+    CUDA_CHECK(cudaGetLastError());
+  });
+}
+
+std::expected<void, KernelFailure> RunSwiGluBf16(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckSwiGluBf16(node); !checked) return checked;
+  return SwiGluToBf16(launch, node->src[0], node->src[1], /*swapped=*/false,
+                      node->src[0]->type == GGML_TYPE_BF16, node->data);
+}
+
 std::expected<void, KernelFailure> RunNormRopeSections(LaunchContext& launch, ggml_tensor* node) {
   const auto args = CheckNormRopeSections(node);
   if (!args) return std::unexpected(args.error());
   return RmsNormMulRope3d(launch, node->src[0], node->src[1], args->eps,
                           std::span(args->positions).first(args->sections),
-                          std::span(args->dims).first(args->sections), args->base, args->neox,
-                          node);
+                          std::span(args->dims).first(args->sections), args->base, args->neox, node,
+                          /*transpose_out=*/false, node->src[0]->type == GGML_TYPE_BF16,
+                          /*dst_is_f16=*/false, /*padded_rows=*/0, /*dst_in_workspace=*/false,
+                          node->type == GGML_TYPE_BF16);
 }
 
 std::expected<void, KernelFailure> DupUpAddF32(LaunchContext& launch, const ggml_tensor* x,
@@ -1499,30 +1184,6 @@ std::expected<void, KernelFailure> DupUpAddF32(LaunchContext& launch, const ggml
     DupUpAddF32Kernel<<<blocks, 256, 0, ctx.stream()>>>(
         static_cast<const float*>(x->data), static_cast<const float*>(sc->data),
         static_cast<float*>(dst->data), out_w, out_h, out_c, ft, repeats);
-    CUDA_CHECK(cudaGetLastError());
-  });
-}
-
-std::expected<void, KernelFailure> SpatialConv1x1F32(LaunchContext& launch,
-                                                     const ggml_tensor* x_whc,
-                                                     const ggml_tensor* weight,
-                                                     const ggml_tensor* bias,
-                                                     ggml_tensor* dst_whc) {
-  const int pixels = static_cast<int>(x_whc->ne[0] * x_whc->ne[1]);
-  const int in_c = static_cast<int>(x_whc->ne[2]);
-  const int out_c = static_cast<int>(dst_whc->ne[2]);
-  const std::int64_t total = static_cast<std::int64_t>(pixels) * out_c;
-  return launch.Run(base::Bytes(0), [=](ggml_backend_cuda_context& ctx) {
-    CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(), ctx.stream()));
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    CUBLAS_CHECK(cublasGemmEx(ctx.cublas_handle(), CUBLAS_OP_N, CUBLAS_OP_N, pixels, out_c, in_c,
-                              &alpha, x_whc->data, CUDA_R_32F, pixels, weight->data, CUDA_R_32F,
-                              in_c, &beta, dst_whc->data, CUDA_R_32F, pixels, CUBLAS_COMPUTE_32F,
-                              CUBLAS_GEMM_DEFAULT));
-    const unsigned blocks = static_cast<unsigned>((total + 255) / 256);
-    AddBiasWhcF32Kernel<<<blocks, 256, 0, ctx.stream()>>>(
-        static_cast<float*>(dst_whc->data), static_cast<const float*>(bias->data), pixels, out_c);
     CUDA_CHECK(cudaGetLastError());
   });
 }

@@ -305,6 +305,781 @@ std::optional<Match> NormRopeSectionsMatch(const MatchContext& c, NodeId anchor)
   return match;
 }
 
+// bf16_glu: a split SwiGLU of two products of BF16 weights (each read by
+// it alone, through reshapes), whose result only products of BF16 weights
+// read (through reshapes): each products' input converted to BF16 once,
+// the gate and up products and the GLU recorded in BF16, its readers'
+// products reading that (BF16 gate and up, SwiGluToBf16, a BF16 down
+// product). The result rounds the gate, the up
+// and the GLU to BF16 where the graph kept F32: a policy enables it (the
+// image's).
+void ContextOf(RewriteContext& c, const ir::Node& node);
+
+struct Bf16GluPlan final : MatchDetail {
+  std::vector<TensorId> inputs;  // the products' distinct F32 inputs
+};
+
+std::optional<Match> Bf16GluMatch(const MatchContext& c, NodeId anchor) {
+  const ir::Node& glu = c.node(anchor);
+  if (glu.key != Prim(Op::kGlu) || c.taken(anchor) || glu.nsrc != 2 || !glu.src[1].valid())
+    return std::nullopt;
+  const auto gp = glu.Params<ir::GluParams>();
+  if (gp.kind != ir::GluKind::kSwiGlu || gp.swapped ||
+      c.tensor(glu.out[0]).format.encoding != format::Encoding::kF32)
+    return std::nullopt;
+  const ir::Graph& g = c.graph();
+  const auto bf16_weight = [&](TensorId w) {
+    const ir::TensorDesc& d = c.tensor(w);
+    return d.format.encoding == format::Encoding::kBF16 &&
+           d.format.layout == format::Layout::kDense && !d.is_view() &&
+           c.producer(w).key == Prim(Op::kWeight);
+  };
+  std::vector<NodeId> nodes{anchor};
+  auto plan = std::make_shared<Bf16GluPlan>();
+  // The gate and up: reshapes back to a product, each read once.
+  for (std::size_t i = 0; i < 2; ++i) {
+    TensorId t = glu.src[i];
+    NodeId reader = anchor;
+    for (;;) {
+      const NodeId at = g.producer(t);
+      const ir::Node& n = c.node(at);
+      if (c.taken(at) || c.OnlyReader(t) != reader) return std::nullopt;
+      nodes.push_back(at);
+      if (n.key == Prim(Op::kReshape)) {
+        reader = at;
+        t = n.src[0];
+        continue;
+      }
+      if (n.key != Prim(Op::kMatMul) || !DefaultProduct(n) || !bf16_weight(n.src[0]) ||
+          c.tensor(n.out[0]).format.encoding != format::Encoding::kF32)
+        return std::nullopt;
+      const TensorId x = n.src[1];
+      const ir::TensorDesc& xd = c.tensor(x);
+      if (xd.format.encoding != format::Encoding::kF32 || !ir::IsContiguous(xd) || xd.ne(1) <= 16)
+        return std::nullopt;
+      if (!std::ranges::contains(plan->inputs, x)) plan->inputs.push_back(x);
+      break;
+    }
+  }
+  // Its readers: reshapes, then products of BF16 weights reading the
+  // result as their input.
+  std::vector<TensorId> frontier{glu.out[0]};
+  std::vector<NodeId> readers;
+  while (!frontier.empty()) {
+    const TensorId t = frontier.back();
+    frontier.pop_back();
+    if (c.external(t) || c.readers(t).empty()) return std::nullopt;
+    for (const NodeId r : c.readers(t)) {
+      const ir::Node& n = c.node(r);
+      if (c.taken(r)) return std::nullopt;
+      if (n.key == Prim(Op::kReshape)) {
+        nodes.push_back(r);
+        frontier.push_back(n.out[0]);
+      } else if (n.key == Prim(Op::kMatMul) && n.src[1] == t && n.src[0] != t &&
+                 DefaultProduct(n) && bf16_weight(n.src[0])) {
+        readers.push_back(r);
+      } else {
+        return std::nullopt;
+      }
+    }
+  }
+  // Implemented as rewritten: the products into BF16 from BF16 inputs, the
+  // GLU, the readers from a BF16 input.
+  const auto bf16 = [](const ir::TensorDesc& d) {
+    ir::TensorDesc r = d;
+    r.format.encoding = format::Encoding::kBF16;
+    r.nb = ir::NaturalStrides(r.format);
+    r.view_of = {};
+    r.view_offset = 0;
+    return r;
+  };
+  for (const NodeId n : nodes) {
+    const ir::Node& q = c.node(n);
+    if (q.key != Prim(Op::kMatMul)) continue;
+    const ir::TensorDesc x = bf16(c.tensor(q.src[1])), out = bf16(c.tensor(q.out[0]));
+    const std::array<const ir::TensorDesc*, 2> src{&c.tensor(q.src[0]), &x};
+    const std::array<const ir::TensorDesc*, 1> o{&out};
+    if (c.view().Candidates(q.key, src, o, q.params).empty()) return std::nullopt;
+    const std::array<const ir::TensorDesc*, 1> xs{&c.tensor(q.src[1])};
+    const std::array<const ir::TensorDesc*, 1> xo{&x};
+    if (c.view().Candidates(Prim(Op::kConvert), xs, xo).empty()) return std::nullopt;
+  }
+  {
+    const ir::TensorDesc gate = bf16(c.tensor(glu.src[0])), up = bf16(c.tensor(glu.src[1])),
+                         out = bf16(c.tensor(glu.out[0]));
+    const std::array<const ir::TensorDesc*, 2> src{&gate, &up};
+    const std::array<const ir::TensorDesc*, 1> o{&out};
+    if (c.view().Candidates(glu.key, src, o, glu.params).empty()) return std::nullopt;
+  }
+  for (const NodeId r : readers) {
+    const ir::Node& q = c.node(r);
+    const ir::TensorDesc x = bf16(c.tensor(q.src[1]));
+    const std::array<const ir::TensorDesc*, 2> src{&c.tensor(q.src[0]), &x};
+    const std::array<const ir::TensorDesc*, 1> o{&c.tensor(q.out[0])};
+    if (c.view().Candidates(q.key, src, o, q.params).empty()) return std::nullopt;
+  }
+  std::ranges::sort(nodes);
+  Match m{
+      .nodes = std::move(nodes), .sources = {}, .params = {}, .implementation = 0, .detail = plan};
+  if (!KeepsOrder(c, m)) return std::nullopt;
+  return m;
+}
+
+// `x` in BF16: converted, unless an earlier match made it so
+// (split_modulate).
+TensorId InBf16(ir::Builder& b, TensorId x) {
+  if (b.tensor(x).format.encoding == format::Encoding::kBF16) return x;
+  return b.Convert(x, format::Encoding::kBF16);
+}
+
+// Each node of a bf16_glu match made again at its own place, in BF16.
+void Bf16GluRewrite(RewriteContext& c, const Match& m, std::size_t index) {
+  const auto& plan = static_cast<const Bf16GluPlan&>(*m.detail);
+  const ir::Graph& g = c.original();
+  const ir::Node& n = g.node(m.nodes.at(index));
+  ContextOf(c, n);
+  ir::Builder& b = c.builder();
+  if (c.local().empty()) c.local().assign(plan.inputs.size(), TensorId{});
+  const auto in_bf16 = [](const ir::TensorDesc& d) {
+    ir::TensorDesc r = d;
+    r.format.encoding = format::Encoding::kBF16;
+    r.nb = ir::NaturalStrides(r.format);
+    r.view_of = {};
+    r.view_offset = 0;
+    return r;
+  };
+  if (n.key == Prim(Op::kReshape)) {
+    c.Set(n.out[0], b.Reshape(c.Map(n.src[0]), g.tensor(n.out[0]).shape()));
+    return;
+  }
+  if (n.key == Prim(Op::kMatMul)) {
+    const auto at =
+        static_cast<std::size_t>(std::ranges::find(plan.inputs, n.src[1]) - plan.inputs.begin());
+    TensorId& x = c.local().at(at);
+    if (!x.valid()) x = InBf16(b, c.Map(n.src[1]));
+    const std::array<TensorId, 2> src{c.Map(n.src[0]), x};
+    const std::array requested{in_bf16(g.tensor(n.out[0]))};
+    c.Set(n.out[0], b.Emit(n.key, n.params, src, requested)[0]);
+    return;
+  }
+  // The GLU.
+  const std::array<TensorId, 2> src{c.Map(n.src[0]), c.Map(n.src[1])};
+  const std::array requested{in_bf16(g.tensor(n.out[0]))};
+  c.Set(n.out[0], b.Emit(n.key, n.params, src, requested)[0]);
+}
+
+// qk_attention: the image's attention over its products (round 1): the
+// query, key and value products of BF16 weights, the query's and key's
+// sectioned norms and rotations (rms_norm_mul_rope_sections), their heads
+// transposed for an attention of head 128 with a mask. Made: the products
+// in BF16 from their input converted once, the key's norm and rotation in
+// BF16, a packed mask and a rotation table shared by every attention of the
+// step that reads them (RewriteContext::shared), and the attention with
+// the query's norm and rotation in it (kQkAttention), recorded in BF16
+// where only products of BF16 weights read it. The result rounds the
+// heads to BF16: a policy enables it (the image's).
+struct QkAttentionPlan final : MatchDetail {
+  std::vector<TensorId> inputs;  // the products' distinct F32 inputs
+  NodeId q_rot{}, k_rot{}, attention{};
+  std::array<NodeId, 3> products{};  // q, k, v
+  bool bf16_out = false;
+};
+
+// `t`, read by `reader` alone, through views that are reshapes of their
+// whole source (a packed view of all of a tensor's bytes) and reshapes,
+// each read by the next alone: the nodes and the tensor they reshape.
+std::optional<std::pair<TensorId, std::vector<NodeId>>> Unreshaped(const MatchContext& c,
+                                                                   TensorId t, NodeId reader) {
+  std::vector<NodeId> nodes;
+  for (;;) {
+    if (c.OnlyReader(t) != reader) return std::nullopt;
+    const NodeId at = c.graph().producer(t);
+    const ir::Node& n = c.node(at);
+    const bool whole_view = n.key == Prim(Op::kView) && ir::IsContiguous(c.tensor(t)) &&
+                            c.tensor(t).view_offset == 0 &&
+                            ir::Elements(c.tensor(t).shape()) ==
+                                ir::Elements(c.tensor(c.graph().root(n.src[0])).shape()) &&
+                            !c.tensor(n.src[0]).is_view();
+    if ((n.key != Prim(Op::kReshape) && !whole_view) || c.taken(at)) return std::pair{t, nodes};
+    nodes.push_back(at);
+    reader = at;
+    t = n.src[0];
+  }
+}
+
+bool OnlyBf16Products(const MatchContext& c, TensorId t);
+
+std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
+  const ir::Node& a = c.node(anchor);
+  if (a.key != Prim(Op::kAttention) || c.taken(anchor) || a.nsrc < 4 || !a.src[3].valid() ||
+      a.source(4).valid())
+    return std::nullopt;
+  const auto ap = a.Params<ir::AttnParams>();
+  if (ap.softcap != 0.0F || ap.max_bias != 0.0F || ap.window != 0 || ap.sinks || ap.sparse_any ||
+      ap.n_kv_max != 0 || ap.accumulate != ir::Accumulate::kDefault)
+    return std::nullopt;
+  const ir::Graph& g = c.graph();
+  auto plan = std::make_shared<QkAttentionPlan>();
+  plan->attention = anchor;
+  std::vector<NodeId> nodes{anchor};
+  const auto bf16_weight = [&](TensorId w) {
+    const ir::TensorDesc& d = c.tensor(w);
+    return d.format.encoding == format::Encoding::kBF16 &&
+           d.format.layout == format::Layout::kDense && !d.is_view() &&
+           c.producer(w).key == Prim(Op::kWeight);
+  };
+  // A product of a BF16 weight whose result only `reader` reads.
+  const auto product = [&](TensorId t, NodeId reader) -> std::optional<NodeId> {
+    const NodeId at = g.producer(t);
+    const ir::Node& n = c.node(at);
+    if (c.taken(at) || c.OnlyReader(t) != reader || n.key != Prim(Op::kMatMul) ||
+        !DefaultProduct(n) || !bf16_weight(n.src[0]) ||
+        c.tensor(n.out[0]).format.encoding != format::Encoding::kF32)
+      return std::nullopt;
+    const ir::TensorDesc& x = c.tensor(n.src[1]);
+    if ((x.format.encoding != format::Encoding::kF32 &&
+         x.format.encoding != format::Encoding::kBF16) ||
+        !ir::IsContiguous(x) || x.ne(1) <= 16)
+      return std::nullopt;
+    if (!std::ranges::contains(plan->inputs, n.src[1])) plan->inputs.push_back(n.src[1]);
+    return at;
+  };
+  // A head operand: Cont (for q and k) of the heads [D, R, H] transposed
+  // from [D, H, R].
+  const auto heads = [&](TensorId t, bool cont) -> std::optional<TensorId> {
+    NodeId reader = anchor;
+    if (cont) {
+      const NodeId at = g.producer(t);
+      if (c.node(at).key != Prim(Op::kCont) || c.taken(at) || c.OnlyReader(t) != reader)
+        return std::nullopt;
+      nodes.push_back(at);
+      reader = at;
+      t = c.node(at).src[0];
+    }
+    const NodeId perm = g.producer(t);
+    const ir::Node& pn = c.node(perm);
+    if (pn.key != Prim(Op::kPermute) || c.taken(perm) || c.OnlyReader(t) != reader ||
+        pn.Params<ir::PermuteParams>().axes != std::array<std::uint8_t, 4>{0, 2, 1, 3})
+      return std::nullopt;
+    nodes.push_back(perm);
+    auto under = Unreshaped(c, pn.src[0], perm);
+    if (!under) return std::nullopt;
+    nodes.insert(nodes.end(), under->second.begin(), under->second.end());
+    return under->first;
+  };
+  // q and k: their sectioned norms and rotations of products' heads.
+  const auto rotated = [&](TensorId t, NodeId& rot, NodeId& prod) -> bool {
+    const auto heads_of = heads(t, true);
+    if (!heads_of) return false;
+    rot = g.producer(*heads_of);
+    const ir::Node& r = c.node(rot);
+    if (r.key != ir::Fused(FusedKind::kRmsNormMulRopeSections) || c.taken(rot) ||
+        c.tensor(*heads_of).ne(0) != 128)
+      return false;
+    const auto rp = r.Params<ir::RopeSectionsParams>();
+    if (rp.mode != ir::RopeMode::kNormal) return false;
+    nodes.push_back(rot);
+    auto under = Unreshaped(c, r.src[0], rot);
+    if (!under) return false;
+    nodes.insert(nodes.end(), under->second.begin(), under->second.end());
+    const auto p = product(under->first, under->second.empty() ? rot : under->second.back());
+    if (!p) return false;
+    prod = *p;
+    nodes.push_back(prod);
+    return true;
+  };
+  if (!rotated(a.src[0], plan->q_rot, plan->products[0]) ||
+      !rotated(a.src[1], plan->k_rot, plan->products[1]))
+    return std::nullopt;
+  {
+    const auto v = heads(a.src[2], false);
+    if (!v) return std::nullopt;
+    const NodeId last = nodes.back();
+    const auto p = product(*v, last);
+    if (!p) return std::nullopt;
+    plan->products[2] = *p;
+    nodes.push_back(*p);
+  }
+  // Its readers: products of BF16 weights through reshapes, each with a
+  // candidate from a BF16 input (then BF16).
+  plan->bf16_out = OnlyBf16Products(c, a.out[0]);
+  std::ranges::sort(nodes);
+  if (std::ranges::adjacent_find(nodes) != nodes.end()) return std::nullopt;
+  // Implemented as made.
+  const auto bf16 = [](ir::TensorDesc d) {
+    d.format.encoding = format::Encoding::kBF16;
+    d.nb = ir::NaturalStrides(d.format);
+    d.view_of = {};
+    d.view_offset = 0;
+    return d;
+  };
+  for (const NodeId n : plan->products) {
+    const ir::Node& q = c.node(n);
+    const ir::TensorDesc x = bf16(c.tensor(q.src[1])), out = bf16(c.tensor(q.out[0]));
+    const std::array<const ir::TensorDesc*, 2> src{&c.tensor(q.src[0]), &x};
+    const std::array<const ir::TensorDesc*, 1> o{&out};
+    if (c.view().Candidates(q.key, src, o, q.params).empty()) return std::nullopt;
+  }
+  const ir::Node& kr = c.node(plan->k_rot);
+  {
+    const ir::TensorDesc x = bf16(c.tensor(kr.src[0])), out = bf16(c.tensor(kr.out[0]));
+    std::vector<const ir::TensorDesc*> src{&x};
+    for (std::size_t i = 1; i < kr.nsrc; ++i) src.push_back(&c.tensor(kr.src[i]));
+    const std::array<const ir::TensorDesc*, 1> o{&out};
+    if (c.view().Candidates(kr.key, src, o, kr.params).empty()) return std::nullopt;
+  }
+  const ir::Node& qr = c.node(plan->q_rot);
+  const auto rope = qr.Params<ir::RopeSectionsParams>();
+  const ir::TensorDesc& mask = c.tensor(a.src[3]);
+  const std::uint64_t rows = c.tensor(a.src[0]).ne(1);
+  if (mask.format.encoding != format::Encoding::kF32 || mask.ne(0) != rows || mask.ne(1) != rows)
+    return std::nullopt;
+  const ir::MaskPackParams mp{.cells = static_cast<std::uint32_t>((rows + 255) / 256 * 256),
+                              .rows = static_cast<std::uint32_t>(rows)};
+  ir::TensorDesc packed;
+  packed.format = ir::Dense(format::Encoding::kF16, ir::ShapeOf({mp.cells, mp.rows}));
+  packed.nb = ir::NaturalStrides(packed.format);
+  ir::TensorDesc table;
+  table.format = ir::Dense(format::Encoding::kF32, ir::ShapeOf({2, 64, rows}));
+  table.nb = ir::NaturalStrides(table.format);
+  {
+    const std::array<const ir::TensorDesc*, 1> src{&mask};
+    const std::array<const ir::TensorDesc*, 1> o{&packed};
+    if (c.view()
+            .Candidates(ir::Fused(FusedKind::kAttentionMaskPack), src, o, ir::ToBytes(mp))
+            .empty())
+      return std::nullopt;
+  }
+  {
+    std::vector<const ir::TensorDesc*> src;
+    for (std::size_t i = 2; i < qr.nsrc; ++i) src.push_back(&c.tensor(qr.src[i]));
+    const std::array<const ir::TensorDesc*, 1> o{&table};
+    if (c.view().Candidates(ir::Fused(FusedKind::kRopeTable), src, o, ir::ToBytes(rope)).empty())
+      return std::nullopt;
+  }
+  {
+    const ir::TensorDesc q = bf16(c.tensor(c.node(plan->products[0]).out[0]));
+    const ir::TensorDesc k = bf16(c.tensor(c.node(plan->products[1]).out[0]));
+    const ir::TensorDesc v = bf16(c.tensor(c.node(plan->products[2]).out[0]));
+    ir::TensorDesc out = c.tensor(c.node(plan->products[0]).out[0]);
+    if (plan->bf16_out) out = bf16(out);
+    const std::array<const ir::TensorDesc*, 6> src{&q,    &c.tensor(qr.src[1]), &k, &v, &packed,
+                                                   &table};
+    const std::array<const ir::TensorDesc*, 1> o{&out};
+    const ir::QkAttentionParams qp{.eps = rope.eps, .scale = ap.scale};
+    if (c.view().Candidates(ir::Fused(FusedKind::kQkAttention), src, o, ir::ToBytes(qp)).empty())
+      return std::nullopt;
+  }
+  Match m{
+      .nodes = std::move(nodes), .sources = {}, .params = {}, .implementation = 0, .detail = plan};
+  if (!KeepsOrder(c, m)) return std::nullopt;
+  return m;
+}
+
+void QkAttentionRewrite(RewriteContext& c, const Match& m, std::size_t index) {
+  const auto& plan = static_cast<const QkAttentionPlan&>(*m.detail);
+  const ir::Graph& g = c.original();
+  const NodeId id = m.nodes.at(index);
+  const ir::Node& n = g.node(id);
+  ir::Builder& b = c.builder();
+  // local: the converted inputs, then the made q, k (rotated), v.
+  const std::size_t inputs = plan.inputs.size();
+  if (c.local().empty()) c.local().assign(inputs + 3, TensorId{});
+  const auto in_bf16 = [](ir::TensorDesc d) {
+    d.format.encoding = format::Encoding::kBF16;
+    d.nb = ir::NaturalStrides(d.format);
+    d.view_of = {};
+    d.view_offset = 0;
+    return d;
+  };
+  for (std::size_t i = 0; i < 3; ++i) {
+    if (id != plan.products[i]) continue;
+    ContextOf(c, n);
+    const auto at =
+        static_cast<std::size_t>(std::ranges::find(plan.inputs, n.src[1]) - plan.inputs.begin());
+    TensorId& x = c.local().at(at);
+    if (!x.valid()) x = InBf16(b, c.Map(n.src[1]));
+    const std::array<TensorId, 2> src{c.Map(n.src[0]), x};
+    const std::array requested{in_bf16(g.tensor(n.out[0]))};
+    c.local().at(inputs + i) = b.Emit(n.key, n.params, src, requested)[0];
+    return;
+  }
+  if (id == plan.k_rot) {
+    // The key's norm and rotation in BF16, over its product's heads.
+    ContextOf(c, n);
+    const TensorId k = c.local().at(inputs + 1);
+    std::vector<TensorId> src{b.Reshape(k, g.tensor(n.src[0]).shape())};
+    for (std::size_t i = 1; i < n.nsrc; ++i) src.push_back(c.Map(n.src[i]));
+    const std::array requested{in_bf16(g.tensor(n.out[0]))};
+    c.local().at(inputs + 1) = b.Emit(n.key, n.params, src, requested)[0];
+    return;
+  }
+  if (id != plan.attention) return;  // an elided intermediate
+  ContextOf(c, n);
+  const ir::Node& qr = g.node(plan.q_rot);
+  const auto rope = qr.Params<ir::RopeSectionsParams>();
+  const auto rows = static_cast<std::uint32_t>(g.tensor(n.src[0]).ne(1));
+  // The packed mask and the table, once for every attention reading them.
+  auto& packed = c.shared()[std::format("qk_attention.mask.{}", n.src[3].v)];
+  if (!packed.valid()) {
+    const ir::MaskPackParams mp{.cells = (rows + 255) / 256 * 256, .rows = rows};
+    const std::array<TensorId, 1> src{c.Map(n.src[3])};
+    packed = b.Fused(FusedKind::kAttentionMaskPack, src, mp)[0];
+  }
+  std::string key = std::format("qk_attention.table.{}.{}.{}", rope.base, rope.sections,
+                                static_cast<int>(rope.mode));
+  std::vector<TensorId> positions;
+  for (std::size_t i = 2; i < qr.nsrc; ++i) {
+    positions.push_back(c.Map(qr.src[i]));
+    key += std::format(".{}:{}", qr.src[i].v, rope.dims.at(i - 2));
+  }
+  auto& table = c.shared()[key];
+  if (!table.valid()) table = b.Fused(FusedKind::kRopeTable, positions, rope)[0];
+  const TensorId q = c.local().at(inputs + 0);
+  const TensorId k = c.local().at(inputs + 1);
+  const TensorId v = c.local().at(inputs + 2);
+  const auto& kd = b.tensor(k);
+  const TensorId k_rows = b.Reshape(k, ir::ShapeOf({kd.ne(0) * kd.ne(1), kd.ne(2)}));
+  const std::array<TensorId, 6> sources{q, c.Map(qr.src[1]), k_rows, v, packed, table};
+  ir::TensorDesc out = g.tensor(g.node(plan.products[0]).out[0]);
+  if (plan.bf16_out) out = in_bf16(out);
+  const std::array<format::Encoding, 1> encodings{out.format.encoding};
+  const ir::QkAttentionParams qp{.eps = rope.eps, .scale = n.Params<ir::AttnParams>().scale};
+  const TensorId made = b.Fused(FusedKind::kQkAttention, sources, qp, encodings)[0];
+  c.Set(n.out[0], b.Reshape(made, g.tensor(n.out[0]).shape()));
+}
+
+// A conditioning split between two row ranges, as the layout pass makes a
+// modulation's conditioning rows (ir/layout.h): over rows [C, R], a [C]
+// vector repeated over the first `split` rows, another over the rest (or
+// one over all). The image's blocks share their conditioning rows: the
+// match takes the rows' nodes only where `reader` alone reads them (else
+// they stay for their other readers, and the fused node reads the vectors).
+struct SplitSide {
+  std::vector<NodeId> nodes;
+  TensorId a{}, b{};
+  std::uint32_t split = 0;
+};
+std::optional<SplitSide> SplitSideOf(const MatchContext& c, TensorId v, NodeId reader) {
+  const ir::Graph& g = c.graph();
+  const ir::TensorDesc& vd = c.tensor(v);
+  if (vd.shape().rank > 2 || c.external(v)) return std::nullopt;
+  const std::uint64_t cols = vd.ne(0), rows = vd.ne(1);
+  // A [C] vector (or [C, 1]) repeated over n rows: its source.
+  const auto repeated = [&](TensorId t, std::uint64_t n) -> std::optional<TensorId> {
+    const ir::Node& r = c.producer(t);
+    if (r.key != Prim(Op::kRepeat) || c.tensor(t).shape().ne != ir::ShapeOf({cols, n}).ne)
+      return std::nullopt;
+    const ir::TensorDesc& src = c.tensor(r.src[0]);
+    if (src.format.encoding != format::Encoding::kF32 || src.shape().ne != ir::ShapeOf({cols}).ne)
+      return std::nullopt;
+    return r.src[0];
+  };
+  const NodeId at = g.producer(v);
+  const ir::Node& n = c.node(at);
+  SplitSide side;
+  std::vector<std::pair<NodeId, TensorId>> chain;  // each node, and its result
+  if (n.key == Prim(Op::kConcat) && n.Params<ir::ConcatParams>().dim == 1) {
+    const std::uint64_t first = c.tensor(n.src[0]).ne(1);
+    const auto a = repeated(n.src[0], first);
+    const auto b = repeated(n.src[1], rows - first);
+    if (!a || !b) return std::nullopt;
+    side = {.nodes = {}, .a = *a, .b = *b, .split = static_cast<std::uint32_t>(first)};
+    chain = {{at, v}, {g.producer(n.src[0]), n.src[0]}, {g.producer(n.src[1]), n.src[1]}};
+  } else if (const auto a = repeated(v, rows)) {
+    side = {.nodes = {}, .a = *a, .b = *a, .split = static_cast<std::uint32_t>(rows)};
+    chain = {{at, v}};
+  } else {
+    return std::nullopt;
+  }
+  // Taken whole where nothing else reads them.
+  bool owned = c.OnlyReader(v) == reader;
+  for (std::size_t k = 1; k < chain.size() && owned; ++k)
+    owned = c.OnlyReader(chain[k].second) == at;
+  for (const auto& [node, result] : chain) owned = owned && !c.taken(node);
+  if (owned)
+    for (const auto& [node, result] : chain) side.nodes.push_back(node);
+  return side;
+}
+
+// Whether only products of BF16 weights read `t` (through reshapes) as
+// their input, each with a candidate from a BF16 input: then it may be
+// recorded in BF16.
+bool OnlyBf16Products(const MatchContext& c, TensorId t) {
+  std::vector<TensorId> frontier{t};
+  while (!frontier.empty()) {
+    const TensorId u = frontier.back();
+    frontier.pop_back();
+    if (c.external(u) || c.readers(u).empty()) return false;
+    for (const NodeId r : c.readers(u)) {
+      const ir::Node& n = c.node(r);
+      if (n.key == Prim(Op::kReshape)) {
+        frontier.push_back(n.out[0]);
+        continue;
+      }
+      const ir::TensorDesc& w = c.tensor(n.src[0]);
+      if (c.taken(r) || n.key != Prim(Op::kMatMul) || n.src[1] != u || n.src[0] == u ||
+          !DefaultProduct(n) || w.format.encoding != format::Encoding::kBF16 || w.is_view() ||
+          c.producer(n.src[0]).key != Prim(Op::kWeight))
+        return false;
+      ir::TensorDesc x = c.tensor(u);
+      x.format.encoding = format::Encoding::kBF16;
+      x.nb = ir::NaturalStrides(x.format);
+      x.view_of = {};
+      x.view_offset = 0;
+      const std::array<const ir::TensorDesc*, 2> src{&w, &x};
+      const std::array<const ir::TensorDesc*, 1> o{&c.tensor(n.out[0])};
+      if (c.view().Candidates(n.key, src, o, n.params).empty()) return false;
+    }
+  }
+  return true;
+}
+
+struct SplitModulatePlan final : MatchDetail {
+  bool bf16 = false;  // recorded in BF16 (OnlyBf16Products)
+};
+
+// split_modulate: a layer norm times one plus a conditioning split between
+// two row ranges (SplitSideOf): fused.layer_norm_modulate_split, in BF16
+// where only products of BF16 weights read it (rounding there: a policy
+// enables it, the image's).
+std::optional<Match> SplitModulateMatch(const MatchContext& c, NodeId anchor) {
+  const ir::Node& m = c.node(anchor);
+  if (m.key != Prim(Op::kMul) || c.taken(anchor)) return std::nullopt;
+  for (std::size_t i = 0; i < 2; ++i) {
+    const TensorId l = m.src[i], sv = m.src[1 - i];
+    const NodeId ln = c.graph().producer(l);
+    const NodeId sc = c.graph().producer(sv);
+    const ir::Node& norm = c.node(ln);
+    const ir::Node& scale = c.node(sc);
+    if (norm.key != Prim(Op::kLayerNorm) || scale.key != Prim(Op::kScale) || c.taken(ln) ||
+        c.taken(sc) || c.OnlyReader(l) != anchor || c.OnlyReader(sv) != anchor)
+      continue;
+    const auto sp = scale.Params<ir::ScaleParams>();
+    if (sp.scale != 1.0F || sp.bias != 1.0F) continue;
+    const ir::TensorDesc& x = c.tensor(norm.src[0]);
+    if (x.format.encoding != format::Encoding::kF32 || !ir::IsContiguous(x) || x.shape().rank > 2 ||
+        c.tensor(m.out[0]).shape().ne != x.shape().ne)
+      continue;
+    const auto side = SplitSideOf(c, scale.src[0], sc);
+    if (!side) continue;
+    std::vector<NodeId> nodes{anchor, ln, sc};
+    nodes.insert(nodes.end(), side->nodes.begin(), side->nodes.end());
+    std::ranges::sort(nodes);
+    const ir::SplitModulateParams params{.eps = norm.Params<ir::NormParams>().eps,
+                                         .split = side->split};
+    Match match = Fusion(std::move(nodes), {norm.src[0], side->a, side->b}, params);
+    auto plan = std::make_shared<SplitModulatePlan>();
+    ir::TensorDesc out = c.tensor(m.out[0]);
+    if (OnlyBf16Products(c, m.out[0])) {
+      plan->bf16 = true;
+      out.format.encoding = format::Encoding::kBF16;
+      out.nb = ir::NaturalStrides(out.format);
+    }
+    std::array<const ir::TensorDesc*, 3> src{&x, &c.tensor(side->a), &c.tensor(side->b)};
+    const std::array<const ir::TensorDesc*, 1> o{&out};
+    if (c.view()
+            .Candidates(ir::Fused(FusedKind::kLayerNormModulateSplit), src, o, match.params)
+            .empty())
+      continue;
+    if (!ElidesF32(c, match) || !KeepsOrder(c, match)) continue;
+    match.detail = std::move(plan);
+    return match;
+  }
+  return std::nullopt;
+}
+
+// The modulation recorded in BF16 where only BF16 products read it.
+void SplitModulateRewrite(RewriteContext& c, const Match& m, std::size_t index) {
+  if (index + 1 != m.nodes.size()) return;
+  const auto& plan = static_cast<const SplitModulatePlan&>(*m.detail);
+  const ir::Node& last = c.original().node(m.nodes.back());
+  ContextOf(c, last);
+  std::vector<TensorId> sources;
+  for (const TensorId s : m.sources) sources.push_back(c.Map(s));
+  const std::array encodings{plan.bf16 ? format::Encoding::kBF16 : format::Encoding::kF32};
+  const ir::Outputs outs =
+      c.builder().FusedBytes(FusedKind::kLayerNormModulateSplit, sources, m.params, encodings);
+  c.Set(last.out[0], outs[0]);
+}
+
+// split_gated_residual: carry + branch · tanh of a conditioning split
+// between two row ranges: fused.gated_residual_split.
+std::optional<Match> SplitGatedResidualMatch(const MatchContext& c, NodeId anchor) {
+  const ir::Node& add = c.node(anchor);
+  if (add.key != Prim(Op::kAdd) || c.taken(anchor)) return std::nullopt;
+  const ir::Graph& g = c.graph();
+  for (std::size_t i = 0; i < 2; ++i) {
+    const TensorId carry = add.src[i], mt = add.src[1 - i];
+    const NodeId mn = g.producer(mt);
+    const ir::Node& mul = c.node(mn);
+    if (mul.key != Prim(Op::kMul) || c.taken(mn) || c.OnlyReader(mt) != anchor) continue;
+    for (std::size_t j = 0; j < 2; ++j) {
+      const TensorId branch = mul.src[j], tt = mul.src[1 - j];
+      const NodeId tn = g.producer(tt);
+      const ir::Node& tanh = c.node(tn);
+      if (tanh.key != Prim(Op::kUnary) || c.taken(tn) || c.OnlyReader(tt) != mn ||
+          tanh.Params<ir::UnaryParams>().fn != ir::UnaryFn::kTanh)
+        continue;
+      const ir::TensorDesc& cd = c.tensor(carry);
+      const ir::TensorDesc& bd = c.tensor(branch);
+      if (cd.format.encoding != format::Encoding::kF32 || cd.shape().rank > 2 ||
+          !ir::IsContiguous(cd) || !ir::IsContiguous(bd) || bd.shape().ne != cd.shape().ne ||
+          c.tensor(add.out[0]).shape().ne != cd.shape().ne)
+        continue;
+      const auto side = SplitSideOf(c, tanh.src[0], tn);
+      if (!side) continue;
+      std::vector<NodeId> nodes{anchor, mn, tn};
+      nodes.insert(nodes.end(), side->nodes.begin(), side->nodes.end());
+      std::ranges::sort(nodes);
+      Match match = Fusion(std::move(nodes), {carry, branch, side->a, side->b},
+                           ir::SplitModulateParams{.eps = 0.0F, .split = side->split});
+      if (!Implemented(c, ir::Fused(FusedKind::kGatedResidualSplit), match.sources, add.outputs(),
+                       match.params) ||
+          !ElidesF32(c, match) || !KeepsOrder(c, match))
+        continue;
+      return match;
+    }
+  }
+  return std::nullopt;
+}
+
+// split_gated_residual_modulate (round 1): a split gated residual and the
+// split modulation of its sum, one split: fused.gated_residual_modulate_split,
+// the sum still an output (the next residual's carry reads it). With the
+// option bf16_residual (a policy's, the image's: rounding there), the sum
+// in BF16 where only later residuals read it, as their carry.
+struct SplitResidualPlan final : MatchDetail {
+  bool bf16_sum = false;
+};
+std::optional<Match> SplitGatedResidualModulateMatch(const MatchContext& c, NodeId anchor) {
+  const ir::Node& m = c.node(anchor);
+  if (m.key != ir::Fused(FusedKind::kLayerNormModulateSplit) || c.taken(anchor))
+    return std::nullopt;
+  const NodeId at = c.graph().producer(m.src[0]);
+  const ir::Node& g = c.node(at);
+  if (g.key != ir::Fused(FusedKind::kGatedResidualSplit) || c.taken(at) ||
+      g.Params<ir::SplitModulateParams>().split != m.Params<ir::SplitModulateParams>().split)
+    return std::nullopt;
+  // Made at the modulation's place: nothing between reads the sum.
+  for (const NodeId r : c.readers(g.out[0]))
+    if (r.v < anchor.v) return std::nullopt;
+  Match match{.nodes = {at, anchor},
+              .sources = {g.src[0], g.src[1], g.src[2], g.src[3], m.src[1], m.src[2]},
+              .params = m.params};
+  const std::array outputs{g.out[0], m.out[0]};
+  if (!Implemented(c, ir::Fused(FusedKind::kGatedResidualModulateSplit), match.sources, outputs,
+                   match.params) ||
+      !KeepsOrder(c, match))
+    return std::nullopt;
+  auto plan = std::make_shared<SplitResidualPlan>();
+  if (!Disabled(c.view().policy(), "bf16_residual") && !c.external(g.out[0])) {
+    ir::TensorDesc sum = c.tensor(g.out[0]);
+    sum.format.encoding = format::Encoding::kBF16;
+    sum.nb = ir::NaturalStrides(sum.format);
+    sum.view_of = {};
+    sum.view_offset = 0;
+    bool readers = true;
+    for (const NodeId r : c.readers(g.out[0])) {
+      if (r == anchor) continue;
+      const ir::Node& n = c.node(r);
+      if (n.key != ir::Fused(FusedKind::kGatedResidualSplit) || n.src[0] != g.out[0] ||
+          n.src[1] == g.out[0]) {
+        readers = false;
+        break;
+      }
+      std::vector<const ir::TensorDesc*> src{&sum};
+      for (std::size_t i = 1; i < n.nsrc; ++i) src.push_back(&c.tensor(n.src[i]));
+      const std::array<const ir::TensorDesc*, 1> o{&c.tensor(n.out[0])};
+      readers = !c.view().Candidates(n.key, src, o, n.params).empty();
+      if (!readers) break;
+    }
+    if (readers) {
+      std::vector<const ir::TensorDesc*> src;
+      for (const TensorId s : match.sources) src.push_back(&c.tensor(s));
+      const std::array<const ir::TensorDesc*, 2> o{&sum, &c.tensor(m.out[0])};
+      plan->bf16_sum =
+          !c.view()
+               .Candidates(ir::Fused(FusedKind::kGatedResidualModulateSplit), src, o, match.params)
+               .empty();
+    }
+  }
+  match.detail = std::move(plan);
+  return match;
+}
+
+// Both outputs at the modulation's place, the modulation in its encoding.
+void SplitGatedResidualModulateRewrite(RewriteContext& c, const Match& m, std::size_t index) {
+  if (index + 1 != m.nodes.size()) return;
+  const ir::Graph& g = c.original();
+  const ir::Node& gated = g.node(m.nodes.front());
+  const ir::Node& last = g.node(m.nodes.back());
+  ContextOf(c, last);
+  std::vector<TensorId> sources;
+  for (const TensorId s : m.sources) sources.push_back(c.Map(s));
+  const auto& plan = static_cast<const SplitResidualPlan&>(*m.detail);
+  const std::array encodings{plan.bf16_sum ? format::Encoding::kBF16 : format::Encoding::kF32,
+                             g.tensor(last.out[0]).format.encoding};
+  const ir::Outputs outs =
+      c.builder().FusedBytes(FusedKind::kGatedResidualModulateSplit, sources, m.params, encodings);
+  c.Set(gated.out[0], outs[0]);
+  c.Set(last.out[0], outs[1]);
+}
+
+// bf16_branch (round 1): the product of a BF16 weight whose result only a
+// split gated residual reads, as its branch, records it in BF16 from a BF16
+// input (rounding there: a policy enables it, the image's).
+std::optional<Match> Bf16BranchMatch(const MatchContext& c, NodeId anchor) {
+  const ir::Node& p = c.node(anchor);
+  if (p.key != Prim(Op::kMatMul) || c.taken(anchor) || !DefaultProduct(p)) return std::nullopt;
+  const TensorId branch = p.out[0];
+  const auto reader = c.OnlyReader(branch);
+  if (!reader || c.node(*reader).key != ir::Fused(FusedKind::kGatedResidualSplit) ||
+      c.node(*reader).src[1] != branch ||
+      c.tensor(branch).format.encoding != format::Encoding::kF32)
+    return std::nullopt;
+  const ir::TensorDesc& w = c.tensor(p.src[0]);
+  const ir::TensorDesc& x = c.tensor(p.src[1]);
+  if (w.format.encoding != format::Encoding::kBF16 || w.format.layout != format::Layout::kDense ||
+      w.is_view() || c.producer(p.src[0]).key != Prim(Op::kWeight) || !ir::IsContiguous(x) ||
+      (x.format.encoding != format::Encoding::kF32 && x.format.encoding != format::Encoding::kBF16))
+    return std::nullopt;
+  const auto in_bf16 = [](ir::TensorDesc d) {
+    d.format.encoding = format::Encoding::kBF16;
+    d.nb = ir::NaturalStrides(d.format);
+    d.view_of = {};
+    d.view_offset = 0;
+    return d;
+  };
+  const ir::TensorDesc xb = in_bf16(x), out = in_bf16(c.tensor(branch));
+  const std::array<const ir::TensorDesc*, 2> src{&w, &xb};
+  const std::array<const ir::TensorDesc*, 1> o{&out};
+  if (c.view().Candidates(p.key, src, o, p.params).empty()) return std::nullopt;
+  if (x.format.encoding != format::Encoding::kBF16) {
+    const std::array<const ir::TensorDesc*, 1> xs{&x};
+    const std::array<const ir::TensorDesc*, 1> xo{&xb};
+    if (c.view().Candidates(Prim(Op::kConvert), xs, xo).empty()) return std::nullopt;
+  }
+  // The residual keeps its own match (round 1 may join it with its
+  // modulation): only the product is taken.
+  return Match{.nodes = {anchor}};
+}
+
+// The product again, from its input in BF16, into BF16.
+void Bf16BranchRewrite(RewriteContext& c, const Match& m, std::size_t) {
+  const ir::Node& p = c.original().node(m.nodes.front());
+  ContextOf(c, p);
+  ir::Builder& b = c.builder();
+  const std::array<TensorId, 2> src{c.Map(p.src[0]), InBf16(b, c.Map(p.src[1]))};
+  ir::TensorDesc out = c.original().tensor(p.out[0]);
+  out.format.encoding = format::Encoding::kBF16;
+  out.nb = ir::NaturalStrides(out.format);
+  out.view_of = {};
+  out.view_offset = 0;
+  const std::array requested{out};
+  c.Set(p.out[0], b.Emit(p.key, p.params, src, requested)[0]);
+}
+
 // The spatial channel norm as the spatial components emit it (components/
 // image_blocks.cc SpatialNorm): x [W, H, C, N] to channel rows, L2-normed
 // over C, scaled, times gamma [C], with or without SiLU, and back, each
@@ -1335,6 +2110,7 @@ constexpr std::array kReduceAnchors = {Op::kExpertReduce};
 constexpr std::array kFoldReaderAnchors = {Op::kPrepare, Op::kConvert, Op::kMatMul};
 constexpr std::array kQuantProductAnchors = {Op::kMatMul, Op::kMatMulId, Op::kFused};
 constexpr std::array kAttentionAnchors = {Op::kAttention};
+constexpr std::array kFusedAnchors = {Op::kFused};
 constexpr std::array kProductAnchors = {Op::kMatMul};
 constexpr std::array kRopeAnchors = {Op::kRope};
 constexpr std::array kPoolAnchors = {Op::kPool};
@@ -1526,6 +2302,30 @@ constexpr std::array kPatterns = {
             .rewrite = &fusions::Rewrite,
             .opt_in = true,
             .round = 1},
+    Pattern{.name = "qk_attention",
+            .result = ir::Fused(FusedKind::kQkAttention),
+            .anchors = kAttentionAnchors,
+            .match = &QkAttentionMatch,
+            .own_checks = true,
+            .rewrite = &QkAttentionRewrite,
+            .opt_in = true,
+            .round = 1},
+    Pattern{.name = "split_gated_residual_modulate",
+            .result = ir::Fused(FusedKind::kGatedResidualModulateSplit),
+            .anchors = kFusedAnchors,
+            .match = &SplitGatedResidualModulateMatch,
+            .own_checks = true,
+            .rewrite = &SplitGatedResidualModulateRewrite,
+            .opt_in = true,
+            .round = 1},
+    Pattern{.name = "bf16_branch",
+            .result = ir::Primitive(Op::kMatMul),
+            .anchors = kProductAnchors,
+            .match = &Bf16BranchMatch,
+            .own_checks = true,
+            .rewrite = &Bf16BranchRewrite,
+            .opt_in = true,
+            .round = 1},
     Pattern{.name = "bf16_inputs",
             .result = ir::Primitive(Op::kConvert),
             .anchors = kProductAnchors,
@@ -1579,6 +2379,28 @@ constexpr std::array kPatterns = {
             .anchors = kNormAnchors,
             .match = &NormMulAddMatch,
             .rewrite = &Fused<FusedKind::kRmsNormMulAdd>},
+    // Before bf16_glu, which reads a BF16 modulation as it is.
+    Pattern{.name = "split_modulate",
+            .result = ir::Fused(FusedKind::kLayerNormModulateSplit),
+            .anchors = kMulAnchors,
+            .match = &SplitModulateMatch,
+            .own_checks = true,
+            .rewrite = &SplitModulateRewrite,
+            .opt_in = true},
+    Pattern{.name = "split_gated_residual",
+            .result = ir::Fused(FusedKind::kGatedResidualSplit),
+            .anchors = kAddAnchors,
+            .match = &SplitGatedResidualMatch,
+            .own_checks = true,
+            .rewrite = &Fused<FusedKind::kGatedResidualSplit>,
+            .opt_in = true},
+    Pattern{.name = "bf16_glu",
+            .result = ir::Primitive(Op::kGlu),
+            .anchors = kGluAnchors,
+            .match = &Bf16GluMatch,
+            .own_checks = true,
+            .rewrite = &Bf16GluRewrite,
+            .opt_in = true},
     Pattern{.name = "float_mul_mat_glu",
             .result = ir::Fused(FusedKind::kMatMulGlu),
             .anchors = kProductAnchors,
@@ -1642,6 +2464,12 @@ constexpr std::array kPatterns = {
     // (each owner's row what it is alone: today's Qwen3.8 waves;
     // StepPlan::owner_row_invariant). Opt-in.
     Pattern{.name = "owner_row_invariant", .kind = PatternKind::kOption, .opt_in = true},
+    // The step's builder removes its layout round trips (ir/layout.h,
+    // components/spatial.h sink_layouts). Opt-in.
+    Pattern{.name = "layout_sinking", .kind = PatternKind::kOption, .opt_in = true},
+    // split_gated_residual_modulate records a residual's sum in BF16 where
+    // only later residuals read it. Opt-in.
+    Pattern{.name = "bf16_residual", .kind = PatternKind::kOption, .opt_in = true},
 };
 
 bool Anchored(const Pattern& p, Op op) { return std::ranges::contains(p.anchors, op); }

@@ -1029,9 +1029,18 @@ pixels `f4006496…`) reads −0.01% in both blocks (2a 36.292 s, `b29380a7`
 36.296 s): no measurable change. Peak memory is unchanged (+1.59 GiB over
 legacy, +1.63 GiB before).
 
+Every run-time matcher is now a planner pattern and `BoundGraph::Run`'s
+run-time fusion is deleted (sub-task 3,
+[m36-runtime-fusion](../m36-runtime-fusion/README.md#the-run-time-path-deleted-sub-task-3)).
+The image's pixels become `9d0b448f…` (the BF16 branch and residual rows
+the shipping path already used, now planned): PSNR 41.26 dB, luma SSIM
+0.99419 against `9de442f1…`, passing. A two-block screen against the
+frozen legacy arm reads +1.42% (33.674 s against 33.203 s; +1.50% and
++1.34% by block), peak memory +0.81 GiB.
+
 Status: NOT PASSED; no full gate was run. Raw records stay outside Git on
-`spark`: `~/scratch/m36-image-screen0{1,2,3,4,5,6,7,8}`, `~/scratch/m36-image-imgab02`, `~/scratch/m36-image-2aab01`,
-`~/scratch/m36-image-quality01`, `~/scratch/m36-image-plan/q2a`,
+`spark`: `~/scratch/m36-image-screen0{1,2,3,4,5,6,7,8,9}`, `~/scratch/m36-image-imgab02`, `~/scratch/m36-image-2aab01`,
+`~/scratch/m36-image-quality01`, `~/scratch/m36-image-plan/q2a`, `~/scratch/m36-image-plan/q4`,
 `~/scratch/m36-image-nsys01` and `~/scratch/m36-image-nofuse01`.
 
 ## Provenance

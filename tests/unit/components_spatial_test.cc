@@ -83,9 +83,11 @@ TEST(SpatialComponentsTest, PointwiseProductsPreserveWHCNBiasBatchAndOwnerIsolat
       return std::ranges::count_if(graph->graph().nodes(),
                                    [&](const auto& n) { return n.key == ir::Primitive(op); });
     };
-    EXPECT_EQ(count(ir::Op::kMatMul), encoding == format::Encoding::kF32 ? 2 : 0);
-    EXPECT_EQ(count(ir::Op::kConv2d), encoding == format::Encoding::kF32 ? 0 : 2);
-    EXPECT_EQ(count(ir::Op::kCont), encoding == format::Encoding::kF32 ? 4 : 0);
+    // A 1x1 convolution in every encoding (its implementations read the
+    // pixel-contiguous layout; no layout copies).
+    EXPECT_EQ(count(ir::Op::kMatMul), 0);
+    EXPECT_EQ(count(ir::Op::kConv2d), 2);
+    EXPECT_EQ(count(ir::Op::kCont), 0);
     auto executor = ref::Executor::Create(graph->graph());
     ASSERT_TRUE(executor) << Failed(executor, &ref::ExecFailure::detail).value_or("");
     const std::vector<float> kernel{0.5F, -1.F, 0.25F, 2.F, -0.5F, 0.75F};

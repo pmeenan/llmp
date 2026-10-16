@@ -175,17 +175,20 @@ en::Status CheckProgram(const SpanCase& item, const kn::StepProgram& program, st
   if (!program.bound()) return {};
   const auto& bound = *program.bound();
   if (bound.size() > 1024) return Error("bounded selected implementation inventory");
-  std::size_t conv = 0, norm = 0, softmax = 0, products = 0;
+  std::size_t conv = 0, pointwise = 0, norm = 0, softmax = 0, products = 0;
   for (std::size_t i = 0; i < bound.size(); ++i) {
     conv += bound.at(i).name == "ggml.conv2d.f32";
+    // Every 1x1 convolution is llmp.image.conv1x1's.
+    pointwise += bound.at(i).name == "llmp.image.conv1x1";
     products += bound.at(i).name.starts_with("ggml.mul_mat.");
     // Every channel norm is the planner's spatial_channel_norm.
     norm += bound.at(i).name == "llmp.image.spatial_channel_norm";
     if (bound.at(i).name == "ggml.l2_norm") return Error("a primitive channel norm remains");
     softmax += bound.at(i).name == "ggml.soft_max";
   }
-  if (products != (index == 0 ? 1U : 8U) || conv != (index == 0 ? 1U : 40U) ||
-      norm != (index == 0 ? 0U : 36U) || softmax != (index == 0 ? 0U : 1U))
+  if (products != (index == 0 ? 0U : 2U) || conv != (index == 0 ? 1U : 40U) ||
+      pointwise != (index == 0 ? 1U : 6U) || norm != (index == 0 ? 0U : 36U) ||
+      softmax != (index == 0 ? 0U : 1U))
     return Error("complete actual decoder primitive selection");
 
   return {};

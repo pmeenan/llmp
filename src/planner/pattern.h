@@ -34,16 +34,37 @@
 //   spatial_channel_norm fused.spatial_channel_norm: a spatial tensor's
 //                      channels L2-normed through channel rows, scaled, times
 //                      a weight, SiLU or not, and back (the spatial
-//                      components' channel norm; BoundGraph::Run's run-time
-//                      spatial norm until M3.6's image patterns)
+//                      components' channel norm)
+//   split_modulate     opt-in: fused.layer_norm_modulate_split: a layer norm
+//                      times one plus conditioning rows that repeat one
+//                      vector over the first rows and another over the rest
+//                      (the image's text and latent rows), in BF16 where
+//                      only products of BF16 weights read it
+//   split_gated_residual opt-in: fused.gated_residual_split: carry plus a
+//                      branch times tanh of such conditioning rows
+//   bf16_glu           opt-in: an MLP's gate and up products of BF16 weights
+//                      into BF16 from their input converted once, the
+//                      SwiGLU into BF16, the down product from it
+//   (round 1, over round 0's results:)
+//   split_gated_residual_modulate opt-in: a split residual and the split
+//                      modulation of its sum, one pass
+//                      (fused.gated_residual_modulate_split); the option
+//                      bf16_residual keeps a sum only later residuals carry
+//                      in BF16
+//   qk_attention       opt-in: the image's attention: BF16 Q/K/V products,
+//                      the key's sectioned norm and rotation in BF16, a
+//                      packed mask and a rotation table each made once a
+//                      step, and fused.qk_attention (the query's norm and
+//                      rotation inside the attention)
+//   bf16_branch        opt-in: a product of a BF16 weight only a split
+//                      residual adds, into BF16
 //   rms_norm_mul_rope  fused.rms_norm_mul_rope: an RMS norm, its weight and
 //                      the rotation of the result (fuse_norm_rope; QK norms)
 //   rms_norm_mul_rope_sections fused.rms_norm_mul_rope_sections: an RMS
 //                      norm, its weight (with its widening) and one to three
 //                      rotations of consecutive sections covering the head,
 //                      each by its own positions (with their packed copies):
-//                      the multi-axis rotation (BoundGraph::Run's run-time
-//                      norm_rope until M3.6's image patterns). Opt-in: a
+//                      the multi-axis rotation. Opt-in: a
 //                      model whose policy disables rms_norm_mul_rope keeps
 //                      its primitive rotations; the image enables it
 //                      (spec/image_spatial.h kImagePlanningPolicy)
@@ -91,6 +112,11 @@
 //                        most four owners)
 //   rounded_indexer      opt-in bounded CSA indexer recipe; the component
 //                        source requires an owned backend and explicit domain
+//   layout_sinking       opt-in: the step's builder removes its layout round
+//                        trips before planning (ir/layout.h SinkLayouts,
+//                        components/spatial.h sink_layouts): values followed
+//                        as views of their storage, materialized only where
+//                        a reader needs their layout
 //   narrow_final         a step with a head narrows its last row-mixing
 //                        component to the output rows (components/step.h
 //                        BuildStep; the runners' frontier_head); disabled,
@@ -104,9 +130,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -205,12 +233,16 @@ class RewriteContext {
   // A match's own tensors, kept across its nodes' rewrites.
   std::vector<ir::TensorId>& local() { return local_; }
   void Reset() { local_.clear(); }
+  // Tensors a round's rewrites share, by a key their pattern gives (one
+  // prepared mask for every attention of a step that reads it).
+  std::map<std::string, ir::TensorId>& shared() { return shared_; }
 
  private:
   const ir::Graph& original_;
   ir::Builder& builder_;
   std::vector<ir::TensorId>& map_;
   std::vector<ir::TensorId> local_{};
+  std::map<std::string, ir::TensorId> shared_{};
 };
 
 // kComposite: the selection may take an implementation of its composite

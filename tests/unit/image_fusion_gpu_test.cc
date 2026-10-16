@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// BoundGraph::Run's run-time fusions (kernels/ggml/executor.h RuntimeFusion;
+// The image's planned fusions (spec/image_spatial.h kImagePlanningPolicy;
 // docs/experiments/m36-runtime-fusion/README.md) on small synthetic
-// Qwen-Image-shaped graphs built by the production spatial components and
-// lowered through the production GGML backend: every output against the
-// reference executor's double-precision oracle with every fusion on, with
-// every fusion off, and with each fusion left out in turn, and each fusion
-// shown to apply. Synthetic weights; no model files, no speed claim.
+// Qwen-Image-shaped graphs built by the production spatial components with
+// the production layout sinking and lowered through the production GGML
+// backend: every output against the reference executor's double-precision
+// oracle (at the source geometry, out of the oracle's reach, against the
+// same graph planned without patterns), and each fused implementation
+// shown in a plan. Synthetic weights; no model files, no speed claim.
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
@@ -60,11 +61,8 @@ namespace mo = llmp::model;
 namespace rf = llmp::kernels::reference;
 namespace sp = llmp::spec;
 using llmp::test_support::Failed;
-using RF = kg::RuntimeFusion;
 
 constexpr std::uint64_t kMiB = 1ULL << 20U;
-// The matchers the control can turn off (the rest are counted variants).
-constexpr std::size_t kControlled = static_cast<std::size_t>(RF::kConv1x1) + 1;
 
 float FromBf16(std::uint16_t bits) {
   return std::bit_cast<float>(static_cast<std::uint32_t>(bits) << 16U);
@@ -73,7 +71,7 @@ std::uint16_t ToBf16(float value) {
   const auto u = std::bit_cast<std::uint32_t>(value);
   return static_cast<std::uint16_t>((u + 0x7fffU + ((u >> 16U) & 1U)) >> 16U);
 }
-// A fixed sequence in [-1, 1): every arm and the oracle see the same values.
+// A fixed sequence in [-1, 1): every run and the oracle see the same values.
 struct Draw {
   std::uint64_t state;
   float operator()() {
@@ -174,12 +172,20 @@ struct FlowShape {
   std::uint32_t blocks = 1;
   double bound = 5e-3;  // relative RMS against the reference
 };
-// The run-time matchers replaced by planner patterns, and the
-// implementations the plan selects in their place.
-constexpr std::array<std::pair<RF, std::string_view>, 2> kPlanned{{
-    {RF::kSpatialNorm, kg::kSpatialChannelNormName},
-    {RF::kNormRope, kg::kNormRopeSectionsName},
-}};
+// The image's fused implementations, each in some case's plan.
+constexpr std::array<std::string_view, 13> kFused{kg::kSpatialChannelNormName,
+                                                  kg::kNormRopeSectionsName,
+                                                  kg::kQkAttentionName,
+                                                  kg::kAttentionMaskPackName,
+                                                  kg::kRopeTableName,
+                                                  kg::kSwiGluBf16Name,
+                                                  kg::kLayerNormModulateSplitName,
+                                                  kg::kGatedResidualSplitName,
+                                                  kg::kGatedResidualModulateSplitName,
+                                                  kg::kConv2dTiledF32,
+                                                  kg::kDupUpAddName,
+                                                  kg::kConv1x1Name,
+                                                  kg::kGemmBf16LtName};
 
 // The image's planning policy, as the served pipeline plans it.
 llmp::planner::Policy ImagePolicy() {
@@ -188,21 +194,6 @@ llmp::planner::Policy ImagePolicy() {
   return policy.value_or(llmp::planner::Policy{});
 }
 
-// The arms whose matchers' run-time choices may collide with the plan's
-// placement, so that the launch refuses them (README, "Findings"); whether
-// they do depends on the placement, so they may also run (and then must
-// match the reference). An arm "*" is any arm of the case but "none": every
-// matcher off must always run and match the reference.
-struct KnownRefusal {
-  std::string_view name, arm, detail;
-};
-constexpr std::array<KnownRefusal, 5> kKnownRefusals{{
-    {"flow_w4096", "without_qkv_attention", "output overlapping an operand"},
-    {"flow_source", "without_qkv_attention", "output overlapping an operand"},
-    {"flow_source", "without_mlp", "output overlapping an operand"},
-    {"flow_w256", "*", "output overlapping an operand"},
-    {"flow_w256", "*", "elided broadcast gate shares"},
-}};
 class ImageFusionGpu : public ::testing::Test {
  protected:
   struct Case {
@@ -210,7 +201,8 @@ class ImageFusionGpu : public ::testing::Test {
     std::optional<co::SpatialGraph> graph;
     std::vector<std::vector<float>> inputs;  // per graph input, logical order
     std::vector<std::vector<float>> reference;
-    // False: too large for the oracle; the unfused run is the reference.
+    // False: too large for the oracle; the same graph planned without
+    // patterns or layout sinking is the reference.
     bool oracle = true;
     std::map<std::string, std::size_t> plan;  // implementation: steps
     std::map<ir::WeightRef, std::uint64_t> weight_addresses;
@@ -273,7 +265,6 @@ class ImageFusionGpu : public ::testing::Test {
     launch = std::move(*launched);
   }
   void TearDown() override {
-    std::ignore = kg::SetRuntimeFusionControl(&control, nullptr);
     if (!Finish()) {
       // Unproven retirement: every borrower stays alive.
       std::ignore = new decltype(cases)(std::move(cases));
@@ -448,10 +439,9 @@ class ImageFusionGpu : public ::testing::Test {
     }
   }
 
-  // One run with `on` (null: no control installed, production); a run the
-  // launch refused returns its refusal and the planned steps around it.
-  std::expected<std::vector<std::vector<float>>, std::string> Run(
-      Case& c, const std::array<bool, kg::kRuntimeFusions>* on) {
+  // One run; a run the launch refused returns its refusal and the planned
+  // steps around it.
+  std::expected<std::vector<std::vector<float>>, std::string> Run(Case& c) {
     std::vector<std::vector<float>> out;
     const auto& graph = c.graph->graph();
     for (std::size_t i = 0; i < c.inputs.size(); ++i) {
@@ -470,18 +460,11 @@ class ImageFusionGpu : public ::testing::Test {
       Copy(slot.device_address, bytes.data(), bytes.size());
       if (HasFatalFailure()) return out;
     }
-    for (auto& hits : control.hits) hits.store(0);
-    if (on != nullptr) {
-      control.enabled = *on;
-      EXPECT_TRUE(kg::SetRuntimeFusionControl(nullptr, &control));
-    }
     auto native = execution->Submission(stream);
     EXPECT_TRUE(native);
     if (!native) return out;
     const auto ran = c.program->Run(*launch, *native);
-    const bool finished = Finish();
-    if (on != nullptr) EXPECT_TRUE(kg::SetRuntimeFusionControl(&control, nullptr));
-    if (!finished) return out;
+    if (!Finish()) return out;
     if (!ran) {
       std::string around;
       if (const auto* plan = c.program->bound()) {
@@ -502,92 +485,46 @@ class ImageFusionGpu : public ::testing::Test {
     return out;
   }
 
-  // Every arm against the reference; returns the hits over the arms that ran.
-  std::array<std::uint64_t, kg::kRuntimeFusions> Arms(Case& c, double bound) {
-    std::array<std::uint64_t, kg::kRuntimeFusions> covered{};
-    std::array<bool, kg::kRuntimeFusions> all{};
-    all.fill(true);
-    std::vector<std::pair<std::string, std::array<bool, kg::kRuntimeFusions>>> arms;
-    auto none = all;
-    for (std::size_t k = 0; k < kControlled; ++k) none[k] = false;
-    arms.emplace_back("none", none);
-    arms.emplace_back("all", all);
-    for (std::size_t k = 0; k < kControlled; ++k) {
-      auto without = all;
-      without[k] = false;
-      arms.emplace_back(std::format("without_{}", kg::RuntimeFusionName(static_cast<RF>(k))),
-                        without);
+  // The case's run against its reference (`reference`: the primitive
+  // plan's run, where the oracle is out of reach).
+  void Check(Case& c, double bound, Case* reference = nullptr) {
+    SCOPED_TRACE(c.name);
+    if (reference != nullptr) {
+      const auto want = Run(*reference);
+      ASSERT_TRUE(want) << want.error();
+      c.reference = *want;
     }
-    for (const auto& [label, enabled] : arms) {
-      SCOPED_TRACE(c.name + " " + label);
-      const auto got = Run(c, &enabled);
-      if (HasFatalFailure()) return covered;
-      if (!got) {
-        const bool known = std::ranges::any_of(kKnownRefusals, [&](const KnownRefusal& r) {
-          return r.name == c.name && ((r.arm == "*" && label != "none") || r.arm == label) &&
-                 got.error().find(r.detail) != std::string::npos;
-        });
-        // A matcher's run-time scratch or lifetime choice collides with the
-        // plan's placement (README, "Findings"); the launch refuses it.
-        EXPECT_TRUE(known) << got.error();
-        std::printf("%s %s: refused: %s\n", c.name.c_str(), label.c_str(), got.error().c_str());
-        RecordProperty(c.name + "." + label, "refused: " + got.error());
-        continue;
-      }
-      if (!c.oracle && label == "none") c.reference = *got;
-      EXPECT_EQ(got->size(), c.reference.size());
-      if (got->size() != c.reference.size()) continue;
-      std::array<std::uint64_t, kg::kRuntimeFusions> hits_now{};
-      for (std::size_t k = 0; k < kg::kRuntimeFusions; ++k) hits_now[k] = control.hits[k].load();
-      if (label == "all") {
-        // Production (no control installed) equals the all-on arm bit for bit.
-        const auto production = Run(c, nullptr);
-        EXPECT_TRUE(production) << (production ? "" : production.error());
-        if (production && production->size() == got->size())
-          for (std::size_t o = 0; o < got->size(); ++o)
-            EXPECT_EQ(std::memcmp((*got)[o].data(), (*production)[o].data(), (*got)[o].size() * 4),
-                      0)
-                << "production output " << o;
-      }
-      std::string summary;
-      for (std::size_t o = 0; o < got->size(); ++o) {
-        EXPECT_EQ((*got)[o].size(), c.reference[o].size()) << "output " << o;
-        if ((*got)[o].size() != c.reference[o].size()) continue;
-        const auto e = Compare((*got)[o], c.reference[o]);
-        EXPECT_LE(e.rel_rms, bound) << "output " << o;
-        EXPECT_TRUE(std::isfinite(e.rel_rms)) << "output " << o;
-        summary += std::format("{}out{} rel_rms {:.3e} max {:.3e}", o ? "; " : "", o, e.rel_rms,
-                               e.max_rel);
-      }
-      std::string hits;
-      for (std::size_t k = 0; k < kg::kRuntimeFusions; ++k) {
-        const auto n = hits_now[k];
-        covered[k] += n;
-        if (n != 0)
-          hits += std::format("{}{}={}", hits.empty() ? "" : ",",
-                              kg::RuntimeFusionName(static_cast<RF>(k)), n);
-        // A matcher turned off never applies.
-        if (k < kControlled && !enabled[k])
-          EXPECT_EQ(n, 0U) << kg::RuntimeFusionName(static_cast<RF>(k));
-      }
-      if (label == "none") EXPECT_TRUE(hits.empty()) << hits;
-      RecordProperty(c.name + "." + label, summary + " | " + hits);
-      std::printf("%s %s: %s | %s\n", c.name.c_str(), label.c_str(), summary.c_str(), hits.c_str());
+    const auto got = Run(c);
+    if (HasFatalFailure()) return;
+    ASSERT_TRUE(got) << got.error();
+    ASSERT_EQ(got->size(), c.reference.size());
+    std::string summary;
+    for (std::size_t o = 0; o < got->size(); ++o) {
+      ASSERT_EQ((*got)[o].size(), c.reference[o].size()) << "output " << o;
+      const auto e = Compare((*got)[o], c.reference[o]);
+      EXPECT_LE(e.rel_rms, bound) << "output " << o;
+      EXPECT_TRUE(std::isfinite(e.rel_rms)) << "output " << o;
+      summary +=
+          std::format("{}out{} rel_rms {:.3e} max {:.3e}", o ? "; " : "", o, e.rel_rms, e.max_rel);
     }
-    return covered;
+    RecordProperty(c.name + ".error", summary);
+    std::printf("%s: %s\n", c.name.c_str(), summary.c_str());
   }
 
-  // A one-block flow: text rows then a square latent grid.
-  std::array<std::uint64_t, kg::kRuntimeFusions> Flow(const FlowShape& shape) {
+  // A flow of `shape.blocks` blocks: text rows then a square latent grid,
+  // as the image plans it (`primitive`: without patterns or layout
+  // sinking).
+  Case* FlowCase(const FlowShape& shape, bool primitive = false) {
     auto& c = *cases.emplace_back(std::make_unique<Case>());
-    c.name = shape.name;
+    c.name = primitive ? shape.name + "_primitive" : shape.name;
     c.oracle = shape.oracle;
+    if (primitive) c.policy = llmp::planner::Policy{};
     const auto profile = SmallDenoiser(shape.heads, shape.mlp, shape.blocks);
     const auto source = mo::DenoiserTensors(profile);
     const auto image_rows = shape.grid * shape.grid;
     auto mapped = sp::ImageFlowSpec(profile, shape.text, image_rows, source);
     EXPECT_TRUE(mapped) << Failed(mapped).value_or("");
-    if (!mapped) return {};
+    if (!mapped) return nullptr;
     const auto tensors = Bound(source, fm::Encoding::kBF16);
     const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
     const std::uint32_t rows = shape.text + image_rows;
@@ -601,14 +538,25 @@ class ImageFusionGpu : public ::testing::Test {
                                       {.links = mapped->links,
                                        .reference_buffers = false,
                                        .exports = mapped->exports,
-                                       .inputs = ports});
+                                       .inputs = ports,
+                                       .sink_layouts = !primitive});
     EXPECT_TRUE(graph) << Failed(graph).value_or("");
-    if (!graph) return {};
+    if (!graph) return nullptr;
     c.graph.emplace(std::move(*graph));
     FlowInputs(*c.graph, shape.text, shape.grid, c.inputs, 7);
     Prepare(c, 11);
-    if (HasFatalFailure()) return {};
-    return Arms(c, shape.bound);
+    if (HasFatalFailure()) return nullptr;
+    return &c;
+  }
+  void Flow(const FlowShape& shape) {
+    Case* c = FlowCase(shape);
+    if (c == nullptr || HasFatalFailure()) return;
+    Case* reference = nullptr;
+    if (!shape.oracle) {
+      reference = FlowCase(shape, true);
+      if (reference == nullptr || HasFatalFailure()) return;
+    }
+    Check(*c, shape.bound, reference);
   }
 
   static constexpr std::uint64_t kPool = 256 * kMiB;
@@ -622,25 +570,9 @@ class ImageFusionGpu : public ::testing::Test {
   std::unique_ptr<kn::StepLaunch> launch;
   std::vector<void*> allocations;
   std::vector<std::unique_ptr<Case>> cases;
-  kg::RuntimeFusionControl control;
-};
-
-TEST_F(ImageFusionGpu, FlowAndDecoderFusionsMatchTheOracleEachLeftOut) {
-  std::array<std::uint64_t, kg::kRuntimeFusions> covered{};
-  const auto add = [&](const std::array<std::uint64_t, kg::kRuntimeFusions>& hits) {
-    for (std::size_t k = 0; k < hits.size(); ++k) covered[k] += hits[k];
-  };
-  // The flow: one transformer block of two and of thirty-two heads (the
-  // source width, whose modulation rows the combined residual writes as
-  // BF16), text rows then a square latent grid.
-  add(Flow({"flow_w4096", 32, 1024, 8, 16}));
-  ASSERT_FALSE(HasFatalFailure());
-  // The source's block at its 1024² geometry: the oracle is out of reach,
-  // so the unfused run is the reference.
-  add(Flow({"flow_source", 32, 12288, 25, 64, false, 2, 6e-3}));
-  ASSERT_FALSE(HasFatalFailure());
-  // The decoder: the source's structure at a small base width and grid.
-  {
+  // The decoder: the source's structure at a small base width and grid,
+  // against the oracle.
+  void Decoder() {
     auto& c = *cases.emplace_back(std::make_unique<Case>());
     c.name = "decoder";
     // The tiled convolution the 1024 decoder selects by default
@@ -651,7 +583,8 @@ TEST_F(ImageFusionGpu, FlowAndDecoderFusionsMatchTheOracleEachLeftOut) {
     const std::uint32_t grid = kDecoderGrid;
     const auto source = mo::VaeDecoderTensors(profile);
     auto mapped = sp::ImageDecodeSpec(profile, grid, source);
-    ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
+    EXPECT_TRUE(mapped) << Failed(mapped).value_or("");
+    if (!mapped) return;
     const auto tensors = Bound(source, fm::Encoding::kF32);
     const std::array<std::span<const co::BoundTensor>, 1> tables{tensors};
     const std::array owners{co::SpatialOwner{0, {1, grid * grid, profile.z_dim, 1}}};
@@ -660,8 +593,10 @@ TEST_F(ImageFusionGpu, FlowAndDecoderFusionsMatchTheOracleEachLeftOut) {
                                       {.links = mapped->links,
                                        .reference_buffers = false,
                                        .exports = mapped->exports,
-                                       .inputs = ports});
-    ASSERT_TRUE(graph) << Failed(graph).value_or("");
+                                       .inputs = ports,
+                                       .sink_layouts = true});
+    EXPECT_TRUE(graph) << Failed(graph).value_or("");
+    if (!graph) return;
     c.graph.emplace(std::move(*graph));
     Draw draw{13};
     for (const auto id : c.graph->graph().inputs()) {
@@ -680,36 +615,34 @@ TEST_F(ImageFusionGpu, FlowAndDecoderFusionsMatchTheOracleEachLeftOut) {
       c.inputs.push_back(std::move(values));
     }
     Prepare(c, 17);
-    ASSERT_FALSE(HasFatalFailure());
+    if (HasFatalFailure()) return;
     // The tiled convolution rounds its operands to BF16.
-    add(Arms(c, 5e-3));
-    ASSERT_FALSE(HasFatalFailure());
+    Check(c, 5e-3);
   }
-  // The matchers whose fusions are planner patterns now never apply: the
-  // plan holds their implementations instead.
-  for (const auto& [fusion, implementation] : kPlanned) {
-    EXPECT_EQ(covered[static_cast<std::size_t>(fusion)], 0U) << kg::RuntimeFusionName(fusion);
+};
+
+TEST_F(ImageFusionGpu, FlowsAndDecoderMatchTheOracle) {
+  // The flow: one transformer block of thirty-two heads (the source width),
+  // text rows then a square latent grid.
+  Flow({"flow_w4096", 32, 1024, 8, 16});
+  ASSERT_FALSE(HasFatalFailure());
+  // Two of the source's blocks at its 1024² geometry: the oracle is out of
+  // reach, so the same graph planned without patterns is the reference.
+  Flow({"flow_source", 32, 12288, 25, 64, false, 2, 6e-3});
+  ASSERT_FALSE(HasFatalFailure());
+  Decoder();
+  ASSERT_FALSE(HasFatalFailure());
+  // Every fused implementation in some plan.
+  for (const std::string_view implementation : kFused)
     EXPECT_TRUE(std::ranges::any_of(cases, [&](const auto& c) {
-      return c->plan.contains(std::string(implementation));
+      return !c->name.ends_with("_primitive") && c->plan.contains(std::string(implementation));
     })) << implementation;
-  }
-  // Every other matcher and variant applies somewhere in these graphs.
-  for (std::size_t k = 0; k < kg::kRuntimeFusions; ++k) {
-    if (std::ranges::any_of(kPlanned,
-                            [&](const auto& p) { return k == static_cast<std::size_t>(p.first); }))
-      continue;
-    RecordProperty(std::format("covered.{}", kg::RuntimeFusionName(static_cast<RF>(k))),
-                   std::to_string(covered[k]));
-    EXPECT_GT(covered[k], 0U) << kg::RuntimeFusionName(static_cast<RF>(k)) << " never applied";
-  }
 }
 
-// Width 256 (two heads), where the plan places the plain gated residual's
-// output over the gate whose broadcast the split broadcast matcher elided:
-// refused (it miscomputed by 21% until the matcher checked it), and every
-// arm that runs matches the oracle (README, "Findings").
-TEST_F(ImageFusionGpu, SmallWidthFlowRefusesOrMatchesTheOracle) {
-  std::ignore = Flow({"flow_w256", 2, 512, 8, 6});  // joint rows in kFlowRows
+// Width 256 (two heads): where the run-time path's split broadcast and
+// gated residual miscomputed by 21% (README, "Findings" 2), the plan
+// matches the oracle.
+TEST_F(ImageFusionGpu, SmallWidthFlowMatchesTheOracle) {
+  Flow({"flow_w256", 2, 512, 8, 6});  // joint rows in kFlowRows
 }
-
 }  // namespace

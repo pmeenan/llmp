@@ -473,7 +473,7 @@ std::expected<std::uint64_t, KernelFailure> PlanConv2dTiledF32(const LaunchConte
 }
 
 std::expected<void, KernelFailure> Conv2dTiledF32(LaunchContext& launch, ggml_tensor* node) {
-  return Conv2dTiledF32WithBias(launch, node, nullptr);
+  return Conv2dTiledF32WithBias(launch, node, node->src[2]);
 }
 
 std::expected<void, KernelFailure> Conv2dTiledF32WithBias(LaunchContext& launch, ggml_tensor* node,

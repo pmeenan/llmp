@@ -102,7 +102,7 @@ constexpr std::array<Rule, 4> kSpatialConvRules = {
 // fused.rms_norm_mul_rope_sections' (x, w, pos0[, pos1, pos2]): the
 // later sections' positions are checked by its predicate.
 constexpr std::array<Rule, 3> kNormRopeSectionsRules = {
-    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+    {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense},
      {.operand = 1, .encodings = kF32Bf16, .layouts = kDense},
      {.operand = 2, .encodings = kI32, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kSpatialUpRules = {
@@ -146,6 +146,44 @@ constexpr std::array<Rule, 3> kSelectedMaskRules = {
      {.operand = 1, .encodings = kI32, .layouts = kDense},
      {.operand = ex::kOutputOperand, .encodings = kF16, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kF32Glu = kF32Binary;
+constexpr std::array<Rule, 2> kMaskPackRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF16, .layouts = kDense}}};
+constexpr std::array<Rule, 2> kRopeTableRules = {
+    {{.operand = 0, .encodings = kI32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 7> kQkAttentionRules = {
+    {{.operand = 0, .encodings = kBf16, .layouts = kDense},
+     {.operand = 1, .encodings = kBf16, .layouts = kDense},
+     {.operand = 2, .encodings = kBf16, .layouts = kDense},
+     {.operand = 3, .encodings = kBf16, .layouts = kDense},
+     {.operand = 4, .encodings = kF16, .layouts = kDense},
+     {.operand = 5, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32Bf16, .layouts = kDense}}};
+constexpr std::array<Rule, 4> kModulateSplitRules = {
+    {{.operand = 0, .encodings = kF32, .layouts = kDense},
+     {.operand = 1, .encodings = kF32, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32Bf16, .layouts = kDense}}};
+constexpr std::array<Rule, 5> kGatedSplitRules = {
+    {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = 1, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = 3, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32, .layouts = kDense}}};
+constexpr std::array<Rule, 8> kGatedModulateSplitRules = {
+    {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = 1, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = 2, .encodings = kF32, .layouts = kDense},
+     {.operand = 3, .encodings = kF32, .layouts = kDense},
+     {.operand = 4, .encodings = kF32, .layouts = kDense},
+     {.operand = 5, .encodings = kF32, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = ex::kOutputOperand + 1, .encodings = kF32Bf16, .layouts = kDense}}};
+constexpr std::array<Rule, 3> kSwiGluBf16Rules = {
+    {{.operand = 0, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = 1, .encodings = kF32Bf16, .layouts = kDense},
+     {.operand = ex::kOutputOperand, .encodings = kBf16, .layouts = kDense}}};
 constexpr std::array<Rule, 1> kFloatTable = {
     {{.operand = 0, .encodings = kFloats, .layouts = kDense}}};
 constexpr std::array<Rule, 2> kRope = {{{.operand = 0, .encodings = kF32, .layouts = kDense},
@@ -578,10 +616,113 @@ bool Glu(const ex::CapabilityQuery& q, ir::GluKind kind) {
   const auto g = ParamsOf<ir::GluParams>(q);
   return Built(q) && g && g->kind == kind && !g->swapped && Has(q, 1);
 }
-bool AcceptsGeGlu(const ex::CapabilityQuery& q) { return Glu(q, ir::GluKind::kGeGluTanh); }
-bool AcceptsSwiGlu(const ex::CapabilityQuery& q) { return Glu(q, ir::GluKind::kSwiGlu); }
-bool AcceptsSwiGluClamp(const ex::CapabilityQuery& q) { return Glu(q, ir::GluKind::kSwiGluClamp); }
+// GGML's split GLUs write F32.
+bool GgmlGlu(const ex::CapabilityQuery& q, ir::GluKind kind) {
+  const auto* out = Operand(q, ex::kOutputOperand);
+  return Glu(q, kind) && (out == nullptr || out->encoding == Encoding::kF32);
+}
+bool AcceptsGeGlu(const ex::CapabilityQuery& q) { return GgmlGlu(q, ir::GluKind::kGeGluTanh); }
+bool AcceptsSwiGlu(const ex::CapabilityQuery& q) { return GgmlGlu(q, ir::GluKind::kSwiGlu); }
+bool AcceptsSwiGluClamp(const ex::CapabilityQuery& q) {
+  return GgmlGlu(q, ir::GluKind::kSwiGluClamp);
+}
 
+// Packed elements of `bytes` each through its last wide axis.
+bool PackedOf(const ex::OperandFormat* operand, std::uint64_t bytes) {
+  if (operand == nullptr || !operand->memory) return false;
+  for (std::size_t d = 0; d < 4; ++d) {
+    if (operand->ne[d] == 0 || (operand->ne[d] > 1 && operand->memory->nb[d] != bytes))
+      return false;
+    bytes *= operand->ne[d];
+  }
+  return true;
+}
+// llmp.image.attention_mask_pack's (CheckAttentionMaskPack's bounds).
+bool AcceptsMaskPack(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::MaskPackParams>(q);
+  const auto* mask = Operand(q, 0);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  return Built(q) && p && mask && out && mask->memory && mask->memory->nb[0] == 4 &&
+         mask->ne[2] == 1 && mask->ne[3] == 1 && p->cells % 256 == 0 && p->cells >= mask->ne[0] &&
+         p->rows >= mask->ne[1] && p->rows <= 65535ULL * 1024 && PackedOf(out, 2) &&
+         out->ne == ir::ShapeOf({p->cells, p->rows}).ne;
+}
+// llmp.image.rope_table's (CheckRopeTable's bounds).
+bool AcceptsRopeTable(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::RopeSectionsParams>(q);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || !p || p->sections < 1 || p->sections > 3 || p->mode != ir::RopeMode::kNormal ||
+      !std::isfinite(p->base) || p->base <= 0.0F || !PackedOf(out, 4))
+    return false;
+  std::uint64_t dims = 0;
+  for (std::size_t i = 0; i < p->sections; ++i) {
+    const auto* pos = Operand(q, static_cast<std::uint8_t>(i));
+    if (p->dims.at(i) == 0 || p->dims.at(i) % 2 != 0 || pos == nullptr ||
+        pos->encoding != Encoding::kI32 || !PackedOf(pos, 4) ||
+        pos->ne != ir::ShapeOf({out->ne[2]}).ne)
+      return false;
+    dims += p->dims.at(i);
+  }
+  return dims <= 512 && out->ne == ir::ShapeOf({2, dims / 2, out->ne[2]}).ne;
+}
+// llmp.image.qk_attention's (CheckQkAttention's bounds): heads of 128.
+bool AcceptsQkAttention(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::QkAttentionParams>(q);
+  const auto* qs = Operand(q, 0);
+  const auto* w = Operand(q, 1);
+  const auto* k = Operand(q, 2);
+  const auto* v = Operand(q, 3);
+  const auto* mask = Operand(q, 4);
+  const auto* table = Operand(q, 5);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || q.arch < 80 || !p || !std::isfinite(p->eps) || p->eps < 0.0F ||
+      !std::isfinite(p->scale) || !PackedOf(qs, 2) || !PackedOf(w, 2) || !PackedOf(k, 2) ||
+      !PackedOf(v, 2) || !PackedOf(mask, 2) || !PackedOf(table, 4) || out == nullptr ||
+      !PackedOf(out, out->encoding == Encoding::kF32 ? 4 : 2))
+    return false;
+  const std::uint64_t rows = qs->ne[1];
+  return qs->ne[0] % 128 == 0 && k->ne[0] % 128 == 0 && k->ne == v->ne && k->ne[1] == rows &&
+         qs->ne[2] == 1 && qs->ne[3] == 1 && k->ne[2] == 1 && k->ne[3] == 1 &&
+         (qs->ne[0] / 128) % (k->ne[0] / 128) == 0 && w->ne == ir::ShapeOf({128}).ne &&
+         table->ne == ir::ShapeOf({2, 64, rows}).ne && mask->ne[0] >= (rows + 255) / 256 * 256 &&
+         mask->ne[1] >= rows && mask->ne[2] == 1 && mask->ne[3] == 1 && out->ne == qs->ne &&
+         rows <= static_cast<std::uint64_t>(INT32_MAX);
+}
+// llmp.image.layer_norm_modulate_split's and gated_residual_split's
+// (their checks' bounds): packed rows [C, R] and [C] vectors.
+bool AcceptsSplitRows(const ex::CapabilityQuery& q, bool gated) {
+  const auto p = ParamsOf<ir::SplitModulateParams>(q);
+  const auto* x = Operand(q, 0);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || !p || x == nullptr || out == nullptr ||
+      !PackedOf(x, x->encoding == Encoding::kF32 ? 4 : 2) ||
+      !PackedOf(out, out->encoding == Encoding::kF32 ? 4 : 2) || x->ne != out->ne ||
+      x->ne[2] != 1 || x->ne[3] != 1 || p->split > x->ne[1] || x->ne[0] > 65536 ||
+      x->ne[1] > static_cast<std::uint64_t>(INT32_MAX) || !std::isfinite(p->eps) || p->eps < 0.0F)
+    return false;
+  if (gated) {
+    const auto* branch = Operand(q, 1);
+    if (branch == nullptr || branch->ne != x->ne ||
+        !PackedOf(branch, branch->encoding == Encoding::kF32 ? 4 : 2) ||
+        x->ne[0] * x->ne[1] > static_cast<std::uint64_t>(INT32_MAX))
+      return false;
+  }
+  for (std::uint8_t i = gated ? 2 : 1; i < (gated ? 4 : 3); ++i) {
+    const auto* v = Operand(q, i);
+    if (v == nullptr || !PackedOf(v, 4) || v->ne != ir::ShapeOf({x->ne[0]}).ne) return false;
+  }
+  return true;
+}
+bool AcceptsModulateSplit(const ex::CapabilityQuery& q) { return AcceptsSplitRows(q, false); }
+// llmp.image.swiglu_bf16's: a split SwiGLU of two operands of one shape
+// and float type into BF16.
+bool AcceptsSwiGluBf16(const ex::CapabilityQuery& q) {
+  const auto* gate = Operand(q, 0);
+  const auto* up = Operand(q, 1);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  return Glu(q, ir::GluKind::kSwiGlu) && gate && up && out && gate->encoding == up->encoding &&
+         gate->ne == up->ne && out->ne == gate->ne;
+}
 bool AcceptsAttentionF32(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::AttnParams>(q);
   const auto* query = Operand(q, 0);
@@ -1381,6 +1522,20 @@ bool AcceptsGetRowsExt(const ex::CapabilityQuery& q) {
          out->ne[0] == rows->ne[0] && out->ne[1] == ids->ne[0] && out->ne[2] == ids->ne[1] &&
          out->ne[3] == ids->ne[2];
 }
+// Packed F32 or BF16 (SpatialPackedF32's bounds at the element's size).
+bool SpatialPacked(const ex::OperandFormat* operand) {
+  if (operand == nullptr || operand->layout != Layout::kDense || !operand->memory ||
+      (operand->encoding != Encoding::kF32 && operand->encoding != Encoding::kBF16))
+    return false;
+  std::uint64_t bytes = operand->encoding == Encoding::kF32 ? 4 : 2;
+  for (std::size_t d = 0; d < 4; ++d) {
+    if (operand->ne[d] == 0 || operand->memory->nb[d] != bytes ||
+        __builtin_mul_overflow(bytes, operand->ne[d], &bytes) ||
+        bytes > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()) - 256)
+      return false;
+  }
+  return true;
+}
 bool SpatialPackedF32(const ex::OperandFormat* operand) {
   if (operand == nullptr || operand->encoding != Encoding::kF32 ||
       operand->layout != Layout::kDense || !operand->memory)
@@ -1453,6 +1608,52 @@ bool AcceptsSpatialTiled(const ex::CapabilityQuery& q) {
            (!t.output_encoding || *t.output_encoding == Encoding::kF32);
   });
 }
+// fused.dup_up_add's (x [2W, 2H, Co, 1], shortcut [W, H, Ci, 1]): packed
+// F32, the repeats whole, an int element count (CheckDupUpAdd's bounds).
+bool AcceptsDupUpAdd(const ex::CapabilityQuery& q) {
+  const auto p = ParamsOf<ir::DupUpParams>(q);
+  const auto* x = Operand(q, 0);
+  const auto* sc = Operand(q, 1);
+  const auto* out = Operand(q, ex::kOutputOperand);
+  if (!Built(q) || !p || p->factor_t < 1 || p->factor_t > 2 || !SpatialPackedF32(x) ||
+      !SpatialPackedF32(sc) || !SpatialPackedF32(out) || x->ne != out->ne || x->ne[3] != 1 ||
+      sc->ne[3] != 1 || sc->ne[0] == 0 || sc->ne[1] == 0 || sc->ne[2] == 0 ||
+      x->ne[0] != 2 * sc->ne[0] || x->ne[1] != 2 * sc->ne[1] || x->ne[2] == 0 ||
+      (x->ne[2] * p->factor_t * 4) % sc->ne[2] != 0)
+    return false;
+  return x->ne[0] * x->ne[1] * x->ne[2] <=
+         static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+}
+// llmp.image.conv1x1's: a 1x1 kernel without padding over packed F32 of one
+// image, its pixels, channels and outputs ints (CheckConv1x1's bounds).
+bool AcceptsConv1x1(const ex::CapabilityQuery& q) {
+  if (!AcceptsSpatialConv(q)) return false;
+  const auto p = ParamsOf<ir::Conv2dParams>(q);
+  const auto* w = Operand(q, 0);
+  const auto* x = Operand(q, 1);
+  constexpr auto kMax = static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  return w->ne[0] == 1 && p->padding == 0 && x->ne[3] == 1 && x->ne[0] * x->ne[1] <= kMax &&
+         w->ne[2] <= kMax && w->ne[3] <= kMax;
+}
+bool AcceptsGatedSplit(const ex::CapabilityQuery& q) { return AcceptsSplitRows(q, true); }
+// fused.gated_residual_modulate_split's: the gated residual's operands and
+// sum as above, the modulation's two vectors and its packed result.
+bool AcceptsGatedModulateSplit(const ex::CapabilityQuery& q) {
+  if (!AcceptsSplitRows(q, true)) return false;
+  const auto* x = Operand(q, 0);
+  const auto* modulated = Operand(q, ex::kOutputOperand + 1);
+  const auto* sum = Operand(q, ex::kOutputOperand);
+  // A BF16 sum only where the pass keeps the row (CheckGatedResidualModulateSplit).
+  if (modulated == nullptr || modulated->ne != x->ne ||
+      !PackedOf(modulated, modulated->encoding == Encoding::kF32 ? 4 : 2) ||
+      (sum->encoding == Encoding::kBF16 && x->ne[0] > 8192))
+    return false;
+  for (std::uint8_t i = 4; i < 6; ++i) {
+    const auto* v = Operand(q, i);
+    if (v == nullptr || !PackedOf(v, 4) || v->ne != ir::ShapeOf({x->ne[0]}).ne) return false;
+  }
+  return true;
+}
 bool AcceptsSpatialUp(const ex::CapabilityQuery& q) {
   const auto p = ParamsOf<ir::UpsampleParams>(q);
   const auto* x = Operand(q, 0);
@@ -1506,8 +1707,8 @@ bool AcceptsNormRopeSections(const ex::CapabilityQuery& q) {
   if (!Built(q) || !p || p->sections < 1 || p->sections > 3 ||
       (p->mode != ir::RopeMode::kNormal && p->mode != ir::RopeMode::kNeox) ||
       !std::isfinite(p->eps) || p->eps < 0.0F || !std::isfinite(p->base) || p->base <= 0.0F ||
-      !SpatialPackedF32(x) || !SpatialPackedF32(out) || x->ne != out->ne || w == nullptr ||
-      !w->memory || w->ne != ir::ShapeOf({x->ne[0]}).ne ||
+      !SpatialPacked(x) || !SpatialPacked(out) || x->ne != out->ne || w == nullptr || !w->memory ||
+      w->ne != ir::ShapeOf({x->ne[0]}).ne ||
       w->memory->nb[0] != (w->encoding == Encoding::kF32 ? 4U : 2U))
     return false;
   const std::uint64_t dim = x->ne[0], heads = x->ne[1], rows = x->ne[2];
@@ -1644,12 +1845,11 @@ constexpr std::string_view kVecQDenseName = "llmp.vecq.dense";
 constexpr std::string_view kVecQGluName = "llmp.vecq.glu";
 constexpr std::string_view kVecQExpertsName = "llmp.vecq.experts";
 constexpr std::string_view kVecQExpertsGluName = "llmp.vecq.experts_glu";
-constexpr std::array<std::string_view, 2> kSpatialTiledSteps = {kConv2dTiledF32, "ggml.add"};
 constexpr ex::Capability SpatialTiled() {
   // The qualified geometry predicate supplies default eligibility. Explicit
   // caller ranks still take precedence over this measured ordinary preference.
-  return Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsSpatialTiled, false, {}, 1, {}, 0,
-             kSpatialTiledSteps);
+  // One step: the bias rides on the convolution (lower.cc).
+  return Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsSpatialTiled, false, {}, 1);
 }
 constexpr std::array<std::string_view, 2> kSpatialConvSteps = {"ggml.conv2d.f32", "ggml.add"};
 constexpr std::array<std::string_view, 2> kMxfp8GemmSteps = {kMxfp8SwizzleName, kMxfp8GemmName};
@@ -1686,6 +1886,8 @@ const std::array kEntries = {
     Entry{"ggml.get_rows.ext", Operation::kGetRows,
           Cap(P(Op::kGetRows), {}, &AcceptsGetRowsExt, true), kBuilt},
     Entry{kConv2dTiledF32, Operation::kConv2d, SpatialTiled(), kBuilt},
+    Entry{kConv1x1Name, Operation::kConv2d,
+          Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsConv1x1, false, {}, 2), kBuilt},
     Entry{"ggml.conv2d.f32", Operation::kConv2d,
           Cap(P(Op::kConv2d), kSpatialConvRules, &AcceptsSpatialConv, false, {}, 0, {}, 0,
               kSpatialConvSteps),
@@ -1737,8 +1939,8 @@ const std::array kEntries = {
     Entry{kNormRopeSectionsName, Operation::kRmsNormMulRopeSections,
           Cap(F(FusedKind::kRmsNormMulRopeSections), kNormRopeSectionsRules,
               &AcceptsNormRopeSections, true),
-          "; selectable for the build's SASS architectures: packed F32 heads of D at most 512, "
-          "an F32 or BF16 [D] weight, one to three plain sections covering D"},
+          "; selectable for the build's SASS architectures: packed F32 or BF16 heads of D at most "
+          "512, an F32 or BF16 [D] weight, one to three plain sections covering D"},
     Entry{"ggml.rms_norm", Operation::kRmsNorm, Cap(P(Op::kRmsNorm), kF32In, &AcceptsAny, true),
           kBuilt},
     Entry{"ggml.rms_norm_mul.fused", Operation::kRmsNormMul,
@@ -1838,6 +2040,37 @@ const std::array kEntries = {
           "takes"},
     Entry{"ggml.geglu", Operation::kGeGlu, Cap(P(Op::kGlu), kF32Glu, &AcceptsGeGlu, true),
           "; selectable for the build's SASS architectures: split GELU-tanh, not swapped"},
+    Entry{kAttentionMaskPackName, Operation::kAttentionMaskPack,
+          Cap(F(FusedKind::kAttentionMaskPack), kMaskPackRules, &AcceptsMaskPack, true),
+          "; selectable for the build's SASS architectures: an F32 mask into F16 padded to "
+          "multiples of 256 columns"},
+    Entry{kRopeTableName, Operation::kRopeTable,
+          Cap(F(FusedKind::kRopeTable), kRopeTableRules, &AcceptsRopeTable, true),
+          "; selectable for the build's SASS architectures: one to three normal sections of a "
+          "head of at most 512"},
+    Entry{kQkAttentionName, Operation::kQkAttention,
+          Cap(F(FusedKind::kQkAttention), kQkAttentionRules, &AcceptsQkAttention, false),
+          "; selectable from compute capability 8.0: BF16 heads of 128, a packed mask and table"},
+    Entry{kLayerNormModulateSplitName, Operation::kLayerNormModulateSplit,
+          Cap(F(FusedKind::kLayerNormModulateSplit), kModulateSplitRules, &AcceptsModulateSplit,
+              true),
+          "; selectable for the build's SASS architectures: packed F32 rows of at most 65536"},
+    Entry{kGatedResidualModulateSplitName, Operation::kGatedResidualModulateSplit,
+          Cap(F(FusedKind::kGatedResidualModulateSplit), kGatedModulateSplitRules,
+              &AcceptsGatedModulateSplit, true),
+          "; selectable for the build's SASS architectures: the residual's sum and its "
+          "modulation in one pass over packed rows"},
+    Entry{kDupUpAddName, Operation::kDupUpAdd,
+          Cap(F(FusedKind::kDupUpAdd), kF32Binary, &AcceptsDupUpAdd, false),
+          "; selectable for the build's SASS architectures: packed F32 of one image, an int "
+          "element count"},
+    Entry{kGatedResidualSplitName, Operation::kGatedResidualSplit,
+          Cap(F(FusedKind::kGatedResidualSplit), kGatedSplitRules, &AcceptsGatedSplit, true),
+          "; selectable for the build's SASS architectures: packed rows of int elements"},
+    Entry{kSwiGluBf16Name, Operation::kSwiGlu,
+          Cap(P(Op::kGlu), kSwiGluBf16Rules, &AcceptsSwiGluBf16, true),
+          "; selectable for the build's SASS architectures: a split SwiGLU of F32 or BF16 "
+          "operands of one shape into BF16"},
     Entry{"ggml.swiglu", Operation::kSwiGlu, Cap(P(Op::kGlu), kF32Glu, &AcceptsSwiGlu, true),
           "; selectable for the build's SASS architectures: split SwiGLU, not swapped"},
     Entry{"ggml.swiglu_clamp", Operation::kSwiGluClamp,
@@ -1920,6 +2153,10 @@ const std::array kEntries = {
           "; selectable on sm_121: rows of whole 128 values"},
     Entry{kGemmBf16Name, Operation::kMatMul,
           Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 4), kBuilt},
+    // The pinned form below the plain one: a policy that ranks it (the
+    // image's) takes it.
+    Entry{kGemmBf16LtName, Operation::kMatMul,
+          Cap(P(Op::kMatMul), kBf16Product, &AcceptsAny, false, {}, 3), kBuilt},
     Entry{"ggml.convert", Operation::kConvert,
           Cap(P(Op::kConvert), kFloatConvert, &AcceptsConvert, true),
           "; selectable for the build's SASS architectures: F16/F32 casts within I32 counts"},
