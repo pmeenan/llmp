@@ -57,7 +57,7 @@ and separate quality controls; they do not replace those oracles.
 | 12 | Ornith 1.5 35B-A3B (Ornith, M7) | MoE 36B/3B | GGUF Q4_K_M, llama.cpp | 262,144 | Qwen3.5 MoE (256 experts top-8 + shared) without QSA, hyper-connections or PLE; M7's daily driver |
 | 13 | GLM-4.7-Flash (Z.ai) | MoE 31B/3B | GGUF Q8_0, llama.cpp | 202,752 | MTP on MLA, the GLM tokenizer and template; M4's GLM-5.3 path |
 
-Owner-requested: Nemotron 3.5 Super VL ([below](#owner-requested-addition-nemotron-35-super-vl)).
+Owner-requested: Nemotron 3.5 Super VL ([below](#owner-requested-addition-nemotron-35-super-vl)) and NVIDIA's Qwen3.8 Flash Next FP4-Local quant ([below](#owner-requested-addition-qwen38-flash-next-fp4-local)).
 Optional, by usage or a feature a smaller set already covers: MiniMax
 M2.7 (IQ3_XXS), Laguna S 2.1, Step 3.7 Flash, Ling 3.0 flash, Nemotron 3.5
 Lightning, Cohere North Mini Code and Mistral Medium 3.5
@@ -133,6 +133,31 @@ At bring-up: pin immutable revisions into the archive (D-114), choose
 same-format references (vLLM ≥ the card's version for NVFP4 and LiLiCorr;
 llama.cpp for GGUF), and qualify LiLiCorr against MTP on the GB10 before
 picking the default drafter. Nothing here is verified yet.
+
+## Owner-requested addition: Qwen3.8 Flash Next FP4-Local
+
+**Listed at the owner's request, 2026-10-16; a further quant of the
+already-served Qwen3.8 family (AGENTS.md rule 11: every quant runs and is
+competitive), for M3.5's bring-up.**
+[`nvidia/Qwen3.8-Flash-Next-FP4-Local`](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local)
+(published 2026-10-05, about 96 GiB, NVIDIA Open Model Agreement over the
+Qwen Community License; recorded, never blocking, D-087) is a ModelOpt
+0.47.0 quantization-aware-distilled checkpoint: NVFP4 routed experts, MXFP8
+decoder attention, NVFP4 MTP experts with BF16 activations (W4A16, as the
+Mia-AiLab checkpoint's MTP), plus a vision tower (MXFP8 attention, NVFP4 MLP
+and merger, BF16 rest) and an n-gram embedding table. The card validates it
+on DGX Spark under vLLM, with the n-gram table offloaded and an FP8 KV cache
+to 1M tokens.
+
+What it adds: NVIDIA's "new lossless compression format" for the NVFP4
+scale factors (undocumented on the card; the importer must decode it or
+relayout it at import, AGENTS.md rule 11's import bullet), the vision tower
+(M3.5's media inputs), and QAD numerics distinct from the Mia-AiLab NVFP4
+the engine serves today. At bring-up: pin a revision into the archive
+(D-114), identify the scale-compression format from ModelOpt's source,
+choose the same-format reference (the card's vLLM container), and compare
+quality and speed against the served Mia-AiLab quant. Nothing here is
+verified yet.
 
 ## Capability matrix
 
