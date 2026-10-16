@@ -52,6 +52,7 @@
 #include <iterator>
 #include <memory>
 #include <print>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -68,6 +69,7 @@
 #include "plain_token_serving_checks.h"
 #include "platform/crash_policy.h"
 #include "runtime/engine_llm.h"
+#include "runtime/memory_guard.h"
 #include "runtime/runtime.h"
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
@@ -1426,6 +1428,132 @@ TEST_P(GemmaEngineServingGpu, FailedPartialLoadPreservesCachesAndRecreatesSavedR
   const auto restored_hash = hash_state();
   ASSERT_TRUE(restored_hash);
   EXPECT_EQ(*restored_hash, *saved_hash);
+}
+
+// The shared workspace pages with the active model (runtime-serving.md,
+// "Registration and the swap"): after every activation exactly the active
+// model's prefix of it is resident; a swap refused for room moves none of
+// it; and a swap whose page-in fails is undone with the outgoing model's
+// prefix back and nothing of the incoming model's tail left resident.
+TEST_P(GemmaEngineServingGpu, TheWorkspaceFollowsTheActiveModelThroughRefusalAndUndo) {
+  life->roles.installed = Models() / "m3-artifacts";
+  if (!Present(life->roles.installed / kGemma2) || !Present(life->roles.installed / kGemma3)) {
+    GTEST_SKIP() << "no Gemma2 and Gemma3 artifacts in " << life->roles.installed;
+  }
+  auto other = life->config.models.front();
+  other.name = "other";
+  other.artifact = GetParam() == 2 ? kGemma3 : kGemma2;
+  other.overrides["context"] = std::int64_t{4096};
+  other.overrides["max_slots"] = std::int64_t{1};  // narrower waves: a workspace of another size
+  life->config.models.push_back(other);
+  // An ordinary start sizes the cap below: what the node holds fixed and the
+  // larger active footprint, so a few GiB of staging fill the free room.
+  if (const auto started = Start(); !started) FAIL() << started.error() << "\n" << Log();
+  auto& first_node = life->server->node();
+  EXPECT_TRUE(first_node.workspace_pageable());
+  std::uint64_t largest = 0;
+  for (const char* name : {"gemma", "other"}) {
+    const auto* m = life->server->Find(name);
+    ASSERT_NE(m, nullptr);
+    largest = std::max(largest, rt::ActiveFootprint(m->weights().size() * en::kPagedExtent,
+                                                    m->activations_needed(), m->pool_needed()));
+  }
+  const std::uint64_t fixed = life->server->fixed_bytes();
+  ASSERT_TRUE(Retire());
+  // At least the startup parser loan (with room for what precedes it),
+  // which the cap bounds too.
+  const auto loan = rt::StartupBootstrapBytes(life->config.models.size(), 1U << 20U);
+  ASSERT_TRUE(loan);
+  life->options.diagnostic_budget_cap_bytes =
+      std::max(fixed + largest + (en::kHandleReserve * en::kPagedExtent), *loan + fixed) +
+      (std::uint64_t{1} << 30U);
+  if (const auto capped = Start(); !capped) FAIL() << capped.error() << "\n" << Log();
+  auto& node = life->server->node();
+  rt::Served* gemma = life->server->Find("gemma");
+  rt::Served* peer = life->server->Find("other");
+  ASSERT_NE(gemma, nullptr);
+  ASSERT_NE(peer, nullptr);
+  const auto footprint = [](const rt::Served& m) {
+    return rt::ActiveFootprint(m.weights().size() * en::kPagedExtent, m.activations_needed(),
+                               m.pool_needed());
+  };
+  rt::Served* small = footprint(*gemma) < footprint(*peer) ? gemma : peer;
+  rt::Served* large = small == gemma ? peer : gemma;
+  const std::vector<llmp::catalog::ExtentId> workspace = node.workspace_extents();
+  const std::set<llmp::catalog::ExtentId> all(workspace.begin(), workspace.end());
+  const auto prefix = [&](const rt::Served& m) {
+    std::set<llmp::catalog::ExtentId> named;
+    for (const auto& [extent, generation] : m.everything().extents)
+      if (all.contains(extent)) named.insert(extent);
+    return named;
+  };
+  const auto resident = [&]() {
+    std::set<llmp::catalog::ExtentId> found;
+    EXPECT_TRUE(node.Call(
+        [&]() -> rt::Status {
+          for (const auto extent : workspace)
+            if (node.catalog().Describe(extent)->state == llmp::catalog::ExtentState::kResident)
+              found.insert(extent);
+          return {};
+        },
+        "listing the resident workspace"));
+    return found;
+  };
+  const auto small_prefix = prefix(*small), large_prefix = prefix(*large);
+  ASSERT_FALSE(small_prefix.empty());
+  EXPECT_NE(small_prefix, large_prefix);
+  EXPECT_EQ(resident(), prefix(*gemma));  // the first activation
+  rt::SwapParts swap;
+  for (rt::Served* next : {small, large, small}) {
+    if (life->server->resident() != next) {
+      ASSERT_TRUE(life->server->Activate(*next, swap));
+      ASSERT_TRUE(life->server->FinishSwap(swap));
+    }
+    EXPECT_EQ(resident(), prefix(*next)) << next->name();
+  }
+  // Refused for room: the free room held by staging, the larger footprint
+  // does not fit beside it; nothing of the workspace moves.
+  std::uint64_t occupied = 0;
+  ASSERT_TRUE(node.Call(
+      [&]() -> rt::Status {
+        occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
+        return {};
+      },
+      "reading the occupancy"));
+  ASSERT_LT(occupied + en::kPagedExtent, node.budget().value());
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto filler = node.Pinned(node.budget().value() - occupied - en::kPagedExtent, 0, staging);
+  ASSERT_TRUE(filler) << (filler ? "" : filler.error());
+  EXPECT_FALSE(life->server->Activate(*large, swap));
+  EXPECT_EQ(life->server->resident(), small);
+  EXPECT_EQ(resident(), small_prefix);
+  ASSERT_TRUE(node.FreePinned(*filler));
+  // A failed page-in of the incoming model: undone, the outgoing prefix back.
+  const auto missing = large->weights().back();
+  llmp::scheduler::PageSource original;
+  ASSERT_TRUE(node.Call(
+      [&]() -> rt::Status {
+        original = *node.scheduler().SourceOf(missing);
+        auto bad = original;
+        bad.read.offset = std::uint64_t{1} << 60U;  // a clean short-read failure
+        if (!node.scheduler().SetSource(missing, bad))
+          return std::unexpected("the test read failure source was refused");
+        return {};
+      },
+      "injecting one incoming weight read failure"));
+  EXPECT_FALSE(life->server->Activate(*large, swap));
+  EXPECT_EQ(life->server->resident(), small);
+  EXPECT_EQ(resident(), small_prefix);
+  ASSERT_TRUE(node.Call(
+      [&]() -> rt::Status {
+        if (!node.scheduler().SetSource(missing, original))
+          return std::unexpected("the original weight source could not be restored");
+        return {};
+      },
+      "repairing the injected source"));
+  ASSERT_TRUE(life->server->Activate(*large, swap));
+  ASSERT_TRUE(life->server->FinishSwap(swap));
+  EXPECT_EQ(resident(), large_prefix);
 }
 
 TEST_P(GemmaEngineGemma3Gpu, UnprovenPreparationStopsServerBeforeOwnerDestruction) {

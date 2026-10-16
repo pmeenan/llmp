@@ -839,7 +839,8 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
         {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
     config.setup_shapes = shapes;
     config.launch =
-        [held = life.get()]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+        [held = life.get()](
+            std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return held->kernel->backend->Launch(
           {.base = held->node.pool().base, .size = llmp::base::Bytes(held->node.pool().bytes)});
     };

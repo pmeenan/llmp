@@ -25,14 +25,15 @@
 // 1. Open: the device, providers, streams, storage, domain and zone.
 // 2. Each model maps its own memory (MapResident, Pinned) and reserves its
 //    weights' places, then MapWorkspace maps the shared workspace at the
-//    largest request.
+//    largest request (or, pageable, virtually reserves and catalogs it: each model's
+//    closure then pages in its own prefix of it).
 // 3. Start(B) builds the scheduler with the execution budget B; each model
 //    registers its sources (scheduler().SetSource).
 // 4. Run puts the scheduler and every lane on its own thread (unless the
 //    lanes are driven inline); from then on only the scheduler's thread
 //    touches the scheduler and the catalog (Call runs a function there).
-// 5. TearDown: a fence on each model's stream, the models' weights
-//    evicted, the scheduler stopped and the lanes drained (or, if setup
+// 5. TearDown: a fence on each model's stream, the models' weights (and a
+//    pageable workspace) evicted, the scheduler stopped and the lanes drained (or, if setup
 //    ended before Start, a fence on each compute stream); then each
 //    model's Release (launch contexts, its memory); then the streams, the
 //    zone and the workspace, with every backing checked released.
@@ -445,12 +446,30 @@ class PagedNode {
   // The shared workspace (scratch, discardable): the activations and the
   // GGML pool, each at the largest size a model asked for (at least one
   // extent). Once, before Start.
+  //
+  // Mapped resident for the node's life, or, `pageable` (the runtime's),
+  // only virtually reserved and cataloged: each extent is then paged like a weight, at
+  // its fixed place, by a map-only source the node registers at Start, so a
+  // model's closure (each model names only its own prefix of both regions)
+  // brings in what it uses and a swap evicts what the incoming model does
+  // not use (docs/runtime-serving.md, "Registration and the swap"). Its
+  // places are pinned, so a captured graph finds them again. Nothing but a
+  // swap or an explicit Evict takes one: every acquisition protects the
+  // whole workspace. It holds no contents from one job to the next (every
+  // model's steps draw on it from its base; an eviction keeps no bytes and
+  // its generation, catalog::KeepsGenerationOnEviction), so nothing may
+  // keep state in it across jobs (RE-058: EXL3's selected source does).
   Status MapWorkspace(std::uint64_t activations, std::uint64_t pool,
-                      std::uint64_t virtual_capacity = 0);
-  // Grows only backed prefixes, preserving every existing address and extent.
-  // Capacity is reserved before Start from the node's physical admission bound.
-  // No shrinking: retained borrowers keep their high-water workspace.
+                      std::uint64_t virtual_capacity = 0, bool pageable = false);
+  // Grows only cataloged prefixes, preserving every existing address and
+  // extent: backed at once, or for a pageable workspace cataloged with its
+  // sources, paged in by the closures that name it. Its virtual capacity is reserved
+  // before Start from the node's physical admission bound. No shrinking:
+  // retained borrowers keep their high-water workspace.
   Status GrowWorkspace(std::uint64_t activations, std::uint64_t pool);
+  bool workspace_pageable() const { return workspace_pageable_; }
+  // Both regions' extents, the activations' first.
+  std::vector<catalog::ExtentId> workspace_extents() const;
   // Only the owning model's unreferenced pinned allocation, after positive
   // device completion and destruction of every plan/registration naming it.
   Status RetireMapped(Mapped& mapped);
@@ -856,6 +875,12 @@ class PagedNode {
   Mapped zone_;
   Mapped activations_;
   Mapped pool_;
+  bool workspace_pageable_ = false;
+  // A pageable workspace's extents get their map-only sources, pinned at
+  // their places: every extent at Start, each new one as it grows after.
+  scheduler::PageSource WorkspaceSource(const Mapped& mapped, std::size_t index) const;
+  Status RegisterWorkspaceSources(const Mapped& mapped);
+  Status GrowPageable(Mapped& mapped, std::uint64_t bytes);
   std::shared_ptr<StagingLifetime> staging_lifetime_ = std::make_shared<StagingLifetime>();
   std::vector<void*> pinned_;
   // Left to the process's end on purpose (RetireRing): never freed.

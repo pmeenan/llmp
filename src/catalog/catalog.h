@@ -136,6 +136,18 @@ struct ExtentDescriptor {
   ContentKey content;
 };
 
+// Whether an eviction that writes nothing back keeps the extent's content
+// generation, so a closure taken before still leases it once it is loaded
+// again: artifact contents (the same bytes come back) and discardable
+// scratch, which holds no contents from one job to the next (the shared
+// workspace, engine/paged_node.h: a load brings fresh backing). Every other
+// class's mutable contents are gone, at a new generation.
+inline bool KeepsGenerationOnEviction(const ExtentDescriptor& descriptor) {
+  return descriptor.recovery == Recovery::kFromArtifact ||
+         (descriptor.recovery == Recovery::kDiscardable &&
+          descriptor.memory_class == MemoryClass::kScratch);
+}
+
 // Occupancy of one domain, by bucket and by class: backing that exists,
 // counted once per extent. Nonresident extents occupy nothing.
 struct Occupancy {
@@ -318,7 +330,7 @@ class Catalog {
   // EVICTING -> NONRESIDENT once every consumer and registration is gone
   // and the backing is released or handed off; the backing generation
   // advances. Mutable contents are gone (the content generation advances)
-  // unless the eviction wrote them back.
+  // unless the eviction wrote them back or KeepsGenerationOnEviction.
   std::expected<void, CatalogError> CompleteEvict(const Ticket& ticket);
   // EVICTING -> RESIDENT: the eviction was abandoned before the backing
   // was touched.

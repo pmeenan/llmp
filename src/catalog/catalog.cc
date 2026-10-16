@@ -638,8 +638,10 @@ std::expected<void, CatalogError> Catalog::CompleteEvict(const Ticket& ticket) {
   view.state = ExtentState::kNonresident;
   Advance(view.backing_generation);
   const bool preserved = (*record)->writing_back;
-  if (view.descriptor.recovery != Recovery::kFromArtifact && !preserved) {
-    Advance(view.content_generation);  // the contents are gone
+  // The contents are gone, at a new generation, unless the eviction wrote
+  // them back or they are the artifact's or scratch's.
+  if (!KeepsGenerationOnEviction(view.descriptor) && !preserved) {
+    Advance(view.content_generation);
   }
   view.discarded = false;
   view.preserved = preserved;  // written back whole: a load restores them

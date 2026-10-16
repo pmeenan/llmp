@@ -315,7 +315,8 @@ class DecodingFixture : public ::testing::Test {
                            wide(0, pl::Phase::kVerify, kVerifyRows, 256),
                            wide(kMtp, pl::Phase::kDraft, kChunk, 512),
                            wide(kBlock, pl::Phase::kDraft, kVerifyRows, 256)};
-    config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+    config.launch =
+        [](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return std::make_unique<kn::RecordingLaunch>();
     };
     config.max_verify_rows = kVerifyRows;

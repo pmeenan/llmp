@@ -597,10 +597,23 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
   };
   if (!measuring) {
     a.activations = node_.activations().base;
-    a.activation_bytes = node_.activations().bytes;
+    a.activation_bytes = activation_bytes();
   }
   return a;
 }
+
+namespace {
+// `need` (Setup rounds it to whole extents) and at least one extent, within
+// the `mapped` region's cataloged prefix.
+std::uint64_t OwnPrefix(std::uint64_t need, const Mapped& mapped) {
+  return std::min(std::max<std::uint64_t>(need, kPagedExtent), mapped.bytes);
+}
+}  // namespace
+
+std::uint64_t ModelRunner::activation_bytes() const {
+  return OwnPrefix(activations_needed_, node_.activations());
+}
+std::uint64_t ModelRunner::pool_bytes() const { return OwnPrefix(pool_needed_, node_.pool()); }
 
 Status ModelRunner::Setup() {
   if (setup_ || released_) return Error("model runner setup is not repeatable");
@@ -697,7 +710,11 @@ Status ModelRunner::Setup() {
       Round(std::max<std::uint64_t>(activations + activations / 4, 1), kPagedExtent);
   // The launch's own part comes out of the pool before any step draws on
   // it (a small step's pool otherwise loses its margin and more to it).
-  pool_needed_ = pool == 0 ? 0 : Round(pool + pool / 4 + config_.launch_pool_reserve, kPagedExtent);
+  // Its reserve is set apart even when the measured steps draw nothing from
+  // the pool: the launch takes it from the pool's end whatever they measure.
+  pool_needed_ = pool == 0 && config_.launch_pool_reserve == 0
+                     ? 0
+                     : Round(pool + pool / 4 + config_.launch_pool_reserve, kPagedExtent);
   inputs_staging_bytes_ = Round(std::max<std::uint64_t>(inputs + inputs / 4, 256), 256);
   outputs_staging_bytes_ = Round(std::max<std::uint64_t>(outputs + outputs / 4, 256), 256);
   host_input_bytes_ =
@@ -1186,7 +1203,7 @@ Status ModelRunner::Register() {
 
 Status ModelRunner::Bind() {
   if (!registered_ || bound_ || released_) return Error("model runner bind order");
-  auto launch = config_.launch();
+  auto launch = config_.launch(pool_bytes());
   if (!launch) return Error(launch.error());
   if (*launch == nullptr) return Error("the launch is missing");
   if (auto bound = programs_.BindLaunch(std::move(*launch)); !bound) return bound;
@@ -1195,8 +1212,15 @@ Status ModelRunner::Bind() {
   key_base_.shape = {};
   if (auto current = CheckRoutingSource(); !current) return current;
   std::vector<catalog::ExtentId> shared = base_weight_extents();
-  for (const Mapped* mapped : {&node_.activations(), &node_.pool()}) {
-    shared.insert(shared.end(), mapped->extents.begin(), mapped->extents.end());
+  // Its own prefix of the shared workspace, not the whole: what another
+  // model needs past it is not this model's to hold (a pageable workspace
+  // evicts it while this model runs).
+  for (const auto& [mapped, bytes] : {std::pair{&node_.activations(), activation_bytes()},
+                                      std::pair{&node_.pool(), pool_bytes()}}) {
+    const auto count = std::min<std::size_t>(mapped->extents.size(),
+                                             static_cast<std::size_t>(bytes / kPagedExtent));
+    shared.insert(shared.end(), mapped->extents.begin(),
+                  mapped->extents.begin() + static_cast<std::ptrdiff_t>(count));
   }
   const auto own = memory_.extents();
   shared.insert(shared.end(), own.begin(), own.end());

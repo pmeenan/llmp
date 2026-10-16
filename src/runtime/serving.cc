@@ -567,7 +567,12 @@ Status Server::Start(bool snapshot) {
     host_inputs = std::max(host_inputs, m->host_input_bytes());
     plans = std::max(plans, m->plan_floor_bytes());
     pool = std::max(pool, m->pool_needed());
-    largest = std::max<std::uint64_t>(largest, m->weights().size() * kExtent);
+    // What it holds resident while it runs: its weights and its own prefix
+    // of the shared workspace, which pages with it (MapWorkspace below), not
+    // the largest weights beside the largest workspace of any model.
+    const std::uint64_t footprint =
+        ActiveFootprint(m->weights().size() * kExtent, m->activations_needed(), m->pool_needed());
+    largest = std::max(largest, footprint);
     std::string chunks;
     if (m->llm()) {
       const auto& l = static_cast<Llm&>(*m);
@@ -579,9 +584,14 @@ Status Server::Start(bool snapshot) {
             *l.configured_rows(), l.context());
       }
     }
-    Log(std::format("model {}: set up in {:.2f} s, {} weight extents ({:.2f} GB read a load){}",
-                    m->name(), Seconds(Clock::now() - started), m->weights().size(),
-                    static_cast<double>(m->weight_read_bytes()) / 1e9, chunks));
+    Log(std::format(
+        "model {}: set up in {:.2f} s, {} weight extents ({:.2f} GB read a load){}; workspace "
+        "{:.2f} GiB of activations and {:.2f} GiB of pool, {:.2f} GiB resident while active",
+        m->name(), Seconds(Clock::now() - started), m->weights().size(),
+        static_cast<double>(m->weight_read_bytes()) / 1e9, chunks,
+        static_cast<double>(m->activations_needed()) / (1ULL << 30U),
+        static_cast<double>(m->pool_needed()) / (1ULL << 30U),
+        static_cast<double>(footprint) / (1ULL << 30U)));
     // Each effective setting and its source (D-103; `llmp-runtime
     // settings` lists them with what each came from).
     Log(std::format("model {}: settings {}", m->name(), m->settings().Summary()));
@@ -627,7 +637,8 @@ Status Server::Start(bool snapshot) {
                                   .available = startup_available,
                                   .fixed = 0,
                                   .requests = RequestFloor(config_.client)};
-  const auto startup_reserve = GuardReserve(startup_guard) + largest + activations + pool;
+  // The largest footprint holds its model's workspace already.
+  const auto startup_reserve = GuardReserve(startup_guard) + largest;
   // Unknown availability (0) bounds nothing here, as the guard skips it;
   // the execution budget bounds what is adopted once it is set (Start).
   startup_token_capacity_ = startup_available == 0 ? std::numeric_limits<std::uint64_t>::max()
@@ -643,14 +654,18 @@ Status Server::Start(bool snapshot) {
   if (auto kept = PrepareKept(); !kept) {
     return kept;
   }
-  if (auto r = node_.MapWorkspace(activations, pool, startup_available); !r) {
+  // Pageable: virtually reserved and cataloged at the largest need, each model's
+  // closure naming only its own prefix, so a swap brings in what the
+  // incoming model uses and evicts what only the outgoing one did. Nothing
+  // of it is resident before the first activation.
+  if (auto r = node_.MapWorkspace(activations, pool, startup_available, true); !r) {
     return r;
   }
   workspace_ = activations + pool;
   snapshot_enabled_ = snapshot;
   // The budget (D-050's B): everything mapped for the node's life (the zone,
-  // each model's own memory, the workspace, the staging) and the largest
-  // model's weights, so a full swap is the only way in.
+  // each model's own memory, the staging) and the largest active footprint
+  // (a model's weights and its workspace), so a full swap is the only way in.
   fixed_ = node_.catalog().OccupancyOf(node_.domain()).Total().value();
   budget_ = fixed_ + largest;
   // A chunk's host-built inputs are the node's memory too, though allocated
@@ -688,7 +703,7 @@ Status Server::Start(bool snapshot) {
   Log(
       std::format("allocation guard: {{\"format\":\"llmp-wave-startup-guard-v1\","
                   "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
-                  "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
+                  "\"shared_scratch_bytes\":{},\"largest_active_footprint_bytes\":{},"
                   "\"host_input_bytes\":{},\"plan_floor_bytes\":{},\"uncounted_margin_bytes\":{},"
                   "\"available_after_fixed_bytes\":{},\"available_known\":{},"
                   "\"guard_passed\":{},\"registered_state_virtual_extent_bytes\":{},"
@@ -777,13 +792,15 @@ Status Server::Start(bool snapshot) {
     }
   }
   // The state room: what the budget leaves the conversations beside the
-  // fixed memory and the largest model's weights.
+  // fixed memory and the largest active footprint.
   const std::uint64_t room = budget_ > fixed_ + largest ? budget_ - fixed_ - largest : 0;
   state_room_ = room;
   Log(std::format(
-      "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed, the workspace {:.2f}; host-built "
+      "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed; the workspace {:.2f} GiB virtually "
+      "reserved, each model's part of it resident while that model is active; host-built "
       "chunk inputs {:.2f} GiB, a step's plans {:.2f} GiB and {:.2f} GiB of request memory "
-      "beside it); conversation state room {:.2f} GiB beside the largest weights; {:.2f} GiB "
+      "beside it); conversation state room {:.2f} GiB beside the largest weights and workspace; "
+      "{:.2f} GiB "
       "available; idle conversations spill, kept {} h within {} GiB",
       models_.size(), static_cast<double>(budget_) / (1ULL << 30U),
       static_cast<double>(fixed_) / (1ULL << 30U), static_cast<double>(workspace_) / (1ULL << 30U),
@@ -797,6 +814,8 @@ Status Server::Start(bool snapshot) {
       static_cast<Llm&>(*m).SetTokenMemory(token_memory_);
       static_cast<Llm&>(*m).set_retention(retention_);
       static_cast<Llm&>(*m).set_log([this](std::string_view text) { Log(text); });
+    } else {
+      static_cast<Image&>(*m).set_log([this](std::string_view text) { Log(text); });
     }
   }
   token_catalog_ready_ = true;
@@ -2231,6 +2250,31 @@ Status Server::EvictPaged(Served& m, bool weights) {
   return resident.empty() ? Status{} : node_.Evict(resident);
 }
 
+std::expected<std::vector<catalog::ExtentId>, std::string> Server::SpareWorkspace(
+    const Served& in) {
+  std::vector<catalog::ExtentId> spare;
+  if (!node_.workspace_pageable()) return spare;
+  std::set<catalog::ExtentId> named;
+  for (const auto& [extent, generation] : in.everything().extents) {
+    (void)generation;
+    named.insert(extent);
+  }
+  const std::vector<catalog::ExtentId> workspace = node_.workspace_extents();
+  auto listed = node_.Call(
+      [&]() -> Status {
+        for (const catalog::ExtentId extent : workspace) {
+          if (named.contains(extent)) continue;
+          if (const auto view = node_.catalog().Describe(extent);
+              view && view->state == catalog::ExtentState::kResident)
+            spare.push_back(extent);
+        }
+        return {};
+      },
+      "listing the workspace the incoming model does not use");
+  if (!listed) return std::unexpected(listed.error());
+  return spare;
+}
+
 Status Server::FenceModel(Served& m) {
   const std::uint32_t stream = m.paged().stream();
   if (node_.InRequest(stream)) {
@@ -2738,6 +2782,12 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
         }
       }
     }
+    // And the workspace only they used: the incoming closure names its own.
+    auto spare = SpareWorkspace(m);
+    if (!spare) return std::unexpected(spare.error());
+    if (!spare->empty()) {
+      if (auto r = node_.Evict(std::move(*spare)); !r) return r;
+    }
     // Every model's plans and graphs stay charged inside the budget: room
     // for the whole load is made through the reclaim order first, as a
     // swap's is, or a load after a failed swap (or a recovery) could be
@@ -2842,11 +2892,17 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     // what the swap frees; the reclaim order spills no idle state here).
     const std::vector<catalog::ExtentId> weights = out.weights();
     const std::vector<catalog::ExtentId> kept = out.kept_state();
+    // What of the shared workspace only the outgoing model used goes out
+    // with its weights (scratch: nothing is written back), so the incoming
+    // model's closure, which names its own prefix, fits beside the rest.
+    auto spare = SpareWorkspace(m);
+    if (!spare) return std::unexpected(spare.error());
     const std::uint64_t graphs_before = out.graphs().kept + m.graphs().kept;
     {
       std::vector<catalog::ExtentId> going =
           options_.partial_weight_eviction ? std::vector<catalog::ExtentId>{} : weights;
       going.insert(going.end(), kept.begin(), kept.end());
+      going.insert(going.end(), spare->begin(), spare->end());
       if (parts.with_state) {
         const std::vector<catalog::ExtentId> state = out.state();
         going.insert(going.end(), state.begin(), state.end());
@@ -2893,6 +2949,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     } else {
       extents.insert(extents.end(), weights.begin(), weights.end());
     }
+    extents.insert(extents.end(), spare->begin(), spare->end());
     const std::uint64_t graphs_after = out.graphs().kept + m.graphs().kept;
     parts.dropped_graphs = graphs_before > graphs_after ? graphs_before - graphs_after : 0;
     unkeep_incoming();

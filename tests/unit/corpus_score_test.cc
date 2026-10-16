@@ -229,7 +229,8 @@ class CorpusRunner : public ::testing::Test {
                             .segments = {{.slot = 0, .rows = 8, .read_cells = 64, .outputs = 8},
                                          {.slot = 2, .rows = 8, .read_cells = 64, .outputs = 8}},
                             .read_align = 256}};
-    config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+    config.launch =
+        [](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return std::make_unique<kn::RecordingLaunch>();
     };
     auto runner = en::ModelRunner::Create(node, std::move(config), std::move(source), 0, 0);

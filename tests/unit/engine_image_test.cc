@@ -140,7 +140,7 @@ struct Life {
   std::vector<en::PagedModel*> entered;
   bool attempted = false;
   Status Start(const std::filesystem::path& scratch, bool bad_port = false,
-               bool mapped_weight = false) {
+               bool mapped_weight = false, bool pageable = false) {
     if (auto opened = node.Open(); !opened) return opened;
     auto admitted = en::ExecutionMetadataAllowance::Admit(node.catalog(), node.domain(), 8ULL << 20,
                                                           1ULL << 30, 1ULL << 20);
@@ -255,7 +255,8 @@ struct Life {
     auto setup = image->Setup();
     if (image->has_paged()) entered.push_back(&image->paged());
     if (!setup) return setup;
-    if (auto mapped = node.MapWorkspace(image->activations_needed(), en::kPagedExtent, 64ULL << 20);
+    if (auto mapped =
+            node.MapWorkspace(image->activations_needed(), en::kPagedExtent, 64ULL << 20, pageable);
         !mapped)
       return mapped;
     if (auto started = node.Start(llmp::base::Bytes(64ULL << 20)); !started) return started;
@@ -494,6 +495,120 @@ TEST_F(EngineImageTest, InvalidGeometryAndGrowthRefusalLeaveCompletedRequestUsab
   ASSERT_TRUE(life->image->FirstOutput(first));
   ASSERT_TRUE(life->image->Finish(output));
   EXPECT_EQ(output, original);
+}
+// The runtime's pageable workspace: the image's closures page its prefix in;
+// a geometry growth pages its grown prefix in before the previous geometry
+// retires, and one whose room is taken is refused with that geometry still
+// usable; a stage whose closure cannot be admitted (no lease, nothing
+// moved) leaves the generation known and runnable once there is room.
+TEST_F(EngineImageTest, PageableGrowthPagesInOrIsRefusedWithTheModelUsable) {
+  ASSERT_TRUE(life->Start(path, false, false, true));
+  ASSERT_TRUE(life->node.workspace_pageable());
+  auto& node = life->node;
+  const auto state_of = [&](llmp::catalog::ExtentId extent) {
+    auto state = llmp::catalog::ExtentState::kNonresident;
+    EXPECT_TRUE(node.Call(
+        [&]() -> Status {
+          state = node.catalog().Describe(extent).value().state;
+          return {};
+        },
+        "reading a workspace extent"));
+    return state;
+  };
+  const auto occupancy = [&]() {
+    std::uint64_t total = 0;
+    EXPECT_TRUE(node.Call(
+        [&]() -> Status {
+          total = node.catalog().OccupancyOf(node.domain()).Total().value();
+          return {};
+        },
+        "reading the occupancy"));
+    return total;
+  };
+  using llmp::catalog::ExtentState;
+  EXPECT_EQ(state_of(node.activations().extents.front()), ExtentState::kNonresident);
+  std::string first, original, output;
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(original));
+  EXPECT_EQ(state_of(node.activations().extents.front()), ExtentState::kResident);
+  // A growth pages its new extents in as it replaces the geometry.
+  auto big = life->Geometry(1024, 512, 7.F);
+  ASSERT_TRUE(big);
+  ASSERT_TRUE(life->image->ReplaceGeometry(std::move(*big)));
+  const std::vector<llmp::catalog::ExtentId> grown = node.activations().extents;
+  ASSERT_EQ(grown.size(), 3U);
+  for (const auto extent : grown) EXPECT_EQ(state_of(extent), ExtentState::kResident);
+  const std::uint64_t with_big = occupancy();
+  auto small = life->Geometry(2, 2, 3.F);
+  ASSERT_TRUE(small);
+  ASSERT_TRUE(life->image->ReplaceGeometry(std::move(*small)));
+  // The smaller geometry of the active image gave back the tail only the
+  // larger one used.
+  const std::vector<llmp::catalog::ExtentId> tail(grown.begin() + 1, grown.end());
+  for (const auto extent : tail) EXPECT_EQ(state_of(extent), ExtentState::kNonresident);
+  // What the larger geometry's ports took beyond the smaller's: the
+  // occupancy it had less the tail it gave back, less what is held now.
+  const std::uint64_t tail_bytes = tail.size() * en::kPagedExtent;
+  ASSERT_GT(with_big, tail_bytes + occupancy());
+  const std::uint64_t ports = with_big - tail_bytes - occupancy();
+  // The room left is less than the tail, though enough for the larger
+  // geometry's ports.
+  std::vector<llmp::catalog::ExtentId> staging;
+  const std::uint64_t filler = node.budget().value() - occupancy() - ports - en::kPagedExtent;
+  auto held = node.Pinned(filler, 0, staging);
+  ASSERT_TRUE(held) << Failed(held).value_or("");
+  auto refused = life->Geometry(1024, 512, 7.F);
+  ASSERT_TRUE(refused);
+  std::weak_ptr<void> candidate_owner = refused->keep;
+  EXPECT_FALSE(life->image->ReplaceGeometry(std::move(*refused)));
+  EXPECT_TRUE(candidate_owner.expired());
+  for (const auto extent : tail) EXPECT_EQ(state_of(extent), ExtentState::kNonresident);
+  EXPECT_LE(occupancy(), node.budget().value());
+  ASSERT_TRUE(life->image->FirstOutput(first));  // the smaller geometry still runs
+  ASSERT_TRUE(life->image->Finish(output));
+  ASSERT_TRUE(node.FreePinned(*held));
+  auto again = life->Geometry(1024, 512, 7.F);
+  ASSERT_TRUE(again);
+  ASSERT_TRUE(life->image->ReplaceGeometry(std::move(*again)));
+  for (const auto extent : tail) EXPECT_EQ(state_of(extent), ExtentState::kResident);
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(output));
+  // A stage refused its closure: no lease, nothing moved, nothing unknown.
+  ASSERT_TRUE(node.Evict(tail));
+  staging.clear();
+  auto full = node.Pinned(node.budget().value() - occupancy() - en::kPagedExtent, 0, staging);
+  ASSERT_TRUE(full) << Failed(full).value_or("");
+  std::string late;
+  EXPECT_FALSE(life->image->FirstOutput(late));
+  EXPECT_FALSE(node.InRequest(0));
+  ASSERT_TRUE(node.FreePinned(*full));
+  ASSERT_TRUE(life->image->FirstOutput(late));
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_EQ(late, output);
+  // Prepared while another model is resident (the image inactive): the
+  // growth is only cataloged, and the image's own activation, which the
+  // swap makes room for, brings it in with the rest of its closure.
+  ASSERT_TRUE(node.SetActive(0, false));
+  auto wider = life->Geometry(2048, 512, 5.F);
+  ASSERT_TRUE(wider);
+  ASSERT_TRUE(life->image->ReplaceGeometry(std::move(*wider)));
+  const std::vector<llmp::catalog::ExtentId> wide = node.activations().extents;
+  ASSERT_GT(wide.size(), grown.size());
+  for (std::size_t i = grown.size(); i < wide.size(); ++i)
+    EXPECT_EQ(state_of(wide[i]), ExtentState::kNonresident);
+  ASSERT_TRUE(node.SetActive(0, true));
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(output));
+  for (const auto extent : wide) EXPECT_EQ(state_of(extent), ExtentState::kResident);
+  // A smaller geometry of the active image gives back what only the larger
+  // one used.
+  auto narrow = life->Geometry(2, 2, 3.F);
+  ASSERT_TRUE(narrow);
+  ASSERT_TRUE(life->image->ReplaceGeometry(std::move(*narrow)));
+  EXPECT_EQ(state_of(wide.front()), ExtentState::kResident);
+  EXPECT_EQ(state_of(wide.back()), ExtentState::kNonresident);
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(output));
 }
 TEST_F(EngineImageTest, ServingRequestPreparationIsIdleAtomicAndReusesCompletedOwners) {
   ASSERT_TRUE(life->Start(path));

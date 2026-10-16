@@ -309,7 +309,8 @@ Status Fp16Runner::Setup() {
     s.backend->LaunchReleased();
     s.cublas.reset();
   };
-  config.launch = [&s]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
+  config.launch =
+      [&s](std::uint64_t) -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
     return s.backend->Launch(
         {.base = s.node.pool().base, .size = base::Bytes(s.node.pool().bytes)});
   };

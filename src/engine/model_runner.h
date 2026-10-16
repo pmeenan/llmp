@@ -184,8 +184,12 @@ struct RunnerConfig {
   std::vector<KernelMemory> kernel_memory;
   std::function<std::expected<void, std::string>(std::span<const std::uint64_t> bases)> prepare;
   std::function<void()> retire;
-  // The step launch, made at Bind (after the workspace is mapped).
-  std::function<std::expected<std::unique_ptr<kernels::StepLaunch>, std::string>()> launch;
+  // The step launch, made at Bind (after the workspace is mapped), over the
+  // first `pool_bytes` of the node's pool: this model's own need of it
+  // (ModelRunner::pool_bytes), all its closures name of it.
+  std::function<std::expected<std::unique_ptr<kernels::StepLaunch>, std::string>(
+      std::uint64_t pool_bytes)>
+      launch;
   // What `launch` sets apart of the pool for itself (GGML's concurrent
   // lanes), at most: added to the pool the setup shapes measured (with its
   // margin), so what a step draws from the rest never shrinks below it.
@@ -373,6 +377,12 @@ class ModelRunner final : public PagedModel {
   // at once (the lookahead's allowance too).
   std::uint64_t activations_needed() const { return activations_needed_; }
   std::uint64_t pool_needed() const { return pool_needed_; }
+  // This model's prefix of each region of the node's shared workspace: its
+  // need in whole extents (at least one), within what the node mapped. Its
+  // steps are bound to it and its closures name only it, so a pageable
+  // workspace brings in only what the running model uses (paged_node.h).
+  std::uint64_t activation_bytes() const;
+  std::uint64_t pool_bytes() const;
   std::uint64_t host_input_bytes() const { return host_input_bytes_; }
   Status CheckExecutionUse(NumericalUse use) const { return source_->CheckExecutionUse(use); }
   std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const {

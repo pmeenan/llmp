@@ -580,7 +580,11 @@ class ModelRunnerTest : public ::testing::Test {
             Shape(pl::Phase::kPrefill, {Seg(0, 0, 512, 1), Seg(1, 0, 512, 1)})};
   }
   virtual std::uint64_t BudgetExtents() const { return 64; }
+  // Extents of each workspace region past this runner's need (another
+  // model's larger need on a shared node).
+  virtual std::uint64_t WorkspaceExtra() const { return 0; }
   virtual void Configure(en::RunnerConfig& /*config*/) {}
+  std::uint64_t launched_pool_ = 0;  // what the runner gave its launch
 
   void SetUp() override {
     // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
@@ -602,7 +606,9 @@ class ModelRunnerTest : public ::testing::Test {
                     .invalidate = {},
                     .drop_plans = {}};
     config.setup_shapes = SetupShapes();
-    config.launch = [this]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+    config.launch =
+        [this](std::uint64_t pool) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+      launched_pool_ = pool;
       return std::make_unique<LoggedLaunch>(&log_);
     };
     Configure(config);
@@ -616,8 +622,9 @@ class ModelRunnerTest : public ::testing::Test {
     ASSERT_TRUE(set) << llmp::test_support::Failed(set).value_or("");
     EXPECT_FALSE(runner_->Setup());
     EXPECT_FALSE(runner_->Bind());
-    ASSERT_TRUE(node_.MapWorkspace(runner_->activations_needed(),
-                                   std::max(runner_->pool_needed(), kExtent)));
+    ASSERT_TRUE(node_.MapWorkspace(
+        runner_->activations_needed() + (WorkspaceExtra() * kExtent),
+        std::max(runner_->pool_needed(), kExtent) + (WorkspaceExtra() * kExtent)));
     auto started = node_.Start(Bytes(fixed_ + (BudgetExtents() * kExtent)));
     ASSERT_TRUE(started) << llmp::test_support::Failed(started).value_or("");
     auto registered = runner_->Register();
@@ -766,6 +773,43 @@ TEST_F(ModelRunnerTest, MeasuresTheWidestShapesAtSetup) {
   ASSERT_EQ(source_->built().size(), 3U);
   for (const auto& built : source_->built()) EXPECT_TRUE(built.measuring);
   EXPECT_NE(runner_->report_json().find(R"("plan_floor":4096)"), std::string::npos);
+}
+
+// On a node whose workspace another model sized larger, the runner names
+// only its own prefix of each region (at least one extent): its closures,
+// its steps' activation bound and its launch's pool; and its steps still run.
+class WorkspacePrefixTest : public ModelRunnerTest {
+ protected:
+  std::uint64_t WorkspaceExtra() const override { return 3; }
+};
+
+TEST_F(WorkspacePrefixTest, TheRunnerNamesOnlyItsOwnPrefixOfTheSharedWorkspace) {
+  const std::uint64_t activations = std::max(runner_->activations_needed(), kExtent);
+  const std::uint64_t pool = std::max(runner_->pool_needed(), kExtent);
+  EXPECT_EQ(runner_->activation_bytes(), activations);
+  EXPECT_EQ(runner_->pool_bytes(), pool);
+  EXPECT_EQ(node_.activations().bytes, activations + (3 * kExtent));
+  EXPECT_EQ(node_.pool().bytes, pool + (3 * kExtent));
+  EXPECT_EQ(launched_pool_, pool);
+  const auto named = [&](const en::Mapped& mapped) {
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < mapped.extents.size(); ++i) {
+      const bool in =
+          std::ranges::any_of(runner_->slots().everything().extents,
+                              [&](const auto& e) { return e.first == mapped.extents[i]; });
+      if (in) {
+        EXPECT_EQ(i, count) << "a prefix, in order";
+        ++count;
+      }
+    }
+    return count;
+  };
+  EXPECT_EQ(named(node_.activations()), activations / kExtent);
+  EXPECT_EQ(named(node_.pool()), pool / kExtent);
+  const auto tokens = Tokens(100, 7);
+  auto ran = Run(Shape(pl::Phase::kPrefill, {Seg(0, 0, 100, 1)}), {tokens});
+  ASSERT_TRUE(ran.has_value()) << ran.error().what;
+  ExpectPrompt(0, tokens);
 }
 
 TEST_F(ModelRunnerTest, PrefillsWritesItsCellsAndReturnsItsFrontier) {
@@ -1069,7 +1113,7 @@ TEST(KernelMemory, AFailedPrepareIsStillRetired) {
     return std::unexpected("no handle");
   };
   config.retire = [&log] { log.emplace_back("retire"); };
-  config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+  config.launch = [](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
     return std::make_unique<kn::RecordingLaunch>();
   };
   auto runner = en::ModelRunner::Create(node, std::move(config),

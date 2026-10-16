@@ -544,7 +544,8 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
       if (!host) return std::unexpected(host.error());
       oracle_host = static_cast<std::byte*>(*host);
     }
-    config.launch = [&]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+    config.launch =
+        [&](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       auto made_launch = source->backend->Launch(
           {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
       if (made_launch) launch = static_cast<kg::GgmlStepLaunch*>(made_launch->get());

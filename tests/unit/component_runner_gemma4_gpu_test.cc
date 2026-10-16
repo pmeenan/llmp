@@ -490,7 +490,8 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     }
     if (c.verify) config.max_verify_rows = kVerifyRows;
     config.setup_shapes = shapes;
-    config.launch = [&]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+    config.launch =
+        [&](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return source->backend->Launch(
           {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
     };

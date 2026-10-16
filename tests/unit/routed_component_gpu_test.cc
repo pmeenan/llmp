@@ -578,7 +578,8 @@ en::Status SetupFixture(const std::shared_ptr<Lifetime>& life, int malformed = 0
       return held->weights->group_address(1);
     return held->weights->resource_address(found->second);
   };
-  config.launch = [held]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+  config.launch =
+      [held](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
     auto launch = held->kernel->backend->Launch(
         {.base = held->node.pool().base, .size = Bytes(held->node.pool().bytes)});
     if (launch) held->launch = launch->get();

@@ -618,6 +618,66 @@ TEST_P(PageInTest, AZeroSourceZeroesItsBackingWithoutAReadOrASlot) {
   EXPECT_FALSE(scheduler_->SetSource(extents_[2], unmanaged).has_value());
 }
 
+// A fresh source (PageSource::fresh, the shared workspace's scratch) maps
+// its backing and is done: no read, no slot and no copy. Only a
+// kDiscardable extent takes one, and only landed and managed, neither
+// zeroed nor written back. Evicted, it keeps its content generation (no
+// one's contents), so a closure taken before still names it.
+TEST_P(PageInTest, AFreshSourceOnlyMapsItsBacking) {
+  Build();
+  PageSource weight = Source(0, weights_);
+  weight.fresh = true;
+  EXPECT_FALSE(scheduler_->SetSource(extents_[0], weight).has_value());
+  const ExtentId scratch = catalog_
+                               .AddExtent({.domain = domain_,
+                                           .memory_class = llmp::catalog::MemoryClass::kScratch,
+                                           .recovery = llmp::catalog::Recovery::kDiscardable,
+                                           .size = Bytes(kSize),
+                                           .content = {}})
+                               .value();
+  PageSource fresh = Source(0, moved_);
+  fresh.fresh = true;
+  for (int bad = 0; bad < 4; ++bad) {
+    PageSource refused = fresh;
+    if (bad == 0) refused.zero = true;
+    if (bad == 1) refused.write_back = true;
+    if (bad == 2) refused.backing.reset();
+    if (bad == 3) {
+      refused.landed = false;
+      refused.read.memory = At(Place(moved_, 0));
+    }
+    EXPECT_FALSE(scheduler_->SetSource(scratch, refused).has_value()) << bad;
+  }
+  // Its read is never made: its length is not held to a landing slot's.
+  PageSource longer = fresh;
+  longer.read.length = 4 * kSize;
+  EXPECT_TRUE(scheduler_->SetSource(scratch, longer).has_value());
+  ASSERT_TRUE(scheduler_->SetSource(scratch, fresh).has_value());
+  const std::array<ExtentId, 1> only = {scratch};
+  const Closure before = catalog_.ClosureOfExtents(only).value();
+  LoadProgram::Report report;
+  ASSERT_TRUE(scheduler_->Start(1, Load(report, before)).has_value());
+  Settle();
+  ASSERT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(View(scratch).state, ExtentState::kResident);
+  EXPECT_TRUE(storage_.submitted().empty());
+  EXPECT_EQ(scheduler_->slots_busy(), 0U);
+  EXPECT_EQ(scheduler_->operations(), 0U);
+  EXPECT_EQ(memory_.backings(), baseline_ + 1);
+  EvictProgram::Report evicted;
+  ASSERT_TRUE(scheduler_->Start(2, Evicting(evicted, {scratch})).has_value());
+  Settle();
+  ASSERT_EQ(evicted.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(View(scratch).state, ExtentState::kNonresident);
+  EXPECT_EQ(memory_.backings(), baseline_);
+  EXPECT_EQ(View(scratch).content_generation, before.extents.front().second);
+  LoadProgram::Report again;
+  ASSERT_TRUE(scheduler_->Start(3, Load(again, before)).has_value());
+  Settle();
+  EXPECT_EQ(again.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(storage_.submitted().empty());
+}
+
 // The zone bounds what is in flight: two slots, so at most two reads; the
 // window lets two more loads map backing ahead and wait for a slot, and
 // the rest wait unmapped. Slots are granted in the order loads asked.

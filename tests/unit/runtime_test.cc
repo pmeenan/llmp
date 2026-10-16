@@ -18,6 +18,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <csignal>
@@ -983,6 +984,54 @@ TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
           .has_value());
   // The reserve the budget leaves out: host inputs, plans and the margin.
   EXPECT_EQ(GuardReserve({.host_inputs = kGiB, .plans = plans}), kGiB + plans + kUncountedMargin);
+}
+
+// One model is resident at a time and the shared workspace pages with it
+// (engine/paged_node.h MapWorkspace): the guard sizes the largest of each
+// model's weights plus its own workspace, never the largest weights beside
+// another model's larger workspace. M3's table on `spark` (2026-10-16):
+// DeepSeek V4 with DSpark beside Qwen3.8 with MTP at four slots.
+TEST(MemoryGuard, SizesTheLargestActiveFootprintNotTheLargestOfEach) {
+  using llmp::runtime::ActiveFootprint;
+  using llmp::runtime::CheckMemoryGuard;
+  using llmp::runtime::GuardReserve;
+  constexpr std::uint64_t kExtent = std::uint64_t{2} << 20U;
+  constexpr std::uint64_t kMost = ~std::uint64_t{0};
+  // Each region in whole extents, at least one; saturating.
+  EXPECT_EQ(ActiveFootprint(0, 0, 0), 2 * kExtent);
+  EXPECT_EQ(ActiveFootprint(7, 1, kExtent), 7 + (2 * kExtent));
+  EXPECT_EQ(ActiveFootprint(0, kExtent + 1, 0), 3 * kExtent);
+  EXPECT_EQ(ActiveFootprint(kMost, 1, 1), kMost);
+  EXPECT_EQ(ActiveFootprint(0, kMost, kMost), kMost);
+  const std::uint64_t deepseek_weights = 107843944448, deepseek_activations = 2833252352,
+                      deepseek_pool = 222298112;
+  const std::uint64_t qwen_weights = 76902563840, qwen_activations = 8644460544,
+                      qwen_pool = 222298112;
+  const std::uint64_t deepseek =
+      ActiveFootprint(deepseek_weights, deepseek_activations, deepseek_pool);
+  const std::uint64_t qwen = ActiveFootprint(qwen_weights, qwen_activations, qwen_pool);
+  EXPECT_EQ(deepseek, deepseek_weights + deepseek_activations + deepseek_pool);
+  const std::uint64_t largest = std::max(deepseek, qwen);
+  EXPECT_EQ(largest, deepseek);
+  // What the guard sized before: DeepSeek's weights beside Qwen's workspace.
+  const std::uint64_t of_each = deepseek_weights + qwen_activations + qwen_pool;
+  EXPECT_GT(of_each - largest, std::uint64_t{5} << 30U);
+  llmp::runtime::MemoryGuard guard{.largest = largest,
+                                   .host_inputs = 107772672,
+                                   .plans = 155377216,
+                                   .fixed = 6 * (std::uint64_t{1} << 30U),
+                                   .requests = 268435456};
+  guard.available = largest + GuardReserve(guard);
+  EXPECT_TRUE(CheckMemoryGuard(guard).has_value());
+  // A refusal still comes when the active footprint itself does not fit.
+  auto short_by_one = guard;
+  short_by_one.available -= 1;
+  const auto refused = CheckMemoryGuard(short_by_one);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("the largest model's weights and workspace"));
+  auto of_each_guard = guard;
+  of_each_guard.largest = of_each;
+  EXPECT_FALSE(CheckMemoryGuard(of_each_guard).has_value());
 }
 
 TEST(StartupHostAllowanceTest, ParserLoanIsIndependentOfMutableFileSizes) {

@@ -28,6 +28,41 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-058: EXL3's selected source keeps its persistent lock slots at the shared pool's base  (2026-10-16, status: open)
+
+Environment: any node that would serve an EXL3 model through the GGML
+backend's selected source (`kernels/exl3/selected_source.cc`), not yet
+wired into serving. `GgmlBackend::Launch` (`kernels/ggml/step_program.cc`)
+gives the selected source the first `persistent_bytes()` of the pool it is
+handed, and EXL3's launch context zeroes its lock slots there once, at its
+first launch (`kernels/exl3/launch.cc`, `needs_zero_`), then relies on them
+persisting across jobs. The pool is the node's shared workspace: since
+2026-10-16 it pages with the active model (a swap evicts it, a load brings
+fresh, unzeroed backing, and the catalog keeps scratch's generation,
+`catalog::KeepsGenerationOnEviction`), and every other model's scratch
+draws from the same base between jobs anyway. Impact: latent; an EXL3
+model served beside another would run with stale or garbage locks.
+Expected fix before EXL3 selected sources serve: move the lock slots into
+the runner's own `kernel_memory` (pinned, never shared or paged), as the
+cuBLAS workspace is, or re-zero them at each request's first job.
+
+## RE-057: A timing run begun with a build's page cache swaps during its first large load  (2026-10-16, status: worked-around)
+
+Environment: `spark` (GB10, 128 GB unified memory, 16 GiB of swap,
+`vm.swappiness` 60), M3's swap table (DeepSeek V4 with DSpark beside
+Qwen3.8 and Qwen-Image) started right after a `spark-native` build that
+left 12.8 GB of page cache. Observed: the startup guard passed (the cache
+counts in MemAvailable), but DeepSeek's first load made the kernel swap
+about 1.8 GB of anonymous memory out and back while it reclaimed that
+cache: the first cycle's rows took 63 and 28 s (page-in 3.8 GB/s, a 33 s
+first output, an 8 s evict) where the same rows begun with 0.4 GB of
+cache took 8.8 and 6.3 s; later cycles were normal. Expected: reclaiming
+clean cache without swapping. Workaround: start timing runs before a
+build's or import's cache builds up, or drop the clean cache of the files
+it read first (`POSIX_FADV_DONTNEED` on each regular file needs no root;
+skip FIFOs and sockets, which block an `open`). Related: RE-052, the same
+cache tripping the guard.
+
 ## RE-056: Gemma 4 instruct checkpoints are not raw-text language models  (2026-10-15, status: worked-around)
 
 **Environment and finding.** Spark A; the approved Gemma 4 26B-A4B

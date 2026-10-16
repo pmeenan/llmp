@@ -417,7 +417,12 @@ def check(dirs: list[str], case_name: str, prepared_limit: float = PREPARED_LIMI
             runtimes.add((base / "runtime.sha256").read_text().split()[0])
         except (OSError, IndexError):
             problems.append(f"{d}: no runtime.sha256")
-        contexts.add(report.get("context_sha256"))
+        # A run whose A is only the image never reads the context text (the
+        # runtime hashes what it read: nothing), as the planned job of the
+        # image A pairs does; only runs with an LLM A must agree on it.
+        if any(not (parse_row(r.get("name", "")) or {}).get("image")
+               for r in report.get("rows") or []):
+            contexts.add(report.get("context_sha256"))
         if report.get("context_tokens") != case.context_tokens:
             problems.append(f"{d}: {report.get('context_tokens')} context tokens, not "
                             f"{case.context_tokens}")

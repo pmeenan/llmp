@@ -36,6 +36,7 @@
 #include <optional>
 #include <print>
 #include <set>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -1411,6 +1412,247 @@ TEST(CudaPagedNodeTest, AHungStreamCannotBeCancelledSoItsPatienceGivesUp) {
   const ts::Status finished = node.TearDown(teardown);
   EXPECT_TRUE(finished.has_value()) << finished.error();
   (void)cudaFreeHost(flag);
+}
+
+// The runtime's pageable workspace (MapWorkspace's `pageable`): virtually reserved and
+// cataloged with no backing, each extent paged in by a load or a closure at
+// its own fixed place through the map-only source the node registers at
+// Start, evicted like a weight (its content generation kept: closures taken
+// before lease it again), never taken by an acquisition, grown after Start
+// without backing, and leaving no backing at teardown.
+TEST(CudaPagedNodeTest, PageableWorkspacePagesAtItsPlacesAndIsNeverAVictim) {
+  ts::PagedNode node({.compute_streams = 1, .slots = 4, .inline_lanes = false, .coalesce = false});
+  ASSERT_TRUE(node.Open());
+  // On the scheduler's thread once the node runs (paged_node.h).
+  const auto occupancy = [&node]() {
+    std::uint64_t total = 0;
+    const auto read = [&]() -> ts::Status {
+      total = node.catalog().OccupancyOf(node.domain()).Total().value();
+      return {};
+    };
+    if (node.threaded()) {
+      EXPECT_TRUE(node.Call(read, "reading the occupancy"));
+    } else {
+      std::ignore = read();
+    }
+    return total;
+  };
+  const std::uint64_t fixed = occupancy();
+  ASSERT_TRUE(node.MapWorkspace(3 * kExtent, kExtent, 8 * kExtent, true));
+  EXPECT_TRUE(node.workspace_pageable());
+  EXPECT_EQ(occupancy(), fixed);  // nothing of it is resident
+  const std::vector<ExtentId> activations = node.activations().extents;
+  const std::vector<ExtentId> pool = node.pool().extents;
+  ASSERT_EQ(activations.size(), 3U);
+  ASSERT_EQ(pool.size(), 1U);
+  EXPECT_EQ(node.workspace_extents().size(), 4U);
+  // Room for three of its four extents.
+  ASSERT_TRUE(node.Start(Bytes(fixed + (3 * kExtent))));
+  node.Run();
+  const auto state_of = [&node](ExtentId extent) {
+    ExtentState state = ExtentState::kNonresident;
+    EXPECT_TRUE(node.Call(
+        [&]() -> ts::Status {
+          state = node.catalog().Describe(extent).value().state;
+          return {};
+        },
+        "reading an extent's state"));
+    return state;
+  };
+  const auto closure_of = [&node](std::vector<ExtentId> extents) {
+    llmp::catalog::Closure closure;
+    EXPECT_TRUE(node.Call(
+        [&]() -> ts::Status {
+          auto made = node.catalog().ClosureOfExtents(extents);
+          if (!made) return std::unexpected("a closure of workspace extents");
+          closure = *made;
+          return {};
+        },
+        "forming a workspace closure"));
+    return closure;
+  };
+  std::vector<llmp::engine::LoadStats> log;
+  ASSERT_TRUE(node.Load({activations[0], activations[1]}, "the workspace's prefix", log));
+  EXPECT_EQ(state_of(activations[0]), ExtentState::kResident);
+  EXPECT_EQ(state_of(activations[2]), ExtentState::kNonresident);
+  EXPECT_EQ(occupancy(), fixed + (2 * kExtent));
+  void* host = nullptr;
+  ASSERT_EQ(cudaMallocHost(&host, 2 * kExtent), cudaSuccess);
+  const std::uint64_t base = node.activations().base;
+  // Taken once: scratch keeps its generation across an eviction, so this
+  // closure leases the prefix again once it is back.
+  const llmp::catalog::Closure prefix = closure_of({activations[0], activations[1]});
+  const auto copy_back = [&](std::uint8_t fill) {
+    return node.Job(
+        prefix,
+        [&, fill](llmp::providers::NativeStream stream) {
+          auto* native = static_cast<cudaStream_t>(stream.handle);
+          // NOLINTBEGIN(performance-no-int-to-ptr)
+          if (fill != 0 && cudaMemsetAsync(reinterpret_cast<void*>(base), fill, 2 * kExtent,
+                                           native) != cudaSuccess)
+            return sc::JobResult::kNotStarted;
+          return cudaMemcpyAsync(host, reinterpret_cast<const void*>(base), 2 * kExtent,
+                                 cudaMemcpyDeviceToHost, native) == cudaSuccess
+                     ? sc::JobResult::kQueued
+                     : sc::JobResult::kFailed;
+          // NOLINTEND(performance-no-int-to-ptr)
+        },
+        "the workspace's prefix", 0);
+  };
+  ASSERT_TRUE(copy_back(0xAB));
+  const auto* bytes = static_cast<const std::uint8_t*>(host);
+  EXPECT_EQ(bytes[0], 0xAB);
+  EXPECT_EQ(bytes[(2 * kExtent) - 1], 0xAB);
+  // Out like a weight (scratch: nothing written back), and back at the same
+  // place, mapped and usable under the same extent and closure.
+  ASSERT_TRUE(node.Evict({activations[1]}));
+  EXPECT_EQ(state_of(activations[1]), ExtentState::kNonresident);
+  EXPECT_EQ(occupancy(), fixed + kExtent);
+  ASSERT_TRUE(node.Load({activations[1]}, "the workspace's extent again", log));
+  ASSERT_TRUE(copy_back(0xCD));
+  EXPECT_EQ(bytes[0], 0xCD);
+  EXPECT_EQ(bytes[kExtent], 0xCD);
+  EXPECT_EQ(bytes[(2 * kExtent) - 1], 0xCD);
+  // An acquisition that does not fit beside it takes nothing of it.
+  ts::AcquireReport report;
+  bool over_budget = false;
+  EXPECT_FALSE(node.Acquire(closure_of({activations[2], pool[0]}), report,
+                            "an acquisition past the room", &over_budget));
+  EXPECT_TRUE(over_budget);
+  EXPECT_TRUE(report.evicted.empty());
+  EXPECT_EQ(state_of(activations[0]), ExtentState::kResident);
+  EXPECT_EQ(state_of(activations[1]), ExtentState::kResident);
+  // One that fits pages in through the same sources.
+  ASSERT_TRUE(node.Evict({activations[0], activations[1]}));
+  ASSERT_TRUE(node.Acquire(closure_of({activations[2], pool[0]}), report, "an acquisition"));
+  EXPECT_EQ(state_of(pool[0]), ExtentState::kResident);
+  // Growth after Start catalogs without backing, within the reservation.
+  ASSERT_TRUE(node.GrowWorkspace(4 * kExtent, kExtent));
+  ASSERT_EQ(node.activations().extents.size(), 4U);
+  EXPECT_EQ(state_of(node.activations().extents[3]), ExtentState::kNonresident);
+  EXPECT_FALSE(node.GrowWorkspace(9 * kExtent, kExtent));
+  ASSERT_TRUE(node.Load({node.activations().extents[3]}, "a grown extent", log));
+  EXPECT_EQ(state_of(node.activations().extents[3]), ExtentState::kResident);
+  // Teardown evicts what is resident and leaves no backing.
+  const ts::Status finished = node.TearDown(std::span<ts::PagedModel* const>{});
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+  (void)cudaFreeHost(host);
+}
+
+// An eviction of a pageable workspace extent that a submitted job's lease
+// holds waits for that job's fence: the backing is unmapped only after the
+// work in flight on it ends (the gate opens a quarter second in).
+TEST(CudaPagedNodeTest, APageableWorkspaceEvictionWaitsForTheJobInFlight) {
+  ts::PagedNode node({.compute_streams = 1, .slots = 4, .inline_lanes = false, .coalesce = false});
+  ASSERT_TRUE(node.Open());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent, 0, true));
+  ASSERT_TRUE(node.Start(Bytes(fixed + (4 * kExtent))));
+  node.Run();
+  const ExtentId scratch = node.activations().extents.front();
+  std::vector<llmp::engine::LoadStats> log;
+  ASSERT_TRUE(node.Load({scratch}, "the workspace's first extent", log));
+  llmp::catalog::Closure closure;
+  ASSERT_TRUE(node.Call(
+      [&]() -> ts::Status {
+        auto made = node.catalog().ClosureOfExtents(std::array{scratch});
+        if (!made) return std::unexpected("the workspace closure");
+        closure = *made;
+        return {};
+      },
+      "forming the workspace closure"));
+  void* flag = nullptr;
+  ASSERT_EQ(cudaHostAlloc(&flag, sizeof(std::uint32_t), cudaHostAllocMapped), cudaSuccess);
+  std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(0);
+  void* device_flag = nullptr;
+  ASSERT_EQ(cudaHostGetDevicePointer(&device_flag, flag, 0), cudaSuccess);
+  const std::uint64_t base = node.activations().base;
+  std::atomic<bool> queued{false};
+  ts::Done done;
+  const std::uint64_t request = node.Submit(std::make_unique<ts::RunProgram>(
+      done, closure,
+      [&queued, device_flag, base](llmp::providers::NativeStream native) {
+        if (cuStreamWaitValue32(static_cast<CUstream>(native.handle),
+                                reinterpret_cast<CUdeviceptr>(device_flag), 1,
+                                CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS)
+          return sc::JobResult::kNotStarted;
+        // NOLINTNEXTLINE(performance-no-int-to-ptr)
+        if (cudaMemsetAsync(reinterpret_cast<void*>(base), 7, kExtent,
+                            static_cast<cudaStream_t>(native.handle)) != cudaSuccess)
+          return sc::JobResult::kUnknown;
+        queued = true;
+        return sc::JobResult::kQueued;
+      },
+      0));
+  for (int i = 0; i < 1000 && !queued.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  ASSERT_TRUE(queued.load());
+  const auto start = std::chrono::steady_clock::now();
+  std::jthread opener([flag](const std::stop_token&) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(1);
+  });
+  ASSERT_TRUE(node.Evict({scratch}));
+  const double waited =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  EXPECT_GE(waited, 0.2);  // not before the job's fence
+  opener.join();
+  const ts::Status job = node.Await(done, "the gated workspace job", request);
+  EXPECT_TRUE(job.has_value()) << job.error();
+  ExtentState state = ExtentState::kResident;
+  ASSERT_TRUE(node.Call(
+      [&]() -> ts::Status {
+        state = node.catalog().Describe(scratch).value().state;
+        return {};
+      },
+      "reading the evicted extent"));
+  EXPECT_EQ(state, ExtentState::kNonresident);
+  const ts::Status finished = node.TearDown(std::span<ts::PagedModel* const>{});
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+  (void)cudaFreeHost(flag);
+}
+
+// A pageable workspace's teardown: before Start (no scheduler: only the
+// virtual reservations go), and with an extent resident under a request
+// still open (the request ends first, then the extent is evicted); neither
+// leaves a backing.
+TEST(CudaPagedNodeTest, APageableWorkspaceTearsDownBeforeStartAndUnderARequest) {
+  {
+    ts::PagedNode node({.compute_streams = 1, .slots = 4, .inline_lanes = false});
+    ASSERT_TRUE(node.Open());
+    ASSERT_TRUE(node.MapWorkspace(3 * kExtent, kExtent, 8 * kExtent, true));
+    const ts::Status finished = node.TearDown(std::span<ts::PagedModel* const>{});
+    EXPECT_TRUE(finished.has_value()) << finished.error();
+  }
+  ts::PagedNode node({.compute_streams = 1, .slots = 4, .inline_lanes = false});
+  ASSERT_TRUE(node.Open());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.MapWorkspace(2 * kExtent, kExtent, 0, true));
+  ASSERT_TRUE(node.Start(Bytes(fixed + (4 * kExtent))));
+  node.Run();
+  llmp::catalog::Closure closure;
+  ASSERT_TRUE(node.Call(
+      [&]() -> ts::Status {
+        auto made = node.catalog().ClosureOfExtents(node.workspace_extents());
+        if (!made) return std::unexpected("the workspace closure");
+        closure = *made;
+        return {};
+      },
+      "forming the workspace closure"));
+  // The request's task brings the whole workspace in and holds it.
+  ASSERT_TRUE(node.BeginRequest(0, closure, "a request over the workspace"));
+  std::uint64_t occupied = 0;
+  ASSERT_TRUE(node.Call(
+      [&]() -> ts::Status {
+        occupied = node.catalog().OccupancyOf(node.domain()).Total().value();
+        return {};
+      },
+      "reading the occupancy"));
+  EXPECT_EQ(occupied, fixed + (3 * kExtent));
+  EXPECT_TRUE(node.InRequest(0));
+  const ts::Status finished = node.TearDown(std::span<ts::PagedModel* const>{});
+  EXPECT_TRUE(finished.has_value()) << finished.error();
 }
 
 }  // namespace

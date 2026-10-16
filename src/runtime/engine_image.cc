@@ -15,6 +15,7 @@
 #include "engine/program_lifecycle.h"
 #include "engine/support.h"
 #include "providers/device_runtime.h"
+#include "scheduler/programs.h"
 
 namespace llmp::runtime {
 namespace {
@@ -41,6 +42,21 @@ std::expected<std::uint64_t, std::string> Margin(std::uint64_t bytes, std::uint6
 void Unique(std::vector<catalog::ExtentId>& values) {
   std::ranges::sort(values);
   values.erase(std::unique(values.begin(), values.end()), values.end());
+}
+// A need's prefix of a region of the node's shared workspace: the need (in
+// whole extents, at least one) within what the node cataloged. The image's
+// steps are bound to it and its closures name only it, so a pageable
+// workspace brings in only what the running model uses (paged_node.h).
+std::uint64_t WorkspacePrefix(std::uint64_t need, const en::Mapped& mapped) {
+  return std::min(std::max<std::uint64_t>(need, en::kPagedExtent), mapped.bytes);
+}
+void AddWorkspacePrefix(std::vector<catalog::ExtentId>& ids, std::uint64_t need,
+                        const en::Mapped& mapped) {
+  const auto count = std::min<std::size_t>(
+      mapped.extents.size(),
+      static_cast<std::size_t>(WorkspacePrefix(need, mapped) / en::kPagedExtent));
+  ids.insert(ids.end(), mapped.extents.begin(),
+             mapped.extents.begin() + static_cast<std::ptrdiff_t>(count));
 }
 }  // namespace
 
@@ -111,7 +127,8 @@ struct EngineImage::State {
   kn::Addresses Addresses(std::size_t stage, bool measuring) const {
     auto result = parts.stages.at(stage).addresses;
     result.activations = measuring ? 0 : memory.node().activations().base;
-    result.activation_bytes = measuring ? 0 : memory.node().activations().bytes;
+    result.activation_bytes =
+        measuring ? 0 : WorkspacePrefix(activation_bytes, memory.node().activations());
     result.activation_alignment = en::kPagedExtent;
     return result;
   }
@@ -353,8 +370,8 @@ Status EngineImage::BindState(State& s) {
     auto common = s.memory.extents();
     const auto model_extents = s.model->memory.extents();
     common.insert(common.end(), model_extents.begin(), model_extents.end());
-    for (const auto* mapping : {&node_.activations(), &node_.pool()})
-      common.insert(common.end(), mapping->extents.begin(), mapping->extents.end());
+    AddWorkspacePrefix(common, s.activation_bytes, node_.activations());
+    AddWorkspacePrefix(common, s.pool_bytes, node_.pool());
     Unique(common);
     auto fence = node_.catalog().ClosureOfExtents(common);
     if (!fence) return Error("image common closure is incomplete");
@@ -426,8 +443,8 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     auto ids = s.memory.extents();
     const auto model_extents = s.model->memory.extents();
     ids.insert(ids.end(), model_extents.begin(), model_extents.end());
-    for (const auto* mapped : {&node_.activations(), &node_.pool()})
-      ids.insert(ids.end(), mapped->extents.begin(), mapped->extents.end());
+    AddWorkspacePrefix(ids, s.activation_bytes, node_.activations());
+    AddWorkspacePrefix(ids, s.pool_bytes, node_.pool());
     const auto& selected = s.stage_weights[invocation.stage];
     ids.insert(ids.end(), selected.begin(), selected.end());
     Unique(ids);
@@ -438,6 +455,13 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
                            : node_.RefreshRequest(stream(), *closure);
     began = began || (opened && admitted);
     if (!admitted) {
+      // No lease and nothing of this stage queued (a refused page-in, room
+      // the closure could not have): the request's task has ended and
+      // every earlier stage's job completed, so the generation is known and
+      // goes back to its start (settle_on_exit). Only a request this call
+      // opened says so; a refreshed one (the caller's) or a lease still
+      // held past a failure leaves it unknown.
+      if (opened && !node_.InRequest(stream())) return admitted;
       s.unknown = true;
       s.flight = hold;
       return admitted;
@@ -691,6 +715,19 @@ Status EngineImage::ReplaceGeometry(ImageGeometry geometry) {
     return refuse(grown);
   candidate->registered = previous->model->registered;
   if (auto bound = BindState(*candidate); !bound) return refuse(bound);
+  // A pageable workspace's growth is only cataloged. While the image is the
+  // active model its new extents come in here, through the reclaim order
+  // like any acquisition, so a growth that cannot have its room is refused
+  // while the previous geometry still stands, not at the next generation's
+  // first stage. While another model is resident (a request prepared
+  // before its activation), its activation brings them in with the rest of
+  // the image's closure, the outgoing model's weights making the room, and
+  // refuses before anything moves if they do not fit.
+  if (node_.workspace_pageable() && node_.active(index_)) {
+    scheduler::AcquireReport report;
+    if (auto paged = node_.Acquire(candidate->fence, report, "the image's grown workspace"); !paged)
+      return refuse(paged);
+  }
   // All candidate validation/payment precedes retiring the old geometry. The
   // shared model/launch and node-wide workspace remain alive throughout.
   previous->plans.Clear();
@@ -704,8 +741,32 @@ Status EngineImage::ReplaceGeometry(ImageGeometry geometry) {
   candidate->programs.runs().SetStaging(candidate->input, candidate->input_bytes);
   candidate->generation_complete = true;
   candidate->next = candidate->parts.request.sequence.size();
+  // A smaller geometry of the active image: what of the workspace only the
+  // previous one used goes out (scratch: nothing to keep), as a swap to a
+  // model that uses less would take it. Its places stay registered.
+  std::vector<catalog::ExtentId> spare;
+  if (node_.workspace_pageable() && node_.active(index_)) {
+    std::vector<catalog::ExtentId> before, after;
+    AddWorkspacePrefix(before, previous->activation_bytes, node_.activations());
+    AddWorkspacePrefix(before, previous->pool_bytes, node_.pool());
+    AddWorkspacePrefix(after, candidate->activation_bytes, node_.activations());
+    AddWorkspacePrefix(after, candidate->pool_bytes, node_.pool());
+    Unique(after);
+    for (const auto extent : before)
+      if (!std::ranges::binary_search(after, extent)) spare.push_back(extent);
+  }
   state_ = std::move(candidate);
   transitions_.clear();
+  if (!spare.empty()) {
+    // The new geometry and its request are in place already: a failed
+    // eviction leaves the spare extents resident (charged, unused; the next
+    // swap's room takes them), logged, never the geometry unusable.
+    if (auto evicted = node_.Evict(std::move(spare)); !evicted)
+      Log(
+          std::format("model {}: the workspace its smaller geometry no longer uses stays "
+                      "resident: {}",
+                      name(), evicted.error()));
+  }
   return {};
 }
 

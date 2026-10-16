@@ -261,7 +261,8 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
     config.weights.push_back(
         {.weights = std::move(weights), .places = std::move(places), .slabs = {}});
     config.setup_shapes = shapes;
-    config.launch = [&]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+    config.launch =
+        [&](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return backend->Launch(
           {.base = node.pool().base, .size = llmp::base::Bytes(node.pool().bytes)});
     };

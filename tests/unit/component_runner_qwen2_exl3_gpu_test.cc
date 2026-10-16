@@ -1363,7 +1363,8 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
     }
     config.setup_shapes = keys;
     config.launch =
-        [held = life.get()]() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+        [held = life.get()](
+            std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return held->kernel->backend->Launch(
           {.base = held->node.pool().base, .size = llmp::base::Bytes(held->node.pool().bytes)});
     };

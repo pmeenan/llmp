@@ -559,11 +559,24 @@ TEST_F(CatalogTest, ContentChangesNeedTheRightHolder) {
   Load(weights);
   EXPECT_EQ(Failed(catalog_.ReplaceContents(state)), CatalogError::kWrongState);  // no lease
   EXPECT_EQ(Failed(catalog_.InvalidateContents(weights)), CatalogError::kWrongState);
+  // Scratch is no one's: evicting it keeps its generation, so a closure
+  // taken before leases it once it is loaded again; an explicit
+  // invalidation advances it.
+  const auto before = Of({scratch});
+  auto dropped = catalog_.BeginEvict(scratch).value();
+  ASSERT_TRUE(catalog_.CompleteEvict(dropped).has_value());
+  EXPECT_EQ(catalog_.Describe(scratch).value().content_generation, before.extents.front().second);
+  Load(scratch);
+  const auto again = catalog_.AcquireLease(before);
+  ASSERT_TRUE(again.has_value());
+  ASSERT_TRUE(catalog_.ReleaseLease(*again).has_value());
   ASSERT_TRUE(catalog_.InvalidateContents(scratch).has_value());
+  EXPECT_GT(catalog_.Describe(scratch).value().content_generation, before.extents.front().second);
   auto evict = catalog_.BeginEvict(scratch).value();
   ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
   EXPECT_FALSE(catalog_.Describe(scratch).value().discarded);
   Load(scratch);
+  EXPECT_FALSE(catalog_.AcquireLease(before).has_value());
   EXPECT_TRUE(catalog_.AcquireLease(Of({scratch})).has_value());
 }
 

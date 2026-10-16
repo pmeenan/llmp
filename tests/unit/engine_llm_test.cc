@@ -240,7 +240,8 @@ class EngineLlmTest : public ::testing::Test {
         if (!kept_progress_)
           parts.config.setup_shapes.push_back(Wide(kBlock, pl::Phase::kDraft, kVerifyRows, 256));
       }
-      parts.config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+      parts.config.launch =
+          [](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
         return std::make_unique<kn::RecordingLaunch>();
       };
       parts.config.max_verify_rows = drafters ? kVerifyRows : 0;

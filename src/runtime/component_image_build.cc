@@ -645,9 +645,23 @@ EngineImageBuild ComponentImageGenerationBuild(
       held->cublas = std::move(*blas);
       return held->backend->LendCublas(held->cublas.get());
     };
-    out.launch = [&node, held] {
-      return held->backend->Launch(
+    // The launch spans the pool's virtual capacity because one launch
+    // serves every geometry the model takes (a growth needs no new launch,
+    // and the program lifecycle binds one per model). What a step draws is
+    // bounded per operation by its planned scratch (LaunchContext::Begin
+    // limits the pool to it), within the stage's measured envelope, which
+    // EngineImage checks at bind against its geometry's pool prefix: no
+    // draw passes the prefix the image's closures name. It never runs
+    // concurrent lanes: their pools would come from the end of that virtual
+    // capacity, past anything the image's closures name (component_build.cc
+    // configures lanes for LLM recipes only, from each model's own prefix).
+    out.launch = [&node,
+                  held]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
+      auto made = held->backend->Launch(
           {.base = node.pool().base, .size = base::Bytes(node.pool().capacity_bytes)});
+      if (made && static_cast<kg::GgmlStepLaunch*>(made->get())->context().lanes() != 0)
+        return std::unexpected("an image launch has concurrent lanes");
+      return made;
     };
     out.retire = [held] {
       held->backend->LaunchReleased();

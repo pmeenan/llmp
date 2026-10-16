@@ -24,8 +24,10 @@
 #include "artifact/composition.h"
 #include "base/json.h"
 #include "base/sha256.h"
+#include "catalog/catalog.h"
 #include "chat/chat.h"
 #include "engine/expert_slab.h"
+#include "engine/paged_node.h"
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "kernels/ggml/attention_f32.h"
@@ -1078,7 +1080,25 @@ struct ServerGrowthLifetime {
         node.activations().extents.front() != activation_extent ||
         node.pool().extents.front() != pool_extent)
       return Error("growth changed another retained model's workspace addresses or IDs");
+    // Prepared while Gemma is resident: the pageable workspace's growth is
+    // cataloged, not paged in beside the resident model; the image's own
+    // activation brings it in, the outgoing model's weights making room.
+    const auto grown_tail = [&](llmp::catalog::ExtentState want) -> Status {
+      return node.Call(
+          [&]() -> Status {
+            for (const auto& [mapped, from] : {std::pair{&node.activations(), initial_activation},
+                                               std::pair{&node.pool(), initial_pool}})
+              for (std::size_t i = from / en::kPagedExtent; i < mapped->extents.size(); ++i)
+                if (node.catalog().Describe(mapped->extents[i])->state != want)
+                  return Error("the grown workspace is not where the active model puts it");
+            return {};
+          },
+          "checking the grown workspace's residency");
+    };
+    if (!node.workspace_pageable()) return Error("the Server's workspace is not pageable");
+    if (auto r = grown_tail(llmp::catalog::ExtentState::kNonresident); !r) return r;
     if (auto r = Image(1); !r) return r;
+    if (auto r = grown_tail(llmp::catalog::ExtentState::kResident); !r) return r;
     if (auto r = Image(2); !r) return r;  // existing second-use capture policy
     if (pixels[1] != pixels[2]) return Error("grown geometry repetition changed own pixels");
     if (auto r = Activate(*llm); !r) return r;

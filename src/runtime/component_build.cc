@@ -1315,26 +1315,27 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     };
     // Concurrent lanes (a joined wave's owner regions on streams of their
     // own) for the serving plans measured to gain from them (its recipe's).
-    // Lanes take their pools from the shared pool's end, so the stream's
-    // own scratch shrinks by kMaxLanes of them: a model that runs lanes sets
-    // them apart beside what its setup shapes measured (the runner's pool
-    // need), and every other model's regions run on its stream.
+    // Lanes take their pools from the end of the model's own prefix of the
+    // shared pool, so the stream's own scratch shrinks by kMaxLanes of
+    // them: a model that runs lanes sets them apart beside what its setup
+    // shapes measured (the runner's pool need), and every other model's
+    // regions run on its stream.
     const bool lanes = shared && recipe.lanes;
     if (lanes) parts.config.launch_pool_reserve = kernels::ggml::kMaxLanes * kLaneScratchBytes;
-    parts.config.launch =
-        [&node, held, lanes]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
+    parts.config.launch = [&node, held, lanes](std::uint64_t pool_bytes)
+        -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
+      if (pool_bytes == 0 || pool_bytes > node.pool().bytes)
+        return Error("a launch's pool lies outside the node's workspace");
       auto made =
-          held->backend->Launch({.base = node.pool().base, .size = base::Bytes(node.pool().bytes)});
+          held->backend->Launch({.base = node.pool().base, .size = base::Bytes(pool_bytes)});
       if (!made || !lanes) return made;
       auto* ggml_launch = static_cast<kernels::ggml::GgmlStepLaunch*>(made->get());
-      const std::uint64_t lane_bytes =
-          std::min<std::uint64_t>(kLaneScratchBytes, node.pool().bytes / 16);
-      if (lane_bytes >= 256 * 1024) {
-        if (auto r = ggml_launch->context().ConfigureLanes(kernels::ggml::kMaxLanes,
-                                                           base::Bytes(lane_bytes));
-            !r) {
-          return Error(std::format("ConfigureLanes: {}", r.error().detail));
-        }
+      // Each lane its whole scratch: the model's pool holds the reserve for
+      // them beside what its steps measured (launch_pool_reserve).
+      if (auto r = ggml_launch->context().ConfigureLanes(kernels::ggml::kMaxLanes,
+                                                         base::Bytes(kLaneScratchBytes));
+          !r) {
+        return Error(std::format("ConfigureLanes: {}", r.error().detail));
       }
       return made;
     };

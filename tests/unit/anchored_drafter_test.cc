@@ -182,7 +182,8 @@ class AnchoredDrafterTest : public ::testing::Test {
     // A target's prompt chunk returns its last row only.
     for (pl::Segment& s : config.setup_shapes.front().segments) s.outputs = 1;
     config.setup_shapes.push_back(ComputedShape());
-    config.launch = []() -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
+    config.launch =
+        [](std::uint64_t) -> std::expected<std::unique_ptr<kn::StepLaunch>, std::string> {
       return std::make_unique<kn::RecordingLaunch>();
     };
     config.max_verify_rows = VerifyRows();

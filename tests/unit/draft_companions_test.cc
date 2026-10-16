@@ -136,7 +136,8 @@ class DraftCompanionsTest : public ::testing::Test {
         config.setup_shapes.push_back(std::move(shape));
       }
     }
-    config.launch = []() -> std::expected<std::unique_ptr<llmp::kernels::StepLaunch>, std::string> {
+    config.launch = [](std::uint64_t)
+        -> std::expected<std::unique_ptr<llmp::kernels::StepLaunch>, std::string> {
       return std::make_unique<llmp::kernels::RecordingLaunch>();
     };
     config.max_verify_rows = 4;
@@ -861,7 +862,8 @@ TEST_F(KeptDraftCompanionsTest, ANewRunnerHydratesPendingProgressBeforeAdoptedSt
   for (const auto& built : source_->built())
     if (built.measuring) config.setup_shapes.push_back(built.shape);
   config.max_verify_rows = 4;
-  config.launch = []() -> std::expected<std::unique_ptr<llmp::kernels::StepLaunch>, std::string> {
+  config.launch =
+      [](std::uint64_t) -> std::expected<std::unique_ptr<llmp::kernels::StepLaunch>, std::string> {
     return std::make_unique<llmp::kernels::RecordingLaunch>();
   };
   auto made = en::ModelRunner::Create(restarted_node, std::move(config), std::move(source), 0, 0);

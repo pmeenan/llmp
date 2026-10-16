@@ -7,6 +7,7 @@ baseline's M3 table and the Gemma near-8K reports, docs/experiments/m36-baseline
 
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import os
@@ -250,6 +251,25 @@ class Check(Fixture):
         self.assertEqual(self.m3(table="")["status"], "FAIL")  # image A, no control line
         d = write_run(self.dir, "pin", make_report("m3"), control_line("f" * 64))
         self.assertEqual(st.check([d], "m3", image_pin="f" * 64)["status"], "PASS")
+
+    def test_the_planned_image_a_job_reads_no_context_text(self):
+        # plan's third job (image:deepseek, image:qwen3.8) has no LLM A: the
+        # runtime reads no context text and reports the empty text's hash.
+        full = make_report("m3")
+        image = [r for r in full["rows"] if r["pair"].startswith("image")]
+        llm = [r for r in full["rows"] if not r["pair"].startswith("image")]
+        empty = hashlib.sha256(b"").hexdigest()
+        report = st.check([write_run(self.dir, "llm", dict(full, rows=llm)),
+                           write_run(self.dir, "image", dict(full, rows=image,
+                                                             context_sha256=empty),
+                                     control_line())], "m3")
+        self.assertEqual(report["status"], "PASS", report["problems"])
+        # An LLM A that hashed another text still fails.
+        other = dict(full, rows=llm, context_sha256=empty)
+        report = st.check([write_run(self.dir, "llm2", other),
+                           write_run(self.dir, "image2", dict(full, rows=image),
+                                     control_line())], "m3")
+        self.assertTrue(any("context text" in p for p in report["problems"]))
 
     def test_runs_must_agree_on_runtime_and_context(self):
         full = make_report("m3")

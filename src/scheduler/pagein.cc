@@ -88,11 +88,14 @@ std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
                    piece.length.value() <= source.read.length - piece.slot_offset;
   }
   if (source.read.length == 0 || source.read.kind != providers::IoKind::kRead || !pieces_valid ||
-      (source.landed && (slots_.empty() || (source.piece_count == 0 && source.destination == 0) ||
-                         source.read.length > settings_.landing.slot_bytes.value())) ||
+      (source.landed &&
+       (slots_.empty() || (source.piece_count == 0 && source.destination == 0) ||
+        (!source.fresh && source.read.length > settings_.landing.slot_bytes.value()))) ||
       (!source.landed && source.read.memory == nullptr) ||
       (source.backing && source.backing->size == Bytes()) ||
-      (source.zero && (!source.landed || source.piece_count != 0 || !source.backing))) {
+      (source.zero && (!source.landed || source.piece_count != 0 || !source.backing)) ||
+      (source.fresh && (!source.landed || source.piece_count != 0 || !source.backing ||
+                        source.zero || source.write_back))) {
     return std::unexpected(WorkError::kInvalid);
   }
   if (loads_.contains(extent) || evictions_.contains(extent)) {
@@ -104,6 +107,9 @@ std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
   }
   if (source.write_back && view->descriptor.recovery != catalog::Recovery::kPreserve) {
     return std::unexpected(WorkError::kInvalid);  // only live mutable contents are written back
+  }
+  if (source.fresh && view->descriptor.recovery != catalog::Recovery::kDiscardable) {
+    return std::unexpected(WorkError::kInvalid);  // only scratch has no contents to bring
   }
   if (source.file.valid() && (source.write_back || !files_.Known(source.file))) {
     return std::unexpected(WorkError::kInvalid);  // a write-back place names its own descriptor
@@ -290,10 +296,11 @@ std::expected<Readiness, WorkError> Scheduler::Materialize(TaskId task,
         if (eviction->second.stage == EvictStage::kParked) {
           // Parked with its backing kept: the extent takes its own backing
           // back, if the eviction keeps the contents' generation (artifact
-          // contents, or written back); otherwise they are gone.
+          // contents or scratch, catalog::KeepsGenerationOnEviction, or
+          // written back); otherwise they are gone.
           const auto source = sources_.find(extent);
-          const bool keeps = found->descriptor.recovery == catalog::Recovery::kFromArtifact ||
-                             eviction->second.write_back;
+          const bool keeps =
+              catalog::KeepsGenerationOnEviction(found->descriptor) || eviction->second.write_back;
           if (!keeps || found->content_generation != generation) {
             return std::unexpected(WorkError::kStale);
           }
@@ -570,6 +577,10 @@ void Scheduler::OnStage(catalog::ExtentId extent, Outcome outcome, std::uint64_t
       }
       if (load.cancelling) {
         Unwind(extent, load);
+        return;
+      }
+      if (load.source.fresh) {
+        EndLoad(extent, true);  // scratch: mapped is loaded
         return;
       }
       if (Zeroes(load.source)) {

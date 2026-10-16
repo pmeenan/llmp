@@ -559,7 +559,7 @@ void PagedCase(int malformed) {
   config.weight_address = [weight_owner](const ir::WeightRef& ref, Role part) {
     return ref == kWeight && part == Role::kTensorScale ? weight_owner->resource_address(2) : 0;
   };
-  config.launch = [owner = life.get()]() {
+  config.launch = [owner = life.get()](std::uint64_t) {
     return owner->backend->Launch(
         {.base = owner->node.pool().base, .size = Bytes(owner->node.pool().bytes)});
   };

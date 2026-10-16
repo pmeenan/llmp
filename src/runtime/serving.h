@@ -13,17 +13,19 @@
 // - Registration (Server::Start): every configured model's artifacts opened
 //   and checked, its runner set up on its own stream, its tokenizer and chat
 //   renderer found (D-067: a template runs only if a native renderer has
-//   its hash), the shared workspace mapped at the largest model's need, and
+//   its hash), the shared workspace virtually reserved and cataloged at the largest
+//   model's need (pageable: each model's closure names its own prefix), and
 //   the scheduler started with a physical cap from available memory,
-//   leaving room for host-built chunk inputs and a 6 GiB guard. The
-//   largest model's weights must fit beside the fixed allocations.
-//   Nothing is paged yet: a model's weights come in when it is first
-//   activated.
+//   leaving room for host-built chunk inputs and a 6 GiB guard. The largest
+//   active footprint (a model's weights and its workspace) must fit beside
+//   the fixed allocations. Nothing is paged yet: a model's weights and
+//   workspace come in when it is first activated.
 // - One model is resident at a time (M3's full swap). Activating another
 //   swaps: the resident model's conversation state is written back through
 //   the landing zone if it holds a conversation (0 context: it stays), its
-//   weights evicted with their backing handed to the incoming model's
-//   loads (D-033), and the incoming model's whole closure paged in (its
+//   weights (and the workspace only it used) evicted with their backing
+//   handed to the incoming model's loads (D-033), and the incoming model's
+//   whole closure paged in (its
 //   state restored if it was spilled); then its checks of what its kernels
 //   index unchecked, and its places checked still pinned (D-090). Each part
 //   is timed (SwapParts).
@@ -1484,6 +1486,16 @@ class Image : public Served {
   // FirstOutput starts a generation again and a request may be prepared.
   // Nothing in flight; a completed or unstarted generation is unchanged.
   virtual Status Abandon() = 0;
+  // Where the adapter reports what it does not refuse for (the server's log).
+  void set_log(std::function<void(std::string_view)> log) { log_ = std::move(log); }
+
+ protected:
+  void Log(std::string_view text) const {
+    if (log_) log_(text);
+  }
+
+ private:
+  std::function<void(std::string_view)> log_;
 };
 
 // The reclaim order's candidates for `model`'s idle conversations
@@ -1650,6 +1662,10 @@ class Server {
   // Evicts a model's resident weights and conversation state (state
   // written back), never the shared workspace or its own pinned memory.
   Status EvictPaged(Served& m, bool weights = true);
+  // The resident extents of the pageable shared workspace that `in`'s
+  // closure does not name: what only the models going out used, which an
+  // activation of `in` evicts with them (engine/paged_node.h MapWorkspace).
+  std::expected<std::vector<catalog::ExtentId>, std::string> SpareWorkspace(const Served& in);
   // Weight files (engine/paged_node.h, SetActive): a model's are open only
   // while it is active, which is while it is resident and, during its
   // Activate, from the start. ActivateFiles opens `m`'s (each checked

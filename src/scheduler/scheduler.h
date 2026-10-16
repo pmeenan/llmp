@@ -352,6 +352,12 @@ struct PageSource {
   // and zeroes `read.length` bytes at `destination` on the zone's copy
   // stream, with no read and no slot. Only landed, one range, managed.
   bool zero = false;
+  // Scratch (a kDiscardable extent, the shared workspace): a load maps the
+  // backing and is done, with no read, no slot and no copy; the contents
+  // are whatever the backing held. Only landed, one range, managed, and
+  // neither written back nor zeroed; its read is never made, so its length
+  // is not held to a landing slot's.
+  bool fresh = false;
 };
 
 // Whether two sources put an extent's contents at the same addresses: the

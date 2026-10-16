@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The memory guard at a serving start (docs/runtime-serving.md): after each
-// model's own memory is mapped, the largest model's weights, the largest
+// model's own memory is mapped, the largest model's closure (its weights and
+// its own prefix of the pageable shared workspace), the largest
 // chunk inputs a model builds on the host, the most plans one step of a
 // model holds at once and a margin for what the catalog does not count
 // otherwise must fit the memory then available, or the runtime refuses to
@@ -42,8 +43,18 @@ namespace llmp::runtime {
 
 inline constexpr std::uint64_t kUncountedMargin = std::uint64_t{6} << 30U;
 
+// What one model's closure holds resident while it is the active model (one
+// model is resident at a time, M3's full swap): its weights and its own
+// prefix of each region of the shared workspace, which pages with it
+// (engine/paged_node.h MapWorkspace), each region in whole 2 MiB extents and
+// at least one. Never what another model needs of the workspace: that is
+// evicted while this one runs. Saturates rather than wraps.
+std::uint64_t ActiveFootprint(std::uint64_t weights, std::uint64_t activations, std::uint64_t pool);
+
 struct MemoryGuard {
-  std::uint64_t largest = 0;      // the largest model's weights
+  // The largest active footprint of any model (ActiveFootprint): its weights
+  // and its workspace.
+  std::uint64_t largest = 0;
   std::uint64_t host_inputs = 0;  // the most any model's chunk builds on the host
   std::uint64_t plans = 0;        // the most one step of a model holds of plans
   std::uint64_t available = 0;  // MemAvailable after the models' own memory was mapped; 0: unknown

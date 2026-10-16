@@ -3,9 +3,11 @@
 
 #include "runtime/memory_guard.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <limits>
 #include <string>
 
 #include "artifact/artifact.h"
@@ -15,6 +17,21 @@
 #include "runtime/model_settings.h"
 
 namespace llmp::runtime {
+
+std::uint64_t ActiveFootprint(std::uint64_t weights, std::uint64_t activations,
+                              std::uint64_t pool) {
+  constexpr std::uint64_t extent = std::uint64_t{2} << 20U;
+  constexpr std::uint64_t most = std::numeric_limits<std::uint64_t>::max();
+  const auto region = [](std::uint64_t bytes) {
+    return bytes > most - extent
+               ? most / extent * extent
+               : (std::max(bytes, std::uint64_t{1}) + extent - 1) / extent * extent;
+  };
+  std::uint64_t total = weights;
+  for (const std::uint64_t part : {region(activations), region(pool)})
+    if (__builtin_add_overflow(total, part, &total)) return most;
+  return total;
+}
 
 std::uint64_t GuardReserve(const MemoryGuard& guard) {
   return guard.host_inputs + guard.plans + guard.requests + kUncountedMargin;
@@ -31,7 +48,8 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard) {
       guard.requests <= a - guard.largest - guard.host_inputs - guard.plans - kUncountedMargin;
   if (a != 0 && !fits) {
     return std::unexpected(std::format(
-        "the largest model's weights ({:.1f} GiB), a model's largest host-built chunk inputs "
+        "the largest model's weights and workspace ({:.1f} GiB), a model's largest host-built "
+        "chunk inputs "
         "({:.1f} GiB), a model step's plans ({:.1f} GiB), the request memory ({:.1f} GiB, "
         "[client] request_memory_bytes) and a {:.0f} GiB margin do not fit the {:.1f} GiB "
         "available beside this node's fixed memory ({:.1f} GiB)",

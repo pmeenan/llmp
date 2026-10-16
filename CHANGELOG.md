@@ -13,6 +13,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- A node serving several models no longer sizes its start for the largest
+  model's weights beside another model's larger workspace: the shared
+  workspace (activations and GGML pool) now pages with the active model,
+  each model naming only its own part of it, and the start admits the
+  largest of each model's weights plus its own workspace. M3's swap table
+  (DeepSeek V4 with DSpark, Qwen3.8 with MTP at four slots, Qwen-Image)
+  starts again from an ordinary configuration; it was refused by 2.4 GB.
 - `llmp-runtime swap-table` runs its prepared rows with the image model as
   B again: B's generation ends at its first output (the row's endpoint, as
   an LLM B's conversation does) instead of staying unfinished, which

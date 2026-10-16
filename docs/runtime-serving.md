@@ -439,14 +439,37 @@ startup steps (anchor, configuration, process lock, storage roles,
 platform), then register every configured
 model on one paged node: its artifacts opened (validated, with their
 shards left closed until the model is activated, below), its runner set
-up on its own stream, its tokenizer and renderer found, the shared workspace mapped at the
-largest model's need. The scheduler's physical cap is the fixed allocations
-plus the post-setup available memory, less the largest host-built chunk
+up on its own stream, its tokenizer and renderer found, the shared workspace
+(the activations and the GGML pool) virtually reserved and cataloged at the largest
+model's need. The workspace pages with the active model (2026-10-16): each
+model's closures name only its own prefix of each region, its steps are
+bound to that prefix, and its extents are paged like weights, at fixed
+places pinned for captured graphs, by a source that only maps backing
+(scratch has no contents to bring; an eviction keeps its content
+generation, so the closures taken at registration stay valid). Nothing
+of it is resident before the first activation, an activation evicts what
+only the outgoing model used with its weights, and nothing else takes it
+(every acquisition protects it). An image geometry that needs more of it
+catalogs the growth and pages it in before the previous geometry retires,
+so a growth without room is refused with the previous geometry usable.
+The workspace holds no contents from one job to the next. The scheduler's physical cap is the
+fixed allocations plus the post-setup available memory, less the largest host-built chunk
 inputs, every model's plan budget and a 6 GiB guard, rounded down to 2 MiB
-extents. Fixed allocations, weights, used state and dynamic staging are
-charged within that cap; the largest model's weights must fit beside the
-fixed allocations at admission. The guard covers memory outside the catalog
-(the driver and cuBLAS; [long-context](experiments/long-context/README.md#memory-and-the-guards-margin)).
+extents. Fixed allocations, weights, the active model's workspace, used
+state and dynamic staging are charged within that cap; at admission the
+largest active footprint, one model's weights and its own workspace
+(`ActiveFootprint`), must fit beside the fixed allocations, never the
+largest weights beside another model's larger workspace. On `spark`
+(2026-10-16) M3's table needed the difference: DeepSeek V4 with DSpark
+(100.4 GiB of weights, a 2.8 GiB workspace) beside Qwen3.8 with MTP at
+four slots (an 8.3 GiB workspace) was refused by 2.4 GB while the whole
+workspace stayed mapped for the node's life. A design constraint
+follows: every model draws on the same workspace from its base, and only
+the active model's prefix is resident, so two models cannot execute
+concurrently on one node; the load-bearing constraint's concurrent
+placements (D-019 to D-025) need a workspace per executing model, which
+M4's placement must revisit. The guard covers memory
+outside the catalog (the driver and cuBLAS; [long-context](experiments/long-context/README.md#memory-and-the-guards-margin)).
 A model's plans and graphs are host and driver memory outside the
 catalog's extents, but counted (D-090 and D-055 as amended 2026-10-02):
 each runner charges what each plan and graph holds to the node as it
@@ -628,9 +651,10 @@ state written back through the zone to each slot's spill file in
 `storage.spill` (named and kept across a restart in the service,
 [below](#conversations-kept-across-a-restart); unnamed for the commands)
 if it holds a conversation (a model with none keeps its
-state resident), its weights evicted with their backing parked for the
-incoming loads (D-033's handoff), and the incoming model's whole closure
-paged in, its state restored if it had been spilled. Then the model's own
+state resident), its weights and the workspace only it used evicted with
+their backing parked for the incoming loads (D-033's handoff), and the
+incoming model's whole closure (its workspace prefix with it) paged in,
+its state restored if it had been spilled. Then the model's own
 checks (DeepSeek's hash-routing tables, Qwen3.8's n-gram hash) and its
 places checked still pinned (D-090). The backing no load took is released
 after the first output, off the swap's path. Each part is timed.

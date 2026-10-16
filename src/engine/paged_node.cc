@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -466,19 +467,126 @@ Status PagedNode::Open() {
 }
 
 Status PagedNode::MapWorkspace(std::uint64_t activations, std::uint64_t pool,
-                               std::uint64_t virtual_capacity) {
+                               std::uint64_t virtual_capacity, bool pageable) {
   if (scheduler_) return Error("workspace reservation must precede node start");
+  if (activations_.reservation.valid() || pool_.reservation.valid())
+    return Error("the workspace is mapped once");
+  workspace_pageable_ = pageable;
   if (auto r = MapRegion(activations_, "the activations", activations,
                          providers::BackingKind::kDevice, MemoryClass::kScratch,
-                         catalog::Recovery::kDiscardable, kShared, true, virtual_capacity);
+                         catalog::Recovery::kDiscardable, kShared, !pageable, virtual_capacity);
       !r)
     return r;
   return MapRegion(pool_, "the GGML pool", pool, providers::BackingKind::kDevice,
-                   MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared, true,
+                   MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared, !pageable,
                    virtual_capacity);
 }
 
+std::vector<ExtentId> PagedNode::workspace_extents() const {
+  std::vector<ExtentId> all = activations_.extents;
+  all.insert(all.end(), pool_.extents.begin(), pool_.extents.end());
+  return all;
+}
+
+sc::PageSource PagedNode::WorkspaceSource(const Mapped& mapped, std::size_t index) const {
+  // Scratch has no contents to restore: a load maps backing at the
+  // extent's own place and is done, with no read, no landing slot and no
+  // copy (scheduler.h, PageSource::fresh). The place never moves.
+  const std::uint64_t offset = index * kPagedExtent;
+  return sc::PageSource{.read = {.fd = -1, .offset = 0, .memory = nullptr, .length = kPagedExtent},
+                        .landed = true,
+                        .destination = mapped.base + offset,
+                        .backing = sc::BackingPlace{.reservation = mapped.reservation,
+                                                    .offset = Bytes(offset),
+                                                    .size = Bytes(kPagedExtent),
+                                                    .allocation_class = device_class_},
+                        .fresh = true};
+}
+
+Status PagedNode::RegisterWorkspaceSources(const Mapped& mapped) {
+  for (std::size_t i = 0; i < mapped.extents.size(); ++i) {
+    if (auto set = scheduler_->SetSource(mapped.extents[i], WorkspaceSource(mapped, i)); !set) {
+      return Error(std::format("{}'s place: {}", mapped.name, sc::ToString(set.error())));
+    }
+  }
+  if (auto pinned = scheduler_->PinPlaces(mapped.extents); !pinned) {
+    return Error(std::format("pinning {}'s places: {}", mapped.name, sc::ToString(pinned.error())));
+  }
+  return {};
+}
+
+Status PagedNode::GrowPageable(Mapped& mapped, std::uint64_t bytes) {
+  if (!scheduler_ || job_active_ || supplemental_ || torn_down_ ||
+      bytes > UINT64_MAX - (kPagedExtent - 1))
+    return Error("workspace growth has invalid size or an unretired operation");
+  const auto rounded =
+      (std::max<std::uint64_t>(bytes, 1) + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
+  if (rounded <= mapped.bytes) return {};
+  if (!mapped.reservation.valid() || rounded > mapped.capacity_bytes)
+    return Error("workspace growth exceeds its virtual reservation");
+  const auto count = rounded / kPagedExtent;
+  // The host metadata a growth adds (catalog, span and source entries,
+  // with the vectors' transient copies), charged as GrowMapped charges it.
+  if (count > (UINT64_MAX - 4096) / 1024) return Error("workspace metadata overflows");
+  const std::uint64_t metadata = count * 1024 + 4096;
+  if (!TryChargeHost(metadata)) return Error("workspace metadata does not fit");
+  std::size_t added = 0;
+  auto cataloged = RegionCatalog(
+      [&]() -> Status {
+        // No physical effect: each new extent is NONRESIDENT until a closure
+        // that names it is materialized. An extent joins the region only
+        // with its source set and its place pinned; one refused either is
+        // forgotten, so no extent of the region lacks a place.
+        Status failed;
+        std::vector<ExtentId> placed;
+        spans_.reserve(spans_.size() + static_cast<std::size_t>(count - mapped.extents.size()));
+        for (std::uint64_t at = mapped.bytes; at < rounded; at += kPagedExtent) {
+          const auto extent = catalog_.AddExtent({.domain = domain_,
+                                                  .memory_class = MemoryClass::kScratch,
+                                                  .recovery = catalog::Recovery::kDiscardable,
+                                                  .size = Bytes(kPagedExtent),
+                                                  .content = {}},
+                                                 false);
+          if (!extent) {
+            failed = Error(std::format("cataloging {}", mapped.name));
+            break;
+          }
+          const std::array one = {*extent};
+          if (auto set = scheduler_->SetSource(*extent, WorkspaceSource(mapped, at / kPagedExtent));
+              !set || !scheduler_->PinPlaces(one)) {
+            base::Check(catalog_.RemoveExtent(*extent).has_value(), "an unplaced workspace extent");
+            failed = Error(std::format("{}'s place: {}", mapped.name,
+                                       set ? "not pinned" : sc::ToString(set.error())));
+            break;
+          }
+          mapped.extents.push_back(*extent);
+          AddSpan({.base = mapped.base + at,
+                   .size = kPagedExtent,
+                   .extent = *extent,
+                   .memory_class = MemoryClass::kScratch,
+                   .device = true,
+                   .owner = kShared});
+          mapped.bytes = at + kPagedExtent;
+          ++added;
+        }
+        SortSpans();
+        return failed;
+      },
+      "cataloging workspace growth");
+  if (added == 0) {
+    UnchargeHost(metadata);  // nothing grew: the region's charge is as it was
+  } else {
+    UnchargeHost(mapped.metadata_bytes);
+    mapped.metadata_bytes = metadata;
+  }
+  return cataloged;
+}
+
 Status PagedNode::GrowWorkspace(std::uint64_t activations, std::uint64_t pool) {
+  if (workspace_pageable_) {
+    if (auto r = GrowPageable(activations_, activations); !r) return r;
+    return GrowPageable(pool_, pool);
+  }
   if (auto r = GrowMapped(activations_, activations, providers::BackingKind::kDevice,
                           MemoryClass::kScratch, catalog::Recovery::kDiscardable, kShared);
       !r)
@@ -1325,6 +1433,12 @@ Status PagedNode::Start(Bytes budget) {
                                                          .backing = backing_lane_.get(),
                                                          .copy = copy_lane_.get()},
                                                scheduling);
+  if (workspace_pageable_) {
+    // Before anything pages: the workspace's places, so every closure that
+    // names an extent of it can bring it in (MapWorkspace).
+    if (auto r = RegisterWorkspaceSources(activations_); !r) return r;
+    if (auto r = RegisterWorkspaceSources(pool_); !r) return r;
+  }
   return {};
 }
 
@@ -2398,8 +2512,13 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
       const auto extents = model->managed_extents();
       managed.insert(managed.end(), extents.begin(), extents.end());
     }
+    if (workspace_pageable_) {
+      // Its backing is the VMM lane's, released through its eviction too.
+      const auto workspace = workspace_extents();
+      managed.insert(managed.end(), workspace.begin(), workspace.end());
+    }
     if (fenced_all && !Evict(managed)) {
-      problems.emplace_back("the weights could not be evicted at the end");
+      problems.emplace_back("the weights and the workspace could not be evicted at the end");
     }
     scheduler_->RequestShutdown();
     if (threads_.empty()) {

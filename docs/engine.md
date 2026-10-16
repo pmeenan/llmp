@@ -40,7 +40,11 @@ path of a verify's snapshot (`live_state_launch.h`) and each family's runner.
 `paged_node.h`: device 0 with its providers, a stream per model and the
 copy stream, the storage ring, one catalog domain, the landing zone
 (D-081), the scheduler and its lanes, and the workspace the models share
-(activations and the GGML pool). A runner registers its memory and page
+(activations and the GGML pool; in the runtime it pages with the active
+model, each model's closures and steps bounded to its own prefix of it,
+[runtime-serving.md](runtime-serving.md#registration-and-the-swap); so
+two models never execute concurrently on one node, a constraint M4's
+placement must revisit). A runner registers its memory and page
 sources with it and posts its work through it: `Job` (one device job on the
 model's stream over a closure), `Load`, `Evict`, `Swap`, `Call` (a function
 on the scheduler's thread), and requests: `BeginRequest`/`EndRequest`, or
@@ -140,9 +144,11 @@ policy. [Bounds, native factors and startup cost](experiments/gemma-shared-q8/RE
    (`LiveState::RegisterSpill`), then every managed extent's place pinned
    (`Scheduler::PinPlaces`, D-090).
 3. **Bind** (after the workspace): the closures (`everything`, the state's
-   fence, any narrower ones), the model's places as the plan's address
-   functions, the commit hook, and the launch context
-   (`RunnerResources::BindLaunch`, then `GraphRuns::SetLaunch`).
+   fence, any narrower ones; of the workspace, only the model's own prefix
+   of each region, `ModelRunner::activation_bytes` and `pool_bytes`), the
+   model's places as the plan's address functions, the commit hook, and
+   the launch context over that pool prefix (`RunnerConfig::launch`, then
+   `GraphRuns::SetLaunch`).
 4. **Steps**: each chunk, draft or verify holds a `PlanStep` for its life,
    checks `LiveState::Usable` and
    `AwaitingAccept`, finds or plans its shape (`PlanCache::Find`, else plan,
