@@ -488,15 +488,21 @@ TEST_F(Dsv4FastTest, DenseAndGroupedProductsMatchGgmlsVectorKernel) {
   };
   // DeepSeek V4 Flash's dense products: q_b (k 1,024), q_a, kv and the
   // compressors (4,096), the shared expert's down (2,048), wo_b (8,192),
-  // the head (Q4_K), wo_a's eight groups; the drafter's MXFP4.
-  const std::array<Case, 8> cases = {{{GGML_TYPE_Q8_0, 1024, 1},
-                                      {GGML_TYPE_Q8_0, 4096, 1},
-                                      {GGML_TYPE_Q8_0, 8192, 1},
-                                      {GGML_TYPE_Q8_0, 4096, 8},
-                                      {GGML_TYPE_Q5_K, 4096, 1},
-                                      {GGML_TYPE_Q6_K, 2048, 1},
-                                      {GGML_TYPE_Q4_K, 4096, 1},
-                                      {GGML_TYPE_MXFP4, 2048, 1}}};
+  // the head (Q4_K), wo_a's eight groups; the drafter's MXFP4. And Gemma 3
+  // 4B QAT's Q4_0 products, which its served decode and scoring rows run
+  // on llmp.vecq.dense: q, k, v, gate and up (k 2,560), o (2,048) and down
+  // (10,240).
+  const std::array<Case, 11> cases = {{{GGML_TYPE_Q8_0, 1024, 1},
+                                       {GGML_TYPE_Q8_0, 4096, 1},
+                                       {GGML_TYPE_Q8_0, 8192, 1},
+                                       {GGML_TYPE_Q8_0, 4096, 8},
+                                       {GGML_TYPE_Q5_K, 4096, 1},
+                                       {GGML_TYPE_Q6_K, 2048, 1},
+                                       {GGML_TYPE_Q4_K, 4096, 1},
+                                       {GGML_TYPE_MXFP4, 2048, 1},
+                                       {GGML_TYPE_Q4_0, 2560, 1},
+                                       {GGML_TYPE_Q4_0, 2048, 1},
+                                       {GGML_TYPE_Q4_0, 10240, 1}}};
   constexpr std::int64_t kOut = 256;
   for (const Case& test : cases) {
     const std::vector<std::uint8_t> bytes = Quantize(test.type, test.k, kOut * test.groups, 5);
