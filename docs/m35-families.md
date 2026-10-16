@@ -155,7 +155,9 @@ relayout it at import, AGENTS.md rule 11's import bullet), the vision tower
 (M3.5's media inputs), and QAD numerics distinct from the Mia-AiLab NVFP4
 the engine serves today. At bring-up: pin a revision into the archive
 (D-114), identify the scale-compression format from ModelOpt's source,
-choose the same-format reference (the card's vLLM container), and compare
+use the latest TensorFold as the same-format reference (the owner reports
+it supports this checkpoint; confirm at M3.5's entry TensorFold re-pin, per
+AGENTS.md rule 3), with the card's vLLM container as a fallback, and compare
 quality and speed against the served Mia-AiLab quant. Nothing here is
 verified yet.
 
