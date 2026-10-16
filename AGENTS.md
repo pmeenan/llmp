@@ -93,7 +93,8 @@ affected docs. Until then, these govern.
   and formats by capability and architectures through declarative mappings,
   and the artifact carries the model spec. Weights stay resident in their
   source encoding (or an opt-in lossy transcode) and decode on-chip;
-  resident weights never grow beyond it.
+  bulk weights never widen beyond it (small per-channel folds at import
+  are fine while the model still fits, D-108 as amended).
   (D-009, D-018, D-035, D-056, D-108, D-109)
 - **C++23, Clang-first, native hot path.** No interpreter in the serving,
   paging, or scheduling path. NVCC is the CUDA compiler with Clang as host
@@ -352,8 +353,9 @@ the commit gate.
       relayouts a fast kernel needs (e.g. block-scale atom order for stacked
       NVFP4 experts) are done once by the importer, chosen by tensor role and
       encoding (never architecture), recorded as layouts (D-108, D-113), and
-      decodable by the CPU references; never at load time, and never when
-      the loaded form would use more memory than the source encoding.
+      decodable by the CPU references; never at load time. Small
+      per-channel parameters may be folded wider at import when it saves
+      run-time work; bulk weights never widen (D-108 as amended).
 12. **License tags follow provenance.** A file that reformats or ports
     upstream code into our classes (for example llama.cpp's graph builders as
     components) carries the upstream license tag beside Apache-2.0

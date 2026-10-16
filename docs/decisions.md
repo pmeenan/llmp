@@ -587,6 +587,18 @@ with D-109's.
 target, or a measured case shows per-target artifacts costing more than a
 relayout at page-in.
 
+**Amended by the owner, 2026-10-15 (growth rule clarified).** The rule's
+intent is that the bulk weights (products, experts, embeddings) stay in their
+source encoding: no import may widen them (e.g. a 100B NVFP4 model stored as
+BF16), which would stop it fitting or cost decode bandwidth. Small
+per-channel parameters (norm weights, gates, decay constants such as A) may
+be folded at import into a wider, ready-to-use form (e.g. F32 `1 + w`,
+`-exp(A)`) when that removes run-time work, provided the imported model still
+fits its target device with reasonable context and the growth is a negligible
+share of the weights (Qwen3.8's folds: about 2 MB of 97 GB). Each fold is
+recorded in the artifact (D-113) and chosen by tensor role, never by
+architecture.
+
 ## D-107: One engine of shared components over llmpalooza's own graph IR replaces the per-family runners; optimizations land once  (2026-10-08, status: accepted by the owner, 2026-10-08; amends D-096's engine structure (one runner, one serving adapter per pipeline kind), D-028's and D-053's role of GGML (a kernel source, not the graph); implements D-068's rule that shapes extend build-time contracts; withdraws the owner's per-family transfer directive of 2026-10-07 and workflow.md's transfer rule; its migration gate is stricter than D-085's coarse speed check for M3.6)
 
 **Decision.** The owner, on 2026-10-08, stopped the per-family transfer
