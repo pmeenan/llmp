@@ -76,6 +76,9 @@ struct ServingOptions {
   bool plain = false;
   // Internal default-off experiment, only with the paid shared service route.
   bool diagnostic_capture_first_verify = false;
+  // Internal: a drafter stage's planning policy in place of its mapping's
+  // (ComponentBuildOptions::drafter_policy), absent from CLI/TOML/HTTP.
+  std::optional<std::string> diagnostic_drafter_policy{};
   // Internal prepared-image migration route, absent from CLI/TOML/HTTP. Each
   // owner was paid on this Server's stopped node; legacy defaults are unchanged.
   std::vector<std::shared_ptr<const PreparedImageGeneration>> diagnostic_prepared_images;

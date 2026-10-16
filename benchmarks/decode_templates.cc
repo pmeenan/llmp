@@ -476,8 +476,7 @@ void Grouped(Bench& b) {
   const std::uint64_t stride = l.bytes();
   const std::uint64_t slab = b.Allocate(stride * kExperts, 0x22);
   // The decode module's operands: each expert's gate and up codes and atoms.
-  const format::TensorFormat f =
-      Format(Encoding::kNvfp4, Layout::kCutlassScaleAtoms, kWidth, 2 * kFfn, 2);
+  const format::TensorFormat f = Format(Encoding::kNvfp4, Layout::kScaleAtoms, kWidth, 2 * kFfn, 2);
   std::vector<decode::Operand> operands;
   for (std::int64_t e = 0; e < kExperts; ++e) {
     const std::uint64_t base = slab + (static_cast<std::uint64_t>(e) * stride);
@@ -488,7 +487,7 @@ void Grouped(Bench& b) {
     operands.push_back(Ok(decode::OperandOf({.format = f, .parts = parts}), "expert operand"));
   }
   const decode::Operand* table = b.Upload(operands);
-  const std::string shape = "nvfp4.cutlass_scale_atoms K2560 N1280, 10 of 512 experts";
+  const std::string shape = "nvfp4.scale_atoms K2560 N1280, 10 of 512 experts";
   for (const std::int64_t tokens : {std::int64_t{1}, std::int64_t{16}, std::int64_t{512}}) {
     std::vector<Routing> routings;
     for (std::size_t i = 0; i < (tokens <= 16 ? kRoutings : 1); ++i) {
@@ -540,14 +539,13 @@ void Grouped(Bench& b) {
       route_only.push_back({kg::MoeRoute(b.c(), idt, kExperts)});
     }
     if (tokens <= 16) {
-      b.Report("grouped", shape, tokens,
-               {"llmp.moe.gemv", "llmp.decode.grouped.nvfp4.cutlass_scale_atoms"},
+      b.Report("grouped", shape, tokens, {"llmp.moe.gemv", "llmp.decode.grouped.nvfp4.scale_atoms"},
                {b.Tuned(tuned), b.Ours(ours)});
       continue;
     }
     b.Report("grouped", shape, tokens,
              {"llmp.moe.route+quantize+gemm", "llmp.moe.route alone",
-              "llmp.decode.grouped.nvfp4.cutlass_scale_atoms"},
+              "llmp.decode.grouped.nvfp4.scale_atoms"},
              {b.Tuned(tuned), b.Tuned(route_only), b.Ours(ours)});
   }
 }

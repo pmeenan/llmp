@@ -128,7 +128,7 @@ TensorFormat Mxfp8Split(std::uint64_t k, std::uint64_t n) {
 // a tensor scale per stacked matrix.
 TensorFormat Nvfp4Atoms(std::uint64_t k, std::uint64_t n) {
   TensorFormat f = Dense(Encoding::kNvfp4, {k, n});
-  f.layout = Layout::kCutlassScaleAtoms;
+  f.layout = Layout::kScaleAtoms;
   f.params.tensor_scale = true;
   f.stacked = 2;
   return f;
@@ -415,7 +415,7 @@ TEST(ArtifactV1Test, FormatsRoundTripThroughTheirJson) {
   }
   std::string text;
   artifact::AppendFormatJson(Nvfp4Atoms(64, 256), text);
-  EXPECT_EQ(text, R"({"encoding":"nvfp4","layout":"cutlass_scale_atoms","ne":[64,256],)"
+  EXPECT_EQ(text, R"({"encoding":"nvfp4","layout":"scale_atoms","ne":[64,256],)"
                   R"("params":{"tensor_scale":true},"stacked":2})");
 }
 
@@ -673,8 +673,8 @@ std::vector<Case> Cases() {
        [](V1Files& f, H&) { Transformation(f, "relayout")["from"] = "swizzled"; }, Rule::kSchema,
        "transformation.from is not a layout"},
       {"relayout-from-own-layout",
-       [](V1Files& f, H&) { Transformation(f, "relayout")["from"] = "cutlass_scale_atoms"; },
-       Rule::kRepr, "a relayout from its own layout, or one its format has not"},
+       [](V1Files& f, H&) { Transformation(f, "relayout")["from"] = "scale_atoms"; }, Rule::kRepr,
+       "a relayout from its own layout, or one its format has not"},
       {"relayout-from-a-layout-that-cannot-hold-it",
        [](V1Files& f, H&) {
          Transformation(f, "relayout")["tensors"] = Json::Array{"blk.0.attn_q.weight"};

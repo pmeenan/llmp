@@ -75,14 +75,32 @@ std::expected<LayerSlabs, std::string> ExpertSlabsOf(const artifact::Artifact& a
       if (artifact.format_version() == 1) {
         // Native descriptors are authoritative. Never populate or consult the
         // absent legacy Representation of a v1 expert array.
-        if (!array.format || !format::Validate(*array.format) ||
-            array.part != format::PartRole::kData || array.format->shape.rank != 2 ||
-            (array.format->layout != format::Layout::kGgmlBlocks &&
-             array.format->layout != format::Layout::kDense))
-          return Error("native expert slab needs a valid GGML-compatible data slice");
-        const auto& info = format::Info(array.format->encoding);
-        if (!info.ggml) return Error("native expert slice has no GGML block geometry");
-        element_bytes = block_bytes = info.ggml->block_bytes;
+        // A split or scale-atom encoding's parts (codes, block scales, a
+        // tensor scale; an affine encoding's biases or zero points) are
+        // separate arrays of one expert group: each part's
+        // slice is placed at the writer's member alignment, read by the
+        // format's decoders or the block-scaled grouped GEMM, not as GGML
+        // blocks; the slab keeps 16-byte expert bases.
+        const bool split =
+            array.format &&
+            (array.format->layout == format::Layout::kSplit ||
+             array.format->layout == format::Layout::kScaleAtoms) &&
+            (array.part == format::PartRole::kCodes ||
+             array.part == format::PartRole::kBlockScales ||
+             array.part == format::PartRole::kTensorScale ||
+             array.part == format::PartRole::kBiases || array.part == format::PartRole::kZeros);
+        if (!array.format || !format::Validate(*array.format) || array.format->shape.rank != 2 ||
+            (!split && (array.part != format::PartRole::kData ||
+                        (array.format->layout != format::Layout::kGgmlBlocks &&
+                         array.format->layout != format::Layout::kDense))))
+          return Error("native expert slab needs a valid GGML-compatible or split-part slice");
+        if (split) {
+          element_bytes = block_bytes = 16;
+        } else {
+          const auto& info = format::Info(array.format->encoding);
+          if (!info.ggml) return Error("native expert slice has no GGML block geometry");
+          element_bytes = block_bytes = info.ggml->block_bytes;
+        }
       } else {
         auto type = kernels::ggml::GgmlTypeOf(array.repr.type);
         if (!type) return Error(type.error().detail);

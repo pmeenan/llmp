@@ -1756,6 +1756,60 @@ layout is a prepared artifact of its own (same checkpoint, one artifact per
 target layout), which D-026 and D-052 anticipated as "alternative layouts".
 A relayout during the device copy is only adopted if measured free.
 
+**The scale-atom layout and the importer's expert relayout** (2026-10-15).
+Platform-specific work happens at import (AGENTS.md rule 11, the owner's
+direction of 2026-10-15): a lossless relayout a fast kernel needs is done
+once by the importer, chosen by what a tensor is (its canonical name, which
+names its role) and its encoding, never by architecture, recorded as a layout (D-108) and an applied relayout (D-113),
+decodable by the CPU references, and never made at load time or where the
+loaded form would outgrow the source encoding. The first is
+`format::Layout::kScaleAtoms` (`scale_atoms` in a v1 index; it was
+`cutlass_scale_atoms` before the name followed the structure): codes as
+`split`, block scales in atoms of 128 rows by 4 scales (512 bytes), atoms
+along K first, rows padded to a whole atom, the tile order block-scaled
+tensor-core products read (on the GB10 CUTLASS's SM1xx grouped GEMM). A
+stacked tensor's matrices take whole atoms each when their rows are
+multiples of 128. `import/expert_relayout.h` applies it to any routed-expert
+table a normalization gathered from split matrices, by its canonical name
+(`blk.L.ffn_{gate,up,down}_exps.weight`, which names its projection) and its
+encoding: a MoE's gate and up stacked into one
+table (gate's rows then up's, expert by expert), down alone, each block
+scale matrix swizzled by `PartRoutePlan::ScaleAtoms` (a 128-row band
+buffered and emitted at its own offset, so the bytes stay the source's),
+codes copied, and each projection's per-matrix tensor scales gathered into
+an F32 [experts] vector (the converted form's `ffn_*_exps.weight_scale_2`
+roles, which the grouped GEMM and the moe component read). It applies only
+where no byte is added (rows whole atoms, a whole number of 4-scale atom
+columns, at most 256 scales a row); otherwise the table stays `split`. In
+an expert group the writer places a stacked table first, each table's
+codes before its scales, the slot the grouped GEMM reads at fixed offsets
+(`moe_layout.h` `ExpertLayout`), which admission checks
+(`runtime/component_admission.h` `CheckScaleAtomSlots`). The registry then
+selects on data: `llmp.moe.experts.cutlass` (the W4A4 grouped GEMM: activations quantized
+to FP4 with a per-step dynamic scale, row amax / (6 · 448), never the
+checkpoint's `input_scale`) needs scale-atom NVFP4 operands and an FP4
+device (`sm_121`). The Qwen3.8 native mapping enables its pattern for a
+target where the importer found the experts' `input_scale` tensors
+(ModelOpt's `NVFP4`, not `W4A16_NVFP4`), since FP4 activations would
+otherwise trade a target's quality, and for a speculative stage always:
+verification decides every token, so a drafter's numerics change only
+acceptance and speed (rule 11), and W4A4 measured 1.2 to 2.0% faster
+decode at equal acceptance for the MTP block, whose checkpoint is
+`W4A16_NVFP4`. Elsewhere, or on a device without FP4, the format ladder's
+resident grouped product decodes the same tables on chip
+(`llmp.decode.grouped.nvfp4.scale_atoms`, W4A16). The
+reference decoders read the layout (`kernels/reference`), and
+`import_expert_relayout_test` checks that a relaid table decodes to its
+split sources' values element for element. Only NVFP4 joins today;
+another block-scaled encoding of one-byte scales (MXFP8, MXFP4) joins by
+entering the relayout's encoding list once a grouped product reads its
+atoms, and dense NVFP4 linears are not relaid out. A row-gathered table
+of the same encodings (an embedding or side table, by role) is relaid out
+from split row blocks into `row_interleaved` (`RelayoutRowTable`: each
+row's codes then its scales, so a paged row is one read and GGML's
+`llmp.nvfp4.get_rows` reads it), its blocks routed into their lanes
+(`PartRoutePlan::Strided`).
+
 **Quantized state.** KV caches and other state take encodings like weights,
 per component. Lossy state encodings are configured per alias, through
 presets or the owner's own settings, and are off by default.
@@ -1770,7 +1824,7 @@ discrete target has no on-demand expert paging (D-082).
 **Where it stands (2026-10-08).** `src/format` names the encodings and
 layouts; `kernels/reference` decodes every format on the CPU;
 `kernels/decode` holds CUDA's block decoders (BF16, F16, Q8_0; NVFP4
-split, in CUTLASS's scale atoms, row-interleaved and in GGML's blocks;
+split, in scale atoms, row-interleaved and in GGML's blocks;
 MXFP8 split and in scale atoms) under the vector (1 to 16 rows), GLU
 (a decoder per input, mixed pairs instantiated where used), matrix
 (mma.sync BF16/F16, or F32 FMA), grouped (an expert worklist) and rows
@@ -2325,15 +2379,18 @@ The approved checkpoints are one table, reviewed as a lock file: each
 entry's source receipts, native tensor inventory (form and digest),
 the SHA-256 of the spec it executes (a target's stored `spec.json`; a
 stored drafter's composition with its named approved target, the
-drafter's values read from the GGUF metadata it keeps, `spec::SourceKeys`),
+drafter's values read from the GGUF metadata it keeps, `spec::SourceKeys`,
+or where it keeps none by its `DraftRecipe::values`: the block's compiled
+constants and the selected head's rows from its tensors),
 its envelope (context, owners, the context above which one owner; a
 default context is cut to it) and the gate keys that select its mapping's
 policy rule. The inventory digest covers every tensor's name, encoding,
 layout, part, stacking, parameters and shape; receipts are the importer's
 declared ones, not re-hashed. Admission compares digests; it no longer
-synthesizes an expected spec from a compiled profile (Qwen3.8's ModelOpt
-and MLX rows stay transitional, unpinned, until their relayout's frozen
-proofs). A stored drafter's inventory and envelope are checked wherever it
+synthesizes an expected spec from a compiled profile (every row pins one;
+Qwen3.8's ModelOpt and MLX rows since their native imports of 2026-10-15,
+which also record their applied folds and relayouts and the mapping their
+spec was synthesized by, `Approval::fold_tensors`, `relayouts`, `mapping`). A stored drafter's inventory and envelope are checked wherever it
 composes, and a block drafter's bound and fill token come from its kept
 metadata. What serving does per architecture is its
 mapping's `ServingRecipe` (settings defaults and bounds, the shared route,
@@ -2408,6 +2465,81 @@ checks pass. This is the internal paid target route: architecture-only public
 selection and stored-drafter admission remain unchanged. ModelOpt/MLX serving,
 family migration and N5's all-artifact gates remain open. See the
 [publication and execution evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13).
+
+The ModelOpt checkpoint's MTP drafter has a native v1 publication
+(`llmp import --component mtp [--draft-head IDS]`,
+`import/modelopt_qwen38.h` `NormalizeModelOptDrafter`). Its 38 `mtp.*` roles
+keep their pinned descriptors and source encodings (BF16 linears), but its
+norms' 1 + w is folded into F32 by role, as the target's (below); its
+routed experts are relaid out as the target's.
+It carries no spec; the importer composes it with a carrier of the native
+target (the target normalization's canonical outputs and the hash's checked
+constants, `ModelOptNativeTargetForm`) only to validate and place it. The
+optional selected head gathers BF16 rows of `lm_head.weight` through the
+indexed row assembly and writes its I32 map as a generated part, which the
+writer emits only after streaming the list file against its whole-content
+receipt; the list name enters the importer's options hash. Serving admits
+the v1 drafter by its approval row (Mia's list: its source receipts,
+complete inventory, the norms' fold and the relayout records, its
+composition with the approved native target), composes it through the
+row's mapping's drafting recipe (`spec::DraftRecipe`: the native
+repeat-pending form; its block's values the architecture's compiled
+constants and its head's rows from its tensors, under the pinned
+composition digest; the head's
+token map read through its placement and checked), with no
+architecture-named branch.
+
+**The native ModelOpt target and drafter on v0's kernels** (2026-10-15).
+The importer relays both's NVFP4 routed experts out into the scale-atom
+layout (above, "The scale-atom layout and the importer's expert
+relayout") and interleaves the target's n-gram table's rows; its
+parameter folds (below) store the norms' 1 + w and A's -exp(A_log) in F32
+(2 MB). Both stages take the W4A4 grouped GEMM, as v0's. On `spark-b` the
+v1 pair serves bit for bit as the v0 pair (heads, tokens, states,
+acceptance), scores v0's NLL exactly and passes the M3.6 speed gate against
+the frozen baseline in every cell
+([report](experiments/m36-numerical-audit/qwen-modelopt-v1.md)). Without the
+folds the norms and A were derived each step: 8% slower decode at C1 and
+0.84% lower NLL, the A path's fast-math `expf` differing from the host's
+double by up to 4 ulp in 705 of 1,728 values, which routing amplifies.
+
+**Parameter folds by role** (2026-10-15, D-108 as amended). A small
+per-channel value a component derives from its stored one at every step
+because its instance's flag asks (a zero-centered norm's 1 + w, a
+logarithmic decay's -exp(A)) is declared on the role
+(`components::WeightRole::derived`: the flag and the fold that stores the
+derived value). `import/parameter_folds.h` `FoldDerivedParameters` reads a
+stage synthesized from the unfolded outputs and folds every tensor a set
+flag derives into F32 on the host (in double, rounded once; under a head
+reorder where it has one), a fold covering all its tensors or none; the
+stage then records the fold and the mapping's flag rule does not apply to
+a source that carries it (`spec::ParamRule::unless_fold`). Bulk weights
+never widen: only whole dense BF16 vectors (rank 1, at most 1 MiB in F32)
+of one copied source qualify.
+The ModelOpt target folds its 148 zero-centered norms and 36 A vectors
+(2 MB), its drafter its nine norms, and the MLX import the same (rule 11:
+a win generalized across formats). A stage without the folds (a source
+whose norms or A could not fold whole) reaches the fused patterns with
+them as derived parameters (below).
+
+**Split routed experts in ordinary programs** (2026-10-15). Split-part
+expert arrays (MLX's affine experts; NVFP4 experts a normalization could
+not relay out) execute outside the routed diagnostic: native expert slabs
+take a split or scale-atom encoding's parts at 16-byte expert bases
+(`engine/expert_slab.h`), stored bindings place them part by part, the
+runner binds each part through its array's slab address and pitch
+(`RunnerConfig::split_expert_parts`), and a resident grouped source
+(`kernels/decode/selected_grouped.h` `ResidentGroupedSelectedSource`) runs
+the format ladder's grouped products (split NVFP4, affine, and scale-atom
+NVFP4 tables no block-scaled GEMM reads) after a one-block device
+preparation (`grouped_route.h`) that counts each expert's pairs, compacts
+the active experts' operands and scatters the pairs: no route, no host
+round trip, capturable. A row table of several parts gets a group a part
+from the writer. Source-encoded norms and A reach the fused patterns as
+derived parameters (`planner/fusions.cc` `Parameter`; the selected-HC proof
+keeps their weight leaf). The split NVFP4 experts' own fast products (a
+grouped GEMV for decode rows, the block-scaled GEMM over split scales) are
+not built: the importer's relayout serves the checkpoints that need them.
 
 Ordinary internal component Server admission now shares one catalog-paid
 maximum transient compiler allowance across participating LLM aliases, instead

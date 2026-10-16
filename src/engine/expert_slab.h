@@ -32,7 +32,8 @@ std::expected<SlabSpec, std::string> ExpertSlab(
     std::uint64_t alignment, std::uint32_t layer);
 
 // Every layer's routed experts as one slab (native TensorFormat block geometry
-// for v1, the unchanged legacy GGML element/block tables for v0; the artifact's
+// for v1, a split encoding's parts at 16-byte expert bases, the unchanged
+// legacy GGML element/block tables for v0; the artifact's
 // expert arrays of that layer, ExpertArray::layer), its pitch rounded up to
 // `alignment` and to every array's GGML block bytes, so each expert's base
 // keeps both (Gemma 4's runner's rule: a shard change then falls on an

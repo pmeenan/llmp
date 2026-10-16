@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "format/layout.h"
 #include "import/route.h"
 
 namespace llmp::import {
@@ -157,6 +158,106 @@ TEST(ImportRouteTest, ScalarCarryMatchesHistoricalBytesWithPaidWorkspace) {
         Check(*plan, source, expected, chunk, workspace);
     }
   }
+}
+
+// Row-major one-byte block scales into the scale atoms (format/layout.h
+// ScaleAtomOffset), losslessly, whatever the input's fragments.
+TEST(ImportRouteTest, ScaleAtomsSwizzleWholeBandsLosslessly) {
+  constexpr std::uint64_t kRows = 384, kBlocks = 12;
+  std::vector<std::byte> source(kRows * kBlocks);
+  for (std::size_t i = 0; i < source.size(); ++i)
+    source[i] = static_cast<std::byte>((i * 131 + 7) % 251);
+  std::vector<std::byte> expected(source.size());
+  for (std::uint64_t r = 0; r < kRows; ++r)
+    for (std::uint64_t b = 0; b < kBlocks; ++b)
+      expected[format::ScaleAtomOffset(r, b, kBlocks)] = source[(r * kBlocks) + b];
+  auto plan = PartRoutePlan::ScaleAtoms(kRows, kBlocks);
+  ASSERT_TRUE(plan);
+  EXPECT_EQ(plan->input_bytes(), source.size());
+  EXPECT_EQ(plan->output_bytes(), source.size());
+  std::vector<std::byte> workspace(65536);
+  for (const std::size_t chunk : {1U, 3U, 37U, 1536U, 4096U})
+    Check(*plan, source, expected, chunk, workspace);
+  // Whole 128-row atoms of 4 to 256 scales only; two bands of workspace.
+  EXPECT_FALSE(PartRoutePlan::ScaleAtoms(100, 12));
+  EXPECT_FALSE(PartRoutePlan::ScaleAtoms(128, 6));
+  EXPECT_FALSE(PartRoutePlan::ScaleAtoms(128, 260));
+  EXPECT_FALSE(PartRoutePlan::ScaleAtoms(0, 4));
+  EXPECT_FALSE(plan->Start(std::span(workspace).first(2 * 128 * kBlocks - 1)));
+  EXPECT_TRUE(plan->Start(std::span(workspace).first(2 * 128 * kBlocks)));
+}
+
+// Two parts' rows side by side: each lane's rows at its offset in a row,
+// as they arrive.
+TEST(ImportRouteTest, StridedLanesInterleaveRows) {
+  constexpr std::uint64_t kRows = 37, kCodes = 8, kScales = 2, kStride = kCodes + kScales;
+  std::vector<std::byte> codes(kRows * kCodes), scales(kRows * kScales);
+  for (std::size_t i = 0; i < codes.size(); ++i) codes[i] = static_cast<std::byte>(i % 251);
+  for (std::size_t i = 0; i < scales.size(); ++i) scales[i] = static_cast<std::byte>(200 + i % 50);
+  for (const bool scale_lane : {false, true}) {
+    const auto& source = scale_lane ? scales : codes;
+    const auto row = scale_lane ? kScales : kCodes;
+    auto plan = PartRoutePlan::Strided(kRows, row, kStride, scale_lane ? kCodes : 0);
+    ASSERT_TRUE(plan);
+    EXPECT_EQ(plan->output_bytes(), source.size());
+    EXPECT_EQ(plan->span(), kRows * kStride);
+    for (const std::size_t chunk : {1U, 3U, 9U, 4096U}) {
+      auto run = plan->Start();
+      ASSERT_TRUE(run);
+      std::vector<std::byte> out(kRows * kStride, std::byte{0xEE});
+      const PartSink sink = [&](std::uint64_t at,
+                                std::span<const std::byte> bytes) -> std::expected<void, Error> {
+        if (at > out.size() || bytes.size() > out.size() - at) return Stop();
+        std::ranges::copy(bytes, out.begin() + static_cast<std::ptrdiff_t>(at));
+        return {};
+      };
+      for (std::size_t at = 0; at < source.size(); at += chunk)
+        ASSERT_TRUE(run->Consume(
+            at, std::span(source).subspan(at, std::min(chunk, source.size() - at)), sink));
+      ASSERT_TRUE(run->Finish());
+      for (std::uint64_t r = 0; r < kRows; ++r)
+        for (std::uint64_t b = 0; b < kStride; ++b) {
+          const bool mine = scale_lane ? b >= kCodes : b < kCodes;
+          const auto want =
+              !mine ? std::byte{0xEE} : source[(r * row) + (scale_lane ? b - kCodes : b)];
+          ASSERT_EQ(out[(r * kStride) + b], want) << r << ':' << b;
+        }
+    }
+  }
+  EXPECT_FALSE(PartRoutePlan::Strided(4, 8, 6, 0));   // a row past its stride
+  EXPECT_FALSE(PartRoutePlan::Strided(4, 2, 10, 9));  // a lane past its stride
+  EXPECT_FALSE(PartRoutePlan::Strided(0, 2, 10, 0));
+}
+
+// A fold under a head reorder (A: -exp(A_log) per value head, tiled): each
+// value folded into its reordered place.
+TEST(ImportRouteTest, PermutedFoldsFoldEachHeadIntoItsPlace) {
+  constexpr std::array<std::size_t, 6> source_heads{0, 3, 1, 4, 2, 5};
+  const format::TensorFormat bf16{.encoding = Encoding::kBF16,
+                                  .layout = Layout::kDense,
+                                  .shape = {.ne = {6, 1, 1, 1}, .rank = 2}};
+  auto permutation = HeadPermutationPlan::Make(bf16, HeadAxis::kColumns, 2, 6, 1, 0);
+  ASSERT_TRUE(permutation);
+  constexpr std::array<std::uint16_t, 6> words{0x0000, 0x3F00, 0xBF80, 0x4000, 0x3E80, 0xC040};
+  std::array<std::byte, 12> source{};
+  for (std::size_t i = 0; i < words.size(); ++i)
+    for (std::size_t b = 0; b < 2; ++b)
+      source[2 * i + b] = static_cast<std::byte>(words[i] >> (8 * b));
+  for (const auto fold : {ScalarFold::kNormPlusOne, ScalarFold::kANegExp}) {
+    std::array<std::byte, 24> expected{};
+    for (std::size_t h = 0; h < source_heads.size(); ++h)
+      ASSERT_TRUE(FoldBf16(fold, std::span(source).subspan(2 * source_heads[h], 2),
+                           std::span(expected).subspan(4 * h, 4)));
+    auto plan = PartRoutePlan::PermuteFold(*permutation, PartRole::kData, fold);
+    ASSERT_TRUE(plan);
+    EXPECT_EQ(plan->output_bytes(), 24U);
+    std::vector<std::byte> workspace(65536);
+    for (const std::size_t chunk : {1U, 5U, 4096U})
+      Check(*plan, source, expected, chunk, workspace);
+    EXPECT_FALSE(plan->Start(std::span(workspace).first(35)));
+  }
+  EXPECT_FALSE(
+      PartRoutePlan::PermuteFold(*permutation, PartRole::kData, static_cast<ScalarFold>(255)));
 }
 
 TEST(ImportRouteTest, RejectsGeometryWorkspaceAndNoncontiguousInputBeforeSink) {

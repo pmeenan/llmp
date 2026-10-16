@@ -27,6 +27,8 @@
 #include "engine/decoding.h"
 #include "engine/expert_slab.h"
 #include "engine/paged_weights.h"
+#include "kernels/decode/selected_grouped.h"
+#include "kernels/decode/selected_rows.h"
 #include "kernels/decode/selected_source.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
@@ -660,42 +662,50 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
           return Error(admitted.error());
       }
-      drafter_mapping = spec::FindMapping(drafter->model().architecture);
+      // The drafter's mapping as composed (its drafting recipe's replay
+      // form; a stored one's by its approval).
+      drafter_mapping = ComposedDrafterMapping(*drafter);
       if (drafter_mapping == nullptr || drafter_mapping->role != spec::StageRole::kDrafter) {
         return Error(std::format("the drafter's architecture {} has no drafter mapping",
                                  drafter->model().architecture));
       }
-      std::expected<std::vector<spec::SourceValue>, std::string> dvalues;
-      if (solo) {
-        if (qwen && qwen->gguf())
-          return Error("the GGUF target has no qualified component MTP recipe");
-        auto binding = model::BindQwen38Mtp(model::Qwen38Flash(), *drafter);
-        if (!binding) return Error(binding.error());
-        if (binding->selected_head()) {
-          auto ids = RecipeIntegers<std::int32_t>(*drafter, binding->draft_ids,
-                                                  model::Qwen38Flash().vocab, "I32");
+      if (qwen && qwen->gguf())
+        return Error("the GGUF target has no qualified component drafter recipe");
+      auto dvalues = DrafterValues(*artifact, *drafter);
+      if (!dvalues) return Error(dvalues.error());
+      // The values its approval's composition was pinned with, before a
+      // setting narrows the draft vocabulary.
+      const std::vector<spec::SourceValue> approved_values = *dvalues;
+      // The draft vocabulary (the recipe's vocab_key value): the configured
+      // draft_vocab, bounded by the selected head's rows (its token map, the
+      // recipe's head_ids) or, without a selected head, by the target's
+      // vocabulary; the head's token IDs are read and checked.
+      if (const spec::DraftRecipe* draft = drafter_mapping->draft;
+          draft != nullptr && !draft->vocab_key.empty()) {
+        std::uint64_t rows = recipe.vocab;
+        auto map = DraftHeadRows(*drafter, draft->head_ids, recipe.vocab);
+        if (!map) return Error(map.error());
+        if (*map) {
+          auto ids = ReadRecipeIntegers<std::int32_t>(*drafter, (*map)->resource, (*map)->rows);
           if (!ids) return Error(ids.error());
-          if (auto valid = model::CheckQwen38DraftIds(*ids, model::Qwen38Flash().vocab); !valid)
-            return Error(valid.error());
+          // Strictly ascending target token IDs.
+          for (std::size_t i = 0; i < ids->size(); ++i)
+            if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], recipe.vocab) ||
+                (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
+              return Error("a selected draft head's token IDs are not strictly ascending");
+          rows = ids->size();
           const auto width = std::min<std::size_t>(settings.draft_vocab.value, ids->size());
           if (width == 0) return Error("a selected draft head needs a positive source row count");
           ids->resize(width);
           hold->draft_head_ids = std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
         }
-        drafter_mapping = &spec::mappings::Qwen38MtpReplayMapping();
-        dvalues = spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), *binding);
-        if (dvalues)
-          for (auto& value : *dvalues)
-            if (value.key == "qwen4exp-mtp.draft_vocab") {
-              const auto rows = binding->selected_head() ? binding->draft_output.ne.at(1)
-                                                         : model::Qwen38Flash().vocab;
-              hold->draft_head_rows = static_cast<std::uint32_t>(
-                  std::min<std::uint64_t>(settings.draft_vocab.value, rows));
-              value.value = static_cast<std::int64_t>(hold->draft_head_rows);
-            }
-      } else
-        dvalues = DrafterValues(*artifact, *drafter);
-      if (!dvalues) return Error(dvalues.error());
+        for (auto& value : *dvalues)
+          if (value.key == draft->vocab_key) {
+            hold->draft_head_rows = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(settings.draft_vocab.value, rows));
+            value.value = static_cast<std::int64_t>(hold->draft_head_rows);
+          }
+      }
       hold->drafter_values = std::move(*dvalues);
       auto dsource = spec::SourceOf(*drafter, drafter_mapping);
       if (!dsource) return Error(dsource.error());
@@ -710,8 +720,16 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto composed = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
                                            hold->drafter_values);
       if (!composed) return Error(composed.error());
-      if (auto approved = CheckComposedAdmission(*composed, *drafter); !approved)
-        return Error(approved.error());
+      if (approved_values == hold->drafter_values) {
+        if (auto approved = CheckComposedAdmission(*composed, *drafter); !approved)
+          return Error(approved.error());
+      } else {
+        auto pinned = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
+                                           approved_values);
+        if (!pinned) return Error(pinned.error());
+        if (auto approved = CheckComposedAdmission(*pinned, *drafter); !approved)
+          return Error(approved.error());
+      }
       hold->spec = std::move(*composed);
       hold->sources.push_back(std::move(*dsource));
     } else {
@@ -1012,7 +1030,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                 .artifact = weight.ref.stage, .array = weight.ref.expert_array, .index = *found};
             if (weight.ref.expert_array)
               hold->pitch[weight.ref] = placements.at(weight.ref.stage).pitch.at(*found);
-            if (solo && weight.ref.stage == 0 && !weight.ref.expert_array &&
+            if (solo && qwen && weight.ref.stage == 0 && !weight.ref.expert_array &&
                 *found == qwen->ple_table.index) {
               row_table = {.weight = weight.ref,
                            .resource = *found,
@@ -1061,20 +1079,46 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                     const auto at = held->pitch.find(ref);
                     return at == held->pitch.end() ? 0 : at->second;
                   }}};
-    bool has_affine = false;
-    for (const auto& table : hold->tables) {
-      for (const auto& tensor : table) {
-        if (tensor.format.encoding == format::Encoding::kAffine) {
+    // The format ladder's decoders for what GGML does not read: affine
+    // tables, and the native importer's split NVFP4 routed experts; else
+    // only what a native artifact's NVFP4 needs: the grouped product for
+    // scale-atom experts (the importer's relayout), which a stage without
+    // the block-scaled grouped GEMM (a W4A16 checkpoint's policy, a device
+    // without FP4) decodes on chip, and the rows of a split NVFP4 table.
+    bool has_affine = false, has_atoms = false, has_rows = false;
+    for (std::size_t a = 0; a < hold->tables.size(); ++a) {
+      // A v0 artifact's converted layouts keep their GGML paths.
+      const bool native = (a == 0 ? *artifact : *drafter).format_version() == 1;
+      for (const auto& tensor : hold->tables[a]) {
+        const bool nvfp4 = tensor.format.encoding == format::Encoding::kNvfp4;
+        if (tensor.format.encoding == format::Encoding::kAffine ||
+            (tensor.experts && nvfp4 && tensor.format.layout == format::Layout::kSplit))
           has_affine = true;
-          break;
-        }
+        if (native && nvfp4 && tensor.experts &&
+            tensor.format.layout == format::Layout::kScaleAtoms)
+          has_atoms = true;
+        if (native && nvfp4 && !tensor.experts && tensor.format.layout == format::Layout::kSplit)
+          has_rows = true;
       }
-      if (has_affine) break;
     }
     if (has_affine) {
-      auto decode_source = kernels::decode::DecodeSelectedSource();
+      // Resident experts: the grouped products route on the device.
+      auto decode_source = kernels::decode::DecodeResidentSelectedSource();
       if (!decode_source) return Error(decode_source.error());
       backend_options.selected = *decode_source;
+    } else if (has_atoms || has_rows) {
+      std::vector<std::shared_ptr<const kernels::ggml::SelectedSource>> sources;
+      if (has_atoms) {
+        auto grouped = kernels::decode::ResidentGroupedSelectedSource(format::Encoding::kNvfp4);
+        if (!grouped) return Error(grouped.error());
+        sources.push_back(std::move(*grouped));
+      }
+      if (has_rows) {
+        auto rows = kernels::decode::RowsSelectedSource(format::Encoding::kNvfp4);
+        if (!rows) return Error(rows.error());
+        sources.push_back(std::move(*rows));
+      }
+      backend_options.selected = kernels::decode::CompositeSelectedSource(std::move(sources));
     }
     auto backend = kernels::ggml::GgmlBackend::Create(
         0, node.execution(), node.stream(static_cast<std::uint32_t>(index)), nullptr,
@@ -1153,6 +1197,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (!parsed) return Error(std::format("the target's policy: {}", parsed.error()));
       target_policy = std::move(*parsed);
     }
+    std::optional<planner::Policy> drafter_policy;
+    if (options.drafter_policy) {
+      auto parsed = planner::ParsePolicy(*options.drafter_policy);
+      if (!parsed) return Error(std::format("the drafter's policy: {}", parsed.error()));
+      drafter_policy = std::move(*parsed);
+    }
     std::vector<std::unique_ptr<engine::ComponentStepSource>> sources;
     for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
       auto made = engine::ComponentStepSource::Create(
@@ -1167,7 +1217,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
            .values = stage == 0 ? std::span<const spec::SourceValue>(hold->values)
                                 : std::span<const spec::SourceValue>(hold->drafter_values),
            .slots = slots,
-           .policy = stage == 0 || forced ? target_policy : std::nullopt,
+           // A drafter stage: the diagnostic's policy, else a forced
+           // shared-route recipe's (the target's), else its mapping's.
+           .policy = stage == 0       ? target_policy
+                     : drafter_policy ? drafter_policy
+                     : forced         ? target_policy
+                                      : std::nullopt,
            .backend = hold->backend->Backend(),
            .execution_domain = execution_domain,
            .validate_program = options.validate_program,
@@ -1206,6 +1261,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     parts.config.weights.push_back({.weights = std::move(weights),
                                     .places = std::move(placements[0].places),
                                     .slabs = std::move(placements[0].slabs)});
+    parts.config.split_expert_parts = has_affine || has_atoms;
     if (stored_bindings) parts.config.row_tables = std::move(stored_bindings->rows);
     if (row_table) parts.config.row_tables.push_back(*row_table);
     if (options.capture_first_verify)

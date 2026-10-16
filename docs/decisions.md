@@ -59,9 +59,13 @@ tensor's name, encoding, layout, part, stacking, parameters and shape)
 maps to the SHA-256 of the spec it
 executes (a target's stored `spec.json`; a stored drafter's composition
 with its approved target, whose values come from the GGUF metadata the
-drafter keeps), its envelope and its policy gates. Nothing is synthesized
-from a compiled profile to admit a v1 artifact, except for the transitional
-rows below. A model's default context is bounded by its approvals. What an architecture's
+drafter keeps, or for a drafter that keeps none, the native MTP import,
+by its `DraftRecipe`: its block's values from the architecture's compiled
+constants and only its head's rows from its tensors, all of which the
+pinned composition digest covers), its envelope and its policy gates,
+and where its import transforms tensors, the applied folds' and relayouts'
+records and the mapping its spec was synthesized by. Nothing is synthesized
+from a compiled profile to admit a v1 artifact. A model's default context is bounded by its approvals. What an architecture's
 models serve with (default prompt chunks, owner bounds, the shared route,
 lanes, a forced serving policy) is its mapping's `ServingRecipe`, and a
 drafter's decoding shape its `DraftRecipe`; serving dispatches by the
@@ -75,11 +79,10 @@ binders and v0 serving.
 
 **Consequences.** A new checkpoint of a known architecture is an approvals
 row and its evidence; a new architecture adds a mapping with its recipes.
-The transitional rows (Qwen3.8 ModelOpt and MLX) pin no spec and no
-published v1 artifact of theirs has frozen proofs: they still check a stored
-spec against their compiled profile, and those models are configured by
-their v0 IDs until their relayout lands with its v1 artifacts, pins and
-proofs; no other row may be unpinned. A change that moves a spec's bytes changes its digest and refuses
+Qwen3.8's ModelOpt and MLX rows, transitional at first (no pinned spec),
+are pinned since 2026-10-15 from their native imports (the ModelOpt pair
+with its MTP drafter, served bit for bit as the v0 pair); no row is
+unpinned. A change that moves a spec's bytes changes its digest and refuses
 the artifact until its approval is renewed.
 
 **Reopen if** a checkpoint must serve that cannot be re-imported, or an
@@ -127,6 +130,22 @@ immutable event files; imports never take D-115's checkpoint-writer guard.
 **Reopen if.** Runtime import-job admission replaces the standalone path,
 additional writer transformations need options that affect artifact identity,
 or a future CLI revision changes these arguments or exit meanings.
+
+*Amended 2026-10-15 (owner decision: the selected draft head is an
+optional import input).* `llmp import SOURCE --store DIRECTORY
+[--metadata-mib N] [--component mtp [--draft-head IDS]]`: `--component mtp`
+publishes the ModelOpt Qwen3.8 checkpoint's MTP drafter instead of its
+target, reading only its configuration documents and the shards holding
+what it publishes; `--draft-head` (only with it) adds a selected head from
+a list of strictly ascending token IDs. Both options are additive and
+usage errors exit 2 as before. The first import option that changes what
+is published, the head, is recorded as the manifest importer's
+`options_sha256` over `{"component":"mtp","draft_head":"<name>"}`, beside
+the list's own source identity; imports without it keep the SHA-256 of no
+options. The writer derives the head's I32 token map from the list file
+only after streaming that file against its whole-content receipt. An
+archive source records the drafter's import event against the
+checkpoint's variant, with the list as the caller's own source.
 
 ## D-115: One archive checkpoint writer, enforced across hosts by atomic NAS directory ownership  (2026-10-10, status: accepted by the owner's single-writer requirement; supersedes D-114's lock-free checkpoint claims)
 
@@ -370,6 +389,28 @@ runner recorded before it (only under its diagnostic switch, no family
 being served by it yet) no longer matches its layout (`KeptLayoutId`
 derives from the bound digest) and is discarded, never misread. A public surface (D-062): the product stays in the 0.x line, a
 minor change.
+
+*Amended 2026-10-15 (the owner's rule 11, "platform-specific work happens
+at import").* The NVFP4 scale-atom layout's name is `scale_atoms` (its
+structure), not `cutlass_scale_atoms`: no artifact had recorded the old
+name, which v1 readers now refuse as an unknown layout. The first applied
+`relayout` records are the native ModelOpt Qwen3.8 target's and MTP
+drafter's routed experts, `split` to `scale_atoms` (engine-components.md,
+"The scale-atom layout and the importer's expert relayout"): a relaid
+table may stack matrices (a MoE's gate and up) that the source held as
+separate tensors, and its matrices' tensor scales move to F32 [experts]
+resources of their own; the bytes stay the source's. The same imports
+record the importer's parameter folds (`norm.plus_one`, `ssm.a_neg_exp`;
+D-108 as amended), chosen by the role each tensor binds
+(`components::WeightRole::derived`), never by architecture; a mapping's
+flag rule names the fold that replaces it (`ParamRule::unless_fold`), so
+a stage that carries the fold never derives the value again. A folded
+tensor's bytes are attested by no digest of their own: their correctness
+rests on the importer (its fold transforms, by their tests) and the source
+receipts the artifact records, as a copied tensor's does. The rename changes
+the decode implementations' names and so their identities: v0 Qwen
+calibration records and kept conversations recorded before it are not
+reused (acceptable while serving moves to v1 artifacts only).
 
 **Reopen if** a tool must read a spec without the spec module, a cap must
 rise, or a reader needs a tensor's parts grouped without a spec (then an

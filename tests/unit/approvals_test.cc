@@ -18,6 +18,7 @@
 
 #include "artifact/artifact.h"
 #include "base/bytes.h"
+#include "format/layout.h"
 #include "runtime/component_admission.h"
 #include "spec/mapping.h"
 
@@ -49,11 +50,27 @@ TEST(Approvals, EveryEntryIsCompleteUniqueAndPairedWithAnApprovedTarget) {
     EXPECT_GT(a.tensors, a.arrays);
     EXPECT_NE(a.max_context, 0U);
     EXPECT_NE(a.max_slots, 0U);
-    // Only Qwen3.8's native imports are still transitional.
-    if (a.spec.empty())
-      EXPECT_TRUE(a.form == rt::InventoryForm::kModelOpt || a.form == rt::InventoryForm::kMlx);
-    else
-      EXPECT_TRUE(Hex64(a.spec));
+    // Every entry pins the spec it executes.
+    EXPECT_TRUE(Hex64(a.spec));
+    // Its transforms' records: a fold's in the folds' order, digests whole.
+    if (!a.fold_tensors.empty()) {
+      ASSERT_EQ(a.fold_tensors.size(), a.folds.size());
+      for (std::size_t i = 0; i < a.folds.size(); ++i) {
+        EXPECT_EQ(a.fold_tensors[i].name, a.folds[i]);
+        EXPECT_NE(a.fold_tensors[i].tensors, 0U);
+        EXPECT_TRUE(Hex64(a.fold_tensors[i].digest));
+      }
+    }
+    for (const rt::ApprovedTransform& r : a.relayouts) {
+      EXPECT_TRUE(llmp::format::LayoutByName(r.name).has_value()) << r.name;
+      EXPECT_NE(r.tensors, 0U);
+      EXPECT_TRUE(Hex64(r.digest));
+    }
+    // A named mapping is one of the architecture's (its role's).
+    if (a.mapping != nullptr) {
+      EXPECT_EQ(a.mapping().architecture, a.architecture);
+      EXPECT_EQ(a.mapping().role == llmp::spec::StageRole::kDrafter, a.drafter);
+    }
     if (a.drafter) {
       const rt::Approval* target = rt::FindApprovalNamed(a.target);
       ASSERT_NE(target, nullptr) << a.target;

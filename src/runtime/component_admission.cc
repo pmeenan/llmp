@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -47,7 +49,8 @@ constexpr auto kRefusedInventory =
 // One tensor's native format within the approved inventory's form.
 bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
   const auto& f = t.format;
-  if (!format::Validate(f) || f.stacked != 1) return false;
+  if (!format::Validate(f)) return false;
+  if (f.stacked != 1 && form != InventoryForm::kModelOpt) return false;
   switch (form) {
     case InventoryForm::kExl3: {
       const bool trellis = f.encoding == format::Encoding::kExl3Trellis;
@@ -64,11 +67,29 @@ bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
     }
     case InventoryForm::kModelOpt:
     case InventoryForm::kMlx: {
+      const bool modelopt = form == InventoryForm::kModelOpt;
+      // Dense: BF16, or F32 (the importer's folded parameters; ModelOpt's
+      // gathered tensor-scale vectors), and for ModelOpt I32 (a draft
+      // head's map).
       if (f.layout == format::Layout::kDense)
-        return f.encoding == format::Encoding::kBF16 && t.part == format::PartRole::kData &&
-               f.params == format::EncodingParams{} && !t.experts && f.shape.rank >= 1 &&
-               f.shape.rank <= 2;
-      if (f.layout != format::Layout::kSplit) return false;
+        return (f.encoding == format::Encoding::kBF16 || f.encoding == format::Encoding::kF32 ||
+                (modelopt && f.encoding == format::Encoding::kI32)) &&
+               t.part == format::PartRole::kData && f.params == format::EncodingParams{} &&
+               f.stacked == 1 && !t.experts && f.shape.rank >= 1 && f.shape.rank <= 2;
+      // ModelOpt's relayouts (import/expert_relayout.h): NVFP4 routed
+      // experts in scale atoms (a MoE's gate and up stacked, their tensor
+      // scales gathered apart), an NVFP4 row table row-interleaved.
+      if (modelopt && f.layout == format::Layout::kScaleAtoms)
+        return f.encoding == format::Encoding::kNvfp4 && t.experts && f.shape.rank == 3 &&
+               f.shape.ne[2] == 512 && (f.stacked == 1 || f.stacked == 2) &&
+               (t.part == format::PartRole::kCodes || t.part == format::PartRole::kBlockScales) &&
+               !f.params.tensor_scale && f.params.k_bits == 0;
+      if (modelopt && f.layout == format::Layout::kRowInterleaved)
+        return f.encoding == format::Encoding::kNvfp4 && !t.experts && f.shape.rank == 2 &&
+               f.stacked == 1 &&
+               (t.part == format::PartRole::kData || t.part == format::PartRole::kTensorScale) &&
+               f.params.tensor_scale && f.params.k_bits == 0;
+      if (f.layout != format::Layout::kSplit || f.stacked != 1) return false;
       const bool geometry =
           t.experts ? (f.shape.rank == 3 && f.shape.ne[2] == 512)
                     : (form == InventoryForm::kModelOpt ? f.shape.rank == 2
@@ -152,33 +173,36 @@ bool SourceMatches(const spec::Source& source, const Approval& approval) {
          source.tensors.size() == approval.tensors;
 }
 
-// Transitional, until Qwen3.8's native imports pin their stored specs
-// (approvals.cc): the stored spec against their compiled profile's
-// synthesis. No other entry may be unpinned.
-std::expected<void, std::string> TransitionalOracle(const Approval& approval,
-                                                    const spec::ModelSpec& model,
-                                                    const spec::Source& source) {
-  if (approval.form != InventoryForm::kModelOpt && approval.form != InventoryForm::kMlx)
-    return Refused("the approval pins no stored spec");
-  const model::Qwen38PleHash hash{
-      .multipliers = {23703573157769, 20109073645365, 8052911324071},
-      .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
-                  160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114,
-                  300001275},
-      .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
-                20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171}};
-  model::Qwen38Profile p = model::Qwen38Flash();
-  if (approval.form == InventoryForm::kMlx) p.ple_row = 160;
-  auto values = spec::mappings::Qwen38GgufValues(p, hash);
-  if (!values) return Refused(values.error());
-  values->push_back(
-      spec::SourceValue{.key = "llmp.qwen4exp.indexer", .value = std::string("fused")});
-  values->push_back(spec::SourceValue{.key = "llmp.qwen4exp.experts_stacked", .value = false});
-  values->push_back(spec::SourceValue{.key = "llmp.qwen4exp.expert_scales", .value = false});
-  const auto expected = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), source, *values);
-  if (!expected) return Refused(expected.error());
-  if (*expected != model) return Refused("stored spec differs from the approved component profile");
-  return {};
+// An applied transform's record: its tensors' count and the SHA-256 of
+// their sorted names, each followed by a line feed (approvals.h).
+bool Recorded(const ApprovedTransform& want, std::string_view name,
+              std::span<const std::string> tensors) {
+  std::vector<std::string_view> sorted(tensors.begin(), tensors.end());
+  std::ranges::sort(sorted);
+  base::Sha256 hash;
+  for (const std::string_view t : sorted) hash.Update(t).Update("\n");
+  return want.name == name && want.tensors == tensors.size() &&
+         base::ToHex(hash.Finish()) == want.digest;
+}
+
+// The artifact's applied folds and relayouts, exactly its approval's.
+bool Transforms(const artifact::Artifact& artifact, const Approval& approval) {
+  const auto folds = artifact.folds();
+  if (!std::ranges::equal(folds, approval.folds, {},
+                          [](const auto& fold) -> std::string_view { return fold.name; }))
+    return false;
+  if (!approval.fold_tensors.empty()) {
+    if (approval.fold_tensors.size() != folds.size()) return false;
+    for (std::size_t i = 0; i < folds.size(); ++i)
+      if (!Recorded(approval.fold_tensors[i], folds[i].name, folds[i].tensors)) return false;
+  }
+  const auto relayouts = artifact.relayouts();
+  if (relayouts.size() != approval.relayouts.size()) return false;
+  for (std::size_t i = 0; i < relayouts.size(); ++i)
+    if (!Recorded(approval.relayouts[i], format::Info(relayouts[i].from).name,
+                  relayouts[i].tensors))
+      return false;
+  return true;
 }
 
 // A pinned spec digest against the actual spec's.
@@ -340,6 +364,17 @@ const spec::Mapping* ComposedDrafterMapping(std::string_view architecture) {
   return &mapping->draft->composed();
 }
 
+const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter) {
+  const Approval* approval = drafter.format_version() == 1
+                                 ? FindApproval(drafter.model().architecture, drafter.sources())
+                                 : nullptr;
+  if (approval == nullptr || approval->mapping == nullptr)
+    return ComposedDrafterMapping(drafter.model().architecture);
+  const spec::Mapping* mapping = &approval->mapping();
+  if (mapping->draft == nullptr || mapping->draft->composed == nullptr) return mapping;
+  return &mapping->draft->composed();
+}
+
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
     const artifact::Artifact& artifact) {
   const auto& architecture = artifact.model().architecture;
@@ -428,9 +463,17 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValue
     return Refused(
         std::format("the approved drafter {} is {}'s, not {}'s", d->name, d->target, t->name));
   if (drafter.format_version() != 1) return ComponentDrafterV0Values(target, drafter);
-  const spec::Mapping* mapping = ComposedDrafterMapping(drafter.model().architecture);
+  const spec::Mapping* mapping = ComposedDrafterMapping(drafter);
   if (mapping == nullptr || mapping->role != spec::StageRole::kDrafter)
     return Refused("the drafter's architecture has no drafter mapping");
+  // A drafter without kept metadata values: its recipe's, from its source.
+  if (mapping->draft != nullptr && mapping->draft->values != nullptr) {
+    auto source = spec::SourceOf(drafter, mapping);
+    if (!source) return Refused(source.error());
+    auto values = mapping->draft->values(*source);
+    if (!values) return Refused(values.error());
+    return values;
+  }
   return KeptValues(drafter, *mapping);
 }
 
@@ -446,6 +489,25 @@ std::expected<void, std::string> ComponentDrafterEnvelope(const artifact::Artifa
       envelope.slots > d->max_slots)
     return Refused(std::format("execution envelope exceeds the approved drafter {}", d->name));
   return {};
+}
+
+std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
+    const artifact::Artifact& drafter, std::string_view head_ids, std::uint64_t vocab) {
+  if (head_ids.empty()) return std::nullopt;
+  const auto index = drafter.FindResource(head_ids);
+  if (!index) return std::nullopt;
+  const auto& resource = drafter.resources()[*index];
+  std::uint64_t rows = 0;
+  if (resource.format && resource.format->encoding == format::Encoding::kI32 &&
+      resource.format->layout == format::Layout::kDense && resource.format->shape.rank == 2 &&
+      resource.format->shape.ne[0] == 1)
+    rows = resource.format->shape.ne[1];
+  else if (!resource.format && resource.repr.type == "I32" && resource.repr.dims.size() == 2 &&
+           resource.repr.dims[0] == 1)
+    rows = resource.repr.dims[1];
+  if (rows == 0 || rows > vocab)
+    return Refused("a selected draft head's token map is not I32 [1, rows] within the vocabulary");
+  return DraftHeadMap{.resource = *index, .rows = rows};
 }
 
 std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
@@ -502,10 +564,7 @@ std::expected<void, std::string> CheckComponentAdmission(
     return Refused("the approved target requires its output tied to its embedding");
   // Execute the authenticated stored spec unchanged; never replace a
   // disagreeing spec by an expected one.
-  if (auto pinned = approval->spec.empty() ? TransitionalOracle(*approval, model, source)
-                                           : Pinned(*approval, model);
-      !pinned)
-    return pinned;
+  if (auto pinned = Pinned(*approval, model); !pinned) return pinned;
   const std::array<std::span<const spec::SourceTensor>, 1> tables{source.tensors};
   if (const auto valid = components::ValidateSpec(model, tables); !valid)
     return Refused(valid.error());
@@ -517,13 +576,45 @@ std::expected<void, std::string> CheckComponentArtifactAdmission(
   if (artifact.format_version() != 1) return Refused("requires a native v1 artifact");
   const Approval* approval = FindApproval(artifact.model().architecture, artifact.sources());
   if (approval == nullptr) return Refused("source identity has no approved v1 execution profile");
-  const bool folds_ok =
-      std::ranges::equal(artifact.folds(), approval->folds, {},
-                         [](const auto& fold) -> std::string_view { return fold.name; });
-  if (!folds_ok || !artifact.relayouts().empty() ||
+  if (!Transforms(artifact, *approval) ||
       artifact.resources().size() != approval->tensors - approval->arrays ||
       artifact.expert_arrays().size() != approval->arrays)
-    return Refused("the approved target requires its copy-only native tensor inventory");
+    return Refused("the approved artifact requires its native tensor inventory and transforms");
+  return CheckScaleAtomSlots(artifact);
+}
+
+std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& artifact) {
+  std::map<std::uint32_t, std::vector<std::uint32_t>> layers;
+  const auto arrays = artifact.expert_arrays();
+  for (std::uint32_t a = 0; a < arrays.size(); ++a) layers[arrays[a].layer].push_back(a);
+  for (auto& [layer, list] : layers) {
+    const auto atoms = [&](std::uint32_t a) {
+      return arrays[a].format && arrays[a].format->layout == format::Layout::kScaleAtoms;
+    };
+    const bool stacked = std::ranges::any_of(
+        list, [&](std::uint32_t a) { return atoms(a) && arrays[a].format->stacked > 1; });
+    if (!stacked) continue;
+    if (!std::ranges::all_of(list, atoms))
+      return Refused("a layer mixes scale-atom expert tables with other layouts");
+    // The stacked table first, each table's codes before its scales.
+    std::ranges::stable_sort(list, [&](std::uint32_t a, std::uint32_t b) {
+      return std::pair(-static_cast<int>(arrays[a].format->stacked), arrays[a].name) <
+             std::pair(-static_cast<int>(arrays[b].format->stacked), arrays[b].name);
+    });
+    for (std::uint32_t e = 0; e < arrays[list.front()].count; ++e) {
+      std::uint64_t at = 0;
+      std::optional<std::uint32_t> group;
+      for (const auto a : list) {
+        const auto place = artifact.SlicePlacement(a, e);
+        if (!place || (group && place->group != *group) || place->offset.value() != at)
+          return Refused(std::format(
+              "layer {}'s scale-atom expert tables are not back to back in expert {}'s slot", layer,
+              e));
+        group = place->group;
+        at += place->bytes.value();
+      }
+    }
+  }
   return {};
 }
 
@@ -544,7 +635,8 @@ std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
 std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval& approval,
                                                                  const spec::Envelope& envelope) {
   if (approval.policy == ApprovedPolicy::kNone) return nullptr;
-  const spec::Mapping* mapping = spec::FindMapping(approval.architecture);
+  const spec::Mapping* mapping =
+      approval.mapping != nullptr ? &approval.mapping() : spec::FindMapping(approval.architecture);
   if (mapping == nullptr) return Refused("the approval's architecture has no mapping");
   // The gates the checkpoint holds, as flags: the approval's, not a key bag
   // read again or a profile's.

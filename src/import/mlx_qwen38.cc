@@ -10,11 +10,14 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "components/step.h"
+#include "import/parameter_folds.h"
 #include "model/qwen38.h"
 #include "spec/mappings/qwen38.h"
 
@@ -1532,6 +1535,63 @@ constexpr std::array<std::string_view, 3> kSemanticHashes = {
     "37349930c3c77bf4927b2afb6b50f30c404f42f00f5790bda96e7d9589c26477",
     "af1566f7a3be2f4a9ee8e2384aa161b8d45cfcbd92376827662a028679b7d8eb",
     "81879b658d9974287ceecc77463e5fdd183cb4cd66692b061ea6af24ef414d39"};
+
+// The semantic inputs as their pinned hashes fix them (kSemanticHashes).
+std::array<std::vector<std::int64_t>, 3> PinnedSemantic() {
+  return {std::vector<std::int64_t>{23703573157769, 20109073645365, 8052911324071},
+          std::vector<std::int64_t>{0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228,
+                                    140000297, 160000374, 180000455, 200000548, 220000655,
+                                    240000802, 260000955, 280001114, 300001275},
+          std::vector<std::int64_t>{20000003, 20000023, 20000033, 20000047, 20000059, 20000063,
+                                    20000069, 20000077, 20000081, 20000093, 20000107, 20000147,
+                                    20000153, 20000159, 20000161, 20000171}};
+}
+// Each output's parts as the canonical tensors they publish.
+std::vector<spec::SourceTensor> CanonicalOf(std::span<const TensorAssembly> outputs) {
+  std::vector<spec::SourceTensor> tensors;
+  for (const auto& out : outputs) {
+    const auto parts = format::PartsOf(out.format);
+    if (!parts) continue;
+    for (const auto& part : parts->parts())
+      tensors.push_back({.name = PartName(out.name, part.role),
+                         .format = out.format,
+                         .part = part.role,
+                         .experts = out.format.shape.rank == 3});
+  }
+  return tensors;
+}
+constexpr std::string_view kHeadReorder = "gdn.value_heads_tiled";
+// The target's parameter folds (import/parameter_folds.h, D-108 as
+// amended), as the ModelOpt import's: its spec synthesized from its
+// unfolded outputs decides them by role; its zero-centered norms (1 + w)
+// and A (-exp(A_log), under the head reorder) in F32, each fold whole.
+std::expected<std::vector<PlannedPartFold>, Error> FoldTargetParameters(
+    std::vector<TensorAssembly>& outputs) {
+  const spec::Source unfolded{.architecture = "qwen4exp",
+                              .container = "mlx",
+                              .converter = {},
+                              .tensors = CanonicalOf(outputs),
+                              .folds = {std::string(kHeadReorder)}};
+  auto spec =
+      spec::Synthesize(spec::mappings::Qwen38NativeMapping(), unfolded, Values(PinnedSemantic()));
+  if (!spec) return Bad("native MLX architecture synthesis refused");
+  auto applied = FoldDerivedParameters(spec->stages.front(), outputs);
+  if (!applied) return std::unexpected(applied.error());
+  if (applied->size() != 2 || (*applied)[0].fold != "norm.plus_one" ||
+      (*applied)[1].fold != "ssm.a_neg_exp")
+    return Bad("the MLX target's norms and A did not fold whole");
+  std::vector<PlannedPartFold> planned{{std::string(kHeadReorder), {}}};
+  for (std::size_t i = 0; i < outputs.size(); ++i)
+    if (outputs[i].permutation) planned.front().outputs.push_back(static_cast<std::uint32_t>(i));
+  for (auto& a : *applied) planned.push_back({std::move(a.fold), std::move(a.outputs)});
+  return planned;
+}
+std::vector<std::string> FoldNames(std::span<const PlannedPartFold> planned) {
+  std::vector<std::string> names;
+  for (const auto& p : planned) names.push_back(p.fold);
+  std::ranges::sort(names);
+  return names;
+}
 }  // namespace
 
 std::expected<NormalizationCost, Error> MlxTargetBound(const Checkpoint& source) {
@@ -1670,6 +1730,8 @@ std::expected<ModelOptTargetPlan, Error> NormalizeMlxTarget(Checkpoint&& source,
       return Bad("missing semantic tensor");
   for (std::size_t i = 0; i < counts.size(); ++i)
     if (counts[i] != kRules[i].count) return Bad("source role set is incomplete");
+  auto planned = FoldTargetParameters(outputs);
+  if (!planned) return std::unexpected(planned.error());
 
   auto indexed_cost = IndexedPartPlan::Bound(source, outputs);
   if (!indexed_cost) return std::unexpected(indexed_cost.error());
@@ -1677,17 +1739,17 @@ std::expected<ModelOptTargetPlan, Error> NormalizeMlxTarget(Checkpoint&& source,
       indexed_cost->metadata_bytes > cost->metadata_bytes ||
       indexed_cost->work_units > cost->work_units)
     return Bad("indexed plan exceeds prepaid native domain", Rule::kBounds);
+  // The published model is the mapping's architecture (its manifest names
+  // what serving finds a mapping and an admission profile for), not
+  // config.json's model_type.
+  source.architecture = "qwen4exp";
   auto parts = IndexedPartPlan::Make(std::move(source), outputs, dispositions, *indexed_cost);
   if (!parts) return std::unexpected(parts.error());
 
   ModelOptTargetPlan result;
   result.cost_ = *cost;
   result.parts_.emplace(std::move(*parts));
-  result.planned_folds_.push_back({"gdn.value_heads_tiled", {}});
-  auto& transformed = result.planned_folds_.front().outputs;
-  transformed.reserve(outputs.size());
-  for (std::size_t i = 0; i < outputs.size(); ++i)
-    if (outputs[i].permutation) transformed.push_back(static_cast<std::uint32_t>(i));
+  result.planned_folds_ = std::move(*planned);
   const auto& owned = result.parts_->source();
   std::array<std::vector<std::int64_t>, 3> semantic;
   std::array<std::byte, 128> buffer{};
@@ -1716,7 +1778,7 @@ std::expected<ModelOptTargetPlan, Error> NormalizeMlxTarget(Checkpoint&& source,
   }
   result.canonical_.architecture = "qwen4exp";
   result.canonical_.container = "mlx";
-  result.canonical_.folds = {"gdn.value_heads_tiled"};
+  result.canonical_.folds = FoldNames(result.planned_folds_);
   result.canonical_.tensors.reserve(kCanonical);
   result.bindings_.reserve(kCanonical);
   std::uint32_t output_index = 0;
@@ -1746,9 +1808,9 @@ spec::Source ApprovedMlxTargetSource() {
   spec::Source source;
   source.architecture = "qwen4exp";
   source.container = "mlx";
-  source.folds = {"gdn.value_heads_tiled"};
-  source.tensors.reserve(kCanonical);
-
+  // The outputs as the normalization makes them (each part's member count,
+  // not its sources), then its parameter folds.
+  std::vector<TensorAssembly> outputs;
   std::map<std::string, std::uint32_t, std::less<>> seen;
   for (const auto& rule : kRules) {
     const auto process = [&](std::uint32_t layer) {
@@ -1757,12 +1819,13 @@ spec::Source ApprovedMlxTargetSource() {
       const auto format = OutputFormat(rule);
       const auto parts = format::PartsOf(format);
       if (!parts) return;
-      for (const auto& part : parts->parts()) {
-        source.tensors.push_back({.name = PartName(canonical, part.role),
-                                  .format = format,
-                                  .part = part.role,
-                                  .experts = format.shape.rank == 3});
-      }
+      TensorAssembly out{.name = canonical, .format = format};
+      for (const auto& part : parts->parts())
+        out.parts.push_back({.part = part.role,
+                             .kind = rule.assembly,
+                             .sources = std::vector<std::uint32_t>(
+                                 rule.assembly == PartAssemblyKind::kRows ? 128U : 1U, 0U)});
+      outputs.push_back(std::move(out));
     };
     switch (rule.first) {
       case Domain::kNone:
@@ -1786,6 +1849,9 @@ spec::Source ApprovedMlxTargetSource() {
         break;
     }
   }
+  auto planned = FoldTargetParameters(outputs);
+  source.folds = planned ? FoldNames(*planned) : std::vector<std::string>{};
+  source.tensors = CanonicalOf(outputs);
   return source;
 }
 }  // namespace llmp::import

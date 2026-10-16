@@ -7,6 +7,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -51,5 +52,13 @@ std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
 std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
                                                const Checkpoint& source,
                                                const artifact::Composition& composition);
+// The same of a component published from part of an archived checkpoint
+// `source` (`llmp import --component`): each artifact source the checkpoint
+// has matches the archive's identity, the only other is the caller's own
+// input `caller` names (a draft head list) when it names one, and the event
+// names the checkpoint's variant.
+std::expected<void, Error> RecordArchiveComponentImport(
+    const ArchiveInput& archive, const Checkpoint& source, const artifact::Artifact& artifact,
+    std::optional<std::string_view> caller = std::nullopt);
 }  // namespace llmp::import
 #endif  // LLMP_IMPORT_ARCHIVE_INPUT_H_

@@ -281,6 +281,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
             node_, entry, settings, roles_, index,
             ComponentLlmBuild(node_, roles_.installed, entry, index,
                               {.target_policy = {},
+                               .drafter_policy = options_.diagnostic_drafter_policy,
                                .diagnostic_solo = shared,
                                .capture_first_verify = options_.diagnostic_capture_first_verify,
                                .automatic_startup_cap = AutomaticStartup() ? startup_cap_ : 0,

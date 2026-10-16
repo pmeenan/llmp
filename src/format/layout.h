@@ -33,10 +33,18 @@
 //                       byte).
 //   kRowInterleaved     one part: each row's codes, then its scales
 //                       (Qwen3.8's n-gram table).
-//   kCutlassScaleAtoms  codes as kSplit; scales in the swizzled atoms
-//                       CUTLASS's SM1xx block-scaled kernels read: 128 rows
-//                       by 4 scales in 512 bytes, atoms along K first, rows
-//                       padded to a whole atom (ScaleAtomOffset).
+//   kScaleAtoms         codes as kSplit; block scales in scale atoms of
+//                       128 rows by 4 scales (512 bytes), atoms along K
+//                       first, rows padded to a whole atom
+//                       (ScaleAtomOffset): the tile order block-scaled
+//                       tensor-core products read (on the GB10, CUTLASS's
+//                       SM1xx grouped GEMM). Any block-scaled encoding of
+//                       one-byte scales fits it; a stacked tensor's
+//                       matrices take whole atoms each when their rows are
+//                       a multiple of 128. The importer relays routed
+//                       experts out into it by role and encoding
+//                       (import/expert_relayout.h); the IR prepares MXFP8
+//                       activations in it.
 //   kExl3Tiles          ExLlamaV3's trellis, I16 [K / 16, N / 16, 16 · k_bits]
 //                       in container order, with its sign vectors and
 //                       codebook marker as further parts.
@@ -57,7 +65,7 @@ enum class Layout : std::uint16_t {
   kGgmlNvfp4Blocks,
   kSplit,
   kRowInterleaved,
-  kCutlassScaleAtoms,
+  kScaleAtoms,
   kExl3Tiles,
 };
 
@@ -83,7 +91,7 @@ std::optional<Layout> LayoutByName(std::string_view name);
 
 inline constexpr std::uint64_t kGgmlRowPadding = 512;  // MATRIX_ROW_PADDING at the pin
 
-// CUTLASS's SM1xx scale atoms (kCutlassScaleAtoms).
+// The scale atoms' geometry (kScaleAtoms).
 inline constexpr std::uint64_t kScaleAtomRows = 128;
 inline constexpr std::uint64_t kScaleAtomBlocks = 4;
 inline constexpr std::uint64_t kScaleAtomBytes = 512;

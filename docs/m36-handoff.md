@@ -29,8 +29,9 @@ it overstated. Corrections, in force until the closeout lands:
 - Qwen3.8 native (`qwen38-smoke04`) and GGUF (`qwen38-gguf-check01`) gate
   passes exist only as raw Spark outputs, not in a committed report; all
   gates ran on v0 artifacts and predate later shared-engine changes.
-- Not yet evidenced: the full M3 swap table on the component engine, real
-  MLX import and admission, v1 serving of every family, a review of the
+- Not yet evidenced: the full M3 swap table on the component engine, MLX
+  serving (its real import and admission landed with the native ModelOpt
+  item below), v1 serving of every family, a review of the
   `agy/*` commits and a full Spark check set after main09. The K1 report's
   Gemma4 rows were rerun in the model's turn format (bare-text Gemma 4
   instruct perplexity is ~18K in llama.cpp too, RE-056), with longer
@@ -39,6 +40,21 @@ it overstated. Corrections, in force until the closeout lands:
   also fixed long-prompt prefill on every non-DeepSeek component model
   (lanes carved from the shared pool since `a0e874cf`).
 - The closeout re-gates every family on the final binary.
+- **DONE: the native ModelOpt Qwen3.8 target and MTP drafter (v1).** The
+  importer relays their NVFP4 routed experts into scale atoms, interleaves
+  the n-gram table, and folds the zero-centered norms and A into F32 by role
+  (as it does MLX's); `llmp import --component mtp --draft-head IDS`
+  publishes the drafter. Approval rows pin the target `d145900e…`, the
+  drafter with Mia's list `316caa59…` and MLX `b842fe59…` (its norms and A
+  folded too; see approvals.cc). The v1 pair serves bit for bit as the v0
+  pair, scores its NLL exactly and passes the `qwen38` speed gate against
+  the frozen baseline
+  ([qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)).
+  Open from it: the split NVFP4 experts' own fast products (a grouped vector
+  product for decode rows, the block-scaled grouped GEMM over split scales);
+  MXFP4/MXFP8 routed experts and dense NVFP4 linears are not relaid out; MLX
+  is admitted but not qualified for serving (no serving comparison or gate);
+  a drafter with another head list, or none, has no approval.
 - **G4d (legacy DeepSeek V4/DSpark runner deletion), in review on `m36-g4d`.**
   - Step 1 below (the `deepseek` C2 decode gate) is resolved by `495a1cdb`. The
     frozen baseline binary is the old arm, so deleting the legacy runner does not
@@ -282,9 +298,9 @@ never change guarded source while an actual run is active.
   target and long 2,560-target quality evidence already exist; the latter is
   +0.803531% PPL versus the quantized reference. Qualify remaining scope rather
   than relabeling those diagnostics as whole-family acceptance.
-- Finish native ModelOpt target products/placement and actual admission,
-  MLX normalization beyond its reader, target-linked drafter semantics and
-  other unsupported native import domains. N5 still requires all current
+- Native ModelOpt target/drafter admission and MLX normalization are done
+  (above); finish MLX serving qualification and other unsupported native
+  import domains. N5 still requires all current
   artifacts' re-import/admission, rather than another importer framework.
 - Finish the plan's structural/state/settings cleanup, K1 long-context/state
   encoding gates and family legacy deletion once qualified. Gemma 2/3/4 and

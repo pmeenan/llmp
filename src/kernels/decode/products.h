@@ -82,7 +82,7 @@ struct Weight {
 
 // The decoder a format takes, if the module has one.
 std::optional<DecoderId> DecoderOf(const format::TensorFormat& format);
-std::string_view DecoderName(DecoderId id);  // "nvfp4.cutlass_scale_atoms"
+std::string_view DecoderName(DecoderId id);  // "nvfp4.scale_atoms"
 format::Encoding DecoderEncoding(DecoderId id);
 format::Layout DecoderLayout(DecoderId id);
 // The multiple of K a decoder's rows must be: its blocks, scale atoms and

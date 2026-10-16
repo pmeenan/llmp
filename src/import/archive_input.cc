@@ -11,7 +11,10 @@
 #include <chrono>
 #include <cmath>
 #include <format>
+#include <map>
 #include <set>
+#include <span>
+#include <string_view>
 
 #include "base/json.h"
 #include "chat/pycase.h"
@@ -22,6 +25,8 @@ namespace {
 namespace fs = std::filesystem;
 namespace json = base::json;
 constexpr std::uint64_t kManifestCap = std::uint64_t{16} << 20U;
+// A safetensors index, bounded as its reader bounds it (readers/safetensors.h).
+constexpr std::uint64_t kIndexCap = std::uint64_t{64} << 20U;
 std::unexpected<Error> Bad(std::string_view reason, Rule rule = Rule::kConfig) {
   return std::unexpected(Error{.rule = rule, .reason = reason});
 }
@@ -186,8 +191,23 @@ std::expected<std::string, Error> Relative(const ArchiveInput& archive, const So
     return Bad("an archived source does not resolve to its listed path", Rule::kEscape);
   return lexical;
 }
+// The directory of a relative archive path ("" at the revision's root).
+std::string_view Directory(std::string_view path) {
+  const auto slash = path.rfind('/');
+  return slash == std::string_view::npos ? std::string_view() : path.substr(0, slash);
+}
+// Each safetensors index the import read, by its directory: the shards its
+// weight_map names, revision-relative.
+using Indexed = std::map<std::string, std::set<std::string>, std::less<>>;
+// The variant the import's weight files (`weights`, revision-relative)
+// make whole: its weight members are its `.gguf` and `.safetensors` files,
+// except that a safetensors directory whose index the import read has as
+// weights the shards that index names: other `.safetensors` files beside
+// it (ModelOpt's amax calibration files) are not the checkpoint's weights
+// and are never read (docs/model-archive.md).
 std::expected<std::string, Error> SelectedVariant(const ArchiveInput& archive,
-                                                  const std::set<std::string>& weights) {
+                                                  const std::set<std::string>& weights,
+                                                  const Indexed& indexed = {}) {
   if (weights.empty()) return Bad("import source has no archived weights");
   std::optional<std::string> selected;
   for (const auto& variant : archive.variants) {
@@ -195,8 +215,11 @@ std::expected<std::string, Error> SelectedVariant(const ArchiveInput& archive,
     bool intersects = false;
     for (const auto& name : variant.files) {
       if (!name.ends_with(".gguf") && !name.ends_with(".safetensors")) continue;
-      members.insert(name);
       intersects |= weights.contains(name);
+      const auto index = indexed.find(Directory(name));
+      if (name.ends_with(".safetensors") && index != indexed.end() && !index->second.contains(name))
+        continue;
+      members.insert(name);
     }
     if (!intersects) continue;
     if (members != weights || selected)
@@ -205,6 +228,31 @@ std::expected<std::string, Error> SelectedVariant(const ArchiveInput& archive,
   }
   if (!selected) return Bad("import source belongs to no archive variant");
   return std::move(*selected);
+}
+// The safetensors indexes among `files` (index documents are bounded as the
+// reader bounds them) with the shards their weight_maps name.
+std::expected<void, Error> AddIndexes(const ArchiveInput& archive,
+                                      std::span<const SourceFile> files, Indexed& out) {
+  for (const auto& file : files) {
+    if (!file.name.ends_with(".safetensors.index.json")) continue;
+    auto path = Relative(archive, file);
+    if (!path) return std::unexpected(path.error());
+    auto document = ReadJson(file.path, kIndexCap);
+    if (!document) return std::unexpected(document.error());
+    const auto map =
+        document->root().is_object() ? document->root().find("weight_map") : std::nullopt;
+    if (!map || !map->is_object()) return Bad("a safetensors index has no weight map");
+    const std::string directory(Directory(*path));
+    auto& shards = out[directory];
+    for (std::size_t i = 0; i < map->size(); ++i) {
+      const auto shard = map->member(i);
+      if (!shard.is_string() || !Path(shard.string()))
+        return Bad("a safetensors index names an invalid shard");
+      shards.insert(directory.empty() ? std::string(shard.string())
+                                      : directory + '/' + std::string(shard.string()));
+    }
+  }
+  return {};
 }
 }  // namespace
 
@@ -320,7 +368,14 @@ std::expected<std::vector<std::optional<base::Sha256Digest>>, Error> ArchiveIden
       }
     }
   }
-  if (auto selected = SelectedVariant(archive, weights); !selected)
+  Indexed indexes;
+  if (auto added = AddIndexes(archive, source.files, indexes); !added)
+    return std::unexpected(added.error());
+  if (source.container == "diffusers")
+    for (const auto& comp : source.components)
+      if (auto added = AddIndexes(archive, comp.files, indexes); !added)
+        return std::unexpected(added.error());
+  if (auto selected = SelectedVariant(archive, weights, indexes); !selected)
     return std::unexpected(selected.error());
   return expected;
 }
@@ -427,7 +482,45 @@ std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
   std::erase_if(source_names, [](const auto& name) {
     return !name.ends_with(".gguf") && !name.ends_with(".safetensors");
   });
-  auto variant = SelectedVariant(archive, source_names);
+  Indexed indexes;
+  if (auto added = AddIndexes(archive, source.files, indexes); !added)
+    return std::unexpected(added.error());
+  auto variant = SelectedVariant(archive, source_names, indexes);
+  if (!variant) return std::unexpected(variant.error());
+  return WriteArchiveEvent(archive, "llmp-artifact", artifact.id(), artifact.converter(), *variant);
+}
+
+std::expected<void, Error> RecordArchiveComponentImport(const ArchiveInput& archive,
+                                                        const Checkpoint& source,
+                                                        const artifact::Artifact& artifact,
+                                                        std::optional<std::string_view> caller) {
+  if (archive.root.empty()) return {};
+  std::set<std::string> weights;
+  for (const auto& file : source.files) {
+    auto relative = Relative(archive, file);
+    if (!relative) return std::unexpected(relative.error());
+    if (relative->ends_with(".gguf") || relative->ends_with(".safetensors"))
+      weights.insert(std::move(*relative));
+  }
+  std::size_t outside = 0;
+  for (const auto& actual : artifact.sources()) {
+    const auto file = std::ranges::find(source.files, actual.name, &SourceFile::name);
+    if (file == source.files.end()) {
+      if (!caller || actual.name != *caller || ++outside > 1)
+        return Bad("published component has sources outside its checkpoint");
+      continue;
+    }
+    auto relative = Relative(archive, *file);
+    if (!relative) return std::unexpected(relative.error());
+    const auto expected = archive.files.find(*relative);
+    if (expected == archive.files.end() || !expected->second.present || !expected->second.sha256 ||
+        actual.bytes.value() != expected->second.bytes || actual.sha256 != *expected->second.sha256)
+      return Bad("published component source identity disagrees with the archive manifest");
+  }
+  Indexed indexes;
+  if (auto added = AddIndexes(archive, source.files, indexes); !added)
+    return std::unexpected(added.error());
+  auto variant = SelectedVariant(archive, weights, indexes);
   if (!variant) return std::unexpected(variant.error());
   return WriteArchiveEvent(archive, "llmp-artifact", artifact.id(), artifact.converter(), *variant);
 }
@@ -450,6 +543,7 @@ std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
       return Bad("published composition source identity disagrees with the archive manifest");
   }
   std::set<std::string> source_names;
+  Indexed indexes;
   for (const auto& comp : source.components) {
     for (const auto& file : comp.files) {
       auto relative = Relative(archive, file);
@@ -458,8 +552,10 @@ std::expected<void, Error> RecordArchiveImport(const ArchiveInput& archive,
         source_names.insert(std::move(*relative));
       }
     }
+    if (auto added = AddIndexes(archive, comp.files, indexes); !added)
+      return std::unexpected(added.error());
   }
-  auto variant = SelectedVariant(archive, source_names);
+  auto variant = SelectedVariant(archive, source_names, indexes);
   if (!variant) return std::unexpected(variant.error());
   return WriteArchiveEvent(archive, "llmp-composition", composition.id(), composition.converter(),
                            *variant);

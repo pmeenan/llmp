@@ -191,9 +191,9 @@ enum : std::uint16_t { kKey, kValue, kNormKey, kNormQuery, kNormConv, kConvW };
 constexpr std::array kPleRoles{
     WeightRole{.name = "key"},
     WeightRole{.name = "value"},
-    WeightRole{.name = "norm_key", .encodings = kNormEncodings},
-    WeightRole{.name = "norm_query", .encodings = kNormEncodings},
-    WeightRole{.name = "norm_conv", .encodings = kNormEncodings},
+    WeightRole{.name = "norm_key", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "norm_query", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "norm_conv", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "conv", .encodings = kNormEncodings},
 };
 constexpr std::array<std::string_view, 1> kPlePatterns{"prepared_products"};
@@ -455,8 +455,10 @@ constexpr std::array kMtpRepeatParams{
 
 enum : std::uint16_t { kTable, kNormEmbd, kFcEmbd, kNormHidden, kFcHidden };
 constexpr std::array kMtpRoles{
-    WeightRole{.name = "table"},     WeightRole{.name = "norm_embd", .encodings = kNormEncodings},
-    WeightRole{.name = "fc_embd"},   WeightRole{.name = "norm_hidden", .encodings = kNormEncodings},
+    WeightRole{.name = "table"},
+    WeightRole{.name = "norm_embd", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "fc_embd"},
+    WeightRole{.name = "norm_hidden", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "fc_hidden"},
 };
 

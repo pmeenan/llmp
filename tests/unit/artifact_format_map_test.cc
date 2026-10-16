@@ -262,7 +262,7 @@ TEST(ArtifactFormatMapTest, PairingsAssembleOrAreRefused) {
   const ar::Representation gu_codes = Ggml("I8", {1280, 1280});
   const ar::Representation gu_scales = Ggml("I8", {512, 400});
   const auto gate_up = ar::Assemble(
-      Encoding::kNvfp4, Layout::kCutlassScaleAtoms,
+      Encoding::kNvfp4, Layout::kScaleAtoms,
       std::vector<ar::V0Part>{{PartRole::kCodes, &gu_codes}, {PartRole::kBlockScales, &gu_scales}},
       2);
   ASSERT_TRUE(gate_up.has_value());
@@ -402,8 +402,7 @@ TEST(ArtifactFormatMapTest, Qwen38ImportAssembles) {
     const std::vector<ar::V0Part> parts = {
         {PartRole::kCodes, &x.repr}, {PartRole::kBlockScales, &a.expert_arrays()[*scales].repr}};
     const bool gate_up = x.name.find("gate_up") != std::string::npos;
-    const auto f =
-        ar::Assemble(Encoding::kNvfp4, Layout::kCutlassScaleAtoms, parts, gate_up ? 2 : 1);
+    const auto f = ar::Assemble(Encoding::kNvfp4, Layout::kScaleAtoms, parts, gate_up ? 2 : 1);
     ASSERT_TRUE(f.has_value()) << x.name << ": " << format::FormatErrorName(f.error());
     ++experts;
   }

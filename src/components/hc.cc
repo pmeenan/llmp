@@ -169,7 +169,7 @@ constexpr std::array kMixParams{
 };
 enum : std::uint16_t { kMixNorm, kMixDown, kMixUp, kMixFn, kMixBase, kMixScale, kMixPostNorm };
 constexpr std::array kMixRoles{
-    WeightRole{.name = "norm", .encodings = kNormEncodings},
+    WeightRole{.name = "norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "down"},
     WeightRole{.name = "up"},
     WeightRole{.name = "fn"},

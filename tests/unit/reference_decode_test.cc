@@ -366,7 +366,7 @@ TEST(ReferenceDecodeTest, Nvfp4LayoutsHoldTheSameValues) {
       {Layout::kSplit,
        {{PartRole::kCodes, codes}, {PartRole::kBlockScales, scales}, {PartRole::kTensorScale, ts}}},
       {Layout::kRowInterleaved, {{PartRole::kData, interleaved}, {PartRole::kTensorScale, ts}}},
-      {Layout::kCutlassScaleAtoms,
+      {Layout::kScaleAtoms,
        {{PartRole::kCodes, codes}, {PartRole::kBlockScales, atoms}, {PartRole::kTensorScale, ts}}},
       {Layout::kGgmlNvfp4Blocks, {{PartRole::kData, ggml}, {PartRole::kTensorScale, ts}}},
   };
@@ -477,7 +477,7 @@ TEST(ReferenceDecodeTest, Mxfp8IsExact) {
   const std::vector<float> a =
       Decode(Matrix(Encoding::kMxfp8, Layout::kSplit, kK, kN), split, 0, 0, kN);
   const std::vector<float> b =
-      Decode(Matrix(Encoding::kMxfp8, Layout::kCutlassScaleAtoms, kK, kN), atom, 0, 0, kN);
+      Decode(Matrix(Encoding::kMxfp8, Layout::kScaleAtoms, kK, kN), atom, 0, 0, kN);
   for (std::size_t i = 0; i < a.size(); ++i) {
     const auto code = std::to_integer<std::uint8_t>(codes[i]);
     const auto s = std::to_integer<std::uint8_t>(scales[i / 32]);
@@ -1103,12 +1103,12 @@ TEST(ReferenceDecodeArtifactTest, Qwen38ExpertsDecodeAlikeInBothLayouts) {
       const std::vector<ar::V0Part> gu_parts = {
           {PartRole::kCodes, repr(blk + "ffn_gate_up_exps.codes")},
           {PartRole::kBlockScales, repr(blk + "ffn_gate_up_exps.scales")}};
-      const auto gate_up = ar::Assemble(Encoding::kNvfp4, Layout::kCutlassScaleAtoms, gu_parts, 2);
+      const auto gate_up = ar::Assemble(Encoding::kNvfp4, Layout::kScaleAtoms, gu_parts, 2);
       ASSERT_TRUE(gate_up.has_value());
       const std::vector<ar::V0Part> down_parts = {
           {PartRole::kCodes, repr(blk + "ffn_down_exps.codes")},
           {PartRole::kBlockScales, repr(blk + "ffn_down_exps.scales")}};
-      const auto down_c = ar::Assemble(Encoding::kNvfp4, Layout::kCutlassScaleAtoms, down_parts);
+      const auto down_c = ar::Assemble(Encoding::kNvfp4, Layout::kScaleAtoms, down_parts);
       ASSERT_TRUE(down_c.has_value());
       const Slice gu_codes = ExpertSlice(cutlass_root, c, blk + "ffn_gate_up_exps.codes", expert);
       const Slice gu_scales = ExpertSlice(cutlass_root, c, blk + "ffn_gate_up_exps.scales", expert);

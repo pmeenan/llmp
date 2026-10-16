@@ -529,7 +529,7 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
         const auto* target_mapping = spec::FindMapping(facts.architecture);
         if (target_mapping == nullptr) return Error("component calibration has no target mapping");
-        const auto* draft_mapping = ComposedDrafterMapping(drafter->model().architecture);
+        const auto* draft_mapping = ComposedDrafterMapping(*drafter);
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
         auto draft_values = ComponentDrafterValues(target, *drafter);
         if (!draft_values) return Error(draft_values.error());
@@ -604,9 +604,17 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     }
     facts.drafter_architecture = drafter->model().architecture;
     facts.drafter_approval = FindApproval(facts.drafter_architecture, drafter->sources());
-    const spec::Mapping* draft_mapping = spec::FindMapping(facts.drafter_architecture);
-    if (draft_mapping != nullptr && draft_mapping->draft != nullptr &&
-        draft_mapping->draft->shape == spec::DraftRecipe::Shape::kMtp) {
+    const spec::Mapping* draft_mapping = ComposedDrafterMapping(*drafter);
+    const spec::DraftRecipe* draft = draft_mapping != nullptr ? draft_mapping->draft : nullptr;
+    if (draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp &&
+        drafter->format_version() == 1 && !draft->head_ids.empty()) {
+      // A stored drafter's selected head: its token map's rows (its
+      // approval pins the whole inventory).
+      auto map =
+          DraftHeadRows(*drafter, draft->head_ids, std::numeric_limits<std::uint32_t>::max());
+      if (!map) return Error(map.error());
+      if (*map) facts.drafter_selected_rows = static_cast<std::uint32_t>((*map)->rows);
+    } else if (draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp) {
       const auto head = drafter->FindResource("draft_output.weight");
       const auto ids = drafter->FindResource("draft_output.ids");
       if (head.has_value() != ids.has_value()) {

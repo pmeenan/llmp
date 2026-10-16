@@ -85,6 +85,13 @@ const Mapping& Qwen38MtpMapping();
 // Same numerical recipe, with the durable repeat-pending position contract.
 // Explicit opt-in; existing v1 artifacts/specs keep their original identity.
 const Mapping& Qwen38MtpReplayMapping();
+// The native importer's MTP drafter (v1, import/modelopt_qwen38.h): source
+// encodings but its norms (the importer's applied norm.plus_one, its
+// source's fold), the routed experts' NVFP4 parts by projection, the
+// converted drafter's parameters and policy; and its repeat-pending form,
+// which serving composes.
+const Mapping& Qwen38MtpNativeMapping();
+const Mapping& Qwen38MtpNativeReplayMapping();
 
 // Container-independent profile oracle for the source-owned GGUF hash. The
 // stored consumer executes its validated spec; this only checks its semantics.
@@ -102,6 +109,10 @@ std::expected<std::vector<SourceValue>, std::string> Qwen38V0Values(
 // The MTP drafter's, as its mapping's keys.
 std::expected<std::vector<SourceValue>, std::string> Qwen38MtpV0Values(
     const model::Qwen38Profile& profile, const model::Qwen38MtpBinding& binding);
+// The native drafter's, with a selected head of `selected_rows` rows (0:
+// none; its target's head, its first rows the draft vocabulary).
+std::expected<std::vector<SourceValue>, std::string> Qwen38MtpNativeValues(
+    const model::Qwen38Profile& profile, std::uint64_t selected_rows);
 
 }  // namespace llmp::spec::mappings
 

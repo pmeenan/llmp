@@ -306,17 +306,16 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& 
 
 // The parameter's value at a layer type (0: not a layer slot), by its
 // rules in order; nothing when no rule applies, or none resolves and one
-// is optional.
-std::expected<std::optional<ParamValue>, std::string> Resolve(const Mapping& m,
-                                                              std::string_view slot,
-                                                              std::string_view param, char type,
-                                                              const Values& values,
-                                                              LayerAt layer = {}) {
+// is optional. A rule unless a fold the source carries does not apply.
+std::expected<std::optional<ParamValue>, std::string> Resolve(
+    const Mapping& m, std::string_view slot, std::string_view param, char type,
+    const Values& values, LayerAt layer = {}, std::span<const std::string> folds = {}) {
   const std::string where = std::format("{}.{}", slot, param);
   bool applied = false;
   bool optional = false;
   for (const ParamRule& r : m.params) {
-    if (r.slot != slot || r.param != param || (type != 0 && !Applies(r.layer_types, type))) {
+    if (r.slot != slot || r.param != param || (type != 0 && !Applies(r.layer_types, type)) ||
+        (!r.unless_fold.empty() && std::ranges::contains(folds, r.unless_fold))) {
       continue;
     }
     applied = true;
@@ -558,7 +557,7 @@ class Synthesis {
           !seen.insert(r.param).second) {
         continue;
       }
-      auto v = Resolve(m_, slot.slot, r.param, type, values_, at);
+      auto v = Resolve(m_, slot.slot, r.param, type, values_, at, source_.folds);
       if (!v) {
         return std::unexpected(v.error());
       }
@@ -1114,9 +1113,12 @@ Status ValidateMapping(const Mapping& m) {
         !std::isfinite(r.value.real)) {
       return Refuse(at, "a constant real that is not finite");
     }
+    if (!r.unless_fold.empty() && FindFold(r.unless_fold) == nullptr) {
+      return Refuse(at, "unless a fold the catalog does not have");
+    }
     if (r.slot.empty()) {
       if (r.key.empty() || !r.param.empty() || !r.layer_types.empty() ||
-          r.transform != Transform::kNone || r.per_layer) {
+          r.transform != Transform::kNone || r.per_layer || !r.unless_fold.empty()) {
         return Refuse(at, "a requirement is a key and its value");
       }
       continue;

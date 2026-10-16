@@ -3,10 +3,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -35,7 +37,9 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   auto f = fx::NativeMlx();
   EXPECT_EQ(f.source.architecture, "qwen4exp");
   EXPECT_EQ(f.source.container, "mlx");
-  EXPECT_EQ(f.source.folds, std::vector<std::string>{"gdn.value_heads_tiled"});
+  // The head reorder and the parameter folds (by role, as ModelOpt's).
+  EXPECT_EQ(f.source.folds,
+            (std::vector<std::string>{"gdn.value_heads_tiled", "norm.plus_one", "ssm.a_neg_exp"}));
   EXPECT_EQ(f.source.tensors.size(), 2954U);
 
   // Verify inventory hash computation
@@ -54,11 +58,14 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
     hash.Update("\n");
   }
   const auto hex = base::ToHex(hash.Finish());
-  EXPECT_EQ(hex, "2d9281bb7d13656bccac99f285180bb96ce6922d7156252e5bf8c8816452a7cd");
+  // Its folded norms and A in F32 (the parameter folds) are in it.
+  EXPECT_EQ(hex, "cfeffcf6b5bdb813b2f3cab5ab4554a9aba1d83ef965a4881dabe03956f408da");
 
   const auto& mapping = spec::mappings::Qwen38NativeMapping();
   EXPECT_TRUE(mapping.folds.empty());
-  EXPECT_TRUE(mapping.policies.empty());
+  // The ModelOpt target's fast forms (W4A4 and the format ladder's); MLX's
+  // admission keeps the planner's default (runtime/component_admission.cc).
+  EXPECT_EQ(mapping.policies.size(), 2U);
   EXPECT_TRUE(mapping.v0_assembly.empty());
 
   auto spec = spec::Synthesize(mapping, f.source, f.values);
@@ -68,7 +75,7 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   ASSERT_EQ(spec->stages.size(), 1U);
   const auto& stage = spec->stages[0];
   ASSERT_EQ(stage.layers.size(), 48U);
-  EXPECT_EQ(stage.folds, std::vector<std::string>{"gdn.value_heads_tiled"});
+  EXPECT_EQ(stage.folds, f.source.folds);
 
   // Embedding and output head must NOT be tied.
   ASSERT_TRUE(stage.embedding);
@@ -78,11 +85,10 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   unsigned linears = 0, attention = 0, moes = 0;
   for (const auto& layer : stage.layers) {
     for (const auto& c : layer.components) {
-      if (c.kind == "attention.gdn") {
-        ++linears;
-        ASSERT_NE(c.Find("a_log"), nullptr);
-        EXPECT_EQ(std::get<bool>(c.Find("a_log")->value), true);
-      }
+      // The folds left no derived parameter to compute.
+      EXPECT_EQ(c.Find("a_log"), nullptr) << c.kind;
+      EXPECT_EQ(c.Find("norm_zero_centered"), nullptr) << c.kind;
+      if (c.kind == "attention.gdn") ++linears;
       if (c.kind == "attention.qsa") ++attention;
       if (c.kind == "ffn.moe") {
         ++moes;
@@ -120,7 +126,7 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   EXPECT_EQ(stage.side[0].source.weights.size(), 3U);
 }
 
-TEST(ImportMlxNormalizeTest, NativeMappingRejectsMissingPartAndAppliedRawFolds) {
+TEST(ImportMlxNormalizeTest, NativeMappingRejectsMissingPartAndReadsRecordedFolds) {
   auto f = fx::NativeMlx();
   auto before = f.source.tensors;
   std::erase_if(f.source.tensors,
@@ -130,12 +136,15 @@ TEST(ImportMlxNormalizeTest, NativeMappingRejectsMissingPartAndAppliedRawFolds) 
   EXPECT_FALSE(components::ValidateSpec(*missing, f.source.tensors));
 
   f.source.tensors = std::move(before);
-  for (const auto fold : {"norm.plus_one", "ssm.a_neg_exp"}) {
-    f.source.folds = {"gdn.value_heads_tiled", fold};
-    auto contradictory =
-        spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
-    ASSERT_TRUE(contradictory);
-    EXPECT_FALSE(components::ValidateSpec(*contradictory, f.source.tensors));
+  // A recorded fold clears the flag it applied (ParamRule::unless_fold):
+  // the spec never derives a folded value again.
+  for (const auto& [fold, flag] : std::array<std::pair<std::string_view, std::string_view>, 2>{
+           {{"norm.plus_one", "norm_zero_centered"}, {"ssm.a_neg_exp", "a_log"}}}) {
+    f.source.folds = {"gdn.value_heads_tiled", std::string(fold)};
+    auto folded = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
+    ASSERT_TRUE(folded) << folded.error();
+    for (const auto& layer : folded->stages[0].layers)
+      for (const auto& c : layer.components) EXPECT_EQ(c.Find(flag), nullptr) << fold;
   }
   f.source.folds.clear();
   auto unpermuted = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
@@ -182,6 +191,29 @@ TEST(ImportMlxNormalizeModelsTest,
   auto plan = NormalizeMlxTarget(std::move(*checkpoint), limits);
   ASSERT_TRUE(plan) << plan.error().ToString();
   EXPECT_EQ(plan->canonical().tensors.size(), 2954U);
+  // The head reorder, then the parameter folds by role (as ModelOpt's): the
+  // zero-centered norms' 1 + w and A's -exp(A_log) in F32; each folded
+  // member's route writes twice its BF16 source's bytes, every other one
+  // as many as it reads.
+  ASSERT_EQ(plan->planned_folds().size(), 3U);
+  EXPECT_EQ(plan->planned_folds()[1].fold, "norm.plus_one");
+  EXPECT_EQ(plan->planned_folds()[1].outputs.size(), 148U);
+  EXPECT_EQ(plan->planned_folds()[2].fold, "ssm.a_neg_exp");
+  EXPECT_EQ(plan->planned_folds()[2].outputs.size(), 36U);
+  EXPECT_EQ(plan->canonical().folds,
+            (std::vector<std::string>{"gdn.value_heads_tiled", "norm.plus_one", "ssm.a_neg_exp"}));
+  std::size_t folded_members = 0;
+  for (const auto& member : plan->parts().members()) {
+    const auto& output = plan->parts().outputs()[member.output];
+    const bool folded =
+        output.format.encoding == Encoding::kF32 &&
+        plan->parts().source().tensors[member.source].format.encoding == Encoding::kBF16;
+    EXPECT_EQ(member.route.output_bytes(), member.route.input_bytes() * (folded ? 2 : 1));
+    folded_members += folded ? 1 : 0;
+  }
+  EXPECT_EQ(folded_members, 148U + 36U);
+  // The manifest names the mapping's architecture, not config.json's.
+  EXPECT_EQ(plan->parts().source().architecture, "qwen4exp");
 
 #if defined(LLMP_HAS_CUDA)
   // Verify DecodeSelectedSource supports all Affine split decoders
@@ -236,7 +268,8 @@ TEST(ImportMlxNormalizeModelsTest,
   EXPECT_EQ(admission->model.pipeline, spec::PipelineKind::kLlm);
   EXPECT_EQ(admission->model.stages.size(), 1U);
   EXPECT_EQ(admission->model.stages[0].layers.size(), 48U);
-  EXPECT_EQ(admission->model.stages[0].folds, std::vector<std::string>{"gdn.value_heads_tiled"});
+  EXPECT_EQ(admission->model.stages[0].folds,
+            (std::vector<std::string>{"gdn.value_heads_tiled", "norm.plus_one", "ssm.a_neg_exp"}));
   EXPECT_EQ(admission->source.container, "mlx");
   EXPECT_EQ(admission->source.architecture, "qwen4exp");
 

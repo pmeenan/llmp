@@ -58,16 +58,10 @@ constexpr std::size_t kDecoderCount = static_cast<std::size_t>(DecoderId::kCount
 constexpr std::array<Encoding, kDecoderCount> kEncodings = {
     Encoding::kBF16,  Encoding::kF16,   Encoding::kQ8_0,  Encoding::kNvfp4, Encoding::kNvfp4,
     Encoding::kNvfp4, Encoding::kNvfp4, Encoding::kMxfp8, Encoding::kMxfp8, Encoding::kAffine};
-constexpr std::array<Layout, kDecoderCount> kLayouts = {Layout::kDense,
-                                                        Layout::kDense,
-                                                        Layout::kGgmlBlocks,
-                                                        Layout::kSplit,
-                                                        Layout::kCutlassScaleAtoms,
-                                                        Layout::kRowInterleaved,
-                                                        Layout::kGgmlNvfp4Blocks,
-                                                        Layout::kSplit,
-                                                        Layout::kCutlassScaleAtoms,
-                                                        Layout::kSplit};
+constexpr std::array<Layout, kDecoderCount> kLayouts = {
+    Layout::kDense,      Layout::kDense,          Layout::kGgmlBlocks,      Layout::kSplit,
+    Layout::kScaleAtoms, Layout::kRowInterleaved, Layout::kGgmlNvfp4Blocks, Layout::kSplit,
+    Layout::kScaleAtoms, Layout::kSplit};
 constexpr std::array<Encoding, 1> kF32 = {Encoding::kF32};
 constexpr std::array<Encoding, 1> kI32 = {Encoding::kI32};
 constexpr std::array<Layout, 1> kDense = {Layout::kDense};

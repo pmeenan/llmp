@@ -796,9 +796,9 @@ Out InferPrimitive(const Ctx& c) {
       t.format.stacked = 1;
       // A single-part value format, or the block-scaled MXFP8 rows a
       // tensor-core product reads (codes, then the scales in CUTLASS's
-      // atoms, in one root: format/layout.h kCutlassScaleAtoms).
+      // atoms, in one root: format/layout.h kScaleAtoms).
       const bool rows = t.format.encoding == Encoding::kMxfp8 &&
-                        t.format.layout == format::Layout::kCutlassScaleAtoms &&
+                        t.format.layout == format::Layout::kScaleAtoms &&
                         t.format.shape.ne[2] == 1 && t.format.shape.ne[3] == 1;
       if (!format::Validate(t.format) || (UnitBytes(t.format) == 0 && !rows) ||
           Integer(t.format.encoding)) {

@@ -124,7 +124,7 @@ bool Holds(Layout layout, const EncodingInfo& info) {
     case Layout::kSplit:
       return BlockScaled(info) || info.id == Encoding::kAffine;
     case Layout::kRowInterleaved:
-    case Layout::kCutlassScaleAtoms:
+    case Layout::kScaleAtoms:
       return BlockScaled(info);
     case Layout::kExl3Tiles:
       return info.id == Encoding::kExl3Trellis;
@@ -170,7 +170,7 @@ std::expected<PartList, FormatError> MatrixParts(const TensorFormat& f, const En
     }
     case Layout::kSplit:
     case Layout::kRowInterleaved:
-    case Layout::kCutlassScaleAtoms: {
+    case Layout::kScaleAtoms: {
       if (f.encoding == Encoding::kAffine) {  // kSplit only (Holds)
         if (k % f.params.group != 0) {
           return std::unexpected(FormatError::kBlock);
@@ -372,7 +372,7 @@ std::expected<std::uint64_t, FormatError> RowBytes(const TensorFormat& format, P
       return role == PartRole::kCodes ? CodeRowBytes(k, info) : k / info.block_elements;
     case Layout::kRowInterleaved:
       return CodeRowBytes(k, info) + (k / info.block_elements);
-    case Layout::kCutlassScaleAtoms:
+    case Layout::kScaleAtoms:
       if (role == PartRole::kCodes) {
         return CodeRowBytes(k, info);
       }

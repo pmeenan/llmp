@@ -58,6 +58,7 @@
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "ir/op.h"
+#include "kernels/decode/grouped_route.h"
 #include "kernels/decode/implementations.h"
 #include "kernels/decode/products.h"
 #include "kernels/reference/decode.h"
@@ -618,6 +619,174 @@ TEST_F(DecodeGpuTest, GroupedProductsOfEveryDecoder) {
             const double value = got[(((t * kUsed) + s) * y_stride) + j];
             ASSERT_LE(std::abs(value - d.sum), Bound(d, tolerance))
                 << "token " << t << " slot " << s << " output " << j;
+          }
+        }
+      }
+    }
+  }
+}
+
+// Resident experts at one pitch (one stacked weight): the device builds the
+// worklist from the router's IDs (grouped_route.h) and the grouped product
+// reads it; IDs outside the experts drop their pairs. Every routed slot's
+// output against the reference, inputs a row a token and a row a slot.
+// The route's compaction past one expert a thread (each thread a run of
+// experts, scanned over the block): groups in ascending expert order, each
+// its expert's pointer, runs in order, every routed pair in its run.
+TEST_F(DecodeGpuTest, ResidentRoutesCompactManyExpertsInOrder) {
+  for (const std::uint32_t experts : {1500U, 4096U}) {
+    SCOPED_TRACE(experts);
+    constexpr std::uint32_t kUsed = 8, kTokens = 300;
+    const std::uint32_t pairs = kUsed * kTokens;
+    std::vector<std::int32_t> ids(pairs);
+    for (auto& i : ids) i = static_cast<std::int32_t>(rng_() % (experts + 2)) - 1;
+    const std::uint32_t groups = std::min(pairs, experts);
+    const Buffer d_ids(ids);
+    const Buffer table(groups * sizeof(decode::Operand));
+    const Buffer offsets((groups + 1) * sizeof(std::int32_t));
+    const Buffer rows(pairs * sizeof(std::int32_t));
+    const Buffer out_rows(pairs * sizeof(std::int32_t));
+    decode::Operand first{};
+    first.data = reinterpret_cast<const std::uint8_t*>(std::uintptr_t{1} << 20U);
+    first.k = 64;
+    const decode::ResidentRoute route{.first = first,
+                                      .data_pitch = 256,
+                                      .experts = experts,
+                                      .ids = d_ids.as<std::int32_t>(),
+                                      .ids_stride = kUsed,
+                                      .used = kUsed,
+                                      .tokens = kTokens,
+                                      .groups = groups,
+                                      .descriptors = table.as<decode::Operand>(),
+                                      .offsets = offsets.as<std::int32_t>(),
+                                      .pair_rows = rows.as<std::int32_t>(),
+                                      .pair_out = out_rows.as<std::int32_t>()};
+    ASSERT_TRUE(decode::PrepareResidentRoute(route, nullptr).has_value());
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    std::vector<std::uint32_t> count(experts, 0);
+    for (const auto e : ids)
+      if (e >= 0 && static_cast<std::uint32_t>(e) < experts) ++count[static_cast<std::size_t>(e)];
+    const auto got_table = table.Get<decode::Operand>();
+    const auto got_offsets = offsets.Get<std::int32_t>();
+    const auto got_out = out_rows.Get<std::int32_t>();
+    std::uint32_t c = 0;
+    std::int32_t at = 0;
+    for (std::uint32_t e = 0; e < experts; ++e) {
+      if (count[e] == 0) continue;
+      ASSERT_EQ(got_offsets[c], at) << e;
+      ASSERT_EQ(reinterpret_cast<std::uintptr_t>(got_table[c].data),
+                (std::uintptr_t{1} << 20U) + (std::uintptr_t{e} * 256))
+          << e;
+      for (std::uint32_t i = 0; i < count[e]; ++i)
+        ASSERT_EQ(ids[static_cast<std::size_t>(got_out[static_cast<std::size_t>(at) + i])],
+                  static_cast<std::int32_t>(e));
+      at += static_cast<std::int32_t>(count[e]);
+      ++c;
+    }
+    for (; c <= groups; ++c) ASSERT_EQ(got_offsets[c], at) << c;
+  }
+}
+
+TEST_F(DecodeGpuTest, ResidentRoutesBuildTheirWorklistOnTheDevice) {
+  constexpr std::uint64_t kExperts = 7;
+  constexpr std::uint64_t kUsed = 3;
+  // The scale-atom tables are the importer's relaid-out experts.
+  for (const DecoderId id :
+       {DecoderId::kNvfp4Split, DecoderId::kNvfp4Atoms, DecoderId::kAffineSplit,
+        DecoderId::kBf16Dense, DecoderId::kMxfp8Split}) {
+    const std::uint64_t k = KFor(id);
+    const auto w = Upload(MakeWeight(id, k, kN, kExperts, rng_));
+    std::vector<decode::Operand> operands;
+    for (std::uint64_t e = 0; e < kExperts; ++e) {
+      const auto op = decode::OperandOf(w->weight(e));
+      ASSERT_TRUE(op.has_value()) << op.error();
+      operands.push_back(*op);
+    }
+    const auto pitch = [&](auto member) -> std::uint64_t {
+      const auto a = reinterpret_cast<std::uintptr_t>(operands[0].*member);
+      const auto b = reinterpret_cast<std::uintptr_t>(operands[1].*member);
+      return a == 0 ? 0 : b - a;
+    };
+    auto one = w->format;
+    one.shape.rank = 2;
+    one.shape.ne[2] = 1;
+    for (const bool per_slot : {false, true}) {
+      for (const std::uint64_t tokens : {1ULL, 3ULL, 64ULL, 517ULL}) {
+        const std::string what = std::format("resident.{} tokens {} {}", decode::DecoderName(id),
+                                             tokens, per_slot ? "a row a slot" : "a row a token");
+        SCOPED_TRACE(what);
+        std::vector<std::int32_t> ids(tokens * kUsed);
+        for (auto& i : ids) {
+          // Mostly in range; some one past the experts, some negative.
+          i = static_cast<std::int32_t>(rng_() % (kExperts + 1));
+          if (rng_() % 9 == 0) i = -1;
+        }
+        const std::uint64_t pairs = tokens * kUsed;
+        const std::uint64_t groups = std::min(pairs, kExperts);
+        const Inputs x = MakeInputs(per_slot ? pairs : tokens, k, rng_);
+        const Buffer d_ids(ids);
+        const Buffer table(groups * sizeof(decode::Operand));
+        const Buffer offsets((groups + 1) * sizeof(std::int32_t));
+        const Buffer rows(pairs * sizeof(std::int32_t));
+        const Buffer out_rows(pairs * sizeof(std::int32_t));
+        const std::uint64_t y_stride = kOutputs + 3;
+        const Buffer y(pairs * y_stride * sizeof(float));
+        y.Fill(0xFF);
+        const decode::ResidentRoute route{
+            .first = operands[0],
+            .data_pitch = pitch(&decode::Operand::data),
+            .scales_pitch = pitch(&decode::Operand::scales),
+            .tensor_scale_pitch = pitch(&decode::Operand::tensor_scale),
+            .biases_pitch = pitch(&decode::Operand::biases),
+            .experts = kExperts,
+            .ids = d_ids.as<std::int32_t>(),
+            .ids_stride = kUsed,
+            .used = kUsed,
+            .tokens = static_cast<std::uint32_t>(tokens),
+            .per_slot_input = per_slot,
+            .groups = static_cast<std::uint32_t>(groups),
+            .descriptors = table.as<decode::Operand>(),
+            .offsets = offsets.as<std::int32_t>(),
+            .pair_rows = rows.as<std::int32_t>(),
+            .pair_out = out_rows.as<std::int32_t>(),
+            .y = y.as<float>(),
+            .y_stride = y_stride,
+            .y_outputs = kOutputs};
+        ASSERT_TRUE(decode::PrepareResidentRoute(route, nullptr).has_value());
+        const auto ran = decode::RunGrouped({.format = one,
+                                             .experts = table.as<decode::Operand>(),
+                                             .experts_count = groups,
+                                             .first = kFirst,
+                                             .outputs = kOutputs,
+                                             .offsets = offsets.as<std::int32_t>(),
+                                             .pair_rows = rows.as<std::int32_t>(),
+                                             .pair_out = out_rows.as<std::int32_t>(),
+                                             .pairs = pairs,
+                                             .x = x.device->as<float>(),
+                                             .x_rows = per_slot ? pairs : tokens,
+                                             .x_stride = x.stride,
+                                             .y = y.as<float>(),
+                                             .y_rows = pairs,
+                                             .y_stride = y_stride,
+                                             .rows_hint = tokens},
+                                            nullptr);
+        ASSERT_TRUE(ran.has_value()) << ran.error();
+        const std::vector<float> got = y.Get<float>();
+        const double tolerance = Tolerance(id, true, k);
+        for (std::uint64_t p = 0; p < pairs; ++p) {
+          const std::int32_t e = ids[p];
+          if (e < 0 || static_cast<std::uint64_t>(e) >= kExperts) {
+            // A dropped pair's row reads as zeros.
+            for (std::uint64_t j = 0; j < kOutputs; ++j)
+              ASSERT_EQ(got[(p * y_stride) + j], 0.0F) << "dropped pair " << p << " output " << j;
+            continue;
+          }
+          const float* input = x.row(per_slot ? p : p / kUsed);
+          for (std::uint64_t j = 0; j < kOutputs; ++j) {
+            const Dot d = DotOf(w->row(static_cast<std::uint64_t>(e), kFirst + j), input, k);
+            const double value = got[(p * y_stride) + j];
+            ASSERT_LE(std::abs(value - d.sum), Bound(d, tolerance))
+                << "pair " << p << " output " << j;
           }
         }
       }

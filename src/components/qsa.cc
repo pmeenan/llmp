@@ -124,13 +124,13 @@ constexpr std::array kRoles{
     WeightRole{.name = "k"},
     WeightRole{.name = "v"},
     WeightRole{.name = "output"},
-    WeightRole{.name = "q_norm", .encodings = kNormEncodings},
-    WeightRole{.name = "k_norm", .encodings = kNormEncodings},
+    WeightRole{.name = "q_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "k_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
     WeightRole{.name = "indexer_qk"},
     WeightRole{.name = "indexer_q"},
     WeightRole{.name = "indexer_k"},
-    WeightRole{.name = "indexer_q_norm", .encodings = kNormEncodings},
-    WeightRole{.name = "indexer_k_norm", .encodings = kNormEncodings},
+    WeightRole{.name = "indexer_q_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
+    WeightRole{.name = "indexer_k_norm", .encodings = kNormEncodings, .derived = kZeroCenteredNorm},
 };
 
 // The state's tensors, in its contract's order.

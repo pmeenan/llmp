@@ -3,10 +3,14 @@
 #include "import/route.h"
 
 #include <algorithm>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <string_view>
 #include <utility>
+
+#include "format/encoding.h"
+#include "format/layout.h"
 
 namespace llmp::import {
 namespace {
@@ -48,15 +52,63 @@ std::expected<PartRoutePlan, Error> PartRoutePlan::Fold(ScalarFold fold, std::ui
   out.fold_ = fold;
   return out;
 }
+std::expected<PartRoutePlan, Error> PartRoutePlan::PermuteFold(const HeadPermutationPlan& plan,
+                                                               format::PartRole part,
+                                                               ScalarFold fold) {
+  auto out = Permute(plan, part);
+  if (!out) return out;
+  if ((fold != ScalarFold::kNormPlusOne && fold != ScalarFold::kANegExp) ||
+      plan.format().encoding != format::Encoding::kBF16 || out->input_bytes_ % 2 != 0 ||
+      out->input_bytes_ > 2 * 8192)
+    return Bad("a permuted fold needs a small whole BF16 part");
+  out->output_bytes_ = out->input_bytes_ * 2;
+  out->fold_ = fold;
+  return out;
+}
+std::expected<PartRoutePlan, Error> PartRoutePlan::ScaleAtoms(std::uint64_t rows,
+                                                              std::uint64_t blocks) {
+  if (rows == 0 || rows % format::kScaleAtomRows != 0 || blocks == 0 ||
+      blocks % format::kScaleAtomBlocks != 0 || blocks > 256 ||
+      rows > std::numeric_limits<std::uint64_t>::max() / blocks)
+    return Bad("scale atoms need whole 128-row atoms of 4 to 256 scales a row");
+  PartRoutePlan out;
+  out.input_bytes_ = out.output_bytes_ = rows * blocks;
+  out.atom_blocks_ = blocks;
+  return out;
+}
+std::expected<PartRoutePlan, Error> PartRoutePlan::Strided(std::uint64_t rows,
+                                                           std::uint64_t row_bytes,
+                                                           std::uint64_t stride,
+                                                           std::uint64_t lane) {
+  if (rows == 0 || row_bytes == 0 || stride == 0 || lane > stride || row_bytes > stride - lane ||
+      rows > std::numeric_limits<std::uint64_t>::max() / stride)
+    return Bad("a strided route needs whole rows within their stride");
+  PartRoutePlan out;
+  out.input_bytes_ = out.output_bytes_ = rows * row_bytes;
+  out.row_bytes_ = row_bytes;
+  out.stride_ = stride;
+  out.lane_ = lane;
+  return out;
+}
 std::expected<PartRouteExecution, Error> PartRoutePlan::Start(
     std::span<std::byte> workspace) const {
   if (fold_ && workspace.size() < 4) return Bad("scalar route workspace was not provided");
+  if (fold_ && permutation_ && workspace.size() < input_bytes_ + output_bytes_)
+    return Bad("permuted fold workspace was not provided");
+  const auto band = format::kScaleAtomRows * atom_blocks_;
+  if (atom_blocks_ != 0 && workspace.size() < 2 * band)
+    return Bad("scale-atom route workspace was not provided");
   PartRouteExecution out;
   out.input_bytes_ = input_bytes_;
   out.output_bytes_ = output_bytes_;
   out.permutation_ = permutation_;
   out.fold_ = fold_;
+  out.atom_blocks_ = atom_blocks_;
+  out.row_bytes_ = row_bytes_;
+  out.stride_ = stride_;
+  out.lane_ = lane_;
   if (fold_) out.workspace_ = workspace.first(std::min<std::size_t>(workspace.size(), 65536));
+  if (atom_blocks_ != 0) out.workspace_ = workspace.first(static_cast<std::size_t>(2 * band));
   return out;
 }
 PartRouteExecution::PartRouteExecution(PartRouteExecution&& other) noexcept {
@@ -76,6 +128,10 @@ PartRouteExecution& PartRouteExecution::operator=(PartRouteExecution&& other) no
   acknowledged_ = other.acknowledged_;
   permutation_ = other.permutation_;
   fold_ = other.fold_;
+  atom_blocks_ = other.atom_blocks_;
+  row_bytes_ = other.row_bytes_;
+  stride_ = other.stride_;
+  lane_ = other.lane_;
   workspace_ = other.workspace_;
   carry_ = other.carry_;
   carried_ = other.carried_;
@@ -116,6 +172,75 @@ std::expected<void, Error> PartRouteExecution::Consume(std::uint64_t offset,
     if (failed_) return std::expected<void, Error>(Bad("part route cancelled during its sink"));
     return result;
   };
+  if (stride_ != 0) {
+    // Each row's received bytes at its lane of its output row.
+    while (!input.empty()) {
+      const auto row = received_ / row_bytes_, at = received_ % row_bytes_;
+      const auto count =
+          static_cast<std::size_t>(std::min<std::uint64_t>(input.size(), row_bytes_ - at));
+      if (auto ok = emit((row * stride_) + lane_ + at, input.first(count)); !ok) return ok;
+      received_ += count;
+      acknowledged_ += count;
+      input = input.subspan(count);
+    }
+    complete = true;
+    return {};
+  }
+  if (permutation_ && fold_) {
+    // The whole source, then each permuted run folded into its place.
+    std::memcpy(workspace_.data() + received_, input.data(), input.size());
+    received_ += input.size();
+    if (received_ == input_bytes_) {
+      const auto whole =
+          std::span<const std::byte>(workspace_).first(static_cast<std::size_t>(input_bytes_));
+      auto output = workspace_.subspan(static_cast<std::size_t>(input_bytes_),
+                                       static_cast<std::size_t>(output_bytes_));
+      for (std::uint64_t at = 0; at < input_bytes_;) {
+        auto next = permutation_->Next(input_bytes_ - at);
+        if (!next) return std::unexpected(next.error());
+        if (!*next || (**next).source != at || (**next).bytes == 0 || (**next).bytes % 2 != 0 ||
+            (**next).destination % 2 != 0 || (**next).bytes > input_bytes_ - at ||
+            (**next).destination > input_bytes_ - (**next).bytes)
+          return Bad("permuted fold lost source coverage");
+        const auto& run = **next;
+        if (auto ok = FoldBf16(*fold_,
+                               whole.subspan(static_cast<std::size_t>(run.source),
+                                             static_cast<std::size_t>(run.bytes)),
+                               output.subspan(static_cast<std::size_t>(run.destination * 2),
+                                              static_cast<std::size_t>(run.bytes * 2)));
+            !ok)
+          return ok;
+        at += run.bytes;
+      }
+      if (auto ok = emit(0, output); !ok) return ok;
+      acknowledged_ = output_bytes_;
+    }
+    complete = true;
+    return {};
+  }
+  if (atom_blocks_ != 0) {
+    // Rows into the first band buffer; a whole band swizzled into the
+    // second and emitted at the band's own offset.
+    const std::uint64_t band = format::kScaleAtomRows * atom_blocks_;
+    auto rows = workspace_.first(static_cast<std::size_t>(band));
+    auto atoms = workspace_.subspan(static_cast<std::size_t>(band));
+    while (!input.empty()) {
+      const auto at = received_ % band;
+      const auto count = static_cast<std::size_t>(std::min<std::uint64_t>(input.size(), band - at));
+      std::memcpy(rows.data() + at, input.data(), count);
+      received_ += count;
+      input = input.subspan(count);
+      if (received_ % band != 0) continue;
+      for (std::uint64_t r = 0; r < format::kScaleAtomRows; ++r)
+        for (std::uint64_t b = 0; b < atom_blocks_; ++b)
+          atoms[static_cast<std::size_t>(format::ScaleAtomOffset(r, b, atom_blocks_))] =
+              rows[static_cast<std::size_t>((r * atom_blocks_) + b)];
+      if (auto ok = emit(acknowledged_, atoms); !ok) return ok;
+      acknowledged_ += band;
+    }
+    complete = true;
+    return {};
+  }
   while (!input.empty()) {
     if (!fold_) {
       CopyRun run{.source = received_, .destination = received_, .bytes = input.size()};

@@ -496,7 +496,7 @@ kn::Addresses ModelRunner::AddressesFor(const pl::StepShape& shape, bool measuri
       return 0;
     };
   }
-  if (config_.routed_metadata)
+  if (config_.routed_metadata || config_.split_expert_parts)
     a.expert_part = [this](std::uint16_t stage,
                            std::string_view name) -> std::optional<kn::ExpertPartBinding> {
       if (stage >= config_.weights.size()) return std::nullopt;

@@ -85,6 +85,29 @@ Values ProfileValues(const rt::Approval& a) {
                   20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171}};
     return sp::mappings::Qwen38GgufValues(md::Qwen38Flash(), hash);
   }
+  // Qwen3.8's native imports: the GGUF values with the importer's own keys
+  // (MLX's affine n-gram rows of 160; ModelOpt's relaid-out experts, their
+  // tensor-scale vectors and activation scales).
+  if (a.name == "qwen3.8-flash-next-modelopt" || a.name == "qwen3.8-flash-next-mlx") {
+    const bool modelopt = a.name == "qwen3.8-flash-next-modelopt";
+    const md::Qwen38PleHash hash{
+        .multipliers = {23703573157769, 20109073645365, 8052911324071},
+        .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
+                    160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114,
+                    300001275},
+        .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
+                  20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171}};
+    md::Qwen38Profile p = md::Qwen38Flash();
+    if (!modelopt) p.ple_row = 160;
+    auto values = sp::mappings::Qwen38GgufValues(p, hash);
+    if (!values) return values;
+    values->push_back({.key = "llmp.qwen4exp.indexer", .value = std::string("fused")});
+    values->push_back({.key = "llmp.qwen4exp.experts_stacked", .value = modelopt});
+    values->push_back({.key = "llmp.qwen4exp.expert_scales", .value = modelopt});
+    if (modelopt)
+      values->push_back({.key = "llmp.qwen4exp.expert_activation_scales", .value = true});
+    return values;
+  }
   return std::unexpected("no compiled profile for " + std::string(a.name));
 }
 
@@ -96,6 +119,8 @@ Values DrafterProfileValues(const rt::Approval& a) {
     return sp::mappings::Gemma4AssistantV0Values(md::Gemma4Assistant31(), md::Gemma4_31B());
   if (a.name == "dspark-deepseek-v4-flash-0731-q8_0")
     return sp::mappings::DsparkV0Values(md::DsparkDeepSeekV4Flash());
+  if (a.name == "qwen3.8-flash-next-modelopt-mtp-mia47172")
+    return sp::mappings::Qwen38MtpNativeValues(md::Qwen38Flash(), 47172);
   return std::unexpected("no compiled profile for " + std::string(a.name));
 }
 
@@ -124,7 +149,7 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
     ASSERT_NE(approval, nullptr);
     if (approval->drafter) {
       EXPECT_TRUE(rt::CheckComponentArtifactAdmission(*artifact));
-      const auto* mapping = rt::ComposedDrafterMapping(artifact->model().architecture);
+      const auto* mapping = rt::ComposedDrafterMapping(*artifact);
       ASSERT_NE(mapping, nullptr);
       auto source = sp::SourceOf(*artifact, mapping);
       ASSERT_TRUE(source) << source.error();
@@ -143,8 +168,10 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
     // The pin is what the retired compiled profile's values synthesize.
     auto values = ProfileValues(*approval);
     ASSERT_TRUE(values) << values.error();
-    auto expected =
-        sp::Synthesize(*sp::FindMapping(approval->architecture), admitted->source, *values);
+    const sp::Mapping& mapping = approval->mapping != nullptr
+                                     ? approval->mapping()
+                                     : *sp::FindMapping(approval->architecture);
+    auto expected = sp::Synthesize(mapping, admitted->source, *values);
     ASSERT_TRUE(expected) << expected.error();
     EXPECT_EQ(llmp::base::ToHex(expected->Digest()), approval->spec);
     ++targets;
@@ -204,8 +231,13 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
     auto drafter_envelope = rt::ComponentDrafterEnvelope(*drafter, envelope);
     EXPECT_TRUE(drafter_envelope) << (drafter_envelope ? "" : drafter_envelope.error());
     // The kept values compose what the compiled profiles' values composed.
-    const sp::Mapping* draft_mapping = rt::ComposedDrafterMapping(drafter->model().architecture);
-    const sp::Mapping* target_mapping = sp::FindMapping(target->model().architecture);
+    const sp::Mapping* draft_mapping = rt::ComposedDrafterMapping(*drafter);
+    const rt::Approval* target_approval =
+        rt::FindApproval(target->model().architecture, target->sources());
+    ASSERT_NE(target_approval, nullptr);
+    const sp::Mapping* target_mapping = target_approval->mapping != nullptr
+                                            ? &target_approval->mapping()
+                                            : sp::FindMapping(target->model().architecture);
     ASSERT_TRUE(draft_mapping && target_mapping);
     auto source = sp::SourceOf(*drafter, draft_mapping);
     ASSERT_TRUE(source) << source.error();

@@ -225,6 +225,9 @@ class Lowering {
   // A weight of several parts (MXFP8's codes and scales, an NVFP4 table's
   // rows and scale, the CUTLASS experts' slab): a GGML tensor a part, the
   // first its stand-in.
+  // Whether a fused block-scaled grouped GEMM (moe_experts) reads the
+  // weight: its scale-atom tables then take the GEMM's slab form.
+  bool BlockScaledGemm(TensorId weight) const;
   std::expected<ggml_tensor*, KernelFailure> MakeParts(TensorId out, const ir::TensorDesc& d,
                                                        const co::StepWeight& w);
   // GGML's builder call for primitive node `n` of `graph` over its
@@ -1088,6 +1091,12 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
   return t;
 }
 
+bool Lowering::BlockScaledGemm(TensorId weight) const {
+  return std::ranges::any_of(p_.nodes(), [&](const ir::Node& n) {
+    return n.key == ir::Fused(FusedKind::kMoeExperts) && std::ranges::contains(n.sources(), weight);
+  });
+}
+
 std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
                                                                const ir::TensorDesc& d,
                                                                const co::StepWeight& w) {
@@ -1123,7 +1132,11 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
     }
   } else if (options_.selected_source != nullptr &&
              (d.format.encoding == Encoding::kNvfp4 || d.format.encoding == Encoding::kAffine) &&
-             d.format.layout == format::Layout::kSplit && w.ref.expert_array) {
+             (d.format.layout == format::Layout::kSplit ||
+              (d.format.layout == format::Layout::kScaleAtoms && !BlockScaledGemm(out))) &&
+             w.ref.expert_array) {
+    // Split parts, or scale-atom tables no block-scaled grouped GEMM reads
+    // (the format ladder decodes them on chip): each part at its pitch.
     if (!in_.addresses.expert_part) return Refused("split expert parts have no source binding");
     auto one = d.format;
     one.shape.rank = 2;
@@ -1181,7 +1194,7 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeParts(TensorId out,
     std::array<std::int64_t, 4> one{1, 1, 1, 1};
     part(format::PartRole::kTensorScale, ggml_new_tensor(c_, GGML_TYPE_F32, 1, one.data()));
   } else if (d.format.encoding == Encoding::kNvfp4 &&
-             d.format.layout == format::Layout::kCutlassScaleAtoms && w.ref.expert_array) {
+             d.format.layout == format::Layout::kScaleAtoms && w.ref.expert_array) {
     // The CUTLASS layout's slab (moe_layout.h): a layer's gate-and-up and
     // down arrays at their offsets in each expert's slot, one tensor
     // [stride, experts] at the gate-and-up codes.
@@ -2333,6 +2346,25 @@ std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
     }
     return found != nullptr;
   };
+  // A norm weight the component derived from its weight alone (components/
+  // defs.h F32Parameters: an F32 conversion, a zero-centered norm's 1 + w)
+  // is the same derived tensor in both graphs; its weight, the bound leaf
+  // the proof keeps, is the original's.
+  const auto parameter_root = [&](TensorId a, TensorId b) -> std::optional<TensorId> {
+    if (weight(a, b)) return a;
+    if (mapped(a) != b) return std::nullopt;
+    TensorId leaf = a;
+    for (int depth = 0; depth < 4 && original.Prim(leaf, Op::kWeight, 0) == nullptr; ++depth) {
+      const auto& n = g_.node(g_.producer(leaf));
+      if (n.nsrc != 1 || n.nout != 1 ||
+          (n.key != ir::Primitive(Op::kConvert) && n.key != ir::Primitive(Op::kScale) &&
+           n.key != ir::Primitive(Op::kUnary)) ||
+          !original.Clean(n.src[0]))
+        return std::nullopt;
+      leaf = n.src[0];
+    }
+    return weight(leaf, mapped(leaf)) ? std::optional(leaf) : std::nullopt;
+  };
   // At most one selected final corridor. This bound avoids unbounded walks
   // through overlapping fold chains in caller-rebuilt valid IR.
   const ir::Node* fold = nullptr;
@@ -2505,11 +2537,11 @@ std::expected<void, KernelFailure> Lowering::CheckSelectedHc() {
       downscale->params != scale->params ||
       silu->params != ir::ToBytes(ir::UnaryParams{.fn = ir::UnaryFn::kSilu}) ||
       sigmoid->params != ir::ToBytes(ir::UnaryParams{.fn = ir::UnaryFn::kSigmoid}) ||
-      !weight(normmul->src[1], prep->src[1]) || !weight(old_low->src[0], low->src[0]) ||
+      !parameter_root(normmul->src[1], prep->src[1]) || !weight(old_low->src[0], low->src[0]) ||
       !weight(old_high->src[0], high->src[0]))
     return Refused("selected HC: original corridor or resource mapping differs");
   selected_hc_ = SelectedHc{.rows = indices->tensor,
-                            .norm = normmul->src[1],
+                            .norm = *parameter_root(normmul->src[1], prep->src[1]),
                             .down = old_low->src[0],
                             .up = old_high->src[0],
                             .low = p_.producer(low->out[0]),

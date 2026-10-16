@@ -86,7 +86,7 @@ constexpr std::array kRoles{
     WeightRole{.name = "beta"},
     WeightRole{.name = "alpha"},
     WeightRole{.name = "dt_bias", .encodings = kNormEncodings},
-    WeightRole{.name = "a", .encodings = kNormEncodings},
+    WeightRole{.name = "a", .encodings = kNormEncodings, .derived = kLogDecay},
     WeightRole{.name = "conv", .encodings = kNormEncodings},
     WeightRole{.name = "norm", .encodings = kNormEncodings},
     WeightRole{.name = "output"},

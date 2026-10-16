@@ -6,14 +6,22 @@
 #include <array>
 #include <bit>
 #include <charconv>
+#include <format>
 #include <limits>
 #include <map>
 #include <numeric>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "components/step.h"
+#include "import/expert_relayout.h"
+#include "import/files.h"
+#include "import/parameter_folds.h"
+#include "ir/graph.h"
 #include "model/qwen38.h"
 #include "spec/mappings/qwen38.h"
 
@@ -1852,6 +1860,28 @@ std::expected<std::optional<HeadPermutationPlan>, Error> Permutation(
   if (!p) return std::unexpected(p.error());
   return *p;
 }
+// The n-gram side table (its row-gathered role) row-interleaved
+// (import/expert_relayout.h RelayoutRowTable), as the converter wrote it.
+std::expected<void, Error> RelayoutSideTable(std::vector<TensorAssembly>& outputs) {
+  auto table = std::ranges::find(outputs, "per_layer_token_embd.weight", &TensorAssembly::name);
+  if (table == outputs.end()) return Bad("the n-gram table is missing");
+  auto relaid = RelayoutRowTable(*table);
+  if (!relaid) return std::unexpected(relaid.error());
+  if (!*relaid) return Bad("the n-gram table cannot be row-interleaved");
+  return {};
+}
+// The routed experts' gathered tables (blk.L.ffn_{gate,up,down}_exps.weight,
+// by their projection's role) into the scale-atom layout
+// (import/expert_relayout.h): gate and up stacked as the gate-up table,
+// each projection's tensor scales an F32 [experts] vector.
+std::expected<ExpertRelayoutSummary, Error> RelayoutRoutedExperts(
+    std::vector<TensorAssembly>& outputs) {
+  std::vector<ExpertTable> tables;
+  for (std::size_t i = 0; i < outputs.size(); ++i)
+    if (auto table = ExpertTableOf(outputs[i].name, static_cast<std::uint32_t>(i)))
+      tables.push_back(std::move(*table));
+  return RelayoutExpertTables(outputs, tables);
+}
 const MetaValue* Meta(const Checkpoint& source, std::string_view key) {
   return source.FindValue(key);
 }
@@ -2143,7 +2173,12 @@ NormalizationCost Cost() {
                         kComponents * 64 * 64 * 256 + 1024ULL * 1024 * 256;
   return {.metadata_bytes = bytes, .work_units = work, .payload_bytes = 280, .layers = 48};
 }
-std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>, 3>& semantic) {
+// The target's values; `relaid`: its experts in the scale-atom layout,
+// gate and up stacked, their tensor scales vectors (import/expert_relayout.h);
+// `activation_scales`: its routed experts carry their activations' input
+// scales (ModelOpt's NVFP4, W4A4, rather than W4A16_NVFP4).
+std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>, 3>& semantic,
+                                      bool relaid, bool activation_scales) {
   const auto& p = model::Qwen38Flash();
   std::vector<spec::SourceValue> out;
   out.reserve(64);
@@ -2192,8 +2227,9 @@ std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>
   out.push_back({"qwen4exp.ple.head_offsets", semantic[1]});
   out.push_back({"qwen4exp.ple.head_vocab_sizes", semantic[2]});
   out.push_back({"llmp.qwen4exp.indexer", std::string("fused")});
-  out.push_back({"llmp.qwen4exp.experts_stacked", false});
-  out.push_back({"llmp.qwen4exp.expert_scales", false});
+  out.push_back({"llmp.qwen4exp.experts_stacked", relaid});
+  out.push_back({"llmp.qwen4exp.expert_scales", relaid});
+  out.push_back({"llmp.qwen4exp.expert_activation_scales", activation_scales});
   return out;
 }
 constexpr std::array<std::string_view, 3> kSemanticSuffixes = {
@@ -2202,6 +2238,65 @@ constexpr std::array<std::string_view, 3> kSemanticHashes = {
     "37349930c3c77bf4927b2afb6b50f30c404f42f00f5790bda96e7d9589c26477",
     "af1566f7a3be2f4a9ee8e2384aa161b8d45cfcbd92376827662a028679b7d8eb",
     "81879b658d9974287ceecc77463e5fdd183cb4cd66692b061ea6af24ef414d39"};
+// The semantic inputs as their pinned hashes fix them (kSemanticHashes).
+std::array<std::vector<std::int64_t>, 3> PinnedSemantic() {
+  return {std::vector<std::int64_t>{23703573157769, 20109073645365, 8052911324071},
+          std::vector<std::int64_t>{0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228,
+                                    140000297, 160000374, 180000455, 200000548, 220000655,
+                                    240000802, 260000955, 280001114, 300001275},
+          std::vector<std::int64_t>{20000003, 20000023, 20000033, 20000047, 20000059, 20000063,
+                                    20000069, 20000077, 20000081, 20000093, 20000107, 20000147,
+                                    20000153, 20000159, 20000161, 20000171}};
+}
+// Each output's parts as the canonical tensors they publish.
+std::expected<std::vector<spec::SourceTensor>, Error> CanonicalOf(
+    std::span<const TensorAssembly> outputs) {
+  std::vector<spec::SourceTensor> tensors;
+  for (const auto& out : outputs) {
+    const auto parts = format::PartsOf(out.format);
+    if (!parts) return Bad("invalid native output geometry");
+    for (const auto& part : parts->parts())
+      tensors.push_back({.name = PartName(out.name, part.role),
+                         .format = out.format,
+                         .part = part.role,
+                         .experts = out.format.shape.rank == 3});
+  }
+  return tensors;
+}
+constexpr std::string_view kHeadReorder = "gdn.value_heads_tiled";
+// The target's parameter folds (import/parameter_folds.h, D-108 as
+// amended): its spec synthesized from its unfolded outputs decides them by
+// role; its zero-centered norms (1 + w) and A (-exp(A_log), under the head
+// reorder) in F32, each fold whole.
+std::expected<std::vector<PlannedPartFold>, Error> FoldTargetParameters(
+    std::vector<TensorAssembly>& outputs, bool activation_scales) {
+  auto tensors = CanonicalOf(outputs);
+  if (!tensors) return std::unexpected(tensors.error());
+  const spec::Source unfolded{.architecture = "qwen4exp",
+                              .container = "safetensors",
+                              .converter = {},
+                              .tensors = std::move(*tensors),
+                              .folds = {std::string(kHeadReorder)}};
+  auto spec = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), unfolded,
+                               Values(PinnedSemantic(), true, activation_scales));
+  if (!spec) return Bad("native ModelOpt architecture synthesis refused");
+  auto applied = FoldDerivedParameters(spec->stages.front(), outputs);
+  if (!applied) return std::unexpected(applied.error());
+  if (applied->size() != 2 || (*applied)[0].fold != "norm.plus_one" ||
+      (*applied)[1].fold != "ssm.a_neg_exp")
+    return Bad("the target's norms and A did not fold whole");
+  std::vector<PlannedPartFold> planned{{std::string(kHeadReorder), {}}};
+  for (std::size_t i = 0; i < outputs.size(); ++i)
+    if (outputs[i].permutation) planned.front().outputs.push_back(static_cast<std::uint32_t>(i));
+  for (auto& a : *applied) planned.push_back({std::move(a.fold), std::move(a.outputs)});
+  return planned;
+}
+std::vector<std::string> FoldNames(std::span<const PlannedPartFold> planned) {
+  std::vector<std::string> names;
+  for (const auto& p : planned) names.push_back(p.fold);
+  std::ranges::sort(names);
+  return names;
+}
 }  // namespace
 
 std::expected<NormalizationCost, Error> ModelOptTargetBound(const Checkpoint& source) {
@@ -2337,6 +2432,19 @@ std::expected<ModelOptTargetPlan, Error> NormalizeModelOptTarget(Checkpoint&& so
   }
   for (std::size_t i = 0; i < counts.size(); ++i)
     if (counts[i] != kRules[i].count) return Bad("source role set is incomplete");
+  // The routed experts' input scales (auxiliary: no product reads them)
+  // say the checkpoint quantized their activations too (W4A4).
+  bool activation_scales = true;
+  for (std::size_t i = 0; i < kRules.size(); ++i)
+    if (kRules[i].pattern.contains(".mlp.experts.") && kRules[i].pattern.ends_with(".input_scale"))
+      activation_scales = activation_scales && counts[i] == kRules[i].count;
+  auto relaid = RelayoutRoutedExperts(outputs);
+  if (!relaid) return std::unexpected(relaid.error());
+  if (relaid->tables != 96 || relaid->stacked != 48 || relaid->scale_vectors != 144)
+    return Bad("the routed experts' relayout does not cover every layer");
+  if (auto table = RelayoutSideTable(outputs); !table) return std::unexpected(table.error());
+  auto planned = FoldTargetParameters(outputs, activation_scales);
+  if (!planned) return std::unexpected(planned.error());
   auto indexed_cost = IndexedPartPlan::Bound(source, outputs);
   if (!indexed_cost) return std::unexpected(indexed_cost.error());
   // This exact request is included in Cost's simultaneously charged families.
@@ -2344,16 +2452,16 @@ std::expected<ModelOptTargetPlan, Error> NormalizeModelOptTarget(Checkpoint&& so
       indexed_cost->metadata_bytes > cost->metadata_bytes ||
       indexed_cost->work_units > cost->work_units)
     return Bad("indexed plan exceeds prepaid native domain", Rule::kBounds);
+  // The published model is the mapping's architecture (its manifest names
+  // what serving finds a mapping and an admission profile for), not
+  // config.json's model_type.
+  source.architecture = "qwen4exp";
   auto parts = IndexedPartPlan::Make(std::move(source), outputs, dispositions, *indexed_cost);
   if (!parts) return std::unexpected(parts.error());
   ModelOptTargetPlan result;
   result.cost_ = *cost;
   result.parts_.emplace(std::move(*parts));
-  result.planned_folds_.push_back({"gdn.value_heads_tiled", {}});
-  auto& transformed = result.planned_folds_.front().outputs;
-  transformed.reserve(outputs.size());
-  for (std::size_t i = 0; i < outputs.size(); ++i)
-    if (outputs[i].permutation) transformed.push_back(static_cast<std::uint32_t>(i));
+  result.planned_folds_ = std::move(*planned);
   const auto& owned = result.parts_->source();
   std::array<std::vector<std::int64_t>, 3> semantic;
   std::array<std::byte, 128> buffer{};
@@ -2382,7 +2490,7 @@ std::expected<ModelOptTargetPlan, Error> NormalizeModelOptTarget(Checkpoint&& so
   }
   result.canonical_.architecture = "qwen4exp";
   result.canonical_.container = "safetensors";
-  result.canonical_.folds = {"gdn.value_heads_tiled"};
+  result.canonical_.folds = FoldNames(result.planned_folds_);
   result.canonical_.tensors.reserve(kCanonical);
   result.bindings_.reserve(kCanonical);
   std::uint32_t output_index = 0;
@@ -2398,13 +2506,508 @@ std::expected<ModelOptTargetPlan, Error> NormalizeModelOptTarget(Checkpoint&& so
     }
     ++output_index;
   }
-  result.values_ = Values(semantic);
+  result.values_ = Values(semantic, true, activation_scales);
   auto spec =
       spec::Synthesize(spec::mappings::Qwen38NativeMapping(), result.canonical_, result.values_);
   if (!spec) return Bad("native ModelOpt architecture synthesis refused");
   if (auto validated = components::ValidateSpec(*spec, result.canonical_.tensors); !validated)
     return Bad("native ModelOpt component validation refused");
   result.spec_ = std::move(*spec);
+  return result;
+}
+
+namespace {
+// ------------------------------------------------------------- MTP drafter
+
+// The drafter's canonical tensor for each of the checkpoint's mtp.* roles
+// (kRules' auxiliary entries, whose descriptors stay pinned there): the
+// names the converted drafter has (spec/mappings/qwen38.h), in the target's
+// native forms.
+struct MtpRole {
+  std::string_view source, canonical;
+  PartAssemblyKind assembly = PartAssemblyKind::kCopy;
+};
+constexpr std::array kMtpRoles = {
+    MtpRole{"mtp.fc_embedding.weight", "fc_embd.weight"},
+    MtpRole{"mtp.fc_hidden.weight", "fc_hidden.weight"},
+    MtpRole{"mtp.pre_fc_norm_embedding.weight", "norm_embd.weight"},
+    MtpRole{"mtp.pre_fc_norm_hidden.weight", "norm_hidden.weight"},
+    MtpRole{"mtp.hyper_connection_mixer.hc_norm.weight", "output_hc_norm.weight"},
+    MtpRole{"mtp.hyper_connection_mixer.input_mix_weight_down.weight", "output_hc_down.weight"},
+    MtpRole{"mtp.hyper_connection_mixer.input_mix_weight_up.weight", "output_hc_up.weight"},
+    MtpRole{"mtp.layers.{index}.attn_hyper_connection.block_inject_weight.weight",
+            "blk.{layer}.hc_attn_inject.weight"},
+    MtpRole{"mtp.layers.{index}.attn_hyper_connection.hc_norm.weight",
+            "blk.{layer}.hc_attn_norm.weight"},
+    MtpRole{"mtp.layers.{index}.attn_hyper_connection.input_mix_weight_down.weight",
+            "blk.{layer}.hc_attn_down.weight"},
+    MtpRole{"mtp.layers.{index}.attn_hyper_connection.input_mix_weight_up.weight",
+            "blk.{layer}.hc_attn_up.weight"},
+    MtpRole{"mtp.layers.{index}.mlp_hyper_connection.block_inject_weight.weight",
+            "blk.{layer}.hc_ffn_inject.weight"},
+    MtpRole{"mtp.layers.{index}.mlp_hyper_connection.hc_norm.weight",
+            "blk.{layer}.hc_ffn_norm.weight"},
+    MtpRole{"mtp.layers.{index}.mlp_hyper_connection.input_mix_weight_down.weight",
+            "blk.{layer}.hc_ffn_down.weight"},
+    MtpRole{"mtp.layers.{index}.mlp_hyper_connection.input_mix_weight_up.weight",
+            "blk.{layer}.hc_ffn_up.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.q_proj.weight", "blk.{layer}.attn_q.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.k_proj.weight", "blk.{layer}.attn_k.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.v_proj.weight", "blk.{layer}.attn_v.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.o_proj.weight", "blk.{layer}.attn_output.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.q_norm.weight", "blk.{layer}.attn_q_norm.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.k_norm.weight", "blk.{layer}.attn_k_norm.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.indexer.index_qk_proj.weight",
+            "blk.{layer}.indexer.qk_proj.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.indexer.q_layernorm.weight",
+            "blk.{layer}.indexer.q_norm.weight"},
+    MtpRole{"mtp.layers.{index}.self_attn.indexer.k_layernorm.weight",
+            "blk.{layer}.indexer.k_norm.weight"},
+    MtpRole{"mtp.layers.{index}.mlp.gate.weight", "blk.{layer}.ffn_gate_inp.weight"},
+    MtpRole{"mtp.layers.{index}.mlp.shared_expert_gate.weight",
+            "blk.{layer}.ffn_gate_inp_shexp.weight", PartAssemblyKind::kDenseReshape},
+    MtpRole{"mtp.layers.{index}.mlp.shared_expert.gate_proj.weight",
+            "blk.{layer}.ffn_gate_shexp.weight"},
+    MtpRole{"mtp.layers.{index}.mlp.shared_expert.up_proj.weight",
+            "blk.{layer}.ffn_up_shexp.weight"},
+    MtpRole{"mtp.layers.{index}.mlp.shared_expert.down_proj.weight",
+            "blk.{layer}.ffn_down_shexp.weight"},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.gate_proj.weight",
+            "blk.{layer}.ffn_gate_exps.weight", PartAssemblyKind::kMatrices},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.gate_proj.weight_scale",
+            "blk.{layer}.ffn_gate_exps.weight", PartAssemblyKind::kMatrices},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.gate_proj.weight_scale_2",
+            "blk.{layer}.ffn_gate_exps.weight", PartAssemblyKind::kMatrices},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.up_proj.weight",
+            "blk.{layer}.ffn_up_exps.weight", PartAssemblyKind::kMatrices},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.up_proj.weight_scale",
+            "blk.{layer}.ffn_up_exps.weight", PartAssemblyKind::kMatrices},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.up_proj.weight_scale_2",
+            "blk.{layer}.ffn_up_exps.weight", PartAssemblyKind::kMatrices},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.down_proj.weight",
+            "blk.{layer}.ffn_down_exps.weight", PartAssemblyKind::kMatrices},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.down_proj.weight_scale",
+            "blk.{layer}.ffn_down_exps.weight", PartAssemblyKind::kMatrices},
+    MtpRole{"mtp.layers.{index}.mlp.experts.{index}.down_proj.weight_scale_2",
+            "blk.{layer}.ffn_down_exps.weight", PartAssemblyKind::kMatrices},
+};
+// 29 tensors and 512 experts' three parts of three projections.
+constexpr std::size_t kMtpSources = 29 + 9 * 512;
+static_assert(kMtpRoles.size() == 38);
+constexpr std::uint64_t kHeadWidth = 2560, kVocab = kModelOptQwen38Vocab;
+constexpr std::string_view kHeadSource = "lm_head.weight";
+
+// A routed copy of an mtp.* auxiliary rule: its canonical name, assembly
+// and (a quantized expert's) part.
+SourceRule Routed(const SourceRule& aux, const MtpRole& role) {
+  SourceRule r = aux;
+  r.disposition = SourceDispositionKind::kRouted;
+  r.canonical = role.canonical;
+  r.assembly = role.assembly;
+  r.part = PartRole::kData;
+  if (role.assembly == PartAssemblyKind::kMatrices)
+    r.part = r.pattern.ends_with(".weight_scale_2") ? PartRole::kTensorScale
+             : r.pattern.ends_with(".weight_scale") ? PartRole::kBlockScales
+                                                    : PartRole::kCodes;
+  return r;
+}
+
+// The domain the drafter shares with the target: the container and its
+// metadata index, and the config contract.
+std::expected<void, Error> DrafterDomain(const Checkpoint& source) {
+  if (source.container != "safetensors" || source.architecture != "qwen3_8_flash_next" ||
+      source.quantization != "modelopt MIXED_PRECISION" || !source.role.empty() ||
+      !source.components.empty() || !source.skipped.empty() || source.files.empty() ||
+      source.files.size() > 64 || source.metadata.size() > 512 ||
+      source.tensors.size() > kPhysicalTensors)
+    return Bad("outside closed ModelOpt drafter source domain", Rule::kUnsupported);
+  for (std::size_t i = 0; i < source.metadata.size(); ++i) {
+    const auto& e = source.metadata[i];
+    if (e.key.size() > kMaxKeyBytes || (i != 0 && source.metadata[i - 1].key >= e.key))
+      return Bad("invalid ModelOpt metadata index", Rule::kBounds);
+  }
+  if (!Config(source)) return Bad("ModelOpt source configuration differs from drafter contract");
+  return {};
+}
+
+// The native target as NormalizeModelOptTarget gives it (every routed
+// rule's outputs, their parts in order) with the n-gram hash's checked
+// constants: the target the drafter's spec composes with at import.
+using Carrier = ModelOptTargetForm;
+std::expected<Carrier, Error> NativeTargetCarrier() {
+  Carrier c;
+  c.source = {.architecture = "qwen4exp",
+              .container = "safetensors",
+              .converter = {},
+              .tensors = {},
+              .folds = {}};
+  // The target's outputs as its normalization makes them (each part's
+  // member count, not its sources), then its experts' relayout.
+  std::vector<TensorAssembly> outputs;
+  std::map<std::string, std::size_t, std::less<>> made;
+  for (const auto& rule : kRules) {
+    if (rule.disposition != SourceDispositionKind::kRouted) continue;
+    for (std::uint32_t layer = 0; layer < 48; ++layer) {
+      if (!InDomain(rule.first, layer)) continue;
+      const auto name = Canonical(rule.canonical, layer);
+      const auto format = OutputFormat(rule);
+      const auto [at, inserted] = made.emplace(name, outputs.size());
+      if (!inserted) {
+        if (outputs[at->second].format != format)
+          return Bad("native target carrier geometry disagrees");
+        continue;
+      }
+      const auto parts = format::PartsOf(format);
+      if (!parts) return Bad("invalid native target carrier geometry");
+      TensorAssembly out{.name = name, .format = format};
+      for (const auto& part : parts->parts()) {
+        // As the target's: a row table's tensor scale is shared.
+        const bool shared = rule.assembly == PartAssemblyKind::kRows ||
+                            rule.assembly == PartAssemblyKind::kSharedTensorScale;
+        const auto kind =
+            shared ? (part.role == PartRole::kTensorScale ? PartAssemblyKind::kSharedTensorScale
+                                                          : PartAssemblyKind::kRows)
+                   : rule.assembly;
+        out.parts.push_back(
+            {.part = part.role,
+             .kind = kind,
+             .sources = std::vector<std::uint32_t>(kind == PartAssemblyKind::kMatrices ? 512U
+                                                   : kind == PartAssemblyKind::kRows   ? 128U
+                                                                                       : 1U,
+                                                   0U)});
+      }
+      outputs.push_back(std::move(out));
+      if (rule.first == Domain::kNone) break;
+    }
+  }
+  if (auto relaid = RelayoutRoutedExperts(outputs); !relaid) return std::unexpected(relaid.error());
+  if (auto table = RelayoutSideTable(outputs); !table) return std::unexpected(table.error());
+  auto planned = FoldTargetParameters(outputs, true);
+  if (!planned) return std::unexpected(planned.error());
+  c.source.folds = FoldNames(*planned);
+  auto tensors = CanonicalOf(outputs);
+  if (!tensors) return std::unexpected(tensors.error());
+  c.source.tensors = std::move(*tensors);
+  c.values = Values(PinnedSemantic(), true, true);
+  return c;
+}
+
+constexpr std::uint64_t kListLineBytes = 12;  // "248319\r\n" and slack, as v0's bound
+}  // namespace
+
+std::expected<ModelOptTargetForm, Error> ModelOptNativeTargetForm() {
+  return NativeTargetCarrier();
+}
+
+std::expected<DraftHeadList, Error> ReadDraftHeadList(const std::filesystem::path& path,
+                                                      std::uint32_t vocab) {
+  if (vocab == 0 || vocab > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()))
+    return Bad("invalid draft head vocabulary", Rule::kBounds);
+  const auto name = path.filename().string();
+  if (name.empty() || name.size() > 255 || name == "." || name == ".." ||
+      !std::ranges::all_of(name, [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+               c == '_' || c == '.' || c == '-';
+      }))
+    return Bad("the draft head list's file name is outside the artifact vocabulary",
+               Rule::kUnsupported);
+  auto opened = OpenCheckpointFile(path, 0);
+  if (!opened) return std::unexpected(opened.error());
+  auto text = ReadDocument(*opened, kListLineBytes * vocab, 0);
+  if (!text) return std::unexpected(text.error());
+  if (text->empty()) return Bad("the draft head list is empty");
+  DraftHeadList out;
+  std::string_view rest = *text;
+  if (rest.ends_with('\n')) rest.remove_suffix(1);
+  while (true) {
+    const auto end = rest.find('\n');
+    auto line = rest.substr(0, end);
+    if (line.ends_with('\r')) line.remove_suffix(1);
+    std::uint64_t id = 0;
+    const auto parsed = std::from_chars(line.data(), line.data() + line.size(), id);
+    if (line.empty() || line.size() > 10 || parsed.ec != std::errc{} ||
+        parsed.ptr != line.data() + line.size() ||
+        !std::ranges::all_of(line, [](char c) { return c >= '0' && c <= '9'; }))
+      return Bad("the draft head list needs one decimal token ID a line");
+    if (id >= vocab) return Bad("a draft head token ID is outside the vocabulary");
+    if (!out.ids.empty() && static_cast<std::uint64_t>(out.ids.back()) >= id)
+      return Bad("draft head token IDs must be strictly ascending");
+    if (out.ids.size() == vocab) return Bad("the draft head list has more IDs than the vocabulary");
+    out.ids.push_back(static_cast<std::int32_t>(id));
+    if (end == std::string_view::npos) break;
+    rest.remove_prefix(end + 1);
+  }
+  out.file = {.name = name,
+              .path = opened->path,
+              .bytes = opened->bytes,
+              .device = opened->device,
+              .inode = opened->inode,
+              .parsed = {opened->bytes, base::Sha256().Update(*text).Finish()}};
+  return out;
+}
+
+std::expected<NormalizationCost, Error> ModelOptDrafterBound(const Checkpoint& source,
+                                                             std::size_t head_ids) {
+  if (auto ok = DrafterDomain(source); !ok) return std::unexpected(ok.error());
+  if (head_ids > kVocab) return Bad("a draft head of more rows than the vocabulary", Rule::kBounds);
+  // The target's ledger covers the carrier's synthesis and the composition
+  // (a closed domain of at most 48 layers); the head adds a source tensor,
+  // a member and its name per selected row at most, and its token map.
+  auto cost = Cost();
+  const std::uint64_t per_row = sizeof(Tensor) + sizeof(IndexedMember) + 4 * sizeof(std::uint32_t) +
+                                2 * (kMaxNameBytes + 1) + sizeof(SourceDisposition) + 64 + 8;
+  cost.metadata_bytes += head_ids * per_row + kListLineBytes * head_ids + (std::uint64_t{1} << 20);
+  cost.work_units += head_ids * 64 * 32;
+  cost.payload_bytes = 0;
+  cost.layers = 1;
+  return cost;
+}
+
+std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
+    const Checkpoint& source, std::optional<DraftHeadList> head, NormalizationLimits prepaid) {
+  auto cost = ModelOptDrafterBound(source, head ? head->ids.size() : 0);
+  if (!cost) return std::unexpected(cost.error());
+  if (prepaid.metadata_bytes < cost->metadata_bytes || prepaid.work_units < cost->work_units)
+    return Bad("ModelOpt drafter normalization is not prepaid", Rule::kBounds);
+  if (head && (head->ids.empty() || head->ids.size() > kVocab ||
+               head->file.parsed.bytes != head->file.bytes))
+    return Bad("the draft head list was not read whole");
+  // The drafter's own sources, by role; the head's when it has one.
+  std::array<std::uint32_t, kMtpRoles.size()> counts{};
+  std::array<const SourceRule*, kMtpRoles.size()> aux{};
+  for (std::size_t r = 0; r < kMtpRoles.size(); ++r) {
+    const auto at = std::ranges::find(kRules, kMtpRoles[r].source, &SourceRule::pattern);
+    if (at == kRules.end() || at->disposition != SourceDispositionKind::kAuxiliary)
+      return Bad("drafter role has no pinned source descriptor");
+    aux[r] = &*at;
+  }
+  std::vector<std::pair<std::uint32_t, std::size_t>> selected;  // source tensor, role
+  selected.reserve(kMtpSources);
+  std::optional<std::uint32_t> head_tensor;
+  std::vector<std::uint8_t> files(source.files.size(), 0);
+  for (std::size_t ti = 0; ti < source.tensors.size(); ++ti) {
+    const auto& t = source.tensors[ti];
+    if (t.name == kHeadSource && head) {
+      if (head_tensor) return Bad("duplicate ModelOpt source name");
+      if (t.dtype != "BF16" || t.dims != std::vector<std::uint64_t>{kVocab, kHeadWidth} ||
+          t.part != PartRole::kData || t.experts ||
+          t.format != ir::Dense(Encoding::kBF16, {.ne = {kHeadWidth, kVocab, 1, 1}, .rank = 2}) ||
+          t.extent.bytes != kVocab * kHeadWidth * 2 || t.extent.file >= source.files.size())
+        return Bad("the target head differs from its pinned descriptor");
+      head_tensor = static_cast<std::uint32_t>(ti);
+      files[t.extent.file] = 1;
+      continue;
+    }
+    if (!t.name.starts_with("mtp.")) continue;
+    std::size_t r = 0;
+    std::optional<std::array<std::uint32_t, 2>> at;
+    for (; r < kMtpRoles.size(); ++r)
+      if ((at = Match(*aux[r], t.name))) break;
+    if (r == kMtpRoles.size()) return Bad("unclassified ModelOpt drafter tensor");
+    const auto routed = Routed(*aux[r], kMtpRoles[r]);
+    if (t.dtype != routed.dtype || t.dims.size() != routed.rank ||
+        !std::ranges::equal(t.dims, std::span(routed.dims).first(routed.rank)) ||
+        ++counts[r] > routed.count)
+      return Bad("ModelOpt drafter descriptor or multiplicity differs");
+    if (t.format != SourceFormat(routed) || t.part != routed.part || t.experts ||
+        t.extent.file >= source.files.size())
+      return Bad("ModelOpt drafter source format differs from its role contract");
+    files[t.extent.file] = 1;
+    selected.emplace_back(static_cast<std::uint32_t>(ti), r);
+  }
+  for (std::size_t r = 0; r < kMtpRoles.size(); ++r)
+    if (counts[r] != aux[r]->count) return Bad("the drafter's source role set is incomplete");
+  if (head && !head_tensor) return Bad("a draft head needs the checkpoint's lm_head.weight");
+  // The publication's sources: the configuration documents, the files
+  // holding what it reads, then the head list.
+  Checkpoint sub{.role = {},
+                 .container = source.container,
+                 .architecture = "qwen4exp-mtp",
+                 .quantization = source.quantization};
+  std::vector<std::uint32_t> remap(source.files.size(), std::numeric_limits<std::uint32_t>::max());
+  for (std::size_t f = 0; f < source.files.size(); ++f) {
+    if (!files[f] && source.files[f].name.ends_with(".safetensors")) continue;
+    if (source.files[f].parsed.bytes == 0)
+      return Bad("a drafter source lacks its parsed receipt", Rule::kConfig);
+    remap[f] = static_cast<std::uint32_t>(sub.files.size());
+    sub.files.push_back(source.files[f]);
+  }
+  std::optional<std::uint32_t> list_file;
+  if (head) {
+    // No file of the checkpoint's, read or not, may share its name.
+    if (std::ranges::contains(source.files, head->file.name, &SourceFile::name))
+      return Bad("the draft head list's name is a checkpoint file's", Rule::kConfig);
+    list_file = static_cast<std::uint32_t>(sub.files.size());
+    sub.files.push_back(head->file);
+  }
+  sub.metadata = source.metadata;
+  sub.tensors.reserve(selected.size() + (head ? head->ids.size() : 0));
+  for (const auto& [ti, r] : selected) {
+    auto t = source.tensors[ti];
+    t.extent.file = remap[t.extent.file];
+    sub.tensors.push_back(std::move(t));
+  }
+  // The head: one source tensor a run of consecutive selected rows of
+  // lm_head.weight, gathered in the list's (ascending) order.
+  std::vector<std::uint32_t> runs;
+  if (head) {
+    const auto& lm = source.tensors[*head_tensor];
+    const auto& ids = head->ids;
+    for (std::size_t at = 0; at < ids.size();) {
+      std::size_t end = at + 1;
+      while (end < ids.size() && ids[end] == ids[end - 1] + 1) ++end;
+      const std::uint64_t first = static_cast<std::uint64_t>(ids[at]), rows = end - at;
+      runs.push_back(static_cast<std::uint32_t>(sub.tensors.size()));
+      sub.tensors.push_back(
+          {.name = std::format("{}.rows.{}", kHeadSource, first),
+           .format = ir::Dense(Encoding::kBF16, {.ne = {kHeadWidth, rows, 1, 1}, .rank = 2}),
+           .part = PartRole::kData,
+           .experts = false,
+           .extent = {.file = remap[lm.extent.file],
+                      .offset = lm.extent.offset + first * kHeadWidth * 2,
+                      .bytes = rows * kHeadWidth * 2},
+           .dtype = lm.dtype,
+           .dims = {rows, kHeadWidth}});
+      at = end;
+    }
+  }
+  // Outputs: each role's canonical tensor (the experts' parts as the
+  // target's), then the head's rows.
+  std::vector<TensorAssembly> outputs;
+  std::map<std::string, std::uint32_t, std::less<>> names;
+  for (std::size_t i = 0; i < selected.size(); ++i) {
+    const auto& t = sub.tensors[i];
+    const auto routed = Routed(*aux[selected[i].second], kMtpRoles[selected[i].second]);
+    const auto coordinates = Match(routed, t.name);
+    if (!coordinates) return Bad("drafter source lost its role");
+    const auto canonical = Canonical(routed.canonical, (*coordinates)[0]);
+    const auto format = OutputFormat(routed);
+    auto found = names.find(canonical);
+    if (found == names.end()) {
+      auto parts = format::PartsOf(format);
+      if (!parts) return Bad("invalid drafter part geometry");
+      TensorAssembly out{.name = canonical, .format = format};
+      for (const auto& part : parts->parts())
+        out.parts.push_back({.part = part.role,
+                             .kind = routed.assembly,
+                             .sources = std::vector<std::uint32_t>(
+                                 routed.assembly == PartAssemblyKind::kMatrices ? 512U : 1U,
+                                 std::numeric_limits<std::uint32_t>::max())});
+      found = names.emplace(canonical, static_cast<std::uint32_t>(outputs.size())).first;
+      outputs.push_back(std::move(out));
+    }
+    auto& out = outputs[found->second];
+    if (out.format != format) return Bad("paired drafter parts disagree on output geometry");
+    auto part = std::ranges::find(out.parts, routed.part, &PartAssembly::part);
+    if (part == out.parts.end()) return Bad("drafter source part is not an output part");
+    const auto ordinal = routed.second == Domain::kExpert ? (*coordinates)[1] : 0U;
+    if (ordinal >= part->sources.size() ||
+        part->sources[ordinal] != std::numeric_limits<std::uint32_t>::max())
+      return Bad("two drafter sources select one member");
+    part->sources[ordinal] = static_cast<std::uint32_t>(i);
+  }
+  // Its routed experts in the scale-atom layout, as the target's.
+  auto relaid = RelayoutRoutedExperts(outputs);
+  if (!relaid) return std::unexpected(relaid.error());
+  if (relaid->tables != 2 || relaid->stacked != 1 || relaid->scale_vectors != 3)
+    return Bad("the drafter's routed experts' relayout is incomplete");
+  const std::uint64_t rows = head ? head->ids.size() : 0;
+  if (head)
+    outputs.push_back(
+        {.name = "draft_output.weight",
+         .format = ir::Dense(Encoding::kBF16, {.ne = {kHeadWidth, rows, 1, 1}, .rank = 2}),
+         .parts = {{.part = PartRole::kData, .kind = PartAssemblyKind::kRows, .sources = runs}}});
+  // Its parameter folds, by role (import/parameter_folds.h): its stage
+  // composed from its unfolded outputs with the target's carrier decides
+  // them; its zero-centered norms' 1 + w in F32, as the target's.
+  auto values = spec::mappings::Qwen38MtpNativeValues(model::Qwen38Flash(), rows);
+  if (!values) return Bad("native ModelOpt drafter values refused");
+  auto carrier = NativeTargetCarrier();
+  if (!carrier) return std::unexpected(carrier.error());
+  const auto& target_mapping = spec::mappings::Qwen38NativeMapping();
+  auto target = spec::Synthesize(target_mapping, carrier->source, carrier->values);
+  if (!target) return Bad("native ModelOpt target carrier synthesis refused");
+  const auto ids_tensor = [&] {
+    return spec::SourceTensor{
+        .name = "draft_output.ids",
+        .format = ir::Dense(Encoding::kI32, {.ne = {1, rows, 1, 1}, .rank = 2}),
+        .part = PartRole::kData,
+        .experts = false};
+  };
+  std::vector<PlannedPartFold> planned;
+  {
+    auto tensors = CanonicalOf(outputs);
+    if (!tensors) return std::unexpected(tensors.error());
+    if (head) tensors->push_back(ids_tensor());
+    const spec::Source unfolded{.architecture = "qwen4exp-mtp",
+                                .container = "safetensors",
+                                .converter = {},
+                                .tensors = std::move(*tensors),
+                                .folds = {}};
+    auto composed = spec::ComposeDrafter(
+        *target, target_mapping, spec::mappings::Qwen38MtpNativeMapping(), unfolded, *values);
+    if (!composed) return Bad("native ModelOpt drafter composition refused");
+    const auto stage =
+        std::ranges::find(composed->stages, spec::StageRole::kDrafter, &spec::Stage::role);
+    if (stage == composed->stages.end()) return Bad("native ModelOpt drafter has no stage");
+    auto applied = FoldDerivedParameters(*stage, outputs);
+    if (!applied) return std::unexpected(applied.error());
+    if (applied->size() != 1 || applied->front().fold != "norm.plus_one")
+      return Bad("the drafter's norms did not fold whole");
+    planned.push_back({std::move(applied->front().fold), std::move(applied->front().outputs)});
+  }
+  std::vector<SourceDisposition> dispositions(sub.tensors.size());
+  auto indexed = IndexedPartPlan::Bound(sub, outputs);
+  if (!indexed) return std::unexpected(indexed.error());
+  if (indexed->metadata_bytes > cost->metadata_bytes || indexed->work_units > cost->work_units)
+    return Bad("indexed drafter plan exceeds its prepaid domain", Rule::kBounds);
+  auto parts = IndexedPartPlan::Make(std::move(sub), outputs, dispositions, *indexed);
+  if (!parts) return std::unexpected(parts.error());
+  ModelOptDrafterPlan result;
+  result.cost_ = *cost;
+  result.parts_.emplace(std::move(*parts));
+  result.planned_folds_ = std::move(planned);
+  result.canonical_ = {.architecture = "qwen4exp-mtp",
+                       .container = "safetensors",
+                       .converter = {},
+                       .tensors = {},
+                       .folds = FoldNames(result.planned_folds_)};
+  std::uint32_t output_index = 0;
+  for (const auto& out : result.parts_->outputs()) {
+    for (const auto& part : out.parts.parts()) {
+      result.bindings_.push_back({output_index, part.role});
+      result.canonical_.tensors.push_back({.name = PartName(out.name, part.role),
+                                           .format = out.format,
+                                           .part = part.role,
+                                           .experts = out.format.shape.rank == 3});
+    }
+    ++output_index;
+  }
+  if (head) {
+    // The token map: I32 [1, rows], little-endian, from the list's bytes.
+    GeneratedPart ids{.tensor = static_cast<std::uint32_t>(result.canonical_.tensors.size()),
+                      .file = *list_file,
+                      .bytes = {}};
+    ids.bytes.reserve(rows * 4);
+    for (const auto id : head->ids)
+      for (unsigned b = 0; b < 4; ++b)
+        ids.bytes.push_back(
+            static_cast<std::byte>((static_cast<std::uint32_t>(id) >> (8U * b)) & 0xFFU));
+    result.canonical_.tensors.push_back(ids_tensor());
+    result.generated_.push_back(std::move(ids));
+    result.selected_rows_ = rows;
+    result.options_ = std::format(R"({{"component":"mtp","draft_head":"{}"}})", head->file.name);
+  }
+  result.values_ = std::move(*values);
+  auto composed =
+      spec::ComposeDrafter(*target, target_mapping, spec::mappings::Qwen38MtpNativeMapping(),
+                           result.canonical_, result.values_);
+  if (!composed) return Bad("native ModelOpt drafter composition refused");
+  const std::array<std::span<const spec::SourceTensor>, 2> tables{carrier->source.tensors,
+                                                                  result.canonical_.tensors};
+  if (auto valid = components::ValidateSpec(*composed, tables); !valid)
+    return Bad("native ModelOpt drafter component validation refused");
+  result.spec_ = std::move(*composed);
   return result;
 }
 }  // namespace llmp::import

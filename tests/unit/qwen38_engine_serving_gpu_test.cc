@@ -27,7 +27,9 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -43,6 +45,9 @@
 #include "engine/paged_weights.h"
 #include "engine/plan_cache.h"
 #include "execution/registry.h"
+#include "import/modelopt_qwen38.h"
+#include "import/reader.h"
+#include "import/writer.h"
 #include "kept_restart_serving_checks.h"
 #include "kernels/common/step_program.h"
 #include "kernels/ggml/graph_plan.h"
@@ -50,6 +55,8 @@
 #include "planner/plan.h"
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
+#include "runtime/approvals.h"
+#include "runtime/component_admission.h"
 #include "runtime/component_build.h"
 #include "runtime/engine_llm.h"
 #include "runtime/memory_guard.h"
@@ -57,6 +64,7 @@
 #include "runtime/snapshot_store.h"
 #include "runtime/state_keeper.h"
 #include "spec/mappings/qwen38.h"
+#include "spec/stored.h"
 #include "tokenizer_fixtures.h"
 #include "v1_frozen.h"
 
@@ -362,7 +370,8 @@ std::expected<StateImage, std::string> ReadState(Lifetime& life, rt::EngineLlm& 
 
 std::expected<std::unique_ptr<Lifetime>, std::string> Run(
     std::string_view id, bool mtp, bool component, bool rows, std::uint32_t depth,
-    Lifetime* previous = nullptr, const fs::path& stored_root = {}, bool publication = false) {
+    Lifetime* previous = nullptr, const fs::path& stored_root = {}, bool publication = false,
+    std::string_view drafter = kMtp, std::optional<std::string> drafter_policy = std::nullopt) {
   auto life = std::make_unique<Lifetime>();
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   if (scratch == nullptr) return std::unexpected("no test scratch directory");
@@ -386,13 +395,14 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
                           "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
   entry.tokenizer = checkpoint / "tokenizer.json";
   entry.chat_template = checkpoint / "chat_template.jinja";
-  if (mtp) entry.drafter = kMtp;
+  if (mtp) entry.drafter = std::string(drafter);
   entry.overrides["context"] = std::int64_t{512};
   entry.overrides["prefill_chunk"] = std::int64_t{16};
   entry.overrides["max_slots"] = std::int64_t{1};
   entry.overrides["draft_rows"] = static_cast<std::int64_t>(depth);
   entry.overrides["wave_read_align"] = std::int64_t{256};
   life->config.models.push_back(std::move(entry));
+  life->options.diagnostic_drafter_policy = std::move(drafter_policy);
   life->options.diagnostic_startup_host_bytes = publication ? 0 : kAllowance;
   life->options.diagnostic_auto_startup = publication;
   life->options.diagnostic_budget_cap_bytes = kBudget;
@@ -578,9 +588,9 @@ void Screen(std::string_view id, bool mtp, bool rows, std::uint32_t depth) {
 }
 
 void PublishedScreen() {
-  const char* root = std::getenv("LLMP_TEST_QWEN_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
+  const char* root = std::getenv("LLMP_TEST_QWEN_V1_STORE");      // NOLINT(concurrency-mt-unsafe)
   if (root == nullptr) root = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
-  const char* given = std::getenv("LLMP_TEST_QWEN_V1_ID");  // NOLINT(concurrency-mt-unsafe)
+  const char* given = std::getenv("LLMP_TEST_QWEN_V1_ID");        // NOLINT(concurrency-mt-unsafe)
   std::string id = given != nullptr ? given : "";
   if (id.empty()) {
     const auto mapped = llmp::test_support::V1IdFor(kGguf);
@@ -594,10 +604,10 @@ void PublishedScreen() {
   // The v0 arm needs the established artifact; without it (or with
   // LLMP_TEST_V1_FROZEN_ONLY) only the v1 arm runs, against the frozen digests.
   std::error_code v0_error;
-  const bool have_v0 = std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&  // NOLINT
-                       fs::exists(fs::path(llmp::test_support::ModelsDir()) / "qgguf-artifacts" /
-                                      std::string(kGguf),
-                                  v0_error);
+  const bool have_v0 =
+      std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&  // NOLINT
+      fs::exists(fs::path(llmp::test_support::ModelsDir()) / "qgguf-artifacts" / std::string(kGguf),
+                 v0_error);
   std::unique_ptr<Lifetime> old;
   if (have_v0) {
     auto fixed = CheckFixture(kGguf, false);
@@ -1025,6 +1035,279 @@ TEST(Qwen38EngineServingGpu, NativeMtpDepthTwoFullLogits) { Screen(kCutlass, tru
 TEST(Qwen38EngineServingGpu, NativeMtpDefaultTokenSchedule) { Screen(kCutlass, true, false, 3); }
 TEST(Qwen38EngineServingGpu, NativeGgmlExpertsPlain) { Screen(kGgml, false, true, 2); }
 TEST(Qwen38EngineServingGpu, GgufPlain) { Screen(kGguf, false, true, 2); }
+
+// The native importer's MTP drafter (`llmp import --component mtp
+// --draft-head`), published here from the pinned source with the selected
+// list the v0 drafter kMtp kept, against kMtp: every tensor's value equal
+// (BF16 bytes, the folded F32 norms, the experts' codes and swizzled
+// scales, the selected head and its map), and admitted by its approval
+// (runtime/approvals.cc). It serves only with its approved target (v1
+// serving: its composition is pinned), in NativeModelOptTargetAndDrafterServe.
+// Writes about 1.8 GB under LLMP_TEST_SCRATCH, removed.
+std::vector<std::byte> PlacedBytes(const fs::path& root, const llmp::artifact::Artifact& a,
+                                   const llmp::artifact::Placement& place) {
+  const auto& group = a.groups()[place.group];
+  const auto& shard = a.shards()[group.shard];
+  std::ifstream in(root / shard.path, std::ios::binary);
+  in.seekg(static_cast<std::streamoff>(shard.data_offset.value() + group.offset.value() +
+                                       place.offset.value()));
+  std::vector<std::byte> out(static_cast<std::size_t>(place.bytes.value()));
+  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
+  return in ? out : std::vector<std::byte>{};
+}
+
+// The native drafter mapping's policy (W4A4: its moe_experts, v0's), and
+// the same without the block-scaled GEMM: the format ladder decodes the
+// scale-atom experts on chip (W4A16), as on a device without FP4.
+std::string LadderDrafterPolicy() {
+  std::string text(llmp::spec::mappings::Qwen38MtpNativeReplayMapping().policies.front().text);
+  const auto at = text.find("enable moe_experts\n");
+  EXPECT_NE(at, std::string::npos);
+  if (at == std::string::npos) return text;
+  text.erase(at, 19);
+  const auto before = text.find("disable mul_mat_glu\n");
+  EXPECT_NE(before, std::string::npos);
+  if (before != std::string::npos) text.insert(before, "disable moe_experts\n");
+  return text;
+}
+std::pair<std::uint64_t, std::uint64_t> Acceptance(const Result& r) {
+  std::uint64_t accepted = 0, drafted = 0;
+  for (const auto& g : r.generations) {
+    accepted += g.accepted;
+    drafted += g.drafted;
+  }
+  return {accepted, drafted};
+}
+void ExpectSameTokens(const Result& was, const Result& now, std::string_view arm) {
+  SCOPED_TRACE(arm);
+  for (std::size_t turn = 0; turn < 2; ++turn) {
+    EXPECT_EQ(now.generations[turn].tokens, was.generations[turn].tokens) << turn;
+    EXPECT_EQ(now.history[turn], was.history[turn]) << turn;
+    EXPECT_GT(now.generations[turn].drafted, 0U);
+  }
+  const auto [old_accepted, old_drafted] = Acceptance(was);
+  const auto [accepted, drafted] = Acceptance(now);
+  testing::Test::RecordProperty(std::format("{}_base_accepted_drafted", arm),
+                                std::format("{}/{}", old_accepted, old_drafted));
+  testing::Test::RecordProperty(std::format("{}_accepted_drafted", arm),
+                                std::format("{}/{}", accepted, drafted));
+  EXPECT_GE(accepted + 2, old_accepted);
+}
+
+void NativeMtpDrafterScreen() {
+  namespace im = llmp::import;
+  namespace ar = llmp::artifact;
+  const auto models = fs::path(llmp::test_support::ModelsDir());
+  const char* configured =
+      std::getenv("LLMP_TEST_MODELOPT_SOURCE");  // NOLINT(concurrency-mt-unsafe)
+  const auto checkpoint = configured != nullptr
+                              ? fs::path(configured)
+                              : models / "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+  const auto old_root = models / "m3-artifacts" / kMtp;
+  const auto list_path = old_root / "meta/mia-47172.txt";
+  if (!fs::exists(checkpoint / "model-00034-of-00034.safetensors") ||
+      !fs::exists(models / "m3-artifacts" / kCutlass) || !fs::exists(list_path))
+    GTEST_SKIP() << "the pinned ModelOpt source, v0 target or v0 selected drafter is absent";
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  ASSERT_NE(scratch, nullptr);
+  fs::create_directories(scratch);
+  std::string work = (fs::path(scratch) / "qwen-mtp-v1-XXXXXX").string();
+  ASSERT_NE(mkdtemp(work.data()), nullptr);
+  // The publication's 1.8 GB go with the test, passed or not.
+  struct RemoveWork {
+    fs::path path;
+    ~RemoveWork() {
+      std::error_code ignored;
+      fs::remove_all(path, ignored);
+    }
+  } remove_work{work};
+  const fs::path store = fs::path(work) / "store";
+
+  // Publication, as `llmp import SOURCE --component mtp --draft-head LIST`.
+  auto input = im::ReadCheckpoint(checkpoint);
+  ASSERT_TRUE(input) << (input ? "" : input.error().ToString());
+  auto list = im::ReadDraftHeadList(list_path, im::kModelOptQwen38Vocab);
+  ASSERT_TRUE(list) << (list ? "" : list.error().ToString());
+  ASSERT_EQ(list->ids.size(), 47172U);
+  auto bound = im::ModelOptDrafterBound(*input, list->ids.size());
+  ASSERT_TRUE(bound) << (bound ? "" : bound.error().ToString());
+  auto plan = im::NormalizeModelOptDrafter(*input, std::move(*list),
+                                           {bound->metadata_bytes, bound->work_units});
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error().ToString());
+  const auto started = std::chrono::steady_clock::now();
+  auto published = im::WriteArtifact(*plan, {.store = store,
+                                             .build = "test",
+                                             .metadata_bytes = std::uint64_t{1} << 30U,
+                                             .options = plan->options()});
+  ASSERT_TRUE(published) << (published ? "" : published.error().ToString());
+  testing::Test::RecordProperty(
+      "import_seconds",
+      std::to_string(
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()));
+  testing::Test::RecordProperty("native_drafter", published->id);
+  auto v1 = ar::Artifact::Open(published->path);
+  ASSERT_TRUE(v1);
+  // Its approval (runtime/approvals.cc): sources, transforms, slots and
+  // the complete inventory, Mia's 47,172-row head included.
+  const rt::Approval* approval = rt::FindApproval(v1->model().architecture, v1->sources());
+  ASSERT_NE(approval, nullptr);
+  EXPECT_EQ(approval->name, "qwen3.8-flash-next-modelopt-mtp-mia47172");
+  auto artifact_admitted = rt::CheckComponentArtifactAdmission(*v1);
+  ASSERT_TRUE(artifact_admitted) << (artifact_admitted ? "" : artifact_admitted.error());
+  const auto* composed_mapping = rt::ComposedDrafterMapping(*v1);
+  EXPECT_EQ(composed_mapping, &llmp::spec::mappings::Qwen38MtpNativeReplayMapping());
+  auto source = llmp::spec::SourceOf(*v1, composed_mapping);
+  ASSERT_TRUE(source) << (source ? "" : source.error());
+  auto admitted = rt::CheckComponentDrafterAdmission(*source, v1->sources());
+  ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
+  auto v0 = ar::Artifact::Open(old_root);
+  ASSERT_TRUE(v0);
+
+  // Every non-expert tensor's bytes v0's, the nine norms' too: the
+  // importer's norm.plus_one stores 1 + w in F32 (by role), as v0's
+  // converter did.
+  ASSERT_EQ(v1->folds().size(), 1U);
+  EXPECT_EQ(v1->folds()[0].name, "norm.plus_one");
+  std::size_t equal = 0, norms = 0;
+  for (std::uint32_t r = 0; r < v1->resources().size(); ++r) {
+    const auto& name = v1->resources()[r].name;
+    SCOPED_TRACE(name);
+    const auto old = v0->FindResource(name);
+    ASSERT_TRUE(old.has_value());
+    auto np = v1->ResourcePlacement(r);
+    auto op = v0->ResourcePlacement(*old);
+    ASSERT_TRUE(np && op);
+    const auto now = PlacedBytes(published->path, *v1, *np);
+    const auto was = PlacedBytes(old_root, *v0, *op);
+    ASSERT_FALSE(now.empty() || was.empty());
+    EXPECT_TRUE(now == was);
+    ++equal;
+    if (std::ranges::contains(v1->folds()[0].tensors, name)) ++norms;
+  }
+  EXPECT_EQ(norms, 9U);
+  testing::Test::RecordProperty("equal_tensors", static_cast<int>(equal));
+  // The experts: the relaid-out tables' slices, expert by expert, v0's
+  // (its .codes and .scales arrays under the v1 tables' .weight and
+  // .weight_scale), as the relayout record says.
+  ASSERT_EQ(v1->relayouts().size(), 1U);
+  EXPECT_EQ(v1->relayouts()[0].tensors.size(), 4U);
+  ASSERT_EQ(v1->expert_arrays().size(), 4U);
+  for (std::uint32_t a = 0; a < v1->expert_arrays().size(); ++a) {
+    const auto& name = v1->expert_arrays()[a].name;
+    SCOPED_TRACE(name);
+    std::string old_name = name;
+    old_name.replace(old_name.rfind(".weight"), std::string::npos,
+                     name.ends_with("_scale") ? ".scales" : ".codes");
+    const auto old = v0->FindExpertArray(old_name);
+    ASSERT_TRUE(old.has_value());
+    EXPECT_EQ(v1->expert_arrays()[a].count, 512U);
+    for (std::uint32_t e = 0; e < 512; ++e) {
+      auto np = v1->SlicePlacement(a, e);
+      auto op = v0->SlicePlacement(*old, e);
+      ASSERT_TRUE(np && op);
+      const auto now = PlacedBytes(published->path, *v1, *np);
+      const auto was = PlacedBytes(old_root, *v0, *op);
+      ASSERT_FALSE(now.empty());
+      ASSERT_TRUE(now == was) << e;
+    }
+  }
+}
+TEST(Qwen38EngineServingGpu, NativeMtpDrafterMatchesV0) { NativeMtpDrafterScreen(); }
+
+// The native ModelOpt target and its native drafter (both v1, from
+// LLMP_TEST_QWEN_MODELOPT_V1_STORE: LLMP_TEST_QWEN_MODELOPT_V1_TARGET and
+// LLMP_TEST_QWEN_MODELOPT_V1_DRAFTER) against v0's c4fb47a9 + kMtp, both
+// speculating through the shared engine at their default policies, state
+// observed. The importer's relayouts give the target v0's experts and
+// n-gram rows, its parameter folds v0's F32 norms (1 + w) and A
+// (-exp(A_log), in double on the host), so bit for bit is expected, but
+// recorded, not required (a diagnostic; v0 is no reference).
+// Fixed before the first run: the prefill head's argmax equal; each turn's
+// tokens equal up to a first divergence, where v0's own logits rank the two
+// tokens within 1.0 (a near-tie; the comparison ends there); v1 accepts at
+// most 2 fewer drafts over the two turns. Whether heads and state images
+// are bit for bit is recorded, not required. Quality is the speed gate's
+// NLL pass (|ΔNLL| at most 0.1%, docs/experiments/m36-numerical-audit/
+// qwen-modelopt-v1.md). Then the same v1 pair with the drafter's scale-atom
+// experts on the format ladder (W4A16, as a device without FP4): the default
+// arm's tokens, accepting at most 2 fewer drafts.
+void NativeModelOptScreen() {
+  // NOLINTBEGIN(concurrency-mt-unsafe): read-only test environment.
+  const char* root = std::getenv("LLMP_TEST_QWEN_MODELOPT_V1_STORE");
+  const char* target = std::getenv("LLMP_TEST_QWEN_MODELOPT_V1_TARGET");
+  const char* drafter = std::getenv("LLMP_TEST_QWEN_MODELOPT_V1_DRAFTER");
+  // NOLINTEND(concurrency-mt-unsafe)
+  ASSERT_TRUE(root && target && drafter);
+  ASSERT_EQ(std::strlen(target), 64U);
+  ASSERT_EQ(std::strlen(drafter), 64U);
+  auto fixed = CheckFixture(kCutlass, true);
+  ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
+  auto old_arm = ::Run(kCutlass, true, true, true, 3, nullptr, {}, true);
+  ASSERT_TRUE(old_arm) << (old_arm ? "" : old_arm.error());
+  auto new_arm = ::Run(target, true, true, true, 3, old_arm->get(), root, true, drafter);
+  ASSERT_TRUE(new_arm) << (new_arm ? "" : new_arm.error());
+  const auto& was = (*old_arm)->result;
+  const auto& now = (*new_arm)->result;
+  ASSERT_EQ(now.heads[0].size(), kVocab);
+  float worst = 0;
+  for (std::size_t i = 0; i < kVocab; ++i) {
+    ASSERT_TRUE(std::isfinite(now.heads[0][i])) << i;
+    worst = std::max(worst, std::abs(now.heads[0][i] - was.heads[0][i]));
+  }
+  const auto argmax = [](const std::vector<float>& row) {
+    return std::ranges::max_element(row) - row.begin();
+  };
+  EXPECT_EQ(argmax(now.heads[0]), argmax(was.heads[0]));
+  testing::Test::RecordProperty("prefill_head_max_abs_diff", std::to_string(worst));
+  testing::Test::RecordProperty(
+      "heads_bitwise",
+      std::memcmp(now.heads[0].data(), was.heads[0].data(), kVocab * sizeof(float)) == 0 &&
+          std::memcmp(now.heads[1].data(), was.heads[1].data(), kVocab * sizeof(float)) == 0);
+  testing::Test::RecordProperty("states_bitwise", now.states == was.states);
+  bool diverged = false;  // later tokens, and the next turn, then follow other histories
+  for (std::size_t turn = 0; turn < 2; ++turn) {
+    const auto& a = was.generations[turn];
+    const auto& b = now.generations[turn];
+    ASSERT_EQ(a.tokens.size(), b.tokens.size());
+    for (std::size_t i = 0; i < a.tokens.size() && !diverged; ++i) {
+      if (a.tokens[i] == b.tokens[i]) continue;
+      diverged = true;
+      ASSERT_LT(i, a.logits.size());
+      const auto& row = a.logits[i];
+      const float margin = row.at(static_cast<std::size_t>(a.tokens[i])) -
+                           row.at(static_cast<std::size_t>(b.tokens[i]));
+      testing::Test::RecordProperty(std::format("turn{}_first_divergence", turn),
+                                    std::format("{} margin {}", i, margin));
+      EXPECT_LT(margin, 1.0F) << turn << ':' << i;
+    }
+    EXPECT_GT(b.drafted, 0U);
+  }
+  testing::Test::RecordProperty("tokens_equal", !diverged);
+  const auto [old_accepted, old_drafted] = Acceptance(was);
+  const auto [accepted, drafted] = Acceptance(now);
+  testing::Test::RecordProperty("v0_accepted_drafted",
+                                std::format("{}/{}", old_accepted, old_drafted));
+  testing::Test::RecordProperty("v1_accepted_drafted", std::format("{}/{}", accepted, drafted));
+  EXPECT_GE(accepted + 2, old_accepted);
+  auto ladder_arm = ::Run(target, true, true, true, 3, new_arm->get(), root, true, drafter,
+                          LadderDrafterPolicy());
+  ASSERT_TRUE(ladder_arm) << (ladder_arm ? "" : ladder_arm.error());
+  ExpectSameTokens(now, (*ladder_arm)->result, "w4a16");
+  for (auto* arm : {&*old_arm, &*new_arm, &*ladder_arm}) {
+    fs::remove_all((*arm)->scratch);
+    arm->reset();
+  }
+}
+class NativeModelOptCase : public testing::Test {
+  void TestBody() override { NativeModelOptScreen(); }
+};
+[[maybe_unused]] const auto* native_modelopt_case = []() -> testing::TestInfo* {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): read-only test environment.
+  if (std::getenv("LLMP_TEST_QWEN_MODELOPT_V1_STORE") == nullptr) return nullptr;
+  return testing::RegisterTest("Qwen38EngineServingGpu", "NativeModelOptTargetAndDrafterServe",
+                               nullptr, nullptr, __FILE__, __LINE__,
+                               []() -> testing::Test* { return new NativeModelOptCase; });
+}();
 
 // A manually enabled durable C2 control in the existing real EngineLlm fixture.
 // It uses the same selected implementation in two sequential whole owners.

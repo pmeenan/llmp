@@ -187,6 +187,10 @@ struct ParamRule {
   // layer, the layer's being the value, or one value for every layer
   // (llama.cpp's get_key_or_arr).
   bool per_layer = false;
+  // A slot rule that does not apply to a source carrying this fold (spec.h's
+  // catalog): a convention the importer's fold already applied to the bytes
+  // (a zero-centered norm's flag beside norm.plus_one; D-108 as amended).
+  std::string_view unless_fold{};
 };
 
 struct FoldRule {
@@ -268,6 +272,8 @@ struct ReadRule {
 };
 
 struct Mapping;
+struct Source;
+struct SourceValue;
 
 // How serving runs a target architecture's models where the engine's
 // defaults differ: the architecture's serving recipe as data (D-109: "the
@@ -369,6 +375,18 @@ struct DraftRecipe {
   // The mapping a composition uses in this one's place (an MTP drafter's
   // replay form); null: this one.
   const Mapping& (*composed)() = nullptr;
+  // A stored drafter whose artifact keeps no metadata values (a native
+  // safetensors import's): its values given its source (the recipe's own
+  // constants for its block, what its tensors say for the rest, such as a
+  // selected head's rows; the approval's composition digest pins the
+  // result); null: its kept GGUF metadata's.
+  std::expected<std::vector<SourceValue>, std::string> (*values)(const Source& source) = nullptr;
+  // A selected draft head's token map (I32 [1, rows], strictly ascending
+  // target token IDs; empty: no selected head), and the value that names the
+  // draft vocabulary's rows, which serving bounds by draft_vocab and the
+  // head's rows (else the target's vocabulary).
+  std::string_view head_ids{};
+  std::string_view vocab_key{};
 };
 
 // A layer type by a source key's value (Mapping::layer_type_key).
@@ -436,6 +454,7 @@ std::vector<std::string_view> SourceKeys(const Mapping& mapping);
 struct SourceValue {
   std::string key{};
   ParamValue value{};
+  bool operator==(const SourceValue&) const = default;
 };
 
 // Whether `key` can name a source value (and a mapping's tensor name):

@@ -31,6 +31,7 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen38.h"
 #include "spec_fixtures.h"
 #include "tokenizer_fixtures.h"
 
@@ -636,7 +637,8 @@ TEST(ComponentAdmissionModelOptTest,
   auto policy =
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262144, .slots = 8});
   ASSERT_TRUE(policy) << (policy ? "" : policy.error());
-  EXPECT_TRUE(policy->text.empty());
+  // The native mapping's fast form.
+  EXPECT_EQ(policy->text, llmp::spec::mappings::Qwen38NativeMapping().policies.front().text);
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262145, .slots = 1}));
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 0, .slots = 1}));
@@ -656,7 +658,7 @@ TEST(ComponentAdmissionModelOptTest,
     if (mutation == 5) changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
     if (mutation == 6) {
       auto it = std::ranges::find_if(changed_source.tensors, [](const auto& t) {
-        return t.format.encoding == fm::Encoding::kNvfp4;
+        return t.format.encoding == fm::Encoding::kNvfp4 && t.format.params.tensor_scale;
       });
       ASSERT_NE(it, changed_source.tensors.end());
       it->format.params.tensor_scale = false;
@@ -780,3 +782,56 @@ TEST(ComponentAdmissionMlxTest,
 }
 
 }  // namespace
+
+// The scale-atom experts' slot (the block-scaled grouped GEMM's fixed
+// offsets): the stacked gate-up table's codes and scales, then down's, back
+// to back from each expert group's start.
+TEST(ComponentAdmissionScaleAtomTest, SlotsHoldTheStackedTableFirstBackToBack) {
+  const auto atoms = [](std::uint64_t k, std::uint64_t n, std::uint8_t stacked) {
+    return fm::TensorFormat{.encoding = fm::Encoding::kNvfp4,
+                            .layout = fm::Layout::kScaleAtoms,
+                            .shape = {.ne = {k, n, 1, 1}, .rank = 2},
+                            .stacked = stacked};
+  };
+  const std::vector<llmp::test::V1Array> gate_up{{.name = "blk.0.ffn_gate_up_exps.weight",
+                                                  .format = atoms(64, 256, 2),
+                                                  .part = fm::PartRole::kCodes},
+                                                 {.name = "blk.0.ffn_gate_up_exps.weight_scale",
+                                                  .format = atoms(64, 256, 2),
+                                                  .part = fm::PartRole::kBlockScales}};
+  const std::vector<llmp::test::V1Array> down{{.name = "blk.0.ffn_down_exps.weight",
+                                               .format = atoms(128, 128, 1),
+                                               .part = fm::PartRole::kCodes},
+                                              {.name = "blk.0.ffn_down_exps.weight_scale",
+                                               .format = atoms(128, 128, 1),
+                                               .part = fm::PartRole::kBlockScales}};
+  const std::filesystem::path scratch =
+      std::filesystem::path(testing::TempDir()) / "component-admission-scale-atoms";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  const auto open = [&](std::string_view name, std::vector<llmp::test::V1Array> arrays) {
+    llmp::test::V1Plan plan;
+    plan.architecture = "qwen4exp";
+    plan.expert_count = 2;
+    plan.groups = {llmp::test::V1Group{
+        .kind = llmp::artifact::GroupKind::kExpert, .layer = 0, .arrays = std::move(arrays)}};
+    return llmp::artifact::Artifact::Open(
+        llmp::test::Publish(scratch / name, llmp::test::Render(plan)));
+  };
+  auto first = gate_up;
+  first.insert(first.end(), down.begin(), down.end());
+  auto good = open("good", first);
+  ASSERT_TRUE(good) << good.error().ToString();
+  EXPECT_TRUE(rt::CheckScaleAtomSlots(*good));
+  auto last = down;
+  last.insert(last.end(), gate_up.begin(), gate_up.end());
+  auto swapped = open("swapped", last);
+  ASSERT_TRUE(swapped) << swapped.error().ToString();
+  EXPECT_FALSE(rt::CheckScaleAtomSlots(*swapped));
+  auto gap = first;
+  gap[2].offset = 8192 + 1024 + 256;  // down's codes past a gap
+  gap[3].offset = 8192 + 1024 + 256 + 8192;
+  auto spaced = open("spaced", gap);
+  ASSERT_TRUE(spaced) << spaced.error().ToString();
+  EXPECT_FALSE(rt::CheckScaleAtomSlots(*spaced));
+}

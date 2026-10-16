@@ -83,7 +83,7 @@ constexpr std::array kF32Bf16 = {Encoding::kF32, Encoding::kBF16};
 constexpr std::array kMxfp8 = {Encoding::kMxfp8};
 constexpr std::array kNvfp4 = {Encoding::kNvfp4};
 constexpr std::array kSplitLayout = {Layout::kSplit};
-constexpr std::array kAtoms = {Layout::kCutlassScaleAtoms};
+constexpr std::array kAtoms = {Layout::kScaleAtoms};
 constexpr std::array kRowsLayout = {Layout::kRowInterleaved};
 constexpr std::array kNvfp4Ggml = {Layout::kGgmlNvfp4Blocks};
 // GGML's expert products over NVFP4 blocks (the ModelOpt import's GGML

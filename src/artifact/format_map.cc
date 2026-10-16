@@ -163,7 +163,7 @@ Result Shaped(Encoding encoding, Layout layout, std::span<const V0Part> parts,
   f.params.tensor_scale = Find(parts, PartRole::kTensorScale) != nullptr;
   switch (layout) {
     case Layout::kSplit:
-    case Layout::kCutlassScaleAtoms:
+    case Layout::kScaleAtoms:
     case Layout::kRowInterleaved: {
       if (info.element_bits == 0 || !info.quantized) {
         return std::unexpected(FormatError::kLayout);  // not block-scaled codes

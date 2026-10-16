@@ -26,6 +26,7 @@
 #include "components/step.h"
 #include "import/modelopt_qwen38.h"
 #include "import/reader.h"
+#include "import/transforms.h"
 #include "import/writer.h"
 #include "platform/memory_pressure.h"
 #include "spec/stored.h"
@@ -158,9 +159,13 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   for (const auto& member : plan->parts().members()) {
     const auto& original = plan->parts().source().tensors[member.source];
     EXPECT_EQ(original.extent, member.extent);
-    EXPECT_EQ(member.route.input_bytes(), member.route.output_bytes());
+    // Copies and relayouts keep their bytes; the BF16 folds write F32.
+    const bool folded =
+        original.format.encoding == format::Encoding::kBF16 &&
+        plan->parts().outputs()[member.output].format.encoding == format::Encoding::kF32;
+    EXPECT_EQ(member.route.output_bytes(), member.route.input_bytes() * (folded ? 2 : 1));
     EXPECT_EQ(member.route.input_bytes(), original.extent.bytes);
-    input_bytes += original.extent.bytes;
+    input_bytes += member.route.output_bytes();
   }
   for (const auto& output : plan->parts().outputs()) {
     auto parts = format::PartsOf(output.format);
@@ -177,7 +182,13 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
     EXPECT_EQ(binding.part, plan->canonical().tensors[i].part);
     EXPECT_EQ(plan->parts().outputs()[binding.output].format, plan->canonical().tensors[i].format);
   }
-  ASSERT_EQ(plan->planned_folds().size(), 1U);
+  // The head reorder, then the parameter folds (by role): the zero-centered
+  // norms' 1 + w and A's -exp(A_log), in F32.
+  ASSERT_EQ(plan->planned_folds().size(), 3U);
+  EXPECT_EQ(plan->planned_folds()[1].fold, "norm.plus_one");
+  EXPECT_EQ(plan->planned_folds()[1].outputs.size(), 148U);
+  EXPECT_EQ(plan->planned_folds()[2].fold, "ssm.a_neg_exp");
+  EXPECT_EQ(plan->planned_folds()[2].outputs.size(), 36U);
   const auto& fold = plan->planned_folds().front();
   EXPECT_EQ(fold.fold, "gdn.value_heads_tiled");
   ASSERT_EQ(fold.outputs.size(), 288U);
@@ -195,7 +206,12 @@ TEST(ImportModelOptModelsTest, ClosedNativeTargetOwnsEverySourceAndPreservesForm
   EXPECT_EQ(semantic_bytes, 280U);
   ASSERT_EQ(plan->spec().stages.size(), 1U);
   EXPECT_EQ(plan->spec().stages[0].layers.size(), 48U);
-  EXPECT_EQ(plan->spec().stages[0].folds, std::vector<std::string>{"gdn.value_heads_tiled"});
+  EXPECT_EQ(plan->spec().stages[0].folds,
+            (std::vector<std::string>{"gdn.value_heads_tiled", "norm.plus_one", "ssm.a_neg_exp"}));
+  // The routed experts' 96 tables and the n-gram table, relaid out.
+  EXPECT_EQ(std::ranges::count_if(plan->parts().outputs(),
+                                  [](const auto& o) { return o.relayout_from.has_value(); }),
+            97);
   EXPECT_TRUE(plan->spec().stages[0].reads.empty());
   EXPECT_TRUE(plan->spec().stages[0].heads.mtp.empty());
   auto valid = components::ValidateSpec(plan->spec(), plan->canonical().tensors);
@@ -303,7 +319,9 @@ void ComparePermutedPart(const ModelOptTargetPlan& plan, const IndexedMember& me
   ASSERT_TRUE(resource);
   const auto placement = stored.ResourcePlacement(*resource);
   ASSERT_TRUE(placement);
-  ASSERT_EQ(placement->bytes.value(), member.extent.bytes);
+  // A, folded to -exp(A_log) in F32 under the reorder (ssm.a_neg_exp).
+  const bool folded = output.format.encoding == format::Encoding::kF32;
+  ASSERT_EQ(placement->bytes.value(), member.extent.bytes * (folded ? 2 : 1));
   ASSERT_EQ(member.destination, 0U);
   const auto& group = stored.groups()[placement->group];
   const auto& shard = stored.shards()[group.shard];
@@ -316,13 +334,14 @@ void ComparePermutedPart(const ModelOptTargetPlan& plan, const IndexedMember& me
   ASSERT_TRUE(actual) << actual.error().ToString();
   const auto base = shard.data_offset.value() + group.offset.value() + placement->offset.value();
   ASSERT_LE(base, actual->bytes);
-  ASSERT_LE(member.extent.bytes, actual->bytes - base);
+  ASSERT_LE(member.extent.bytes * (folded ? 2 : 1), actual->bytes - base);
   ASSERT_LE(member.extent.offset, input->bytes);
   ASSERT_LE(member.extent.bytes, input->bytes - member.extent.offset);
   const auto& format = output.format;
   ASSERT_LE(format.shape.rank, 2U);
   ASSERT_TRUE(
       (format.encoding == format::Encoding::kBF16 && format.layout == format::Layout::kDense) ||
+      (folded && output.name.ends_with(".ssm_a") && format.layout == format::Layout::kDense) ||
       (format.encoding == format::Encoding::kMxfp8 && format.layout == format::Layout::kSplit));
   const auto rows = format.shape.ne[1];
   ASSERT_NE(rows, 0U);
@@ -345,13 +364,22 @@ void ComparePermutedPart(const ModelOptTargetPlan& plan, const IndexedMember& me
       ASSERT_TRUE(ReadExactly(input->fd.get(), member.extent.offset + row * row_bytes,
                               std::span(expected).first(static_cast<std::size_t>(row_bytes)),
                               member.extent.file));
-      ASSERT_TRUE(ReadExactly(actual->fd.get(), base + row * row_bytes,
-                              std::span(got).first(static_cast<std::size_t>(row_bytes)), 0));
+      const auto out_row = row_bytes * (folded ? 2 : 1), out_head = head_bytes * (folded ? 2 : 1);
+      ASSERT_TRUE(ReadExactly(actual->fd.get(), base + row * out_row,
+                              std::span(got).first(static_cast<std::size_t>(out_row)), 0));
+      std::array<std::byte, 64> value{};
       for (std::uint64_t destination = 0; destination < 48; ++destination) {
         const auto original = (destination % 16) * 3 + destination / 16;
-        ASSERT_EQ(std::memcmp(got.data() + destination * head_bytes,
-                              expected.data() + original * head_bytes,
-                              static_cast<std::size_t>(head_bytes)),
+        auto want = std::span<const std::byte>(expected).subspan(
+            static_cast<std::size_t>(original * head_bytes), static_cast<std::size_t>(head_bytes));
+        if (folded) {
+          ASSERT_LE(out_head, value.size());
+          ASSERT_TRUE(FoldBf16(ScalarFold::kANegExp, want,
+                               std::span(value).first(static_cast<std::size_t>(out_head))));
+          want = std::span<const std::byte>(value).first(static_cast<std::size_t>(out_head));
+        }
+        ASSERT_EQ(std::memcmp(got.data() + destination * out_head, want.data(),
+                              static_cast<std::size_t>(out_head)),
                   0)
             << canonical_name << " row " << row << " head " << destination;
       }
@@ -420,10 +448,10 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   auto plan =
       NormalizeModelOptTarget(std::move(*source), {bound->metadata_bytes, bound->work_units});
   ASSERT_TRUE(plan) << plan.error().ToString();
-  ASSERT_EQ(plan->canonical().tensors.size(), 1886U);
-  ASSERT_EQ(plan->parts().outputs().size(), 1212U);
+  ASSERT_EQ(plan->canonical().tensors.size(), 1789U);
+  ASSERT_EQ(plan->parts().outputs().size(), 1308U);
   ASSERT_EQ(plan->parts().members().size(), 222892U);
-  ASSERT_EQ(plan->planned_folds().size(), 1U);
+  ASSERT_EQ(plan->planned_folds().size(), 3U);
   ASSERT_EQ(plan->planned_folds()[0].outputs.size(), 288U);
   ASSERT_EQ(plan->semantic().size(), 3U);
   std::uint64_t expanded = 0, bytes = 0;
@@ -436,8 +464,9 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
     ASSERT_TRUE(part);
     bytes += part->bytes;
   }
-  ASSERT_EQ(bytes, 103797070596ULL);
-  ASSERT_EQ(expanded, 222638U);
+  // The source's weight bytes, but its folded BF16 norms and A in F32.
+  ASSERT_EQ(bytes, 103797070596ULL + 2069888ULL);
+  ASSERT_EQ(expanded, 99901U);
   // Same conservative writer inventory, evaluated before any store mutation.
   // Every multiplier is bounded by the authenticated fixed domain above.
   const auto chunks =
@@ -445,7 +474,7 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   const auto writer_bound =
       (256ULL << 20U) + expanded * 8192 + chunks * 512 +
       plan->parts().source().files.size() * 1024 + plan->parts().members().size() * 512 +
-      plan->parts().source().tensors.size() * 32 + 3 * 256 + 288 * 8192 + 65536;
+      plan->parts().source().tensors.size() * 32 + 3 * 256 + (288 + 148 + 36) * 8192 + 65536;
   ASSERT_LT(writer_bound, 3 * kGiB);
   ASSERT_FALSE(std::filesystem::exists(store));
   // Qualify the actual ordinary-source CLI path with its default 4 GiB
@@ -495,7 +524,7 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   ASSERT_TRUE(spec) << spec.error();
   EXPECT_EQ(spec->Digest(), plan->spec().Digest());
   EXPECT_EQ(base::ToHex(spec->Digest()),
-            "b7fdd2300c7690a17437490ec8b41110cb19169962435c20be128434b8544108");
+            "c2e2822e48502a42783ab9f1c4d8ecf3649f02e6331ea2c0ea133e2542983a0f");
   ASSERT_EQ(stored->sources().size(), 38U);
   for (const auto& receipt : stored->sources()) {
     const auto pin = std::ranges::find(kPublicationPins, receipt.name, &PublicationPin::name);
@@ -555,12 +584,17 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
     folded.push_back(tensor.name);
     ++permuted_parts;
   }
-  ASSERT_EQ(expert_arrays, 432U);
+  ASSERT_EQ(expert_arrays, 192U);
   ASSERT_EQ(permuted_parts, 468U);
   std::ranges::sort(folded);
-  ASSERT_EQ(stored->folds().size(), 1U);
+  ASSERT_EQ(stored->folds().size(), 3U);
   EXPECT_EQ(stored->folds()[0].name, "gdn.value_heads_tiled");
   EXPECT_EQ(stored->folds()[0].tensors, folded);
+  EXPECT_EQ(stored->folds()[1].tensors.size(), 148U);
+  EXPECT_EQ(stored->folds()[2].tensors.size(), 36U);
+  ASSERT_EQ(stored->relayouts().size(), 1U);
+  EXPECT_EQ(stored->relayouts()[0].from, format::Layout::kSplit);
+  EXPECT_EQ(stored->relayouts()[0].tensors.size(), 194U);
   // Successful CLI publication already performed full file and chunk Deep
   // readback plus StoredSpec/ValidateSpec before atomic publication. Do not
   // duplicate those multi-100GB passes here, or automatically republish for reuse.
@@ -574,8 +608,8 @@ TEST(ImportModelOptModelsTest, PublishesPinnedNativeTargetWithCompleteSourceAuth
   RecordProperty("mem_available_before", std::to_string(*memory.available));
   RecordProperty("source_files_authenticated", "38");
   RecordProperty("source_bytes_authenticated", std::to_string(authenticated_source_bytes));
-  RecordProperty("canonical_parts", "1886");
-  RecordProperty("logical_outputs", "1212");
+  RecordProperty("canonical_parts", "1789");
+  RecordProperty("logical_outputs", "1308");
   RecordProperty("preserved_weight_bytes", std::to_string(bytes));
   RecordProperty("published_file_bytes", std::to_string(published_bytes));
   RecordProperty("artifact_files", std::to_string(stored->files().size()));

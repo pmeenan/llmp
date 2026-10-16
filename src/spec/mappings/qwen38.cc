@@ -29,6 +29,9 @@ constexpr std::string_view kIndexer = "llmp.qwen4exp.indexer";
 constexpr std::string_view kStacked = "llmp.qwen4exp.experts_stacked";
 constexpr std::string_view kScaled = "llmp.qwen4exp.expert_scales";
 constexpr std::string_view kPleLayers = "qwen4exp.ple.layers";
+// The native importer's fact: the checkpoint quantized its routed experts'
+// activations too (their input_scale tensors are present: W4A4).
+constexpr std::string_view kActivationScales = "llmp.qwen4exp.expert_activation_scales";
 
 // A matrix one import keeps whole and the other as MXFP8 codes beside
 // their scales: the tensor with whatever part it holds, and its scales.
@@ -69,14 +72,14 @@ constexpr std::array kAssembly = {
                .suffixes = {".codes", ".scales", ""},
                .roles = {PartRole::kCodes, PartRole::kBlockScales, PartRole::kData},
                .encoding = format::Encoding::kNvfp4,
-               .layout = format::Layout::kCutlassScaleAtoms,
+               .layout = format::Layout::kScaleAtoms,
                .stacked = 2,
                .experts = true},
     V0Assembly{.stem = "blk.{layer}.ffn_down_exps",
                .suffixes = {".codes", ".scales", ""},
                .roles = {PartRole::kCodes, PartRole::kBlockScales, PartRole::kData},
                .encoding = format::Encoding::kNvfp4,
-               .layout = format::Layout::kCutlassScaleAtoms,
+               .layout = format::Layout::kScaleAtoms,
                .experts = true},
 };
 
@@ -563,12 +566,14 @@ constexpr auto kGgufMapping = [] {
   return m;
 }();
 
-// Native normalization binds source-preserving split parts to the same
-// shared roles. Embedded per-matrix scales are not projection multipliers.
+// Native normalization binds a checkpoint's split parts to the same shared
+// roles (MLX's affine experts and tables), and the importer's relaid-out
+// NVFP4 experts (import/expert_relayout.h): the scale-atom gate-up and
+// down tables, `.weight` and `.weight_scale`, beside their tensor scales'
+// F32 [experts] vectors (the converted form's roles). A rule binds one role
+// and part, so a down table's split and scale-atom forms share a pattern.
 constexpr auto kNativeTensors = [] {
-  // Four legacy CUTLASS alternatives are replaced by four native split-part
-  // rules. Keeping both down-scale alternatives would bind one role twice.
-  std::array<TensorRule, kTensors.size() + 8> rules{};
+  std::array<TensorRule, kTensors.size() + 10> rules{};
   std::size_t next = 0;
   for (auto rule : kTensors) {
     if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes" ||
@@ -576,24 +581,33 @@ constexpr auto kNativeTensors = [] {
         rule.pattern == "blk.{layer}.ffn_down_exps.codes" ||
         rule.pattern == "blk.{layer}.ffn_down_exps.scales")
       continue;
-    if (rule.pattern == "per_layer_token_embd.weight" ||
-        rule.pattern == "blk.{layer}.ffn_gate_exps.weight" ||
+    if (rule.pattern == "blk.{layer}.ffn_gate_exps.weight" ||
         rule.pattern == "blk.{layer}.ffn_up_exps.weight" ||
         rule.pattern == "blk.{layer}.ffn_down_exps.weight") {
       rule.part = PartRole::kCodes;
       rule.any_part = false;
     }
-    if (rule.pattern == "token_embd.weight") {
+    // A table's codes (split) or its rows of codes and scales (interleaved).
+    if (rule.pattern == "token_embd.weight" || rule.pattern == "per_layer_token_embd.weight") {
       rule.any_part = true;
     }
-    if (rule.role == "gate_scale" || rule.role == "up_scale" || rule.role == "down_scale") {
-      rule.role = rule.role == "gate_scale" ? "gate_experts"
-                  : rule.role == "up_scale" ? "up_experts"
-                                            : "down_experts";
-      rule.part = PartRole::kTensorScale;
-      rule.experts = true;
-    }
     rules[next++] = rule;
+  }
+  for (const auto& [codes, scales, role] : std::array<std::array<std::string_view, 3>, 1>{
+           {{"blk.{layer}.ffn_gate_up_exps.weight", "blk.{layer}.ffn_gate_up_exps.weight_scale",
+             "gate_up_experts"}}}) {
+    rules[next++] = TensorRule{.pattern = codes,
+                               .slot = "moe",
+                               .role = role,
+                               .part = PartRole::kCodes,
+                               .experts = true,
+                               .optional = true};
+    rules[next++] = TensorRule{.pattern = scales,
+                               .slot = "moe",
+                               .role = role,
+                               .part = PartRole::kBlockScales,
+                               .experts = true,
+                               .optional = true};
   }
   rules[next++] = Scales("token_embd.weight_scale", "embedding", "table");
   rules[next++] = Biases("token_embd.weight_bias", "embedding", "table");
@@ -619,21 +633,67 @@ constexpr auto kNativeTensors = [] {
   }
   return rules;
 }();
+static_assert(kNativeTensors.size() == kTensors.size() + 10);
 constexpr auto kNativeParams = [] {
   std::array<ParamRule, kParams.size() + 6> params{};
   std::ranges::copy(kParams, params.begin());
   std::size_t i = kParams.size();
-  for (std::string_view slot : {"attn_mix", "ffn_mix", "output_mix", "attention", "ple"})
-    params[i++] = Flag(slot, "norm_zero_centered", true);
+  // The checkpoint's convention, unless the importer folded it (D-108 as
+  // amended: the ModelOpt import stores 1 + w and -exp(A) in F32).
+  for (std::string_view slot : {"attn_mix", "ffn_mix", "output_mix", "attention", "ple"}) {
+    params[i] = Flag(slot, "norm_zero_centered", true);
+    params[i++].unless_fold = "norm.plus_one";
+  }
   params[i] = Flag("linear", "a_log", true);
+  params[i].unless_fold = "ssm.a_neg_exp";
   return params;
 }();
+// The native import's fast forms. Routed experts whose checkpoint
+// quantized their activations too (kActivationScales: W4A4) take the
+// converted form's (kPolicies[0]): its moe_experts runs a block-scaled
+// grouped GEMM where the experts are in the scale-atom layout and the
+// device has FP4 tensor cores (kernels/ggml/capabilities.cc). Otherwise
+// (W4A16, or split experts) the GGML-expert form's (kPolicies[1]) but its
+// experts' fused GLU, which reads GGML's blocks: the format ladder's grouped
+// products decode the experts; zero-centered norms and A that an import
+// did not fold reach the fused patterns as derived parameters.
+constexpr std::array kNativePolicies = {
+    PolicyRule{.gate = kActivationScales, .text = kPolicies[0].text},
+    PolicyRule{.text = "max_decode_rows 16\n"
+                       "enable bf16_rows\n"
+                       "enable gdn_conv\n"
+                       "enable gdn_gates\n"
+                       "enable gdn_norm_gate\n"
+                       "enable gdn_step\n"
+                       "enable hc_combine\n"
+                       "enable hc_fold_inputs\n"
+                       "enable hc_prep\n"
+                       "enable moe_combine\n"
+                       "enable moe_router\n"
+                       "enable mxfp8_inputs\n"
+                       "enable owner_row_invariant\n"
+                       "enable qsa_gate\n"
+                       "enable qsa_pool\n"
+                       "enable qsa_prep\n"
+                       "enable qsa_select\n"
+                       "disable grouped_stores\n"
+                       "disable moe_glu\n"
+                       "disable mul_mat_glu\n"
+                       "disable narrow_final\n"
+                       "disable owner_attention\n"
+                       "disable prepared_inputs\n"
+                       "disable rms_norm_mul\n"
+                       "disable rms_norm_mul_add\n"
+                       "disable rms_norm_mul_rope\n"
+                       "disable rope_store\n"
+                       "disable route_reduce\n"},
+};
 constexpr auto kNativeMapping = [] {
   auto mapping = kMapping;
   mapping.tensors = kNativeTensors;
   mapping.params = kNativeParams;
   mapping.folds = {};
-  mapping.policies = {};
+  mapping.policies = kNativePolicies;
   mapping.v0_assembly = {};
   return mapping;
 }();
@@ -771,9 +831,13 @@ constexpr std::array kMtpReads = {
     ReadRule{.kind = ReadKind::kTap, .name = "streams", .point = TapPoint::kStreams},
 };
 
-// Autoregressive MTP passes, composed in their replay form.
+// Autoregressive MTP passes, composed in their replay form; a selected
+// head's token map and the draft vocabulary's value.
+constexpr std::string_view kHeadIds = "draft_output.ids";
 constexpr DraftRecipe kMtpDraft{.shape = DraftRecipe::Shape::kMtp,
-                                .composed = &Qwen38MtpReplayMapping};
+                                .composed = &Qwen38MtpReplayMapping,
+                                .head_ids = kHeadIds,
+                                .vocab_key = kDraftVocab};
 
 constexpr Mapping kMtpMapping{
     .architecture = "qwen4exp-mtp",
@@ -810,6 +874,81 @@ constexpr auto kMtpReplayMapping = [] {
   mapping.version = 2;
   mapping.slots = kMtpReplaySlots;
   mapping.params = kMtpReplayParams;
+  return mapping;
+}();
+
+// The native importer's drafter (import/modelopt_qwen38.h, D-109): the
+// checkpoint's MTP tensors in their source encodings (its BF16 linears)
+// but its norms' 1 + w folded in F32 (norm.plus_one, chosen by role), its
+// routed experts relaid out as the native target's (scale-atom gate-up and
+// down tables, `.weight` and `.weight_scale`, and their tensor scales' F32
+// vectors), and the optional selected head the importer gathered from the
+// target's head rows. The mapping names no fold of its own: the source
+// records the importer's (Source::folds).
+constexpr auto kMtpNativeTensors = [] {
+  auto rules = kMtpTensors;
+  for (auto& rule : rules) {
+    if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.codes")
+      rule.pattern = "blk.{layer}.ffn_gate_up_exps.weight";
+    if (rule.pattern == "blk.{layer}.ffn_gate_up_exps.scales")
+      rule.pattern = "blk.{layer}.ffn_gate_up_exps.weight_scale";
+    if (rule.pattern == "blk.{layer}.ffn_down_exps.codes")
+      rule.pattern = "blk.{layer}.ffn_down_exps.weight";
+    if (rule.pattern == "blk.{layer}.ffn_down_exps.scales")
+      rule.pattern = "blk.{layer}.ffn_down_exps.weight_scale";
+  }
+  return rules;
+}();
+// Its norms zero-centered, as the checkpoint holds them, unless the
+// importer stored 1 + w in F32 (norm.plus_one, as the converted drafter's).
+template <std::size_t N>
+constexpr auto ZeroCentered(const std::array<ParamRule, N>& base) {
+  std::array<ParamRule, N + 5> params{};
+  std::ranges::copy(base, params.begin());
+  std::size_t i = N;
+  for (std::string_view slot : {"embedding", "attn_mix", "ffn_mix", "output_mix", "attention"}) {
+    params[i] = Flag(slot, "norm_zero_centered", true);
+    params[i++].unless_fold = "norm.plus_one";
+  }
+  return params;
+}
+constexpr auto kMtpNativeParams = ZeroCentered(kMtpParams);
+constexpr auto kMtpNativeReplayParams = ZeroCentered(kMtpReplayParams);
+// The native import's drafter (its artifact keeps no GGUF metadata): its
+// replay form, its block's values the Qwen3.8 Flash constants and its
+// selected head's rows from the tensors it holds.
+std::expected<std::vector<SourceValue>, std::string> MtpNativeSourceValues(const Source& source);
+constexpr DraftRecipe kMtpNativeDraft{.shape = DraftRecipe::Shape::kMtp,
+                                      .composed = &Qwen38MtpNativeReplayMapping,
+                                      .values = &MtpNativeSourceValues,
+                                      .head_ids = kHeadIds,
+                                      .vocab_key = kDraftVocab};
+// A speculative stage's routed experts take the W4A4 grouped GEMM (its
+// moe_experts: activations quantized to FP4 with a per-step dynamic scale,
+// row amax / (6 · 448), as v0's did) whatever its checkpoint's activation
+// quantization: the target's verification decides every token, so the
+// drafter's numerics change only acceptance and speed (AGENTS.md rule 11,
+// speed over bit-exactness at the same quality), and on spark-b it measured
+// 1.2 to 2.0% faster decode than W4A16 at equal acceptance
+// (experiments/m36-numerical-audit/qwen-modelopt-v1.md). The converted
+// drafter's policy (kMtpMapping's, which the mapping below keeps); a device
+// without FP4 falls back to the format ladder.
+constexpr auto kMtpNativeMapping = [] {
+  auto mapping = kMtpMapping;
+  mapping.draft = &kMtpNativeDraft;
+  mapping.tensors = kMtpNativeTensors;
+  mapping.params = kMtpNativeParams;
+  mapping.folds = {};
+  mapping.v0_assembly = {};
+  return mapping;
+}();
+constexpr auto kMtpNativeReplayMapping = [] {
+  auto mapping = kMtpReplayMapping;
+  mapping.draft = &kMtpNativeDraft;
+  mapping.tensors = kMtpNativeTensors;
+  mapping.params = kMtpNativeReplayParams;
+  mapping.folds = {};
+  mapping.v0_assembly = {};
   return mapping;
 }();
 
@@ -850,6 +989,8 @@ const Mapping& Qwen38GgufMapping() { return kGgufMapping; }
 const Mapping& Qwen38NativeMapping() { return kNativeMapping; }
 const Mapping& Qwen38MtpMapping() { return kMtpMapping; }
 const Mapping& Qwen38MtpReplayMapping() { return kMtpReplayMapping; }
+const Mapping& Qwen38MtpNativeMapping() { return kMtpNativeMapping; }
+const Mapping& Qwen38MtpNativeReplayMapping() { return kMtpNativeReplayMapping; }
 
 std::expected<std::vector<SourceValue>, std::string> Qwen38GgufValues(
     const model::Qwen38Profile& p, const model::Qwen38PleHash& hash) {
@@ -905,8 +1046,14 @@ std::expected<std::vector<SourceValue>, std::string> Qwen38V0Values(
   return out;
 }
 
-std::expected<std::vector<SourceValue>, std::string> Qwen38MtpV0Values(
-    const model::Qwen38Profile& p, const model::Qwen38MtpBinding& binding) {
+namespace {
+// The MTP drafter's values in either form (both hold stacked scale-atom
+// expert tables with their tensor scales' vectors), with a selected head of
+// `selected` rows (0: none, its target's head).
+std::expected<std::vector<SourceValue>, std::string> MtpValues(const model::Qwen38Profile& p,
+                                                               std::uint64_t selected) {
+  if (selected > p.vocab)
+    return std::unexpected("a selected head of more rows than the vocabulary");
   std::vector<SourceValue> out;
   BlockValues(out, "qwen4exp-mtp.", p, {std::int64_t{p.indexer_ratio}});
   out.push_back(Value("qwen4exp-mtp.block_count", 1U));
@@ -914,14 +1061,41 @@ std::expected<std::vector<SourceValue>, std::string> Qwen38MtpV0Values(
   out.push_back(FlagValue(kStacked, true));
   out.push_back(FlagValue(kScaled, true));
   std::uint64_t head_rows = p.vocab;
-  if (binding.selected_head()) {
-    if (binding.draft_output.ne.size() != 2) return std::unexpected("a selected head of no rows");
-    out.push_back(Value(kDraftRows, static_cast<std::uint32_t>(binding.draft_output.ne[1])));
-    head_rows = binding.draft_output.ne[1];
+  if (selected != 0) {
+    out.push_back(Value(kDraftRows, static_cast<std::uint32_t>(selected)));
+    head_rows = selected;
   }
   out.push_back(Value(kDraftVocab, static_cast<std::uint32_t>(
                                        std::min<std::uint64_t>(kQwen38DraftVocab, head_rows))));
   return out;
+}
+
+std::expected<std::vector<SourceValue>, std::string> MtpNativeSourceValues(const Source& source) {
+  std::uint64_t selected = 0;
+  for (const SourceTensor& t : source.tensors)
+    if (t.name == "draft_output.weight") {
+      if (t.format.shape.rank != 2 || t.format.shape.ne[1] == 0)
+        return std::unexpected("a selected head of no rows");
+      selected = t.format.shape.ne[1];
+    }
+  return MtpValues(model::Qwen38Flash(), selected);
+}
+}  // namespace
+
+std::expected<std::vector<SourceValue>, std::string> Qwen38MtpV0Values(
+    const model::Qwen38Profile& p, const model::Qwen38MtpBinding& binding) {
+  std::uint64_t selected = 0;
+  if (binding.selected_head()) {
+    if (binding.draft_output.ne.size() != 2 || binding.draft_output.ne[1] == 0)
+      return std::unexpected("a selected head of no rows");
+    selected = binding.draft_output.ne[1];
+  }
+  return MtpValues(p, selected);
+}
+
+std::expected<std::vector<SourceValue>, std::string> Qwen38MtpNativeValues(
+    const model::Qwen38Profile& p, std::uint64_t selected_rows) {
+  return MtpValues(p, selected_rows);
 }
 
 }  // namespace llmp::spec::mappings

@@ -11,7 +11,7 @@
 if(LLMP_CUDA)
   add_library(llmp_decode_kernels STATIC decode_affine.cu decode_dense.cu decode_q8_0.cu decode_nvfp4.cu
                                          decode_mxfp8.cu decode_mixed.cu products.cc
-                                         implementations.cc grouped_binding.cc)
+                                         implementations.cc grouped_binding.cc grouped_route.cu)
   target_include_directories(llmp_decode_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_include_directories(llmp_decode_kernels SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
@@ -33,7 +33,7 @@ if(LLMP_CUDA)
   # hashed at build time into a generated source (module_digest.cmake). A
   # file added here without being listed fails the next configure.
   set(module_files CMakeLists.txt decode_affine.cu decode_dense.cu decode_mixed.cu decode_mxfp8.cu decode_nvfp4.cu
-                   decode_q8_0.cu decoders.cuh grouped_binding.cc grouped_binding.h implementations.cc implementations.h launch.h
+                   decode_q8_0.cu decoders.cuh grouped_binding.cc grouped_binding.h grouped_route.cu grouped_route.h implementations.cc implementations.h launch.h
                    module_digest.cmake operand.h products.cc products.h selected_grouped.cc selected_grouped.h selected_products.cc selected_products.h selected_rows.cc selected_rows.h selected_source.cc selected_source.h templates.cuh)
   file(GLOB present CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
        "${CMAKE_CURRENT_SOURCE_DIR}/[!.]*")

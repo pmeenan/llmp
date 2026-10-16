@@ -1034,7 +1034,7 @@ TEST(GgmlLowerQwen38Test, KeptNormResultsAreNotReplacedByPreparedRows) {
     const ir::TensorId value = b.Fused(ir::FusedKind::kNormGate, sources, ir::NormParams{})[0];
     const ir::TensorId flat = b.Reshape(value, ir::ShapeOf({128, 17}));
     const ir::TensorId prepared =
-        b.Prepare(flat, llmp::format::Encoding::kMxfp8, llmp::format::Layout::kCutlassScaleAtoms);
+        b.Prepare(flat, llmp::format::Encoding::kMxfp8, llmp::format::Layout::kScaleAtoms);
     b.Output(prepared);
     if (retained == 1) b.Keep(value);
     if (retained == 2) b.Keep(flat);

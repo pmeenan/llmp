@@ -17,6 +17,7 @@
 
 namespace llmp::import {
 class ModelOptTargetPlan;
+class ModelOptDrafterPlan;
 struct ComponentPlan {
   const Checkpoint& checkpoint;
   spec::Source canonical{};
@@ -39,6 +40,9 @@ struct WriteOptions {
   std::span<const std::optional<base::Sha256Digest>> expected{};
   // Explicit ceiling for newly requested metadata, excluding the owned plan.
   std::uint64_t metadata_bytes = 0;
+  // The import options that change what is published, as canonical JSON
+  // (empty: none); the manifest's importer records their SHA-256 (D-113).
+  std::string options{};
 };
 struct WriteResult {
   std::string id{};
@@ -54,6 +58,11 @@ std::expected<WriteResult, Error> WriteArtifact(const NormalizedPlan& plan,
 std::expected<WriteResult, Error> WriteArtifact(const ModelOptTargetPlan& plan,
                                                 const WriteOptions& options);
 std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
+                                                const WriteOptions& options);
+// A drafter carries no spec (D-113); its generated parts (a selected head's
+// token map) are written once every source stream, the whole file each
+// derives from included, has authenticated.
+std::expected<WriteResult, Error> WriteArtifact(const ModelOptDrafterPlan& plan,
                                                 const WriteOptions& options);
 std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions& options);
 namespace publication_detail {

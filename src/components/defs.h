@@ -97,6 +97,10 @@ inline bool NormOffsetContradictsFold(const Instance& in) {
   return in.params.Flag("norm_zero_centered") &&
          std::ranges::find(in.stage.folds, "norm.plus_one") != in.stage.folds.end();
 }
+// The roles NormTransform and a logarithmic A derive (WeightRole::derived).
+inline constexpr DerivedValue kZeroCenteredNorm{.flag = "norm_zero_centered",
+                                                .fold = "norm.plus_one"};
+inline constexpr DerivedValue kLogDecay{.flag = "a_log", .fold = "ssm.a_neg_exp"};
 enum class ParameterTransform : std::uint8_t { kNone, kNegativeExp, kPlusOne };
 inline ParameterTransform NormTransform(const Instance& in) {
   return in.params.Flag("norm_zero_centered") ? ParameterTransform::kPlusOne

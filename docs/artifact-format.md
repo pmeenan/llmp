@@ -77,6 +77,87 @@ all 38 pinned complete source hashes; all canonical bindings and the complete
 The ordinary-source control compares pins after publication; archive inputs
 also require their supplied hashes during streaming.
 
+The native ModelOpt target's manifest names its mapping's architecture,
+`qwen4exp` (2026-10-15; earlier imports named `config.json`'s
+`qwen3_8_flash_next`, which no mapping or admission profile matches; the
+MLX target likewise, not `qwen4_exp`). A row table of several parts (its
+n-gram table's NVFP4 codes, block scales and tensor scale) gets a group a
+part, since a row-paged part owns its group alone; one-part tables keep one
+group, so no earlier artifact's layout changes.
+
+Since 2026-10-15 the ModelOpt target and drafter carry the converted
+form's expert and n-gram layouts in v1 (engine-components.md, "The scale-atom layout and
+the importer's expert relayout"). Their routed experts are relaid out
+from `split` into `scale_atoms`, recorded as one `relayout` from `split`
+over every layer's `blk.L.ffn_gate_up_exps.weight` (codes, gate's 640 rows
+then up's, `stacked` 2) and `.weight_scale` (block scales in atoms) and
+`blk.L.ffn_down_exps.weight` and `.weight_scale`; each projection's
+per-expert tensor scales are a resource, `blk.L.ffn_{gate,up,down}_exps.weight_scale_2`
+(F32 `[512]`, gathered by the indexed assembly's `kScalars`). In each expert
+group the stacked table's codes and scales come first, then down's, back
+to back (the grouped GEMM's slot; the writer orders a group's stacked
+tables first, and admission checks the offsets). The n-gram table is
+relaid out too, into `row_interleaved` (each row's 80 code bytes, then its
+10 scales: one read a paged row, as the converter wrote it), its 128 split
+row blocks routed lane by lane (`PartRoutePlan::Strided`), recorded in the
+same `relayout` with its tensor scale. Besides the head reorder, the
+target carries the importer's parameter folds (D-108 as amended:
+small per-channel parameters may be stored derived, in F32, when that
+removes run-time work; bulk weights never widen), chosen by the role each
+tensor binds (`import/parameter_folds.h`), never by architecture:
+`norm.plus_one` over the 148 norms its components read zero-centered
+(1 + w) and `ssm.a_neg_exp` over the 36 layers' A (-exp(A_log), computed
+in double and rounded once, under the head reorder), recorded as applied
+folds; the mapping's zero-centered and `a_log` flags then do not apply
+(`ParamRule::unless_fold`). They add 2,069,888 bytes (about 0.002% of
+the weights). Every other byte count is the source's. Native ModelOpt
+targets and drafters imported before these relayouts and folds must be
+re-imported: their inventories, admission profiles and spec digests
+changed.
+
+`llmp import SOURCE --store DIRECTORY --component mtp [--draft-head IDS]`
+publishes the same checkpoint's MTP drafter instead of its target
+(`import/modelopt_qwen38.h` `NormalizeModelOptDrafter`): architecture
+`qwen4exp-mtp`, container `safetensors`, no `spec.json` (a drafter that
+reads its target, D-113; serving composes it with the target's spec), one
+fold (`norm.plus_one` over its nine norms, by role as the target's) and
+one relayout. Its sources are the checkpoint's configuration
+documents (`config.json`, `hf_quant_config.json`,
+`model.safetensors.index.json`) and the shard holding every `mtp.*`
+tensor; no other shard is read or listed. Its tensors keep their source
+encodings under the drafter's converted names (`qwen4exp-mtp`'s, below):
+BF16 linears; its norms' 1 + w in F32, as the converted drafter's; the
+shared expert's gate reshaped to `[2560]`; and the routed experts relaid
+out as the native target's (above): `blk.0.ffn_gate_up_exps.weight` and
+`.weight_scale`, `blk.0.ffn_down_exps.weight` and `.weight_scale` in
+`scale_atoms` (one recorded `relayout` from `split`), and the three
+`blk.0.ffn_{gate,up,down}_exps.weight_scale_2` vectors. With `--draft-head IDS` the drafter also
+holds a selected head: IDS is untrusted input read whole (one decimal token
+ID a line, strictly ascending, each below the 248,320-token vocabulary, at
+most that many lines, `\n` or `\r\n` line ends; a safe file name that is
+no checkpoint file's), the head's BF16 rows are gathered from
+`lm_head.weight` in the list's order as `draft_output.weight`
+(`[2560, n]`), and the token map is `draft_output.ids` (I32 `[1, n]`),
+which the writer derives from the list file after streaming it against its
+whole-content receipt. Such a drafter lists the head's shard and the list
+file among its sources, and its importer's `options_sha256` is the SHA-256
+of `{"component":"mtp","draft_head":"<file name>"}`, so the artifact ID
+changes with the list. Without a head, the options are empty, as every
+other import's. The runtime admits a drafter with Mia's 47,172-ID list
+by its approval row (`runtime/approvals.cc`): the pinned files above with
+the head's shard and that list, its complete tensor inventory, the fold
+over exactly its nine norms and the relayout over exactly its four expert
+tables (their records' digests) and their slot, and its composition with
+the approved native target; the map's content is checked when it is read.
+Another list's drafter, or one without a head, has no approval yet. Every
+published tensor, the expert tables' slices and the folded norms included,
+equals the v0 drafter `8600a998…`'s byte for byte
+(`NativeMtpDrafterMatchesV0`). It serves with its approved v1 target
+([qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)).
+The importer refuses a source outside the closed domain, a missing or
+mismatched `mtp.*` descriptor, a head without `lm_head.weight`, and a list
+that is not strictly ascending within the vocabulary.
+
 The explicit metadata budget covers normalization plus writer working
 storage, excluding the container readers' bounded input storage. It is an
 allocation ceiling, not process or runtime memory admission. Re-import and
@@ -881,7 +962,7 @@ such as a text encoder usable alone.
 | --- | --- |
 | `resources[]` | `name`, `group`, `offset`, `bytes`, `readable_bytes`, `roles`, optional `access: "rows"` as v0's; `format`; `part` |
 | `expert_arrays[]` | `name`, `layer`, `count`, `first_group`, `group_offset`, `slice_bytes`, `readable_bytes` as v0's; `format` (one slice's, at most two dimensions); `part` |
-| `format` | `{encoding, layout, ne, params, stacked}`: the names of `format::Info` (`q4_k`, `nvfp4`, `exl3_trellis`; `ggml_blocks`, `split`, `cutlass_scale_atoms`), the logical shape in GGML's order (0 to 4 positive integers, its length the rank), the stacked matrices (1 to 255), and in `params` exactly the encoding parameters that differ from their zero defaults (`k_bits`, `codebook` `mcg`/`mul1`/`3inst`, `tensor_scale: true`, `bits`, `group`, `scale` `f16`/`bf16`/`f32`, `zero_point: true`; one written at its default is non-canonical) |
+| `format` | `{encoding, layout, ne, params, stacked}`: the names of `format::Info` (`q4_k`, `nvfp4`, `exl3_trellis`; `ggml_blocks`, `split`, `scale_atoms`), the logical shape in GGML's order (0 to 4 positive integers, its length the rank), the stacked matrices (1 to 255), and in `params` exactly the encoding parameters that differ from their zero defaults (`k_bits`, `codebook` `mcg`/`mul1`/`3inst`, `tensor_scale: true`, `bits`, `group`, `scale` `f16`/`bf16`/`f32`, `zero_point: true`; one written at its default is non-canonical) |
 | `part` | The part of the format the entry holds (`data`, `codes`, `block_scales`, `tensor_scale`, `input_signs`, `output_signs`, `codebook_marker`, `biases`, `zeros`) |
 
 Rules, in place of v0's representation rules:
@@ -994,15 +1075,15 @@ of the layer:
   "params": {}, "stacked": 1}, "group": 1, "name": "blk.0.attn_k.weight_scale",
   "offset": 3840, "part": "block_scales", "readable_bytes": 64,
   "roles": ["blk.0.attn_k.weight_scale"]}
-{"bytes": 32, "format": {"encoding": "nvfp4", "layout": "cutlass_scale_atoms",
+{"bytes": 32, "format": {"encoding": "nvfp4", "layout": "scale_atoms",
   "ne": [64, 256, 4], "params": {"tensor_scale": true}, "stacked": 2}, "group": 2,
   "name": "blk.1.ffn_gate_up_exps.weight_scale_2", "offset": 0, "part": "tensor_scale",
   "readable_bytes": 32, "roles": ["blk.1.ffn_gate_up_exps.weight_scale_2"]}
-{"count": 4, "first_group": 3, "format": {"encoding": "nvfp4", "layout": "cutlass_scale_atoms",
+{"count": 4, "first_group": 3, "format": {"encoding": "nvfp4", "layout": "scale_atoms",
   "ne": [64, 256], "params": {"tensor_scale": true}, "stacked": 2}, "group_offset": 0,
   "layer": 1, "name": "blk.1.ffn_gate_up_exps.codes", "part": "codes",
   "readable_bytes": 8192, "slice_bytes": 8192}
-{"count": 4, "first_group": 3, "format": {"encoding": "nvfp4", "layout": "cutlass_scale_atoms",
+{"count": 4, "first_group": 3, "format": {"encoding": "nvfp4", "layout": "scale_atoms",
   "ne": [64, 256], "params": {"tensor_scale": true}, "stacked": 2}, "group_offset": 8192,
   "layer": 1, "name": "blk.1.ffn_gate_up_exps.scales", "part": "block_scales",
   "readable_bytes": 1024, "slice_bytes": 1024}
@@ -1104,7 +1185,10 @@ importer's record, which names the norm the stage binds, so
   requires its size and SHA-256 in the supplied pins file. Without them the drafter uses the
   target head's first 65,536 rows. These are ordinary v0 tensors, not a
   container-schema change; list selection and its license are the
-  importer's responsibility.
+  importer's responsibility. Version 1's native importer takes the same
+  list as `llmp import --component mtp --draft-head IDS`
+  ([above](#native-writer)), its drafter in source encodings (its experts
+  relaid out) and without a spec of its own.
 - **Model-parallel sharding** (TP/EP partitioning, one artifact per rank or
   sliced at load) is deferred with a deadline of M4 entry, where each node
   holds its own shard on disk. It depends on M4's sharding design, and v0

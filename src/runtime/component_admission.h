@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -33,6 +34,9 @@ bool OnComponentEngine(std::string_view architecture);
 // The mapping a composition uses for a drafter architecture (its drafting
 // recipe's replay form, or its own); null when it has none.
 const spec::Mapping* ComposedDrafterMapping(std::string_view architecture);
+// The same for a drafter artifact: a stored one's by its approval's mapping
+// (Approval::mapping) where it names one, else by its architecture.
+const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter);
 // Existing v0 recipe values shared by registration facts and actual execution.
 // These do not parse a spec or change admission/default policy.
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
@@ -43,13 +47,24 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Val
     const artifact::Artifact& target, const artifact::Artifact& drafter);
 // A drafter's values for its composition: v0's from its compiled profile;
 // with either stored, the approved pairing of both sources' identities and
-// a stored drafter's values from the metadata it keeps.
+// a stored drafter's values from the metadata it keeps, or where it keeps
+// none, its drafting recipe's given its source (spec::DraftRecipe::values).
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
     const artifact::Artifact& target, const artifact::Artifact& drafter);
 // A drafter's approved envelope (its approval's context and owners; one
 // without an approval, a v0 MTP drafter, passes).
 std::expected<void, std::string> ComponentDrafterEnvelope(const artifact::Artifact& drafter,
                                                           const spec::Envelope& envelope);
+// A drafter's selected draft head by its token map `head_ids` (its drafting
+// recipe's): the map's resource and rows, I32 [1, rows] with 0 < rows <=
+// `vocab` (a v1 artifact's format or a v0 one's descriptor); nullopt
+// without one; refused for another shape.
+struct DraftHeadMap {
+  std::uint32_t resource = 0;
+  std::uint64_t rows = 0;
+};
+std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
+    const artifact::Artifact& drafter, std::string_view head_ids, std::uint64_t vocab);
 // An integer the artifact's kept GGUF metadata holds under `key`.
 std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
                                                      std::string_view key);
@@ -90,6 +105,14 @@ std::expected<void, std::string> CheckComponentDrafterAdmission(
 // Artifact-only prerequisite, before owned spec/source construction.
 std::expected<void, std::string> CheckComponentArtifactAdmission(
     const artifact::Artifact& artifact);
+
+// A v1 artifact's routed experts in the scale-atom layout (the importer's
+// relayout, import/expert_relayout.h) as the block-scaled grouped GEMM reads
+// them: in every expert group of a layer with a stacked scale-atom table,
+// that table's codes and scales, then the layer's other tables' codes and
+// scales, back to back from the group's start (kernels/ggml/moe_layout.h
+// ExpertLayout); layers without one are not checked.
+std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& artifact);
 
 // v1 only. Reads StoredSpec and SourceOf; v0 retains its existing synthesis.
 std::expected<ComponentAdmission, std::string> ReadComponentAdmission(

@@ -7,6 +7,8 @@
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/build_info.h"
@@ -31,11 +33,19 @@ int Failure(std::FILE* err, const import::Error& error) {
 }  // namespace
 int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* err) {
   const auto usage = [&]() {
-    Print(err, "Usage: llmp import SOURCE --store DIRECTORY [--metadata-mib N]\n");
+    Print(err,
+          "Usage: llmp import SOURCE --store DIRECTORY [--metadata-mib N]\n"
+          "                   [--component mtp [--draft-head IDS]]\n"
+          "  --component mtp   import the checkpoint's MTP drafter (Qwen3.8 Flash Next's\n"
+          "                    ModelOpt checkpoint) instead of its target\n"
+          "  --draft-head IDS  give the drafter a selected draft head: IDS lists one\n"
+          "                    decimal token ID a line, strictly ascending; their rows\n"
+          "                    of the checkpoint's lm_head.weight become its head\n");
     return kExitUsage;
   };
   if (args.empty() || args[0].empty() || args[0].starts_with('-')) return usage();
-  std::filesystem::path source(args[0]), store;
+  std::filesystem::path source(args[0]), store, draft_head;
+  std::string_view component;
   // Caller-owned checkpoint storage is bounded by the container readers.
   // This separate budget covers normalization and publication metadata.
   std::uint64_t metadata = std::uint64_t{4} << 30U;
@@ -53,10 +63,14 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
         return usage();
       metadata = mib << 20U;
       limit_seen = true;
-    } else
+    } else if (args[i] == "--component" && component.empty() && args[i + 1] == "mtp")
+      component = args[i + 1];
+    else if (args[i] == "--draft-head" && draft_head.empty())
+      draft_head = args[i + 1];
+    else
       return usage();
   }
-  if (store.empty()) return usage();
+  if (store.empty() || (!draft_head.empty() && component != "mtp")) return usage();
   auto archive = import::FindArchiveInput(source);
   if (!archive) return Failure(err, archive.error());
   if (*archive) {
@@ -108,6 +122,72 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
   const auto funded = [&](const import::NormalizationCost& bound) {
     return bound.metadata_bytes <= metadata;
   };
+  if (component == "mtp") {
+    if (input->container != "safetensors" || input->architecture != "qwen3_8_flash_next" ||
+        input->quantization != "modelopt MIXED_PRECISION")
+      return Failure(err, {.rule = import::Rule::kUnsupported,
+                           .reason = "the mtp component is the ModelOpt Qwen3.8 checkpoint's"});
+    std::optional<import::DraftHeadList> head;
+    std::optional<std::string> list_name;  // the caller's own source
+    if (!draft_head.empty()) {
+      auto list = import::ReadDraftHeadList(draft_head, import::kModelOptQwen38Vocab);
+      if (!list) return Failure(err, list.error());
+      list_name = list->file.name;
+      head = std::move(*list);
+    }
+    auto bound = import::ModelOptDrafterBound(*input, head ? head->ids.size() : 0);
+    if (!bound) return Failure(err, bound.error());
+    if (!funded(*bound))
+      return Failure(err, {.rule = import::Rule::kBounds,
+                           .reason = "normalization exceeds the requested metadata budget"});
+    auto plan = import::NormalizeModelOptDrafter(*input, std::move(head),
+                                                 {bound->metadata_bytes, bound->work_units});
+    if (!plan) return Failure(err, plan.error());
+    // The archive's identities of the files it reads (the head list is
+    // the caller's, not the archive's).
+    std::vector<std::optional<base::Sha256Digest>> drafter_expected;
+    if (*archive) {
+      for (const auto& file : plan->parts().source().files) {
+        const auto at = std::ranges::find(input->files, file.name, &import::SourceFile::name);
+        drafter_expected.push_back(
+            at == input->files.end()
+                ? std::nullopt
+                : expected[static_cast<std::size_t>(at - input->files.begin())]);
+      }
+    }
+    const auto& info = base::GetBuildInfo();
+    const std::string build = info.commit.empty()
+                                  ? "unknown"
+                                  : std::string(info.commit) + (info.modified ? ".dirty" : "");
+    auto result = import::WriteArtifact(*plan, {.store = store,
+                                                .build = build,
+                                                .expected = drafter_expected,
+                                                .metadata_bytes = metadata - bound->metadata_bytes,
+                                                .options = plan->options()});
+    if (!result) return Failure(err, result.error());
+    if (!Print(out,
+               std::format("{} {}\n", result->reused ? "verified" : "published", result->id))) {
+      Print(err, "llmp import: artifact published; cannot write result to standard output\n");
+      return kExitFailure;
+    }
+    if (*archive) {
+      auto opened = artifact::Artifact::Open(result->path);
+      if (!opened) {
+        Print(err,
+              "llmp import: artifact published, but it could not be reopened for catalog "
+              "recording\n");
+        return kExitFailure;
+      }
+      if (auto recorded =
+              import::RecordArchiveComponentImport(**archive, *input, *opened, list_name);
+          !recorded) {
+        Print(err, "llmp import: artifact published; catalog event failed: " +
+                       recorded.error().ToString() + '\n');
+        return kExitFailure;
+      }
+    }
+    return kExitOk;
+  }
   if (input->container == "safetensors" && input->architecture == "qwen3_8_flash_next" &&
       input->quantization == "modelopt MIXED_PRECISION") {
     auto bound = import::ModelOptTargetBound(*input);

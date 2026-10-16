@@ -32,6 +32,7 @@
 #include "base/sha256.h"
 #include "format/tensor_format.h"
 #include "import/mlx_qwen38.h"
+#include "import/modelopt_qwen38.h"
 #include "model/qwen38.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
@@ -284,62 +285,15 @@ struct NativeModelOptFixture {
   std::vector<spec::SourceValue> values{};
 };
 
+// The native ModelOpt target as its importer publishes it
+// (import::ModelOptNativeTargetForm): relaid-out experts, folded norms and A.
 inline NativeModelOptFixture NativeModelOpt() {
-  const auto& p = model::Qwen38Flash();
-  auto resources = Resources(p, Form::kGgmlExperts);
-  auto old = SourceOf("qwen4exp", "safetensors", std::string(kModelOptConverter), resources,
-                      spec::mappings::Qwen38Mapping());
   NativeModelOptFixture result;
-  result.source.architecture = "qwen4exp";
-  result.source.container = "safetensors";
-  result.source.folds = {"gdn.value_heads_tiled"};
-  for (auto tensor : old.tensors) {
-    const bool table = tensor.name.starts_with("per_layer_token_embd.");
-    const bool experts = tensor.name.find("_exps.") != std::string::npos;
-    const bool ple_plain = tensor.name.starts_with("blk.1.ple_multipliers") ||
-                           tensor.name.starts_with("blk.1.ple_head_offsets") ||
-                           tensor.name.starts_with("blk.1.ple_head_vocab");
-    if (ple_plain || (table && tensor.part == format::PartRole::kTensorScale) ||
-        (experts && tensor.name.ends_with(".weight_scale_2")))
-      continue;
-    if (table || tensor.experts) {
-      tensor.format.encoding = format::Encoding::kNvfp4;
-      tensor.format.layout = format::Layout::kSplit;
-      tensor.format.params = {.tensor_scale = true};
-      tensor.format.stacked = 1;
-      const auto name = tensor.name;
-      for (const auto part : {format::PartRole::kCodes, format::PartRole::kBlockScales,
-                              format::PartRole::kTensorScale}) {
-        tensor.part = part;
-        tensor.name = part == format::PartRole::kCodes
-                          ? name
-                          : name.substr(0, name.size() - 7) +
-                                (part == format::PartRole::kBlockScales ? ".weight_scale"
-                                                                        : ".weight_scale_2");
-        result.source.tensors.push_back(tensor);
-      }
-    } else {
-      if (tensor.format.encoding == format::Encoding::kF32 &&
-          tensor.format.layout == format::Layout::kDense)
-        tensor.format.encoding = format::Encoding::kBF16;
-      result.source.tensors.push_back(std::move(tensor));
-    }
-  }
-  const model::Qwen38PleHash hash{
-      .multipliers = {23703573157769, 20109073645365, 8052911324071},
-      .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
-                  160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114,
-                  300001275},
-      .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
-                20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171}};
-  auto values = spec::mappings::Qwen38GgufValues(p, hash);
-  EXPECT_TRUE(values.has_value());
-  if (values) {
-    result.values = std::move(*values);
-    result.values.push_back({"llmp.qwen4exp.indexer", std::string("fused")});
-    result.values.push_back({"llmp.qwen4exp.experts_stacked", false});
-    result.values.push_back({"llmp.qwen4exp.expert_scales", false});
-  }
+  auto form = import::ModelOptNativeTargetForm();
+  EXPECT_TRUE(form.has_value());
+  if (!form) return result;
+  result.source = std::move(form->source);
+  result.values = std::move(form->values);
   auto made = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), result.source, result.values);
   EXPECT_TRUE(made.has_value());
   if (made) result.model = std::move(*made);

@@ -1894,4 +1894,193 @@ TEST(ComponentsQwen38Test, ParameterCacheSeparatesRawAndOffsetWithoutAnotherCast
 }
 }  // namespace
 
+// The importer's parameter folds (import/parameter_folds.h) against the
+// derivation they replace, forward through each component's step graph on
+// the reference executor: for every role that derives a value under its
+// instance's flag (WeightRole::derived), the instance with the flag set over
+// the role's raw BF16 values computes what the instance whose stage carries
+// the fold computes over the folded F32 values (1 + w, or -exp(w), each in
+// double and rounded once): the norms bit for bit (their offset is exact),
+// A within an ulp of the executor's exp.
+namespace {
+
+// One step's every output and state image, with weights `values` (a role's
+// values; the format encodes them) and the same inputs for any instance.
+std::vector<std::vector<float>> Forward(const Instance& in,
+                                        std::span<const format::TensorFormat> formats,
+                                        std::span<const std::uint64_t> cells, const Lone& lone,
+                                        const std::vector<std::vector<float>>& values) {
+  std::vector<std::vector<float>> out;
+  const auto shape = RowSteps()[0].shape;
+  auto graph = BuildComponent(in, shape, formats, cells, lone.inputs);
+  EXPECT_TRUE(graph.has_value()) << (graph ? "" : graph.error());
+  if (!graph) return out;
+  auto exec = ref::Executor::Create(graph->step.graph);
+  EXPECT_TRUE(exec.has_value());
+  if (!exec) return out;
+  for (std::size_t r = 0; r < values.size(); ++r) {
+    const ir::TensorId leaf = r < graph->weights.size() ? graph->weights[r] : ir::TensorId{};
+    if (!leaf.valid() || values[r].empty()) continue;
+    const auto& f = formats[r];
+    const auto parts = format::PartsOf(f);
+    EXPECT_TRUE(parts.has_value());
+    if (!parts) return out;
+    std::vector<std::byte> bytes((*parts)[0].bytes);
+    const std::uint64_t matrices = format::Matrices(f);
+    const std::size_t per = values[r].size() / matrices;
+    for (std::uint64_t m = 0; m < matrices; ++m)
+      EXPECT_TRUE(ref::EncodeRows(f, m, 0, std::span(values[r]).subspan(m * per, per), bytes));
+    const ref::PartView part{.role = format::PartRole::kData, .bytes = bytes};
+    EXPECT_TRUE(exec->Bind(leaf, std::span(&part, 1)));
+  }
+  for (const StepState& st : graph->step.state) {
+    std::vector<float> zeros(ir::Elements(graph->step.graph.tensor(st.tensor).shape()), 0.0F);
+    EXPECT_TRUE(exec->BindValues(st.tensor, zeros));
+  }
+  std::mt19937 rng(91);
+  std::uniform_real_distribution<float> u(-1.0F, 1.0F);
+  for (const StepInput& input : graph->step.inputs) {
+    const auto elements = ir::Elements(graph->step.graph.tensor(input.tensor).shape());
+    switch (input.kind) {
+      case InputKind::kStream:
+      case InputKind::kResidual:
+      case InputKind::kCarry:
+      case InputKind::kSide:
+      case InputKind::kFeatures: {
+        std::vector<float> f(elements);
+        for (float& x : f) x = u(rng);
+        EXPECT_TRUE(exec->BindValues(input.tensor, f));
+        continue;
+      }
+      case InputKind::kSideRows: {
+        EXPECT_NE(lone.table_rows, 0U);
+        if (lone.table_rows == 0) return out;
+        std::vector<std::int64_t> rows(elements);
+        for (auto& r : rows) r = static_cast<std::int64_t>(rng() % lone.table_rows);
+        EXPECT_TRUE(exec->BindInts(input.tensor, rows));
+        continue;
+      }
+      default:
+        break;
+    }
+    auto ints = InputValues(input, shape, RowSteps()[0].tokens);
+    EXPECT_TRUE(ints.has_value()) << (ints ? "" : ints.error());
+    if (!ints) return out;
+    EXPECT_TRUE(exec->BindInts(input.tensor, *ints));
+  }
+  const auto ran = exec->Run();
+  EXPECT_TRUE(ran.has_value()) << (ran ? "" : ran.error().detail);
+  if (!ran) return out;
+  for (const ir::TensorId t : graph->step.graph.outputs()) {
+    auto v = exec->Values(t);
+    EXPECT_TRUE(v.has_value());
+    if (v) out.push_back(*v);
+  }
+  for (const StepState& st : graph->step.state) {
+    auto v = exec->Values(st.tensor);
+    EXPECT_TRUE(v.has_value());
+    if (v) out.push_back(*v);
+  }
+  return out;
+}
+
+struct FoldCase {
+  ParameterCase c;
+  ComponentRef raw;                    // the flag set
+  std::vector<std::string> raw_folds;  // its stage's folds: c's without the one
+};
+std::vector<std::string> Without(std::span<const std::string> folds, std::string_view fold) {
+  std::vector<std::string> out;
+  for (const auto& f : folds)
+    if (f != fold) out.push_back(f);
+  return out;
+}
+
+std::vector<FoldCase> FoldCases() {
+  std::vector<FoldCase> out;
+  for (auto c : ZeroCenteredCases()) {
+    auto folds = Without(c.facts.folds, "norm.plus_one");
+    auto raw = RawNorm(c.component, true);
+    out.push_back({.c = std::move(c), .raw = std::move(raw), .raw_folds = std::move(folds)});
+  }
+  for (const auto& c : ParameterCases()) {
+    if (c.component.kind != "attention.gdn") continue;
+    auto raw = c.component;
+    raw.params.push_back(P("a_log", B(true)));
+    std::ranges::sort(raw.params, {}, &Param::name);
+    out.push_back(
+        {.c = c, .raw = std::move(raw), .raw_folds = Without(c.facts.folds, "ssm.a_neg_exp")});
+  }
+  return out;
+}
+
+TEST(ComponentsQwen38Test, FoldedParametersForwardAsTheirRawDerivations) {
+  std::size_t roles = 0;
+  for (const auto& [c, raw, raw_folds] : FoldCases()) {
+    SCOPED_TRACE(c.component.kind);
+    StageFacts raw_facts = c.facts;
+    raw_facts.folds = raw_folds;
+    const auto flagged = MakeInstance(raw, raw_facts, c.site, 0, 1);
+    const auto folded = MakeInstance(c.component, c.facts, c.site, 0, 1);
+    ASSERT_TRUE(flagged) << flagged.error();
+    ASSERT_TRUE(folded) << folded.error();
+    const ComponentDef& def = *flagged->def;
+    const auto shapes = def.shapes(*flagged);
+    ASSERT_TRUE(shapes) << shapes.error();
+    // Raw values: a derived role's exactly representable in BF16 (k / 256
+    // for a norm's offset, k / 64 for A_log); the others random, shared.
+    std::mt19937 rng(5);
+    std::uniform_real_distribution<float> u(-1.0F, 1.0F);
+    std::vector<std::vector<float>> raw_values(def.roles.size()), fold_values(def.roles.size());
+    auto raw_formats = c.formats, fold_formats = c.formats;
+    bool a = false;
+    for (const RoleShape& r : *shapes) {
+      std::vector<float> v(ir::Elements(c.formats[r.role].shape));
+      const DerivedValue& derived = def.roles[r.role].derived;
+      if (derived.fold.empty()) {
+        for (float& x : v)
+          x = c.formats[r.role].shape.rank == 1 ? 1.0F + (0.25F * u(rng)) : 0.3F * u(rng);
+        raw_values[r.role] = fold_values[r.role] = std::move(v);
+        continue;
+      }
+      ++roles;
+      const bool decay = derived.fold == "ssm.a_neg_exp";
+      a = a || decay;
+      std::vector<float> f(v.size());
+      for (std::size_t i = 0; i < v.size(); ++i) {
+        const int k = static_cast<int>(rng() % 129) - 64;
+        v[i] = static_cast<float>(k) / (decay ? 64.0F : 256.0F);
+        const double w = static_cast<double>(v[i]);
+        f[i] = static_cast<float>(decay ? -std::exp(w) : w + 1.0);
+      }
+      raw_formats[r.role].encoding = Encoding::kBF16;
+      fold_formats[r.role].encoding = Encoding::kF32;
+      raw_values[r.role] = std::move(v);
+      fold_values[r.role] = std::move(f);
+    }
+    const auto want = Forward(*flagged, raw_formats, c.cells, c.lone, raw_values);
+    const auto got = Forward(*folded, fold_formats, c.cells, c.lone, fold_values);
+    ASSERT_EQ(got.size(), want.size());
+    ASSERT_FALSE(got.empty());
+    for (std::size_t o = 0; o < got.size(); ++o) {
+      ASSERT_EQ(got[o].size(), want[o].size()) << o;
+      for (std::size_t i = 0; i < got[o].size(); ++i) {
+        if (a) {
+          EXPECT_NEAR(got[o][i], want[o][i], 1e-5 * std::max(1.0F, std::fabs(want[o][i])))
+              << o << ':' << i;
+        } else {
+          EXPECT_EQ(std::bit_cast<std::uint32_t>(got[o][i]),
+                    std::bit_cast<std::uint32_t>(want[o][i]))
+              << o << ':' << i;
+        }
+      }
+    }
+  }
+  // Every derived role of these components: four QSA norms (twice: fused and
+  // split), three n-gram norms, the mix's norm (twice: a block's and the
+  // head's), the MTP embedding's two (twice) and A.
+  EXPECT_GE(roles, 12U);
+}
+}  // namespace
+
 }  // namespace llmp::components

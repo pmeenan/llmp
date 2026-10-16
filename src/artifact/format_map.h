@@ -57,7 +57,7 @@ struct V0Part {
 
 // The logical format of one 2-D tensor stored as these resources, each the
 // part its role names, in `layout`: codes and scales of one-byte elements
-// for kSplit and kCutlassScaleAtoms, one interleaved table for
+// for kSplit and kScaleAtoms, one interleaved table for
 // kRowInterleaved, a GGML resource for the GGML layouts and kDense, a
 // trellis with its sign vectors and marker for kExl3Tiles; and for NVFP4 an
 // optional F32 tensor scale of `stacked` values. Refused (kParts) unless

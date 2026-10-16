@@ -43,6 +43,9 @@ bool OnComponentEngine(std::string_view architecture);
 // (planner/policy.h), in place of its mapping's default.
 struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
+  // The same for a drafter stage (a diagnostic: its mapping's default
+  // otherwise).
+  std::optional<std::string> drafter_policy{};
   // The derived shared route (Server sets it for the architectures whose
   // serving recipe names it, ServingRecipe::shared_route). Explicit
   // diagnostic domains retain their closed envelopes. Automatic service

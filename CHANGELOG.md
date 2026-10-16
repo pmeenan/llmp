@@ -13,6 +13,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- The native MLX importer publishes Qwen3.8 as `qwen4exp` (its mapping's
+  architecture), not `config.json`'s `qwen4_exp`.
+- Importing from an archived or staged revision no longer refuses a
+  safetensors variant whose directory also holds files its index does not
+  name (ModelOpt's `amax*.safetensors`): those are not the checkpoint's
+  weights.
+
 - Serve Qwen3.8 (native and GGUF), DeepSeek V4 with DSpark and a
   Qwen-Image-2.1 composition from an ordinary configuration again: since
   their legacy classes' removal they were refused without the internal
@@ -230,6 +237,49 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   checkpoint writers before upgrading. Stored archive schemas remain 1.
 
 ### Added
+
+- `llmp import SOURCE --component mtp [--draft-head IDS]` publishes Qwen3.8
+  Flash Next's MTP drafter from its ModelOpt NVFP4/MXFP8 checkpoint as a v1
+  artifact in its source encodings, its routed experts relaid out as the v0
+  drafter's (no spec of its own; composed with its target at serving), optionally with a
+  selected draft head whose BF16 rows are gathered from `lm_head.weight` for
+  the strictly ascending token IDs IDS lists; the list joins the artifact's
+  sources and its importer options, so the artifact ID changes with it.
+  The approval table admits the drafter with Mia's 47,172-ID list, composed
+  with the native ModelOpt target through its mapping's drafting recipe
+  (its block's values compiled constants, its head's rows from its
+  tensors, under a pinned composition). Additive CLI options; the
+  artifact format stays version 1.
+- Qwen3.8's native ModelOpt target, its MTP drafter and its MLX target have
+  pinned approval rows (no row is transitional): their stored specs'
+  digests, inventories and the applied folds' and relayouts' records, and
+  the mapping each spec was synthesized by. Native ModelOpt and MLX
+  artifacts imported before 2026-10-15 are refused; re-import them.
+- The importer relays NVFP4 routed experts out losslessly into the
+  scale-atom layout the block-scaled grouped GEMM reads (a MoE's gate and up
+  stacked, tensor scales gathered per projection), by canonical name and
+  encoding, recorded as an applied relayout; the CPU references decode it.
+  NVFP4 row tables are row-interleaved the same way. The native ModelOpt
+  Qwen3.8 target with its v1 drafter then runs v0's expert and n-gram
+  kernels. The importer also folds small per-channel parameters a
+  component would derive every step into F32, chosen by the role each
+  tensor binds and recorded as applied folds: the ModelOpt and MLX
+  targets' zero-centered norms (1 + w) and A (-exp(A_log), in double), the
+  drafter's norms. On a device with
+  FP4, the W4A4 grouped GEMM runs a target's experts where the checkpoint
+  quantized their activations too (their `input_scale` tensors present) and
+  a speculative stage's always (verification bounds its quality); other
+  experts decode on the format ladder's grouped product. Previously
+  imported native ModelOpt targets and drafters must be re-imported. The
+  NVFP4 scale-atom layout is named `scale_atoms` (no artifact recorded its
+  old name); the rename changes the decode implementations' identities, so
+  v0 Qwen calibrations and kept conversations recorded before it are not
+  reused.
+- Split NVFP4 and affine routed experts run in ordinary component programs:
+  part-by-part slab bindings and a capturable device-routed grouped product
+  over resident experts. Fused patterns read source-encoded norms and A as
+  derived parameters. The native ModelOpt Qwen3.8 target publishes as
+  `qwen4exp` with its multipart n-gram table a group a part.
 
 - An internal joined target/MTP diagnostic requires a prepared, complete source
   composition and explicit numerical-domain permission before owner state can

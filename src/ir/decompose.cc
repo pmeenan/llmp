@@ -1178,8 +1178,7 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const TensorId mixed = HcFoldOf(d, d.s(0), d.s(1), p.streams);
       Outputs o = One(mixed);
       if (p.prepared && b.ok()) {
-        o.ids.at(o.n++) =
-            b.Prepare(mixed, format::Encoding::kMxfp8, format::Layout::kCutlassScaleAtoms);
+        o.ids.at(o.n++) = b.Prepare(mixed, format::Encoding::kMxfp8, format::Layout::kScaleAtoms);
       }
       if (p.rounded && b.ok()) {
         o.ids.at(o.n++) = b.Convert(mixed, format::Encoding::kBF16);
@@ -1621,8 +1620,7 @@ Outputs Decompose(Builder& b, OpKey key, const ParamBytes& params,
       o.ids.at(i) = b.Convert(o.ids.at(i), encodings[i]);
     } else if (encodings[i] == format::Encoding::kMxfp8 && have == format::Encoding::kF32) {
       // An output recorded prepared (graph.h PreparedRows).
-      o.ids.at(i) =
-          b.Prepare(o.ids.at(i), format::Encoding::kMxfp8, format::Layout::kCutlassScaleAtoms);
+      o.ids.at(i) = b.Prepare(o.ids.at(i), format::Encoding::kMxfp8, format::Layout::kScaleAtoms);
     }
   }
   return o;

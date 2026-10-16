@@ -142,16 +142,16 @@ TEST(FormatTest, SplitInterleavedAndAtomLayoutsSizeTheirParts) {
 
   // The CUTLASS expert layout (kernels/ggml/moe_layout.h): gate and up of
   // f = 640 rows each over w = 2560, and down.
-  const TensorFormat gate_up = Matrix(Encoding::kNvfp4, Layout::kCutlassScaleAtoms, 2560, 1280);
+  const TensorFormat gate_up = Matrix(Encoding::kNvfp4, Layout::kScaleAtoms, 2560, 1280);
   const llmp::kernels::ggml::moe::ExpertLayout expert{.ffn = 640, .width = 2560};
   const auto gu = Parts(gate_up);
   EXPECT_EQ(gu[0].bytes, expert.gate_up_scales());
   EXPECT_EQ(gu[1].bytes, expert.down_codes() - expert.gate_up_scales());
-  const auto down = Parts(Matrix(Encoding::kNvfp4, Layout::kCutlassScaleAtoms, 640, 2560));
+  const auto down = Parts(Matrix(Encoding::kNvfp4, Layout::kScaleAtoms, 640, 2560));
   EXPECT_EQ(down[0].bytes, expert.down_scales() - expert.down_codes());
   EXPECT_EQ(down[1].bytes, expert.bytes() - expert.down_scales());
   // Scales pad rows to a whole 128-row atom.
-  const auto padded = Parts(Matrix(Encoding::kMxfp8, Layout::kCutlassScaleAtoms, 256, 130));
+  const auto padded = Parts(Matrix(Encoding::kMxfp8, Layout::kScaleAtoms, 256, 130));
   EXPECT_EQ(padded[1].bytes, 256U * 8);
   EXPECT_EQ(format::RowBytes(gate_up, PartRole::kBlockScales).error(), FormatError::kLayout);
 }
@@ -251,7 +251,7 @@ TEST(FormatTest, AffineSizesAsItsBitsGroupsAndScales) {
   other.params.scale = format::AffineScale::kF16;
   EXPECT_EQ(Refusal(other), FormatError::kParams);
   for (const Layout l : {Layout::kDense, Layout::kGgmlBlocks, Layout::kRowInterleaved,
-                         Layout::kCutlassScaleAtoms, Layout::kExl3Tiles}) {
+                         Layout::kScaleAtoms, Layout::kExl3Tiles}) {
     TensorFormat f = affine(256, 128, 4, 32, format::AffineScale::kF16);
     f.layout = l;
     EXPECT_EQ(Refusal(f), FormatError::kLayout) << static_cast<int>(l);
@@ -283,8 +283,7 @@ TEST(FormatTest, RefusesWhatTheRuleDoesNotTake) {
   EXPECT_EQ(Refusal(Matrix(Encoding::kQ4_K, Layout::kGgmlBlocks, 300, 1)), FormatError::kBlock);
   EXPECT_EQ(Refusal(Matrix(Encoding::kNvfp4, Layout::kGgmlNvfp4Blocks, 48, 1)),
             FormatError::kBlock);
-  EXPECT_EQ(Refusal(Matrix(Encoding::kNvfp4, Layout::kCutlassScaleAtoms, 32, 128)),
-            FormatError::kBlock);
+  EXPECT_EQ(Refusal(Matrix(Encoding::kNvfp4, Layout::kScaleAtoms, 32, 128)), FormatError::kBlock);
   // Shapes.
   TensorFormat f = Matrix(Encoding::kF16, Layout::kDense, 4, 4);
   f.shape.ne[0] = 0;

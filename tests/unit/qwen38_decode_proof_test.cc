@@ -705,8 +705,7 @@ ExpertSet LoadCutlassExperts(const fs::path& root, const ar::Artifact& a) {
     const std::vector<ar::V0Part> parts = {
         {PartRole::kCodes, &a.expert_arrays()[codes].repr},
         {PartRole::kBlockScales, &a.expert_arrays()[scales].repr}};
-    TensorFormat f =
-        ar::Assemble(Encoding::kNvfp4, Layout::kCutlassScaleAtoms, parts, stacked).value();
+    TensorFormat f = ar::Assemble(Encoding::kNvfp4, Layout::kScaleAtoms, parts, stacked).value();
     f.params.tensor_scale = true;  // gathered below
     return f;
   };
@@ -894,11 +893,11 @@ TEST_F(Qwen38DecodeProofTest, RoutedExpertsMatchTheReferenceInBothLayouts) {
     const std::vector<float> gate_up = Grouped(cutlass.gate_up, *cutlass.gate_up_table, 0, 2 * f, r,
                                                false, dx, tokens, tokens, memory);
     ExpectGrouped(gate_up, cutlass.gate_up, 0, 2 * f, r, x, false, tokens, rng_,
-                  std::format("grouped gate_up (cutlass_scale_atoms) tokens {}", tokens));
+                  std::format("grouped gate_up (scale_atoms) tokens {}", tokens));
     const std::vector<float> down = Grouped(cutlass.down, *cutlass.down_table, 0, w, r, true, dh,
                                             tokens * kUsed, tokens, memory);
     ExpectGrouped(down, cutlass.down, 0, w, r, h, true, tokens, rng_,
-                  std::format("grouped down (cutlass_scale_atoms) tokens {}", tokens));
+                  std::format("grouped down (scale_atoms) tokens {}", tokens));
     if (ggml_artifact == nullptr) {
       continue;
     }

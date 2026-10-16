@@ -352,7 +352,7 @@ if(LLMP_CUDA)
   # Default-off Qwen single-slot serving qualification.
   add_executable(qwen38_engine_serving_gpu_test qwen38_engine_serving_gpu_test.cc)
   target_link_libraries(qwen38_engine_serving_gpu_test PRIVATE llmp_runtime_serving
-                                                               llmp_test_v1_frozen)
+                                                               llmp_test_v1_frozen llmp_import)
   llmp_gpu_gtest(qwen38_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
                                "LLMP_TEST_DATA=${tokenizer_data}")
@@ -1488,6 +1488,11 @@ add_executable(import_modelopt_normalize_test import_modelopt_normalize_test.cc)
 target_link_libraries(import_modelopt_normalize_test PRIVATE llmp_import llmp_components llmp_model llmp_artifact llmp_json)
 llmp_gtest(import_modelopt_normalize_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The native Qwen3.8 MTP drafter import and its runtime declaration.
+add_executable(import_modelopt_drafter_test import_modelopt_drafter_test.cc)
+target_link_libraries(import_modelopt_drafter_test PRIVATE llmp_import llmp_runtime llmp_components llmp_model llmp_spec llmp_artifact llmp_base)
+llmp_gtest(import_modelopt_drafter_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Closed native MLX target normalization and source control.
 add_executable(import_mlx_normalize_test import_mlx_normalize_test.cc)
 target_link_libraries(import_mlx_normalize_test PRIVATE llmp_import llmp_components llmp_model llmp_artifact llmp_runtime llmp_json)
@@ -1515,6 +1520,17 @@ add_executable(import_route_test import_route_test.cc)
 target_link_libraries(import_route_test PRIVATE llmp_import)
 llmp_gtest(import_route_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The importer's routed-expert relayout into the scale-atom layout, decoded
+# by the CPU references against its split sources.
+add_executable(import_expert_relayout_test import_expert_relayout_test.cc)
+target_link_libraries(import_expert_relayout_test PRIVATE llmp_import llmp_reference_kernels)
+llmp_gtest(import_expert_relayout_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# The importer's parameter folds, chosen by the roles a stage binds.
+add_executable(import_parameter_folds_test import_parameter_folds_test.cc)
+target_link_libraries(import_parameter_folds_test PRIVATE llmp_import llmp_components llmp_spec)
+llmp_gtest(import_parameter_folds_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # Import-time BF16 folds and complete multipart value-head permutations.
 add_executable(import_transforms_test import_transforms_test.cc)
 target_link_libraries(import_transforms_test PRIVATE llmp_import llmp_base)
@@ -1536,7 +1552,8 @@ target_link_libraries(import_models_test PRIVATE llmp_import llmp_spec llmp_mode
 llmp_gtest(import_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
 
 add_executable(import_writer_test import_writer_test.cc)
-target_link_libraries(import_writer_test PRIVATE llmp_cli llmp_import llmp_components llmp_spec llmp_artifact llmp_base)
+target_link_libraries(import_writer_test PRIVATE llmp_cli llmp_import llmp_components llmp_spec llmp_artifact llmp_base
+                                          llmp_test_artifact_writer)
 llmp_gtest(import_writer_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(import_adversarial_test import_adversarial_test.cc)

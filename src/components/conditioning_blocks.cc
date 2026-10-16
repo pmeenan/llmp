@@ -305,7 +305,8 @@ constexpr std::array kSpatialRmsParams{
     ParamSpec{.name = "channels", .type = ParamType::kInt, .least = 1, .most = 65536},
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 1e-30, .most = 1},
     kNormZeroCentered};
-constexpr std::array kSpatialRmsRoles{WeightRole{.name = "weight", .encodings = kNormEncodings}};
+constexpr std::array kSpatialRmsRoles{
+    WeightRole{.name = "weight", .encodings = kNormEncodings, .derived = kZeroCenteredNorm}};
 std::expected<std::vector<RoleShape>, std::string> SpatialRmsRoles(const Instance& in) {
   if (in.site != Site::kLayer || NormOffsetContradictsFold(in))
     return std::unexpected("spatial RMS role or source gamma convention differs");

@@ -514,7 +514,12 @@ D-109's rule applies: what a user runs is native, no Python.
   above, and every source file it reads must be listed present; a file it
   needs that the manifest does not list is refused. Its complete weight-file
   set must equal exactly one variant's weight members; subsets and mixed
-  independent weight containers are refused before publication. Without a manifest the
+  independent weight containers are refused before publication. A
+  safetensors directory's weight members are the shards its index
+  (`*.safetensors.index.json`, read by the import) names: other
+  `.safetensors` files beside it, such as ModelOpt's `amax.safetensors`
+  calibration files, are listed in the variant but are not the
+  checkpoint's weights, never read and never required. Without a manifest the
   importer works as it does today, hashing what it reads. From the archive
   the importer reads each needed byte once: it streams each source file in
   order, hashes it, and writes the byte ranges the artifact needs into its

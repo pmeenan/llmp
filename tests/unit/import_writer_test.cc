@@ -9,6 +9,7 @@
 #include <map>
 #include <variant>
 
+#include "artifact_writer.h"
 #include "base/check.h"
 #include "base/json.h"
 #include "cli/cli.h"
@@ -544,6 +545,90 @@ TEST_F(ImportWriterTest, ArchiveManifestRefusalsDoNotFallBackToUnverifiedImport)
   ++entry.bytes;
   EXPECT_FALSE(ArchiveIdentities(**archive, plan->source()));
 }
+// A safetensors variant's weights are the shards its index names: the
+// directory's other .safetensors files (ModelOpt's amax calibration files)
+// are never read and never required; an index's shard left unread is.
+TEST_F(ImportWriterTest, IndexedSafetensorsVariantsIgnoreUnindexedSidecars) {
+  const auto revision = dir_ / "staged";
+  const std::string index =
+      R"({"metadata":{},"weight_map":{"a":"model-00001-of-00002.safetensors",)"
+      R"("b":"model-00002-of-00002.safetensors"}})";
+  std::vector<std::pair<std::string, std::vector<std::byte>>> files;
+  for (const std::string name :
+       {"model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors",
+        "model.safetensors.index.json", "amax.safetensors", "config.json"}) {
+    std::vector<std::byte> bytes(16 + name.size(), std::byte{7});
+    if (name.ends_with(".index.json"))
+      bytes =
+          std::vector<std::byte>(reinterpret_cast<const std::byte*>(index.data()),
+                                 reinterpret_cast<const std::byte*>(index.data()) + index.size());
+    Write(revision / name, bytes);
+    files.emplace_back(name, bytes);
+  }
+  std::ranges::sort(files);  // the manifest lists paths sorted
+  Write(revision / "llmp-archive.json", ArchiveManifestFiles(files));
+  auto archive = FindArchiveInput(revision);
+  ASSERT_TRUE(archive && *archive);
+  const auto source_file = [&](const std::string& name) {
+    const auto bytes = std::filesystem::file_size(revision / name);
+    return SourceFile{.name = name, .path = revision / name, .bytes = bytes, .parsed = {bytes, {}}};
+  };
+  Checkpoint read{.container = "safetensors"};
+  for (const std::string name :
+       {"config.json", "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors",
+        "model.safetensors.index.json"})
+    read.files.push_back(source_file(name));
+  EXPECT_TRUE(ArchiveIdentities(**archive, read));
+  // Without its index, the sidecar is a weight member the import lacks.
+  Checkpoint unindexed = read;
+  unindexed.files.pop_back();
+  EXPECT_FALSE(ArchiveIdentities(**archive, unindexed));
+  // A shard the index names, unread, is still a subset.
+  Checkpoint subset = read;
+  subset.files.erase(subset.files.begin() + 2);
+  EXPECT_FALSE(ArchiveIdentities(**archive, subset));
+}
+// A component's import event: every source the checkpoint holds as the
+// archive has it, and the only other the caller's named input (its list).
+TEST_F(ImportWriterTest, ComponentEventsAdmitOnlyTheCallersNamedSource) {
+  const auto root = dir_ / "archive";
+  const auto revision = root / "hf/owner/model@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  Write(root / "llmp-archive-root.json", R"({"format":"llmp-archive-root","format_version":1})");
+  std::vector<std::pair<std::string, std::vector<std::byte>>> files;
+  for (const std::string name : {"config.json", "model.safetensors"}) {
+    std::vector<std::byte> bytes(8 + name.size(), std::byte{3});
+    Write(revision / name, bytes);
+    files.emplace_back(name, bytes);
+  }
+  Write(revision / "llmp-archive.json", ArchiveManifestFiles(files));
+  auto archive = FindArchiveInput(revision);
+  ASSERT_TRUE(archive && *archive);
+  ASSERT_FALSE((**archive).root.empty());
+  Checkpoint source{.container = "safetensors"};
+  test::V1Plan plan;
+  plan.container = "safetensors";
+  plan.sources.clear();
+  for (const auto& [name, bytes] : files) {
+    source.files.push_back({.name = name,
+                            .path = revision / name,
+                            .bytes = bytes.size(),
+                            .parsed = {bytes.size(), {}}});
+    plan.sources.emplace_back(
+        name, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+  }
+  plan.sources.emplace_back("ids.txt", "1\n2\n");
+  plan.groups = {
+      test::V1Group{.kind = artifact::GroupKind::kTable,
+                    .resources = {{.name = "token_embd.weight",
+                                   .format = {.encoding = format::Encoding::kBF16,
+                                              .layout = format::Layout::kDense,
+                                              .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
+  auto published = artifact::Artifact::Open(test::Publish(dir_ / "artifact", test::Render(plan)));
+  ASSERT_TRUE(published) << published.error().ToString();
+  EXPECT_FALSE(RecordArchiveComponentImport(**archive, source, *published));
+  EXPECT_FALSE(RecordArchiveComponentImport(**archive, source, *published, "other.txt"));
+  EXPECT_TRUE(RecordArchiveComponentImport(**archive, source, *published, "ids.txt"));
+}
 TEST_F(ImportWriterTest, ArchivedLinksOutAndUnmanifestedRevisionsRefuse) {
   const auto root = dir_ / "archive";
   Write(root / "llmp-archive-root.json", R"({"format":"llmp-archive-root","format_version":1})");
@@ -570,6 +655,32 @@ TEST_F(ImportWriterTest, CliRequiresExplicitStoreAndValidFunding) {
   const std::array<std::string_view, 6> invalid{"import", "model.gguf",     "--store",
                                                 "store",  "--metadata-mib", "0"};
   EXPECT_EQ(cli::Run(invalid, output, error), cli::kExitUsage);
+  std::fclose(output);
+  std::fclose(error);
+}
+TEST_F(ImportWriterTest, CliTakesTheMtpComponentAndItsDraftHeadOnlyTogether) {
+  std::FILE* output = std::tmpfile();
+  std::FILE* error = std::tmpfile();
+  ASSERT_NE(output, nullptr);
+  ASSERT_NE(error, nullptr);
+  const std::array<std::string_view, 6> head_alone{"import", "model.gguf",   "--store",
+                                                   "store",  "--draft-head", "ids.txt"};
+  EXPECT_EQ(cli::Run(head_alone, output, error), cli::kExitUsage);
+  const std::array<std::string_view, 6> other{"import", "model.gguf",  "--store",
+                                              "store",  "--component", "vision"};
+  EXPECT_EQ(cli::Run(other, output, error), cli::kExitUsage);
+  const std::array<std::string_view, 8> twice{"import",      "model.gguf", "--store",     "store",
+                                              "--component", "mtp",        "--component", "mtp"};
+  EXPECT_EQ(cli::Run(twice, output, error), cli::kExitUsage);
+  // Another checkpoint's drafter: refused, nothing published.
+  Write(dir_ / "source/model.gguf", Gguf(Tiny()));
+  const std::string requested = (dir_ / "source/model.gguf").string();
+  const std::string store = (dir_ / "never-created").string();
+  const std::array<std::string_view, 6> gguf{"import", requested,     "--store",
+                                             store,    "--component", "mtp"};
+  EXPECT_EQ(cli::Run(gguf, output, error), cli::kExitFailure);
+  EXPECT_EQ(std::ftell(output), 0);
+  EXPECT_FALSE(std::filesystem::exists(dir_ / "never-created"));
   std::fclose(output);
   std::fclose(error);
 }
@@ -1213,6 +1324,174 @@ TEST_F(ImportWriterTest, DiffusersArchiveEventRecorded) {
     ++count;
   }
   EXPECT_EQ(count, 1U);
+}
+
+// A drafter's publication (no spec of its own) with a gathered head and a
+// token map generated from its whole authenticated list file: the private
+// tiny product exercises only the shared publisher.
+class ImportDrafterWriterTest : public ImportWriterTest {
+ protected:
+  static constexpr std::string_view kOptions = R"({"draft_head":"ids.txt"})";
+  std::vector<std::byte> weights_;
+  std::expected<ModelOptDrafterPlan, Error> Drafter() {
+    weights_.resize(256);
+    for (std::size_t i = 0; i < weights_.size(); ++i)
+      weights_[i] = static_cast<std::byte>((i * 37 + 11) & 0xFF);
+    Write(dir_ / "drafter/weights.bin", weights_);
+    Write(dir_ / "drafter/ids.txt", "1\n2\n5\n");
+    Checkpoint source{.container = "safetensors", .architecture = "qwen4exp-mtp"};
+    for (const auto name : {"weights.bin", "ids.txt"}) {
+      auto opened = OpenCheckpointFile(dir_ / "drafter" / name, 0);
+      if (!opened) return std::unexpected(opened.error());
+      const bool list = std::string_view(name) == "ids.txt";
+      const auto parsed = list ? opened->bytes : 16;
+      source.files.push_back(
+          {.name = name,
+           .path = opened->path,
+           .bytes = opened->bytes,
+           .device = opened->device,
+           .inode = opened->inode,
+           .parsed = {parsed,
+                      list ? base::Sha256().Update("1\n2\n5\n").Finish()
+                           : base::Sha256().Update(std::span(weights_).first(16)).Finish()}});
+    }
+    const auto bf16 = [](std::uint64_t rows) {
+      return format::TensorFormat{.encoding = Encoding::kBF16,
+                                  .shape = {.ne = {4, rows, 1, 1}, .rank = 2}};
+    };
+    // A 10-row table of 4 BF16 values a row at 0, a 4x4 matrix at 128.
+    source.tensors.push_back({.name = "fc.weight",
+                              .format = bf16(4),
+                              .extent = {.file = 0, .offset = 128, .bytes = 32},
+                              .dtype = "BF16",
+                              .dims = {4, 4}});
+    source.tensors.push_back({.name = "table.rows.1",
+                              .format = bf16(2),
+                              .extent = {.file = 0, .offset = 8, .bytes = 16},
+                              .dtype = "BF16",
+                              .dims = {2, 4}});
+    source.tensors.push_back({.name = "table.rows.5",
+                              .format = bf16(1),
+                              .extent = {.file = 0, .offset = 40, .bytes = 8},
+                              .dtype = "BF16",
+                              .dims = {1, 4}});
+    std::vector<TensorAssembly> outputs;
+    outputs.push_back({.name = "fc.weight",
+                       .format = bf16(4),
+                       .parts = {{.part = format::PartRole::kData, .sources = {0}}}});
+    outputs.push_back({.name = "draft_output.weight",
+                       .format = bf16(3),
+                       .parts = {{.part = format::PartRole::kData,
+                                  .kind = PartAssemblyKind::kRows,
+                                  .sources = {1, 2}}}});
+    std::vector<SourceDisposition> dispositions(source.tensors.size());
+    auto cost = IndexedPartPlan::Bound(source, outputs);
+    if (!cost) return std::unexpected(cost.error());
+    auto parts = IndexedPartPlan::Make(std::move(source), outputs, dispositions, *cost);
+    if (!parts) return std::unexpected(parts.error());
+    spec::Source canonical{.architecture = "qwen4exp-mtp", .container = "safetensors"};
+    canonical.tensors = {
+        {.name = "fc.weight", .format = bf16(4)},
+        {.name = "draft_output.weight", .format = bf16(3)},
+        {.name = "draft_output.ids",
+         .format = {.encoding = Encoding::kI32, .shape = {.ne = {1, 3, 1, 1}, .rank = 2}}}};
+    spec::ModelSpec model;
+    model.stages.resize(2);
+    model.stages[0].name = "target";
+    model.stages[1] = {.name = "mtp", .role = spec::StageRole::kDrafter, .artifact = 1};
+    model.stages[1].layers.resize(1);
+    model.stages[1].layers[0].components.push_back(
+        {.kind = "x", .weights = {{.role = "w", .tensor = "fc.weight"}}});
+    model.stages[1].heads.output =
+        spec::ComponentRef{.kind = "head.linear",
+                           .weights = {{.role = "ids", .tensor = "draft_output.ids"},
+                                       {.role = "weight", .tensor = "draft_output.weight"}}};
+    std::vector<GeneratedPart> generated{{.tensor = 2, .file = 1, .bytes = {}}};
+    for (const int id : {1, 2, 5})
+      for (int b = 0; b < 4; ++b)
+        generated[0].bytes.push_back(static_cast<std::byte>(b == 0 ? id : 0));
+    return test_support::PartPublicationFixture::MakeDrafter(
+        std::move(*parts), std::move(canonical), std::move(model),
+        {{0, format::PartRole::kData}, {1, format::PartRole::kData}}, std::move(generated),
+        std::string(kOptions));
+  }
+  std::vector<std::byte> Read(const artifact::Artifact& a, const std::filesystem::path& root,
+                              std::string_view name) {
+    const auto resource = a.FindResource(name);
+    EXPECT_TRUE(resource) << name;
+    if (!resource) return {};
+    auto place = a.ResourcePlacement(*resource);
+    EXPECT_TRUE(place);
+    if (!place) return {};
+    const auto& group = a.groups()[place->group];
+    const auto& shard = a.shards()[group.shard];
+    auto file = OpenCheckpointFile(root / shard.path, 0);
+    EXPECT_TRUE(file);
+    std::vector<std::byte> out(static_cast<std::size_t>(place->bytes.value()));
+    EXPECT_TRUE(ReadExactly(
+        file->fd.get(), shard.data_offset.value() + group.offset.value() + place->offset.value(),
+        out, 0));
+    return out;
+  }
+};
+
+TEST_F(ImportDrafterWriterTest, GathersRowsAndWritesItsAuthenticatedTokenMap) {
+  auto plan = Drafter();
+  ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  auto options = Options();
+  options.options = std::string(kOptions);
+  auto result = WriteArtifact(*plan, options);
+  ASSERT_TRUE(result) << test_support::Failed(result, &Error::ToString).value_or("");
+  auto opened = artifact::Artifact::Open(result->path);
+  ASSERT_TRUE(opened);
+  EXPECT_FALSE(opened->spec_json().has_value());
+  EXPECT_EQ(opened->model().architecture, "qwen4exp-mtp");
+  EXPECT_EQ(opened->converter().options_sha256, base::Sha256().Update(kOptions).Finish());
+  const auto list = std::ranges::find(opened->sources(), "ids.txt", &artifact::Source::name);
+  ASSERT_NE(list, opened->sources().end());
+  EXPECT_EQ(list->sha256, base::Sha256().Update("1\n2\n5\n").Finish());
+  const auto ids = Read(*opened, result->path, "draft_output.ids");
+  EXPECT_EQ(ids, plan->generated()[0].bytes);
+  std::vector<std::byte> rows;
+  for (const std::ptrdiff_t row : {std::ptrdiff_t{1}, std::ptrdiff_t{2}, std::ptrdiff_t{5}})
+    rows.insert(rows.end(), weights_.begin() + row * 8, weights_.begin() + row * 8 + 8);
+  EXPECT_EQ(Read(*opened, result->path, "draft_output.weight"), rows);
+  EXPECT_TRUE(std::ranges::equal(Read(*opened, result->path, "fc.weight"),
+                                 std::span(weights_).subspan(128, 32)));
+  auto source = spec::SourceOf(*opened);
+  ASSERT_TRUE(source);
+  EXPECT_EQ(source->tensors.size(), 3U);
+  // Without the plan's options the identity would differ: refused.
+  EXPECT_FALSE(WriteArtifact(*plan, Options("no-options")));
+  EXPECT_FALSE(std::filesystem::exists(dir_ / "no-options" / result->id));
+}
+
+TEST_F(ImportDrafterWriterTest, AChangedListOrMisfitTokenMapCannotPublish) {
+  {
+    auto plan = Drafter();
+    ASSERT_TRUE(plan);
+    // Same size, other IDs: the list no longer matches its parsed receipt.
+    std::fstream file(dir_ / "drafter/ids.txt", std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(file);
+    file.seekp(0);
+    file.write("3", 1);
+    file.close();
+    auto options = Options("changed");
+    options.options = std::string(kOptions);
+    EXPECT_FALSE(WriteArtifact(*plan, options));
+    auto store = std::filesystem::directory_iterator(dir_ / "changed");
+    EXPECT_TRUE(std::ranges::none_of(
+        store, [](const auto& entry) { return entry.path().filename().string().size() == 64; }));
+  }
+  {
+    auto plan = Drafter();
+    ASSERT_TRUE(plan);
+    test_support::PartPublicationFixture::ResizeGenerated(*plan, 8);
+    auto options = Options("misfit");
+    options.options = std::string(kOptions);
+    EXPECT_FALSE(WriteArtifact(*plan, options));
+    EXPECT_FALSE(std::filesystem::exists(dir_ / "misfit"));
+  }
 }
 
 }  // namespace

@@ -16,10 +16,15 @@ row's **v1** artifact ID (and its drafter's), each admitted by its entry in
 the approval table (`runtime/approvals.cc`: source receipts, tensor
 inventory and the pinned digest of the spec it executes). A v0 artifact is
 re-imported with `llmp import`, not migrated; this build still serves v0
-until slice 4b removes it. Qwen3.8's native ModelOpt and MLX imports have
-transitional approval rows (no pinned spec) but no approved v1 artifact
-with frozen proofs yet, and the Qwen-Image composition none: their rows
-below keep their v0 IDs until those land.
+until slice 4b removes it. Qwen3.8's native ModelOpt import with its MTP
+drafter (Mia's list) has pinned approval rows and v1 artifacts since
+2026-10-15, served bit for bit as the v0 pair
+([qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)).
+Its MLX import (`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80`, its norms
+and A folded as ModelOpt's) has a pinned approval row and is admitted, but
+is not qualified for serving yet: no serving comparison or speed gate has
+run on it, a separate later task. The Qwen-Image composition has none: its
+row keeps its v0 ID.
 
 Plain target-only greedy decode now publishes a device I32 token by default
 for DeepSeek V4 and native/GGUF Qwen3.8, as for Gemma. Short scalar/joined own
@@ -697,7 +702,11 @@ controls, not a held-out PPL, all-context or HTTP parity qualification.
   routed experts top-10 plus a shared expert.
 - **Checkpoint:** `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (ModelOpt
   NVFP4 experts, MXFP8 linears; [pins.json](experiments/fast-swap/pins.json)).
-- **Artifact:** v0 `c4fb47a9…`, routed experts in the CUTLASS layout
+- **Artifact:** v1 `d145900e…` (`llmp import`; its routed experts relaid
+  out into scale atoms, its norms and A folded, approved with its drafter
+  `316caa59…`: bit for bit as the v0 pair, the speed gate passed against the
+  frozen baseline, [qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)),
+  re-imported from v0 `c4fb47a9…`, routed experts in the CUTLASS layout
   (the earlier GGML-layout `67617f87…` remains for harness options that
   read that layout)
   ([qwen38-native](experiments/qwen38-native/README.md#what-runs)). The
@@ -837,6 +846,22 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   separately prepared Q4_1 `draft_output.weight` and strictly ascending original token IDs in
   `draft_output.ids`; neither changes the target artifact. No vocabulary
   list ships with llmpalooza. See the [draft-head study](experiments/qwen38-draft-head/README.md).
+  The native importer publishes it as a v1 artifact,
+  `llmp import SOURCE --component mtp [--draft-head IDS]`, from the
+  checkpoint's configuration documents and last shard (and with a head,
+  `lm_head.weight`'s shard and the list): BF16 linears, its norms' 1 + w
+  folded into F32, the routed experts relaid out into the scale-atom layout
+  (recorded fold and relayout), no spec of its own, composed with its
+  approved v1 target through `qwen4exp-mtp`'s native mapping and admitted
+  by its approval row ([artifact format](artifact-format.md#native-writer)).
+  With Mia's list it is `316caa59…`, whose every tensor equals
+  `8600a998…`'s byte for byte. Its experts take the W4A4 grouped GEMM
+  although the checkpoint quantized them W4A16: verification bounds a
+  drafter's quality, and W4A4 measured faster at equal acceptance. With the
+  native target `d145900e…` the v1 pair serves bit for bit as the v0 pair,
+  scores its NLL exactly and passes the speed gate against the frozen
+  baseline (1.7 to 4.6% faster decode)
+  ([qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)).
 - **Depth:** greedy chooses between two and three passes from observed
   acceptance and a calibrated step-cost ratio, with bounded exploration.
   The policy is conversation state: restore preserves its schedule, and

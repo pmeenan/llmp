@@ -214,6 +214,11 @@ struct RunnerConfig {
   // uncertain retirement. Metadata uses an admitted catalog allowance.
   std::weak_ptr<const void> routed_owner;
   std::shared_ptr<ExecutionMetadataAllowance> routed_metadata;
+  // Resident split-part expert arrays (the native importer's NVFP4 and
+  // affine experts) in an ordinary program: the lowering binds each part
+  // through its array's slab address and pitch, as routed steps do, but no
+  // step is routed (the products build their worklists on the device).
+  bool split_expert_parts = false;
   // Speculation: the most rows a verify takes (0: none; no snapshot is
   // mapped and a verify is refused). Setup maps each slot's stages'
   // snapshots, sized by model::VerifySaveBound, for the stages a target's

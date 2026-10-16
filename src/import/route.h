@@ -44,6 +44,9 @@ class PartRouteExecution {
   std::uint64_t input_bytes_ = 0, output_bytes_ = 0, received_ = 0, acknowledged_ = 0;
   std::optional<HeadPermutationCursor> permutation_{};
   std::optional<ScalarFold> fold_{};
+  std::uint64_t atom_blocks_ = 0;  // a scale-atom route's scales a row
+  // A strided route's row bytes, output row stride and offset in a row.
+  std::uint64_t row_bytes_ = 0, stride_ = 0, lane_ = 0;
   std::span<std::byte> workspace_{};
   std::array<std::byte, 2> carry_{};
   bool carried_ = false, failed_ = false, busy_ = false;
@@ -61,10 +64,40 @@ class PartRoutePlan {
   // Historical BF16->F32 conversion, not a native resident-weight expansion
   // policy. Reuses FoldBf16's exact numerical and refusal contract.
   static std::expected<PartRoutePlan, Error> Fold(ScalarFold fold, std::uint64_t elements);
+  // A fold under a head permutation of the BF16 source (`plan`'s format):
+  // a small part (at most 8192 elements) buffered whole in the workspace,
+  // then each permuted run folded to its F32 place (the fold commutes with
+  // the reorder).
+  static std::expected<PartRoutePlan, Error> PermuteFold(const HeadPermutationPlan& plan,
+                                                         format::PartRole part, ScalarFold fold);
+  // A matrix's row-major one-byte block scales (`rows` rows of `blocks`)
+  // into the scale atoms of format::Layout::kScaleAtoms, losslessly and at
+  // the same size: rows whole atoms (a multiple of 128) and blocks a
+  // multiple of 4, at most 256 (a 128-row band, at most 32 KiB, is the unit). A
+  // band's atoms occupy the band's own byte range, so the route buffers
+  // one band in its workspace and emits it whole.
+  static std::expected<PartRoutePlan, Error> ScaleAtoms(std::uint64_t rows, std::uint64_t blocks);
+  // Row-major rows of `row_bytes` into every `stride`-th byte run at `lane`
+  // in its row (format::Layout::kRowInterleaved: one part's rows beside
+  // another's, each source routed into its lane), written as they arrive.
+  // The route writes rows · row_bytes bytes over a span of rows · stride;
+  // its sibling lanes cover the rest of the span.
+  static std::expected<PartRoutePlan, Error> Strided(std::uint64_t rows, std::uint64_t row_bytes,
+                                                     std::uint64_t stride, std::uint64_t lane);
   std::uint64_t input_bytes() const { return input_bytes_; }
+  // The bytes it writes, and the output range they lie in (a strided
+  // route's rows · stride; otherwise the same).
   std::uint64_t output_bytes() const { return output_bytes_; }
+  std::uint64_t span() const {
+    return stride_ != 0 ? input_bytes_ / row_bytes_ * stride_ : output_bytes_;
+  }
+  std::uint64_t lane() const { return lane_; }
   // No allocation: caller owns/funds workspace and keeps it alive through
-  // execution. A fold needs >=4 bytes and uses at most64KiB; other routes 0.
+  // execution. A fold needs >=4 bytes and uses at most64KiB; a permuted
+  // fold its input and output (at most 48 KiB); a scale-atom
+  // route two bands (at most 64 KiB) and keeps a partial band there between
+  // Consume calls, so no other route may use the workspace until it
+  // finishes (the writer streams one route at a time); other routes 0.
   std::expected<PartRouteExecution, Error> Start(std::span<std::byte> workspace = {}) const;
 
  private:
@@ -72,6 +105,8 @@ class PartRoutePlan {
   std::uint64_t input_bytes_ = 0, output_bytes_ = 0;
   std::optional<HeadPermutationCursor> permutation_{};
   std::optional<ScalarFold> fold_{};
+  std::uint64_t atom_blocks_ = 0;
+  std::uint64_t row_bytes_ = 0, stride_ = 0, lane_ = 0;
 };
 }  // namespace llmp::import
 #endif  // LLMP_IMPORT_ROUTE_H_

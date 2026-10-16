@@ -23,6 +23,11 @@ std::shared_ptr<const ggml::SelectedSource> CompositeSelectedSource(
 // (for Affine split and/or NVFP4 split).
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> DecodeSelectedSource(
     std::optional<format::Encoding> encoding = std::nullopt);
+// The same for ordinary serving programs over resident weights: the grouped
+// products build their worklist on the device (no routed continuation), so
+// every child is capturable.
+std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string>
+DecodeResidentSelectedSource(std::optional<format::Encoding> encoding = std::nullopt);
 
 }  // namespace llmp::kernels::decode
 

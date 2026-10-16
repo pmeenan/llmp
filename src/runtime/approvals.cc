@@ -7,12 +7,14 @@
 // and declared them at import (admission compares, never re-hashes them);
 // inventories digest every tensor's complete native description
 // (component_admission.cc Inventory), each re-pinned (D-118) from the
-// published artifact, or for the transitional rows the normalization
-// fixture, that the earlier name/encoding/shape digests admitted (source
-// pins: docs/experiments/m36-native-v1-admission/README.md); the spec digests are those of the v1 artifacts `llmp import`
-// published from the staged, archive-verified sources and that executed bit
-// for bit as their v0 artifacts did (docs/experiments/m36-numerical-audit/
-// v1-equivalence.md; owner, 2026-10-15: serving is v1-only). The envelopes,
+// published artifact that the earlier name/encoding/shape digests admitted
+// (source pins: docs/experiments/m36-native-v1-admission/README.md); the
+// spec digests are those of the v1 artifacts `llmp import` published from
+// the staged, archive-verified sources and that executed bit for bit as
+// their v0 artifacts did (docs/experiments/m36-numerical-audit/
+// v1-equivalence.md and qwen-modelopt-v1.md; owner, 2026-10-15: serving is
+// v1-only). The applied folds' and relayouts' records digest their tensors'
+// sorted names (component_admission.cc Transforms). The envelopes,
 // policies and pairings are the ones each family qualified in M3 and M3.6.
 // Change an entry only with the evidence that approves it.
 
@@ -26,6 +28,7 @@
 #include <string_view>
 
 #include "base/sha256.h"
+#include "spec/mappings/qwen38.h"
 
 namespace llmp::runtime {
 namespace {
@@ -208,6 +211,26 @@ constexpr std::array kQwen38ModelOptSources{
                   "435eef76fc10fc6e932a208a1f85a86bc9c7ffc389b27b34ba83bb6a5d0371e9", 33074286ULL},
 };
 
+// The native importer's MTP drafter of the same checkpoint with Mia's
+// 47,172-token draft head: its configuration documents, the shards holding
+// mtp.* and lm_head.weight, and the head's list.
+constexpr std::array kQwen38MtpSources{
+    SourceReceipt{"config.json", "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e",
+                  109897ULL},
+    SourceReceipt{"hf_quant_config.json",
+                  "d60c54caa65317fd8f1338bdeb81b9014512ac8f21ec18da22541cb88c6784b7", 99088ULL},
+    SourceReceipt{"mia-47172.txt",
+                  "ee819d2560b52ba1351acdd1c4a0244b77bb60694a7660c6363097a482b0afb5", 274622ULL},
+    SourceReceipt{"model-00033-of-00034.safetensors",
+                  "0fbcdf16c13cd830447efdcd3be19b82ec0e76b7f57f0e96952c1f2b62002b11",
+                  5021547836ULL},
+    SourceReceipt{"model-00034-of-00034.safetensors",
+                  "fe0a0a227e39c4d02dc66c726d3e1ad87ef082e90a6b023ac90b2bb301672203",
+                  1597270800ULL},
+    SourceReceipt{"model.safetensors.index.json",
+                  "435eef76fc10fc6e932a208a1f85a86bc9c7ffc389b27b34ba83bb6a5d0371e9", 33074286ULL},
+};
+
 constexpr std::array kQwen38MlxSources{
     SourceReceipt{"config.json", "4efd5f41c47e8de9f55c678df4a237cbbc78e4d517dad42a906889f7d94f79a2",
                   5361ULL},
@@ -298,8 +321,47 @@ constexpr std::array kDsparkSources{
                   10896057440ULL},
 };
 
-// Qwen3.8's ModelOpt and MLX imports repack GDN's value heads tiled.
-constexpr std::array<std::string_view, 1> kTiledValueHeads{"gdn.value_heads_tiled"};
+// Qwen3.8's ModelOpt and MLX imports repack GDN's value heads tiled and
+// apply the parameter folds (by role, D-108 as amended: the zero-centered
+// norms' 1 + w and A's -exp(A_log) in F32). The ModelOpt import's
+// relayouts from split parts besides: each layer's routed experts' gate-up
+// and down tables (both parts) into scale atoms, the n-gram table's rows
+// interleaved with its scale.
+constexpr std::array<std::string_view, 3> kQwenNativeFolds{"gdn.value_heads_tiled", "norm.plus_one",
+                                                           "ssm.a_neg_exp"};
+constexpr std::array kModelOptFoldTensors{
+    ApprovedTransform{"gdn.value_heads_tiled", 468,
+                      "29a95338f00eb7e661ff6ce8f8439d57a9843607995f821477c628fe13855286"},
+    ApprovedTransform{"norm.plus_one", 148,
+                      "5da54d6f36f3f22b2270222f1c9a648e93d7a6ec1dd0e9dd25df4d7f97106627"},
+    ApprovedTransform{"ssm.a_neg_exp", 36,
+                      "81543b80122b4297547cbdbc21c1415d59b3a3dcd3bddebc9a4632ba77f02c79"},
+};
+// MLX's: the same parameter folds (its affine experts stay split).
+constexpr std::array kMlxFoldTensors{
+    ApprovedTransform{"gdn.value_heads_tiled", 648,
+                      "4353c8ba6bb8035f12ad81de77796f49f96863e40be66829f8c24c0462e8669d"},
+    ApprovedTransform{"norm.plus_one", 148,
+                      "5da54d6f36f3f22b2270222f1c9a648e93d7a6ec1dd0e9dd25df4d7f97106627"},
+    ApprovedTransform{"ssm.a_neg_exp", 36,
+                      "81543b80122b4297547cbdbc21c1415d59b3a3dcd3bddebc9a4632ba77f02c79"},
+};
+constexpr std::array kModelOptRelayouts{
+    ApprovedTransform{"split", 194,
+                      "b32a3c70ebb8e0674db510fe8031faeefb16c1271e5170992221fe24edbce802"},
+};
+// Its routed experts' input scales: the W4A4 grouped GEMM's policy rule.
+constexpr std::array<std::string_view, 1> kModelOptGates{"llmp.qwen4exp.expert_activation_scales"};
+// The drafter's: its nine norms folded, its one MoE's two tables relaid.
+constexpr std::array<std::string_view, 1> kMtpFolds{"norm.plus_one"};
+constexpr std::array kMtpFoldTensors{
+    ApprovedTransform{"norm.plus_one", 9,
+                      "ee1c7aec4e0625327a9fee3dfd69eaf1d2c81ab2420af6aec10d902fb070e393"},
+};
+constexpr std::array kMtpRelayouts{
+    ApprovedTransform{"split", 4,
+                      "d92d1cade97145947781ef03383f2528fe7dc55ec91fb12e4bfae40a4fb468dd"},
+};
 // Gemma 4 26B-A4B's routed experts gate its policy rules.
 constexpr std::array<std::string_view, 1> kGemma4Experts{"gemma4.expert_count"};
 
@@ -425,35 +487,65 @@ constexpr std::array kApprovals{
              .spec = "dbbce592f38d0ec8c5fc96b1255e0821b3bf80600a6ad89e068cd39cd90fa72b",
              .max_context = 262144,
              .max_slots = kAnyOwners},
-    // Transitional (no spec pinned yet): their stored specs are still
-    // checked against their compiled profile until their native relayout
-    // lands with its v1 artifacts and frozen proofs.
+    // The native import (`llmp import`), its experts and n-gram table relaid
+    // out and its norms and A folded; served beside its drafter below bit for
+    // bit as the v0 pair (docs/experiments/m36-numerical-audit/
+    // qwen-modelopt-v1.md). The W4A4 grouped GEMM where its experts' input
+    // scales say the checkpoint quantized their activations.
     Approval{.name = "qwen3.8-flash-next-modelopt",
              .label = "Qwen3.8 ModelOpt",
              .architecture = "qwen4exp",
              .container = "safetensors",
-             .folds = kTiledValueHeads,
+             .folds = kQwenNativeFolds,
              .sources = kQwen38ModelOptSources,
-             .tensors = 1886,
-             .arrays = 432,
+             .fold_tensors = kModelOptFoldTensors,
+             .relayouts = kModelOptRelayouts,
+             .tensors = 1789,
+             .arrays = 192,
              .form = InventoryForm::kModelOpt,
-             .inventory = "0e17f338a80f0b3d4d0b4d530749b8f42bdb724640594a8cb088a0597a462f29",
+             .inventory = "857e32b418f0f073e0315015fce98d69e2e0019ea93fa7cb89656f0bf8832a8c",
+             .spec = "c2e2822e48502a42783ab9f1c4d8ecf3649f02e6331ea2c0ea133e2542983a0f",
              .max_context = 262144,
              .max_slots = kAnyOwners,
-             .policy = ApprovedPolicy::kNone},
+             .gates = kModelOptGates,
+             .mapping = &spec::mappings::Qwen38NativeMapping},
+    // Its MTP drafter (`llmp import --component mtp --draft-head`), with
+    // Mia's selected head; composed with the approved native target.
+    Approval{.name = "qwen3.8-flash-next-modelopt-mtp-mia47172",
+             .label = "Qwen3.8 ModelOpt MTP",
+             .architecture = "qwen4exp-mtp",
+             .drafter = true,
+             .container = "safetensors",
+             .folds = kMtpFolds,
+             .sources = kQwen38MtpSources,
+             .fold_tensors = kMtpFoldTensors,
+             .relayouts = kMtpRelayouts,
+             .tensors = 38,
+             .arrays = 4,
+             .form = InventoryForm::kModelOpt,
+             .inventory = "41743b0b88b63e1c6b48fdee328f06cb20f8442d86840369526287f6a98f1bfc",
+             .spec = "5ac4971d27acd22a5a4554088710b2537f2dad1e683ed913e65589766fcef7c6",
+             .max_context = 262144,
+             .max_slots = kAnyOwners,
+             .policy = ApprovedPolicy::kNone,
+             .target = "qwen3.8-flash-next-modelopt",
+             .mapping = &spec::mappings::Qwen38MtpNativeMapping},
     Approval{.name = "qwen3.8-flash-next-mlx",
              .label = "Qwen3.8 MLX",
              .architecture = "qwen4exp",
              .container = "mlx",
-             .folds = kTiledValueHeads,
+             .folds = kQwenNativeFolds,
              .sources = kQwen38MlxSources,
+             .fold_tensors = kMlxFoldTensors,
              .tensors = 2954,
              .arrays = 432,
              .form = InventoryForm::kMlx,
-             .inventory = "70886578cfdf6686685fd1caf56fb645903c5a04a24f0a215d17cd302ad8a5ec",
+             .inventory = "8b049b07d06ba1da85d7ee7d3a7818a3d98c5ea546226e514355b75073d03974",
+             .spec = "90e6fbbbbcad4297fc6d56e900674c2ec865aa29e96b9d3c5098a07c557eff0a",
              .max_context = 262144,
              .max_slots = kAnyOwners,
-             .policy = ApprovedPolicy::kNone},
+             .policy = ApprovedPolicy::kNone,
+             .mapping = &spec::mappings::Qwen38NativeMapping},
     // Its mapping deliberately has no policy rules: the engine's default
     // outside the shared route's own recipe.
     Approval{.name = "deepseek-v4-flash-0731-ud-q2_k_xl",

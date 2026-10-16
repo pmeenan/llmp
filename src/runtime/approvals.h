@@ -25,6 +25,10 @@
 
 #include "artifact/artifact.h"
 
+namespace llmp::spec {
+struct Mapping;
+}  // namespace llmp::spec
+
 namespace llmp::runtime {
 
 // A source file's receipt: its name, SHA-256 (lower-case hex) and bytes.
@@ -48,6 +52,16 @@ enum class ApprovedPolicy : std::uint8_t { kMapping, kMappingOrNone, kNone };
 // kExl3 each part's role and K bits.
 enum class InventoryForm : std::uint8_t { kGguf, kExl3, kModelOpt, kMlx };
 
+// An importer transform the artifact records (D-113): an applied fold (by
+// its name) or relayout (by the layout its sources held, format::Info's
+// name), the tensors it covers and the SHA-256 of their names, sorted, each
+// followed by a line feed.
+struct ApprovedTransform {
+  std::string_view name{};
+  std::size_t tensors = 0;
+  std::string_view digest{};
+};
+
 struct Approval {
   // The entry's stable name, and the label settings' bases use for its
   // qualified envelope ("Gemma26").
@@ -60,6 +74,10 @@ struct Approval {
   std::string_view container{};
   std::span<const std::string_view> folds{};
   std::span<const SourceReceipt> sources{};
+  // The applied folds' and relayouts' records exactly (each fold of `folds`
+  // in its order); empty `fold_tensors`: the folds by name only.
+  std::span<const ApprovedTransform> fold_tensors{};
+  std::span<const ApprovedTransform> relayouts{};
   // The native tensor inventory: its tensors (resources' and expert arrays'
   // together), its expert arrays, its form and digest.
   std::size_t tensors = 0;
@@ -68,9 +86,7 @@ struct Approval {
   std::string_view inventory{};
   // The SHA-256 of the spec it executes: a target's stored spec.json, a
   // drafter's composition with its approved target (before any per-alias
-  // KV encoding). Empty: not yet pinned (a transitional entry whose
-  // stored spec is still checked against its compiled profile; none may be
-  // added).
+  // KV encoding). Every entry pins one.
   std::string_view spec{};
   // A target whose output head must read its embedding's tensor.
   bool tied_output = false;
@@ -83,6 +99,9 @@ struct Approval {
   std::span<const std::string_view> gates{};
   // A drafter's approved target (its entry's name).
   std::string_view target{};
+  // The mapping its spec was synthesized by (its policies; a drafter's
+  // composition and drafting recipe); null: its architecture's.
+  const spec::Mapping& (*mapping)() = nullptr;
 };
 
 std::span<const Approval> Approvals();

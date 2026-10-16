@@ -3,96 +3,74 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "components/step.h"
 #include "import/modelopt_qwen38.h"
-#include "qwen38_fixture.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
 namespace {
-namespace fx = llmp::test_support::qwen38;
 using format::Encoding;
 using format::PartRole;
 struct NativeFixture {
   spec::Source source{};
   std::vector<spec::SourceValue> values{};
 };
+// The native target as NormalizeModelOptTarget publishes it.
 NativeFixture Native() {
-  const auto& p = model::Qwen38Flash();
-  auto resources = fx::Resources(p, fx::Form::kGgmlExperts);
-  auto old = fx::SourceOf("qwen4exp", "safetensors", std::string(fx::kModelOptConverter), resources,
-                          spec::mappings::Qwen38Mapping());
-  NativeFixture result;
-  result.source.architecture = "qwen4exp";
-  result.source.container = "safetensors";
-  result.source.folds = {"gdn.value_heads_tiled"};
-  for (auto tensor : old.tensors) {
-    const bool table = tensor.name.starts_with("per_layer_token_embd.");
-    const bool experts = tensor.name.find("_exps.") != std::string::npos;
-    if ((table && tensor.part == PartRole::kTensorScale) ||
-        (experts && tensor.name.ends_with(".weight_scale_2")))
-      continue;
-    if (table || tensor.experts) {
-      tensor.format.encoding = Encoding::kNvfp4;
-      tensor.format.layout = format::Layout::kSplit;
-      tensor.format.params = {.tensor_scale = true};
-      tensor.format.stacked = 1;
-      const auto name = tensor.name;
-      for (const auto part : {PartRole::kCodes, PartRole::kBlockScales, PartRole::kTensorScale}) {
-        tensor.part = part;
-        tensor.name =
-            part == PartRole::kCodes
-                ? name
-                : name.substr(0, name.size() - 7) +
-                      (part == PartRole::kBlockScales ? ".weight_scale" : ".weight_scale_2");
-        result.source.tensors.push_back(tensor);
-      }
-    } else {
-      if (tensor.format.encoding == Encoding::kF32 &&
-          tensor.format.layout == format::Layout::kDense)
-        tensor.format.encoding = Encoding::kBF16;
-      result.source.tensors.push_back(std::move(tensor));
-    }
-  }
-  model::Qwen38Binding binding;
-  binding.layers.resize(48);
-  binding.format = model::Qwen38Format::kModelOpt;
-  binding.experts = model::Qwen38Experts::kGgml;
-  std::vector<std::int64_t> offsets, vocab;
-  for (std::int64_t i = 0; i < 16; ++i) {
-    offsets.push_back(i * 20000096);
-    vocab.push_back(20000096 - i * 8);
-  }
-  auto hash = model::CheckQwen38PleHash(p, std::vector<std::int64_t>{3, 5, 7}, offsets, vocab,
-                                        fx::kTableRows);
-  EXPECT_TRUE(hash);
-  auto values = spec::mappings::Qwen38V0Values(p, binding, *hash);
-  EXPECT_TRUE(values);
-  result.values = std::move(*values);
-  for (auto& v : result.values)
-    if (v.key == "llmp.qwen4exp.expert_scales") v.value = false;
-  return result;
+  auto form = ModelOptNativeTargetForm();
+  EXPECT_TRUE(form) << (form ? "" : form.error().ToString());
+  return {std::move(form->source), std::move(form->values)};
 }
-TEST(ImportModelOptNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
+const spec::Param* ParamOf(const spec::ComponentRef& c, std::string_view name) {
+  return c.Find(name);
+}
+TEST(ImportModelOptNormalizeTest, NativeRelaidTargetValidatesAcrossCompleteTarget) {
   auto f = Native();
   const auto& mapping = spec::mappings::Qwen38NativeMapping();
   EXPECT_TRUE(mapping.folds.empty());
-  EXPECT_TRUE(mapping.policies.empty());
   EXPECT_TRUE(mapping.v0_assembly.empty());
-  EXPECT_TRUE(std::ranges::none_of(mapping.tensors, [](const auto& rule) {
-    return rule.pattern.ends_with(".codes") || rule.pattern.ends_with(".scales");
-  }));
-  for (const auto& rule : mapping.tensors)
-    if (rule.pattern == "per_layer_token_embd.weight" ||
-        (rule.experts && rule.pattern.ends_with(".weight"))) {
-      EXPECT_EQ(rule.part, PartRole::kCodes);
-      EXPECT_FALSE(rule.any_part);
+  // W4A4 experts take the converted form's policy (moe_experts); others
+  // the format ladder's.
+  ASSERT_EQ(mapping.policies.size(), 2U);
+  EXPECT_EQ(mapping.policies[0].gate, "llmp.qwen4exp.expert_activation_scales");
+  EXPECT_EQ(mapping.policies[0].text, spec::mappings::Qwen38Mapping().policies[0].text);
+  EXPECT_TRUE(mapping.policies[1].gate.empty());
+  EXPECT_TRUE(mapping.policies[1].text.contains("disable moe_glu\n"));
+  EXPECT_FALSE(mapping.policies[1].text.contains("enable moe_experts\n"));
+  // The experts' tables in the scale-atom layout: gate-up stacked.
+  std::size_t tables = 0, vectors = 0;
+  for (const auto& t : f.source.tensors) {
+    if (t.experts) {
+      ++tables;
+      EXPECT_EQ(t.format.layout, format::Layout::kScaleAtoms) << t.name;
+      EXPECT_EQ(t.format.stacked, t.name.contains("gate_up") ? 2U : 1U) << t.name;
+      EXPECT_FALSE(t.format.params.tensor_scale) << t.name;
     }
+    if (t.name.ends_with("_exps.weight_scale_2")) {
+      ++vectors;
+      EXPECT_EQ(t.format.encoding, Encoding::kF32);
+      EXPECT_EQ(t.format.shape.ne[0], 512U);
+    }
+  }
+  EXPECT_EQ(tables, 48U * 4);
+  EXPECT_EQ(vectors, 48U * 3);
+  // Its zero-centered norms and A folded into F32 by role.
+  EXPECT_EQ(f.source.folds,
+            (std::vector<std::string>{"gdn.value_heads_tiled", "norm.plus_one", "ssm.a_neg_exp"}));
+  for (const auto& t : f.source.tensors)
+    if (t.name.ends_with("ssm_a") || t.name.ends_with("attn_q_norm.weight") ||
+        t.name.ends_with("hc_attn_norm.weight") || t.name == "output_hc_norm.weight")
+      EXPECT_EQ(t.format.encoding, Encoding::kF32) << t.name;
+    else if (t.name.ends_with("ssm_norm.weight") || t.name.ends_with("attn_norm.weight"))
+      EXPECT_EQ(t.format.encoding, Encoding::kBF16) << t.name;
+  EXPECT_EQ(f.source.tensors.size(), 1789U);
   auto spec = spec::Synthesize(mapping, f.source, f.values);
   ASSERT_TRUE(spec) << spec.error();
   auto valid = components::ValidateSpec(*spec, f.source.tensors);
@@ -100,56 +78,71 @@ TEST(ImportModelOptNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) 
   ASSERT_EQ(spec->stages.size(), 1U);
   const auto& stage = spec->stages[0];
   ASSERT_EQ(stage.layers.size(), 48U);
-  EXPECT_EQ(stage.folds, std::vector<std::string>{"gdn.value_heads_tiled"});
+  EXPECT_EQ(stage.folds, f.source.folds);
   unsigned linears = 0, attention = 0, moes = 0;
   for (const auto& layer : stage.layers)
     for (const auto& c : layer.components) {
-      if (c.kind == "attention.gdn") {
-        ++linears;
-        ASSERT_NE(c.Find("a_log"), nullptr);
-        EXPECT_EQ(std::get<bool>(c.Find("a_log")->value), true);
-      }
+      // The folds left no derived parameter to compute.
+      EXPECT_EQ(ParamOf(c, "a_log"), nullptr) << c.kind;
+      EXPECT_EQ(ParamOf(c, "norm_zero_centered"), nullptr) << c.kind;
+      if (c.kind == "attention.gdn") ++linears;
       if (c.kind == "attention.qsa") ++attention;
       if (c.kind == "ffn.moe") {
         ++moes;
-        ASSERT_NE(c.Find("projection_scales"), nullptr);
-        EXPECT_EQ(std::get<bool>(c.Find("projection_scales")->value), false);
-        for (const auto role : {"gate_experts", "up_experts", "down_experts"}) {
+        EXPECT_EQ(std::get<bool>(ParamOf(c, "projection_scales")->value), true);
+        EXPECT_EQ(std::get<bool>(ParamOf(c, "stacked")->value), true);
+        for (const auto& [role, count] :
+             std::array<std::pair<std::string_view, int>, 5>{{{"gate_up_experts", 2},
+                                                              {"down_experts", 2},
+                                                              {"gate_scale", 1},
+                                                              {"up_scale", 1},
+                                                              {"down_scale", 1}}})
           EXPECT_EQ(std::ranges::count_if(c.weights, [&](const auto& w) { return w.role == role; }),
-                    3);
-          EXPECT_EQ(std::ranges::count_if(c.weights,
-                                          [&](const auto& w) {
-                                            return w.role == role &&
-                                                   w.part == PartRole::kTensorScale && w.experts;
-                                          }),
-                    1);
-        }
-        EXPECT_TRUE(std::ranges::none_of(c.weights, [](const auto& w) {
-          return w.role == "gate_scale" || w.role == "up_scale" || w.role == "down_scale";
-        }));
+                    count)
+              << role;
       }
     }
   EXPECT_EQ(linears, 36U);
   EXPECT_EQ(attention, 12U);
   EXPECT_EQ(moes, 48U);
+  // The n-gram table row-interleaved: its rows and its tensor scale.
   ASSERT_EQ(stage.side.size(), 1U);
-  EXPECT_EQ(stage.side[0].source.weights.size(), 3U);
+  EXPECT_EQ(stage.side[0].source.weights.size(), 2U);
+  // Its policy: the W4A4 form; without activation scales, the ladder's.
+  auto rule = spec::DefaultRule(mapping, f.values, {.context = 8192, .slots = 1});
+  ASSERT_TRUE(rule && *rule != nullptr);
+  EXPECT_TRUE((**rule).text.contains("enable moe_experts\n"));
+  auto w4a16 = f.values;
+  for (auto& v : w4a16)
+    if (v.key == "llmp.qwen4exp.expert_activation_scales") v.value = false;
+  rule = spec::DefaultRule(mapping, w4a16, {.context = 8192, .slots = 1});
+  ASSERT_TRUE(rule && *rule != nullptr);
+  EXPECT_FALSE((**rule).text.contains("enable moe_experts\n"));
 }
-TEST(ImportModelOptNormalizeTest, NativeMappingRejectsMissingPartAndAppliedRawFolds) {
+TEST(ImportModelOptNormalizeTest, NativeMappingRejectsMissingPartAndReadsItsFolds) {
   auto f = Native();
   auto before = f.source.tensors;
   std::erase_if(f.source.tensors,
                 [](const auto& t) { return t.name == "blk.0.ffn_gate_exps.weight_scale_2"; });
   auto missing = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
-  ASSERT_TRUE(missing);
-  EXPECT_FALSE(components::ValidateSpec(*missing, f.source.tensors));
+  if (missing) EXPECT_FALSE(components::ValidateSpec(*missing, f.source.tensors));
   f.source.tensors = std::move(before);
-  for (const auto fold : {"norm.plus_one", "ssm.a_neg_exp"}) {
-    f.source.folds = {"gdn.value_heads_tiled", fold};
-    auto contradictory =
-        spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
-    ASSERT_TRUE(contradictory);
-    EXPECT_FALSE(components::ValidateSpec(*contradictory, f.source.tensors));
+  // Without a fold, its flag returns (the checkpoint's convention, as an
+  // import that could not fold publishes it).
+  for (const auto& [fold, flag] : std::array<std::pair<std::string_view, std::string_view>, 2>{
+           {{"norm.plus_one", "norm_zero_centered"}, {"ssm.a_neg_exp", "a_log"}}}) {
+    f.source.folds = {"gdn.value_heads_tiled", std::string(fold)};
+    auto spec = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);
+    ASSERT_TRUE(spec) << spec.error();
+    // The flag the fold clears is back on: the other one's.
+    const std::string_view back = flag == "a_log" ? "norm_zero_centered" : "a_log";
+    bool found = false;
+    for (const auto& layer : spec->stages[0].layers)
+      for (const auto& c : layer.components) {
+        EXPECT_EQ(ParamOf(c, flag), nullptr);
+        if (const auto* p = ParamOf(c, back)) found = found || std::get<bool>(p->value);
+      }
+    EXPECT_TRUE(found) << fold;
   }
   f.source.folds.clear();
   auto unpermuted = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), f.source, f.values);

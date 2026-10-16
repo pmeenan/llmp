@@ -145,6 +145,16 @@ struct Instance {
 
 // ------------------------------------------------------------------ weights
 
+// A value a component derives at run time from a role's stored one when an
+// instance's flag asks (a zero-centered norm's 1 + w, a logarithmic decay's
+// -exp(A)): the flag, and the fold (spec.h's catalog) by which an importer
+// stores the derived value instead, in F32 (D-108 as amended); a stage that
+// carries the fold leaves the flag unset. Empty: the role derives nothing.
+struct DerivedValue {
+  std::string_view flag{};
+  std::string_view fold{};
+};
+
 struct WeightRole {
   std::string_view name{};
   // The encodings it accepts. Empty: any valid format the format layer
@@ -156,6 +166,7 @@ struct WeightRole {
   // the step's lookup then reads (engine/ple_rows.h: Qwen3.8's n-gram
   // table). Its lookup's indices are a step input the engine computes.
   bool rows_on_demand = false;
+  DerivedValue derived{};
 };
 
 // A role in use for an instance and the logical shape its parameters

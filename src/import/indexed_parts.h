@@ -24,7 +24,16 @@ enum class PartAssemblyKind : std::uint8_t {
   kDenseReshape,
   kRows,
   kMatrices,
-  kSharedTensorScale
+  kSharedTensorScale,
+  // One F32 element of a dense [sources] vector per source: each source's
+  // 4-byte F32 tensor-scale part, in order (a routed-expert table's
+  // per-matrix tensor scales gathered beside its relaid-out table).
+  kScalars,
+  // A row-interleaved table's data from split row blocks (a relayout from
+  // kSplit): sources are pairs, a block's codes then its block scales, each
+  // row's codes and scales side by side in the output (PartRoutePlan::
+  // Strided); the blocks' rows in order. Its tensor scale is shared.
+  kInterleavedRows
 };
 enum class SourceDispositionKind : std::uint8_t { kRouted, kSemantic, kAuxiliary };
 struct SourceDisposition {
@@ -45,6 +54,19 @@ struct TensorAssembly {
   // One shared permutation for every part; only single-source copy/reshape.
   // Must describe this exact output format.
   std::optional<HeadPermutationPlan> permutation{};
+  // A scalar fold of one dense BF16 source into this dense F32 output of the
+  // same shape (a single kCopy part; with a permutation, the reorder of its
+  // BF16 source, PartRoutePlan::PermuteFold): FoldBf16's exact conversion
+  // (PartRoutePlan::Fold). The importer that asks for it records the
+  // applied fold (D-108 as amended, D-113).
+  std::optional<ScalarFold> fold{};
+  // A lossless relayout (D-108, D-113) from `relayout_from` (kSplit): a
+  // kMatrices assembly in format::Layout::kScaleAtoms takes format.stacked
+  // source matrices a slice, in order (gate then up), at the same bytes:
+  // codes copied, block scales by PartRoutePlan::ScaleAtoms, the sources'
+  // tensor scales not this output's (kScalars outputs); or a row table's
+  // kInterleavedRows assembly in format::Layout::kRowInterleaved.
+  std::optional<format::Layout> relayout_from{};
 };
 struct IndexedPartCost {
   std::uint64_t metadata_bytes = 0;
@@ -55,6 +77,9 @@ struct IndexedOutput {
   std::string name{};
   format::TensorFormat format{};
   format::PartList parts{};
+  // The layout its sources held when it is a relayout (the writer records
+  // it as an applied relayout, D-113).
+  std::optional<format::Layout> relayout_from{};
 };
 struct IndexedMember {
   std::uint32_t source = 0;

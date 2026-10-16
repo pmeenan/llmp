@@ -272,7 +272,7 @@ std::expected<void, DecodeError> DecodeRow(const TensorFormat& f, const Parts& p
     }
     case Layout::kSplit:
     case Layout::kRowInterleaved:
-    case Layout::kCutlassScaleAtoms: {
+    case Layout::kScaleAtoms: {
       if (f.encoding == Encoding::kAffine) {
         AffineRow(f, p, r, y);
         return {};
@@ -293,7 +293,7 @@ std::expected<void, DecodeError> DecodeRow(const TensorFormat& f, const Parts& p
       }
       for (std::uint64_t j = 0; j < k; ++j) {
         const std::uint64_t b = j / info.block_elements;
-        const std::uint8_t s = f.layout == Layout::kCutlassScaleAtoms
+        const std::uint8_t s = f.layout == Layout::kScaleAtoms
                                    ? U8(p.scales, format::ScaleAtomOffset(r, b, blocks))
                                    : U8(scales, b);
         y[j] = Code(info, codes, j) * BlockScale(f.encoding, s);

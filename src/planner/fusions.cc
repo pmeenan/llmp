@@ -83,6 +83,21 @@ bool Weight(const MatchContext& c, TensorId t) {
   return t.valid() && c.producer(t).key == Prim(Op::kWeight);
 }
 
+// A parameter: a weight, or what a component derives from one alone (a
+// convert, scale or unary of it: components/defs.h F32Parameters' F32 norm
+// weights, zero-centered norms' (1 + w), A's -exp(A_log)), which a fused
+// kernel reads as it reads a weight. Source-encoded checkpoints (D-108)
+// carry their norms and A unfolded, so their fast forms see these.
+bool Parameter(const MatchContext& c, TensorId t, int depth = 4) {
+  if (!t.valid()) return false;
+  const ir::Node& p = c.producer(t);
+  if (p.key == Prim(Op::kWeight)) return true;
+  if (depth == 0 || p.nsrc != 1 ||
+      (p.key != Prim(Op::kConvert) && p.key != Prim(Op::kScale) && p.key != Prim(Op::kUnary)))
+    return false;
+  return Parameter(c, p.src[0], depth - 1);
+}
+
 float ScaleOf(const MatchContext& c, NodeId n) { return c.node(n).Params<ir::ScaleParams>().scale; }
 
 ir::UnaryFn FnOf(const MatchContext& c, NodeId n) { return c.node(n).Params<ir::UnaryParams>().fn; }
@@ -436,7 +451,7 @@ std::optional<Mix> MixAt(const MatchContext& c, NodeId anchor) {
   }
   m.r1 = *r1;
   const auto m1 = OnlyOf(c, c.node(*r1).out[0], Op::kMul);
-  if (!m1 || c.node(*m1).src[0] != c.node(*r1).out[0] || !Weight(c, c.node(*m1).src[1])) {
+  if (!m1 || c.node(*m1).src[0] != c.node(*r1).out[0] || !Parameter(c, c.node(*m1).src[1])) {
     return std::nullopt;
   }
   m.m1 = *m1;
@@ -666,10 +681,9 @@ std::optional<Match> HcPrepMatch(const MatchContext& c, NodeId anchor) {
     if (!Has(c, Prim(Op::kMatMul), s, o, c.node(m.p).params)) return std::nullopt;
   }
   const ir::TensorDesc mixed_d = DenseDesc(Encoding::kF32, {m.width, m.rows});
-  const ir::TensorDesc rows_d =
-      Desc(format::TensorFormat{.encoding = Encoding::kMxfp8,
-                                .layout = format::Layout::kCutlassScaleAtoms,
-                                .shape = ir::ShapeOf({m.width, m.rows})});
+  const ir::TensorDesc rows_d = Desc(format::TensorFormat{.encoding = Encoding::kMxfp8,
+                                                          .layout = format::Layout::kScaleAtoms,
+                                                          .shape = ir::ShapeOf({m.width, m.rows})});
   const ir::TensorDesc rounded_d = DenseDesc(Encoding::kBF16, {m.width, m.rows});
   ir::HcFoldParams fold{.streams = static_cast<std::uint32_t>(m.hc)};
   const std::array<const ir::TensorDesc*, 2> fold_src = {&xn_d, &gate_d};
@@ -1210,7 +1224,7 @@ std::optional<Match> GdnGatesMatch(const MatchContext& c, NodeId anchor) {
   }
   const ir::Node& ad = c.node(anchor);
   const NodeId ra = Made(c, ad.src[0]);
-  if (!Is(c, ra, Op::kReshape) || !Weight(c, ad.src[1]) || Only(c, ad.src[0]) != anchor) {
+  if (!Is(c, ra, Op::kReshape) || !Parameter(c, ad.src[1]) || Only(c, ad.src[0]) != anchor) {
     return std::nullopt;
   }
   const NodeId alpha = Made(c, c.node(ra).src[0]);
@@ -1222,7 +1236,7 @@ std::optional<Match> GdnGatesMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   const auto ma = OnlyOf(c, c.node(*sp).out[0], Op::kMul);
-  if (!ma || !Weight(c, c.node(*ma).src[1])) {
+  if (!ma || !Parameter(c, c.node(*ma).src[1])) {
     return std::nullopt;
   }
   const auto rg = OnlyOf(c, c.node(*ma).out[0], Op::kReshape);
@@ -1358,7 +1372,7 @@ std::optional<Match> GdnNormGateMatch(const MatchContext& c, NodeId anchor) {
   }
   const ir::Node& nr = c.node(anchor);
   const auto nm = OnlyOf(c, nr.out[0], Op::kMul);
-  if (!nm || c.node(*nm).src[0] != nr.out[0] || !Weight(c, c.node(*nm).src[1])) {
+  if (!nm || c.node(*nm).src[0] != nr.out[0] || !Parameter(c, c.node(*nm).src[1])) {
     return std::nullopt;
   }
   const auto gm = OnlyOf(c, c.node(*nm).out[0], Op::kMul);
@@ -1409,7 +1423,7 @@ std::optional<Match> QsaPrepMatch(const MatchContext& c, NodeId anchor) {
   }
   const ir::Node& ro = c.node(anchor);
   const NodeId mm = Made(c, ro.src[0]);
-  if (!Is(c, mm, Op::kMul) || Only(c, ro.src[0]) != anchor || !Weight(c, c.node(mm).src[1])) {
+  if (!Is(c, mm, Op::kMul) || Only(c, ro.src[0]) != anchor || !Parameter(c, c.node(mm).src[1])) {
     return std::nullopt;
   }
   const NodeId nn = Made(c, c.node(mm).src[0]);
@@ -1956,7 +1970,7 @@ std::optional<Match> QsaPoolMatch(const MatchContext& c, NodeId anchor) {
   const NodeId m = Is(c, r1, Op::kReshape) ? Made(c, c.node(r1).src[0]) : NodeId{};
   const NodeId n = Is(c, m, Op::kMul) ? Made(c, c.node(m).src[0]) : NodeId{};
   const NodeId po = Is(c, n, Op::kRmsNorm) ? Made(c, c.node(n).src[0]) : NodeId{};
-  if (!Is(c, po, Op::kPool) || !Weight(c, c.node(m).src[1]) || c.node(ro).source(2).valid()) {
+  if (!Is(c, po, Op::kPool) || !Parameter(c, c.node(m).src[1]) || c.node(ro).source(2).valid()) {
     return std::nullopt;
   }
   const auto pool = c.node(po).Params<ir::PoolParams>();
@@ -2202,10 +2216,9 @@ std::optional<Match> QsaGateMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   const ir::TensorDesc& od = c.tensor(c.node(*o).src[0]);
-  const ir::TensorDesc prepared =
-      Desc(format::TensorFormat{.encoding = Encoding::kMxfp8,
-                                .layout = format::Layout::kCutlassScaleAtoms,
-                                .shape = c.tensor(g4.out[0]).shape()});
+  const ir::TensorDesc prepared = Desc(format::TensorFormat{.encoding = Encoding::kMxfp8,
+                                                            .layout = format::Layout::kScaleAtoms,
+                                                            .shape = c.tensor(g4.out[0]).shape()});
   {
     const std::array<const ir::TensorDesc*, 2> s = {&od, &prepared};
     const std::array<const ir::TensorDesc*, 1> out = {&c.tensor(c.node(*o).out[0])};
@@ -2321,7 +2334,7 @@ std::optional<Match> MoeRouterMatch(const MatchContext& c, NodeId anchor) {
   NodeId sr{};
   for (const NodeId r : c.readers(x)) {
     if (!Is(c, r, Op::kMul) || c.taken(r) || c.node(r).component != rt.component ||
-        c.node(r).src[0] != x || !Weight(c, c.node(r).src[1])) {
+        c.node(r).src[0] != x || !Parameter(c, c.node(r).src[1])) {
       continue;
     }
     const auto s = OnlyOf(c, c.node(r).out[0], Op::kSumRows);
@@ -2569,9 +2582,8 @@ namespace {
 
 // The format of an input prepared for MXFP8 tensor-core products.
 ir::TensorDesc MxfpRows(const ir::TensorDesc& x) {
-  return Desc(format::TensorFormat{.encoding = Encoding::kMxfp8,
-                                   .layout = format::Layout::kCutlassScaleAtoms,
-                                   .shape = x.shape()});
+  return Desc(format::TensorFormat{
+      .encoding = Encoding::kMxfp8, .layout = format::Layout::kScaleAtoms, .shape = x.shape()});
 }
 
 ir::TensorDesc Q8Rows(const ir::TensorDesc& x) {
@@ -2668,7 +2680,7 @@ std::optional<Match> Mxfp8InputsMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
   return PreparedInputs(c, anchor, x, MxfpRows(xd), mxfp8, Encoding::kMxfp8,
-                        format::Layout::kCutlassScaleAtoms);
+                        format::Layout::kScaleAtoms);
 }
 
 // vecq_glu: a quantized GLU of decode rows (llmp.vecq's GLU form: dense

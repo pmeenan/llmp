@@ -190,4 +190,15 @@ std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> DecodeSe
   return CompositeSelectedSource(std::move(sources));
 }
 
+std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string>
+DecodeResidentSelectedSource(std::optional<format::Encoding> encoding) {
+  std::vector<std::shared_ptr<const ggml::SelectedSource>> sources;
+  if (auto grouped = ResidentGroupedSelectedSource(encoding))
+    sources.push_back(std::move(*grouped));
+  if (auto rows = RowsSelectedSource(encoding)) sources.push_back(std::move(*rows));
+  if (auto products = ProductsSelectedSource(encoding)) sources.push_back(std::move(*products));
+  if (sources.empty()) return std::unexpected("no decode sources available for requested encoding");
+  return CompositeSelectedSource(std::move(sources));
+}
+
 }  // namespace llmp::kernels::decode

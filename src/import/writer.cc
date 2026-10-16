@@ -10,6 +10,7 @@
 #include <array>
 #include <cerrno>
 #include <format>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -22,6 +23,7 @@
 #include "base/gguf.h"
 #include "base/json.h"
 #include "components/step.h"
+#include "format/layout.h"
 #include "import/modelopt_qwen38.h"
 #include "import/route.h"
 #include "import/source_mapping.h"
@@ -140,6 +142,9 @@ struct PublicationView {
   std::span<const NormalizedPartBinding> bindings{};
   std::span<const SemanticReceipt> semantic{};
   std::span<const PlannedPartFold> planned_folds{};
+  // The trailing canonical tensors, each one whole part the importer derived
+  // from one source file whose whole content is its parsed receipt.
+  std::span<const GeneratedPart> generated{};
   const Checkpoint& source() const { return checkpoint; }
   const spec::Source& canonical() const { return canonical_source; }
   const spec::ModelSpec& spec() const { return model_spec; }
@@ -151,7 +156,9 @@ struct PublicationView {
 };
 struct Copy {
   std::uint32_t file = 0, tensor = 0;
-  std::uint64_t source = 0, destination = 0, bytes = 0, output_bytes = 0;
+  // `span`: the output range its writes lie in (an interleaved lane's rows,
+  // beside its sibling lanes; otherwise its output bytes).
+  std::uint64_t source = 0, destination = 0, bytes = 0, output_bytes = 0, span = 0;
   std::optional<PartRouteExecution> route{};
 };
 struct Destination {
@@ -177,6 +184,7 @@ struct Layout {
   std::vector<std::size_t> first_destination{};
   std::vector<SemanticCheck> semantic{};
   std::vector<artifact::AppliedFold> folds{};
+  std::vector<artifact::Relayout> relayouts{};
   std::uint32_t experts = 0;
 };
 struct GroupKey {
@@ -193,11 +201,24 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
   };
   std::map<std::pair<std::uint32_t, format::PartRole>, std::uint32_t> binding;
   std::vector<std::uint8_t> used(source.tensors.size(), 0);
+  const std::size_t bound = tensors.size() - std::min(tensors.size(), plan.generated.size());
+  if (!plan.generated.empty() && (!plan.parts || bound + plan.generated.size() != tensors.size()))
+    return Bad("generated parts need a part publication", Rule::kConfig);
+  for (std::size_t g = 0; g < plan.generated.size(); ++g) {
+    const auto& gen = plan.generated[g];
+    const auto parts = format::PartsOf(tensors[bound + g].format);
+    const auto part = parts ? parts->Find(tensors[bound + g].part) : std::nullopt;
+    if (gen.tensor != bound + g || tensors[gen.tensor].experts || !part ||
+        part->bytes != gen.bytes.size() || gen.file >= source.files.size() ||
+        source.files[gen.file].parsed.bytes != source.files[gen.file].bytes ||
+        std::ranges::any_of(source.tensors,
+                            [&](const Tensor& t) { return t.extent.file == gen.file; }))
+      return Bad("generated part identity, size or source file", Rule::kConfig);
+  }
   if (plan.parts) {
-    if (plan.bindings.size() != tensors.size() ||
-        plan.parts->dispositions().size() != source.tensors.size())
+    if (plan.bindings.size() != bound || plan.parts->dispositions().size() != source.tensors.size())
       return Bad("part publication binding or disposition count", Rule::kConfig);
-    for (std::size_t i = 0; i < tensors.size(); ++i) {
+    for (std::size_t i = 0; i < bound; ++i) {
       const auto& b = plan.bindings[i];
       if (b.output >= plan.parts->outputs().size())
         return Bad("part publication binding index", Rule::kConfig);
@@ -213,8 +234,14 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
       if (!spec::FindFold(receipt.fold) || !fold_names.insert(receipt.fold).second ||
           receipt.outputs.empty())
         return Bad("publication fold name or duplicate", Rule::kConfig);
+      // The stages that run from this artifact: a drafter's alone (stage 1,
+      // artifact 1), beside its target's carrier.
+      const bool drafter = plan.spec().stages.size() == 2 &&
+                           plan.spec().stages[1].role == spec::StageRole::kDrafter &&
+                           plan.spec().stages[1].artifact == 1;
       for (const auto& stage : plan.spec().stages)
-        if (!std::ranges::contains(stage.folds, receipt.fold))
+        if (stage.artifact == (drafter ? 1U : 0U) &&
+            !std::ranges::contains(stage.folds, receipt.fold))
           return Bad("publication fold absent from stage", Rule::kConfig);
       artifact::AppliedFold fold{.name = receipt.fold, .tensors = {}};
       std::set<std::uint32_t> folded_outputs;
@@ -231,6 +258,24 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
       std::ranges::sort(fold.tensors);
       layout.folds.push_back(std::move(fold));
     }
+    // Relayouts (D-113): every part of each relaid-out output, by the
+    // layout its sources held.
+    for (std::uint32_t o = 0; o < plan.parts->outputs().size(); ++o) {
+      const auto& output = plan.parts->outputs()[o];
+      if (!output.relayout_from) continue;
+      auto found =
+          std::ranges::find(layout.relayouts, *output.relayout_from, &artifact::Relayout::from);
+      if (found == layout.relayouts.end()) {
+        layout.relayouts.push_back({.from = *output.relayout_from, .tensors = {}});
+        found = std::prev(layout.relayouts.end());
+      }
+      for (const auto& part : output.parts.parts()) {
+        const auto at = binding.find({o, part.role});
+        if (at == binding.end()) return Bad("publication relayout part coverage", Rule::kConfig);
+        found->tensors.push_back(tensors[at->second].name);
+      }
+    }
+    for (auto& relayout : layout.relayouts) std::ranges::sort(relayout.tensors);
     std::size_t required = 0;
     for (const auto& output : plan.parts->outputs()) required += output.parts.size();
     if (binding.size() != required)
@@ -247,12 +292,12 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
       return Bad("part publication source identity or duplicate", Rule::kConfig);
     const auto parts = format::PartsOf(tensors[ti].format);
     const auto part = parts ? parts->Find(tensors[ti].part) : std::nullopt;
-    if (!part || destination > part->bytes || route.output_bytes() > part->bytes - destination)
+    if (!part || destination > part->bytes || route.span() > part->bytes - destination)
       return Bad("part publication route destination bounds", Rule::kConfig);
     auto cursor = route.Start(layout.workspace);
     if (!cursor) return std::unexpected(cursor.error());
     layout.copies.push_back({extent.file, ti, extent.offset, destination, extent.bytes,
-                             route.output_bytes(), std::move(*cursor)});
+                             route.output_bytes(), route.span(), std::move(*cursor)});
     return {};
   };
   const auto routes = plan.copy ? plan.copy->routes() : plan.copy_routes;
@@ -300,16 +345,27 @@ std::expected<void, Error> Transfers(const PublicationView& plan, Layout& layout
     return std::tie(x.tensor, x.destination) < std::tie(y.tensor, y.destination);
   });
   std::size_t next = 0;
-  for (std::size_t ti = 0; ti < tensors.size(); ++ti) {
+  for (std::size_t ti = 0; ti < bound; ++ti) {
     const auto parts = format::PartsOf(tensors[ti].format);
     const auto part = parts ? parts->Find(tensors[ti].part) : std::nullopt;
     if (!part) return Bad("part publication output format", Rule::kConfig);
     std::uint64_t at = 0;
     while (next < order.size() && layout.copies[order[next]].tensor == ti) {
+      // Copies at one destination are lanes of one span (an interleaved
+      // table's codes and scales), their writes covering it exactly.
       const auto& c = layout.copies[order[next++]];
-      if (c.destination != at || c.output_bytes > part->bytes - at)
+      if (c.destination != at || c.span > part->bytes - at)
         return Bad("part publication output gap or overlap", Rule::kConfig);
-      at += c.output_bytes;
+      std::uint64_t written = c.output_bytes;
+      while (next < order.size() && layout.copies[order[next]].tensor == ti &&
+             layout.copies[order[next]].destination == at) {
+        const auto& lane = layout.copies[order[next++]];
+        if (lane.span != c.span || lane.output_bytes > c.span - written)
+          return Bad("part publication lanes disagree on their span", Rule::kConfig);
+        written += lane.output_bytes;
+      }
+      if (written != c.span) return Bad("part publication output gap or overlap", Rule::kConfig);
+      at += c.span;
     }
     if (at != part->bytes) return Bad("part publication incomplete output", Rule::kConfig);
   }
@@ -433,8 +489,8 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
           std::string name = std::string(r.pattern);
           const auto pos = name.find("{layer}");
           if (pos != std::string::npos) name.replace(pos, 7, std::to_string(l));
-          owners.try_emplace(std::move(name),
-                             GroupKey{key.order == 2 ? 2U : key.order, key.order == 2 ? l : key.layer});
+          owners.try_emplace(std::move(name), GroupKey{key.order == 2 ? 2U : key.order,
+                                                       key.order == 2 ? l : key.layer});
         }
       } else {
         owners.try_emplace(std::string(r.pattern), key);
@@ -455,6 +511,13 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
     std::ranges::sort(indices, [&](auto a, auto b) { return tensors[a].name < tensors[b].name; });
     std::vector<std::uint32_t> dense, experts;
     for (auto i : indices) (tensors[i].experts ? experts : dense).push_back(i);
+    // In an expert group a stacked table (a MoE's gate and up) precedes its
+    // other tables, each table's parts in name order: the slot the block-
+    // scaled grouped GEMM reads at fixed offsets (kernels/ggml/moe_layout.h
+    // ExpertLayout; the runtime's admission checks them).
+    std::ranges::stable_sort(experts, [&](auto a, auto b) {
+      return tensors[a].format.stacked > tensors[b].format.stacked;
+    });
     if (!experts.empty()) {
       if (key.order != 2) return Bad("an expert array has no unique layer", Rule::kUnsupported);
       const auto count = tensors[experts.front()].format.shape.ne[2];
@@ -508,7 +571,18 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
       out.groups.push_back(std::move(g));
       return {};
     };
-    if (auto ok = add(dense, std::nullopt); !ok) return std::unexpected(ok.error());
+    // A row table of several parts (a split encoding's codes, scales and
+    // tensor scale): each part its own group, since a row-paged part owns
+    // its group alone (engine/model_runner.h RowTable). One-part tables and
+    // every other kind keep one group.
+    if (key.order == 0 && dense.size() > 1 && std::ranges::any_of(dense, [&](auto i) {
+          return tensors[i].part != format::PartRole::kData;
+        })) {
+      for (const auto i : dense)
+        if (auto ok = add({i}, std::nullopt); !ok) return std::unexpected(ok.error());
+    } else if (auto ok = add(dense, std::nullopt); !ok) {
+      return std::unexpected(ok.error());
+    }
     if (!experts.empty())
       for (std::uint32_t e = 0; e < out.experts; ++e)
         if (auto ok = add(experts, e); !ok) return std::unexpected(ok.error());
@@ -789,6 +863,29 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
     if (semantic.received != semantic.receipt->extent.bytes ||
         semantic.hash.Finish() != semantic.receipt->sha256)
       return Bad("semantic source bytes changed before publication", Rule::kConfig);
+  // Every source, each generated part's whole file included, has streamed
+  // against its parsed receipt: the derived bytes are the authenticated
+  // content's.
+  for (const auto& gen : plan.generated) {
+    std::uint64_t written = 0;
+    for (auto d = layout->first_destination[gen.tensor];
+         d < layout->first_destination[gen.tensor + 1]; ++d) {
+      const auto& target = layout->destinations[d];
+      if (target.begin != written || target.end > gen.bytes.size())
+        return Bad("generated part destination gap", Rule::kConfig);
+      FD file(::open((job / layout->shards[target.shard].path).c_str(), O_RDWR | O_CLOEXEC));
+      if (!file.valid()) return Bad("cannot reopen a staging shard");
+      const auto bytes = std::span<const std::byte>(gen.bytes).subspan(
+          static_cast<std::size_t>(target.begin),
+          static_cast<std::size_t>(target.end - target.begin));
+      if (auto ok =
+              Write(file.get(), layout->shards[target.shard].header.size() + target.output, bytes);
+          !ok)
+        return std::unexpected(ok.error());
+      written = target.end;
+    }
+    if (written != gen.bytes.size()) return Bad("generated part left unwritten", Rule::kConfig);
+  }
 
   std::vector<std::string> chunks, groups, resources, arrays, shards, transformations;
   std::vector<std::byte> buffer(artifact::kChunkBytes);
@@ -902,6 +999,13 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
     transformations.push_back(
         O({{"kind", Q("fold")}, {"fold", Q(fold.name)}, {"tensors", A(names)}}));
   }
+  for (const auto& relayout : layout->relayouts) {
+    std::vector<std::string> names;
+    for (const auto& name : relayout.tensors) names.push_back(Q(name));
+    transformations.push_back(O({{"kind", Q("relayout")},
+                                 {"from", Q(format::Info(relayout.from).name)},
+                                 {"tensors", A(names)}}));
+  }
   std::ranges::sort(transformations);
   const auto manifest = O({{"experimental", "true"},
                            {"files", A(file_list)},
@@ -909,7 +1013,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
                            {"format_version", "1"},
                            {"importer", O({{"build", Q(options.build)},
                                            {"name", Q("llmp-import")},
-                                           {"options_sha256", Q(Hex(""))},
+                                           {"options_sha256", Q(Hex(options.options))},
                                            {"version", Q("1")}})},
                            {"layout", O({{"byte_order", Q("little")},
                                          {"chunk_bytes", N(artifact::kChunkBytes)},
@@ -1030,6 +1134,21 @@ std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
                   .model_spec = plan.spec,
                   .payload = plan.payload_bytes,
                   .copy_routes = plan.routes},
+                 options);
+}
+
+std::expected<WriteResult, Error> WriteArtifact(const ModelOptDrafterPlan& plan,
+                                                const WriteOptions& options) {
+  if (options.options != plan.options())
+    return Bad("drafter publication options differ from its plan's", Rule::kConfig);
+  return Publish({.checkpoint = plan.parts().source(),
+                  .canonical_source = plan.canonical(),
+                  .model_spec = plan.spec(),
+                  .payload = plan.cost().payload_bytes,
+                  .parts = &plan.parts(),
+                  .bindings = plan.bindings(),
+                  .planned_folds = plan.planned_folds(),
+                  .generated = plan.generated()},
                  options);
 }
 
