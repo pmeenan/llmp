@@ -231,3 +231,23 @@ Screens, then quality, then the gates in this order: gemma2, gemma3, gemma26,
 gemma31, the 31B assistant, qwen38, qwen38-gguf, deepseek plain, deepseek DSpark.
 Total GPU time about 9.5 h at the scheduled blocks (minimums; DeepSeek's six), more
 for each extension, serially on this one host.
+
+## Amendment — tiered gates on both Sparks (owner, 2026-10-16)
+
+Registered before any gate run, after the screens above. The owner chose to cut
+the final pass from about 9.5 GPU-hours on one host to a tiered pass on both:
+
+- **Hosts.** Families are split across `spark` and `spark-b`; each family runs
+  wholly on one host, against that host's frozen `1facc957-fixed` install (the
+  old arm matched its baseline means on spark-b within 0.7–2.5%).
+- **Tier 1, confirmation.** Every family first runs a 2-block ABBA set
+  (`speed_gate.py plan --blocks 2`). A family whose every gated metric has a
+  2-block mean slowdown of at most +0.5% passes on that confirmation.
+- **Tier 2, full gate.** A family with any metric above +0.5% in tier 1, and
+  every family not validly gated on the migrated engine (DeepSeek DSpark
+  speculative waves; Gemma 4 26B after its regression fix), runs the registered
+  full gate (minimum blocks above, extended to the registered maximum while
+  the verdict says CONTINUE).
+- Quality, peak-memory reporting and the bounds above are unchanged. The
+  image family keeps its full gate on `c8f0f80b` (PASS, −0.36%); after the
+  image constants slice it is re-confirmed by tier 1.
