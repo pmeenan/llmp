@@ -1479,6 +1479,11 @@ class Image : public Served {
   virtual Status FirstOutput(std::string& sha) = 0;
   // The remaining steps and the decoder; the RGBA pixels' SHA-256.
   virtual Status Finish(std::string& sha) = 0;
+  // Ends a generation stopped after its first output without finishing it
+  // (the swap table's B, whose endpoint is that output): the next
+  // FirstOutput starts a generation again and a request may be prepared.
+  // Nothing in flight; a completed or unstarted generation is unchanged.
+  virtual Status Abandon() = 0;
 };
 
 // The reclaim order's candidates for `model`'s idle conversations

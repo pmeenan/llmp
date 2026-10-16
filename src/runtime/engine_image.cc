@@ -726,6 +726,15 @@ Status EngineImage::Finish(std::string& sha) {
   return result;
 }
 
+Status EngineImage::Abandon() {
+  if (!state_ || state_->unknown || state_->flight || state_->released)
+    return Error("image abandon requires an idle, known generation");
+  // Only the position: what the stopped generation wrote is overwritten by
+  // the next one's stages, from its initial ports on.
+  if (!state_->generation_complete) state_->next = 0;
+  return {};
+}
+
 std::uint64_t EngineImage::activations_needed() const {
   return state_ ? state_->activation_bytes : 0;
 }

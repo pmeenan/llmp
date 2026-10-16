@@ -381,6 +381,35 @@ TEST_F(EngineImageTest, DeviceHandoffAndChangedInputsSurviveRepeatedGenerations)
   EXPECT_EQ(life->trace->executed, 6U);
   EXPECT_EQ(life->trace->live_programs, 2U);
 }
+// A generation stopped after its first output (the swap table's B) is
+// refused another first output until it is abandoned; then it starts again,
+// takes a new request and finishes as an unstopped one does.
+TEST_F(EngineImageTest, AnAbandonedFirstOutputStartsAgain) {
+  const auto started = life->Start(path);
+  ASSERT_TRUE(started) << Failed(started).value_or("");
+  std::string first, again, output, control;
+  ASSERT_TRUE(life->image->Abandon());  // unstarted: unchanged
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  const auto refused = life->image->FirstOutput(again);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error(), "image first output order");
+  EXPECT_FALSE(life->image->PrepareRequest({.prompt = "changed"}));
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    ASSERT_TRUE(life->image->Abandon());
+    ASSERT_TRUE(life->image->FirstOutput(again));
+    EXPECT_EQ(again, first);
+  }
+  ASSERT_TRUE(life->image->Finish(output));
+  EXPECT_EQ(output, first);
+  ASSERT_TRUE(life->image->Abandon());  // completed: unchanged
+  EXPECT_FALSE(life->image->Finish(control));
+  ASSERT_TRUE(life->image->Abandon());
+  ASSERT_TRUE(life->image->PrepareRequest({.prompt = "changed"}));
+  ASSERT_TRUE(life->image->FirstOutput(again));
+  ASSERT_TRUE(life->image->Finish(control));
+  EXPECT_NE(control, output);  // the changed request's content
+  EXPECT_EQ(life->trace->executed, 6U);
+}
 TEST_F(EngineImageTest, GeometryGrowthRetiresOnlyOwnedPortsAndKeepsWorkspaceAddresses) {
   ASSERT_TRUE(life->Start(path, false, true));
   const auto managed = life->image->managed_extents();

@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- `llmp-runtime swap-table` runs its prepared rows with the image model as
+  B again: B's generation ends at its first output (the row's endpoint, as
+  an LLM B's conversation does) instead of staying unfinished, which
+  refused the next cycle's first output ("image first output order") and
+  the next pair's image control.
 - The native MLX importer publishes Qwen3.8 as `qwen4exp` (its mapping's
   architecture), not `config.json`'s `qwen4_exp`.
 - Importing from an archived or staged revision no longer refuses a

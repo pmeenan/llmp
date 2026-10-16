@@ -520,7 +520,13 @@ Status Table::Context(Llm& a) {
 Status Table::FirstOutput(Served& b, std::string& hash) {
   return server_.InRequest(b, [&]() -> Status {
     if (!b.llm()) {
-      return static_cast<Image&>(b).FirstOutput(hash);
+      // B's generation ends at its endpoint (as an LLM B's conversation
+      // does, below): the next cycle's first output starts it again.
+      auto& image = static_cast<Image&>(b);
+      if (auto r = image.FirstOutput(hash); !r) {
+        return r;
+      }
+      return image.Abandon();
     }
     auto& l = static_cast<Llm&>(b);
     chat::Conversation c;

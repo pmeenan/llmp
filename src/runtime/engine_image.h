@@ -150,6 +150,7 @@ class EngineImage final : public Image, public engine::PagedModel {
   Status ReplaceGeometry(ImageGeometry geometry);
   Status FirstOutput(std::string& sha) override;
   Status Finish(std::string& sha) override;
+  Status Abandon() override;
 
  private:
   engine::PagedNode& node_;
