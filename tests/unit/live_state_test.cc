@@ -15,6 +15,7 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -1511,6 +1512,58 @@ TEST(LiveStateBufferTest, UnprovenCopyRefusesReuseAndKeepsItsDestinationUntilExi
   EXPECT_EQ(node.kept_pinned(), 1);
   ASSERT_TRUE(node.TearDown({}));
   // Deliberately retained, as a real unknown-completion destination is.
+}
+
+// After Run the device-memory provider is the backing lane's alone, and the
+// lane refills its handle reserve in the background from the moment it
+// starts: a state region reserved from another thread then (as the unknown-
+// owner test of gemma_engine_serving_gpu_test.cc does) has its reservation
+// made on that lane and its extents cataloged on the scheduler's thread,
+// never beside a refill ("two threads changed a VMM provider at once").
+TEST(LiveStateAfterRunTest, AGrowingRegionAddedAfterRunReservesOnTheBackingLane) {
+  constexpr std::size_t kReserve = 32;
+  constexpr int kRegions = 8;
+  en::PagedNode node(en::NodeSettings{.compute_streams = 1,
+                                      .slots = 2,
+                                      .copy_lane = true,
+                                      .handle_reserve = kReserve,
+                                      .slot_bytes = kExtent});
+  ASSERT_TRUE(node.Open());
+  const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + ((kReserve + 16) * kExtent))));
+  node.Run();
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
+  ASSERT_NE(scratch, nullptr);
+  std::vector<std::unique_ptr<BareState>> late;
+  for (int i = 0; i < kRegions; ++i) {
+    auto& state = *late.emplace_back(std::make_unique<BareState>(node));
+    auto added = state.live.AddGrowing(node, "a late cache", 2 * kExtent, 0);
+    ASSERT_TRUE(added) << llmp::test_support::Failed(added).value_or("");
+    ASSERT_EQ(state.live.reserved_extents().size(), 2U);
+    auto registered = node.Call(
+        [&]() -> en::Status {
+          for (const auto id : state.live.reserved_extents()) {
+            const auto view = node.catalog().Describe(id);
+            if (!view || view->state != llmp::catalog::ExtentState::kNonresident ||
+                view->descriptor.memory_class != llmp::catalog::MemoryClass::kLiveState)
+              return std::unexpected("a late state extent is not cataloged nonresident state");
+          }
+          return state.live.RegisterSpill(node, std::filesystem::path(scratch));
+        },
+        "registering a late state's spill");
+    ASSERT_TRUE(registered) << llmp::test_support::Failed(registered).value_or("");
+  }
+  // The last one pages in at its place and is usable.
+  auto& used = *late.back();
+  const std::array ranges = {en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  ASSERT_TRUE(used.live.Use(node, ranges));
+  ASSERT_TRUE(used.Refresh());
+  EXPECT_EQ(used.live.extents().size(), 1U);
+  std::vector<en::PagedModel*> models;
+  for (const auto& state : late) models.push_back(state.get());
+  auto closed = node.TearDown(models);
+  EXPECT_TRUE(closed) << llmp::test_support::Failed(closed).value_or("");
 }
 
 }  // namespace

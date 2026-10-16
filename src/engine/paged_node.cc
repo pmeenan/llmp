@@ -609,8 +609,104 @@ Status PagedNode::MapResident(Mapped& mapped, std::string name, std::uint64_t by
 }
 
 Status PagedNode::ReserveState(Mapped& mapped, std::string name, std::uint64_t bytes, int owner) {
-  return MapRegion(mapped, std::move(name), bytes, providers::BackingKind::kDevice,
-                   MemoryClass::kLiveState, catalog::Recovery::kPreserve, owner, false);
+  if (threads_.empty()) {
+    // Before Run (or lanes driven on this thread): nothing else calls the
+    // provider or touches the catalog meanwhile.
+    return MapRegion(mapped, std::move(name), bytes, providers::BackingKind::kDevice,
+                     MemoryClass::kLiveState, catalog::Recovery::kPreserve, owner, false);
+  }
+  // After Run the VMM provider is the backing lane's alone (its handle
+  // reserve refills in the background) and the catalog the scheduler's: the
+  // reservation goes to the lane, the extents to the scheduler's thread.
+  // Never from inside a Call: both wait for the scheduler.
+  if (mapped.reservation.valid()) return Error("a mapped region cannot be overwritten");
+  if (job_active_ || supplemental_ || torn_down_ ||
+      bytes > std::numeric_limits<std::uint64_t>::max() - kPagedExtent + 1)
+    return Error("state reservation has invalid size or an unretired operation");
+  const std::uint64_t rounded =
+      (std::max<std::uint64_t>(bytes, 1) + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
+  const std::uint64_t count = rounded / kPagedExtent;
+  // The host metadata it adds (catalog and span entries), as GrowPageable
+  // charges it.
+  if (count > (UINT64_MAX - 4096) / 1024) return Error("state reservation metadata overflows");
+  const std::uint64_t metadata = count * 1024 + 4096;
+  if (!TryChargeHost(metadata)) return Error("state reservation metadata does not fit");
+  auto result = std::make_shared<sc::RegionResult>();
+  if (auto reserved = Region({.kind = sc::RegionWork::Kind::kReserve,
+                              .size = Bytes(rounded),
+                              .extent_size = Bytes(kPagedExtent),
+                              .offset = {},
+                              .allocation_class = 0,
+                              .reservation = {},
+                              .result = result},
+                             "reserving a state region");
+      !reserved) {
+    UnchargeHost(metadata);
+    return reserved;
+  }
+  const std::uint64_t at_base = result->base;
+  std::vector<ExtentId> extents;
+  extents.reserve(static_cast<std::size_t>(count));
+  auto cataloged = RegionCatalog(
+      [&]() -> Status {
+        // No physical effect: each extent is NONRESIDENT until its page
+        // source materializes it, as MapRegion catalogs one before Run.
+        spans_.reserve(spans_.size() + static_cast<std::size_t>(count));
+        for (std::uint64_t at = 0; at < rounded; at += kPagedExtent) {
+          const auto extent = catalog_.AddExtent({.domain = domain_,
+                                                  .memory_class = MemoryClass::kLiveState,
+                                                  .recovery = catalog::Recovery::kPreserve,
+                                                  .size = Bytes(kPagedExtent),
+                                                  .content = {}},
+                                                 false);
+          if (!extent) {
+            for (const ExtentId added : extents)
+              base::Check(catalog_.RemoveExtent(added).has_value(), "an unpublished state extent");
+            extents.clear();
+            return Error(std::format("cataloging {}", name));
+          }
+          extents.push_back(*extent);
+        }
+        for (std::size_t i = 0; i < extents.size(); ++i) {
+          AddSpan({.base = at_base + (i * kPagedExtent),
+                   .size = kPagedExtent,
+                   .extent = extents[i],
+                   .memory_class = MemoryClass::kLiveState,
+                   .device = true,
+                   .owner = owner});
+        }
+        SortSpans();
+        return {};
+      },
+      "cataloging a state region");
+  if (!cataloged) {
+    // Nothing of it is cataloged: its empty reservation goes back.
+    if (auto freed = Region({.kind = sc::RegionWork::Kind::kFree,
+                             .size = {},
+                             .extent_size = Bytes(kPagedExtent),
+                             .offset = {},
+                             .allocation_class = 0,
+                             .reservation = result->reservation,
+                             .result = result},
+                            "freeing an uncataloged state reservation");
+        !freed) {
+      // Kept owned by the region, released with it at teardown.
+      mapped.name = std::move(name);
+      mapped.reservation = result->reservation;
+      mapped.base = at_base;
+      mapped.metadata_bytes = metadata;
+      return freed;
+    }
+    UnchargeHost(metadata);
+    return cataloged;
+  }
+  mapped.name = std::move(name);
+  mapped.reservation = result->reservation;
+  mapped.base = at_base;
+  mapped.bytes = mapped.capacity_bytes = rounded;
+  mapped.extents = std::move(extents);
+  mapped.metadata_bytes = metadata;
+  return {};
 }
 
 Status PagedNode::MapRegion(Mapped& mapped, std::string name, std::uint64_t bytes,
@@ -618,6 +714,9 @@ Status PagedNode::MapRegion(Mapped& mapped, std::string name, std::uint64_t byte
                             catalog::Recovery recovery, int owner, bool resident,
                             std::uint64_t virtual_capacity) {
   if (mapped.reservation.valid()) return Error("a mapped region cannot be overwritten");
+  // It calls the provider and the catalog from this thread: after Run they
+  // are the backing lane's and the scheduler's (ReserveState, GrowMapped).
+  if (!threads_.empty()) return Error("a region is mapped directly only before Run");
   if (bytes > std::numeric_limits<std::uint64_t>::max() - kPagedExtent + 1) {
     return Error("a region's size overflows its extent alignment");
   }

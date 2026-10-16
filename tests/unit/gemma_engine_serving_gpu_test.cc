@@ -1496,13 +1496,12 @@ TEST_P(GemmaEngineGemma3Gpu, UnprovenPreparationStopsServerBeforeOwnerDestructio
         // It and the Server remain alive until the guard terminates this child.
         auto owned_state = std::make_unique<en::LiveState>("unknown-owner-control");
         auto& state = *owned_state;
-        if (!node.Call(
-                [&]() -> en::Status {
-                  if (auto r = state.AddGrowing(node, "unknown owner", en::kPagedExtent, 0); !r)
-                    return r;
-                  return state.RegisterSpill(node, scratch);
-                },
-                "register independent preparation owner"))
+        // Its reservation goes through the backing lane (never from inside a
+        // Call: the lane may be refilling its handle reserve meanwhile), its
+        // spill source on the scheduler's thread.
+        if (!state.AddGrowing(node, "unknown owner", en::kPagedExtent, 0) ||
+            !node.Call([&]() -> en::Status { return state.RegisterSpill(node, scratch); },
+                       "register independent preparation owner"))
           std::_Exit(71);
         const std::array ranges = {en::LiveState::Range{0, 0, 16}};
         if (!state.Prepare(node, ranges).value_or(false) || !node.has_pending_state_preparation())

@@ -522,7 +522,9 @@ class PagedNode {
                      catalog::Recovery recovery, int owner);
   // Reserves a live-state region and catalogs its extents without physical
   // backing. Each extent is materialized through its registered page source
-  // before a job reads or writes it. Before Start.
+  // before a job reads or writes it. Normally before Start; after Run the
+  // reservation goes through the backing lane and the catalog through the
+  // scheduler's thread, so never from inside a Call.
   Status ReserveState(Mapped& mapped, std::string name, std::uint64_t bytes, int owner);
   // Pinned host memory, cataloged as staging. After Run, added on the
   // scheduler's thread within the execution budget: what does not fit has

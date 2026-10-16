@@ -161,6 +161,9 @@ PagedWeights::Status PagedWeights::Reserve(PagedNode& node, std::span<const Grou
   if (!opened()) {
     return Error("the weights' artifact is not open");
   }
+  // It calls the provider from this thread: after Run that is the backing
+  // lane's alone (paged_node.h ReserveState).
+  if (node.threaded()) return Error("the weights are reserved only before Run");
   const artifact::Artifact& artifact = *artifact_;
   const auto groups = artifact.groups();
   if (place.size() != groups.size()) {
