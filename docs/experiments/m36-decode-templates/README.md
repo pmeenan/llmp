@@ -147,3 +147,38 @@ logs/XML remain outside Git under `/tmp/llmp-m36-coordination/`.
 | `native-split-rows-main-gpu04/results/result.json` | `988ca4a431320370dd162f71b70c603c8e891c70d4ed950eb88f7884e587e3d2` |
 | `native-split-rows-main-gpu04/results/models.xml` | `9592b8aea7ee575b978a0de91d819f38fbe8f8fe3e6fe135eaa01d4655ab089a` |
 | source05 independent capture challenge | `63c67ff808606a56d13d250ae9df7c338bbb30d0e7b26fe3a8f49f0b3715febb` |
+
+## sm_86 proof on the v1 ModelOpt artifact (2026-10-16)
+
+The Formats exit criterion, re-run on the workstation's discrete GPU
+against the v1 artifact: `qwen38_decode_proof_test` (4 tests, labels
+`gpu`, `models`, `gpu-discrete`) at `343d375e` (clean tree), `native`
+preset `--locked`, `mise run test -- native --gpu`, restricted with
+`-R Qwen38DecodeProof`, under `hostlock shared --label "llmp: sm_86
+proof"`. GPU: RTX 3080 Ti, `sm_86`. Artifact: the v1 ModelOpt target
+`d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d`,
+read through `LLMP_QWEN38_PROOF_ARTIFACT` from a partial copy (manifest,
+index, spec and meta whole; every shard at full size, sparse, with its
+header and only the byte ranges the test reads present; 1.5 GiB on disk,
+in shards 00001, 00002, 00003 and 00019). All 4 pass, none skipped.
+Errors are the largest observed over the checked outputs, as a fraction of
+the test's per-element bound (1.0 is the tolerance):
+
+| Product | Result | Largest error of its bound |
+| --- | --- | --- |
+| MXFP8 projections, layer 1 and 3 (13 tensors, vector 1 and 16 rows, matrix 512 rows) | pass | 0.124 (`ffn_down_shexp`, matrix 512); vector products at most 0.001 |
+| Shared-expert gate and up as one vector GLU, 1 and 16 rows | pass | within its bound (the GLU asserts, it prints no ratio) |
+| BF16 products (hyper-connection, n-gram key and value, router, shared gate, output head and its hyper-connection) | pass | 0.263 (`hc_attn_up`, K 320, matrix 512); head `output` 0.055 |
+| NVFP4 routed experts, `scale_atoms` (grouped gate_up and down over 30 of 512 experts, 1, 16 and 512 tokens; one expert's vector GLU and down) | pass | grouped gate_up 0.063, grouped down 0.116, one expert's down (matrix 512) 0.104 |
+| NVFP4 row-interleaved n-gram rows (3,072 rows, 1 to 3,072 ids) | pass | bit-exact against the reference decode |
+
+Device memory: no product's run took device memory (0.0 MiB, bound 8 MiB),
+and none exceeded its allocations (peak 250 MiB layers, 1,722 MiB head,
+160 MiB experts). The test passed on first execution of the copy; the
+earlier setup problems were environmental, not the test's: the copy needed
+every shard's header (`Artifact::Open` checks them all), and this build
+tree's discrete-GPU run needed `LD_LIBRARY_PATH=build/native/cublas`, since
+the `native-gpu` test preset does not set it and some test binaries
+(`expert_slab_test` and others) are linked without the cuBLAS run path, so
+CTest's discovery failed without it. `nvidia-smi` reports a driver/library
+mismatch (kernel module 595.91.07, user space 595.99.02); CUDA itself ran.
