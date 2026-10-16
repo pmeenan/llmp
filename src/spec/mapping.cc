@@ -916,6 +916,25 @@ const Mapping* FindMapping(std::string_view architecture) {
   return nullptr;
 }
 
+std::vector<std::string_view> SourceKeys(const Mapping& m) {
+  std::vector<std::string_view> keys;
+  const auto add = [&](std::string_view key) {
+    if (!key.empty() && std::ranges::find(keys, key) == keys.end()) keys.push_back(key);
+  };
+  add(m.layer_count_key);
+  add(m.layer_type_key);
+  add(m.layer_flags_key);
+  for (const SlotRule& s : m.slots) {
+    add(s.gate);
+    add(s.layers_key);
+    add(s.count_key);
+  }
+  for (const ParamRule& p : m.params) add(p.key);
+  for (const ReadRule& r : m.reads) add(r.layers_key);
+  for (const PolicyRule& p : m.policies) add(p.gate);
+  return keys;
+}
+
 Status ValidateMapping(const Mapping& m) {
   const std::string where = std::format("mapping {}", m.architecture);
   if (!IsArchitecture(m.architecture) || m.version == 0 ||

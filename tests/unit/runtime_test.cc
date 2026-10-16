@@ -1199,29 +1199,23 @@ TEST(TokenStorage, AdmissionCreditsTheProspectiveBoundaryAndOtherCatalogRelease)
 TEST(ServiceDiagnostics, CompletePaymentIsRequiredBeforeOptionsChange) {
   using llmp::runtime::ApplyServiceDiagnostics;
   llmp::runtime::ServingOptions options;
-  EXPECT_TRUE(ApplyServiceDiagnostics(options, std::nullopt, std::nullopt, std::nullopt));
-  EXPECT_FALSE(options.diagnostic_component_solo);
-  const auto refused = [&](std::optional<std::string_view> select,
-                           std::optional<std::string_view> bytes,
+  EXPECT_TRUE(ApplyServiceDiagnostics(options, std::nullopt, std::nullopt));
+  EXPECT_EQ(options.diagnostic_startup_host_bytes, 0);
+  const auto refused = [&](std::optional<std::string_view> bytes,
                            std::optional<std::string_view> cap) {
-    EXPECT_FALSE(ApplyServiceDiagnostics(options, select, bytes, cap));
-    EXPECT_FALSE(options.diagnostic_component_solo);
+    EXPECT_FALSE(ApplyServiceDiagnostics(options, bytes, cap));
     EXPECT_EQ(options.diagnostic_startup_host_bytes, 0);
     EXPECT_FALSE(options.diagnostic_budget_cap_bytes.has_value());
   };
-  refused("1", std::nullopt, "8388608");
-  refused(std::nullopt, "2097152", "8388608");
-  refused("1", "2097152", std::nullopt);
-  refused("0", "2097152", "8388608");
-  refused("", "2097152", "8388608");
+  refused(std::nullopt, "8388608");
+  refused("2097152", std::nullopt);
   for (const std::string_view value :
        {"", "0", "-1", "+2097152", " 2097152", "2097152x", "18446744073709551616", "2097153"}) {
-    refused("1", value, "8388608");
-    refused("1", "2097152", value);
+    refused(value, "8388608");
+    refused("2097152", value);
   }
-  refused("1", "8388608", "2097152");
-  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "2097152", "8388608"));
-  EXPECT_TRUE(options.diagnostic_component_solo);
+  refused("8388608", "2097152");
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "2097152", "8388608"));
   EXPECT_EQ(options.diagnostic_startup_host_bytes, 2097152);
   EXPECT_EQ(options.diagnostic_budget_cap_bytes, 8388608);
 }
@@ -1229,13 +1223,13 @@ TEST(ServiceDiagnostics, CompletePaymentIsRequiredBeforeOptionsChange) {
 TEST(ServiceDiagnostics, AutoKeepsStrictTupleAndNumericCompatibility) {
   using namespace llmp::runtime;
   ServingOptions options;
-  EXPECT_FALSE(ApplyServiceDiagnostics(options, "1", "auto", std::nullopt));
-  EXPECT_FALSE(ApplyServiceDiagnostics(options, "1", "auto", "2097153"));
+  EXPECT_FALSE(ApplyServiceDiagnostics(options, "auto", std::nullopt));
+  EXPECT_FALSE(ApplyServiceDiagnostics(options, "auto", "2097153"));
   EXPECT_FALSE(options.diagnostic_auto_startup);
-  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "auto", "8388608"));
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "auto", "8388608"));
   EXPECT_TRUE(options.diagnostic_auto_startup);
   EXPECT_EQ(options.diagnostic_startup_host_bytes, 0U);
-  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "2097152", "8388608"));
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "2097152", "8388608"));
   EXPECT_FALSE(options.diagnostic_auto_startup);
   EXPECT_EQ(options.diagnostic_startup_host_bytes, 2097152U);
 }
@@ -1243,14 +1237,14 @@ TEST(ServiceDiagnostics, AutoKeepsStrictTupleAndNumericCompatibility) {
 TEST(ServiceDiagnostics, FirstVerifyCaptureRequiresTheCompletePaidOptIn) {
   using namespace llmp::runtime;
   ServingOptions options;
-  EXPECT_FALSE(ApplyServiceDiagnostics(options, std::nullopt, std::nullopt, std::nullopt, "1"));
+  EXPECT_FALSE(ApplyServiceDiagnostics(options, std::nullopt, std::nullopt, "1"));
   for (const std::string_view invalid : {"", "0", "true", " 1"})
-    EXPECT_FALSE(ApplyServiceDiagnostics(options, "1", "auto", "8388608", invalid));
-  EXPECT_FALSE(options.diagnostic_component_solo);
+    EXPECT_FALSE(ApplyServiceDiagnostics(options, "auto", "8388608", invalid));
+  EXPECT_FALSE(options.diagnostic_auto_startup);
   EXPECT_FALSE(options.diagnostic_capture_first_verify);
-  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "auto", "8388608", "1"));
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "auto", "8388608", "1"));
   EXPECT_TRUE(options.diagnostic_capture_first_verify);
-  ASSERT_TRUE(ApplyServiceDiagnostics(options, "1", "auto", "8388608"));
+  ASSERT_TRUE(ApplyServiceDiagnostics(options, "auto", "8388608"));
   EXPECT_FALSE(options.diagnostic_capture_first_verify);
 }
 
@@ -1258,8 +1252,7 @@ TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartia
   const int status = CrashChild([] {
     // This isolated child changes its environment before starting any threads.
     // NOLINTBEGIN(concurrency-mt-unsafe)
-    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0 ||
-        ::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
+    if (::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
         ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0 ||
         ::unsetenv("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY") != 0)
       std::_Exit(2);
@@ -1267,16 +1260,15 @@ TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartia
     options.plain = true;
     options.report = "swap.json";
     if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
-        !options.diagnostic_component_solo || !options.diagnostic_auto_startup ||
-        options.diagnostic_budget_cap_bytes != 8388608 || !options.plain ||
-        options.report != "swap.json" || options.keep_conversations)
+        !options.diagnostic_auto_startup || options.diagnostic_budget_cap_bytes != 8388608 ||
+        !options.plain || options.report != "swap.json" || options.keep_conversations)
       std::_Exit(3);
     if (::unsetenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES") != 0) std::_Exit(4);
     // NOLINTEND(concurrency-mt-unsafe)
     llmp::runtime::ServingOptions refused;
     refused.plain = true;
     if (llmp::runtime::ApplyServiceDiagnosticEnvironment(refused) ||
-        refused.diagnostic_component_solo || !refused.plain)
+        refused.diagnostic_auto_startup || refused.diagnostic_budget_cap_bytes || !refused.plain)
       std::_Exit(5);
     std::_Exit(0);
   });
@@ -1284,45 +1276,27 @@ TEST(ServiceDiagnostics, EnvironmentPreservesLocalCommandOptionsAndRefusesPartia
   EXPECT_EQ(WEXITSTATUS(status), 0);
 }
 
-TEST(ServiceDiagnostics, FundedTupleSelectsEveryPipelineAndTheQwenSelectorStaysNarrower) {
+// The retired per-architecture selector (LLMP_DIAGNOSTIC_COMPONENT_QWEN) no
+// longer narrows or funds anything: the funded pair alone decides.
+TEST(ServiceDiagnostics, TheRetiredComponentSelectorIsIgnored) {
   const int status = CrashChild([] {
     // NOLINTBEGIN(concurrency-mt-unsafe): isolated child before serving threads
-    if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN") != 0 ||
-        ::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
-        ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0 ||
+    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0 ||
+        ::unsetenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES") != 0 ||
+        ::unsetenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES") != 0 ||
         ::unsetenv("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY") != 0)
       std::_Exit(2);
     llmp::runtime::ServingOptions options;
     if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
-        !options.diagnostic_component_solo || !options.diagnostic_component_all ||
-        !options.diagnostic_auto_startup)
+        options.diagnostic_auto_startup || options.diagnostic_budget_cap_bytes)
       std::_Exit(3);
-    // The Qwen-only selector narrows the scope without changing the payment.
-    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0) std::_Exit(4);
-    llmp::runtime::ServingOptions narrow;
-    if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(narrow) ||
-        narrow.diagnostic_component_all || !narrow.diagnostic_component_solo ||
-        narrow.diagnostic_budget_cap_bytes != 8388608)
+    if (::setenv("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES", "auto", 1) != 0 ||
+        ::setenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES", "8388608", 1) != 0)
+      std::_Exit(4);
+    llmp::runtime::ServingOptions funded;
+    if (!llmp::runtime::ApplyServiceDiagnosticEnvironment(funded) ||
+        !funded.diagnostic_auto_startup || funded.diagnostic_budget_cap_bytes != 8388608)
       std::_Exit(5);
-    // A malformed selector refuses without mutating the resolved tuple.
-    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "all", 1) != 0) std::_Exit(6);
-    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(options) ||
-        !options.diagnostic_component_all || options.diagnostic_budget_cap_bytes != 8388608)
-      std::_Exit(7);
-    // A partial tuple refuses, with or without the selector.
-    if (::unsetenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN") != 0 ||
-        ::unsetenv("LLMP_DIAGNOSTIC_NODE_CAP_BYTES") != 0)
-      std::_Exit(8);
-    llmp::runtime::ServingOptions partial;
-    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(partial) ||
-        partial.diagnostic_component_solo)
-      std::_Exit(9);
-    // The same partial tuple refuses under the Qwen-only selector.
-    if (::setenv("LLMP_DIAGNOSTIC_COMPONENT_QWEN", "1", 1) != 0) std::_Exit(10);
-    llmp::runtime::ServingOptions partial_qwen;
-    if (llmp::runtime::ApplyServiceDiagnosticEnvironment(partial_qwen) ||
-        partial_qwen.diagnostic_component_solo)
-      std::_Exit(11);
     // NOLINTEND(concurrency-mt-unsafe)
     std::_Exit(0);
   });

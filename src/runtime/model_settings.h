@@ -43,12 +43,15 @@
 #include "artifact/gguf_metadata.h"
 #include "base/sha256.h"
 #include "config/node_config.h"
+#include "spec/spec.h"
 #include "tokenizer/tokenizer.h"
 
-namespace llmp::model {
-struct Gemma4Profile;
+namespace llmp::spec {
+struct ServingRecipe;
 }
 namespace llmp::runtime {
+
+struct Approval;
 
 enum class SettingSource : std::uint8_t { kDerived, kCalibrated, kOverride, kFallback };
 std::string_view SourceName(SettingSource source);
@@ -65,21 +68,18 @@ struct Setting {
 // calibration on the machine measures it or the owner overrides it.
 
 // Prefill chunk rows (docs/runtime-serving.md#prefill-chunks-and-
-// cancellation): the fastest through the runtime at 8K and 32K within the
-// memory bound (DeepSeek: 4,096 rows 12-15% faster than 2,048, 8,192 no
-// faster). DeepSeek's attention mask is sized for the whole context, so
-// above 262,144 tokens it takes 2,048 rows: at 1,048,576, 4,096 would fix
-// 2.14 GiB more and take that from the measured 1M conversation's state.
-inline constexpr std::uint32_t kDsv4PrefillRows = 4096;
-inline constexpr std::uint32_t kDsv4DeepPrefillRows = 2048;
-inline constexpr std::uint32_t kDsv4WidePrefillContext = 262144;  // the widest at 4,096
-inline constexpr std::uint32_t kQwen38PrefillRows = 4096;
+// cancellation) are each architecture's serving recipe's
+// (spec/mapping.h ServingRecipe): the fastest through the runtime at 8K and
+// 32K within the memory bound (DeepSeek: 4,096 rows 12-15% faster than
+// 2,048, 8,192 no faster; its attention mask is sized for the whole
+// context, so above 262,144 tokens it takes 2,048 rows: at 1,048,576, 4,096
+// would fix 2.14 GiB more and take that from the measured 1M
+// conversation's state), as are a speculating model's most owners (DeepSeek
+// with DSpark: eight, a verify of at least two of a wave's sixteen rows).
 // Request slots: the knee where another slot stops raising the completed
 // rate enough to pay for slowing every request (D-104; docs/experiments/
-// request-slots). DeepSeek with DSpark takes at most eight: a verify of at
-// least two of a wave's sixteen rows.
+// request-slots).
 inline constexpr std::uint32_t kDefaultSlots = 4;
-inline constexpr std::uint32_t kDsv4SpeculativeMostSlots = 8;
 // The reclaim order's cost of dropped conversation state, recomputed by
 // prefill, a token of the conversation (Server::Reclaim): 1.4 ms measured
 // for DeepSeek's prefill (16,384 tokens in 22.9 s on a GB10), the slower of
@@ -136,8 +136,13 @@ struct ArtifactFacts {
   std::optional<base::Sha256Digest> target_spec{};
   std::optional<base::Sha256Digest> composed_spec{};
   std::string composed_spec_error;  // ignored when speculation is disabled
-  // Non-null only after the complete approved Gemma binding was checked.
-  const model::Gemma4Profile* gemma_profile = nullptr;
+  // The target's approval (runtime/approvals.h), by its source identity:
+  // its envelope's policy rules and label; null for an unapproved source.
+  const Approval* approval = nullptr;
+  // The drafter's approval, likewise (null: no drafter, or none approved).
+  const Approval* drafter_approval = nullptr;
+  // The pipeline its spec says (a stored spec's, else its mapping's).
+  spec::PipelineKind pipeline = spec::PipelineKind::kLlm;
   // The artifact's architecture ("deepseek4", "qwen4exp"); a composition's
   // models are pipelines (composition is true, architecture empty).
   std::string architecture;
@@ -258,6 +263,8 @@ struct ModelSettings {
   std::string name;
   std::string architecture;  // empty for a composition
   bool composition = false;
+  // The serving adapter's kind (a composition's: the image pipeline).
+  spec::PipelineKind pipeline = spec::PipelineKind::kLlm;
   bool drafter = false;
   // Chosen before calibration from the unchanged speculation setting.
   std::optional<base::Sha256Digest> bound_spec{};
@@ -281,14 +288,14 @@ struct ModelSettings {
   Setting<std::string> reasoning_start;
   Setting<std::string> reasoning_end;
   Setting<std::uint32_t> draft_rows;
-  // DeepSeek V4.
+  // Adaptive waves (ServingRecipe::adaptive_waves).
   Setting<config::WaveForm> wave_form;
   Setting<std::vector<double>> wave_costs;  // widths 2 up
   // How many leading widths the owner overrides. The resolved vector alone
   // cannot distinguish equal fallback-valued prefixes that hide different
   // calibrated widths. Internal dependency metadata, not another setting.
   std::size_t wave_costs_override_count = 0;
-  // Qwen3.8.
+  // MTP waves (ServingRecipe::mtp_waves).
   Setting<std::uint32_t> draft_vocab;
   Setting<double> depth_cost_ratio;
   Setting<std::uint32_t> shared_wave_depth;
@@ -323,13 +330,17 @@ struct ModelSettings {
 // allows: a context beyond the checkpoint's ceiling, more drafts than the
 // drafter proposes. The reasoning markers stay unresolved (their fallback,
 // none) until ResolveReasoning.
-// gemma3_trained_max is an internal qualification hook: only the approved
-// Gemma3 profile may resolve its trained maximum, still with one owner.
+// trained_max is an internal qualification hook: the runner's ceiling is the
+// checkpoint's trained maximum, which its metadata must state (its recipe's
+// owner bounds still apply).
 std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEntry& entry,
                                                           const ArtifactFacts& facts,
                                                           const Calibration* calibration,
-                                                          bool plain,
-                                                          bool gemma3_trained_max = false);
+                                                          bool plain, bool trained_max = false);
+
+// An architecture's serving recipe (its mapping's; spec/mapping.h); null:
+// none is served.
+const spec::ServingRecipe* RecipeOf(std::string_view architecture);
 
 // The reasoning markers once the vocabulary is known (`find`: a token's ID
 // by its exact text): each override, which must be a token of it (empty:

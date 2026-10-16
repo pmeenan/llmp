@@ -165,8 +165,8 @@ A node names the models it serves in its configuration (D-073's document,
 
 ```toml
 [models.deepseek]
-artifact = "8a355bfb…"   # an installed artifact's ID, under storage.installed
-drafter = "dd2d3f9c…"    # optional: its speculative drafter (DSpark, MTP)
+artifact = "698b1cd8…"   # an installed v1 artifact's ID, under storage.installed
+drafter = "5c9d95e2…"    # optional: its speculative drafter (DSpark, MTP)
 # speculation = true     # the default when there is a drafter
 # wave_form = "auto"     # concurrent waves: "auto", "speculative" or "plain" (below)
 # context = 262144       # default tokens of conversation state (bounds below)
@@ -658,10 +658,26 @@ open-file limit (D-102) stays as it is, for the chat route's connections.
 M3.6 replaces each family's serving class with one adapter per pipeline
 kind over the shared runner (D-107; [engine.md](engine.md#the-serving-adapter)):
 `EngineLlm` (`runtime/engine_llm.h`) for LLMs and `EngineImage`
-(`runtime/engine_image.h`) for image pipelines. `Server::Make` picks one
-for a family moved to the component engine, by the pipeline kind its
-architecture's mapping names (`spec/mapping.h`); every other family keeps
-its M3 class. Gemma 2 and Gemma 3 are moved (since their migration, whose
+(`runtime/engine_image.h`) for image pipelines. `Server::Make` picks one by
+the pipeline kind of the model's spec (its settings', from the stored
+spec; a composition's, the image pipeline) for an architecture whose
+mapping carries a serving recipe (`spec::ServingRecipe`, D-118), and names
+no architecture: what differs between families is the recipe's data
+(default prompt chunks and the context above which they shrink, owner
+bounds, whether a drafter may be configured, which settings keys apply,
+the derived shared route with its prompt-chunk row bound, lanes and forced
+serving policy) and a drafter mapping's `spec::DraftRecipe` (anchored,
+block or MTP drafting). A v1 artifact is admitted by the approval table
+(`runtime/approvals.cc`, D-109, D-118): its source receipts and native
+tensor inventory name an entry, and its stored spec's SHA-256 is the
+entry's (a stored drafter's composition with its approved target, its
+values read from the GGUF metadata it keeps, likewise); the entry's
+envelope bounds the context and owners (a default context is cut to it,
+and to a configured drafter's, so a default configuration starts), and its
+gates select its mapping's policy rule. Source receipts are as the importer
+verified and declared them; admission compares them without re-hashing.
+Serving is v1-only from slice 4b (D-118): a v0 artifact is re-imported;
+this build's v0 path goes with that slice. Gemma 2 and Gemma 3 are moved (since their migration, whose
 gate passed and whose M3 classes, runners, plans, graph builders and
 `ServingOptions` flags are deleted), and so are Gemma 4 26B-A4B and 31B
 with their assistants (since theirs, whose M3 Gemma 4 class, runner,
@@ -697,12 +713,15 @@ and lowered onto its graphs, on the model's own stream, with a cuBLAS
 handle over a workspace the runner maps and charges as its own; a head
 row is the head's vocabulary of logits, and a greedy row's token is
 chosen on the device. Any other architecture is refused at Setup with
-that reason, and so is speculation on with no drafter in the parts. The
-Gemma 4 chat route keeps the slice its retired M3 class served: thinking off by default
-and refused on, tool declarations refused, its channel and tool-call
-openers ending a reply. DeepSeek V4's, like its M3 class's, thinks unless
-a request turns thinking off (llama-server's `/apply-template` default,
-which rendered its references' prompts). A conversation an M3 class kept across a restart
+that reason, and so is speculation on with no drafter in the parts. What
+of its chat template the chat route serves is its serving recipe's data
+(`ServingRecipe`'s chat fields), whatever template renders (a native match,
+an owner's `chat_template` or an edited one never widens it): Gemma 4 keeps
+the slice its retired M3 class served (thinking off by default and refused
+on, tool declarations refused, its channel and tool-call openers ending a
+reply); DeepSeek V4, like its M3 class, thinks unless a request turns
+thinking off (llama-server's `/apply-template` default, which rendered its
+references' prompts); the others serve their whole template. A conversation an M3 class kept across a restart
 (record version 1) is refused by the engine's start and its files
 discarded, once ([below](#conversations-kept-across-a-restart)).
 

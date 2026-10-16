@@ -261,54 +261,38 @@ void Server::Log(std::string_view text) {
 }
 
 Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index) {
-  // A family on the component engine: the adapter of its spec's pipeline
-  // kind, which its architecture's mapping names. Qwen3.8 and DeepSeek V4
-  // serve on the derived shared route (their domain derived from the actual
-  // spec, state and owners), every LLM under the automatic startup payment
-  // by default (Start). The diagnostic selectors only narrow which aliases a
-  // screen admits: the Qwen-only one admits no other LLM.
-  const bool solo = settings.architecture == "qwen4exp" || settings.architecture == "deepseek4";
-  const bool component_image = entry.composition && settings.composition;
-  if (options_.diagnostic_component_all && !options_.diagnostic_component_solo)
-    return Error("the generic component route requires the funded diagnostic selector");
-  if (options_.diagnostic_component_solo &&
-      ((!entry.composition && !options_.diagnostic_component_all &&
-        settings.architecture != "qwen4exp") ||
-       (entry.composition && !component_image)))
-    return Error(
-        "shared diagnostic requires every selected alias to use a qualified component route");
+  // A model on the component engine: the adapter of its spec's pipeline
+  // kind (its settings', from its stored spec). Its architecture's serving
+  // recipe (spec/mapping.h) says whether it serves on the derived shared
+  // route (its domain derived from the actual spec, state and owners);
+  // every LLM serves under the automatic startup payment by default
+  // (Start).
   if (!entry.composition) {
-    if (!OnComponentEngine(settings.architecture) && !solo)
+    const spec::ServingRecipe* recipe = RecipeOf(settings.architecture);
+    if (recipe == nullptr)
       return Error(std::format("model {}: no runner for architecture {}", entry.name,
                                settings.architecture));
-    const spec::Mapping* mapping = spec::FindMapping(settings.architecture);
-    if (mapping == nullptr) {
-      return Error(std::format("model {}: the component engine has no mapping of architecture {}",
-                               entry.name, settings.architecture));
-    }
-    switch (mapping->pipeline) {
+    const bool shared = recipe->shared_route;
+    switch (settings.pipeline) {
       case spec::PipelineKind::kLlm: {
         if (AutomaticStartup() && !compiler_)
           compiler_ = std::make_shared<engine::SharedCompilerAllowance>();
         auto llm = std::make_unique<EngineLlm>(
             node_, entry, settings, roles_, index,
-            ComponentLlmBuild(
-                node_, roles_.installed, entry, index,
-                {.target_policy = {},
-                 .diagnostic_solo = solo,
-                 .capture_first_verify = options_.diagnostic_capture_first_verify,
-                 .automatic_startup_cap = AutomaticStartup() ? startup_cap_ : 0,
-                 .shared_compiler = compiler_,
-                 .prefill_lookahead =
-                     settings.architecture == "deepseek4" ? options_.dsv4_prefill_lookahead : true,
-                 .prepare_state =
-                     settings.architecture == "deepseek4" ? options_.dsv4_prepare_state : true,
-                 .state_only_prefill = settings.architecture == "deepseek4"
-                                           ? options_.dsv4_state_only_prefill
-                                           : std::nullopt,
-                 .derive_execution_domain =
-                     solo && (settings.architecture == "deepseek4" ||
-                              settings.max_slots.value > 1 || !entry.drafter)}));
+            ComponentLlmBuild(node_, roles_.installed, entry, index,
+                              {.target_policy = {},
+                               .diagnostic_solo = shared,
+                               .capture_first_verify = options_.diagnostic_capture_first_verify,
+                               .automatic_startup_cap = AutomaticStartup() ? startup_cap_ : 0,
+                               .shared_compiler = compiler_,
+                               .prefill_lookahead = options_.prefill_lookahead,
+                               .prepare_state = options_.prepare_state,
+                               .state_only_prefill = options_.state_only_prefill,
+                               // A route with a closed bridge serves only derived; others
+                               // derive their joined and plain envelopes.
+                               .derive_execution_domain =
+                                   shared && (recipe->closed_bridge ||
+                                              settings.max_slots.value > 1 || !entry.drafter)}));
         if (options_.diagnostic_capture_first_verify)
           Log(std::format("model {}: experimental Verify capture beside first eager run",
                           entry.name));
@@ -326,7 +310,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
         return {};
       default:
         return Error(std::format("model {}: no serving adapter for the {} pipeline kind yet",
-                                 entry.name, spec::PipelineName(mapping->pipeline)));
+                                 entry.name, spec::PipelineName(settings.pipeline)));
     }
   }
   // Every other entry is a composition: an image pipeline.
@@ -529,7 +513,7 @@ Status Server::Start(bool snapshot) {
       // Keyed by the settings its measurements depend on, as they resolve
       // without calibration.
       auto uncalibrated =
-          ResolveSettings(entry, *facts, nullptr, options_.plain, options_.gemma3_trained_max);
+          ResolveSettings(entry, *facts, nullptr, options_.plain, options_.trained_max_context);
       if (!uncalibrated) {
         return Error(std::format("model {}: {}", entry.name, uncalibrated.error()));
       }
@@ -541,7 +525,7 @@ Status Server::Start(bool snapshot) {
       }
     }
     auto resolved = ResolveSettings(entry, *facts, record.known.empty() ? nullptr : &record.known,
-                                    options_.plain, options_.gemma3_trained_max);
+                                    options_.plain, options_.trained_max_context);
     if (!resolved) {
       return Error(std::format("model {}: {}", entry.name, resolved.error()));
     }

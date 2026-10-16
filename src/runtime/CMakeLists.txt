@@ -15,7 +15,7 @@
 # hang recovery's ladder (hang_ladder.h, D-102), and the records of
 # conversations kept across a restart with their keeper (kept_record.h,
 # state_keeper.h, D-105), all vendor-free.
-add_library(llmp_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc binding.cc
+add_library(llmp_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc approvals.cc binding.cc
                                   calibration.cc cohort_capacity.cc cohort_schedule.cc
                                   completion_tokens.cc component_admission.cc hang_ladder.cc intake_limits.cc
                                   gemma_profile.cc kept_record.cc memory_guard.cc model_settings.cc

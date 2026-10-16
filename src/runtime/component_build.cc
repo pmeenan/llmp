@@ -30,12 +30,7 @@
 #include "kernels/decode/selected_source.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
-#include "model/dspark.h"
 #include "model/dsv4.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
 #include "model/qwen38.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
@@ -44,16 +39,12 @@
 #include "providers/device_runtime.h"
 #include "runtime/component_admission.h"
 #include "runtime/component_bindings.h"
-#include "runtime/gemma_profile.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/serving_support.h"
 #include "spec/mapping.h"
 #include "spec/mappings/dsv4.h"
-#include "spec/mappings/gemma2.h"
-#include "spec/mappings/gemma3.h"
-#include "spec/mappings/gemma4.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
 #include "spec/stored.h"
@@ -340,38 +331,57 @@ std::expected<void, std::string> CheckHashTables(const ja::Artifact& artifact,
   return {};
 }
 
-// Native hash tables retain I32 source values. Validate each table through a
-// bounded direct-read window before any routed work; no whole-table copy or
-// uncharged payload allocation is introduced for stored targets.
-std::expected<void, std::string> CheckStoredHashTables(const ja::Artifact& artifact) {
-  const auto& profile = model::Dsv4Flash();
-  for (std::uint32_t layer = 0; layer < profile.hash_layers; ++layer) {
-    auto index = artifact.FindResource(std::format("blk.{}.ffn_gate_tid2eid.weight", layer));
-    if (!index) return Error("stored hash-routing table is missing");
-    auto place = artifact.ResourcePlacement(*index);
-    const auto count = std::uint64_t{profile.experts_used} * profile.vocab;
-    if (!place || place->bytes.value() != count * sizeof(std::int32_t))
-      return Error("stored hash-routing table has an inconsistent byte count");
-    const auto& group = artifact.groups()[place->group];
-    const auto& shard = artifact.shards()[group.shard];
-    const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
-    const auto end = begin + place->bytes.value();
-    if (begin % sizeof(std::int32_t)) return Error("stored hash-routing table is unaligned");
-    auto file = artifact.OpenShardForDirectRead(group.shard);
-    if (!file) return Error(file.error().ToString());
-    alignas(4096) std::array<std::byte, 4096> window{};
-    for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
-      if (at > shard.data_offset.value() + shard.data_bytes.value() ||
-          window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
-        return Error("stored hash-routing read exceeds its shard");
-      if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
-        return Error(std::format("reading stored hash-routing table: errno {}", read.error()));
-      for (auto offset = std::max(at, begin); offset < std::min(at + window.size(), end);
-           offset += sizeof(std::int32_t)) {
-        std::int32_t expert = 0;
-        std::memcpy(&expert, window.data() + offset - at, sizeof(expert));
-        if (expert < 0 || std::cmp_greater_equal(expert, profile.experts))
-          return Error("stored hash-routing table names an invalid expert");
+// Native hash tables retain I32 source values. Validate each table the spec
+// binds (each side.hash input's, by its own experts and rows a token)
+// through a bounded direct-read window before any routed work; no
+// whole-table copy or uncharged payload allocation is introduced for stored
+// targets.
+std::expected<void, std::string> CheckStoredHashTables(const ja::Artifact& artifact,
+                                                       const spec::ModelSpec& model) {
+  for (const spec::Stage& stage : model.stages) {
+    for (const spec::SideInput& side : stage.side) {
+      if (side.source.kind != "side.hash") continue;
+      const spec::Param* experts_param = side.source.Find("experts");
+      const spec::Param* used_param = side.source.Find("used");
+      const auto* experts =
+          experts_param ? std::get_if<std::int64_t>(&experts_param->value) : nullptr;
+      const auto* used = used_param ? std::get_if<std::int64_t>(&used_param->value) : nullptr;
+      if (experts == nullptr || used == nullptr || *experts <= 0 || *used <= 0)
+        return Error("stored hash routing has no expert count");
+      for (const spec::WeightBinding& binding : side.source.weights) {
+        auto index = artifact.FindResource(binding.tensor);
+        if (!index) return Error("stored hash-routing table is missing");
+        auto place = artifact.ResourcePlacement(*index);
+        const auto& format = artifact.resources()[*index].format;
+        if (!format || format->shape.rank != 2 ||
+            format->shape.ne[0] != static_cast<std::uint64_t>(*used) || format->shape.ne[1] == 0 ||
+            format->shape.ne[1] > (std::uint64_t{1} << 32U))
+          return Error("stored hash-routing table has another shape");
+        const auto count = format->shape.ne[0] * format->shape.ne[1];
+        if (!place || place->bytes.value() != count * sizeof(std::int32_t))
+          return Error("stored hash-routing table has an inconsistent byte count");
+        const auto& group = artifact.groups()[place->group];
+        const auto& shard = artifact.shards()[group.shard];
+        const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
+        const auto end = begin + place->bytes.value();
+        if (begin % sizeof(std::int32_t)) return Error("stored hash-routing table is unaligned");
+        auto file = artifact.OpenShardForDirectRead(group.shard);
+        if (!file) return Error(file.error().ToString());
+        alignas(4096) std::array<std::byte, 4096> window{};
+        for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
+          if (at > shard.data_offset.value() + shard.data_bytes.value() ||
+              window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
+            return Error("stored hash-routing read exceeds its shard");
+          if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
+            return Error(std::format("reading stored hash-routing table: errno {}", read.error()));
+          for (auto offset = std::max(at, begin); offset < std::min(at + window.size(), end);
+               offset += sizeof(std::int32_t)) {
+            std::int32_t expert = 0;
+            std::memcpy(&expert, window.data() + offset - at, sizeof(expert));
+            if (expert < 0 || std::cmp_greater_equal(expert, *experts))
+              return Error("stored hash-routing table names an invalid expert");
+          }
+        }
       }
     }
   }
@@ -399,29 +409,6 @@ std::expected<std::vector<spec::SourceValue>, std::string> DrafterValues(
     const ja::Artifact& target, const ja::Artifact& drafter) {
   return ComponentDrafterValues(target, drafter);
 }
-
-// What of a family's chat template its chat route serves (the M3 classes'
-// qualified slices): Gemma 4's thought channel and tool calls, which no
-// parser here reads, are off, and their openers end a reply; DeepSeek V4
-// thinks unless a request says otherwise, as its M3 class served it (the
-// references' prompts were llama-server's /apply-template renderings,
-// whose default turns the template's thinking on).
-EngineLlmParts::ChatSlice ChatSliceOf(std::string_view architecture) {
-  if (architecture == "gemma4") {
-    return {.thinking = false,
-            .tools = false,
-            .stops = {"<|channel>", "<|tool_call>"},
-            .default_thinking = std::nullopt};
-  }
-  if (architecture == "deepseek4") {
-    return {.thinking = true, .tools = true, .stops = {}, .default_thinking = true};
-  }
-  return {};
-}
-
-// A Gemma 4 assistant's depth: three drafts a unit at most, its qualified
-// transaction's (docs/experiments/gemma-assistant-throughput).
-constexpr std::uint32_t kAssistantDepth = 3;
 
 bool DeepSeekDomain(const ComponentBuildOptions& options, bool companion) {
   if (!options.execution_domain) return false;
@@ -537,11 +524,19 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{},
           stored_metadata = std::shared_ptr<engine::ExecutionMetadataAllowance>{}](
              const ModelSettings& settings) mutable -> std::expected<EngineLlmParts, std::string> {
-    const bool solo = settings.architecture == "qwen4exp";
+    // The architecture's serving recipe (its mapping's data, spec/mapping.h).
+    const spec::Mapping* recipe_mapping = spec::FindMapping(settings.architecture);
+    if (recipe_mapping == nullptr || recipe_mapping->serving == nullptr)
+      return Error(
+          std::format("the component engine serves no architecture {}", settings.architecture));
+    const spec::ServingRecipe& recipe = *recipe_mapping->serving;
+    // A shared route qualified by its plain or joined envelopes (else one
+    // owner), or one whose automatic serving shape has a closed bridge.
+    const bool solo = recipe.shared_route && recipe.qualified_envelopes;
     if (options.derive_execution_domain && (!options.diagnostic_solo || options.execution_domain))
       return Error(
           "derived serving qualification needs an internal request without a caller domain");
-    const bool deepseek = settings.architecture == "deepseek4";
+    const bool deepseek = recipe.shared_route && recipe.closed_bridge;
     const bool dspark = deepseek && !drafter_id.empty();
     const bool deepseek_serving =
         deepseek && options.derive_execution_domain && options.automatic_startup_cap != 0 &&
@@ -549,6 +544,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         settings.prefill_chunk.value != 0 &&
         settings.prefill_chunk.value < settings.context.value && settings.max_slots.value != 0 &&
         settings.max_slots.value <= Llm::kMaxBranches && (!settings.speculation.value || dspark);
+    // The shared route's serving shape.
+    const bool shared = solo || deepseek_serving;
     if (deepseek && !deepseek_serving &&
         (!options.diagnostic_solo || !DeepSeekDomain(options, dspark) ||
          !options.construction_metadata || options.target_policy || settings.max_slots.value != 1 ||
@@ -626,16 +623,15 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           {.context = settings.context.value, .slots = settings.max_slots.value});
       if (!policy) return Error(policy.error());
       stored_policy = *policy;
-      if (deepseek)
-        if (auto checked = CheckStoredHashTables(*artifact); !checked)
-          return Error(checked.error());
+      if (auto checked = CheckStoredHashTables(*artifact, stored_bindings->model); !checked)
+        return Error(checked.error());
       hold->stored_payment = std::move(stored_bindings->payment);
       synthesized = std::move(stored_bindings->model);
       hold->sources.push_back(std::move(stored_bindings->source));
       hold->place = std::move(stored_bindings->places);
     } else {
       std::expected<std::vector<spec::SourceValue>, std::string> values;
-      if (solo || settings.architecture == "qwen4exp") {
+      if (solo) {
         auto binding = model::BindQwen38(model::Qwen38Flash(), *artifact);
         if (!binding) return Error(binding.error());
         qwen.emplace(std::move(*binding));
@@ -670,7 +666,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                  drafter->model().architecture));
       }
       std::expected<std::vector<spec::SourceValue>, std::string> dvalues;
-      if (solo || settings.architecture == "qwen4exp") {
+      if (solo) {
         if (qwen && qwen->gguf())
           return Error("the GGUF target has no qualified component MTP recipe");
         auto binding = model::BindQwen38Mtp(model::Qwen38Flash(), *drafter);
@@ -703,9 +699,19 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       hold->drafter_values = std::move(*dvalues);
       auto dsource = spec::SourceOf(*drafter, drafter_mapping);
       if (!dsource) return Error(dsource.error());
+      // A stored drafter's complete tensor inventory is its approval's.
+      if (drafter->format_version() == 1)
+        if (auto admitted = CheckComponentDrafterAdmission(*dsource, drafter->sources()); !admitted)
+          return Error(admitted.error());
+      if (auto envelope = ComponentDrafterEnvelope(
+              *drafter, {.context = settings.context.value, .slots = settings.max_slots.value});
+          !envelope)
+        return Error(envelope.error());
       auto composed = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
                                            hold->drafter_values);
       if (!composed) return Error(composed.error());
+      if (auto approved = CheckComposedAdmission(*composed, *drafter); !approved)
+        return Error(approved.error());
       hold->spec = std::move(*composed);
       hold->sources.push_back(std::move(*dsource));
     } else {
@@ -792,19 +798,34 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // (RE-037): its rows at a long context are bounded as its legacy host
     // masks' were (262,144 cells: 2,040 rows).
     const auto configured_chunk =
-        solo ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
-                                model::Qwen38MostRows(settings.context.value, true))
-        : deepseek_serving
+        shared && recipe.most_rows != nullptr
             ? PrefillChunkRows(settings.context.value, std::nullopt, settings.prefill_chunk.value,
-                               model::Dsv4MostRows(model::Dsv4Flash(), settings.context.value))
+                               recipe.most_rows(settings.context.value))
             : settings.prefill_chunk.value;
-    const auto depth = solo     ? (configured_chunk >= 4 ? settings.draft_rows.value
-                                                         : std::min(settings.draft_rows.value, 2U))
-                       : dspark ? settings.draft_rows.value
-                                : kAssistantDepth;
-    if (speculate && dspark &&
-        (depth == 0 || depth == UINT32_MAX || depth > model::DsparkDeepSeekV4Flash().block_size))
-      return Error("the resolved draft depth exceeds the bound block drafter");
+    // How the drafter drafts (its mapping's drafting recipe).
+    const spec::DraftRecipe* draft = speculate ? drafter_mapping->draft : nullptr;
+    if (speculate && draft == nullptr)
+      return Error(std::format("the drafter's architecture {} has no drafting recipe",
+                               drafter->model().architecture));
+    const bool block = draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kBlock;
+    const bool mtp = draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp;
+    const auto depth = mtp     ? (configured_chunk >= 4 ? settings.draft_rows.value
+                                                        : std::min(settings.draft_rows.value, 2U))
+                       : block ? settings.draft_rows.value
+                               : (draft != nullptr ? draft->depth : 0U);
+    // A block drafter's bound and fill token, from the metadata it keeps.
+    std::int32_t block_fill = 0;
+    if (block) {
+      auto most = KeptInteger(*drafter, draft->depth_key);
+      if (!most) return Error(most.error());
+      auto fill = KeptInteger(*drafter, draft->fill_key);
+      if (!fill) return Error(fill.error());
+      if (*fill < 0 || *fill > std::numeric_limits<std::int32_t>::max())
+        return Error("a block drafter's fill token is outside the vocabulary");
+      block_fill = static_cast<std::int32_t>(*fill);
+      if (depth == 0 || depth == UINT32_MAX || std::cmp_greater(depth, *most))
+        return Error("the resolved draft depth exceeds the bound block drafter");
+    }
     // State tensors pack at StageLayout's standard 256-byte alignment across
     // all models so contiguous state banks and multi-slot state footprints
     // behave uniformly.
@@ -831,9 +852,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (!rule) return Error(rule.error());
       if (*rule != nullptr) composition = **rule;
     }
-    if (composition.prompts_alone || deepseek_serving) caps->join_prefill = false;
+    // The shared route's own recipe in place of the admitted one.
+    const bool forced = shared && recipe.serving_rule != nullptr;
+    if (forced) composition = *recipe.serving_rule;
+    if (composition.prompts_alone) caps->join_prefill = false;
     if (composition.owners_alone) caps->max_segments = 1;
-    if (solo || deepseek_serving) {
+    if (shared) {
       caps->common_read = true;
       caps->joined_read_align = settings.wave_read_align.value;
     }
@@ -845,8 +869,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           return verify_rows > layout.max_rows;
         }))
       return Error("the complete drafter verify exceeds its actual stage row bounds");
-    const std::uint32_t read_align =
-        (solo || deepseek_serving) ? settings.wave_read_align.value : 256;
+    const std::uint32_t read_align = shared ? settings.wave_read_align.value : 256;
     // The widest steps (the setup measurement): every owner's rows at the
     // end of its context, reading all of it.
     const auto shape = [&](std::uint16_t stage, planner::Phase phase, std::uint32_t owners,
@@ -884,8 +907,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       for (const bool greedy : {false, true}) {
         add(shape(0, planner::Phase::kDecode, owners, 1, 1, greedy));
       }
-      if (speculate && dspark) {
-        if (deepseek_serving) {
+      if (block) {
+        if (shared) {
           const std::uint32_t max_rows =
               caps->max_segment_rows != 0 ? caps->max_segment_rows / owners : verify_rows;
           const std::uint32_t d_rows = std::min(depth, max_rows);
@@ -903,9 +926,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       } else if (speculate) {
         for (const bool greedy : {false, true}) {
           add(shape(0, planner::Phase::kVerify, owners, verify_rows, verify_rows, greedy));
-          add(shape(1, planner::Phase::kDraft, owners, 1, 1, solo && greedy));
+          add(shape(1, planner::Phase::kDraft, owners, 1, 1, mtp && greedy));
         }
-        if (solo) {
+        if (mtp) {
           for (const auto rows : {verify_rows, chunk}) {
             add(shape(1, planner::Phase::kDraft, owners, rows, 1, true));
             add(shape(1, planner::Phase::kDraft, owners, rows, 0, false));
@@ -943,8 +966,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // its logits' (the head's vocabulary).
     std::vector<engine::LayerSlabs> placements;
     for (std::size_t a = 0; a < hold->sources.size(); ++a) {
-      auto slabs = engine::ExpertSlabsOf(a == 0 ? *artifact : *drafter,
-                                         (solo || deepseek_serving) ? 16 : 256);
+      auto slabs = engine::ExpertSlabsOf(a == 0 ? *artifact : *drafter, shared ? 16 : 256);
       if (!slabs) return Error(slabs.error());
       placements.push_back(std::move(*slabs));
     }
@@ -967,12 +989,13 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // builds the setup graphs, to place its drafter's weights.
     if (!stored || speculate) {
       for (const planner::StepShape& s : setup) {
-        auto step = components::BuildStep(hold->spec, s.stage, s,
-                                          {.tensors = hold->tables.at(s.stage),
-                                           .state = &hold->layouts.at(s.stage),
-                                           .stages = hold->stages,
-                                           .artifacts = hold->tables},
-                                          {.narrow = true, .dsv4_lid_mask = deepseek_serving});
+        auto step =
+            components::BuildStep(hold->spec, s.stage, s,
+                                  {.tensors = hold->tables.at(s.stage),
+                                   .state = &hold->layouts.at(s.stage),
+                                   .stages = hold->stages,
+                                   .artifacts = hold->tables},
+                                  {.narrow = true, .dsv4_lid_mask = shared && recipe.lid_mask});
         if (!step) return Error(step.error());
         for (const components::StepWeight& weight : step->weights) {
           // A stored target's weights are placed above from its validated
@@ -1017,6 +1040,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       }
     }
     if (logit_width == 0) return Error("the spec's target stage has no head");
+    if (block && std::cmp_greater_equal(block_fill, logit_width))
+      return Error("a block drafter's fill token is outside the vocabulary");
     // A layer's routed experts in one slab (the M3 runners' pitch).
     if (solo && !row_table && (!stored_bindings || stored_bindings->rows.empty()))
       return Error("the component recipe has no n-gram row table");
@@ -1026,7 +1051,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                   // The runner stages a frozen read's host mask (its cells'
                   // positions before the rows); the device's are made
                   // anyway.
-                  .frozen_host_masks = !solo && !deepseek,
+                  .frozen_host_masks = recipe.frozen_host_masks,
                   // Every source's reader index is bounded by what its
                   // construction pays (ServingConstructionBytes), the closed
                   // DeepSeek diagnostic's by its own ceiling.
@@ -1065,21 +1090,21 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (speculate) {
       mode = {.kind = engine::DecodingMode::Kind::kSpeculative,
               .drafters = {{.stage = 1,
-                            .shape = dspark ? engine::DrafterSpec::Shape::kBlock
-                                            : engine::DrafterSpec::Shape::kAutoregressive,
+                            .shape = block ? engine::DrafterSpec::Shape::kBlock
+                                           : engine::DrafterSpec::Shape::kAutoregressive,
                             .max_depth = depth,
                             .shared_wave_depth =
-                                solo ? std::min(settings.shared_wave_depth.value, depth) : 0,
-                            .draft_wave_max = solo ? settings.draft_wave_max.value : 0,
-                            .catch_up = solo,
-                            .fill = dspark ? model::DsparkDeepSeekV4Flash().mask_token : 0,
-                            .borrows_target = !solo && !dspark,
-                            .anchored = !solo && !dspark,
-                            .features = !dspark,
-                            .adaptive = solo && depth >= 3,
-                            .depth_cost = solo ? settings.depth_cost_ratio.value : 1.16,
-                            .device_tokens = solo || deepseek_serving,
-                            .draft_before_limit = solo || deepseek_serving,
+                                mtp ? std::min(settings.shared_wave_depth.value, depth) : 0,
+                            .draft_wave_max = mtp ? settings.draft_wave_max.value : 0,
+                            .catch_up = mtp,
+                            .fill = block_fill,
+                            .borrows_target = !mtp && !block,
+                            .anchored = !mtp && !block,
+                            .features = !block,
+                            .adaptive = mtp && depth >= 3,
+                            .depth_cost = mtp ? settings.depth_cost_ratio.value : 1.16,
+                            .device_tokens = shared,
+                            .draft_before_limit = shared,
                             .head_ids = hold->draft_head_ids,
                             .head_rows = hold->draft_head_rows}},
               .combine = engine::DecodingMode::Drafters::kCascade,
@@ -1119,13 +1144,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         return Error(declared.error());
     }
 
-    constexpr std::string_view kDeepSeekServingPolicy = spec::mappings::kDeepSeekServingPolicy;
-    // A harness's matched recipe in place of the target's mapping's.
+    // A harness's matched recipe, or the shared route's own, in place of the
+    // target's mapping's.
     std::optional<planner::Policy> target_policy;
-    if ((stored && !composition.text.empty()) || options.target_policy || deepseek_serving) {
-      auto parsed = planner::ParsePolicy(
-          options.target_policy ? *options.target_policy
-                                : (deepseek_serving ? kDeepSeekServingPolicy : composition.text));
+    if ((stored && !composition.text.empty()) || options.target_policy || forced) {
+      auto parsed =
+          planner::ParsePolicy(options.target_policy ? *options.target_policy : composition.text);
       if (!parsed) return Error(std::format("the target's policy: {}", parsed.error()));
       target_policy = std::move(*parsed);
     }
@@ -1143,7 +1167,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
            .values = stage == 0 ? std::span<const spec::SourceValue>(hold->values)
                                 : std::span<const spec::SourceValue>(hold->drafter_values),
            .slots = slots,
-           .policy = stage == 0 || deepseek_serving ? target_policy : std::nullopt,
+           .policy = stage == 0 || forced ? target_policy : std::nullopt,
            .backend = hold->backend->Backend(),
            .execution_domain = execution_domain,
            .validate_program = options.validate_program,
@@ -1186,7 +1210,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (row_table) parts.config.row_tables.push_back(*row_table);
     if (options.capture_first_verify)
       parts.config.capture_first_phases = 1U << static_cast<unsigned>(planner::Phase::kVerify);
-    if (solo || deepseek_serving)
+    if (shared)
       parts.config.capture_phases &= ~(1U << static_cast<unsigned>(planner::Phase::kPrefill));
     if (speculate) {
       parts.config.slots.stages.push_back(
@@ -1200,7 +1224,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       parts.config.max_verify_rows = verify_rows;
       parts.mode = std::move(mode);
     }
-    if (deepseek_serving && speculate) {
+    if (shared && speculate && recipe.adaptive_waves) {
       execution::AdaptiveWaveMode::Costs costs{};
       for (std::size_t i = 0; i < settings.wave_costs.value.size() && i + 2 < costs.size(); ++i)
         costs[i + 2] = settings.wave_costs.value[i];
@@ -1234,12 +1258,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       held->cublas.reset();
     };
     // Concurrent lanes (a joined wave's owner regions on streams of their
-    // own) for the serving plans measured to gain from them, DeepSeek's.
+    // own) for the serving plans measured to gain from them (its recipe's).
     // Lanes take their pools from the shared pool's end, so the stream's
     // own scratch shrinks by kMaxLanes of them: a model that runs lanes sets
     // them apart beside what its setup shapes measured (the runner's pool
     // need), and every other model's regions run on its stream.
-    const bool lanes = deepseek_serving;
+    const bool lanes = shared && recipe.lanes;
     if (lanes) parts.config.launch_pool_reserve = kernels::ggml::kMaxLanes * kLaneScratchBytes;
     parts.config.launch =
         [&node, held, lanes]() -> std::expected<std::unique_ptr<kernels::StepLaunch>, std::string> {
@@ -1272,8 +1296,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     parts.caps = *caps;
     parts.logit_width = logit_width;
     parts.device_greedy = true;
-    parts.device_verify = solo || deepseek_serving;
-    parts.branch_depth = solo ? 3U : 0U;
+    parts.device_verify = shared;
+    parts.branch_depth = recipe.branch_depth;
     parts.prefill = {.chunk_rows = chunk,
                      .lookahead = composition.prefill_lookahead,
                      .capture_ahead = composition.capture_ahead,
@@ -1287,18 +1311,17 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       parts.prefill.prepare_ahead = false;
       parts.prefill.state_only = false;
     }
-    if (deepseek_serving) {
-      parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
-      parts.prefill.capture_ahead = false;
-      parts.prefill.prepare_ahead = options.prepare_state;
-      parts.prefill.state_only = options.state_only_prefill.value_or(!speculate);
-    } else if (solo) {
+    if (shared) {
       parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
       parts.prefill.prepare_ahead = options.prepare_state;
       parts.prefill.state_only = options.state_only_prefill.value_or(!speculate);
     }
     parts.architecture = settings.architecture;
-    parts.chat = ChatSliceOf(settings.architecture);
+    parts.chat = {
+        .thinking = recipe.chat_thinking,
+        .tools = recipe.chat_tools,
+        .stops = std::vector<std::string>(recipe.chat_stops.begin(), recipe.chat_stops.end()),
+        .default_thinking = recipe.default_thinking};
     parts.keep = std::move(hold);
     return parts;
   };

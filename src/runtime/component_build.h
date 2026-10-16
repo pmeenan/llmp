@@ -33,9 +33,9 @@
 namespace llmp::runtime {
 
 // The architectures served by the component engine's adapter for their
-// pipeline kind (engine_llm.h, engine_image.h; D-107): Gemma 2, 3 and 4 with
-// its assistant, Qwen3.8 with its MTP drafter, and DeepSeek V4 with its DSpark
-// drafter. A family joins when its migration passes its gate.
+// pipeline kind (engine_llm.h, engine_image.h; D-107): those whose mapping
+// carries a serving recipe (a target's) or a drafting recipe (a drafter's;
+// spec/mapping.h). A family joins when its migration passes its gate.
 bool OnComponentEngine(std::string_view architecture);
 
 // What a build may change of its family's recipe (a harness's matched
@@ -43,11 +43,11 @@ bool OnComponentEngine(std::string_view architecture);
 // (planner/policy.h), in place of its mapping's default.
 struct ComponentBuildOptions {
   std::optional<std::string> target_policy;
-  // Qwen3.8 and DeepSeek V4 serve only through this shared route (Server
-  // sets it for them by default). Explicit diagnostic domains retain their
-  // closed envelopes. Automatic service admission derives the domain and
-  // payment from its actual source, state, decoding mode and configured
-  // owners.
+  // The derived shared route (Server sets it for the architectures whose
+  // serving recipe names it, ServingRecipe::shared_route). Explicit
+  // diagnostic domains retain their closed envelopes. Automatic service
+  // admission derives the domain and payment from its actual source, state,
+  // decoding mode and configured owners.
   bool diagnostic_solo = false;
   // Default-off capture scheduling experiment; numerical policy is unchanged.
   bool capture_first_verify = false;

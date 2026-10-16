@@ -393,7 +393,6 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
   entry.overrides["draft_rows"] = static_cast<std::int64_t>(depth);
   entry.overrides["wave_read_align"] = std::int64_t{256};
   life->config.models.push_back(std::move(entry));
-  life->options.diagnostic_component_solo = component;
   life->options.diagnostic_startup_host_bytes = publication ? 0 : kAllowance;
   life->options.diagnostic_auto_startup = publication;
   life->options.diagnostic_budget_cap_bytes = kBudget;
@@ -1790,7 +1789,6 @@ rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previou
   entry.overrides["draft_rows"] = std::int64_t{2};
   entry.overrides["wave_read_align"] = std::int64_t{256};
   life.config.models.push_back(std::move(entry));
-  life.options.diagnostic_component_solo = component;
   life.options.keep_conversations = true;
   // Current compiler is transient once: the two futures build sequentially
   // while the device runs. Their retained programs are separately charged by

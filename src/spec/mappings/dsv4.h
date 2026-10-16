@@ -35,10 +35,10 @@
 // probability floor it leaves at 0).
 //
 // Neither mapping folds a weight: llama.cpp's converter keeps DeepSeek V4's
-// norms as they are. No default planning policy yet: the patterns that
-// reproduce today's fast plan (the hyper-connection kernels, the Q head,
-// the compressor, the indexer's selection, the sparse attention, output-A,
-// the routing and the fused experts) are slice G4b's.
+// norms as they are. No default planning policy rule: the shared serving
+// route's own recipe (its ServingRecipe's serving_rule) carries
+// kDeepSeekServingPolicy, the patterns that reproduce the fast plan; the
+// closed diagnostic bridge plans with the engine's default.
 
 #ifndef LLMP_SPEC_MAPPINGS_DSV4_H_
 #define LLMP_SPEC_MAPPINGS_DSV4_H_
@@ -68,7 +68,8 @@ std::expected<std::vector<SourceValue>, std::string> Dsv4V0Values(
 std::expected<std::vector<SourceValue>, std::string> DsparkV0Values(
     const model::DsparkProfile& profile);
 
-// The planning policy for DeepSeek serving fast forms. Its step rules: the
+// The planning policy for DeepSeek serving fast forms (the "deepseek4"
+// mapping's serving recipe names it). Its step rules: the
 // HC post's fused form from 64 rows; a solo step past 8 rows (a prompt's
 // chunk) without the small-row forms (the HC pre, the vector products and
 // inputs, the selected routing), its decode-shaped and vector bounds at 8

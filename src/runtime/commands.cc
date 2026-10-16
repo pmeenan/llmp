@@ -43,23 +43,18 @@ bool PlausibleName(std::string_view name) { return !name.empty() && name.size() 
 }  // namespace
 
 std::expected<void, std::string> ApplyServiceDiagnostics(
-    ServingOptions& options, std::optional<std::string_view> component,
-    std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap,
+    ServingOptions& options, std::optional<std::string_view> startup_bytes,
+    std::optional<std::string_view> node_cap,
     std::optional<std::string_view> capture_first_verify) {
-  if (!component && !startup_bytes && !node_cap && !capture_first_verify) return {};
+  if (!startup_bytes && !node_cap && !capture_first_verify) return {};
   std::uint64_t bytes = 0, cap = 0;
   constexpr std::uint64_t extent = std::uint64_t{2} << 20U;
   const bool automatic = startup_bytes && *startup_bytes == "auto";
-  if ((capture_first_verify && *capture_first_verify != "1") || !component ||
-      (*component != "1" && *component != "all") || !startup_bytes || !node_cap ||
+  if ((capture_first_verify && *capture_first_verify != "1") || !startup_bytes || !node_cap ||
       (!automatic && !Number(*startup_bytes, std::uint64_t{1}, UINT64_MAX, bytes)) ||
       !Number(*node_cap, std::uint64_t{1}, UINT64_MAX, cap) || bytes % extent || cap % extent ||
       bytes > cap)
-    return Error(
-        "shared service diagnostic needs selector=1 or all, startup bytes (or auto), and aligned "
-        "node cap");
-  options.diagnostic_component_solo = true;
-  options.diagnostic_component_all = *component == "all";
+    return Error("shared service diagnostic needs startup bytes (or auto) and an aligned node cap");
   options.diagnostic_capture_first_verify = capture_first_verify.has_value();
   options.diagnostic_startup_host_bytes = bytes;
   options.diagnostic_auto_startup = automatic;
@@ -73,17 +68,9 @@ std::expected<void, std::string> ApplyServiceDiagnosticEnvironment(ServingOption
     const char* text = std::getenv(name);
     return text ? std::optional<std::string_view>(text) : std::nullopt;
   };
-  // The funded tuple selects every component pipeline; the historical Qwen-only
-  // selector keeps its narrower alias contract.
-  const auto qwen = value("LLMP_DIAGNOSTIC_COMPONENT_QWEN");
-  if (qwen && *qwen != "1") return Error("the Qwen-only component selector requires 1");
-  const auto startup = value("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES");
-  const auto cap = value("LLMP_DIAGNOSTIC_NODE_CAP_BYTES");
-  const auto capture = value("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY");
-  const bool funded = startup || cap || capture;
-  return ApplyServiceDiagnostics(
-      options, qwen ? qwen : (funded ? std::optional<std::string_view>("all") : std::nullopt),
-      startup, cap, capture);
+  return ApplyServiceDiagnostics(options, value("LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES"),
+                                 value("LLMP_DIAGNOSTIC_NODE_CAP_BYTES"),
+                                 value("LLMP_DIAGNOSTIC_CAPTURE_FIRST_VERIFY"));
 }
 
 const std::string_view kCommandUsage =

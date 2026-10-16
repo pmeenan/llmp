@@ -88,7 +88,7 @@ std::string MeasuredWith(const ModelSettings& s) {
       s.speculation.value, s.draft_rows.value, s.prefill_chunk.value, s.max_slots.value, form(),
       s.prefill_chunk.source == SettingSource::kOverride,
       s.max_slots.source == SettingSource::kOverride, s.context.value);
-  if (s.architecture == "deepseek4") {
+  if (SupportsWaveCosts(s)) {
     measured += " wave_costs=[";
     for (std::size_t i = 0; i < s.wave_costs.value.size(); ++i) {
       measured += std::format("{}{}", i == 0 ? "" : ",", s.wave_costs.value[i]);
@@ -97,7 +97,7 @@ std::string MeasuredWith(const ModelSettings& s) {
         std::format("] wave_costs_override={} wave_costs_override_count={}",
                     s.wave_costs.source == SettingSource::kOverride, s.wave_costs_override_count);
   }
-  if (s.architecture == "qwen4exp") {
+  if (SupportsMtpDrafting(s)) {
     measured += std::format(
         " wave_lanes={} draft_vocab={} shared_wave_depth={} draft_wave_max={} "
         "wave_read_align={} depth_cost_ratio={} depth_cost_ratio_override={}",

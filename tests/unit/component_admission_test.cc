@@ -587,27 +587,37 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndR
               10896057440ULL, "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249");
   ASSERT_TRUE(dflash.has_value()) << (dflash ? "" : dflash.error().ToString());
 
-  // Matched v1 target and drafter produce valid values.
+  // Matched approved pairs pass their pairing; their values are the stored
+  // drafter's kept metadata, which these synthetic artifacts lack.
   auto g26_pair = rt::ComponentDrafterValues(*g26_target, *g26_asst);
-  EXPECT_TRUE(g26_pair.has_value()) << (g26_pair ? "" : g26_pair.error());
+  ASSERT_FALSE(g26_pair.has_value());
+  EXPECT_NE(g26_pair.error().find("keeps no GGUF metadata"), std::string::npos) << g26_pair.error();
 
   auto g31_pair = rt::ComponentDrafterValues(*g31_target, *g31_asst);
-  EXPECT_TRUE(g31_pair.has_value()) << (g31_pair ? "" : g31_pair.error());
+  ASSERT_FALSE(g31_pair.has_value());
+  EXPECT_NE(g31_pair.error().find("keeps no GGUF metadata"), std::string::npos) << g31_pair.error();
 
-  // Size mismatches are refused.
+  // Size mismatches are refused: each assistant's approval names its target.
   auto size_mismatch1 = rt::ComponentDrafterValues(*g26_target, *g31_asst);
-  EXPECT_FALSE(size_mismatch1.has_value());
-  EXPECT_NE(size_mismatch1.error().find("does not match the target model size"), std::string::npos);
+  ASSERT_FALSE(size_mismatch1.has_value());
+  EXPECT_NE(size_mismatch1.error().find("is gemma-4-31b-it-ud-q4_k_xl's, not "
+                                        "gemma-4-26b-a4b-it-ud-q4_k_m's"),
+            std::string::npos)
+      << size_mismatch1.error();
 
   auto size_mismatch2 = rt::ComponentDrafterValues(*g31_target, *g26_asst);
-  EXPECT_FALSE(size_mismatch2.has_value());
-  EXPECT_NE(size_mismatch2.error().find("does not match the target model size"), std::string::npos);
+  ASSERT_FALSE(size_mismatch2.has_value());
+  EXPECT_NE(size_mismatch2.error().find("is gemma-4-26b-a4b-it-ud-q4_k_m's, not "
+                                        "gemma-4-31b-it-ud-q4_k_xl's"),
+            std::string::npos)
+      << size_mismatch2.error();
 
   // Architecture mismatch is refused.
   auto arch_mismatch = rt::ComponentDrafterValues(*g26_target, *dflash);
-  EXPECT_FALSE(arch_mismatch.has_value());
-  EXPECT_NE(arch_mismatch.error().find("no drafter dflash for architecture gemma4"),
-            std::string::npos);
+  ASSERT_FALSE(arch_mismatch.has_value());
+  EXPECT_NE(arch_mismatch.error().find("the approved drafter dspark-deepseek-v4-flash-0731-q8_0"),
+            std::string::npos)
+      << arch_mismatch.error();
 
   // ComponentDrafterV0Values refuses v1 artifacts.
   auto v0_attempt = rt::ComponentDrafterV0Values(*g26_target, *g26_asst);

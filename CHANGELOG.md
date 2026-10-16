@@ -876,6 +876,28 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Serving becomes v1-only (D-118, amending D-113's "v0 stays readable"):
+  re-import a v0 artifact with `llmp import` from its archived source (its
+  v1 ID differs; nothing is migrated) and name the v1 ID in `[models]`.
+  This build still serves v0 artifacts; their serving path is removed in
+  the next slice. Qwen3.8's ModelOpt and MLX imports keep their v0 IDs
+  until their own v1 artifacts are approved.
+- Checkpoint approval is data (D-109, D-118): `runtime/approvals.cc` lists
+  each approved source (its files' receipts, its native tensor inventory)
+  with the SHA-256 of the spec it executes (a target's stored `spec.json`,
+  a drafter's composition with its approved target), its envelope and its
+  policy gates. A v1 artifact is admitted when its stored spec's digest is
+  its approval's; the expected spec is no longer synthesized from a compiled
+  profile, and a stored drafter's composition values are read from the GGUF
+  metadata it keeps. Serving reads each architecture's serving recipe from
+  its mapping (`spec::ServingRecipe`: default prompt chunks, owner bounds,
+  shared route, lanes, the forced DeepSeek policy, the chat route's served
+  slice) and dispatches by the stored spec's pipeline kind.
+- A model's default context stays within its approval (and its configured
+  drafter's): Gemma 4 26B-A4B and 31B, approved to 8,192 tokens, now
+  default to 8,192 (with the qualified 1,024- and 256-row prompt chunks)
+  instead of 262,144, which their admission refused, so a Gemma 4 entry
+  without a `context` starts. No other family's default changes.
 - Gemma 4 26B-A4B and 31B are served by the shared engine (D-107): their
   steps come from the `gemma4` mapping's components and recipes, lowered
   onto the same GGML kernels in the same order, so their replies and
@@ -1391,6 +1413,17 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Removed
 
+- The per-architecture diagnostic selectors: `LLMP_DIAGNOSTIC_COMPONENT_QWEN`
+  and `ServingOptions`' `diagnostic_component_solo` and
+  `diagnostic_component_all` (with their "diagnostic shared alias" log
+  lines) are gone; `LLMP_DIAGNOSTIC_STARTUP_HOST_BYTES` and
+  `LLMP_DIAGNOSTIC_NODE_CAP_BYTES` remain the funded diagnostic pair on
+  their own. The DeepSeek-named prefill overrides become the shared route's
+  `prefill_lookahead`, `prepare_state` and `state_only_prefill`, which now
+  apply to every shared-route model (Qwen3.8 too, not only DeepSeek), and
+  `gemma3_trained_max` the generic `trained_max_context`, all internal. The
+  service logs a "serving final" line for every LLM in place of the
+  per-family ones.
 - The internal Gemma 4 diagnostics of `ServingOptions` (`gemma_joined`,
   `gemma_row_invariant`, `gemma31_production`, `gemma26_production` and
   the prepared-state switch, with `RunService`'s matching parameters and

@@ -50,7 +50,6 @@
 #include "runtime/cohort_schedule.h"
 #include "runtime/commands.h"
 #include "runtime/completion_tokens.h"
-#include "runtime/component_admission.h"
 #include "runtime/hang_ladder.h"
 #include "runtime/intake_limits.h"
 #include "runtime/prefill.h"
@@ -2341,29 +2340,6 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       });
     }
     auto started = server.Start(false);
-    if (started && serving.diagnostic_component_solo) {
-      for (const auto& model : server.models()) {
-        if (serving.diagnostic_component_all && model->llm() &&
-            OnComponentEngine(model->settings().architecture)) {
-          Say(log, std::format("diagnostic shared alias {}: existing migrated component route",
-                               model->name()));
-          continue;
-        }
-        if (!model->llm() || (model->settings().architecture != "qwen4exp" &&
-                              !(serving.diagnostic_component_all &&
-                                model->settings().architecture == "deepseek4"))) {
-          started = std::unexpected("shared service diagnostic has an unsupported alias");
-          break;
-        }
-        auto identity = static_cast<Llm&>(*model).ExecutionIdentity();
-        if (!identity || !*identity) {
-          started = std::unexpected("shared service diagnostic omitted its prepared identity");
-          break;
-        }
-        Say(log, std::format("diagnostic shared alias {}: execution identity {}", model->name(),
-                             base::ToHex(**identity)));
-      }
-    }
     // A cancellation drains only once nothing submitted before it is still
     // in flight (a read a drive holds does not end when cancelled).
     ladder.set_operations([&server] { return server.node().oldest_io(); });
@@ -2539,14 +2515,8 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
     }
     http.reset();
     for (const auto& model : server.models())
-      if (model->settings().architecture == "gemma3")
-        Say(log, std::format("Gemma3 serving final {}: {}", model->name(), model->extra()));
-      else if (model->settings().architecture == "gemma2")
-        Say(log, std::format("Gemma2 serving final {}: {}", model->name(), model->extra()));
-      else if (model->settings().architecture == "gemma4")
-        Say(log, std::format("Gemma4 serving final {}: {}", model->name(), model->extra()));
-      else if (serving.diagnostic_component_solo)
-        Say(log, std::format("diagnostic shared final {}: {}", model->name(), model->extra()));
+      if (model->llm())
+        Say(log, std::format("serving final {}: {}", model->name(), model->extra()));
     if (auto stopped = server.TearDown(); !stopped) {
       Say(log, "stopping: " + stopped.error());
       status = kExitFailure;

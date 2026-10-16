@@ -456,6 +456,23 @@ constexpr std::array kPolicies = {
                        "disable route_reduce\n"},
 };
 
+// Its serving: the derived shared route, qualified by its plain or joined
+// envelopes; its QSA selection's F32 [read cells, rows] tensors bound a
+// prompt chunk's rows (RE-037: their plane strides in 32 bits); the MTP
+// keys; a conversation-owned adaptive depth of three.
+constexpr ServingRecipe kServing{
+    .family = "Qwen3.8",
+    .name = "Qwen3.8",
+    .prefill_rows = 4096,
+    .draft_rows = true,
+    .mtp_waves = true,
+    .vocab = model::kQwen38FlashVocab,
+    .shared_route = true,
+    .qualified_envelopes = true,
+    .most_rows = +[](std::uint32_t context) { return model::Qwen38MostRows(context, true); },
+    .frozen_host_masks = false,
+    .branch_depth = 3};
+
 constexpr Mapping kMapping{
     .architecture = "qwen4exp",
     .version = 1,
@@ -470,6 +487,7 @@ constexpr Mapping kMapping{
     .layer_flag_type = 'f',
     .policies = kPolicies,
     .v0_assembly = kAssembly,
+    .serving = &kServing,
 };
 
 // Closed GGUF target projection: whole encoded data parts, split indexer,
@@ -753,6 +771,10 @@ constexpr std::array kMtpReads = {
     ReadRule{.kind = ReadKind::kTap, .name = "streams", .point = TapPoint::kStreams},
 };
 
+// Autoregressive MTP passes, composed in their replay form.
+constexpr DraftRecipe kMtpDraft{.shape = DraftRecipe::Shape::kMtp,
+                                .composed = &Qwen38MtpReplayMapping};
+
 constexpr Mapping kMtpMapping{
     .architecture = "qwen4exp-mtp",
     .version = 1,
@@ -768,6 +790,7 @@ constexpr Mapping kMtpMapping{
     .reads = kMtpReads,
     .policies = kMtpPolicies,
     .v0_assembly = kAssembly,
+    .draft = &kMtpDraft,
 };
 
 constexpr auto kMtpReplaySlots = [] {

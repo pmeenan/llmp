@@ -239,6 +239,20 @@ constexpr std::array kPolicies = {
                .capture_ahead = false},
 };
 
+// Its bounded serving route; the prompt chunk its envelope's policy rule
+// names (kPolicies) where a setting names none. Its chat route serves the
+// slice its retired M3 class did: thinking off by default and refused on,
+// tool declarations refused, its channel and tool-call openers ending a
+// reply (no parser here reads them).
+constexpr auto kChatStops = std::to_array<std::string_view>({"<|channel>", "<|tool_call>"});
+constexpr ServingRecipe kServing{.family = "Gemma",
+                                 .name = "Gemma4",
+                                 .bounded = true,
+                                 .prefill_rows = 128,
+                                 .chat_thinking = false,
+                                 .chat_tools = false,
+                                 .chat_stops = kChatStops};
+
 constexpr Mapping kMapping{
     .architecture = "gemma4",
     .version = 1,
@@ -252,6 +266,7 @@ constexpr Mapping kMapping{
     .layer_flags_key = "gemma4.attention.sliding_window_pattern",
     .layer_flag_type = 'l',
     .policies = kPolicies,
+    .serving = &kServing,
 };
 
 // -------------------------------------------------------- gemma4-assistant
@@ -367,6 +382,11 @@ constexpr std::array kAssistantPolicies = {
                        "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"},
 };
 
+// Anchored on its target's tapped features, borrowing its target's state:
+// three drafts a unit at most, its qualified transaction's
+// (docs/experiments/gemma-assistant-throughput).
+constexpr DraftRecipe kAssistantDraft{.shape = DraftRecipe::Shape::kAnchored, .depth = 3};
+
 constexpr Mapping kAssistantMapping{
     .architecture = "gemma4-assistant",
     .version = 1,
@@ -383,6 +403,7 @@ constexpr Mapping kAssistantMapping{
     .stage = "assistant",
     .reads = kAssistantReads,
     .policies = kAssistantPolicies,
+    .draft = &kAssistantDraft,
 };
 
 std::vector<std::int64_t> PerLayerOf(std::uint32_t layers, auto value) {

@@ -59,6 +59,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -266,6 +267,110 @@ struct ReadRule {
   bool entering = false;
 };
 
+struct Mapping;
+
+// How serving runs a target architecture's models where the engine's
+// defaults differ: the architecture's serving recipe as data (D-109: "the
+// approved list is data, not a profile in code"), which the runtime's
+// settings (runtime/model_settings.cc) and component build
+// (runtime/component_build.cc) read instead of naming architectures. A
+// mapping without one is not served (Qwen2's correctness recipe). What one
+// checkpoint is approved for (its envelope, its policy gates) is the
+// approval table's (runtime/approvals.h), not this.
+struct ServingRecipe {
+  // Settings. `family` and `name` name its bounded envelope in the
+  // settings' bases and refusals ("Gemma", "Gemma3").
+  std::string_view family{};
+  std::string_view name{};
+  // A bounded scalar-cohort route: a prompt chunk of at most
+  // `prefill_rows` (or the rows its envelope's policy rule names), one
+  // owner by default, at most twelve within its chunk, a provisional
+  // recompute cost. Otherwise `prefill_rows` is the measured default.
+  bool bounded = false;
+  std::uint32_t prefill_rows = 0;
+  // Above this context, `deep_prefill_rows` (the mask's memory; 0: none).
+  std::uint32_t deep_context = 0;
+  std::uint32_t deep_prefill_rows = 0;
+  // A bounded default context, wider ones an explicit opt-in (0: none).
+  std::uint32_t default_context = 0;
+  // Configured owners at most (0: no bound of its own); above
+  // `wide_context`, exactly one (0: none).
+  std::uint32_t max_owners = 0;
+  std::uint32_t wide_context = 0;
+  // A speculating model's owners at most (0: no bound of its own).
+  std::uint32_t speculative_owners = 0;
+  // Whether a drafter may be configured at all.
+  bool drafters = true;
+  // draft_rows applies without a drafter; within a block drafter's block
+  // (block_drafts), else an MTP block's two or three passes.
+  bool draft_rows = false;
+  bool block_drafts = false;
+  // wave_form and wave_costs apply, and the shared route forms speculative
+  // waves adaptively by them.
+  bool adaptive_waves = false;
+  // The MTP wave keys apply (draft_vocab, depth_cost_ratio,
+  // shared_wave_depth, draft_wave_max, wave_lanes, wave_read_align).
+  bool mtp_waves = false;
+  // The target's vocabulary, which a speculating draft_vocab may not
+  // exceed (0: unchecked).
+  std::uint32_t vocab = 0;
+  // What of its chat template the chat route serves (its qualified slice,
+  // whatever template the model renders: a native match or an owner's
+  // override never widens it): thought-channel output allowed and tool
+  // declarations accepted, control tokens that end a chat reply beside the
+  // template's own stops (Gemma 4's channel and tool-call openers, which no
+  // parser here reads), and a request's thinking when it names none
+  // (DeepSeek V4's on, as llama-server's /apply-template rendered its
+  // references' prompts; unset, the template's own default).
+  bool chat_thinking = true;
+  bool chat_tools = true;
+  std::span<const std::string_view> chat_stops{};
+  std::optional<bool> default_thinking{};
+  // Construction. The derived shared route: its numerical domain derived
+  // from the actual spec, state and owners, every joined read at the
+  // settings' wave_read_align, prompt capture off, tokens chosen and
+  // verified on the device, a layer's routed experts in slabs of 16.
+  bool shared_route = false;
+  // How a shared route is qualified (exactly one, with shared_route): by its
+  // plain, joined-MTP or joined-scoring envelopes, one owner otherwise
+  // (qualified_envelopes); or by its automatic serving shape, else only its
+  // closed single-owner diagnostic bridge, a derived domain for every
+  // envelope (closed_bridge).
+  bool qualified_envelopes = false;
+  bool closed_bridge = false;
+  // A prompt chunk's rows at a context, bounded so that its masks' plane
+  // strides fit 32 bits (RE-037); null: unbounded.
+  std::uint32_t (*most_rows)(std::uint32_t context) = nullptr;
+  // The runner stages a frozen read's host mask.
+  bool frozen_host_masks = true;
+  // A conversation-owned adaptive depth's ceiling (0: none).
+  std::uint32_t branch_depth = 0;
+  // Joined waves' owner regions on lanes of their own.
+  bool lanes = false;
+  // The lowering's lightning-indexer mask form.
+  bool lid_mask = false;
+  // The shared route's recipe in place of the admitted one (its policy
+  // text and how it composes steps); null: the admitted one.
+  const PolicyRule* serving_rule = nullptr;
+};
+
+// How a drafter architecture's stage drafts (the component build's
+// decoding mode): anchored on its target's tapped features and borrowing
+// its state (an assistant, a fixed `depth` a unit), a block of proposals
+// (at most as many drafts as the drafter's metadata under `depth_key`
+// says, filled with the token under `fill_key`), or autoregressive MTP
+// passes with catch-up and shared waves.
+struct DraftRecipe {
+  enum class Shape : std::uint8_t { kAnchored, kBlock, kMtp };
+  Shape shape = Shape::kAnchored;
+  std::uint32_t depth = 0;
+  std::string_view depth_key{};
+  std::string_view fill_key{};
+  // The mapping a composition uses in this one's place (an MTP drafter's
+  // replay form); null: this one.
+  const Mapping& (*composed)() = nullptr;
+};
+
 // A layer type by a source key's value (Mapping::layer_type_key).
 struct LayerTypeCode {
   std::int64_t value = 0;
@@ -304,6 +409,10 @@ struct Mapping {
   std::span<const PolicyRule> policies{};
   // A v0 artifact's resources paired into tensors (SourceOfV0).
   std::span<const V0Assembly> v0_assembly{};
+  // How serving runs its models (a target's) or drafts (a drafter's);
+  // null: not served.
+  const ServingRecipe* serving = nullptr;
+  const DraftRecipe* draft = nullptr;
 };
 inline constexpr std::size_t kMaxPolicyText = 4096;
 
@@ -317,6 +426,11 @@ inline constexpr std::string_view kTargetLastLayer = "llmp.target.last_layer.";
 std::span<const Mapping* const> Mappings();
 const Mapping* FindMapping(std::string_view architecture);
 std::expected<void, std::string> ValidateMapping(const Mapping& mapping);
+
+// Every source key the mapping reads (its layer, slot, parameter, read and
+// policy keys), each once: what a stored drafter's kept metadata is read
+// for (its values are the source's, as the importer read them).
+std::vector<std::string_view> SourceKeys(const Mapping& mapping);
 
 // A source's metadata value: an integer, a real, a flag or a string.
 struct SourceValue {

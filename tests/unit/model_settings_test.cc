@@ -17,6 +17,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "config/node_config.h"
@@ -24,6 +25,8 @@
 #include "model/gemma2.h"
 #include "model/gemma4.h"
 #include "model/qwen38.h"
+#include "runtime/approvals.h"
+#include "spec/mapping.h"
 
 namespace {
 
@@ -225,7 +228,7 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(s.context.source, SettingSource::kFallback);
   EXPECT_FALSE(s.speculation.value);
   EXPECT_EQ(s.speculation.source, SettingSource::kDerived);  // no drafter
-  EXPECT_EQ(s.prefill_chunk.value, llmp::runtime::kDsv4PrefillRows);
+  EXPECT_EQ(s.prefill_chunk.value, llmp::runtime::RecipeOf("deepseek4")->prefill_rows);
   EXPECT_EQ(s.prefill_chunk.source, SettingSource::kFallback);
   EXPECT_EQ(s.max_slots.value, 4U);
   EXPECT_EQ(s.prefill_floor_tok_s.value, 100U);
@@ -243,7 +246,7 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
 
   const ModelSettings q = Resolved(Model("q"), Facts("qwen4exp"));
   EXPECT_EQ(q.context.value, 262144U);
-  EXPECT_EQ(q.prefill_chunk.value, llmp::runtime::kQwen38PrefillRows);
+  EXPECT_EQ(q.prefill_chunk.value, llmp::runtime::RecipeOf("qwen4exp")->prefill_rows);
   EXPECT_EQ(q.draft_vocab.value, 65536U);
   EXPECT_EQ(q.depth_cost_ratio.value, 1.16);
   EXPECT_EQ(q.shared_wave_depth.value, 2U);
@@ -472,7 +475,7 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
   entry.overrides["prefill_chunk"] = std::int64_t{1024};
   entry.overrides["max_slots"] = std::int64_t{4};
   auto facts = Facts("gemma4");
-  facts.gemma_profile = &llmp::model::Gemma4_31B();
+  facts.approval = llmp::runtime::FindApprovalNamed("gemma-4-31b-it-ud-q4_k_xl");
   auto candidate = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(candidate);
   EXPECT_EQ(candidate->prefill_chunk.value, 256U);
@@ -488,21 +491,65 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
   ASSERT_TRUE(larger_cohort);
   EXPECT_EQ(larger_cohort->prefill_chunk.value, 128U);
   entry.overrides["max_slots"] = std::int64_t{4};
-  facts.gemma_profile = &llmp::model::Gemma4_26BA4B();
+  facts.approval = llmp::runtime::FindApprovalNamed("gemma-4-26b-a4b-it-ud-q4_k_m");
   auto profile26 = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(profile26);
   EXPECT_EQ(profile26->prefill_chunk.value, 1024U);
-  facts.gemma_profile = nullptr;
+  facts.approval = nullptr;
   auto unknown = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(unknown);
   EXPECT_EQ(unknown->prefill_chunk.value, 128U);
 }
 
+// A default configuration resolves within its approval: Gemma 4's
+// approvals stop at 8,192 tokens and four owners, so its default context is
+// theirs (and with its assistant, the assistant's too), and its recipe's
+// qualified chunk follows.
+TEST(ModelSettings, Gemma4DefaultsResolveWithinTheirApprovals) {
+  for (const auto& [target, assistant, chunk] :
+       {std::tuple{"gemma-4-26b-a4b-it-ud-q4_k_m", "mtp-gemma-4-26b-a4b-it", 1024U},
+        std::tuple{"gemma-4-31b-it-ud-q4_k_xl", "mtp-gemma-4-31b-it", 256U}}) {
+    SCOPED_TRACE(target);
+    for (const bool drafted : {false, true}) {
+      auto facts = drafted ? Facts("gemma4", "gemma4-assistant") : Facts("gemma4");
+      facts.approval = llmp::runtime::FindApprovalNamed(target);
+      ASSERT_NE(facts.approval, nullptr);
+      if (drafted) facts.drafter_approval = llmp::runtime::FindApprovalNamed(assistant);
+      const auto settings = ResolveSettings(Model("gemma", drafted), facts, nullptr, false);
+      ASSERT_TRUE(settings) << settings.error();
+      EXPECT_EQ(settings->context.value, facts.approval->max_context);
+      EXPECT_EQ(settings->context.source, SettingSource::kDerived);
+      EXPECT_THAT(settings->context.basis, HasSubstr("approved"));
+      EXPECT_LE(settings->max_slots.value, facts.approval->max_slots);
+      EXPECT_EQ(settings->prefill_chunk.value, chunk);
+      if (drafted) {
+        EXPECT_TRUE(settings->speculation.value);
+        EXPECT_LE(settings->context.value, facts.drafter_approval->max_context);
+        EXPECT_LE(settings->max_slots.value, facts.drafter_approval->max_slots);
+      }
+    }
+  }
+  // An override still names its own context (the approval refuses it later).
+  auto facts = Facts("gemma4");
+  facts.approval = llmp::runtime::FindApprovalNamed("gemma-4-31b-it-ud-q4_k_xl");
+  auto entry = Model("gemma");
+  entry.overrides["context"] = std::int64_t{16384};
+  const auto wide = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(wide);
+  EXPECT_EQ(wide->context.value, 16384U);
+}
+
 TEST(ModelSettings, Gemma26ProductionUses1024WithinBoundsAndPreservesSmallerOverride) {
   auto entry = Model("gemma");
   auto facts = Facts("gemma4");
-  facts.gemma_profile = &llmp::model::Gemma4_26BA4B();
-  // Default context exceeds the bounded envelope: the prior recipe.
+  facts.approval = llmp::runtime::FindApprovalNamed("gemma-4-26b-a4b-it-ud-q4_k_m");
+  // The default context is the approved envelope's: its qualified chunk.
+  auto defaults = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(defaults);
+  EXPECT_EQ(defaults->context.value, 8192U);
+  EXPECT_EQ(defaults->prefill_chunk.value, 1024U);
+  // A wider context than the envelope: the prior recipe.
+  entry.overrides["context"] = std::int64_t{16384};
   auto unbounded = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(unbounded);
   EXPECT_EQ(unbounded->prefill_chunk.value, 128U);
@@ -535,11 +582,16 @@ TEST(ModelSettings, Gemma26ProductionUses1024WithinBoundsAndPreservesSmallerOver
 TEST(ModelSettings, Gemma31ProductionUses256WithinBoundsAndPreservesSmallerOverride) {
   auto entry = Model("gemma");
   auto facts = Facts("gemma4");
-  facts.gemma_profile = &llmp::model::Gemma4_31B();
+  facts.approval = llmp::runtime::FindApprovalNamed("gemma-4-31b-it-ud-q4_k_xl");
   auto candidate = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(candidate);
-  EXPECT_EQ(candidate->prefill_chunk.value, 128U);
+  EXPECT_EQ(candidate->context.value, 8192U);  // the approved envelope's
+  EXPECT_EQ(candidate->prefill_chunk.value, 256U);
   EXPECT_EQ(candidate->max_slots.value, 1U);
+  entry.overrides["context"] = std::int64_t{16384};
+  candidate = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_EQ(candidate->prefill_chunk.value, 128U);
   entry.overrides["context"] = std::int64_t{8192};
   candidate = ResolveSettings(entry, facts, nullptr, true);
   ASSERT_TRUE(candidate);
@@ -794,10 +846,10 @@ TEST(ModelSettings, BoundsFromTheArchitecture) {
 
   entry.overrides["context"] = std::int64_t{1048576};
   EXPECT_EQ(Resolved(entry, Facts("deepseek4")).prefill_chunk.value,
-            llmp::runtime::kDsv4DeepPrefillRows);
+            llmp::runtime::RecipeOf("deepseek4")->deep_prefill_rows);
   entry.overrides["context"] = std::int64_t{262144};
   EXPECT_EQ(Resolved(entry, Facts("deepseek4")).prefill_chunk.value,
-            llmp::runtime::kDsv4PrefillRows);
+            llmp::runtime::RecipeOf("deepseek4")->prefill_rows);
 
   ModelEntry wide = Model("ds", true);
   wide.overrides["max_slots"] = std::int64_t{16};

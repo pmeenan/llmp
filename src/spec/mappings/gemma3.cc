@@ -111,6 +111,17 @@ constexpr std::array kPolicies = {
     PolicyRule{.text = "max_decode_rows 16\ndisable rope_store\n"},
 };
 
+// Its bounded serving route: 4,096 tokens by default (a wider context is an
+// explicit opt-in for exactly one owner), at most two owners, no drafter.
+constexpr ServingRecipe kServing{.family = "Gemma",
+                                 .name = "Gemma3",
+                                 .bounded = true,
+                                 .prefill_rows = 128,
+                                 .default_context = 4096,
+                                 .max_owners = 2,
+                                 .wide_context = 4096,
+                                 .drafters = false};
+
 constexpr Mapping kMapping{
     .architecture = "gemma3",
     .version = 1,
@@ -122,6 +133,7 @@ constexpr Mapping kMapping{
     .params = kParams,
     .folds = kFolds,
     .policies = kPolicies,
+    .serving = &kServing,
 };
 
 }  // namespace

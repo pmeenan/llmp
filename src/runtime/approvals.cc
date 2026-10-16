@@ -1,0 +1,511 @@
+// SPDX-FileCopyrightText: 2026 llmpalooza contributors
+// SPDX-License-Identifier: Apache-2.0
+
+// The approved checkpoints (runtime/approvals.h), a lock file in C++.
+//
+// Source receipts are the approved captured ones, as the importer verified
+// and declared them at import (admission compares, never re-hashes them);
+// inventories digest every tensor's complete native description
+// (component_admission.cc Inventory), each re-pinned (D-118) from the
+// published artifact, or for the transitional rows the normalization
+// fixture, that the earlier name/encoding/shape digests admitted (source
+// pins: docs/experiments/m36-native-v1-admission/README.md); the spec digests are those of the v1 artifacts `llmp import`
+// published from the staged, archive-verified sources and that executed bit
+// for bit as their v0 artifacts did (docs/experiments/m36-numerical-audit/
+// v1-equivalence.md; owner, 2026-10-15: serving is v1-only). The envelopes,
+// policies and pairings are the ones each family qualified in M3 and M3.6.
+// Change an entry only with the evidence that approves it.
+
+#include "runtime/approvals.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <span>
+#include <string_view>
+
+#include "base/sha256.h"
+
+namespace llmp::runtime {
+namespace {
+
+constexpr std::array kGemma2Sources{
+    SourceReceipt{"gemma-2-2b-it-Q8_0.gguf",
+                  "2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe",
+                  2784495456ULL},
+};
+
+constexpr std::array kGemma3Sources{
+    SourceReceipt{"gemma-3-4b-it-qat-Q4_0.gguf",
+                  "ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a",
+                  2526080992ULL},
+};
+
+constexpr std::array kGemma26Sources{
+    SourceReceipt{"gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+                  "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+                  16947541728ULL},
+};
+
+constexpr std::array kGemma31Sources{
+    SourceReceipt{"gemma-4-31B-it-UD-Q4_K_XL.gguf",
+                  "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575",
+                  18822970304ULL},
+};
+
+constexpr std::array kGemma26AssistantSources{
+    SourceReceipt{"mtp-gemma-4-26B-A4B-it.gguf",
+                  "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b", 461766816ULL},
+};
+
+constexpr std::array kGemma31AssistantSources{
+    SourceReceipt{"mtp-gemma-4-31B-it.gguf",
+                  "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de", 514687104ULL},
+};
+
+constexpr std::array kQwen2Fp16Sources{
+    SourceReceipt{"qwen2.5-0.5b-instruct-fp16.gguf",
+                  "8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc",
+                  1266425696ULL},
+};
+
+constexpr std::array kQwen2Exl340Sources{
+    SourceReceipt{"config.json", "966657b7e8c331ea16127a868eb6d6ff16ad0b16a5ee39d26279e12de0a3205c",
+                  996ULL},
+    SourceReceipt{"model.safetensors",
+                  "66b61bd1ca3ebb0fc1cea29148eda8bdaca45d232c6a7e319c6d2835b65c066b", 588951098ULL},
+};
+
+constexpr std::array kQwen2Exl345Sources{
+    SourceReceipt{"config.json", "dcd945f38ba6e7835c8c281a45c03d9a20759d03afe5761d09def8c62aa11f3c",
+                  923ULL},
+    SourceReceipt{"model.safetensors",
+                  "94c45f9838a56fbf23f43d0a04c47e187d840dd97f17b4a027a69a20339762bc", 611257914ULL},
+};
+
+constexpr std::array kQwen38GgufSources{
+    SourceReceipt{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+                  "268f81fdedf3149a538f252308927a4d5d1f6e062c178568a51e3b519744f8a8", 10946624ULL},
+    SourceReceipt{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+                  "cfe600b236b88c7fad1613a5ca5e83b9f2beb63cbd44c32b2be50a44747c695f",
+                  49567921344ULL},
+    SourceReceipt{"Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+                  "f1912ba34c79427d2295a58dcb2b732b5931af5bef7a373c60557a57d9ee7250",
+                  32382955968ULL},
+};
+
+constexpr std::array kQwen38ModelOptSources{
+    SourceReceipt{"config.json", "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e",
+                  109897ULL},
+    SourceReceipt{"hf_quant_config.json",
+                  "d60c54caa65317fd8f1338bdeb81b9014512ac8f21ec18da22541cb88c6784b7", 99088ULL},
+    SourceReceipt{"model-00001-of-00034.safetensors",
+                  "3f870511a20ad170c997517765f03d475bcd364ae1a6011491085cab620d3c39",
+                  2841505880ULL},
+    SourceReceipt{"model-00002-of-00034.safetensors",
+                  "fe8f4bdbce28f4911f10460b75581b6c88a8ade9b836d2f1ec22c6bee6f976a8",
+                  1575009800ULL},
+    SourceReceipt{"model-00003-of-00034.safetensors",
+                  "2b7d1312a660cf17bb05c34e1ac79570820f86fb1e1115108ee40562e48acb5e",
+                  1575009808ULL},
+    SourceReceipt{"model-00004-of-00034.safetensors",
+                  "25ba4508c209a5cc54c04edb1edb8d0a0b5efa80e5f99637e2263fa78d6a25e8",
+                  1575009808ULL},
+    SourceReceipt{"model-00005-of-00034.safetensors",
+                  "a9848067bb49f44b8339bcdca9d60ca74d801a6df874c979c6f901c8da6ff545",
+                  1575009808ULL},
+    SourceReceipt{"model-00006-of-00034.safetensors",
+                  "66fc496b58675a90b94d9f36765fe67692dd8a4c966ec0692e076d751f835c8d",
+                  1575009808ULL},
+    SourceReceipt{"model-00007-of-00034.safetensors",
+                  "68f89e84be13069bd9f2928b44a9f9638d628fd62be5abb6a4fc956c1af25ea9",
+                  1575009808ULL},
+    SourceReceipt{"model-00008-of-00034.safetensors",
+                  "b8bdaa0a7b027dc0fa38c2e43bb31e8ddf9ba9288d3d0f28c422e6947241d96e",
+                  1575009808ULL},
+    SourceReceipt{"model-00009-of-00034.safetensors",
+                  "6c5a85990b16a93f0e7e28fb76f56713d5cbc05bef494bb15360188f575746e9",
+                  1575009808ULL},
+    SourceReceipt{"model-00010-of-00034.safetensors",
+                  "8734a1fc3b5857391fbf2252d4305391a9f77894b70577949f472fc75386582f",
+                  1575009808ULL},
+    SourceReceipt{"model-00011-of-00034.safetensors",
+                  "29792378d43c9f70d9f3fbdd07d0ee24b38f81fe27aff25a02ba0d3cde8df13c",
+                  1575009808ULL},
+    SourceReceipt{"model-00012-of-00034.safetensors",
+                  "b23e615ebefff4753d982d9ec6a8be6ad57353a8900146a3ec4e217f81c10e61",
+                  1575009808ULL},
+    SourceReceipt{"model-00013-of-00034.safetensors",
+                  "9da7b4570fc3f13cb781e5aca5e79d0edfc10be5555a18bc7bda8f47459d5acf",
+                  1575009808ULL},
+    SourceReceipt{"model-00014-of-00034.safetensors",
+                  "53e770d0bdf6261e30abaae2477aa0b50f6686511e0240514ded0fd65edbfeba",
+                  1575009808ULL},
+    SourceReceipt{"model-00015-of-00034.safetensors",
+                  "03440de56d127ff58e72963aafd0de0574b825667330c50b4441bb300dae9f06",
+                  1575009816ULL},
+    SourceReceipt{"model-00016-of-00034.safetensors",
+                  "ce2e0474ccb34c56003a61608b46d3a8f668c218a9993c1f861239df83afe77b",
+                  1575009824ULL},
+    SourceReceipt{"model-00017-of-00034.safetensors",
+                  "57f84845e0b8bcab738e70f0f880e941f1baa8da14663293d7d40481288c73a0",
+                  1575009824ULL},
+    SourceReceipt{"model-00018-of-00034.safetensors",
+                  "3477df0be60910576fc5a1f8159d8dbbf7847a03872b9cb53664808e1d5dfac8",
+                  1575009824ULL},
+    SourceReceipt{"model-00019-of-00034.safetensors",
+                  "43c22213b2fe0990c7fc2aa54c0ea65062eb93253b4ea419914d1a655e64b23a",
+                  2438722732ULL},
+    SourceReceipt{"model-00020-of-00034.safetensors",
+                  "b7143694bf8698c5b704ae9b3d492a0e9b8ef57bdda8ae6f3f29f264c183ad17",
+                  5133924592ULL},
+    SourceReceipt{"model-00021-of-00034.safetensors",
+                  "522bbbc894183865726e06ca44021d275d03cc0e8dcd60a2c7074d870e811d37",
+                  5194891408ULL},
+    SourceReceipt{"model-00022-of-00034.safetensors",
+                  "5a4789f6da6b386b09cb9093b0315fe12a816142958e4d8a4ae83e4fbaa066e7",
+                  5133933936ULL},
+    SourceReceipt{"model-00023-of-00034.safetensors",
+                  "cd0aaef1c8688cb4e35b488048ede2a6b653e1d558b20d4657567df24dc8be13",
+                  5194908864ULL},
+    SourceReceipt{"model-00024-of-00034.safetensors",
+                  "d07198edd38ae8740d556487729ae87be1e21e31a88cf6624c1b3f9d0fc6de76",
+                  5188755712ULL},
+    SourceReceipt{"model-00025-of-00034.safetensors",
+                  "c7d5e642968679ca14d07bdb1e8c2187c59898611d05a6909c209738642c9519",
+                  5133940040ULL},
+    SourceReceipt{"model-00026-of-00034.safetensors",
+                  "47a7c7a70188cb3dc318071a5278260c4b05d7ce1b69c3b99e7bf1c0e42c353b",
+                  5194907416ULL},
+    SourceReceipt{"model-00027-of-00034.safetensors",
+                  "a81fedf160434806e81f36731c853fe4e3f973dea2f0817043987f32b4915a54",
+                  5133940216ULL},
+    SourceReceipt{"model-00028-of-00034.safetensors",
+                  "91c5d479fe4de1035c430ad7fd3de9d15214a46fd786ca7909d1f2fa40ef603a",
+                  5194907672ULL},
+    SourceReceipt{"model-00029-of-00034.safetensors",
+                  "f31c6f61968f6f9e85d469f31c55c82ab6c5f2bc54c1d7a0cd6b23ac45f0ce15",
+                  5133939992ULL},
+    SourceReceipt{"model-00030-of-00034.safetensors",
+                  "df8627f5b8b0711b2ebf415c1f2549ef0b50f964e0babb560469b191b33c6a14",
+                  5194908960ULL},
+    SourceReceipt{"model-00031-of-00034.safetensors",
+                  "654c8f9ae1ab5de393cbcdd46a13bd0d3d1c1005e575879e0e660d40ad9ef425",
+                  5188755536ULL},
+    SourceReceipt{"model-00032-of-00034.safetensors",
+                  "7de2e680802ad92a0e019f875ebc07f2d5d82c8bca1c64b0f817d547bc3c9de7",
+                  5133940208ULL},
+    SourceReceipt{"model-00033-of-00034.safetensors",
+                  "0fbcdf16c13cd830447efdcd3be19b82ec0e76b7f57f0e96952c1f2b62002b11",
+                  5021547836ULL},
+    SourceReceipt{"model-00034-of-00034.safetensors",
+                  "fe0a0a227e39c4d02dc66c726d3e1ad87ef082e90a6b023ac90b2bb301672203",
+                  1597270800ULL},
+    SourceReceipt{"model-inputscales.safetensors",
+                  "49c7d04606ff7c8f103b4d1fc9742b44649a2937b25ecc896a5450ab1020f308", 9669936ULL},
+    SourceReceipt{"model.safetensors.index.json",
+                  "435eef76fc10fc6e932a208a1f85a86bc9c7ffc389b27b34ba83bb6a5d0371e9", 33074286ULL},
+};
+
+constexpr std::array kQwen38MlxSources{
+    SourceReceipt{"config.json", "4efd5f41c47e8de9f55c678df4a237cbbc78e4d517dad42a906889f7d94f79a2",
+                  5361ULL},
+    SourceReceipt{"model-00001-of-00022.safetensors",
+                  "308f20b7e35a3e525f36eca0df286f6d1043cfeb621e7bbcf372a834c99cd66d",
+                  5283195887ULL},
+    SourceReceipt{"model-00002-of-00022.safetensors",
+                  "8af1a616f2f39dbfe6ee92e959afb2414623fcb299aff1ced55984bfe810d608",
+                  5250035137ULL},
+    SourceReceipt{"model-00003-of-00022.safetensors",
+                  "519a0472252ac9a51af020686f462aa6be82ce655f948fd5f054d70949de17a6",
+                  5250035154ULL},
+    SourceReceipt{"model-00004-of-00022.safetensors",
+                  "b1ad7e951969eb8dc4e92762dc2e50bd47353c95990ae207db5da393d441400f",
+                  5250035160ULL},
+    SourceReceipt{"model-00005-of-00022.safetensors",
+                  "9ca797304c563bb65f2356b67d444511b11744bc5b5c8ec8345ae7d97d3e251c",
+                  5250035164ULL},
+    SourceReceipt{"model-00006-of-00022.safetensors",
+                  "8aab4c1dce7d8a0af645426b66d1caf30245d422d4c6b7029583959d675a1827",
+                  5250035184ULL},
+    SourceReceipt{"model-00007-of-00022.safetensors",
+                  "7908da37b2e3fa7f0de8b9734dad0759be7dc445716f3acd59c20c4842638db9",
+                  5067850140ULL},
+    SourceReceipt{"model-00008-of-00022.safetensors",
+                  "85beff20f250bfe63e95f12c0460512aab92bcde8f7408fe9c20e3de0321bc1d",
+                  5337131618ULL},
+    SourceReceipt{"model-00009-of-00022.safetensors",
+                  "f7c03ae640e9bf0f7813ef2b2980afa83a883c02b3988e814e9921055fc08a28",
+                  5337131558ULL},
+    SourceReceipt{"model-00010-of-00022.safetensors",
+                  "6897f52227533e720b243d6aef24c1293ad1eb02a1bb2ec6a6e4dc48d56d0c8f",
+                  4970130103ULL},
+    SourceReceipt{"model-00011-of-00022.safetensors",
+                  "905d27f9db887284289a043f9638020258c5f90d52122cdce2e7aef941a431f2",
+                  5341257482ULL},
+    SourceReceipt{"model-00012-of-00022.safetensors",
+                  "c4d2bb76fa4613f7386ddaa7045608c320f9736623211a814aa28fb370530dec",
+                  4967968541ULL},
+    SourceReceipt{"model-00013-of-00022.safetensors",
+                  "1f20a5e1f2256b2fb6a78fef52f9e66daa970f4318ab1be3abb32a1effedbbf3",
+                  5337131651ULL},
+    SourceReceipt{"model-00014-of-00022.safetensors",
+                  "860d12691792df5f08c9dfe245dc356773741f1edcc1fd430672ef06ac387635",
+                  5337131799ULL},
+    SourceReceipt{"model-00015-of-00022.safetensors",
+                  "259fb7577b8248f6dcbe6a932fe5d2f1c8869eda761ef3394fe6ad06065f216c",
+                  4970130195ULL},
+    SourceReceipt{"model-00016-of-00022.safetensors",
+                  "e931785f9ff4e0a567bf8c06df37639be46b4dae156e0f8b39b9d32a03d75792",
+                  5341257440ULL},
+    SourceReceipt{"model-00017-of-00022.safetensors",
+                  "4f4610dc4a862bf9d93d70cfd0ec037e8e7943a734794d34eb5c0d748b74747a",
+                  4967968481ULL},
+    SourceReceipt{"model-00018-of-00022.safetensors",
+                  "afdb4828920186600f9d61537d1465979fb36692f4eddb8c5a961a6b72964b77",
+                  5337131695ULL},
+    SourceReceipt{"model-00019-of-00022.safetensors",
+                  "869d34c6e8f7db79bd4e54b9833d5b0db45eefac860c9bd64fbd312bf862a667",
+                  5337131801ULL},
+    SourceReceipt{"model-00020-of-00022.safetensors",
+                  "5ca2f994fec1aa06fefef6646b9f072cf70f7f73aa8dab4c7c1a9a424afb4a52",
+                  4970130135ULL},
+    SourceReceipt{"model-00021-of-00022.safetensors",
+                  "58def6762f29cc798437e5649a56ee75d053faca69138a2454dbdb34bb8a37c3",
+                  5341257436ULL},
+    SourceReceipt{"model-00022-of-00022.safetensors",
+                  "30a3c82b573d813a1d2349f1c05c308c0d415f3ca1bb67caa0bfaad8a6afa7a3",
+                  3715570974ULL},
+    SourceReceipt{"model.safetensors.index.json",
+                  "8848503860c7da8619fdc8d5e65201868f8f1d21d69d2e21166c95522379ff77", 420813ULL},
+};
+
+constexpr std::array kDsv4Sources{
+    SourceReceipt{"DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf",
+                  "de65c5bb660817b95cc281bf54935f9d1bcc3b22535f2eae63b35a14c7c5724b", 5257664ULL},
+    SourceReceipt{"DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00002-of-00003.gguf",
+                  "c8728a298862cd8736782e2e4056e5e3e03c415ba552a38173264494e41ef327",
+                  49437013568ULL},
+    SourceReceipt{"DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00003-of-00003.gguf",
+                  "a4bae0788c025c1b2388754592c98fefa1372981748ac9875039bf6a30e6eeb4",
+                  47390237120ULL},
+};
+
+constexpr std::array kDsparkSources{
+    SourceReceipt{"dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
+                  "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249",
+                  10896057440ULL},
+};
+
+// Qwen3.8's ModelOpt and MLX imports repack GDN's value heads tiled.
+constexpr std::array<std::string_view, 1> kTiledValueHeads{"gdn.value_heads_tiled"};
+// Gemma 4 26B-A4B's routed experts gate its policy rules.
+constexpr std::array<std::string_view, 1> kGemma4Experts{"gemma4.expert_count"};
+
+constexpr std::uint32_t kAnyOwners = std::numeric_limits<std::uint32_t>::max();
+
+constexpr std::array kApprovals{
+    Approval{.name = "gemma-2-2b-it-q8_0",
+             .label = "Gemma2",
+             .architecture = "gemma2",
+             .container = "gguf",
+             .sources = kGemma2Sources,
+             .tensors = 288,
+             .inventory = "caaa925eb5f24c566ffec8972f598d6af75ffd787b3b5629e09c783727c0fdff",
+             .spec = "5d9a04370e581d5bddc1eeda9b1c4eb6222372ec5bd0d3db723bafacc999c28f",
+             .tied_output = true,
+             .max_context = 8192,
+             .max_slots = 2},
+    Approval{.name = "gemma-3-4b-it-qat-q4_0",
+             .label = "Gemma3",
+             .architecture = "gemma3",
+             .container = "gguf",
+             .sources = kGemma3Sources,
+             .tensors = 444,
+             .inventory = "9da3bfa834bc1c447c06b4588f7b6f12c16c06b3f71437b0893abc8fa176880e",
+             .spec = "0f0346b9626697e65fb5ec0ba2506b34af86eb8e0e52000a53ff1b03722741fb",
+             .tied_output = true,
+             .max_context = 131072,
+             .max_slots = 2,
+             .wide_context = 4096},
+    Approval{.name = "gemma-4-26b-a4b-it-ud-q4_k_m",
+             .label = "Gemma26",
+             .architecture = "gemma4",
+             .container = "gguf",
+             .sources = kGemma26Sources,
+             .tensors = 658,
+             .arrays = 60,
+             .inventory = "cefd4cfe5a3b8e6d3c0facb34933a8124c49890761a56b905efd5208f627e5e6",
+             .spec = "2284f647e55684479768e12f91ae0b88b13c8dc855f84c4aff1e37a06d028290",
+             .tied_output = true,
+             .max_context = 8192,
+             .max_slots = 4,
+             .gates = kGemma4Experts},
+    Approval{.name = "gemma-4-31b-it-ud-q4_k_xl",
+             .label = "Gemma31",
+             .architecture = "gemma4",
+             .container = "gguf",
+             .sources = kGemma31Sources,
+             .tensors = 833,
+             .inventory = "9109e8abbf01494c81640a14167774200debe1533c39fed86708708289bf2c3b",
+             .spec = "f511d74ed438866558034d5f6366ab270bb975b8bde3b75f35f8e6c669951bff",
+             .tied_output = true,
+             .max_context = 8192,
+             .max_slots = 4},
+    Approval{.name = "mtp-gemma-4-26b-a4b-it",
+             .label = "Gemma26 assistant",
+             .architecture = "gemma4-assistant",
+             .drafter = true,
+             .container = "gguf",
+             .sources = kGemma26AssistantSources,
+             .tensors = 49,
+             .inventory = "5a7a022877abf6adef7fa034e9aad391966b02449586764f0155c0674d5e433d",
+             .spec = "e40835b3959dbb78f7bc784d6cea6495b2e71ff7f8acf869bbcfcc126b959cb2",
+             .max_context = 262144,
+             .max_slots = 4,
+             .policy = ApprovedPolicy::kNone,
+             .target = "gemma-4-26b-a4b-it-ud-q4_k_m"},
+    Approval{.name = "mtp-gemma-4-31b-it",
+             .label = "Gemma31 assistant",
+             .architecture = "gemma4-assistant",
+             .drafter = true,
+             .container = "gguf",
+             .sources = kGemma31AssistantSources,
+             .tensors = 49,
+             .inventory = "a87c724f9a0afb06f38abb486981111b7693d6c598ad876067fe9f12b3abef64",
+             .spec = "ed4da268ff3aa55d8675619e67d51b0dbe2d45c6c05f3e463242ff948708be22",
+             .max_context = 262144,
+             .max_slots = 4,
+             .policy = ApprovedPolicy::kNone,
+             .target = "gemma-4-31b-it-ud-q4_k_xl"},
+    Approval{.name = "qwen2.5-0.5b-instruct-fp16",
+             .label = "Qwen2.5 FP16",
+             .architecture = "qwen2",
+             .container = "gguf",
+             .sources = kQwen2Fp16Sources,
+             .tensors = 291,
+             .inventory = "f80c4d5b2a974a164fe890b3695da3d94cf6f3526266df12ac67799bc0d90ac2",
+             .spec = "096ae62e7e4978ad74bdfd80d64ab61c4ae662df1dc393fc6ad76f59f324f2b5",
+             .max_context = 8192,
+             .max_slots = 1},
+    Approval{.name = "qwen2.5-0.5b-instruct-exl3-4.0bpw",
+             .label = "Qwen2.5 EXL3 4.0",
+             .architecture = "qwen2",
+             .container = "exl3",
+             .sources = kQwen2Exl340Sources,
+             .tensors = 798,
+             .form = InventoryForm::kExl3,
+             .inventory = "fac1aa40c2bd7e690872017f3cc02712f886fd411f726f601312d9201fffad3c",
+             .spec = "1b982d73ad42ab6a92cd224a1ff3995825cef4af8c8e4a3f83e3059f5068c274",
+             .max_context = 8192,
+             .max_slots = 1},
+    Approval{.name = "qwen2.5-0.5b-instruct-exl3-4.5bpw",
+             .label = "Qwen2.5 EXL3 4.5",
+             .architecture = "qwen2",
+             .container = "exl3",
+             .sources = kQwen2Exl345Sources,
+             .tensors = 798,
+             .form = InventoryForm::kExl3,
+             .inventory = "5d60dbe367c9e8dd7b5803bc69bf2d64cec762e4b65db795306e44cf0e46e426",
+             .spec = "1b982d73ad42ab6a92cd224a1ff3995825cef4af8c8e4a3f83e3059f5068c274",
+             .max_context = 8192,
+             .max_slots = 1},
+    // Three shards, UD-IQ3_XXS. The writer verified their whole streams while
+    // publishing; admission checks their receipts and the complete stored
+    // inventory and spec without rehashing payloads.
+    Approval{.name = "qwen3.8-flash-next-ud-iq3_xxs",
+             .label = "Qwen3.8 GGUF",
+             .architecture = "qwen4exp",
+             .container = "gguf",
+             .sources = kQwen38GgufSources,
+             .tensors = 1224,
+             .arrays = 144,
+             .inventory = "a580f533d1b0ffe53e0650a17e5e479328cc8f3d1dd5aaeedb2987f7d0f1d01a",
+             .spec = "dbbce592f38d0ec8c5fc96b1255e0821b3bf80600a6ad89e068cd39cd90fa72b",
+             .max_context = 262144,
+             .max_slots = kAnyOwners},
+    // Transitional (no spec pinned yet): their stored specs are still
+    // checked against their compiled profile until their native relayout
+    // lands with its v1 artifacts and frozen proofs.
+    Approval{.name = "qwen3.8-flash-next-modelopt",
+             .label = "Qwen3.8 ModelOpt",
+             .architecture = "qwen4exp",
+             .container = "safetensors",
+             .folds = kTiledValueHeads,
+             .sources = kQwen38ModelOptSources,
+             .tensors = 1886,
+             .arrays = 432,
+             .form = InventoryForm::kModelOpt,
+             .inventory = "0e17f338a80f0b3d4d0b4d530749b8f42bdb724640594a8cb088a0597a462f29",
+             .max_context = 262144,
+             .max_slots = kAnyOwners,
+             .policy = ApprovedPolicy::kNone},
+    Approval{.name = "qwen3.8-flash-next-mlx",
+             .label = "Qwen3.8 MLX",
+             .architecture = "qwen4exp",
+             .container = "mlx",
+             .folds = kTiledValueHeads,
+             .sources = kQwen38MlxSources,
+             .tensors = 2954,
+             .arrays = 432,
+             .form = InventoryForm::kMlx,
+             .inventory = "70886578cfdf6686685fd1caf56fb645903c5a04a24f0a215d17cd302ad8a5ec",
+             .max_context = 262144,
+             .max_slots = kAnyOwners,
+             .policy = ApprovedPolicy::kNone},
+    // Its mapping deliberately has no policy rules: the engine's default
+    // outside the shared route's own recipe.
+    Approval{.name = "deepseek-v4-flash-0731-ud-q2_k_xl",
+             .label = "DeepSeek V4 Flash",
+             .architecture = "deepseek4",
+             .container = "gguf",
+             .sources = kDsv4Sources,
+             .tensors = 1328,
+             .arrays = 129,
+             .inventory = "e4bead1c37f8938de7d1fd186c3021140348533b9160c7726465d7b4344b71fd",
+             .spec = "ddaaa1d38bd6a501b9ef891bc0f639a70f41b19ff85a85674be5d77470e7a8e8",
+             .max_context = 1048576,
+             .max_slots = kAnyOwners,
+             .policy = ApprovedPolicy::kMappingOrNone},
+    Approval{.name = "dspark-deepseek-v4-flash-0731-q8_0",
+             .label = "DSpark",
+             .architecture = "dflash",
+             .drafter = true,
+             .container = "gguf",
+             .sources = kDsparkSources,
+             .tensors = 81,
+             .arrays = 9,
+             .inventory = "a9905c3984a3d7598444825d5f9f281270c276d554c3e2f8c909adfb7e705b97",
+             .spec = "32ef1e3d874b12f249d19eb03746dda14a6c88c16c75b403228c3d1f9f1c5e53",
+             .max_context = 1048576,
+             .max_slots = kAnyOwners,
+             .policy = ApprovedPolicy::kNone,
+             .target = "deepseek-v4-flash-0731-ud-q2_k_xl"},
+};
+
+}  // namespace
+
+std::span<const Approval> Approvals() { return kApprovals; }
+
+const Approval* FindApproval(std::string_view architecture,
+                             std::span<const artifact::Source> sources) {
+  for (const Approval& a : kApprovals) {
+    if (a.architecture != architecture || a.sources.size() != sources.size()) continue;
+    const bool matched = std::ranges::all_of(a.sources, [&](const SourceReceipt& r) {
+      return std::ranges::count_if(sources, [&](const artifact::Source& s) {
+               return s.name == r.name && s.bytes.value() == r.bytes &&
+                      base::ToHex(s.sha256) == r.sha256;
+             }) == 1;
+    });
+    if (matched) return &a;
+  }
+  return nullptr;
+}
+
+const Approval* FindApprovalNamed(std::string_view name) {
+  const auto found = std::ranges::find(kApprovals, name, &Approval::name);
+  return found == kApprovals.end() ? nullptr : &*found;
+}
+
+}  // namespace llmp::runtime

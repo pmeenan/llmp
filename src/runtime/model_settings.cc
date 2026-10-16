@@ -23,18 +23,11 @@
 #include "base/json.h"
 #include "base/report.h"
 #include "components/state_encoding.h"
-#include "model/dsv4.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
-#include "model/qwen38.h"
 #include "model/v0_artifact.h"
+#include "runtime/approvals.h"
 #include "runtime/calibration.h"
 #include "runtime/component_admission.h"
-#include "runtime/gemma_profile.h"
 #include "spec/mapping.h"
-#include "spec/mappings/gemma4.h"
-#include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
@@ -257,46 +250,60 @@ std::string_view SourceName(SettingSource source) {
 
 namespace {
 
-std::uint32_t ContextCeilingOf(const ArtifactFacts& facts) {
-  if (facts.context_ceiling != 0) {
-    return facts.context_ceiling;
-  }
-  if (facts.architecture == "deepseek4") return model::kDsv4FlashContext;
-  if (facts.architecture == "qwen4exp") return model::kQwen38FlashContext;
-  if (facts.architecture == "gemma4") return model::kGemma4Context;
-  if (facts.architecture == "gemma3") return 8448;
-  if (facts.architecture == "gemma2") return model::Gemma2_2B().context;
-  return 0;
+// The runner's ceiling: its spec's stage context (0: no runner).
+std::uint32_t ContextCeilingOf(const ArtifactFacts& facts) { return facts.context_ceiling; }
+
+// The recipe's, or none's (every capability off).
+const spec::ServingRecipe& Recipe(std::string_view architecture) {
+  static constexpr spec::ServingRecipe kNone{};
+  const spec::ServingRecipe* recipe = RecipeOf(architecture);
+  return recipe != nullptr ? *recipe : kNone;
+}
+
+// A count as written in the bases ("262,144").
+std::string Grouped(std::uint64_t n) {
+  std::string digits = std::to_string(n);
+  for (auto at = digits.size(); at > 3; at -= 3) digits.insert(at - 3, ",");
+  return digits;
 }
 
 }  // namespace
 
-bool SupportsSpeculativeDrafting(const ArtifactFacts& facts) {
-  return !facts.drafter_architecture.empty() || facts.architecture == "deepseek4" ||
-         facts.architecture == "qwen4exp";
+const spec::ServingRecipe* RecipeOf(std::string_view architecture) {
+  const spec::Mapping* mapping = spec::FindMapping(architecture);
+  return mapping != nullptr ? mapping->serving : nullptr;
 }
 
-bool SupportsWaveForm(const ArtifactFacts& facts) { return facts.architecture == "deepseek4"; }
+bool SupportsSpeculativeDrafting(const ArtifactFacts& facts) {
+  return !facts.drafter_architecture.empty() || Recipe(facts.architecture).draft_rows;
+}
 
-bool SupportsWaveCosts(const ArtifactFacts& facts) { return facts.architecture == "deepseek4"; }
+bool SupportsWaveForm(const ArtifactFacts& facts) {
+  return Recipe(facts.architecture).adaptive_waves;
+}
 
-bool SupportsMtpDrafting(const ArtifactFacts& facts) { return facts.architecture == "qwen4exp"; }
+bool SupportsWaveCosts(const ArtifactFacts& facts) {
+  return Recipe(facts.architecture).adaptive_waves;
+}
+
+bool SupportsMtpDrafting(const ArtifactFacts& facts) {
+  return Recipe(facts.architecture).mtp_waves;
+}
 
 bool SupportsSpeculativeDrafting(const ModelSettings& settings) {
-  return settings.drafter || settings.architecture == "deepseek4" ||
-         settings.architecture == "qwen4exp";
+  return settings.drafter || Recipe(settings.architecture).draft_rows;
 }
 
 bool SupportsWaveForm(const ModelSettings& settings) {
-  return settings.architecture == "deepseek4";
+  return Recipe(settings.architecture).adaptive_waves;
 }
 
 bool SupportsWaveCosts(const ModelSettings& settings) {
-  return settings.architecture == "deepseek4";
+  return Recipe(settings.architecture).adaptive_waves;
 }
 
 bool SupportsMtpDrafting(const ModelSettings& settings) {
-  return settings.architecture == "qwen4exp";
+  return Recipe(settings.architecture).mtp_waves;
 }
 
 bool KeyAppliesTo(std::string_view key, const ArtifactFacts& facts) {
@@ -491,78 +498,53 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     return components::ApplyKvCacheEncoding(model, format::Encoding::kQ8_0, *bytes);
   };
   facts.architecture = target.model().architecture;
+  facts.approval = FindApproval(facts.architecture, target.sources());
+  if (const spec::Mapping* mapping = spec::FindMapping(facts.architecture); mapping != nullptr)
+    facts.pipeline = mapping->pipeline;
   std::optional<std::uint32_t> declared_context;
+  // The target's spec (a stored one's, or v0's synthesis from the existing
+  // library) and, with a drafter, its composition: their bound identities.
+  // No independent parser or cached execution model; every object below
+  // dies before tokenizer/generation metadata is read.
+  std::optional<spec::ModelSpec> model;
   if (target.format_version() == 1) {
     auto admitted = ReadComponentAdmission(target);
     if (!admitted) return Error(admitted.error());
     declared_context = admitted->model.stages.front().context;
-    facts.context_ceiling = admitted->model.stages.front().context;
-    facts.gemma_profile = admitted->gemma_profile;
-    if (drafter != nullptr) {
-      const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
-        const auto* target_mapping = spec::FindMapping(facts.architecture);
-        if (target_mapping == nullptr) return Error("component calibration has no target mapping");
-        const auto* draft_mapping = drafter->model().architecture == "qwen4exp-mtp"
-                                        ? &spec::mappings::Qwen38MtpReplayMapping()
-                                        : spec::FindMapping(drafter->model().architecture);
-        if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
-        auto draft_values = ComponentDrafterValues(target, *drafter);
-        if (!draft_values) return Error(draft_values.error());
-        auto draft_source = spec::SourceOf(*drafter, draft_mapping);
-        if (!draft_source) return Error(draft_source.error());
-        auto composed = spec::ComposeDrafter(admitted->model, *target_mapping, *draft_mapping,
-                                             *draft_source, *draft_values);
-        if (!composed) return Error(composed.error());
-        if (auto configured = configure(*composed); !configured) return Error(configured.error());
-        const std::array<std::string_view, 2> both{target.id(), drafter->id()};
-        return spec::BoundDigest(*composed, both);
-      };
-      auto composed = compose();
-      if (composed)
-        facts.composed_spec = *composed;
-      else
-        facts.composed_spec_error = composed.error();
-    }
-    const std::array<std::string_view, 1> ids{target.id()};
-    if (auto configured = configure(admitted->model); !configured) return Error(configured.error());
-    auto digest = spec::BoundDigest(admitted->model, ids);
-    if (!digest) return Error(digest.error());
-    facts.target_spec = *digest;
-  } else if (facts.architecture == "gemma4") {
-    auto profile = ApprovedGemmaProfile(target);
-    if (!profile) return std::unexpected(profile.error());
-    facts.gemma_profile = *profile;
-  }
-  if (target.format_version() == 0 && facts.architecture == "gemma2") {
-    if (auto binding = model::BindApprovedGemma2(target); !binding) return Error(binding.error());
-  }
-  if (target.format_version() == 0 && facts.architecture == "gemma3") {
-    if (auto binding = model::BindApprovedGemma3(target); !binding) return Error(binding.error());
-  }
-  if (target.format_version() == 0 && OnComponentEngine(facts.architecture)) {
-    // Reuse the factory's source values and the existing synthesis/composition
-    // library; no independent parser or cached execution model. All objects
-    // below die before tokenizer/generation metadata is read.
+    facts.pipeline = admitted->model.pipeline;
+    model = std::move(admitted->model);
+  } else if (OnComponentEngine(facts.architecture)) {
+    if (auto checked = CheckComponentV0Admission(target); !checked) return Error(checked.error());
     const auto* mapping = spec::FindMapping(facts.architecture);
     if (mapping == nullptr) return Error("component calibration has no target mapping");
     auto values = ComponentV0Values(target);
     if (!values) return Error(values.error());
-    auto model = spec::SynthesizeV0(target, *mapping, *values);
-    if (!model) return Error(model.error());
+    auto synthesized = spec::SynthesizeV0(target, *mapping, *values);
+    if (!synthesized) return Error(synthesized.error());
+    model = std::move(*synthesized);
+  }
+  if (model) {
     facts.context_ceiling = model->stages.front().context;
     if (drafter != nullptr) {
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
-        const auto* draft_mapping = drafter->model().architecture == "qwen4exp-mtp"
-                                        ? &spec::mappings::Qwen38MtpReplayMapping()
-                                        : spec::FindMapping(drafter->model().architecture);
+        const auto* target_mapping = spec::FindMapping(facts.architecture);
+        if (target_mapping == nullptr) return Error("component calibration has no target mapping");
+        const auto* draft_mapping = ComposedDrafterMapping(drafter->model().architecture);
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
         auto draft_values = ComponentDrafterValues(target, *drafter);
         if (!draft_values) return Error(draft_values.error());
         auto draft_source = spec::SourceOf(*drafter, draft_mapping);
         if (!draft_source) return Error(draft_source.error());
-        auto composed =
-            spec::ComposeDrafter(*model, *mapping, *draft_mapping, *draft_source, *draft_values);
+        // A stored drafter's complete tensor inventory is its approval's.
+        if (drafter->format_version() == 1)
+          if (auto admitted = CheckComponentDrafterAdmission(*draft_source, drafter->sources());
+              !admitted)
+            return Error(admitted.error());
+        auto composed = spec::ComposeDrafter(*model, *target_mapping, *draft_mapping, *draft_source,
+                                             *draft_values);
         if (!composed) return Error(composed.error());
+        if (auto approved = CheckComposedAdmission(*composed, *drafter); !approved)
+          return Error(approved.error());
         if (auto configured = configure(*composed); !configured) return Error(configured.error());
         const std::array<std::string_view, 2> both{target.id(), drafter->id()};
         return spec::BoundDigest(*composed, both);
@@ -621,7 +603,10 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
       return Error("drafter format version must be 0 or 1");
     }
     facts.drafter_architecture = drafter->model().architecture;
-    if (facts.drafter_architecture == "qwen4exp-mtp") {
+    facts.drafter_approval = FindApproval(facts.drafter_architecture, drafter->sources());
+    const spec::Mapping* draft_mapping = spec::FindMapping(facts.drafter_architecture);
+    if (draft_mapping != nullptr && draft_mapping->draft != nullptr &&
+        draft_mapping->draft->shape == spec::DraftRecipe::Shape::kMtp) {
       const auto head = drafter->FindResource("draft_output.weight");
       const auto ids = drafter->FindResource("draft_output.ids");
       if (head.has_value() != ids.has_value()) {
@@ -750,11 +735,12 @@ std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target
 std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEntry& entry,
                                                           const ArtifactFacts& facts,
                                                           const Calibration* calibration,
-                                                          bool plain, bool gemma3_trained_max) {
+                                                          bool plain, bool trained_max) {
   ModelSettings s;
   s.name = entry.name;
   s.architecture = facts.architecture;
   s.composition = facts.composition;
+  s.pipeline = facts.composition ? spec::PipelineKind::kImage : facts.pipeline;
   s.drafter = entry.drafter.has_value();
   if (facts.composition && entry.Text("kv_cache_encoding"))
     return Error("KV cache encoding is not a composition setting");
@@ -780,11 +766,16 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     return s;
   }
   const std::string& arch = facts.architecture;
-  if (gemma3_trained_max && arch == "gemma3" && !facts.trained_context)
-    return Error("Gemma3 maximum-context qualification needs trained-context metadata");
-  const std::uint32_t runner = gemma3_trained_max && arch == "gemma3"
-                                   ? model::Gemma3_4BQat().context
-                                   : ContextCeilingOf(facts);
+  // The architecture's serving recipe (its mapping's data).
+  const spec::ServingRecipe& recipe = Recipe(arch);
+  if (trained_max && !facts.trained_context)
+    return Error(std::format("{} maximum-context qualification needs trained-context metadata",
+                             recipe.name.empty() ? std::string_view(arch) : recipe.name));
+  // The hook's runner is the checkpoint's trained maximum itself.
+  const std::uint32_t runner =
+      trained_max ? static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                        *facts.trained_context, std::numeric_limits<std::uint32_t>::max()))
+                  : ContextCeilingOf(facts);
   if (runner == 0) {
     return Error(std::format("no runner for architecture {}", arch));
   }
@@ -814,15 +805,30 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                                arch, config::kMinContext, ceiling, ceiling_from));
     }
     s.context = {static_cast<std::uint32_t>(*context), SettingSource::kOverride, basis("context")};
-  } else if (arch == "gemma3" && ceiling >= 4096) {
+  } else if (recipe.default_context != 0 && ceiling >= recipe.default_context) {
     // The wider scalar envelope is explicit opt-in; retain the checked default.
-    s.context = {4096, SettingSource::kDerived,
-                 "bounded Gemma3 default; wider scalar context opt-in"};
+    s.context = {recipe.default_context, SettingSource::kDerived,
+                 std::format("bounded {} default; wider scalar context opt-in", recipe.name)};
   } else if (ceiling < config::kDefaultContext) {
     s.context = {ceiling, SettingSource::kDerived, ceiling_from};
   } else {
     s.context = {config::kDefaultContext, SettingSource::kFallback,
                  std::format("the default, within {}", ceiling_from)};
+  }
+  // A default within the approved envelope (the target's approval's
+  // context, and its configured drafter's): a default the approval refuses
+  // would never start.
+  if (s.context.source != SettingSource::kOverride) {
+    const auto within = [&](const Approval* approval) {
+      if (approval == nullptr || approval->max_context == 0 ||
+          s.context.value <= approval->max_context)
+        return;
+      s.context = {
+          approval->max_context, SettingSource::kDerived,
+          std::format("the approved {} envelope's {}", approval->label, approval->max_context)};
+    };
+    within(facts.approval);
+    if (entry.drafter) within(facts.drafter_approval);
   }
   const std::uint32_t context = s.context.value;
 
@@ -840,11 +846,11 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     s.speculation = {true, SettingSource::kDerived,
                      std::format("the drafter ({})", facts.drafter_architecture)};
   }
-  // Gemma 4 drafts with its assistant (the component engine's); Gemma 2
-  // and Gemma 3 have no drafter.
-  if ((arch == "gemma3" || arch == "gemma2") &&
+  // A recipe without drafters (Gemma 2's and 3's) has no speculative path.
+  if (RecipeOf(arch) != nullptr && !recipe.drafters &&
       (entry.drafter || entry.Bool("speculation").value_or(false)))
-    return Error("Gemma serving has no qualified assistant or speculative path");
+    return Error(
+        std::format("{} serving has no qualified assistant or speculative path", recipe.family));
   const bool speculative = s.speculation.value;
   if (facts.target_spec) {
     s.bound_spec = speculative ? facts.composed_spec : facts.target_spec;
@@ -855,64 +861,60 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   }
 
   // Speed trades: calibrated on the machine, else M3's measured constants.
-  const bool gemma = arch == "gemma4" || arch == "gemma3" || arch == "gemma2";
-  const bool dsv4 = arch == "deepseek4";
-  const bool deep = dsv4 && context > kDsv4WidePrefillContext;
-  std::uint32_t rows = gemma ? 128U : kQwen38PrefillRows;
-  if (dsv4) {
-    rows = deep ? kDsv4DeepPrefillRows : kDsv4PrefillRows;
-  }
-  s.prefill_chunk =
-      Pick<std::uint32_t>(U32(entry.Integer("prefill_chunk")), basis("prefill_chunk"),
-                          cal.prefill_chunk, cal.basis, {}, {}, rows,
-                          gemma  ? "bounded Gemma runner envelope; uncalibrated"
-                          : deep ? "measured on a GB10 (above 262,144 tokens: the mask's memory)"
-                                 : "measured on a GB10");
-  s.max_slots = Pick<std::uint32_t>(
-      U32(entry.Integer("max_slots")), basis("max_slots"), cal.max_slots, cal.basis, {}, {},
-      gemma ? 1U : kDefaultSlots,
-      gemma ? "bounded scalar-cohort route; uncalibrated" : "the knee measured on a GB10 (D-104)");
-  if (gemma) {
+  const bool bounded = recipe.bounded;
+  const bool deep = recipe.deep_context != 0 && context > recipe.deep_context;
+  const std::uint32_t rows = deep ? recipe.deep_prefill_rows : recipe.prefill_rows;
+  s.prefill_chunk = Pick<std::uint32_t>(
+      U32(entry.Integer("prefill_chunk")), basis("prefill_chunk"), cal.prefill_chunk, cal.basis, {},
+      {}, rows,
+      bounded ? std::format("bounded {} runner envelope; uncalibrated", recipe.family)
+      : deep  ? std::format("measured on a GB10 (above {} tokens: the mask's memory)",
+                            Grouped(recipe.deep_context))
+              : std::string("measured on a GB10"));
+  s.max_slots = Pick<std::uint32_t>(U32(entry.Integer("max_slots")), basis("max_slots"),
+                                    cal.max_slots, cal.basis, {}, {}, bounded ? 1U : kDefaultSlots,
+                                    bounded ? "bounded scalar-cohort route; uncalibrated"
+                                            : "the knee measured on a GB10 (D-104)");
+  if (bounded) {
     // Gemma 4's bounded recipes (a context of at most 8,192 and four
     // owners) were qualified at a prompt chunk, which its mapping's policy
     // rule for the envelope names (spec/mapping.h PolicyRule::prefill_chunk);
     // larger contexts and cohorts take the default.
     std::uint32_t recipe_chunk = 0;
-    if (arch == "gemma4" && facts.gemma_profile != nullptr) {
-      const auto values = spec::mappings::Gemma4V0Values(*facts.gemma_profile);
-      if (!values) return Error(values.error());
-      const auto rule = spec::DefaultRule(spec::mappings::Gemma4Mapping(), *values,
-                                          {.context = context, .slots = s.max_slots.value});
+    if (facts.approval != nullptr) {
+      const auto rule =
+          ApprovedRule(*facts.approval, {.context = context, .slots = s.max_slots.value});
       if (!rule) return Error(rule.error());
       if (*rule != nullptr) recipe_chunk = (*rule)->prefill_chunk;
     }
-    const std::string_view recipe =
-        facts.gemma_profile == &model::Gemma4_31B() ? "Gemma31" : "Gemma26";
     if (recipe_chunk != 0 && s.prefill_chunk.source == SettingSource::kFallback) {
       s.prefill_chunk.value = recipe_chunk;
-      s.prefill_chunk.basis = std::format("qualified bounded {} serving envelope", recipe);
+      s.prefill_chunk.basis =
+          std::format("qualified bounded {} serving envelope", facts.approval->label);
     }
-    const auto cap = std::min(recipe_chunk != 0 ? recipe_chunk : 128U, context - 1);
+    const auto cap = std::min(recipe_chunk != 0 ? recipe_chunk : recipe.prefill_rows, context - 1);
     if (s.prefill_chunk.value > cap) {
       s.prefill_chunk.value = cap;
       s.prefill_chunk.basis +=
-          recipe_chunk != 0 ? std::format(", capped by the bounded {} serving envelope", recipe)
-                            : std::string(", capped by the bounded Gemma serving envelope");
+          std::format(", capped by the bounded {} serving envelope",
+                      recipe_chunk != 0 ? facts.approval->label : recipe.family);
     }
-    if (arch == "gemma2" && s.max_slots.value > 2)
-      return Error("Gemma2 serving needs at most two conversation owners");
-    if (arch == "gemma3" && context > 4096 && s.max_slots.value != 1)
-      return Error("Gemma3 context above 4096 needs exactly one conversation owner");
-    if (arch == "gemma3" && s.max_slots.value > 2)
-      return Error("Gemma3 serving needs at most two conversation owners");
+    if (recipe.max_owners != 0 && s.max_slots.value > recipe.max_owners)
+      return Error(std::format("{} serving needs at most {} conversation owners", recipe.name,
+                               recipe.max_owners));
+    if (recipe.wide_context != 0 && context > recipe.wide_context && s.max_slots.value != 1)
+      return Error(std::format("{} context above {} needs exactly one conversation owner",
+                               recipe.name, recipe.wide_context));
     if (s.max_slots.value > 12 || s.max_slots.value > s.prefill_chunk.value)
-      return Error("Gemma serving needs at most twelve owners, within its chunk envelope");
+      return Error(std::format("{} serving needs at most twelve owners, within its chunk envelope",
+                               recipe.family));
   }
-  if (dsv4 && speculative && s.max_slots.value > kDsv4SpeculativeMostSlots) {
+  if (recipe.speculative_owners != 0 && speculative &&
+      s.max_slots.value > recipe.speculative_owners) {
     s.max_slots.basis +=
         std::format(", at most {}: a DSpark verify takes two of a wave's sixteen rows",
-                    kDsv4SpeculativeMostSlots);
-    s.max_slots.value = kDsv4SpeculativeMostSlots;
+                    recipe.speculative_owners);
+    s.max_slots.value = recipe.speculative_owners;
   }
   s.prefill_floor_tok_s = Pick<std::uint32_t>(
       U32(entry.Integer("prefill_floor_tok_s")), basis("prefill_floor_tok_s"),
@@ -920,10 +922,11 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.decode_floor_tok_s = Pick<std::uint32_t>(
       U32(entry.Integer("decode_floor_tok_s")), basis("decode_floor_tok_s"), cal.decode_floor_tok_s,
       cal.basis, {}, {}, config::kDefaultDecodeFloor, "the default");
-  s.recompute_ms_per_token = Pick<double>(
-      entry.Real("recompute_ms_per_token"), basis("recompute_ms_per_token"),
-      cal.recompute_ms_per_token, cal.basis, {}, {}, kRecomputeMsPerToken,
-      gemma ? "provisional recompute cost; uncalibrated" : "DeepSeek's prefill measured on a GB10");
+  s.recompute_ms_per_token =
+      Pick<double>(entry.Real("recompute_ms_per_token"), basis("recompute_ms_per_token"),
+                   cal.recompute_ms_per_token, cal.basis, {}, {}, kRecomputeMsPerToken,
+                   bounded ? "provisional recompute cost; uncalibrated"
+                           : "DeepSeek's prefill measured on a GB10");
 
   // Sampling defaults: the checkpoint's own, else OpenAI's.
   const std::string& sampled = facts.sampling_from;
@@ -945,7 +948,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
 
   // Drafting.
   const std::optional<std::int64_t> draft_rows = entry.Integer("draft_rows");
-  if (dsv4) {
+  if (recipe.block_drafts) {
     // The drafter's block (0: not kept) bounds its drafts.
     const std::uint64_t block = facts.drafter_block.value_or(0);
     const std::int64_t asked = draft_rows.value_or(0);
@@ -1016,12 +1019,12 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.draft_vocab = Pick<std::uint32_t>(U32(entry.Integer("draft_vocab")), basis("draft_vocab"), {},
                                       {}, {}, {}, kQwen38DraftVocab, "measured on a GB10");
   // Keep the runner's refusal of a cap larger than its target vocabulary.
-  if (arch == "qwen4exp" && speculative && s.draft_vocab.value > model::kQwen38FlashVocab) {
-    return Error("draft_vocab exceeds the Qwen3.8 target vocabulary");
+  if (recipe.mtp_waves && speculative && recipe.vocab != 0 && s.draft_vocab.value > recipe.vocab) {
+    return Error(std::format("draft_vocab exceeds the {} target vocabulary", recipe.name));
   }
   // The runner already caps selected heads; report that effective value
   // before registration, preserving a smaller owner-selected limit.
-  if (arch == "qwen4exp" && speculative && facts.drafter_selected_rows &&
+  if (recipe.mtp_waves && speculative && facts.drafter_selected_rows &&
       (s.draft_vocab.value == 0 || s.draft_vocab.value > *facts.drafter_selected_rows)) {
     s.draft_vocab.basis += std::format(" ({} requested; selected draft head has {} rows)",
                                        s.draft_vocab.value, *facts.drafter_selected_rows);

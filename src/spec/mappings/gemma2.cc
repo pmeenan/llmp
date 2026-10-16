@@ -104,6 +104,14 @@ constexpr std::array kPolicies = {
                        "disable rope_store\n"},
 };
 
+// Its bounded serving route: at most two owners, no drafter.
+constexpr ServingRecipe kServing{.family = "Gemma",
+                                 .name = "Gemma2",
+                                 .bounded = true,
+                                 .prefill_rows = 128,
+                                 .max_owners = 2,
+                                 .drafters = false};
+
 constexpr Mapping kMapping{
     .architecture = "gemma2",
     .version = 1,
@@ -115,6 +123,7 @@ constexpr Mapping kMapping{
     .params = kParams,
     .folds = kFolds,
     .policies = kPolicies,
+    .serving = &kServing,
 };
 
 }  // namespace

@@ -202,6 +202,36 @@ constexpr std::array kParams = {
     RequireInt("deepseek4.expert_gating_func", 4, true),
 };
 
+// Its serving: the derived shared route's automatic shape (else only the
+// closed single-owner diagnostic bridge), with kDeepSeekServingPolicy, prompt
+// chunks each alone and none captured ahead; its fast plan's attention mask
+// bounds a prompt chunk's rows (RE-037); 4,096-row prompt chunks (2,048 above
+// 262,144 tokens: the mask's memory); at most eight owners while speculating
+// (a DSpark verify takes two of a wave's sixteen rows); adaptive waves on
+// lanes of their own. Its chat route thinks unless a request turns thinking
+// off.
+constexpr PolicyRule kServingRule{
+    .text = kDeepSeekServingPolicy, .prompts_alone = true, .capture_ahead = false};
+constexpr ServingRecipe kServing{
+    .family = "DeepSeek V4",
+    .name = "DeepSeek V4",
+    .prefill_rows = 4096,
+    .deep_context = 262144,
+    .deep_prefill_rows = 2048,
+    .speculative_owners = 8,
+    .draft_rows = true,
+    .block_drafts = true,
+    .adaptive_waves = true,
+    .default_thinking = true,
+    .shared_route = true,
+    .closed_bridge = true,
+    .most_rows =
+        +[](std::uint32_t context) { return model::Dsv4MostRows(model::Dsv4Flash(), context); },
+    .frozen_host_masks = false,
+    .lanes = true,
+    .lid_mask = true,
+    .serving_rule = &kServingRule};
+
 constexpr Mapping kMapping{
     .architecture = "deepseek4",
     .version = 1,
@@ -213,6 +243,7 @@ constexpr Mapping kMapping{
     .slots = kSlots,
     .tensors = kTensors,
     .params = kParams,
+    .serving = &kServing,
 };
 
 // ---------------------------------------------------------------- dflash
@@ -285,6 +316,12 @@ constexpr std::array kDsparkReads = {
              .entering = true},
 };
 
+// A block of proposals: at most dflash.block_size drafts, filled with
+// tokenizer.ggml.mask_token_id, both from the drafter's kept metadata.
+constexpr DraftRecipe kDsparkDraft{.shape = DraftRecipe::Shape::kBlock,
+                                   .depth_key = "dflash.block_size",
+                                   .fill_key = "tokenizer.ggml.mask_token_id"};
+
 constexpr Mapping kDsparkMapping{
     .architecture = "dflash",
     .version = 1,
@@ -299,6 +336,7 @@ constexpr Mapping kDsparkMapping{
     .role = StageRole::kDrafter,
     .stage = "dspark",
     .reads = kDsparkReads,
+    .draft = &kDsparkDraft,
 };
 
 #undef LLMP_DSV4_BLOCK_SLOTS

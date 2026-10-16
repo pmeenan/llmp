@@ -1129,6 +1129,19 @@ endif()
 llmp_gtest(component_bindings_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# The approved checkpoints as data (runtime/approvals.h): the table's rules;
+# and against the published v1 store (LLMP_TEST_V1_STORE, by default the
+# models directory's m36-v1-artifacts) every artifact and pairing admitted by
+# its pinned spec digest, each pin the compiled profile's synthesis, and every
+# family's default settings within its approval.
+add_executable(approvals_test approvals_test.cc)
+target_link_libraries(approvals_test PRIVATE llmp_runtime llmp_spec)
+llmp_gtest(approvals_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+add_executable(approvals_models_test approvals_models_test.cc)
+target_link_libraries(approvals_models_test PRIVATE llmp_runtime llmp_json llmp_spec llmp_model
+                                                     llmp_test_v1_frozen)
+llmp_gtest(approvals_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models")
+
 # Closed native-v1 admission over actual descriptor formats and stored specs.
 add_executable(component_admission_test component_admission_test.cc)
 target_link_libraries(component_admission_test PRIVATE llmp_runtime llmp_components llmp_json

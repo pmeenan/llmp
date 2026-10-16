@@ -216,12 +216,10 @@ class Dsv4EngineBase : public testing::Test {
     life->options = {};  // the service's defaults
     life->options.keep_conversations = shape.keep;
     if (shape.diagnostic_tuple) {
-      if (auto r =
-              rt::ApplyServiceDiagnostics(life->options, "all", "auto", kNodeCap, std::nullopt);
-          !r)
+      if (auto r = rt::ApplyServiceDiagnostics(life->options, "auto", kNodeCap, std::nullopt); !r)
         return std::unexpected(r.error());
     }
-    life->options.dsv4_prefill_lookahead = shape.lookahead;
+    life->options.prefill_lookahead = shape.lookahead;
     life->server = std::make_unique<rt::Server>(life->config, life->roles, life->options, log);
     if (auto r = life->server->Start(true); !r) return r;
     model = dynamic_cast<rt::Llm*>(life->server->Find("deepseek"));

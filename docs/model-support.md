@@ -11,6 +11,16 @@ links show. Where evidence is missing the row says "not verified". Started
 in M3 (moved from M5); every change that alters a row's capability or
 evidence updates it in the same change ([workflow](workflow.md)).
 
+Serving is v1-only (D-118, 2026-10-15): a `[models.<name>]` entry names a
+row's **v1** artifact ID (and its drafter's), each admitted by its entry in
+the approval table (`runtime/approvals.cc`: source receipts, tensor
+inventory and the pinned digest of the spec it executes). A v0 artifact is
+re-imported with `llmp import`, not migrated; this build still serves v0
+until slice 4b removes it. Qwen3.8's native ModelOpt and MLX imports have
+transitional approval rows (no pinned spec) but no approved v1 artifact
+with frozen proofs yet, and the Qwen-Image composition none: their rows
+below keep their v0 IDs until those land.
+
 Plain target-only greedy decode now publishes a device I32 token by default
 for DeepSeek V4 and native/GGUF Qwen3.8, as for Gemma. Short scalar/joined own
 comparisons preserve complete initialized state, endogenous history and full

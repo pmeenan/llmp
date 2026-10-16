@@ -52,7 +52,12 @@ default parameters, one stack, the data part, dense F32 or GGML block layout,
 and expert status exactly for rank-three tensors. Thus the digest fixes every
 role, dimension and per-layer encoding, while the explicit checks fix all
 remaining format fields. These digests are derived from the existing captured
-GGUF directories, not measured kernel support or invented checkpoint names:
+GGUF directories, not measured kernel support or invented checkpoint names.
+*Superseded 2026-10-15 (D-118):* the approval table (`runtime/approvals.cc`)
+now digests every tensor's complete native description (name, encoding,
+layout, part, stacking, expert flag, every encoding parameter and shape),
+re-pinned from the artifacts these digests admitted; the table below is the
+history.
 
 | Target | Tensors / expert arrays | Inventory SHA-256 |
 | --- | ---: | --- |

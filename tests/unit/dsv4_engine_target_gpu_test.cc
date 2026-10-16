@@ -1514,8 +1514,6 @@ std::expected<std::unique_ptr<Owner>, std::string> Run(const fs::path& store, st
   entry.overrides["prefill_chunk"] = std::int64_t{kChunk};
   entry.overrides["max_slots"] = std::int64_t{1};
   life->config.models.push_back(std::move(entry));
-  life->options.diagnostic_component_solo = true;
-  life->options.diagnostic_component_all = true;
   life->options.diagnostic_auto_startup = true;
   // DSpark's weights and state need the node's full 112 GiB (the speed gate's cap).
   life->options.diagnostic_budget_cap_bytes = drafter.empty() ? kCap : 120259084288ULL;

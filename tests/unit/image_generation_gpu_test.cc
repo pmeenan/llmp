@@ -976,8 +976,6 @@ struct ServerGrowthLifetime {
     // image construction owner. Both live charges are included in node admission.
     options.diagnostic_startup_host_bytes = ordinary ? 0 : kStartup;
     if (ordinary) {
-      options.diagnostic_component_solo = true;
-      options.diagnostic_component_all = true;
       options.diagnostic_auto_startup = true;
       options.image_prompt = kPrompt;
       // The bounded caller preparation is <2 MiB, separately covered by the

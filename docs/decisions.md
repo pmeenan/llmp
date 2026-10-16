@@ -39,6 +39,52 @@ one Spark and on two.
 
 ---
 
+## D-118: Serving is v1-only; v0 artifacts are re-imported, not migrated; approval is data  (2026-10-15, status: accepted by the owner, 2026-10-15 (v1-only serving); amends D-113's "v0 stays readable" for serving; implements D-109's "the approved list is data, not a profile in code")
+
+**Decision.** The runtime serves format-v1 artifacts only, from slice 4b
+(which deletes v0 synthesis, the binders and v0 serving; slice 4a, below,
+makes approval and serving choices data while v0 still serves). A v0 artifact is
+re-imported from its archived source with `llmp import` (D-109, D-114,
+D-116), never migrated; its v1 ID differs, and a configuration names the
+v1 ID. Every M3.6 family but Qwen3.8's native imports and the Qwen-Image
+composition has a v1 artifact whose execution was proved bit for bit equal
+to its v0 artifact's and frozen as digests
+([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)); the
+frozen-baseline arm of the migration gate keeps its own old binary and v0
+artifacts. Admission is a table of data (`runtime/approvals.cc`, reviewed
+as a lock file): an approved source identity (its files' receipts, as the
+importer verified and declared them at import, which admission compares
+but does not re-hash; and its native tensor inventory's digest over every
+tensor's name, encoding, layout, part, stacking, parameters and shape)
+maps to the SHA-256 of the spec it
+executes (a target's stored `spec.json`; a stored drafter's composition
+with its approved target, whose values come from the GGUF metadata the
+drafter keeps), its envelope and its policy gates. Nothing is synthesized
+from a compiled profile to admit a v1 artifact, except for the transitional
+rows below. A model's default context is bounded by its approvals. What an architecture's
+models serve with (default prompt chunks, owner bounds, the shared route,
+lanes, a forced serving policy) is its mapping's `ServingRecipe`, and a
+drafter's decoding shape its `DraftRecipe`; serving dispatches by the
+stored spec's pipeline kind and names no architecture.
+
+**Context.** M3.6's "one engine" exit forbids family-specific serving
+classes and architecture-name dispatch; v0 needed compiled profiles and
+binders to synthesize its spec, which v1 carries. Slice 4a (this entry)
+makes approval and serving choices data; slice 4b deletes v0 synthesis, the
+binders and v0 serving.
+
+**Consequences.** A new checkpoint of a known architecture is an approvals
+row and its evidence; a new architecture adds a mapping with its recipes.
+The transitional rows (Qwen3.8 ModelOpt and MLX) pin no spec and no
+published v1 artifact of theirs has frozen proofs: they still check a stored
+spec against their compiled profile, and those models are configured by
+their v0 IDs until their relayout lands with its v1 artifacts, pins and
+proofs; no other row may be unpinned. A change that moves a spec's bytes changes its digest and refuses
+the artifact until its approval is renewed.
+
+**Reopen if** a checkpoint must serve that cannot be re-imported, or an
+approval needs a condition a spec digest and envelope cannot state.
+
 ## D-117: Explicit per-alias Q8_0 dense KV cache (2026-10-12, accepted; implements D-108)
 
 `[models.NAME] kv_cache_encoding = "q8_0"` opts an artifact alias into lossy Q8_0 K and V state. The absent setting and explicit `"f16"` preserve the existing F16 graph, bound spec digest and state layout. This additive key keeps configuration schema 2: existing configurations remain valid, following D-103/D-104 and D-062. The settings command reports the choice, its source and its lossy character; calibration does not select it.
@@ -220,7 +266,7 @@ compatibility guarantees and an import is measured to cost much more than
 a copy, or archived manifests need protection the environment does not
 give.
 
-## D-113: Prepared-artifact format version 1: tensor formats and parts in the index, the model spec as a hashed document of its own, applied folds and relayouts, the importer's identity; v0 stays readable and other versions are refused  (2026-10-09, status: proposed by M3.6's slice N1, for review with it; implements D-108's and D-109's new format version; amends D-056's manifest and index (descriptors, model block, converter, transformations) beside v0, keeping its profile, container, groups, chunks and page-in; adds version 1 of D-089's composition)
+## D-113: Prepared-artifact format version 1: tensor formats and parts in the index, the model spec as a hashed document of its own, applied folds and relayouts, the importer's identity; v0 stays readable and other versions are refused  (2026-10-09, status: proposed by M3.6's slice N1, for review with it; serving amended to v1-only by D-118; implements D-108's and D-109's new format version; amends D-056's manifest and index (descriptors, model block, converter, transformations) beside v0, keeping its profile, container, groups, chunks and page-in; adds version 1 of D-089's composition)
 
 **Decision.** [artifact-format.md](artifact-format.md#version-1) holds the
 schema and a worked example.

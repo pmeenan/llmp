@@ -2320,6 +2320,30 @@ pass with a full native build, 103 affected host controls and one real-header
 normalization case. Actual full publication, admission and model qualification
 are separate.
 
+**Approval as data** (`runtime/approvals.h`, D-118, slice 4a, 2026-10-15).
+The approved checkpoints are one table, reviewed as a lock file: each
+entry's source receipts, native tensor inventory (form and digest),
+the SHA-256 of the spec it executes (a target's stored `spec.json`; a
+stored drafter's composition with its named approved target, the
+drafter's values read from the GGUF metadata it keeps, `spec::SourceKeys`),
+its envelope (context, owners, the context above which one owner; a
+default context is cut to it) and the gate keys that select its mapping's
+policy rule. The inventory digest covers every tensor's name, encoding,
+layout, part, stacking, parameters and shape; receipts are the importer's
+declared ones, not re-hashed. Admission compares digests; it no longer
+synthesizes an expected spec from a compiled profile (Qwen3.8's ModelOpt
+and MLX rows stay transitional, unpinned, until their relayout's frozen
+proofs). A stored drafter's inventory and envelope are checked wherever it
+composes, and a block drafter's bound and fill token come from its kept
+metadata. What serving does per architecture is its
+mapping's `ServingRecipe` (settings defaults and bounds, the shared route,
+its prompt-chunk row bound, lanes, the forced DeepSeek policy) and a
+drafter mapping's `DraftRecipe`; `Server::Make` dispatches by the stored
+spec's pipeline kind, settings applicability and the calibration
+fingerprint follow the recipe, a stored hash-routing table is checked by
+the spec's `side.hash` inputs, and the chat route's slice is the recipe's. No architecture name is compared in `src/runtime`
+outside the v0 path that slice 4b deletes.
+
 **Stored-spec runtime admission** (`runtime/component_admission.h`).
 Registration and component construction use the same closed check over
 `StoredSpec` and `SourceOf`. N4b1 qualified the approved Gemma 2 2B Q8_0

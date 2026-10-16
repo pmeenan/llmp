@@ -74,13 +74,6 @@ struct Turn {
 struct ServingOptions {
   // Decode plainly even where a model has a drafter.
   bool plain = false;
-  // The funded service diagnostic's alias selector (every family serves on
-  // the component engine regardless): set, it logs each alias's execution
-  // identity; without diagnostic_component_all (the historical Qwen-only
-  // selector) it refuses every LLM but Qwen3.8.
-  bool diagnostic_component_solo = false;
-  // The generic selector admits every qualified component pipeline.
-  bool diagnostic_component_all = false;
   // Internal default-off experiment, only with the paid shared service route.
   bool diagnostic_capture_first_verify = false;
   // Internal prepared-image migration route, absent from CLI/TOML/HTTP. Each
@@ -113,8 +106,9 @@ struct ServingOptions {
   // cancelled when the lane cancels them. Otherwise, as a drive's, they
   // do not.
   bool hold_cancellable = false;
-  // Internal maximum-context qualification only; no config/CLI/HTTP route.
-  bool gemma3_trained_max = false;
+  // Internal maximum-context qualification only; no config/CLI/HTTP route:
+  // a context up to the checkpoint's trained maximum (ResolveSettings).
+  bool trained_max_context = false;
   // Swaps' handoff evictions keep backing mapped until a load takes it
   // (engine::NodeSettings::lazy_handoff); off is an internal override for
   // matched controls only.
@@ -130,13 +124,14 @@ struct ServingOptions {
   // overrides for matched controls only.
   bool zero_state = true;
   std::optional<std::size_t> handle_reserve;  // unset: the node's default
-  // Selected scalar DS prediction; no public setting or output-policy
-  // change.
-  bool dsv4_prefill_lookahead = true;
-  bool dsv4_prepare_state = true;
+  // The shared serving route's prompt prediction (ServingRecipe::
+  // shared_route: lookahead, state prepared ahead); internal matched-control
+  // overrides, no public setting or output-policy change.
+  bool prefill_lookahead = true;
+  bool prepare_state = true;
   // Unset selects ordinary non-speculative prefill only; required-stream
   // drafter consumers remain explicit opt-ins.
-  std::optional<bool> dsv4_state_only_prefill;
+  std::optional<bool> state_only_prefill;
   // Gate-only (owner, 2026-10-09): the component engine's models save no
   // turn checkpoint (Llm::set_turn_checkpoints), so M3.6's speed gate
   // compares equal work with a baseline whose M3 classes never saved one
@@ -174,15 +169,13 @@ struct CommandOptions {
   bool json = false;  // settings --json
 };
 
-// Internal supervised service qualification only. The component selector,
-// startup bytes and node cap are all absent or all valid (the environment
-// supplies the selector itself, `all` or the Qwen-only `1`); an optional
-// first-Verify capture selector requires that complete tuple. Refusal leaves
-// options unchanged. Funding is
+// Internal supervised service qualification only. The startup bytes and node
+// cap are both absent or both valid; an optional first-Verify capture
+// selector requires that pair. Refusal leaves options unchanged. Funding is
 // derived and source/config-bound by the caller before starting the process.
 std::expected<void, std::string> ApplyServiceDiagnostics(
-    ServingOptions& options, std::optional<std::string_view> component,
-    std::optional<std::string_view> startup_bytes, std::optional<std::string_view> node_cap,
+    ServingOptions& options, std::optional<std::string_view> startup_bytes,
+    std::optional<std::string_view> node_cap,
     std::optional<std::string_view> capture_first_verify = std::nullopt);
 
 // Reads the same internal diagnostic tuple before either HTTP or local serving

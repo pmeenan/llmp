@@ -102,7 +102,7 @@ rt::Status Run(std::span<const std::string_view> args) {
   if (!roles) return Error(roles.error().front());
   rt::ServingOptions options;
   options.plain = true;
-  options.gemma3_trained_max = true;
+  options.trained_max_context = true;
   // Optional words after the input and output: repeat (one earlier timed
   // traversal of the same prefix, then Clear: the measured pass runs on its
   // plans and graphs); no-zero (fresh state read from the spill file's

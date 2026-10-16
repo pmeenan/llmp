@@ -187,6 +187,8 @@ TEST(Calibration, QwenKeysEffectiveHeadRowsWithoutItsCalibratedRatio) {
   entry.drafter = Key().drafter;
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "qwen4exp";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "qwen4exp-mtp";
   facts.drafter_selected_rows = 47172;
   const auto initial = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
@@ -238,6 +240,8 @@ TEST(Calibration, ExplicitFallbackOverridesInvalidateCalibratedExecutionPolicy) 
   entry.drafter = Key().drafter;
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "qwen4exp";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "qwen4exp-mtp";
   const auto fallback = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(fallback.has_value());
@@ -288,6 +292,8 @@ TEST(Calibration, EffectiveContextInvalidatesContextCappedPrefillMeasurements) {
     entry.overrides["prefill_chunk"] = std::int64_t{4096};
     llmp::runtime::ArtifactFacts facts;
     facts.architecture = architecture;
+    // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+    facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
     const auto before = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
     ASSERT_TRUE(before.has_value());
     entry.overrides["context"] = std::int64_t{2048};
@@ -318,6 +324,8 @@ TEST(Calibration, DeepSeekKeysUncalibratedWaveCostsWithoutInvalidatingItsOwnReco
   entry.drafter = Key().drafter;
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "dflash";
   const auto initial = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(initial.has_value());
@@ -377,6 +385,8 @@ TEST(Calibration, ExplicitFallbackWaveCostsInvalidateInBothDirections) {
   entry.drafter = Key().drafter;
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "dflash";
   const auto fallback = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(fallback.has_value());
@@ -407,6 +417,8 @@ TEST(Calibration, EqualWaveCostVectorsWithDifferentOverridePrefixesHaveDifferent
   entry.drafter = Key().drafter;
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "dflash";
   entry.overrides["wave_costs"] = std::vector<double>{llmp::runtime::kDsv4WaveCosts[0]};
   const auto one = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
@@ -450,6 +462,8 @@ TEST(Calibration, QwenDoesNotKeyIgnoredDeepSeekWaveCostOverrides) {
   entry.artifact = Key().artifact;
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "qwen4exp";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   const auto before = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(before.has_value());
   entry.overrides["wave_costs"] = std::vector<double>{3.0};
@@ -731,6 +745,8 @@ TEST(Calibration, ExplicitWaveCostsKeepZeroAndCountedChoicesThroughExploration) 
   entry.overrides["wave_costs"] = std::vector<double>{0, 2.08};
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "dflash";
   const auto resolved = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(resolved.has_value());
@@ -771,6 +787,8 @@ TEST(Calibration, ExplicitPrefixLeavesOnlyUnknownSuffixWidthsExploring) {
   entry.overrides["wave_costs"] = std::vector<double>{0};
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "dflash";
   const auto resolved = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(resolved.has_value());
@@ -808,6 +826,8 @@ TEST(Calibration, ForcedAndSampledWavesDoNotConsumeCalibrationExploration) {
   entry.name = "ds";
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "dflash";
   const auto automatic = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(automatic.has_value());
@@ -844,6 +864,8 @@ TEST(Calibration, FullWaveCostPrefixIncludesWidthEightAndInvalidWidthsStayUnchan
   entry.overrides["wave_costs"] = std::vector<double>(7, 0);
   llmp::runtime::ArtifactFacts facts;
   facts.architecture = "deepseek4";
+  // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
+  facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "dflash";
   const auto all = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(all.has_value());
