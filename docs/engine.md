@@ -491,6 +491,9 @@ ring narrower than a verify's rows, and a step refuses more output rows
 than the ring holds.
 
 The shared runner also stages bounded on-demand row tables (`RunnerConfig::row_tables`).
+A table is paged this way only when it is larger than the pinned landing
+and slots its reads need for a setup shape's lookups (`RowPagingPays`):
+Qwen3.8's n-gram table is; DeepSeek V4's hash-routing tables are resident.
 Their full artifact groups stay unplaced; each table owns a direct-read ring,
 pinned landing and offsets, and pinned device weight slots sized from its
 setup shapes. Every side-row input must be supplied in full and pass the

@@ -92,6 +92,22 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
 // two blocks.
 constexpr std::uint64_t PleLandingBound(std::uint64_t lookups) { return lookups * 2 * kPleBlock; }
 
+// Whether paging a table by rows holds less than the table itself: its
+// reads need the pinned landing for `lookups` lookups and device slots of
+// `slot_row_bytes` each. A table no larger than that (DeepSeek V4's
+// hash-routing tables, 3 MB against a 4,096-row chunk's 32 MiB landing)
+// is better resident like any weight: paging it saves no memory and puts
+// a synchronous read before every step that names its rows.
+constexpr bool RowPagingPays(std::uint64_t table_bytes, std::uint64_t lookups,
+                             std::uint64_t slot_row_bytes) {
+  std::uint64_t slots = 0, cost = 0;
+  if (__builtin_mul_overflow(lookups, 2 * kPleBlock, &cost) ||
+      __builtin_mul_overflow(lookups, slot_row_bytes, &slots) ||
+      __builtin_add_overflow(cost, slots, &cost))
+    return false;  // more than any table could hold
+  return table_bytes > cost;
+}
+
 // Runs a plan's reads into `landing` on `storage` (the caller's own ring,
 // never the storage lane's), polling (never sleeping) until every one has
 // completed, an unknown submission included (it is in flight, storage.h);

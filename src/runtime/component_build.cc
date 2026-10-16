@@ -26,6 +26,8 @@
 #include "engine/decoding.h"
 #include "engine/expert_slab.h"
 #include "engine/paged_weights.h"
+#include "engine/ple_rows.h"
+#include "format/tensor_format.h"
 #include "kernels/decode/selected_grouped.h"
 #include "kernels/decode/selected_rows.h"
 #include "kernels/decode/selected_source.h"
@@ -767,6 +769,29 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto slabs = engine::ExpertSlabsOf(a == 0 ? *artifact : *drafter, shared ? 16 : 256);
       if (!slabs) return Error(slabs.error());
       placements.push_back(std::move(*slabs));
+    }
+    // A table read by rows only where that holds less than the table (its
+    // landing and slots for the most lookups a setup shape makes,
+    // engine::RowPagingPays); a smaller one stays resident with its group,
+    // so no step waits on its reads.
+    {
+      const auto& rows = stored_bindings->rows;
+      std::vector<engine::RunnerConfig::RowTable> paged;
+      for (const auto& row : rows) {
+        const ja::Artifact& owner =
+            hold->spec.stages.at(row.weight.stage).artifact == 0 ? *artifact : *drafter;
+        std::uint64_t lookups = 0, table = 0, row_bytes = 0;
+        for (const planner::StepShape& s : setup)
+          if (s.stage == row.weight.stage)
+            lookups = std::max(lookups, std::uint64_t{s.rows()} * row.rows_per_token);
+        for (const auto& part : rows) {
+          if (part.weight != row.weight) continue;
+          table += owner.resources()[part.resource].bytes.value();
+          row_bytes += format::RowBytes(part.format, part.part).value_or(0);
+        }
+        if (engine::RowPagingPays(table, lookups, row_bytes)) paged.push_back(row);
+      }
+      stored_bindings->rows = std::move(paged);
     }
     std::uint32_t logit_width = 0;
     {

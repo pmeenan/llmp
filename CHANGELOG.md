@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- DeepSeek V4 with DSpark decodes joined speculative waves at the M3
+  speed again on v1 imports: its hash-routing tables (3 MB) were read by
+  rows from disk before every step that routed new tokens, a synchronous
+  read of about 10 ms before each joined verify. A row table is now read
+  by rows only when it is larger than the landing and slots that reading
+  needs; smaller ones are resident like any weight.
 - A node serving several models no longer sizes its start for the largest
   model's weights beside another model's larger workspace: the shared
   workspace (activations and GGML pool) now pages with the active model,

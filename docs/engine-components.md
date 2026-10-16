@@ -1329,7 +1329,8 @@ fragment (`components_dsv4_test`):
   accumulation, `route_scale`), the `hash` router reading a per-layer
   side input, and SwiGLU clamped at `limit` (`silu_clamp`; the shared
   expert's `shared_limit`); `side.hash` is that side input, each row's
-  token's row of the host table (`ffn_gate_tid2eid`, rows on demand);
+  token's row of its table (`ffn_gate_tid2eid`, a rows-on-demand role,
+  resident since it is smaller than its row reads' landing);
 - `embedding.inject` is DSpark's input: its target's token rows, scaled,
   in its own steps, and in its target's its injection
   (`ComponentDef::inject`, `inject_reads`, `inject_rows`): the taps it

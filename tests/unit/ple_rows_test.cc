@@ -46,6 +46,7 @@ using llmp::engine::PleLandingBound;
 using llmp::engine::PleRowPlan;
 using llmp::engine::PleTable;
 using llmp::engine::ReadPleRows;
+using llmp::engine::RowPagingPays;
 using llmp::kernels::paging::GatherPleRows;
 
 constexpr std::uint64_t kChunk = std::uint64_t{2} << 20U;
@@ -203,6 +204,20 @@ TEST(PleRowsTest, RowsOutsideTheTableATooSmallLandingAndTooManyRowsAreRefused) {
   PleTable longer = table;
   longer.rows += 100;
   EXPECT_FALSE(PlanPleRows(longer, two, 2 * kPleBlock, 8).has_value());
+}
+
+// Paging by rows pays only for a table larger than its landing and slots:
+// Qwen3.8's 28.8 GB n-gram table is paged, DeepSeek V4's 3 MB hash-routing
+// table (4,096-row chunks, one 24-byte row a token) is resident.
+TEST(PleRowsTest, OnlyATableLargerThanItsLandingAndSlotsIsPagedByRows) {
+  constexpr std::uint64_t kLookups = 4096;
+  EXPECT_TRUE(RowPagingPays(std::uint64_t{320001536} * 90, kLookups * 64, 90));
+  EXPECT_FALSE(RowPagingPays(std::uint64_t{129280} * 24, kLookups, 24));
+  const std::uint64_t cost = PleLandingBound(kLookups) + (kLookups * 24);
+  EXPECT_FALSE(RowPagingPays(cost, kLookups, 24));
+  EXPECT_TRUE(RowPagingPays(cost + 1, kLookups, 24));
+  // A cost past 64 bits is more than any table holds.
+  EXPECT_FALSE(RowPagingPays(UINT64_MAX, UINT64_MAX / 4, 1));
 }
 
 // The reads' outcomes, on the storage fake, under the storage lane's rules:
