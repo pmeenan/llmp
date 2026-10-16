@@ -299,6 +299,13 @@ struct ImagePrompt {
 std::expected<ImagePrompt, Error> RenderQwenImagePrompt(std::string_view prompt,
                                                         const tokenizer::Tokenizer& tokenizer);
 
+// An image pipeline's prompt renderer by its name, the one its image
+// mapping names (spec/image_family.h): "qwen_image_2_1"
+// (RenderQwenImagePrompt); null for a name it does not know.
+using ImagePromptRenderer = std::expected<ImagePrompt, Error> (*)(
+    std::string_view prompt, const tokenizer::Tokenizer& tokenizer);
+ImagePromptRenderer FindImagePromptRenderer(std::string_view name);
+
 // Python's str.strip(): the characters str.isspace() accepts, which
 // Jinja's `trim` removes.
 std::string_view PythonStrip(std::string_view text);

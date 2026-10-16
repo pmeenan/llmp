@@ -18,6 +18,7 @@
 #include "components/spatial.h"
 #include "engine/graph_plan.h"
 #include "expected_error.h"
+#include "image_family.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/conv2d_tiled.h"
@@ -43,7 +44,7 @@ using llmp::test_support::Failed;
 
 // The image's planning policy, as the served pipeline plans it.
 llmp::planner::Policy ImagePolicy() {
-  auto policy = llmp::planner::ParsePolicy(sp::kImagePlanningPolicy);
+  auto policy = llmp::planner::ParsePolicy(::llmp::test_support::QwenImagePolicy());
   EXPECT_TRUE(policy) << (policy ? "" : policy.error());
   return policy.value_or(llmp::planner::Policy{});
 }
@@ -271,9 +272,9 @@ TEST(GgmlSpatialTest, RaggedTypedPortsLowerWithoutTokenMetadataInBothBindingMode
 }
 
 TEST(GgmlSpatialTest, ActualVaeSourceSpansPreserveWeightsAndRefuseBranches) {
-  const auto& profile = mo::QwenImage21().vae;
+  const auto& profile = ::llmp::test_support::QwenImageProfile().vae;
   const auto steps = mo::VaeDecoderPlan(profile, 64, 64);
-  const auto tensors = mo::VaeDecoderTensors(profile);
+  const auto tensors = mo::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
   ASSERT_GT(steps.size(), 2U);
   auto prefix = sp::VaeSpatialSpec(std::span(steps).first(2), tensors);
   ASSERT_TRUE(prefix) << Failed(prefix).value_or("");
@@ -305,9 +306,9 @@ TEST(GgmlSpatialTest, ActualVaeSourceSpansPreserveWeightsAndRefuseBranches) {
 
 TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMetadata) {
   for (const std::uint32_t latent : {2U, 64U}) {
-    const auto& profile = mo::QwenImage21().vae;
+    const auto& profile = ::llmp::test_support::QwenImageProfile().vae;
     const auto steps = mo::VaeDecoderPlan(profile, latent, latent);
-    const auto source = mo::VaeDecoderTensors(profile);
+    const auto source = mo::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
     ASSERT_EQ(steps.size(), 113U);
     ASSERT_EQ(source.size(), 128U);
     auto mapped = sp::VaeDecoderSpec(steps, source);
@@ -417,8 +418,8 @@ TEST(GgmlSpatialTest, CompleteActualDecoderGeometryPlansAndLowersWithoutTokenMet
 }
 
 TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNormalRotations) {
-  const auto& profile = mo::QwenImage21().denoiser;
-  const auto source = mo::DenoiserTensors(profile);
+  const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
+  const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapped = sp::ImageTransformerBlockSpec(profile, 0, 2, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
@@ -546,8 +547,8 @@ TEST(GgmlSpatialTest, FullSourceConditionedBlockUsesSharedProductsMaskAndThreeNo
 // The same block built with layout sinking (ir/layout.h): it plans and
 // lowers, with far fewer copies.
 TEST(GgmlSpatialTest, LayoutSunkBlockPlansAndLowersWithFewerCopies) {
-  const auto& profile = mo::QwenImage21().denoiser;
-  const auto source = mo::DenoiserTensors(profile);
+  const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
+  const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapped = sp::ImageTransformerBlockSpec(profile, 0, 2, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
@@ -622,14 +623,14 @@ TEST(GgmlSpatialTest, LayoutSunkBlockPlansAndLowersWithFewerCopies) {
 // A whole small flow (one block of the source's head geometry) built with
 // layout sinking: it plans and lowers.
 TEST(GgmlSpatialTest, LayoutSunkFlowPlansAndLowers) {
-  mo::QwenImageDenoiserProfile profile;
+  auto profile = ::llmp::test_support::QwenImageProfile().denoiser;
   profile.blocks = 1;
   profile.heads = 32;
   profile.width = profile.heads * profile.head_dim;
   profile.mlp = 1024;
   profile.context = profile.width;
   constexpr std::uint32_t kText = 8, kGrid = 16, kRows = kText + kGrid * kGrid;
-  const auto source = mo::DenoiserTensors(profile);
+  const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapped = sp::ImageFlowSpec(profile, kText, kGrid * kGrid, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
@@ -699,20 +700,20 @@ TEST(GgmlSpatialTest, LayoutSunkFlowPlansAndLowers) {
   ASSERT_TRUE(lowered) << Failed(lowered, &kg::KernelFailure::detail).value_or("");
 }
 
-// The image's planning policy (spec/image_spatial.h kImagePlanningPolicy) over
+// The image's planning policy (spec/image_spatial.h ::llmp::test_support::QwenImagePolicy()) over
 // two flow blocks of the source's head geometry: every block's attention,
 // MLP, modulations (two a block and the output's) and residuals fused by
 // the plan, each residual joined with the modulation of its sum (the last
 // with the output's, over its latent rows).
 TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
-  mo::QwenImageDenoiserProfile profile;
+  auto profile = ::llmp::test_support::QwenImageProfile().denoiser;
   profile.blocks = 2;
   profile.heads = 32;
   profile.width = profile.heads * profile.head_dim;
   profile.mlp = 1024;
   profile.context = profile.width;
   constexpr std::uint32_t kText = 25, kGrid = 8, kRows = kText + kGrid * kGrid;
-  const auto source = mo::DenoiserTensors(profile);
+  const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapped = sp::ImageFlowSpec(profile, kText, kGrid * kGrid, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
@@ -747,7 +748,7 @@ TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
                           .device = {.arch = 121},
                           .written = kg::WrittenBytes,
                           .within = kg::WithinRoot};
-  auto policy = llmp::planner::ParsePolicy(sp::kImagePlanningPolicy);
+  auto policy = llmp::planner::ParsePolicy(::llmp::test_support::QwenImagePolicy());
   ASSERT_TRUE(policy) << policy.error();
   kn::Addresses addresses;
   addresses.weight = [](const ir::WeightRef& ref, fm::PartRole) {
@@ -823,8 +824,8 @@ TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
 }
 
 TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) {
-  const auto& profile = mo::QwenImage21().denoiser;
-  const auto source = mo::DenoiserTensors(profile);
+  const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
+  const auto source = mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapped = sp::ImageFlowSpec(profile, 2, 4, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<co::BoundTensor> tensors;
@@ -936,8 +937,8 @@ TEST(GgmlSpatialTest, Whole32BlockFlowPreservesPhysicalPlansAndFinalEulerPorts) 
 }
 
 TEST(GgmlSpatialTest, ActualTextEncoderUsesTypedIdsNeoxAndGqaWithoutTokenMetadata) {
-  const auto& profile = mo::QwenImage21().text;
-  const auto source = mo::TextEncoderTensors(profile);
+  const auto& profile = ::llmp::test_support::QwenImageProfile().text;
+  const auto source = mo::TextEncoderTensors(profile, ::llmp::test_support::QwenImageNames().text);
   auto mapping = sp::ImageTextSpec(profile, 39, 14, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   std::vector<co::BoundTensor> tensors;
@@ -1032,7 +1033,7 @@ TEST(GgmlSpatialTest, ActualTextEncoderUsesTypedIdsNeoxAndGqaWithoutTokenMetadat
 }
 
 TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
-  const auto& profile = mo::QwenImage21();
+  const auto& profile = ::llmp::test_support::QwenImageProfile();
   std::vector<llmp::planner::Selected> tuned_steps;
   llmp::planner::Placement tuned_placement;
   std::vector<std::uint64_t> tuned_stripes;
@@ -1041,7 +1042,9 @@ TEST(GgmlSpatialTest, Actual1024FlowAndDecoderHaveMeasuredTypedStageEnvelopes) {
     const bool tiled = mode == 2 || mode == 3;
     SCOPED_TRACE(decoder ? "decoder1024" : "flow4121");
     const auto source =
-        decoder ? mo::VaeDecoderTensors(profile.vae) : mo::DenoiserTensors(profile.denoiser);
+        decoder ? mo::VaeDecoderTensors(profile.vae, ::llmp::test_support::QwenImageNames().vae)
+                : mo::DenoiserTensors(profile.denoiser,
+                                      ::llmp::test_support::QwenImageNames().denoiser);
     auto mapping = decoder ? sp::ImageDecodeSpec(profile.vae, 64, source)
                            : sp::ImageFlowSpec(profile.denoiser, 25, 4096, source);
     ASSERT_TRUE(mapping) << Failed(mapping).value_or("");

@@ -16,10 +16,11 @@
 #include "components/step.h"
 #include "dsv4_gguf_normalization_fixture.h"
 #include "expected_error.h"
+#include "image_family.h"
 #include "import/archive_input.h"
+#include "import/image_pipeline.h"
 #include "import/modelopt_qwen38.h"
 #include "import/normalize.h"
-#include "import/qwen_image.h"
 #include "import/reader.h"
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
@@ -1214,6 +1215,27 @@ TEST_F(ImportWriterTest, CompositionPublicationAndReuse) {
   ASSERT_TRUE(meta.has_value());
   EXPECT_EQ(*meta, meta_bytes);
 
+  // A composition keeps the spec it is given as its spec.json (D-113): the
+  // image family's, whose stages count its three components; refused
+  // where a stage names a component it does not have.
+  {
+    const auto& family = test_support::QwenImage().spec;
+    auto two = opts;
+    two.store = dir_ / "spec-store";
+    two.spec = family;
+    EXPECT_FALSE(WriteComposition(two));
+    auto three = two;
+    three.components.push_back(
+        {.role = "vae", .artifact = art_id, .architecture = "AutoencoderKLQwenImage21"});
+    auto kept = WriteComposition(three);
+    ASSERT_TRUE(kept) << test_support::Failed(kept, &Error::ToString).value_or("");
+    EXPECT_NE(kept->id, comp->id);
+    auto reopened = artifact::OpenComposition(kept->path, kept->id);
+    ASSERT_TRUE(reopened) << reopened.error().ToString();
+    ASSERT_TRUE(reopened->spec_json().has_value());
+    EXPECT_EQ(*reopened->spec_json(), spec::ToJson(family));
+  }
+
   // Re-publishing detects reuse
   auto again = WriteComposition(opts);
   ASSERT_TRUE(again) << test_support::Failed(again, &Error::ToString).value_or("");
@@ -1232,18 +1254,18 @@ TEST_F(ImportWriterTest, CompositionPublicationAndReuse) {
   EXPECT_FALSE(WriteComposition(bad_expected_opts));
 }
 
-TEST_F(ImportWriterTest, QwenImagePipelineValidationAndBound) {
+TEST_F(ImportWriterTest, ImagePipelineValidationAndBound) {
   Checkpoint invalid_container{.container = "gguf", .architecture = "QwenImage21Pipeline"};
-  EXPECT_FALSE(QwenImagePipelineBound(invalid_container));
-  EXPECT_FALSE(PlanQwenImagePipeline(invalid_container));
+  EXPECT_FALSE(ImagePipelineBound(invalid_container));
+  EXPECT_FALSE(PlanImagePipeline(invalid_container));
 
   Checkpoint invalid_arch{.container = "diffusers", .architecture = "FluxPipeline"};
-  EXPECT_FALSE(QwenImagePipelineBound(invalid_arch));
-  EXPECT_FALSE(PlanQwenImagePipeline(invalid_arch));
+  EXPECT_FALSE(ImagePipelineBound(invalid_arch));
+  EXPECT_FALSE(PlanImagePipeline(invalid_arch));
 
   Checkpoint missing_comp{.container = "diffusers", .architecture = "QwenImage21Pipeline"};
   missing_comp.components.push_back({.role = "text_encoder"});
-  EXPECT_FALSE(PlanQwenImagePipeline(missing_comp));
+  EXPECT_FALSE(PlanImagePipeline(missing_comp));
 
   // Bound calculation sums tensor bytes
   Checkpoint pipeline{.container = "diffusers", .architecture = "QwenImage21Pipeline"};
@@ -1251,7 +1273,7 @@ TEST_F(ImportWriterTest, QwenImagePipelineValidationAndBound) {
   comp.tensors.push_back({.name = "t1", .extent = {.bytes = 100}});
   comp.tensors.push_back({.name = "t2", .extent = {.bytes = 200}});
   pipeline.components.push_back(comp);
-  auto bound = QwenImagePipelineBound(pipeline);
+  auto bound = ImagePipelineBound(pipeline);
   ASSERT_TRUE(bound);
   EXPECT_EQ(bound->payload_bytes, 300U);
   EXPECT_EQ(bound->work_units, 2U);

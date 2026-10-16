@@ -47,10 +47,11 @@ enum class ApprovedPolicy : std::uint8_t { kMapping, kMappingOrNone, kNone };
 
 // The tensor formats an inventory admits: GGUF's data parts (GGML blocks,
 // dense), EXL3 trellises and their dense tensors, ModelOpt's NVFP4/MXFP8
-// splits beside BF16, MLX's affine splits beside BF16. The inventory digest
-// covers each tensor's sorted name, encoding and dimensions, and with
-// kExl3 each part's role and K bits.
-enum class InventoryForm : std::uint8_t { kGguf, kExl3, kModelOpt, kMlx };
+// splits beside BF16, MLX's affine splits beside BF16, an image
+// component's dense BF16 and F32 tensors of up to four dimensions (kDense).
+// The inventory digest covers each tensor's sorted name, encoding and
+// dimensions, and with kExl3 each part's role and K bits.
+enum class InventoryForm : std::uint8_t { kGguf, kExl3, kModelOpt, kMlx, kDense };
 
 // An importer transform the artifact records (D-113): an applied fold (by
 // its name) or relayout (by the layout its sources held, format::Info's
@@ -106,12 +107,38 @@ struct Approval {
 
 std::span<const Approval> Approvals();
 
+// An approved image pipeline (spec/image_family.h): its composition's
+// architecture and kept files' receipts, the digest of the family spec it
+// stores (its spec.json), and its components' entries in the
+// composition's (role) order, each an Approval of its own source, of form
+// kDense, pinning the component spec it stores, with no envelope (a
+// request's geometry is checked against the family) and policy kNone (the
+// pipeline's policy is its mapping's).
+struct ImageApproval {
+  std::string_view name{};
+  std::string_view label{};
+  std::string_view architecture{};
+  std::span<const SourceReceipt> sources{};
+  std::string_view spec{};
+  std::span<const Approval> components{};
+};
+
+std::span<const ImageApproval> ImageApprovals();
+
+// Whether `sources` are exactly the receipts: every file, each once.
+bool SourcesMatch(std::span<const SourceReceipt> receipts,
+                  std::span<const artifact::Source> sources);
+
 // The entry whose architecture and source receipts (every file, each once)
 // are `architecture` and `sources`; null when none is.
 const Approval* FindApproval(std::string_view architecture,
                              std::span<const artifact::Source> sources);
 // By name; null when none.
 const Approval* FindApprovalNamed(std::string_view name);
+// The image pipeline entry of a composition's architecture and kept files;
+// null when none is.
+const ImageApproval* FindImageApproval(std::string_view architecture,
+                                       std::span<const artifact::Source> sources);
 
 }  // namespace llmp::runtime
 #endif  // LLMP_RUNTIME_APPROVALS_H_

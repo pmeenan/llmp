@@ -294,8 +294,13 @@ never change guarded source while an actual run is active.
   with the last residual, a one-read VAE channel norm. The image gate
   passes on `f05323d1` (−0.36%, upper −0.08%, 6 blocks); the model is
   ready 0.45 s later on a first load (its recordings and the paged
-  workspace). The image pin is `93356574…` (41.26 dB). Next: sub-task 4
-  (the profile constants as data). Open: the planner's repeat and unread
+  workspace). The image pin is `93356574…` (41.26 dB). Sub-task 4 moved
+  the family into data ([image pipelines](engine-components.md#image-pipelines)):
+  an image mapping, a family spec the v1 composition `2170db12…` stores
+  and an approval pinning it; no Qwen-Image number is compiled in. Same
+  pixels; the image gate passes again on it (−0.84%, upper −0.28%, 6
+  blocks), and against `c8f0f80b` on the v0 composition a two-block
+  screen is −0.20%. A stored per-geometry spec waits for M3.5. Open: the planner's repeat and unread
   passes change 64 LLM plans (Qwen3.8's per-layer masks), checked by the
   tests, the frozen proofs and a one-block `qwen38` screen (faster in every
   cell) but not by a full LLM speed gate; the image's opt-in patterns

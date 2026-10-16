@@ -23,6 +23,7 @@
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
 #include "providers/device_runtime.h"
+#include "runtime/component_admission.h"
 #include "runtime/memory_guard.h"
 #include "runtime/serving_support.h"
 #include "spec/image_spatial.h"
@@ -36,11 +37,21 @@ namespace md = model;
 namespace kg = kernels::ggml;
 using en::support::Error;
 // Source descriptor/spec/input owner inventory, before any source-profile
-// vectors or copied names exist: <=822 roles at4KiB, <=1435 components at8KiB,
+// vectors or copied names exist: the family's tensors (roles) at 4 KiB, its
+// components (17 a text layer and a flow block, the text encoder's 2 and
+// the flow's 19 besides, the decoder's at most 258) at 8 KiB.
 // Request-sized port, pixel and schedule vectors are separately paid below;
 // incoming prompt/noise allocations retain their caller-owned payment.
-constexpr std::uint64_t kSourceMappingBytes =
-    822ULL * 4096 + (36ULL * 17 + 2 + 32ULL * 17 + 19 + 258) * 8192;
+std::uint64_t SourceMappingBytes(const md::QwenImageProfile& p) {
+  const std::uint64_t roles =
+      1 + std::uint64_t{p.text.layers} * static_cast<std::uint64_t>(md::TextTensor::kCount) +
+      static_cast<std::uint64_t>(md::DenoiserGlobal::kCount) +
+      std::uint64_t{p.denoiser.blocks} * static_cast<std::uint64_t>(md::BlockTensor::kCount) +
+      md::VaeDecoderTensors(p.vae, {}).size();
+  const std::uint64_t components =
+      std::uint64_t{p.text.layers} * 17 + 2 + std::uint64_t{p.denoiser.blocks} * 17 + 19 + 258;
+  return roles * 4096 + components * 8192;
+}
 bool Charge(const std::shared_ptr<en::ExecutionMetadataAllowance>& allowance, std::uint64_t bytes,
             en::PagedNode* node = nullptr, std::uint64_t cap = 0) {
   if (!allowance) return false;
@@ -129,6 +140,7 @@ std::expected<RequestGeometry, std::string> RequestOf(const ImageGenerationReque
 }
 struct ImageRequestOwner {
   Paid paid;
+  std::shared_ptr<const ImageFamily> family;
   ImageGenerationRequest source;
   RequestGeometry request;
   std::vector<float> sigmas, timesteps;
@@ -140,6 +152,8 @@ constexpr std::uint64_t kRequestOwnerBytes =
 struct ImageGenerationModel {
   Paid paid;
   std::shared_ptr<ImageGenerationSource> source;
+  std::shared_ptr<const ImageFamily> family;
+  planner::Policy policy;
   std::array<std::vector<md::QwenImageTensor>, 3> source_tensors;
   std::array<std::vector<co::BoundTensor>, 3> tables;
   std::array<std::vector<std::uint32_t>, 3> resource_ids;
@@ -159,9 +173,10 @@ struct ImageGeometryOwner {
 // Two complete owner/return representations, doubled vector capacities for
 // three stages/eleven input ports, and fixed shared/control blocks.
 // Kernel declaration storage is independently charged by Declare below.
-constexpr std::uint64_t kSourceOwnerBytes = kSourceMappingBytes + 2 * sizeof(ImageGenerationModel) +
-                                            2 * sizeof(EngineImageParts) + 6 * sizeof(ImageStage) +
-                                            22 * sizeof(std::optional<std::uint32_t>) + 4096;
+std::uint64_t SourceOwnerBytes(const md::QwenImageProfile& p) {
+  return SourceMappingBytes(p) + 2 * sizeof(ImageGenerationModel) + 2 * sizeof(EngineImageParts) +
+         6 * sizeof(ImageStage) + 22 * sizeof(std::optional<std::uint32_t>) + 4096;
+}
 
 // Same lower construction categories as the complete-flow proof, derived from
 // this mapped stage's declared primitive/role/port inventory before graph emit.
@@ -210,7 +225,7 @@ Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, st
             std::span<std::byte> bytes) {
   const auto rows = static_cast<std::uint32_t>(held.source.prompt.size());
   const auto text = rows - held.source.drop;
-  const auto& profile = md::QwenImage21();
+  const auto& profile = held.family->profile;
   const auto put = [&]<typename T>(std::size_t at, T value) {
     std::memcpy(bytes.data() + at * sizeof(T), &value, sizeof(T));
   };
@@ -294,10 +309,11 @@ Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, st
 }  // namespace
 
 std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
-    ImageGenerationRequest&& source, const ModelSettings& settings,
-    std::shared_ptr<en::ExecutionMetadataAllowance> construction, en::PagedNode* construction_node,
-    std::uint64_t construction_cap) {
-  const auto& p = md::QwenImage21();
+    const std::shared_ptr<const ImageFamily>& family, ImageGenerationRequest&& source,
+    const ModelSettings& settings, std::shared_ptr<en::ExecutionMetadataAllowance> construction,
+    en::PagedNode* construction_node, std::uint64_t construction_cap) {
+  if (!family || !family->mapping) return Error("image request has no admitted family");
+  const auto& p = family->profile;
   if (!source.keep || !construction) return Error("image request lacks its paid caller owner");
   auto request = RequestOf(source, settings, p);
   if (!request) return Error(request.error());
@@ -313,6 +329,7 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
   held->paid.node = construction_node;
   held->paid.cap = construction_cap;
   if (!held->paid.Add(geometry.variable_bytes)) return Error("image request vectors are unpaid");
+  held->family = family;
   held->source = std::move(source);
   held->request = geometry;
   const auto image_rows = geometry.rows, text_rows = geometry.text_rows;
@@ -325,7 +342,7 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
   out.keep = held;
   base::Sha256 layout;
   layout.Update("llmp-image-request-layout-v1");
-  layout.Update(p.pipeline_architecture);
+  layout.Update(family->mapping->architecture);
   const std::array shape{geometry.width, geometry.height, geometry.prompt_rows, held->source.drop};
   layout.Update(std::as_bytes(std::span(shape)));
   out.layout = layout.Finish();
@@ -390,33 +407,46 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
 }
 
 namespace {
-// The image's planning policy, parsed once: its plans' and its graphs'
-// builder's (the option layout_sinking).
-const auto& ImagePolicy() {
-  static const auto policy = planner::ParsePolicy(spec::kImagePlanningPolicy);
-  return policy;
+// Whether the family's planning policy asks the graphs' builder to remove
+// their layout round trips (planner/pattern.h option layout_sinking).
+bool SinksLayouts(const planner::Policy& policy) {
+  return !planner::Disabled(policy, "layout_sinking");
 }
-// Whether that policy asks the graphs' builder to remove their layout round
-// trips (planner/pattern.h option layout_sinking).
-bool ImageSinksLayouts() {
-  const auto& policy = ImagePolicy();
-  return policy && !planner::Disabled(*policy, "layout_sinking");
+// The family's tensors, its mapping's names, in each stage's order.
+std::array<std::vector<md::QwenImageTensor>, 3> SourceTensors(const ImageFamily& family) {
+  const auto& p = family.profile;
+  const auto& n = family.mapping->names;
+  return {md::TextEncoderTensors(p.text, n.text), md::DenoiserTensors(p.denoiser, n.denoiser),
+          md::VaeDecoderTensors(p.vae, n.vae)};
 }
 }  // namespace
+
+std::expected<std::shared_ptr<const ImageFamily>, std::string> ReadImageFamily(
+    const artifact::Composition& composition,
+    std::span<const artifact::Artifact* const> components) {
+  auto admitted = ReadImageAdmission(composition, components);
+  if (!admitted) return std::unexpected(admitted.error());
+  auto family = std::make_shared<ImageFamily>();
+  family->mapping = admitted->mapping;
+  family->profile = std::move(admitted->profile);
+  family->spec = std::move(admitted->family);
+  return family;
+}
 
 std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
     const std::shared_ptr<ImageGenerationSource>& source, ImageGenerationRequest&& request_source,
     const ModelSettings& settings, std::shared_ptr<en::ExecutionMetadataAllowance> construction) {
   auto model = source ? source->prepared.lock() : nullptr;
-  if (!model || !construction) return Error("image geometry requires the retained model source");
-  const auto& p = md::QwenImage21();
+  if (!model || !construction || !model->family)
+    return Error("image geometry requires the retained model source");
+  const auto& p = model->family->profile;
   auto checked = RequestOf(request_source, settings, p);
   if (!checked) return Error(checked.error());
   const auto geometry = *checked;
   const auto drop = request_source.drop;
   const auto image_rows = geometry.rows, prompt_rows = geometry.prompt_rows;
   const auto channels = p.vae.z_dim;
-  const auto geometry_bytes = kSourceMappingBytes + 2 * sizeof(ImageGeometryOwner) +
+  const auto geometry_bytes = SourceMappingBytes(p) + 2 * sizeof(ImageGeometryOwner) +
                               2 * sizeof(ImageGeometry) + 6 * sizeof(ImageStage) + 4096;
   if (!Charge(construction, geometry_bytes, source->construction_node, source->construction_cap))
     return Error("image geometry mapping is not prepaid");
@@ -426,9 +456,9 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
   held->paid.node = source->construction_node;
   held->paid.cap = source->construction_cap;
   held->model = model;
-  auto prepared_request =
-      ComponentImageGenerationRequest(std::move(request_source), settings, construction,
-                                      source->construction_node, source->construction_cap);
+  auto prepared_request = ComponentImageGenerationRequest(
+      model->family, std::move(request_source), settings, construction, source->construction_node,
+      source->construction_cap);
   if (!prepared_request) return Error(prepared_request.error());
   const auto& source_tensors = model->source_tensors;
   const auto text_rows = geometry.text_rows;
@@ -474,7 +504,7 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
          .input_encoding = i == 0 ? format::Encoding::kI32 : format::Encoding::kF32,
          .exports = mappings[i]->exports,
          .inputs = inputs[i],
-         .sink_layouts = ImageSinksLayouts()});
+         .sink_layouts = SinksLayouts(model->policy)});
     if (!graph) return Error(std::format("image stage {}: {}", i, graph.error()));
     for (const auto& weight : graph->weights()) {
       if (weight.parts.size() != 1 || weight.parts[0].second != format::PartRole::kData)
@@ -535,40 +565,52 @@ EngineImageBuild ComponentImageGenerationBuild(
   return [&node, owner, source = std::move(source), construction = std::move(construction),
           tuning = std::move(tuning)](
              const ModelSettings& settings) -> std::expected<EngineImageParts, std::string> {
-    const auto& p = md::QwenImage21();
-    if (!source || !source->composition || !source->keep || !construction || owner < 0 ||
-        source->composition->architecture() != p.pipeline_architecture)
+    if (!source || !source->composition || !source->keep || !construction || owner < 0)
+      return Error("image generation requires the complete paid source envelope");
+    for (const auto& weights : source->weights)
+      if (!weights || !weights->opened()) return Error("image source artifact is not open");
+    if (!source->family) {
+      std::array<const artifact::Artifact*, 3> opened{};
+      for (std::size_t i = 0; i < opened.size(); ++i) opened[i] = &source->weights[i]->artifact();
+      auto family = ReadImageFamily(*source->composition, opened);
+      if (!family) return Error(family.error());
+      source->family = std::move(*family);
+    }
+    const auto& family = *source->family;
+    const auto& p = family.profile;
+    if (source->composition->architecture() != family.mapping->architecture ||
+        family.mapping->components.size() != 3)
       return Error("image generation requires the complete paid source envelope");
     auto request = RequestOf(*source, settings, p);
     if (!request) return Error(request.error());
     for (auto id : source->prompt)
       if (id < 0 || static_cast<std::uint32_t>(id) >= p.text.vocab)
         return Error("image text input ID lies outside the actual source vocabulary");
-    for (const auto& weights : source->weights)
-      if (!weights || !weights->opened()) return Error("image source artifact is not open");
-    if (!Charge(construction, kSourceOwnerBytes, source->construction_node,
-                source->construction_cap))
+    const auto owner_bytes = SourceOwnerBytes(p);
+    if (!Charge(construction, owner_bytes, source->construction_node, source->construction_cap))
       return Error("image source mapping is not prepaid");
     auto held = std::make_shared<ImageGenerationModel>();
     held->paid.allowance = construction;
-    held->paid.bytes = kSourceOwnerBytes;
+    held->paid.bytes = owner_bytes;
     held->paid.node = source->construction_node;
     held->paid.cap = source->construction_cap;
     held->source = source;
-    held->source_tensors = {md::TextEncoderTensors(p.text), md::DenoiserTensors(p.denoiser),
-                            md::VaeDecoderTensors(p.vae)};
+    held->family = source->family;
+    auto policy = planner::ParsePolicy(family.mapping->serving->serving_rule->text);
+    if (!policy) return Error(std::format("the image planning policy: {}", policy.error()));
+    held->policy = std::move(*policy);
+    held->source_tensors = SourceTensors(family);
     const auto& source_tensors = held->source_tensors;
-    const std::array<std::string_view, 3> role{"text_encoder", "transformer", "vae"};
-    const std::array<std::string_view, 3> architecture{p.text_architecture, p.denoiser_architecture,
-                                                       p.vae_architecture};
 
     for (std::size_t i = 0; i < 3; ++i) {
-      const auto* component = source->composition->Find(role[i]);
+      const auto& rule = family.mapping->components[i];
+      const auto* component = source->composition->Find(rule.role);
       const auto& artifact = source->weights[i]->artifact();
       if (!component || component->artifact != artifact.id() ||
-          component->architecture != architecture[i])
+          !std::ranges::contains(rule.architectures, component->architecture))
         return Error("image composition/source artifact identity differs");
-      auto bindings = md::BindQwenImageComponent(source_tensors[i], architecture[i], artifact);
+      auto bindings =
+          md::BindQwenImageComponent(source_tensors[i], component->architecture, artifact);
       if (!bindings) return Error(bindings.error());
       held->resource_ids[i] = std::move(*bindings);
       auto tensors = Table(source_tensors[i]);
@@ -584,25 +626,27 @@ EngineImageBuild ComponentImageGenerationBuild(
     if (!facts) return Error("image device facts unavailable");
     const auto blas_bytes =
         kg::CublasHandle::UpstreamWorkspace(static_cast<int>(facts->architecture)).value();
+    // The denoiser's F32 attention, tuned by default on the GB10 at the
+    // mapping's qualified joint rows, and this request's where its image
+    // rows are the qualified ones (its heads' width).
     const auto joint = std::uint64_t{request->text_rows} + request->rows;
-    const std::array<execution::TunedShape, 2> default_tuned{{
-        {.implementation = kg::kAttentionF32,
-         .rows = 4121,
-         .k = 128,
-         .n = 128,
-         .output_encoding = format::Encoding::kF32},
-        {.implementation = kg::kAttentionF32,
-         .rows = joint,
-         .k = 128,
-         .n = 128,
-         .output_encoding = format::Encoding::kF32},
-    }};
-    const std::size_t default_count = (!tuning && facts->architecture / 10 == 121)
-                                          ? (joint != 4121 && request->rows == 4096 ? 2U : 1U)
-                                          : 0U;
-    const auto tuples =
-        tuning ? std::span<const execution::TunedShape>(tuning->facts().tuned)
-               : std::span<const execution::TunedShape>(default_tuned.data(), default_count);
+    std::vector<execution::TunedShape> default_tuned;
+    if (!tuning && facts->architecture / 10 == 121) {
+      std::vector<std::uint64_t> rows(family.mapping->attention_rows.begin(),
+                                      family.mapping->attention_rows.end());
+      // A request at the qualified image rows, whatever its prompt's.
+      if (std::ranges::contains(family.mapping->attention_image_rows, request->rows) &&
+          !std::ranges::contains(rows, joint))
+        rows.push_back(joint);
+      for (const auto r : rows)
+        default_tuned.push_back({.implementation = kg::kAttentionF32,
+                                 .rows = r,
+                                 .k = p.denoiser.head_dim,
+                                 .n = p.denoiser.head_dim,
+                                 .output_encoding = format::Encoding::kF32});
+    }
+    const auto tuples = tuning ? std::span<const execution::TunedShape>(tuning->facts().tuned)
+                               : std::span<const execution::TunedShape>(default_tuned);
     auto declared = held->backend->Declare(
         tuples, blas_bytes,
         [construction, source](std::uint64_t bytes) {
@@ -622,12 +666,10 @@ EngineImageBuild ComponentImageGenerationBuild(
                                                            settings, construction);
     if (!geometry_parts) return Error(geometry_parts.error());
     EngineImageParts out;
-    const auto& policy = ImagePolicy();
-    if (!policy) return Error(std::format("the image planning policy: {}", policy.error()));
-    out.policy = *policy;
+    out.policy = held->policy;
     out.keep = held;
     out.construction = construction;
-    out.architecture = p.pipeline_architecture;
+    out.architecture = family.mapping->architecture;
     out.backend = std::make_shared<kernels::StepBackend>(held->backend->Backend());
     out.geometry_keep = geometry_parts->keep;
     out.identity = geometry_parts->identity;
@@ -677,6 +719,8 @@ EngineImageBuild ComponentImageGenerationBuild(
 namespace {
 struct InstalledImageOwner {
   Paid paid;
+  std::shared_ptr<const ImageFamily> family;
+  chat::ImagePromptRenderer render = nullptr;  // its mapping's prompt renderer
   std::optional<tokenizer::Tokenizer> tokenizer;
   std::filesystem::path noise;
   ModelSettings settings;
@@ -687,7 +731,7 @@ struct ImageInputOwner {
 std::expected<ImageGenerationRequest, std::string> ReadImageInput(
     const std::shared_ptr<InstalledImageOwner>& owner, const ImageInput& input,
     ModelSettings& settings) {
-  const auto& profile = md::QwenImage21();
+  const auto& profile = owner->family->profile;
   settings = owner->settings;
   if (input.steps) settings.image_steps.value = input.steps;
   if ((input.width == 0) != (input.height == 0))
@@ -719,7 +763,7 @@ std::expected<ImageGenerationRequest, std::string> ReadImageInput(
   keep->paid.node = owner->paid.node;
   keep->paid.cap = owner->paid.cap;
   keep->paid.bytes = initial;
-  auto rendered = chat::RenderQwenImagePrompt(input.prompt, *owner->tokenizer);
+  auto rendered = owner->render(input.prompt, *owner->tokenizer);
   if (!rendered) return Error(rendered.error().ToString());
   const auto work = owner->tokenizer->WorkingBytes(rendered->rendered.text);
   if (!keep->paid.Add(work)) return Error("image tokenization working space is unpaid");
@@ -792,15 +836,14 @@ EngineImageBuild ComponentImageServingBuild(en::PagedNode& node, std::filesystem
     source->construction_cap = cap;
     auto composition = artifact::OpenComposition(store / composition_id, composition_id);
     if (!composition) return Error(composition.error().ToString());
-    const auto& p = md::QwenImage21();
-    if (composition->architecture() != p.pipeline_architecture)
+    const auto* mapping = spec::FindImageMapping(composition->architecture());
+    if (mapping == nullptr || mapping->components.size() != source->weights.size())
       return Error("installed composition has no qualified shared image mapping");
     if (!retained->paid.Add(2 * artifact::kMaxMetadataTotal + 8 * artifact::kMaxManifestBytes))
       return Error("retained image composition metadata is unpaid");
     source->composition = std::make_shared<const artifact::Composition>(std::move(*composition));
-    const std::array<std::string_view, 3> roles{"text_encoder", "transformer", "vae"};
-    for (std::size_t i = 0; i < roles.size(); ++i) {
-      const auto* component = source->composition->Find(roles[i]);
+    for (std::size_t i = 0; i < mapping->components.size(); ++i) {
+      const auto* component = source->composition->Find(mapping->components[i].role);
       if (!component) return Error("image composition is missing a required component");
       auto weights = std::make_unique<en::PagedWeights>();
       artifact::OpenOptions options;
@@ -814,7 +857,17 @@ EngineImageBuild ComponentImageServingBuild(en::PagedNode& node, std::filesystem
         return Error(bytes ? "retained image source metadata is unpaid" : bytes.error());
       source->weights[i] = std::move(weights);
     }
-    const auto json = source->composition->Metadata("tokenizer.json");
+    std::array<const artifact::Artifact*, 3> opened{};
+    for (std::size_t i = 0; i < opened.size(); ++i) opened[i] = &source->weights[i]->artifact();
+    auto family = ReadImageFamily(*source->composition, opened);
+    if (!family) return Error(family.error());
+    source->family = *family;
+    retained->family = std::move(*family);
+    // The pipeline's prompt renderer, its mapping's (by name).
+    retained->render = chat::FindImagePromptRenderer(mapping->prompt);
+    if (retained->render == nullptr)
+      return Error("image pipeline has no prompt renderer of its mapping's name");
+    const auto json = source->composition->Metadata(mapping->tokenizer);
     if (!json) return Error("image composition has no native tokenizer metadata");
     const auto parsing = base::json::ParseWorkingBytes(*json);
     const auto expanded = 32 * std::uint64_t{json->size()} + parsing;
@@ -841,17 +894,17 @@ EngineImageBuild ComponentImageServingBuild(en::PagedNode& node, std::filesystem
       ModelSettings next_settings;
       auto request = ReadImageInput(retained, input, next_settings);
       if (!request) return Error(request.error());
-      auto checked = RequestOf(*request, next_settings, md::QwenImage21());
+      auto checked = RequestOf(*request, next_settings, retained->family->profile);
       if (!checked) return Error(checked.error());
       base::Sha256 hash;
       hash.Update("llmp-image-request-layout-v1");
-      hash.Update(md::QwenImage21().pipeline_architecture);
+      hash.Update(retained->family->mapping->architecture);
       const std::array shape{checked->width, checked->height, checked->prompt_rows, request->drop};
       hash.Update(std::as_bytes(std::span(shape)));
       if (hash.Finish() == layout) {
         auto content =
-            ComponentImageGenerationRequest(std::move(*request), next_settings, construction,
-                                            retained->paid.node, retained->paid.cap);
+            ComponentImageGenerationRequest(retained->family, std::move(*request), next_settings,
+                                            construction, retained->paid.node, retained->paid.cap);
         if (!content) return Error(content.error());
         return std::variant<ImageRequest, ImageGeometry>(std::move(*content));
       }

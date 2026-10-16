@@ -6,6 +6,7 @@
 // transformers, and Qwen-Image 2.1's text-to-image prompt. Written from the
 // format, not translated from the template (docs/tokenizer.md).
 
+#include <array>
 #include <cstddef>
 #include <expected>
 #include <optional>
@@ -314,6 +315,17 @@ std::expected<ImagePrompt, Error> RenderQwenImagePrompt(std::string_view prompt,
     return Fail(Rule::kInvalid, "the image prompt's system segment does not encode");
   }
   return ImagePrompt{w.Take(), ids.size()};
+}
+
+ImagePromptRenderer FindImagePromptRenderer(std::string_view name) {
+  struct Entry {
+    std::string_view name;
+    ImagePromptRenderer render;
+  };
+  static constexpr std::array<Entry, 1> kRenderers{{{"qwen_image_2_1", &RenderQwenImagePrompt}}};
+  for (const auto& e : kRenderers)
+    if (e.name == name) return e.render;
+  return nullptr;
 }
 
 }  // namespace llmp::chat

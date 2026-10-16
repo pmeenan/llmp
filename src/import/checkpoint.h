@@ -51,7 +51,8 @@ inline constexpr std::size_t kMaxArchitecture = 200;
 // A metadata value: none (JSON null, or what the metadata cannot hold: a
 // GGUF u64 above INT64_MAX, a JSON array of mixed kinds or of objects), an
 // integer, a real, a flag, a string, or a list of integers, reals or
-// strings. A GGUF bool array is a list of integers 0 and 1.
+// strings. A GGUF bool array, and a JSON array of flags, is a list of
+// integers 0 and 1.
 using MetaValue =
     std::variant<std::monostate, std::int64_t, double, bool, std::string, std::vector<std::int64_t>,
                  std::vector<double>, std::vector<std::string>>;

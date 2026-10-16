@@ -30,6 +30,8 @@
 #include "engine/paged_node.h"
 #include "execution/registry.h"
 #include "expected_error.h"
+#include "image_family.h"
+#include "image_published.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
@@ -57,23 +59,29 @@ constexpr std::uint64_t kCap = 48 * kGiB, kConstruction = 4 * kGiB;
 // composition directory, all retained artifact/catalog descriptors, prompt,
 // source noise and the actual diagnostic reports. No reference weight copy.
 constexpr std::uint64_t kStartup = kGiB;
-constexpr std::uint64_t kSelectedWeights = 30530338816ULL;
-constexpr std::string_view kComposition =
-    "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd";
-constexpr std::array<std::string_view, 3> kIds{
-    "ed89ed270cf840965565d42eb61220b07399ff147e4f1de9ffcb7cbfd5ae86cf",
-    "d1184efda09c12175b7bae6e9acf6cf3aeafb765f4f2ab6192cbf284c37eb3a4",
-    "44c1a20a202ce1078588cbd4b0c594bbadf365a01f26091c715fd16d5b2eb34d"};
+constexpr std::uint64_t kSelectedWeights = 30528241664ULL;
+// The published v1 composition and components (tests/support/
+// image_family.h), their indexes' exact bytes and digests.
+const std::string kComposition = llmp::test_support::QwenImageComposition();
+const std::array<std::string, 3> kIds{llmp::test_support::QwenImageText(),
+                                      llmp::test_support::QwenImageTransformer(),
+                                      llmp::test_support::QwenImageVae()};
 constexpr std::array<std::string_view, 3> kIndexHashes{
-    "05cdbb6903545d79ffdc0bcc713721710267fd60e1be790a81028657edaf4e72",
-    "13e91555cab81aaf627a0e32e6590733518c8c03b02abf65dbce59367a970a4f",
-    "bb8c26b04b8d9bd4011a2cbb5c25e7630db8e2cd68b3bf09bb5350be0caca77a"};
-constexpr std::array<std::uint64_t, 3> kIndexBytes{751744, 531405, 99639};
+    "d26a01d51576225995ad4b87405ea7846ce5b2f3361d19df614fcce6072408ee",
+    "d47e662718b6c0a5c83119aef376d8fa9e425eb10b11606daab9acb2fa671838",
+    "7c84ef9445a334645d83276c4774b43853ab82e303c1f7e6976fb25c5f30cf96"};
+constexpr std::array<std::uint64_t, 3> kIndexBytes{610814, 543282, 68162};
 constexpr std::string_view kPrompt =
     "A red ceramic teapot on a plain wooden table, soft daylight, no text.";
 constexpr std::string_view kRectangularPrompt =
     "A blue glass vase beside a yellow book, viewed from above.";
 Status Error(std::string message) { return std::unexpected(std::move(message)); }
+// The published composition's family, as its admission reads it.
+std::shared_ptr<const rt::ImageFamily> FrozenFamily() {
+  const auto& frozen = llmp::test_support::QwenImage();
+  return std::make_shared<const rt::ImageFamily>(
+      rt::ImageFamily{.mapping = frozen.mapping, .spec = frozen.spec, .profile = frozen.profile});
+}
 std::expected<std::string, std::string> ReadExact(const fs::path& path, std::uint64_t bytes) {
   std::error_code ec;
   if (fs::file_size(path, ec) != bytes || ec || bytes > 12 * kMiB)
@@ -139,7 +147,10 @@ struct Lifetime {
       auto index = ReadExact(store / kIds[i] / "index.json", kIndexBytes[i]);
       if (!index ||
           llmp::base::ToHex(llmp::base::Sha256{}.Update(*index).Finish()) != kIndexHashes[i])
-        return Error("image source index identity differs");
+        return Error(
+            std::format("image source index identity differs: {} {}", index ? index->size() : 0,
+                        index ? llmp::base::ToHex(llmp::base::Sha256{}.Update(*index).Finish())
+                              : std::string()));
       source->weights[i] = std::make_unique<en::PagedWeights>();
       llmp::artifact::OpenOptions options;
       options.expected_id = std::string(kIds[i]);
@@ -267,7 +278,8 @@ struct Lifetime {
       tuning_credit = preparation;
       llmp::planner::DeviceFacts facts{.device_class = "sm_121"};
       if (tiled) {
-        const auto stages = llmp::model::VaeDecoderPlan(llmp::model::QwenImage21().vae, 64, 64);
+        const auto stages =
+            llmp::model::VaeDecoderPlan(::llmp::test_support::QwenImageProfile().vae, 64, 64);
         if (stages.size() != 113) return Error("actual decoder tuning inventory changed");
         facts.tuned.reserve(stages.size());
         for (const auto& stage : stages) {
@@ -419,7 +431,8 @@ struct Lifetime {
     if (!setup) return setup;
     weights = image->weight_read_bytes();
     selected_weight_bytes = weights;
-    if (weights != kSelectedWeights) return Error("complete source closure page union differs");
+    if (weights != kSelectedWeights)
+      return Error(std::format("complete source closure page union differs: {}", weights));
     activation = image->activations_needed();
     pool = std::max<std::uint64_t>(image->pool_needed(), en::kPagedExtent);
     staging = image->host_input_bytes();
@@ -513,7 +526,8 @@ struct Lifetime {
         rt::ModelSettings settings;
         settings.image_size.value = 1024;
         settings.image_steps.value = steps;
-        auto request = rt::ComponentImageGenerationRequest(std::move(input), settings, allowance);
+        auto request = rt::ComponentImageGenerationRequest(source->family, std::move(input),
+                                                           settings, allowance);
         if (!request) return Error(request.error());
         construction_peak = std::max(construction_peak, allowance->used());
         if (request->layout != request_layout || request->sequence.size() != steps + 2 ||
@@ -590,7 +604,7 @@ TEST(ImageRequestInputs, PaymentAndLayoutRemainIndependentOfRequestContent) {
   settings.image_steps.value = 1;
   llmp::base::Sha256Digest layout, identity;
   {
-    auto first = rt::ComponentImageGenerationRequest(input(), settings, *paid);
+    auto first = rt::ComponentImageGenerationRequest(FrozenFamily(), input(), settings, *paid);
     ASSERT_TRUE(first) << Failed(first).value_or("");
     layout = first->layout;
     identity = first->identity;
@@ -604,7 +618,8 @@ TEST(ImageRequestInputs, PaymentAndLayoutRemainIndependentOfRequestContent) {
     changed.prompt[0] = 4;
     changed.noise[0] = llmp::model::ToBf16(1.F);
     settings.image_steps.value = 3;
-    auto next = rt::ComponentImageGenerationRequest(std::move(changed), settings, *paid);
+    auto next =
+        rt::ComponentImageGenerationRequest(FrozenFamily(), std::move(changed), settings, *paid);
     ASSERT_TRUE(next) << Failed(next).value_or("");
     EXPECT_EQ(next->layout, layout);
     EXPECT_NE(next->identity, identity);
@@ -613,7 +628,8 @@ TEST(ImageRequestInputs, PaymentAndLayoutRemainIndependentOfRequestContent) {
     auto rectangle = input();
     rectangle.height = 32;
     rectangle.noise.resize(128);
-    auto different = rt::ComponentImageGenerationRequest(std::move(rectangle), settings, *paid);
+    auto different =
+        rt::ComponentImageGenerationRequest(FrozenFamily(), std::move(rectangle), settings, *paid);
     ASSERT_TRUE(different) << Failed(different).value_or("");
     EXPECT_NE(different->layout, layout);
   }
@@ -621,12 +637,13 @@ TEST(ImageRequestInputs, PaymentAndLayoutRemainIndependentOfRequestContent) {
   auto too_small = en::ExecutionMetadataAllowance::Admit(
       catalog, domain, en::ExecutionMetadataAllowance::OverheadBytes() + 64, 8 * kMiB, kMiB);
   ASSERT_TRUE(too_small);
-  auto unpaid = rt::ComponentImageGenerationRequest(input(), settings, *too_small);
+  auto unpaid = rt::ComponentImageGenerationRequest(FrozenFamily(), input(), settings, *too_small);
   EXPECT_FALSE(unpaid);
   EXPECT_EQ((*too_small)->used(), 0U);
   auto invalid = input();
   invalid.noise[0] = 0x7F80;  // source BF16 infinity
-  auto refused = rt::ComponentImageGenerationRequest(std::move(invalid), settings, *paid);
+  auto refused =
+      rt::ComponentImageGenerationRequest(FrozenFamily(), std::move(invalid), settings, *paid);
   EXPECT_FALSE(refused);
   EXPECT_EQ((*paid)->used(), 4096U);
 }
@@ -1177,6 +1194,16 @@ TEST(ImageGenerationGpu, OrdinaryServerConsumesInstalledSourceAndRequests) {
     FAIL() << Failed(retired).value_or("");
   }
   ASSERT_TRUE(run) << Failed(run).value_or("");
+  if (quality) {
+    // The pixel pin (docs/model-support.md): the exported 1,024² image's
+    // bytes, frozen with the published v1 composition.
+    const auto rgba = llmp::test_support::ReadWhole(
+        (fs::path(std::getenv("LLMP_IMAGE_SCREEN_OUTPUT")) / "image.rgba8").string());
+    ASSERT_TRUE(rgba.has_value());
+    llmp::test_support::FrozenDigests frozen("qwen_image");
+    frozen.Expect("pixels.1024x1024.40",
+                  llmp::test_support::HexOfBytes(std::as_bytes(std::span(*rgba))));
+  }
   EXPECT_EQ(life->completed_images, quality ? 1U : 4U);
   EXPECT_EQ(life->retired_geometries, quality ? 0U : 2U);
   RecordProperty("ordinary_installed_source", 1);

@@ -2927,6 +2927,46 @@ Shared blocks (attention variants, norms, GLUs, convolutions, rotations)
 are the same components the LLMs use. Qwen-Image moves onto them after the
 LLM families; decision models, embeddings and speech arrive as specs.
 
+### Image pipelines
+
+An image pipeline's graphs depend on each request's geometry, so they are
+built per request from its family's hyperparameters
+(`spec/image_spatial.h`); a stored spec per geometry waits for M3.5. The
+hyperparameters are data, and no family's numbers are compiled in
+(`spec/image_family.h`). An image mapping (`spec/mappings/qwen_image.cc`
+for `QwenImage21Pipeline`) names the pipeline's components (each a
+composition role, a stored stage, its accepted architectures and the
+family kinds its stage holds), where each family parameter comes from (a
+key of a component's config.json or of a kept pipeline file such as
+`scheduler/scheduler_config.json`, or a constant the source library fixes
+in code: the timestep embedding's 256 channels, period 10,000 and scale
+1,000, the pipeline's timestep divisor and the rotation's θ), what the
+source must say besides (its activation, residual VAE, exponential time
+shift, ...), the checkpoints' tensor names, its serving recipe (whose
+serving rule is the planning policy every stage plans with), the tokenizer
+it keeps and its prompt renderer's name (`chat::FindImagePromptRenderer`).
+`ValidateImageMapping` also refuses names that would bind one tensor to
+two roles. At import, `SynthesizeImageFamily` makes the family spec: one
+stage a component, each one layer of family components
+(`image.text_transformer`, `image.flow_transformer` with
+`image.flow_schedule`, `image.vae_decoder`) whose parameters the schema
+reads as its types and range-checks; the composition keeps it as its
+`spec.json` (D-113). Each component artifact keeps the tensors its mapping
+names (not the text encoder's vision tower and output head, nor the VAE's
+encoder, which text to image never runs) and a spec of itself at a minimal
+geometry; since that spec binds every tensor in one spatial layer, the
+importer groups the tensors as the component's structure divides them
+(`import::ComponentPlan::groups`: the text encoder's token table and one
+group a layer, the denoiser's globals and one a block, the VAE decoder's
+up blocks one each and the rest of it one). The pipeline's approval (`runtime/approvals.cc`,
+`ImageApprovals`) pins the composition's kept files and family digest and
+each component's sources, dense inventory and spec digest;
+`ReadImageAdmission` checks them all, then reads the family back through
+the schema as the profile every request's graphs are built from. Serving
+finds the mapping by the composition's architecture and takes the
+components' roles, the tokenizer, the prompt renderer, the policy and the
+default tuned attention rows from it.
+
 ## Partitioning
 
 Tensor, pipeline and expert parallelism with any number of splits, mixed

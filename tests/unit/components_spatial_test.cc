@@ -19,6 +19,7 @@
 #include "engine/graph_plan.h"
 #include "execution/registry.h"
 #include "expected_error.h"
+#include "image_family.h"
 #include "kernels/reference/exec.h"
 #include "spec/image_spatial.h"
 
@@ -353,12 +354,12 @@ TEST(SpatialComponentsTest, BackwardResidualEdgesPreserveOwnersGammaEncodingAndR
 }
 
 TEST(SpatialComponentsTest, CompleteReducedDecoderSharesAllFragmentsAndIndependentReferences) {
-  auto profile = model::QwenImage21().vae;
+  auto profile = ::llmp::test_support::QwenImageProfile().vae;
   profile.z_dim = 2;
   profile.base = 1;
   profile.dim_mult = {1, 2, 2, 2, 2};
   const auto steps = model::VaeDecoderPlan(profile, 2, 2);
-  const auto source = model::VaeDecoderTensors(profile);
+  const auto source = model::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
   auto mapped = spec::VaeDecoderSpec(steps, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   std::vector<BoundTensor> tensors;
@@ -449,10 +450,11 @@ std::vector<double> ProjectRows(std::span<const double> input, std::uint64_t pix
 }
 
 TEST(SpatialComponentsTest, TimestepBranchesKeepBothOutputsAndChangedMultiownerInputs) {
-  auto profile = model::QwenImage21().denoiser;
+  auto profile = ::llmp::test_support::QwenImageProfile().denoiser;
   profile.width = 4;
   profile.timestep_dim = 2;
-  const auto source = model::DenoiserTensors(profile);
+  const auto source =
+      model::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapping = spec::ImageTimestepSpec(profile, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   auto tensors = TimestepTensors(source);
@@ -532,8 +534,9 @@ TEST(SpatialComponentsTest, TimestepBranchesKeepBothOutputsAndChangedMultiownerI
 }
 
 TEST(SpatialComponentsTest, FullTimestepSourceMetadataDoesNotAllocateDecodedWeights) {
-  const auto& profile = model::QwenImage21().denoiser;
-  const auto source = model::DenoiserTensors(profile);
+  const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
+  const auto source =
+      model::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapping = spec::ImageTimestepSpec(profile, source);
   ASSERT_TRUE(mapping);
   auto tensors = TimestepTensors(source);
@@ -570,10 +573,10 @@ TEST(SpatialComponentsTest, FullTimestepSourceMetadataDoesNotAllocateDecodedWeig
 }
 
 TEST(SpatialComponentsTest, TimestepRefusesMalformedSourcesExportsAndPaymentBeforeGraphCopies) {
-  auto profile = model::QwenImage21().denoiser;
+  auto profile = ::llmp::test_support::QwenImageProfile().denoiser;
   profile.width = 4;
   profile.timestep_dim = 2;
-  auto source = model::DenoiserTensors(profile);
+  auto source = model::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapping = spec::ImageTimestepSpec(profile, source);
   ASSERT_TRUE(mapping);
   auto wrong = source;
@@ -751,7 +754,7 @@ std::array<std::vector<double>, 2> BlockOracle(const model::QwenImageDenoiserPro
 }
 
 TEST(SpatialComponentsTest, ConditionedBlockConsumesBothCarriesAndOwnerLocalTypedInputs) {
-  auto p = model::QwenImage21().denoiser;
+  auto p = ::llmp::test_support::QwenImageProfile().denoiser;
   p.blocks = 1;
   p.width = 16;
   p.heads = 2;
@@ -759,7 +762,7 @@ TEST(SpatialComponentsTest, ConditionedBlockConsumesBothCarriesAndOwnerLocalType
   p.mlp = 48;
   p.timestep_dim = 4;
   p.rope_axes = {2, 2, 4};
-  const auto source = model::DenoiserTensors(p);
+  const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapped = spec::ImageTransformerBlockSpec(p, 0, 2, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   const auto tensors = BlockTensors(source);
@@ -859,7 +862,7 @@ TEST(SpatialComponentsTest, ConditionedBlockConsumesBothCarriesAndOwnerLocalType
 }
 
 TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePositionFormula) {
-  const auto& p = model::QwenImage21().denoiser;
+  const auto& p = ::llmp::test_support::QwenImageProfile().denoiser;
   spec::Stage stage{.name = "rotation", .role = spec::StageRole::kDenoiser, .artifact = 0};
   stage.stream.width = 128;
   spec::ComponentRef rotate{.kind = "norm.rope_axes",
@@ -937,8 +940,8 @@ TEST(SpatialComponentsTest, SourceAxesUseNormalOffsetsAndIndependentNegativePosi
 }
 
 TEST(SpatialComponentsTest, ConditionedBlockPaysFullSourcesAndRefusesMalformedPortsAndCarries) {
-  const auto& p = model::QwenImage21().denoiser;
-  const auto source = model::DenoiserTensors(p);
+  const auto& p = ::llmp::test_support::QwenImageProfile().denoiser;
+  const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapped = spec::ImageTransformerBlockSpec(p, 0, 2, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   const auto tensors = BlockTensors(source);
@@ -1093,7 +1096,7 @@ std::array<std::vector<double>, 2> FlowOracle(const model::QwenImageDenoiserProf
 }
 
 TEST(SpatialComponentsTest, CompleteFlowUsesAllBlocksAndIndependentBoundaryMathForTwoOwners) {
-  auto p = model::QwenImage21().denoiser;
+  auto p = ::llmp::test_support::QwenImageProfile().denoiser;
   p.blocks = 2;
   p.width = 16;
   p.context = 16;
@@ -1104,7 +1107,7 @@ TEST(SpatialComponentsTest, CompleteFlowUsesAllBlocksAndIndependentBoundaryMathF
   p.rope_axes = {2, 2, 4};
   p.in_channels = 4;
   p.out_channels = 4;
-  const auto source = model::DenoiserTensors(p);
+  const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapping = spec::ImageFlowSpec(p, 2, 4, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   ASSERT_EQ(mapping->links.size(), 53U);
@@ -1197,8 +1200,8 @@ TEST(SpatialComponentsTest, CompleteFlowUsesAllBlocksAndIndependentBoundaryMathF
 }
 
 TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceBeforeCopy) {
-  const auto& p = model::QwenImage21().denoiser;
-  const auto source = model::DenoiserTensors(p);
+  const auto& p = ::llmp::test_support::QwenImageProfile().denoiser;
+  const auto source = model::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
   ASSERT_EQ(source.size(), 297U);
   auto mapping = spec::ImageFlowSpec(p, 2, 4, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
@@ -1274,7 +1277,7 @@ TEST(SpatialComponentsTest, FullFlowPays563ComponentsAndRefusesDecodedReferenceB
 }
 
 TEST(SpatialComponentsTest, TypedTextEncoderUsesIndependentGatherGqaAndNeoxReference) {
-  model::QwenImageTextProfile p;
+  auto p = ::llmp::test_support::QwenImageProfile().text;
   p.layers = 2;
   p.width = 8;
   p.heads = 2;
@@ -1282,7 +1285,7 @@ TEST(SpatialComponentsTest, TypedTextEncoderUsesIndependentGatherGqaAndNeoxRefer
   p.head_dim = 4;
   p.ffn = 12;
   p.vocab = 9;
-  const auto source = model::TextEncoderTensors(p);
+  const auto source = model::TextEncoderTensors(p, ::llmp::test_support::QwenImageNames().text);
   auto mapping = spec::ImageTextSpec(p, 3, 1, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   const auto tensors = FlowTensors(source);
@@ -1375,8 +1378,9 @@ TEST(SpatialComponentsTest, TypedTextEncoderUsesIndependentGatherGqaAndNeoxRefer
 }
 
 TEST(SpatialComponentsTest, RealTextAnd1024FlowMetadataArePaidWithoutReferencePayloads) {
-  const auto& profile = model::QwenImage21();
-  const auto text_source = model::TextEncoderTensors(profile.text);
+  const auto& profile = ::llmp::test_support::QwenImageProfile();
+  const auto text_source =
+      model::TextEncoderTensors(profile.text, ::llmp::test_support::QwenImageNames().text);
   auto text = spec::ImageTextSpec(profile.text, 39, 14, text_source);
   ASSERT_TRUE(text) << Failed(text).value_or("");
   const auto text_tensors = FlowTensors(text_source);
@@ -1402,7 +1406,8 @@ TEST(SpatialComponentsTest, RealTextAnd1024FlowMetadataArePaidWithoutReferencePa
                                  .exports = text->exports,
                                  .inputs = text_ports}));
   EXPECT_EQ(deny_reference.used, 0U);
-  const auto flow_source = model::DenoiserTensors(profile.denoiser);
+  const auto flow_source =
+      model::DenoiserTensors(profile.denoiser, ::llmp::test_support::QwenImageNames().denoiser);
   auto flow = spec::ImageFlowSpec(profile.denoiser, 25, 4096, flow_source);
   ASSERT_TRUE(flow) << Failed(flow).value_or("");
   const auto flow_tensors = FlowTensors(flow_source);
@@ -1488,8 +1493,8 @@ TEST(SpatialComponentsTest, LatentReshapeAndChannelAffinePreserveOwnerPlanes) {
 }
 
 TEST(SpatialComponentsTest, Actual1024DecoderHandoffIsPaidBeforeReferenceAllocation) {
-  const auto& profile = model::QwenImage21().vae;
-  const auto source = model::VaeDecoderTensors(profile);
+  const auto& profile = ::llmp::test_support::QwenImageProfile().vae;
+  const auto source = model::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
   auto mapping = spec::ImageDecodeSpec(profile, 64, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   auto tensors = FlowTensors(source);
@@ -1526,8 +1531,8 @@ TEST(SpatialComponentsTest, Actual1024DecoderHandoffIsPaidBeforeReferenceAllocat
 }
 
 TEST(ComponentsSpatial, RectangularDecoderCarriesGeometryInItsGraphIdentity) {
-  const auto profile = model::QwenImage21().vae;
-  const auto source = model::VaeDecoderTensors(profile);
+  const auto profile = ::llmp::test_support::QwenImageProfile().vae;
+  const auto source = model::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
   auto tensors = FlowTensors(source);
   const std::array<std::span<const BoundTensor>, 1> tables{tensors};
   const std::array ports{SpatialInput{0, 0, {1, 2, 64, 1}}};

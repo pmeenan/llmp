@@ -145,6 +145,9 @@ struct PublicationView {
   // The trailing canonical tensors, each one whole part the importer derived
   // from one source file whose whole content is its parsed receipt.
   std::span<const GeneratedPart> generated{};
+  // Each canonical tensor's group where the spec's bindings do not say
+  // (ComponentPlan::groups); empty: by the spec.
+  std::span<const ComponentGroup> groups{};
   const Checkpoint& source() const { return checkpoint; }
   const spec::Source& canonical() const { return canonical_source; }
   const spec::ModelSpec& spec() const { return model_spec; }
@@ -438,7 +441,18 @@ std::expected<Layout, Error> Place(const PublicationView& plan, std::uint64_t fu
   const std::span<const spec::Stage> stages_to_bind =
       is_drafter ? std::span<const spec::Stage>(&plan.spec().stages[1], 1)
                  : std::span<const spec::Stage>(plan.spec().stages);
+  if (!plan.groups.empty()) {
+    if (plan.groups.size() != tensors.size())
+      return Bad("component groups do not name every tensor", Rule::kConfig);
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      const auto& g = plan.groups[i];
+      owners.try_emplace(tensors[i].name,
+                         GroupKey{static_cast<std::uint32_t>(g.kind),
+                                  g.kind == ComponentGroup::Kind::kLayer ? g.layer : 0U});
+    }
+  }
   for (const auto& stage : stages_to_bind) {
+    if (!plan.groups.empty()) break;
     if (stage.embedding) bind(*stage.embedding, {0, 0});
     if (stage.stream.mixing) bind(*stage.stream.mixing, {1, 0});
     for (std::size_t i = 0; i < stage.side.size(); ++i) {
@@ -1133,7 +1147,8 @@ std::expected<WriteResult, Error> WriteArtifact(const ComponentPlan& plan,
                   .canonical_source = plan.canonical,
                   .model_spec = plan.spec,
                   .payload = plan.payload_bytes,
-                  .copy_routes = plan.routes},
+                  .copy_routes = plan.routes,
+                  .groups = plan.groups},
                  options);
 }
 
@@ -1234,6 +1249,18 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
   }
   std::ranges::sort(kept_entries, {}, &KeptFileEntry::name);
 
+  // spec.json, listed last (its path sorts after every meta/ one).
+  if (options.spec) {
+    if (auto valid = spec::Validate(*options.spec); !valid)
+      return Bad("composition spec is not valid", Rule::kConfig);
+    for (const auto& stage : options.spec->stages)
+      if (stage.artifact >= options.components.size())
+        return Bad("composition spec names a component it does not have", Rule::kConfig);
+    const auto json = spec::ToJson(*options.spec);
+    if (json.size() > artifact::kMaxSpecBytes)
+      return Bad("composition spec exceeds its cap", Rule::kBounds);
+    if (auto ok = Save(job / "spec.json", json); !ok) return std::unexpected(ok.error());
+  }
   std::vector<std::string> comp_jsons;
   for (const auto& c : options.components) {
     comp_jsons.push_back(
@@ -1248,6 +1275,10 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
                             {"path", Q("meta/" + k.name)},
                             {"role", Q("source-metadata")},
                             {"sha256", Q(k.sha256)}}));
+  }
+  if (options.spec) {
+    const auto json = spec::ToJson(*options.spec);
+    file_jsons.push_back(FileJson("spec.json", "spec", json.size(), Hex(json)));
   }
   const auto manifest = O({{"components", A(comp_jsons)},
                            {"experimental", "true"},
@@ -1269,6 +1300,13 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
 
   auto opened = artifact::OpenComposition(job, id);
   if (!opened) return Bad("the produced composition failed verification", Rule::kConfig);
+  if (options.spec) {
+    const auto stored = opened->spec_json();
+    auto parsed = stored ? spec::FromJson(*stored)
+                         : std::expected<spec::ModelSpec, std::string>(std::unexpected("none"));
+    if (!parsed || *parsed != *options.spec)
+      return Bad("the produced composition has an invalid spec", Rule::kConfig);
+  }
 
   if (!options.files.empty()) {
     if (auto ok = Sync(job / "meta"); !ok) return std::unexpected(ok.error());

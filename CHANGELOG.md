@@ -946,6 +946,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Qwen-Image-2.1 serves from a native v1 import: `llmp import` of the
+  diffusers pipeline publishes its three components (each the tensors text
+  to image runs: not the text encoder's vision tower and output head, nor
+  the VAE's encoder) and a composition that stores the family spec its
+  image mapping synthesizes from the pipeline's configs (`spec.json`). The
+  runtime admits the composition by its approval (kept files, family spec
+  digest, each component's sources, inventory and spec) and builds every
+  graph from the stored family; no Qwen-Image number is compiled in. Name
+  the new composition ID (`2170db12…`) in `[models]`; the v0
+  composition `eca21baa…` is no longer served.
 - Serving becomes v1-only (D-118, amending D-113's "v0 stays readable"):
   re-import a v0 artifact with `llmp import` from its archived source (its
   v1 ID differs; nothing is migrated) and name the v1 ID in `[models]`.

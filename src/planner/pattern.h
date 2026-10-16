@@ -67,7 +67,7 @@
 //                      the multi-axis rotation. Opt-in: a
 //                      model whose policy disables rms_norm_mul_rope keeps
 //                      its primitive rotations; the image enables it
-//                      (spec/image_spatial.h kImagePlanningPolicy)
+//                      (its mapping's policy, spec/mappings/qwen_image.cc)
 //   rms_norm_mul_add   fused.rms_norm_mul_add: an RMS norm, its weight and a
 //                      residual add of its shape, one after another (or
 //                      the residual's gather between the mul and the add)

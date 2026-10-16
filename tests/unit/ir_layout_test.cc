@@ -23,6 +23,7 @@
 #include "components/spatial.h"
 #include "expected_error.h"
 #include "format/tensor_format.h"
+#include "image_family.h"
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/layout.h"
@@ -218,13 +219,13 @@ void FlowFill(const ir::Graph& g, TensorId t, std::vector<float>& values,
 }
 
 TEST(IrLayoutTest, FlowBlockSinksExactlyWithFewerCopies) {
-  mo::QwenImageDenoiserProfile p;
+  auto p = ::llmp::test_support::QwenImageProfile().denoiser;
   p.blocks = 2;
   p.heads = 2;
   p.width = p.heads * p.head_dim;
   p.mlp = 512;
   p.context = p.width;
-  const auto source = mo::DenoiserTensors(p);
+  const auto source = mo::DenoiserTensors(p, ::llmp::test_support::QwenImageNames().denoiser);
   auto mapped = sp::ImageFlowSpec(p, kText, kGrid * kGrid, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   const auto tensors = Bound(source, fm::Encoding::kBF16);
@@ -253,13 +254,13 @@ void PlainFill(const ir::Graph&, TensorId t, std::vector<float>& values,
 }
 
 TEST(IrLayoutTest, DecoderSinksExactly) {
-  mo::QwenImageVaeProfile profile;
+  auto profile = ::llmp::test_support::QwenImageProfile().vae;
   profile.z_dim = 16;
   profile.base = 16;
   profile.dim_mult = {1, 2, 4, 4, 4};
   profile.res_blocks = 1;
   constexpr std::uint32_t kLatent = 2;
-  const auto source = mo::VaeDecoderTensors(profile);
+  const auto source = mo::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
   auto mapped = sp::ImageDecodeSpec(profile, kLatent, source);
   ASSERT_TRUE(mapped) << Failed(mapped).value_or("");
   const auto tensors = Bound(source, fm::Encoding::kF32);
@@ -291,7 +292,7 @@ void TextFill(const ir::Graph& g, TensorId t, std::vector<float>& values,
 }
 
 TEST(IrLayoutTest, TextEncoderSinksExactlyWithFewerCopies) {
-  mo::QwenImageTextProfile p;
+  auto p = ::llmp::test_support::QwenImageProfile().text;
   p.layers = 2;
   p.width = 256;
   p.heads = 2;
@@ -300,7 +301,7 @@ TEST(IrLayoutTest, TextEncoderSinksExactlyWithFewerCopies) {
   p.ffn = 512;
   p.vocab = 64;
   constexpr std::uint32_t kTokens = 9, kDrop = 3;
-  const auto source = mo::TextEncoderTensors(p);
+  const auto source = mo::TextEncoderTensors(p, ::llmp::test_support::QwenImageNames().text);
   auto mapping = sp::ImageTextSpec(p, kTokens, kDrop, source);
   ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
   const auto tensors = Bound(source, fm::Encoding::kBF16);

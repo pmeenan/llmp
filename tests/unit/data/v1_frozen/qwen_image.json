@@ -1,0 +1,7 @@
+{
+ "digests": {
+  "pixels.1024x1024.40": "93356574afbfb533bf234b2335f5b095319cf5163a588814360706e62c479478"
+ },
+ "family": "qwen_image",
+ "provenance": "Recorded 2026-10-16 on Spark A (GB10, spark-native build of main c8f0f80b plus the image-family slice) by ImageGenerationGpu.OrdinaryServerConsumesInstalledSourceAndRequests in quality mode (1,024\u00b2, 40 steps, the reference prompt and noise) from the published v1 composition 2170db12\u2026 (llmp import of Qwen/Qwen-Image-2.1@790c9263): the exported RGBA8 image, the pixel pin of docs/model-support.md (41.26 dB PSNR, SSIM 0.99419 against diffusers)."
+}

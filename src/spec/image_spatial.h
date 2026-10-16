@@ -15,25 +15,6 @@
 #include "spec/spec.h"
 
 namespace llmp::spec {
-// The Qwen-Image pipeline's planning policy (planner/policy.h canonical
-// text), every stage's: the graphs' layout round trips removed
-// (layout_sinking); the QK norms and rotations in one pass
-// (rms_norm_mul_rope_sections); the MLP in BF16 (bf16_glu); the attention
-// over BF16 heads with a mask and rotation table made once a step
-// (qk_attention); the modulations and gated residuals over their
-// conditioning vectors (split_modulate, split_gated_residual), each residual
-// joined with the modulation of its sum (split_gated_residual_modulate);
-// the products a residual adds in BF16 (bf16_branch) and a sum only later
-// residuals carry kept in BF16 (bf16_residual): the BF16 activations the
-// image path has always used, at the same quality against the reference
-// (docs/experiments/m36-runtime-fusion); each product input converted to
-// BF16 once (bf16_inputs) and the GB10's pinned cuBLASLt products first.
-inline constexpr std::string_view kImagePlanningPolicy =
-    "max_decode_rows 16\nenable bf16_branch\nenable bf16_glu\nenable bf16_inputs\n"
-    "enable bf16_residual\nenable layout_sinking\n"
-    "enable qk_attention\nenable rms_norm_mul_rope_sections\nenable split_gated_residual\n"
-    "enable split_gated_residual_modulate\nenable split_modulate\n"
-    "rank sm_121 llmp.gemm.bf16_lt 0\n";
 // Mapping only, over an already-owned, paid VaeDecoderPlan/tensor inventory.
 // Consumes a closed serial conv/nearest span, preserving source tensor names
 // and F32 shapes. Graph inference owns the actual spatial input geometry;

@@ -18,12 +18,23 @@
 namespace llmp::import {
 class ModelOptTargetPlan;
 class ModelOptDrafterPlan;
+// Where a component's tensor is stored when its spec's bindings do not say
+// (an image component's spec binds every tensor in one spatial layer): its
+// row table, its global group, one of its layers' (a transformer block's,
+// a decoder up block's) or its head group.
+struct ComponentGroup {
+  enum class Kind : std::uint8_t { kTable, kGlobal, kLayer, kHead };
+  Kind kind = Kind::kGlobal;
+  std::uint32_t layer = 0;
+};
 struct ComponentPlan {
   const Checkpoint& checkpoint;
   spec::Source canonical{};
   spec::ModelSpec spec{};
   std::vector<CopyRoute> routes{};
   std::uint64_t payload_bytes = 0;
+  // Each canonical tensor's group, in its order; empty: as the spec binds it.
+  std::vector<ComponentGroup> groups{};
 };
 struct CompositionWriteOptions {
   std::filesystem::path store{};
@@ -32,6 +43,10 @@ struct CompositionWriteOptions {
   std::vector<artifact::CompositionComponent> components{};
   std::vector<SourceFile> files{};
   std::span<const std::optional<base::Sha256Digest>> expected{};
+  // The spec of the model the composition makes (D-113), kept as its
+  // spec.json, its stages' artifact indexes counting the components in
+  // order; none: a composition without one.
+  std::optional<spec::ModelSpec> spec{};
 };
 struct WriteOptions {
   std::filesystem::path store{};

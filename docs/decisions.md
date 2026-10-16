@@ -48,7 +48,9 @@ re-imported from its archived source with `llmp import` (D-109, D-114,
 D-116), never migrated; its v1 ID differs, and a configuration names the
 v1 ID. Every M3.6 family but Qwen3.8's native imports and the Qwen-Image
 composition has a v1 artifact whose execution was proved bit for bit equal
-to its v0 artifact's and frozen as digests
+to its v0 artifact's and frozen as digests; the Qwen-Image composition's
+v1 import (2026-10-16) makes the v0 pipeline's pixels exactly, frozen as
+its pixel pin
 ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)); the
 frozen-baseline arm of the migration gate keeps its own old binary and v0
 artifacts. Admission is a table of data (`runtime/approvals.cc`, reviewed
@@ -69,7 +71,15 @@ from a compiled profile to admit a v1 artifact. A model's default context is bou
 models serve with (default prompt chunks, owner bounds, the shared route,
 lanes, a forced serving policy) is its mapping's `ServingRecipe`, and a
 drafter's decoding shape its `DraftRecipe`; serving dispatches by the
-stored spec's pipeline kind and names no architecture.
+stored spec's pipeline kind and names no architecture. An image pipeline
+is the same as data (since the image slice, 2026-10-16;
+[image pipelines](engine-components.md#image-pipelines)): its v1
+composition stores the family spec its image mapping synthesizes at import
+(`spec.json`), and `ImageApprovals` pins the composition's kept files and
+family digest beside each component's sources, dense inventory and
+component spec digest; the runtime builds every graph from the stored
+family and reads its policy, tensor names, tokenizer and prompt renderer
+(by name) from the mapping.
 
 **Context.** M3.6's "one engine" exit forbids family-specific serving
 classes and architecture-name dispatch; v0 needed compiled profiles and
@@ -94,7 +104,8 @@ family's safetensors forms (Qwen3.8's ModelOpt and MLX normalizers and the
 CLI's dispatch to them) remain, as M3.5 debt: generalized when a second
 ModelOpt model (Nemotron NVFP4) arrives. Re-imports of the staged
 sources reproduce the published IDs. The artifact reader still reads v0, for
-tools, tests and the Qwen-Image composition until the image slice moves it.
+tools and tests; since the image slice the Qwen-Image composition is v1 too
+(`2170db12…`), and a v0 composition is refused with the same hint.
 
 **Reopen if** a checkpoint must serve that cannot be re-imported, or an
 approval needs a condition a spec digest and envelope cannot state.

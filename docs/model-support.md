@@ -912,15 +912,20 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 
 ## Qwen-Image-2.1
 
-- **Architecture:** composition `QwenImage21Pipeline` (`model/qwen_image.h`)
-  of a `qwen3_vl` text encoder (text path only), the
-  `QwenImage21Transformer2DModel` DiT and the `AutoencoderKLQwenImage21`
-  VAE decoder; a 40-step flow-matching Euler loop.
+- **Architecture:** composition `QwenImage21Pipeline` of a `qwen3_vl`
+  text encoder (text path only), the `QwenImage21Transformer2DModel` DiT
+  and the `AutoencoderKLQwenImage21` VAE decoder; a 40-step flow-matching
+  Euler loop. The family is data: its image mapping
+  (`spec/mappings/qwen_image.cc`) and the family spec the composition
+  stores ([engine-components](engine-components.md#image-pipelines)).
 - **Checkpoint:** `Qwen/Qwen-Image-2.1@790c9263`, BF16
   ([pins.json](experiments/fast-swap/pins.json)).
-- **Artifacts:** composition `eca21baa…` (D-089) naming text encoder
-  `ed89ed27…`, denoiser `d1184efd…` and VAE `44c1a20a…`
-  ([qwen-image-native](experiments/qwen-image-native/README.md#what-runs)).
+- **Artifacts:** v1 composition `2170db12…` (D-089, D-113, `llmp import`
+  of the pipeline) naming text encoder `a7c279d2…`, denoiser `3ee9bd00…`
+  and VAE `2ef349d5…`, each the tensors text to image runs; its approval
+  pins the family spec `ef266ac1…`. The v0 composition `eca21baa…`
+  ([qwen-image-native](experiments/qwen-image-native/README.md#what-runs))
+  is no longer served.
 - **Template:** none; the fixed prompt string (above).
 - **Tokenizer:** byte-level BPE from the composition's `tokenizer.json`
   (the processor's, Qwen3-VL-8B; NFC, the `qwen2` pre-tokenizer).
@@ -936,7 +941,10 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   [swap](experiments/fast-swap/swap.md#qwen-image-21-on-the-paged-node));
   since the speed slice (same BF16 numerics; image 41.77 dB PSNR, SSIM
   0.996, pixels `3b7770ca…`) also its pixels, repeatable run to run
-  ([speed](experiments/qwen-image-native/README.md#speed)).
+  ([speed](experiments/qwen-image-native/README.md#speed)). On the
+  shared engine (M3.6) the pixel pin is `93356574…` (41.26 dB PSNR, SSIM
+  0.99419), the same from the v1 composition and its stored family
+  (frozen in `tests/unit/data/v1_frozen/qwen_image.json`).
   Speed headline: full generation 0.64× diffusers' time, weights
   resident. Other sizes, step counts, prompts and seeds: not verified; the
   products' pinned algorithms are the GB10's at this prompt's shapes.

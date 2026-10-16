@@ -356,7 +356,8 @@ if(LLMP_CUDA)
   add_executable(image_generation_gpu_test image_generation_gpu_test.cc)
   target_link_libraries(image_generation_gpu_test PRIVATE llmp_runtime_serving llmp_test_v1_frozen)
   llmp_gpu_gtest(image_generation_gpu_test MODELS
-                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+                   ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
+                               "LLMP_TEST_DATA=${tokenizer_data}")
   # Gemma 2 and Gemma 3 on the shared engine through the server: heads,
   # state, spill, restart, the near-8K context and the swap transactions.
   add_executable(gemma_engine_serving_gpu_test gemma_engine_serving_gpu_test.cc)
@@ -944,12 +945,21 @@ llmp_gtest(composition_test TEST_PREFIX unit.
              PROPERTIES LABELS unit
                         ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-# The Qwen-Image-2.1 adapter (model/qwen_image.h): schedule, tensor lists
-# and binding, the VAE's plan, rotary tables, sinusoid and pixels; the
-# installed components bound where the M3 store holds them (a Spark).
+# The Qwen-Image-2.1 adapter (model/qwen_image.h) over its frozen family
+# (tests/support/image_family.h): schedule, tensor lists and binding, the
+# VAE's plan, rotary tables, sinusoid and pixels; the published v1
+# components bound where the v1 store holds them (a Spark).
 add_executable(qwen_image_test qwen_image_test.cc)
-target_link_libraries(qwen_image_test PRIVATE llmp_model llmp_artifact llmp_test_artifact_writer)
+target_link_libraries(qwen_image_test PRIVATE llmp_model llmp_spec llmp_artifact
+                                              llmp_test_artifact_writer llmp_test_v1_frozen)
 llmp_gtest(qwen_image_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# Image pipeline mappings and family specs (spec/image_family.h): the
+# mapping's own rules, synthesis from source values, the profile a stored
+# spec reads back as, and the frozen family's agreement with its approval.
+add_executable(image_family_test image_family_test.cc)
+target_link_libraries(image_family_test PRIVATE llmp_runtime llmp_spec llmp_model llmp_test_v1_frozen)
+llmp_gtest(image_family_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The locked ExLlamaV3 subset: the device context's sizes and the
 # launchers' host checks in every profile; the kernels' tables and lookups
@@ -1313,14 +1323,17 @@ if(LLMP_CUDA)
   target_link_libraries(masked_attention_gpu_test PRIVATE llmp_engine llmp_components llmp_spec)
   llmp_gpu_gtest(masked_attention_gpu_test MODELS)
   add_executable(image_spatial_gpu_test image_spatial_gpu_test.cc)
-  target_link_libraries(image_spatial_gpu_test PRIVATE llmp_engine llmp_components llmp_spec)
+  target_link_libraries(image_spatial_gpu_test PRIVATE llmp_engine llmp_components llmp_spec
+                                                    llmp_test_v1_frozen)
   llmp_gpu_gtest(image_spatial_gpu_test MODELS)
 add_executable(image_timestep_gpu_test image_timestep_gpu_test.cc)
-target_link_libraries(image_timestep_gpu_test PRIVATE llmp_engine llmp_components llmp_spec)
+target_link_libraries(image_timestep_gpu_test PRIVATE llmp_engine llmp_components llmp_spec
+                                                    llmp_test_v1_frozen)
 llmp_gpu_gtest(image_timestep_gpu_test MODELS)
 
 add_executable(image_whole_vae_gpu_test image_whole_vae_gpu_test.cc)
-target_link_libraries(image_whole_vae_gpu_test PRIVATE llmp_engine llmp_components llmp_spec)
+target_link_libraries(image_whole_vae_gpu_test PRIVATE llmp_engine llmp_components llmp_spec
+                                                    llmp_test_v1_frozen)
 llmp_gpu_gtest(image_whole_vae_gpu_test MODELS)
 
 # BoundGraph::Run's run-time fusions on synthetic flow/decoder graphs

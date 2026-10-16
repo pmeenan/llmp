@@ -14,9 +14,9 @@
 #include "base/build_info.h"
 #include "cli/cli.h"
 #include "import/archive_input.h"
+#include "import/image_pipeline.h"
 #include "import/mlx_qwen38.h"
 #include "import/modelopt_qwen38.h"
-#include "import/qwen_image.h"
 #include "import/reader.h"
 #include "import/writer.h"
 
@@ -212,13 +212,13 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     if (!plan) return Failure(err, plan.error());
     return publish(*plan, plan->parts().source(), bound->metadata_bytes);
   }
-  if (input->container == "diffusers" && input->architecture == "QwenImage21Pipeline") {
-    auto bound = import::QwenImagePipelineBound(*input);
+  if (import::IsImagePipeline(*input)) {
+    auto bound = import::ImagePipelineBound(*input);
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
       return Failure(err, {.rule = import::Rule::kBounds,
                            .reason = "normalization exceeds the requested metadata budget"});
-    auto plan = import::PlanQwenImagePipeline(*input);
+    auto plan = import::PlanImagePipeline(*input);
     if (!plan) return Failure(err, plan.error());
 
     const auto& info = base::GetBuildInfo();
@@ -226,9 +226,9 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
                                   ? "unknown"
                                   : std::string(info.commit) + (info.modified ? ".dirty" : "");
     std::vector<artifact::CompositionComponent> published_components;
-    published_components.reserve(3);
+    published_components.reserve(plan->components.size());
 
-    for (std::size_t i = 0; i < 3; ++i) {
+    for (std::size_t i = 0; i < plan->components.size(); ++i) {
       const auto& comp_plan = plan->components[i];
       std::vector<std::optional<base::Sha256Digest>> comp_expected;
       if (*archive) {
@@ -258,6 +258,7 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
         .components = std::move(published_components),
         .files = input->files,
         .expected = expected,
+        .spec = plan->family,
     });
     if (!comp_result) return Failure(err, comp_result.error());
 

@@ -4,15 +4,37 @@
 #define LLMP_RUNTIME_COMPONENT_IMAGE_BUILD_H_
 
 #include <array>
+#include <expected>
 #include <filesystem>
 #include <memory>
+#include <span>
+#include <string>
 #include <vector>
 
 #include "artifact/composition.h"
 #include "engine/execution_contract.h"
+#include "model/qwen_image.h"
 #include "runtime/engine_image.h"
+#include "spec/image_family.h"
 
 namespace llmp::runtime {
+// An admitted image composition's family: its mapping (its tensor names,
+// planning policy and recipe), its stored family spec and the profile it
+// gives (spec/image_family.h). Every request, geometry and graph reads it;
+// no family is compiled in.
+struct ImageFamily {
+  const spec::ImageMapping* mapping = nullptr;
+  spec::ModelSpec spec{};
+  model::QwenImageProfile profile{};
+};
+// The family of a v1 composition whose components are opened in its
+// component order, admitted against its approval (runtime/approvals.h:
+// the composition's and each component's source identity, inventory and
+// pinned spec).
+std::expected<std::shared_ptr<const ImageFamily>, std::string> ReadImageFamily(
+    const artifact::Composition& composition,
+    std::span<const artifact::Artifact* const> components);
+
 // Caller-paid content for one request. No artifacts, kernels or mappings are
 // reopened when preparing another request of the same layout.
 struct ImageGenerationRequest {
@@ -29,6 +51,8 @@ struct ImageGenerationRequest {
 struct ImageGenerationModel;
 struct ImageGenerationSource : ImageGenerationRequest {
   std::shared_ptr<const artifact::Composition> composition;
+  // Read by the build when absent (ReadImageFamily).
+  std::shared_ptr<const ImageFamily> family;
   std::array<std::unique_ptr<engine::PagedWeights>, 3> weights;
   std::weak_ptr<ImageGenerationModel> prepared;
   // Ordinary serving may grow its one retained host payment under this node's
@@ -50,8 +74,8 @@ struct PreparedImageGeneration {
 // Pays generated request data before allocation. EngineImage verifies its layout
 // against the retained graphs/ports before accepting a completed-boundary change.
 std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
-    ImageGenerationRequest&& request, const ModelSettings& settings,
-    std::shared_ptr<engine::ExecutionMetadataAllowance> construction,
+    const std::shared_ptr<const ImageFamily>& family, ImageGenerationRequest&& request,
+    const ModelSettings& settings, std::shared_ptr<engine::ExecutionMetadataAllowance> construction,
     engine::PagedNode* construction_node = nullptr, std::uint64_t construction_cap = 0);
 // Builds only paid geometry/request owners against the existing bound source.
 // EngineImage publishes this at a completed boundary after measured admission.

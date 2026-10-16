@@ -185,7 +185,7 @@ tokenizer = "/path/to/tokenizer.json"          # when the artifact keeps none
 chat_template = "/path/to/chat_template.jinja"  # likewise
 
 [models.image]
-composition = "eca21baa…"  # a pipeline (D-089)
+composition = "2170db12…"  # a pipeline (D-089)
 
 [memory]                     # D-055 as amended 2026-10-02 (below)
 # retention_hours = 24       # idle conversations, resident or spilled, and their

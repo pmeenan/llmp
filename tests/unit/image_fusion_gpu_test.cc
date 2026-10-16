@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The image's planned fusions (spec/image_spatial.h kImagePlanningPolicy;
+// The image's planned fusions (spec/image_spatial.h ::llmp::test_support::QwenImagePolicy();
 // docs/experiments/m36-runtime-fusion/README.md) on small synthetic
 // Qwen-Image-shaped graphs built by the production spatial components with
 // the production layout sinking and lowered through the production GGML
@@ -37,6 +37,7 @@
 #include "components/spatial.h"
 #include "engine/graph_plan.h"
 #include "expected_error.h"
+#include "image_family.h"
 #include "kernels/ggml/attention_f32.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/cublas.h"
@@ -117,7 +118,7 @@ std::vector<co::BoundTensor> Bound(std::span<const mo::QwenImageTensor> source, 
 // axes) at a small width: two heads, one block.
 mo::QwenImageDenoiserProfile SmallDenoiser(std::uint32_t heads, std::uint32_t mlp,
                                            std::uint32_t blocks = 1) {
-  mo::QwenImageDenoiserProfile p;
+  auto p = ::llmp::test_support::QwenImageProfile().denoiser;
   p.blocks = blocks;
   p.heads = heads;
   p.width = heads * p.head_dim;
@@ -157,7 +158,7 @@ void FlowInputs(const co::SpatialGraph& graph, std::uint32_t text, std::uint32_t
 // A decoder of the source's structure at base 16: a 4×4 latent to 64×64.
 constexpr std::uint32_t kDecoderGrid = 4;
 mo::QwenImageVaeProfile SmallVae() {
-  mo::QwenImageVaeProfile profile;
+  auto profile = ::llmp::test_support::QwenImageProfile().vae;
   profile.z_dim = 16;
   profile.base = 16;
   profile.dim_mult = {1, 2, 4, 4, 4};
@@ -190,7 +191,7 @@ constexpr std::array<std::string_view, 12> kFused{kg::kSpatialChannelNormName,
 
 // The image's planning policy, as the served pipeline plans it.
 llmp::planner::Policy ImagePolicy() {
-  auto policy = llmp::planner::ParsePolicy(sp::kImagePlanningPolicy);
+  auto policy = llmp::planner::ParsePolicy(::llmp::test_support::QwenImagePolicy());
   EXPECT_TRUE(policy) << (policy ? "" : policy.error());
   return policy.value_or(llmp::planner::Policy{});
 }
@@ -521,7 +522,8 @@ class ImageFusionGpu : public ::testing::Test {
     c.oracle = shape.oracle;
     if (primitive) c.policy = llmp::planner::Policy{};
     const auto profile = SmallDenoiser(shape.heads, shape.mlp, shape.blocks);
-    const auto source = mo::DenoiserTensors(profile);
+    const auto source =
+        mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
     const auto image_rows = shape.grid * shape.grid;
     auto mapped = sp::ImageFlowSpec(profile, shape.text, image_rows, source);
     EXPECT_TRUE(mapped) << Failed(mapped).value_or("");
@@ -582,7 +584,7 @@ class ImageFusionGpu : public ::testing::Test {
     llmp::planner::Canonicalize(c.policy);
     const auto profile = SmallVae();
     const std::uint32_t grid = kDecoderGrid;
-    const auto source = mo::VaeDecoderTensors(profile);
+    const auto source = mo::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
     auto mapped = sp::ImageDecodeSpec(profile, grid, source);
     EXPECT_TRUE(mapped) << Failed(mapped).value_or("");
     if (!mapped) return;

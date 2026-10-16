@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <limits>
 #include <map>
 #include <memory>
@@ -31,12 +32,14 @@
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
-#include "fixture_source.h"
+#include "image_family.h"
+#include "image_published.h"
 #include "kernels/ggml/step_program.h"
 #include "planner/policy.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "spec/image_spatial.h"
+#include "spec/stored.h"
 
 namespace {
 namespace en = llmp::engine;
@@ -58,8 +61,7 @@ constexpr std::uint64_t kActivation = 2 * kMiB, kPool = 2 * kMiB, kPinned = kMiB
 constexpr std::uint64_t kOutputOffset = 65536, kSavedOffset = 524288;
 constexpr std::array<std::uint64_t, 2> kOutputBytes{131072, 32768};
 constexpr std::uint64_t kOutputTotal = kOutputBytes[0] + kOutputBytes[1];
-constexpr std::string_view kArtifact =
-    "d1184efda09c12175b7bae6e9acf6cf3aeafb765f4f2ab6192cbf284c37eb3a4";
+const std::string kArtifact = llmp::test_support::QwenImageTransformer();
 constexpr std::array<std::string_view, 4> kNames{
     "time_text_embed.timestep_embedder.linear_1.weight",
     "time_text_embed.timestep_embedder.linear_2.weight", "modulation.1.weight",
@@ -95,12 +97,12 @@ constexpr Limits kConditioning{kDomain,
                                491520,
                                64,
                                4,
-                               99,
+                               98,
                                130,
                                kOutputBytes};
 constexpr Limits kBlock{1024 * kMiB, 96 * kMiB, 64 * kMiB, 4 * kMiB, 8 * kMiB,
                         8 * kMiB,    131072,    250,       500,      2912256,
-                        256,         13,        308,       339,      {98304, 32768}};
+                        256,         13,        307,       339,      {98304, 32768}};
 constexpr std::array<std::string_view, 9> kBlockNames{
     "transformer_blocks.0.attn.to_q.weight",          "transformer_blocks.0.attn.to_k.weight",
     "transformer_blocks.0.attn.to_v.weight",          "transformer_blocks.0.attn.to_out.0.weight",
@@ -283,16 +285,17 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   life.paid = *paid;
   if (!life.paid->Charge(life.limits.compiler)) return Error("preconstruction owner payment");
   std::error_code ec;
-  if (std::filesystem::file_size(path / "manifest.json", ec) != 1600 || ec ||
-      std::filesystem::file_size(path / "index.json", ec) != 531405 || ec)
+  if (std::filesystem::file_size(path / "manifest.json", ec) != 2246 || ec ||
+      std::filesystem::file_size(path / "index.json", ec) != 543282 || ec)
     return Error("fixed source metadata extents");
   if (auto r = life.weights.Open(path, {.expected_id = std::string(kArtifact)}); !r) return r;
   const auto& artifact = life.weights.artifact();
   if (artifact.resources().size() != 297 || artifact.groups().size() != 33 ||
-      artifact.shards().size() != 4 || artifact.format_version() != 0)
+      artifact.shards().size() != 4 || artifact.format_version() != 1)
     return Error("actual denoiser source inventory");
-  const auto& profile = mo::QwenImage21().denoiser;
-  const auto all_tensors = mo::DenoiserTensors(profile);
+  const auto& profile = ::llmp::test_support::QwenImageProfile().denoiser;
+  const auto all_tensors =
+      mo::DenoiserTensors(profile, ::llmp::test_support::QwenImageNames().denoiser);
   std::vector<mo::QwenImageTensor> tensors;
   for (const auto name : kNames) {
     const auto found = std::ranges::find(all_tensors, name, &mo::QwenImageTensor::name);
@@ -308,7 +311,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   if (life.flow) tensors = all_tensors;
   auto ids = mo::BindQwenImageComponent(tensors, "QwenImage21Transformer2DModel", artifact);
   if (!ids) return Error(ids.error());
-  auto source = llmp::test_support::V0ArtifactSource(artifact);
+  auto source = sp::SourceOf(artifact);
   if (!source) return Error(source.error());
   std::vector<co::BoundTensor> bound;
   std::vector<en::GroupPlace> groups(33, en::GroupPlace::kNone);
@@ -323,7 +326,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     life.resource_ids[i] = ids->at(i);
     const auto placement = artifact.ResourcePlacement(life.resource_ids[i]);
     if (!placement || placement->bytes.value() != life.source_bytes[i] ||
-        (!life.flow && placement->group != (i < 4 ? 32U : 0U)))
+        (!life.flow && placement->group != (i < 4 ? 0U : 1U)))
       return Error("source role bytes or group differ");
     groups[placement->group] = en::GroupPlace::kDevice;
     const auto found = std::ranges::find(source->tensors, tensors[i].name, &co::BoundTensor::name);
@@ -337,15 +340,18 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   if (auto r = life.weights.Reserve(life.node, groups, {}); !r) return r;
   if (life.weights.bytes() != life.limits.reserved_pages * 2 * kMiB ||
       life.weights.host_bytes() != 0 || life.weights.extents().size() != life.limits.reserved_pages)
-    return Error("global group virtual reservation differs");
+    return Error(std::format("global group virtual reservation differs: {} bytes, {} extents",
+                             life.weights.bytes(), life.weights.extents().size()));
   if (life.flow) {
-    auto mapping_bound = sp::ImageFlowSpecBound(profile, tensors);
+    auto mapping_bound = sp::ImageFlowSpecBound(profile, all_tensors);
     if (!mapping_bound || *mapping_bound != kFlowMappingBytes || !life.paid->Charge(*mapping_bound))
       return Error("whole flow mapping prepayment");
   }
-  auto mapping = life.flow    ? sp::ImageFlowSpec(profile, 2, 4, tensors)
-                 : life.block ? sp::ImageTransformerBlockSpec(profile, 0, 2, tensors)
-                              : sp::ImageTimestepSpec(profile, tensors);
+  // The specs read the denoiser's whole tensor list by role (its order);
+  // only the bound subset is placed.
+  auto mapping = life.flow    ? sp::ImageFlowSpec(profile, 2, 4, all_tensors)
+                 : life.block ? sp::ImageTransformerBlockSpec(profile, 0, 2, all_tensors)
+                              : sp::ImageTimestepSpec(profile, all_tensors);
   if (!mapping) return Error(mapping.error());
   const std::array<std::span<const co::BoundTensor>, 1> tables{bound};
   const std::array owners{co::SpatialOwner{0, life.flow    ? co::SpatialShape{1, 2, 4096, 1}
@@ -414,7 +420,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   en::GraphBuildIO io{life.graph->graph(), life.graph->graph().inputs(),
                       life.graph->graph().outputs(), life.graph->weights()};
   // The image's own planning policy, as the served pipeline plans it.
-  const auto policy = llmp::planner::ParsePolicy(sp::kImagePlanningPolicy);
+  const auto policy = llmp::planner::ParsePolicy(::llmp::test_support::QwenImagePolicy());
   if (!policy) return Error(policy.error());
   const auto build = [&](bool measuring) {
     return en::BuildComponentProgram(
@@ -452,7 +458,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
     extents.insert(extents.end(), more->begin(), more->end());
   std::vector<ca::ExtentId> selected;
   for (std::size_t i = 0; i < life.limits.parts; ++i) {
-    // The128MiB modulation interval is offset0.5MiB into a page:65 pages.
+    // The 128 MiB modulation interval touches at most 65 pages.
     std::array<ca::ExtentId, 65> pages{};
     auto count = life.weights.ExtentsTouching(life.weights.resource_address(life.resource_ids[i]),
                                               life.source_bytes[i], pages);
@@ -463,7 +469,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   std::ranges::sort(selected);
   selected.erase(std::unique(selected.begin(), selected.end()), selected.end());
   if (selected.size() != life.limits.selected_pages)
-    return Error("complete selected source-page closure");
+    return Error(std::format("complete selected source-page closure: {}", selected.size()));
   extents.insert(extents.end(), selected.begin(), selected.end());
   auto closure = life.node.catalog().ClosureOfExtents(extents);
   if (!closure) return Error("complete timestep owned closure");
@@ -482,8 +488,8 @@ en::Status Execute(Lifetime& life) {
         "timestep catalog coverage");
     if (!coverage) return coverage;
     for (std::size_t repeat = 0; repeat < (life.block ? 7U : 5U); ++repeat) {
-      const auto input =
-          mo::QwenImageTimestepSinusoid(mo::QwenImage21().denoiser, repeat == 3 ? 500.F : 1000.F);
+      const auto input = mo::QwenImageTimestepSinusoid(
+          ::llmp::test_support::QwenImageProfile().denoiser, repeat == 3 ? 500.F : 1000.F);
       if (input.size() != 512) return Error("source sinusoid size");
       bool unequal = false;
       for (std::size_t c = 0; c < 256; ++c) {
@@ -639,9 +645,7 @@ en::Status Execute(Lifetime& life) {
   });
 }
 TEST(ImageTimestepGpuTest, CompleteSourceConditioningBranchesReplayChangedInputs) {
-  const auto* path = std::getenv("LLMP_TEST_DENOISER_ARTIFACT");
-  if (path == nullptr)
-    GTEST_SKIP() << "needs LLMP_TEST_DENOISER_ARTIFACT (an installed Qwen-Image denoiser artifact)";
+  const auto path = llmp::test_support::QwenImagePublished(kArtifact);
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
   auto setup = SetupFixture(*life, path);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");
@@ -653,7 +657,7 @@ TEST(ImageTimestepGpuTest, CompleteSourceConditioningBranchesReplayChangedInputs
   EXPECT_EQ(life->stats.refused, 0U);
   RecordProperty("source_bytes", std::to_string(kWeightTotal));
   RecordProperty("source_parts", "4");
-  RecordProperty("selected_pages", "99");
+  RecordProperty("selected_pages", "98");
   RecordProperty("reserved_pages", "130");
   RecordProperty("selected_weight_page_bytes", "207618048");
   RecordProperty("reserved_weight_bytes", "272629760");
@@ -684,9 +688,7 @@ TEST(ImageTimestepGpuTest, CompleteSourceConditioningBranchesReplayChangedInputs
   ASSERT_TRUE(retired) << Failed(retired).value_or("");
 }
 TEST(ImageTimestepGpuTest, CompleteSourceBlockConsumesConditioningAndReplaysChangedInputs) {
-  const auto* path = std::getenv("LLMP_TEST_DENOISER_ARTIFACT");
-  if (path == nullptr)
-    GTEST_SKIP() << "needs LLMP_TEST_DENOISER_ARTIFACT (an installed Qwen-Image denoiser artifact)";
+  const auto path = llmp::test_support::QwenImagePublished(kArtifact);
   std::unique_ptr<Lifetime, Retire> life(new Lifetime(true));
   auto setup = SetupFixture(*life, path);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");
@@ -698,7 +700,7 @@ TEST(ImageTimestepGpuTest, CompleteSourceBlockConsumesConditioningAndReplaysChan
   EXPECT_EQ(life->stats.refused, 0U);
   RecordProperty("source_bytes", "639631872");
   RecordProperty("source_parts", "13");
-  RecordProperty("selected_pages", "308");
+  RecordProperty("selected_pages", "307");
   RecordProperty("reserved_pages", "339");
   RecordProperty("selected_weight_page_bytes", "645922816");
   RecordProperty("reserved_weight_bytes", "710934528");
@@ -735,9 +737,7 @@ TEST(ImageTimestepGpuTest, CompleteSourceBlockConsumesConditioningAndReplaysChan
   ASSERT_TRUE(retired) << Failed(retired).value_or("");
 }
 TEST(ImageTimestepGpuTest, Complete32BlockSourceFlowAndEulerReplayChangedInputs) {
-  const auto* path = std::getenv("LLMP_TEST_DENOISER_ARTIFACT");
-  if (path == nullptr)
-    GTEST_SKIP() << "needs LLMP_TEST_DENOISER_ARTIFACT (an installed Qwen-Image denoiser artifact)";
+  const auto path = llmp::test_support::QwenImagePublished(kArtifact);
   std::unique_ptr<Lifetime, Retire> life(new Lifetime(false, true));
   auto setup = SetupFixture(*life, path);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");

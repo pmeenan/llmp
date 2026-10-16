@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The Qwen-Image-2.1 pipeline adapter (M3; docs/plan.md, "Model graphs and
+// The Qwen-Image pipeline adapter (M3; docs/plan.md, "Model graphs and
 // state"; docs/experiments/qwen-image-native): the three components'
-// hyperparameters, compiled in as profiles; the binding of each component's
-// v0 artifact (one per component, joined by a composition, D-089) to the
-// tensors it reads; and the host-side arithmetic the pipeline does outside
+// hyperparameters and tensor names as the model's data gives them (no
+// family is compiled in); the binding of each component's artifact (one per
+// component, joined by a composition, D-089) to the tensors it reads; and
+// the host-side arithmetic the pipeline does outside
 // its kernels, each written to reproduce the pinned diffusers 8b3c707e and
 // transformers 5.17 code: the flow-matching schedule, the rotary tables of
 // both transformers, the timestep's sinusoid, the latents' packing and the
@@ -35,75 +36,119 @@ namespace llmp::model {
 
 // ---------------------------------------------------------------- profiles
 
-// Qwen3-VL-8B's text path (text_encoder/config.json's text_config).
+// A family's hyperparameters, read from the data its model carries (the
+// composition's stored spec, spec/image_family.h: its components' configs
+// as its mapping reads them, spec/mappings/qwen_image.h). No profile is
+// compiled in: a default-constructed one is all zeros.
+
+// The text encoder's transformer (a decoder-only text path).
 struct QwenImageTextProfile {
-  std::uint32_t layers = 36;
-  std::uint32_t width = 4096;
-  std::uint32_t heads = 32;
-  std::uint32_t kv_heads = 8;
-  std::uint32_t head_dim = 128;
-  std::uint32_t ffn = 12288;
-  std::uint32_t vocab = 151936;
-  float rms_eps = 1e-6f;
-  float rope_theta = 5000000.0f;
+  std::uint32_t layers = 0;
+  std::uint32_t width = 0;
+  std::uint32_t heads = 0;
+  std::uint32_t kv_heads = 0;
+  std::uint32_t head_dim = 0;
+  std::uint32_t ffn = 0;
+  std::uint32_t vocab = 0;
+  float rms_eps = 0.0f;
+  float rope_theta = 0.0f;
 };
 
-// QwenImage21Transformer2DModel (transformer/config.json).
+// The flow transformer (the denoiser).
 struct QwenImageDenoiserProfile {
-  std::uint32_t blocks = 32;
-  std::uint32_t width = 4096;  // heads x head_dim
-  std::uint32_t heads = 32;
-  std::uint32_t head_dim = 128;
-  std::uint32_t mlp = 12288;  // mlp_ratio 3
-  std::uint32_t in_channels = 64;
-  std::uint32_t out_channels = 64;
-  std::uint32_t context = 4096;  // context_in_dim
-  std::uint32_t timestep_dim = 256;
-  std::array<std::uint32_t, 3> rope_axes = {16, 56, 56};
-  float rope_theta = 10000.0f;
-  float eps = 1e-6f;
+  std::uint32_t blocks = 0;
+  std::uint32_t width = 0;  // heads x head_dim
+  std::uint32_t heads = 0;
+  std::uint32_t head_dim = 0;
+  std::uint32_t mlp = 0;
+  std::uint32_t in_channels = 0;
+  std::uint32_t out_channels = 0;
+  std::uint32_t context = 0;  // the text features' width
+  std::uint32_t timestep_dim = 0;
+  std::array<std::uint32_t, 3> rope_axes{};
+  float rope_theta = 0.0f;
+  float eps = 0.0f;
+  // The timestep's sinusoid: the pipeline divides the scheduler's timestep
+  // by `timestep_divisor` (in BF16), the embedding scales it back by
+  // `timestep_scale` over frequencies of period up to `timestep_period`.
+  float timestep_divisor = 0.0f;
+  float timestep_scale = 0.0f;
+  double timestep_period = 0.0;
 };
 
-// AutoencoderKLQwenImage21's decoder (vae/config.json).
+// The VAE's decoder.
 struct QwenImageVaeProfile {
-  std::uint32_t z_dim = 64;
-  std::uint32_t base = 144;  // decoder_base_dim
-  std::array<std::uint32_t, 5> dim_mult = {1, 2, 4, 8, 8};
-  std::uint32_t res_blocks = 2;
-  // temperal_downsample reversed: the decoder's up blocks.
-  std::array<bool, 4> temporal_upsample = {true, true, true, false};
-  std::uint32_t out_channels = 4;
-  std::uint32_t spatial_factor = 16;
-  std::array<float, 64> latents_mean{};
-  std::array<float, 64> latents_std{};
+  std::uint32_t z_dim = 0;
+  std::uint32_t base = 0;  // the decoder's base width
+  std::vector<std::uint32_t> dim_mult{};
+  std::uint32_t res_blocks = 0;
+  // The encoder's temporal downsampling reversed: the decoder's up blocks'.
+  std::vector<bool> temporal_upsample{};
+  std::uint32_t out_channels = 0;
+  std::uint32_t spatial_factor = 0;
+  std::vector<float> latents_mean{};  // z_dim each
+  std::vector<float> latents_std{};
 };
 
-// The flow-matching scheduler (scheduler/scheduler_config.json).
+// The flow-matching scheduler.
 struct QwenImageSchedulerProfile {
-  std::uint32_t train_timesteps = 1000;
-  std::uint32_t base_image_seq_len = 256;
-  std::uint32_t max_image_seq_len = 8192;
+  std::uint32_t train_timesteps = 0;
+  std::uint32_t base_image_seq_len = 0;
+  std::uint32_t max_image_seq_len = 0;
   // Python floats in the pipeline, so F64 here.
-  double base_shift = 0.5;
-  double max_shift = 0.9;
-  double shift_terminal = 0.02;
+  double base_shift = 0.0;
+  double max_shift = 0.0;
+  double shift_terminal = 0.0;
 };
 
 struct QwenImageProfile {
-  std::string_view name;
   QwenImageTextProfile text;
   QwenImageDenoiserProfile denoiser;
   QwenImageVaeProfile vae;
   QwenImageSchedulerProfile scheduler;
-  // The composition's and its components' architectures.
-  std::string_view pipeline_architecture;
-  std::string_view text_architecture;
-  std::string_view denoiser_architecture;
-  std::string_view vae_architecture;
 };
 
-// Qwen/Qwen-Image-2.1 at 790c9263.
-const QwenImageProfile& QwenImage21();
+// The checkpoint's tensor names, by structural role: its mapping's data
+// (spec/mappings/qwen_image.h). A layer's or a block's pattern holds
+// "{layer}" once, its index; a VAE name is a prefix (a block's, a
+// convolution's) and a suffix.
+struct QwenImageTextNames {
+  std::string_view embedding{};
+  std::array<std::string_view, 11> layer{};  // in TextTensor order
+};
+struct QwenImageDenoiserNames {
+  std::array<std::string_view, 9> globals{};  // in DenoiserGlobal order
+  std::array<std::string_view, 9> block{};    // in BlockTensor order, with {layer}
+};
+struct QwenImageVaeNames {
+  std::string_view post_quant_conv{};
+  std::string_view conv_in{};
+  std::string_view mid_resnet{};     // with {layer}: 0, 1
+  std::string_view mid_attention{};  // the mid block's attention
+  std::string_view up_block{};       // with {layer}
+  std::string_view up_resnet{};      // after an up block's prefix, with {layer}
+  std::string_view upsampler{};      // after an up block's prefix: the 2-D resample convolution
+  std::string_view norm_out{};       // a gamma's full name
+  std::string_view conv_out{};
+  // Within a residual block.
+  std::string_view shortcut{};
+  std::string_view norm1{};
+  std::string_view conv1{};
+  std::string_view norm2{};
+  std::string_view conv2{};
+  // Within the attention block.
+  std::string_view attention_norm{};
+  std::string_view attention_qkv{};
+  std::string_view attention_proj{};
+  // A convolution's parts.
+  std::string_view weight{};
+  std::string_view bias{};
+};
+struct QwenImageNames {
+  QwenImageTextNames text;
+  QwenImageDenoiserNames denoiser;
+  QwenImageVaeNames vae;
+};
 
 // ---------------------------------------------------------------- binding
 
@@ -161,9 +206,13 @@ enum class DenoiserGlobal : std::uint8_t {
 // The component's tensor list: the text encoder's embedding table, then
 // each layer's TextTensor list; the denoiser's globals, then each block's
 // BlockTensor list; the VAE decoder's tensors in VaeDecoderPlan's order.
-std::vector<QwenImageTensor> TextEncoderTensors(const QwenImageTextProfile& p);
-std::vector<QwenImageTensor> DenoiserTensors(const QwenImageDenoiserProfile& p);
-std::vector<QwenImageTensor> VaeDecoderTensors(const QwenImageVaeProfile& p);
+// Each by its names (its mapping's).
+std::vector<QwenImageTensor> TextEncoderTensors(const QwenImageTextProfile& p,
+                                                const QwenImageTextNames& names);
+std::vector<QwenImageTensor> DenoiserTensors(const QwenImageDenoiserProfile& p,
+                                             const QwenImageDenoiserNames& names);
+std::vector<QwenImageTensor> VaeDecoderTensors(const QwenImageVaeProfile& p,
+                                               const QwenImageVaeNames& names);
 
 // A resource as the binder sees it.
 struct QwenImageResource {

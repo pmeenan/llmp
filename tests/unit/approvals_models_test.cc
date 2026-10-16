@@ -9,11 +9,14 @@
 //     composition the drafter's kept metadata gives;
 //   - every artifact and drafter inventory is admitted, and no drafter pairs
 //     with another approved target;
+//   - every image pipeline's composition is admitted with its components
+//     (their sources, inventories and specs, its family spec the pinned one);
 //   - every served family's default configuration (with and without its
 //     drafter) resolves to settings its approval admits.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <expected>
@@ -22,6 +25,7 @@
 #include <string_view>
 #include <vector>
 
+#include "artifact/composition.h"
 #include "base/json.h"
 #include "base/sha256.h"
 #include "config/node_config.h"
@@ -60,14 +64,42 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
   ASSERT_FALSE(names.empty()) << "no pinned v1 IDs at " << pinned;
   ASSERT_TRUE(std::filesystem::is_directory(store))
       << "no published v1 store at " << store << " (LLMP_TEST_V1_STORE)";
-  std::size_t targets = 0, drafters = 0, served = 0;
+  std::size_t targets = 0, drafters = 0, served = 0, pipelines = 0, image_components = 0;
   for (const auto& [v0, v1] : names) {
     SCOPED_TRACE(v1);
+    // An image pipeline's composition: it and its components admitted
+    // together, its stored family the pinned one.
+    if (auto composition = llmp::artifact::OpenComposition(std::filesystem::path(store) / v1, v1)) {
+      std::vector<llmp::artifact::Artifact> opened;
+      for (const auto& c : composition->components()) {
+        auto a = rt::OpenInstalled(store, c.artifact);
+        ASSERT_TRUE(a) << a.error();
+        opened.push_back(std::move(*a));
+      }
+      std::vector<const llmp::artifact::Artifact*> components;
+      for (const auto& a : opened) components.push_back(&a);
+      auto admitted = rt::ReadImageAdmission(*composition, components);
+      ASSERT_TRUE(admitted) << admitted.error();
+      EXPECT_EQ(llmp::base::ToHex(admitted->family.Digest()), admitted->approval->spec);
+      ++pipelines;
+      continue;
+    }
     auto artifact = rt::OpenInstalled(store, v1);
     ASSERT_TRUE(artifact) << artifact.error();
     const rt::Approval* approval =
         rt::FindApproval(artifact->model().architecture, artifact->sources());
-    ASSERT_NE(approval, nullptr);
+    if (approval == nullptr) {
+      // An image pipeline's component, admitted with its composition above.
+      const bool component = std::ranges::any_of(rt::ImageApprovals(), [&](const auto& p) {
+        return std::ranges::any_of(p.components, [&](const rt::Approval& c) {
+          return c.architecture == artifact->model().architecture &&
+                 rt::SourcesMatch(c.sources, artifact->sources());
+        });
+      });
+      EXPECT_TRUE(component) << "no approval names it";
+      image_components += component ? 1 : 0;
+      continue;
+    }
     if (approval->drafter) {
       EXPECT_TRUE(rt::CheckComponentArtifactAdmission(*artifact));
       const auto* mapping = rt::ComposedDrafterMapping(*artifact);
@@ -105,6 +137,8 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
   EXPECT_GE(targets, 1U);
   EXPECT_GE(drafters, 1U);
   EXPECT_GE(served, 1U);
+  EXPECT_GE(pipelines, 1U);
+  EXPECT_EQ(image_components, 3 * pipelines);
 
   // The pairs: "compositions" holds {name: {target, drafter}}.
   const auto ids = llmp::test_support::ReadWhole(pinned);
@@ -165,6 +199,8 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
     // A drafter never pairs with another approved target.
     for (const auto& [v0, v1] : names) {
       if (v1 == target_id->string() || v1 == drafter_id->string()) continue;
+      // An image pipeline's composition is no target.
+      if (llmp::artifact::OpenComposition(std::filesystem::path(store) / v1, v1)) continue;
       auto other = rt::OpenInstalled(store, v1);
       ASSERT_TRUE(other);
       const rt::Approval* a = rt::FindApproval(other->model().architecture, other->sources());

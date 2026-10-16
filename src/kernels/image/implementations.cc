@@ -5,15 +5,19 @@
 
 #include <cublas_api.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "execution/registry.h"
+#include "ir/op.h"
 
 // The build's part of each identity, from CMakeLists.txt.
 #if !defined(LLMP_IMAGE_SDK) || !defined(LLMP_IMAGE_TARGET) ||                    \
@@ -33,7 +37,45 @@ struct Entry {
   Impl impl;
   bool cublas;  // its identity records the pinned cuBLAS
   std::string_view variant;
+  // Where its kernel is built for fixed shapes (heads of 128, a 3x3
+  // convolution over input channels in stages of 16): the capability that
+  // refuses every other shape, so that no query is offered a kernel that
+  // would miscompute it. Null: none declared.
+  const execution::Capability* capability = nullptr;
 };
+
+// Heads of 128: an attention's Q and K head size and V's (CapabilityQuery
+// k and n), a head norm's rows (its first operand's innermost extent).
+bool HeadsOf128(const execution::CapabilityQuery& q) {
+  return q.k == 128 && (q.n == 0 || q.n == 128);
+}
+bool HeadRowsOf128(const execution::CapabilityQuery& q) {
+  const auto x = std::ranges::find(q.operands, std::uint8_t{0}, &execution::OperandFormat::operand);
+  return x != q.operands.end() && x->ne[0] == 128;
+}
+// Conv3x3Implicit's: a 3x3 kernel [3, 3, IC, OC] over x [W, H, IC, 1] with
+// input channels a multiple of 16 and an even width.
+bool ImplicitConv3x3(const execution::CapabilityQuery& q) {
+  const auto find = [&](std::uint8_t i) {
+    const auto it = std::ranges::find(q.operands, i, &execution::OperandFormat::operand);
+    return it == q.operands.end() ? nullptr : &*it;
+  };
+  const auto* kernel = find(0);
+  const auto* x = find(1);
+  return kernel != nullptr && x != nullptr && kernel->ne[0] == 3 && kernel->ne[1] == 3 &&
+         kernel->ne[2] != 0 && kernel->ne[2] % 16 == 0 && kernel->ne[2] <= 65536 &&
+         kernel->ne[3] != 0 && kernel->ne[3] <= 65536 && x->ne[2] == kernel->ne[2] &&
+         x->ne[0] != 0 && x->ne[0] % 2 == 0 && x->ne[1] != 0 && x->ne[3] == 1;
+}
+constexpr execution::Capability kAttention128{.op = ir::Primitive(ir::Op::kAttention),
+                                              .accepts = &HeadsOf128};
+// SmallAttentionKernel's rows: at most 1,024.
+constexpr execution::Capability kShortAttention128{
+    .op = ir::Primitive(ir::Op::kAttention), .shape = {.max_rows = 1024}, .accepts = &HeadsOf128};
+constexpr execution::Capability kHeadNormRope128{.op = ir::Fused(ir::FusedKind::kRmsNormMulRope),
+                                                 .accepts = &HeadRowsOf128};
+constexpr execution::Capability kConv3x3Implicit{.op = ir::Primitive(ir::Op::kConv2d),
+                                                 .accepts = &ImplicitConv3x3};
 
 #ifdef NDEBUG
 constexpr std::string_view kAsserts = "NDEBUG";
@@ -63,16 +105,20 @@ constexpr std::array<Entry, static_cast<std::size_t>(Impl::kCount)> kEntries = {
      "algorithm pinned for the shape by gemm.cc's table on its device and cuBLASLt, else "
      "cuBLASLt's first heuristic choice for the workspace; operands 256-byte aligned"},
     {"image.head_norm_rope.neox", Operation::kHeadNormRope, Impl::kHeadNormRopeNeox, false,
-     "HeadNormRopeNeoxKernel: a warp per row and head of 128, rotate_half, BF16 tables"},
+     "HeadNormRopeNeoxKernel: a warp per row and head of 128, rotate_half, BF16 tables",
+     &kHeadNormRope128},
     {"image.head_norm_rope.complex", Operation::kHeadNormRope, Impl::kHeadNormRopeComplex, false,
      "HeadNormRopeComplexKernel<BF16, in place>: a warp per row and head of 128, F32 complex "
-     "frequencies"},
+     "frequencies",
+     &kHeadNormRope128},
     {"image.attention.short", Operation::kFlashAttn, Impl::kAttentionShort, false,
      "SmallAttentionKernel: one block of 128 per query row and head, F32 scores and softmax "
-     "in shared memory, at most 1,024 rows"},
+     "in shared memory, at most 1,024 rows",
+     &kShortAttention128},
     {"image.flash_attention", Operation::kFlashAttn, Impl::kFlashAttention, false,
      "FlashForwardKernel: FlashAttention-2 forward, 128 query rows and 8 warps per block, "
-     "64-key tiles two stages deep, mma.sync m16n8k16 BF16, F32 online softmax"},
+     "64-key tiles two stages deep, mma.sync m16n8k16 BF16, F32 online softmax",
+     &kAttention128},
     {"image.add", Operation::kAdd, Impl::kAdd, false, "AddKernel: BF16 + BF16, one rounding"},
     {"image.swiglu", Operation::kSwiGlu, Impl::kSwiGlu, false,
      "SwiGlu8Kernel (8 elements per thread) where widths and strides are multiples of 8, "
@@ -99,7 +145,8 @@ constexpr std::array<Entry, static_cast<std::size_t>(Impl::kCount)> kEntries = {
     {"image.conv2d.implicit", Operation::kConv2d, Impl::kConvImplicit, false,
      "3x3: Conv3x3Kernel, implicit GEMM over KRSC weights, 128 pixels x 144 channels per "
      "block, 16 input channels per stage, two stages, mma.sync m16n8k16 BF16, F32, the bias "
-     "added before one rounding"},
+     "added before one rounding",
+     &kConv3x3Implicit},
     {"image.conv2d.product", Operation::kConv2d, Impl::kConvProduct, true,
      "1x1: FillBiasKernel, then cublasGemmEx (N, N, beta 1)"},
     {"image.channel_norm", Operation::kChannelNorm, Impl::kChannelNorm, false,
@@ -117,11 +164,13 @@ constexpr std::array<Entry, static_cast<std::size_t>(Impl::kCount)> kEntries = {
      "KrscFromF32Kernel: [co, ci, 3, 3] F32 to [co, 3, 3, ci] BF16, round to nearest even"},
     {"image.flash_attention.prefixed", Operation::kFlashAttn, Impl::kFlashAttentionPrefixed, false,
      "FlashForwardKernel as image.flash_attention, the keys and values below the prefix read "
-     "from the prefix cache in place of a copy ahead of the call"},
+     "from the prefix cache in place of a copy ahead of the call",
+     &kAttention128},
     {"image.flash_attention.norm_q", Operation::kFlashAttn, Impl::kFlashAttentionNormQ, false,
      "FlashForwardKernel<norm q> as image.flash_attention.prefixed, each query row normed and "
      "rotated in registers as HeadNormRopeComplexKernel computes it (its sums' order), past the "
-     "first step; the first step as image.flash_attention"},
+     "first step; the first step as image.flash_attention",
+     &kAttention128},
 }};
 
 execution::Implementation Declaration(const Entry& entry) {
@@ -133,12 +182,14 @@ execution::Implementation Declaration(const Entry& entry) {
   if (entry.cublas) {
     build += std::format("; cuBLAS {}", CUBLAS_VERSION);
   }
-  return execution::Implementation{.name = std::string(entry.name),
-                                   .operation = entry.operation,
-                                   .source = "llmp",
-                                   .revision = std::string(ModuleSourcesDigest()),
-                                   .build = std::move(build),
-                                   .variant = std::string(entry.variant)};
+  return execution::Implementation{
+      .name = std::string(entry.name),
+      .operation = entry.operation,
+      .source = "llmp",
+      .revision = std::string(ModuleSourcesDigest()),
+      .build = std::move(build),
+      .variant = std::string(entry.variant),
+      .capability = entry.capability != nullptr ? std::optional(*entry.capability) : std::nullopt};
 }
 
 }  // namespace

@@ -7,8 +7,9 @@
 # artifact (mapping.h, mappings/), and the spec a v1 artifact or
 # composition stores (stored.h, D-113). Model layer, after format, artifact, ir
 # and model; no kernel, engine or vendor type.
-add_library(llmp_spec STATIC spec.cc mapping.cc stored.cc image_spatial.cc mappings/gemma2.cc mappings/gemma3.cc
-                             mappings/gemma4.cc mappings/qwen38.cc mappings/dsv4.cc mappings/qwen2.cc)
+add_library(llmp_spec STATIC spec.cc mapping.cc stored.cc image_spatial.cc image_family.cc mappings/gemma2.cc mappings/gemma3.cc
+                             mappings/gemma4.cc mappings/qwen38.cc mappings/dsv4.cc mappings/qwen2.cc
+                             mappings/qwen_image.cc)
 target_include_directories(llmp_spec PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_spec PUBLIC llmp_format llmp_base PRIVATE llmp_artifact llmp_model
                                                                     llmp_warnings)

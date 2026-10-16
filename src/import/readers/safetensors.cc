@@ -131,11 +131,20 @@ MetaValue ListOf(json::Value list) {
   bool integers = true;
   bool numbers = true;
   bool strings = true;
+  bool flags = n > 0;
   for (std::size_t i = 0; i < n; ++i) {
     const json::Value v = list.at(i);
     integers = integers && v.is_number() && v.is_integer() && v.int64().has_value();
     numbers = numbers && v.is_number() && v.float64() && std::isfinite(*v.float64());
     strings = strings && v.is_string();
+    flags = flags && (v.kind() == json::Kind::kTrue || v.kind() == json::Kind::kFalse);
+  }
+  // A list of flags as integers 0 and 1 (as a GGUF bool array reads).
+  if (flags) {
+    std::vector<std::int64_t> out;
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) out.push_back(list.at(i).boolean() ? 1 : 0);
+    return out;
   }
   if (integers) {
     std::vector<std::int64_t> out;

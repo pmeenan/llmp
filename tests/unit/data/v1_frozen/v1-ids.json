@@ -4,6 +4,7 @@
   "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42": "23aa1c353091e1ce80309fe8dd55a90f679758525d4abaca2b974819aeae3ede",
   "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08": "4d9a255ab47519b8061fcbc38bb5e72b9008d8e3538aad5edf0e7530fa82adc8",
   "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120": "07067ae0547848e4dcf904148a917df300354f31eb9bed88c78d1b92c83602c0",
+  "44c1a20a202ce1078588cbd4b0c594bbadf365a01f26091c715fd16d5b2eb34d": "2ef349d54b5fc4953826272f27c1ddd999bb1648a477730e107c13dc259d51d2",
   "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3": "f0f72ab3d6c733d15472ceeecd05fdf200c266101c537bd3253548fc38559ab7",
   "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78": "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
   "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4": "ce8defd9150a7a3fa38c448dee4fb8177e94a1acfb04719263dd7882ec3deadf",
@@ -14,8 +15,11 @@
   "b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073": "a96092c9fe6ab8512f1c8fdd4daaf69622f2a8dd211d9056a23d285da22c5e84",
   "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93": "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d",
   "cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac": "e7c0d0e453aab30765c884ab610835936e80312646f18383538bd4d9b428dc59",
+  "d1184efda09c12175b7bae6e9acf6cf3aeafb765f4f2ab6192cbf284c37eb3a4": "3ee9bd001e5a59ab33a67f75de413cf31bcaad3909f8872a212753e5c03b63e6",
   "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5": "5c9d95e24769c4d0a06088b0b6a8cc4afd4979b5ffc6d9357b4116f26fa583aa",
-  "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870": "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076"
+  "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870": "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076",
+  "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd": "2170db12b295d308b4ec071765a8c1b9fb6651b45b210aeaa3976603de82e3ac",
+  "ed89ed270cf840965565d42eb61220b07399ff147e4f1de9ffcb7cbfd5ae86cf": "a7c279d2ac4b7d76ec18a368cf77958b5a47699c81e51a4e8f9b3a8a1ab58297"
  },
  "composition_note": "a target and its drafter are two artifacts paired by the model entry's artifact and drafter keys; no llmp-composition document is written for them",
  "compositions": {
@@ -37,12 +41,14 @@
   }
  },
  "format": "llmp-v1-ids",
+ "image_note": "qwen-image is a v1 composition (llmp import of the diffusers pipeline, 2026-10-16): its key is the v0 composition's ID, and its components' keys their v0 artifacts'",
  "mlx_note": "qwen38-mlx has no v0 artifact: its key is its own v1 ID",
  "names": {
   "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a": "qwen2-exl3-4.5",
   "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42": "gemma26-assistant",
   "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08": "gemma31",
   "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120": "gemma31-assistant",
+  "44c1a20a202ce1078588cbd4b0c594bbadf365a01f26091c715fd16d5b2eb34d": "qwen-image-vae",
   "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3": "gemma26",
   "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78": "qwen38-gguf",
   "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4": "qwen2-exl3-4.0",
@@ -53,8 +59,11 @@
   "b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073": "qwen2-fp16",
   "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93": "qwen38-modelopt",
   "cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac": "deepseek-iq2xxs",
+  "d1184efda09c12175b7bae6e9acf6cf3aeafb765f4f2ab6192cbf284c37eb3a4": "qwen-image-transformer",
   "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5": "dspark",
-  "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870": "gemma2"
+  "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870": "gemma2",
+  "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd": "qwen-image",
+  "ed89ed270cf840965565d42eb61220b07399ff147e4f1de9ffcb7cbfd5ae86cf": "qwen-image-text-encoder"
  },
  "note": "v0 artifact ID -> v1 ID, imported from the staged, manifest-verified sources by llmp import (importer build 'unknown': the Spark tree has no .git)"
 }

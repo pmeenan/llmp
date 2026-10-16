@@ -176,7 +176,9 @@ inline std::string V1IdsPath() {
 // "gemma3", "gemma26", "gemma26-assistant", "gemma31", "gemma31-assistant",
 // "qwen38-gguf", "qwen38-modelopt", "qwen38-modelopt-mtp", "qwen38-mlx",
 // "deepseek", "deepseek-iq2xxs", "dspark", "qwen2-fp16", "qwen2-exl3-4.0",
-// "qwen2-exl3-4.5"), nullopt for a name it does not have.
+// "qwen2-exl3-4.5", and the Qwen-Image composition "qwen-image" with its
+// "qwen-image-text-encoder", "qwen-image-transformer" and "qwen-image-vae"),
+// nullopt for a name it does not have.
 inline std::optional<std::string> V1IdNamed(std::string_view name) {
   const auto path = V1IdsPath();
   const auto names = ReadStringMap(path, "names");

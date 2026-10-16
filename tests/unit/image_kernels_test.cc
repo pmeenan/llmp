@@ -31,6 +31,7 @@
 #include <random>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "execution/registry.h"
@@ -926,6 +927,56 @@ TEST_F(ImageKernelsTest, APinCublasLtRefusesFallsBackToItsHeuristic) {
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   lt->reset();
   (void)cudaFree(workspace);
+}
+
+// The kernels built for fixed shapes declare capabilities that refuse every
+// other shape: heads of 128, a 3x3 convolution over input channels in
+// stages of 16 at an even width (host only).
+TEST(ImageKernelDeclarations, FixedShapeKernelsRefuseOtherShapes) {
+  namespace ex = llmp::execution;
+  const auto declared = ki::Implementations();
+  const auto find = [&](std::string_view name) -> const ex::Implementation* {
+    const auto it = std::ranges::find(declared, name, &ex::Implementation::name);
+    return it == declared.end() ? nullptr : &*it;
+  };
+  for (const std::string_view name :
+       {"image.attention.short", "image.flash_attention", "image.flash_attention.prefixed",
+        "image.flash_attention.norm_q"}) {
+    SCOPED_TRACE(name);
+    const auto* impl = find(name);
+    ASSERT_NE(impl, nullptr);
+    ASSERT_TRUE(impl->capability.has_value());
+    ASSERT_NE(impl->capability->accepts, nullptr);
+    EXPECT_TRUE(impl->capability->accepts({.k = 128, .n = 128}));
+    EXPECT_FALSE(impl->capability->accepts({.k = 64, .n = 64}));
+    EXPECT_FALSE(impl->capability->accepts({.k = 128, .n = 256}));
+  }
+  EXPECT_EQ(find("image.attention.short")->capability->shape.max_rows, 1024U);
+  for (const std::string_view name :
+       {"image.head_norm_rope.neox", "image.head_norm_rope.complex"}) {
+    SCOPED_TRACE(name);
+    const auto* impl = find(name);
+    ASSERT_NE(impl, nullptr);
+    ASSERT_TRUE(impl->capability.has_value());
+    const std::array<ex::OperandFormat, 1> head128{{{.operand = 0, .ne = {128, 4, 9, 1}}}};
+    const std::array<ex::OperandFormat, 1> head64{{{.operand = 0, .ne = {64, 4, 9, 1}}}};
+    EXPECT_TRUE(impl->capability->accepts({.operands = head128}));
+    EXPECT_FALSE(impl->capability->accepts({.operands = head64}));
+  }
+  const auto* conv = find("image.conv2d.implicit");
+  ASSERT_NE(conv, nullptr);
+  ASSERT_TRUE(conv->capability.has_value());
+  const auto conv_query = [&](std::uint64_t in, std::uint64_t width, std::uint64_t taps) {
+    const std::array<ex::OperandFormat, 2> operands{
+        {{.operand = 0, .ne = {taps, taps, in, 144}}, {.operand = 1, .ne = {width, 8, in, 1}}}};
+    return conv->capability->accepts({.operands = operands});
+  };
+  EXPECT_TRUE(conv_query(16, 64, 3));
+  EXPECT_FALSE(conv_query(8, 64, 3));   // input channels not in stages of 16
+  EXPECT_FALSE(conv_query(16, 63, 3));  // an odd width
+  EXPECT_FALSE(conv_query(16, 64, 1));  // not 3x3
+  // Every declared capability is well formed: a registry accepts the module.
+  EXPECT_TRUE(ex::Registry::Create(declared).has_value());
 }
 
 }  // namespace

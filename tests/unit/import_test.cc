@@ -948,6 +948,8 @@ TEST(ImportSafetensorsTest, ReadsTensorsAndConfig) {
     "ints": [1, -2, 3],
     "reals": [1, 2.5],
     "mixed": [1, "a"],
+    "flags": [false, true, true],
+    "flags_and_ints": [true, 1],
     "nested": [[1]],
     "empty": [],
     "text_config": {"hidden_size": 8, "rope": {"type": "yarn", "factor": 4.0}},
@@ -990,6 +992,10 @@ TEST(ImportSafetensorsTest, ReadsTensorsAndConfig) {
   EXPECT_EQ(*Get<std::vector<std::int64_t>>(*c, "ints"), (std::vector<std::int64_t>{1, -2, 3}));
   EXPECT_EQ(*Get<std::vector<double>>(*c, "reals"), (std::vector<double>{1.0, 2.5}));
   EXPECT_TRUE(std::holds_alternative<std::monostate>(*c->FindValue("mixed")));
+  // A list of flags reads as integers 0 and 1 (as a GGUF bool array does);
+  // flags beside numbers are a mixed list.
+  EXPECT_EQ(*Get<std::vector<std::int64_t>>(*c, "flags"), (std::vector<std::int64_t>{0, 1, 1}));
+  EXPECT_TRUE(std::holds_alternative<std::monostate>(*c->FindValue("flags_and_ints")));
   EXPECT_TRUE(std::holds_alternative<std::monostate>(*c->FindValue("nested")));
   EXPECT_EQ(*Get<std::vector<std::int64_t>>(*c, "empty"), std::vector<std::int64_t>{});
   EXPECT_EQ(*Get<std::vector<std::string>>(*c, "architectures"),

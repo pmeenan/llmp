@@ -757,6 +757,12 @@ global group with the encoder, 1.35 GB), and keeps model_index.json, the
 scheduler's config and the processor's nine files. The importer's grouping
 policy per component (the prototype's layer pattern and row tables) is
 `import_m3.py`'s, and the layout rules above are otherwise unchanged.
+Its native v1 import (`llmp import`, 2026-10-16) is composition
+`2170db12…`: each component keeps the tensors text to image runs (the
+text encoder's token table and 36 layers, 15.14 GB in 37 groups; the
+denoiser's globals and 32 blocks, 14.23 GB in 33; the VAE decoder's up
+blocks and the rest of its decoder, 1.01 GB in 6), and the composition
+stores the family spec (`spec/image_family.h`) as its `spec.json`.
 
 ## Verification and rejection
 
@@ -1005,7 +1011,8 @@ refused as for an artifact), `importer` in place of `converter`, and v0's
 other rules, except that the kept files are whatever the pipeline has,
 possibly none (v0 requires `model_index.json`; a target and its drafter
 keep nothing), and that it may list `spec.json` (role `spec`), checked as
-an artifact's. That spec is the model the composition makes: its stages'
+an artifact's. That spec is the model the composition makes (an image
+pipeline's is its family spec, `spec/image_family.h`): its stages'
 artifact indexes count the components in their (role) order, and
 `spec::StoredSpec(composition, components)` checks them against the
 opened components, whose IDs and architectures must be the recorded ones

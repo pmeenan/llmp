@@ -6,8 +6,9 @@
 // (docs/experiments/qwen-image-native, reference.py's sigmas), the tensor
 // lists and their binding, the VAE decoder's plan, the rotary tables and
 // the timestep's sinusoid by their definitions, and the pixels' rounding.
-// The installed component artifacts are bound where the M3 store holds
-// them (a Spark) and skipped elsewhere.
+// The family is the published composition's, frozen in-tree
+// (tests/support/image_family.h); its published component artifacts are
+// bound where the v1 store holds them (a Spark) and skipped elsewhere.
 
 #include "model/qwen_image.h"
 
@@ -30,6 +31,9 @@
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
 #include "artifact_writer.h"
+#include "image_family.h"
+#include "image_published.h"
+#include "spec/mappings/qwen_image.h"
 
 namespace {
 
@@ -79,7 +83,8 @@ TEST(QwenImage, TheScheduleIsDiffusers) {
                                        0.06788057088851929,
                                        0.019999980926513672,
                                        0.0};
-  const auto s = md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 40, 4096);
+  const auto s =
+      md::QwenImageSchedulerSigmas(::llmp::test_support::QwenImageProfile().scheduler, 40, 4096);
   ASSERT_TRUE(s.has_value()) << s.error();
   EXPECT_DOUBLE_EQ(s->mu, 0.6935483870967742);
   ASSERT_EQ(s->sigmas.size(), want.size());
@@ -88,11 +93,13 @@ TEST(QwenImage, TheScheduleIsDiffusers) {
   }
   ASSERT_EQ(s->timesteps.size(), 40U);
   EXPECT_EQ(s->timesteps[1], 986.9637451171875f);
-  const auto one = md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 1, 4096);
+  const auto one =
+      md::QwenImageSchedulerSigmas(::llmp::test_support::QwenImageProfile().scheduler, 1, 4096);
   ASSERT_TRUE(one);
   EXPECT_EQ(one->sigmas, (std::vector<float>{1.F, 0.F}));
   EXPECT_EQ(one->timesteps, (std::vector<float>{1000.F}));
-  const auto many = md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 1001, 4096);
+  const auto many =
+      md::QwenImageSchedulerSigmas(::llmp::test_support::QwenImageProfile().scheduler, 1001, 4096);
   ASSERT_TRUE(many);
   ASSERT_EQ(many->sigmas.size(), 1002U);
   EXPECT_EQ(many->sigmas.front(), 1.F);
@@ -101,24 +108,26 @@ TEST(QwenImage, TheScheduleIsDiffusers) {
     EXPECT_TRUE(std::isfinite(many->sigmas[i]));
     EXPECT_LE(many->sigmas[i], many->sigmas[i - 1]);
   }
-  EXPECT_FALSE(md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 0, 4096));
-  EXPECT_FALSE(md::QwenImageSchedulerSigmas(md::QwenImage21().scheduler, 2, UINT32_MAX));
+  EXPECT_FALSE(
+      md::QwenImageSchedulerSigmas(::llmp::test_support::QwenImageProfile().scheduler, 0, 4096));
+  EXPECT_FALSE(md::QwenImageSchedulerSigmas(::llmp::test_support::QwenImageProfile().scheduler, 2,
+                                            UINT32_MAX));
 }
 
 TEST(QwenImage, TensorListsNameTheCheckpoint) {
-  const md::QwenImageProfile& p = md::QwenImage21();
-  const auto text = md::TextEncoderTensors(p.text);
+  const md::QwenImageProfile& p = ::llmp::test_support::QwenImageProfile();
+  const auto text = md::TextEncoderTensors(p.text, ::llmp::test_support::QwenImageNames().text);
   ASSERT_EQ(text.size(), 1 + (36 * static_cast<std::size_t>(md::TextTensor::kCount)));
   EXPECT_EQ(text[0].name, "model.language_model.embed_tokens.weight");
   EXPECT_EQ(text[1 + static_cast<std::size_t>(md::TextTensor::kK)].shape,
             (std::vector<std::uint64_t>{1024, 4096}));
-  const auto dit = md::DenoiserTensors(p.denoiser);
+  const auto dit = md::DenoiserTensors(p.denoiser, ::llmp::test_support::QwenImageNames().denoiser);
   ASSERT_EQ(dit.size(), static_cast<std::size_t>(md::DenoiserGlobal::kCount) +
                             (32 * static_cast<std::size_t>(md::BlockTensor::kCount)));
   EXPECT_EQ(dit[static_cast<std::size_t>(md::DenoiserGlobal::kModulation)].shape,
             (std::vector<std::uint64_t>{16384, 4096}));
   EXPECT_EQ(dit.back().name, "transformer_blocks.31.img_mlp.out.weight");
-  const auto vae = md::VaeDecoderTensors(p.vae);
+  const auto vae = md::VaeDecoderTensors(p.vae, ::llmp::test_support::QwenImageNames().vae);
   for (const auto& t : vae) {
     EXPECT_EQ(t.dtype, "F32") << t.name;
     EXPECT_TRUE(t.name.starts_with("decoder.") || t.name.starts_with("post_quant_conv")) << t.name;
@@ -147,8 +156,8 @@ TEST(QwenImage, BindingRefusesWhatTheProfileDoesNotRead) {
 }
 
 TEST(QwenImage, TheVaePlanUpsamplesSixteenFold) {
-  const md::QwenImageVaeProfile& p = md::QwenImage21().vae;
-  const auto tensors = md::VaeDecoderTensors(p);
+  const md::QwenImageVaeProfile& p = ::llmp::test_support::QwenImageProfile().vae;
+  const auto tensors = md::VaeDecoderTensors(p, ::llmp::test_support::QwenImageNames().vae);
   const auto steps = md::VaeDecoderPlan(p, 64, 64);
   int upsamples = 0;
   int dupups = 0;
@@ -184,7 +193,7 @@ TEST(QwenImage, TheVaePlanUpsamplesSixteenFold) {
 }
 
 TEST(QwenImage, RotaryTablesFollowTheirDefinitions) {
-  const md::QwenImageDenoiserProfile& d = md::QwenImage21().denoiser;
+  const md::QwenImageDenoiserProfile& d = ::llmp::test_support::QwenImageProfile().denoiser;
   const std::uint32_t text = 3;
   const std::uint32_t grid = 4;
   const auto f = md::QwenImageDenoiserRotary(d, text, grid);
@@ -202,7 +211,7 @@ TEST(QwenImage, RotaryTablesFollowTheirDefinitions) {
   EXPECT_FLOAT_EQ(f[(row * 128) + 16], std::cos(-2.0f));
   EXPECT_FLOAT_EQ(f[(row * 128) + 17], std::sin(-2.0f));
   // Text rotary: position 2, the first frequency is 1 (theta^0).
-  const auto t = md::QwenImageTextRotary(md::QwenImage21().text, 3);
+  const auto t = md::QwenImageTextRotary(::llmp::test_support::QwenImageProfile().text, 3);
   EXPECT_EQ(t.cos[std::size_t{2} * 128], md::ToBf16(std::cos(2.0f)));
   EXPECT_EQ(t.sin[(std::size_t{2} * 128) + 64], md::ToBf16(std::sin(2.0f)));
 }
@@ -223,7 +232,7 @@ TEST(QwenImage, RectangularOddAxesRetainIndependentSourceCenters) {
 }
 
 TEST(QwenImage, TimestepSinusoidAndPixelsRoundAsDiffusers) {
-  const md::QwenImageDenoiserProfile& d = md::QwenImage21().denoiser;
+  const md::QwenImageDenoiserProfile& d = ::llmp::test_support::QwenImageProfile().denoiser;
   const auto s = md::QwenImageTimestepSinusoid(d, 1000.0f);
   ASSERT_EQ(s.size(), 512U);
   EXPECT_EQ(s[0], md::ToBf16(std::cos(1000.0f)));  // freq 1: cos(1000)
@@ -240,35 +249,30 @@ TEST(QwenImage, TimestepSinusoidAndPixelsRoundAsDiffusers) {
 }
 
 TEST(QwenImage, InstalledComponentsBind) {
-  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  const std::filesystem::path store =
-      std::filesystem::path(home != nullptr ? home : "/") / ".local/share/llmp/m3-artifacts";
+  // The published v1 composition (the pinned map's "qwen-image", in the v1
+  // store), its components bound by the frozen family's tensor lists.
+  namespace ts = llmp::test_support;
+  const auto& mapping = llmp::spec::mappings::QwenImage21Mapping();
+  const auto id = ts::QwenImageComposition();
+  ASSERT_FALSE(id.empty()) << "the pinned v1 map names no qwen-image";
+  const auto root = ts::QwenImagePublished(id);
   std::error_code error;
-  std::optional<llmp::artifact::Composition> composition;
-  for (const auto& entry : std::filesystem::directory_iterator(store, error)) {
-    auto c = llmp::artifact::OpenComposition(entry.path());
-    if (c && c->architecture() == md::QwenImage21().pipeline_architecture) {
-      composition.emplace(std::move(*c));
-    }
-  }
-  if (!composition) {
-    GTEST_SKIP() << "no installed Qwen-Image composition in " << store;
-  }
-  const md::QwenImageProfile& p = md::QwenImage21();
-  const std::array<std::pair<const char*, std::vector<md::QwenImageTensor>>, 3> roles = {{
-      {"text_encoder", md::TextEncoderTensors(p.text)},
-      {"transformer", md::DenoiserTensors(p.denoiser)},
-      {"vae", md::VaeDecoderTensors(p.vae)},
-  }};
-  const std::array<std::string_view, 3> archs = {p.text_architecture, p.denoiser_architecture,
-                                                 p.vae_architecture};
-  for (std::size_t i = 0; i < roles.size(); ++i) {
-    const auto* c = composition->Find(roles[i].first);
-    ASSERT_NE(c, nullptr) << roles[i].first;
-    auto a = llmp::artifact::Artifact::Open(store / c->artifact);
+  if (!std::filesystem::is_directory(root, error))
+    GTEST_SKIP() << "no published Qwen-Image composition at " << root;
+  auto composition = llmp::artifact::OpenComposition(root, id);
+  ASSERT_TRUE(composition.has_value()) << composition.error().ToString();
+  ASSERT_EQ(composition->architecture(), mapping.architecture);
+  const std::array<std::vector<md::QwenImageTensor>, 3> tensors = {
+      llmp::test_support::QwenImageTextTensors(), llmp::test_support::QwenImageDenoiserTensors(),
+      llmp::test_support::QwenImageVaeTensors()};
+  ASSERT_EQ(mapping.components.size(), tensors.size());
+  for (std::size_t i = 0; i < tensors.size(); ++i) {
+    const auto* c = composition->Find(mapping.components[i].role);
+    ASSERT_NE(c, nullptr) << mapping.components[i].role;
+    auto a = llmp::artifact::Artifact::Open(ts::QwenImagePublished(c->artifact));
     ASSERT_TRUE(a.has_value()) << a.error().ToString();
-    const auto bound = md::BindQwenImageComponent(roles[i].second, archs[i], *a);
-    EXPECT_TRUE(bound.has_value()) << roles[i].first << ": " << bound.error();
+    const auto bound = md::BindQwenImageComponent(tensors[i], c->architecture, *a);
+    EXPECT_TRUE(bound.has_value()) << c->role << ": " << bound.error();
   }
 }
 

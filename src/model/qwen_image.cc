@@ -27,40 +27,24 @@ namespace {
 
 std::unexpected<std::string> Refused(std::string why) { return std::unexpected(std::move(why)); }
 
-QwenImageProfile MakeQwenImage21() {
-  QwenImageProfile p;
-  p.name = "Qwen/Qwen-Image-2.1@790c9263";
-  p.pipeline_architecture = "QwenImage21Pipeline";
-  p.text_architecture = "qwen3_vl";
-  p.denoiser_architecture = "QwenImage21Transformer2DModel";
-  p.vae_architecture = "AutoencoderKLQwenImage21";
-  // vae/config.json's latents_mean and latents_std.
-  p.vae.latents_mean = {
-      0.5126f,  0.7721f,  -0.0631f, 1.3506f,  -0.7855f, -2.1025f, -0.3458f, 1.3722f,
-      1.8873f,  -1.7177f, -0.651f,  0.2732f,  0.7562f,  -0.6163f, -1.0277f, 3.8363f,
-      2.021f,   0.0472f,  0.932f,   2.0087f,  2.4954f,  -0.1391f, -1.4249f, 1.8464f,
-      -0.5236f, 1.2826f,  3.7046f,  -1.3035f, 2.7286f,  -1.4518f, -1.9036f, -1.9955f,
-      -0.0342f, -1.0265f, -0.7636f, 3.0555f,  0.0746f,  -3.0751f, -0.1076f, 1.7376f,
-      -1.0914f, -1.9435f, -0.2784f, -1.368f,  0.4809f,  -0.4433f, 0.3764f,  0.5729f,
-      -2.0595f, 1.096f,   -1.326f,  -2.0211f, -5.0179f, 0.5275f,  4.0162f,  1.8505f,
-      0.3026f,  1.9373f,  1.4937f,  0.2632f,  0.5547f,  -1.7121f, -0.1562f, 0.0304f};
-  p.vae.latents_std = {3.2001f, 3.2936f, 3.4321f, 3.0091f, 3.1061f, 4.0379f, 4.0705f, 3.791f,
-                       3.0785f, 3.65f,   3.9308f, 3.0904f, 2.8778f, 3.7675f, 3.732f,  5.0756f,
-                       3.2864f, 4.0397f, 3.1317f, 4.0443f, 2.9249f, 3.9454f, 3.0988f, 4.2489f,
-                       3.4896f, 3.8513f, 3.9323f, 3.4719f, 3.7498f, 4.283f,  3.5694f, 4.2467f,
-                       3.9037f, 3.2947f, 5.077f,  3.5075f, 3.27f,   3.4767f, 2.8063f, 5.1125f,
-                       3.5327f, 4.7833f, 3.1286f, 4.1819f, 3.8527f, 3.8312f, 3.5605f, 4.3875f,
-                       3.9624f, 4.0168f, 3.5643f, 4.055f,  5.5614f, 4.2963f, 4.408f,  3.4959f,
-                       3.8747f, 3.7608f, 3.5735f, 3.149f,  3.7662f, 3.6746f, 3.4563f, 3.8161f};
-  return p;
-}
-
 std::vector<std::uint64_t> Shape(std::initializer_list<std::uint64_t> dims) { return dims; }
+
+// A pattern with its "{layer}" (once, if any) replaced by `index`.
+std::string Named(std::string_view pattern, std::uint32_t index) {
+  constexpr std::string_view kField = "{layer}";
+  const auto at = pattern.find(kField);
+  if (at == std::string_view::npos) return std::string(pattern);
+  return std::string(pattern.substr(0, at)) + std::to_string(index) +
+         std::string(pattern.substr(at + kField.size()));
+}
+std::string Joined(std::string_view prefix, std::string_view suffix) {
+  return std::string(prefix) + std::string(suffix);
+}
 
 // The decoder's tensors and steps, built together.
 class VaeBuilder {
  public:
-  explicit VaeBuilder(const QwenImageVaeProfile& p) : p_(p) {}
+  VaeBuilder(const QwenImageVaeProfile& p, const QwenImageVaeNames& n) : p_(p), n_(n) {}
 
   std::int32_t Tensor(std::string name, std::vector<std::uint64_t> shape) {
     tensors_.push_back({.name = std::move(name), .dtype = "F32", .shape = std::move(shape)});
@@ -71,8 +55,8 @@ class VaeBuilder {
   void Conv(std::string_view prefix, std::uint8_t in, std::uint8_t out, std::uint32_t cin,
             std::uint32_t cout, std::uint32_t kernel, std::uint32_t h, std::uint32_t w) {
     const std::int32_t weight =
-        Tensor(std::format("{}.weight", prefix), Shape({cout, cin, kernel, kernel}));
-    const std::int32_t bias = Tensor(std::format("{}.bias", prefix), Shape({cout}));
+        Tensor(Joined(prefix, n_.weight), Shape({cout, cin, kernel, kernel}));
+    const std::int32_t bias = Tensor(Joined(prefix, n_.bias), Shape({cout}));
     Step({.kind = kernel == 3 ? VaeStep::Kind::kConv3x3 : VaeStep::Kind::kConv1x1,
           .in = in,
           .out = out,
@@ -102,14 +86,14 @@ class VaeBuilder {
                 std::uint32_t w) {
     std::uint8_t shortcut = kVaeX;
     if (cin != cout) {
-      Conv(std::format("{}.conv_shortcut", prefix), kVaeX, kVaeS, cin, cout, 1, h, w);
+      Conv(Joined(prefix, n_.shortcut), kVaeX, kVaeS, cin, cout, 1, h, w);
       shortcut = kVaeS;
     }
-    NormSilu(std::format("{}.norm1.gamma", prefix), kVaeX, kVaeH, cin, h, w);
-    Conv(std::format("{}.conv1", prefix), kVaeH, kVaeT, cin, cout, 3, h, w);
-    NormSilu(std::format("{}.norm2.gamma", prefix), kVaeT, kVaeH, cout, h, w);
+    NormSilu(Joined(prefix, n_.norm1), kVaeX, kVaeH, cin, h, w);
+    Conv(Joined(prefix, n_.conv1), kVaeH, kVaeT, cin, cout, 3, h, w);
+    NormSilu(Joined(prefix, n_.norm2), kVaeT, kVaeH, cout, h, w);
     // NOLINTNEXTLINE(readability-suspicious-call-argument): buffers, then channels
-    Conv(std::format("{}.conv2", prefix), kVaeH, kVaeT, cout, cout, 3, h, w);
+    Conv(Joined(prefix, n_.conv2), kVaeH, kVaeT, cout, cout, 3, h, w);
     Step({.kind = VaeStep::Kind::kAdd,
           .in = kVaeT,
           .out = kVaeX,
@@ -122,7 +106,7 @@ class VaeBuilder {
 
   // QwenImage21AttentionBlock on x, in place.
   void Attention(std::string_view prefix, std::uint32_t c, std::uint32_t h, std::uint32_t w) {
-    const std::int32_t g = Tensor(std::format("{}.norm.gamma", prefix), Shape({c, 1, 1}));
+    const std::int32_t g = Tensor(Joined(prefix, n_.attention_norm), Shape({c, 1, 1}));
     Step({.kind = VaeStep::Kind::kNorm,
           .in = kVaeX,
           .out = kVaeH,
@@ -131,7 +115,7 @@ class VaeBuilder {
           .height = h,
           .width = w,
           .weight = g});
-    Conv(std::format("{}.to_qkv", prefix), kVaeH, kVaeQ, c, 3 * c, 1, h, w);
+    Conv(Joined(prefix, n_.attention_qkv), kVaeH, kVaeQ, c, 3 * c, 1, h, w);
     Step({.kind = VaeStep::Kind::kAttention,
           .in = kVaeQ,
           .out = kVaeH,
@@ -139,7 +123,7 @@ class VaeBuilder {
           .out_channels = c,
           .height = h,
           .width = w});
-    Conv(std::format("{}.proj", prefix), kVaeH, kVaeT, c, c, 1, h, w);
+    Conv(Joined(prefix, n_.attention_proj), kVaeH, kVaeT, c, c, 1, h, w);
     Step({.kind = VaeStep::Kind::kAdd,
           .in = kVaeT,
           .out = kVaeX,
@@ -152,7 +136,7 @@ class VaeBuilder {
 
   void Build(std::uint32_t height, std::uint32_t width) {
     const std::uint32_t z = p_.z_dim;
-    Conv("post_quant_conv", kVaeX, kVaeH, z, z, 1, height, width);
+    Conv(n_.post_quant_conv, kVaeX, kVaeH, z, z, 1, height, width);
     // dims = [dim * u for u in [dim_mult[-1]] + dim_mult[::-1]]
     std::vector<std::uint32_t> dims = {p_.base * p_.dim_mult.back()};
     for (unsigned int it : std::views::reverse(p_.dim_mult)) {
@@ -160,15 +144,15 @@ class VaeBuilder {
     }
     std::uint32_t h = height;
     std::uint32_t w = width;
-    Conv("decoder.conv_in", kVaeH, kVaeX, z, dims[0], 3, h, w);
-    Residual("decoder.mid_block.resnets.0", dims[0], dims[0], h, w);
-    Attention("decoder.mid_block.attentions.0", dims[0], h, w);
-    Residual("decoder.mid_block.resnets.1", dims[0], dims[0], h, w);
+    Conv(n_.conv_in, kVaeH, kVaeX, z, dims[0], 3, h, w);
+    Residual(Named(n_.mid_resnet, 0), dims[0], dims[0], h, w);
+    Attention(n_.mid_attention, dims[0], h, w);
+    Residual(Named(n_.mid_resnet, 1), dims[0], dims[0], h, w);
     for (std::uint32_t i = 0; i + 1 < dims.size(); ++i) {
       const std::uint32_t cin = dims[i];
       const std::uint32_t cout = dims[i + 1];
       const bool up = i != p_.dim_mult.size() - 1;
-      const std::string prefix = std::format("decoder.up_blocks.{}", i);
+      const std::string prefix = Named(n_.up_block, i);
       if (up) {
         Step({.kind = VaeStep::Kind::kCopy,
               .in = kVaeX,
@@ -180,7 +164,7 @@ class VaeBuilder {
       }
       std::uint32_t c = cin;
       for (std::uint32_t r = 0; r < p_.res_blocks + 1; ++r) {
-        Residual(std::format("{}.resnets.{}", prefix, r), c, cout, h, w);
+        Residual(Joined(prefix, Named(n_.up_resnet, r)), c, cout, h, w);
         c = cout;
       }
       if (up) {
@@ -194,8 +178,7 @@ class VaeBuilder {
               .height = h,
               .width = w});
         // NOLINTNEXTLINE(readability-suspicious-call-argument): buffers, then channels
-        Conv(std::format("{}.upsampler.resample.1", prefix), kVaeH, kVaeX, cout, cout, 3, h * 2,
-             w * 2);
+        Conv(Joined(prefix, n_.upsampler), kVaeH, kVaeX, cout, cout, 3, h * 2, w * 2);
         Step({.kind = VaeStep::Kind::kAddDupUp,
               .in = kVaeX,
               .out = kVaeX,
@@ -209,8 +192,8 @@ class VaeBuilder {
         w *= 2;
       }
     }
-    NormSilu("decoder.norm_out.gamma", kVaeX, kVaeH, dims.back(), h, w);
-    Conv("decoder.conv_out", kVaeH, kVaeX, dims.back(), p_.out_channels, 3, h, w);
+    NormSilu(n_.norm_out, kVaeX, kVaeH, dims.back(), h, w);
+    Conv(n_.conv_out, kVaeH, kVaeX, dims.back(), p_.out_channels, 3, h, w);
   }
 
   std::vector<QwenImageTensor> tensors_;
@@ -218,77 +201,70 @@ class VaeBuilder {
 
  private:
   const QwenImageVaeProfile& p_;
+  const QwenImageVaeNames& n_;
 };
 
 float Round32(double v) { return static_cast<float>(v); }
 
 }  // namespace
 
-const QwenImageProfile& QwenImage21() {
-  static const QwenImageProfile profile = MakeQwenImage21();
-  return profile;
-}
-
-std::vector<QwenImageTensor> TextEncoderTensors(const QwenImageTextProfile& p) {
+std::vector<QwenImageTensor> TextEncoderTensors(const QwenImageTextProfile& p,
+                                                const QwenImageTextNames& names) {
   std::vector<QwenImageTensor> out;
   const std::uint64_t w = p.width;
   const std::uint64_t q = std::uint64_t{p.heads} * p.head_dim;
   const std::uint64_t kv = std::uint64_t{p.kv_heads} * p.head_dim;
-  out.push_back({"model.language_model.embed_tokens.weight", "BF16", Shape({p.vocab, w})});
-  for (std::uint32_t l = 0; l < p.layers; ++l) {
-    const std::string pre = std::format("model.language_model.layers.{}.", l);
-    out.push_back({pre + "input_layernorm.weight", "BF16", Shape({w})});
-    out.push_back({pre + "self_attn.q_proj.weight", "BF16", Shape({q, w})});
-    out.push_back({pre + "self_attn.k_proj.weight", "BF16", Shape({kv, w})});
-    out.push_back({pre + "self_attn.v_proj.weight", "BF16", Shape({kv, w})});
-    out.push_back({pre + "self_attn.o_proj.weight", "BF16", Shape({w, q})});
-    out.push_back({pre + "self_attn.q_norm.weight", "BF16", Shape({p.head_dim})});
-    out.push_back({pre + "self_attn.k_norm.weight", "BF16", Shape({p.head_dim})});
-    out.push_back({pre + "post_attention_layernorm.weight", "BF16", Shape({w})});
-    out.push_back({pre + "mlp.gate_proj.weight", "BF16", Shape({p.ffn, w})});
-    out.push_back({pre + "mlp.up_proj.weight", "BF16", Shape({p.ffn, w})});
-    out.push_back({pre + "mlp.down_proj.weight", "BF16", Shape({w, p.ffn})});
-  }
+  out.push_back({std::string(names.embedding), "BF16", Shape({p.vocab, w})});
+  // In TextTensor order.
+  const std::array<std::vector<std::uint64_t>, 11> shapes{
+      Shape({w}),        Shape({q, w}),       Shape({kv, w}),      Shape({kv, w}),
+      Shape({w, q}),     Shape({p.head_dim}), Shape({p.head_dim}), Shape({w}),
+      Shape({p.ffn, w}), Shape({p.ffn, w}),   Shape({w, p.ffn})};
+  for (std::uint32_t l = 0; l < p.layers; ++l)
+    for (std::size_t t = 0; t < shapes.size(); ++t)
+      out.push_back({Named(names.layer[t], l), "BF16", shapes[t]});
   return out;
 }
 
-std::vector<QwenImageTensor> DenoiserTensors(const QwenImageDenoiserProfile& p) {
+std::vector<QwenImageTensor> DenoiserTensors(const QwenImageDenoiserProfile& p,
+                                             const QwenImageDenoiserNames& names) {
   const std::uint64_t w = p.width;
-  std::vector<QwenImageTensor> out = {
-      {"img_in.weight", "BF16", Shape({w, p.in_channels})},
-      {"modulation.1.weight", "BF16", Shape({4 * w, w})},
-      {"time_text_embed.timestep_embedder.linear_1.weight", "BF16", Shape({w, p.timestep_dim})},
-      {"time_text_embed.timestep_embedder.linear_2.weight", "BF16", Shape({w, w})},
-      {"txt_in.text_norm.weight", "BF16", Shape({p.context})},
-      {"txt_in.in_layer.weight", "BF16", Shape({w, p.context})},
-      {"txt_in.out_layer.weight", "BF16", Shape({w, w})},
-      {"norm_out.linear.weight", "BF16", Shape({w, w})},
-      {"proj_out.weight", "BF16", Shape({p.out_channels, w})},
-  };
-  for (std::uint32_t b = 0; b < p.blocks; ++b) {
-    const std::string pre = std::format("transformer_blocks.{}.", b);
-    out.push_back({pre + "attn.to_q.weight", "BF16", Shape({w, w})});
-    out.push_back({pre + "attn.to_k.weight", "BF16", Shape({w, w})});
-    out.push_back({pre + "attn.to_v.weight", "BF16", Shape({w, w})});
-    out.push_back({pre + "attn.to_out.0.weight", "BF16", Shape({w, w})});
-    out.push_back({pre + "attn.norm_q.weight", "BF16", Shape({p.head_dim})});
-    out.push_back({pre + "attn.norm_k.weight", "BF16", Shape({p.head_dim})});
-    out.push_back({pre + "img_mlp.gate_layer.weight", "BF16", Shape({p.mlp, w})});
-    out.push_back({pre + "img_mlp.proj.weight", "BF16", Shape({p.mlp, w})});
-    out.push_back({pre + "img_mlp.out.weight", "BF16", Shape({w, p.mlp})});
-  }
+  // In DenoiserGlobal order.
+  const std::array<std::vector<std::uint64_t>, 9> globals{Shape({w, p.in_channels}),
+                                                          Shape({4 * w, w}),
+                                                          Shape({w, p.timestep_dim}),
+                                                          Shape({w, w}),
+                                                          Shape({p.context}),
+                                                          Shape({w, p.context}),
+                                                          Shape({w, w}),
+                                                          Shape({w, w}),
+                                                          Shape({p.out_channels, w})};
+  // In BlockTensor order.
+  const std::array<std::vector<std::uint64_t>, 9> block{
+      Shape({w, w}),     Shape({w, w}),       Shape({w, w}),
+      Shape({w, w}),     Shape({p.head_dim}), Shape({p.head_dim}),
+      Shape({p.mlp, w}), Shape({p.mlp, w}),   Shape({w, p.mlp})};
+  std::vector<QwenImageTensor> out;
+  for (std::size_t t = 0; t < globals.size(); ++t)
+    out.push_back({std::string(names.globals[t]), "BF16", globals[t]});
+  for (std::uint32_t b = 0; b < p.blocks; ++b)
+    for (std::size_t t = 0; t < block.size(); ++t)
+      out.push_back({Named(names.block[t], b), "BF16", block[t]});
   return out;
 }
 
-std::vector<QwenImageTensor> VaeDecoderTensors(const QwenImageVaeProfile& p) {
-  VaeBuilder b(p);
+std::vector<QwenImageTensor> VaeDecoderTensors(const QwenImageVaeProfile& p,
+                                               const QwenImageVaeNames& names) {
+  VaeBuilder b(p, names);
   b.Build(1, 1);
   return std::move(b.tensors_);
 }
 
 std::vector<VaeStep> VaeDecoderPlan(const QwenImageVaeProfile& p, std::uint32_t height,
                                     std::uint32_t width) {
-  VaeBuilder b(p);
+  // The steps name tensors by index; their names are not needed.
+  const QwenImageVaeNames names{};
+  VaeBuilder b(p, names);
   b.Build(height, width);
   return std::move(b.steps_);
 }
@@ -324,54 +300,43 @@ std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
 std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
     std::span<const QwenImageTensor> tensors, std::string_view want,
     const artifact::Artifact& artifact) {
-  if (artifact.format_version() == 0) {
-    std::vector<QwenImageResource> resources;
-    resources.reserve(artifact.resources().size());
-    for (const artifact::Resource& r : artifact.resources()) {
-      resources.push_back({.roles = r.roles,
-                           .family = artifact::FamilyName(r.repr.family),
-                           .dtype = r.repr.type,
-                           .shape = r.repr.dims});
-    }
-    return BindQwenImageComponent(tensors, want, artifact.model().architecture, resources);
+  if (artifact.format_version() != 1) {
+    return Refused(std::format(
+        "an image component reads version 1 prepared artifacts; artifact {} is format version {} "
+        "(D-118: re-import its source pipeline with `llmp import`)",
+        artifact.id(), artifact.format_version()));
   }
-  if (artifact.format_version() == 1) {
-    if (!artifact.expert_arrays().empty() || !artifact.folds().empty() ||
-        !artifact.relayouts().empty()) {
-      return Refused("Qwen-Image-2.1 component cannot have expert arrays, folds, or relayouts");
-    }
-    std::vector<QwenImageResource> resources;
-    resources.reserve(artifact.resources().size());
-    for (const artifact::Resource& r : artifact.resources()) {
-      const bool is_plain = r.format && r.part == format::PartRole::kData &&
-                            r.format->layout == format::Layout::kDense &&
-                            r.format->params == format::EncodingParams{} && r.format->stacked == 1;
-      std::string_view dtype;
-      if (r.format) {
-        if (r.format->encoding == format::Encoding::kBF16) {
-          dtype = "BF16";
-        } else if (r.format->encoding == format::Encoding::kF32) {
-          dtype = "F32";
-        }
-      }
-      std::vector<std::uint64_t> shape;
-      if (r.format) {
-        shape.reserve(r.format->shape.rank);
-        for (std::size_t d = 0; d < r.format->shape.rank; ++d) {
-          shape.push_back(r.format->shape.ne[r.format->shape.rank - 1 - d]);
-        }
-      }
-      resources.push_back({.roles = r.roles,
-                           .family = is_plain ? "plain" : "other",
-                           .dtype = dtype,
-                           .shape = std::move(shape)});
-    }
-    return BindQwenImageComponent(tensors, want, artifact.model().architecture, resources);
+  if (!artifact.expert_arrays().empty() || !artifact.folds().empty() ||
+      !artifact.relayouts().empty()) {
+    return Refused("an image component cannot have expert arrays, folds, or relayouts");
   }
-  return Refused(
-      std::format("Qwen-Image-2.1 reads version 0 or 1 prepared artifacts; artifact {} is format "
-                  "version {} (D-113)",
-                  artifact.id(), artifact.format_version()));
+  std::vector<QwenImageResource> resources;
+  resources.reserve(artifact.resources().size());
+  for (const artifact::Resource& r : artifact.resources()) {
+    const bool is_plain = r.format && r.part == format::PartRole::kData &&
+                          r.format->layout == format::Layout::kDense &&
+                          r.format->params == format::EncodingParams{} && r.format->stacked == 1;
+    std::string_view dtype;
+    if (r.format) {
+      if (r.format->encoding == format::Encoding::kBF16) {
+        dtype = "BF16";
+      } else if (r.format->encoding == format::Encoding::kF32) {
+        dtype = "F32";
+      }
+    }
+    std::vector<std::uint64_t> shape;
+    if (r.format) {
+      shape.reserve(r.format->shape.rank);
+      for (std::size_t d = 0; d < r.format->shape.rank; ++d) {
+        shape.push_back(r.format->shape.ne[r.format->shape.rank - 1 - d]);
+      }
+    }
+    resources.push_back({.roles = r.roles,
+                         .family = is_plain ? "plain" : "other",
+                         .dtype = dtype,
+                         .shape = std::move(shape)});
+  }
+  return BindQwenImageComponent(tensors, want, artifact.model().architecture, resources);
 }
 
 // ---------------------------------------------------------------- host arithmetic
@@ -445,13 +410,13 @@ std::expected<QwenImageSchedule, std::string> QwenImageSchedulerSigmas(
 }
 
 std::vector<std::uint16_t> QwenImageTimestepSinusoid(const QwenImageDenoiserProfile& p, float t) {
-  // t.to(bf16), then / 1000 in BF16, then the [t, 0] rows.
-  const float scaled = FromBf16(ToBf16(FromBf16(ToBf16(t)) / 1000.0f));
+  // t.to(bf16), then / the divisor in BF16, then the [t, 0] rows.
+  const float scaled = FromBf16(ToBf16(FromBf16(ToBf16(t)) / p.timestep_divisor));
   const std::uint32_t half = p.timestep_dim / 2;
   std::vector<std::uint16_t> out(2 * std::size_t{p.timestep_dim});
-  const auto log_period = static_cast<float>(-std::log(10000.0));
+  const auto log_period = static_cast<float>(-std::log(p.timestep_period));
   for (std::uint32_t row = 0; row < 2; ++row) {
-    const float ts = 1000.0f * (row == 0 ? scaled : 0.0f);
+    const float ts = p.timestep_scale * (row == 0 ? scaled : 0.0f);
     for (std::uint32_t i = 0; i < half; ++i) {
       const float freq = Round32(std::exp(
           static_cast<double>((log_period * static_cast<float>(i)) / static_cast<float>(half))));

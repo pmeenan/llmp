@@ -22,6 +22,7 @@
 #include "components/step.h"
 #include "platform/direct_io.h"
 #include "runtime/approvals.h"
+#include "spec/image_family.h"
 #include "spec/stored.h"
 
 namespace llmp::runtime {
@@ -103,6 +104,11 @@ bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
              !f.params.tensor_scale && f.params.k_bits == 0 &&
              f.params.codebook == format::Exl3Codebook::kNone && geometry;
     }
+    case InventoryForm::kDense:
+      return (f.encoding == format::Encoding::kBF16 || f.encoding == format::Encoding::kF32) &&
+             f.layout == format::Layout::kDense && t.part == format::PartRole::kData &&
+             f.params == format::EncodingParams{} && !t.experts && f.shape.rank >= 1 &&
+             f.shape.rank <= 4;
     case InventoryForm::kGguf:
       break;
   }
@@ -582,6 +588,65 @@ std::uint32_t ApprovedDefaultContext(const Approval& approval) {
     }
   }
   return widest != 0 ? std::min(widest, approval.max_context) : approval.max_context;
+}
+
+std::expected<ImageAdmission, std::string> ReadImageAdmission(
+    const artifact::Composition& composition,
+    std::span<const artifact::Artifact* const> components) {
+  if (composition.format_version() != 1)
+    return Refused(std::format(
+        "composition {} ({}) is format version {}; serving reads version 1 only (D-118): "
+        "re-import its source pipeline with `llmp import SOURCE --store DIRECTORY` and configure "
+        "the new composition ID",
+        composition.id(), composition.architecture(), composition.format_version()));
+  const spec::ImageMapping* mapping = spec::FindImageMapping(composition.architecture());
+  if (mapping == nullptr) return Refused("the composition's architecture has no image mapping");
+  const ImageApproval* approval =
+      FindImageApproval(composition.architecture(), composition.sources());
+  if (approval == nullptr)
+    return Refused("the composition's source identity has no approved image pipeline");
+  const auto& named = composition.components();
+  if (named.size() != mapping->components.size() || components.size() != named.size() ||
+      approval->components.size() != named.size())
+    return Refused("the composition's components are not its image mapping's");
+  // Each component: its approved source, inventory and stored spec.
+  for (std::size_t i = 0; i < named.size(); ++i) {
+    const auto& rule = mapping->components[i];
+    const Approval& want = approval->components[i];
+    const artifact::Artifact* a = components[i];
+    if (a == nullptr || named[i].role != rule.role || a->id() != named[i].artifact ||
+        a->format_version() != 1 || a->model().architecture != want.architecture ||
+        !std::ranges::contains(rule.architectures, want.architecture))
+      return Refused(std::format("image component {} is not its approved artifact", rule.role));
+    if (!SourcesMatch(want.sources, a->sources()) || !Transforms(*a, want) ||
+        a->resources().size() != want.tensors || !a->expert_arrays().empty())
+      return Refused(std::format("image component {}'s source identity or inventory is not {}'s",
+                                 rule.role, want.name));
+    auto source = spec::SourceOf(*a);
+    if (!source) return Refused(source.error());
+    if (!SourceMatches(*source, want))
+      return Refused("source container, transforms or tensor inventory differs from its profile");
+    if (auto inventory = Inventory(*source, want); !inventory)
+      return std::unexpected(inventory.error());
+    auto stored = spec::StoredSpec(*a);
+    if (!stored) return Refused(stored.error());
+    if (auto pinned = Pinned(want, *stored); !pinned) return std::unexpected(pinned.error());
+    if (const auto valid = components::ValidateSpec(*stored, source->tensors); !valid)
+      return Refused(valid.error());
+  }
+  // The family spec the composition stores, the approved one, read back
+  // through its mapping's schema.
+  auto family = spec::StoredSpec(composition, components);
+  if (!family) return Refused(family.error());
+  if (const auto actual = base::ToHex(family->Digest()); actual != approval->spec)
+    return Refused(std::format("the family spec ({}) is not the one approved for {} ({})", actual,
+                               approval->name, approval->spec));
+  auto profile = spec::ImageProfileOf(*family, *mapping);
+  if (!profile) return Refused(profile.error());
+  return ImageAdmission{.mapping = mapping,
+                        .approval = approval,
+                        .family = std::move(*family),
+                        .profile = std::move(*profile)};
 }
 
 std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval& approval,

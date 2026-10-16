@@ -17,7 +17,10 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "artifact/composition.h"
+#include "model/qwen_image.h"
 #include "runtime/approvals.h"
+#include "spec/image_family.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
 
@@ -113,6 +116,22 @@ std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
 // and that join owners (a rule bounded by context, not an owners-alone
 // one), else its envelope's.
 std::uint32_t ApprovedDefaultContext(const Approval& approval);
+
+// An image pipeline's admission (spec/image_family.h): a v1 composition
+// whose architecture has an image mapping and whose kept files are an
+// approved pipeline's (ImageApproval), its components (opened in the
+// composition's order) each its approved source, dense inventory and
+// pinned component spec, and the family spec it stores the pinned one,
+// read back as the model's profile.
+struct ImageAdmission {
+  const spec::ImageMapping* mapping = nullptr;
+  const ImageApproval* approval = nullptr;
+  spec::ModelSpec family;
+  model::QwenImageProfile profile;
+};
+std::expected<ImageAdmission, std::string> ReadImageAdmission(
+    const artifact::Composition& composition,
+    std::span<const artifact::Artifact* const> components);
 
 // The approval's planning policy rule for an envelope (its mapping's first
 // rule whose gate, by the approval's gates, and envelope hold; null: none).

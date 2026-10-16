@@ -616,28 +616,151 @@ constexpr std::array kApprovals{
              .target = "deepseek-v4-flash-0731-ud-q2_k_xl"},
 };
 
+// Qwen-Image-2.1 (Qwen/Qwen-Image-2.1@790c9263): the pipeline's kept files
+// and its components' sources, as `llmp import` declared them from the
+// staged, archive-verified pipeline; the family spec and component specs
+// the importer synthesized (spec/mappings/qwen_image.cc), executed at the
+// pixel pin (docs/model-support.md).
+constexpr std::array kQwenImageSources{
+    SourceReceipt{"added_tokens.json",
+                  "c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680", 707ULL},
+    SourceReceipt{"chat_template.jinja",
+                  "3636d0f0bd6bef02654cdffdc447b79cb2cef8ab02cc75267345946291a489e4", 5292ULL},
+    SourceReceipt{"merges.txt", "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+                  1671853ULL},
+    SourceReceipt{"model_index.json",
+                  "cf1ecd104ea090855d60d8cec0895c1e9d6ee41b2f87e231b678beecd1cf7809", 447ULL},
+    SourceReceipt{"preprocessor_config.json",
+                  "93585062a80db5e8ca038efc7726a3e6411d9db948472d81d63c6303993be8c5", 782ULL},
+    SourceReceipt{"scheduler_config.json",
+                  "5895f3a167c14a967fe9ac70c64924ae5acc79799e0679fd12907e594a713cd1", 485ULL},
+    SourceReceipt{"special_tokens_map.json",
+                  "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd", 613ULL},
+    SourceReceipt{"tokenizer.json",
+                  "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4", 11422654ULL},
+    SourceReceipt{"tokenizer_config.json",
+                  "81ec7bb9530159b326c0bef1d0b6c33d392090524014ea3f0123a3c1eb9c2af5", 5445ULL},
+    SourceReceipt{"video_preprocessor_config.json",
+                  "59c5c9eb52182eb14c06ffb10ca9effd29adce5f238a95de23ca14a38dbd2cb1", 817ULL},
+    SourceReceipt{"vocab.json", "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+                  2776833ULL},
+};
+
+constexpr std::array kQwenImageTextSources{
+    SourceReceipt{"config.json", "6001331949f7f86ab6d791a80b12246d4f8da5159fa08c3e62368a39f36d63a9",
+                  1517ULL},
+    SourceReceipt{"model-00001-of-00004.safetensors",
+                  "dde00291b5f7fb92013895310a3da0ddba78674df9f10d505d375243dc01fc6f",
+                  4998056552ULL},
+    SourceReceipt{"model-00002-of-00004.safetensors",
+                  "9047faccc0a6d98496a52d55f27be1c94a9c259d1e283fbea0128d054a948d42",
+                  4915962464ULL},
+    SourceReceipt{"model-00003-of-00004.safetensors",
+                  "8c54187654c0176b73ae73785bf791dc9a14c9df7fb4310083a09d42048cb57e",
+                  4915962496ULL},
+    SourceReceipt{"model-00004-of-00004.safetensors",
+                  "5311532aaaeae3259eb6a7b2c600636be1159adf7ded35f53579f7d0e7d43cdd",
+                  2704357976ULL},
+    SourceReceipt{"model.safetensors.index.json",
+                  "859146bff8db1d617fca8b457a5223edff963bb70076b3645f2189fe0540a147", 67795ULL},
+};
+
+constexpr std::array kQwenImageTransformerSources{
+    SourceReceipt{"config.json", "56ae3281c4e6c2d1aa3658252d187488071815fd79bef15808bb0205fc1a2241",
+                  370ULL},
+    SourceReceipt{"diffusion_pytorch_model-00001-of-00002.safetensors",
+                  "9e6bc2d641e67bf277895ea8777141044a38f3edb7101bc469b2961dd7c36b4b",
+                  9968332504ULL},
+    SourceReceipt{"diffusion_pytorch_model-00002-of-00002.safetensors",
+                  "3aaf234dcbe128530479735854a346b5e3e66283b7c11db56f836bbd1c13ebaa",
+                  4261951904ULL},
+    SourceReceipt{"diffusion_pytorch_model.safetensors.index.json",
+                  "17987f6623b1c814d0ef55a137d99142b7b3b040eb1bf241b5575dd35af803a2", 30283ULL},
+};
+
+constexpr std::array kQwenImageVaeSources{
+    SourceReceipt{"config.json", "9785d527b278cb8b210e9f48a8028d92a4190968ce7e24c8fc85d9d1b82f6ba2",
+                  2079ULL},
+    SourceReceipt{"diffusion_pytorch_model.safetensors",
+                  "a07a1b7c4ee2966a1b3bdc37de9b4f983d56937e46619f709a80b6e490675417",
+                  1350989512ULL},
+};
+
+constexpr std::array kQwenImageComponents{
+    Approval{.name = "qwen-image-2.1-text-encoder",
+             .label = "QwenImage21",
+             .architecture = "qwen3_vl",
+             .container = "safetensors",
+             .sources = kQwenImageTextSources,
+             .tensors = 397,
+             .form = InventoryForm::kDense,
+             .inventory = "11829262ca3bf720fc5608a424668b1c3a2cb26f80971b1460ede5fca6317d5e",
+             .spec = "3fe8500eee57f69da669e70a05de39447e4765880417f9ab00d2f277a0392e66",
+             .policy = ApprovedPolicy::kNone},
+    Approval{.name = "qwen-image-2.1-transformer",
+             .label = "QwenImage21",
+             .architecture = "QwenImage21Transformer2DModel",
+             .container = "safetensors",
+             .sources = kQwenImageTransformerSources,
+             .tensors = 297,
+             .form = InventoryForm::kDense,
+             .inventory = "984e1dd57dbe7ad5011c4bdbcee19bea18529ee1d4086e9428fd278f225849e9",
+             .spec = "bfd3893351dcb7bddce98a2603adbbee75435b3acc82a1c07cec04101f4fdb61",
+             .policy = ApprovedPolicy::kNone},
+    Approval{.name = "qwen-image-2.1-vae",
+             .label = "QwenImage21",
+             .architecture = "AutoencoderKLQwenImage21",
+             .container = "safetensors",
+             .sources = kQwenImageVaeSources,
+             .tensors = 128,
+             .form = InventoryForm::kDense,
+             .inventory = "dc21b79eddff66b8cc71a7297ab47cebb7875ee18509cde02312c30e934a485b",
+             .spec = "9a87db5d534f1cf6399fb8935e139077e014d28f8a36e32a175abb16c79d6dd0",
+             .policy = ApprovedPolicy::kNone},
+};
+
+constexpr std::array kImageApprovals{
+    ImageApproval{.name = "qwen-image-2.1",
+                  .label = "QwenImage21",
+                  .architecture = "QwenImage21Pipeline",
+                  .sources = kQwenImageSources,
+                  .spec = "ef266ac1b35803f731982a027d31e3656eb31ddd7fde94f4d549bc70ef70a88a",
+                  .components = kQwenImageComponents},
+};
+
 }  // namespace
 
 std::span<const Approval> Approvals() { return kApprovals; }
+std::span<const ImageApproval> ImageApprovals() { return kImageApprovals; }
+
+bool SourcesMatch(std::span<const SourceReceipt> receipts,
+                  std::span<const artifact::Source> sources) {
+  if (receipts.size() != sources.size()) return false;
+  return std::ranges::all_of(receipts, [&](const SourceReceipt& r) {
+    return std::ranges::count_if(sources, [&](const artifact::Source& s) {
+             return s.name == r.name && s.bytes.value() == r.bytes &&
+                    base::ToHex(s.sha256) == r.sha256;
+           }) == 1;
+  });
+}
 
 const Approval* FindApproval(std::string_view architecture,
                              std::span<const artifact::Source> sources) {
-  for (const Approval& a : kApprovals) {
-    if (a.architecture != architecture || a.sources.size() != sources.size()) continue;
-    const bool matched = std::ranges::all_of(a.sources, [&](const SourceReceipt& r) {
-      return std::ranges::count_if(sources, [&](const artifact::Source& s) {
-               return s.name == r.name && s.bytes.value() == r.bytes &&
-                      base::ToHex(s.sha256) == r.sha256;
-             }) == 1;
-    });
-    if (matched) return &a;
-  }
+  for (const Approval& a : kApprovals)
+    if (a.architecture == architecture && SourcesMatch(a.sources, sources)) return &a;
   return nullptr;
 }
 
 const Approval* FindApprovalNamed(std::string_view name) {
   const auto found = std::ranges::find(kApprovals, name, &Approval::name);
   return found == kApprovals.end() ? nullptr : &*found;
+}
+
+const ImageApproval* FindImageApproval(std::string_view architecture,
+                                       std::span<const artifact::Source> sources) {
+  for (const ImageApproval& a : kImageApprovals)
+    if (a.architecture == architecture && SourcesMatch(a.sources, sources)) return &a;
+  return nullptr;
 }
 
 }  // namespace llmp::runtime

@@ -32,12 +32,14 @@
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
-#include "fixture_source.h"
+#include "image_family.h"
+#include "image_published.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/step_program.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "spec/image_spatial.h"
+#include "spec/stored.h"
 
 namespace {
 namespace en = llmp::engine;
@@ -58,8 +60,7 @@ constexpr std::uint64_t kCompilerAndOwner = 64 * kMiB, kProgram = 8 * kMiB;
 constexpr std::uint64_t kActivation = 64 * kMiB, kPool = 2 * kMiB;
 constexpr std::uint64_t kPinned = 32 * kMiB, kOutputOffset = 2 * kMiB;
 constexpr std::uint64_t kWeightOffset = 26 * kMiB;
-constexpr std::string_view kArtifact =
-    "44c1a20a202ce1078588cbd4b0c594bbadf365a01f26091c715fd16d5b2eb34d";
+const std::string kArtifact = llmp::test_support::QwenImageVae();
 constexpr std::array<std::string_view, 6> kNames{"post_quant_conv.weight",
                                                  "post_quant_conv.bias",
                                                  "decoder.conv_in.weight",
@@ -249,20 +250,21 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
   life.paid = *paid;
   if (!life.paid->Charge(kCompilerAndOwner)) return Error("preconstruction payment");
   std::error_code ec;
-  if (std::filesystem::file_size(path / "manifest.json", ec) != 991 || ec ||
-      std::filesystem::file_size(path / "index.json", ec) != 99639 || ec)
+  if (std::filesystem::file_size(path / "manifest.json", ec) != 1312 || ec ||
+      std::filesystem::file_size(path / "index.json", ec) != 68162 || ec)
     return Error("fixed metadata extent");
   if (auto r = life.weights.Open(path, {.expected_id = std::string(kArtifact)}); !r) return r;
   const auto& artifact = life.weights.artifact();
-  if (artifact.resources().size() != 238 || artifact.groups().size() != 6 ||
-      artifact.shards().size() != 1 || artifact.format_version() != 0)
+  if (artifact.resources().size() != 128 || artifact.groups().size() != 6 ||
+      artifact.shards().size() != 1 || artifact.format_version() != 1)
     return Error("opened VAE inventory");
-  const auto tensors = mo::VaeDecoderTensors(mo::QwenImage21().vae);
+  const auto tensors = mo::VaeDecoderTensors(::llmp::test_support::QwenImageProfile().vae,
+                                             ::llmp::test_support::QwenImageNames().vae);
   auto bound = mo::BindQwenImageComponent(tensors, "AutoencoderKLQwenImage21", artifact);
   if (!bound) return Error(bound.error());
-  auto source = llmp::test_support::V0ArtifactSource(artifact);
+  auto source = sp::SourceOf(artifact);
   if (!source) return Error(source.error());
-  if (source->tensors.size() != 238) return Error("fixed source tensor metadata");
+  if (source->tensors.size() != 128) return Error("fixed source tensor metadata");
   std::vector<en::GroupPlace> groups(6, en::GroupPlace::kNone);
   std::uint64_t offset = life.weight_offset;
   for (std::size_t i = 0; i < kNames.size(); ++i) {
@@ -279,11 +281,12 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
   if (offset != life.weight_offset + kTotalWeightBytes || offset > life.pinned)
     return Error("weight host layout");
   if (auto r = life.weights.Reserve(life.node, groups, {}); !r) return r;
-  if (life.weights.bytes() != 555745280ULL || life.weights.host_bytes() != 0 ||
-      life.weights.extents().size() != 265)
-    return Error("reserved source page geometry");
+  if (life.weights.bytes() != 241172480ULL || life.weights.host_bytes() != 0 ||
+      life.weights.extents().size() != 115)
+    return Error(std::format("reserved source page geometry: {} bytes, {} extents",
+                             life.weights.bytes(), life.weights.extents().size()));
 
-  auto steps = mo::VaeDecoderPlan(mo::QwenImage21().vae, 64, 64);
+  auto steps = mo::VaeDecoderPlan(::llmp::test_support::QwenImageProfile().vae, 64, 64);
   std::array<std::vector<mo::VaeStep>, 2> spans;
   spans[0].assign(steps.begin(), steps.begin() + 2);
   for (std::size_t i = 0; i + 1 < steps.size(); ++i) {
@@ -626,9 +629,7 @@ en::Status Execute(Lifetime& life) {
 }
 
 void RunFixture(bool pointwise) {
-  const auto* path = std::getenv("LLMP_TEST_VAE_ARTIFACT");
-  if (path == nullptr)
-    GTEST_SKIP() << "needs LLMP_TEST_VAE_ARTIFACT (an installed Qwen-Image VAE artifact)";
+  const auto path = llmp::test_support::QwenImagePublished(kArtifact);
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
   auto setup = SetupFixture(*life, path, pointwise);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");
@@ -895,9 +896,7 @@ en::Status ExecuteTiled(Lifetime& life, bool small) {
       });
 }
 void TiledSourceCase(bool small) {
-  const auto* path = std::getenv("LLMP_TEST_VAE_ARTIFACT");
-  if (path == nullptr)
-    GTEST_SKIP() << "needs LLMP_TEST_VAE_ARTIFACT (an installed Qwen-Image VAE artifact)";
+  const auto path = llmp::test_support::QwenImagePublished(kArtifact);
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
   auto setup = SetupFixture(*life, path, false, small ? 7U : 128U, small ? 5U : 128U);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");

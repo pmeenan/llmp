@@ -32,11 +32,13 @@
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
-#include "fixture_source.h"
+#include "image_family.h"
+#include "image_published.h"
 #include "kernels/ggml/step_program.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "spec/image_spatial.h"
+#include "spec/stored.h"
 
 namespace {
 namespace en = llmp::engine;
@@ -57,8 +59,7 @@ constexpr std::uint64_t kCompilerAndOwner = 128 * kMiB, kProgram = 8 * kMiB;
 constexpr std::uint64_t kActivation = 64 * kMiB, kPool = 2 * kMiB;
 constexpr std::uint64_t kPinned = 8 * kMiB, kOutputOffset = kMiB;
 constexpr std::uint64_t kWeightOffset = 2 * kMiB;
-constexpr std::string_view kArtifact =
-    "44c1a20a202ce1078588cbd4b0c594bbadf365a01f26091c715fd16d5b2eb34d";
+const std::string kArtifact = llmp::test_support::QwenImageVae();
 constexpr std::array<std::string_view, 4> kNames{"post_quant_conv.weight", "post_quant_conv.bias",
                                                  "decoder.conv_in.weight", "decoder.conv_in.bias"};
 constexpr std::array<std::uint64_t, 4> kWeightBytes{16384, 256, 2654208, 4608};
@@ -207,20 +208,21 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   life.paid = *paid;
   if (!life.paid->Charge(kCompilerAndOwner)) return Error("preconstruction payment");
   std::error_code ec;
-  if (std::filesystem::file_size(path / "manifest.json", ec) != 991 || ec ||
-      std::filesystem::file_size(path / "index.json", ec) != 99639 || ec)
+  if (std::filesystem::file_size(path / "manifest.json", ec) != 1312 || ec ||
+      std::filesystem::file_size(path / "index.json", ec) != 68162 || ec)
     return Error("fixed metadata extent");
   if (auto r = life.weights.Open(path, {.expected_id = std::string(kArtifact)}); !r) return r;
   const auto& artifact = life.weights.artifact();
-  if (artifact.resources().size() != 238 || artifact.groups().size() != 6 ||
-      artifact.shards().size() != 1 || artifact.format_version() != 0)
+  if (artifact.resources().size() != 128 || artifact.groups().size() != 6 ||
+      artifact.shards().size() != 1 || artifact.format_version() != 1)
     return Error("opened VAE inventory");
-  const auto tensors = mo::VaeDecoderTensors(mo::QwenImage21().vae);
+  const auto tensors = mo::VaeDecoderTensors(::llmp::test_support::QwenImageProfile().vae,
+                                             ::llmp::test_support::QwenImageNames().vae);
   auto bound = mo::BindQwenImageComponent(tensors, "AutoencoderKLQwenImage21", artifact);
   if (!bound) return Error(bound.error());
-  auto source = llmp::test_support::V0ArtifactSource(artifact);
+  auto source = sp::SourceOf(artifact);
   if (!source) return Error(source.error());
-  if (source->tensors.size() != 238) return Error("fixed source tensor metadata");
+  if (source->tensors.size() != 128) return Error("fixed source tensor metadata");
   if (tensors.size() != 128 || bound->size() != 128) return Error("decoder source inventory");
   std::vector<en::GroupPlace> groups(6, en::GroupPlace::kNone);
   std::vector<co::BoundTensor> decoder_tensors;
@@ -253,11 +255,12 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   if (offset != kWeightOffset + kReferenceWeightBytes || offset > kPinned)
     return Error("bounded reference source layout");
   if (auto r = life.weights.Reserve(life.node, groups, {}); !r) return r;
-  if (life.weights.bytes() != 1356857344ULL || life.weights.host_bytes() != 0 ||
-      life.weights.extents().size() != 647)
-    return Error("reserved source page geometry");
+  if (life.weights.bytes() != 1017118720ULL || life.weights.host_bytes() != 0 ||
+      life.weights.extents().size() != 485)
+    return Error(std::format("reserved source page geometry: {} bytes, {} extents",
+                             life.weights.bytes(), life.weights.extents().size()));
 
-  const auto steps = mo::VaeDecoderPlan(mo::QwenImage21().vae, 2, 2);
+  const auto steps = mo::VaeDecoderPlan(::llmp::test_support::QwenImageProfile().vae, 2, 2);
   if (steps.size() != 113) return Error("complete first-frame source plan");
   const std::array<std::span<const co::BoundTensor>, 1> tables{decoder_tensors};
   for (std::size_t i = 0; i < 2; ++i) {
@@ -380,7 +383,8 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   }
   std::ranges::sort(selected);
   selected.erase(std::unique(selected.begin(), selected.end()), selected.end());
-  if (selected.size() != 486) return Error("selected source-page closure");
+  if (selected.size() != 485)
+    return Error(std::format("selected source-page closure: {}", selected.size()));
   life.selected_pages = selected.size();
   append(selected);
   auto closure = life.node.catalog().ClosureOfExtents(extents);
@@ -554,9 +558,7 @@ en::Status Execute(Lifetime& life) {
 }
 
 TEST(ImageWholeVaeGpuTest, CompleteFirstFrameUsesSharedProgramsAndCompletedReplay) {
-  const auto* path = std::getenv("LLMP_TEST_VAE_ARTIFACT");
-  if (path == nullptr)
-    GTEST_SKIP() << "needs LLMP_TEST_VAE_ARTIFACT (an installed Qwen-Image VAE artifact)";
+  const auto path = llmp::test_support::QwenImagePublished(kArtifact);
   std::unique_ptr<Lifetime, Retire> life(new Lifetime);
   auto setup = SetupFixture(*life, path);
   ASSERT_TRUE(setup) << Failed(setup).value_or("");
@@ -572,8 +574,8 @@ TEST(ImageWholeVaeGpuTest, CompleteFirstFrameUsesSharedProgramsAndCompletedRepla
   RecordProperty("whole_output_values", "4096");
   RecordProperty("reference_output_values", "4608");
   RecordProperty("decoder_source_parts", "128");
-  RecordProperty("reserved_weight_bytes", "1356857344");
-  RecordProperty("selected_weight_page_bytes", "1019215872");
+  RecordProperty("reserved_weight_bytes", "1017118720");
+  RecordProperty("selected_weight_page_bytes", "1017118720");
   RecordProperty("whole_compiler_metadata_bytes",
                  std::to_string(life->cases[1].graph->metadata_bytes()));
   RecordProperty("reference_source_bytes", std::to_string(kReferenceWeightBytes));
