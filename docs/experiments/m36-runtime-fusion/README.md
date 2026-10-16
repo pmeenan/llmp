@@ -255,10 +255,12 @@ so this is speed over bit-exactness at the same quality, not a quality
 trade. Both apply at any geometry and width their kernels take (a BF16
 sum up to 8,192 channels); their quality is qualified at 1024² on the
 model's width (4,096), the one diffusers reference retained; a second
-geometry needs its own reference. The blocks share their conditioning rows, so the
-split patterns read the two vectors directly and leave the shared rows to
-their other readers (two dead row concatenations a step remain, about
-22 ms a generation).
+geometry needs its own reference. The split patterns read the two
+conditioning vectors directly and leave the rows they were repeated into
+unread; the first block joined its text and latent rows twice, once for its
+norm and once for its residual (two 64 MiB row concatenations a step,
+about 47 ms a generation). Sub-task 5's planner drops the unread rows and
+joins the rows once (below).
 
 The VAE's three matchers now never apply in production either: the
 decoder's plan selects the tiled convolution with its bias, the
@@ -336,3 +338,120 @@ against the frozen legacy arm (`1facc957`, primed, ABBA) reads +1.42%
 
 Raw records on `spark`: `~/scratch/m36-image-screen09`,
 `~/scratch/m36-image-plan/q4`, `~/scratch/m36-image-plan/dg-{old,new}.log`.
+
+## The speed gap (sub-task 5)
+
+An nsys pair of the sub-task 3 state against the frozen legacy arm placed
+the +1.42% in: the text encoder's window (246 ms against 133, the same
+72.5 ms of kernels: the first generation's plan builds and the cuBLAS and
+cuBLASLt libraries its first products load, `cuLibraryLoadData`, which
+`CUDA_MODULE_LOADING=EAGER` does not move), each denoising step's
+upload of its 68 MB mask and its rebuilt mask pack and rope table, the
+VAE's channel norm (126 ms against 68), the first block's input rows
+joined twice a step, the output norm's 64 MiB row copy, and the
+conditioning products. Each fix is general:
+
+1. **Inputs unchanged since the last run** (planner/plan.h
+   `PlanOptions::invariant`, `StepPlan::prologue`;
+   `StepProgram::RunWarm`): a caller declares inputs it keeps the same
+   between consecutive runs of a plan; the steps that read only them
+   (and weights) form a prologue whose results placement keeps whole, and
+   a warm run skips the prologue and those inputs' copies (host staging or
+   device port). The image's denoiser declares its text rows, positions
+   and mask (`ImageStage::invariant`), so a generation uploads the mask,
+   packs it, builds the rope table and projects the text rows once. LLMs
+   declare none yet.
+2. **Plans and recordings at load** (`EngineImage::AfterLoad`;
+   `StepRuns::CaptureAhead` takes a run's device copies and its warm
+   form; the plans are the load's `PlanStep`'s, so no charge reclaims one
+   whose capture is pending, and a plan the load cannot make is left to
+   the first request): before the swap is ready the image plans every stage and records
+   each run its sequence makes, so the first generation replays them; the
+   recording loads the libraries. This moves time, it does not remove it:
+   on a first load the model is ready about 0.24 s later and generates as
+   much faster (the gate's `generation_s` starts at ready). Plans and
+   recordings outlive a swap out, so a prepared swap pays nothing; a
+   `swap-table` pair (`qwen3.8:image`, first use, 8K context) read
+   LLM→image 3.877 s before and 3.933 s after (setup 0.004 → 0.193 s,
+   first output 1.477 → 1.374 s) and image→LLM 6.010 s and 6.002 s.
+3. **Repeats and unread nodes** (planner/plan.cc `Repeats`, `Unread`):
+   after the patterns a node equal to an earlier one runs once and a node
+   nothing needs is dropped. The image's block input rows are joined once
+   (one 64 MiB concatenation a step, −23 ms a generation). Neither joins
+   nor drops a leaf, a write in place or communication, and no node that
+   reads or makes a root written in place (a store's cache, a state) is
+   joined (`WrittenRoots`). In LLM plans (a temporary hook logging every
+   plan's input digest, policy, planned-graph digest and implementations,
+   over the lowering tests, the frozen v1 proofs and Qwen3.8 ModelOpt's
+   CUTLASS screens, on main `f09e7994` and on this state: 3,076 plans)
+   64 plans change, all Qwen3.8's but 2: ModelOpt CUTLASS 43 of 206,
+   native GGML NVFP4 11 of 44, GGUF 8 of 35 (their layers' equal masks
+   built once, 20 or 22 a plan, and a few conversions, masks, views or
+   row gathers left unread dropped); DeepSeek's 12 and Gemma's are
+   unchanged. The tests and proofs pass.
+4. **The output norm joined with the last residual**
+   (`split_gated_residual_modulate` version 2): the modulation may read a
+   range of whole rows of the sum (a view, copied or not): norm and
+   modulation are row-wise, so the joined node modulates every row and the
+   output projection reads the latent rows of it; the sum nothing else
+   reads is recorded in BF16. The 64 MiB row copy and a pass over the sum
+   go (−24.5 ms of device copies, −15 ms of kernels).
+5. **The VAE's channel norm** (`SpatialChannelNormTiledF32Kernel`, up to
+   1,024 channels): 32 pixels a block, their channels dealt over 8 or 16
+   warps and held in registers, so the input is read once (1,024²: 6.7 ms
+   a call against 10.2). The channel sums' order changes, so the pixels
+   change (pin `93356574…`) at the same quality: PSNR 41.26 dB, luma SSIM
+   0.99419 against `9de442f1…`. BF16 VAE activations were not needed.
+6. The conditioning products were left: the screen was below +0.5%.
+
+What remains against legacy is kernel time (nsys, `item5b` against `old1`,
+excluding the products and attention, whose run-to-run spread is larger):
+the F32 VAE (convolutions +48 ms, norms +20, adds +23, against legacy's
+BF16 activations), the joined residual and modulation (+43), the SwiGLU
+(+33) and the conditioning products (`mul_mat_f`, +37; legacy's `Kernel2`
+−30).
+
+**Gate, Spark A, 2026-10-16** (`tools/speed_gate.py`, 1,024², 40 steps, 6
+primed ABBA blocks against the frozen legacy arm `1facc957`): **PASS**,
+`generation_s` +0.22% (upper bound +0.37%, sd 0.14%; legacy 33.792 s, new
+33.867 s); peak memory +0.83 GiB (informational). Ready after load is
+2.389 s against 2.633 s, so ready plus generation is +0.88%. The two-block
+screens read +1.17% after item 1 of this list, +0.60% after item 2,
++0.24% after all five.
+
+After the review's fixes (writes in place kept out of repeats and the
+prologue, an invariant input the prologue cannot hold copied every run,
+roots placed inside others the prologue's only together, a lowered step
+that joins prologue and per-run steps refused, warmness by plan serial and
+reset by a newly opened lease, the load's plans its own `PlanStep`'s, no
+recording ahead while another model holds the pageable workspace) and on
+main `f05323d1` (the workspace paged with the active model), the pixels
+are unchanged (`93356574…`). The image now needs 3.52 GiB of activations
+and 0.08 GiB of pool (legacy: 2.81 GiB), 32.03 GiB resident while active
+(`ActiveFootprint`). **Gate again, Spark A, 2026-10-16** (6 primed ABBA
+blocks against `1facc957`; `~/scratch/m36-image-r2gate`): **PASS**,
+`generation_s` −0.36% (upper bound −0.08%; legacy 33.418 s, new 33.298 s),
+peak memory +0.81 GiB; ready 2.758 s against 2.310 s (the recordings and,
+since `f05323d1`, the workspace's page-in), so ready plus generation is
++0.92%. The `qwen3.8:image` swap rows on this build (first use, prepared,
+both directions) are all exact, the image→LLM rows 6.25–6.56 s and the
+LLM→image rows 3.74–3.94 s. The LLM plan digests (main `f05323d1` against
+this state, 3,076 plans) change in the same 64. A one-block `qwen38` screen
+against `1facc957` (the v1 ModelOpt pair, `~/scratch/m36-r2-qwen`) is
+faster in every cell (C1 decode −1.16%, prefill −3.11%; C2 decode −2.78%;
+C4 decode −0.93%, prefill −0.23%), peak memory +9.1 GiB (the ModelOpt v1
+gate read +8.3).
+
+Checks on this state (Spark A): the shared set passes; the frozen v1
+proofs pass (`LLMP_TEST_V1_FROZEN_ONLY=1`); the image model tests pass (the
+six `ImageGenerationGpu` diagnostics skip); the Qwen3.8, DeepSeek, Gemma 4
+and Gemma 2/3 engine model tests pass except
+`ImportDrafterNormalizeTest.SyntheticGemma4AssistantNormalizesPublishesAndAdmitsWithTargetComposition`
+("the drafter keeps no GGUF metadata", in admission code this change does
+not touch); the EXL3 and Qwen2 corpus tests skip without their oracle
+inputs (the frozen proofs ran their subsets).
+
+Raw records on `spark`: `~/scratch/m36-image-s5gate` (the gate),
+`~/scratch/m36-image-s5scr{1,2,3}` (screens), `~/scratch/m36-s5-swap`
+(swap rows), `~/scratch/m36-image-plan/nsys/{old1,new1,item4,item5a,item5b}`
+and `~/scratch/m36-image-plan/s5/simp*.log` (the LLM plan hook).

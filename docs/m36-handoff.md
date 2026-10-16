@@ -271,12 +271,19 @@ never change guarded source while an actual run is active.
   the VAE's three, layout sinking), made the production policy, and
   `BoundGraph::Run`'s run-time fusion deleted (sub-task 3; findings 1 and 2
   resolved; [m36-runtime-fusion](experiments/m36-runtime-fusion/README.md)).
-  The image pin is `9d0b448f…` (41.26 dB); the two-block screen against
-  legacy reads +1.42%. Next: sub-task 5 (host inputs that do not change,
-  the text encoder, the channel norm), the ~0.7% main regression, then
-  sub-task 4 (the profile constants as data). Open: every new pattern is
-  opt-in and only the image's policy enables it (LLM plans were checked
-  unchanged by plan digest), so measuring them for LLM families is open.
+  Sub-task 5 closed the speed gap
+  ([m36-runtime-fusion](experiments/m36-runtime-fusion/README.md#the-speed-gap-sub-task-5)):
+  invariant inputs and a plan prologue, stage plans and recordings at load,
+  repeated and unread nodes removed by the planner, the output norm joined
+  with the last residual, a one-read VAE channel norm. The image gate
+  passes on `f05323d1` (−0.36%, upper −0.08%, 6 blocks); the model is
+  ready 0.45 s later on a first load (its recordings and the paged
+  workspace). The image pin is `93356574…` (41.26 dB). Next: sub-task 4
+  (the profile constants as data). Open: the planner's repeat and unread
+  passes change 64 LLM plans (Qwen3.8's per-layer masks), checked by the
+  tests, the frozen proofs and a one-block `qwen38` screen (faster in every
+  cell) but not by a full LLM speed gate; the image's opt-in patterns
+  change no LLM plan.
 - Qwen's decode gaps are fully resolved in `25711ad9` (`qwen-c4-fix-models01`)
   and `7ad389b5` (`qwen-c4-fix-models02`) on Spark A: wiring
   `DrafterSpec::shared_wave_depth` (`= 2` in multi-slot waves, matching

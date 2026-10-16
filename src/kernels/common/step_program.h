@@ -170,6 +170,9 @@ struct InputSlot {
   bool commit_save = false;
   std::uint16_t component = 0;         // kSideRows' source component
   std::uint64_t visible_capacity = 0;  // kVisibleCells: excludes padded/dummy cells
+  // The same between consecutive runs (planner/plan.h PlanOptions::
+  // invariant): a warm run (RunWarm) neither copies nor reads it anew.
+  bool invariant = false;
 };
 
 // An output the step returns: copied to the host after the run, each
@@ -349,6 +352,17 @@ class StepProgram {
   // The step's work queued on `stream`, after what is queued there.
   virtual std::expected<void, StepFailure> Run(StepLaunch& launch,
                                                providers::NativeStream stream) const = 0;
+  // Whether a warm run differs from Run: the plan has invariant inputs
+  // (InputSlot::invariant) or a prologue (planner/plan.h StepPlan::prologue).
+  virtual bool warm() const { return false; }
+  // The step's work after a run of this program whose invariant inputs were
+  // the same, with nothing run on its activations since (the caller's to
+  // know): its prologue skipped, whose results and the invariant inputs it
+  // keeps in place. Its invariant inputs' copies are the caller's to skip.
+  virtual std::expected<void, StepFailure> RunWarm(StepLaunch& launch,
+                                                   providers::NativeStream stream) const {
+    return Run(launch, stream);
+  }
   // `body` (the engine's input copies, this program's Run and the output
   // copies) recorded as one replayable sequence; a program that cannot be
   // recorded refuses (kRejected) and runs launch by launch.

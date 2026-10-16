@@ -514,6 +514,10 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
       stage.observation = 1;
       stage.inputs = {0, 1, {}, {}, {}, {}};
       stage.outputs = {{}, 1};
+      // The text rows (the encoder's, written once a generation) and the
+      // joint rows' positions and mask (Fill) stay the same over a
+      // generation's steps.
+      stage.invariant = {0, 3, 4};
     }
     if (i == 2) {
       stage.inputs = {1, {}};

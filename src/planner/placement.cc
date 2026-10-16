@@ -72,7 +72,7 @@ std::expected<std::uint64_t, std::string> RootBytes(const ir::TensorDesc& tensor
 std::expected<Placement, std::string> PlaceActivations(
     const ir::Graph& graph, std::span<const Selected> steps, std::span<const Region> regions,
     std::span<const ir::TensorId> staged, std::uint64_t alignment, const RootBytesOf& written,
-    const RootWithin& within) {
+    const RootWithin& within, std::span<const ir::TensorId> preserved) {
   if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
     return Error("the alignment is not a power of two");
   }
@@ -229,6 +229,10 @@ std::expected<Placement, std::string> PlaceActivations(
     for (const ir::TensorId t : list) {
       to_end(t);
     }
+  }
+  for (const ir::TensorId t : preserved) {
+    to_end(t);
+    if (const std::size_t at = index.at(holder(t).v); at != ~std::size_t{0}) lives[at].first = -1;
   }
   std::vector<std::size_t> order(lives.size());
   std::iota(order.begin(), order.end(), std::size_t{0});

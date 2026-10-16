@@ -1038,10 +1038,25 @@ the shipping path already used, now planned): PSNR 41.26 dB, luma SSIM
 frozen legacy arm reads +1.42% (33.674 s against 33.203 s; +1.50% and
 +1.34% by block), peak memory +0.81 GiB.
 
-Status: NOT PASSED; no full gate was run. Raw records stay outside Git on
+Raw records stay outside Git on
 `spark`: `~/scratch/m36-image-screen0{1,2,3,4,5,6,7,8,9}`, `~/scratch/m36-image-imgab02`, `~/scratch/m36-image-2aab01`,
 `~/scratch/m36-image-quality01`, `~/scratch/m36-image-plan/q2a`, `~/scratch/m36-image-plan/q4`,
 `~/scratch/m36-image-nsys01` and `~/scratch/m36-image-nofuse01`.
+
+Sub-task 5 closed the rest of the gap
+([m36-runtime-fusion](../m36-runtime-fusion/README.md#the-speed-gap-sub-task-5)):
+inputs unchanged within a generation uploaded and their prologue run
+once, stage plans and recordings made at load, repeated and unread nodes
+removed by the planner, the output norm joined with the last residual
+and a one-read VAE channel norm. The pixels become `93356574…` (PSNR
+41.26 dB, luma SSIM 0.99419). **Status: PASS** (Spark A, 2026-10-16, 6
+primed ABBA blocks against `1facc957`): `generation_s` +0.22%, upper bound
++0.37% (legacy 33.792 s, new 33.867 s); peak memory +0.83 GiB. The model
+is ready 0.24 s later after a first load (its recordings), so ready plus
+generation reads +0.88%. Records: `~/scratch/m36-image-s5gate`. After
+the review's fixes, on main `f05323d1`: PASS again, −0.36% (upper bound
+−0.08%), peak +0.81 GiB, ready 2.758 s against 2.310 s
+(`~/scratch/m36-image-r2gate`).
 
 ## Provenance
 

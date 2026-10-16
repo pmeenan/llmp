@@ -80,7 +80,7 @@ std::expected<Copies, std::string> StepRuns::Stage(std::span<const kn::InputSlot
 std::expected<void, kn::StepFailure> StepRuns::Record(
     const Copies& inputs, const std::function<bool(providers::NativeStream)>& between,
     const kn::StepProgram& program, std::span<const RunCopy> outputs,
-    providers::NativeStream native) const {
+    providers::NativeStream native, bool warm) const {
   for (const auto& [to, bytes, at] : inputs) {
     if (const providers::DeviceStatus copied = providers::CopyAsync(
             native, Pointer(to), staging_ + at, bytes, providers::CopyKind::kHostToDevice);
@@ -91,7 +91,8 @@ std::expected<void, kn::StepFailure> StepRuns::Record(
   if (between && !between(native)) {
     return std::unexpected(Unknown("the work queued between the inputs and the program"));
   }
-  if (auto ran = program.Run(*launch_, native); !ran) return ran;
+  if (auto ran = warm ? program.RunWarm(*launch_, native) : program.Run(*launch_, native); !ran)
+    return ran;
   for (const auto& [to, from, bytes] : outputs) {
     if (const providers::DeviceStatus copied = providers::CopyAsync(
             native, Pointer(to), Pointer(from), bytes, providers::CopyKind::kDeviceToHost);
@@ -202,14 +203,15 @@ StepQueued StepRuns::QueueRouted(StepPlanRuns& runs, const kn::RoutedAccess& acc
 std::expected<bool, kn::StepFailure> StepRuns::CaptureInto(
     StepPlanRuns& runs, const Copies& inputs,
     const std::function<bool(providers::NativeStream)>& between, const kn::StepProgram& program,
-    std::span<const RunCopy> outputs, GraphStats& stats, providers::NativeStream native) const {
+    std::span<const RunCopy> outputs, GraphStats& stats, providers::NativeStream native,
+    bool warm) const {
   const std::size_t free_before =
       providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
   // A capture runs on the CPU, seconds for a large plan, inside a device
   // job: these beats reach the driver's pulse (D-102, D-106).
   (void)base::Pulse();
   auto captured = program.Record(*launch_, native, [&]() -> std::expected<void, kn::StepFailure> {
-    return Record(inputs, between, program, outputs, native);
+    return Record(inputs, between, program, outputs, native, warm);
   });
   (void)base::Pulse();
   const std::size_t free_after =
@@ -239,7 +241,8 @@ std::expected<bool, kn::StepFailure> StepRuns::CaptureInto(
 
 std::expected<bool, kn::StepFailure> StepRuns::CaptureAhead(
     StepPlanRuns& runs, const Copies& inputs, const kn::StepProgram& program,
-    std::span<const RunCopy> outputs, GraphStats& stats, providers::NativeStream native) const {
+    std::span<const RunCopy> outputs, GraphStats& stats, providers::NativeStream native,
+    const std::function<bool(providers::NativeStream)>& between, bool warm) const {
   if (program.routed() || runs.has_routed_graph())
     return std::unexpected(
         kn::StepFailure{.detail = "ordinary capture refuses routed programs or recordings"});
@@ -247,7 +250,7 @@ std::expected<bool, kn::StepFailure> StepRuns::CaptureAhead(
       runs.ahead_refused) {
     return false;
   }
-  auto captured = CaptureInto(runs, inputs, {}, program, outputs, stats, native);
+  auto captured = CaptureInto(runs, inputs, between, program, outputs, stats, native, warm);
   if (captured && !*captured) {
     // A plan never yet run may refuse what a capture beside its run would
     // not: leave that path open.
@@ -260,7 +263,8 @@ std::expected<bool, kn::StepFailure> StepRuns::CaptureAhead(
 StepQueued StepRuns::Queue(StepPlanRuns& runs, const Copies& inputs,
                            const std::function<bool(providers::NativeStream)>& between,
                            const kn::StepProgram& program, std::span<const RunCopy> outputs,
-                           bool capture, GraphStats& stats, providers::NativeStream native) const {
+                           bool capture, GraphStats& stats, providers::NativeStream native,
+                           bool warm) const {
   StepQueued q;
   if (program.routed() || runs.has_routed_graph()) {
     q.result = std::unexpected(
@@ -293,11 +297,11 @@ StepQueued StepRuns::Queue(StepPlanRuns& runs, const Copies& inputs,
   if (beside) {
     ++runs.eager_runs;
     q.before = true;
-    q.result = Record(inputs, between, program, outputs, native);
+    q.result = Record(inputs, between, program, outputs, native, warm);
     if (!q.result) return q;
   }
   if (capture) {
-    auto captured = CaptureInto(runs, inputs, between, program, outputs, stats, native);
+    auto captured = CaptureInto(runs, inputs, between, program, outputs, stats, native, warm);
     if (!captured) {
       q.result = std::unexpected(std::move(captured.error()));
       return q;
@@ -312,7 +316,7 @@ StepQueued StepRuns::Queue(StepPlanRuns& runs, const Copies& inputs,
   }
   ++runs.eager_runs;
   q.before = true;
-  q.result = Record(inputs, between, program, outputs, native);
+  q.result = Record(inputs, between, program, outputs, native, warm);
   return q;
 }
 

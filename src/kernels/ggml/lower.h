@@ -136,6 +136,9 @@ struct LoweredStep {
   std::vector<TensorUse> tensors;
   std::uint64_t extent = 0;  // the activations' (the IR placement's)
   bool measuring = false;    // placeless: never bound to run
+  // The plan's prologue (planner/plan.h StepPlan::prologue) as `plan`'s
+  // step indices, in order: what a warm run skips.
+  std::vector<std::size_t> prologue{};
   // Payment outlives the routed vectors (members are destroyed in reverse).
   std::shared_ptr<const void> routing_payment{};
   std::vector<LoweredRouting> routing{};

@@ -199,6 +199,29 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
     return {};
   }
 
+  bool warm() const override {
+    return !lowered_.prologue.empty() ||
+           std::ranges::any_of(lowered_.inputs, [](const InputSlot& s) { return s.invariant; });
+  }
+  std::expected<void, StepFailure> RunWarm(StepLaunch& launch,
+                                           providers::NativeStream stream) const override {
+    if (lowered_.prologue.empty()) return Run(launch, stream);
+    if (!lowered_.routing.empty())
+      return std::unexpected(StepFailure{.detail = "routed program refuses whole-step Run"});
+    if (owner_) {
+      if (auto ready = owner_->Ready(); !ready)
+        return std::unexpected(StepFailure{.detail = ready.error()});
+    }
+    if (!bound_ || &launch != *launch_ || bound_generation_ != *generation_) {
+      return std::unexpected(StepFailure{.detail = "the step is not bound to this launch"});
+    }
+    if (auto same = SameStream((*launch_)->context(), stream); !same) return same;
+    if (auto ran = bound_->RunSkipping((*launch_)->context(), lowered_.prologue); !ran) {
+      return std::unexpected(Failure(ran.error()));
+    }
+    return {};
+  }
+
   std::optional<std::span<const RoutedWeight>> weight_reads() const override {
     if (!lowered_.weight_reads) return {};
     return std::span<const RoutedWeight>(*lowered_.weight_reads);

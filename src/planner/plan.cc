@@ -9,6 +9,7 @@
 #include <expected>
 #include <format>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -58,12 +59,14 @@ std::string Describe(const ir::Graph& graph, NodeId id) {
   return text + ")";
 }
 
-// `graph` with the flagged nodes replaced by their decompositions; `map`
-// receives each old tensor's new id and `from` each new node's old one.
-std::expected<ir::Graph, ir::VerifyError> ExpandNodes(const ir::Graph& graph,
-                                                      const std::vector<bool>& expand,
-                                                      std::vector<TensorId>& map,
-                                                      std::vector<NodeId>& from) {
+// `graph` with the flagged nodes replaced by their decompositions, those
+// `drop` flags (if given) left out, and each of `repeats` (if given) left
+// out for the earlier node it names; `map` receives each old tensor's new
+// id (none for a dropped node's) and `from` each new node's old one.
+std::expected<ir::Graph, ir::VerifyError> ExpandNodes(
+    const ir::Graph& graph, const std::vector<bool>& expand, std::vector<TensorId>& map,
+    std::vector<NodeId>& from, const std::vector<bool>* drop = nullptr,
+    const std::vector<NodeId>* repeats = nullptr) {
   ir::Builder b;
   map.assign(graph.tensor_count(), TensorId{});
   from.clear();
@@ -72,6 +75,13 @@ std::expected<ir::Graph, ir::VerifyError> ExpandNodes(const ir::Graph& graph,
   std::vector<format::Encoding> encodings;
   for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
     const ir::Node& node = graph.nodes()[i];
+    if (drop != nullptr && (*drop)[i]) continue;
+    if (repeats != nullptr && (*repeats)[i].valid()) {
+      // A repeat: the earlier node's outputs stand for its own.
+      const ir::Node& earlier = graph.node((*repeats)[i]);
+      for (std::size_t k = 0; k < node.nout; ++k) rc.Set(node.out[k], rc.Map(earlier.out[k]));
+      continue;
+    }
     if (!expand[i]) {
       rc.Copy(node);
     } else {
@@ -108,6 +118,147 @@ std::expected<ir::Graph, ir::VerifyError> ExpandNodes(const ir::Graph& graph,
     b.Keep(rc.Map(k));
   }
   return std::move(b).Finish();
+}
+
+// A node whose run matters beyond its outputs: a leaf, a write in place (a
+// cache store, a fused node's aliased output) or communication.
+bool Effect(const ir::Node& n) {
+  switch (n.key.op) {
+    case ir::Op::kInput:
+    case ir::Op::kWeight:
+    case ir::Op::kState:
+    case ir::Op::kCacheStore:
+    case ir::Op::kAllReduce:
+    case ir::Op::kAllGather:
+    case ir::Op::kAllToAll:
+    case ir::Op::kSend:
+    case ir::Op::kRecv:
+      return true;
+    case ir::Op::kFused:
+      for (std::size_t i = 0; i < n.nout; ++i)
+        if (ir::AliasedSource(n.key, i)) return true;
+      return false;
+    default:
+      return false;
+  }
+}
+
+// The roots `graph` writes in place, by tensor: a cache store's target, a
+// fused node's aliased source, a state, and every root a node with an
+// Effect (but a weight or input leaf) reads or makes. A value read from
+// one may differ between two reads, so it is neither another node's
+// repeat nor a prologue's.
+std::vector<bool> WrittenRoots(const ir::Graph& graph) {
+  std::vector<bool> written(graph.tensor_count(), false);
+  const auto mark = [&](TensorId t) {
+    if (t.valid()) written.at(graph.root(t).v) = true;
+  };
+  for (const ir::Node& n : graph.nodes()) {
+    if (!Effect(n) || n.key.op == ir::Op::kInput || n.key.op == ir::Op::kWeight) continue;
+    for (const TensorId t : n.sources()) mark(t);
+    for (const TensorId t : n.outputs()) mark(t);
+    if (n.key.op == ir::Op::kFused)
+      for (std::size_t i = 0; i < n.nout; ++i)
+        if (const auto alias = ir::AliasedSource(n.key, i)) mark(n.src.at(*alias));
+  }
+  return written;
+}
+
+// The nodes of `graph` nothing needs: none of their outputs is the
+// graph's output or kept, or read by a node that is needed, and they have
+// no Effect. A rewrite leaves such nodes where its fused node reads their
+// sources directly (one pass, readers after their producers). Empty when
+// every node is needed.
+std::vector<bool> Unread(const ir::Graph& graph) {
+  std::vector<bool> needed(graph.tensor_count(), false);
+  for (const auto list : {graph.outputs(), graph.keep()})
+    for (const TensorId t : list) {
+      needed.at(t.v) = true;
+      needed.at(graph.root(t).v) = true;
+    }
+  std::vector<bool> unread(graph.nodes().size(), false);
+  bool any = false;
+  for (std::uint32_t i = static_cast<std::uint32_t>(graph.nodes().size()); i-- > 0;) {
+    const ir::Node& n = graph.nodes()[i];
+    if (!Effect(n) && std::ranges::none_of(n.outputs(), [&](TensorId o) {
+          return needed.at(o.v) || needed.at(graph.root(o).v);
+        })) {
+      unread[i] = any = true;
+      continue;
+    }
+    for (const TensorId src : n.sources())
+      if (src.valid()) {
+        needed.at(src.v) = true;
+        needed.at(graph.root(src).v) = true;
+      }
+  }
+  if (!any) unread.clear();
+  return unread;
+}
+
+// For each node of `graph` that repeats an earlier one, the earlier one:
+// the same operation and parameters over the same sources (as repeats
+// resolve), with outputs of the same roles, formats, strides and segments,
+// whichever component emitted it (two blocks joining the same rows). Only
+// nodes with sources and no Effect whose outputs are roots the graph
+// neither outputs nor keeps (nor an Effect reads) repeat. Empty when none
+// does.
+std::vector<NodeId> Repeats(const ir::Graph& graph) {
+  std::vector<TensorId> canon(graph.tensor_count());
+  for (std::uint32_t t = 0; t < canon.size(); ++t) canon[t] = TensorId{t};
+  // Outputs and kept tensors are never another's; a node reading or
+  // making a root written in place repeats none (WrittenRoots).
+  std::vector<bool> external(graph.tensor_count(), false);
+  for (const auto list : {graph.outputs(), graph.keep()})
+    for (const TensorId t : list) external.at(t.v) = true;
+  const std::vector<bool> written = WrittenRoots(graph);
+  const auto eligible = [&](const ir::Node& n) {
+    return n.nsrc > 0 && n.nout > 0 && !Effect(n) &&
+           std::ranges::none_of(
+               n.sources(), [&](TensorId t) { return t.valid() && written.at(graph.root(t).v); }) &&
+           std::ranges::none_of(n.outputs(), [&](TensorId o) {
+             return external.at(o.v) || graph.tensor(o).is_view() || written.at(graph.root(o).v);
+           });
+  };
+  const auto same = [&](const ir::Node& a, const ir::Node& b) {
+    if (a.key != b.key || a.params != b.params || a.nsrc != b.nsrc || a.nout != b.nout ||
+        a.batch != b.batch)
+      return false;
+    for (std::size_t k = 0; k < a.nsrc; ++k) {
+      const TensorId x = a.src[k], y = b.src[k];
+      if (x.valid() != y.valid() || (x.valid() && canon[x.v] != canon[y.v])) return false;
+    }
+    for (std::size_t k = 0; k < a.nout; ++k) {
+      const ir::TensorDesc& x = graph.tensor(a.out[k]);
+      const ir::TensorDesc& y = graph.tensor(b.out[k]);
+      if (x.role != y.role || x.format != y.format || x.nb != y.nb || x.segment != y.segment)
+        return false;
+    }
+    return true;
+  };
+  // Candidates by operation and first source.
+  std::map<std::pair<std::uint64_t, std::uint32_t>, std::vector<std::uint32_t>> seen;
+  std::vector<NodeId> repeats;
+  for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
+    const ir::Node& n = graph.nodes()[i];
+    if (!eligible(n)) continue;
+    const TensorId first = n.src[0];
+    const std::pair<std::uint64_t, std::uint32_t> key{
+        (std::uint64_t{static_cast<std::uint16_t>(n.key.op)} << 16U) |
+            static_cast<std::uint16_t>(n.key.fused),
+        first.valid() ? canon[first.v].v : TensorId::kNone};
+    auto& bucket = seen[key];
+    const auto at =
+        std::ranges::find_if(bucket, [&](std::uint32_t j) { return same(graph.nodes()[j], n); });
+    if (at == bucket.end()) {
+      bucket.push_back(i);
+      continue;
+    }
+    if (repeats.empty()) repeats.assign(graph.nodes().size(), NodeId{});
+    repeats[i] = NodeId{*at};
+    for (std::size_t k = 0; k < n.nout; ++k) canon[n.out[k].v] = graph.nodes()[*at].out[k];
+  }
+  return repeats;
 }
 
 struct Selection {
@@ -177,6 +328,107 @@ Selection Select(const ir::Graph& graph, const SelectionView& view,
     }
     out.steps.push_back(One(registry, id, candidates.front()));
   }
+  return out;
+}
+
+// The steps of `steps` that read only `invariant` (planned input ids),
+// weights and each other's results (a plan's prologue), and the tensors
+// the other steps read from them (kept in place between runs). A step
+// with any node that reads anything else, or has an Effect (a state, a
+// store, communication), is not the prologue's, and what it computes is
+// not invariant; nor is anything a root written in place holds.
+struct Prologue {
+  std::vector<std::uint32_t> steps;
+  std::vector<TensorId> preserved;
+  // Of `invariant`, by position, those it holds fixed (the rest, a root
+  // written in place, are copied every run).
+  std::vector<bool> kept;
+};
+Prologue PrologueOf(const ir::Graph& graph, std::span<const Selected> steps,
+                    std::span<const TensorId> invariant, const RootWithin& within) {
+  std::vector<bool> fixed(graph.tensor_count(), false);
+  std::vector<bool> demoted(graph.nodes().size(), false);
+  // A node with an Effect (a store, a state, communication) is never the
+  // prologue's, nor is what a root written in place holds.
+  const std::vector<bool> written = WrittenRoots(graph);
+  const auto effect = [](const ir::Node& n) { return Effect(n) && n.key.op != ir::Op::kWeight; };
+  std::vector<bool> prologue(steps.size(), false);
+  for (bool changed = true; changed;) {
+    changed = false;
+    std::ranges::fill(fixed, false);
+    for (const TensorId t : invariant)
+      if (!written.at(graph.root(t).v)) fixed.at(t.v) = true;
+    for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
+      const ir::Node& n = graph.nodes()[i];
+      // An input only where declared (above); a weight always.
+      if (n.key == ir::Primitive(ir::Op::kInput)) continue;
+      bool all = !demoted[i] && !effect(n);
+      for (const TensorId src : n.sources())
+        if (src.valid() && (!fixed.at(src.v) || written.at(graph.root(src).v))) all = false;
+      if (all)
+        for (const TensorId o : n.outputs())
+          if (!written.at(graph.root(o).v)) fixed.at(o.v) = true;
+    }
+    // A root placed inside another (RootWithin: a blob's later output, a
+    // preparation in its norm's place) shares its bytes: both fixed or
+    // neither, or one's run would write the other's kept bytes.
+    if (within) {
+      for (std::uint32_t i = 0; i < graph.nodes().size(); ++i) {
+        for (const TensorId o : graph.nodes()[i].outputs()) {
+          const TensorId root = graph.root(o);
+          const TensorId outer = within(graph, root);
+          if (!outer.valid() || fixed.at(root.v) == fixed.at(outer.v)) continue;
+          const TensorId kept = fixed.at(root.v) ? root : outer;
+          const NodeId producer = graph.producer(kept);
+          if (producer.valid() && !demoted[producer.v]) {
+            demoted[producer.v] = true;
+            changed = true;
+          }
+        }
+      }
+      if (changed) continue;
+    }
+    for (std::size_t s = 0; s < steps.size(); ++s) {
+      const bool whole = std::ranges::all_of(steps[s].nodes, [&](NodeId id) {
+        return std::ranges::all_of(graph.node(id).outputs(),
+                                   [&](TensorId o) { return fixed.at(o.v); });
+      });
+      prologue[s] = whole && !steps[s].nodes.empty();
+      if (whole) continue;
+      // A step that runs anyway: what it computes is not the prologue's.
+      for (const NodeId id : steps[s].nodes) {
+        if (!demoted[id.v] && std::ranges::any_of(graph.node(id).outputs(),
+                                                  [&](TensorId o) { return fixed.at(o.v); })) {
+          demoted[id.v] = true;
+          changed = true;
+        }
+      }
+    }
+  }
+  Prologue out;
+  for (std::size_t s = 0; s < steps.size(); ++s) {
+    if (prologue[s]) {
+      out.steps.push_back(static_cast<std::uint32_t>(s));
+      continue;
+    }
+    for (const NodeId id : steps[s].nodes)
+      for (const TensorId src : graph.node(id).sources())
+        if (src.valid() && fixed.at(src.v) && !std::ranges::contains(out.preserved, src))
+          out.preserved.push_back(src);
+  }
+  // The step's outputs and kept tensors computed by the prologue stay too.
+  for (const auto list : {graph.outputs(), graph.keep()})
+    for (const TensorId t : list)
+      if (fixed.at(t.v) && !std::ranges::contains(out.preserved, t)) out.preserved.push_back(t);
+  // And the root a kept one lies in.
+  if (within) {
+    for (std::size_t k = 0; k < out.preserved.size(); ++k) {
+      const TensorId outer = within(graph, graph.root(out.preserved[k]));
+      if (outer.valid() && !std::ranges::contains(out.preserved, outer))
+        out.preserved.push_back(outer);
+    }
+  }
+  for (const TensorId t : invariant) out.kept.push_back(fixed.at(t.v));
   return out;
 }
 
@@ -289,6 +541,65 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   std::vector<TensorId> tensors = std::move(rewritten->tensors);
   std::vector<NodeId> from = std::move(rewritten->from);
   std::vector<Applied> applied = std::move(rewritten->applied);
+  // `next` for `graph`, its tensors (`map`) and nodes (`back`) carried
+  // through every map onto the primitive graph.
+  const auto adopt = [&](ir::Graph next, std::span<const TensorId> map,
+                         std::span<const NodeId> back) {
+    view.Forward(graph, next, map);
+    for (auto& scope : scopes) scope.result = map[scope.result.v];
+    for (TensorId& t : tensors) {
+      t = t.valid() ? map[t.v] : t;
+    }
+    std::vector<NodeId> composed(back.size());
+    for (std::size_t j = 0; j < back.size(); ++j) {
+      composed[j] = from.at(back[j].v);
+    }
+    std::size_t max_back = 0;
+    for (const auto& nid : back) {
+      if (nid.v >= max_back) max_back = nid.v + 1;
+    }
+    std::vector<std::vector<NodeId>> by_old(max_back);
+    for (std::uint32_t j = 0; j < back.size(); ++j) {
+      if (back[j].v < max_back) by_old[back[j].v].push_back(NodeId{j});
+    }
+    for (Applied& a : applied) {
+      std::vector<NodeId> made;
+      for (const NodeId old_id : a.made) {
+        if (old_id.v < by_old.size()) {
+          made.insert(made.end(), by_old[old_id.v].begin(), by_old[old_id.v].end());
+        }
+      }
+      std::ranges::sort(made, {}, &NodeId::v);
+      a.made = std::move(made);
+    }
+    from = std::move(composed);
+    graph = std::move(next);
+  };
+  // A node computed again (the same rows joined twice) runs once.
+  if (const auto repeats = Repeats(graph); !repeats.empty()) {
+    std::vector<TensorId> map;
+    std::vector<NodeId> back;
+    auto joined = ExpandNodes(graph, std::vector<bool>(graph.nodes().size(), false), map, back,
+                              nullptr, &repeats);
+    if (!joined) {
+      return Failed(PlanError::kPattern, std::format("joining repeated nodes at node {}: {}",
+                                                     joined.error().node, joined.error().detail));
+    }
+    adopt(std::move(*joined), map, back);
+  }
+  // What the rewrites left unread is not run (a split pattern's fused node
+  // reading the vectors another node joined for the replaced readers).
+  if (const auto unread = Unread(graph); !unread.empty()) {
+    std::vector<TensorId> map;
+    std::vector<NodeId> back;
+    auto pruned =
+        ExpandNodes(graph, std::vector<bool>(graph.nodes().size(), false), map, back, &unread);
+    if (!pruned) {
+      return Failed(PlanError::kPattern, std::format("pruning unread nodes at node {}: {}",
+                                                     pruned.error().node, pruned.error().detail));
+    }
+    adopt(std::move(*pruned), map, back);
+  }
   std::vector<std::string> decomposed;
   Selection selection;
   for (int pass = 0;; ++pass) {
@@ -321,35 +632,7 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
                     std::format("a decomposition at node {}: {}", expanded.error().node,
                                 expanded.error().detail));
     }
-    view.Forward(graph, *expanded, map);
-    for (auto& scope : scopes) scope.result = map.at(scope.result.v);
-    for (TensorId& t : tensors) {
-      t = t.valid() ? map.at(t.v) : t;
-    }
-    std::vector<NodeId> composed(back.size());
-    for (std::size_t j = 0; j < back.size(); ++j) {
-      composed[j] = from.at(back[j].v);
-    }
-    std::size_t max_back = 0;
-    for (const auto& nid : back) {
-      if (nid.v >= max_back) max_back = nid.v + 1;
-    }
-    std::vector<std::vector<NodeId>> by_old(max_back);
-    for (std::uint32_t j = 0; j < back.size(); ++j) {
-      if (back[j].v < max_back) by_old[back[j].v].push_back(NodeId{j});
-    }
-    for (Applied& a : applied) {
-      std::vector<NodeId> made;
-      for (const NodeId old_id : a.made) {
-        if (old_id.v < by_old.size()) {
-          made.insert(made.end(), by_old[old_id.v].begin(), by_old[old_id.v].end());
-        }
-      }
-      std::ranges::sort(made, {}, &NodeId::v);
-      a.made = std::move(made);
-    }
-    from = std::move(composed);
-    graph = std::move(*expanded);
+    adopt(std::move(*expanded), map, back);
   }
   for (const auto& scope : scopes) {
     if (!scope.result.valid() ||
@@ -394,8 +677,25 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
   } else {
     staged.assign(graph.inputs().begin(), graph.inputs().end());
   }
+  // The prologue (PlanOptions::invariant), without lanes.
+  Prologue prologue;
+  std::vector<TensorId> invariant;
+  if (!options.invariant.empty() && regions.empty()) {
+    std::vector<TensorId> planned;
+    for (const TensorId t : options.invariant) {
+      if (!t.valid() || t.v >= tensors.size() || !tensors[t.v].valid() ||
+          !std::ranges::contains(graph.inputs(), tensors[t.v]))
+        return Failed(PlanError::kPlacement, "an invariant input the plan does not hold");
+      planned.push_back(tensors[t.v]);
+    }
+    prologue = PrologueOf(graph, steps, planned, options.within);
+    // Only what the prologue holds fixed is kept between runs (an input a
+    // store or communication reads is copied every run).
+    for (std::size_t k = 0; k < planned.size(); ++k)
+      if (prologue.kept[k]) invariant.push_back(options.invariant[k]);
+  }
   auto placement = PlaceActivations(graph, steps, regions, staged, options.alignment,
-                                    options.written, options.within);
+                                    options.written, options.within, prologue.preserved);
   if (!placement) {
     return Failed(PlanError::kPlacement, placement.error());
   }
@@ -418,8 +718,8 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
     for (const auto& fact : alignments) {
       if (fact.root.valid() && fact.root.v < has_offset.size() && has_offset[fact.root.v]) {
         const std::uint64_t off = offset_lut[fact.root.v];
-        if (off % fact.alignment != 0 ||
-            (options.activation_alignment != 0 && options.activation_alignment % fact.alignment != 0)) {
+        if (off % fact.alignment != 0 || (options.activation_alignment != 0 &&
+                                          options.activation_alignment % fact.alignment != 0)) {
           return Failed(PlanError::kPlacement,
                         "an activation's placement breaks its alignment promise");
         }
@@ -443,7 +743,9 @@ std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::
       .root_alignments = std::move(alignments),
       .owner_products = std::move(scopes),
       .owner_digest =
-          options.owner_products ? options.owner_products->digest() : base::Sha256Digest{}};
+          options.owner_products ? options.owner_products->digest() : base::Sha256Digest{},
+      .invariant = std::move(invariant),
+      .prologue = std::move(prologue.steps)};
 }
 
 PlanKey KeyOf(const base::Sha256Digest& spec, const StepShape& shape, const Policy& policy,

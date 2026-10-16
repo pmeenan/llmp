@@ -458,7 +458,13 @@ class PagedNode {
   // whole workspace. It holds no contents from one job to the next (every
   // model's steps draw on it from its base; an eviction keeps no bytes and
   // its generation, catalog::KeepsGenerationOnEviction), so nothing may
-  // keep state in it across jobs (RE-058: EXL3's selected source does).
+  // keep state in it across jobs (RE-058: EXL3's selected source does,
+  // across requests and swaps). One exception, bounded by a lease: a plan's
+  // prologue results and invariant inputs (planner/plan.h
+  // PlanOptions::invariant) stay between consecutive jobs of one caller
+  // that holds its request lease throughout (EngineImage::RunThrough's
+  // denoising steps), where nothing evicts the workspace and no other
+  // model runs on it; a newly opened lease runs cold.
   Status MapWorkspace(std::uint64_t activations, std::uint64_t pool,
                       std::uint64_t virtual_capacity = 0, bool pageable = false);
   // Grows only cataloged prefixes, preserving every existing address and

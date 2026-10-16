@@ -846,7 +846,10 @@ std::expected<ggml_tensor*, KernelFailure> Lowering::MakeLeaf(const ir::Node& n)
         return Refused("a spatial input is not an exact owned graph port");
       ggml_tensor* t = ggml_new_tensor(c_, *type, rank, ne.data());
       input_leaves_.emplace_back(
-          t, InputSlot{.tensor = prim, .segment = d.segment, .kind = InputKind::kStepBytes});
+          t, InputSlot{.tensor = prim,
+                       .segment = d.segment,
+                       .kind = InputKind::kStepBytes,
+                       .invariant = std::ranges::contains(plan_.invariant, prim)});
       out_.leaves.push_back({.tensor = t, .primitive = prim});
       return t;
     }
@@ -3049,6 +3052,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
   std::vector<std::size_t> step_gp_first(plan_.steps.size(), 0);
   std::vector<std::size_t> step_gp_last(plan_.steps.size(), 0);
   std::vector<bool> paired_later(plan_.steps.size(), false);
+  std::vector<bool> launches_nothing(plan_.steps.size(), false);
   for (std::size_t i = 0; i < plan_.steps.size(); ++i) {
     if (paired_later[i]) continue;
     const std::size_t cur_first = j;
@@ -3070,6 +3074,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
             return prior.implementation != kGemma4MaskName;
           }))
         return Refused("a host-built mask after the step's computed nodes");
+      launches_nothing[i] = true;
       continue;
     }
     const std::string_view name = registry_.at(s.implementation).name;
@@ -3239,6 +3244,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     got.lane = s.lane;
     ++j;
   }
+  const std::size_t ir_end = j;
   // The lowering's own steps (a verify's saves) after the IR's.
   while (j < gp.steps.size() &&
          std::ranges::all_of(
@@ -3249,6 +3255,32 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     return Refused(std::format("PlanGraph has {} steps beyond the IR's: {} over{}",
                                gp.steps.size() - j, gp.steps[j].implementation,
                                describe(gp.steps[j].nodes)));
+  }
+  // The prologue's steps (StepPlan::prologue): the PlanGraph steps whose
+  // IR steps are all the prologue's. One that also stands for a step that
+  // runs every time (a pair, a norm and its mul run as one) is refused.
+  if (!plan_.prologue.empty()) {
+    if (!plan_.regions.empty()) return Refused("a prologue beside lanes");
+    std::vector<bool> in_prologue(plan_.steps.size(), false);
+    for (const std::uint32_t i : plan_.prologue) {
+      if (i >= plan_.steps.size()) return Refused("a prologue step outside the plan");
+      in_prologue[i] = true;
+    }
+    // Each PlanGraph step's IR steps.
+    std::vector<std::vector<std::size_t>> covers(ir_end);
+    for (std::size_t i = 0; i < plan_.steps.size(); ++i) {
+      if (launches_nothing[i]) continue;
+      for (std::size_t k = step_gp_first[i]; k <= step_gp_last[i] && k < ir_end; ++k)
+        covers[k].push_back(i);
+    }
+    for (std::size_t k = 0; k < ir_end; ++k) {
+      const auto& ir = covers[k];
+      const auto members = std::ranges::count_if(ir, [&](std::size_t i) { return in_prologue[i]; });
+      if (members == 0) continue;
+      if (static_cast<std::size_t>(members) != ir.size())
+        return Refused(std::format("PlanGraph's step {} joins prologue and per-run steps", k));
+      out_.prologue.push_back(k);
+    }
   }
   // The IR's lanes over the same steps (host masks, which launch nothing
   // here, are outside every region: the step lists only their own).

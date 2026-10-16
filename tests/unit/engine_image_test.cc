@@ -35,6 +35,10 @@ struct Trace {
   std::size_t positioned = 0, prepared_requests = 0;
   std::size_t queued = 0, executed = 0;
   std::size_t live_programs = 0;
+  // Warm runs: the first stage's programs declare a warm form and its input
+  // invariant; the warm runs made and the host fills of request inputs.
+  bool warm_capable = false;
+  std::size_t warm_runs = 0, fills = 0;
   float value = 1;
   kn::RecordingLaunch* launch = nullptr;
 };
@@ -47,22 +51,29 @@ class TypedCopy final : public kn::StepProgram {
     const auto in = input.io.inputs[0], out = input.io.outputs[0];
     bytes_ = 4;
     for (auto dimension : graph.tensor(in).shape().ne) bytes_ *= dimension;
+    second_ = graph.tensor(out).shape().ne[0] == 1;
     const auto output_offset = (bytes_ + 255) / 256 * 256;
     scratch_ = std::max<std::uint64_t>(512, output_offset + bytes_);
     input_[0] = {.device_address = input.addresses.activations,
                  .bytes = bytes_,
                  .tensor = in,
                  .segment = graph.tensor(in).segment,
-                 .kind = kn::InputKind::kStepBytes};
+                 .kind = kn::InputKind::kStepBytes,
+                 .invariant = trace_->warm_capable && !second_};
     output_[0] = {.device_address = input.addresses.activations + output_offset,
                   .bytes = bytes_,
                   .tensor = out,
                   .segment = graph.tensor(out).segment};
     uses_[0] = {.address = input.addresses.activations, .bytes = scratch_};
-    second_ = graph.tensor(out).shape().ne[0] == 1;
   }
   ~TypedCopy() override { --trace_->live_programs; }
   bool capturable() const override { return trace_->capturable; }
+  bool warm() const override { return trace_->warm_capable && !second_; }
+  std::expected<void, kn::StepFailure> RunWarm(
+      kn::StepLaunch& launch, llmp::providers::NativeStream stream) const override {
+    ++trace_->warm_runs;
+    return Run(launch, stream);
+  }
   std::expected<void, kn::StepFailure> Position(std::span<const std::uint32_t> past) override {
     ++trace_->positioned;
     if (!past.empty() || trace_->fail_position)
@@ -208,7 +219,9 @@ struct Life {
           {.graph = std::make_shared<const co::SpatialGraph>(std::move(*graph)),
            .addresses = {},
            .inputs = {stage_id == 0 ? std::nullopt : std::optional<std::uint32_t>(0)},
-           .outputs = {stage_id == 0 ? std::optional<std::uint32_t>(0) : std::nullopt}});
+           .outputs = {stage_id == 0 ? std::optional<std::uint32_t>(0) : std::nullopt},
+           .invariant = stage_id == 0 && trace->warm_capable ? std::vector<std::uint32_t>{0}
+                                                             : std::vector<std::uint32_t>{}});
     }
     parts.request.ports.push_back(
         {.format = ir::Dense(llmp::format::Encoding::kF32, ir::ShapeOf({2, 2, 1, 1})),
@@ -278,9 +291,10 @@ struct Life {
     for (std::uint32_t i = 0; i < repeats; ++i) request.sequence.push_back({0, i});
     request.sequence.push_back({1, 0});
     request.first_output = repeats - 1;
-    request.fill = [value](const rt::ImageInvocation& invocation, std::size_t,
-                           std::span<std::byte> data) -> Status {
+    request.fill = [value, trace = trace](const rt::ImageInvocation& invocation, std::size_t,
+                                          std::span<std::byte> data) -> Status {
       if (data.size() != 16) return std::unexpected("fake replacement size");
+      ++trace->fills;
       const auto start = value + static_cast<float>(invocation.iteration);
       const std::array<float, 4> values{start, start + 1, start + 2, start + 3};
       std::memcpy(data.data(), values.data(), data.size());
@@ -410,6 +424,55 @@ TEST_F(EngineImageTest, AnAbandonedFirstOutputStartsAgain) {
   ASSERT_TRUE(life->image->Finish(control));
   EXPECT_NE(control, output);  // the changed request's content
   EXPECT_EQ(life->trace->executed, 6U);
+}
+// A stage run again right after itself runs warm: its invariant input is
+// neither filled nor copied again. Each generation, and a new request at the
+// same layout, starts cold.
+TEST_F(EngineImageTest, AWarmRunSkipsItsInvariantInputAndEachGenerationStartsCold) {
+  life->trace->warm_capable = true;
+  const auto started = life->Start(path);
+  ASSERT_TRUE(started) << Failed(started).value_or("");
+  ASSERT_TRUE(life->image->ReplaceRequest(life->Request(1.F, 3)));
+  std::array<std::string, 3> output;
+  for (std::size_t g = 0; g < output.size(); ++g) {
+    if (g == 2) ASSERT_TRUE(life->image->ReplaceRequest(life->Request(5.F, 3)));
+    life->trace->fills = 0;
+    const auto warm = life->trace->warm_runs;
+    std::string first;
+    ASSERT_TRUE(life->image->FirstOutput(first));
+    // Three runs of the first stage: the cold one fills its input, the
+    // warm ones leave it (their program's warm form, or its recording).
+    EXPECT_EQ(life->trace->fills, 1U) << g;
+    if (g == 0) EXPECT_GT(life->trace->warm_runs, warm);
+    ASSERT_TRUE(life->image->Finish(output[g]));
+    EXPECT_EQ(life->trace->fills, 1U) << g;  // the second stage reads a port
+  }
+  EXPECT_EQ(output[0], output[1]);
+  EXPECT_NE(output[1], output[2]);  // the new request's input, filled cold
+}
+// After a load every stage is planned and recorded ahead: the first
+// generation replays both, with the same outputs, and nothing records again.
+TEST_F(EngineImageTest, AfterLoadRecordsEveryStageAheadOfTheFirstGeneration) {
+  const auto started = life->Start(path);
+  ASSERT_TRUE(started) << Failed(started).value_or("");
+  const auto loaded = life->image->AfterLoad();
+  ASSERT_TRUE(loaded) << Failed(loaded).value_or("");
+  EXPECT_EQ(life->trace->launch->captures(), 2U);
+  EXPECT_EQ(life->trace->executed, 0U);
+  ASSERT_TRUE(life->image->AfterLoad());  // planned and recorded: nothing more
+  EXPECT_EQ(life->trace->launch->captures(), 2U);
+  std::array<std::string, 2> output;
+  for (auto& o : output) {
+    std::string first;
+    ASSERT_TRUE(life->image->FirstOutput(first));
+    ASSERT_TRUE(life->image->Finish(o));
+    EXPECT_EQ(first, o);
+  }
+  EXPECT_EQ(output[0], output[1]);
+  EXPECT_EQ(life->trace->launch->captures(), 2U);
+  EXPECT_EQ(life->trace->launch->launches(), 4U);
+  EXPECT_EQ(life->trace->executed, 4U);
+  EXPECT_EQ(life->trace->live_programs, 2U);
 }
 TEST_F(EngineImageTest, GeometryGrowthRetiresOnlyOwnedPortsAndKeepsWorkspaceAddresses) {
   ASSERT_TRUE(life->Start(path, false, true));
@@ -609,6 +672,61 @@ TEST_F(EngineImageTest, PageableGrowthPagesInOrIsRefusedWithTheModelUsable) {
   EXPECT_EQ(state_of(wide.back()), ExtentState::kNonresident);
   ASSERT_TRUE(life->image->FirstOutput(first));
   ASSERT_TRUE(life->image->Finish(output));
+}
+// A pageable workspace: what is recorded ahead at a load replays after a
+// swap out (the workspace evicted) and back in, with the same pixels and no
+// new recording; a load seen while another model is active records nothing
+// and leaves the workspace out.
+TEST_F(EngineImageTest, PageableRecordingsAheadReplayAfterASwapOutAndIn) {
+  ASSERT_TRUE(life->Start(path, false, false, true));
+  auto& node = life->node;
+  ASSERT_TRUE(node.workspace_pageable());
+  const auto resident = [&](llmp::catalog::ExtentId extent) {
+    auto state = llmp::catalog::ExtentState::kNonresident;
+    EXPECT_TRUE(node.Call(
+        [&]() -> Status {
+          state = node.catalog().Describe(extent).value().state;
+          return {};
+        },
+        "reading a workspace extent"));
+    return state == llmp::catalog::ExtentState::kResident;
+  };
+  // A swap's activation pages the model's whole closure in before its
+  // AfterLoad (Server::Activate); here, by hand.
+  const auto activate = [&] {
+    llmp::scheduler::AcquireReport report;
+    return node.Acquire(life->image->everything(), report, "the image's activation");
+  };
+  ASSERT_TRUE(activate());
+  const auto loaded = life->image->AfterLoad();
+  ASSERT_TRUE(loaded) << Failed(loaded).value_or("");
+  EXPECT_EQ(life->trace->launch->captures(), 2U);
+  std::string first, before, after;
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(before));
+  EXPECT_EQ(life->trace->launch->launches(), 2U);
+  // Swapped out: another model active, the workspace evicted.
+  ASSERT_TRUE(node.SetActive(0, false));
+  std::vector<llmp::catalog::ExtentId> workspace;
+  for (const auto* region : {&node.activations(), &node.pool()})
+    for (const auto extent : region->extents)
+      if (resident(extent)) workspace.push_back(extent);
+  ASSERT_FALSE(workspace.empty());
+  ASSERT_TRUE(node.Evict(workspace));
+  EXPECT_FALSE(resident(node.activations().extents.front()));
+  ASSERT_TRUE(life->image->AfterLoad());  // inactive: nothing recorded or paged in
+  EXPECT_EQ(life->trace->launch->captures(), 2U);
+  EXPECT_FALSE(resident(node.activations().extents.front()));
+  // Back in: active, its closure paged in again, and its recordings replay.
+  ASSERT_TRUE(node.SetActive(0, true));
+  ASSERT_TRUE(activate());
+  EXPECT_TRUE(resident(node.activations().extents.front()));
+  ASSERT_TRUE(life->image->AfterLoad());  // recorded already: nothing more
+  ASSERT_TRUE(life->image->FirstOutput(first));
+  ASSERT_TRUE(life->image->Finish(after));
+  EXPECT_EQ(after, before);
+  EXPECT_EQ(life->trace->launch->captures(), 2U);
+  EXPECT_EQ(life->trace->launch->launches(), 4U);
 }
 TEST_F(EngineImageTest, ServingRequestPreparationIsIdleAtomicAndReusesCompletedOwners) {
   ASSERT_TRUE(life->Start(path));

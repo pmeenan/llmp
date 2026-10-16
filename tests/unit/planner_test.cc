@@ -1613,6 +1613,69 @@ TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfItsSum) {
   EXPECT_EQ(count(between, FusedKind::kGatedResidualSplit), 1);
 }
 
+// The modulation of a range of the sum's rows (the image's output norm over
+// its latent rows): joined, its readers reading the range of every row's.
+TEST(PlannerPatternTest, SplitResidualJoinsTheModulationOfARangeOfItsRows) {
+  const auto prim = [](Op op) { return Any(ir::Primitive(op)); };
+  std::vector<ex::Implementation> everything = Everything();
+  for (const Op op :
+       {Op::kLayerNorm, Op::kRepeat, Op::kConcat, Op::kUnary, Op::kConvert, Op::kCont})
+    everything.push_back(Fake(std::format("t.{}", ir::OpKeyName(ir::Primitive(op))), prim(op)));
+  everything.push_back(
+      Fake("t.modulate_split", Any(ir::Fused(FusedKind::kLayerNormModulateSplit))));
+  everything.push_back(Fake("t.gated_split", Any(ir::Fused(FusedKind::kGatedResidualSplit))));
+  everything.push_back(
+      Fake("t.gated_modulate_split", Any(ir::Fused(FusedKind::kGatedResidualModulateSplit))));
+  const ex::Registry r = Registry(std::move(everything));
+  Policy on{.enabled = {"bf16_residual", "split_gated_residual", "split_gated_residual_modulate",
+                        "split_modulate"}};
+  Canonicalize(on);
+  // Rows [first, 32) of the sum, its split at 12; `two`: the range's own
+  // modulation split at `split` between two vectors.
+  const auto graph = [](std::uint64_t first, bool copy, bool two, std::uint64_t split) {
+    ir::Builder b;
+    const TensorId x = b.Scale(b.Input(F32({64, 32})), 2.0F);
+    const TensorId y = b.Scale(b.Input(F32({64, 32})), 3.0F);
+    const TensorId side = b.Concat(b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, 12})),
+                                   b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, 20})), 1);
+    const TensorId sum = b.Add(x, b.Mul(y, b.Unary(side, ir::UnaryFn::kTanh)));
+    const std::uint64_t rows = 32 - first;
+    TensorId range =
+        b.View(sum, ir::ShapeOf({64, rows}), {4, 256, 256 * rows, 256 * rows}, first * 256);
+    if (copy) range = b.Cont(range);
+    const TensorId scale =
+        two ? b.Concat(b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, split})),
+                       b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, rows - split})), 1)
+            : b.Repeat(b.Input(F32({64})), ir::ShapeOf({64, rows}));
+    b.Output(b.Scale(b.Mul(b.LayerNorm(range, 1e-6F), b.Scale(scale, 1.0F, 1.0F)), 2.0F));
+    return Finish(b);
+  };
+  const auto count = [](const StepPlan& p, FusedKind kind) {
+    return std::ranges::count(p.graph.nodes(), ir::Fused(kind), &ir::Node::key);
+  };
+  for (const bool copy : {false, true}) {
+    const StepPlan p = PlanOf(graph(12, copy, false, 0), r, on);
+    EXPECT_EQ(count(p, FusedKind::kGatedResidualModulateSplit), 1) << copy;
+    EXPECT_EQ(count(p, FusedKind::kGatedResidualSplit), 0) << copy;
+    EXPECT_EQ(count(p, FusedKind::kLayerNormModulateSplit), 0) << copy;
+    EXPECT_EQ(std::ranges::count(p.graph.nodes(), ir::Primitive(Op::kCont), &ir::Node::key), 0);
+    for (const ir::Node& n : p.graph.nodes())
+      if (n.key == ir::Fused(FusedKind::kGatedResidualModulateSplit)) {
+        // The sum nothing else reads, in BF16; every row modulated.
+        EXPECT_EQ(p.graph.tensor(n.out[0]).format.encoding, Encoding::kBF16);
+        EXPECT_EQ(p.graph.tensor(n.out[1]).ne(1), 32U);
+        EXPECT_EQ(n.Params<ir::SplitModulateParams>().split, 12U);
+      }
+  }
+  // A range's split at the residual's (counted from its first row): joined.
+  EXPECT_EQ(count(PlanOf(graph(8, false, true, 4), r, on), FusedKind::kGatedResidualModulateSplit),
+            1);
+  // Elsewhere: apart.
+  const StepPlan apart = PlanOf(graph(8, false, true, 6), r, on);
+  EXPECT_EQ(count(apart, FusedKind::kGatedResidualModulateSplit), 0);
+  EXPECT_EQ(count(apart, FusedKind::kGatedResidualSplit), 1);
+}
+
 TEST(PlannerPatternTest, Bf16BranchRecordsTheResidualsBranchInBf16) {
   static constexpr std::array kBf16 = {Encoding::kBF16};
   static constexpr std::array kBf16Products = {ex::OperandRule{.operand = 0, .encodings = kBf16},
@@ -2121,6 +2184,208 @@ void ExpectDisjoint(const StepPlan& p) {
       }
     }
   }
+}
+
+// Invariant inputs (PlanOptions::invariant): the steps that read only them
+// and weights are the plan's prologue; what the rest reads from it stays
+// in place the whole step, sharing its bytes with nothing.
+TEST(PlannerPlanTest, InvariantInputsMakeAPrologueWhoseResultsStay) {
+  const auto graph = [] {
+    ir::Builder b;
+    const TensorId fixed = b.Input(F32({64, 8}));
+    const TensorId varying = b.Input(F32({64, 8}));
+    const TensorId w = b.Weight(F32({64}), W(0));
+    // The prologue: a scale of the invariant input, then its product with a
+    // weight; a scale of it the step reads twice.
+    const TensorId prepared = b.Mul(b.Scale(fixed, 2.0F), w);
+    // The rest: what varies, a long chain the prepared value must survive.
+    TensorId x = b.Add(b.Scale(varying, 3.0F), prepared);
+    for (int i = 0; i < 6; ++i) x = b.Scale(b.Add(x, x), 0.5F);
+    b.Output(b.Add(x, prepared));
+    return Finish(b);
+  };
+  const ex::Registry r = Registry(Everything());
+  const ir::Graph g = graph();
+  const TensorId fixed = g.inputs()[0];
+  const StepPlan plain = PlanOf(graph(), r);
+  EXPECT_TRUE(plain.prologue.empty());
+  const StepPlan p = PlanOf(graph(), r, {}, {.invariant = {fixed}});
+  EXPECT_EQ(p.invariant, std::vector<TensorId>{fixed});
+  ASSERT_EQ(p.prologue.size(), 2U);  // the scale and the product
+  EXPECT_EQ(p.prologue, (std::vector<std::uint32_t>{0, 1}));
+  ExpectDisjoint(p);
+  // The product the rest reads shares its bytes with no other tensor.
+  const ir::Node& made = p.graph.node(p.steps[1].nodes.front());
+  const TensorId kept = made.out[0];
+  std::uint64_t at = 0;
+  for (const auto& [t, offset] : p.placement.offsets)
+    if (t == kept) at = offset;
+  const std::uint64_t bytes = (RootBytes(p.graph.tensor(kept)).value() + 255) / 256 * 256;
+  for (const auto& [t, offset] : p.placement.offsets) {
+    if (t == kept) continue;
+    const std::uint64_t other = (RootBytes(p.graph.tensor(t)).value() + 255) / 256 * 256;
+    EXPECT_TRUE(at + bytes <= offset || offset + other <= at) << t.v;
+  }
+  // The other input declared instead: its own scale alone.
+  const StepPlan other = PlanOf(graph(), r, {}, {.invariant = {g.inputs()[1]}});
+  EXPECT_EQ(other.prologue.size(), 1U);
+  ExpectDisjoint(other);
+  // Both: every step.
+  const StepPlan both = PlanOf(graph(), r, {}, {.invariant = {fixed, g.inputs()[1]}});
+  EXPECT_EQ(both.prologue.size(), both.steps.size());
+}
+
+// Never the prologue's: what reads a state, and a store or a collective
+// reading an invariant input; such an input is then copied every run (not
+// kept in StepPlan::invariant), and nothing reuses a kept one's bytes.
+TEST(PlannerPlanTest, AStateReadAStoreOrACollectiveIsNoPrologue) {
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.all_reduce", Any(ir::Primitive(Op::kAllReduce))));
+  const ex::Registry r = Registry(std::move(implementations));
+  {  // A state read beside the invariant input: only the scale is fixed.
+    const auto graph = [] {
+      ir::Builder b;
+      const TensorId x = b.Input(F32({64, 8}));
+      const TensorId state = b.State(F32({64, 8}), ir::StateRef{});
+      const TensorId fixed = b.Scale(x, 2.0F);
+      b.Output(b.Add(b.Mul(fixed, state), b.Scale(state, 3.0F)));
+      return Finish(b);
+    };
+    const TensorId in = graph().inputs()[0];
+    const StepPlan p = PlanOf(graph(), r, {}, {.invariant = {in}});
+    EXPECT_EQ(p.prologue.size(), 1U);
+    EXPECT_EQ(p.invariant, std::vector<TensorId>{in});
+    ExpectDisjoint(p);
+  }
+  const auto stored = [](bool collective) {
+    ir::Builder b;
+    const TensorId x = b.Input(F32({128, 3}));
+    const TensorId cache = b.State(F32({128, 8}), ir::StateRef{});
+    const TensorId idx = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({3})));
+    if (collective) {
+      b.Output(b.AllReduce(b.Scale(x, 2.0F), {}));
+      b.Output(b.AllReduce(x, {}));
+    } else {
+      b.CacheStore(cache, x, idx);
+      b.Output(b.Scale(x, 2.0F));
+    }
+    return Finish(b);
+  };
+  for (const bool collective : {false, true}) {
+    SCOPED_TRACE(collective);
+    const ir::Graph g = stored(collective);
+    const TensorId x = g.inputs()[0];
+    const StepPlan p = PlanOf(stored(collective), r, {}, {.invariant = {x}});
+    // The input a store or a collective reads is written in place or sent:
+    // not kept, nothing is the prologue's, and it is copied every run.
+    EXPECT_TRUE(p.prologue.empty());
+    EXPECT_TRUE(p.invariant.empty());
+    ExpectDisjoint(p);
+  }
+}
+
+TEST(PlannerPlanTest, NodesNothingReadsAreNotPlanned) {
+  const auto graph = [](bool dead) {
+    ir::Builder b;
+    const TensorId x = b.Input(F32({64, 8}));
+    const TensorId y = b.Input(F32({64, 8}));  // read only by the unread chain
+    const TensorId w = b.Weight(F32({64}), W(0));
+    const TensorId v = b.Weight(F32({64}), W(1));
+    const TensorId kept = b.Mul(b.Scale(x, 2.0F), w);
+    if (dead) {
+      // Unread: a chain over the kept value, a weight and the other input,
+      // and a view of it.
+      const TensorId chain = b.Add(b.Mul(kept, v), b.Scale(y, 3.0F));
+      (void)b.Reshape(b.Scale(chain, 0.5F), ir::ShapeOf({512}));
+    }
+    b.Output(b.Add(kept, x));
+    return Finish(b);
+  };
+  const ex::Registry r = Registry(Everything());
+  const StepPlan live = PlanOf(graph(false), r);
+  const StepPlan pruned = PlanOf(graph(true), r);
+  EXPECT_EQ(pruned.steps.size(), live.steps.size());
+  // The leaves stay: the step's inputs and weights are its interface.
+  EXPECT_EQ(pruned.graph.inputs().size(), 2U);
+  std::size_t computed = 0, computed_live = 0;
+  for (const auto& n : pruned.graph.nodes())
+    computed += n.key.op != ir::Op::kInput && n.key.op != ir::Op::kWeight ? 1 : 0;
+  for (const auto& n : live.graph.nodes())
+    computed_live += n.key.op != ir::Op::kInput && n.key.op != ir::Op::kWeight ? 1 : 0;
+  EXPECT_EQ(computed, computed_live);
+  ExpectDisjoint(pruned);
+}
+
+TEST(PlannerPlanTest, ARepeatedNodeRunsOnce) {
+  const auto graph = [](bool repeat, bool other) {
+    ir::Builder b;
+    const TensorId x = b.Input(F32({64, 8}));
+    const TensorId y = b.Input(F32({64, 8}));
+    const TensorId first = b.Concat(x, y, 1);
+    // Again over the same sources, or over others.
+    const TensorId again = repeat ? b.Concat(x, other ? x : y, 1) : first;
+    b.Output(b.Add(b.Scale(first, 2.0F), b.Scale(again, 3.0F)));
+    return Finish(b);
+  };
+  auto implementations = Everything();
+  implementations.push_back(Fake("t.concat", Any(ir::Primitive(Op::kConcat))));
+  const ex::Registry r = Registry(std::move(implementations));
+  const StepPlan once = PlanOf(graph(false, false), r);
+  const StepPlan joined = PlanOf(graph(true, false), r);
+  EXPECT_EQ(joined.steps.size(), once.steps.size());
+  ExpectDisjoint(joined);
+  const StepPlan distinct = PlanOf(graph(true, true), r);
+  EXPECT_EQ(distinct.steps.size(), once.steps.size() + 1);
+}
+
+// Never joined: the step's outputs and kept tensors, stores, and reads of
+// a root a store or a fused node's aliased output writes in place (the
+// same read before and after a write sees different values).
+TEST(PlannerPlanTest, NoRepeatJoinsAWriteInPlaceOrWhatTheStepReturns) {
+  const ex::Registry r = Registry(Everything());
+  const auto scales = [](const StepPlan& p) {
+    return std::ranges::count(p.graph.nodes(), ir::Primitive(Op::kScale), &ir::Node::key);
+  };
+  const auto stores = [](const StepPlan& p) {
+    return std::ranges::count(p.graph.nodes(), ir::Primitive(Op::kCacheStore), &ir::Node::key);
+  };
+  {  // Two outputs.
+    ir::Builder b;
+    const TensorId x = b.Input(F32({64, 8}));
+    b.Output(b.Scale(x, 2.0F));
+    b.Output(b.Scale(x, 2.0F));
+    EXPECT_EQ(scales(PlanOf(Finish(b), r)), 2);
+  }
+  {  // One kept.
+    ir::Builder b;
+    const TensorId x = b.Input(F32({64, 8}));
+    b.Keep(b.Scale(x, 2.0F));
+    b.Output(b.Add(b.Scale(x, 2.0F), x));
+    EXPECT_EQ(scales(PlanOf(Finish(b), r)), 2);
+  }
+  const auto stored = [](bool fused) {
+    ir::Builder b;
+    const TensorId cache = b.State(F32({128, 8}), ir::StateRef{});
+    const TensorId idx = b.Input(ir::Dense(Encoding::kI64, ir::ShapeOf({3})));
+    const TensorId before = b.Scale(cache, 2.0F);
+    if (fused) {
+      const TensorId x = b.Input(F32({64, 2, 3}));
+      const TensorId pos = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({3})));
+      const ir::RopeParams rope{.mode = ir::RopeMode::kNeox, .dims = 64, .base = 10000.0F};
+      (void)b.Fused(FusedKind::kRopeStore, std::array{x, pos, cache, idx, TensorId{}}, rope);
+    } else {
+      // The same store twice: each a write, neither the other's repeat.
+      const TensorId rows = b.Input(F32({128, 3}));
+      b.CacheStore(cache, rows, idx);
+      b.CacheStore(cache, rows, idx);
+    }
+    b.Output(b.Add(before, b.Scale(cache, 2.0F)));
+    return Finish(b);
+  };
+  const StepPlan store = PlanOf(stored(false), r);
+  EXPECT_EQ(scales(store), 2);
+  EXPECT_EQ(stores(store), 2);
+  EXPECT_EQ(scales(PlanOf(stored(true), r)), 2);
 }
 
 TEST(PlannerPlacementTest, AChainReusesBytesAndInputsLiveFromTheStart) {

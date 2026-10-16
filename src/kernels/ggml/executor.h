@@ -83,6 +83,10 @@ class BoundGraph {
   // context has none); stops at the first step refused or faulted
   // (launch.h), which is returned, every lane joined back first.
   std::expected<void, KernelFailure> Run(LaunchContext& launch) const;
+  // The same with the steps `skip` marks (ascending step indices: a plan's
+  // prologue) left out; without lanes only.
+  std::expected<void, KernelFailure> RunSkipping(LaunchContext& launch,
+                                                 std::span<const std::size_t> skip) const;
 
   const execution::BoundPlan& bound() const { return bound_; }
   bool has_lanes() const { return !regions_.empty(); }

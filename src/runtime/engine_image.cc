@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <limits>
 #include <utility>
 
@@ -67,7 +68,9 @@ struct EngineImage::State {
     std::uint32_t stage = 0;
     bool operator==(const Key&) const = default;
   };
-  using Plans = en::BasicPlanCache<Key, en::StepPlanned, 1, en::StepPlanRuns>;
+  // Two runs a plan: a cold run's, and a warm run's (a run right after a
+  // run of the same plan, skipping its prologue and invariant inputs).
+  using Plans = en::BasicPlanCache<Key, en::StepPlanned, 2, en::StepPlanRuns>;
   struct Model {
     EngineImageParts parts;
     en::RunnerMemory memory;
@@ -143,7 +146,89 @@ struct EngineImage::State {
         {.staged = std::vector(io.inputs.begin(), io.inputs.end()),
          .written = backend.written,
          .within = backend.within,
-         .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end())});
+         .alignment_staged = std::vector(io.inputs.begin(), io.inputs.end()),
+         .invariant = Invariant(stage)});
+  }
+  // The stage's inputs its source keeps the same within a generation.
+  std::vector<ir::TensorId> Invariant(std::size_t stage) const {
+    const auto& descriptor = parts.stages.at(stage);
+    const auto inputs = descriptor.graph->graph().inputs();
+    std::vector<ir::TensorId> out;
+    for (const std::uint32_t i : descriptor.invariant)
+      if (i < inputs.size()) out.push_back(inputs[i]);
+    return out;
+  }
+  Key KeyOf(std::size_t stage) const {
+    return {parts.identity, stage_digests[stage], declaration, static_cast<std::uint32_t>(stage)};
+  }
+  // A stage's plan: the cached one, or built, bound and added.
+  std::expected<Plans::Entry*, std::string> Plan(std::size_t stage) {
+    const Key key = KeyOf(stage);
+    if (auto* entry = plans.Find(key)) return entry;
+    auto program = Build(stage, false);
+    if (!program) return Error(program.error());
+    auto planned = std::make_unique<en::StepPlanned>();
+    planned->program = std::move(*program);
+    auto bind = programs.BindPrepared(*planned, [&](const kn::StepProgram& actual) -> Status {
+      auto envelope = en::ProgramEnvelope::Measure(actual, true);
+      const auto& paid = stage_envelopes[stage];
+      if (!envelope || envelope->scratch > paid.scratch || envelope->pool > paid.pool ||
+          envelope->host > paid.host || envelope->launches > paid.launches ||
+          envelope->inputs > paid.inputs || envelope->outputs > paid.outputs)
+        return Error("bound image program exceeds its measured envelope");
+      return Ports(stage, actual);
+    });
+    if (!bind) return Error(bind.error());
+    const auto bytes = planned->program->host_bytes();
+    auto* entry = &plans.Add(key, std::move(planned), bytes, stage_capture_nodes[stage], 0);
+    for (auto& runs : entry->runs) runs.uncapturable = entry->planned->positioned;
+    return entry;
+  }
+  // The staging of a stage's host inputs, in slot order at 256-byte
+  // boundaries: a warm run's invariant inputs keep their place but are not
+  // copied. `fill` (if set) writes each copied input's bytes.
+  std::expected<en::Copies, std::string> Inputs(
+      std::size_t stage, const kn::StepProgram& program, bool warm,
+      const std::function<Status(std::size_t, std::span<std::byte>)>& fill) const {
+    const auto& descriptor = parts.stages[stage];
+    en::Copies copies;
+    std::uint64_t cursor = 0;
+    for (std::size_t i = 0; i < program.inputs().size(); ++i) {
+      const auto& slot = program.inputs()[i];
+      if (descriptor.inputs[i]) continue;
+      if (!(warm && slot.invariant)) {
+        if (cursor > input_bytes || slot.bytes > input_bytes - cursor)
+          return Error("image host input has no paid source");
+        if (fill) {
+          if (auto filled = fill(i, {input + cursor, static_cast<std::size_t>(slot.bytes)});
+              !filled)
+            return Error(filled.error());
+        }
+        copies.push_back({slot.device_address, slot.bytes, cursor});
+      }
+      cursor += Round(slot.bytes, 256);
+    }
+    return copies;
+  }
+  // The device ports a stage reads, copied in after its host inputs; a
+  // warm run's invariant ones are in place already.
+  bool PortsIn(std::size_t stage, const kn::StepProgram& program, providers::NativeStream stream,
+               bool warm) const {
+    const auto& descriptor = parts.stages[stage];
+    for (std::size_t i = 0; i < descriptor.inputs.size(); ++i) {
+      if (!descriptor.inputs[i] || (warm && program.inputs()[i].invariant)) continue;
+      if (!providers::CopyAsync(stream, Pointer(program.inputs()[i].device_address),
+                                Pointer(ports[*descriptor.inputs[i]]->base),
+                                program.inputs()[i].bytes, providers::CopyKind::kDeviceToDevice)
+               .ok())
+        return false;
+    }
+    return true;
+  }
+  // The observation every run of a stage copies out (part of its recording).
+  en::Copies Observed(std::size_t stage, const kn::StepProgram& program) const {
+    const auto& observed = program.outputs()[parts.stages[stage].observation];
+    return {{en::support::Address(output), observed.device_address, observed.bytes}};
   }
   std::expected<std::uint64_t, std::string> Request(const ImageRequest& request) const {
     if (!request.keep || request.layout == base::Sha256Digest{} ||
@@ -433,6 +518,14 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     }
     if (s.next < end && !s.generation_complete) s.next = 0;
   }};
+  // The plan this call ran last: the next run of it is warm (its prologue
+  // and invariant inputs left in place). The workspace keeps no contents
+  // from one job to the next (paged_node.h MapWorkspace) but here: between
+  // this call's consecutive jobs, under the lease the call holds throughout
+  // (the request moves from one stage's closure to the next, never ended),
+  // nothing evicts the workspace and no other model runs on it. A new call
+  // starts cold.
+  std::uint64_t last_run = 0;  // the plan's serial (Entry::serial), 0 for none
   for (; s.next < end; ++s.next) {
     const en::PlanStep protect;
     const auto invocation = s.parts.request.sequence[s.next];
@@ -451,6 +544,8 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     auto closure = node_.catalog().ClosureOfExtents(ids);
     if (!closure) return Error("image current stage closure is absent");
     const bool opened = !node_.InRequest(stream());
+    // A lease opened here starts the workspace afresh: nothing runs warm.
+    if (opened) last_run = 0;
     auto admitted = opened ? node_.BeginRequest(stream(), *closure, "image stage")
                            : node_.RefreshRequest(stream(), *closure);
     began = began || (opened && admitted);
@@ -495,37 +590,8 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
       }
       s.flight.reset();
     }
-    const State::Key key{s.parts.identity, s.stage_digests[invocation.stage], s.declaration,
-                         invocation.stage};
-    auto* entry = s.plans.Find(key);
-    Status checked;
-    if (!entry) {
-      auto program = s.Build(invocation.stage, false);
-      if (!program)
-        checked = Error(program.error());
-      else {
-        auto planned = std::make_unique<en::StepPlanned>();
-        planned->program = std::move(*program);
-        auto bound =
-            s.programs.BindPrepared(*planned, [&](const kn::StepProgram& actual) -> Status {
-              auto envelope = en::ProgramEnvelope::Measure(actual, true);
-              const auto& paid = s.stage_envelopes[invocation.stage];
-              if (!envelope || envelope->scratch > paid.scratch || envelope->pool > paid.pool ||
-                  envelope->host > paid.host || envelope->launches > paid.launches ||
-                  envelope->inputs > paid.inputs || envelope->outputs > paid.outputs)
-                return Error("bound image program exceeds its measured envelope");
-              return s.Ports(invocation.stage, actual);
-            });
-        if (!bound)
-          checked = Error(bound.error());
-        else {
-          const auto bytes = planned->program->host_bytes();
-          entry = &s.plans.Add(key, std::move(planned), bytes,
-                               s.stage_capture_nodes[invocation.stage], 0);
-          entry->runs[0].uncapturable = entry->planned->positioned;
-        }
-      }
-    }
+    auto planned = s.Plan(invocation.stage);
+    Status checked = planned ? Status{} : Error(planned.error());
     if (!checked) {
       auto ended = settle();
       if (!ended) {
@@ -534,6 +600,7 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
       }
       return checked;
     }
+    auto* entry = *planned;
     auto& program = *entry->planned->program;
     // Eager programs still receive the common between-jobs positioning hook.
     // A stateless typed stage has no token positions; refusal precedes Run.
@@ -541,20 +608,20 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
       if (auto positioned = program.Position({}); !positioned)
         checked = Error(positioned.error().detail);
     }
+    const bool warm = program.warm() && last_run != 0 && last_run == entry->serial;
+    const std::size_t variant = warm ? 1 : 0;
     en::Copies inputs;
-    std::uint64_t cursor = 0;
-    for (std::size_t i = 0; checked && i < program.inputs().size(); ++i) {
-      const auto& input = program.inputs()[i];
-      if (stage.inputs[i]) continue;
-      if (!s.parts.request.fill || cursor > s.input_bytes || input.bytes > s.input_bytes - cursor) {
-        checked = Error("image host input has no paid source");
-        break;
-      }
-      checked = s.parts.request.fill(invocation, i,
-                                     {s.input + cursor, static_cast<std::size_t>(input.bytes)});
-      if (!checked) break;
-      inputs.push_back({input.device_address, input.bytes, cursor});
-      cursor += Round(input.bytes, 256);
+    if (checked) {
+      auto staged = s.Inputs(invocation.stage, program, warm,
+                             [&](std::size_t slot, std::span<std::byte> out) -> Status {
+                               if (!s.parts.request.fill)
+                                 return Error("image host input has no paid source");
+                               return s.parts.request.fill(invocation, slot, out);
+                             });
+      if (staged)
+        inputs = std::move(*staged);
+      else
+        checked = Error(staged.error());
     }
     if (!checked) {
       auto ended = settle();
@@ -566,33 +633,24 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     }
     const bool observe = s.next + 1 == end;
     const auto& observed = program.outputs()[stage.observation];
-    en::Copies outputs;
     // Fixed observation addresses are part of the captured plan contract.
     // Always copy this stage output; only requested boundaries publish it.
-    outputs.push_back({en::support::Address(s.output), observed.device_address, observed.bytes});
-    const bool capture =
-        entry->runs[0].CaptureDue(s.model->parts.graphs) && s.plans.ChargeGraph(*entry);
+    en::Copies outputs = s.Observed(invocation.stage, program);
+    const bool capture = entry->runs[variant].CaptureDue(s.model->parts.graphs) &&
+                         s.plans.ChargeGraph(*entry, variant);
     s.flight = hold;
     auto queued = std::make_shared<en::StepQueued>();
     auto job = [hold, entry, invocation, inputs = std::move(inputs), outputs = std::move(outputs),
-                capture, queued](providers::NativeStream native) -> scheduler::JobResult {
+                capture, queued, warm,
+                variant](providers::NativeStream native) -> scheduler::JobResult {
       auto& live = *hold;
       const auto& descriptor = live.parts.stages[invocation.stage];
       const auto& actual = *entry->planned->program;
       const auto between = [&](providers::NativeStream stream) {
-        for (std::size_t i = 0; i < descriptor.inputs.size(); ++i) {
-          if (!descriptor.inputs[i]) continue;
-          const auto from = live.ports[*descriptor.inputs[i]]->base;
-          if (!providers::CopyAsync(stream, Pointer(actual.inputs()[i].device_address),
-                                    Pointer(from), actual.inputs()[i].bytes,
-                                    providers::CopyKind::kDeviceToDevice)
-                   .ok())
-            return false;
-        }
-        return true;
+        return live.PortsIn(invocation.stage, actual, stream, warm);
       };
-      *queued = live.programs.runs().Queue(entry->runs[0], inputs, between, actual, outputs,
-                                           capture, live.stats, native);
+      *queued = live.programs.runs().Queue(entry->runs[variant], inputs, between, actual, outputs,
+                                           capture, live.stats, native, warm);
       if (!queued->result) return scheduler::JobResult::kUnknown;
       // Device handoff follows the actual graph launch, in this same leased
       // job. It is not a DeviceToHost RunCopy and is never replayed separately.
@@ -625,6 +683,7 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
     }
     s.flight.reset();
     en::Count(s.stats, queued->path);
+    last_run = entry->serial;
     if (observe) {
       const std::span<const std::byte> bytes(s.output, static_cast<std::size_t>(observed.bytes));
       if (end == s.parts.request.sequence.size() && s.parts.request.finish) {
@@ -647,6 +706,87 @@ Status EngineImage::RunThrough(std::size_t end, std::string& sha) {
   }
   return {};
 }
+// After a load: each stage's plan built and bound and, with graphs on, each
+// run of the sequence (a stage's cold run, and its warm one when the sequence
+// runs it twice in a row) recorded ahead. The first generation then replays
+// what it would otherwise plan, load (the libraries a recording's first
+// launches load) and run launch by launch. Plans and recordings outlive a
+// swap out, so only a model's first load in a process pays for them.
+Status EngineImage::AfterLoad() {
+  // A pageable workspace is the active model's: recording while another
+  // model is active would lease (and page in) this one's prefix of it.
+  if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
+      node_.InRequest(stream()) || (node_.workspace_pageable() && !node_.active(index_)))
+    return {};
+  // Every plan made or found here is this step's until its recordings are
+  // queued: nothing the charges below reclaim may be one of them, nor have
+  // its graph's charge settled while its capture is pending.
+  const en::PlanStep protect;
+  auto hold = state_;
+  auto& s = *hold;
+  struct Ahead {
+    std::size_t stage = 0;
+    State::Plans::Entry* entry = nullptr;
+    bool warm = false;
+    en::Copies inputs, outputs;
+  };
+  std::vector<Ahead> ahead;
+  const auto& sequence = s.parts.request.sequence;
+  for (std::size_t i = 0; i < sequence.size(); ++i) {
+    const std::size_t stage = sequence[i].stage;
+    // A plan this cannot make now is the first request's to make (or
+    // refuse): only a recording's fault fails the load.
+    auto planned = s.Plan(stage);
+    if (!planned) continue;
+    auto* entry = *planned;
+    const auto& program = *entry->planned->program;
+    const bool warm = program.warm() && i > 0 && sequence[i - 1].stage == stage;
+    const std::size_t variant = warm ? 1 : 0;
+    if (!s.model->parts.graphs || entry->planned->positioned || entry->runs[variant].has_graph() ||
+        entry->runs[variant].uncapturable || entry->runs[variant].ahead_refused ||
+        std::ranges::any_of(ahead,
+                            [&](const Ahead& a) { return a.entry == entry && a.warm == warm; }))
+      continue;
+    auto inputs = s.Inputs(stage, program, warm, {});
+    if (!inputs || !s.plans.ChargeGraph(*entry, variant)) continue;
+    ahead.push_back({stage, entry, warm, std::move(*inputs), s.Observed(stage, program)});
+  }
+  if (ahead.empty()) return {};
+  s.flight = hold;
+  // Shared with the job: a failed wait may leave it to run later.
+  auto shared = std::make_shared<std::vector<Ahead>>(std::move(ahead));
+  auto failure = std::make_shared<std::string>();
+  const auto ran = node_.Job(
+      s.fence,
+      [hold, shared, failure](providers::NativeStream native) -> scheduler::JobResult {
+        auto& live = *hold;
+        for (auto& a : *shared) {
+          const auto& program = *a.entry->planned->program;
+          auto& runs = a.entry->runs[a.warm ? 1 : 0];
+          const auto between = [&](providers::NativeStream stream) {
+            return live.PortsIn(a.stage, program, stream, a.warm);
+          };
+          auto captured = live.programs.runs().CaptureAhead(runs, a.inputs, program, a.outputs,
+                                                            live.stats, native, between, a.warm);
+          if (!captured) {
+            *failure = captured.error().detail;
+            return scheduler::JobResult::kUnknown;
+          }
+        }
+        return scheduler::JobResult::kQueued;
+      },
+      "image recordings ahead", stream());
+  if (!ran || !failure->empty() || s.programs.launch()->faulted()) {
+    s.unknown = true;
+    return Error(std::format("recording the image's stages ahead: {}", !ran ? ran.error()
+                                                                       : !failure->empty()
+                                                                           ? *failure
+                                                                           : "launch faulted"));
+  }
+  s.flight.reset();
+  return {};
+}
+
 Status EngineImage::PrepareRequest(const ImageInput& input) {
   if (!state_ || !state_->bound || state_->released || state_->unknown || state_->flight ||
       !transitions_.empty() || node_.InRequest(stream()) ||

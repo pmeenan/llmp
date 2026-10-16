@@ -412,6 +412,34 @@ primitive ids). It is deterministic. The steps:
   Owner attention's Gemma 4 forms (16 or 32 heads, D 512) are selectable
   on the GB10 alone, as the M3 runner kept independent attention on
   other devices (`llmp.flash_attn.owner_roots`' capability).
+- **Repeats and unread nodes** (`plan.cc`, 2026-10-16): after the
+  patterns, a node that repeats an earlier one (the same operation and
+  parameters over the same sources, its outputs of the same formats,
+  strides and segments, from any component) runs once, its readers
+  reading the earlier node's outputs; then a node nothing needs (no
+  output the step returns or keeps, none read by a needed node) is
+  dropped. Neither drops or joins a leaf, a write in place (a cache
+  store, a fused node's aliased output) or communication, and no node
+  that reads or makes a root written in place (a store's cache, a state,
+  what communication reads or makes) is joined: the same read before and
+  after a write is two values. The image's first block joined its input rows twice and its
+  split modulations left their conditioning rows unread; Qwen3.8's steps
+  built one equal mask per layer.
+- **Prologue** (`PlanOptions::invariant`, 2026-10-16): inputs the caller
+  keeps the same between consecutive runs of the plan make the steps that
+  read only them, weights and each other a prologue (`StepPlan::prologue`)
+  whose results placement keeps for the whole step, shared with nothing;
+  a warm run (`StepProgram::RunWarm`) skips the prologue and the
+  invariant inputs' copies. A node with an effect, or a value a root
+  written in place holds, is never the prologue's, and an invariant input
+  it cannot hold fixed (one a store or communication reads) is copied
+  every run (`StepPlan::invariant` keeps only those it holds); a root
+  placed inside another (`RootWithin`) is the prologue's only with it; a
+  lowered step that
+  stands for prologue and per-run steps together (a pair, a norm and its
+  mul run as one) is refused. Not with lanes. `KeyOf` does not hold the
+  invariant inputs: a caller whose steps share plan keys must add them
+  first. The image's denoiser declares its text rows, positions and mask.
 - **Selection** (`select.h`): each node's first candidate from
   `Candidates()`, asked with the device's architecture, features, tuning
   data (an implementation that `needs_tuning` is offered only for a shape

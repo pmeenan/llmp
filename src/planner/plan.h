@@ -96,6 +96,18 @@ struct PlanOptions {
   // only this subset receives arena guarantees. Absent: the staged set.
   // This changes no placement/accounting; it describes physical binding.
   std::optional<std::vector<ir::TensorId>> alignment_staged{};
+  // Inputs (the primitive graph's ids) whose values the caller keeps the
+  // same between consecutive runs of the plan: the steps that read only
+  // them, weights and each other's results form the plan's prologue
+  // (StepPlan::prologue), whose results the rest reads stay in place
+  // between runs, so a run after a run of the same plan may skip the
+  // prologue and these inputs' copies (kernels/common/step_program.h
+  // RunWarm). Ignored with lanes (the regions run in their own order).
+  // KeyOf does not hold it: the image's stages (the only callers) key their
+  // plans by graph and stage, so each graph has one declaration. A caller
+  // whose plans share a PlanKey (an LLM's steps) must add it to the key
+  // before it declares invariant inputs.
+  std::vector<ir::TensorId> invariant{};
   // Proved physical owner columns, expanded before width-sensitive patterns.
   // Null keeps existing planning unchanged. The proof outlives this call.
   const components::OwnerProducts* owner_products = nullptr;
@@ -129,6 +141,11 @@ struct StepPlan {
   // Exact products retained through rewrites; lowering authenticates recipes.
   std::vector<OwnerProductScope> owner_products{};
   base::Sha256Digest owner_digest{};
+  // PlanOptions::invariant's (the primitive graph's ids) and the prologue:
+  // the steps that read only them, weights and each other's results, in
+  // order (none without invariant inputs).
+  std::vector<ir::TensorId> invariant{};
+  std::vector<std::uint32_t> prologue{};
 };
 
 std::expected<StepPlan, PlanFailure> Plan(ir::Graph primitive, const execution::Registry& registry,

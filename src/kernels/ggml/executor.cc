@@ -355,6 +355,22 @@ std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const 
   return {};
 }
 
+std::expected<void, KernelFailure> BoundGraph::RunSkipping(
+    LaunchContext& launch, std::span<const std::size_t> skip) const {
+  if (routed_) return Rejected("routed graph cannot run through the whole-step entry");
+  if (!regions_.empty() && launch.lanes() >= kMaxLanes)
+    return Rejected("a graph with lanes runs whole");
+  std::size_t at = 0;
+  for (std::size_t i = 0; i < steps_.size(); ++i) {
+    if (at < skip.size() && skip[at] == i) {
+      ++at;
+      continue;
+    }
+    if (auto r = RunStep(launch, i); !r) return r;
+  }
+  return {};
+}
+
 std::expected<void, KernelFailure> BoundGraph::RunRange(LaunchContext& launch, std::size_t first,
                                                         std::size_t end) const {
   if (!routed_ || first > end || end > steps_.size())

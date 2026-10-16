@@ -652,6 +652,51 @@ TEST_F(ImageOpsGpu, SplitModulationsMatchTheirDecompositions) {
   }
 }
 
+// The channel norm on both sides of each of its kernels' channel bounds
+// (the tiled kernel's 8 and 16 warps to 1,024 channels, a pixel a thread
+// above), with and without SiLU, against its decomposition.
+TEST_F(ImageOpsGpu, SpatialChannelNormMatchesItsDecompositionAtEveryWidth) {
+  constexpr std::int64_t kW = 37, kH = 3;  // 111 pixels: a partial tile
+  for (const std::int64_t channels : {1, 7, 144, 513, 576, 1024, 1025, 1152}) {
+    for (const bool silu : {false, true}) {
+      SCOPED_TRACE(std::format("C {} silu {}", channels, silu));
+      const auto n = static_cast<std::size_t>(kW * kH * channels);
+      const std::vector<float> x = Normal(81 + static_cast<std::uint32_t>(channels), n);
+      const std::vector<float> gamma =
+          Normal(82 + static_cast<std::uint32_t>(channels), static_cast<std::size_t>(channels));
+      const ir::SpatialNormParams params{
+          .eps = 1e-12F, .scale = std::sqrt(static_cast<float>(channels)), .silu = silu};
+      ir::Builder b;
+      const auto u = static_cast<std::uint64_t>(channels);
+      const ir::TensorId tx = b.Input(
+          ir::Dense(Encoding::kF32, ir::ShapeOf({std::uint64_t{kW}, std::uint64_t{kH}, u})));
+      const ir::TensorId tg = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({u})));
+      const ir::TensorId out =
+          b.Fused(ir::FusedKind::kSpatialChannelNorm, std::array{tx, tg}, params)[0];
+      b.Output(out);
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << graph.error().detail;
+      auto exec = ref::Executor::Create(*graph);
+      ASSERT_TRUE(exec) << exec.error().detail;
+      ASSERT_TRUE(exec->BindValues(tx, x));
+      ASSERT_TRUE(exec->BindValues(tg, gamma));
+      ASSERT_TRUE(exec->Run());
+      const auto want = exec->Values(out);
+      ASSERT_TRUE(want);
+      ggml_context* c = arena_->context();
+      ggml_tensor* gx = Place(ggml_new_tensor_3d(c, GGML_TYPE_F32, kW, kH, channels), x);
+      ggml_tensor* gg = Place(ggml_new_tensor_1d(c, GGML_TYPE_F32, channels), gamma);
+      ggml_tensor* node = Place(kg::SpatialChannelNorm(c, gx, gg, params.eps, params.scale, silu),
+                                std::vector<float>{});
+      ASSERT_TRUE(kg::CheckSpatialChannelNorm(node));
+      auto ran = kg::RunSpatialChannelNorm(*launch_, node);
+      ASSERT_TRUE(ran) << ran.error().detail;
+      // F32 both sides, the channels' squares summed in another order.
+      EXPECT_LE(WorstRelative(Read(node), *want, 1e-3), 1e-5);
+    }
+  }
+}
+
 TEST_F(ImageOpsGpu, DupUpAddAndConv1x1MatchTheirDecompositions) {
   const auto u = [](std::int64_t v) { return static_cast<std::uint64_t>(v); };
   // The duplicate-up: each shortcut channel repeated 2, 16 and 4 times

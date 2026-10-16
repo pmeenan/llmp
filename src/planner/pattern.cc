@@ -949,55 +949,148 @@ std::optional<Match> SplitGatedResidualMatch(const MatchContext& c, NodeId ancho
 // the sum still an output (the next residual's carry reads it). With the
 // option bf16_residual (a policy's, the image's: rounding there), the sum
 // in BF16 where only later residuals read it, as their carry.
+//
+// Version 2: the modulation may read a range of the sum's rows (a view of
+// whole rows, copied or not: the image's output norm over its latent rows,
+// the text rows before them dropped). Norm and modulation are row-wise, so
+// the fused node modulates every row and its readers read the range of
+// them; its split is the residual's, where the modulation's (counted from
+// the range's first row) selects the same vectors. The sum nothing else
+// reads is then recorded in BF16 (never read, its rounding is none).
 struct SplitResidualPlan final : MatchDetail {
   bool bf16_sum = false;
+  // A range: its first row and row count (rows == 0: the whole sum).
+  std::uint64_t first = 0, rows = 0;
 };
+// The descriptor of rows [first, first + rows) of the contiguous [C, R]
+// `whole`, as a view.
+ir::TensorDesc RowRange(const ir::TensorDesc& whole, std::uint64_t first, std::uint64_t rows) {
+  ir::TensorDesc d = whole;
+  d.format.shape.ne[1] = rows;
+  d.nb = ir::NaturalStrides(d.format);
+  d.view_offset = first * d.nb[1];
+  return d;
+}
 std::optional<Match> SplitGatedResidualModulateMatch(const MatchContext& c, NodeId anchor) {
   const ir::Node& m = c.node(anchor);
   if (m.key != ir::Fused(FusedKind::kLayerNormModulateSplit) || c.taken(anchor))
     return std::nullopt;
-  const NodeId at = c.graph().producer(m.src[0]);
+  // The modulation's input: the sum, or a range of its rows (a view, then
+  // perhaps a copy of it, each read by the next alone).
+  std::vector<NodeId> between;
+  TensorId x = m.src[0];
+  for (int link = 0; link < 2; ++link) {
+    const NodeId p = c.graph().producer(x);
+    const ir::Node& n = c.node(p);
+    if ((n.key != Prim(Op::kView) && n.key != Prim(Op::kCont)) || c.taken(p) ||
+        c.external(n.out[0]) || c.OnlyReader(n.out[0]) != (between.empty() ? anchor : between[0]))
+      break;
+    between.insert(between.begin(), p);
+    x = n.src[0];
+  }
+  const NodeId at = c.graph().producer(x);
   const ir::Node& g = c.node(at);
-  if (g.key != ir::Fused(FusedKind::kGatedResidualSplit) || c.taken(at) ||
-      g.Params<ir::SplitModulateParams>().split != m.Params<ir::SplitModulateParams>().split)
+  if (g.key != ir::Fused(FusedKind::kGatedResidualSplit) || c.taken(at)) return std::nullopt;
+  const auto gp = g.Params<ir::SplitModulateParams>();
+  const auto mp = m.Params<ir::SplitModulateParams>();
+  const ir::TensorDesc& sum = c.tensor(g.out[0]);
+  std::uint64_t first = 0, rows = 0;
+  if (!between.empty()) {
+    // One view of whole rows of the packed sum; a copy only of all of it.
+    // The modulation of the range alone is the step's (a view of every
+    // row's then stands for it): never one the step returns or keeps.
+    if (c.external(m.out[0])) return std::nullopt;
+    const ir::Node& v = c.node(between.front());
+    const ir::TensorDesc& vd = c.tensor(v.out[0]);
+    if (v.key != Prim(Op::kView) || vd.view_of != c.graph().root(g.out[0]) ||
+        !ir::IsContiguous(sum) || sum.is_view() || sum.ne(2) != 1 || sum.ne(3) != 1 ||
+        vd.ne(0) != sum.ne(0) || vd.ne(2) != 1 || vd.ne(3) != 1 ||
+        vd.format !=
+            [&] {
+              auto f = sum.format;
+              f.shape = vd.format.shape;
+              return f;
+            }() ||
+        vd.nb[1] != sum.nb[1] || vd.view_offset % sum.nb[1] != 0)
+      return std::nullopt;
+    first = vd.view_offset / sum.nb[1];
+    rows = vd.ne(1);
+    if (rows == 0 || first + rows > sum.ne(1) || !ir::IsContiguous(vd)) return std::nullopt;
+    if (between.size() == 2) {
+      const ir::TensorDesc& copy = c.tensor(c.node(between[1]).out[0]);
+      if (copy.format != vd.format || copy.is_view()) return std::nullopt;
+    }
+    // The modulation's rows below its split take a: those below the
+    // residual's split counted from the range's first row, or one vector.
+    const auto clamp = [&](std::int64_t v) {
+      return std::clamp<std::int64_t>(v, 0, static_cast<std::int64_t>(rows));
+    };
+    if (m.src[1] != m.src[2] && clamp(mp.split) != clamp(static_cast<std::int64_t>(gp.split) -
+                                                         static_cast<std::int64_t>(first)))
+      return std::nullopt;
+  } else if (gp.split != mp.split) {
     return std::nullopt;
+  }
   // Made at the modulation's place: nothing between reads the sum.
   for (const NodeId r : c.readers(g.out[0]))
-    if (r.v < anchor.v) return std::nullopt;
-  Match match{.nodes = {at, anchor},
+    if (r.v < anchor.v && (between.empty() || r != between.front())) return std::nullopt;
+  ir::SplitModulateParams params = mp;
+  params.split = gp.split;
+  Match match{.nodes = {at},
               .sources = {g.src[0], g.src[1], g.src[2], g.src[3], m.src[1], m.src[2]},
-              .params = m.params};
-  const std::array outputs{g.out[0], m.out[0]};
-  if (!Implemented(c, ir::Fused(FusedKind::kGatedResidualModulateSplit), match.sources, outputs,
-                   match.params) ||
+              .params = ir::ToBytes(params)};
+  match.nodes.insert(match.nodes.end(), between.begin(), between.end());
+  match.nodes.push_back(anchor);
+  // The modulation of every row (the range's readers read a view of it).
+  ir::TensorDesc modulated = c.tensor(m.out[0]);
+  if (!between.empty()) {
+    modulated.format.shape.ne[1] = sum.ne(1);
+    modulated.nb = ir::NaturalStrides(modulated.format);
+    for (const NodeId r : c.readers(m.out[0])) {
+      const ir::Node& n = c.node(r);
+      const ir::TensorDesc range = RowRange(modulated, first, rows);
+      std::vector<const ir::TensorDesc*> src;
+      for (const TensorId t : n.sources())
+        src.push_back(!t.valid() ? nullptr : t == m.out[0] ? &range : &c.tensor(t));
+      std::vector<const ir::TensorDesc*> out;
+      for (const TensorId t : n.outputs()) out.push_back(&c.tensor(t));
+      if (c.view().Candidates(n.key, src, out, n.params).empty()) return std::nullopt;
+    }
+  }
+  std::vector<const ir::TensorDesc*> src;
+  for (const TensorId t : match.sources) src.push_back(&c.tensor(t));
+  if (c.view()
+          .Candidates(ir::Fused(FusedKind::kGatedResidualModulateSplit), src,
+                      std::array<const ir::TensorDesc*, 2>{&sum, &modulated}, match.params)
+          .empty() ||
       !KeepsOrder(c, match))
     return std::nullopt;
   auto plan = std::make_shared<SplitResidualPlan>();
+  plan->first = first;
+  plan->rows = between.empty() ? 0 : rows;
   if (!Disabled(c.view().policy(), "bf16_residual") && !c.external(g.out[0])) {
-    ir::TensorDesc sum = c.tensor(g.out[0]);
-    sum.format.encoding = format::Encoding::kBF16;
-    sum.nb = ir::NaturalStrides(sum.format);
-    sum.view_of = {};
-    sum.view_offset = 0;
+    ir::TensorDesc bf16 = sum;
+    bf16.format.encoding = format::Encoding::kBF16;
+    bf16.nb = ir::NaturalStrides(bf16.format);
+    bf16.view_of = {};
+    bf16.view_offset = 0;
     bool readers = true;
     for (const NodeId r : c.readers(g.out[0])) {
-      if (r == anchor) continue;
+      if (r == anchor || std::ranges::contains(between, r)) continue;
       const ir::Node& n = c.node(r);
       if (n.key != ir::Fused(FusedKind::kGatedResidualSplit) || n.src[0] != g.out[0] ||
           n.src[1] == g.out[0]) {
         readers = false;
         break;
       }
-      std::vector<const ir::TensorDesc*> src{&sum};
-      for (std::size_t i = 1; i < n.nsrc; ++i) src.push_back(&c.tensor(n.src[i]));
+      std::vector<const ir::TensorDesc*> rs{&bf16};
+      for (std::size_t i = 1; i < n.nsrc; ++i) rs.push_back(&c.tensor(n.src[i]));
       const std::array<const ir::TensorDesc*, 1> o{&c.tensor(n.out[0])};
-      readers = !c.view().Candidates(n.key, src, o, n.params).empty();
+      readers = !c.view().Candidates(n.key, rs, o, n.params).empty();
       if (!readers) break;
     }
     if (readers) {
-      std::vector<const ir::TensorDesc*> src;
-      for (const TensorId s : match.sources) src.push_back(&c.tensor(s));
-      const std::array<const ir::TensorDesc*, 2> o{&sum, &c.tensor(m.out[0])};
+      const std::array<const ir::TensorDesc*, 2> o{&bf16, &modulated};
       plan->bf16_sum =
           !c.view()
                .Candidates(ir::Fused(FusedKind::kGatedResidualModulateSplit), src, o, match.params)
@@ -1008,7 +1101,8 @@ std::optional<Match> SplitGatedResidualModulateMatch(const MatchContext& c, Node
   return match;
 }
 
-// Both outputs at the modulation's place, the modulation in its encoding.
+// Both outputs at the modulation's place, the modulation in its encoding
+// (and a range of its rows a view of them).
 void SplitGatedResidualModulateRewrite(RewriteContext& c, const Match& m, std::size_t index) {
   if (index + 1 != m.nodes.size()) return;
   const ir::Graph& g = c.original();
@@ -1023,7 +1117,12 @@ void SplitGatedResidualModulateRewrite(RewriteContext& c, const Match& m, std::s
   const ir::Outputs outs =
       c.builder().FusedBytes(FusedKind::kGatedResidualModulateSplit, sources, m.params, encodings);
   c.Set(gated.out[0], outs[0]);
-  c.Set(last.out[0], outs[1]);
+  if (plan.rows == 0) {
+    c.Set(last.out[0], outs[1]);
+    return;
+  }
+  const ir::TensorDesc range = RowRange(c.builder().tensor(outs[1]), plan.first, plan.rows);
+  c.Set(last.out[0], c.builder().View(outs[1], range.format.shape, range.nb, range.view_offset));
 }
 
 // bf16_branch (round 1): the product of a BF16 weight whose result only a
@@ -2311,6 +2410,7 @@ constexpr std::array kPatterns = {
             .opt_in = true,
             .round = 1},
     Pattern{.name = "split_gated_residual_modulate",
+            .version = 2,
             .result = ir::Fused(FusedKind::kGatedResidualModulateSplit),
             .anchors = kFusedAnchors,
             .match = &SplitGatedResidualModulateMatch,

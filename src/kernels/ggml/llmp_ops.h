@@ -689,7 +689,9 @@ std::expected<void, KernelFailure> RunHcMixBf16(LaunchContext& launch, ggml_tens
 // llmp.image.spatial_channel_norm: each pixel's channels of `x` F32 [W, H,
 // C, 1] (packed) L2-normed with `eps` the norm's floor, times `scale` and
 // `gamma` F32 [C], with `silu` SiLU, into F32 of x's shape, disjoint from
-// its operands (ops_ext.h SpatialChannelNormF32, a pixel a thread).
+// its operands (ops_ext.h SpatialChannelNormF32: up to 1,024 channels a
+// tile of pixels a block, its channels in registers; above, a pixel a
+// thread).
 ggml_tensor* SpatialChannelNorm(ggml_context* context, ggml_tensor* x, ggml_tensor* gamma,
                                 float eps, float scale, bool silu);
 std::expected<void, KernelFailure> CheckSpatialChannelNorm(const ggml_tensor* node);

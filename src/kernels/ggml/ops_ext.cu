@@ -738,6 +738,60 @@ __global__ void SpatialChannelNormF32Kernel(const float* __restrict__ x_whc,
   }
 }
 
+// A tile of 32 pixels a block, its channels dealt over the block's kWarps
+// warps (warp w takes channels w, w + kWarps, ...): each lane holds its
+// pixel's share of the channels in registers, so the input is read once.
+// The partial sums of squares meet in shared memory, added in warp order.
+template <bool kSilu, int kWarps, int kPerLane>
+__global__ void __launch_bounds__(kWarps * 32)
+    SpatialChannelNormTiledF32Kernel(const float* __restrict__ x_whc,
+                                     const float* __restrict__ gamma, float* __restrict__ dst_whc,
+                                     int channels, std::int64_t pixels, float eps_sq, float scale) {
+  __shared__ float partial[kWarps][32];
+  const int lane = static_cast<int>(threadIdx.x & 31U);
+  const int warp = static_cast<int>(threadIdx.x >> 5U);
+  const std::int64_t p = static_cast<std::int64_t>(blockIdx.x) * 32 + lane;
+  const bool live = p < pixels;
+  float v[kPerLane];
+  float sum_sq = 0.0f;
+#pragma unroll
+  for (int k = 0; k < kPerLane; ++k) {
+    const int c = warp + kWarps * k;
+    v[k] = live && c < channels ? x_whc[p + pixels * c] : 0.0f;
+    sum_sq += v[k] * v[k];
+  }
+  partial[warp][lane] = sum_sq;
+  __syncthreads();
+  float total = 0.0f;
+#pragma unroll
+  for (int w = 0; w < kWarps; ++w) total += partial[w][lane];
+  const float inv_norm = rsqrtf(fmaxf(total, eps_sq));
+  if (!live) return;
+#pragma unroll
+  for (int k = 0; k < kPerLane; ++k) {
+    const int c = warp + kWarps * k;
+    if (c >= channels) break;
+    float y = ((v[k] * inv_norm) * scale) * __ldg(&gamma[c]);
+    if constexpr (kSilu) {
+      y = y / (1.0f + expf(-y));
+    }
+    dst_whc[p + pixels * c] = y;
+  }
+}
+
+template <int kWarps, int kPerLane>
+void LaunchChannelNormTiled(bool silu, unsigned tiles, cudaStream_t stream, const float* x,
+                            const float* gamma, float* dst, int channels, std::int64_t pixels,
+                            float eps_sq, float scale) {
+  if (silu) {
+    SpatialChannelNormTiledF32Kernel<true, kWarps, kPerLane>
+        <<<tiles, kWarps * 32, 0, stream>>>(x, gamma, dst, channels, pixels, eps_sq, scale);
+  } else {
+    SpatialChannelNormTiledF32Kernel<false, kWarps, kPerLane>
+        <<<tiles, kWarps * 32, 0, stream>>>(x, gamma, dst, channels, pixels, eps_sq, scale);
+  }
+}
+
 __global__ void DupUpAddF32Kernel(const float* __restrict__ x, const float* __restrict__ sc,
                                   float* __restrict__ dst, int out_w, int out_h, int out_c, int ft,
                                   int repeats) {
@@ -957,15 +1011,32 @@ std::expected<void, KernelFailure> SpatialChannelNormF32(LaunchContext& launch,
   const int channels = static_cast<int>(x_whc->ne[2]);
   const float eps_sq = eps * eps;
   return launch.Run(base::Bytes(0), [=](ggml_backend_cuda_context& ctx) {
-    const unsigned blocks = static_cast<unsigned>((pixels + 255) / 256);
-    if (silu) {
-      SpatialChannelNormF32Kernel<true><<<blocks, 256, 0, ctx.stream()>>>(
-          static_cast<const float*>(x_whc->data), static_cast<const float*>(gamma->data),
-          static_cast<float*>(dst_whc->data), channels, pixels, eps_sq, scale);
+    const auto* x = static_cast<const float*>(x_whc->data);
+    const auto* g = static_cast<const float*>(gamma->data);
+    auto* dst = static_cast<float*>(dst_whc->data);
+    // Up to 1024 channels, the tiled kernel: one read of the input (8 warps
+    // a tile to 512, 16 above).
+    const unsigned tiles = static_cast<unsigned>((pixels + 31) / 32);
+    const int per_lane = (channels + 7) / 8;
+    const auto launch_tiled = per_lane <= 8     ? &LaunchChannelNormTiled<8, 8>
+                              : per_lane <= 16  ? &LaunchChannelNormTiled<8, 16>
+                              : per_lane <= 32  ? &LaunchChannelNormTiled<8, 32>
+                              : per_lane <= 48  ? &LaunchChannelNormTiled<8, 48>
+                              : per_lane <= 64  ? &LaunchChannelNormTiled<8, 64>
+                              : per_lane <= 96  ? &LaunchChannelNormTiled<16, 48>
+                              : per_lane <= 128 ? &LaunchChannelNormTiled<16, 64>
+                                                : nullptr;
+    if (launch_tiled != nullptr) {
+      launch_tiled(silu, tiles, ctx.stream(), x, g, dst, channels, pixels, eps_sq, scale);
     } else {
-      SpatialChannelNormF32Kernel<false><<<blocks, 256, 0, ctx.stream()>>>(
-          static_cast<const float*>(x_whc->data), static_cast<const float*>(gamma->data),
-          static_cast<float*>(dst_whc->data), channels, pixels, eps_sq, scale);
+      const unsigned blocks = static_cast<unsigned>((pixels + 255) / 256);
+      if (silu) {
+        SpatialChannelNormF32Kernel<true>
+            <<<blocks, 256, 0, ctx.stream()>>>(x, g, dst, channels, pixels, eps_sq, scale);
+      } else {
+        SpatialChannelNormF32Kernel<false>
+            <<<blocks, 256, 0, ctx.stream()>>>(x, g, dst, channels, pixels, eps_sq, scale);
+      }
     }
     CUDA_CHECK(cudaGetLastError());
   });

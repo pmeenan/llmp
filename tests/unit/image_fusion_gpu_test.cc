@@ -172,15 +172,16 @@ struct FlowShape {
   std::uint32_t blocks = 1;
   double bound = 5e-3;  // relative RMS against the reference
 };
-// The image's fused implementations, each in some case's plan.
-constexpr std::array<std::string_view, 13> kFused{kg::kSpatialChannelNormName,
+// The image's fused implementations, each in some case's plan (a gated
+// residual alone, kGatedResidualSplitName, is not: every flow joins each
+// with the modulation of its sum).
+constexpr std::array<std::string_view, 12> kFused{kg::kSpatialChannelNormName,
                                                   kg::kNormRopeSectionsName,
                                                   kg::kQkAttentionName,
                                                   kg::kAttentionMaskPackName,
                                                   kg::kRopeTableName,
                                                   kg::kSwiGluBf16Name,
                                                   kg::kLayerNormModulateSplitName,
-                                                  kg::kGatedResidualSplitName,
                                                   kg::kGatedResidualModulateSplitName,
                                                   kg::kConv2dTiledF32,
                                                   kg::kDupUpAddName,

@@ -702,8 +702,8 @@ TEST(GgmlSpatialTest, LayoutSunkFlowPlansAndLowers) {
 // The image's planning policy (spec/image_spatial.h kImagePlanningPolicy) over
 // two flow blocks of the source's head geometry: every block's attention,
 // MLP, modulations (two a block and the output's) and residuals fused by
-// the plan, each residual but the last joined with the modulation of its
-// sum.
+// the plan, each residual joined with the modulation of its sum (the last
+// with the output's, over its latent rows).
 TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
   mo::QwenImageDenoiserProfile profile;
   profile.blocks = 2;
@@ -775,7 +775,7 @@ TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
            {"bf16_glu", 2},
            {"split_modulate", 5},
            {"split_gated_residual", 4},
-           {"split_gated_residual_modulate", 3}})
+           {"split_gated_residual_modulate", 4}})
     EXPECT_EQ(applied[name], count) << name;
   if (::testing::Test::HasFailure() || std::getenv("LLMP_PLAN_DUMP") != nullptr) {
     const ir::Graph& g = graph->graph();
@@ -789,6 +789,25 @@ TEST(GgmlSpatialTest, PlannedFlowFusesEveryBlock) {
                               static_cast<int>(t.format.encoding));
         }
       for (const auto o : n.outputs()) line += std::format(" -> t{}", o.v);
+      std::printf("%s\n", line.c_str());
+    }
+    // The planned steps: each implementation over its nodes.
+    const ir::Graph& p = plan->graph;
+    for (std::size_t s = 0; s < plan->steps.size(); ++s) {
+      const auto& step = plan->steps[s];
+      std::string line = std::format("step {} {}:", s, registry->at(step.implementation).name);
+      for (const auto id : step.nodes) {
+        const auto& n = p.node(id);
+        line += std::format(" {}", ir::OpKeyName(n.key));
+        for (const auto src : n.sources())
+          if (src.valid()) {
+            const auto& t = p.tensor(src);
+            line += std::format(" t{}[{} {} {} {}|{}]", src.v, t.ne(0), t.ne(1), t.ne(2), t.ne(3),
+                                static_cast<int>(t.format.encoding));
+          }
+        for (const auto o : n.outputs()) line += std::format(" -> t{}", o.v);
+        line += ";";
+      }
       std::printf("%s\n", line.c_str());
     }
   }

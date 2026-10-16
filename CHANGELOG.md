@@ -964,6 +964,15 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   diffusers reference, from 40.69 dB): the image's fusions are now chosen
   by its planning policy, keeping the shipping path's BF16 activations,
   instead of matched at run time.
+- An image model records its stages' graphs when it loads, so its first
+  generation after a load replays them (the load takes about 0.2 s longer
+  the first time in a process; the generation as much less), and its
+  denoising steps upload the inputs that do not change within a generation
+  (the text rows, positions and mask) once. The planner runs a node it
+  finds twice once and drops the nodes nothing reads, which also removes
+  repeated mask builds and unread conversions from the LLM plans that had
+  them. Qwen-Image-2.1's pixels change slightly (a faster VAE channel norm
+  adds its channels in another order; PSNR 41.26 dB unchanged).
 - Gemma 4 26B-A4B and 31B are served by the shared engine (D-107): their
   steps come from the `gemma4` mapping's components and recipes, lowered
   onto the same GGML kernels in the same order, so their replies and

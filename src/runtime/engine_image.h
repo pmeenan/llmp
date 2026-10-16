@@ -46,6 +46,10 @@ struct ImageStage {
   // One entry per graph port. Absent input: host-staged by fill. An output
   // may be observed on the host and/or carried to this device port.
   std::vector<std::optional<std::uint32_t>> inputs, outputs;
+  // The graph inputs (by index) the source keeps the same between the
+  // stage's invocations of a generation (planner/plan.h
+  // PlanOptions::invariant): a run after a run of the stage skips them.
+  std::vector<std::uint32_t> invariant{};
 };
 struct ImageInvocation {
   std::uint32_t stage = 0;
@@ -133,6 +137,7 @@ class EngineImage final : public Image, public engine::PagedModel {
   std::vector<catalog::ExtentId> state() const override;
   const catalog::Closure& everything() const override;
   std::uint64_t weight_read_bytes() const override;
+  Status AfterLoad() override;
   Status CheckPlaces() override;
   void DropPlans() override;
   std::string extra() const override;

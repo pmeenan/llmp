@@ -257,8 +257,10 @@ en::Status CheckProgram(const Lifetime& life, const kn::StepProgram& program) {
     glu += name == "ggml.swiglu";
     norms += name == "ggml.norm";
   }
+  // The flow's blocks each take the SiLU of one conditioning vector: the
+  // planner runs that repeat once (planner/plan.cc Repeats).
   if (products != (life.flow ? 296U : (life.block ? 13U : 4U)) ||
-      unary != (life.flow ? 67U : (life.block ? 4U : 2U)) || rope != 0U ||
+      unary != (life.flow ? 5U : (life.block ? 4U : 2U)) || rope != 0U ||
       sectioned != (life.flow ? 64U : (life.block ? 2U : 0U)) ||
       softmax != (life.flow ? 32U : (life.block ? 1U : 0U)) ||
       glu != (life.flow ? 32U : (life.block ? 1U : 0U)) ||

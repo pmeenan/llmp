@@ -58,10 +58,15 @@ using RootBytesOf = std::function<std::uint64_t(const ir::Graph&, ir::TensorId)>
 using RootWithin = std::function<ir::TensorId(const ir::Graph&, ir::TensorId)>;
 
 // `alignment` is a power of two.
+// `preserved`: tensors kept in place between runs of the step (a plan's
+// prologue results the rest reads, its invariant inputs): each lives the
+// whole step, from before its first step to after its last, shared with
+// nothing.
 std::expected<Placement, std::string> PlaceActivations(
     const ir::Graph& graph, std::span<const Selected> steps, std::span<const Region> regions,
     std::span<const ir::TensorId> staged, std::uint64_t alignment = 256,
-    const RootBytesOf& written = {}, const RootWithin& within = {});
+    const RootBytesOf& written = {}, const RootWithin& within = {},
+    std::span<const ir::TensorId> preserved = {});
 
 }  // namespace llmp::planner
 

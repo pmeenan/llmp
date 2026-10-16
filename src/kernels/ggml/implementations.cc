@@ -1000,8 +1000,10 @@ constexpr std::array<Kernel::Entry, 153> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return RunHcPrep(launch, n[0]); }},
     {.name = kSpatialChannelNormName,
      .operation = execution::Operation::kSpatialChannelNorm,
-     .variant = "SpatialChannelNormF32Kernel: a pixel a thread, its channels' sum of squares, then "
-                "each channel normed, scaled by the factor and gamma, SiLU where asked",
+     .variant = "SpatialChannelNormTiledF32Kernel up to 1024 channels: 32 pixels a block, their "
+                "channels dealt over 8 warps (16 above 512) and held in registers (one read), the "
+                "sums of squares met in shared memory; above, SpatialChannelNormF32Kernel: a pixel "
+                "a thread. Each channel normed, scaled by the factor and gamma, SiLU where asked",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckSpatialChannelNorm(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunSpatialChannelNorm(launch, n[0]); }},

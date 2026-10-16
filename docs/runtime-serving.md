@@ -452,7 +452,13 @@ only the outgoing model used with its weights, and nothing else takes it
 (every acquisition protects it). An image geometry that needs more of it
 catalogs the growth and pages it in before the previous geometry retires,
 so a growth without room is refused with the previous geometry usable.
-The workspace holds no contents from one job to the next. The scheduler's physical cap is the
+The workspace holds no contents from one job to the next, but for one
+bounded exception: a plan's prologue results and invariant inputs stay
+between consecutive jobs of one caller that holds its request lease
+throughout (an image generation's denoising steps within one call), where
+nothing evicts the workspace and no other model runs on it; a newly opened
+lease runs cold. Unlike RE-058's EXL3 lock slots, nothing relies on bytes
+surviving a request, a swap or an eviction. The scheduler's physical cap is the
 fixed allocations plus the post-setup available memory, less the largest host-built chunk
 inputs, every model's plan budget and a 6 GiB guard, rounded down to 2 MiB
 extents. Fixed allocations, weights, the active model's workspace, used
@@ -766,9 +772,16 @@ restore's completion doing nothing, recovery by dropping plans) do not
 apply. Its settings are the model's (D-103: context, prefill chunk,
 request slots, speculation), given to the build of its parts and capped by
 what they hold. The image adapter registers, pages and plans its runner
-like any model, but its work (encoder, denoiser steps, decoder) has no
-orchestration on the shared runner yet: its first output and finish refuse
-until Qwen-Image's migration.
+like any model and runs its stages (encoder, denoiser steps, decoder) as
+planned step programs. After a load (`AfterLoad`, before the swap is
+ready) it plans every stage and records each run its sequence makes (a
+stage's first run, and a run right after a run of the same stage), so a
+model's first generation in a process replays them; plans and recordings
+outlive a swap out. A run right after a run of the same stage is warm: it
+skips the inputs the stage declares invariant within a generation
+(`ImageStage::invariant`: the denoiser's text rows, positions and mask) and
+the plan's prologue that only they feed (planner/plan.h
+`PlanOptions::invariant`).
 
 ## Turns
 

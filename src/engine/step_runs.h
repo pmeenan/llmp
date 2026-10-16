@@ -134,10 +134,14 @@ class StepRuns {
   // made beside the run, or (with `between`) recorded first and replayed
   // once (a refusal leaves the plan launch by launch, counted in `stats`);
   // else launch by launch. The caller counts the path once its job ran.
+  // `warm`: the program's warm run (StepProgram::RunWarm), whose recording
+  // is `runs`' own (a caller keeps a warm run's runs apart from a cold
+  // one's, and leaves the invariant inputs out of `inputs`).
   StepQueued Queue(StepPlanRuns& runs, const Copies& inputs,
                    const std::function<bool(providers::NativeStream)>& between,
                    const kernels::StepProgram& program, std::span<const RunCopy> outputs,
-                   bool capture, GraphStats& stats, providers::NativeStream native) const;
+                   bool capture, GraphStats& stats, providers::NativeStream native,
+                   bool warm = false) const;
   // One part of an owned dependency-discovery step. Prefix copies host inputs
   // and the complete route readback; continuation copies final outputs. Only
   // ModelRunner can supply its fresh access token. Both recordings stay in the
@@ -149,23 +153,23 @@ class StepRuns {
   // Records `runs`' graph of `program` without running it, beside work
   // already queued on `native`: the plan's next run replays it. A refusal
   // (false) sets ahead_refused only; only a fault (kUnknown) is an error.
-  // Not counted as a run.
-  std::expected<bool, kernels::StepFailure> CaptureAhead(StepPlanRuns& runs, const Copies& inputs,
-                                                         const kernels::StepProgram& program,
-                                                         std::span<const RunCopy> outputs,
-                                                         GraphStats& stats,
-                                                         providers::NativeStream native) const;
+  // Not counted as a run. `between` and `warm` as Queue's: what the run
+  // queues between its inputs and the program, and its warm recording.
+  std::expected<bool, kernels::StepFailure> CaptureAhead(
+      StepPlanRuns& runs, const Copies& inputs, const kernels::StepProgram& program,
+      std::span<const RunCopy> outputs, GraphStats& stats, providers::NativeStream native,
+      const std::function<bool(providers::NativeStream)>& between = {}, bool warm = false) const;
 
  private:
   std::expected<void, kernels::StepFailure> Record(
       const Copies& inputs, const std::function<bool(providers::NativeStream)>& between,
       const kernels::StepProgram& program, std::span<const RunCopy> outputs,
-      providers::NativeStream native) const;
+      providers::NativeStream native, bool warm = false) const;
   std::expected<bool, kernels::StepFailure> CaptureInto(
       StepPlanRuns& runs, const Copies& inputs,
       const std::function<bool(providers::NativeStream)>& between,
       const kernels::StepProgram& program, std::span<const RunCopy> outputs, GraphStats& stats,
-      providers::NativeStream native) const;
+      providers::NativeStream native, bool warm = false) const;
 
   bool graphs_ = true;
   std::byte* staging_ = nullptr;
