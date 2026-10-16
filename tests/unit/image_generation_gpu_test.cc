@@ -41,6 +41,7 @@
 #include "runtime/engine_llm.h"
 #include "runtime/memory_guard.h"
 #include "tokenizer/hf.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace en = llmp::engine;
@@ -936,8 +937,9 @@ struct ServerGrowthLifetime {
              bool installed_source = false, bool upstream_quality = false) {
     ordinary = installed_source;
     quality = upstream_quality;
+    // Gemma2 2B's published v1 artifact (D-118).
     constexpr std::string_view gemma =
-        "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
+        "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076";
     const char* temporary = std::getenv("LLMP_TEST_SCRATCH");
     if (!temporary) return Error("explicit private scratch required");
     std::string pattern = (fs::path(temporary) / "image-growth-XXXXXX").string();
@@ -1114,15 +1116,21 @@ struct ServerGrowthLifetime {
     return {};
   }
 };
+// The store holding Gemma2's v1 artifact: LLMP_IMAGE_GROWTH_GEMMA_STORE, else
+// the published v1 store.
+std::string GemmaStore() {
+  const char* gemma = std::getenv("LLMP_IMAGE_GROWTH_GEMMA_STORE");
+  return gemma != nullptr ? std::string(gemma) : llmp::test_support::V1Store();
+}
 TEST(ImageGenerationGpu, ServerSwapsRetainStateAcrossImageGeometryGrowth) {
   if (!std::getenv("LLMP_RUN_SHARED_IMAGE_GROWTH"))
     GTEST_SKIP() << "explicit bounded Server geometry/swap diagnostic required";
   const char* store = std::getenv("LLMP_IMAGE_GENERATION_STORE");
   const char* noise = std::getenv("LLMP_IMAGE_GENERATION_NOISE");
-  const char* gemma = std::getenv("LLMP_IMAGE_GROWTH_GEMMA_STORE");
+  const std::string gemma = GemmaStore();
   ASSERT_NE(store, nullptr);
   ASSERT_NE(noise, nullptr);
-  ASSERT_NE(gemma, nullptr);
+  ASSERT_FALSE(gemma.empty());
   auto life = std::make_unique<ServerGrowthLifetime>();
   const auto run = life->Run(store, noise, gemma);
   const auto retired = life->Retire();
@@ -1154,10 +1162,10 @@ TEST(ImageGenerationGpu, OrdinaryServerConsumesInstalledSourceAndRequests) {
     GTEST_SKIP() << "explicit paid ordinary-source service screen required";
   const char* store = std::getenv("LLMP_IMAGE_GENERATION_STORE");
   const char* noise = std::getenv("LLMP_IMAGE_GENERATION_NOISE");
-  const char* gemma = std::getenv("LLMP_IMAGE_GROWTH_GEMMA_STORE");
+  const std::string gemma = GemmaStore();
   ASSERT_NE(store, nullptr);
   ASSERT_NE(noise, nullptr);
-  ASSERT_NE(gemma, nullptr);
+  ASSERT_FALSE(gemma.empty());
   const bool quality = std::getenv("LLMP_IMAGE_SERVICE_UPSTREAM_QUALITY") != nullptr;
   ASSERT_TRUE(rt::CheckStartupHostAllowance(2 * kMiB, kCap,
                                             llmp::platform::AvailableMemoryBytes().value_or(0)));

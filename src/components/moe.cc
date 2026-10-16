@@ -29,7 +29,7 @@
 // ffn_gate_tid2eid): each row's `used` experts, the row's token's row of a
 // table I32 [used, vocabulary] that the engine reads by rows on demand (a
 // host table: the engine checks every id it reads against `experts`
-// before the step, as model/dsv4.h CheckDsv4HashRouting does, since the
+// before the step (runtime/component_admission.h's stored hash-table check), since the
 // expert products index memory with them), as ids I32 [used, rows] that
 // its layer's hash router reads.
 //

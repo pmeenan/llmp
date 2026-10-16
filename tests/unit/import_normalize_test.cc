@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/sha256.h"
 #include "components/step.h"
 #include "dsv4_gguf_normalization_fixture.h"
 #include "expected_error.h"
@@ -29,14 +30,10 @@
 #include "import/normalize.h"
 #include "import/readers/gguf.h"
 #include "import_fixtures.h"
-#include "model/dsv4.h"
-#include "model/qwen2.h"
-#include "model/qwen2_exl3.h"
+#include "model/state_contract.h"
 #include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
-#include "spec/mappings/dsv4.h"
-#include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -1026,11 +1023,10 @@ TEST(ImportNormalizeDsv4Test, CompleteCapturedTargetKeepsAllEncodingsAndLayerSem
   ASSERT_EQ(plan->spec().stages.size(), 1U);
   EXPECT_EQ(plan->spec().stages[0].side.size(), 3U);
   EXPECT_EQ(plan->spec().stages[0].layers.size(), 43U);
-  auto values = spec::mappings::Dsv4V0Values(model::Dsv4Flash());
-  ASSERT_TRUE(values);
-  auto expected = spec::Synthesize(spec::mappings::Dsv4Mapping(), plan->canonical(), *values);
-  ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
-  EXPECT_EQ(plan->spec(), *expected);
+  // The spec the approved artifact stores (runtime/approvals.cc), which
+  // the retired profile's synthesis made.
+  EXPECT_EQ(base::ToHex(plan->spec().Digest()),
+            "ddaaa1d38bd6a501b9ef891bc0f639a70f41b19ff85a85674be5d77470e7a8e8");
   std::set<Encoding> encodings;
   for (std::size_t i = 0; i != input.tensors.size(); ++i) {
     EXPECT_EQ(plan->routes()[i].extent, input.tensors[i].extent);
@@ -1058,6 +1054,121 @@ TEST(ImportNormalizeDsv4Test, RefusesIncompleteListsCountsAndUnclassifiedSourceS
   }
 }
 
+// antirez's community GGUFs (the IQ2_XXS artifact): the layer-type list may
+// stop at the 43 blocks (its trailing MTP layers' entries absent) but must be
+// the profile's prefix; the shared expert's clamps may be absent, when the
+// mapping clamps it as the routed experts; the MTP depth and the vocabulary
+// size are exact auxiliary keys, never a prefix that admits a near miss.
+TEST(ImportNormalizeDsv4Test, CommunityListsAuxiliaryKeysAndTheClampFallback) {
+  const auto normalized = [](Checkpoint input) { return Normalize(std::move(input), kFunded); };
+  const auto ratios = [](std::size_t count) {
+    std::vector<std::int64_t> out;
+    for (std::size_t il = 0; il < count; ++il)
+      out.push_back(il < 2 || il >= 43 ? 0 : (il % 2 == 0 ? 4 : 128));
+    return out;
+  };
+  const auto erase = [](Checkpoint& input, std::string_view key) {
+    std::erase_if(input.metadata, [&](const MetaEntry& e) { return e.key == key; });
+  };
+  {  // The 43 blocks' entries alone: accepted at the list's minimum size.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    Value(input, "deepseek4.attention.compress_ratios", ratios(43));
+    const auto plan = normalized(std::move(input));
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    EXPECT_EQ(plan->spec().stages[0].layers.size(), 43U);
+  }
+  {  // Below the minimum: refused.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    Value(input, "deepseek4.attention.compress_ratios", ratios(42));
+    EXPECT_FALSE(normalized(std::move(input)));
+  }
+  {  // Longer than the list's maximum (46): refused.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    Value(input, "deepseek4.attention.compress_ratios", ratios(47));
+    EXPECT_FALSE(normalized(std::move(input)));
+  }
+  {  // Within the bounds, its last entry not the profile's: refused.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    auto changed = ratios(44);
+    changed.back() = 4;
+    Value(input, "deepseek4.attention.compress_ratios", changed);
+    EXPECT_FALSE(normalized(std::move(input)));
+  }
+  {  // A prefix that is not the profile's: refused.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    auto mismatched = ratios(43);
+    mismatched[2] = 128;
+    Value(input, "deepseek4.attention.compress_ratios", mismatched);
+    EXPECT_FALSE(normalized(std::move(input)));
+  }
+  {  // The shared expert's clamps absent: the routed experts' clamp it.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    erase(input, "deepseek4.swiglu_clamp_shexp");
+    Value(input, "deepseek4.swiglu_clamp_exp", std::vector<double>(43, 9.5));
+    const auto plan = normalized(std::move(input));
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    std::size_t clamped = 0;
+    for (const auto& layer : plan->spec().stages[0].layers)
+      for (const auto& c : layer.components)
+        if (const auto* shared = c.Find("shared_limit"); shared != nullptr) {
+          const auto* routed = c.Find("limit");
+          ASSERT_NE(routed, nullptr);
+          EXPECT_EQ(shared->value, routed->value);
+          EXPECT_EQ(shared->value, spec::ParamValue(9.5));
+          ++clamped;
+        }
+    EXPECT_EQ(clamped, 43U);
+  }
+  {  // Present but malformed: refused, not replaced by the fallback.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    Value(input, "deepseek4.swiglu_clamp_shexp", std::vector<double>(42, 10));
+    EXPECT_FALSE(normalized(std::move(input)));
+  }
+  {  // The exact auxiliary keys: accepted.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    Value(input, "deepseek4.nextn_predict_layers", std::int64_t{1});
+    Value(input, "deepseek4.vocab_size", std::int64_t{129280});
+    const auto plan = normalized(std::move(input));
+    EXPECT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+  }
+  {  // A vocabulary size the token table does not state: refused.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    Value(input, "deepseek4.vocab_size", std::int64_t{129281});
+    EXPECT_FALSE(normalized(std::move(input)));
+  }
+  // The community GGUF's encodings: an F16 compressor APE table, Q2_K down
+  // and IQ2_XXS gate experts, each kept as the source holds it.
+  for (const auto& [name, encoding] :
+       {std::pair<std::string_view, Encoding>{"attn_compressor_ape.weight", Encoding::kF16},
+        std::pair<std::string_view, Encoding>{"ffn_down_exps.weight", Encoding::kQ2_K},
+        std::pair<std::string_view, Encoding>{"ffn_gate_exps.weight", Encoding::kIQ2_XXS}}) {
+    SCOPED_TRACE(name);
+    auto input = test_support::Dsv4GgufCheckpoint();
+    const auto at = std::ranges::find_if(input.tensors,
+                                         [&](const Tensor& t) { return t.name.ends_with(name); });
+    ASSERT_NE(at, input.tensors.end());
+    const auto index = static_cast<std::size_t>(at - input.tensors.begin());
+    at->format.encoding = encoding;
+    at->dtype = format::Info(encoding).name;  // as the GGUF names its type
+    at->format.layout =
+        format::Info(encoding).quantized ? format::Layout::kGgmlBlocks : format::Layout::kDense;
+    const auto parts = format::PartsOf(at->format);
+    ASSERT_TRUE(parts);
+    ASSERT_LE((*parts)[0].bytes, at->extent.bytes);  // within its old extent
+    at->extent.bytes = (*parts)[0].bytes;
+    const auto plan = normalized(std::move(input));
+    ASSERT_TRUE(plan) << test_support::Failed(plan, &Error::ToString).value_or("");
+    EXPECT_EQ(plan->canonical().tensors[index].format.encoding, encoding);
+  }
+  for (const std::string_view near :
+       {"deepseek4.nextn_predict_layers_extra", "deepseek4.vocab_size.v2", "deepseek4.vocab"}) {
+    // A near miss of an exact key stays unclassified: refused.
+    auto input = test_support::Dsv4GgufCheckpoint();
+    Value(input, std::string(near), std::int64_t{1});
+    EXPECT_FALSE(normalized(std::move(input))) << near;
+  }
+}
+
 TEST(ImportNormalizeQwen2Test, CompleteCapturedTargetMatchesV0SpecWithOmittedOrExplicitKeyLength) {
   for (const bool explicit_keys : {false, true}) {
     auto input = test_support::Qwen2GgufCheckpoint();
@@ -1077,11 +1188,10 @@ TEST(ImportNormalizeQwen2Test, CompleteCapturedTargetMatchesV0SpecWithOmittedOrE
     ASSERT_EQ(plan->spec().stages.size(), 1U);
     EXPECT_EQ(plan->spec().stages[0].layers.size(), 24U);
     EXPECT_EQ(plan->spec().stages[0].heads.output->weights[0].tensor, "output.weight");
-    auto values = spec::mappings::Qwen2V0Values(model::Qwen25Instruct05B());
-    ASSERT_TRUE(values);
-    auto expected = spec::Synthesize(spec::mappings::Qwen2Mapping(), plan->canonical(), *values);
-    ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
-    EXPECT_EQ(plan->spec(), *expected);
+    // The spec the approved artifact stores (runtime/approvals.cc), which
+    // the retired profile's synthesis made, with or without the keys.
+    EXPECT_EQ(base::ToHex(plan->spec().Digest()),
+              "096ae62e7e4978ad74bdfd80d64ab61c4ae662df1dc393fc6ad76f59f324f2b5");
     EXPECT_TRUE(plan->applied_folds().empty());
     EXPECT_FALSE(Normalize(input, {cost->metadata_bytes - 1, cost->work_units}));
   }
@@ -1120,11 +1230,10 @@ TEST(ImportNormalizeQwen2Exl3Test, CompleteCaptured40And45TargetsMatchV0SpecAndP
     ASSERT_EQ(plan->routes().size(), 798U);
     ASSERT_EQ(plan->spec().stages.size(), 1U);
     EXPECT_EQ(plan->spec().stages[0].layers.size(), 24U);
-    auto values = spec::mappings::Qwen2V0Values(model::Qwen25Instruct05BExl3());
-    ASSERT_TRUE(values);
-    auto expected = spec::Synthesize(spec::mappings::Qwen2Mapping(), plan->canonical(), *values);
-    ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
-    EXPECT_EQ(plan->spec(), *expected);
+    // The spec both approved artifacts store (runtime/approvals.cc), which
+    // the retired profile's synthesis made.
+    EXPECT_EQ(base::ToHex(plan->spec().Digest()),
+              "1b982d73ad42ab6a92cd224a1ff3995825cef4af8c8e4a3f83e3059f5068c274");
     EXPECT_TRUE(plan->applied_folds().empty());
     EXPECT_FALSE(Normalize(input, {cost->metadata_bytes - 1, cost->work_units}));
   }

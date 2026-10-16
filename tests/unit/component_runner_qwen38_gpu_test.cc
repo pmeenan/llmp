@@ -3,10 +3,10 @@
 
 // The one model runner (engine/model_runner.h) over the component step
 // source (engine/component_source.h) and the GGML module's lowering
-// (kernels/ggml/step_program.h), on the real Qwen3.8 artifacts (label
-// `models`, one model at a time): the ModelOpt import with its experts in
-// the CUTLASS layout and in GGML's NVFP4 blocks, and a GGUF quantization,
-// each under its mapping's default policy, in its fast form (the default: fused,
+// (kernels/ggml/step_program.h), on the published v1 Qwen3.8 artifacts
+// (label `models`, one model at a time): the native ModelOpt import and a
+// GGUF quantization, each under its approved policy (as serving selects
+// it), in its fast form (the default: fused,
 // not exact, device masks and tokens). Two owners run one script: prompt
 // chunks of the chunk bound, a ragged chunk and short ones (the fast
 // kernels' row limits: 8 and 16 rows, the convolution's 32-token windows),
@@ -21,7 +21,10 @@
 //
 // The n-gram rows each row reads (the step's side rows, components/
 // component.h side_rows) are the test's: the hash of the token history
-// (model/qwen38.h Qwen38PleRows), read on demand into bounded row slots.
+// (tests/support/families/qwen.h Qwen38PleRows, with the hash constants
+// the stored spec's side.ngram component carries), read on demand into
+// bounded row slots. (The v0 GGML-experts ModelOpt import, 67617f87, has no
+// v1 counterpart but the native one.)
 // Speculation (a verify's saves and its commit) runs through the engine in
 // G3c; its steps' lowering is validated on the CPU (ggml_lower_qwen38_test).
 
@@ -37,16 +40,15 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -61,17 +63,19 @@
 #include "engine/paged_weights.h"
 #include "engine/runner_resources.h"
 #include "engine/support.h"
+#include "families/qwen.h"
 #include "kernels/ggml/qwen38_commit.h"
 #include "kernels/ggml/step_program.h"
-#include "model/qwen38.h"
 #include "model/state_contract.h"
+#include "planner/policy.h"
 #include "planner/step_shape.h"
 #include "providers/device_runtime.h"
+#include "runtime/component_admission.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
 #include "spec/stored.h"
-#include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -80,8 +84,10 @@ namespace en = llmp::engine;
 namespace ar = llmp::artifact;
 namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
+namespace fm = llmp::test_support::families;
 namespace md = llmp::model;
 namespace pl = llmp::planner;
+namespace rt = llmp::runtime;
 namespace sp = llmp::spec;
 namespace fs = std::filesystem;
 
@@ -93,7 +99,7 @@ constexpr std::uint64_t kSlabAlignment = 16;
 
 struct Case {
   std::string name;
-  std::string_view id;
+  std::string_view v1_name;  // the store's name (v1_frozen.h V1IdNamed)
 };
 
 // ------------------------------------------------------------ the script
@@ -222,93 +228,84 @@ std::vector<std::byte> Bytes(std::span<const T> values) {
 
 // ------------------------------------------------------------ the artifact
 
-std::optional<fs::path> Installed(std::string_view id) {
-  const fs::path root = fs::path(llmp::test_support::ModelsDir()) / id;
-  if (std::error_code error; !fs::exists(root, error)) return std::nullopt;
-  return root;
-}
-
-// A resource's bytes (from `offset` within it), read from its shard.
-std::vector<std::byte> ReadResource(const fs::path& root, const ar::Artifact& a,
-                                    std::uint32_t index, std::uint64_t offset,
-                                    std::uint64_t bytes) {
-  const auto placement = a.ResourcePlacement(index);
-  EXPECT_TRUE(placement.has_value());
-  if (!placement) return {};
-  const ar::Group& g = a.groups()[placement->group];
-  const ar::Shard& shard = a.shards()[g.shard];
-  std::ifstream in(root / shard.path, std::ios::binary);
-  in.seekg(static_cast<std::streamoff>(shard.data_offset.value() + g.offset.value() +
-                                       placement->offset.value() + offset));
-  std::vector<std::byte> out(bytes);
-  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(bytes));
-  EXPECT_TRUE(in.good());
-  return out;
-}
-
-std::vector<std::int64_t> ReadI64(const fs::path& root, const ar::Artifact& a,
-                                  const md::Qwen38Tensor& t) {
-  const auto bytes = ReadResource(root, a, t.index, 0, t.ne.at(0) * sizeof(std::int64_t));
-  std::vector<std::int64_t> out(t.ne.at(0));
-  std::memcpy(out.data(), bytes.data(), std::min(bytes.size(), out.size() * sizeof(out[0])));
-  return out;
-}
-
 struct Target {
   fs::path root;
   ar::Artifact artifact;
-  md::Qwen38Binding binding;
-  md::Qwen38PleHash hash;
-  std::vector<sp::SourceValue> values;
+  fm::Qwen38PleHash hash;
+  std::uint32_t table = 0;  // the n-gram table's resource
   sp::Source source;
   sp::ModelSpec spec;
+  std::optional<pl::Policy> policy;  // the approved one, as serving selects it
 };
 
-// The artifact's spec as the runtime reads it (spec/stored.h), its hash as
-// today's runner reads it.
-std::optional<Target> Open(const fs::path& root) {
-  auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
+std::vector<std::uint64_t> Unsigned(const sp::ComponentRef& c, std::string_view name) {
+  const sp::Param* param = c.Find(name);
+  EXPECT_NE(param, nullptr) << name;
+  if (param == nullptr) return {};
+  const auto* list = std::get_if<std::vector<std::int64_t>>(&param->value);
+  EXPECT_NE(list, nullptr) << name;
+  if (list == nullptr) return {};
+  return {list->begin(), list->end()};
+}
+
+// The v1 artifact the store names `name`, its stored spec and source as the
+// runtime reads them (spec/stored.h), its n-gram hash as its side.ngram
+// component carries it, and its approved policy; nullopt when absent.
+std::optional<Target> Open(std::string_view name) {
+  const auto id = llmp::test_support::V1IdNamed(name);
+  if (!id) return std::nullopt;
+  const fs::path root = fs::path(llmp::test_support::V1Store()) / *id;
+  auto artifact = ar::Artifact::Open(root, {.expected_id = *id});
   EXPECT_TRUE(artifact.has_value());
   if (!artifact) return std::nullopt;
-  const auto& p = md::Qwen38Flash();
-  auto binding = md::BindQwen38(p, *artifact);
-  EXPECT_TRUE(binding.has_value()) << (binding ? "" : binding.error());
-  if (!binding) return std::nullopt;
-  const std::uint64_t rows = binding->ple_table.ne.back();
-  std::expected<md::Qwen38PleHash, std::string> hash;
-  if (binding->gguf()) {
-    hash = md::ReadQwen38GgufHash(p, *artifact, rows);
-  } else {
-    const md::Qwen38Layer& l = binding->layers.at(p.ple_layer);
-    hash = md::CheckQwen38PleHash(p, ReadI64(root, *artifact, l.ple_multipliers),
-                                  ReadI64(root, *artifact, l.ple_head_offsets),
-                                  ReadI64(root, *artifact, l.ple_head_vocab), rows);
-  }
-  EXPECT_TRUE(hash.has_value()) << (hash ? "" : hash.error());
-  if (!hash) return std::nullopt;
-  auto values = sp::mappings::Qwen38V0Values(p, *binding, *hash);
-  EXPECT_TRUE(values.has_value()) << (values ? "" : values.error());
-  if (!values) return std::nullopt;
-  const auto& mapping = sp::mappings::Qwen38Mapping();
-  auto source = sp::SourceOf(*artifact, &mapping);
-  EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
-  auto spec = sp::SynthesizeV0(*artifact, mapping, *values);
+  auto spec = sp::StoredSpec(*artifact);
   EXPECT_TRUE(spec.has_value()) << (spec ? "" : spec.error());
+  auto source = sp::SourceOf(*artifact);
+  EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
   if (!source || !spec) return std::nullopt;
+  const auto side = std::ranges::find(spec->stages.front().side, std::string("side.ngram"),
+                                      [](const sp::SideInput& in) { return in.source.kind; });
+  EXPECT_NE(side, spec->stages.front().side.end());
+  if (side == spec->stages.front().side.end()) return std::nullopt;
+  fm::Qwen38PleHash hash{.multipliers = Unsigned(side->source, "multipliers"),
+                         .offsets = Unsigned(side->source, "offsets"),
+                         .vocab = Unsigned(side->source, "vocab")};
+  const auto& p = fm::Qwen38Flash();
+  EXPECT_EQ(hash.multipliers.size(), p.ngram);
+  EXPECT_EQ(hash.offsets.size(), p.ple_heads());
+  EXPECT_EQ(hash.vocab.size(), p.ple_heads());
+  std::optional<std::uint32_t> table;
+  for (const sp::WeightBinding& w : side->source.weights) {
+    if (w.role == "table" && w.part == llmp::format::PartRole::kData)
+      table = artifact->FindResource(w.tensor);
+  }
+  EXPECT_TRUE(table.has_value()) << "no n-gram table resource";
+  if (!table) return std::nullopt;
+  auto rule = rt::ComponentAdmissionPolicy(*spec, *source, artifact->sources(),
+                                           {.context = kContext, .slots = kOwners});
+  EXPECT_TRUE(rule.has_value()) << (rule ? "" : rule.error());
+  if (!rule) return std::nullopt;
+  std::optional<pl::Policy> policy;
+  if (!rule->text.empty()) {
+    auto parsed = pl::ParsePolicy(rule->text);
+    EXPECT_TRUE(parsed.has_value()) << (parsed ? "" : parsed.error());
+    if (!parsed) return std::nullopt;
+    policy = std::move(*parsed);
+  }
   return Target{.root = root,
                 .artifact = std::move(*artifact),
-                .binding = std::move(*binding),
-                .hash = std::move(*hash),
-                .values = std::move(*values),
+                .hash = std::move(hash),
+                .table = *table,
                 .source = std::move(*source),
-                .spec = std::move(*spec)};
+                .spec = std::move(*spec),
+                .policy = std::move(policy)};
 }
 
 // The bytes of a tensor the owner's positions have written: a cache's
 // cells through them, the block keys' complete blocks, the rest whole.
 std::uint64_t UsedBytes(std::string_view name, std::uint64_t cell_bytes, std::uint64_t whole,
                         std::uint32_t positions) {
-  const auto& p = md::Qwen38Flash();
+  const auto& p = fm::Qwen38Flash();
   if (name == "k" || name == "v" || name == "indexer_k") return positions * cell_bytes;
   if (name == "indexer_blocks") return (positions / p.indexer_ratio) * cell_bytes;
   return whole;
@@ -339,45 +336,25 @@ class KernelSource final : public en::PagedModel {
   llmp::catalog::Closure nothing_;
 };
 
-// The model's weight places: every dense group on the
-// device except the row-paged n-gram table, each layer's expert arrays in
-// one slab.
-struct Places {
-  std::vector<en::GroupPlace> places;
-  std::vector<en::SlabSpec> slabs;
-  std::map<std::uint32_t, std::uint64_t> pitch;  // by expert array
-};
-std::expected<Places, std::string> PlacesOf(const Target& t) {
-  const auto& p = md::Qwen38Flash();
-  const ar::Artifact& a = t.artifact;
-  Places out;
-  out.places.assign(a.groups().size(), en::GroupPlace::kNone);
-  for (std::size_t g = 0; g < a.groups().size(); ++g) {
-    if (a.groups()[g].kind != ar::GroupKind::kExpert) out.places[g] = en::GroupPlace::kDevice;
-  }
-  out.places[a.resources()[t.binding.ple_table.index].group] = en::GroupPlace::kNone;
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    std::vector<std::pair<std::uint32_t, std::string_view>> arrays;
-    for (const md::Qwen38Tensor* x : t.binding.layers[il].expert_arrays(t.binding.cutlass())) {
-      arrays.emplace_back(x->index, x->type);
-    }
-    auto slab = en::ExpertSlab(a, arrays, p.experts, kSlabAlignment, il);
-    if (!slab) return std::unexpected(slab.error());
-    for (const auto& [index, type] : arrays) out.pitch[index] = slab->stride;
-    out.slabs.push_back(*slab);
-  }
+// The model's weight places (engine/expert_slab.h ExpertSlabsOf, as
+// serving places them): every dense group on the device except the
+// row-paged n-gram table, each layer's expert arrays in one slab.
+std::expected<en::LayerSlabs, std::string> PlacesOf(const Target& t) {
+  auto out = en::ExpertSlabsOf(t.artifact, kSlabAlignment);
+  if (!out) return out;
+  out->places.at(t.artifact.resources()[t.table].group) = en::GroupPlace::kNone;
   return out;
 }
 
 // The n-gram table's rows a step's rows read, in order.
 std::vector<std::int32_t> SideRows(const Target& t, const Planned& p) {
-  const auto& prof = md::Qwen38Flash();
+  const auto& prof = fm::Qwen38Flash();
   std::vector<std::int32_t> out;
   for (std::size_t i = 0; i < p.wave.units.size(); ++i) {
     const Unit& u = p.wave.units[i];
     const std::vector<std::int32_t> history = History(u.slot, p.past[i] + u.rows);
     for (std::uint32_t r = 0; r < u.rows; ++r) {
-      const auto rows = md::Qwen38PleRows(prof, t.hash, history, p.past[i] + r);
+      const auto rows = fm::Qwen38PleRows(prof, t.hash, history, p.past[i] + r);
       out.insert(out.end(), rows.begin(), rows.end());
     }
   }
@@ -453,18 +430,12 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
         EXPECT_TRUE(found.has_value()) << name;
         if (!found) continue;
         place[{w.ref, role}] = {.array = false, .index = *found};
-        if (*found == t.binding.ple_table.index) {
+        if (*found == t.table) {
           table = {.weight = w.ref,
                    .resource = *found,
                    .format = step->graph.tensor(w.tensor).format,
                    .part = role,
-                   .rows_per_token = md::Qwen38Flash().ple_heads()};
-          for (const auto& [part_name, part_role] : w.parts) {
-            const auto part_resource = t.artifact.FindResource(part_name);
-            EXPECT_TRUE(part_resource) << part_name;
-            if (!part_resource) return out;
-            table->source_parts.emplace_back(part_role, *part_resource);
-          }
+                   .rows_per_token = fm::Qwen38Flash().ple_heads()};
         }
       }
     }
@@ -511,9 +482,9 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
          .bindings = {.tensors = t.source.tensors, .state = &*layout},
          .bound_digest = t.spec.Digest(),
          .mapping = &mapping,
-         .values = t.values,
+         .values = {},
          .slots = kOwners,
-         .policy = std::nullopt,
+         .policy = t.policy,
          .backend = std::move(backend)});
     if (!stage0) return std::unexpected(stage0.error());
     en::RunnerConfig config;
@@ -647,7 +618,7 @@ Component Lowered(const Target& t, const fs::path& scratch, std::span<const Plan
                 const auto at = saves.find({layer, std::string(name), u.slot});
                 return at == saves.end() ? nullptr : ptr(at->second);
               };
-              const auto& profile = md::Qwen38Flash();
+              const auto& profile = fm::Qwen38Flash();
               kg::Qwen38CommitArgs args;
               args.keep = static_cast<int>(u.keep);
               args.channels = static_cast<int>(profile.conv_channels());
@@ -775,9 +746,10 @@ class ComponentRunnerQwen38Gpu : public testing::TestWithParam<Case> {};
 
 TEST_P(ComponentRunnerQwen38Gpu, FastFormStepsAreFiniteAndRepeatBitForBit) {
   const Case& c = GetParam();
-  const auto root = Installed(c.id);
-  if (!root) GTEST_SKIP() << "no Qwen3.8 artifact " << c.id << " installed";
-  const auto target = Open(*root);
+  if (!llmp::test_support::V1IdNamed(c.v1_name))
+    GTEST_FAIL() << "no Qwen3.8 v1 artifact " << c.v1_name << " in "
+                 << llmp::test_support::V1Store();
+  const auto target = Open(c.v1_name);
   ASSERT_TRUE(target.has_value());
   // NOLINTNEXTLINE(concurrency-mt-unsafe): the test environment is immutable
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
@@ -820,9 +792,10 @@ TEST_P(ComponentRunnerQwen38Gpu, FastFormStepsAreFiniteAndRepeatBitForBit) {
 // This is exact against the verify's recurrence, without pretending the
 // fast verify has the arithmetic of a shorter plain target step.
 TEST_P(ComponentRunnerQwen38Gpu, VerifiedPrefixesMatchTheSavedRecurrence) {
-  const auto root = Installed(GetParam().id);
-  if (!root) GTEST_SKIP() << "no Qwen3.8 artifact installed";
-  const auto target = Open(*root);
+  if (!llmp::test_support::V1IdNamed(GetParam().v1_name))
+    GTEST_FAIL() << "no Qwen3.8 v1 artifact " << GetParam().v1_name << " in "
+                 << llmp::test_support::V1Store();
+  const auto target = Open(GetParam().v1_name);
   ASSERT_TRUE(target);
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
   const fs::path out = fs::path(scratch != nullptr ? scratch : testing::TempDir()) / "verified38";
@@ -834,16 +807,9 @@ TEST_P(ComponentRunnerQwen38Gpu, VerifiedPrefixesMatchTheSavedRecurrence) {
   EXPECT_GE(lowered.replayed, 2U);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Qwen38, ComponentRunnerQwen38Gpu,
-    testing::Values(
-        Case{.name = "cutlass",
-             .id = "m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93"},
-        Case{.name = "ggml_experts",
-             .id = "m3-artifacts/67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6"},
-        Case{.name = "gguf",
-             .id = "qgguf-artifacts/"
-                   "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"}),
-    [](const testing::TestParamInfo<Case>& info) { return info.param.name; });
+INSTANTIATE_TEST_SUITE_P(Qwen38, ComponentRunnerQwen38Gpu,
+                         testing::Values(Case{.name = "modelopt", .v1_name = "qwen38-modelopt"},
+                                         Case{.name = "gguf", .v1_name = "qwen38-gguf"}),
+                         [](const testing::TestParamInfo<Case>& info) { return info.param.name; });
 
 }  // namespace

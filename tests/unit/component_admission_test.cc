@@ -9,8 +9,13 @@
 #include <array>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <expected>
 #include <filesystem>
+#include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -19,10 +24,8 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "dsv4_gguf_normalization_fixture.h"
+#include "families/gemma.h"
 #include "import/normalize.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
 #include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_fixture.h"
@@ -39,6 +42,7 @@ namespace {
 namespace rt = llmp::runtime;
 namespace sp = llmp::spec;
 namespace fm = llmp::format;
+namespace fam = llmp::test_support::families;
 
 std::array<llmp::artifact::Source, 1> Origins(
     std::string_view name = "gemma-2-2b-it-Q8_0.gguf", std::uint64_t bytes = 2784495456ULL,
@@ -59,7 +63,7 @@ class ComponentAdmissionTest : public testing::Test {
   sp::ModelSpec model;
   std::array<llmp::artifact::Source, 1> origins = Origins();
   void SetUp() override {
-    const auto values = sp::mappings::Gemma2V0Values(llmp::model::Gemma2_2B());
+    const auto values = fam::Gemma2Values(fam::Gemma2_2B());
     ASSERT_TRUE(values);
     auto made = sp::Synthesize(sp::mappings::Gemma2Mapping(), source, *values);
     ASSERT_TRUE(made) << (made ? "" : made.error());
@@ -230,7 +234,7 @@ class NativeGemmaAdmissionTest : public testing::TestWithParam<std::uint32_t> {
     std::vector<sp::SourceValue> values;
     if (GetParam() == 3) {
       source = llmp::test_support::Gemma3Source();
-      const auto approved = sp::mappings::Gemma3V0Values(llmp::model::Gemma3_4BQat());
+      const auto approved = fam::Gemma3Values(fam::Gemma3_4BQat());
       ASSERT_TRUE(approved);
       values = *approved;
       origins = Origins("gemma-3-4b-it-qat-Q4_0.gguf", 2526080992ULL,
@@ -313,10 +317,28 @@ TEST_P(NativeGemmaAdmissionTest, ChoosesExactProfileAndEnvelopeRecipeWithoutChec
     ASSERT_TRUE(small);
     EXPECT_FALSE(small->text.contains("disable owner_bounded_roots"));
   }
-  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins,
-                                            {.context = context + 1, .slots = slots}));
-  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins,
-                                            {.context = context, .slots = slots + 1}));
+  if (gemma3) {
+    EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins,
+                                              {.context = context + 1, .slots = slots}));
+    EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins,
+                                              {.context = context, .slots = slots + 1}));
+  } else {
+    // Past the joined recipes' domains, the owners-alone route at M3's
+    // bounded admission: twelve scalar owners qualified; context to the
+    // trained 262,144, long context not verified. Beyond it, none.
+    for (const auto& envelope : {sp::Envelope{.context = context + 1, .slots = slots},
+                                 sp::Envelope{.context = context, .slots = slots + 1},
+                                 sp::Envelope{.context = 262144, .slots = 12}}) {
+      const auto alone = rt::ComponentAdmissionPolicy(model, source, origins, envelope);
+      ASSERT_TRUE(alone) << (alone ? "" : alone.error());
+      EXPECT_TRUE(alone->owners_alone);
+      EXPECT_TRUE(alone->text.contains("disable owner_attention"));
+    }
+    EXPECT_FALSE(
+        rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262145, .slots = 1}));
+    EXPECT_FALSE(
+        rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 13}));
+  }
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 0, .slots = slots}));
   model.stages.front().layers.pop_back();
@@ -442,73 +464,34 @@ TEST(ComponentAdmissionQwen2Exl3Test,
   }
 }
 
-TEST(ComponentAdmissionDrafterTest, ComponentDrafterV0ValuesRejectsMismatchedAndInvalidArtifacts) {
-  const std::filesystem::path scratch =
-      std::filesystem::path(testing::TempDir()) / "component-admission-drafters";
-  std::error_code ec;
-  std::filesystem::remove_all(scratch, ec);
-  std::filesystem::create_directories(scratch, ec);
-
-  const auto make_plan = [](std::string arch) {
-    llmp::test::V1Plan p;
-    p.architecture = std::move(arch);
-    p.groups = {llmp::test::V1Group{
-        .kind = llmp::artifact::GroupKind::kTable,
-        .resources = {{.name = "token_embd.weight",
-                       .format = {.encoding = fm::Encoding::kBF16,
-                                  .layout = fm::Layout::kDense,
-                                  .shape = {.ne = {64, 64, 1, 1}, .rank = 2}}}}}};
-    return p;
-  };
-
-  const auto gemma_target = llmp::artifact::Artifact::Open(
-      llmp::test::Publish(scratch / "target", llmp::test::Render(make_plan("gemma4"))));
-  ASSERT_TRUE(gemma_target.has_value()) << (gemma_target ? "" : gemma_target.error().ToString());
-
-  const auto gemma_drafter = llmp::artifact::Artifact::Open(
-      llmp::test::Publish(scratch / "asst", llmp::test::Render(make_plan("gemma4-assistant"))));
-  ASSERT_TRUE(gemma_drafter.has_value()) << (gemma_drafter ? "" : gemma_drafter.error().ToString());
-
-  const auto dsv4_target = llmp::artifact::Artifact::Open(
-      llmp::test::Publish(scratch / "dsv4", llmp::test::Render(make_plan("deepseek4"))));
-  ASSERT_TRUE(dsv4_target.has_value()) << (dsv4_target ? "" : dsv4_target.error().ToString());
-
-  const auto dflash_drafter = llmp::artifact::Artifact::Open(
-      llmp::test::Publish(scratch / "dflash", llmp::test::Render(make_plan("dflash"))));
-  ASSERT_TRUE(dflash_drafter.has_value())
-      << (dflash_drafter ? "" : dflash_drafter.error().ToString());
-
-  // Mismatched pairings are rejected with descriptive errors.
-  auto mismatched1 = rt::ComponentDrafterV0Values(*gemma_target, *dflash_drafter);
-  EXPECT_FALSE(mismatched1.has_value());
-  EXPECT_NE(mismatched1.error().find("no drafter dflash for architecture gemma4"),
-            std::string::npos);
-
-  auto mismatched2 = rt::ComponentDrafterV0Values(*dsv4_target, *gemma_drafter);
-  EXPECT_FALSE(mismatched2.has_value());
-  EXPECT_NE(mismatched2.error().find("no drafter gemma4-assistant for architecture deepseek4"),
-            std::string::npos);
-
-  // Matched architectures with invalid (v1 synthetic) artifacts fail through the binders.
-  auto gemma_pair = rt::ComponentDrafterV0Values(*gemma_target, *gemma_drafter);
-  EXPECT_FALSE(gemma_pair.has_value());
-
-  auto dsv4_pair = rt::ComponentDrafterV0Values(*dsv4_target, *dflash_drafter);
-  EXPECT_FALSE(dsv4_pair.has_value());
-  EXPECT_NE(dsv4_pair.error().find("version 0"), std::string::npos);
-
-  // If actual v0 artifacts are installed (e.g. in full models environment), verify success.
-  const std::filesystem::path models = llmp::test_support::ModelsDir();
-  const auto g4_target_path = models / "m3-artifacts/gemma-4-26B-A4B-it-UD-Q4_K_M";
-  const auto g4_asst_path = models / "m3-artifacts/gemma-4-26B-A4B-it-assistant";
-  if (std::filesystem::exists(g4_target_path, ec) && std::filesystem::exists(g4_asst_path, ec)) {
-    auto t = llmp::artifact::Artifact::Open(g4_target_path, {.expected_id = {}});
-    auto a = llmp::artifact::Artifact::Open(g4_asst_path, {.expected_id = {}});
-    if (t && a) {
-      auto vals = rt::ComponentDrafterV0Values(*t, *a);
-      EXPECT_TRUE(vals.has_value()) << (vals ? "" : vals.error());
-    }
+// Serving reads v1 artifacts only (D-118): a v0 artifact (the reader's
+// corpus golden) is refused, as a target and as a drafter, with what to do.
+TEST(ComponentAdmissionVersionTest, V0ArtifactsAreRefusedWithTheReimport) {
+  const char* configured =
+      std::getenv("LLMP_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
+  const std::filesystem::path corpus =
+      configured == nullptr ? std::filesystem::path("artifact-corpus") : configured;
+  std::error_code error;
+  std::filesystem::path root;
+  for (const auto& entry : std::filesystem::directory_iterator(corpus / "golden" / "tiny", error)) {
+    root = entry.path();
   }
+  ASSERT_FALSE(root.empty()) << "no corpus at " << corpus;
+  const auto v0 = llmp::artifact::Artifact::Open(root);
+  ASSERT_TRUE(v0.has_value()) << (v0 ? "" : v0.error().ToString());
+  ASSERT_EQ(v0->format_version(), 0U);
+  const auto reimport = [](const std::string& message) {
+    return message.find("re-import its source checkpoint with `llmp import") != std::string::npos;
+  };
+  const auto served = rt::RequireServedVersion(*v0);
+  ASSERT_FALSE(served.has_value());
+  EXPECT_TRUE(reimport(served.error())) << served.error();
+  const auto admitted = rt::ReadComponentAdmission(*v0);
+  ASSERT_FALSE(admitted.has_value());
+  EXPECT_NE(admitted.error().find("re-import"), std::string::npos) << admitted.error();
+  const auto drafted = rt::ComponentDrafterValues(*v0, *v0);
+  ASSERT_FALSE(drafted.has_value());
+  EXPECT_TRUE(reimport(drafted.error())) << drafted.error();
 }
 
 TEST(ComponentAdmissionDrafterTest, CheckComponentDrafterAdmissionApprovesGemma4Assistants) {
@@ -619,10 +602,6 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndR
   EXPECT_NE(arch_mismatch.error().find("the approved drafter dspark-deepseek-v4-flash-0731-q8_0"),
             std::string::npos)
       << arch_mismatch.error();
-
-  // ComponentDrafterV0Values refuses v1 artifacts.
-  auto v0_attempt = rt::ComponentDrafterV0Values(*g26_target, *g26_asst);
-  EXPECT_FALSE(v0_attempt.has_value());
 }
 
 TEST(ComponentAdmissionModelOptTest,
@@ -834,4 +813,119 @@ TEST(ComponentAdmissionScaleAtomTest, SlotsHoldTheStackedTableFirstBackToBack) {
   auto spaced = open("spaced", gap);
   ASSERT_TRUE(spaced) << spaced.error().ToString();
   EXPECT_FALSE(rt::CheckScaleAtomSlots(*spaced));
+}
+
+// Stored hash routes (DeepSeek V4's token-hash layers): each side.hash
+// table a spec binds is read through bounded direct reads before any routed
+// work, and refused unless it is I32 [used, tokens] of consistent bytes
+// whose every entry names one of the input's experts.
+TEST(ComponentAdmissionHashTableTest, StoredTablesAreReadAndRefusedByShapeBytesAndEntries) {
+  constexpr std::int64_t kExperts = 8;
+  constexpr std::uint64_t kUsed = 6;
+  constexpr std::uint64_t kTokens = 1000;  // 24,000 bytes: several 4 KiB windows
+  constexpr std::string_view kTable = "blk.0.ffn_gate_tid2eid.weight";
+  // Direct reads need a file system that takes O_DIRECT: the build tree's.
+  const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
+  const std::filesystem::path scratch =
+      (base != nullptr ? std::filesystem::path(base)
+                       : std::filesystem::current_path() / "scratch") /
+      "component-admission-hash-tables";
+  std::error_code ec;
+  std::filesystem::remove_all(scratch, ec);
+  // A spec whose one stage binds the table as a side.hash input's weight.
+  sp::ModelSpec model;
+  model.stages.resize(1);
+  model.stages[0].side.push_back(
+      {.name = "hash",
+       .source = {.kind = "side.hash",
+                  .params = {{.name = "experts", .value = kExperts},
+                             {.name = "used", .value = static_cast<std::int64_t>(kUsed)}},
+                  .weights = {{.role = "table", .tensor = std::string(kTable)}}},
+       .layers = {0}});
+  // A v1 artifact holding a norm and then the table, its entries written.
+  const auto publish = [&](std::string_view name, fm::Encoding encoding, std::uint64_t rows,
+                           auto entry) -> std::expected<llmp::artifact::Artifact, std::string> {
+    llmp::test::V1Plan plan;
+    plan.architecture = "deepseek4";
+    plan.groups = {llmp::test::V1Group{
+        .kind = llmp::artifact::GroupKind::kLayer,
+        .layer = 0,
+        .resources = {{.name = "blk.0.attn_norm.weight",
+                       .format = {.encoding = fm::Encoding::kF32,
+                                  .layout = fm::Layout::kDense,
+                                  .shape = {.ne = {64, 1, 1, 1}, .rank = 1}}},
+                      {.name = std::string(kTable),
+                       .format = {.encoding = encoding,
+                                  .layout = fm::Layout::kDense,
+                                  .shape = {.ne = {rows, kTokens, 1, 1}, .rank = 2}}}}}};
+    auto rendered = llmp::test::Render(plan);
+    // Where the table's bytes lie in its shard file (the deterministic fill
+    // is replaced with the entries).
+    auto probe =
+        llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / name / "probe", rendered));
+    if (!probe) return std::unexpected(probe.error().ToString());
+    const auto index = probe->FindResource(kTable);
+    if (!index) return std::unexpected("the table is missing");
+    const auto place = probe->ResourcePlacement(*index);
+    if (!place) return std::unexpected(place.error().ToString());
+    const auto& group = probe->groups()[place->group];
+    const auto begin = probe->shards()[group.shard].data_offset.value() + group.offset.value() +
+                       place->offset.value();
+    std::string& file = rendered.shards.at(group.shard);
+    for (std::uint64_t i = 0; i * sizeof(std::int32_t) < place->bytes.value(); ++i) {
+      const std::int32_t value = entry(i);
+      std::memcpy(file.data() + begin + (i * sizeof(value)), &value, sizeof(value));
+    }
+    auto opened =
+        llmp::artifact::Artifact::Open(llmp::test::Publish(scratch / name / "store", rendered));
+    if (!opened) return std::unexpected(opened.error().ToString());
+    return std::move(*opened);
+  };
+  const auto valid = [](std::uint64_t i) {
+    return static_cast<std::int32_t>((i * 5U) % static_cast<std::uint64_t>(kExperts));
+  };
+  const auto check = [&](std::string_view name, fm::Encoding encoding, std::uint64_t rows,
+                         auto entry) -> std::expected<void, std::string> {
+    auto artifact = publish(name, encoding, rows, entry);
+    if (!artifact) return std::unexpected("publishing: " + artifact.error());
+    return rt::CheckStoredHashTables(*artifact, model);
+  };
+
+  // Every expert in [0, experts): read and accepted.
+  const auto good = check("valid", fm::Encoding::kI32, kUsed, valid);
+  ASSERT_TRUE(good) << good.error();
+  // One entry below zero, one entry naming the expert count: refused.
+  const auto negative = check("negative", fm::Encoding::kI32, kUsed,
+                              [&](std::uint64_t i) { return i == 4321 ? -1 : valid(i); });
+  ASSERT_FALSE(negative);
+  EXPECT_NE(negative.error().find("names an invalid expert"), std::string::npos)
+      << negative.error();
+  const auto past = check("past", fm::Encoding::kI32, kUsed, [&](std::uint64_t i) {
+    return i + 1 == kUsed * kTokens ? static_cast<std::int32_t>(kExperts) : valid(i);
+  });
+  ASSERT_FALSE(past);
+  EXPECT_NE(past.error().find("names an invalid expert"), std::string::npos) << past.error();
+  // Another encoding of the same shape, its bytes I32's (F32) or half of
+  // them (a short table, I16): never read as I32.
+  for (const auto encoding : {fm::Encoding::kF32, fm::Encoding::kI16}) {
+    const auto other = check(encoding == fm::Encoding::kF32 ? "f32" : "short", encoding, kUsed,
+                             [](std::uint64_t) { return 0; });
+    ASSERT_FALSE(other);
+    EXPECT_NE(other.error().find("not dense I32"), std::string::npos) << other.error();
+  }
+  // Another shape: rows a token other than the input's `used`.
+  const auto shape = check("shape", fm::Encoding::kI32, kUsed + 1, valid);
+  ASSERT_FALSE(shape);
+  EXPECT_NE(shape.error().find("another shape"), std::string::npos) << shape.error();
+  // A spec naming a table the artifact lacks, or no expert count.
+  auto artifact = publish("valid-again", fm::Encoding::kI32, kUsed, valid);
+  ASSERT_TRUE(artifact) << artifact.error();
+  auto missing = model;
+  missing.stages[0].side[0].source.weights[0].tensor = "blk.1.ffn_gate_tid2eid.weight";
+  EXPECT_FALSE(rt::CheckStoredHashTables(*artifact, missing));
+  auto uncounted = model;
+  uncounted.stages[0].side[0].source.params.erase(
+      uncounted.stages[0].side[0].source.params.begin());
+  EXPECT_FALSE(rt::CheckStoredHashTables(*artifact, uncounted));
+  std::filesystem::remove_all(scratch, ec);
 }

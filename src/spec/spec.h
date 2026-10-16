@@ -9,9 +9,8 @@
 // their parameters and weight bindings, feature taps, heads (final norm,
 // output, logit softcap, MTP heads) and what it reads from another stage
 // (a tap, or state it borrows) and the folds its artifact's tensors already
-// carry (FoldInfo). The importer writes it into the artifact and the
-// runtime validates it; until then a v0 artifact's spec is synthesized from
-// its architecture's mapping (spec/mapping.h).
+// carry (FoldInfo). The importer writes it into the artifact (spec/
+// mapping.h synthesizes it) and the runtime validates it (spec/stored.h).
 //
 // Component kinds are strings with versions: the spec names them, the
 // component catalog (src/components) knows them and validates parameters
@@ -103,8 +102,8 @@ struct Param {
   bool operator==(const Param&) const = default;
 };
 
-// A component's weight role bound to an artifact tensor: a v0 resource's
-// role (its name or a tied alias) or an expert array's name, and the part
+// A component's weight role bound to an artifact tensor: a resource's role
+// (its name or a tied alias) or an expert array's name, and the part
 // of its format the tensor holds. The tensor is of the artifact the
 // component's stage runs from, or with `stage`, of the artifact another
 // stage of the spec runs from: a weight the stages share, which that stage

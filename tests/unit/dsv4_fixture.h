@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// DeepSeek V4's v0 artifacts as resource tables (model/dsv4.h
-// Dsv4Resource, shaped and typed as the GGUF importer writes them:
-// docs/artifact-format.md), and as mapping sources (spec/mapping.h
-// SourceOfV0Tensors): the target's (every layer's window, compressor and
+// DeepSeek V4's GGUF tensor tables as resource tables
+// (tests/support/families/dsv4.h Dsv4Resource, shaped and typed as the
+// GGUFs hold them), and as mapping sources (tests/support/fixture_source.h
+// FixtureSource): the target's (every layer's window, compressor and
 // indexer tensors by its compression ratio, its hash-routed layers' token
 // tables) and the DSpark drafter's.
 
@@ -24,13 +24,18 @@
 
 #include "artifact/json.h"
 #include "artifact/representation.h"
-#include "model/dspark.h"
-#include "model/dsv4.h"
+#include "families/dsv4.h"
+#include "fixture_source.h"
 #include "spec/mapping.h"
 
 namespace llmp::test_support::dsv4 {
 
-inline void Add(std::vector<model::Dsv4Resource>& r, std::string name, std::string type,
+using families::DsparkProfile;
+using families::Dsv4Profile;
+using families::Dsv4Resource;
+using families::kDsv4CsaRatio;
+
+inline void Add(std::vector<Dsv4Resource>& r, std::string name, std::string type,
                 std::vector<std::uint64_t> ne) {
   r.push_back({.roles = {std::move(name)}, .type = std::move(type), .ne = std::move(ne)});
 }
@@ -55,9 +60,9 @@ inline constexpr Types kF16Types{.dense = "F16",
                                  .output = "F16",
                                  .experts = "F16"};
 
-inline void Block(const model::Dsv4Profile& p, std::vector<model::Dsv4Resource>& r,
-                  std::vector<model::Dsv4Resource>& arrays, std::uint32_t il,
-                  std::string_view experts, const Types& t = {}) {
+inline void Block(const Dsv4Profile& p, std::vector<Dsv4Resource>& r,
+                  std::vector<Dsv4Resource>& arrays, std::uint32_t il, std::string_view experts,
+                  const Types& t = {}) {
   const std::string dense(t.dense);
   const std::string small(t.small);
   const std::string n = std::format("blk.{}.", il);
@@ -80,19 +85,19 @@ inline void Block(const model::Dsv4Profile& p, std::vector<model::Dsv4Resource>&
   }
   const std::uint32_t ratio = p.compress_ratios.at(il);
   if (ratio != 0) {
-    const std::uint64_t coff = ratio == model::kDsv4CsaRatio ? 2 : 1;
+    const std::uint64_t coff = ratio == kDsv4CsaRatio ? 2 : 1;
     Add(r, n + "attn_compressor_kv.weight", small, {w, coff * head});
     Add(r, n + "attn_compressor_gate.weight", small, {w, coff * head});
     Add(r, n + "attn_compressor_ape.weight", "F32", {coff * head, ratio});
     Add(r, n + "attn_compressor_norm.weight", "F32", {head});
   }
-  if (ratio == model::kDsv4CsaRatio) {
+  if (ratio == kDsv4CsaRatio) {
     const std::uint64_t ih = p.indexer_head_dim;
     Add(r, n + "indexer.attn_q_b.weight", dense, {p.q_lora, std::uint64_t{p.indexer_heads} * ih});
     Add(r, n + "indexer.proj.weight", small, {w, p.indexer_heads});
     Add(r, n + "indexer_compressor_kv.weight", small, {w, 2 * ih});
     Add(r, n + "indexer_compressor_gate.weight", small, {w, 2 * ih});
-    Add(r, n + "indexer_compressor_ape.weight", "F32", {2 * ih, model::kDsv4CsaRatio});
+    Add(r, n + "indexer_compressor_ape.weight", "F32", {2 * ih, kDsv4CsaRatio});
     Add(r, n + "indexer_compressor_norm.weight", "F32", {ih});
   }
   Add(r, n + "ffn_norm.weight", "F32", {w});
@@ -119,10 +124,9 @@ inline void Block(const model::Dsv4Profile& p, std::vector<model::Dsv4Resource>&
 }
 
 // The target's resources, then its expert arrays.
-inline std::vector<model::Dsv4Resource> Resources(const model::Dsv4Profile& p,
-                                                  const Types& t = {}) {
-  std::vector<model::Dsv4Resource> r;
-  std::vector<model::Dsv4Resource> arrays;
+inline std::vector<Dsv4Resource> Resources(const Dsv4Profile& p, const Types& t = {}) {
+  std::vector<Dsv4Resource> r;
+  std::vector<Dsv4Resource> arrays;
   Add(r, "token_embd.weight", std::string(t.table), {p.width, p.vocab});
   Add(r, "output_norm.weight", "F32", {p.width});
   Add(r, "output.weight", std::string(t.output), {p.width, p.vocab});
@@ -136,11 +140,10 @@ inline std::vector<model::Dsv4Resource> Resources(const model::Dsv4Profile& p,
 
 // The DSpark drafter's, as its Q8_0 GGUF lists them (no table or head of
 // its own).
-inline std::vector<model::Dsv4Resource> DrafterResources(const model::DsparkProfile& d,
-                                                         const Types& t = {}) {
-  const model::Dsv4Profile& p = d.blocks;
-  std::vector<model::Dsv4Resource> r;
-  std::vector<model::Dsv4Resource> arrays;
+inline std::vector<Dsv4Resource> DrafterResources(const DsparkProfile& d, const Types& t = {}) {
+  const Dsv4Profile& p = d.blocks;
+  std::vector<Dsv4Resource> r;
+  std::vector<Dsv4Resource> arrays;
   const bool ggufs = t.experts == "IQ2_XS";
   for (std::uint32_t il = 0; il < p.layers; ++il) {
     Block(p, r, arrays, il, ggufs ? "MXFP4" : t.experts, t);
@@ -160,7 +163,7 @@ inline std::vector<model::Dsv4Resource> DrafterResources(const model::DsparkProf
 }
 
 // A resource's v0 representation (GGML's).
-inline artifact::Representation RepresentationOf(const model::Dsv4Resource& r) {
+inline artifact::Representation RepresentationOf(const Dsv4Resource& r) {
   std::string ne;
   for (const auto d : r.ne) ne += (ne.empty() ? "" : ",") + std::to_string(d);
   const std::string text = std::format(R"({{"family":"ggml","ne":[{}],"type":"{}"}})", ne, r.type);
@@ -171,21 +174,20 @@ inline artifact::Representation RepresentationOf(const model::Dsv4Resource& r) {
   return rep.value_or(artifact::Representation{});
 }
 
-// The resources as a mapping's source.
-inline spec::Source SourceOf(std::string architecture,
-                             const std::vector<model::Dsv4Resource>& resources,
-                             const spec::Mapping& mapping) {
+// The resources as a mapping's source (DeepSeek V4's GGUFs pair no parts
+// and its mappings fold nothing; `mapping` is kept for its callers).
+inline spec::Source SourceOf(std::string architecture, const std::vector<Dsv4Resource>& resources,
+                             const spec::Mapping& /*mapping*/) {
   std::deque<artifact::Representation> reps;
-  std::vector<spec::V0Tensor> tensors;
-  for (const model::Dsv4Resource& r : resources) {
+  std::vector<FixtureTensor> tensors;
+  for (const Dsv4Resource& r : resources) {
     reps.push_back(RepresentationOf(r));
     tensors.push_back({.name = r.roles.front(),
                        .roles = r.roles,
                        .repr = &reps.back(),
                        .count = r.expert_array ? r.count : 0});
   }
-  auto source = spec::SourceOfV0Tensors(std::move(architecture), "gguf",
-                                        "artifact-layout/import_m3.py m3-1", tensors, &mapping);
+  auto source = FixtureSource(std::move(architecture), "gguf", tensors);
   EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
   return source.value_or(spec::Source{});
 }

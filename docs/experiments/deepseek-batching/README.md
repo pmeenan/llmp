@@ -628,7 +628,8 @@ from counted tokens and a recorded cost, never from wall time:
   widths 2 to 5 with [joined drafts](#joined-draft-blocks). They are recorded per model
   (`kDsv4WaveCosts` in `runtime/model_settings.h`, the fallbacks of the
   `wave_costs` setting under D-103) and are measured again when the wave
-  step changes.
+  step changes. (Historical: the closed bridge and `kDsv4WaveCosts` were
+  removed in M3.6 4b; the costs are the DeepSeek mapping's recipe data.)
 - **Acceptance.** One moving average (weight 1/8) over the service's
   draft-verify waves of any width, of the tokens each commits per
   request. As Qwen's draft depth does, it counts only complete verifies:

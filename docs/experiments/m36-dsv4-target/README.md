@@ -3,6 +3,8 @@
 
 # Complete DeepSeek target execution screen
 
+> Historical: the closed DeepSeek bridge and `kDsv4WaveCosts` were removed in M3.6 slice 4b.
+
 2026-10-12, Spark B, main candidate based on `a441cf13`. The fixed prepared
 GGUF target executes through ComponentLlmBuild, EngineLlm and ModelRunner,
 with its actual token-hash rows, compressor inputs and ordinary complete

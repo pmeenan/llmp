@@ -36,6 +36,12 @@ struct ListRequirement {
   std::string_view key{};
   std::size_t size = 0;
   std::span<const std::int64_t> exact{};  // absent: retain the source values
+  // Nonzero: the list may hold from `min_size` to `size` entries (trailing
+  // entries describe layers the source does not hold), equal to `exact`'s
+  // first entries where it is given.
+  std::size_t min_size = 0;
+  // The key may be absent (the mapping resolves its parameter otherwise).
+  bool optional = false;
 };
 struct TensorShapeRequirement {
   std::string_view name{};
@@ -46,8 +52,13 @@ struct RowIndexRequirement {
   bool operator==(const RowIndexRequirement&) const = default;
 };
 struct AuxiliaryNamespace {
-  std::string_view prefix{};  // literal, dot-terminated; metadata only
+  std::string_view prefix{};  // literal: dot-terminated, or one whole key; metadata only
   std::string_view reason{};
+  // A whole key's integer that must equal a source tensor's extent along
+  // `equals_dim` (a vocabulary size its token table states): an inconsistent
+  // source is refused. Empty: unchecked.
+  std::string_view equals_tensor{};
+  std::uint8_t equals_dim = 0;
 };
 enum class RouteOperation : std::uint8_t { kCopyPart };
 struct SourceMapping {

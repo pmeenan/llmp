@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The components end to end on the real Gemma 2 2B and Gemma 3 4B QAT
-// artifacts (label `models`): the spec synthesized from each v0 artifact
-// (spec/mapping.h SynthesizeV0), validated against its tensors, built into
-// a prefill step and three decode steps (components/step.h BuildStep) and
+// artifacts (label `models`): the spec each published v1 artifact stores
+// (spec/stored.h StoredSpec), validated against its tensors (SourceOf),
+// built into a prefill step and three decode steps (components/step.h BuildStep) and
 // run by the reference executor (double arithmetic over the decoded
 // weights, F16 KV state), against the served model on the GPU (the
 // runtime's server over the shared engine, runtime/engine_llm.h) for the
@@ -25,7 +25,7 @@
 // reference's products fed Q8_1-rounded activations and F16 queries the
 // difference stays 0.35 to 0.71, so it is not the activations'
 // quantization). Those parameters are pinned elsewhere: the spec this test
-// synthesizes from the artifact is the tensor table's (spec_models_test),
+// reads from the artifact is the tensor table's (spec_models_test),
 // whose steps were once held to the M3 builders node for node, every
 // arithmetic parameter bit for bit (retired with them after the
 // migration's gate).
@@ -58,14 +58,10 @@
 #include "config/node_config.h"
 #include "config/storage_roles.h"
 #include "kernels/reference/exec.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
 #include "planner/step_shape.h"
 #include "runtime/serving.h"
-#include "spec/mapping.h"
-#include "spec/mappings/gemma2.h"
-#include "spec/mappings/gemma3.h"
-#include "tokenizer_fixtures.h"
+#include "spec/stored.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -182,8 +178,8 @@ std::vector<std::byte> ReadResource(const fs::path& root, const ar::Artifact& a,
 std::vector<std::vector<float>> Reference(const fs::path& root, const ar::Artifact& a,
                                           const llmp::spec::ModelSpec& spec,
                                           std::span<const std::int32_t> tokens) {
-  const auto source = llmp::spec::SourceOfV0(a);
-  EXPECT_TRUE(source.has_value());
+  const auto source = llmp::spec::SourceOf(a);
+  EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
   if (!source) return {};
   const auto valid = co::ValidateSpec(spec, source->tensors);
   EXPECT_TRUE(valid.has_value()) << valid.error();
@@ -248,20 +244,17 @@ std::vector<std::vector<float>> Reference(const fs::path& root, const ar::Artifa
 }
 
 struct Case {
-  std::string name;
-  std::string path;
+  std::string name;  // the store's v1-ids.json name
 };
 
 class ComponentsModelsGpu : public testing::TestWithParam<Case> {};
 
 TEST_P(ComponentsModelsGpu, StepsMatchTheServedModel) {
   const Case& c = GetParam();
-  const fs::path root = llmp::test_support::ModelsDir() + "/" + c.path;
-  if (std::error_code error; !fs::exists(root, error)) GTEST_SKIP() << "no artifact in " << root;
+  const auto id = llmp::test_support::V1IdNamed(c.name);
+  if (!id) GTEST_FAIL() << "no published v1 " << c.name << " in " << llmp::test_support::V1Store();
+  const fs::path root = fs::path(llmp::test_support::V1Store()) / *id;
   const std::vector<std::vector<float>> production = Production(root, c.name);
-  const std::vector<llmp::spec::SourceValue> values =
-      c.name == "gemma2" ? *llmp::spec::mappings::Gemma2V0Values(llmp::model::Gemma2_2B())
-                         : *llmp::spec::mappings::Gemma3V0Values(llmp::model::Gemma3_4BQat());
   ASSERT_EQ(production.size(), kDecodes + 1);
   std::vector<std::int32_t> picked;
   for (std::uint32_t i = 0; i < kDecodes; ++i) {
@@ -269,9 +262,7 @@ TEST_P(ComponentsModelsGpu, StepsMatchTheServedModel) {
   }
   auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
   ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
-  const auto* mapping = llmp::spec::FindMapping(artifact->model().architecture);
-  ASSERT_NE(mapping, nullptr);
-  const auto spec = llmp::spec::SynthesizeV0(*artifact, *mapping, values);
+  const auto spec = llmp::spec::StoredSpec(*artifact);
   ASSERT_TRUE(spec.has_value()) << spec.error();
   const auto reference = Reference(root, *artifact, *spec, picked);
   ASSERT_EQ(reference.size(), production.size());
@@ -305,15 +296,8 @@ TEST_P(ComponentsModelsGpu, StepsMatchTheServedModel) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Gemma, ComponentsModelsGpu,
-    testing::Values(
-        Case{.name = "gemma2",
-             .path = "gemma2-import-20261007/artifacts/"
-                     "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870"},
-        Case{.name = "gemma3",
-             .path = "gemma3-import-20261007/artifacts/"
-                     "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"}),
-    [](const testing::TestParamInfo<Case>& info) { return info.param.name; });
+INSTANTIATE_TEST_SUITE_P(Gemma, ComponentsModelsGpu,
+                         testing::Values(Case{.name = "gemma2"}, Case{.name = "gemma3"}),
+                         [](const testing::TestParamInfo<Case>& info) { return info.param.name; });
 
 }  // namespace

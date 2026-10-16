@@ -55,7 +55,10 @@ llmp_gtest(runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit
 # and ignored overrides, the reasoning markers, the listing.
 add_executable(model_settings_test model_settings_test.cc)
 target_link_libraries(model_settings_test PRIVATE llmp_runtime llmp_config)
-llmp_gtest(model_settings_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+# v0 artifacts are refused (D-118): the reader's corpus golden, beside it.
+add_dependencies(model_settings_test artifact_corpus)
+llmp_gtest(model_settings_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+             PROPERTIES LABELS unit)
 
 # The calibration record (D-103): its format, key, atomic write and trusted
 # read, and what a model's first uses measure.
@@ -315,29 +318,6 @@ add_executable(host_mask_test host_mask_test.cc)
 target_link_libraries(host_mask_test PRIVATE llmp_model)
 llmp_gtest(host_mask_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# Approved Gemma2 profile and actual padded-readable tensor binding only.
-add_executable(gemma2_test gemma2_test.cc)
-target_link_libraries(gemma2_test PRIVATE llmp_model llmp_artifact llmp_json)
-llmp_gtest(gemma2_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-
-# Approved Gemma3 profile and actual tensor binding only.
-add_executable(gemma3_test gemma3_test.cc)
-target_link_libraries(gemma3_test PRIVATE llmp_model llmp_artifact llmp_json)
-llmp_gtest(gemma3_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-
-# Approved Gemma4 profiles and actual tensor contracts.
-add_executable(gemma4_test gemma4_test.cc)
-target_link_libraries(gemma4_test PRIVATE llmp_model llmp_artifact llmp_json)
-llmp_gtest(gemma4_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-
-add_executable(gemma_profile_test gemma_profile_test.cc)
-target_link_libraries(gemma_profile_test PRIVATE llmp_runtime llmp_model llmp_json)
-llmp_gtest(gemma_profile_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
-
 if(LLMP_CUDA)
   add_executable(gemma_norm_gpu_test gemma_norm_gpu_test.cc)
   target_include_directories(gemma_norm_gpu_test SYSTEM PRIVATE
@@ -345,33 +325,36 @@ if(LLMP_CUDA)
   target_link_libraries(gemma_norm_gpu_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory)
   llmp_gpu_gtest(gemma_norm_gpu_test)
   add_executable(gemma4_serving_gpu_test gemma4_serving_gpu_test.cc)
-  target_link_libraries(gemma4_serving_gpu_test PRIVATE llmp_runtime_serving)
+  target_link_libraries(gemma4_serving_gpu_test PRIVATE llmp_runtime_serving llmp_test_v1_frozen)
   llmp_gpu_gtest(gemma4_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}"
                                "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
-  # Default-off Qwen single-slot serving qualification.
+  # Qwen single-slot serving screens on the published v1 artifacts.
   add_executable(qwen38_engine_serving_gpu_test qwen38_engine_serving_gpu_test.cc)
   target_link_libraries(qwen38_engine_serving_gpu_test PRIVATE llmp_runtime_serving
-                                                               llmp_test_v1_frozen llmp_import)
+                                                               llmp_test_v1_frozen)
   llmp_gpu_gtest(qwen38_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
                                "LLMP_TEST_DATA=${tokenizer_data}")
-  # Fixed default-off full DeepSeek target factory/state diagnostic.
+  # DeepSeek V4's serving domain and automatic envelope, and its published
+  # v1 artifacts' frozen heads, state and spill.
   add_executable(dsv4_engine_target_gpu_test dsv4_engine_target_gpu_test.cc)
-  target_link_libraries(dsv4_engine_target_gpu_test PRIVATE llmp_corpus_score llmp_engine_core
-                                                        llmp_runtime_serving llmp_test_v1_frozen)
+  target_link_libraries(dsv4_engine_target_gpu_test PRIVATE llmp_engine_core llmp_runtime_serving
+                                                            llmp_test_v1_frozen)
   llmp_gpu_gtest(dsv4_engine_target_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
                                "LLMP_TEST_DATA=${tokenizer_data}")
   # DeepSeek V4 Flash through the server on the shared engine: the plain-token
   # oracle, DSpark's joined waves and features, four slots' speculative waves,
-  # prefill lookahead on and off, and the fixed prompt's head.
+  # prefill lookahead on and off, the fixed prompt's head, and every program
+  # its automatic serving build lowers binding the complete expert domain.
   add_executable(dsv4_engine_serving_gpu_test dsv4_engine_serving_gpu_test.cc)
-  target_link_libraries(dsv4_engine_serving_gpu_test PRIVATE llmp_runtime_serving)
+  target_link_libraries(dsv4_engine_serving_gpu_test PRIVATE llmp_runtime_serving
+                                                             llmp_test_v1_frozen)
   llmp_gpu_gtest(dsv4_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   add_executable(image_generation_gpu_test image_generation_gpu_test.cc)
-  target_link_libraries(image_generation_gpu_test PRIVATE llmp_runtime_serving)
+  target_link_libraries(image_generation_gpu_test PRIVATE llmp_runtime_serving llmp_test_v1_frozen)
   llmp_gpu_gtest(image_generation_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Gemma 2 and Gemma 3 on the shared engine through the server: heads,
@@ -382,7 +365,7 @@ if(LLMP_CUDA)
   llmp_gpu_gtest(gemma_engine_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
                                "LLMP_TEST_DATA=${tokenizer_data}")
-  # Native v1 admission: approved Gemma3/26/31, compared with pinned v0 imports.
+  # Native v1 admission: approved Gemma3/26/31 against their frozen digests.
   add_executable(gemma_native_v1_serving_gpu_test gemma_native_v1_serving_gpu_test.cc)
   target_link_libraries(gemma_native_v1_serving_gpu_test PRIVATE llmp_runtime_serving
                                                                  llmp_test_v1_frozen)
@@ -390,7 +373,7 @@ if(LLMP_CUDA)
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch"
                                "LLMP_TEST_DATA=${tokenizer_data}")
   # Gemma 4 with its assistant as the drafter: published v1 artifacts against
-  # the pinned v0 imports and the frozen digests (tests/support/v1_frozen.h).
+  # the frozen digests (tests/support/v1_frozen.h).
   add_executable(gemma_assistant_v1_gpu_test gemma_assistant_v1_gpu_test.cc)
   target_link_libraries(gemma_assistant_v1_gpu_test PRIVATE llmp_runtime_serving
                                                             llmp_test_v1_frozen)
@@ -400,7 +383,8 @@ if(LLMP_CUDA)
   # Weight files across real switches between Gemma 2 and Gemma 3: only the
   # resident model's shards open (engine/paged_node.h SetActive).
   add_executable(weight_files_serving_gpu_test weight_files_serving_gpu_test.cc)
-  target_link_libraries(weight_files_serving_gpu_test PRIVATE llmp_runtime_serving llmp_artifact)
+  target_link_libraries(weight_files_serving_gpu_test PRIVATE llmp_runtime_serving llmp_artifact
+                                                              llmp_test_v1_frozen)
   llmp_gpu_gtest(weight_files_serving_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
@@ -444,7 +428,8 @@ llmp_gtest(chat_template_test TEST_PREFIX unit. PROPERTIES LABELS unit
 # The actual approved Gemma2 template remains interpreted, including its
 # system refusal and the end-of-turn stop from the kept GGUF metadata.
 add_executable(gemma2_chat_assets_test gemma2_chat_assets_test.cc)
-target_link_libraries(gemma2_chat_assets_test PRIVATE llmp_runtime llmp_chat llmp_model llmp_base)
+target_link_libraries(gemma2_chat_assets_test PRIVATE llmp_runtime llmp_chat llmp_model llmp_base
+                                                      llmp_test_v1_frozen)
 llmp_gtest(gemma2_chat_assets_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models")
 
 add_executable(chat_corpus_test chat_corpus_test.cc)
@@ -481,11 +466,9 @@ target_link_libraries(format_test PRIVATE llmp_format)
 llmp_gtest(format_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The CPU reference decoders (D-108), against GGML's dequantization and
-# hand-computed values; the Qwen3.8 imports' experts where the M3 store
-# holds them (a Spark).
+# hand-computed values.
 add_executable(reference_decode_test reference_decode_test.cc)
-target_link_libraries(reference_decode_test PRIVATE llmp_reference_kernels llmp_artifact
-                                                    llmp_ggml_base)
+target_link_libraries(reference_decode_test PRIVATE llmp_reference_kernels llmp_ggml_base)
 llmp_gtest(reference_decode_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The device decoders' geometry (kernels/decode/operand.h) against the
@@ -525,8 +508,8 @@ target_link_libraries(model_test PRIVATE llmp_model)
 llmp_gtest(model_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # State contracts (model/state_contract.h): each family's state reproduced
-# byte for byte from contracts, a verify's saves, representations and the
-# kept layout's identity.
+# byte for byte from contracts against the M3 layouts in closed form, a
+# verify's saves, representations and the kept layout's identity.
 add_executable(state_contract_test state_contract_test.cc)
 target_link_libraries(state_contract_test PRIVATE llmp_model)
 llmp_gtest(state_contract_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -554,26 +537,10 @@ add_executable(ggml_tensors_test ggml_tensors_test.cc)
 target_link_libraries(ggml_tensors_test PRIVATE llmp_ggml_tensors)
 llmp_gtest(ggml_tensors_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The Qwen2 adapter (model/qwen2.h): binding a synthetic index to the
-# compiled-in profile, and a chunk's host-built inputs.
-add_executable(qwen2_test qwen2_test.cc)
-target_link_libraries(qwen2_test PRIVATE llmp_model)
-llmp_gtest(qwen2_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-# Immutable EXL3 source profile and resource binding (model/qwen2_exl3.h).
-add_executable(qwen2_exl3_test qwen2_exl3_test.cc)
-target_link_libraries(qwen2_exl3_test PRIVATE llmp_model)
-llmp_gtest(qwen2_exl3_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
 # Generic graph planning, activation placement and lane/KV controls.
 add_executable(ggml_graph_test ggml_graph_test.cc)
 target_link_libraries(ggml_graph_test PRIVATE llmp_ggml_tensors)
 llmp_gtest(ggml_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-# The DeepSeek V4 adapter: binding, state and chunk inputs (model/dsv4.h).
-add_executable(dsv4_test dsv4_test.cc)
-target_link_libraries(dsv4_test PRIVATE llmp_model)
-llmp_gtest(dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 if(LLMP_CUDA)
   # A runner's plan and graph caps (engine/planned.h), host-only.
@@ -696,13 +663,6 @@ llmp_test_executable(weights_ordinal_screen)
 add_executable(slab_layout_test slab_layout_test.cc)
 target_link_libraries(slab_layout_test PRIVATE llmp_engine_core llmp_fake_device_backend)
 llmp_gtest(slab_layout_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-# DeepSeek V4's DSpark drafter and speculation's parts of the adapter
-# (model/dspark.h; D-092).
-add_executable(dspark_test dspark_test.cc)
-target_link_libraries(dspark_test PRIVATE llmp_model)
-llmp_gtest(dspark_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
 
 add_executable(ggml_validate_test ggml_validate_test.cc)
 add_executable(gemma_norm_test gemma_norm_test.cc)
@@ -871,16 +831,15 @@ if(LLMP_CUDA)
   # The format layer's first proof (D-108): Qwen3.8's native NVFP4 and
   # MXFP8 tensors, one layer's worth of each product shape, through the
   # decoders against the CPU reference, with device memory checked; meant
-  # for the discrete sm_86 target. The artifacts' roots come from
-  # LLMP_QWEN38_PROOF_ARTIFACT (and _GGML_ARTIFACT), by default the M3
-  # store's v0 IDs, or those of LLMP_QWEN38_PROOF_ARTIFACT_ID (and
-  # _GGML_ARTIFACT_ID); without them it skips.
+  # for the discrete sm_86 target. The artifact's root comes from
+  # LLMP_QWEN38_PROOF_ARTIFACT, by default the published v1 store's ModelOpt
+  # import; without it it skips.
   add_executable(qwen38_decode_proof_test qwen38_decode_proof_test.cc)
   target_include_directories(qwen38_decode_proof_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
   target_link_libraries(qwen38_decode_proof_test PRIVATE llmp_decode_kernels
                                                          llmp_reference_kernels llmp_artifact
-                                                         llmp_model)
+                                                         llmp_test_v1_frozen)
   llmp_gpu_gtest(qwen38_decode_proof_test MODELS DISCRETE ALL
                    ENVIRONMENT "CUDA_MODULE_LOADING=EAGER")
 
@@ -1079,13 +1038,14 @@ if(LLMP_CUDA)
 
   # The EXL3 trellis through the format layer (D-108): the module's
   # capabilities and Candidates(), ExLlamaV3's reconstruction kernels
-  # against the CPU reference, and, where the v0 fixtures are installed
-  # (spark, spark-b), every fixture linear's weights and layer 0's products
+  # against the CPU reference, and, where the published v1 fixtures are
+  # installed (spark, spark-b), every fixture linear's weights and layer 0's products
   # through each candidate. On a discrete GPU too, all but the fixtures'
   # test, which runs the GB10's pinned reconstruction GEMMs.
   add_executable(exl3_trellis_test exl3_trellis_test.cc)
   target_link_libraries(exl3_trellis_test PRIVATE llmp_exl3_kernels llmp_reference_kernels
-                                                  llmp_artifact llmp_model llmp_cuda_device_memory)
+                                                  llmp_artifact llmp_cuda_device_memory
+                                                  llmp_test_v1_frozen)
   llmp_gpu_gtest(exl3_trellis_test MODELS
                    DISCRETE Exl3TrellisSelectionTest.CandidatesFollowRowsRatesShapesAndDevices
                             Exl3TrellisTest.ReconstructionIsTheReferenceDecode)
@@ -1108,14 +1068,7 @@ target_link_libraries(gemma_moe_fusion_test PRIVATE llmp_ggml_tensors llmp_artif
 llmp_gtest(gemma_moe_fusion_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
-add_executable(gemma4_assistant_test gemma4_assistant_test.cc)
-target_link_libraries(gemma4_assistant_test PRIVATE llmp_model llmp_artifact llmp_json)
-llmp_gtest(gemma4_assistant_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
-add_executable(gemma4_assistant_artifact_test gemma4_assistant_artifact_test.cc)
-target_link_libraries(gemma4_assistant_artifact_test PRIVATE llmp_model llmp_artifact llmp_tokenizer)
-llmp_gtest(gemma4_assistant_artifact_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models")
 
 # Paid stored-v1 bindings; CUDA builds also bind real implementation descriptors
 # on the host, without provider setup, capture, model payload or GPU dispatch.
@@ -1146,29 +1099,32 @@ llmp_gtest(approvals_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;mod
 add_executable(component_admission_test component_admission_test.cc)
 target_link_libraries(component_admission_test PRIVATE llmp_runtime llmp_components llmp_json
                                                        llmp_import llmp_test_artifact_writer)
-llmp_gtest(component_admission_test TEST_PREFIX unit. PROPERTIES LABELS unit
-             ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
+# v0 artifacts are refused (D-118): the reader's corpus golden, beside it.
+add_dependencies(component_admission_test artifact_corpus)
+llmp_gtest(component_admission_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+             PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
 # The model spec's canonical JSON, refusals and bound digest; the
-# architecture mappings as data and applied to the Gemma 2 and Gemma 3
-# tensor tables with today's profiles (spec/).
+# architecture mappings as data and applied to the Gemma tensor tables with
+# their profiles' values (tests/support/families/gemma.h).
 add_executable(spec_test spec_test.cc)
-target_link_libraries(spec_test PRIVATE llmp_spec llmp_model llmp_artifact llmp_json)
+target_link_libraries(spec_test PRIVATE llmp_spec llmp_artifact llmp_json)
 llmp_gtest(spec_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
 # The spec a v1 artifact or composition stores (spec/stored.h, D-113), on
-# artifacts the test-only writer makes, and v0's goldens as before.
+# artifacts the test-only writer makes, and v0's goldens refused (D-118).
 add_executable(spec_stored_test spec_stored_test.cc)
-target_link_libraries(spec_stored_test PRIVATE llmp_spec llmp_artifact llmp_model
-                                               llmp_test_artifact_writer)
+target_link_libraries(spec_stored_test PRIVATE llmp_spec llmp_artifact llmp_test_artifact_writer)
 add_dependencies(spec_stored_test artifact_corpus)
 llmp_gtest(spec_stored_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-# The spec synthesized from the installed Gemma 2 and Gemma 3 v0 artifacts.
+# The specs the published Gemma 2, 3 and 4 v1 artifacts store, against their
+# tensor tables'.
 add_executable(spec_models_test spec_models_test.cc)
-target_link_libraries(spec_models_test PRIVATE llmp_spec llmp_model llmp_artifact llmp_json)
+target_link_libraries(spec_models_test PRIVATE llmp_runtime llmp_spec llmp_model llmp_artifact
+                                               llmp_json llmp_test_v1_frozen)
 llmp_gtest(spec_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models"
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
@@ -1201,7 +1157,7 @@ llmp_gtest(components_qwen2_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(components_qwen2_models_test components_qwen2_models_test.cc)
 target_link_libraries(components_qwen2_models_test PRIVATE llmp_components llmp_spec llmp_model
-                                                        llmp_artifact)
+                                                        llmp_artifact llmp_test_v1_frozen)
 llmp_gtest(components_qwen2_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
 
 add_executable(components_qwen38_test components_qwen38_test.cc)
@@ -1209,30 +1165,33 @@ target_link_libraries(components_qwen38_test PRIVATE llmp_components llmp_refere
                                                      llmp_spec llmp_model llmp_artifact llmp_json)
 llmp_gtest(components_qwen38_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The Qwen3.8 mappings on the installed artifacts: each import's spec, the
-# fixture's equal to the ModelOpt ones, today's state layouts, the MTP
-# drafter composed, every step kind built.
+# The Qwen3.8 mappings on the published v1 artifacts: each import's stored
+# spec, the fixture's equal to it, the M3 runner's state layouts, the MTP
+# drafter composed to its approval, every step kind built.
 add_executable(components_qwen38_models_test components_qwen38_models_test.cc)
 target_link_libraries(components_qwen38_models_test PRIVATE llmp_components llmp_spec llmp_model
-                                                            llmp_artifact llmp_json)
+                                                            llmp_artifact llmp_json llmp_runtime
+                                                            llmp_import llmp_test_v1_frozen
+                                                            llmp_draft_vocab_contract)
 llmp_gtest(components_qwen38_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
 
 # The DeepSeek V4 components (the Sinkhorn hyper-connections, MQA with its
 # compressors and lightning indexer, the DeepSeek routers and clamped
 # SwiGLU, the token-hash side input, the DSpark drafter's injected input and
-# Markov head) against their references, the compressors' inputs against
-# today's plans, the deepseek4 and dflash mappings over the fixture's
-# tensors, the steps they make and the injection run.
+# Markov head) against their references, the deepseek4 and dflash mappings
+# over the fixture's tensors and the profiles' values
+# (tests/support/families/dsv4.h), the steps they make and the injection run.
 add_executable(components_dsv4_test components_dsv4_test.cc)
 target_link_libraries(components_dsv4_test PRIVATE llmp_components llmp_reference_kernels
                                                    llmp_spec llmp_model llmp_artifact llmp_json)
 llmp_gtest(components_dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-# The DeepSeek V4 mappings on the installed artifacts: each target's spec
-# and its DSpark drafter's, the fixture's equal to them, today's state
-# layouts, every step kind built.
+# The DeepSeek V4 mappings on the published v1 artifacts: the target's
+# stored spec and its DSpark drafter's composition, the fixture's equal to
+# them, the M3 runners' state layouts, every step kind built.
 add_executable(components_dsv4_models_test components_dsv4_models_test.cc)
 target_link_libraries(components_dsv4_models_test PRIVATE llmp_components llmp_spec llmp_model
-                                                          llmp_artifact llmp_json)
+                                                          llmp_artifact llmp_json llmp_runtime
+                                                          llmp_test_v1_frozen)
 llmp_gtest(components_dsv4_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
 
 # The planner (D-107): policies, patterns, selection, placement, lanes and
@@ -1258,8 +1217,8 @@ llmp_gtest(ir_layout_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # choices for described topologies and against a brute-force enumeration.
 add_executable(planner_partition_test planner_partition_test.cc)
 target_link_libraries(planner_partition_test PRIVATE llmp_planner llmp_components
-                                                     llmp_reference_kernels llmp_spec llmp_model
-                                                     llmp_artifact llmp_json)
+                                                     llmp_reference_kernels llmp_spec llmp_artifact
+                                                     llmp_json)
 llmp_gtest(planner_partition_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${tokenizer_data}")
 
@@ -1388,22 +1347,22 @@ if(LLMP_CUDA)
   add_executable(components_models_gpu_test components_models_gpu_test.cc)
   target_link_libraries(components_models_gpu_test PRIVATE llmp_runtime_serving llmp_components
                                                            llmp_reference_kernels llmp_spec
-                                                           llmp_artifact)
+                                                           llmp_artifact llmp_test_v1_frozen)
   llmp_gpu_gtest(components_models_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-  # The Gemma 4 components end to end on the installed 26B-A4B and 31B, by
+  # The Gemma 4 components end to end on the published 26B-A4B and 31B, by
   # the reference executor, against the served model.
   add_executable(components_gemma4_models_gpu_test components_gemma4_models_gpu_test.cc)
   target_link_libraries(components_gemma4_models_gpu_test PRIVATE llmp_runtime_serving
                                                                   llmp_components
                                                                   llmp_reference_kernels llmp_spec
-                                                                  llmp_artifact)
+                                                                  llmp_artifact llmp_test_v1_frozen)
   llmp_gpu_gtest(components_gemma4_models_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
   # The one model runner over the component step source and the GGML
-  # lowering on the installed artifacts, a scripted run finite and exact
+  # lowering on the published v1 artifacts, a scripted run finite and exact
   # from one runner to the next.
   # Real Qwen2 FP16 fixture on the shared runner against the frozen bridge.
   add_executable(component_runner_qwen2_exl3_gpu_test component_runner_qwen2_exl3_gpu_test.cc)
@@ -1416,7 +1375,8 @@ if(LLMP_CUDA)
                                "LLMP_TEST_DATA=${tokenizer_data}")
 
   add_executable(fp16_benchmark_gpu_test fp16_benchmark_gpu_test.cc)
-  target_link_libraries(fp16_benchmark_gpu_test PRIVATE llmp_paged_runners llmp_base)
+  target_link_libraries(fp16_benchmark_gpu_test PRIVATE llmp_paged_runners llmp_base
+                                                        llmp_test_v1_frozen)
   llmp_gpu_gtest(fp16_benchmark_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
@@ -1429,8 +1389,9 @@ if(LLMP_CUDA)
                                "LLMP_TEST_DATA=${tokenizer_data}")
 
   add_executable(component_runner_gpu_test component_runner_gpu_test.cc)
-  target_link_libraries(component_runner_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
-                                                          llmp_components llmp_spec llmp_artifact)
+  target_link_libraries(component_runner_gpu_test PRIVATE llmp_engine llmp_ggml_kernels llmp_runtime
+                                                          llmp_components llmp_spec llmp_artifact
+                                                          llmp_test_v1_frozen)
   llmp_gpu_gtest(component_runner_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
@@ -1439,14 +1400,16 @@ if(LLMP_CUDA)
   # speculative verify's waves.
   add_executable(component_runner_gemma4_gpu_test component_runner_gemma4_gpu_test.cc)
   target_link_libraries(component_runner_gemma4_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
-                                                                 llmp_components llmp_spec
-                                                                 llmp_artifact)
+                                                                 llmp_runtime llmp_components
+                                                                 llmp_spec llmp_artifact
+                                                                 llmp_test_v1_frozen)
   llmp_gpu_gtest(component_runner_gemma4_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
   # Fixed natural-corpus scoring through the owned shared target source.
   add_executable(qwen38_joined_score_gpu_test qwen38_joined_score_gpu_test.cc)
   target_link_libraries(qwen38_joined_score_gpu_test PRIVATE llmp_corpus_score
-    llmp_engine_core llmp_runtime_serving llmp_components llmp_spec llmp_artifact)
+    llmp_engine_core llmp_runtime_serving llmp_components llmp_spec llmp_artifact
+    llmp_test_v1_frozen)
   # Captured-corpus diagnostic: invoke only with authenticated IDs and a paid
   # supervised owner, never automatically through all-model CTest discovery.
   target_link_libraries(qwen38_joined_score_gpu_test PRIVATE
@@ -1460,16 +1423,18 @@ if(LLMP_CUDA)
   # Owned joined target/MTP state and changed-input capture qualification.
   add_executable(qwen38_joined_mtp_gpu_test qwen38_joined_mtp_gpu_test.cc)
   target_link_libraries(qwen38_joined_mtp_gpu_test PRIVATE llmp_corpus_score
-    llmp_engine_core llmp_runtime_serving llmp_components llmp_spec llmp_artifact)
+    llmp_engine_core llmp_runtime_serving llmp_components llmp_spec llmp_artifact
+    llmp_test_v1_frozen)
   llmp_gpu_gtest(qwen38_joined_mtp_gpu_test MODELS
     ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
-  # The same on the Qwen3.8 imports (ModelOpt's two expert layouts, a
-  # GGUF quantization's) against today's runner's fast form, one at a time.
+  # The same on the published v1 Qwen3.8 imports (the native ModelOpt one, a
+  # GGUF quantization's) in the fast form, one at a time.
   add_executable(component_runner_qwen38_gpu_test component_runner_qwen38_gpu_test.cc)
   target_link_libraries(component_runner_qwen38_gpu_test PRIVATE llmp_engine llmp_ggml_kernels
                                                                  llmp_components llmp_spec
-                                                                 llmp_artifact)
+                                                                 llmp_artifact llmp_runtime
+                                                                 llmp_test_v1_frozen)
   llmp_gpu_gtest(component_runner_qwen38_gpu_test MODELS
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 endif()
@@ -1542,13 +1507,13 @@ llmp_gtest(import_normalize_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "LLMP_TEST_DATA=${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 # The readers on the current models' checkpoints: the Gemma 2 and 3 source
-# GGUFs' specs equal to their v0 artifacts', the split GGUFs, Qwen3.8's
-# ModelOpt checkpoint, Qwen-Image's pipeline against its v0 components,
-# the MLX checkpoint decoded against Qwen3.8's native one, the EXL3
-# fixtures against their v0 imports.
+# GGUFs' specs equal to their published v1 artifacts', the split GGUFs,
+# Qwen3.8's ModelOpt checkpoint, Qwen-Image's pipeline against its v0
+# components, the MLX checkpoint decoded against Qwen3.8's native one, the
+# EXL3 fixtures against their v1 imports.
 add_executable(import_models_test import_models_test.cc)
 target_link_libraries(import_models_test PRIVATE llmp_import llmp_spec llmp_model llmp_artifact
-                                                 llmp_reference_kernels)
+                                                 llmp_reference_kernels llmp_test_v1_frozen)
 llmp_gtest(import_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\;models")
 
 add_executable(import_writer_test import_writer_test.cc)

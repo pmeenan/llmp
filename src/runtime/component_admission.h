@@ -21,11 +21,6 @@
 #include "spec/mapping.h"
 #include "spec/spec.h"
 
-namespace llmp::model {
-struct Qwen38Binding;
-struct Qwen38PleHash;
-struct Qwen38Tensor;
-}  // namespace llmp::model
 namespace llmp::runtime {
 
 // One authority for current production component serving: an architecture
@@ -34,31 +29,25 @@ bool OnComponentEngine(std::string_view architecture);
 // The mapping a composition uses for a drafter architecture (its drafting
 // recipe's replay form, or its own); null when it has none.
 const spec::Mapping* ComposedDrafterMapping(std::string_view architecture);
-// The same for a drafter artifact: a stored one's by its approval's mapping
+// The same for a drafter artifact: by its approval's mapping
 // (Approval::mapping) where it names one, else by its architecture.
 const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter);
-// Existing v0 recipe values shared by registration facts and actual execution.
-// These do not parse a spec or change admission/default policy.
-std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
-    const artifact::Artifact& artifact);
-// A v0 target's approved binding (Gemma's), before its synthesis is used.
-std::expected<void, std::string> CheckComponentV0Admission(const artifact::Artifact& artifact);
-std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Values(
-    const artifact::Artifact& target, const artifact::Artifact& drafter);
-// A drafter's values for its composition: v0's from its compiled profile;
-// with either stored, the approved pairing of both sources' identities and
-// a stored drafter's values from the metadata it keeps, or where it keeps
-// none, its drafting recipe's given its source (spec::DraftRecipe::values).
+// Serving reads format-v1 artifacts only (D-118): a v0 artifact (or any
+// other version) is refused with what to do about it, re-importing its
+// source with `llmp import`.
+std::expected<void, std::string> RequireServedVersion(const artifact::Artifact& artifact);
+// A drafter's values for its composition: the approved pairing of both
+// sources' identities, and the drafter's values from the metadata it keeps,
+// or where it keeps none, its drafting recipe's given its source
+// (spec::DraftRecipe::values).
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
     const artifact::Artifact& target, const artifact::Artifact& drafter);
-// A drafter's approved envelope (its approval's context and owners; one
-// without an approval, a v0 MTP drafter, passes).
+// A drafter's approved envelope (its approval's context and owners).
 std::expected<void, std::string> ComponentDrafterEnvelope(const artifact::Artifact& drafter,
                                                           const spec::Envelope& envelope);
 // A drafter's selected draft head by its token map `head_ids` (its drafting
 // recipe's): the map's resource and rows, I32 [1, rows] with 0 < rows <=
-// `vocab` (a v1 artifact's format or a v0 one's descriptor); nullopt
-// without one; refused for another shape.
+// `vocab`; nullopt without one; refused for another shape.
 struct DraftHeadMap {
   std::uint32_t resource = 0;
   std::uint64_t rows = 0;
@@ -68,24 +57,16 @@ std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
 // An integer the artifact's kept GGUF metadata holds under `key`.
 std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
                                                      std::string_view key);
-// A stored drafter's composition (before any per-alias KV encoding) is the
-// one its approval pins; a v0 drafter's passes.
+// A drafter's composition (before any per-alias KV encoding) is the one its
+// approval pins.
 std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& composed,
                                                         const artifact::Artifact& drafter);
 
+// `count` integers of a resource, read directly (a draft head's token map).
 template <class T>
 std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const artifact::Artifact& artifact,
                                                               std::uint32_t resource,
                                                               std::uint64_t count);
-
-template <class T>
-std::expected<std::vector<T>, std::string> RecipeIntegers(const artifact::Artifact& artifact,
-                                                          const model::Qwen38Tensor& tensor,
-                                                          std::uint32_t maximum,
-                                                          std::string_view type);
-
-std::expected<model::Qwen38PleHash, std::string> RecipeHash(const artifact::Artifact& artifact,
-                                                            const model::Qwen38Binding& binding);
 
 struct ComponentAdmission {
   spec::ModelSpec model;
@@ -114,9 +95,24 @@ std::expected<void, std::string> CheckComponentArtifactAdmission(
 // ExpertLayout); layers without one are not checked.
 std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& artifact);
 
-// v1 only. Reads StoredSpec and SourceOf; v0 retains its existing synthesis.
+// Native hash-routing tables retain I32 source values. Validate each table
+// `model` binds (each side.hash input's, by its own `experts` and `used`
+// rows a token) through a bounded direct-read window of `artifact` before
+// any routed work: an I32 [used, tokens] table of consistent bytes whose
+// every entry names an expert in [0, experts). No whole-table copy or
+// uncharged payload allocation is introduced for stored targets.
+std::expected<void, std::string> CheckStoredHashTables(const artifact::Artifact& artifact,
+                                                       const spec::ModelSpec& model);
+
+// Reads StoredSpec and SourceOf of a v1 artifact.
 std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
     const artifact::Artifact& artifact);
+
+// The context a configuration that names none takes within an approval:
+// the widest context of its mapping's rule domains that its gates select
+// and that join owners (a rule bounded by context, not an owners-alone
+// one), else its envelope's.
+std::uint32_t ApprovedDefaultContext(const Approval& approval);
 
 // The approval's planning policy rule for an envelope (its mapping's first
 // rule whose gate, by the approval's gates, and envelope hold; null: none).

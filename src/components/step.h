@@ -92,8 +92,8 @@ inline constexpr std::uint32_t kMaskRowAlign = 32;
 // The node component of what the framework emits itself (masks).
 inline constexpr std::uint16_t kFrameworkComponent = 0xFFFF;
 
-// A tensor of the artifact a stage runs from, as the mapping sees it (a
-// v0 artifact's: spec::SourceOfV0).
+// A tensor of the artifact a stage runs from, as the mapping sees it (a v1
+// artifact's: spec::SourceOf).
 using BoundTensor = spec::SourceTensor;
 
 // A stage's components with their parameters validated and their ordinals:

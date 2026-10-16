@@ -35,7 +35,6 @@ TEST(ImportModelOptNormalizeTest, NativeRelaidTargetValidatesAcrossCompleteTarge
   auto f = Native();
   const auto& mapping = spec::mappings::Qwen38NativeMapping();
   EXPECT_TRUE(mapping.folds.empty());
-  EXPECT_TRUE(mapping.v0_assembly.empty());
   // W4A4 experts take the converted form's policy (moe_experts); others
   // the format ladder's.
   ASSERT_EQ(mapping.policies.size(), 2U);
@@ -153,7 +152,6 @@ TEST(ImportModelOptNormalizeTest, ExistingConvertedMappingKeepsItsFoldAndPolicyC
   const auto& old = spec::mappings::Qwen38Mapping();
   EXPECT_FALSE(old.folds.empty());
   EXPECT_FALSE(old.policies.empty());
-  EXPECT_FALSE(old.v0_assembly.empty());
   EXPECT_TRUE(std::ranges::none_of(old.params, [](const auto& p) {
     return p.param == "a_log" || p.param == "norm_zero_centered";
   }));

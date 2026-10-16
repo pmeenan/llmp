@@ -707,6 +707,43 @@ class Inputs(unittest.TestCase):
         with self.assertRaises(SystemExit):
             gate.render_config('data_dir = "{data}"\n', pathlib.Path("/s"), pathlib.Path("/d"), 7)
 
+    def test_each_arm_defaults_to_its_labels_artifacts(self):
+        for name, family in gate.FAMILIES.items():
+            old = gate.arm_template(family, None, "old")
+            new = gate.arm_template(family, None, "new")
+            self.assertEqual(old, gate.config_template(family))  # the frozen baseline's
+            self.assertIn(f'installed = "{{share}}/{family.store}"', old)
+            if name == "image":  # the image slice's: both arms as today
+                self.assertEqual(old, new)
+                continue
+            self.assertIn('installed = "{share}/m36-v1-artifacts"', new)
+            self.assertNotEqual(old, new)
+            # The same settings, only the artifact and drafter IDs differ.
+            ids = {"artifact", "drafter"}
+            keep = lambda text: [line for line in text.splitlines()
+                                 if line.split(" = ")[0] not in ids
+                                 and not line.startswith("installed")]
+            self.assertEqual(keep(old), keep(new), name)
+            self.assertEqual(gate.arm_template(family, None, "new"),
+                             gate.config_template(family, "new"))
+        v1 = gate.config_template(gate.FAMILIES["qwen38"], "new")
+        self.assertIn(f'artifact = "{gate.QWEN_V1}"', v1)
+        self.assertIn(f'drafter = "{gate.QWEN_MTP_V1}"', v1)
+        self.assertNotIn(gate.QWEN_V0, v1)
+        self.assertIn(gate.DSV4_V0, gate.config_template(gate.FAMILIES["deepseek"]))
+        self.assertIn(f'drafter = "{gate.DSPARK_V1}"',
+                      gate.config_template(gate.FAMILIES["deepseek"], "new"))
+        self.assertIn(gate.GEMMA31_V1, gate.config_text(
+            gate.FAMILIES["gemma31"], pathlib.Path("/s"), pathlib.Path("/d"), 7, "new"))
+
+    def test_an_explicit_template_overrides_the_label_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "t.toml"
+            path.write_text("x = 1\n")
+            for label in ("old", "new"):
+                self.assertEqual(gate.arm_template(gate.FAMILIES["gemma2"], str(path), label),
+                                 "x = 1\n")
+
     def test_config_binds_loopback_and_names_the_share(self):
         text = gate.config_text(gate.FAMILIES["qwen38"], pathlib.Path("/s"), pathlib.Path("/d"),
                                 18114)

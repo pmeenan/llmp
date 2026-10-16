@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // State contracts (model/state_contract.h): contracts equivalent to each
-// current family's state reproduce its layout and ranges byte for byte
-// (Gemma2's and Gemma3's, against their closed form since the M3 layouts'
-// deletion: used state and chunk writes; Qwen3.8's used state
-// and checkpoint writes, DeepSeek V4's in both window modes); a verify's
+// current family's state reproduce its layout and ranges byte for byte,
+// against the M3 runners' layouts in closed form (their runners and
+// per-family layouts are retired; the contracts are the one source now):
+// Gemma2's and Gemma3's used state and chunk writes; Qwen3.8's used state
+// and checkpoint writes; DeepSeek V4's in both window modes; a verify's
 // saves by row, byte for byte what Qwen3.8's, DeepSeek V4's and DSpark's
-// verifies save today; the D-068 representations; the kept layout's
-// identity; and the refusals.
+// verifies saved; the D-068 representations; the kept layout's identity;
+// and the refusals. The families' facts are tests/support/families/'s.
 
 #include "model/state_contract.h"
 
@@ -19,6 +20,7 @@
 #include <cstdint>
 #include <format>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
@@ -27,16 +29,15 @@
 #include <vector>
 
 #include "base/sha256.h"
-#include "model/dspark.h"
-#include "model/dsv4.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/qwen38.h"
+#include "families/dsv4.h"
+#include "families/gemma.h"
+#include "families/qwen.h"
 #include "model/state.h"
 
 namespace {
 
 namespace md = llmp::model;
+namespace fam = llmp::test_support::families;
 using md::CellRule;
 using md::Encoding;
 using md::Rollback;
@@ -175,7 +176,7 @@ void ExpectGemmaLayout(const md::StateLayoutDerived& got, const GemmaLayoutRef& 
 }
 
 TEST(StateContractTest, Gemma2ContractsDeriveItsLayoutUsedStateAndChunkWrites) {
-  const auto& p = md::Gemma2_2B();
+  const auto& p = fam::Gemma2_2B();
   for (const auto& [context, rows] : {std::pair{4096U, 128U}, {8192U, 512U}, {8192U, 4096U}}) {
     const auto want = GemmaRef(p, context, rows);
     const Layers contracts = GemmaContracts(p);
@@ -208,7 +209,7 @@ TEST(StateContractTest, Gemma2ContractsDeriveItsLayoutUsedStateAndChunkWrites) {
 }
 
 TEST(StateContractTest, Gemma3ContractsDeriveItsLayoutAndUsedState) {
-  const auto& p = md::Gemma3_4BQat();
+  const auto& p = fam::Gemma3_4BQat();
   for (const auto& [context, rows] : {std::pair{8448U, 128U}, {4096U, 512U}}) {
     const auto want = GemmaRef(p, context, rows);
     const Layers contracts = GemmaContracts(p);
@@ -230,7 +231,7 @@ TEST(StateContractTest, Gemma3ContractsDeriveItsLayoutAndUsedState) {
 
 // ---------------------------------------------------------------- Qwen3.8
 
-Layers QwenContracts(const md::Qwen38Profile& p) {
+Layers QwenContracts(const fam::Qwen38Profile& p) {
   Layers layers;
   const auto fixed = [](std::string name, StateKind kind, std::uint64_t bytes) {
     return StateTensorContract{.name = std::move(name),
@@ -283,7 +284,7 @@ Layers QwenContracts(const md::Qwen38Profile& p) {
 
 // The MTP drafter's stage: its own caches (rewritten by its catch-up, so
 // truncated) and the streams the target's chunks export into it.
-Layers QwenMtpContracts(const md::Qwen38Profile& p) {
+Layers QwenMtpContracts(const fam::Qwen38Profile& p) {
   const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * 2;
   return {{0,
            {.tensors = {{.name = "k", .kind = StateKind::kKv, .cell_bytes = kv},
@@ -322,7 +323,7 @@ struct QwenLayoutRef {
   std::uint32_t cells = 0;
 };
 
-QwenLayoutRef QwenRef(const md::Qwen38Profile& p, std::uint32_t context, std::uint32_t /*rows*/) {
+QwenLayoutRef QwenRef(const fam::Qwen38Profile& p, std::uint32_t context, std::uint32_t /*rows*/) {
   QwenLayoutRef s;
   s.cells = static_cast<std::uint32_t>(PadTo(context, 256));
   const auto add = [&](std::uint32_t layer, bool f16, std::uint64_t ne0, std::uint64_t ne1) {
@@ -349,7 +350,7 @@ QwenLayoutRef QwenRef(const md::Qwen38Profile& p, std::uint32_t context, std::ui
   return s;
 }
 
-std::vector<StateRange> QwenUsedRef(const md::Qwen38Profile& p, const QwenLayoutRef& layout,
+std::vector<StateRange> QwenUsedRef(const fam::Qwen38Profile& p, const QwenLayoutRef& layout,
                                     std::uint32_t positions, std::uint32_t read_align) {
   const std::uint64_t read = std::min<std::uint64_t>(layout.cells, PadTo(positions, read_align));
   std::vector<StateRange> ranges;
@@ -367,7 +368,7 @@ std::vector<StateRange> QwenUsedRef(const md::Qwen38Profile& p, const QwenLayout
   return ranges;
 }
 
-std::vector<StateRange> QwenCheckpointRef(const md::Qwen38Profile& p, const QwenLayoutRef& layout,
+std::vector<StateRange> QwenCheckpointRef(const fam::Qwen38Profile& p, const QwenLayoutRef& layout,
                                           std::uint32_t positions) {
   std::vector<StateRange> writes;
   for (const auto& t : layout.tensors) {
@@ -397,7 +398,7 @@ struct QwenMtpRef {
   std::uint64_t bytes = 0;
 };
 
-QwenMtpRef QwenMtp(const md::Qwen38Profile& p, std::uint32_t context, std::uint32_t max_rows) {
+QwenMtpRef QwenMtp(const fam::Qwen38Profile& p, std::uint32_t context, std::uint32_t max_rows) {
   QwenMtpRef s;
   s.cells = static_cast<std::uint32_t>(PadTo(context, 256));
   s.hidden_rows = max_rows + 1;
@@ -415,7 +416,7 @@ QwenMtpRef QwenMtp(const md::Qwen38Profile& p, std::uint32_t context, std::uint3
 }
 
 TEST(StateContractTest, Qwen38ContractsReproduceItsLayoutUsedStateAndCheckpointWrites) {
-  const auto& p = md::Qwen38Flash();
+  const auto& p = fam::Qwen38Flash();
   for (const auto& [context, rows] : {std::pair{8192U, 512U}, {262144U, 2048U}, {4000U, 300U}}) {
     const auto want = QwenRef(p, context, rows);
     const Layers contracts = QwenContracts(p);
@@ -448,7 +449,7 @@ TEST(StateContractTest, Qwen38ContractsReproduceItsLayoutUsedStateAndCheckpointW
 
 // The MTP drafter's own region: a stage of its own.
 TEST(StateContractTest, Qwen38MtpContractReproducesItsDrafterRegion) {
-  const auto& p = md::Qwen38Flash();
+  const auto& p = fam::Qwen38Flash();
   const auto want = QwenMtp(p, 8192, 512);
   const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * 2;
   const Layers mtp = QwenMtpContracts(p);
@@ -485,7 +486,7 @@ TEST(StateContractTest, Qwen38MtpContractReproducesItsDrafterRegion) {
 
 // --------------------------------------------------------------- DeepSeek
 
-Layers Dsv4Contracts(const md::Dsv4Profile& p, md::Dsv4Window window) {
+Layers Dsv4Contracts(const fam::Dsv4Profile& p, fam::Dsv4Window window) {
   Layers layers;
   const auto compressed = [](std::string name, StateKind kind, std::uint64_t cell,
                              std::uint32_t ratio) {
@@ -512,7 +513,7 @@ Layers Dsv4Contracts(const md::Dsv4Profile& p, md::Dsv4Window window) {
   for (std::uint32_t il = 0; il < p.layers; ++il) {
     StateContract c;
     const std::uint64_t raw = std::uint64_t{p.head_dim} * 2;
-    if (window == md::Dsv4Window::kFull) {
+    if (window == fam::Dsv4Window::kFull) {
       c.tensors.push_back({.name = "raw",
                            .kind = StateKind::kKv,
                            .cell_bytes = raw,
@@ -528,31 +529,164 @@ Layers Dsv4Contracts(const md::Dsv4Profile& p, md::Dsv4Window window) {
     }
     const std::uint64_t hd2 = 2ULL * p.head_dim * 4;
     const std::uint64_t ihd2 = 2ULL * p.indexer_head_dim * 4;
-    if (p.compress_ratios[il] == md::kDsv4CsaRatio) {
+    if (p.compress_ratios[il] == fam::kDsv4CsaRatio) {
       c.tensors.push_back(compressed("csa", StateKind::kCompressed, std::uint64_t{p.head_dim} * 2,
-                                     md::kDsv4CsaRatio));
-      c.tensors.push_back(ring("csa_kv", hd2, 2 * md::kDsv4CsaRatio));
-      c.tensors.push_back(ring("csa_score", hd2, 2 * md::kDsv4CsaRatio));
+                                     fam::kDsv4CsaRatio));
+      c.tensors.push_back(ring("csa_kv", hd2, 2 * fam::kDsv4CsaRatio));
+      c.tensors.push_back(ring("csa_score", hd2, 2 * fam::kDsv4CsaRatio));
       c.tensors.push_back(compressed("lid", StateKind::kIndex,
-                                     std::uint64_t{p.indexer_head_dim} * 2, md::kDsv4CsaRatio));
-      c.tensors.push_back(ring("lid_kv", ihd2, 2 * md::kDsv4CsaRatio));
-      c.tensors.push_back(ring("lid_score", ihd2, 2 * md::kDsv4CsaRatio));
-    } else if (p.compress_ratios[il] == md::kDsv4HcaRatio) {
+                                     std::uint64_t{p.indexer_head_dim} * 2, fam::kDsv4CsaRatio));
+      c.tensors.push_back(ring("lid_kv", ihd2, 2 * fam::kDsv4CsaRatio));
+      c.tensors.push_back(ring("lid_score", ihd2, 2 * fam::kDsv4CsaRatio));
+    } else if (p.compress_ratios[il] == fam::kDsv4HcaRatio) {
       c.tensors.push_back(compressed("hca", StateKind::kCompressed, std::uint64_t{p.head_dim} * 2,
-                                     md::kDsv4HcaRatio));
-      c.tensors.push_back(ring("hca_kv", std::uint64_t{p.head_dim} * 4, md::kDsv4HcaRatio));
-      c.tensors.push_back(ring("hca_score", std::uint64_t{p.head_dim} * 4, md::kDsv4HcaRatio));
+                                     fam::kDsv4HcaRatio));
+      c.tensors.push_back(ring("hca_kv", std::uint64_t{p.head_dim} * 4, fam::kDsv4HcaRatio));
+      c.tensors.push_back(ring("hca_score", std::uint64_t{p.head_dim} * 4, fam::kDsv4HcaRatio));
     }
     layers.push_back({il, std::move(c)});
   }
   return layers;
 }
 
+// DeepSeek V4's ranges in closed form, as the retired runner's were over
+// its layout (fam::Dsv4State). What `positions` positions read: a full
+// window's cells up to the next 256, a ring whole; each compressed cache's
+// visible rows up to the next 256 (at least 256) and its last (dummy) row;
+// the compressor rings whole.
+std::vector<StateRange> Dsv4UsedRef(const fam::Dsv4StateLayout& state, std::uint32_t positions) {
+  using K = fam::Dsv4StateTensor::Kind;
+  std::vector<StateRange> ranges;
+  for (const auto& t : state.tensors) {
+    std::uint64_t rows = t.ne1;
+    bool compressed = false;
+    if (t.kind == K::kRawK && state.window == fam::Dsv4Window::kFull) {
+      rows = std::min(t.ne1, PadTo(positions, 256));
+    } else if (t.kind == K::kCsaK || t.kind == K::kLidK || t.kind == K::kHcaK) {
+      const std::uint64_t ratio = t.kind == K::kHcaK ? fam::kDsv4HcaRatio : fam::kDsv4CsaRatio;
+      const std::uint64_t visible = (std::uint64_t{positions} + ratio - 1) / ratio;
+      rows = std::min(t.ne1, std::max<std::uint64_t>(256, PadTo(visible, 256)));
+      compressed = true;
+    }
+    if (rows != 0) ranges.push_back({.offset = t.offset, .bytes = rows * t.row_bytes()});
+    if (compressed && rows < t.ne1) {
+      ranges.push_back(
+          {.offset = t.offset + ((t.ne1 - 1) * t.row_bytes()), .bytes = t.row_bytes()});
+    }
+  }
+  return ranges;
+}
+
+// What later positions may overwrite: a full window's cells from
+// `positions`, a ring whole; each compressed cache's rows from the block
+// `positions` is in, and its dummy row (every chunk writes it); the
+// compressor rings whole.
+std::vector<StateRange> Dsv4CheckpointRef(const fam::Dsv4StateLayout& state,
+                                          std::uint32_t positions) {
+  using K = fam::Dsv4StateTensor::Kind;
+  std::vector<StateRange> writes;
+  for (const auto& t : state.tensors) {
+    std::uint64_t first = 0;
+    if (t.kind == K::kRawK && state.window == fam::Dsv4Window::kFull) {
+      first = positions;
+    } else if (t.kind == K::kCsaK || t.kind == K::kLidK || t.kind == K::kHcaK) {
+      const std::uint64_t ratio = t.kind == K::kHcaK ? fam::kDsv4HcaRatio : fam::kDsv4CsaRatio;
+      first = positions / ratio;
+      writes.push_back(
+          {.offset = t.offset + ((t.ne1 - 1) * t.row_bytes()), .bytes = t.row_bytes()});
+    }
+    first = std::min(first, t.ne1);
+    if (first < t.ne1) {
+      writes.push_back(
+          {.offset = t.offset + (first * t.row_bytes()), .bytes = (t.ne1 - first) * t.row_bytes()});
+    }
+  }
+  return writes;
+}
+
+// Every byte a chunk of `rows` rows after `past` positions writes, by the
+// row that writes it: its position's window cell in every layer, each
+// compressor ring row it is the chunk's last position of (both the
+// projections' and the scores'), and each compressed row of the block its
+// position completes; and as scratch, whatever is accepted, each
+// compressor's dummy block (a CSA compressor pads the chunk to a block per
+// ratio rows, an HCA one to one block), written to its cache's last row.
+struct Dsv4WritesRef {
+  std::vector<std::vector<StateRange>> rows;
+  std::vector<StateRange> scratch;
+};
+Dsv4WritesRef Dsv4ChunkWritesRef(const fam::Dsv4Profile& p, const fam::Dsv4StateLayout& state,
+                                 std::uint32_t past, std::uint32_t rows) {
+  using K = fam::Dsv4StateTensor::Kind;
+  Dsv4WritesRef out;
+  out.rows.resize(rows);
+  const auto at = [](const fam::Dsv4StateTensor& t, std::uint64_t row) {
+    return StateRange{.offset = t.offset + (row * t.row_bytes()), .bytes = t.row_bytes()};
+  };
+  const auto compressor = [&](std::uint32_t il, std::uint32_t ratio, std::uint32_t ring, K kv_kind,
+                              K score_kind, K cache_kind) {
+    const auto* kv = state.Find(il, kv_kind);
+    const auto* score = state.Find(il, score_kind);
+    const auto* cache = state.Find(il, cache_kind);
+    ASSERT_TRUE(kv != nullptr && score != nullptr && cache != nullptr);
+    std::map<std::uint64_t, std::uint32_t> kept;  // ring row -> its last chunk row
+    std::uint32_t blocks = 0;
+    for (std::uint32_t i = 0; i < rows; ++i) {
+      const std::uint64_t pos = std::uint64_t{past} + i;
+      kept[pos % ring] = i;
+      if ((pos + 1) % ratio == 0) {
+        out.rows[i].push_back(at(*cache, pos / ratio));
+        ++blocks;
+      }
+    }
+    for (const auto& [row, i] : kept) {
+      out.rows[i].push_back(at(*kv, row));
+      out.rows[i].push_back(at(*score, row));
+    }
+    const std::uint32_t padded = ratio == fam::kDsv4CsaRatio ? (rows + ratio - 1) / ratio : 1;
+    if (blocks < padded) out.scratch.push_back(at(*cache, cache->ne1 - 1));
+  };
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    const auto* raw = state.Find(il, K::kRawK);
+    if (raw == nullptr) {
+      ADD_FAILURE() << "no window cache in layer " << il;
+      return out;
+    }
+    for (std::uint32_t i = 0; i < rows; ++i) {
+      out.rows[i].push_back(at(*raw, (std::uint64_t{past} + i) % state.raw_cells));
+    }
+    const std::uint32_t ratio = p.compress_ratios[il];
+    if (ratio == fam::kDsv4CsaRatio) {
+      compressor(il, ratio, state.csa_state_rows, K::kCsaStateKv, K::kCsaStateScore, K::kCsaK);
+      compressor(il, ratio, state.csa_state_rows, K::kLidStateKv, K::kLidStateScore, K::kLidK);
+    } else if (ratio == fam::kDsv4HcaRatio) {
+      compressor(il, ratio, state.hca_state_rows, K::kHcaStateKv, K::kHcaStateScore, K::kHcaK);
+    }
+  }
+  return out;
+}
+
+// The DSpark ring cells a target chunk's injection writes, by chunk row:
+// its last min(rows, ring) rows' positions' cells, in every block's ring.
+std::vector<std::vector<StateRange>> DsparkWritesRef(const fam::DsparkProfile& d,
+                                                     const fam::DsparkStateLayout& state,
+                                                     std::uint32_t past, std::uint32_t rows) {
+  std::vector<std::vector<StateRange>> out(rows);
+  const std::uint64_t cell = std::uint64_t{d.blocks.head_dim} * 2;
+  for (std::uint32_t i = rows - std::min(rows, state.ring); i < rows; ++i) {
+    const std::uint64_t at = (std::uint64_t{past} + i) % state.ring;
+    for (const std::uint64_t offset : state.offsets) {
+      out[i].push_back({.offset = offset + (at * cell), .bytes = cell});
+    }
+  }
+  return out;
+}
+
 TEST(StateContractTest, DeepSeekContractsReproduceBothWindowsUsedStateAndCheckpointWrites) {
-  const auto& p = md::Dsv4Flash();
-  for (const auto window : {md::Dsv4Window::kFull, md::Dsv4Window::kRing}) {
+  const auto& p = fam::Dsv4Flash();
+  for (const auto window : {fam::Dsv4Window::kFull, fam::Dsv4Window::kRing}) {
     for (const auto& [context, rows] : {std::pair{4096U, 512U}, {65536U, 2048U}, {1000U, 128U}}) {
-      auto want = md::Dsv4State(p, context, rows, window);
+      auto want = fam::Dsv4State(p, context, rows, window);
       ASSERT_TRUE(want.has_value()) << want.error();
       const Layers contracts = Dsv4Contracts(p, window);
       auto got = md::Layout(contracts, context, rows);
@@ -567,21 +701,21 @@ TEST(StateContractTest, DeepSeekContractsReproduceBothWindowsUsedStateAndCheckpo
            {0U, 1U, 3U, 4U, 5U, 127U, 128U, 129U, 255U, 256U, 257U, 1023U, context - 1, context}) {
         if (positions > context) continue;
         auto used = md::UsedThrough(*got, positions);
-        auto old = md::Dsv4UsedState(*want, positions);
-        ASSERT_TRUE(used.has_value() && old.has_value());
-        ExpectSame(*used, *old, std::format("DeepSeek used at {}", positions));
+        ASSERT_TRUE(used.has_value());
+        ExpectSame(*used, Dsv4UsedRef(*want, positions),
+                   std::format("DeepSeek used at {}", positions));
         auto writes = md::CheckpointWrites(*got, positions);
-        auto old_writes = md::Dsv4CheckpointWrites(*want, positions);
-        ASSERT_TRUE(writes.has_value() && old_writes.has_value());
-        ExpectSame(*writes, *old_writes, std::format("DeepSeek checkpoint at {}", positions));
+        ASSERT_TRUE(writes.has_value());
+        ExpectSame(*writes, Dsv4CheckpointRef(*want, positions),
+                   std::format("DeepSeek checkpoint at {}", positions));
       }
     }
   }
 }
 
 TEST(StateContractTest, AdjacentBanksAreDerivedFromActualOffsetsWithoutChangingLayouts) {
-  const auto& profile = md::Dsv4Flash();
-  const auto contracts = Dsv4Contracts(profile, md::Dsv4Window::kRing);
+  const auto& profile = fam::Dsv4Flash();
+  const auto contracts = Dsv4Contracts(profile, fam::Dsv4Window::kRing);
   const auto layer = static_cast<std::uint32_t>(std::ranges::find(profile.compress_ratios, 4U) -
                                                 profile.compress_ratios.begin());
   ASSERT_LT(layer, profile.layers);
@@ -919,24 +1053,22 @@ TEST(StateContractTest, VerifyScopesCommitsPositionRingsAndTheTargetsWritesIntoA
   EXPECT_EQ(md::BorrowedItem(*layout, elsewhere), nullptr);
 }
 
-// DeepSeek V4's verify (the retired runner's snapshot plan over Dsv4ChunkWrites):
+// DeepSeek V4's verify (the retired runner's snapshot plan, in closed form):
 // each row's window cell, the compressor ring rows it persists and the
 // compressed rows it completes, and the dummy rows as scratch, in both
 // window modes.
 TEST(StateContractTest, DeepSeekVerifySavesAreItsContractsWritesByteForByte) {
-  const auto& p = md::Dsv4Flash();
-  for (const auto window : {md::Dsv4Window::kFull, md::Dsv4Window::kRing}) {
+  const auto& p = fam::Dsv4Flash();
+  for (const auto window : {fam::Dsv4Window::kFull, fam::Dsv4Window::kRing}) {
     for (const auto& [context, max_rows] : {std::pair{4096U, 512U}, {65536U, 2048U}}) {
-      auto state = md::Dsv4State(p, context, max_rows, window);
+      auto state = fam::Dsv4State(p, context, max_rows, window);
       ASSERT_TRUE(state.has_value()) << state.error();
       auto layout = md::Layout(Dsv4Contracts(p, window), context, max_rows);
       ASSERT_TRUE(layout.has_value()) << layout.error();
       for (const std::uint32_t past : {0U, 1U, 2U, 3U, 4U, 5U, 7U, 8U, 126U, 127U, 128U, 129U, 250U,
                                        255U, 256U, 1020U, context - 8}) {
         for (std::uint32_t rows = 1; rows <= 8; ++rows) {
-          auto chunk = md::Dsv4Chunk(p, *state, past, rows, false, false);
-          ASSERT_TRUE(chunk.has_value()) << chunk.error() << " at " << past << "+" << rows;
-          const md::Dsv4Writes want = md::Dsv4ChunkWrites(p, *state, *chunk);
+          const Dsv4WritesRef want = Dsv4ChunkWritesRef(p, *state, past, rows);
           auto got = md::WritesFor(*layout, past, rows);
           ASSERT_TRUE(got.has_value()) << got.error();
           const auto what = std::format("DeepSeek verify {}+{}", past, rows);
@@ -952,10 +1084,10 @@ TEST(StateContractTest, DeepSeekVerifySavesAreItsContractsWritesByteForByte) {
 }
 
 // DSpark's ring, the drafter's stage, which the target's verify writes by
-// its injection (DsparkWrites).
+// its injection (DsparkWritesRef).
 TEST(StateContractTest, DsparkVerifySavesAreItsContractsWritesByteForByte) {
-  const auto& dp = md::DsparkDeepSeekV4Flash();
-  auto state = md::DsparkState(dp, 16);
+  const auto& dp = fam::DsparkDeepSeekV4Flash();
+  auto state = fam::DsparkState(dp, 16);
   ASSERT_TRUE(state.has_value()) << state.error();
   Layers layers;
   for (std::uint32_t il = 0; il < dp.blocks.layers; ++il) {
@@ -977,7 +1109,7 @@ TEST(StateContractTest, DsparkVerifySavesAreItsContractsWritesByteForByte) {
   EXPECT_EQ(layout->bytes, state->bytes);
   for (const std::uint32_t past : {0U, 1U, 250U, 254U, 255U, 256U, 1000U, 65520U}) {
     for (std::uint32_t rows = 1; rows <= 16; ++rows) {
-      const auto want = md::DsparkWrites(dp, *state, past, rows);
+      const auto want = DsparkWritesRef(dp, *state, past, rows);
       auto got = md::WritesFor(*layout, past, rows, {.commits = false, .drafter = true});
       ASSERT_TRUE(got.has_value()) << got.error();
       EXPECT_TRUE(got->scratch.empty());

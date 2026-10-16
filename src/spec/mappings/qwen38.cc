@@ -7,13 +7,13 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "format/encoding.h"
 #include "format/layout.h"
-#include "model/qwen38.h"
 #include "spec/mapping.h"
 #include "spec/mappings/rules.h"
 #include "spec/spec.h"
@@ -56,44 +56,46 @@ constexpr TensorRule Plain(std::string_view pattern, std::string_view slot, std:
   return {.pattern = pattern, .slot = slot, .role = role};
 }
 
-// The ModelOpt import's pairs: MXFP8 matrices, the n-gram table and its
-// tensor scale, and the CUTLASS expert arrays.
-constexpr std::array kAssembly = {
-    V0Assembly{.suffixes = {".weight", ".weight_scale", ""},
-               .roles = {PartRole::kCodes, PartRole::kBlockScales, PartRole::kData},
-               .encoding = format::Encoding::kMxfp8,
-               .layout = format::Layout::kSplit},
-    V0Assembly{.stem = "per_layer_token_embd",
-               .suffixes = {".weight", ".weight_scale_2", ""},
-               .roles = {PartRole::kData, PartRole::kTensorScale, PartRole::kData},
-               .encoding = format::Encoding::kNvfp4,
-               .layout = format::Layout::kRowInterleaved},
-    V0Assembly{.stem = "blk.{layer}.ffn_gate_up_exps",
-               .suffixes = {".codes", ".scales", ""},
-               .roles = {PartRole::kCodes, PartRole::kBlockScales, PartRole::kData},
-               .encoding = format::Encoding::kNvfp4,
-               .layout = format::Layout::kScaleAtoms,
-               .stacked = 2,
-               .experts = true},
-    V0Assembly{.stem = "blk.{layer}.ffn_down_exps",
-               .suffixes = {".codes", ".scales", ""},
-               .roles = {PartRole::kCodes, PartRole::kBlockScales, PartRole::kData},
-               .encoding = format::Encoding::kNvfp4,
-               .layout = format::Layout::kScaleAtoms,
-               .experts = true},
-};
-
-// The folds both converters apply: by GGUF sources, and by the ModelOpt
-// import's converter identity (it records no transformation).
-constexpr std::string_view kModelOpt = "modelopt_qwen38-";
+// The folds the GGUF converter applies (the native importer records its
+// own: spec/stored.h).
 constexpr std::array kFolds = {
     FoldRule{.fold = "norm.plus_one", .container = "gguf"},
     FoldRule{.fold = "ssm.a_neg_exp", .container = "gguf"},
     FoldRule{.fold = "gdn.value_heads_tiled", .container = "gguf"},
-    FoldRule{.fold = "norm.plus_one", .converter = kModelOpt},
-    FoldRule{.fold = "ssm.a_neg_exp", .converter = kModelOpt},
-    FoldRule{.fold = "gdn.value_heads_tiled", .converter = kModelOpt},
 };
+
+// Qwen3.8 Flash Next's facts its recipes and its MTP drafter's values are
+// made of (config.json's text_config, Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@
+// 925d7be6, the base model's): a QSA prompt chunk's bound, its vocabulary,
+// and the block the native MTP import's values describe (D-118: the
+// architecture's compiled constants).
+constexpr std::uint32_t kContext = 262144;
+constexpr std::uint32_t kVocab = 248320;
+constexpr std::uint32_t kMaxRows = 8192;
+struct Block {
+  std::uint32_t width = 2560, heads = 24, kv_heads = 2, head_dim = 256, rope_dims = 64;
+  std::array<std::int32_t, 4> rope_sections{11, 11, 10, 0};
+  float rope_base = 10000000.0F;
+  std::uint32_t experts = 512, experts_used = 10, expert_ffn = 640, shared_ffn = 640;
+  std::uint32_t hc = 4, hc_rank = 320;
+  std::uint32_t indexer_heads = 4, indexer_head_dim = 128, indexer_ratio = 4, indexer_budget = 2048;
+  float rms_eps = 1e-6F;
+};
+constexpr Block kBlock{};
+
+// The widest prompt chunk at `context`: its QSA selection's F32 masks,
+// [padded cells, rows], keep their plane strides within 32 bits (RE-037).
+std::uint32_t MostRows(std::uint32_t context) {
+  constexpr std::uint64_t kMaskBytes = 4;
+  if (context == 0 || context > kContext ||
+      context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
+    return 0;
+  }
+  const std::uint64_t cells = (std::uint64_t{context} + 255) / 256 * 256;
+  const std::uint64_t masks =
+      std::uint64_t{std::numeric_limits<std::int32_t>::max()} / (cells * kMaskBytes);
+  return static_cast<std::uint32_t>(std::min<std::uint64_t>({context, kMaxRows, masks}));
+}
 
 // ---------------------------------------------------------------- qwen4exp
 
@@ -462,19 +464,31 @@ constexpr std::array kPolicies = {
 // Its serving: the derived shared route, qualified by its plain or joined
 // envelopes; its QSA selection's F32 [read cells, rows] tensors bound a
 // prompt chunk's rows (RE-037: their plane strides in 32 bits); the MTP
-// keys; a conversation-owned adaptive depth of three.
-constexpr ServingRecipe kServing{
-    .family = "Qwen3.8",
-    .name = "Qwen3.8",
-    .prefill_rows = 4096,
-    .draft_rows = true,
-    .mtp_waves = true,
-    .vocab = model::kQwen38FlashVocab,
-    .shared_route = true,
-    .qualified_envelopes = true,
-    .most_rows = +[](std::uint32_t context) { return model::Qwen38MostRows(context, true); },
-    .frozen_host_masks = false,
-    .branch_depth = 3};
+// keys, with their measured defaults: drafts a step at most (depths 2-3
+// chosen by acceptance, AdaptiveDepth), the draft head's rows (the fastest
+// of 32,768 rows to the whole vocabulary, docs/experiments/qwen38-mtp),
+// depth 3's cost over depth 2's (execution/adaptive_depth.h), a wave's
+// drafts a request (C2/C4 HTTP screens: +8%/+15% over adaptive depth), how
+// many requests draft in one joined wave (past two each drafts alone: 3.6%
+// faster at C4), and the state a wave reads, rounded up (the plans' reuse
+// across depths); a conversation-owned adaptive depth of three.
+constexpr ServingRecipe kServing{.family = "Qwen3.8",
+                                 .name = "Qwen3.8",
+                                 .prefill_rows = 4096,
+                                 .draft_rows = true,
+                                 .mtp_waves = true,
+                                 .vocab = kVocab,
+                                 .default_draft_rows = 3,
+                                 .default_draft_vocab = 65536,
+                                 .default_depth_cost_ratio = 1.16,
+                                 .default_shared_wave_depth = 2,
+                                 .default_draft_wave_max = 2,
+                                 .default_wave_read_align = 2048,
+                                 .shared_route = true,
+                                 .qualified_envelopes = true,
+                                 .most_rows = &MostRows,
+                                 .frozen_host_masks = false,
+                                 .branch_depth = 3};
 
 constexpr Mapping kMapping{
     .architecture = "qwen4exp",
@@ -489,7 +503,6 @@ constexpr Mapping kMapping{
     .layer_flags_key = "qwen4exp.attention.compress_ratios",
     .layer_flag_type = 'f',
     .policies = kPolicies,
-    .v0_assembly = kAssembly,
     .serving = &kServing,
 };
 
@@ -560,9 +573,8 @@ constexpr auto kGgufMapping = [] {
   auto m = kMapping;
   m.tensors = kGgufTensors;
   m.params = kGgufParams;
-  m.folds = std::span(kFolds).first(3);
+  m.folds = kFolds;
   m.policies = std::span(kPolicies).last(1);
-  m.v0_assembly = {};
   return m;
 }();
 
@@ -694,7 +706,6 @@ constexpr auto kNativeMapping = [] {
   mapping.params = kNativeParams;
   mapping.folds = {};
   mapping.policies = kNativePolicies;
-  mapping.v0_assembly = {};
   return mapping;
 }();
 
@@ -853,7 +864,6 @@ constexpr Mapping kMtpMapping{
     .stage = "mtp",
     .reads = kMtpReads,
     .policies = kMtpPolicies,
-    .v0_assembly = kAssembly,
     .draft = &kMtpDraft,
 };
 
@@ -939,7 +949,6 @@ constexpr auto kMtpNativeMapping = [] {
   mapping.tensors = kMtpNativeTensors;
   mapping.params = kMtpNativeParams;
   mapping.folds = {};
-  mapping.v0_assembly = {};
   return mapping;
 }();
 constexpr auto kMtpNativeReplayMapping = [] {
@@ -948,17 +957,16 @@ constexpr auto kMtpNativeReplayMapping = [] {
   mapping.tensors = kMtpNativeTensors;
   mapping.params = kMtpNativeReplayParams;
   mapping.folds = {};
-  mapping.v0_assembly = {};
   return mapping;
 }();
 
 #undef LLMP_QWEN38_BLOCK_PARAMS
 
 // The keys both mappings' blocks read, under `p`.
-void BlockValues(std::vector<SourceValue>& out, const std::string& p, const model::Qwen38Profile& q,
+void BlockValues(std::vector<SourceValue>& out, const std::string& p, const Block& q,
                  std::vector<std::int64_t> ratios) {
   const auto key = [&](std::string_view k) { return p + std::string(k); };
-  out.push_back(Value(key("context_length"), model::kQwen38FlashContext));
+  out.push_back(Value(key("context_length"), kContext));
   out.push_back(Value(key("embedding_length"), q.width));
   out.push_back(Value(key("hyper_connection.count"), q.hc));
   out.push_back(Value(key("hyper_connection.low_rank"), q.hc_rank));
@@ -992,81 +1000,27 @@ const Mapping& Qwen38MtpReplayMapping() { return kMtpReplayMapping; }
 const Mapping& Qwen38MtpNativeMapping() { return kMtpNativeMapping; }
 const Mapping& Qwen38MtpNativeReplayMapping() { return kMtpNativeReplayMapping; }
 
-std::expected<std::vector<SourceValue>, std::string> Qwen38GgufValues(
-    const model::Qwen38Profile& p, const model::Qwen38PleHash& hash) {
-  std::vector<std::int64_t> ratios;
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    const bool full = kMapping.layer_types.at(il % kMapping.layer_types.size()) == 'f';
-    if (p.linear(il) == full) {
-      return std::unexpected("the Qwen3.8 profile's linear layers are not the mapping's");
-    }
-    ratios.push_back(full ? std::int64_t{p.indexer_ratio} : 0);
-  }
-  const auto list = [](const std::vector<std::uint64_t>& v) {
-    return std::vector<std::int64_t>(v.begin(), v.end());
-  };
-  std::vector<SourceValue> out;
-  BlockValues(out, "qwen4exp.", p, std::move(ratios));
-  for (SourceValue v : std::vector<SourceValue>{
-           Value("qwen4exp.block_count", p.layers),
-           Value("qwen4exp.full_attention_interval", 4U),
-           Value("qwen4exp.ssm.conv_kernel", p.conv),
-           Value("qwen4exp.ssm.group_count", p.lin_k_heads),
-           Value("qwen4exp.ssm.time_step_rank", p.lin_v_heads),
-           Value("qwen4exp.ssm.state_size", p.lin_head_dim),
-           Value("qwen4exp.ssm.inner_size", p.lin_v_width()),
-           Value("qwen4exp.ple.ngram_size", p.ngram),
-           Value("qwen4exp.ple.heads_per_ngram", p.heads_per_ngram),
-           Value("qwen4exp.ple.conv_kernel", p.ple_conv),
-           Value("qwen4exp.ple.eos_token_id", static_cast<std::uint32_t>(p.ple_eos)),
-           Value("qwen4exp.embedding_length_per_layer_input", p.ple_row),
-           Value(kPleLayers, std::vector<std::int64_t>{p.ple_layer}),
-           Value("qwen4exp.ple.layer_multipliers", list(hash.multipliers)),
-           Value("qwen4exp.ple.head_offsets", list(hash.offsets)),
-           Value("qwen4exp.ple.head_vocab_sizes", list(hash.vocab)),
-       }) {
-    out.push_back(std::move(v));
-  }
-  return out;
-}
-
-std::expected<std::vector<SourceValue>, std::string> Qwen38V0Values(
-    const model::Qwen38Profile& p, const model::Qwen38Binding& binding,
-    const model::Qwen38PleHash& hash) {
-  if (binding.layers.size() != p.layers) return std::unexpected("a binding of another profile");
-  auto values = Qwen38GgufValues(p, hash);
-  if (!values) return std::unexpected(values.error());
-  auto out = std::move(*values);
-  // The ModelOpt import's form (a GGUF's when absent).
-  if (!binding.gguf()) {
-    out.push_back(Value(kIndexer, "fused"));
-    out.push_back(FlagValue(kStacked, binding.cutlass()));
-    out.push_back(FlagValue(kScaled, true));
-  }
-  return out;
-}
-
 namespace {
 // The MTP drafter's values in either form (both hold stacked scale-atom
 // expert tables with their tensor scales' vectors), with a selected head of
 // `selected` rows (0: none, its target's head).
-std::expected<std::vector<SourceValue>, std::string> MtpValues(const model::Qwen38Profile& p,
+std::expected<std::vector<SourceValue>, std::string> MtpValues(const Block& p,
                                                                std::uint64_t selected) {
-  if (selected > p.vocab)
-    return std::unexpected("a selected head of more rows than the vocabulary");
+  if (selected > kVocab) return std::unexpected("a selected head of more rows than the vocabulary");
   std::vector<SourceValue> out;
   BlockValues(out, "qwen4exp-mtp.", p, {std::int64_t{p.indexer_ratio}});
   out.push_back(Value("qwen4exp-mtp.block_count", 1U));
   out.push_back(Value(kIndexer, "fused"));
   out.push_back(FlagValue(kStacked, true));
   out.push_back(FlagValue(kScaled, true));
-  std::uint64_t head_rows = p.vocab;
+  std::uint64_t head_rows = kVocab;
   if (selected != 0) {
     out.push_back(Value(kDraftRows, static_cast<std::uint32_t>(selected)));
     head_rows = selected;
   }
-  out.push_back(Value(kDraftVocab, static_cast<std::uint32_t>(
-                                       std::min<std::uint64_t>(kQwen38DraftVocab, head_rows))));
+  // The draft vocabulary its serving reads by default, at most the head's.
+  out.push_back(Value(kDraftVocab, static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                                       kServing.default_draft_vocab, head_rows))));
   return out;
 }
 
@@ -1078,24 +1032,13 @@ std::expected<std::vector<SourceValue>, std::string> MtpNativeSourceValues(const
         return std::unexpected("a selected head of no rows");
       selected = t.format.shape.ne[1];
     }
-  return MtpValues(model::Qwen38Flash(), selected);
+  return MtpValues(kBlock, selected);
 }
 }  // namespace
 
-std::expected<std::vector<SourceValue>, std::string> Qwen38MtpV0Values(
-    const model::Qwen38Profile& p, const model::Qwen38MtpBinding& binding) {
-  std::uint64_t selected = 0;
-  if (binding.selected_head()) {
-    if (binding.draft_output.ne.size() != 2 || binding.draft_output.ne[1] == 0)
-      return std::unexpected("a selected head of no rows");
-    selected = binding.draft_output.ne[1];
-  }
-  return MtpValues(p, selected);
-}
-
 std::expected<std::vector<SourceValue>, std::string> Qwen38MtpNativeValues(
-    const model::Qwen38Profile& p, std::uint64_t selected_rows) {
-  return MtpValues(p, selected_rows);
+    std::uint64_t selected_rows) {
+  return MtpValues(kBlock, selected_rows);
 }
 
 }  // namespace llmp::spec::mappings

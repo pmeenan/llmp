@@ -12,9 +12,7 @@
 // reference (exl3_trellis_test checks it against ExLlamaV3's own kernels);
 // the affine encoding against hand-computed values, MLX's bit order and
 // its documented quantization; every state encoding's encode and decode;
-// refusals; and, where the M3 store holds them (a
-// Spark), the routed experts of both Qwen3.8 imports (GGML's blocks and the
-// CUTLASS layout) decoding to the same values.
+// and refusals.
 
 #include <gtest/gtest.h>
 
@@ -24,11 +22,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <format>
-#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <random>
@@ -36,8 +31,6 @@
 #include <string>
 #include <vector>
 
-#include "artifact/artifact.h"
-#include "artifact/format_map.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
@@ -1016,131 +1009,6 @@ TEST(ReferenceDecodeTest, RefusesPartsAndRangesThatDoNotFit) {
   trellis.params.codebook = format::Exl3Codebook::kMcg;
   EXPECT_EQ(ref::DecodeRows(trellis, std::vector{c, s}, 0, 0, 1, out).error(),
             ref::DecodeError::kUnsupported);
-}
-
-// ---------------------------------------------------------------- real artifacts
-
-namespace fs = std::filesystem;
-namespace ar = llmp::artifact;
-
-std::vector<std::byte> ReadPlaced(const fs::path& root, const ar::Artifact& a,
-                                  const ar::Placement& p) {
-  const ar::Group& group = a.groups()[p.group];
-  const ar::Shard& shard = a.shards()[group.shard];
-  std::ifstream in(root / shard.path, std::ios::binary);
-  in.seekg(static_cast<std::streamoff>(shard.data_offset.value() + group.offset.value() +
-                                       p.offset.value()));
-  std::vector<std::byte> out(p.bytes.value());
-  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
-  EXPECT_TRUE(in.good());
-  return out;
-}
-
-struct Slice {
-  TensorFormat format;
-  std::vector<std::byte> bytes;
-};
-
-Slice ExpertSlice(const fs::path& root, const ar::Artifact& a, const std::string& name,
-                  std::uint32_t expert) {
-  const auto index = a.FindExpertArray(name);
-  EXPECT_TRUE(index.has_value()) << name;
-  if (!index) {
-    return {};
-  }
-  const ar::ExpertArray& array = a.expert_arrays()[*index];
-  const auto placed = a.SlicePlacement(*index, expert);
-  EXPECT_TRUE(placed.has_value()) << name;
-  const auto f = ar::FormatOf(array.repr);
-  EXPECT_TRUE(f.has_value()) << name;
-  return {.format = f.value_or(TensorFormat{}), .bytes = ReadPlaced(root, a, *placed)};
-}
-
-// The first Qwen3.8 import holds the routed experts in GGML's block_nvfp4
-// (gate, up and down apiece), the later one in the CUTLASS layout (gate
-// and up stacked, codes then atoms); both from one checkpoint, losslessly
-// (docs/artifact-format.md). Each expert decodes to the same values in
-// both.
-TEST(ReferenceDecodeArtifactTest, Qwen38ExpertsDecodeAlikeInBothLayouts) {
-  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  const fs::path store = fs::path(home != nullptr ? home : "/") / ".local/share/llmp/m3-artifacts";
-  const fs::path ggml_root =
-      store / "67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6";
-  const fs::path cutlass_root =
-      store / "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
-  std::error_code error;
-  if (!fs::is_directory(ggml_root, error) || !fs::is_directory(cutlass_root, error)) {
-    GTEST_SKIP() << "no Qwen3.8 imports in " << store << " (they are on the Sparks)";
-  }
-  const auto ggml_artifact = ar::Artifact::Open(ggml_root);
-  const auto cutlass_artifact = ar::Artifact::Open(cutlass_root);
-  ASSERT_TRUE(ggml_artifact.has_value());
-  ASSERT_TRUE(cutlass_artifact.has_value());
-  // The first and last layers with routed experts.
-  std::vector<std::uint32_t> layers;
-  for (const ar::ExpertArray& array : ggml_artifact->expert_arrays()) {
-    if (array.name.ends_with(".ffn_gate_exps.weight")) {
-      layers.push_back(array.layer);
-    }
-  }
-  ASSERT_FALSE(layers.empty());
-  std::ranges::sort(layers);
-  for (const std::uint32_t layer : {layers.front(), layers.back()}) {
-    for (const std::uint32_t expert : {0U, 1U, 511U}) {
-      SCOPED_TRACE(std::to_string(layer) + "/" + std::to_string(expert));
-      const std::string blk = "blk." + std::to_string(layer) + ".";
-      const Slice gate =
-          ExpertSlice(ggml_root, *ggml_artifact, blk + "ffn_gate_exps.weight", expert);
-      const Slice up = ExpertSlice(ggml_root, *ggml_artifact, blk + "ffn_up_exps.weight", expert);
-      const Slice down =
-          ExpertSlice(ggml_root, *ggml_artifact, blk + "ffn_down_exps.weight", expert);
-      ASSERT_EQ(gate.format.layout, Layout::kGgmlNvfp4Blocks);
-      // The CUTLASS arrays, assembled into their logical tensors.
-      const auto& c = *cutlass_artifact;
-      auto repr = [&](const std::string& name) {
-        return &c.expert_arrays()[c.FindExpertArray(name).value()].repr;
-      };
-      const std::vector<ar::V0Part> gu_parts = {
-          {PartRole::kCodes, repr(blk + "ffn_gate_up_exps.codes")},
-          {PartRole::kBlockScales, repr(blk + "ffn_gate_up_exps.scales")}};
-      const auto gate_up = ar::Assemble(Encoding::kNvfp4, Layout::kScaleAtoms, gu_parts, 2);
-      ASSERT_TRUE(gate_up.has_value());
-      const std::vector<ar::V0Part> down_parts = {
-          {PartRole::kCodes, repr(blk + "ffn_down_exps.codes")},
-          {PartRole::kBlockScales, repr(blk + "ffn_down_exps.scales")}};
-      const auto down_c = ar::Assemble(Encoding::kNvfp4, Layout::kScaleAtoms, down_parts);
-      ASSERT_TRUE(down_c.has_value());
-      const Slice gu_codes = ExpertSlice(cutlass_root, c, blk + "ffn_gate_up_exps.codes", expert);
-      const Slice gu_scales = ExpertSlice(cutlass_root, c, blk + "ffn_gate_up_exps.scales", expert);
-      const Slice d_codes = ExpertSlice(cutlass_root, c, blk + "ffn_down_exps.codes", expert);
-      const Slice d_scales = ExpertSlice(cutlass_root, c, blk + "ffn_down_exps.scales", expert);
-
-      const std::uint64_t f = gate.format.shape.ne[1];
-      const ref::PartView g{PartRole::kData, gate.bytes};
-      const ref::PartView u{PartRole::kData, up.bytes};
-      const ref::PartView d{PartRole::kData, down.bytes};
-      const std::vector<float> gate_values = Decode(gate.format, {&g, 1}, 0, 0, f);
-      const std::vector<float> up_values = Decode(up.format, {&u, 1}, 0, 0, f);
-      const std::vector<float> down_values =
-          Decode(down.format, {&d, 1}, 0, 0, down.format.shape.ne[1]);
-      const std::vector<ref::PartView> gu = {{PartRole::kCodes, gu_codes.bytes},
-                                             {PartRole::kBlockScales, gu_scales.bytes}};
-      const std::vector<ref::PartView> dc = {{PartRole::kCodes, d_codes.bytes},
-                                             {PartRole::kBlockScales, d_scales.bytes}};
-      const std::vector<float> gate_c = Decode(*gate_up, gu, 0, 0, f);
-      const std::vector<float> up_c = Decode(*gate_up, gu, 0, f, f);
-      const std::vector<float> down_cv = Decode(*down_c, dc, 0, 0, down_c->shape.ne[1]);
-      ASSERT_EQ(gate_values.size(), gate_c.size());
-      ASSERT_EQ(down_values.size(), down_cv.size());
-      for (std::size_t i = 0; i < gate_values.size(); ++i) {
-        ASSERT_TRUE(SameBits(gate_values[i], gate_c[i])) << "gate " << i;
-        ASSERT_TRUE(SameBits(up_values[i], up_c[i])) << "up " << i;
-      }
-      for (std::size_t i = 0; i < down_values.size(); ++i) {
-        ASSERT_TRUE(SameBits(down_values[i], down_cv[i])) << "down " << i;
-      }
-    }
-  }
 }
 
 }  // namespace

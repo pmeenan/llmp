@@ -6,8 +6,7 @@
 // the stored spec read back with its digest, the artifact's tensors as a
 // source, the applied folds checked against the catalog and each stage's
 // folds, the stages' artifact indexes, a composition of a target and its
-// drafter, v0 artifacts (the prototype's goldens) as before, and the M3
-// per-family binders refusing v1 artifacts.
+// drafter, and v0 artifacts (the prototype's goldens) refused (D-118).
 
 #include <gtest/gtest.h>
 
@@ -24,22 +23,11 @@
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
-#include "artifact/format_map.h"
 #include "artifact_writer.h"
 #include "base/sha256.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
-#include "model/dspark.h"
-#include "model/dsv4.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
-#include "model/qwen2.h"
-#include "model/qwen2_exl3.h"
-#include "model/qwen38.h"
-#include "model/qwen_image.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
 #include "spec/stored.h"
@@ -266,6 +254,8 @@ TEST(SpecStoredTest, RefusesWhatTheArtifactCannotHold) {
   }
 }
 
+// A v0 artifact (the prototype's goldens) stores no spec and is no source:
+// both refuse it with what to do, re-import it (D-118).
 TEST(SpecStoredTest, V0ArtifactsAsBefore) {
   std::error_code error;
   fs::path root;
@@ -274,54 +264,15 @@ TEST(SpecStoredTest, V0ArtifactsAsBefore) {
   }
   ASSERT_FALSE(root.empty()) << "no corpus at " << Corpus();
   const artifact::Artifact a = Open(root);
-  EXPECT_FALSE(spec::StoredSpec(a).has_value());
+  ASSERT_EQ(a.format_version(), 0U);
+  const auto stored = spec::StoredSpec(a);
+  ASSERT_FALSE(stored.has_value());
+  EXPECT_NE(stored.error().find("re-import it with llmp import"), std::string::npos)
+      << stored.error();
   const auto source = spec::SourceOf(a);
-  const auto v0 = spec::SourceOfV0(a);
-  ASSERT_TRUE(source.has_value() && v0.has_value());
-  EXPECT_EQ(source->container, v0->container);
-  ASSERT_EQ(source->tensors.size(), v0->tensors.size());
-  for (std::size_t i = 0; i < v0->tensors.size(); ++i) {
-    EXPECT_EQ(source->tensors[i].name, v0->tensors[i].name);
-    EXPECT_EQ(source->tensors[i].format, v0->tensors[i].format);
-    EXPECT_EQ(source->tensors[i].part, v0->tensors[i].part);
-  }
-  // Open reads each v0 resource's format as format_map.h does.
-  for (const artifact::Resource& r : a.resources()) {
-    const auto f = artifact::FormatOf(r.repr);
-    ASSERT_TRUE(f.has_value()) << r.name;
-    EXPECT_EQ(r.format, *f) << r.name;
-  }
-}
-
-// The M3 per-family binders read v0's representation descriptors, which a
-// v1 artifact leaves empty: each refuses it, naming its version, rather
-// than misreading it (D-113).
-TEST(SpecStoredTest, LegacyFamiliesRefuseV1Artifacts) {
-  namespace model = llmp::model;
-  const artifact::Artifact a = Open(Publish(Scratch("legacy"), Render(Plan(std::nullopt))));
-  ASSERT_EQ(a.format_version(), 1U);
-  const auto refused = [](const auto& result, std::string_view what) {
-    ASSERT_FALSE(result.has_value()) << what;
-    EXPECT_NE(result.error().find("format version 1"), std::string::npos)
-        << what << ": " << result.error();
-  };
-  refused(model::BindApprovedGemma2(a), "Gemma2 approved");
-  refused(model::BindGemma2(model::Gemma2_2B(), a), "Gemma2");
-  refused(model::BindApprovedGemma3(a), "Gemma3 approved");
-  refused(model::BindGemma3(model::Gemma3_4BQat(), a), "Gemma3");
-  refused(model::BindGemma4(model::Gemma4_26BA4B(), a), "Gemma4");
-  refused(model::BindGemma4Assistant(model::Gemma4Assistant26(), a), "Gemma4 assistant");
-  refused(model::BindDsv4(model::Dsv4Flash(), a), "DeepSeek V4");
-  refused(model::BindDspark(model::DsparkDeepSeekV4Flash(), a, model::Dsv4Flash(),
-                            model::Dsv4Binding{}),
-          "DSpark");
-  refused(model::BindQwen38(model::Qwen38Flash(), a), "Qwen3.8");
-  refused(model::BindQwen38Mtp(model::Qwen38Flash(), a), "Qwen3.8 MTP");
-  refused(model::BindQwen2(model::Qwen25Instruct05B(), a), "Qwen2");
-  refused(model::BindQwen2Exl3(model::Qwen25Instruct05BExl3(), a), "Qwen2 EXL3");
-  // The v0 source reader too; SourceOf reads both versions.
-  refused(spec::SourceOfV0(a), "SourceOfV0");
-  EXPECT_TRUE(spec::SourceOf(a).has_value());
+  ASSERT_FALSE(source.has_value());
+  EXPECT_NE(source.error().find("re-import it with llmp import"), std::string::npos)
+      << source.error();
 }
 
 // A target and its drafter: two artifacts, the drafter carrying no spec of

@@ -4,9 +4,11 @@
 // The one model runner (engine/model_runner.h) over the component step
 // source (engine/component_source.h) and the GGML module's lowering
 // (kernels/ggml/step_program.h), on the real Gemma 4 26B-A4B and 31B
-// artifacts and their assistants (label `models`), under the gemma4
-// mapping's policy for each serving envelope (the component source plans
-// under it): within the qualified envelope at 4,096 and two owners (every
+// published v1 artifacts and their assistants (label `models`: their stored
+// specs and tensors, each assistant composed with its target from its
+// approved values), under the gemma4 mapping's policy for each serving
+// envelope (the component source plans under it, gated as the model's
+// approval gates it): within the qualified envelope at 4,096 and two owners (every
 // row to the head, the fused norm-mul, norm-rope and norm-add, the
 // 26B-A4B's fused routing and scaled reduce, the 31B's quantized GeGLU,
 // owner attention with bounded roots over unequal reads, device masks), at
@@ -60,6 +62,7 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -73,12 +76,12 @@
 #include "engine/runner_resources.h"
 #include "engine/support.h"
 #include "kernels/ggml/step_program.h"
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
 #include "planner/step_shape.h"
+#include "runtime/approvals.h"
+#include "runtime/component_admission.h"
 #include "spec/mapping.h"
-#include "spec/mappings/gemma4.h"
-#include "tokenizer_fixtures.h"
+#include "spec/stored.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -93,7 +96,6 @@ namespace fs = std::filesystem;
 
 constexpr std::uint32_t kMaxRows = 128;
 constexpr std::uint32_t kVocab = 262144;
-const fs::path kStore = "m3-artifacts";
 
 struct Case {
   std::string name;
@@ -112,16 +114,38 @@ struct Case {
 
 constexpr std::uint32_t kVerifyRows = 4;
 
-std::string_view TargetId(std::uint32_t size) {
-  return size == 26 ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
-                    : "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
+// The store's v1-ids.json names of the published target and assistant.
+std::string_view TargetName(std::uint32_t size) { return size == 26 ? "gemma26" : "gemma31"; }
+std::string_view AssistantName(std::uint32_t size) {
+  return size == 26 ? "gemma26-assistant" : "gemma31-assistant";
 }
-std::string_view AssistantId(std::uint32_t size) {
-  return size == 26 ? "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42"
-                    : "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120";
+
+// The sliding layers' window: the largest an attention component of the
+// stored spec names.
+std::uint32_t Window(const llmp::spec::ModelSpec& spec) {
+  std::int64_t window = 0;
+  for (const llmp::spec::Layer& layer : spec.stages.front().layers) {
+    for (const llmp::spec::ComponentRef& c : layer.components) {
+      const llmp::spec::Param* p = c.Find("window");
+      if (p == nullptr) continue;
+      if (const auto* v = std::get_if<std::int64_t>(&p->value)) window = std::max(window, *v);
+    }
+  }
+  return static_cast<std::uint32_t>(window);
 }
-const md::Gemma4Profile& Profile(std::uint32_t size) {
-  return size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();
+
+// The values serving plans the target mapping's policy with: the gates the
+// model's approval holds, as flags (runtime/component_admission.cc
+// ApprovedRule).
+std::vector<llmp::spec::SourceValue> ApprovedGates(const ar::Artifact& artifact) {
+  std::vector<llmp::spec::SourceValue> gates;
+  const auto* approval =
+      llmp::runtime::FindApproval(artifact.model().architecture, artifact.sources());
+  EXPECT_NE(approval, nullptr) << "no approval for the published artifact";
+  if (approval == nullptr) return gates;
+  for (const std::string_view gate : approval->gates)
+    gates.push_back({.key = std::string(gate), .value = true});
+  return gates;
 }
 
 // ------------------------------------------------------------ the script
@@ -329,7 +353,6 @@ std::uint32_t ArrayIndex(const ar::Artifact& a, std::string_view name) {
 Component Lowered(const Case& c, const fs::path& target, const fs::path& assistant,
                   const fs::path& scratch, std::span<const Planned> script) {
   Component out;
-  const md::Gemma4Profile& p = Profile(c.size);
   auto ta = ar::Artifact::Open(target, {.expected_id = {}});
   EXPECT_TRUE(ta.has_value());
   if (!ta) return out;
@@ -340,30 +363,40 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     if (!opened) return out;
     aa.emplace(std::move(*opened));
   }
-  const auto& mapping = llmp::spec::mappings::Gemma4Mapping();
-  const auto values = *llmp::spec::mappings::Gemma4V0Values(p);
-  const auto target_spec = llmp::spec::SynthesizeV0(*ta, mapping, values);
+  const auto* target_mapping = llmp::spec::FindMapping(ta->model().architecture);
+  EXPECT_NE(target_mapping, nullptr);
+  if (target_mapping == nullptr) return out;
+  const llmp::spec::Mapping& mapping = *target_mapping;
+  const auto values = ApprovedGates(*ta);
+  const auto target_spec = llmp::spec::StoredSpec(*ta);
   EXPECT_TRUE(target_spec.has_value()) << target_spec.error();
   if (!target_spec) return out;
-  const auto ts = llmp::spec::SourceOfV0(*ta);
-  EXPECT_TRUE(ts.has_value());
+  const auto ts = llmp::spec::SourceOf(*ta);
+  EXPECT_TRUE(ts.has_value()) << (ts ? "" : ts.error());
   if (!ts) return out;
   std::vector<llmp::spec::SourceValue> assistant_values;
   std::optional<llmp::spec::ModelSpec> composed;
   std::optional<llmp::spec::Source> as;
+  const llmp::spec::Mapping* assistant_mapping = nullptr;
   if (c.assistant) {
-    assistant_values = *llmp::spec::mappings::Gemma4AssistantV0Values(
-        c.size == 26 ? md::Gemma4Assistant26() : md::Gemma4Assistant31(), p);
-    auto spec = llmp::spec::ComposeDrafterV0(*target_spec, mapping, *aa,
-                                             llmp::spec::mappings::Gemma4AssistantMapping(),
-                                             assistant_values);
+    // The assistant's values as serving composes it: the approved pairing
+    // checked, its values from the metadata it keeps.
+    auto drafter_values = llmp::runtime::ComponentDrafterValues(*ta, *aa);
+    EXPECT_TRUE(drafter_values.has_value()) << (drafter_values ? "" : drafter_values.error());
+    if (!drafter_values) return out;
+    assistant_values = std::move(*drafter_values);
+    assistant_mapping = llmp::runtime::ComposedDrafterMapping(*aa);
+    EXPECT_NE(assistant_mapping, nullptr);
+    if (assistant_mapping == nullptr) return out;
+    auto source = llmp::spec::SourceOf(*aa);
+    EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
+    if (!source) return out;
+    as.emplace(std::move(*source));
+    auto spec = llmp::spec::ComposeDrafter(*target_spec, mapping, *assistant_mapping, *as,
+                                           assistant_values);
     EXPECT_TRUE(spec.has_value()) << spec.error();
     if (!spec) return out;
     composed.emplace(std::move(*spec));
-    auto source = llmp::spec::SourceOfV0(*aa);
-    EXPECT_TRUE(source.has_value());
-    if (!source) return out;
-    as.emplace(std::move(*source));
   }
   const llmp::spec::ModelSpec& layout_spec = composed ? *composed : *target_spec;
   std::vector<md::StateLayoutDerived> layouts;
@@ -465,19 +498,18 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
     config.weights.push_back(
         {.weights = std::move(target_weights), .places = slabs->places, .slabs = slabs->slabs});
     if (c.assistant) {
-      auto drafter = en::ComponentStepSource::Create(
-          {.spec = &*composed,
-           .stage = 1,
-           .bindings = {.tensors = as->tensors,
-                        .state = &layouts[1],
-                        .stages = stage_layouts,
-                        .artifacts = artifacts},
-           .bound_digest = composed->Digest(),
-           .mapping = &llmp::spec::mappings::Gemma4AssistantMapping(),
-           .values = assistant_values,
-           .slots = c.owners,
-           .policy = std::nullopt,
-           .backend = source->backend->Backend()});
+      auto drafter = en::ComponentStepSource::Create({.spec = &*composed,
+                                                      .stage = 1,
+                                                      .bindings = {.tensors = as->tensors,
+                                                                   .state = &layouts[1],
+                                                                   .stages = stage_layouts,
+                                                                   .artifacts = artifacts},
+                                                      .bound_digest = composed->Digest(),
+                                                      .mapping = assistant_mapping,
+                                                      .values = assistant_values,
+                                                      .slots = c.owners,
+                                                      .policy = std::nullopt,
+                                                      .backend = source->backend->Backend()});
       if (!drafter) return std::unexpected(drafter.error());
       sources.push_back(std::move(*drafter));
       config.slots.stages.push_back({.name = "assistant", .layout = layouts[1]});
@@ -605,26 +637,36 @@ Component Lowered(const Case& c, const fs::path& target, const fs::path& assista
   return out;
 }
 
-std::optional<fs::path> Installed(std::string_view id) {
-  const fs::path root = fs::path(llmp::test_support::ModelsDir()) / kStore / id;
-  if (std::error_code error; !fs::exists(root, error)) return std::nullopt;
-  return root;
+// The published v1 artifact the store's v1-ids.json names `name`.
+std::optional<fs::path> Installed(std::string_view name) {
+  const auto id = llmp::test_support::V1IdNamed(name);
+  if (!id) return std::nullopt;
+  return fs::path(llmp::test_support::V1Store()) / *id;
 }
 
 class ComponentRunnerGemma4Gpu : public testing::TestWithParam<Case> {};
 
 TEST_P(ComponentRunnerGemma4Gpu, ServingRecipeStepsAreFiniteAndRepeatBitForBit) {
   const Case& c = GetParam();
-  const auto target = Installed(TargetId(c.size));
-  const auto assistant = Installed(AssistantId(c.size));
-  if (!target || (c.assistant && !assistant)) GTEST_SKIP() << "no Gemma 4 artifacts installed";
+  const auto target = Installed(TargetName(c.size));
+  const auto assistant = Installed(AssistantName(c.size));
+  if (!target || (c.assistant && !assistant)) {
+    GTEST_FAIL() << "no published v1 Gemma 4 artifacts in " << llmp::test_support::V1Store();
+  }
+  // The window and the width the target's stored spec names.
+  auto opened = ar::Artifact::Open(*target, {.expected_id = {}});
+  ASSERT_TRUE(opened.has_value()) << opened.error().ToString();
+  const auto stored = llmp::spec::StoredSpec(*opened);
+  ASSERT_TRUE(stored.has_value()) << stored.error();
+  const std::uint32_t window = Window(*stored);
+  ASSERT_GT(window, 0U);
+  const std::uint64_t width = stored->stages.front().stream.width;
   // NOLINTNEXTLINE(concurrency-mt-unsafe): the test environment is immutable
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
   const fs::path out = fs::path(scratch != nullptr ? scratch : testing::TempDir()) / "lowered4";
   fs::create_directories(out);
   // The sliding layers' ring: pad(min(context, window + rows), 256) cells.
-  const std::uint32_t local_cells =
-      (std::min(c.context, Profile(c.size).window + kMaxRows) + 255) / 256 * 256;
+  const std::uint32_t local_cells = (std::min(c.context, window + kMaxRows) + 255) / 256 * 256;
   const std::vector<Planned> script = Script(c, local_cells);
   const Component first = Lowered(c, *target, assistant.value_or(fs::path{}), out, script);
   ASSERT_EQ(first.outputs.size(), script.size());
@@ -654,7 +696,7 @@ TEST_P(ComponentRunnerGemma4Gpu, ServingRecipeStepsAreFiniteAndRepeatBitForBit) 
         // and next feature.
         const std::size_t rows =
             script[w].wave.head == Head::kAll ? script[w].wave.units[u].rows : 1U;
-        const std::size_t want = draft ? kVocab + Profile(c.size).width : rows * kVocab;
+        const std::size_t want = draft ? kVocab + width : rows * kVocab;
         ASSERT_EQ(got.size(), want * sizeof(float)) << "wave " << w << " owner " << u;
         bool finite = true;
         for (std::size_t j = 0; j < want && finite; ++j) {

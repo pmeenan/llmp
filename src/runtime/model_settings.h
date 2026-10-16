@@ -87,36 +87,8 @@ inline constexpr std::uint32_t kDefaultSlots = 4;
 // fixed rings and windows while short, so a cost a byte measured on short
 // prefills would rank long conversations far too cheap to drop.
 inline constexpr double kRecomputeMsPerToken = 1.4;
-// DeepSeek with DSpark: a draft-verify wave's time over a plain decode
-// wave's, widths 2 to 8 (execution/adaptive_wave_mode.h): the median joined
-// wave of the retired `llmp_spec_runner --check wave --slots N --wave-mode
-// verify|decode` (GB10, community GGUF, wave lanes on, 2026-10-03;
-// docs/experiments/deepseek-batching, "Wave lanes" and "Joined draft
-// blocks"): with joined drafts, 127.5 / 61.3, 180.0 / 71.5, 231.2 / 82.3
-// and 229.0 / 95.6 ms at widths 2 to 5; with lanes, 224.7 / 106.1, 258.0 /
-// 116.6 and 287.3 / 129.1 ms at widths 6 to 8 (D-104; past five a joined
-// draft's rows exceed a wave's, so each block runs alone). A DSpark verify
-// then takes three rows a request at width 5 and two past it, so past five
-// a draft-verify wave (at most two tokens a request) never pays
-// (docs/experiments/request-slots). To be measured again when a wave's
-// cost changes.
-inline constexpr std::array<double, config::kMaxWaveCostWidths> kDsv4WaveCosts = {
-    2.08, 2.52, 2.81, 2.40, 2.12, 2.21, 2.23};
-// DSpark's drafts a step (its verify takes one row more).
-inline constexpr std::uint32_t kDsv4DraftRows = 3;
-// Qwen3.8's MTP: drafts a step at most (depths 2-3 chosen by acceptance,
-// AdaptiveDepth), the draft head's rows (the fastest of 32,768 rows to the
-// whole vocabulary, docs/experiments/qwen38-mtp), depth 3's cost over
-// depth 2's (execution/adaptive_depth.h), a wave's drafts a request (C2/C4
-// HTTP screens: +8%/+15% over adaptive depth), how many requests draft in
-// one joined wave (past two each drafts alone: 3.6% faster at C4), and the
-// state a wave reads, rounded up.
-inline constexpr std::uint32_t kQwen38DraftRows = 3;
-inline constexpr std::uint32_t kQwen38DraftVocab = 65536;
-inline constexpr double kQwen38DepthCostRatio = 1.16;
-inline constexpr std::uint32_t kQwen38SharedWaveDepth = 2;
-inline constexpr std::uint32_t kQwen38DraftWaveMax = 2;
-inline constexpr std::uint32_t kQwen38WaveReadAlign = 2048;
+// The drafting and wave settings' measured defaults are each family's
+// serving recipe's (spec::ServingRecipe's default_* fields).
 // The image pipeline's generation (runtime/engine_image.h).
 inline constexpr std::uint32_t kImageSize = 1024;
 inline constexpr std::uint32_t kImageSteps = 40;

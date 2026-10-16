@@ -136,10 +136,11 @@ picking the default drafter. Nothing here is verified yet.
 
 ## Capability matrix
 
-What llmpalooza runs today comes from M3's models (DeepSeek V4 Flash,
-`model/dsv4.h`; Qwen3.8 Flash Next, `model/qwen38.h`; Qwen-Image-2.1,
-`model/qwen_image.h`) and the M2 fixtures (Qwen2.5-0.5B, `model/qwen2.h`,
-FP16 GGUF and EXL3). "Have" means an M3 model exercises it; "partial"
+What llmpalooza runs today comes from M3's models (DeepSeek V4 Flash and
+Qwen3.8 Flash Next, whose M3 adapters `model/dsv4.h` and `model/qwen38.h`
+are now their mappings, `spec/mappings/`; Qwen-Image-2.1,
+`model/qwen_image.h`) and the M2 fixtures (Qwen2.5-0.5B, FP16 GGUF and EXL3,
+the `qwen2` mapping). "Have" means an M3 model exercises it; "partial"
 means a neighbouring form exists. The covering-set column names the
 checkpoints above by number.
 

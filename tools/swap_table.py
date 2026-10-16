@@ -11,7 +11,7 @@ README.md, "The gate's tools"). This tool replaces the baseline's `swaps.sh` and
 `swaps-fixed.sh`: the runtime, the artifact store, the artifact IDs and the image pin are
 inputs, so the same table runs on the old and the new runtime, or on re-imported artifacts.
 
-    swap_table.py plan  --case CASE --runtime R --store DIR --out DIR [--ids FILE]
+    swap_table.py plan  --case CASE --runtime R --store DIR --out DIR [--ids FILE] [--v0-ids]
                         [--image-pin SHA256] [--pairs-per-job N] [--share DIR] [--inputs DIR]
                         [--config-template FILE] > STEPS
     swap_table.py run   --case CASE --runtime R --store DIR --out DIR --name NAME
@@ -29,9 +29,12 @@ refuses an existing OUT/NAME, removes the run's data directory afterwards and ex
 runtime's status.
 
 The node configuration is rendered from the case with the artifact IDs of `--ids`, a JSON
-object over the defaults (the M3 artifacts), by model name; each entry may hold `artifact`,
-`drafter`, `composition`, `tokenizer`, `chat_template` and `settings` (extra keys for the model's
-table, e.g. what a newer runtime needs):
+object over the defaults, by model name. The defaults are the v1 imports serving uses (D-118,
+`--store` the store holding them, `m36-v1-artifacts`); `--v0-ids` selects the frozen baseline
+binary's M3 v0 artifacts instead (`--store` then `m3-artifacts`). The image model's composition
+is the image slice's and the same in both sets (the m3 case's store must hold it). Each entry
+may hold `artifact`, `drafter`, `composition`, `tokenizer`, `chat_template` and `settings`
+(extra keys for the model's table, e.g. what a newer runtime needs):
 
     {"deepseek": {"artifact": "...", "drafter": "..."},
      "qwen3.8": {"artifact": "...", "settings": {"depth_cost_ratio": 1.16}},
@@ -91,16 +94,27 @@ PREPARED_LIMIT = 20.0  # seconds: the bound for previously prepared swaps
 FIRST_USE_LIMIT = 40.0  # seconds: first use is no worse than about twice the bound
 JOB_SECONDS = 600
 
+QWEN_FILES = {"tokenizer": f"{{share}}/{sg.QWEN_TOKENIZER}/tokenizer.json",
+              "chat_template": f"{{share}}/{sg.QWEN_TOKENIZER}/chat_template.jinja"}
+# The v1 imports serving uses (D-118), and with --v0-ids the frozen baseline's M3 v0 artifacts.
+# The image composition is the image slice's: both sets name it as it is.
 DEFAULT_IDS = {
-    "deepseek": {"artifact": sg.DSV4, "drafter": sg.DSPARK},
-    "qwen3.8": {"artifact": sg.QWEN, "drafter": sg.QWEN_MTP,
-                "tokenizer": f"{{share}}/{sg.QWEN_TOKENIZER}/tokenizer.json",
-                "chat_template": f"{{share}}/{sg.QWEN_TOKENIZER}/chat_template.jinja"},
+    "deepseek": {"artifact": sg.DSV4_V1, "drafter": sg.DSPARK_V1},
+    "qwen3.8": {"artifact": sg.QWEN_V1, "drafter": sg.QWEN_MTP_V1, **QWEN_FILES},
     "image": {"composition": sg.IMAGE},
-    "gemma2": {"artifact": sg.GEMMA2},
-    "gemma3": {"artifact": sg.GEMMA3},
-    "gemma26": {"artifact": sg.GEMMA26},
-    "gemma31": {"artifact": sg.GEMMA31},
+    "gemma2": {"artifact": sg.GEMMA2_V1},
+    "gemma3": {"artifact": sg.GEMMA3_V1},
+    "gemma26": {"artifact": sg.GEMMA26_V1},
+    "gemma31": {"artifact": sg.GEMMA31_V1},
+}
+V0_IDS = {
+    "deepseek": {"artifact": sg.DSV4_V0, "drafter": sg.DSPARK_V0},
+    "qwen3.8": {"artifact": sg.QWEN_V0, "drafter": sg.QWEN_MTP_V0, **QWEN_FILES},
+    "image": {"composition": sg.IMAGE},
+    "gemma2": {"artifact": sg.GEMMA2_V0},
+    "gemma3": {"artifact": sg.GEMMA3_V0},
+    "gemma26": {"artifact": sg.GEMMA26_V0},
+    "gemma31": {"artifact": sg.GEMMA31_V0},
 }
 
 
@@ -136,8 +150,8 @@ def toml_value(value) -> str:
     raise SystemExit(f"a configuration setting must be a string, number or boolean: {value!r}")
 
 
-def load_ids(path: str | None) -> dict:
-    ids = {k: dict(v) for k, v in DEFAULT_IDS.items()}
+def load_ids(path: str | None, v0: bool = False) -> dict:
+    ids = {k: dict(v) for k, v in (V0_IDS if v0 else DEFAULT_IDS).items()}
     if path:
         given = json.loads(pathlib.Path(path).expanduser().read_text())
         if not isinstance(given, dict):
@@ -209,6 +223,8 @@ def job_pairs(case: Case, per_job: int) -> list[list[str]]:
 def common_options(args: argparse.Namespace) -> list[str]:
     options = ["--case", args.case, "--runtime", args.runtime, "--store", args.store,
                "--share", args.share, "--out", args.out]
+    if args.v0_ids:
+        options.append("--v0-ids")
     for flag, value in (("--ids", args.ids), ("--inputs", args.inputs),
                         ("--image-pin", args.image_pin),
                         ("--config-template", args.config_template)):
@@ -277,7 +293,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     template = (pathlib.Path(args.config_template).expanduser().read_text()
                 if args.config_template else None)
     (run_dir / "node.toml").write_text(render_config(
-        case, load_ids(args.ids), str(pathlib.Path(args.store).expanduser().resolve()),
+        case, load_ids(args.ids, args.v0_ids), str(pathlib.Path(args.store).expanduser().resolve()),
         str(run_dir / "data"), str(share), template))
     (run_dir / "runtime.sha256").write_text(f"{sha256_file(runtime)}  {runtime}\n")
     try:
@@ -536,6 +552,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--store", required=True, help="the installed-artifacts directory")
         p.add_argument("--out", required=True)
         p.add_argument("--ids", help="JSON of artifact IDs by model name, over the defaults")
+        p.add_argument("--v0-ids", action="store_true",
+                       help="default to the frozen baseline's M3 v0 artifact IDs, not the v1 imports")
         p.add_argument("--image-pin", help="the expected pixels SHA-256 (default: the M3 pin)")
         p.add_argument("--share", default=DEFAULT_SHARE)
         p.add_argument("--inputs", help="the context texts (default SHARE/m36-baselines/inputs)")

@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <expected>
 #include <format>
-#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -22,8 +21,6 @@
 #include <variant>
 #include <vector>
 
-#include "artifact/artifact.h"
-#include "artifact/format_map.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 #include "spec/mappings/dsv4.h"
@@ -82,19 +79,6 @@ bool IsText(std::string_view s) {
   return !s.empty() && s.size() <= kMaxText && std::ranges::all_of(s, [](char c) {
     return c > ' ' && c < 0x7F && c != '"' && c != '\\' && c != '{' && c != '}';
   });
-}
-
-// Whether a fold rule's converter names one of `identity`'s '+'-joined
-// parts (Source::converter: "name version", the version's parts joined by
-// '+'): the part begins with it ("modelopt_qwen38-" names the part
-// "modelopt_qwen38-031ed8750c9da55d", never "xmodelopt_qwen38-…").
-bool NamesPart(std::string_view identity, std::string_view rule) {
-  while (true) {
-    const std::size_t end = identity.find('+');
-    if (identity.substr(0, end).starts_with(rule)) return true;
-    if (end == std::string_view::npos) return false;
-    identity.remove_prefix(end + 1);
-  }
 }
 
 bool IsPseudo(std::string_view slot) {
@@ -377,7 +361,7 @@ std::expected<bool, std::string> Holds(std::string_view gate, bool absent, const
   }
   std::int64_t n = 0;
   if (const auto found = values.find(gate); found != values.end()) {
-    // A flag (a v0 binding's fact, FlagValue) holds when set.
+    // A flag (an approval's gate) holds when set.
     if (const auto* flag = std::get_if<bool>(found->second); flag != nullptr) {
       n = *flag ? 1 : 0;
     } else {
@@ -838,12 +822,7 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   // latter validated against the catalog with the spec), sorted by
   // Canonicalize.
   for (const FoldRule& f : mapping.folds) {
-    // A converter rule names a v0 artifact's converter, so it never adds a
-    // fold to a v1 artifact's or a checkpoint's source (empty converter).
-    const bool applied =
-        f.converter.empty() ? f.container == source.container
-                            : !source.converter.empty() && NamesPart(source.converter, f.converter);
-    if (applied && !std::ranges::contains(stage.folds, f.fold)) {
+    if (f.container == source.container && !std::ranges::contains(stage.folds, f.fold)) {
       stage.folds.emplace_back(f.fold);
     }
   }
@@ -1146,144 +1125,12 @@ Status ValidateMapping(const Mapping& m) {
     }
   }
   for (const FoldRule& f : m.folds) {
-    if (FindFold(f.fold) == nullptr || f.container.empty() == f.converter.empty() ||
-        (!f.container.empty() && !IsName(f.container)) ||
-        (!f.converter.empty() && (!IsText(f.converter) || f.converter.contains('+')))) {
+    if (FindFold(f.fold) == nullptr || !IsName(f.container)) {
       return Refuse(std::format("{} fold {}", where, f.fold),
-                    "not in the fold catalog, or not one container or converter part");
-    }
-  }
-  for (const V0Assembly& a : m.v0_assembly) {
-    const std::string at = std::format("{} v0 assembly {}", where, a.stem);
-    if ((!a.stem.empty() && !IsPattern(a.stem, true) && !IsPattern(a.stem, false)) ||
-        a.suffixes[0].empty() || a.suffixes[1].empty() || a.stacked == 0) {
-      return Refuse(at, "an invalid stem, fewer than two parts or no stack");
-    }
-    for (std::size_t i = 0; i < a.suffixes.size(); ++i) {
-      if (!a.suffixes.at(i).empty() && !IsText(a.suffixes.at(i))) {
-        return Refuse(at, "an invalid suffix");
-      }
+                    "not in the fold catalog, or no container");
     }
   }
   return {};
-}
-
-std::expected<Source, std::string> SourceOfV0Tensors(std::string architecture,
-                                                     std::string container, std::string converter,
-                                                     std::span<const V0Tensor> tensors,
-                                                     const Mapping* mapping) {
-  Source s{.architecture = std::move(architecture),
-           .container = std::move(container),
-           .converter = std::move(converter),
-           .tensors = {}};
-  // The resources and arrays the mapping pairs: by name, the format of the
-  // tensor they hold a part of, and the part.
-  std::map<std::string, std::pair<format::TensorFormat, format::PartRole>, std::less<>> paired;
-  if (mapping != nullptr) {
-    std::map<std::string_view, const V0Tensor*> by_name;
-    for (const V0Tensor& t : tensors) by_name.emplace(t.name, &t);
-    for (const V0Assembly& a : mapping->v0_assembly) {
-      for (const V0Tensor& t : tensors) {
-        if ((t.count != 0) != a.experts || !t.name.ends_with(a.suffixes[0])) continue;
-        const std::string_view stem =
-            std::string_view(t.name).substr(0, t.name.size() - a.suffixes[0].size());
-        if (!a.stem.empty() && !Match(a.stem, stem, std::numeric_limits<std::uint32_t>::max())) {
-          continue;
-        }
-        std::vector<artifact::V0Part> parts;
-        std::vector<std::string> part_names;
-        std::size_t wanted = 0;
-        for (std::size_t i = 0; i < a.suffixes.size(); ++i) {
-          if (a.suffixes.at(i).empty()) continue;
-          ++wanted;
-          std::string name = std::format("{}{}", stem, a.suffixes.at(i));
-          const auto found = by_name.find(name);
-          if (found == by_name.end() || (found->second->count != 0) != a.experts ||
-              found->second->repr == nullptr) {
-            break;
-          }
-          parts.push_back({.role = a.roles.at(i), .rep = found->second->repr});
-          part_names.push_back(std::move(name));
-        }
-        if (parts.size() != wanted) continue;  // not every part: left as it is
-        auto f = artifact::Assemble(a.encoding, a.layout, parts, a.stacked);
-        if (!f) {
-          return Refuse(t.name, std::format("its parts do not assemble ({})",
-                                            format::FormatErrorName(f.error())));
-        }
-        if (a.experts) {
-          f->shape.ne[2] = t.count;
-          f->shape.rank = 3;
-        }
-        for (std::size_t i = 0; i < parts.size(); ++i) {
-          if (!paired.emplace(part_names[i], std::pair{*f, parts[i].role}).second) {
-            return Refuse(part_names[i], "a part of two tensors");
-          }
-        }
-      }
-    }
-  }
-  for (const V0Tensor& t : tensors) {
-    if (t.repr == nullptr) return Refuse(t.name, "no representation");
-    auto f = artifact::FormatOf(*t.repr);
-    if (!f || (t.count != 0 && f->shape.rank > 2)) {
-      return Refuse(t.name,
-                    f ? std::string("no two-dimensional slice format")
-                      : std::format("no tensor format ({})", format::FormatErrorName(f.error())));
-    }
-    format::PartRole part = artifact::V0PartRole(*t.repr);
-    if (const auto at = paired.find(t.name); at != paired.end()) {
-      f = at->second.first;
-      part = at->second.second;
-    } else if (t.count != 0) {
-      f->shape.ne[2] = t.count;
-      f->shape.rank = 3;
-    }
-    if (t.count != 0) {
-      s.tensors.push_back({.name = t.name, .format = *f, .part = part, .experts = true});
-      continue;
-    }
-    for (const std::string& role : t.roles) {
-      s.tensors.push_back({.name = role, .format = *f, .part = part, .experts = false});
-    }
-  }
-  if (s.tensors.size() > kMaxSourceTensors) {
-    return Refuse("source", std::format("more than {} tensors", kMaxSourceTensors));
-  }
-  return s;
-}
-
-std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact,
-                                              const Mapping* mapping) {
-  if (artifact.format_version() != 0) {
-    // Its descriptors are empty; spec/stored.h SourceOf reads its formats.
-    return Refuse(
-        std::format("artifact {}", artifact.id()),
-        std::format("format version {}, not 0 (read it with SourceOf)", artifact.format_version()));
-  }
-  const auto sources = artifact.sources();
-  const auto all = [&](auto pred) {
-    return !sources.empty() && std::ranges::all_of(sources, pred);
-  };
-  std::string container = "other";
-  if (all([](const artifact::Source& f) { return f.name.ends_with(".gguf"); })) {
-    container = "gguf";
-  } else if (all([](const artifact::Source& f) {
-               return f.name.ends_with(".safetensors") || f.name.ends_with(".json");
-             })) {
-    container = "safetensors";
-  }
-  std::vector<V0Tensor> tensors;
-  for (const artifact::Resource& r : artifact.resources()) {
-    tensors.push_back({.name = r.name, .roles = r.roles, .repr = &r.repr, .count = 0});
-  }
-  for (const artifact::ExpertArray& a : artifact.expert_arrays()) {
-    tensors.push_back({.name = a.name, .roles = {a.name}, .repr = &a.repr, .count = a.count});
-  }
-  return SourceOfV0Tensors(
-      artifact.model().architecture, std::move(container),
-      std::format("{} {}", artifact.converter().name, artifact.converter().version), tensors,
-      mapping);
 }
 
 std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const Source& source,
@@ -1305,16 +1152,6 @@ std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const S
     return std::unexpected(ok.error());
   }
   return spec;
-}
-
-std::expected<ModelSpec, std::string> SynthesizeV0(const artifact::Artifact& artifact,
-                                                   const Mapping& mapping,
-                                                   std::span<const SourceValue> values) {
-  auto source = SourceOfV0(artifact, &mapping);
-  if (!source) {
-    return std::unexpected(source.error());
-  }
-  return Synthesize(mapping, *source, values);
 }
 
 std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
@@ -1414,18 +1251,6 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
     return std::unexpected(ok.error());
   }
   return spec;
-}
-
-std::expected<ModelSpec, std::string> ComposeDrafterV0(const ModelSpec& target,
-                                                       const Mapping& target_mapping,
-                                                       const artifact::Artifact& artifact,
-                                                       const Mapping& drafter,
-                                                       std::span<const SourceValue> values) {
-  auto source = SourceOfV0(artifact, &drafter);
-  if (!source) {
-    return std::unexpected(source.error());
-  }
-  return ComposeDrafter(target, target_mapping, drafter, *source, values);
 }
 
 }  // namespace llmp::spec

@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Qwen3.8's v0 artifacts as resource tables (model/qwen38.h Qwen38Resource,
-// shaped and typed as the importers write them: docs/artifact-format.md),
-// and as mapping sources (spec/mapping.h SourceOfV0Tensors, the mapping's
-// pairs assembled): the ModelOpt import with its experts in GGML's NVFP4
-// blocks (67617f87) or the CUTLASS layout (c4fb47a9), a GGUF
-// quantization's (of this fixture's types), and the MTP drafter's.
+// Qwen3.8's fixture imports as resource tables (families/qwen.h
+// Qwen38Resource, shaped and typed as the M3 importers wrote them:
+// docs/artifact-format.md), and as mapping sources
+// (fixture_source.h FixtureSource, the ModelOpt pairs assembled): the
+// ModelOpt import with its experts in GGML's NVFP4 blocks (67617f87) or the
+// CUTLASS layout (c4fb47a9), a GGUF quantization's (of this fixture's
+// types), and the MTP drafter's; and the native importer's ModelOpt and MLX
+// targets.
 
 #ifndef LLMP_TESTS_UNIT_QWEN38_FIXTURE_H_
 #define LLMP_TESTS_UNIT_QWEN38_FIXTURE_H_
@@ -18,6 +20,7 @@
 #include <charconv>
 #include <cstdint>
 #include <deque>
+#include <expected>
 #include <format>
 #include <string>
 #include <string_view>
@@ -30,10 +33,11 @@
 #include "artifact/representation.h"
 #include "base/bytes.h"
 #include "base/sha256.h"
+#include "families/qwen.h"
+#include "fixture_source.h"
 #include "format/tensor_format.h"
 #include "import/mlx_qwen38.h"
 #include "import/modelopt_qwen38.h"
-#include "model/qwen38.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen38.h"
 
@@ -45,9 +49,10 @@ inline constexpr std::uint64_t kTableRows = 320001536;
 enum class Form : std::uint8_t { kGgmlExperts, kCutlass, kGguf };
 
 // The target's resources, in the importers' order, then its expert arrays.
-inline std::vector<model::Qwen38Resource> Resources(const model::Qwen38Profile& p, Form form) {
-  std::vector<model::Qwen38Resource> r;
-  std::vector<model::Qwen38Resource> arrays;
+inline std::vector<families::Qwen38Resource> Resources(const families::Qwen38Profile& p,
+                                                       Form form) {
+  std::vector<families::Qwen38Resource> r;
+  std::vector<families::Qwen38Resource> arrays;
   const bool gguf = form == Form::kGguf;
   const auto ggml = [&](std::string name, std::string type, std::vector<std::uint64_t> ne) {
     r.push_back(
@@ -174,10 +179,10 @@ inline std::vector<model::Qwen38Resource> Resources(const model::Qwen38Profile& 
 }
 
 // The MTP drafter's resources (its layer's BF16 linears, CUTLASS experts).
-inline std::vector<model::Qwen38Resource> MtpResources(const model::Qwen38Profile& p,
-                                                       std::uint64_t selected_rows = 0) {
-  std::vector<model::Qwen38Resource> r;
-  std::vector<model::Qwen38Resource> arrays;
+inline std::vector<families::Qwen38Resource> MtpResources(const families::Qwen38Profile& p,
+                                                          std::uint64_t selected_rows = 0) {
+  std::vector<families::Qwen38Resource> r;
+  std::vector<families::Qwen38Resource> arrays;
   const auto ggml = [&](std::string name, std::string type, std::vector<std::uint64_t> ne) {
     r.push_back(
         {.roles = {std::move(name)}, .plain = false, .type = std::move(type), .ne = std::move(ne)});
@@ -239,7 +244,7 @@ inline std::vector<model::Qwen38Resource> MtpResources(const model::Qwen38Profil
 }
 
 // A resource's v0 representation.
-inline artifact::Representation RepresentationOf(const model::Qwen38Resource& r) {
+inline artifact::Representation RepresentationOf(const families::Qwen38Resource& r) {
   std::string ne;
   std::vector<std::uint64_t> dims = r.ne;
   if (r.plain) std::ranges::reverse(dims);  // a plain shape is row-major
@@ -254,30 +259,54 @@ inline artifact::Representation RepresentationOf(const model::Qwen38Resource& r)
   return rep.value_or(artifact::Representation{});
 }
 
-// The resources as a mapping's source (SourceOfV0's, its pairs assembled).
-inline spec::Source SourceOf(std::string architecture, std::string container, std::string converter,
-                             const std::vector<model::Qwen38Resource>& resources,
-                             const spec::Mapping& mapping) {
+// The folds the native ModelOpt importer records (sorted), which a
+// ModelOpt-form fixture's source carries; a GGUF's come from its mapping's
+// fold rules.
+inline std::vector<std::string> ModelOptFolds() {
+  return {"gdn.value_heads_tiled", "norm.plus_one", "ssm.a_neg_exp"};
+}
+
+// The resources as a mapping's source (the ModelOpt pairs assembled), with
+// `folds`.
+inline spec::Source SourceOf(std::string architecture, std::string container,
+                             const std::vector<families::Qwen38Resource>& resources,
+                             std::vector<std::string> folds = {}) {
   std::deque<artifact::Representation> reps;
-  std::vector<spec::V0Tensor> tensors;
-  for (const model::Qwen38Resource& r : resources) {
+  std::vector<FixtureTensor> tensors;
+  for (const families::Qwen38Resource& r : resources) {
     reps.push_back(RepresentationOf(r));
     tensors.push_back({.name = r.roles.front(),
                        .roles = r.roles,
                        .repr = &reps.back(),
                        .count = r.expert_array ? r.count : 0});
   }
-  auto source = spec::SourceOfV0Tensors(std::move(architecture), std::move(container),
-                                        std::move(converter), tensors, &mapping);
+  auto source = FixtureSource(std::move(architecture), std::move(container), tensors,
+                              kQwen38ModelOptAssembly, std::move(folds));
   EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
   return source.value_or(spec::Source{});
 }
 
-// The converter identities of the importers (docs/artifact-layout).
-inline constexpr std::string_view kModelOptConverter =
-    "artifact-layout/import_m3.py m3-1+layout-a0d1980a9eddd1ad+modelopt_qwen38-031ed8750c9da55d";
-inline constexpr std::string_view kGgufConverter =
-    "artifact-layout/import_m3.py m3-1+layout-a0d1980a9eddd1ad";
+// The target's source in `form`: a GGUF's, or a ModelOpt import's with the
+// importer's folds.
+inline spec::Source TargetSource(const families::Qwen38Profile& p, Form form) {
+  const bool gguf = form == Form::kGguf;
+  return SourceOf("qwen4exp", gguf ? "gguf" : "safetensors", Resources(p, form),
+                  gguf ? std::vector<std::string>{} : ModelOptFolds());
+}
+
+// The MTP drafter's source (a ModelOpt import's, with its folds).
+inline spec::Source MtpSource(const families::Qwen38Profile& p, std::uint64_t selected_rows = 0) {
+  return SourceOf("qwen4exp-mtp", "safetensors", MtpResources(p, selected_rows), ModelOptFolds());
+}
+
+// The target's values in `form` (qwen4exp's, Qwen38Mapping).
+inline std::expected<std::vector<spec::SourceValue>, std::string> TargetValues(
+    const families::Qwen38Profile& p, const families::Qwen38PleHash& hash, Form form) {
+  if (form == Form::kGguf) return families::Qwen38GgufValues(p, hash);
+  return families::Qwen38ModelOptValues(
+      p, hash,
+      form == Form::kCutlass ? families::Qwen38Experts::kCutlass : families::Qwen38Experts::kGgml);
+}
 
 struct NativeModelOptFixture {
   spec::Source source{};
@@ -401,16 +430,16 @@ struct NativeMlxFixture {
 inline NativeMlxFixture NativeMlx() {
   NativeMlxFixture result;
   result.source = import::ApprovedMlxTargetSource();
-  const model::Qwen38PleHash hash{
+  const families::Qwen38PleHash hash{
       .multipliers = {23703573157769, 20109073645365, 8052911324071},
       .offsets = {0, 20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
                   160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114,
                   300001275},
       .vocab = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
                 20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171}};
-  model::Qwen38Profile p = model::Qwen38Flash();
+  families::Qwen38Profile p = families::Qwen38Flash();
   p.ple_row = 160;
-  auto values = spec::mappings::Qwen38GgufValues(p, hash);
+  auto values = families::Qwen38GgufValues(p, hash);
   EXPECT_TRUE(values.has_value());
   if (values) {
     result.values = std::move(*values);

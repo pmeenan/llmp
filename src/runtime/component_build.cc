@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstring>
 #include <expected>
 #include <format>
 #include <limits>
@@ -32,11 +31,8 @@
 #include "kernels/decode/selected_source.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
-#include "model/dsv4.h"
-#include "model/qwen38.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
-#include "platform/direct_io.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_admission.h"
@@ -46,8 +42,6 @@
 #include "runtime/prefill.h"
 #include "runtime/serving_support.h"
 #include "spec/mapping.h"
-#include "spec/mappings/dsv4.h"
-#include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
 #include "spec/stored.h"
 
@@ -60,21 +54,6 @@ using serving_support::kExtent;
 namespace fs = std::filesystem;
 namespace ja = llmp::artifact;
 
-// The fixed target's current hard-cap compiler and simultaneous factory
-// inventory is sealed with its diagnostic. This charge is separate from the
-// backend declaration allowance and from all mapped runtime/device storage.
-constexpr std::uint64_t kDsv4ConstructionBytes = std::uint64_t{4} << 30U;
-// Reader maps use only the remaining space inside the already paid compiler
-// ceiling. Other lower metadata includes the current descriptor arena and
-// owner indexes, but excludes the old 32 MiB reader-map sub-budget.
-constexpr std::uint64_t kDsv4CompilerBytes = 2776629248ULL;
-constexpr std::uint64_t kDsv4OtherLowerBytes = 2279950224ULL - 33554432ULL + 92274688ULL;
-static_assert(kDsv4OtherLowerBytes < kDsv4CompilerBytes);
-constexpr std::uint64_t kDsv4ReaderScratchBytes = kDsv4CompilerBytes - kDsv4OtherLowerBytes;
-constexpr std::string_view kDsv4DiagnosticArtifact =
-    "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
-constexpr std::string_view kDsparkDiagnosticArtifact =
-    "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
 struct ConstructionCharge {
   std::shared_ptr<engine::ExecutionMetadataAllowance> allowance;
   std::uint64_t bytes = 0;
@@ -288,7 +267,6 @@ std::expected<ServingConstruction, std::string> ServingConstructionBytes(
 
 struct ComponentHold {
   // First: refund only after all graph, binding and backend owners die.
-  std::shared_ptr<ConstructionCharge> construction;
   std::shared_ptr<engine::ExecutionMetadataAllowance> automatic_construction;
   std::shared_ptr<engine::SharedCompilerAllowance> compiler;
   std::uint64_t compiler_bytes = 0;
@@ -313,148 +291,6 @@ struct ComponentHold {
   std::unique_ptr<kernels::ggml::GgmlBackend> backend;
 };
 static_assert(sizeof(ComponentHold) <= 4096);  // StoredBindingBytes fixed owner inventory.
-
-std::expected<void, std::string> CheckHashTables(const ja::Artifact& artifact,
-                                                 const model::Dsv4Binding& binding) {
-  const auto& profile = model::Dsv4Flash();
-  for (std::uint32_t layer = 0; layer < profile.hash_layers; ++layer) {
-    const auto& tensor = binding.layers.at(layer).tid2eid;
-    if (tensor.type != "I32" || tensor.ne.size() != 2 || tensor.ne[0] != profile.experts_used ||
-        tensor.ne[1] != profile.vocab)
-      return Error("hash-routing source is not the bound expert-by-token table");
-    // Serial reads: one complete table at a time, under the construction
-    // allowance. The source table remains encoded; no result cache is kept.
-    auto table = ReadRecipeIntegers<std::int32_t>(
-        artifact, tensor.index, std::uint64_t{profile.experts_used} * profile.vocab);
-    if (!table) return Error(table.error());
-    if (auto valid = model::CheckDsv4HashRouting(profile, *table); !valid)
-      return Error(valid.error());
-  }
-  return {};
-}
-
-// Native hash tables retain I32 source values. Validate each table the spec
-// binds (each side.hash input's, by its own experts and rows a token)
-// through a bounded direct-read window before any routed work; no
-// whole-table copy or uncharged payload allocation is introduced for stored
-// targets.
-std::expected<void, std::string> CheckStoredHashTables(const ja::Artifact& artifact,
-                                                       const spec::ModelSpec& model) {
-  for (const spec::Stage& stage : model.stages) {
-    for (const spec::SideInput& side : stage.side) {
-      if (side.source.kind != "side.hash") continue;
-      const spec::Param* experts_param = side.source.Find("experts");
-      const spec::Param* used_param = side.source.Find("used");
-      const auto* experts =
-          experts_param ? std::get_if<std::int64_t>(&experts_param->value) : nullptr;
-      const auto* used = used_param ? std::get_if<std::int64_t>(&used_param->value) : nullptr;
-      if (experts == nullptr || used == nullptr || *experts <= 0 || *used <= 0)
-        return Error("stored hash routing has no expert count");
-      for (const spec::WeightBinding& binding : side.source.weights) {
-        auto index = artifact.FindResource(binding.tensor);
-        if (!index) return Error("stored hash-routing table is missing");
-        auto place = artifact.ResourcePlacement(*index);
-        const auto& format = artifact.resources()[*index].format;
-        if (!format || format->shape.rank != 2 ||
-            format->shape.ne[0] != static_cast<std::uint64_t>(*used) || format->shape.ne[1] == 0 ||
-            format->shape.ne[1] > (std::uint64_t{1} << 32U))
-          return Error("stored hash-routing table has another shape");
-        const auto count = format->shape.ne[0] * format->shape.ne[1];
-        if (!place || place->bytes.value() != count * sizeof(std::int32_t))
-          return Error("stored hash-routing table has an inconsistent byte count");
-        const auto& group = artifact.groups()[place->group];
-        const auto& shard = artifact.shards()[group.shard];
-        const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
-        const auto end = begin + place->bytes.value();
-        if (begin % sizeof(std::int32_t)) return Error("stored hash-routing table is unaligned");
-        auto file = artifact.OpenShardForDirectRead(group.shard);
-        if (!file) return Error(file.error().ToString());
-        alignas(4096) std::array<std::byte, 4096> window{};
-        for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
-          if (at > shard.data_offset.value() + shard.data_bytes.value() ||
-              window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
-            return Error("stored hash-routing read exceeds its shard");
-          if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
-            return Error(std::format("reading stored hash-routing table: errno {}", read.error()));
-          for (auto offset = std::max(at, begin); offset < std::min(at + window.size(), end);
-               offset += sizeof(std::int32_t)) {
-            std::int32_t expert = 0;
-            std::memcpy(&expert, window.data() + offset - at, sizeof(expert));
-            if (expert < 0 || std::cmp_greater_equal(expert, *experts))
-              return Error("stored hash-routing table names an invalid expert");
-          }
-        }
-      }
-    }
-  }
-  return {};
-}
-
-// A v0 artifact's values for its architecture's mapping: its compiled
-// profile's (spec/mappings/*.h); Gemma 4's by the approved profile its
-// tensors bind.
-std::expected<std::vector<spec::SourceValue>, std::string> V0Values(std::string_view architecture,
-                                                                    const ja::Artifact& artifact) {
-  if (architecture == "deepseek4") {
-    auto binding = model::BindDsv4(model::Dsv4Flash(), artifact);
-    if (!binding) return Error(binding.error());
-    if (auto checked = CheckHashTables(artifact, *binding); !checked) return Error(checked.error());
-    return spec::mappings::Dsv4V0Values(model::Dsv4Flash());
-  }
-  return ComponentV0Values(artifact);
-}
-
-// A drafter's values (its compiled profile's, by its target's): the
-// Gemma 4 assistant's of its target's approved profile, its tensors bound
-// to that profile.
-std::expected<std::vector<spec::SourceValue>, std::string> DrafterValues(
-    const ja::Artifact& target, const ja::Artifact& drafter) {
-  return ComponentDrafterValues(target, drafter);
-}
-
-bool DeepSeekDomain(const ComponentBuildOptions& options, bool companion) {
-  if (!options.execution_domain) return false;
-  const auto stages = options.execution_domain->stages();
-  constexpr std::array uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode};
-  constexpr std::array phases{engine::NumericalPhase{.phase = planner::Phase::kPrefill,
-                                                     .max_owners = 1,
-                                                     .max_owner_rows = 512,
-                                                     .max_total_rows = 512},
-                              engine::NumericalPhase{.phase = planner::Phase::kDecode,
-                                                     .max_owners = 1,
-                                                     .max_owner_rows = 1,
-                                                     .max_total_rows = 1}};
-  if (!companion) {
-    if (stages.size() != 1 || stages[0].stage != 0 || stages[0].name != "target") return false;
-    constexpr std::array scored_uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
-                                     engine::NumericalUse::kScore};
-    constexpr std::array scored_phases{phases[0], phases[1],
-                                       engine::NumericalPhase{.phase = planner::Phase::kScore,
-                                                              .max_owners = 1,
-                                                              .max_owner_rows = 128,
-                                                              .max_total_rows = 128}};
-    return (std::ranges::equal(stages[0].uses, uses) &&
-            std::ranges::equal(stages[0].phases, phases)) ||
-           (std::ranges::equal(stages[0].uses, scored_uses) &&
-            std::ranges::equal(stages[0].phases, scored_phases));
-  }
-  constexpr std::array composed_uses{engine::NumericalUse::kPrompt, engine::NumericalUse::kDecode,
-                                     engine::NumericalUse::kPromptCompanions,
-                                     engine::NumericalUse::kSpeculative};
-  constexpr std::array target_phases{phases[0], phases[1],
-                                     engine::NumericalPhase{.phase = planner::Phase::kVerify,
-                                                            .max_owners = 1,
-                                                            .max_owner_rows = 4,
-                                                            .max_total_rows = 4}};
-  constexpr std::array draft_phases{engine::NumericalPhase{
-      .phase = planner::Phase::kDraft, .max_owners = 1, .max_owner_rows = 3, .max_total_rows = 3}};
-  return stages.size() == 2 && stages[0].stage == 0 && stages[0].name == "target" &&
-         stages[1].stage == 1 && stages[1].name == "dspark" &&
-         std::ranges::equal(stages[0].uses, composed_uses) &&
-         std::ranges::equal(stages[1].uses, composed_uses) &&
-         std::ranges::equal(stages[0].phases, target_phases) &&
-         std::ranges::equal(stages[1].phases, draft_phases);
-}
 
 // Closed internal scoring experiment, not a serving route. A non-null domain
 // alone is not authority to lift the ordinary single-owner diagnostic bound.
@@ -533,43 +369,28 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           std::format("the component engine serves no architecture {}", settings.architecture));
     const spec::ServingRecipe& recipe = *recipe_mapping->serving;
     // A shared route qualified by its plain or joined envelopes (else one
-    // owner), or one whose automatic serving shape has a closed bridge.
+    // owner), or one served only in its automatic serving shape.
     const bool solo = recipe.shared_route && recipe.qualified_envelopes;
     if (options.derive_execution_domain && (!options.diagnostic_solo || options.execution_domain))
       return Error(
           "derived serving qualification needs an internal request without a caller domain");
-    const bool deepseek = recipe.shared_route && recipe.closed_bridge;
-    const bool dspark = deepseek && !drafter_id.empty();
-    const bool deepseek_serving =
-        deepseek && options.derive_execution_domain && options.automatic_startup_cap != 0 &&
-        !options.construction_metadata && !options.target_policy && settings.context.value != 0 &&
+    const bool automatic_only = recipe.shared_route && !recipe.qualified_envelopes;
+    const bool automatic_serving =
+        automatic_only && options.derive_execution_domain && options.automatic_startup_cap != 0 &&
+        !options.target_policy && settings.context.value != 0 &&
         settings.prefill_chunk.value != 0 &&
         settings.prefill_chunk.value < settings.context.value && settings.max_slots.value != 0 &&
-        settings.max_slots.value <= Llm::kMaxBranches && (!settings.speculation.value || dspark);
+        settings.max_slots.value <= Llm::kMaxBranches &&
+        (!settings.speculation.value || !drafter_id.empty());
+    if (automatic_only && !automatic_serving)
+      return Error(std::format("the {} shared route serves only its automatic serving envelope",
+                               recipe.name));
     // The shared route's serving shape.
-    const bool shared = solo || deepseek_serving;
-    if (deepseek && !deepseek_serving &&
-        (!options.diagnostic_solo || !DeepSeekDomain(options, dspark) ||
-         !options.construction_metadata || options.target_policy || settings.max_slots.value != 1 ||
-         settings.context.value != 3072 || settings.prefill_chunk.value != 512 ||
-         settings.speculation.value != dspark ||
-         (dspark && (drafter_id != kDsparkDiagnosticArtifact || settings.draft_rows.value != 3)) ||
-         id != kDsv4DiagnosticArtifact))
-      return Error("the DeepSeek target bridge requires its paid single-owner diagnostic envelope");
-    std::shared_ptr<ConstructionCharge> construction;
-    if (deepseek && !deepseek_serving) {
-      if (ggml_tensor_overhead() > 512)
-        return Error("DeepSeek native descriptor ABI exceeds its construction inventory");
-      if (!options.construction_metadata->Charge(kDsv4ConstructionBytes))
-        return Error("DeepSeek component construction exceeds its admitted metadata allowance");
-      construction = std::make_shared<ConstructionCharge>();
-      construction->allowance = options.construction_metadata;
-      construction->bytes = kDsv4ConstructionBytes;
-    }
+    const bool shared = solo || automatic_serving;
     const bool joined_score = solo && JoinedScoreEnvelope(settings, drafter_id, options);
     const bool joined_mtp = solo && JoinedMtpEnvelope(settings, drafter_id, options);
     const bool plain_serving = solo && PlainServingEnvelope(settings, drafter_id, options);
-    if (options.derive_execution_domain && !plain_serving && !joined_mtp && !deepseek_serving)
+    if (options.derive_execution_domain && !plain_serving && !joined_mtp && !automatic_serving)
       return Error(
           "derived serving qualification needs an ordinary target or composed replay source");
     if (solo && (!options.diagnostic_solo ||
@@ -577,16 +398,16 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error("the Qwen component qualification requires exactly one configured slot");
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
-    const bool stored = artifact->format_version() == 1;
 
     const spec::Mapping* mapping = spec::FindMapping(artifact->model().architecture);
     if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
     if (settings.architecture != artifact->model().architecture)
       return Error("resolved architecture differs from the opened artifact");
     // Stored source construction is admitted before parsing/copying its spec,
-    // component parameters or role maps. Retain one catalog payment on retries.
+    // component parameters or role maps (a v1 artifact's alone: D-118).
+    // Retain one catalog payment on retries.
     std::unique_ptr<StoredBindingPayment> stored_payment;
-    if (stored) {
+    {
       if (auto admitted = CheckComponentArtifactAdmission(*artifact); !admitted)
         return Error(admitted.error());
       auto bytes = StoredBindingBytes(*artifact);
@@ -607,13 +428,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       stored_payment = std::move(*paid);
     }
     auto hold = std::make_shared<ComponentHold>();
-    hold->construction = std::move(construction);
     hold->stored_payment = std::move(stored_payment);
     std::optional<StoredComponentBindings> stored_bindings;
-    std::optional<model::Qwen38Binding> qwen;
     std::optional<spec::PolicyRule> stored_policy;
     std::expected<spec::ModelSpec, std::string> synthesized;
-    if (stored) {
+    {
       auto bindings = ReadStoredComponents(*artifact, std::move(hold->stored_payment));
       if (!bindings) return Error(bindings.error());
       stored_bindings.emplace(std::move(*bindings));
@@ -631,24 +450,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       synthesized = std::move(stored_bindings->model);
       hold->sources.push_back(std::move(stored_bindings->source));
       hold->place = std::move(stored_bindings->places);
-    } else {
-      std::expected<std::vector<spec::SourceValue>, std::string> values;
-      if (solo) {
-        auto binding = model::BindQwen38(model::Qwen38Flash(), *artifact);
-        if (!binding) return Error(binding.error());
-        qwen.emplace(std::move(*binding));
-        auto hash = RecipeHash(*artifact, *qwen);
-        if (!hash) return Error(hash.error());
-        values = spec::mappings::Qwen38V0Values(model::Qwen38Flash(), *qwen, *hash);
-      } else
-        values = V0Values(settings.architecture, *artifact);
-      if (!values) return Error(values.error());
-      hold->values = std::move(*values);
-      synthesized = spec::SynthesizeV0(*artifact, *mapping, hold->values);
-      if (!synthesized) return Error(synthesized.error());
-      auto source = spec::SourceOfV0(*artifact, mapping);
-      if (!source) return Error(source.error());
-      hold->sources.push_back(std::move(*source));
     }
     // The drafter, a stage of its own, when the model speculates.
     const bool speculate = !drafter_id.empty() && settings.speculation.value;
@@ -658,10 +459,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto opened = OpenInstalled(store, drafter_id);
       if (!opened) return Error(opened.error());
       drafter.emplace(std::move(*opened));
-      if (drafter->format_version() == 1) {
-        if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
-          return Error(admitted.error());
-      }
+      if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
+        return Error(admitted.error());
       // The drafter's mapping as composed (its drafting recipe's replay
       // form; a stored one's by its approval).
       drafter_mapping = ComposedDrafterMapping(*drafter);
@@ -669,9 +468,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         return Error(std::format("the drafter's architecture {} has no drafter mapping",
                                  drafter->model().architecture));
       }
-      if (qwen && qwen->gguf())
-        return Error("the GGUF target has no qualified component drafter recipe");
-      auto dvalues = DrafterValues(*artifact, *drafter);
+      auto dvalues = ComponentDrafterValues(*artifact, *drafter);
       if (!dvalues) return Error(dvalues.error());
       // The values its approval's composition was pinned with, before a
       // setting narrows the draft vocabulary.
@@ -707,12 +504,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           }
       }
       hold->drafter_values = std::move(*dvalues);
-      auto dsource = spec::SourceOf(*drafter, drafter_mapping);
+      auto dsource = spec::SourceOf(*drafter);
       if (!dsource) return Error(dsource.error());
-      // A stored drafter's complete tensor inventory is its approval's.
-      if (drafter->format_version() == 1)
-        if (auto admitted = CheckComponentDrafterAdmission(*dsource, drafter->sources()); !admitted)
-          return Error(admitted.error());
+      // The drafter's complete tensor inventory is its approval's.
+      if (auto admitted = CheckComponentDrafterAdmission(*dsource, drafter->sources()); !admitted)
+        return Error(admitted.error());
       if (auto envelope = ComponentDrafterEnvelope(
               *drafter, {.context = settings.context.value, .slots = settings.max_slots.value});
           !envelope)
@@ -774,9 +570,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       // Already migrated component families use the same paid construction
       // inventory without inventing a NumericalDomain. Newly opted families
       // still require their explicit diagnostic request and derived domain.
-      if ((!OnComponentEngine(settings.architecture) &&
-           (!options.diagnostic_solo || !options.derive_execution_domain)) ||
-          hold->construction)
+      if (!OnComponentEngine(settings.architecture) &&
+          (!options.diagnostic_solo || !options.derive_execution_domain))
         return Error("automatic construction requires a qualified shared serving route");
       auto bytes =
           ServingConstructionBytes(hold->spec, *artifact, drafter ? &*drafter : nullptr, settings);
@@ -862,14 +657,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     const std::uint32_t context = target.context;
     const std::uint32_t chunk = std::max<std::uint32_t>(target.max_rows, 1);
     // The recipe for this serving envelope, and how it composes steps.
-    spec::PolicyRule composition;
-    if (stored) {
-      composition = *stored_policy;
-    } else {
-      auto rule = spec::DefaultRule(*mapping, hold->values, {.context = context, .slots = slots});
-      if (!rule) return Error(rule.error());
-      if (*rule != nullptr) composition = **rule;
-    }
+    spec::PolicyRule composition = *stored_policy;
     // The shared route's own recipe in place of the admitted one.
     const bool forced = shared && recipe.serving_rule != nullptr;
     if (forced) composition = *recipe.serving_rule;
@@ -971,14 +759,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         }
       }
     }
-    if (deepseek && !dspark && options.execution_domain &&
-        options.execution_domain->CheckMode(engine::NumericalUse::kScore)) {
-      // Full-head Score has a different output/workspace envelope from the
-      // frontier-only Prefill. Actual caller schedules may add their complete
-      // compressor/read classes before Setup; the factory measures the maxima.
-      for (const std::uint32_t rows : {128U, 1U})
-        setup.push_back(shape(0, planner::Phase::kScore, 1, rows, rows, false));
-    }
     // Each weight's place, by what the steps bind (the head's included;
     // a state-only prompt chunk binds a subset), and a head row's width:
     // its logits' (the head's vocabulary).
@@ -988,12 +768,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (!slabs) return Error(slabs.error());
       placements.push_back(std::move(*slabs));
     }
-    if (solo && !stored)
-      placements[0].places.at(artifact->resources()[qwen->ple_table.index].group) =
-          engine::GroupPlace::kNone;
-    std::optional<engine::RunnerConfig::RowTable> row_table;
     std::uint32_t logit_width = 0;
-    if (stored_bindings) {
+    {
       logit_width = stored_bindings->logit_width;
       for (const auto& [key, place] : hold->place)
         if (place.array)
@@ -1002,10 +778,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         placements.at(hold->spec.stages.at(row.weight.stage).artifact)
             .places.at(artifact->resources()[row.resource].group) = engine::GroupPlace::kNone;
     }
-    // v0 retains its established synthesis path. Stored v1 target maps came
-    // from the validated component roles above; only a speculating model
-    // builds the setup graphs, to place its drafter's weights.
-    if (!stored || speculate) {
+    // The stored target's maps came from its validated component roles
+    // above; only a speculating model builds the setup graphs, to place its
+    // drafter's weights.
+    if (speculate) {
       for (const planner::StepShape& s : setup) {
         auto step =
             components::BuildStep(hold->spec, s.stage, s,
@@ -1020,7 +796,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           // roles. A target-stage step also binds the drafter's weights (the
           // feature projection a prompt chunk runs when the model speculates),
           // and those have no other source of places.
-          if (stored && weight.ref.stage == 0) continue;
+          if (weight.ref.stage == 0) continue;
           const ja::Artifact& a = weight.ref.stage == 0 ? *artifact : *drafter;
           for (const auto& [name, role] : weight.parts) {
             const auto found =
@@ -1030,21 +806,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                 .artifact = weight.ref.stage, .array = weight.ref.expert_array, .index = *found};
             if (weight.ref.expert_array)
               hold->pitch[weight.ref] = placements.at(weight.ref.stage).pitch.at(*found);
-            if (solo && qwen && weight.ref.stage == 0 && !weight.ref.expert_array &&
-                *found == qwen->ple_table.index) {
-              row_table = {.weight = weight.ref,
-                           .resource = *found,
-                           .format = step->graph.tensor(weight.tensor).format,
-                           .part = role,
-                           .rows_per_token = model::Qwen38Flash().ple_heads()};
-              if (weight.parts.size() > format::PartList::kMax)
-                return Error("a row table exceeds its format part inventory");
-              for (const auto& [part_name, part_role] : weight.parts) {
-                const auto part_resource = a.FindResource(part_name);
-                if (!part_resource) return Error("a row table source part is absent");
-                row_table->source_parts.emplace_back(part_role, *part_resource);
-              }
-            }
           }
         }
         if (s.stage == 0 && step->logits.valid() && logit_width == 0) {
@@ -1061,7 +822,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (block && std::cmp_greater_equal(block_fill, logit_width))
       return Error("a block drafter's fill token is outside the vocabulary");
     // A layer's routed experts in one slab (the M3 runners' pitch).
-    if (solo && !row_table && (!stored_bindings || stored_bindings->rows.empty()))
+    if (solo && stored_bindings->rows.empty())
       return Error("the component recipe has no n-gram row table");
     ComponentHold* held = hold.get();
     kernels::ggml::GgmlBackendOptions backend_options{
@@ -1071,10 +832,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                   // anyway.
                   .frozen_host_masks = recipe.frozen_host_masks,
                   // Every source's reader index is bounded by what its
-                  // construction pays (ServingConstructionBytes), the closed
-                  // DeepSeek diagnostic's by its own ceiling.
-                  .index_scratch_limit = deepseek && !deepseek_serving ? kDsv4ReaderScratchBytes
-                                                                       : kServingReaderScratchBytes,
+                  // construction pays (ServingConstructionBytes).
+                  .index_scratch_limit = kServingReaderScratchBytes,
                   .expert_stride = [held](const ir::WeightRef& ref) -> std::uint64_t {
                     const auto at = held->pitch.find(ref);
                     return at == held->pitch.end() ? 0 : at->second;
@@ -1086,18 +845,15 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // the block-scaled grouped GEMM (a W4A16 checkpoint's policy, a device
     // without FP4) decodes on chip, and the rows of a split NVFP4 table.
     bool has_affine = false, has_atoms = false, has_rows = false;
-    for (std::size_t a = 0; a < hold->tables.size(); ++a) {
-      // A v0 artifact's converted layouts keep their GGML paths.
-      const bool native = (a == 0 ? *artifact : *drafter).format_version() == 1;
-      for (const auto& tensor : hold->tables[a]) {
+    for (const auto& table : hold->tables) {
+      for (const auto& tensor : table) {
         const bool nvfp4 = tensor.format.encoding == format::Encoding::kNvfp4;
         if (tensor.format.encoding == format::Encoding::kAffine ||
             (tensor.experts && nvfp4 && tensor.format.layout == format::Layout::kSplit))
           has_affine = true;
-        if (native && nvfp4 && tensor.experts &&
-            tensor.format.layout == format::Layout::kScaleAtoms)
+        if (nvfp4 && tensor.experts && tensor.format.layout == format::Layout::kScaleAtoms)
           has_atoms = true;
-        if (native && nvfp4 && !tensor.experts && tensor.format.layout == format::Layout::kSplit)
+        if (nvfp4 && !tensor.experts && tensor.format.layout == format::Layout::kSplit)
           has_rows = true;
       }
     }
@@ -1191,7 +947,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // A harness's matched recipe, or the shared route's own, in place of the
     // target's mapping's.
     std::optional<planner::Policy> target_policy;
-    if ((stored && !composition.text.empty()) || options.target_policy || forced) {
+    if (!composition.text.empty() || options.target_policy || forced) {
       auto parsed =
           planner::ParsePolicy(options.target_policy ? *options.target_policy : composition.text);
       if (!parsed) return Error(std::format("the target's policy: {}", parsed.error()));
@@ -1262,8 +1018,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                     .places = std::move(placements[0].places),
                                     .slabs = std::move(placements[0].slabs)});
     parts.config.split_expert_parts = has_affine || has_atoms;
-    if (stored_bindings) parts.config.row_tables = std::move(stored_bindings->rows);
-    if (row_table) parts.config.row_tables.push_back(*row_table);
+    parts.config.row_tables = std::move(stored_bindings->rows);
     if (options.capture_first_verify)
       parts.config.capture_first_phases = 1U << static_cast<unsigned>(planner::Phase::kVerify);
     if (shared)
@@ -1360,14 +1115,6 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                      .capture_ahead = composition.capture_ahead,
                      .prepare_ahead = true,
                      .state_only = true};
-    if (deepseek && !deepseek_serving) {
-      // Closed first target screen: serial completed chunks, with no extra
-      // future program owners; normal prefill/decode execution is unchanged.
-      parts.prefill.lookahead = 0;
-      parts.prefill.capture_ahead = false;
-      parts.prefill.prepare_ahead = false;
-      parts.prefill.state_only = false;
-    }
     if (shared) {
       parts.prefill.lookahead = options.prefill_lookahead ? 2 : 0;
       parts.prefill.prepare_ahead = options.prepare_state;

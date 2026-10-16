@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Shorthand for writing mapping tables (spec/mapping.h) as constant data,
-// and for a v0 profile's source values. Internal to src/spec/mappings.
+// and for the source values the mapping data carries (a drafter import's
+// target, the native MTP drafter's block). Internal to src/spec/mappings
+// (and the tests' family fixtures).
 
 #ifndef LLMP_SPEC_MAPPINGS_RULES_H_
 #define LLMP_SPEC_MAPPINGS_RULES_H_
@@ -101,7 +103,7 @@ inline SourceValue Value(std::string_view key, std::string_view v) {
 inline SourceValue Value(std::string_view key, std::vector<std::int64_t> v) {
   return {.key = std::string(key), .value = ParamValue(std::move(v))};
 }
-// A flag (a fact a v0 artifact's binding gives).
+// A flag (a source's fact, an approval's gate).
 inline SourceValue FlagValue(std::string_view key, bool v) {
   return {.key = std::string(key), .value = ParamValue(v)};
 }

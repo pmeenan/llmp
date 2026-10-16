@@ -41,6 +41,7 @@
 #include "components/step.h"
 #include "engine/support.h"
 #include "execution/registry.h"
+#include "families/gemma.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ggml.h"
@@ -52,8 +53,7 @@
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/set_rows_group.h"
 #include "kernels/ggml/tensors.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
+#include "model/state_contract.h"
 #include "planner/placement.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
@@ -67,7 +67,7 @@ namespace llmp::planner {
 namespace {
 
 namespace kg = llmp::kernels::ggml;
-namespace md = llmp::model;
+namespace fam = llmp::test_support::families;
 namespace ex = llmp::execution;
 using format::Encoding;
 using format::Layout;
@@ -200,13 +200,13 @@ Cells CellsOf(std::uint32_t window, std::uint32_t context, std::uint32_t rows) {
 
 struct Gemma2Family {
   static constexpr bool kGemma3 = false;
-  static const md::Gemma2Profile& P() { return md::Gemma2_2B(); }
+  static const fam::Gemma2Profile& P() { return fam::Gemma2_2B(); }
   static auto Resources() { return test_support::gemma2::Resources(); }
   static Cells State(std::uint32_t context, std::uint32_t rows) {
     return CellsOf(P().window, context, rows);
   }
   static spec::ModelSpec Spec() {
-    auto values = spec::mappings::Gemma2V0Values(P());
+    auto values = fam::Gemma2Values(P());
     return *spec::Synthesize(spec::mappings::Gemma2Mapping(), test_support::Gemma2Source(),
                              *values);
   }
@@ -215,13 +215,13 @@ struct Gemma2Family {
 
 struct Gemma3Family {
   static constexpr bool kGemma3 = true;
-  static const md::Gemma3Profile& P() { return md::Gemma3_4BQat(); }
+  static const fam::Gemma3Profile& P() { return fam::Gemma3_4BQat(); }
   static auto Resources() { return test_support::gemma3::Resources(); }
   static Cells State(std::uint32_t context, std::uint32_t rows) {
     return CellsOf(P().window, context, rows);
   }
   static spec::ModelSpec Spec() {
-    auto values = spec::mappings::Gemma3V0Values(P());
+    auto values = fam::Gemma3Values(P());
     return *spec::Synthesize(spec::mappings::Gemma3Mapping(), test_support::Gemma3Source(),
                              *values);
   }

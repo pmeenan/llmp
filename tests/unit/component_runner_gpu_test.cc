@@ -4,8 +4,9 @@
 // The one model runner (engine/model_runner.h) over the component step
 // source (engine/component_source.h) and the GGML module's lowering
 // (kernels/ggml/step_program.h), on the real Gemma 2 2B and Gemma 3 4B QAT
-// artifacts (label `models`), under the serving recipe (the component
-// source planning under the architecture mapping's policy). Two owners run
+// published v1 artifacts (label `models`: their stored specs and tensors),
+// under the serving recipe (the component source planning under the
+// architecture mapping's policy, gated as the model's approval gates it). Two owners run
 // one script of waves: joined prefill chunks of equal rows (128, 37 and 2:
 // owner prefill and its flexible tiles; 20 over equal reads at different
 // pasts, each owner's own mask), ragged and single-owner chunks (per-owner
@@ -35,9 +36,11 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -49,13 +52,11 @@
 #include "engine/paged_weights.h"
 #include "engine/support.h"
 #include "kernels/ggml/step_program.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
 #include "planner/step_shape.h"
+#include "runtime/approvals.h"
 #include "spec/mapping.h"
-#include "spec/mappings/gemma2.h"
-#include "spec/mappings/gemma3.h"
-#include "tokenizer_fixtures.h"
+#include "spec/stored.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -198,8 +199,8 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
   auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
   EXPECT_TRUE(artifact.has_value());
   if (!artifact) return out;
-  const auto source = llmp::spec::SourceOfV0(*artifact);
-  EXPECT_TRUE(source.has_value());
+  const auto source = llmp::spec::SourceOf(*artifact);
+  EXPECT_TRUE(source.has_value()) << (source ? "" : source.error());
   if (!source) return out;
   const auto valid = co::ValidateSpec(spec, source->tensors);
   EXPECT_TRUE(valid.has_value()) << valid.error();
@@ -321,16 +322,44 @@ Component Lowered(const fs::path& root, const llmp::spec::ModelSpec& spec,
 }
 
 struct Case {
-  std::string name;
-  std::string path;
+  std::string name;  // the store's v1-ids.json name
 };
+
+// The sliding layers' window: the largest an attention component of the
+// stored spec names.
+std::uint32_t Window(const llmp::spec::ModelSpec& spec) {
+  std::int64_t window = 0;
+  for (const llmp::spec::Layer& layer : spec.stages.front().layers) {
+    for (const llmp::spec::ComponentRef& c : layer.components) {
+      const llmp::spec::Param* p = c.Find("window");
+      if (p == nullptr) continue;
+      if (const auto* v = std::get_if<std::int64_t>(&p->value)) window = std::max(window, *v);
+    }
+  }
+  return static_cast<std::uint32_t>(window);
+}
+
+// The values serving plans the mapping's policy with: the gates the
+// model's approval holds, as flags (runtime/component_admission.cc
+// ApprovedRule).
+std::vector<llmp::spec::SourceValue> ApprovedGates(const ar::Artifact& artifact) {
+  std::vector<llmp::spec::SourceValue> gates;
+  const auto* approval =
+      llmp::runtime::FindApproval(artifact.model().architecture, artifact.sources());
+  EXPECT_NE(approval, nullptr) << "no approval for the published artifact";
+  if (approval == nullptr) return gates;
+  for (const std::string_view gate : approval->gates)
+    gates.push_back({.key = std::string(gate), .value = true});
+  return gates;
+}
 
 class ComponentRunnerGpu : public testing::TestWithParam<Case> {};
 
 TEST_P(ComponentRunnerGpu, ServingRecipeScriptIsFiniteAndTheSameRunToRun) {
   const Case& c = GetParam();
-  const fs::path root = llmp::test_support::ModelsDir() + "/" + c.path;
-  if (std::error_code error; !fs::exists(root, error)) GTEST_SKIP() << "no artifact in " << root;
+  const auto id = llmp::test_support::V1IdNamed(c.name);
+  if (!id) GTEST_FAIL() << "no published v1 " << c.name << " in " << llmp::test_support::V1Store();
+  const fs::path root = fs::path(llmp::test_support::V1Store()) / *id;
   // NOLINTNEXTLINE(concurrency-mt-unsafe): the test environment is immutable
   const char* scratch = std::getenv("LLMP_TEST_SCRATCH");
   const fs::path out = fs::path(scratch != nullptr ? scratch : testing::TempDir()) / "lowered";
@@ -340,19 +369,17 @@ TEST_P(ComponentRunnerGpu, ServingRecipeScriptIsFiniteAndTheSameRunToRun) {
   // serving bound (4,096). The sliding layers' ring: the window and a
   // chunk, padded to 256 cells.
   const std::uint32_t context = gemma2 ? 8192U : 4096U;
-  const std::uint32_t window =
-      gemma2 ? llmp::model::Gemma2_2B().window : llmp::model::Gemma3_4BQat().window;
-  const std::uint32_t local_cells = (std::min(context, window + kMaxRows) + 255U) / 256U * 256U;
-  const std::vector<Planned> script = Script(local_cells);
-  const std::vector<llmp::spec::SourceValue> values =
-      gemma2 ? *llmp::spec::mappings::Gemma2V0Values(llmp::model::Gemma2_2B())
-             : *llmp::spec::mappings::Gemma3V0Values(llmp::model::Gemma3_4BQat());
   auto artifact = ar::Artifact::Open(root, {.expected_id = {}});
   ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
   const auto* mapping = llmp::spec::FindMapping(artifact->model().architecture);
   ASSERT_NE(mapping, nullptr);
-  const auto spec = llmp::spec::SynthesizeV0(*artifact, *mapping, values);
+  const auto spec = llmp::spec::StoredSpec(*artifact);
   ASSERT_TRUE(spec.has_value()) << spec.error();
+  const std::vector<llmp::spec::SourceValue> values = ApprovedGates(*artifact);
+  const std::uint32_t window = Window(*spec);
+  ASSERT_GT(window, 0U);
+  const std::uint32_t local_cells = (std::min(context, window + kMaxRows) + 255U) / 256U * 256U;
+  const std::vector<Planned> script = Script(local_cells);
   const Component first = Lowered(root, *spec, *mapping, values, context, script, out);
   const Component second = Lowered(root, *spec, *mapping, values, context, script, out);
   ASSERT_EQ(first.outputs.size(), script.size());
@@ -398,15 +425,8 @@ TEST_P(ComponentRunnerGpu, ServingRecipeScriptIsFiniteAndTheSameRunToRun) {
               script.size(), compared, static_cast<unsigned long long>(first.replayed));
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Gemma, ComponentRunnerGpu,
-    testing::Values(
-        Case{.name = "gemma2",
-             .path = "gemma2-import-20261007/artifacts/"
-                     "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870"},
-        Case{.name = "gemma3",
-             .path = "gemma3-import-20261007/artifacts/"
-                     "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"}),
-    [](const testing::TestParamInfo<Case>& info) { return info.param.name; });
+INSTANTIATE_TEST_SUITE_P(Gemma, ComponentRunnerGpu,
+                         testing::Values(Case{.name = "gemma2"}, Case{.name = "gemma3"}),
+                         [](const testing::TestParamInfo<Case>& info) { return info.param.name; });
 
 }  // namespace

@@ -3,9 +3,7 @@
 
 // Gemma 4's architecture mappings (spec/mapping.h), as llama.cpp's GGUF
 // writes the checkpoints (its gemma4.cpp and gemma4-assistant.cpp, read at
-// 8019dc56; the retired M3 runners ported b29c606e), and the source values
-// of v0 artifacts from the compiled profiles (model/gemma4.h,
-// gemma4_assistant.h).
+// 8019dc56; the retired M3 runners ported b29c606e).
 //
 // "gemma4" (26B-A4B and 31B): five sliding-window layers to a global one
 // (the checkpoint's per-layer flag list must agree); sandwich-normed
@@ -34,7 +32,9 @@
 // width (embedding.projected); then three local and one global layer of
 // borrowed attention, GELU-tanh GLU and output scale; its head is its own
 // token table (tied, every row an output, no softcap) and projects its
-// rows back to the target's width (its next feature).
+// rows back to the target's width (its next feature). Its import composes
+// it with its approved target's values and tensors as data here (the 26B-A4B
+// or 31B checkpoint, by the target width its metadata names).
 //
 // The default planner policies are the production recipe's pattern
 // selection within its qualified envelope (the retired M3 class's
@@ -50,33 +50,12 @@
 #ifndef LLMP_SPEC_MAPPINGS_GEMMA4_H_
 #define LLMP_SPEC_MAPPINGS_GEMMA4_H_
 
-#include <expected>
-#include <string>
-#include <vector>
-
 #include "spec/mapping.h"
-
-namespace llmp::model {
-struct Gemma4Profile;
-struct Gemma4AssistantProfile;
-}  // namespace llmp::model
 
 namespace llmp::spec::mappings {
 
 const Mapping& Gemma4Mapping();
 const Mapping& Gemma4AssistantMapping();
-
-// The profile as the GGUF keys the mapping reads (the per-layer lists as
-// lists). Refused where the profile says what the mapping cannot (other
-// local layers).
-std::expected<std::vector<SourceValue>, std::string> Gemma4V0Values(
-    const model::Gemma4Profile& profile);
-
-// The assistant's profile, with its target's, as the keys its mapping
-// reads. Refused where the profile's target layers are not its target's
-// last local and global layers (what the composition gives it).
-std::expected<std::vector<SourceValue>, std::string> Gemma4AssistantV0Values(
-    const model::Gemma4AssistantProfile& assistant, const model::Gemma4Profile& target);
 
 }  // namespace llmp::spec::mappings
 

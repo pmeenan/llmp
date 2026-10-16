@@ -67,10 +67,7 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
-#include "model/dsv4.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
+#include "model/host_mask.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
 #include "providers/device_execution.h"
@@ -307,7 +304,7 @@ TEST_F(GgmlExtOpsTest, Gemma3DeviceMasksMatchEveryHostByteAcrossWrapAndTrainedMa
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  const std::uint32_t window = llmp::model::Gemma3_4BQat().window;
+  const std::uint32_t window = 1024;                              // Gemma 3 4B's sliding window
   const std::uint32_t global_cells = 131072, local_cells = 1280;  // ring: pad(1024 + 128, 256)
   for (const auto [past, rows] :
        {std::pair{1279U, 1U}, std::pair{1152U, 128U}, std::pair{130816U, 128U}}) {
@@ -399,7 +396,7 @@ TEST_F(GgmlExtOpsTest, Gemma2DeviceMasksMatchEveryHostByteAcrossWrapAndEightKBou
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  const std::uint32_t window = llmp::model::Gemma2_2B().window;
+  const std::uint32_t window = 4096;                            // Gemma 2 2B's sliding window
   const std::uint32_t global_cells = 8192, local_cells = 4352;  // ring: pad(4096 + 128, 256)
   for (const auto [past, rows] :
        {std::pair{4351U, 1U}, std::pair{4224U, 128U}, std::pair{7936U, 128U}}) {
@@ -734,47 +731,79 @@ TEST_F(GgmlExtOpsTest, SharedBlockMasksMatchF16AndF32AndRefreshCapturedSegments)
   }
 }
 
+// DeepSeek V4 Flash's raw sliding-window cache as its chunks read it (the
+// M3 chunk inputs, retired with their runner), through host_mask.h's
+// builders: `cells` of the 128-position window as a ring (pad(128 + 4,096,
+// 256) of an 8,704-position state in chunks of 4,096) or a cell a position;
+// a ring's chunk reads every cell, a full cache's the positions up to the
+// next 256 (at least 256); each row sees the cells holding, after the
+// chunk, a position within the window of its own.
+struct DeepSeekRawChunk {
+  std::uint32_t n_kv = 0;
+  std::vector<std::int32_t> positions;
+  std::vector<std::uint16_t> mask;
+};
+DeepSeekRawChunk DeepSeekRaw(std::uint32_t cells, bool ring, std::uint32_t past,
+                             std::uint32_t rows) {
+  constexpr std::uint64_t kWindow = 128;
+  const std::uint64_t total = std::uint64_t{past} + rows;
+  DeepSeekRawChunk out;
+  out.n_kv = ring
+                 ? cells
+                 : static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                       cells, std::max<std::uint64_t>(
+                                  256, (std::min<std::uint64_t>(total, cells) + 255) / 256 * 256)));
+  out.mask.assign(std::size_t{rows} * out.n_kv, 0xFC00);
+  for (std::uint32_t i = 0; i < rows; ++i) {
+    const std::uint64_t pos = std::uint64_t{past} + i;
+    out.positions.push_back(static_cast<std::int32_t>(pos));
+    const auto visible = llmp::model::HostMaskRing(out.n_kv, pos, total, cells, kWindow);
+    EXPECT_TRUE(visible.has_value());
+    if (visible)
+      llmp::model::FillHostMaskVisible(
+          std::span{out.mask}.subspan(std::size_t{i} * out.n_kv, out.n_kv), *visible,
+          std::uint16_t{0});
+  }
+  return out;
+}
+
 TEST_F(GgmlExtOpsTest, DeepSeekRawDeviceMasksKeepExactRowsAndRefreshCapturedRingPositions) {
-  namespace md = llmp::model;
   const auto stream = reinterpret_cast<cudaStream_t>(execution_->Submission(stream_)->handle);
-  for (const auto window : {md::Dsv4Window::kRing, md::Dsv4Window::kFull}) {
-    auto state = md::Dsv4State(md::Dsv4Flash(), 8704, 4096, window);
-    ASSERT_TRUE(state);
+  for (const bool ring : {true, false}) {
+    const std::uint32_t raw_cells = ring ? 4352 : 8704;
     for (const std::uint32_t rows : {1U, 3U, 16U, 257U}) {
       for (const std::uint32_t past :
-           {0U, std::min(state->raw_cells - 1, 8704U - rows - 2), 8704U - rows - 2}) {
-        auto chunk = md::Dsv4Chunk(md::Dsv4Flash(), *state, past, rows, false);
-        ASSERT_TRUE(chunk);
+           {0U, std::min(raw_cells - 1, 8704U - rows - 2), 8704U - rows - 2}) {
+        const auto chunk = DeepSeekRaw(raw_cells, ring, past, rows);
         // Offset three exercises an actual segment into joined position input.
         std::vector<std::int32_t> positions(rows + 3, 17);
-        std::ranges::copy(chunk->positions, positions.begin() + 3);
+        std::ranges::copy(chunk.positions, positions.begin() + 3);
         auto* input = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rows + 3), positions);
         auto* mask = kg::CausalRingMask(
-            c(), input, chunk->raw_n_kv, 3, static_cast<std::int32_t>(rows),
-            static_cast<std::int32_t>(state->raw_cells), 128, 8704, kg::CausalMaskRows::kExact);
+            c(), input, static_cast<std::int32_t>(chunk.n_kv), 3, static_cast<std::int32_t>(rows),
+            static_cast<std::int32_t>(raw_cells), 128, 8704, kg::CausalMaskRows::kExact);
         ASSERT_EQ(mask->ne[1], rows);
-        ASSERT_EQ(ggml_nbytes(mask), chunk->raw_mask.size() * 2);
+        ASSERT_EQ(ggml_nbytes(mask), chunk.mask.size() * 2);
         const auto bytes = ggml_nbytes(mask);
         const auto address = Allocate(bytes + 512);
         TensorArena::Bind(mask, address + 256);
         ASSERT_EQ(cudaMemsetAsync(reinterpret_cast<void*>(address), 0xa5, bytes + 512, stream),
                   cudaSuccess);
         ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
-        EXPECT_EQ(Download<std::uint16_t>(mask), chunk->raw_mask);
+        EXPECT_EQ(Download<std::uint16_t>(mask), chunk.mask);
         auto graph =
             launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, mask); });
         ASSERT_TRUE(graph);
         // In full-window mode choose positions that keep the same padded cell
         // width; ring shapes retain their width at every position.
-        auto fresh = md::Dsv4Chunk(md::Dsv4Flash(), *state, past + 1, rows, false);
-        ASSERT_TRUE(fresh);
-        if (fresh->raw_n_kv == chunk->raw_n_kv) {
-          std::ranges::copy(fresh->positions, positions.begin() + 3);
+        const auto fresh = DeepSeekRaw(raw_cells, ring, past + 1, rows);
+        if (fresh.n_kv == chunk.n_kv) {
+          std::ranges::copy(fresh.positions, positions.begin() + 3);
           ASSERT_EQ(cudaMemcpyAsync(input->data, positions.data(), ggml_nbytes(input),
                                     cudaMemcpyHostToDevice, stream),
                     cudaSuccess);
           ASSERT_TRUE(launch().Launch(*graph));
-          EXPECT_EQ(Download<std::uint16_t>(mask), fresh->raw_mask);
+          EXPECT_EQ(Download<std::uint16_t>(mask), fresh.mask);
         }
         auto* unexpected = ggml_new_tensor_1d(c(), GGML_TYPE_I32, 1);
         for (std::size_t parent = 1; parent < GGML_MAX_SRC; ++parent) {
@@ -806,7 +835,8 @@ TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPosi
   const auto submission = execution_->Submission(stream_);
   ASSERT_TRUE(submission);
   const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
-  for (const auto* profile : {&llmp::model::Gemma4_26BA4B(), &llmp::model::Gemma4_31B()}) {
+  // Both Gemma 4 checkpoints' sliding window.
+  for (const int window : {1024}) {
     for (const auto segments : {1, 2, 4, 16}) {
       const int rows = segments == 16 ? 16 : segments;
       const int first_past = segments == 1 ? 0 : segments == 16 ? 262144 - rows - 15 * 7 : 1279;
@@ -821,8 +851,7 @@ TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPosi
         for (const bool local : {false, true}) {
           const int read_cells = local ? (segments == 1 ? 256 : capacity) : cells;
           auto* node = kg::Gemma4Mask(c(), input, read_cells, segment * rows, rows,
-                                      local ? capacity : 262144,
-                                      local ? static_cast<int>(profile->window) : 0, 262144);
+                                      local ? capacity : 262144, local ? window : 0, 262144);
           const auto bytes = ggml_nbytes(node);
           const auto address = Allocate(bytes + 512);
           TensorArena::Bind(node, address + 256);
@@ -842,7 +871,7 @@ TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPosi
                 for (int cell = 0; cell < read_cells; ++cell) {
                   if (cell >= end) continue;
                   const int held = cell + ((end - 1 - cell) / capacity) * capacity;
-                  if (held <= query && query - held < static_cast<int>(profile->window))
+                  if (held <= query && query - held < window)
                     mask[static_cast<std::size_t>(r * read_cells + cell)] = 0;
                 }
               }

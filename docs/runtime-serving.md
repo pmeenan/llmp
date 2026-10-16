@@ -179,8 +179,8 @@ drafter = "5c9d95e2…"    # optional: its speculative drafter (DSpark, MTP)
 #     derived from the artifact, calibrated, or its measured fallback
 
 [models."qwen3.8"]
-artifact = "c4fb47a9…"
-drafter = "056a750e…"
+artifact = "d145900e…"   # a v1 import's ID (D-118)
+drafter = "316caa59…"
 tokenizer = "/path/to/tokenizer.json"          # when the artifact keeps none
 chat_template = "/path/to/chat_template.jinja"  # likewise
 
@@ -359,7 +359,7 @@ directory or record found with another owner, modes or links is used and
 said once, D-105 as amended on 2026-10-09):
 
 ```json
-{"format":"llmp-model-calibration-v1","artifact":"8a355bfb…","drafter":"dd2d3f9c…",
+{"format":"llmp-model-calibration-v1","artifact":"698b1cd8…","drafter":"5c9d95e2…",
  "device":"NVIDIA GB10 sm_121, driver 580.95.05, CUDA 13.0","build":"0.3.0-dev.12+g…",
  "settings":"speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 prefill_outa_hca=true/true wave_form=auto prefill_chunk_override=false max_slots_override=false context=262144 wave_costs=[2.08,2.52,2.81,2.4,2.12,2.21,2.23] wave_costs_override=false wave_costs_override_count=0",
  "values":{"prefill_floor_tok_s":333,"decode_floor_tok_s":7,
@@ -706,8 +706,11 @@ envelope bounds the context and owners (a default context is cut to it,
 and to a configured drafter's, so a default configuration starts), and its
 gates select its mapping's policy rule. Source receipts are as the importer
 verified and declared them; admission compares them without re-hashing.
-Serving is v1-only from slice 4b (D-118): a v0 artifact is re-imported;
-this build's v0 path goes with that slice. Gemma 2 and Gemma 3 are moved (since their migration, whose
+Serving is v1-only (D-118, slice 4b): a target or drafter of any other
+format version is refused at registration ("re-import its source checkpoint
+with `llmp import`"), and a configuration names the v1 import's ID; nothing
+is synthesized from a compiled profile or bound by a per-family binder.
+The v0 IDs in older reports are history. Gemma 2 and Gemma 3 are moved (since their migration, whose
 gate passed and whose M3 classes, runners, plans, graph builders and
 `ServingOptions` flags are deleted), and so are Gemma 4 26B-A4B and 31B
 with their assistants (since theirs, whose M3 Gemma 4 class, runner,
@@ -732,11 +735,10 @@ the Gemma gates ran with it (the M3 Gemma 4 class's saves failed the same
 way), and it stays for the later families' gates.
 The parts of an
 engine-backed model's runner are built at its Setup
-(`runtime/component_build.h`): its spec synthesized from its v0 artifact
-by its architecture's mapping (composed with its drafter's when it
-speculates), its components' state layouts and batching, and a component
-step source a stage planned under each mapping's policy for the serving
-envelope (the family's recipe as data: its context and request slots
+(`runtime/component_build.h`): the spec its v1 artifact stores (composed
+with its drafter's when it speculates), its components' state layouts and
+batching, and a component step source a stage planned under its
+approval's policy rule for the serving envelope (the family's recipe as data: its context and request slots
 choose the rule, which also says whether prompt chunks and owners step
 alone and how many prompt chunks are planned ahead) over GGML's registry
 and lowered onto its graphs, on the model's own stream, with a cuBLAS

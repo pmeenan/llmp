@@ -3,7 +3,6 @@
 #ifndef LLMP_TESTS_SUPPORT_GEMMA4_ASSISTANT_FIXTURE_H_
 #define LLMP_TESTS_SUPPORT_GEMMA4_ASSISTANT_FIXTURE_H_
 #include "gemma4_fixture.h"
-#include "model/gemma4_assistant.h"
 namespace llmp::test_support::gemma4 {
 inline std::vector<md::Gemma4Resource> AssistantResources(std::uint32_t size) {
   const auto* dir = std::getenv("LLMP_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)

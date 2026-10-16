@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The Gemma 4 components end to end on the real artifacts (label
-// `models`): the specs synthesized from the installed v0 artifacts
-// (SynthesizeV0) and validated against their tensors, built into steps
+// `models`): the specs the published v1 artifacts store (spec/stored.h
+// StoredSpec), validated against their tensors (SourceOf), built into steps
 // (components/step.h BuildStep) and run by the reference executor (double
 // arithmetic over the decoded weights, F16 KV state), against the served
 // model on the GPU (the runtime's server over the shared engine,
@@ -58,12 +58,11 @@
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/reference/exec.h"
-#include "model/gemma4.h"
 #include "planner/step_shape.h"
 #include "runtime/serving.h"
 #include "spec/mapping.h"
-#include "spec/mappings/gemma4.h"
-#include "tokenizer_fixtures.h"
+#include "spec/stored.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -71,7 +70,6 @@ namespace co = llmp::components;
 namespace rt = llmp::runtime;
 namespace cfg = llmp::config;
 namespace ar = llmp::artifact;
-namespace md = llmp::model;
 namespace ref = llmp::kernels::reference;
 namespace fs = std::filesystem;
 namespace pl = llmp::planner;
@@ -101,10 +99,6 @@ constexpr double kTieMargin = 0.25;
 constexpr std::array<std::int32_t, 2> kPrompt{2, 818};
 constexpr std::uint32_t kContext = 512;
 constexpr std::uint32_t kRows = 64;
-
-const fs::path kStore = fs::path("m3-artifacts");
-constexpr std::string_view k26 = "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
-constexpr std::string_view k31 = "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
 
 std::int32_t Top(std::span<const float> row) {
   return static_cast<std::int32_t>(std::ranges::max_element(row) - row.begin());
@@ -350,27 +344,25 @@ void ExpectClose(std::string_view what, std::span<const float> reference,
   EXPECT_LE(worst, tolerance) << what;
 }
 
-std::optional<fs::path> Installed(std::string_view id) {
-  const fs::path root = fs::path(llmp::test_support::ModelsDir()) / kStore / id;
-  if (std::error_code error; !fs::exists(root, error)) return std::nullopt;
-  return root;
+// The published v1 artifact the store's v1-ids.json names `name`.
+std::optional<fs::path> Installed(std::string_view name) {
+  const auto id = llmp::test_support::V1IdNamed(name);
+  if (!id) return std::nullopt;
+  return fs::path(llmp::test_support::V1Store()) / *id;
 }
 
 TEST(ComponentsGemma4ModelsGpu, Gemma26MatchesTheServedModel) {
-  const auto target = Installed(k26);
-  if (!target) GTEST_SKIP() << "no Gemma 4 26B installed";
+  const auto target = Installed("gemma26");
+  if (!target) GTEST_FAIL() << "no published v1 Gemma 4 26B in " << llmp::test_support::V1Store();
   const Production production = RunProduction(*target, true);
   ASSERT_FALSE(production.prompt.empty());
   ASSERT_FALSE(production.decode.empty());
   auto ta = ar::Artifact::Open(*target, {.expected_id = {}});
   ASSERT_TRUE(ta.has_value());
-  const auto& mapping = llmp::spec::mappings::Gemma4Mapping();
-  ASSERT_EQ(llmp::spec::FindMapping(ta->model().architecture), &mapping);
-  const auto spec = llmp::spec::SynthesizeV0(
-      *ta, mapping, *llmp::spec::mappings::Gemma4V0Values(md::Gemma4_26BA4B()));
+  const auto spec = llmp::spec::StoredSpec(*ta);
   ASSERT_TRUE(spec.has_value()) << spec.error();
-  auto ts = llmp::spec::SourceOfV0(*ta);
-  ASSERT_TRUE(ts.has_value());
+  auto ts = llmp::spec::SourceOf(*ta);
+  ASSERT_TRUE(ts.has_value()) << ts.error();
   const auto valid = co::ValidateSpec(*spec, ts->tensors);
   ASSERT_TRUE(valid.has_value()) << valid.error();
   Reference reference(*spec, {{*target, &*ta}}, {*ts});
@@ -392,18 +384,16 @@ TEST(ComponentsGemma4ModelsGpu, Gemma26MatchesTheServedModel) {
 }
 
 TEST(ComponentsGemma4ModelsGpu, Gemma31MatchesTheServedModel) {
-  const auto target = Installed(k31);
-  if (!target) GTEST_SKIP() << "no Gemma 4 31B installed";
+  const auto target = Installed("gemma31");
+  if (!target) GTEST_FAIL() << "no published v1 Gemma 4 31B in " << llmp::test_support::V1Store();
   const Production production = RunProduction(*target, false);
   ASSERT_FALSE(production.prompt.empty());
   auto ta = ar::Artifact::Open(*target, {.expected_id = {}});
   ASSERT_TRUE(ta.has_value());
-  const auto spec =
-      llmp::spec::SynthesizeV0(*ta, llmp::spec::mappings::Gemma4Mapping(),
-                               *llmp::spec::mappings::Gemma4V0Values(md::Gemma4_31B()));
+  const auto spec = llmp::spec::StoredSpec(*ta);
   ASSERT_TRUE(spec.has_value()) << spec.error();
-  auto ts = llmp::spec::SourceOfV0(*ta);
-  ASSERT_TRUE(ts.has_value());
+  auto ts = llmp::spec::SourceOf(*ta);
+  ASSERT_TRUE(ts.has_value()) << ts.error();
   const auto valid = co::ValidateSpec(*spec, ts->tensors);
   ASSERT_TRUE(valid.has_value()) << valid.error();
   Reference reference(*spec, {{*target, &*ta}}, {*ts});

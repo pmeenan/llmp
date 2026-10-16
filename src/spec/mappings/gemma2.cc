@@ -10,7 +10,6 @@
 #include <string>
 #include <vector>
 
-#include "model/gemma2.h"
 #include "spec/mapping.h"
 #include "spec/mappings/rules.h"
 #include "spec/spec.h"
@@ -129,34 +128,5 @@ constexpr Mapping kMapping{
 }  // namespace
 
 const Mapping& Gemma2Mapping() { return kMapping; }
-
-std::expected<std::vector<SourceValue>, std::string> Gemma2V0Values(const model::Gemma2Profile& p) {
-  if (p.key_dim == 0 ||
-      p.attention_scale != static_cast<float>(1.0 / std::sqrt(static_cast<double>(p.key_dim))) ||
-      p.rope_scale != 1.0F) {
-    return std::unexpected(
-        "the Gemma 2 profile's attention scale or rotation scaling is not the mapping's");
-  }
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    if (p.local(il) != (kMapping.layer_types.at(il % kMapping.layer_types.size()) == 'l')) {
-      return std::unexpected("the Gemma 2 profile's local layers are not the mapping's");
-    }
-  }
-  return std::vector<SourceValue>{
-      Value("gemma2.context_length", p.context),
-      Value("gemma2.embedding_length", p.width),
-      Value("gemma2.block_count", p.layers),
-      Value("gemma2.feed_forward_length", p.ffn),
-      Value("gemma2.attention.head_count", p.heads),
-      Value("gemma2.attention.head_count_kv", p.kv_heads),
-      Value(kKeyLength, p.key_dim),
-      Value("gemma2.attention.value_length", p.value_dim),
-      Value(kEps, p.rms_eps),
-      Value("gemma2.attn_logit_softcapping", p.attention_softcap),
-      Value("gemma2.final_logit_softcapping", p.final_softcap),
-      Value("gemma2.attention.sliding_window", p.window),
-      Value("gemma2.rope.freq_base", p.rope_base),
-  };
-}
 
 }  // namespace llmp::spec::mappings

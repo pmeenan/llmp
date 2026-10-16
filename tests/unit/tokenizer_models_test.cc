@@ -323,11 +323,11 @@ TEST(Vocabularies, DeepSeek0731TokenizerEqualsE3aa0d6a) {
             "d05566ebe26667ec54f4ef7a3dbc114ce2e00aefc40e0c62286374eee0e22080");
 }
 
-// The community IQ2_XXS GGUF (antirez/deepseek-v4-gguf@f71f23d5, artifact
-// cd39d504…) as its imported artifact keeps its metadata: the 0731 GGUF's
-// tokenizer with another chat template, chat-v2.
+// The community IQ2_XXS GGUF (antirez/deepseek-v4-gguf@f71f23d5) as its v1
+// import (e7c0d0e4…, in the published v1 store) keeps its metadata: the 0731
+// GGUF's tokenizer with another chat template, chat-v2.
 constexpr std::string_view kCommunityKv =
-    "m3-artifacts/cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac/meta/"
+    "m36-v1-artifacts/e7c0d0e453aab30765c884ab610835936e80312646f18383538bd4d9b428dc59/meta/"
     "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.kv.gguf";
 
 TEST(Vocabularies, DeepSeekCommunityTokenizerEquals0731) {

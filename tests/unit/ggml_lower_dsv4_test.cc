@@ -23,6 +23,7 @@
 #include "dsv4_fixture.h"
 #include "engine/component_source.h"
 #include "execution/registry.h"
+#include "families/dsv4.h"
 #include "ggml.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
@@ -34,8 +35,6 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
-#include "model/dspark.h"
-#include "model/dsv4.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
@@ -45,6 +44,7 @@ namespace {
 namespace co = llmp::components;
 namespace en = llmp::engine;
 namespace ex = llmp::execution;
+namespace fam = llmp::test_support::families;
 namespace fx = llmp::test_support::dsv4;
 namespace ir = llmp::ir;
 namespace kg = llmp::kernels::ggml;
@@ -70,8 +70,8 @@ ex::Registry Registry(bool indexer = true) {
 }
 
 struct Fixture {
-  md::Dsv4Profile target = md::Dsv4Flash();
-  md::DsparkProfile draft = md::DsparkDeepSeekV4Flash();
+  fam::Dsv4Profile target = fam::Dsv4Flash();
+  fam::DsparkProfile draft = fam::DsparkDeepSeekV4Flash();
   sp::Source target_source =
       fx::SourceOf("deepseek4", fx::Resources(target), sp::mappings::Dsv4Mapping());
   sp::Source draft_source =
@@ -82,8 +82,8 @@ struct Fixture {
   std::unique_ptr<en::StagedStepSource> source;
 
   bool Init() {
-    const auto tv = sp::mappings::Dsv4V0Values(target);
-    const auto dv = sp::mappings::DsparkV0Values(draft);
+    const auto tv = fam::Dsv4Values(target);
+    const auto dv = fam::DsparkValues(draft);
     auto ts = sp::Synthesize(sp::mappings::Dsv4Mapping(), target_source, *tv);
     if (!ts) {
       ADD_FAILURE() << ts.error();

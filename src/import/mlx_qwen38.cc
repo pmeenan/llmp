@@ -18,7 +18,6 @@
 
 #include "components/step.h"
 #include "import/parameter_folds.h"
-#include "model/qwen38.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -1476,7 +1475,6 @@ NormalizationCost Cost() {
 }
 
 std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>, 3>& semantic) {
-  const auto& p = model::Qwen38Flash();
   std::vector<spec::SourceValue> out;
   out.reserve(64);
   const auto integer = [&](std::string_view key, std::int64_t value) {
@@ -1491,7 +1489,8 @@ std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>
   integer("qwen4exp.embedding_length", 2560);
   integer("qwen4exp.hyper_connection.count", 4);
   integer("qwen4exp.hyper_connection.low_rank", 320);
-  real("qwen4exp.attention.layer_norm_rms_epsilon", p.rms_eps);
+  // The checkpoint's float32 epsilon, widened.
+  real("qwen4exp.attention.layer_norm_rms_epsilon", 1e-6F);
   integer("qwen4exp.attention.head_count", 24);
   integer("qwen4exp.attention.head_count_kv", 2);
   integer("qwen4exp.attention.key_length", 256);
@@ -1569,7 +1568,6 @@ std::expected<std::vector<PlannedPartFold>, Error> FoldTargetParameters(
     std::vector<TensorAssembly>& outputs) {
   const spec::Source unfolded{.architecture = "qwen4exp",
                               .container = "mlx",
-                              .converter = {},
                               .tensors = CanonicalOf(outputs),
                               .folds = {std::string(kHeadReorder)}};
   auto spec =

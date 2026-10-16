@@ -5,8 +5,8 @@
 // capabilities, ExLlamaV3's kernels against the CPU reference
 // (kernels/reference/decode.h), and the Qwen2.5 EXL3 fixtures' products
 // through the registry's candidates. Label `gpu` (and `models`: the
-// fixtures' test reads the v0 artifacts where they are installed, on
-// spark and spark-b); the selection and synthetic tests also run on a
+// fixtures' test reads their published v1 artifacts where the store holds
+// them, on spark and spark-b); the selection and synthetic tests also run on a
 // discrete GPU the build targets (`gpu-discrete`, D-082).
 // - Candidates(): at decode rows (1 to 16) the GEMV (K = 4, up to 8 rows)
 //   and the packed GEMM, never a reconstruction, whatever is measured; at
@@ -50,7 +50,6 @@
 #include <vector>
 
 #include "artifact/artifact.h"
-#include "artifact/format_map.h"
 #include "execution/registry.h"
 #include "format/encoding.h"
 #include "format/layout.h"
@@ -61,9 +60,9 @@
 #include "kernels/exl3/recon_gemm.h"
 #include "kernels/exl3/validate.h"
 #include "kernels/reference/decode.h"
-#include "model/qwen2_exl3.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -72,7 +71,6 @@ namespace ref = llmp::kernels::reference;
 namespace ex = llmp::execution;
 namespace format = llmp::format;
 namespace ar = llmp::artifact;
-namespace model = llmp::model;
 namespace ir = llmp::ir;
 namespace fs = std::filesystem;
 using exl3::Output;
@@ -739,22 +737,12 @@ TEST_F(Exl3TrellisTest, ReconstructionIsTheReferenceDecode) {
 
 // ---------------------------------------------------------------- fixtures
 
-// The v0 fixtures (docs/experiments/artifact-layout), where they are
-// installed (artifact_test.cc's store), or under LLMP_EXL3_FIXTURE_STORE.
+// The published v1 EXL3 fixtures (the store's v1-ids.json names; the v1
+// import of docs/experiments/artifact-layout's checkpoints).
 constexpr std::array<std::pair<std::string_view, std::string_view>, 2> kFixtures = {{
-    {"6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4", "EXL3 4.0 bpw"},
-    {"00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a", "EXL3 4.5 bpw"},
+    {"qwen2-exl3-4.0", "EXL3 4.0 bpw"},
+    {"qwen2-exl3-4.5", "EXL3 4.5 bpw"},
 }};
-
-fs::path Store() {
-  if (const char* p = std::getenv("LLMP_EXL3_FIXTURE_STORE");  // NOLINT(concurrency-mt-unsafe)
-      p != nullptr && *p != '\0') {
-    return p;
-  }
-  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  return fs::path(home != nullptr ? home : "/") /
-         ".local/share/llmp/artifact-layout-20260922/installed";
-}
 
 std::vector<std::byte> ReadResource(const fs::path& root, const ar::Artifact& a,
                                     std::uint32_t resource) {
@@ -770,95 +758,100 @@ std::vector<std::byte> ReadResource(const fs::path& root, const ar::Artifact& a,
   return out;
 }
 
-std::unique_ptr<Linear> Load(const fs::path& root, const ar::Artifact& a,
-                             const model::Exl3LinearBinding& b) {
-  auto l = std::make_unique<Linear>();
-  l->name = b.name;
-  const auto marker = a.FindResource(b.name + ".mcg");
-  EXPECT_TRUE(marker.has_value()) << b.name;
-  if (!marker) {
-    return nullptr;
-  }
-  const std::array<ar::V0Part, 4> parts = {{
-      {PartRole::kCodes, &a.resources()[b.trellis].repr},
-      {PartRole::kInputSigns, &a.resources()[b.suh].repr},
-      {PartRole::kOutputSigns, &a.resources()[b.svh].repr},
-      {PartRole::kCodebookMarker, &a.resources()[*marker].repr},
+// The linear `name` ("model.layers.0.mlp.down_proj", "lm_head"): its four
+// parts, the resources <name>.trellis, .suh, .svh and .mcg, each recording
+// the one trellis format the linear has.
+std::unique_ptr<Linear> Load(const fs::path& root, const ar::Artifact& a, const std::string& name) {
+  constexpr std::array<std::pair<PartRole, std::string_view>, 4> kParts = {{
+      {PartRole::kCodes, ".trellis"},
+      {PartRole::kInputSigns, ".suh"},
+      {PartRole::kOutputSigns, ".svh"},
+      {PartRole::kCodebookMarker, ".mcg"},
   }};
-  const auto f = ar::Assemble(Encoding::kExl3Trellis, Layout::kExl3Tiles, parts);
-  EXPECT_TRUE(f.has_value()) << b.name;
-  if (!f) {
+  std::array<std::uint32_t, 4> resources{};
+  for (std::size_t i = 0; i < kParts.size(); ++i) {
+    const auto found = a.FindResource(name + std::string(kParts[i].second));
+    EXPECT_TRUE(found.has_value()) << name << kParts[i].second;
+    if (!found) return nullptr;
+    const ar::Resource& r = a.resources()[*found];
+    EXPECT_EQ(r.part, kParts[i].first) << r.name;
+    EXPECT_TRUE(r.format.has_value()) << r.name;
+    if (r.part != kParts[i].first || !r.format) return nullptr;
+    if (i != 0) EXPECT_EQ(*r.format, *a.resources()[resources[0]].format) << r.name;
+    resources[i] = *found;
+  }
+  auto l = std::make_unique<Linear>();
+  l->name = name;
+  l->format = *a.resources()[resources[0]].format;
+  EXPECT_EQ(l->format.encoding, Encoding::kExl3Trellis) << name;
+  EXPECT_EQ(l->format.layout, Layout::kExl3Tiles) << name;
+  if (l->format.encoding != Encoding::kExl3Trellis || l->format.layout != Layout::kExl3Tiles) {
     return nullptr;
   }
-  l->format = *f;
-  EXPECT_EQ(l->k(), b.k);
-  EXPECT_EQ(l->n(), b.n);
-  EXPECT_EQ(l->bits(), b.bits);
-  l->codes = ReadResource(root, a, b.trellis);
-  l->suh = ReadResource(root, a, b.suh);
-  l->svh = ReadResource(root, a, b.svh);
-  l->marker = ReadResource(root, a, *marker);
+  l->codes = ReadResource(root, a, resources[0]);
+  l->suh = ReadResource(root, a, resources[1]);
+  l->svh = ReadResource(root, a, resources[2]);
+  l->marker = ReadResource(root, a, resources[3]);
   l->Upload();
   return l;
 }
 
 TEST_F(Exl3TrellisTest, FixturesDecodeAsUpstreamAndTheirCandidatesComputeTheirProducts) {
   std::size_t found = 0;
-  for (const auto& [id, what] : kFixtures) {
-    const fs::path root = Store() / id;
-    std::error_code error;
-    if (!fs::is_directory(root, error)) {
+  for (const auto& [fixture, what] : kFixtures) {
+    const auto id = llmp::test_support::V1IdNamed(fixture);
+    if (!id) {
       continue;
     }
+    const fs::path root = fs::path(llmp::test_support::V1Store()) / *id;
     ++found;
     SCOPED_TRACE(what);
     const auto opened = ar::Artifact::Open(root);
     ASSERT_TRUE(opened.has_value()) << root;
-    const auto binding = model::BindQwen2Exl3(model::Qwen25Instruct05BExl3(), *opened);
-    ASSERT_TRUE(binding.has_value()) << binding.error();
-    // Every linear's rotated weights, bit for bit.
+    // Every linear's rotated weights, bit for bit: each resource holding a
+    // trellis's codes names one.
     std::size_t linears = 0;
-    for (const model::Exl3LayerBinding& layer : binding->layers) {
-      for (const model::Exl3LinearBinding* b :
-           {&layer.q, &layer.k, &layer.v, &layer.o, &layer.gate, &layer.up, &layer.down}) {
-        const auto l = Load(root, *opened, *b);
-        ASSERT_NE(l, nullptr);
-        CheckRotated(*l, 0, l->n());
-        ++linears;
+    for (const ar::Resource& r : opened->resources()) {
+      if (r.part != PartRole::kCodes || !r.name.ends_with(".trellis")) {
+        continue;
       }
-    }
-    {
-      const auto head = Load(root, *opened, binding->lm_head);
-      ASSERT_NE(head, nullptr);
-      CheckRotated(*head, 0, 1024);
-      CheckRotated(*head, head->n() - 1024, 1024);
+      const auto l = Load(root, *opened, r.name.substr(0, r.name.size() - 8));
+      ASSERT_NE(l, nullptr) << r.name;
+      if (l->name == "lm_head") {
+        CheckRotated(*l, 0, 1024);
+        CheckRotated(*l, l->n() - 1024, 1024);
+      } else {
+        CheckRotated(*l, 0, l->n());
+      }
       ++linears;
     }
     EXPECT_EQ(linears, 169U);
     // Layer 0: the original-basis weights, and the products.
-    const model::Exl3LayerBinding& layer = binding->layers.at(0);
-    for (const model::Exl3LinearBinding* b :
-         {&layer.q, &layer.k, &layer.v, &layer.o, &layer.gate, &layer.up, &layer.down}) {
-      const auto l = Load(root, *opened, *b);
+    const std::string attention = "model.layers.0.self_attn.";
+    const std::string mlp = "model.layers.0.mlp.";
+    for (const std::string& linear :
+         {attention + "q_proj", attention + "k_proj", attention + "v_proj", attention + "o_proj",
+          mlp + "gate_proj", mlp + "up_proj", mlp + "down_proj"}) {
+      const auto l = Load(root, *opened, linear);
       ASSERT_NE(l, nullptr);
       CheckFused(*l);
     }
-    for (const model::Exl3LinearBinding* b : {&layer.q, &layer.gate, &layer.down}) {
-      const auto l = Load(root, *opened, *b);
+    for (const std::string& linear : {attention + "q_proj", mlp + "gate_proj", mlp + "down_proj"}) {
+      const auto l = Load(root, *opened, linear);
       ASSERT_NE(l, nullptr);
       const std::vector<float> w = l->Rows();
       for (const int rows : {1, 8, 145, 1024}) {
         CheckProducts(*l, w, rows);
       }
     }
-    const auto gate = Load(root, *opened, layer.gate);
-    const auto up = Load(root, *opened, layer.up);
+    const auto gate = Load(root, *opened, mlp + "gate_proj");
+    const auto up = Load(root, *opened, mlp + "up_proj");
     ASSERT_NE(gate, nullptr);
     ASSERT_NE(up, nullptr);
     CheckMulti(*gate, gate->Rows(), *up, up->Rows(), 8);
   }
   if (found == 0) {
-    GTEST_SKIP() << "no EXL3 fixture under " << Store() << " (they are on spark and spark-b)";
+    GTEST_FAIL() << "no published v1 EXL3 fixture in " << llmp::test_support::V1Store();
   }
 }
 

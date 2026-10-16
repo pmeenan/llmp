@@ -315,6 +315,12 @@ constexpr std::array kDsv4Sources{
                   47390237120ULL},
 };
 
+constexpr std::array kDsv4Iq2xxsSources{
+    SourceReceipt{"DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf",
+                  "ca22ae2f838e14077c22bc1c1417b71b45b5e5a3687bd96c2ac6e17fdb6261c0",
+                  86720111488ULL},
+};
+
 constexpr std::array kDsparkSources{
     SourceReceipt{"dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
                   "2c7ac54b0b64a99df1f139a9f1371a00198265e1d6a614b77597d20a655a4249",
@@ -364,6 +370,15 @@ constexpr std::array kMtpRelayouts{
 };
 // Gemma 4 26B-A4B's routed experts gate its policy rules.
 constexpr std::array<std::string_view, 1> kGemma4Experts{"gemma4.expert_count"};
+// Gemma 4's envelope is its mapping's rule domains: the joined recipes
+// within a context of 8,192 and four owners, and beyond them the scalar
+// owners-alone route at M3's bounded admission: twelve scalar owners
+// qualified; context to the trained 262,144, long context not verified
+// (docs/experiments/gemma31-serving; docs/model-support.md, "Envelope").
+// Memory bounds it below. A default context stays within the joined
+// domains (ApprovedDefaultContext).
+constexpr std::uint32_t kGemma4Context = 262144;
+constexpr std::uint32_t kGemma4Owners = 12;
 
 constexpr std::uint32_t kAnyOwners = std::numeric_limits<std::uint32_t>::max();
 
@@ -401,8 +416,8 @@ constexpr std::array kApprovals{
              .inventory = "cefd4cfe5a3b8e6d3c0facb34933a8124c49890761a56b905efd5208f627e5e6",
              .spec = "2284f647e55684479768e12f91ae0b88b13c8dc855f84c4aff1e37a06d028290",
              .tied_output = true,
-             .max_context = 8192,
-             .max_slots = 4,
+             .max_context = kGemma4Context,
+             .max_slots = kGemma4Owners,
              .gates = kGemma4Experts},
     Approval{.name = "gemma-4-31b-it-ud-q4_k_xl",
              .label = "Gemma31",
@@ -413,8 +428,8 @@ constexpr std::array kApprovals{
              .inventory = "9109e8abbf01494c81640a14167774200debe1533c39fed86708708289bf2c3b",
              .spec = "f511d74ed438866558034d5f6366ab270bb975b8bde3b75f35f8e6c669951bff",
              .tied_output = true,
-             .max_context = 8192,
-             .max_slots = 4},
+             .max_context = kGemma4Context,
+             .max_slots = kGemma4Owners},
     Approval{.name = "mtp-gemma-4-26b-a4b-it",
              .label = "Gemma26 assistant",
              .architecture = "gemma4-assistant",
@@ -559,6 +574,31 @@ constexpr std::array kApprovals{
              .spec = "ddaaa1d38bd6a501b9ef891bc0f639a70f41b19ff85a85674be5d77470e7a8e8",
              .max_context = 1048576,
              .max_slots = kAnyOwners,
+             .policy = ApprovedPolicy::kMappingOrNone},
+    // antirez/deepseek-v4-gguf@f71f23d5's community GGUF (IQ2_XXS gate/up
+    // experts, Q2_K down, F16 compressor APE, mixing and router tables),
+    // imported natively as v1 e7c0d0e4. It lists no shared-expert clamps, so
+    // its shared expert clamps as its routed ones (10), as M3's profile
+    // served it; its stored spec is byte-identical to the UD-Q2_K_XL
+    // target's (the same digest). Its M3 evidence (v0 cd39d504, docs/
+    // model-support.md#deepseek-v4-community-iq2_xxs, experiments/ds4-study
+    // and deepseek-batching): plain greedy through 128,817 prompt tokens in
+    // the native harness (one owner); through the runtime at context 16,384,
+    // and at context 262,144 in four-slot plain waves of 7K prompts. The v1
+    // artifact's own evidence is the frozen-digest smoke test alone
+    // (dsv4_engine_target_gpu_test PublishedIq2xxs*); no v0 comparison or
+    // speed gate ran on it, and no drafter approval names it.
+    Approval{.name = "deepseek-v4-flash-iq2xxs-w2q2k-chat-v2-imatrix-0731",
+             .label = "DeepSeek V4 Flash IQ2_XXS",
+             .architecture = "deepseek4",
+             .container = "gguf",
+             .sources = kDsv4Iq2xxsSources,
+             .tensors = 1328,
+             .arrays = 129,
+             .inventory = "b3dad08e426a83ab38991ba3b479b363b26ca8a6df581301ff8afd9675ce41ad",
+             .spec = "ddaaa1d38bd6a501b9ef891bc0f639a70f41b19ff85a85674be5d77470e7a8e8",
+             .max_context = 262144,
+             .max_slots = 4,
              .policy = ApprovedPolicy::kMappingOrNone},
     Approval{.name = "dspark-deepseek-v4-flash-0731-q8_0",
              .label = "DSpark",

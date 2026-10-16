@@ -55,6 +55,20 @@ it overstated. Corrections, in force until the closeout lands:
   MXFP4/MXFP8 routed experts and dense NVFP4 linears are not relaid out; MLX
   is admitted but not qualified for serving (no serving comparison or gate);
   a drafter with another head list, or none, has no approval.
+- **Slice 4b (v1-only serving, D-118), in review on `m36-v1only-b`.**
+  Serving refuses v0 with the re-import message; the per-family
+  `src/model/` profiles and binders, `gemma_profile`, every `*V0Values`,
+  `SynthesizeV0`/`SourceOfV0`/`ComposeDrafterV0` and the v0 converter fold
+  rules are deleted; a GGUF drafter's import takes its target as mapping data
+  (`DraftRecipe::import_targets`). Re-imports reproduce the published v1 IDs.
+  Tests synthesize families from `tests/support/families/`; models tests run on
+  the v1 store; the speed gate's new arm and `swap_table.py` default to v1
+  IDs. Open: the Qwen-Image composition (the image slice's), whose components
+  stay v0. **M3.5 debt** (owner's reviewer, 2026-10-16): the importer's
+  family-specific native readers stay (`src/cli/import.cc`'s dispatch on
+  `qwen3_8_flash_next`/`qwen4_exp`, `import/modelopt_qwen38.cc` and
+  `import/mlx_qwen38.cc`); generalize them into mapping-driven ModelOpt and
+  MLX normalizers when Nemotron NVFP4 brings a second ModelOpt model.
 - **G4d (legacy DeepSeek V4/DSpark runner deletion), in review on `m36-g4d`.**
   - Step 1 below (the `deepseek` C2 decode gate) is resolved by `495a1cdb`. The
     frozen baseline binary is the old arm, so deleting the legacy runner does not
@@ -68,7 +82,9 @@ it overstated. Corrections, in force until the closeout lands:
   - **DONE (`88eb0da4`):** DeepSeek's serving GPU coverage is ported to the
     shared engine (`Dsv4EngineServing`), replacing what the legacy runner's
     serving tests held. The legacy A/B screen was deleted outright. The
-    `Dsv4EngineTargetGpu.*` full-model tests remain opt-in bridge diagnostics.
+    opt-in `Dsv4EngineTargetGpu.*` bridge diagnostics went with the closed
+    bridge in slice 4b; the frozen v1 screens and `Dsv4EngineServing` cover
+    DeepSeek.
 - **Planner fixes (`m36-planner-fix`): row gates are policy data.** DeepSeek's
   small-row gates (the `max_decode_rows == 8` sentinel and the solo/joined
   pattern strips that `d02a65c3` applied to every model) are now step rules

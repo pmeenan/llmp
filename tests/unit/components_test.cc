@@ -32,15 +32,12 @@
 #include "components/moe.h"
 #include "components/state_encoding.h"
 #include "components/step.h"
+#include "families/gemma.h"
 #include "format/encoding.h"
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/reference/exec.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
 #include "model/host_mask.h"
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
@@ -55,6 +52,7 @@ namespace llmp::components {
 namespace {
 
 namespace ref = llmp::kernels::reference;
+namespace fam = llmp::test_support::families;
 using format::Encoding;
 using spec::ComponentRef;
 using spec::Param;
@@ -73,13 +71,13 @@ ParamValue N(std::string v) { return ParamValue(std::move(v)); }
 
 spec::ModelSpec Gemma4Spec(std::uint32_t size);
 spec::ModelSpec Gemma2Spec() {
-  auto values = spec::mappings::Gemma2V0Values(model::Gemma2_2B());
+  auto values = fam::Gemma2Values(fam::Gemma2_2B());
   auto s = spec::Synthesize(spec::mappings::Gemma2Mapping(), test_support::Gemma2Source(), *values);
   EXPECT_TRUE(s.has_value()) << s.error();
   return *s;
 }
 spec::ModelSpec Gemma3Spec() {
-  auto values = spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
+  auto values = fam::Gemma3Values(fam::Gemma3_4BQat());
   auto s = spec::Synthesize(spec::mappings::Gemma3Mapping(), test_support::Gemma3Source(), *values);
   EXPECT_TRUE(s.has_value()) << s.error();
   return *s;
@@ -328,7 +326,7 @@ GemmaStateRef GemmaState(const Profile& p, std::uint32_t context, std::uint32_t 
 
 TEST(ComponentsTest, StageLayoutsAreTheGemmaLayouts) {
   for (const auto& [context, rows] : {std::pair{4096U, 128U}, {8192U, 512U}, {8192U, 16U}}) {
-    const auto want = GemmaState(model::Gemma2_2B(), context, rows);
+    const auto want = GemmaState(fam::Gemma2_2B(), context, rows);
     const auto got = StageLayout(Gemma2Spec(), 0, context, rows, kExtent);
     ASSERT_TRUE(got.has_value()) << got.error();
     ASSERT_EQ(got->items.size(), want.tensors.size());
@@ -341,7 +339,7 @@ TEST(ComponentsTest, StageLayoutsAreTheGemmaLayouts) {
     EXPECT_EQ(got->bytes, want.bytes);
   }
   for (const auto& [context, rows] : {std::pair{8192U, 512U}, {131072U, 2048U}}) {
-    const auto want = GemmaState(model::Gemma3_4BQat(), context, rows);
+    const auto want = GemmaState(fam::Gemma3_4BQat(), context, rows);
     const auto got = StageLayout(Gemma3Spec(), 0, context, rows, kExtent);
     ASSERT_TRUE(got.has_value()) << got.error();
     ASSERT_EQ(got->items.size(), want.tensors.size());
@@ -1518,8 +1516,8 @@ void ExpectGemmaCellsAndHostMasks(const spec::ModelSpec& spec, const spec::Sourc
 TEST(ComponentsTest, InputValuesGiveTheGemmaCellsAndHostMasks) {
   // Two owners, one wrapping its ring (4608 local cells).
   const std::array<GemmaOwner, 2> owners{GemmaOwner{2, 400, 4500}, GemmaOwner{0, 3, 9}};
-  ExpectGemmaCellsAndHostMasks(Gemma2Spec(), test_support::Gemma2Source(),
-                               model::Gemma2_2B().window, 8192, 512, owners);
+  ExpectGemmaCellsAndHostMasks(Gemma2Spec(), test_support::Gemma2Source(), fam::Gemma2_2B().window,
+                               8192, 512, owners);
 }
 
 // Gemma 4's, with its 1,024-cell window: the owner at 1,500 wraps a ring of
@@ -1529,7 +1527,7 @@ TEST(ComponentsTest, InputValuesGiveGemma4CellsAndHostMasks) {
   for (const std::uint32_t size : {26U, 31U}) {
     SCOPED_TRACE(size);
     ExpectGemmaCellsAndHostMasks(Gemma4Spec(size), test_support::Gemma4Source(size),
-                                 (size == 26 ? model::Gemma4_26BA4B() : model::Gemma4_31B()).window,
+                                 (size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B()).window,
                                  8192, 512, owners);
   }
 }
@@ -1841,8 +1839,8 @@ TEST(ComponentsTest, MoePiecesMatchTheirReferences) {
 }
 
 spec::ModelSpec Gemma4Spec(std::uint32_t size) {
-  const auto& p = size == 26 ? model::Gemma4_26BA4B() : model::Gemma4_31B();
-  auto values = spec::mappings::Gemma4V0Values(p);
+  const auto& p = size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
+  auto values = fam::Gemma4Values(p);
   EXPECT_TRUE(values.has_value());
   auto s =
       spec::Synthesize(spec::mappings::Gemma4Mapping(), test_support::Gemma4Source(size), *values);
@@ -1851,9 +1849,9 @@ spec::ModelSpec Gemma4Spec(std::uint32_t size) {
 }
 
 spec::ModelSpec Gemma4WithAssistant(std::uint32_t size) {
-  const auto& p = size == 26 ? model::Gemma4_26BA4B() : model::Gemma4_31B();
-  const auto& a = size == 26 ? model::Gemma4Assistant26() : model::Gemma4Assistant31();
-  auto values = spec::mappings::Gemma4AssistantV0Values(a, p);
+  const auto& p = size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
+  const auto& a = size == 26 ? fam::Gemma4Assistant26() : fam::Gemma4Assistant31();
+  auto values = fam::Gemma4AssistantValues(a, p);
   EXPECT_TRUE(values.has_value()) << values.error();
   auto s = spec::ComposeDrafter(Gemma4Spec(size), spec::mappings::Gemma4Mapping(),
                                 spec::mappings::Gemma4AssistantMapping(),
@@ -1865,7 +1863,7 @@ spec::ModelSpec Gemma4WithAssistant(std::uint32_t size) {
 TEST(ComponentsTest, Gemma4SpecsValidateAndLayTheGemma4State) {
   for (const std::uint32_t size : {26U, 31U}) {
     SCOPED_TRACE(size);
-    const auto& p = size == 26 ? model::Gemma4_26BA4B() : model::Gemma4_31B();
+    const auto& p = size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
     const spec::ModelSpec s = Gemma4Spec(size);
     const auto source = test_support::Gemma4Source(size);
     const auto valid = ValidateSpec(s, source.tensors);
@@ -1926,7 +1924,7 @@ TEST(ComponentsTest, Gemma4SpecsValidateAndLayTheGemma4State) {
 // the target's step writes the tap it reads.
 TEST(ComponentsTest, Gemma4AssistantStageReadsItsTarget) {
   const spec::ModelSpec s = Gemma4WithAssistant(26);
-  const auto& p = model::Gemma4_26BA4B();
+  const auto& p = fam::Gemma4_26BA4B();
   const auto target = test_support::Gemma4Source(26);
   const auto assistant = test_support::Gemma4AssistantSource(26);
   const std::array<std::span<const BoundTensor>, 2> artifacts{target.tensors, assistant.tensors};

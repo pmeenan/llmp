@@ -21,9 +21,9 @@
 //     local and global layers, "lg"), and optionally the source key that
 //     lists them as a flag a layer (Gemma 4's sliding-window pattern),
 //     which must agree;
-//   - the folds (spec.h's catalog) a source container's converter, or a
-//     v0 artifact's named converter, applied, which with the source's own
-//     (a v1 artifact's importer's) are the stage's folds;
+//   - the folds (spec.h's catalog) a source container's converter
+//     applied, which with the source's own (a v1 artifact's importer's) are
+//     the stage's folds;
 //   - its default planning policies (planner/policy.h's canonical text),
 //     each gated by a source key as a slot is: the patterns and bounds a
 //     model of the architecture is planned with, the first migrations'
@@ -44,13 +44,16 @@
 // rotation-factor table), and may apply to some layer types only.
 //
 // Mappings are compiled in as data and validated like untrusted input
-// (ValidateMapping): a mapping runs no code. Synthesize applies one to a
+// (ValidateMapping): their slot, tensor, parameter, fold and policy rules
+// run no code. Their recipes carry a few compiled functions over an
+// architecture's constants (a serving recipe's prompt-chunk bound, a
+// drafting recipe's values, a drafter import's target values and tensor
+// shapes), which read no checkpoint bytes. Synthesize applies one to a
 // source: every tensor of the source matches exactly one rule, every
-// required role is bound, every parameter resolves. SynthesizeV0 does that
-// for a v0 artifact, whose tensors are its resources' roles and expert
-// arrays and whose values are today's compiled profile's (no new on-disk
-// parsing: spec/mappings/*.h make them); the native importer later applies
-// the same mappings to checkpoints.
+// required role is bound, every parameter resolves. The native importer
+// applies them to checkpoints (import/normalize.h) and stores the spec in
+// the v1 artifact it writes (D-113); serving reads that stored spec
+// (spec/stored.h) and synthesizes none (D-118).
 
 #ifndef LLMP_SPEC_MAPPING_H_
 #define LLMP_SPEC_MAPPING_H_
@@ -68,11 +71,6 @@
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 #include "spec/spec.h"
-
-namespace llmp::artifact {
-class Artifact;
-struct Representation;
-}  // namespace llmp::artifact
 
 namespace llmp::spec {
 
@@ -196,29 +194,6 @@ struct ParamRule {
 struct FoldRule {
   std::string_view fold{};       // spec.h's catalog
   std::string_view container{};  // the source container whose converter applied it ("gguf")
-  // Or a v0 artifact's converter that applied it, by the start of one of
-  // its identity's '+'-joined parts (Source::converter: name and version;
-  // Qwen3.8's ModelOpt import, which repacks its tensors without recording
-  // it; no '+' of its own). Either one set.
-  std::string_view converter{};
-};
-
-// Resources of a v0 artifact that hold one tensor's parts (an MXFP8
-// matrix's codes and scales, the CUTLASS expert arrays, the n-gram table
-// and its tensor scale), which the artifact lists apart: paired by the
-// mapping's data (artifact/format_map.h Assemble), each a source tensor of
-// the assembled format holding its part. A resource `stem + suffixes[i]`
-// holds part roles[i], where the stem matches `stem` (a pattern with
-// {layer}; empty: any stem), and a set is assembled only where every part's
-// resource exists (otherwise the resources stay as they are).
-struct V0Assembly {
-  std::string_view stem{};
-  std::array<std::string_view, 4> suffixes{};  // the parts' resources; an empty one: none
-  std::array<format::PartRole, 4> roles{};
-  format::Encoding encoding = format::Encoding::kF32;
-  format::Layout layout = format::Layout::kDense;
-  std::uint8_t stacked = 1;
-  bool experts = false;  // expert arrays
 };
 
 // The planner's default policy for some checkpoints of the architecture,
@@ -320,6 +295,25 @@ struct ServingRecipe {
   // The target's vocabulary, which a speculating draft_vocab may not
   // exceed (0: unchecked).
   std::uint32_t vocab = 0;
+  // The measured defaults of the drafting and wave settings (their
+  // fallbacks under calibration and overrides, runtime/model_settings.h;
+  // each measured on a GB10 by the family that sets it; the others keep
+  // these, which their serving never reads but draft_rows): drafts a step
+  // at most (a block drafter's, at most its block; an MTP block's two or
+  // three passes); a draft-verify wave's time over a plain wave's by
+  // width from 2 (at most config::kMaxWaveCostWidths, D-104; widths past
+  // the list 0); the draft head's rows a pass reads (0: all); a three-draft
+  // step's time over a two-draft step's (execution/adaptive_depth.h; 0:
+  // its own prior); a request's drafts in a wave of several; how many
+  // requests draft in one joined wave (0: no bound); and the state a
+  // joined wave reads, rounded up to this.
+  std::uint32_t default_draft_rows = 3;
+  std::span<const double> default_wave_costs{};
+  std::uint32_t default_draft_vocab = 0;
+  double default_depth_cost_ratio = 0;
+  std::uint32_t default_shared_wave_depth = 0;
+  std::uint32_t default_draft_wave_max = 0;
+  std::uint32_t default_wave_read_align = 256;
   // What of its chat template the chat route serves (its qualified slice,
   // whatever template the model renders: a native match or an owner's
   // override never widens it): thought-channel output allowed and tool
@@ -337,13 +331,11 @@ struct ServingRecipe {
   // settings' wave_read_align, prompt capture off, tokens chosen and
   // verified on the device, a layer's routed experts in slabs of 16.
   bool shared_route = false;
-  // How a shared route is qualified (exactly one, with shared_route): by its
-  // plain, joined-MTP or joined-scoring envelopes, one owner otherwise
-  // (qualified_envelopes); or by its automatic serving shape, else only its
-  // closed single-owner diagnostic bridge, a derived domain for every
-  // envelope (closed_bridge).
+  // How a shared route is qualified: by its plain, joined-MTP or
+  // joined-scoring envelopes, one owner otherwise (qualified_envelopes);
+  // without them, only in its automatic serving shape, a derived domain for
+  // every envelope.
   bool qualified_envelopes = false;
-  bool closed_bridge = false;
   // A prompt chunk's rows at a context, bounded so that its masks' plane
   // strides fit 32 bits (RE-037); null: unbounded.
   std::uint32_t (*most_rows)(std::uint32_t context) = nullptr;
@@ -358,6 +350,17 @@ struct ServingRecipe {
   // The shared route's recipe in place of the admitted one (its policy
   // text and how it composes steps); null: the admitted one.
   const PolicyRule* serving_rule = nullptr;
+};
+
+// A target as its architecture's mapping data describes it to a drafter's
+// import: its mapping, and the values and tensors (their names, shapes and
+// a nominal encoding) of the approved checkpoint its drafter pairs with.
+struct ImportTarget {
+  std::array<std::string_view, 2> keys{};
+  std::int64_t value = 0;
+  const Mapping& (*mapping)() = nullptr;
+  std::expected<std::vector<SourceValue>, std::string> (*values)() = nullptr;
+  Source (*source)() = nullptr;
 };
 
 // How a drafter architecture's stage drafts (the component build's
@@ -387,6 +390,11 @@ struct DraftRecipe {
   // head's rows (else the target's vocabulary).
   std::string_view head_ids{};
   std::string_view vocab_key{};
+  // The targets a GGUF drafter's import composes its stage with, to check
+  // the composition before it publishes the drafter (its checkpoint keeps
+  // none of its target's tensors or values): the first whose key, of
+  // `keys`, the drafter's source holds with `value` (no keys: the only one).
+  std::span<const ImportTarget> import_targets{};
 };
 
 // A layer type by a source key's value (Mapping::layer_type_key).
@@ -425,8 +433,6 @@ struct Mapping {
   // text at most kMaxPolicyText bytes of printable lines, each ending in
   // '\n'); none: the planner's default policy (every pattern).
   std::span<const PolicyRule> policies{};
-  // A v0 artifact's resources paired into tensors (SourceOfV0).
-  std::span<const V0Assembly> v0_assembly{};
   // How serving runs its models (a target's) or drafts (a drafter's);
   // null: not served.
   const ServingRecipe* serving = nullptr;
@@ -471,10 +477,7 @@ struct SourceTensor {
 };
 struct Source {
   std::string architecture{};
-  std::string container{};  // v0: "gguf", "safetensors" or "other"; v1: its manifest's
-  // A v0 artifact's converter ("<name> <version>"); empty for a checkpoint
-  // and a v1 artifact, whose importer's folds are `folds` below.
-  std::string converter{};
+  std::string container{};  // a checkpoint's ("gguf", "safetensors"); a v1 artifact's manifest's
   std::vector<SourceTensor> tensors{};
   // Folds the tensors carry beyond the container converter's (the mapping's
   // FoldRules): a v1 artifact's importer's (spec/stored.h SourceOf). The
@@ -482,30 +485,6 @@ struct Source {
   // again.
   std::vector<std::string> folds{};
 };
-
-// A v0 artifact as a source: every role of every resource (its name and
-// tied aliases) and every expert array (its slice's format with the expert
-// count as ne[2]); the container "gguf" when every source file is a GGUF.
-// Any other format version is refused (stored.h SourceOf reads both).
-// With a mapping, the resources its v0_assembly pairs are one tensor's
-// parts (refused where a set's sizes are not the format's).
-std::expected<Source, std::string> SourceOfV0(const artifact::Artifact& artifact,
-                                              const Mapping* mapping = nullptr);
-
-// The same of a v0 artifact's tensors as listed: each resource (its name,
-// the name and tied aliases as its roles) or expert array (its name, its
-// slice's representation, its experts' count) with its representation,
-// which outlives the call.
-struct V0Tensor {
-  std::string name{};
-  std::vector<std::string> roles{};
-  const artifact::Representation* repr = nullptr;
-  std::uint32_t count = 0;  // an expert array's experts; 0: a resource
-};
-std::expected<Source, std::string> SourceOfV0Tensors(std::string architecture,
-                                                     std::string container, std::string converter,
-                                                     std::span<const V0Tensor> tensors,
-                                                     const Mapping* mapping = nullptr);
 
 // The serving envelope a policy is chosen for: the stage's context and the
 // owners it serves (0: unknown; an envelope-bounded rule then never holds).
@@ -529,9 +508,6 @@ std::expected<std::string_view, std::string> DefaultPolicy(const Mapping& mappin
 // composes with its target: ComposeDrafter).
 std::expected<ModelSpec, std::string> Synthesize(const Mapping& mapping, const Source& source,
                                                  std::span<const SourceValue> values);
-std::expected<ModelSpec, std::string> SynthesizeV0(const artifact::Artifact& artifact,
-                                                   const Mapping& mapping,
-                                                   std::span<const SourceValue> values);
 
 // `target` (a spec whose first stage is its target, made by
 // `target_mapping`) with a drafter stage the drafter's mapping makes of
@@ -544,11 +520,6 @@ std::expected<ModelSpec, std::string> ComposeDrafter(const ModelSpec& target,
                                                      const Mapping& target_mapping,
                                                      const Mapping& drafter, const Source& source,
                                                      std::span<const SourceValue> values);
-std::expected<ModelSpec, std::string> ComposeDrafterV0(const ModelSpec& target,
-                                                       const Mapping& target_mapping,
-                                                       const artifact::Artifact& artifact,
-                                                       const Mapping& drafter,
-                                                       std::span<const SourceValue> values);
 
 }  // namespace llmp::spec
 

@@ -1,9 +1,15 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Default-off single-slot migration screen through the real Server and Llm.
-// Both arms draft and judge their own outputs. No graph/source wrapper or
-// teacher-forced proposals. This small screen is not the 1% migration gate.
+// Single-slot screens through the real Server and Llm on the published v1
+// Qwen3.8 artifacts (tests/support/v1_frozen.h V1Store: the native ModelOpt
+// target d145900e with its MTP drafter 316caa59, and the GGUF import
+// 18a67153). Two arms of one binary draft and judge their own outputs and
+// must agree bit for bit; the GGUF publication arm is asserted against its
+// frozen digests (tests/unit/data/v1_frozen/qwen38_gguf.json). No
+// graph/source wrapper or teacher-forced proposals. This small screen is
+// not the 1% migration gate. Each screen skips when its artifacts or the
+// tokenizer assets are absent.
 //
 // Also (label `models`, the ordinary Server with its default options and
 // no diagnostic tuple): the GGUF import's conversations kept across a
@@ -27,7 +33,6 @@
 #include <expected>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -45,13 +50,9 @@
 #include "engine/paged_weights.h"
 #include "engine/plan_cache.h"
 #include "execution/registry.h"
-#include "import/modelopt_qwen38.h"
-#include "import/reader.h"
-#include "import/writer.h"
 #include "kept_restart_serving_checks.h"
 #include "kernels/common/step_program.h"
 #include "kernels/ggml/graph_plan.h"
-#include "model/qwen38.h"
 #include "planner/plan.h"
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
@@ -143,7 +144,7 @@ static_assert(sizeof(llmp::artifact::Resource) <= 512 &&
               sizeof(llmp::artifact::ExpertArray) <= 512 && sizeof(llmp::artifact::Group) <= 64);
 static_assert(sizeof(llmp::engine::SlabPage) <= 128 && sizeof(llmp::scheduler::PageSource) <= 256 &&
               sizeof(llmp::catalog::ExtentView) <= 144);
-static_assert(sizeof(llmp::spec::SourceTensor) <= 128 && sizeof(llmp::model::Qwen38Tensor) <= 96);
+static_assert(sizeof(llmp::spec::SourceTensor) <= 128);
 // Exact private-field mirrors used by the inherited and new inventories.
 struct JsonNodeAbi {
   llmp::artifact::json::Kind kind{};
@@ -175,79 +176,64 @@ constexpr std::uint32_t kVocab = 248320;
 constexpr std::uint64_t kRetainedRows = 2 * (2 + 8 + 8);
 static_assert(2 * kRetainedRows * kVocab * sizeof(float) + 18 * kMiB <= kResults);
 
-constexpr std::string_view kCutlass =
-    "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
-constexpr std::string_view kGgml =
-    "67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6";
+// The published v1 artifacts (D-118): the native ModelOpt target, the GGUF
+// import, and the ModelOpt MTP drafter.
+constexpr std::string_view kModelOpt =
+    "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d";
 constexpr std::string_view kGguf =
-    "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78";
+    "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2";
 constexpr std::string_view kMtp =
-    "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40";
+    "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb";
+
+// The published v1 store, where all three are installed.
+fs::path Store() { return fs::path(llmp::test_support::V1Store()); }
 
 // A streaming, fixed-stack identity preflight authenticates the metadata
 // counts used above without constructing JSON, artifacts or tokenizers.
 // The actual Server installs its catalog payment before reading them again.
+// An artifact's files are under the v1 store, the tokenizer assets under the
+// models directory.
 struct FixtureFile {
   std::string_view artifact, path;
   std::uint64_t bytes;
   std::string_view digest;
 };
 constexpr std::array kFixtureFiles{
-    FixtureFile{
-        "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
-        "m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93/index.json",
-        8152364ULL, "5b65dcce8169374e638264d7ebdcb5cca517234b3dec26f1272a5f4f9c0e4c89"},
-    FixtureFile{"c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
-                "m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93/"
-                "manifest.json",
-                23037ULL, "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93"},
-    FixtureFile{"c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93",
-                "m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93/"
-                "meta/config.json",
+    FixtureFile{"d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d",
+                "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d/index.json",
+                8236769ULL, "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"},
+    FixtureFile{"d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d",
+                "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d/manifest.json",
+                48495ULL, "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d"},
+    FixtureFile{"d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d",
+                "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d/meta/config.json",
                 109897ULL, "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"},
-    FixtureFile{
-        "67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6",
-        "m3-artifacts/67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6/index.json",
-        8142763ULL, "ac9f3705caea91987cb517a84e70d16b3f9159385db2d0d4b24132805846a54f"},
-    FixtureFile{"67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6",
-                "m3-artifacts/67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6/"
-                "manifest.json",
-                19159ULL, "67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6"},
-    FixtureFile{"67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6",
-                "m3-artifacts/67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6/"
-                "meta/config.json",
-                109897ULL, "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"},
-    FixtureFile{"5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
-                "qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/"
-                "index.json",
-                6330819ULL, "d6c69d701ead0cbadc3a64f1f3c354a70ecac7179f61dbac1e1163fca0cd3550"},
-    FixtureFile{"5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
-                "qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/"
-                "manifest.json",
-                14289ULL, "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"},
-    FixtureFile{"5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
-                "qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/"
+    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
+                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/index.json",
+                6391531ULL, "40803567725558418f1993e1c50948870d92ea7022fea40151846334fbd03d70"},
+    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
+                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/manifest.json",
+                14606ULL, "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2"},
+    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
+                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.kv.gguf",
                 10946618ULL, "7c1460a95eb2e95377c32b14deb92cf74fe504d4feb5a62a40d48f78e9e0dcb8"},
-    FixtureFile{"5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
-                "qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/"
+    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
+                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.kv.gguf",
                 106ULL, "0bd485a7f050b5ac258c3722f25f2be38a7ef3e597696f3e4d7e09ec461ff978"},
-    FixtureFile{"5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
-                "qgguf-artifacts/5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78/"
+    FixtureFile{"18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2",
+                "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2/"
                 "meta/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.kv.gguf",
                 106ULL, "2fd68e0dc3770fdd9e4d52a5e9570394855926807e0e020b879651ded2b004c6"},
-    FixtureFile{
-        "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
-        "m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40/index.json",
-        157885ULL, "5cd45fc5354ab224d281c2416027f224c61e32e2ae0acf8e7580d063fc274d99"},
-    FixtureFile{"8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
-                "m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40/"
-                "manifest.json",
-                1861ULL, "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40"},
-    FixtureFile{"8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40",
-                "m3-artifacts/8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40/"
-                "meta/config.json",
+    FixtureFile{"316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb",
+                "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb/index.json",
+                159859ULL, "c20f71e3c79ad0505f24a5f822a8a644d53a3cdfc4e962e4e34533a508cee316"},
+    FixtureFile{"316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb",
+                "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb/manifest.json",
+                2782ULL, "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb"},
+    FixtureFile{"316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb",
+                "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb/meta/config.json",
                 109897ULL, "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"},
     FixtureFile{"", "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json",
                 12809320ULL, "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"},
@@ -258,7 +244,8 @@ constexpr std::array kFixtureFiles{
 rt::Status CheckFixture(std::string_view id, bool mtp) {
   for (const auto& file : kFixtureFiles) {
     if (!file.artifact.empty() && file.artifact != id && !(mtp && file.artifact == kMtp)) continue;
-    const auto path = fs::path(llmp::test_support::ModelsDir()) / file.path;
+    const auto path =
+        (file.artifact.empty() ? fs::path(llmp::test_support::ModelsDir()) : Store()) / file.path;
     std::FILE* input = std::fopen(path.c_str(), "rb");
     if (input == nullptr) return std::unexpected("opening fixed serving metadata");
     struct stat st{};
@@ -379,9 +366,7 @@ std::expected<std::unique_ptr<Lifetime>, std::string> Run(
   std::string name = (fs::path(scratch) / "qwen-solo-XXXXXX").string();
   if (mkdtemp(name.data()) == nullptr) return std::unexpected("creating test scratch");
   life->scratch = name;
-  life->roles.installed = fs::path(llmp::test_support::ModelsDir()) /
-                          (id == kGguf ? "qgguf-artifacts" : "m3-artifacts");
-  if (!stored_root.empty()) life->roles.installed = stored_root;
+  life->roles.installed = stored_root.empty() ? Store() : stored_root;
   life->roles.spill = life->scratch / "spill";
   life->roles.state = life->scratch / "state";
   for (const auto& path : {life->roles.spill, life->roles.state}) {
@@ -561,13 +546,13 @@ void Compare(const Result& got, const Result& want, bool rows) {
 }
 
 void Screen(std::string_view id, bool mtp, bool rows, std::uint32_t depth) {
-  const auto store = fs::path(llmp::test_support::ModelsDir()) /
-                     (id == kGguf ? "qgguf-artifacts" : "m3-artifacts");
+  const auto store = Store();
   const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
                           "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
   if (!fs::exists(store / id) || (mtp && !fs::exists(store / kMtp)) ||
       !fs::exists(checkpoint / "tokenizer.json") || !fs::exists(checkpoint / "chat_template.jinja"))
-    GTEST_SKIP() << "the established Qwen artifact is absent";
+    GTEST_FAIL() << "the published Qwen3.8 v1 artifacts or the tokenizer assets are absent ("
+                 << store << ")";
   auto fixed = CheckFixture(id, mtp);
   ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
   auto first = Run(id, mtp, true, rows, depth);
@@ -587,93 +572,63 @@ void Screen(std::string_view id, bool mtp, bool rows, std::uint32_t depth) {
   first->reset();
 }
 
-void PublishedScreen() {
-  const char* root = std::getenv("LLMP_TEST_QWEN_V1_STORE");      // NOLINT(concurrency-mt-unsafe)
-  if (root == nullptr) root = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
-  const char* given = std::getenv("LLMP_TEST_QWEN_V1_ID");        // NOLINT(concurrency-mt-unsafe)
-  std::string id = given != nullptr ? given : "";
-  if (id.empty()) {
-    const auto mapped = llmp::test_support::V1IdFor(kGguf);
-    if (mapped) id = *mapped;
-  }
-  ASSERT_NE(root, nullptr);
+// The GGUF import's publication arm (heads, greedy tokens with their logit
+// rows, the state after each turn and after a spill and restore) against its
+// frozen digests. LLMP_TEST_QWEN_V1_STORE (or LLMP_TEST_V1_STORE) and
+// LLMP_TEST_QWEN_V1_ID name another store and artifact.
+TEST(Qwen38EngineServingGpu, PublishedGgufMatchesFrozenHeadsStateAndSpill) {
+  const char* root = std::getenv("LLMP_TEST_QWEN_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
+  const char* given = std::getenv("LLMP_TEST_QWEN_V1_ID");    // NOLINT(concurrency-mt-unsafe)
+  const fs::path store = root != nullptr ? fs::path(root) : Store();
+  const std::string id = given != nullptr ? given : std::string(kGguf);
   ASSERT_EQ(id.size(), 64U);
   ASSERT_TRUE(std::ranges::all_of(std::string_view(id), [](char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
   }));
-  // The v0 arm needs the established artifact; without it (or with
-  // LLMP_TEST_V1_FROZEN_ONLY) only the v1 arm runs, against the frozen digests.
-  std::error_code v0_error;
-  const bool have_v0 =
-      std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&  // NOLINT
-      fs::exists(fs::path(llmp::test_support::ModelsDir()) / "qgguf-artifacts" / std::string(kGguf),
-                 v0_error);
-  std::unique_ptr<Lifetime> old;
-  if (have_v0) {
+  const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
+                          "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+  std::error_code error;
+  if (!fs::exists(store / id, error) || !fs::exists(checkpoint / "tokenizer.json", error) ||
+      !fs::exists(checkpoint / "chat_template.jinja", error))
+    GTEST_FAIL() << "no Qwen3.8 GGUF v1 artifact " << id << " in " << store
+                 << " or no tokenizer assets";
+  if (id == kGguf && root == nullptr) {
     auto fixed = CheckFixture(kGguf, false);
     ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
-    auto first = Run(kGguf, false, true, true, 2, nullptr, {}, true);
-    ASSERT_TRUE(first) << (first ? "" : first.error());
-    old = std::move(*first);
   }
-  auto native = Run(id, false, true, true, 2, old.get(), root, true);
+  auto native = ::Run(id, false, true, true, 2, nullptr, store, true);
   ASSERT_TRUE(native) << (native ? "" : native.error());
   llmp::test_support::FrozenDigests frozen("qwen38_gguf");
-  for (const auto* life : {old.get(), native->get()}) {
-    if (life == nullptr) continue;
-    SCOPED_TRACE(life == old.get() ? "v0 against frozen" : "v1 against frozen");
-    const auto& r = life->result;
-    using llmp::test_support::HexOfFloats;
-    using llmp::test_support::HexOfInts;
-    using llmp::test_support::HexOfRows;
-    const auto state_text = [](const StateImage& state) {
-      return llmp::base::ToHex(state.digest) + ':' + std::to_string(state.positions) + ':' +
-             std::to_string(state.ranges.size());
-    };
-    for (std::size_t turn = 0; turn < 2; ++turn) {
-      const auto t = std::to_string(turn);
-      frozen.Expect("heads." + t, HexOfFloats(r.heads[turn]));
-      frozen.Expect("tokens." + t, llmp::test_support::JoinTokens(r.generations[turn].tokens));
-      frozen.Expect("logits." + t, HexOfRows(r.generations[turn].logits));
-      frozen.Expect("history." + t, HexOfInts(r.history[turn]));
-    }
-    // States: 0 after the first turn, 1 after spill and restore, 2 after the second.
-    for (std::size_t i = 0; i < r.states.size(); ++i)
-      frozen.Expect("state." + std::to_string(i), state_text(r.states[i]));
-    if (frozen.recording()) break;  // one arm records
+  const auto& r = (*native)->result;
+  using llmp::test_support::HexOfFloats;
+  using llmp::test_support::HexOfInts;
+  using llmp::test_support::HexOfRows;
+  const auto state_text = [](const StateImage& state) {
+    return llmp::base::ToHex(state.digest) + ':' + std::to_string(state.positions) + ':' +
+           std::to_string(state.ranges.size());
+  };
+  for (std::size_t turn = 0; turn < 2; ++turn) {
+    const auto t = std::to_string(turn);
+    frozen.Expect("heads." + t, HexOfFloats(r.heads[turn]));
+    frozen.Expect("tokens." + t, llmp::test_support::JoinTokens(r.generations[turn].tokens));
+    frozen.Expect("logits." + t, HexOfRows(r.generations[turn].logits));
+    frozen.Expect("history." + t, HexOfInts(r.history[turn]));
   }
-  if (have_v0) {
-    Compare((*native)->result, old->result, true);
-    EXPECT_EQ((*native)->result.states, old->result.states);
-  }
-  for (const auto* result : {have_v0 ? &old->result : nullptr, &(*native)->result}) {
-    if (result == nullptr) continue;
-    for (const auto& head : result->heads)
+  // States: 0 after the first turn, 1 after spill and restore, 2 after the second.
+  for (std::size_t i = 0; i < r.states.size(); ++i)
+    frozen.Expect("state." + std::to_string(i), state_text(r.states[i]));
+  for (const auto& head : r.heads)
+    EXPECT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
+  for (const auto& generation : r.generations)
+    for (const auto& head : generation.logits)
       EXPECT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
-    for (const auto& generation : result->generations)
-      for (const auto& head : generation.logits)
-        EXPECT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
-  }
-  testing::Test::RecordProperty("complete_head_rows", 36);
+  testing::Test::RecordProperty("complete_head_rows", 18);
   testing::Test::RecordProperty("head_values_per_row", kVocab);
-  testing::Test::RecordProperty("complete_state_images", 6);
-  testing::Test::RecordProperty("restored_owners", 2);
+  testing::Test::RecordProperty("complete_state_images", 3);
+  testing::Test::RecordProperty("restored_owners", 1);
   testing::Test::RecordProperty("native_artifact", id);
-  if (old) fs::remove_all(old->scratch);
   fs::remove_all((*native)->scratch);
-  old.reset();
 }
-class PublishedCase : public testing::Test {
-  void TestBody() override { PublishedScreen(); }
-};
-[[maybe_unused]] const auto* published_case = []() -> testing::TestInfo* {
-  if (std::getenv("LLMP_TEST_QWEN_V1_STORE") == nullptr &&  // NOLINT(concurrency-mt-unsafe)
-      std::getenv("LLMP_TEST_V1_STORE") == nullptr)         // NOLINT(concurrency-mt-unsafe)
-    return nullptr;
-  return testing::RegisterTest("Qwen38EngineServingGpu", "PublishedGgufMatchesV0HeadsStateAndSpill",
-                               nullptr, nullptr, __FILE__, __LINE__,
-                               []() -> testing::Test* { return new PublishedCase; });
-}();
 
 // No artifact, runner registration, model binding or device work is needed
 // to discriminate these early refusal/payment paths.
@@ -1031,32 +986,11 @@ TEST(Qwen38EngineServingGpu, DerivedPlainDomainRequiresAnOrdinaryTargetRequest) 
   }
 }
 
-TEST(Qwen38EngineServingGpu, NativeMtpDepthTwoFullLogits) { Screen(kCutlass, true, true, 2); }
-TEST(Qwen38EngineServingGpu, NativeMtpDefaultTokenSchedule) { Screen(kCutlass, true, false, 3); }
-TEST(Qwen38EngineServingGpu, NativeGgmlExpertsPlain) { Screen(kGgml, false, true, 2); }
+TEST(Qwen38EngineServingGpu, NativeMtpDepthTwoFullLogits) { Screen(kModelOpt, true, true, 2); }
+TEST(Qwen38EngineServingGpu, NativeMtpDefaultTokenSchedule) { Screen(kModelOpt, true, false, 3); }
 TEST(Qwen38EngineServingGpu, GgufPlain) { Screen(kGguf, false, true, 2); }
 
-// The native importer's MTP drafter (`llmp import --component mtp
-// --draft-head`), published here from the pinned source with the selected
-// list the v0 drafter kMtp kept, against kMtp: every tensor's value equal
-// (BF16 bytes, the folded F32 norms, the experts' codes and swizzled
-// scales, the selected head and its map), and admitted by its approval
-// (runtime/approvals.cc). It serves only with its approved target (v1
-// serving: its composition is pinned), in NativeModelOptTargetAndDrafterServe.
-// Writes about 1.8 GB under LLMP_TEST_SCRATCH, removed.
-std::vector<std::byte> PlacedBytes(const fs::path& root, const llmp::artifact::Artifact& a,
-                                   const llmp::artifact::Placement& place) {
-  const auto& group = a.groups()[place.group];
-  const auto& shard = a.shards()[group.shard];
-  std::ifstream in(root / shard.path, std::ios::binary);
-  in.seekg(static_cast<std::streamoff>(shard.data_offset.value() + group.offset.value() +
-                                       place.offset.value()));
-  std::vector<std::byte> out(static_cast<std::size_t>(place.bytes.value()));
-  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
-  return in ? out : std::vector<std::byte>{};
-}
-
-// The native drafter mapping's policy (W4A4: its moe_experts, v0's), and
+// The native drafter mapping's policy (W4A4: its moe_experts), and
 // the same without the block-scaled GEMM: the format ladder decodes the
 // scale-atom experts on chip (W4A16), as on a device without FP4.
 std::string LadderDrafterPolicy() {
@@ -1094,220 +1028,39 @@ void ExpectSameTokens(const Result& was, const Result& now, std::string_view arm
   EXPECT_GE(accepted + 2, old_accepted);
 }
 
-void NativeMtpDrafterScreen() {
-  namespace im = llmp::import;
-  namespace ar = llmp::artifact;
-  const auto models = fs::path(llmp::test_support::ModelsDir());
-  const char* configured =
-      std::getenv("LLMP_TEST_MODELOPT_SOURCE");  // NOLINT(concurrency-mt-unsafe)
-  const auto checkpoint = configured != nullptr
-                              ? fs::path(configured)
-                              : models / "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
-  const auto old_root = models / "m3-artifacts" / kMtp;
-  const auto list_path = old_root / "meta/mia-47172.txt";
-  if (!fs::exists(checkpoint / "model-00034-of-00034.safetensors") ||
-      !fs::exists(models / "m3-artifacts" / kCutlass) || !fs::exists(list_path))
-    GTEST_SKIP() << "the pinned ModelOpt source, v0 target or v0 selected drafter is absent";
-  const char* scratch = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
-  ASSERT_NE(scratch, nullptr);
-  fs::create_directories(scratch);
-  std::string work = (fs::path(scratch) / "qwen-mtp-v1-XXXXXX").string();
-  ASSERT_NE(mkdtemp(work.data()), nullptr);
-  // The publication's 1.8 GB go with the test, passed or not.
-  struct RemoveWork {
-    fs::path path;
-    ~RemoveWork() {
-      std::error_code ignored;
-      fs::remove_all(path, ignored);
-    }
-  } remove_work{work};
-  const fs::path store = fs::path(work) / "store";
-
-  // Publication, as `llmp import SOURCE --component mtp --draft-head LIST`.
-  auto input = im::ReadCheckpoint(checkpoint);
-  ASSERT_TRUE(input) << (input ? "" : input.error().ToString());
-  auto list = im::ReadDraftHeadList(list_path, im::kModelOptQwen38Vocab);
-  ASSERT_TRUE(list) << (list ? "" : list.error().ToString());
-  ASSERT_EQ(list->ids.size(), 47172U);
-  auto bound = im::ModelOptDrafterBound(*input, list->ids.size());
-  ASSERT_TRUE(bound) << (bound ? "" : bound.error().ToString());
-  auto plan = im::NormalizeModelOptDrafter(*input, std::move(*list),
-                                           {bound->metadata_bytes, bound->work_units});
-  ASSERT_TRUE(plan) << (plan ? "" : plan.error().ToString());
-  const auto started = std::chrono::steady_clock::now();
-  auto published = im::WriteArtifact(*plan, {.store = store,
-                                             .build = "test",
-                                             .metadata_bytes = std::uint64_t{1} << 30U,
-                                             .options = plan->options()});
-  ASSERT_TRUE(published) << (published ? "" : published.error().ToString());
-  testing::Test::RecordProperty(
-      "import_seconds",
-      std::to_string(
-          std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()));
-  testing::Test::RecordProperty("native_drafter", published->id);
-  auto v1 = ar::Artifact::Open(published->path);
-  ASSERT_TRUE(v1);
-  // Its approval (runtime/approvals.cc): sources, transforms, slots and
-  // the complete inventory, Mia's 47,172-row head included.
-  const rt::Approval* approval = rt::FindApproval(v1->model().architecture, v1->sources());
-  ASSERT_NE(approval, nullptr);
-  EXPECT_EQ(approval->name, "qwen3.8-flash-next-modelopt-mtp-mia47172");
-  auto artifact_admitted = rt::CheckComponentArtifactAdmission(*v1);
-  ASSERT_TRUE(artifact_admitted) << (artifact_admitted ? "" : artifact_admitted.error());
-  const auto* composed_mapping = rt::ComposedDrafterMapping(*v1);
-  EXPECT_EQ(composed_mapping, &llmp::spec::mappings::Qwen38MtpNativeReplayMapping());
-  auto source = llmp::spec::SourceOf(*v1, composed_mapping);
-  ASSERT_TRUE(source) << (source ? "" : source.error());
-  auto admitted = rt::CheckComponentDrafterAdmission(*source, v1->sources());
-  ASSERT_TRUE(admitted) << (admitted ? "" : admitted.error());
-  auto v0 = ar::Artifact::Open(old_root);
-  ASSERT_TRUE(v0);
-
-  // Every non-expert tensor's bytes v0's, the nine norms' too: the
-  // importer's norm.plus_one stores 1 + w in F32 (by role), as v0's
-  // converter did.
-  ASSERT_EQ(v1->folds().size(), 1U);
-  EXPECT_EQ(v1->folds()[0].name, "norm.plus_one");
-  std::size_t equal = 0, norms = 0;
-  for (std::uint32_t r = 0; r < v1->resources().size(); ++r) {
-    const auto& name = v1->resources()[r].name;
-    SCOPED_TRACE(name);
-    const auto old = v0->FindResource(name);
-    ASSERT_TRUE(old.has_value());
-    auto np = v1->ResourcePlacement(r);
-    auto op = v0->ResourcePlacement(*old);
-    ASSERT_TRUE(np && op);
-    const auto now = PlacedBytes(published->path, *v1, *np);
-    const auto was = PlacedBytes(old_root, *v0, *op);
-    ASSERT_FALSE(now.empty() || was.empty());
-    EXPECT_TRUE(now == was);
-    ++equal;
-    if (std::ranges::contains(v1->folds()[0].tensors, name)) ++norms;
-  }
-  EXPECT_EQ(norms, 9U);
-  testing::Test::RecordProperty("equal_tensors", static_cast<int>(equal));
-  // The experts: the relaid-out tables' slices, expert by expert, v0's
-  // (its .codes and .scales arrays under the v1 tables' .weight and
-  // .weight_scale), as the relayout record says.
-  ASSERT_EQ(v1->relayouts().size(), 1U);
-  EXPECT_EQ(v1->relayouts()[0].tensors.size(), 4U);
-  ASSERT_EQ(v1->expert_arrays().size(), 4U);
-  for (std::uint32_t a = 0; a < v1->expert_arrays().size(); ++a) {
-    const auto& name = v1->expert_arrays()[a].name;
-    SCOPED_TRACE(name);
-    std::string old_name = name;
-    old_name.replace(old_name.rfind(".weight"), std::string::npos,
-                     name.ends_with("_scale") ? ".scales" : ".codes");
-    const auto old = v0->FindExpertArray(old_name);
-    ASSERT_TRUE(old.has_value());
-    EXPECT_EQ(v1->expert_arrays()[a].count, 512U);
-    for (std::uint32_t e = 0; e < 512; ++e) {
-      auto np = v1->SlicePlacement(a, e);
-      auto op = v0->SlicePlacement(*old, e);
-      ASSERT_TRUE(np && op);
-      const auto now = PlacedBytes(published->path, *v1, *np);
-      const auto was = PlacedBytes(old_root, *v0, *op);
-      ASSERT_FALSE(now.empty());
-      ASSERT_TRUE(now == was) << e;
-    }
-  }
-}
-TEST(Qwen38EngineServingGpu, NativeMtpDrafterMatchesV0) { NativeMtpDrafterScreen(); }
-
-// The native ModelOpt target and its native drafter (both v1, from
-// LLMP_TEST_QWEN_MODELOPT_V1_STORE: LLMP_TEST_QWEN_MODELOPT_V1_TARGET and
-// LLMP_TEST_QWEN_MODELOPT_V1_DRAFTER) against v0's c4fb47a9 + kMtp, both
-// speculating through the shared engine at their default policies, state
-// observed. The importer's relayouts give the target v0's experts and
-// n-gram rows, its parameter folds v0's F32 norms (1 + w) and A
-// (-exp(A_log), in double on the host), so bit for bit is expected, but
-// recorded, not required (a diagnostic; v0 is no reference).
-// Fixed before the first run: the prefill head's argmax equal; each turn's
-// tokens equal up to a first divergence, where v0's own logits rank the two
-// tokens within 1.0 (a near-tie; the comparison ends there); v1 accepts at
-// most 2 fewer drafts over the two turns. Whether heads and state images
-// are bit for bit is recorded, not required. Quality is the speed gate's
-// NLL pass (|ΔNLL| at most 0.1%, docs/experiments/m36-numerical-audit/
-// qwen-modelopt-v1.md). Then the same v1 pair with the drafter's scale-atom
-// experts on the format ladder (W4A16, as a device without FP4): the default
-// arm's tokens, accepting at most 2 fewer drafts.
-void NativeModelOptScreen() {
-  // NOLINTBEGIN(concurrency-mt-unsafe): read-only test environment.
-  const char* root = std::getenv("LLMP_TEST_QWEN_MODELOPT_V1_STORE");
-  const char* target = std::getenv("LLMP_TEST_QWEN_MODELOPT_V1_TARGET");
-  const char* drafter = std::getenv("LLMP_TEST_QWEN_MODELOPT_V1_DRAFTER");
-  // NOLINTEND(concurrency-mt-unsafe)
-  ASSERT_TRUE(root && target && drafter);
-  ASSERT_EQ(std::strlen(target), 64U);
-  ASSERT_EQ(std::strlen(drafter), 64U);
-  auto fixed = CheckFixture(kCutlass, true);
+// The native ModelOpt target and its MTP drafter speculating through the
+// shared engine at their default policies, state observed, then the same
+// pair with the drafter's scale-atom experts on the format ladder (W4A16,
+// as a device without FP4): the default arm's tokens, accepting at most 2
+// fewer drafts.
+TEST(Qwen38EngineServingGpu, NativeMtpLadderDrafterKeepsTokens) {
+  const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
+                          "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
+  std::error_code error;
+  if (!fs::exists(Store() / kModelOpt, error) || !fs::exists(Store() / kMtp, error) ||
+      !fs::exists(checkpoint / "tokenizer.json", error) ||
+      !fs::exists(checkpoint / "chat_template.jinja", error))
+    GTEST_FAIL() << "the published Qwen3.8 v1 pair or the tokenizer assets are absent (" << Store()
+                 << ")";
+  auto fixed = CheckFixture(kModelOpt, true);
   ASSERT_TRUE(fixed) << (fixed ? "" : fixed.error());
-  auto old_arm = ::Run(kCutlass, true, true, true, 3, nullptr, {}, true);
-  ASSERT_TRUE(old_arm) << (old_arm ? "" : old_arm.error());
-  auto new_arm = ::Run(target, true, true, true, 3, old_arm->get(), root, true, drafter);
-  ASSERT_TRUE(new_arm) << (new_arm ? "" : new_arm.error());
-  const auto& was = (*old_arm)->result;
-  const auto& now = (*new_arm)->result;
-  ASSERT_EQ(now.heads[0].size(), kVocab);
-  float worst = 0;
-  for (std::size_t i = 0; i < kVocab; ++i) {
-    ASSERT_TRUE(std::isfinite(now.heads[0][i])) << i;
-    worst = std::max(worst, std::abs(now.heads[0][i] - was.heads[0][i]));
+  auto default_arm = ::Run(kModelOpt, true, true, true, 3, nullptr, {}, true);
+  ASSERT_TRUE(default_arm) << (default_arm ? "" : default_arm.error());
+  const auto& now = (*default_arm)->result;
+  for (const auto& head : now.heads) {
+    ASSERT_EQ(head.size(), kVocab);
+    EXPECT_TRUE(std::ranges::all_of(head, [](float value) { return std::isfinite(value); }));
   }
-  const auto argmax = [](const std::vector<float>& row) {
-    return std::ranges::max_element(row) - row.begin();
-  };
-  EXPECT_EQ(argmax(now.heads[0]), argmax(was.heads[0]));
-  testing::Test::RecordProperty("prefill_head_max_abs_diff", std::to_string(worst));
-  testing::Test::RecordProperty(
-      "heads_bitwise",
-      std::memcmp(now.heads[0].data(), was.heads[0].data(), kVocab * sizeof(float)) == 0 &&
-          std::memcmp(now.heads[1].data(), was.heads[1].data(), kVocab * sizeof(float)) == 0);
-  testing::Test::RecordProperty("states_bitwise", now.states == was.states);
-  bool diverged = false;  // later tokens, and the next turn, then follow other histories
-  for (std::size_t turn = 0; turn < 2; ++turn) {
-    const auto& a = was.generations[turn];
-    const auto& b = now.generations[turn];
-    ASSERT_EQ(a.tokens.size(), b.tokens.size());
-    for (std::size_t i = 0; i < a.tokens.size() && !diverged; ++i) {
-      if (a.tokens[i] == b.tokens[i]) continue;
-      diverged = true;
-      ASSERT_LT(i, a.logits.size());
-      const auto& row = a.logits[i];
-      const float margin = row.at(static_cast<std::size_t>(a.tokens[i])) -
-                           row.at(static_cast<std::size_t>(b.tokens[i]));
-      testing::Test::RecordProperty(std::format("turn{}_first_divergence", turn),
-                                    std::format("{} margin {}", i, margin));
-      EXPECT_LT(margin, 1.0F) << turn << ':' << i;
-    }
-    EXPECT_GT(b.drafted, 0U);
-  }
-  testing::Test::RecordProperty("tokens_equal", !diverged);
-  const auto [old_accepted, old_drafted] = Acceptance(was);
-  const auto [accepted, drafted] = Acceptance(now);
-  testing::Test::RecordProperty("v0_accepted_drafted",
-                                std::format("{}/{}", old_accepted, old_drafted));
-  testing::Test::RecordProperty("v1_accepted_drafted", std::format("{}/{}", accepted, drafted));
-  EXPECT_GE(accepted + 2, old_accepted);
-  auto ladder_arm = ::Run(target, true, true, true, 3, new_arm->get(), root, true, drafter,
+  for (const auto& generation : now.generations) EXPECT_GT(generation.drafted, 0U);
+  auto ladder_arm = ::Run(kModelOpt, true, true, true, 3, default_arm->get(), {}, true, kMtp,
                           LadderDrafterPolicy());
   ASSERT_TRUE(ladder_arm) << (ladder_arm ? "" : ladder_arm.error());
   ExpectSameTokens(now, (*ladder_arm)->result, "w4a16");
-  for (auto* arm : {&*old_arm, &*new_arm, &*ladder_arm}) {
+  for (auto* arm : {&*default_arm, &*ladder_arm}) {
     fs::remove_all((*arm)->scratch);
     arm->reset();
   }
 }
-class NativeModelOptCase : public testing::Test {
-  void TestBody() override { NativeModelOptScreen(); }
-};
-[[maybe_unused]] const auto* native_modelopt_case = []() -> testing::TestInfo* {
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): read-only test environment.
-  if (std::getenv("LLMP_TEST_QWEN_MODELOPT_V1_STORE") == nullptr) return nullptr;
-  return testing::RegisterTest("Qwen38EngineServingGpu", "NativeModelOptTargetAndDrafterServe",
-                               nullptr, nullptr, __FILE__, __LINE__,
-                               []() -> testing::Test* { return new NativeModelOptCase; });
-}();
 
 // A manually enabled durable C2 control in the existing real EngineLlm fixture.
 // It uses the same selected implementation in two sequential whole owners.
@@ -1557,12 +1310,12 @@ rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bo
   owner.startup = std::move(*prepaid);
   if (!owner.startup->Charge(kStartup)) return std::unexpected("C2 startup payment refused");
   if (previous != nullptr) previous->reset();
-  if (auto s = CheckFixture(kCutlass, true); !s) return s;
-  owner.roles.installed = fs::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
+  if (auto s = CheckFixture(kModelOpt, true); !s) return s;
+  owner.roles.installed = Store();
   owner.roles.spill = directory;
   owner.roles.state = directory;
   owner.entry.name = "qwen-c2-durable";
-  owner.entry.artifact = kCutlass;
+  owner.entry.artifact = kModelOpt;
   owner.entry.drafter = kMtp;
   const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
                           "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
@@ -1672,7 +1425,7 @@ rt::Status Setup(Owner& owner, const fs::path& directory, Evidence& evidence, bo
   if (worker_dir < 0) return std::unexpected("C2 keeper directory duplication failed");
   owner.keeper_model = owner.keeper->AddModel(worker_dir);
   kept::Identity expected{.build = "qwen-c2-owned-durable-v1",
-                          .artifact = std::string(kCutlass),
+                          .artifact = std::string(kModelOpt),
                           .drafter = std::string(kMtp),
                           .layout = owner.llm->KeptLayout()};
   rt::Llm::Kept state{.keeper = owner.keeper.get(),
@@ -2048,10 +1801,10 @@ using Owned = std::unique_ptr<Owner, RetainUnknown>;
 
 rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previous,
                  bool component = true) {
-  if (auto s = CheckFixture(kCutlass, true); !s) return s;
+  if (auto s = CheckFixture(kModelOpt, true); !s) return s;
   auto& life = owner.life;
   life.scratch = root;
-  life.roles.installed = fs::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
+  life.roles.installed = Store();
   life.roles.spill = root / "spill";
   life.roles.state = root / "state";
   for (const auto& path : {life.roles.spill, life.roles.state}) {
@@ -2060,7 +1813,7 @@ rt::Status Setup(Owner& owner, const fs::path& root, bool reopen, Owned* previou
   }
   cfg::ModelEntry entry;
   entry.name = "qwen-server-c2";
-  entry.artifact = kCutlass;
+  entry.artifact = kModelOpt;
   entry.drafter = kMtp;
   const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
                           "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
@@ -2407,14 +2160,12 @@ class Qwen38GgufKeptGpu : public testing::Test {
   std::FILE* log = nullptr;
   bool retirement_failed = false;
 
-  static fs::path Store() { return fs::path(llmp::test_support::ModelsDir()) / "qgguf-artifacts"; }
-
   void SetUp() override {
     const auto checkpoint = fs::path(llmp::test_support::ModelsDir()) /
                             "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
     std::error_code error;
     if (!fs::exists(Store() / kGguf, error))
-      GTEST_SKIP() << "no Qwen3.8 GGUF artifact " << kGguf << " in " << Store();
+      GTEST_FAIL() << "no Qwen3.8 GGUF artifact " << kGguf << " in " << Store();
     if (!fs::exists(checkpoint / "tokenizer.json", error) ||
         !fs::exists(checkpoint / "chat_template.jinja", error))
       GTEST_SKIP() << "no Qwen3.8 tokenizer assets in " << checkpoint;

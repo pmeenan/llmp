@@ -17,6 +17,14 @@ namespace llmp::benchmarks::draft_vocab {
 inline constexpr std::uint32_t kContext = 33792;
 inline constexpr std::uint32_t kDepth = 3;
 inline constexpr std::uint32_t kAnchors = 4;
+// The state capacities the prepared manifests record at kContext with
+// 8,192-row prompt chunks: Qwen3.8 Flash Next's (the ModelOpt target) and
+// its MTP drafter's, without the serving composition's draft-progress
+// record (as the M3 runner laid them out). The preparer opens no artifact:
+// components_qwen38_models_test checks them against components::StageLayout
+// of the published v1 target's stored spec composed with its drafter.
+inline constexpr std::uint64_t kTargetStateBytes = 1182081024;
+inline constexpr std::uint64_t kMtpStateBytes = 424255488;
 
 // Private benchmark inputs. The continuation is frozen conditioning text;
 // its IDs are never the candidate's target-frequency labels.

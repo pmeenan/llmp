@@ -3,7 +3,7 @@
 
 // The component engine's parts of an LLM served by EngineLlm (D-107;
 // docs/runtime-serving.md, "Engine-backed models"; runtime/engine_llm.h):
-// from a v0 artifact (and its drafter's) to the spec, the stages' state
+// from a v1 artifact (and its drafter's) to the spec, the stages' state
 // layouts, the batching and composition, the component step sources over
 // GGML's registry and lowering, the weights' places and the runner's own
 // memory. Serving's build (Server::Make) and the gate harnesses that pay
@@ -48,9 +48,10 @@ struct ComponentBuildOptions {
   std::optional<std::string> drafter_policy{};
   // The derived shared route (Server sets it for the architectures whose
   // serving recipe names it, ServingRecipe::shared_route). Explicit
-  // diagnostic domains retain their closed envelopes. Automatic service
-  // admission derives the domain and payment from its actual source, state,
-  // decoding mode and configured owners.
+  // diagnostic domains retain their closed envelopes (a route without
+  // qualified envelopes has none: it serves only its automatic shape).
+  // Automatic service admission derives the domain and payment from its
+  // actual source, state, decoding mode and configured owners.
   bool diagnostic_solo = false;
   // Default-off capture scheduling experiment; numerical policy is unchanged.
   bool capture_first_verify = false;
@@ -61,11 +62,6 @@ struct ComponentBuildOptions {
   // One driver-owned transient compiler payment across automatic aliases.
   // Sources retain this owner; per-alias source/spec/chat storage stays separate.
   std::shared_ptr<engine::SharedCompilerAllowance> shared_compiler{};
-  // Complete catalog-backed construction allowance for the closed DeepSeek
-  // diagnostic. Admitted by its owner before constructing EngineLlm; the
-  // factory charges before reading/parsing its prepared source and retains
-  // the charge with every returned source/plan borrower. Not a paid flag.
-  std::shared_ptr<engine::ExecutionMetadataAllowance> construction_metadata{};
   bool prefill_lookahead = true;
   bool prepare_state = true;
   std::optional<bool> state_only_prefill{};
@@ -88,25 +84,22 @@ struct ComponentBuildOptions {
 };
 
 // The parts of `entry`'s model (its artifact and drafter in `store`), made
-// at its Setup from its settings: its spec from its architecture's mapping
-// (a v0 artifact's, with its compiled profile's values, D-109's
-// synthesis), composed with its drafter's when it speculates
-// (spec::ComposeDrafterV0: the drafter a stage of its own that reads the
+// at its Setup from its settings: the spec its v1 artifact stores (D-113,
+// D-118), composed with its drafter's when it speculates
+// (spec::ComposeDrafter: the drafter a stage of its own that reads the
 // target's state and taps), each stage's state layout (each tensor on its
 // own paged extents), the target's batching, and a component step source a
-// stage (one StagedStepSource over them) planned under each mapping's
-// default policy for those values and the serving envelope (its context
-// and owners: spec::DefaultRule, the family's recipe as data, with how
-// serving composes its steps) over GGML's registry and lowered onto its
+// stage (one StagedStepSource over them) planned under its approval's
+// policy for the serving envelope (its context and owners:
+// ComponentAdmissionPolicy, the family's recipe as data, with how serving
+// composes its steps) over GGML's registry and lowered onto its
 // graphs, on the model's own stream (`index`: its registration's), with a
 // cuBLAS handle over a workspace the runner maps and charges as its own; a
 // layer's routed experts one slab, its pitch the lowering's expert stride
 // (engine/expert_slab.h ExpertSlabsOf). A head row is the head's vocabulary
 // of logits; a greedy step returns each owner's token chosen on the
-// device. Gemma 2, Gemma 3 and Gemma 4 (with its assistant: an anchored
-// drafter reading the target's tapped features, three drafts a unit), by
-// their compiled profiles' values; any other architecture is refused at
-// Setup, naming why.
+// device. An architecture whose mapping has no serving recipe is refused
+// at Setup, naming why.
 // The paid internal serving domain, shared by ordinary and block/replay
 // compositions. The retained domain owns its allowance charge; this does not
 // approve a source or replace ComponentStepSource's complete sealing checks.

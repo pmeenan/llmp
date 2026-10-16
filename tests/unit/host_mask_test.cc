@@ -13,9 +13,6 @@
 #include <span>
 #include <vector>
 
-#include "model/dsv4.h"
-#include "model/qwen38.h"
-
 namespace {
 namespace md = llmp::model;
 
@@ -86,42 +83,45 @@ TEST(HostMaskTest, InvalidDescriptorsRefuseBeforeChangingOutput) {
   EXPECT_EQ(bias, saved);
 }
 
-TEST(HostMaskTest, DeepSeekRawAndAllCompressedMasksMatchCompleteOldFormula) {
-  const auto& profile = md::Dsv4Flash();
-  for (const auto mode : {md::Dsv4Window::kFull, md::Dsv4Window::kRing}) {
-    auto state = md::Dsv4State(profile, 16384, 512, mode);
-    ASSERT_TRUE(state);
+// DeepSeek V4 Flash's raw window masks at its geometry (the M3 chunk
+// inputs, retired with their runner, built them so): a 16,384-position
+// state in chunks of 512, its 128-position window a ring of pad(128 + 512,
+// 256) cells or a cell a position; a ring's chunk reads every cell, a full
+// cache's the positions up to the next 256 (at least 256).
+TEST(HostMaskTest, DeepSeekRawMasksMatchTheOldFormula) {
+  constexpr std::uint64_t kWindow = 128;
+  for (const bool ring : {false, true}) {
+    const std::uint64_t cells = ring ? 768 : 16384;
     for (const auto past : {0U, 257U, 4090U, 8191U}) {
       for (const auto rows : {1U, 17U, 511U}) {
-        auto in = md::Dsv4Chunk(profile, *state, past, rows, true, true);
-        ASSERT_TRUE(in);
-        for (std::uint32_t r = 0; r < rows; ++r)
-          for (std::uint32_t c = 0; c < in->raw_n_kv; ++c)
-            ASSERT_EQ(in->raw_mask[std::size_t{r} * in->raw_n_kv + c],
-                      OldRing(c, past + r, past + rows, state->raw_cells, profile.window));
-        const auto comp = [&](const auto& plan, const auto& mask) {
-          ASSERT_EQ(mask.size(), std::size_t{rows} * plan.n_kv);
-          for (std::uint32_t r = 0; r < rows; ++r)
-            for (std::uint32_t c = 0; c < plan.n_kv; ++c)
-              ASSERT_EQ(mask[std::size_t{r} * plan.n_kv + c],
-                        std::int64_t{c} < plan.n_visible[r] ? 0 : 0xFC00);
-        };
-        comp(in->csa, in->csa_mask);
-        comp(in->hca, in->hca_mask);
-        comp(in->lid, in->lid_mask);
+        const std::uint64_t end = std::uint64_t{past} + rows;
+        const std::uint64_t width =
+            ring ? cells
+                 : std::min<std::uint64_t>(
+                       cells,
+                       std::max<std::uint64_t>(256, (std::min(end, cells) + 255) / 256 * 256));
+        for (std::uint32_t r = 0; r < rows; ++r) {
+          const auto runs = md::HostMaskRing(width, past + r, end, cells, kWindow);
+          ASSERT_TRUE(runs);
+          std::vector<std::uint16_t> row(width, 0xFC00);
+          ASSERT_TRUE(md::FillHostMaskVisible(std::span{row}, *runs, std::uint16_t{0}));
+          for (std::uint64_t c = 0; c < width; ++c)
+            ASSERT_EQ(row[c], OldRing(c, past + r, end, cells, kWindow));
+          ASSERT_TRUE(md::MatchHostMask(row, *runs));
+        }
       }
     }
   }
 }
 
 TEST(HostMaskTest, QwenDenseAndThreeValuedQsaBuffersMatchOldBits) {
-  const auto& p = md::Qwen38Flash();
+  constexpr std::uint32_t kIndexerRatio = 4;  // Qwen3.8 Flash's
   for (const auto past : {0U, 2048U, 2300U, 4095U}) {
     for (const auto rows : {1U, 17U, 257U}) {
       const auto end = past + rows;
       const auto read = (end + 255) / 256 * 256;
-      const auto full = end / p.indexer_ratio;
-      const auto blocks = (read + p.indexer_ratio - 1) / p.indexer_ratio;
+      const auto full = end / kIndexerRatio;
+      const auto blocks = (read + kIndexerRatio - 1) / kIndexerRatio;
       for (std::uint32_t r = 0; r < rows; ++r) {
         auto prefix = md::HostMaskPrefix(read, past + r + 1);
         ASSERT_TRUE(prefix);
@@ -131,7 +131,7 @@ TEST(HostMaskTest, QwenDenseAndThreeValuedQsaBuffersMatchOldBits) {
           EXPECT_EQ(mask[c], c <= past + r ? 0 : 0xFC00);
         }
         if (full == 0) continue;
-        const auto tail = (std::uint64_t{past} + r + 1) / p.indexer_ratio;
+        const auto tail = (std::uint64_t{past} + r + 1) / kIndexerRatio;
         std::vector<float> bias(blocks);
         ASSERT_TRUE(md::FillHostQsaBias(std::span{bias}, full, tail));
         for (std::uint32_t b = 0; b < blocks; ++b) {

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The approved artifact supplies the template; no copied checkpoint template
+// The published v1 artifact supplies the template; no copied checkpoint template
 // or new family renderer is needed for its system-role refusal.
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -17,10 +17,9 @@
 #include "base/sha256.h"
 #include "chat/chat.h"
 #include "expected_error.h"
-#include "model/gemma2.h"
 #include "runtime/model_settings.h"
 #include "tokenizer/tokenizer.h"
-#include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace chat = llmp::chat;
@@ -29,17 +28,11 @@ namespace tok = llmp::tokenizer;
 class Gemma2ChatAssets : public ::testing::Test {
  protected:
   void SetUp() override {
-    const std::filesystem::path path =
-        llmp::test_support::ModelsDir() +
-        "/gemma2-import-20261007/artifacts/"
-        "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
-    if (std::error_code error; !std::filesystem::exists(path, error)) {
-      GTEST_SKIP() << "no Gemma2 artifact in " << path;
-    }
+    const auto id = llmp::test_support::V1IdNamed("gemma2");
+    if (!id) GTEST_FAIL() << "no published v1 Gemma2 in " << llmp::test_support::V1Store();
+    const std::filesystem::path path = std::filesystem::path(llmp::test_support::V1Store()) / *id;
     auto artifact = llmp::artifact::Artifact::Open(path, {.expected_id = {}});
     ASSERT_TRUE(artifact) << llmp::test_support::Failed(artifact)->ToString();
-    auto bound = llmp::model::BindApprovedGemma2(*artifact);
-    ASSERT_TRUE(bound) << *llmp::test_support::Failed(bound);
     auto facts = rt::ArtifactFactsOf(*artifact, nullptr);
     ASSERT_TRUE(facts) << *llmp::test_support::Failed(facts);
     EXPECT_EQ(facts->architecture, "gemma2");

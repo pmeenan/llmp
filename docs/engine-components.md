@@ -791,7 +791,7 @@ what exists more than once today and becomes one component.
 
 | Component | Used by, with variants | Implemented more than once today |
 | --- | --- | --- |
-| Token embedding | all; scaled by √width (G2–G4), host lookup (Q2, DS), into hyper-connection streams (Q38, DS) | host and device lookups in `model/qwen2.cc`, `engine/dsv4_plan.cc`, `kernels/image/ops.cu` |
+| Token embedding | all; scaled by √width (G2–G4), host lookup (Q2, DS), into hyper-connection streams (Q38, DS) | host and device lookups in `model/qwen2.cc`, `engine/dsv4_plan.cc` (both retired), `kernels/image/ops.cu` |
 | RMS norm | all; weighted, unweighted (DS heads), L2 (Q38 GDN), gated output norm (Q38), BF16-rounded (Img), true `(1 + w)` only in Img (GGUF folds Gemma's offset into the weight) | a `Norm` helper in every graph builder and in `kernels/exl3/qwen2.cc` |
 | Norm placement | pre (Q2), sandwich pre/post with a layer output scale (G2–G4, Asst), inside the residual mix (Q38, DS), adaLN (Img) | inline per graph builder |
 | Rotation | NEOX (Gemma, Q2, Img text encoder), NORM pairs with YaRN (DS), interleaved multi-section, partial (Q38), proportional frequencies (G4 global), 3-axis complex (Img DiT); base and scaling per layer type | wrappers in `qwen2_graph`, `exl3/qwen2.cc`, `dsv4_graph`; literal bases in `gemma3_graph` |
@@ -1635,11 +1635,11 @@ requirements on source values, and folds from a fixed catalog
 source container; a stage's folds are its source container's with the
 folds its importer recorded (`Source::folds`). Mappings are validated like untrusted input.
 Synthesis binds every source tensor to exactly one rule and every
-required role to a tensor, and resolves every parameter. For a v0
-artifact the tensors are its resources' roles and expert arrays and the
-values come from today's compiled profiles under the GGUF keys a mapping
-reads (`mappings/gemma2.h`, `gemma3.h`), so no new file is parsed; the
-importer will apply the same mappings to checkpoints. Gemma 2 and
+required role to a tensor, and resolves every parameter. The native
+importer applies the mappings to checkpoints and stores the spec in the
+v1 artifact; serving reads that stored spec (D-118). (Until slice 4b a v0
+artifact's spec was synthesized from its resources and from compiled
+profiles' values under the same keys; that path is retired.) Gemma 2 and
 Gemma 3 have mappings: `attention.dense` and `ffn.glu` (sandwich norms,
 GQA, softcap, sliding windows, NEOX rotation, GELU-tanh GLU),
 `embedding.token` scaled by sqrt(width), `norm.rms` and `head.linear`;
@@ -1680,17 +1680,12 @@ mixing slots (`Site::kSide`, `kMixing`); slots whose layers a source
 key lists (`SlotRule::layers_key`: `qwen4exp.ple.layers`); tensor rules
 binding any part of a tensor (`any_part`: the ModelOpt import's MXFP8
 codes and scales) or accounting for tensors the spec holds as parameters
-(`unbound`: the hash's constants); folds asserted for a v0 artifact's
-converter identity (`FoldRule::converter`, the ModelOpt importer's, which
-records no transformation: the start of one of the identity's `+`-joined
-parts; a v1 artifact records its importer's folds, so no converter rule
-applies to it) as well as per container; v0 resources paired into
-one tensor's parts (`V0Assembly`: MXFP8 codes and scales, the n-gram
-table's NVFP4 rows and scale, the CUTLASS expert arrays); integer-list
+(`unbound`: the hash's constants); folds asserted per container (a v1
+artifact records its importer's folds; slice 4b retired the v0 converter
+rules and the v0 resource pairing, `V0Assembly`); integer-list
 values (`ValueType::kInts`: the rotation's sections, the hash's
 constants); and drafter taps of a layer's output or streams (the target's
-last layer). `SourceOfV0` takes the mapping to assemble, and the caps
-rise to 2^20 source tensors (an artifact's are 301,730) and 2^16 values.
+last layer). The caps rise to 2^20 source tensors (an artifact's are 301,730) and 2^16 values.
 The `qwen4exp` mapping makes one spec structure from the ModelOpt
 import (experts in the CUTLASS layout or GGML's blocks) and a GGUF's:
 the streams' mixing, the n-gram side input read by `residual.ple` at
@@ -1703,8 +1698,8 @@ composes the MTP drafter stage: it reads its target's streams after the
 last layer, its token rows from the target's table, one QSA layer
 (rollback `truncate`) and MoE, the head's mix returning its streams as
 the next feature, and its own selected head where the artifact has one.
-Both mappings' values come from today's profile, binding and hash
-(`Qwen38V0Values`, `Qwen38MtpV0Values`); their default policies (G3b)
+Both mappings' values came from M3's profile, binding and hash
+(`Qwen38V0Values`, `Qwen38MtpV0Values`, retired in slice 4b); their default policies (G3b)
 are today's fast form, by the import's form. The drafter's head reads
 its weight's first rows (`head.linear`'s `rows`: the draft vocabulary,
 65,536 or a selected head's), and the verify's and the drafter's tokens
@@ -1729,11 +1724,32 @@ hash or biased routing, the head's mix, the untied output) and `dflash`
 composes the DSpark stage `dspark` (three window layers over a 256-cell
 injected ring, `embedding.inject`, the head's mix of every row, its
 target's output and the Markov head; `conf_proj` unbound). Values come
-from today's profiles (`Dsv4V0Values`, `DsparkV0Values`). On the
+from M3's profiles (`Dsv4V0Values`, `DsparkV0Values`, retired in slice
+4b). On the
 installed artifacts (`components_dsv4_models_test`: UD-Q2_K_XL
 `8a355bfb`, the community IQ2_XXS `cd39d504`, DSpark `dd2d3f9c`), the
 specs equal the unit fixture's, the layouts are today's, and every step
 kind builds, the injection writing every drafter layer's ring.
+
+**Since slice 4b (D-118)** serving reads v1 artifacts only, and no family
+has code outside its mapping data: the per-family profiles, binders and
+`*V0Values`, `SynthesizeV0`, `SourceOfV0` and `ComposeDrafterV0` are
+deleted, and a v0 target or drafter is refused at registration with the
+re-import message. What the mappings still carry as an architecture's
+compiled constants is data: a serving recipe's prompt bound (Qwen3.8's and
+DeepSeek V4's `most_rows`), the native MTP drafter's block values (its
+`DraftRecipe::values`, D-118), and the approved targets a GGUF drafter's
+import composes its stage with (`DraftRecipe::import_targets`: Gemma 4
+26B-A4B's and 31B's by the target width the assistant's metadata names,
+DeepSeek V4 Flash's for DSpark), each with its values and tensor shapes,
+which the importer selects by data (its closed Qwen3.8 ModelOpt and MLX
+normalizers remain per family, M3.5 debt: docs/m36-handoff.md). The tests
+that synthesize a real family's spec from a fixture's tensor table take
+the profile values from `tests/support/families/`, and the frozen v1
+digests (`tests/unit/data/v1_frozen/`) are the regression oracle of every
+served family. Re-importing the staged sources reproduces the published
+IDs (`verified`: Gemma 2, Gemma 4 26B-A4B, both assistants, DSpark and the
+Qwen3.8 MTP drafter, spark-b, 2026-10-16).
 
 ## Weight and state formats
 
@@ -2426,8 +2442,8 @@ its prompt-chunk row bound, lanes, the forced DeepSeek policy) and a
 drafter mapping's `DraftRecipe`; `Server::Make` dispatches by the stored
 spec's pipeline kind, settings applicability and the calibration
 fingerprint follow the recipe, a stored hash-routing table is checked by
-the spec's `side.hash` inputs, and the chat route's slice is the recipe's. No architecture name is compared in `src/runtime`
-outside the v0 path that slice 4b deletes.
+the spec's `side.hash` inputs, and the chat route's slice is the recipe's. No architecture name is compared in
+`src/runtime` (slice 4b deleted the v0 path that did).
 
 **Stored-spec runtime admission** (`runtime/component_admission.h`).
 Registration and component construction use the same closed check over

@@ -44,6 +44,7 @@
 
 #include "base/bytes.h"
 #include "execution/registry.h"
+#include "families/dsv4.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
@@ -54,7 +55,6 @@
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
-#include "model/dsv4.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 
@@ -1796,7 +1796,7 @@ TEST_F(Dsv4FastTest, TheSparseMaskKeepsTheWindowAndTheSelectedOrVisibleRows) {
 }
 
 TEST_F(Dsv4FastTest, QHeadRetainsNativeRmsAndRotaryRoundingAtLongPositions) {
-  const auto& profile = llmp::model::Dsv4Flash();
+  const auto& profile = llmp::test_support::families::Dsv4Flash();
   for (const std::int64_t rows : {33, 2048}) {
     const auto count = static_cast<std::size_t>(512LL * 64 * rows);
     auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 512, 64, rows), Normal(711, count));

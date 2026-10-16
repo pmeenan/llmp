@@ -2,21 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Gemma 4 26B-A4B and 31B served with their assistants as the model's
-// drafter, from published v1 artifacts against the pinned v0 imports (label
-// `models`): the same server, settings and speculative path, one owner.
+// drafter, from the published v1 artifacts (label `models`): the server,
+// approved settings and speculative path, one owner.
 //
-// Each arm prefills a repeating prompt and generates 48 tokens speculatively
+// The run prefills a repeating prompt and generates 48 tokens speculatively
 // with every logit row, takes the complete state (every stage, the
 // assistant's included), spills it, restores it with no model work, checks
 // the state is the same, continues from the restored history with 16 more
 // speculative tokens, and takes the state again. The observations are
 // digests (full prefill head, tokens, drafted and accepted counts, logit
-// rows, histories, state images), compared v0 against v1 where the v0
-// artifacts exist and asserted against tests/unit/data/v1_frozen
-// (tests/support/v1_frozen.h) either way.
+// rows, histories, state images), asserted against tests/unit/data/v1_frozen
+// (tests/support/v1_frozen.h), which hold what the pinned v0 imports
+// produced bit for bit before serving became v1-only (D-118).
 //
-// LLMP_TEST_V1_STORE names the v1 store and holds v1-ids.json;
-// LLMP_TEST_V1_FROZEN_ONLY skips the v0 arm.
+// LLMP_TEST_V1_STORE names the v1 store and holds v1-ids.json.
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -30,7 +29,6 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -44,7 +42,6 @@
 #include "engine/paged_node.h"
 #include "runtime/engine_llm.h"
 #include "runtime/serving.h"
-#include "tokenizer_fixtures.h"
 #include "v1_frozen.h"
 
 namespace {
@@ -56,15 +53,13 @@ namespace ts = llmp::test_support;
 
 struct Profile {
   const char* name;
-  const char* v0_target;
-  const char* v0_assistant;
+  const char* target;  // the store's v1-ids.json names
+  const char* assistant;
   std::uint32_t prefill_chunk;
 };
 constexpr std::array<Profile, 2> kProfiles{{
-    {"Gemma26", "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-     "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42", 1024},
-    {"Gemma31", "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
-     "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120", 256},
+    {"Gemma26", "gemma26", "gemma26-assistant", 1024},
+    {"Gemma31", "gemma31", "gemma31-assistant", 256},
 }};
 constexpr std::uint32_t kVocab = 262144;
 constexpr std::uint32_t kContext = 8192, kSlots = 4;
@@ -117,8 +112,9 @@ std::expected<std::string, std::string> StateImage(Owner& own, rt::EngineLlm& mo
       const std::array<std::uint64_t, 3> where{stage, range.offset, range.bytes};
       hash.Update(std::as_bytes(std::span(where)));
       for (std::uint64_t at = 0; at < range.bytes; at += kPart) {
-        const en::LiveState::Range part{
-            .region = stage, .offset = range.offset + at, .bytes = std::min(kPart, range.bytes - at)};
+        const en::LiveState::Range part{.region = stage,
+                                        .offset = range.offset + at,
+                                        .bytes = std::min(kPart, range.bytes - at)};
         auto retired = en::LiveState::CopyRetirement::kUnproven;
         const auto copied = slots.CopyState(0, *buffer, std::span(&part, 1), true, &retired);
         if (retired == en::LiveState::CopyRetirement::kUnproven) node.KeepPinned(*buffer);
@@ -293,47 +289,18 @@ std::expected<Observations, std::string> RunArm(const Profile& profile, const Ar
 
 class GemmaAssistantV1Gpu : public ::testing::TestWithParam<std::size_t> {};
 
-TEST_P(GemmaAssistantV1Gpu, PublishedPairMatchesV0AndTheFrozenDigests) {
+TEST_P(GemmaAssistantV1Gpu, PublishedPairMatchesTheFrozenDigests) {
   const Profile& profile = kProfiles.at(GetParam());
   const auto store = ts::V1Store();
-  if (store.empty()) GTEST_SKIP() << "no published v1 store (LLMP_TEST_V1_STORE)";
-  const auto target = ts::V1IdFor(profile.v0_target);
-  const auto assistant = ts::V1IdFor(profile.v0_assistant);
-  ASSERT_TRUE(target && assistant) << "v1-ids.json lacks the target or the assistant";
-  const fs::path v0_store = fs::path(ts::ModelsDir()) / "m3-artifacts";
-  std::error_code error;
-  const bool have_v0 = std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&  // NOLINT
-                       fs::exists(v0_store / profile.v0_target, error) &&
-                       fs::exists(v0_store / profile.v0_assistant, error);
-  std::optional<Observations> v0;
-  if (have_v0) {
-    auto ran = RunArm(profile, {v0_store, profile.v0_target, profile.v0_assistant});
-    ASSERT_TRUE(ran) << (ran ? "" : ran.error());
-    v0 = std::move(*ran);
+  const auto target = ts::V1IdNamed(profile.target);
+  const auto assistant = ts::V1IdNamed(profile.assistant);
+  if (!target || !assistant) {
+    GTEST_FAIL() << "no published v1 " << profile.target << " and its assistant in " << store;
   }
   const auto v1 = RunArm(profile, {store, *target, *assistant});
   ASSERT_TRUE(v1) << (v1 ? "" : v1.error());
   ts::FrozenDigests frozen(std::string("gemma_assistant_") + profile.name);
-  if (have_v0) {
-    ASSERT_EQ(v0->size(), v1->size());
-    for (std::size_t i = 0; i < v1->size(); ++i) {
-      EXPECT_EQ((*v0)[i].first, (*v1)[i].first);
-      EXPECT_EQ((*v0)[i].second, (*v1)[i].second) << "v0 and v1 differ at " << (*v1)[i].first;
-    }
-  }
-  if (frozen.recording()) {
-    // One arm records: the v0 one when it exists (the v1 arm is compared above).
-    for (const auto& [key, value] : have_v0 ? *v0 : *v1) frozen.Expect(key, value);
-  } else {
-    {
-      SCOPED_TRACE("v1 against frozen");
-      for (const auto& [key, value] : *v1) frozen.Expect(key, value);
-    }
-    if (have_v0) {
-      SCOPED_TRACE("v0 against frozen");
-      for (const auto& [key, value] : *v0) frozen.Expect(key, value);
-    }
-  }
+  for (const auto& [key, value] : *v1) frozen.Expect(key, value);
   RecordProperty("v1_target", *target);
   RecordProperty("v1_assistant", *assistant);
 }

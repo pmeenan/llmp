@@ -18,9 +18,9 @@
 #include "artifact/representation.h"
 #include "base/check.h"
 #include "base/json.h"
-#include "model/gemma3.h"
+#include "families/gemma.h"
 namespace llmp::test_support::gemma3 {
-namespace md = llmp::model;
+namespace md = llmp::test_support::families;
 namespace json = llmp::base::json;
 inline json::Value Get(json::Value value, std::string_view key) {
   const auto found = value.find(key);

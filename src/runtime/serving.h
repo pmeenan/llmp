@@ -1363,8 +1363,9 @@ class Llm : public Served {
   std::vector<std::int32_t> stops_;
   std::optional<std::int32_t> think_start_;
   std::optional<std::int32_t> think_end_;
-  // Adaptive draft depth's cost of a third draft over two (its settings').
-  double depth_cost_ratio_ = kQwen38DepthCostRatio;
+  // Adaptive draft depth's cost of a third draft over two (its settings',
+  // where a conversation owns its depth; 0: AdaptiveDepth's own prior).
+  double depth_cost_ratio_ = 0;
   CalibrationSamples calibration_samples_;
   CalibrationRecord calibration_record_;
 

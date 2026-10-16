@@ -15,10 +15,6 @@
 #include "components/component.h"
 #include "components/step.h"
 #include "import/readers/gguf.h"
-#include "model/dsv4.h"
-#include "model/gemma4.h"
-#include "spec/mappings/dsv4.h"
-#include "spec/mappings/gemma4.h"
 
 namespace llmp::import {
 namespace nd = normalization_detail;
@@ -63,8 +59,9 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key) {
   if (const auto types = nd::KeyTypes(*t.architecture, canonical); types != 0)
     return Key{.kind = MetadataClass::kSelected, .canonical = canonical, .types = types};
   for (std::size_t i = 0; i < t.auxiliary.size(); ++i)
-    if (t.container == "gguf" ? key.starts_with(t.auxiliary[i].prefix)
-                              : key == t.auxiliary[i].prefix)
+    if (t.container == "gguf" && t.auxiliary[i].prefix.ends_with('.')
+            ? key.starts_with(t.auxiliary[i].prefix)
+            : key == t.auxiliary[i].prefix)
       return Key{.auxiliary = static_cast<std::uint32_t>(i)};
   return std::nullopt;
 }
@@ -353,8 +350,9 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     const auto* list = value ? std::get_if<std::vector<std::int64_t>>(value) : nullptr;
     const auto* reals = value ? std::get_if<std::vector<double>>(value) : nullptr;
     const auto count = list ? list->size() : reals ? reals->size() : 0;
-    if (count != rule.size ||
-        (!rule.exact.empty() && (!list || !std::ranges::equal(*list, rule.exact))))
+    if (!value && rule.optional) continue;
+    if ((rule.min_size == 0 ? count != rule.size : (count < rule.min_size || count > rule.size)) ||
+        (!rule.exact.empty() && (!list || !std::ranges::equal(*list, rule.exact.first(count)))))
       return Bad("source numeric-list profile requirement disagrees");
     list_elements = std::max(list_elements, count);
   }
@@ -573,141 +571,41 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
   return NormalizationCost{bytes, work, payload, static_cast<std::uint32_t>(layers)};
 }
 
-spec::Source SyntheticGemma4TargetSource(const model::Gemma4Profile& p) {
-  spec::Source s{.architecture = "gemma4", .container = "gguf"};
-  const auto add = [&](std::string name, std::vector<std::uint64_t> ne, bool experts = false) {
-    const auto encoding = ne.size() == 1 ? format::Encoding::kF32 : format::Encoding::kBF16;
-    format::TensorFormat f{
-        .encoding = encoding,
-        .layout = format::Layout::kDense,
-        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())},
-    };
-    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
-    s.tensors.push_back({.name = std::move(name),
-                         .format = f,
-                         .part = format::PartRole::kData,
-                         .experts = experts});
+// The import target a drafter's source selects (spec/mapping.h
+// ImportTarget): the one whose value a key of its, among the source's
+// normalized values or raw metadata, holds; a recipe's only target when it
+// has no keys. Refused (null, with why) where none or more than one target
+// matches, or where any of the targets' keys the source holds names none of
+// them or another one than the selected (a source naming two targets).
+static std::expected<const spec::ImportTarget*, std::string_view> SelectImportTarget(
+    const spec::DraftRecipe& draft, std::span<const spec::SourceValue> values,
+    std::span<const MetaEntry> metadata) {
+  const auto targets = draft.import_targets;
+  if (targets.size() == 1 && targets.front().keys[0].empty()) return &targets.front();
+  // Every value the source holds under any target's key.
+  std::vector<std::pair<std::string_view, const std::int64_t*>> held;
+  const auto keyed = [&](std::string_view key) {
+    return !key.empty() && std::ranges::any_of(targets, [&](const spec::ImportTarget& t) {
+      return std::ranges::contains(t.keys, key);
+    });
   };
-  add("token_embd.weight", {p.width, p.vocab});
-  add("output_norm.weight", {p.width});
-  add("output.weight", {p.width, p.vocab});
-  add("rope_freqs.weight", {p.global_head_dim / 2});
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    const std::string prefix = std::format("blk.{}.", il);
-    const auto d = p.head_dim(il), kv = p.kv_heads(il) * d, q = p.heads * d;
-    add(prefix + "attn_norm.weight", {p.width});
-    add(prefix + "attn_q.weight", {p.width, q});
-    add(prefix + "attn_k.weight", {p.width, kv});
-    if (p.local(il)) {
-      add(prefix + "attn_v.weight", {p.width, kv});
-    }
-    add(prefix + "attn_q_norm.weight", {d});
-    add(prefix + "attn_k_norm.weight", {d});
-    add(prefix + "attn_output.weight", {q, p.width});
-    add(prefix + "post_attention_norm.weight", {p.width});
-    add(prefix + "layer_output_scale.weight", {1});
-    if (p.experts != 0) {
-      add(prefix + "ffn_norm.weight", {p.width});
-      add(prefix + "ffn_gate.weight", {p.width, p.ffn});
-      add(prefix + "ffn_up.weight", {p.width, p.ffn});
-      add(prefix + "ffn_down.weight", {p.ffn, p.width});
-      add(prefix + "post_ffw_norm_1.weight", {p.width});
-      add(prefix + "ffn_gate_inp.weight", {p.width, p.experts});
-      add(prefix + "ffn_gate_inp.scale", {p.width});
-      add(prefix + "pre_ffw_norm_2.weight", {p.width});
-      add(prefix + "ffn_gate_up_exps.weight", {p.width, 2U * p.expert_ffn, p.experts}, true);
-      add(prefix + "ffn_down_exps.weight", {p.expert_ffn, p.width, p.experts}, true);
-      add(prefix + "ffn_down_exps.scale", {p.experts});
-      add(prefix + "post_ffw_norm_2.weight", {p.width});
-      add(prefix + "post_ffw_norm.weight", {p.width});
-    } else {
-      add(prefix + "ffn_norm.weight", {p.width});
-      add(prefix + "ffn_gate.weight", {p.width, p.ffn});
-      add(prefix + "ffn_up.weight", {p.width, p.ffn});
-      add(prefix + "ffn_down.weight", {p.ffn, p.width});
-      add(prefix + "post_ffw_norm.weight", {p.width});
-    }
+  for (const auto& v : values)
+    if (keyed(v.key)) held.emplace_back(v.key, std::get_if<std::int64_t>(&v.value));
+  for (const auto& e : metadata)
+    if (keyed(e.key)) held.emplace_back(e.key, std::get_if<std::int64_t>(&e.value));
+  const spec::ImportTarget* chosen = nullptr;
+  for (const auto& [key, value] : held) {
+    const spec::ImportTarget* named = nullptr;
+    for (const spec::ImportTarget& t : targets)
+      if (value != nullptr && *value == t.value && std::ranges::contains(t.keys, key)) named = &t;
+    if (named == nullptr)
+      return std::unexpected("unsupported drafter target: a key names no approved target");
+    if (chosen != nullptr && chosen != named)
+      return std::unexpected("unsupported drafter target: the source names more than one");
+    chosen = named;
   }
-  return s;
-}
-
-spec::Source SyntheticDsv4TargetSource(const model::Dsv4Profile& p) {
-  spec::Source s{.architecture = "deepseek4", .container = "gguf"};
-  const auto add = [&](std::string name, std::vector<std::uint64_t> ne, bool experts = false,
-                       std::optional<format::Encoding> enc = std::nullopt) {
-    const auto encoding =
-        enc.value_or(ne.size() == 1 ? format::Encoding::kF32 : format::Encoding::kBF16);
-    format::TensorFormat f{
-        .encoding = encoding,
-        .layout = format::Layout::kDense,
-        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())},
-    };
-    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
-    s.tensors.push_back({.name = std::move(name),
-                         .format = f,
-                         .part = format::PartRole::kData,
-                         .experts = experts});
-  };
-  add("token_embd.weight", {p.width, p.vocab});
-  add("output_norm.weight", {p.width});
-  add("output.weight", {p.width, p.vocab});
-  add("output_hc_fn.weight", {p.hc_width(), p.hc});
-  add("output_hc_base.weight", {p.hc});
-  add("output_hc_scale.weight", {1});
-  const std::uint64_t w = p.width;
-  const std::uint64_t head = p.head_dim;
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    const std::string prefix = std::format("blk.{}.", il);
-    add(prefix + "attn_norm.weight", {w});
-    add(prefix + "attn_sinks.weight", {p.heads});
-    add(prefix + "attn_q_a.weight", {w, p.q_lora});
-    add(prefix + "attn_q_a_norm.weight", {p.q_lora});
-    add(prefix + "attn_q_b.weight", {p.q_lora, std::uint64_t{p.heads} * head});
-    add(prefix + "attn_kv.weight", {w, head});
-    add(prefix + "attn_kv_a_norm.weight", {head});
-    add(prefix + "attn_output_a.weight",
-        {std::uint64_t{p.heads} * head / p.o_groups, std::uint64_t{p.o_lora} * p.o_groups});
-    add(prefix + "attn_output_b.weight", {std::uint64_t{p.o_lora} * p.o_groups, w});
-    add(prefix + "hc_attn_fn.weight", {p.hc_width(), p.hc_mix()});
-    add(prefix + "hc_attn_base.weight", {p.hc_mix()});
-    add(prefix + "hc_attn_scale.weight", {3});
-    add(prefix + "hc_ffn_fn.weight", {p.hc_width(), p.hc_mix()});
-    add(prefix + "hc_ffn_base.weight", {p.hc_mix()});
-    add(prefix + "hc_ffn_scale.weight", {3});
-    const std::uint32_t ratio = p.compress_ratios.at(il);
-    if (ratio != 0) {
-      const std::uint64_t coff = ratio == model::kDsv4CsaRatio ? 2 : 1;
-      add(prefix + "attn_compressor_kv.weight", {w, coff * head});
-      add(prefix + "attn_compressor_gate.weight", {w, coff * head});
-      add(prefix + "attn_compressor_ape.weight", {coff * head, ratio});
-      add(prefix + "attn_compressor_norm.weight", {head});
-    }
-    if (ratio == model::kDsv4CsaRatio) {
-      const std::uint64_t ih = p.indexer_head_dim;
-      add(prefix + "indexer.attn_q_b.weight", {p.q_lora, std::uint64_t{p.indexer_heads} * ih});
-      add(prefix + "indexer.proj.weight", {w, p.indexer_heads});
-      add(prefix + "indexer_compressor_kv.weight", {w, 2 * ih});
-      add(prefix + "indexer_compressor_gate.weight", {w, 2 * ih});
-      add(prefix + "indexer_compressor_ape.weight", {2 * ih, model::kDsv4CsaRatio});
-      add(prefix + "indexer_compressor_norm.weight", {ih});
-    }
-    add(prefix + "ffn_norm.weight", {w});
-    add(prefix + "ffn_gate_inp.weight", {w, p.experts});
-    if (il < p.hash_layers) {
-      add(prefix + "ffn_gate_tid2eid.weight", {p.experts_used, p.vocab}, false,
-          format::Encoding::kI32);
-    } else {
-      add(prefix + "exp_probs_b.bias", {p.experts});
-    }
-    const std::uint64_t shared = std::uint64_t{p.expert_ffn} * p.shared_experts;
-    add(prefix + "ffn_gate_shexp.weight", {w, shared});
-    add(prefix + "ffn_up_shexp.weight", {w, shared});
-    add(prefix + "ffn_down_shexp.weight", {shared, w});
-    add(prefix + "ffn_gate_exps.weight", {w, p.expert_ffn, p.experts}, true);
-    add(prefix + "ffn_up_exps.weight", {w, p.expert_ffn, p.experts}, true);
-    add(prefix + "ffn_down_exps.weight", {p.expert_ffn, w, p.experts}, true);
-  }
-  return s;
+  if (chosen == nullptr) return std::unexpected("unsupported drafter target: none named");
+  return chosen;
 }
 
 std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMapping& table,
@@ -788,6 +686,17 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
     const auto& e = input.metadata[i];
     const auto key = *Classify(table, e.key);
     auto destination = key.auxiliary;
+    if (key.kind == MetadataClass::kAuxiliary && key.auxiliary < table.auxiliary.size()) {
+      // An auxiliary key a tensor's extent states must agree with it.
+      const auto& aux = table.auxiliary[key.auxiliary];
+      if (!aux.equals_tensor.empty()) {
+        const auto* value = std::get_if<std::int64_t>(&e.value);
+        const auto tensor = std::ranges::find(input.tensors, aux.equals_tensor, &Tensor::name);
+        if (value == nullptr || tensor == input.tensors.end() || *value < 0 ||
+            static_cast<std::uint64_t>(*value) != tensor->format.shape.ne[aux.equals_dim])
+          return Bad("auxiliary metadata disagrees with its tensor's extent", ItemKind::kKey, i);
+      }
+    }
     if (key.kind == MetadataClass::kSelected) {
       destination = static_cast<std::uint32_t>(plan.values_.size());
       spec::ParamValue value{};
@@ -806,49 +715,20 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
     plan.metadata_.push_back({static_cast<std::uint32_t>(i), key.kind, destination});
   }
   if (table.architecture->role == spec::StageRole::kDrafter) {
-    const spec::Mapping* target_mapping = nullptr;
-    std::expected<std::vector<spec::SourceValue>, std::string> target_values;
-    spec::Source target_source;
-    if (table.architecture->architecture == "gemma4-assistant") {
-      std::optional<std::int64_t> out_len;
-      for (const auto& v : plan.values_) {
-        if (v.key == "gemma4-assistant.embedding_length_out") {
-          if (const auto* i = std::get_if<std::int64_t>(&v.value)) {
-            out_len = *i;
-          }
-        }
-      }
-      if (!out_len) {
-        for (const auto& e : input.metadata) {
-          if (e.key == "gemma4-assistant.embedding_length_out" ||
-              e.key == "gemma4-assistant.Parent.embedding_length") {
-            if (const auto* i = std::get_if<std::int64_t>(&e.value)) {
-              out_len = *i;
-            }
-          }
-        }
-      }
-      const model::Gemma4Profile* target_profile = nullptr;
-      if (out_len == 2816) {
-        target_profile = &model::Gemma4_26BA4B();
-      } else if (out_len == 5376) {
-        target_profile = &model::Gemma4_31B();
-      } else {
-        return Bad("unsupported assistant parent width", ItemKind::kNone, kNoItem,
-                   Rule::kUnsupported);
-      }
-      target_mapping = &spec::mappings::Gemma4Mapping();
-      target_values = spec::mappings::Gemma4V0Values(*target_profile);
-      if (!target_values) return Bad(target_values.error());
-      target_source = SyntheticGemma4TargetSource(*target_profile);
-    } else if (table.architecture->architecture == "dflash") {
-      target_mapping = &spec::mappings::Dsv4Mapping();
-      target_values = spec::mappings::Dsv4V0Values(model::Dsv4Flash());
-      if (!target_values) return Bad(target_values.error());
-      target_source = SyntheticDsv4TargetSource(model::Dsv4Flash());
-    } else {
-      return Bad("unsupported drafter architecture", ItemKind::kNone, kNoItem, Rule::kUnsupported);
-    }
+    // Its target as its drafting recipe's data describes it (its source
+    // keeps none of its target's tensors or values).
+    const spec::DraftRecipe* draft = table.architecture->draft;
+    if (draft == nullptr || draft->import_targets.empty())
+      return Bad("unsupported drafter target", ItemKind::kNone, kNoItem, Rule::kUnsupported);
+    const auto selected = SelectImportTarget(*draft, plan.values_, input.metadata);
+    if (!selected) return Bad(selected.error(), ItemKind::kNone, kNoItem, Rule::kUnsupported);
+    const spec::ImportTarget* target = *selected;
+    if (target->mapping == nullptr || target->values == nullptr || target->source == nullptr)
+      return Bad("unsupported drafter target", ItemKind::kNone, kNoItem, Rule::kUnsupported);
+    const spec::Mapping* target_mapping = &target->mapping();
+    auto target_values = target->values();
+    if (!target_values) return Bad("drafter target values refused");
+    const spec::Source target_source = target->source();
     auto target_spec = spec::Synthesize(*target_mapping, target_source, *target_values);
     if (!target_spec) return Bad("drafter target synthesis failed");
     auto composed = spec::ComposeDrafter(*target_spec, *target_mapping, *table.architecture,
@@ -867,7 +747,7 @@ std::expected<NormalizedPlan, Error> Build(Checkpoint source, const SourceMappin
   }
   plan.folds_.reserve(table.architecture->folds.size());
   for (const auto& fold : table.architecture->folds)
-    if (fold.container == input.container && fold.converter.empty())
+    if (fold.container == input.container)
       plan.folds_.push_back({std::string(fold.fold), std::string(fold.container)});
   return plan;
 }

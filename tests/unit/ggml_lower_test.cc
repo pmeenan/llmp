@@ -42,6 +42,7 @@
 #include "components/step.h"
 #include "engine/support.h"
 #include "execution/registry.h"
+#include "families/gemma.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "ggml.h"
@@ -57,8 +58,7 @@
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
+#include "model/state_contract.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
 #include "planner/select.h"
@@ -73,6 +73,7 @@ namespace {
 namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace md = llmp::model;
+namespace fam = llmp::test_support::families;
 namespace ex = llmp::execution;
 namespace pl = llmp::planner;
 namespace co = llmp::components;
@@ -164,13 +165,13 @@ struct Gemma2Family {
   static std::string_view Policy() {
     return llmp::spec::mappings::Gemma2Mapping().policies.front().text;
   }
-  static const md::Gemma2Profile& P() { return md::Gemma2_2B(); }
+  static const fam::Gemma2Profile& P() { return fam::Gemma2_2B(); }
   static auto Resources() { return llmp::test_support::gemma2::Resources(); }
   static Cells State(std::uint32_t context, std::uint32_t rows) {
     return CellsOf(P().window, context, rows);
   }
   static llmp::spec::ModelSpec Spec() {
-    auto values = llmp::spec::mappings::Gemma2V0Values(P());
+    auto values = fam::Gemma2Values(P());
     return *llmp::spec::Synthesize(llmp::spec::mappings::Gemma2Mapping(),
                                    llmp::test_support::Gemma2Source(), *values);
   }
@@ -183,13 +184,13 @@ struct Gemma3Family {
   static std::string_view Policy() {
     return llmp::spec::mappings::Gemma3Mapping().policies.front().text;
   }
-  static const md::Gemma3Profile& P() { return md::Gemma3_4BQat(); }
+  static const fam::Gemma3Profile& P() { return fam::Gemma3_4BQat(); }
   static auto Resources() { return llmp::test_support::gemma3::Resources(); }
   static Cells State(std::uint32_t context, std::uint32_t rows) {
     return CellsOf(P().window, context, rows);
   }
   static llmp::spec::ModelSpec Spec() {
-    auto values = llmp::spec::mappings::Gemma3V0Values(P());
+    auto values = fam::Gemma3Values(P());
     return *llmp::spec::Synthesize(llmp::spec::mappings::Gemma3Mapping(),
                                    llmp::test_support::Gemma3Source(), *values);
   }

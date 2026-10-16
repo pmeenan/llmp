@@ -3,7 +3,8 @@
 
 // The format layer's first proof (D-108; docs/engine-components.md, "First
 // proof"): Qwen3.8 Flash Next's native NVFP4 and MXFP8 tensors, read from
-// its prepared artifacts, through on-chip decode (kernels/decode) product by
+// its published v1 ModelOpt artifact (d145900e; each resource's format and
+// part as its index records them), through on-chip decode (kernels/decode) product by
 // product against the CPU reference decode and F64 products. Labels `gpu`,
 // `models` and `gpu-discrete`: it is meant for the discrete sm_86 target,
 // which has no FP4 or FP8 tensor cores, and runs on a GB10 too. The whole
@@ -17,9 +18,7 @@
 //   layer 3 (QSA): the MXFP8 q, k, v, o and indexer projections;
 //   layer 1's routed experts, NVFP4 in CUTLASS's scale atoms with gate and
 //     up stacked, as grouped products over 30 of the 512 experts (17 i, i
-//     < 30) and as one expert's vector GLU and down; where the first
-//     import (GGML's block_nvfp4) is also given, its experts' grouped
-//     products, which must equal the CUTLASS layout's bit for bit;
+//     < 30) and as one expert's vector GLU and down;
 //   the n-gram table's row-interleaved NVFP4 rows ([0, 1024), [160000000,
 //     160001024) and the last 1024), gathered exactly;
 //   the output head (BF16, 248,320 rows) and its hyper-connection products.
@@ -31,24 +30,19 @@
 // templates' tiles live in shared memory), with every module loaded
 // before the baseline (CUDA_MODULE_LOADING=EAGER).
 //
-// The artifacts: LLMP_QWEN38_PROOF_ARTIFACT, the CUTLASS-layout import
-// (c4fb47a9..., the v0 default), and optionally
-// LLMP_QWEN38_PROOF_GGML_ARTIFACT, the GGML one (67617f87...); by default
-// the M3 store under ~/.local/share/llmp (a Spark). Each variable names a
-// root directory and wins over the store. To run against another artifact
-// (a v1 import, say) in that store instead, set
-// LLMP_QWEN38_PROOF_ARTIFACT_ID (and LLMP_QWEN38_PROOF_GGML_ARTIFACT_ID) to
-// its 64-hex ID: the store lookup and the skip messages use it; unset, the
-// v0 IDs above. A partial copy serves: manifest, index and meta whole, each
+// The artifact: LLMP_QWEN38_PROOF_ARTIFACT names its root directory;
+// unset, the published v1 store's (tests/support/v1_frozen.h V1Store, a
+// Spark's). A partial copy serves: manifest, index and meta whole, each
 // shard at full size with its header and the groups and table rows above
 // present (the rest may be holes); the test reads nothing else. Without
-// the CUTLASS import the test skips, naming the variable.
+// the artifact the test skips, naming the variable. (The v0 imports'
+// comparison of the GGML-layout experts with the CUTLASS layout's went
+// with the v0 artifacts: no v1 import keeps GGML's layout.)
 //
-// Known gap (v0): the CUTLASS import keeps gate's and up's per-expert
-// tensor scales as two resources ([512] each), while a stacked
-// TensorFormat has one tensor-scale part ordered [matrix][stacked]; the
-// test gathers them into that order in a device buffer, which is what a
-// launch path does until the importer writes the part itself.
+// The routed experts' per-expert tensor scales are resources of their own
+// ([512] by projection), while a stacked TensorFormat has one tensor-scale
+// part ordered [matrix][stacked]; the test gathers them into that order in
+// a device buffer, as a launch path does.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -76,14 +70,13 @@
 #include <vector>
 
 #include "artifact/artifact.h"
-#include "artifact/format_map.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
 #include "ir/op.h"
 #include "kernels/decode/products.h"
 #include "kernels/reference/decode.h"
-#include "model/qwen38.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -92,7 +85,6 @@ namespace ar = llmp::artifact;
 namespace format = llmp::format;
 namespace decode = llmp::kernels::decode;
 namespace ref = llmp::kernels::reference;
-namespace model = llmp::model;
 namespace ir = llmp::ir;
 using decode::DecoderId;
 using format::Encoding;
@@ -100,12 +92,11 @@ using format::Layout;
 using format::PartRole;
 using format::TensorFormat;
 
-constexpr std::string_view kCutlassId =
-    "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
-constexpr std::string_view kGgmlId =
-    "67617f87f2199408faa6a3663ca86f6d7aafb258a687a8d0a11092ffd74741b6";
 constexpr std::uint32_t kExpertLayer = 1;
 constexpr std::uint32_t kUsed = 10;
+// Qwen3.8 Flash's width and routed expert's FFN width.
+constexpr std::uint64_t kWidth = 2560;
+constexpr std::uint64_t kExpertFfn = 640;
 constexpr std::uint64_t kSlack = std::uint64_t{8} << 20U;
 constexpr std::uint64_t kGranule = std::uint64_t{2} << 20U;
 
@@ -117,26 +108,16 @@ std::vector<std::uint32_t> Experts() {
   return out;
 }
 
-// The artifact ID: `variable`'s value if set and non-empty, else the v0
-// default `fallback`.
-std::string ArtifactId(const char* variable, std::string_view fallback) {
-  if (const char* p = std::getenv(variable);
-      p != nullptr && *p != '\0') {  // NOLINT(concurrency-mt-unsafe)
+// The artifact's root: LLMP_QWEN38_PROOF_ARTIFACT, else the v1 store's
+// ModelOpt import; empty when neither is present.
+fs::path Root() {
+  if (const char* p = std::getenv("LLMP_QWEN38_PROOF_ARTIFACT");  // NOLINT(concurrency-mt-unsafe)
+      p != nullptr && *p != '\0') {
     return p;
   }
-  return std::string(fallback);
-}
-
-fs::path Root(const char* variable, std::string_view id) {
-  if (const char* p = std::getenv(variable);
-      p != nullptr && *p != '\0') {  // NOLINT(concurrency-mt-unsafe)
-    return p;
-  }
-  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  const fs::path store =
-      fs::path(home != nullptr ? home : "/") / ".local/share/llmp/m3-artifacts" / id;
-  std::error_code error;
-  return fs::is_directory(store, error) ? store : fs::path();
+  const auto id = llmp::test_support::V1IdNamed("qwen38-modelopt");
+  if (!id) return {};
+  return fs::path(llmp::test_support::V1Store()) / *id;
 }
 
 // ---------------------------------------------------------------- device memory
@@ -307,37 +288,48 @@ struct Tensor {
   }
 };
 
-// An MXFP8 linear (codes and scales), or a GGML resource as it is (BF16).
-std::unique_ptr<Tensor> LoadLinear(const fs::path& root, const ar::Artifact& a,
-                                   const std::string& name, const model::Qwen38Mxfp8& m) {
+// A resource by name, its index.
+std::uint32_t ResourceIndex(const ar::Artifact& a, const std::string& name) {
+  const auto index = a.FindResource(name);
+  EXPECT_TRUE(index.has_value()) << name;
+  return index.value_or(0);
+}
+
+// A tensor whose parts are the resources `names` (in their recorded
+// parts), its format the first one's as the index records it.
+std::unique_ptr<Tensor> LoadParts(const fs::path& root, const ar::Artifact& a,
+                                  const std::string& name,
+                                  std::initializer_list<std::string> names) {
   auto t = std::make_unique<Tensor>();
   t->name = name;
-  const auto& codes = a.resources()[m.codes.index];
-  const auto& scales = a.resources()[m.scales.index];
-  const std::vector<ar::V0Part> parts = {{PartRole::kCodes, &codes.repr},
-                                         {PartRole::kBlockScales, &scales.repr}};
-  const auto f = ar::Assemble(Encoding::kMxfp8, Layout::kSplit, parts);
-  EXPECT_TRUE(f.has_value()) << name;
-  t->format = f.value_or(TensorFormat{});
-  t->Add(PartRole::kCodes, ReadResource(root, a, m.codes.index));
-  t->Add(PartRole::kBlockScales, ReadResource(root, a, m.scales.index));
+  for (const std::string& part : names) {
+    const std::uint32_t index = ResourceIndex(a, part);
+    const ar::Resource& r = a.resources()[index];
+    EXPECT_TRUE(r.format.has_value()) << part;
+    if (t->roles.empty()) t->format = r.format.value_or(TensorFormat{});
+    EXPECT_EQ(r.format.value_or(TensorFormat{}), t->format) << part;
+    t->Add(r.part, ReadResource(root, a, index));
+  }
+  if (t->format.shape.rank == 1) {  // a vector: one output row
+    t->format.shape.rank = 2;
+  }
   t->Upload();
   return t;
 }
 
-std::unique_ptr<Tensor> LoadDense(const fs::path& root, const ar::Artifact& a,
-                                  const std::string& name, const model::Qwen38Tensor& r) {
-  auto t = std::make_unique<Tensor>();
-  t->name = name;
-  const auto f = ar::FormatOf(a.resources()[r.index].repr);
-  EXPECT_TRUE(f.has_value()) << name;
-  t->format = f.value_or(TensorFormat{});
-  if (t->format.shape.rank == 1) {  // a vector: one output row
-    t->format.shape.rank = 2;
-  }
-  t->Add(PartRole::kData, ReadResource(root, a, r.index));
-  t->Upload();
+// An MXFP8 linear (codes and scales).
+std::unique_ptr<Tensor> LoadLinear(const fs::path& root, const ar::Artifact& a,
+                                   const std::string& name) {
+  auto t = LoadParts(root, a, name, {name + ".weight", name + ".weight_scale"});
+  EXPECT_EQ(t->format.encoding, Encoding::kMxfp8) << name;
+  EXPECT_EQ(t->roles, (std::vector<PartRole>{PartRole::kCodes, PartRole::kBlockScales})) << name;
   return t;
+}
+
+// A dense (BF16) linear.
+std::unique_ptr<Tensor> LoadDense(const fs::path& root, const ar::Artifact& a,
+                                  const std::string& name) {
+  return LoadParts(root, a, name, {name + ".weight"});
 }
 
 // ---------------------------------------------------------------- checks
@@ -506,65 +498,37 @@ class Qwen38DecodeProofTest : public ::testing::Test {
     if (cudaGetDeviceCount(&count) != cudaSuccess || count == 0) {
       GTEST_SKIP() << "no CUDA device";
     }
-    const std::string id = ArtifactId("LLMP_QWEN38_PROOF_ARTIFACT_ID", kCutlassId);
-    root_ = Root("LLMP_QWEN38_PROOF_ARTIFACT", id);
+    root_ = Root();
     if (root_.empty()) {
-      GTEST_SKIP() << "no Qwen3.8 native import (" << id
-                   << "): set LLMP_QWEN38_PROOF_ARTIFACT to its root, or a partial copy of it";
+      GTEST_FAIL() << "no Qwen3.8 v1 ModelOpt import in " << llmp::test_support::V1Store()
+                   << ": set LLMP_QWEN38_PROOF_ARTIFACT to its root, or a partial copy of it";
     }
     auto opened = ar::Artifact::Open(root_);
     ASSERT_TRUE(opened.has_value()) << root_;
+    ASSERT_EQ(opened->format_version(), 1U) << root_;
     artifact_ = std::make_unique<ar::Artifact>(std::move(*opened));
-    auto bound = model::BindQwen38(model::Qwen38Flash(), *artifact_);
-    ASSERT_TRUE(bound.has_value()) << bound.error();
-    binding_ = std::move(*bound);
-    ASSERT_TRUE(binding_.cutlass());
   }
 
   fs::path root_;
   std::unique_ptr<ar::Artifact> artifact_;
-  model::Qwen38Binding binding_;
   std::mt19937 rng_{38};
 };
 
 TEST_F(Qwen38DecodeProofTest, LayerProductsMatchTheReference) {
   const ar::Artifact& a = *artifact_;
-  const model::Qwen38Layer& linear = binding_.layers.at(1);
-  const model::Qwen38Layer& qsa = binding_.layers.at(3);
-  ASSERT_TRUE(linear.linear);
-  ASSERT_FALSE(qsa.linear);
   Memory memory;
   std::vector<std::unique_ptr<Tensor>> tensors;
-  for (const auto& [name, m] :
-       std::initializer_list<std::pair<const char*, const model::Qwen38Mxfp8*>>{
-           {"blk.1.attn_qkv", &linear.qkv},
-           {"blk.1.attn_gate", &linear.z},
-           {"blk.1.ssm_beta", &linear.beta},
-           {"blk.1.ssm_alpha", &linear.alpha},
-           {"blk.1.ssm_out", &linear.ssm_out},
-           {"blk.1.ffn_gate_shexp", &linear.gate_shexp},
-           {"blk.1.ffn_up_shexp", &linear.up_shexp},
-           {"blk.1.ffn_down_shexp", &linear.down_shexp},
-           {"blk.3.attn_q", &qsa.q},
-           {"blk.3.attn_k", &qsa.k},
-           {"blk.3.attn_v", &qsa.v},
-           {"blk.3.attn_output", &qsa.o},
-           {"blk.3.indexer.qk_proj", &qsa.idx_qk}}) {
-    tensors.push_back(LoadLinear(root_, a, name, *m));
+  for (const char* name :
+       {"blk.1.attn_qkv", "blk.1.attn_gate", "blk.1.ssm_beta", "blk.1.ssm_alpha", "blk.1.ssm_out",
+        "blk.1.ffn_gate_shexp", "blk.1.ffn_up_shexp", "blk.1.ffn_down_shexp", "blk.3.attn_q",
+        "blk.3.attn_k", "blk.3.attn_v", "blk.3.attn_output", "blk.3.indexer.qk_proj"}) {
+    tensors.push_back(LoadLinear(root_, a, name));
   }
-  for (const auto& [name, r] :
-       std::initializer_list<std::pair<const char*, const model::Qwen38Tensor*>>{
-           {"blk.1.hc_attn_down", &linear.hc_attn_down},
-           {"blk.1.hc_attn_up", &linear.hc_attn_up},
-           {"blk.1.hc_attn_inject", &linear.hc_attn_inject},
-           {"blk.1.hc_ffn_down", &linear.hc_ffn_down},
-           {"blk.1.hc_ffn_up", &linear.hc_ffn_up},
-           {"blk.1.hc_ffn_inject", &linear.hc_ffn_inject},
-           {"blk.1.ple_key", &linear.ple_key},
-           {"blk.1.ple_value", &linear.ple_value},
-           {"blk.1.ffn_gate_inp", &linear.router},
-           {"blk.1.ffn_gate_inp_shexp", &linear.shared_gate}}) {
-    tensors.push_back(LoadDense(root_, a, name, *r));
+  for (const char* name :
+       {"blk.1.hc_attn_down", "blk.1.hc_attn_up", "blk.1.hc_attn_inject", "blk.1.hc_ffn_down",
+        "blk.1.hc_ffn_up", "blk.1.hc_ffn_inject", "blk.1.ple_key", "blk.1.ple_value",
+        "blk.1.ffn_gate_inp", "blk.1.ffn_gate_inp_shexp"}) {
+    tensors.push_back(LoadDense(root_, a, name));
   }
   std::uint64_t stored = 0;
   std::uint64_t expanded = 0;
@@ -582,9 +546,9 @@ TEST_F(Qwen38DecodeProofTest, LayerProductsMatchTheReference) {
 TEST_F(Qwen38DecodeProofTest, HeadProductsMatchTheReference) {
   Memory memory;
   std::vector<std::unique_ptr<Tensor>> tensors;
-  tensors.push_back(LoadDense(root_, *artifact_, "output", binding_.output));
-  tensors.push_back(LoadDense(root_, *artifact_, "output_hc_down", binding_.output_hc_down));
-  tensors.push_back(LoadDense(root_, *artifact_, "output_hc_up", binding_.output_hc_up));
+  tensors.push_back(LoadDense(root_, *artifact_, "output"));
+  tensors.push_back(LoadDense(root_, *artifact_, "output_hc_down"));
+  tensors.push_back(LoadDense(root_, *artifact_, "output_hc_up"));
   std::uint64_t stored = 0;
   for (const auto& t : tensors) {
     stored += t->stored();
@@ -595,12 +559,14 @@ TEST_F(Qwen38DecodeProofTest, HeadProductsMatchTheReference) {
 
 TEST_F(Qwen38DecodeProofTest, NgramTableRowsDecodeExactly) {
   const ar::Artifact& a = *artifact_;
-  const auto& table = a.resources()[binding_.ple_table.index];
-  const auto& scale = a.resources()[binding_.ple_table_scale.index];
-  const std::vector<ar::V0Part> parts = {{PartRole::kData, &table.repr},
-                                         {PartRole::kTensorScale, &scale.repr}};
-  const auto whole = ar::Assemble(Encoding::kNvfp4, Layout::kRowInterleaved, parts);
+  const std::uint32_t table = ResourceIndex(a, "per_layer_token_embd.weight");
+  const std::uint32_t scale = ResourceIndex(a, "per_layer_token_embd.weight_scale_2");
+  ASSERT_EQ(a.resources()[table].part, PartRole::kData);
+  ASSERT_EQ(a.resources()[scale].part, PartRole::kTensorScale);
+  const auto& whole = a.resources()[table].format;
   ASSERT_TRUE(whole.has_value());
+  ASSERT_EQ(whole->encoding, Encoding::kNvfp4);
+  ASSERT_EQ(whole->layout, Layout::kRowInterleaved);
   ASSERT_EQ(whole->shape.ne[0], 160U);
   const std::uint64_t rows = whole->shape.ne[1];
   const std::uint64_t row_bytes = format::RowBytes(*whole, PartRole::kData).value();
@@ -611,7 +577,7 @@ TEST_F(Qwen38DecodeProofTest, NgramTableRowsDecodeExactly) {
   t.name = "per_layer_token_embd";
   t.format = *whole;
   t.format.shape.ne[1] = 3072;
-  const ar::Placement placed = a.ResourcePlacement(binding_.ple_table.index).value();
+  const ar::Placement placed = a.ResourcePlacement(table).value();
   std::vector<std::byte> bytes;
   for (const std::uint64_t first : {std::uint64_t{0}, std::uint64_t{160000000}, rows - 1024}) {
     const std::vector<std::byte> range = ReadRange(
@@ -619,7 +585,7 @@ TEST_F(Qwen38DecodeProofTest, NgramTableRowsDecodeExactly) {
     bytes.insert(bytes.end(), range.begin(), range.end());
   }
   t.Add(PartRole::kData, std::move(bytes));
-  t.Add(PartRole::kTensorScale, ReadResource(root_, a, binding_.ple_table_scale.index));
+  t.Add(PartRole::kTensorScale, ReadResource(root_, a, scale));
   t.Upload();
   for (const std::uint64_t count :
        {std::uint64_t{1}, std::uint64_t{16}, std::uint64_t{512}, std::uint64_t{3072}}) {
@@ -654,11 +620,9 @@ TEST_F(Qwen38DecodeProofTest, NgramTableRowsDecodeExactly) {
 
 // One expert's tensors, and the grouped products over a set of experts.
 struct ExpertSet {
-  std::vector<std::unique_ptr<Tensor>> gate_up;  // or gate, in GGML's layout
-  std::vector<std::unique_ptr<Tensor>> up;       // GGML's layout only
+  std::vector<std::unique_ptr<Tensor>> gate_up;
   std::vector<std::unique_ptr<Tensor>> down;
   std::unique_ptr<Buffer> gate_up_table;
-  std::unique_ptr<Buffer> up_table;
   std::unique_ptr<Buffer> down_table;
   std::vector<std::unique_ptr<Buffer>> scales;
 };
@@ -687,30 +651,35 @@ std::vector<std::byte> AsBytes(std::span<const float> v) {
   return {b.begin(), b.end()};
 }
 
-// The CUTLASS import's experts: gate and up stacked (codes, atoms), down,
+// The ModelOpt import's experts: gate and up stacked (codes, atoms), down,
 // each with its tensor scales gathered from the per-projection resources
 // into [stacked] order.
-ExpertSet LoadCutlassExperts(const fs::path& root, const ar::Artifact& a) {
+ExpertSet LoadExperts(const fs::path& root, const ar::Artifact& a) {
   ExpertSet set;
   const std::string blk = std::format("blk.{}.", kExpertLayer);
   const std::vector<float> gate_s = ScalesOf(root, a, blk + "ffn_gate_exps.weight_scale_2");
   const std::vector<float> up_s = ScalesOf(root, a, blk + "ffn_up_exps.weight_scale_2");
   const std::vector<float> down_s = ScalesOf(root, a, blk + "ffn_down_exps.weight_scale_2");
   const auto array = [&](const std::string& name) { return a.FindExpertArray(blk + name).value(); };
-  const std::uint32_t gu_codes = array("ffn_gate_up_exps.codes");
-  const std::uint32_t gu_scales = array("ffn_gate_up_exps.scales");
-  const std::uint32_t d_codes = array("ffn_down_exps.codes");
-  const std::uint32_t d_scales = array("ffn_down_exps.scales");
-  const auto assemble = [&](std::uint32_t codes, std::uint32_t scales, std::uint8_t stacked) {
-    const std::vector<ar::V0Part> parts = {
-        {PartRole::kCodes, &a.expert_arrays()[codes].repr},
-        {PartRole::kBlockScales, &a.expert_arrays()[scales].repr}};
-    TensorFormat f = ar::Assemble(Encoding::kNvfp4, Layout::kScaleAtoms, parts, stacked).value();
+  const std::uint32_t gu_codes = array("ffn_gate_up_exps.weight");
+  const std::uint32_t gu_scales = array("ffn_gate_up_exps.weight_scale");
+  const std::uint32_t d_codes = array("ffn_down_exps.weight");
+  const std::uint32_t d_scales = array("ffn_down_exps.weight_scale");
+  const auto format_of = [&](std::uint32_t codes, std::uint32_t scales, std::uint8_t stacked) {
+    const ar::ExpertArray& c = a.expert_arrays()[codes];
+    const ar::ExpertArray& s = a.expert_arrays()[scales];
+    EXPECT_EQ(c.part, PartRole::kCodes) << c.name;
+    EXPECT_EQ(s.part, PartRole::kBlockScales) << s.name;
+    EXPECT_EQ(c.format, s.format) << c.name;
+    TensorFormat f = c.format.value();
+    EXPECT_EQ(f.encoding, Encoding::kNvfp4) << c.name;
+    EXPECT_EQ(f.layout, Layout::kScaleAtoms) << c.name;
+    EXPECT_EQ(f.stacked, stacked) << c.name;
     f.params.tensor_scale = true;  // gathered below
     return f;
   };
-  const TensorFormat gu_format = assemble(gu_codes, gu_scales, 2);
-  const TensorFormat d_format = assemble(d_codes, d_scales, 1);
+  const TensorFormat gu_format = format_of(gu_codes, gu_scales, 2);
+  const TensorFormat d_format = format_of(d_codes, d_scales, 1);
   for (const std::uint32_t e : Experts()) {
     auto gu = std::make_unique<Tensor>();
     gu->name = std::format("{}ffn_gate_up_exps[{}]", blk, e);
@@ -730,35 +699,6 @@ ExpertSet LoadCutlassExperts(const fs::path& root, const ar::Artifact& a) {
     set.down.push_back(std::move(d));
   }
   set.gate_up_table = Table(set.gate_up);
-  set.down_table = Table(set.down);
-  return set;
-}
-
-// The GGML import's experts: gate, up and down in block_nvfp4, each with
-// its own tensor scale.
-ExpertSet LoadGgmlExperts(const fs::path& root, const ar::Artifact& a) {
-  ExpertSet set;
-  const std::string blk = std::format("blk.{}.", kExpertLayer);
-  const auto load = [&](const std::string& proj, std::vector<std::unique_ptr<Tensor>>& out) {
-    const std::vector<float> s = ScalesOf(root, a, blk + proj + ".weight_scale_2");
-    const std::uint32_t index = a.FindExpertArray(blk + proj + ".weight").value();
-    TensorFormat f = ar::FormatOf(a.expert_arrays()[index].repr).value();
-    f.params.tensor_scale = true;
-    for (const std::uint32_t e : Experts()) {
-      auto t = std::make_unique<Tensor>();
-      t->name = std::format("{}{}[{}]", blk, proj, e);
-      t->format = f;
-      t->Add(PartRole::kData, ReadPlaced(root, a, a.SlicePlacement(index, e).value()));
-      t->Add(PartRole::kTensorScale, AsBytes(std::array{s.at(e)}));
-      t->Upload();
-      out.push_back(std::move(t));
-    }
-  };
-  load("ffn_gate_exps", set.gate_up);
-  load("ffn_up_exps", set.up);
-  load("ffn_down_exps", set.down);
-  set.gate_up_table = Table(set.gate_up);
-  set.up_table = Table(set.up);
   set.down_table = Table(set.down);
   return set;
 }
@@ -865,23 +805,11 @@ void ExpectGrouped(const std::vector<float>& y, const std::vector<std::unique_pt
   std::printf("%s: largest error %.3f of its bound\n", what.c_str(), worst);
 }
 
-TEST_F(Qwen38DecodeProofTest, RoutedExpertsMatchTheReferenceInBothLayouts) {
+TEST_F(Qwen38DecodeProofTest, RoutedExpertsMatchTheReference) {
   Memory memory;
-  ExpertSet cutlass = LoadCutlassExperts(root_, *artifact_);
-  std::unique_ptr<ar::Artifact> ggml_artifact;
-  ExpertSet ggml;
-  const std::string ggml_id = ArtifactId("LLMP_QWEN38_PROOF_GGML_ARTIFACT_ID", kGgmlId);
-  const fs::path ggml_root = Root("LLMP_QWEN38_PROOF_GGML_ARTIFACT", ggml_id);
-  if (!ggml_root.empty()) {
-    auto opened = ar::Artifact::Open(ggml_root);
-    ASSERT_TRUE(opened.has_value()) << ggml_root;
-    ggml_artifact = std::make_unique<ar::Artifact>(std::move(*opened));
-    ggml = LoadGgmlExperts(ggml_root, *ggml_artifact);
-  } else {
-    std::printf("no GGML-layout import (%s): its experts are not compared\n", ggml_id.c_str());
-  }
-  const std::uint64_t f = model::Qwen38Flash().expert_ffn;
-  const std::uint64_t w = model::Qwen38Flash().width;
+  ExpertSet cutlass = LoadExperts(root_, *artifact_);
+  const std::uint64_t f = kExpertFfn;
+  const std::uint64_t w = kWidth;
   const auto count = static_cast<std::uint32_t>(Experts().size());
   for (const std::uint64_t tokens : {std::uint64_t{1}, std::uint64_t{16}, std::uint64_t{512}}) {
     SCOPED_TRACE(std::format("tokens {}", tokens));
@@ -898,36 +826,6 @@ TEST_F(Qwen38DecodeProofTest, RoutedExpertsMatchTheReferenceInBothLayouts) {
                                             tokens * kUsed, tokens, memory);
     ExpectGrouped(down, cutlass.down, 0, w, r, h, true, tokens, rng_,
                   std::format("grouped down (scale_atoms) tokens {}", tokens));
-    if (ggml_artifact == nullptr) {
-      continue;
-    }
-    // The first import's experts, each projection its own tensor: the
-    // same values, so the same outputs bit for bit.
-    const std::vector<float> gate =
-        Grouped(ggml.gate_up, *ggml.gate_up_table, 0, f, r, false, dx, tokens, tokens, memory);
-    const std::vector<float> up =
-        Grouped(ggml.up, *ggml.up_table, 0, f, r, false, dx, tokens, tokens, memory);
-    const std::vector<float> ggml_down =
-        Grouped(ggml.down, *ggml.down_table, 0, w, r, true, dh, tokens * kUsed, tokens, memory);
-    for (std::uint64_t s = 0; s < tokens * kUsed; ++s) {
-      for (std::uint64_t j = 0; j < f; ++j) {
-        ASSERT_EQ(std::bit_cast<std::uint32_t>(gate[(s * f) + j]),
-                  std::bit_cast<std::uint32_t>(gate_up[(s * 2 * f) + j]))
-            << "gate slot " << s << " output " << j;
-        ASSERT_EQ(std::bit_cast<std::uint32_t>(up[(s * f) + j]),
-                  std::bit_cast<std::uint32_t>(gate_up[(s * 2 * f) + f + j]))
-            << "up slot " << s << " output " << j;
-      }
-      for (std::uint64_t j = 0; j < w; ++j) {
-        ASSERT_EQ(std::bit_cast<std::uint32_t>(ggml_down[(s * w) + j]),
-                  std::bit_cast<std::uint32_t>(down[(s * w) + j]))
-            << "down slot " << s << " output " << j;
-      }
-    }
-    std::printf(
-        "tokens %llu: the GGML import's grouped gate, up and down equal the CUTLASS "
-        "import's bit for bit\n",
-        static_cast<unsigned long long>(tokens));
   }
   // One expert as a decode step: its gate and up as a vector GLU, its down
   // as a vector product.
@@ -935,12 +833,10 @@ TEST_F(Qwen38DecodeProofTest, RoutedExpertsMatchTheReferenceInBothLayouts) {
   CheckLinear(*cutlass.down[3], memory, rng_);
   std::uint64_t stored = 0;
   std::uint64_t expanded = 0;
-  for (const ExpertSet* set : {&cutlass, &ggml}) {
-    for (const auto* list : {&set->gate_up, &set->up, &set->down}) {
-      for (const auto& t : *list) {
-        stored += t->stored();
-        expanded += t->expanded();
-      }
+  for (const auto* list : {&cutlass.gate_up, &cutlass.down}) {
+    for (const auto& t : *list) {
+      stored += t->stored();
+      expanded += t->expanded();
     }
   }
   memory.Check(stored, expanded, std::format("{} routed experts", count));

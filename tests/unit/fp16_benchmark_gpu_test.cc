@@ -24,6 +24,7 @@
 #include "expected_error.h"
 #include "fp16_runner.h"
 #include "paged_node.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace jb = llmp::benchmarks;
@@ -45,7 +46,12 @@ struct Lifetime {
 };
 
 void Exercise(bool heldout) {
-  const auto artifact = Env("LLMP_FP16_BENCH_ARTIFACT");
+  // LLMP_FP16_BENCH_ARTIFACT, else the published v1 FP16 fixture (the
+  // store's v1-ids.json "qwen2-fp16").
+  auto artifact = Env("LLMP_FP16_BENCH_ARTIFACT");
+  if (artifact.empty()) {
+    if (const auto id = ts::V1IdNamed("qwen2-fp16"); id) artifact = ts::V1Store() + "/" + *id;
+  }
   const auto tokens = Env(heldout ? "LLMP_QWEN2_FP16_HELDOUT_IDS" : "LLMP_QWEN2_FP16_TOKENS");
   if (artifact.empty() || tokens.empty()) GTEST_SKIP() << "requires approved FP16 benchmark inputs";
   auto lifetime = std::make_unique<Lifetime>();

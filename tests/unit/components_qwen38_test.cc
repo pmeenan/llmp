@@ -11,11 +11,12 @@
 //   reference, with the streams, carry and side input it reads;
 // - a verify's saves and their commit against a plain step of the kept
 //   rows (Gated DeltaNet and the n-gram block's fixed state);
-// - the n-gram rows' hash against model::Qwen38PleRows;
+// - the n-gram rows' hash against llama.cpp's (families/qwen.h
+//   Qwen38PleRows);
 // - the qwen4exp and qwen4exp-mtp mappings over every import's tensor
 //   table (tests/unit/qwen38_fixture.h): one spec structure, the forms each
-//   import's tensors take, the folds, the stage layout against today's
-//   Qwen38State and the drafter's against Qwen38MtpStateOf; and steps
+//   import's tensors take, the folds, the stage layout against the M3
+//   runner's state and the drafter's (families/qwen.h); and steps
 //   built from them (the target writing its drafter's streams every row,
 //   state-only included; the drafter's pass);
 // - reads widened: a drafter reading a layer's streams, a cascade (a
@@ -30,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <map>
 #include <optional>
@@ -47,11 +49,11 @@
 #include "components/component.h"
 #include "components/defs.h"
 #include "components/step.h"
+#include "families/qwen.h"
 #include "format/encoding.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/reference/exec.h"
-#include "model/qwen38.h"
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
 #include "qwen38_fixture.h"
@@ -64,6 +66,7 @@ namespace {
 
 namespace ref = llmp::kernels::reference;
 namespace fx = llmp::test_support::qwen38;
+namespace fam = llmp::test_support::families;
 using format::Encoding;
 using spec::ComponentRef;
 using spec::Param;
@@ -704,7 +707,7 @@ TEST(ComponentsQwen38Test, TheMoeInsideHyperConnectionsMatchesItsReference) {
 // ---------------------------------------------------------------- the n-gram embedding
 
 TEST(ComponentsQwen38Test, TheNgramRowsAreLlamaCppsHash) {
-  const auto& p = model::Qwen38Flash();
+  const auto& p = fam::Qwen38Flash();
   // A 64-bit multiplier past 2^63 is a negative integer (GGUF's I64).
   std::vector<std::int64_t> mult{static_cast<std::int64_t>(0x9E3779B97F4A7C15ULL), 7,
                                  1099511628211LL};
@@ -714,7 +717,7 @@ TEST(ComponentsQwen38Test, TheNgramRowsAreLlamaCppsHash) {
     offsets.push_back(h * 20000096);
     vocab.push_back(20000096 - (h * 8));
   }
-  const auto hash = model::CheckQwen38PleHash(p, mult, offsets, vocab, fx::kTableRows);
+  const auto hash = fam::CheckQwen38PleHash(p, mult, offsets, vocab, fx::kTableRows);
   ASSERT_TRUE(hash.has_value()) << hash.error();
   auto in =
       MakeInstance(C("side.ngram", {P("ngram", I(3)), P("heads_per_ngram", I(8)), P("row", I(160)),
@@ -727,7 +730,7 @@ TEST(ComponentsQwen38Test, TheNgramRowsAreLlamaCppsHash) {
   std::vector<std::int32_t> got(16);
   for (std::uint32_t pos = 0; pos < history.size(); ++pos) {
     ASSERT_TRUE(in->def->side_rows(*in, history, pos, got));
-    EXPECT_EQ(got, model::Qwen38PleRows(p, *hash, history, pos)) << pos;
+    EXPECT_EQ(got, fam::Qwen38PleRows(p, *hash, history, pos)) << pos;
   }
   EXPECT_FALSE(in->def->side_rows(*in, history, 7, got));
 }
@@ -1138,54 +1141,34 @@ struct Imports {
 };
 const Imports& Sources() {
   static const Imports imports = [] {
-    const auto& p = model::Qwen38Flash();
-    const auto& target = spec::mappings::Qwen38Mapping();
-    const auto& mtp = spec::mappings::Qwen38MtpMapping();
-    return Imports{
-        .modelopt_cutlass =
-            fx::SourceOf("qwen4exp", "safetensors", std::string(fx::kModelOptConverter),
-                         fx::Resources(p, fx::Form::kCutlass), target),
-        .modelopt_ggml =
-            fx::SourceOf("qwen4exp", "safetensors", std::string(fx::kModelOptConverter),
-                         fx::Resources(p, fx::Form::kGgmlExperts), target),
-        .gguf = fx::SourceOf("qwen4exp", "gguf", std::string(fx::kGgufConverter),
-                             fx::Resources(p, fx::Form::kGguf), target),
-        .mtp = fx::SourceOf("qwen4exp-mtp", "safetensors", std::string(fx::kModelOptConverter),
-                            fx::MtpResources(p), mtp)};
+    const auto& p = fam::Qwen38Flash();
+    return Imports{.modelopt_cutlass = fx::TargetSource(p, fx::Form::kCutlass),
+                   .modelopt_ggml = fx::TargetSource(p, fx::Form::kGgmlExperts),
+                   .gguf = fx::TargetSource(p, fx::Form::kGguf),
+                   .mtp = fx::MtpSource(p)};
   }();
   return imports;
 }
 
-model::Qwen38PleHash Hash() {
+fam::Qwen38PleHash Hash() {
   std::vector<std::int64_t> offsets;
   std::vector<std::int64_t> vocab;
   for (std::int64_t h = 0; h < 16; ++h) {
     offsets.push_back(h * 20000096);
     vocab.push_back(20000096 - (h * 8));
   }
-  return *model::CheckQwen38PleHash(model::Qwen38Flash(), std::vector<std::int64_t>{3, 5, 7},
-                                    offsets, vocab, fx::kTableRows);
-}
-
-model::Qwen38Binding BindingOf(fx::Form form) {
-  const auto& p = model::Qwen38Flash();
-  model::Qwen38Binding b;
-  b.layers.resize(p.layers);
-  b.format = form == fx::Form::kGguf ? model::Qwen38Format::kGguf : model::Qwen38Format::kModelOpt;
-  b.experts =
-      form == fx::Form::kCutlass ? model::Qwen38Experts::kCutlass : model::Qwen38Experts::kGgml;
-  return b;
+  return *fam::CheckQwen38PleHash(fam::Qwen38Flash(), std::vector<std::int64_t>{3, 5, 7}, offsets,
+                                  vocab, fx::kTableRows);
 }
 
 std::expected<spec::ModelSpec, std::string> TargetSpec(const spec::Source& source, fx::Form form) {
-  auto values = spec::mappings::Qwen38V0Values(model::Qwen38Flash(), BindingOf(form), Hash());
+  auto values = fx::TargetValues(fam::Qwen38Flash(), Hash(), form);
   if (!values) return std::unexpected(values.error());
   return spec::Synthesize(spec::mappings::Qwen38Mapping(), source, *values);
 }
 
 std::expected<spec::ModelSpec, std::string> WithMtp(const spec::ModelSpec& target) {
-  model::Qwen38MtpBinding mb;
-  auto values = spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), mb);
+  auto values = fam::Qwen38MtpValues(fam::Qwen38Flash(), 0);
   if (!values) return std::unexpected(values.error());
   return spec::ComposeDrafter(target, spec::mappings::Qwen38Mapping(),
                               spec::mappings::Qwen38MtpMapping(), Sources().mtp, *values);
@@ -1230,8 +1213,7 @@ TEST(ComponentsQwen38Test, RepeatableMtpContractsCoexistWithTheOriginalLayout) {
 TEST(ComponentsQwen38Test, ServingReplayMappingDeclaresDurableShiftWithoutChangingV1) {
   auto target = TargetSpec(Sources().modelopt_cutlass, fx::Form::kCutlass);
   ASSERT_TRUE(target);
-  model::Qwen38MtpBinding binding;
-  auto values = spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), binding);
+  auto values = fam::Qwen38MtpValues(fam::Qwen38Flash(), 0);
   ASSERT_TRUE(values);
   const auto& original = spec::mappings::Qwen38MtpMapping();
   const auto& replay = spec::mappings::Qwen38MtpReplayMapping();
@@ -1266,11 +1248,10 @@ TEST(ComponentsQwen38Test, ServingReplayMappingDeclaresDurableShiftWithoutChangi
 // rules (the retired Qwen38VerifySaves' rule, which the legacy runner's
 // test compared byte for byte).
 TEST(ComponentsQwen38Test, VerifySavesAreTheRealContractsWritesByteForByte) {
-  const auto& p = model::Qwen38Flash();
+  const auto& p = fam::Qwen38Flash();
   auto target = TargetSpec(Sources().modelopt_cutlass, fx::Form::kCutlass);
   ASSERT_TRUE(target) << target.error();
-  model::Qwen38MtpBinding binding;
-  auto values = spec::mappings::Qwen38MtpV0Values(p, binding);
+  auto values = fam::Qwen38MtpValues(p, 0);
   ASSERT_TRUE(values);
   const std::uint64_t kv = std::uint64_t{p.head_dim} * p.kv_heads * 2;  // f16 cells
   const std::uint64_t index = std::uint64_t{p.indexer_head_dim} * 4;
@@ -1393,7 +1374,7 @@ std::vector<std::vector<std::string>> Kinds(const spec::Stage& s) {
 }
 
 TEST(ComponentsQwen38Test, EveryImportsTensorsMakeOneSpecStructure) {
-  const auto& p = model::Qwen38Flash();
+  const auto& p = fam::Qwen38Flash();
   struct Case {
     const spec::Source* source;
     fx::Form form;
@@ -1444,67 +1425,18 @@ TEST(ComponentsQwen38Test, EveryImportsTensorsMakeOneSpecStructure) {
   EXPECT_EQ((*kinds)[0], (std::vector<std::string>{"hc.mix", "attention.gdn", "hc.combine",
                                                    "hc.mix", "ffn.moe", "hc.combine"}));
   EXPECT_EQ((*kinds)[3][1], "attention.qsa");
-  // Without the converter's folds (a checkpoint read as it is), the gated
+  // Without the importer's folds (a checkpoint read as it is), the gated
   // delta rule refuses the spec.
   spec::Source bare = Sources().modelopt_cutlass;
-  bare.converter.clear();
+  bare.folds.clear();
   auto unfolded = TargetSpec(bare, fx::Form::kCutlass);
   ASSERT_TRUE(unfolded.has_value()) << unfolded.error();
   EXPECT_TRUE(unfolded->stages.front().folds.empty());
   EXPECT_FALSE(ValidateSpec(*unfolded, bare.tensors));
 }
 
-TEST(ComponentsQwen38Test, TheModelOptFoldsFollowTheImportersPartOfItsIdentity) {
-  // The ModelOpt importer is one '+'-joined part of the converter's
-  // identity: the targets' and the MTP drafter's (followed by "+mtp"); a
-  // look-alike part, or its name inside another part, is not it.
-  constexpr std::string_view kStem = "artifact-layout/import_m3.py m3-1+layout-a0d1980a9eddd1ad";
-  const std::vector<std::string> folds{"gdn.value_heads_tiled", "norm.plus_one", "ssm.a_neg_exp"};
-  const auto sorted = [](std::vector<std::string> v) {
-    std::ranges::sort(v);
-    return v;
-  };
-  const auto target_folds = [&](std::string converter) {
-    spec::Source s = Sources().modelopt_cutlass;
-    s.converter = std::move(converter);
-    auto made = TargetSpec(s, fx::Form::kCutlass);
-    EXPECT_TRUE(made.has_value()) << made.error();
-    return made ? sorted(made->stages.front().folds) : std::vector<std::string>{"refused"};
-  };
-  EXPECT_EQ(target_folds(std::format("{}+modelopt_qwen38-031ed8750c9da55d", kStem)), folds);
-  EXPECT_EQ(target_folds(std::format("{}+modelopt_qwen38-bd8e3954615dbe97+mtp", kStem)), folds);
-  for (const std::string_view other :
-       {"+xmodelopt_qwen38-031ed8750c9da55d", "-modelopt_qwen38-031ed8750c9da55d",
-        "+mtp-modelopt_qwen38-bd8e3954615dbe97", "+modelopt_qwen38", "+modelopt_qwen3-031ed875"}) {
-    EXPECT_TRUE(target_folds(std::format("{}{}", kStem, other)).empty()) << other;
-  }
-  // The drafter's own import: its folds are its own stage's, the target's
-  // (none) unchanged.
-  spec::Source bare = Sources().modelopt_cutlass;
-  bare.converter.clear();
-  auto target = TargetSpec(bare, fx::Form::kCutlass);
-  ASSERT_TRUE(target.has_value()) << target.error();
-  ASSERT_TRUE(target->stages.front().folds.empty());
-  model::Qwen38MtpBinding mb;
-  auto values = spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), mb);
-  ASSERT_TRUE(values.has_value()) << values.error();
-  for (const auto& [converter, want] :
-       {std::pair{std::format("{}+modelopt_qwen38-bd8e3954615dbe97+mtp", kStem), folds},
-        std::pair{std::format("{}+xmodelopt_qwen38-bd8e3954615dbe97+mtp", kStem),
-                  std::vector<std::string>{}}}) {
-    spec::Source mtp = Sources().mtp;
-    mtp.converter = converter;
-    auto composed = spec::ComposeDrafter(*target, spec::mappings::Qwen38Mapping(),
-                                         spec::mappings::Qwen38MtpMapping(), mtp, *values);
-    ASSERT_TRUE(composed.has_value()) << composed.error();
-    ASSERT_EQ(composed->stages.size(), 2U);
-    EXPECT_TRUE(composed->stages[0].folds.empty()) << converter;
-    EXPECT_EQ(sorted(composed->stages[1].folds), want) << converter;
-  }
-}
-
 TEST(ComponentsQwen38Test, TheStageLayoutsHoldTodaysQwenState) {
-  const auto& p = model::Qwen38Flash();
+  const auto& p = fam::Qwen38Flash();
   auto spec = TargetSpec(Sources().modelopt_cutlass, fx::Form::kCutlass);
   ASSERT_TRUE(spec.has_value()) << spec.error();
   auto composed = WithMtp(*spec);
@@ -1517,11 +1449,11 @@ TEST(ComponentsQwen38Test, TheStageLayoutsHoldTodaysQwenState) {
   for (const auto& [context, rows] : {std::pair{8192U, 512U}, {262144U, 2048U}}) {
     auto got = StageLayout(*composed, 0, context, rows);
     ASSERT_TRUE(got.has_value()) << got.error();
-    EXPECT_EQ(got->bytes, model::Qwen38StateBytes(p, context, rows));
+    EXPECT_EQ(got->bytes, fam::Qwen38StateBytes(p, context, rows));
     // The drafter's: its caches and the streams its target writes.
     auto drafter = StageLayout(*composed, 1, context, rows);
     ASSERT_TRUE(drafter.has_value()) << drafter.error();
-    EXPECT_EQ(drafter->bytes, model::Qwen38MtpStateBytes(p, context, rows));
+    EXPECT_EQ(drafter->bytes, fam::Qwen38MtpStateBytes(p, context, rows));
     const auto streams = std::ranges::find(drafter->items, std::string("streams"),
                                            [](const auto& i) { return i.contract.name; });
     ASSERT_NE(streams, drafter->items.end());
@@ -1556,7 +1488,7 @@ TEST(ComponentsQwen38Test, TheTargetWritesItsDraftersStreamsEveryRow) {
   // The target's tap: its last layer's streams.
   ASSERT_EQ(spec->stages[0].taps.size(), 1U);
   EXPECT_EQ(spec->stages[0].taps[0].point, spec::TapPoint::kStreams);
-  EXPECT_EQ(spec->stages[0].taps[0].layer, model::Qwen38Flash().layers - 1);
+  EXPECT_EQ(spec->stages[0].taps[0].layer, fam::Qwen38Flash().layers - 1);
   const auto t_layout = StageLayout(*spec, 0, 8192, 64);
   const auto d_layout = StageLayout(*spec, 1, 8192, 64);
   ASSERT_TRUE(t_layout.has_value() && d_layout.has_value());
@@ -1605,7 +1537,7 @@ TEST(ComponentsQwen38Test, TheTargetWritesItsDraftersStreamsEveryRow) {
   auto draft = BuildStep(*spec, 1, pass, drafter_bindings);
   ASSERT_TRUE(draft.has_value()) << draft.error();
   ASSERT_TRUE(draft->features.valid());
-  EXPECT_EQ(draft->graph.tensor(draft->features).ne(0), model::Qwen38Flash().hc_width());
+  EXPECT_EQ(draft->graph.tensor(draft->features).ne(0), fam::Qwen38Flash().hc_width());
   ASSERT_TRUE(draft->greedy.valid());
   // It never writes its own streams tap (its target does).
   for (const StepState& st : draft->state) {

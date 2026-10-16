@@ -250,6 +250,14 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- The DeepSeek V4 community IQ2_XXS GGUF
+  (`antirez/deepseek-v4-gguf@f71f23d5`, chat-v2 imatrix) serves again, as
+  v1 `e7c0d0e4…` from `llmp import` under its own approval row (contexts to
+  262,144, four owners). The importer now accepts its IQ2_XXS, Q2_K and F16
+  tensors, its `deepseek4.nextn_predict_layers` and `deepseek4.vocab_size`
+  keys and its 44-entry layer-type list; without
+  `deepseek4.swiglu_clamp_shexp` the shared expert clamps as the routed
+  experts. No other source's import changes.
 - `llmp import SOURCE --component mtp [--draft-head IDS]` publishes Qwen3.8
   Flash Next's MTP drafter from its ModelOpt NVFP4/MXFP8 checkpoint as a v1
   artifact in its source encodings, its routed experts relaid out as the v0
@@ -1488,6 +1496,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Removed
 
+- Serving prepared-artifact format version 0 (D-118): a configured target or
+  drafter of v0 is refused at registration with "re-import its source
+  checkpoint with `llmp import SOURCE --store DIRECTORY` and configure the new
+  artifact ID". Re-import each v0 artifact from its source (the published v1
+  IDs are in [model-support.md](docs/model-support.md)); nothing is migrated in
+  place. The Qwen3.8 GGML-experts v0 artifact has no v1 import and is no
+  longer served. The per-family
+  profiles and tensor binders, and the v0 spec synthesis behind them, are
+  deleted; `llmp import` produces the same v1 artifacts as before. The
+  Qwen-Image composition is unchanged until its own migration.
 - The per-architecture diagnostic selectors: `LLMP_DIAGNOSTIC_COMPONENT_QWEN`
   and `ServingOptions`' `diagnostic_component_solo` and
   `diagnostic_component_all` (with their "diagnostic shared alias" log

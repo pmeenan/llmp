@@ -23,7 +23,6 @@
 #include "base/json.h"
 #include "base/report.h"
 #include "components/state_encoding.h"
-#include "model/v0_artifact.h"
 #include "runtime/approvals.h"
 #include "runtime/calibration.h"
 #include "runtime/component_admission.h"
@@ -502,26 +501,20 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
   if (const spec::Mapping* mapping = spec::FindMapping(facts.architecture); mapping != nullptr)
     facts.pipeline = mapping->pipeline;
   std::optional<std::uint32_t> declared_context;
-  // The target's spec (a stored one's, or v0's synthesis from the existing
-  // library) and, with a drafter, its composition: their bound identities.
-  // No independent parser or cached execution model; every object below
-  // dies before tokenizer/generation metadata is read.
+  // The target's stored spec (a v1 artifact's alone: D-118) and, with a
+  // drafter, its composition: their bound identities. No independent parser
+  // or cached execution model; every object below dies before
+  // tokenizer/generation metadata is read.
+  if (auto served = RequireServedVersion(target); !served) return Error(served.error());
+  if (drafter != nullptr)
+    if (auto served = RequireServedVersion(*drafter); !served) return Error(served.error());
   std::optional<spec::ModelSpec> model;
-  if (target.format_version() == 1) {
+  {
     auto admitted = ReadComponentAdmission(target);
     if (!admitted) return Error(admitted.error());
     declared_context = admitted->model.stages.front().context;
     facts.pipeline = admitted->model.pipeline;
     model = std::move(admitted->model);
-  } else if (OnComponentEngine(facts.architecture)) {
-    if (auto checked = CheckComponentV0Admission(target); !checked) return Error(checked.error());
-    const auto* mapping = spec::FindMapping(facts.architecture);
-    if (mapping == nullptr) return Error("component calibration has no target mapping");
-    auto values = ComponentV0Values(target);
-    if (!values) return Error(values.error());
-    auto synthesized = spec::SynthesizeV0(target, *mapping, *values);
-    if (!synthesized) return Error(synthesized.error());
-    model = std::move(*synthesized);
   }
   if (model) {
     facts.context_ceiling = model->stages.front().context;
@@ -533,13 +526,12 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
         auto draft_values = ComponentDrafterValues(target, *drafter);
         if (!draft_values) return Error(draft_values.error());
-        auto draft_source = spec::SourceOf(*drafter, draft_mapping);
+        auto draft_source = spec::SourceOf(*drafter);
         if (!draft_source) return Error(draft_source.error());
-        // A stored drafter's complete tensor inventory is its approval's.
-        if (drafter->format_version() == 1)
-          if (auto admitted = CheckComponentDrafterAdmission(*draft_source, drafter->sources());
-              !admitted)
-            return Error(admitted.error());
+        // The drafter's complete tensor inventory is its approval's.
+        if (auto admitted = CheckComponentDrafterAdmission(*draft_source, drafter->sources());
+            !admitted)
+          return Error(admitted.error());
         auto composed = spec::ComposeDrafter(*model, *target_mapping, *draft_mapping, *draft_source,
                                              *draft_values);
         if (!composed) return Error(composed.error());
@@ -596,47 +588,20 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     facts.trained_context_from = "the admitted stored spec";
   }
   if (drafter != nullptr) {
-    if (drafter->format_version() == 1) {
-      if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
-        return Error(admitted.error());
-    } else if (drafter->format_version() != 0) {
-      return Error("drafter format version must be 0 or 1");
-    }
+    if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
+      return Error(admitted.error());
     facts.drafter_architecture = drafter->model().architecture;
     facts.drafter_approval = FindApproval(facts.drafter_architecture, drafter->sources());
     const spec::Mapping* draft_mapping = ComposedDrafterMapping(*drafter);
     const spec::DraftRecipe* draft = draft_mapping != nullptr ? draft_mapping->draft : nullptr;
     if (draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp &&
-        drafter->format_version() == 1 && !draft->head_ids.empty()) {
-      // A stored drafter's selected head: its token map's rows (its
-      // approval pins the whole inventory).
+        !draft->head_ids.empty()) {
+      // A selected head: its token map's rows (its approval pins the whole
+      // inventory).
       auto map =
           DraftHeadRows(*drafter, draft->head_ids, std::numeric_limits<std::uint32_t>::max());
       if (!map) return Error(map.error());
       if (*map) facts.drafter_selected_rows = static_cast<std::uint32_t>((*map)->rows);
-    } else if (draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp) {
-      const auto head = drafter->FindResource("draft_output.weight");
-      const auto ids = drafter->FindResource("draft_output.ids");
-      if (head.has_value() != ids.has_value()) {
-        return Error("the selected draft head requires its weight and token map");
-      }
-      if (head) {
-        // v0's descriptors: a v1 drafter's are empty (D-113).
-        if (auto v0 = model::RequireV0Artifact(*drafter, "The Qwen3.8 MTP drafter"); !v0) {
-          return Error(v0.error());
-        }
-        const auto& weight = drafter->resources()[*head].repr;
-        const auto& map = drafter->resources()[*ids].repr;
-        if (weight.family != ja::Family::kGgml ||
-            (weight.type != "BF16" && weight.type != "Q4_1") || weight.dims.size() != 2 ||
-            weight.dims[1] == 0 || weight.dims[1] > std::numeric_limits<std::uint32_t>::max() ||
-            map.family != ja::Family::kGgml || map.type != "I32" ||
-            map.dims != std::vector<std::uint64_t>{1, weight.dims[1]}) {
-          return Error(
-              "the selected draft head requires BF16 or Q4_1 rows and a matching I32 token map");
-        }
-        facts.drafter_selected_rows = static_cast<std::uint32_t>(weight.dims[1]);
-      }
     }
     if (const std::string kv = KeptGguf(*drafter); !kv.empty()) {
       const std::string block_key = std::format("{}.block_size", facts.drafter_architecture);
@@ -824,16 +789,16 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                  std::format("the default, within {}", ceiling_from)};
   }
   // A default within the approved envelope (the target's approval's
-  // context, and its configured drafter's): a default the approval refuses
-  // would never start.
+  // default context, its joined rule domains', and its configured
+  // drafter's): a default the approval refuses would never start, and a
+  // wider one than its joined recipes is an explicit opt-in.
   if (s.context.source != SettingSource::kOverride) {
     const auto within = [&](const Approval* approval) {
-      if (approval == nullptr || approval->max_context == 0 ||
-          s.context.value <= approval->max_context)
-        return;
-      s.context = {
-          approval->max_context, SettingSource::kDerived,
-          std::format("the approved {} envelope's {}", approval->label, approval->max_context)};
+      if (approval == nullptr || approval->max_context == 0) return;
+      const std::uint32_t bound = ApprovedDefaultContext(*approval);
+      if (s.context.value <= bound) return;
+      s.context = {bound, SettingSource::kDerived,
+                   std::format("the approved {} envelope's {}", approval->label, bound)};
     };
     within(facts.approval);
     if (entry.drafter) within(facts.drafter_approval);
@@ -966,21 +931,22 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     }
     std::optional<std::uint32_t> derived;
     std::string derived_basis;
-    if (block != 0 && block < kDsv4DraftRows) {
+    if (block != 0 && block < recipe.default_draft_rows) {
       derived = static_cast<std::uint32_t>(block);
       derived_basis = std::format("{}.block_size {}", facts.drafter_architecture, block);
     }
-    s.draft_rows = Pick<std::uint32_t>(U32(draft_rows), basis("draft_rows"), {}, {}, derived,
-                                       derived_basis, kDsv4DraftRows, "measured on a GB10");
+    s.draft_rows =
+        Pick<std::uint32_t>(U32(draft_rows), basis("draft_rows"), {}, {}, derived, derived_basis,
+                            recipe.default_draft_rows, "measured on a GB10");
   } else {
-    const std::int64_t asked = draft_rows.value_or(kQwen38DraftRows);
+    const std::int64_t asked = draft_rows.value_or(recipe.default_draft_rows);
     if (asked < 2 || asked > 3) {
       return Error(std::format(
           "draft_rows {} is outside {}'s 2 to 3 (its MTP block drafts two or three passes)", asked,
           arch));
     }
     s.draft_rows = Pick<std::uint32_t>(U32(draft_rows), basis("draft_rows"), {}, {}, {}, {},
-                                       kQwen38DraftRows, "measured on a GB10");
+                                       recipe.default_draft_rows, "measured on a GB10");
   }
 
   // DeepSeek V4's waves and prefill arithmetic.
@@ -996,7 +962,10 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                                        config::WaveForm::kAuto, "chosen by counted acceptance");
   // By width: the fallback, then the widths calibrated, then the widths an
   // override names; the source is the last layer that gave any.
-  std::vector<double> costs(kDsv4WaveCosts.begin(), kDsv4WaveCosts.end());
+  std::vector<double> costs(config::kMaxWaveCostWidths, 0.0);
+  std::ranges::copy(
+      recipe.default_wave_costs.first(std::min(recipe.default_wave_costs.size(), costs.size())),
+      costs.begin());
   std::string measured_widths;
   for (std::size_t w = 0; w < cal.wave_costs.size() && w < costs.size(); ++w) {
     if (const std::optional<double> cost = cal.wave_costs[w]; cost.has_value()) {
@@ -1025,7 +994,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   }
   // Qwen3.8's MTP and waves.
   s.draft_vocab = Pick<std::uint32_t>(U32(entry.Integer("draft_vocab")), basis("draft_vocab"), {},
-                                      {}, {}, {}, kQwen38DraftVocab, "measured on a GB10");
+                                      {}, {}, {}, recipe.default_draft_vocab, "measured on a GB10");
   // Keep the runner's refusal of a cap larger than its target vocabulary.
   if (recipe.mtp_waves && speculative && recipe.vocab != 0 && s.draft_vocab.value > recipe.vocab) {
     return Error(std::format("draft_vocab exceeds the {} target vocabulary", recipe.name));
@@ -1043,10 +1012,10 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   }
   s.depth_cost_ratio =
       Pick<double>(entry.Real("depth_cost_ratio"), basis("depth_cost_ratio"), cal.depth_cost_ratio,
-                   cal.basis, {}, {}, kQwen38DepthCostRatio, "measured on a GB10");
+                   cal.basis, {}, {}, recipe.default_depth_cost_ratio, "measured on a GB10");
   s.shared_wave_depth =
       Pick<std::uint32_t>(U32(entry.Integer("shared_wave_depth")), basis("shared_wave_depth"), {},
-                          {}, {}, {}, kQwen38SharedWaveDepth, "measured on a GB10");
+                          {}, {}, {}, recipe.default_shared_wave_depth, "measured on a GB10");
   // A wave's drafts never exceed a step's.
   if (s.shared_wave_depth.value > s.draft_rows.value) {
     s.shared_wave_depth.value = s.draft_rows.value;
@@ -1054,12 +1023,12 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   }
   s.draft_wave_max =
       Pick<std::uint32_t>(U32(entry.Integer("draft_wave_max")), basis("draft_wave_max"), {}, {}, {},
-                          {}, kQwen38DraftWaveMax, "measured on a GB10");
+                          {}, recipe.default_draft_wave_max, "measured on a GB10");
   s.wave_lanes = Pick<bool>(entry.Bool("wave_lanes"), basis("wave_lanes"), {}, {}, {}, {}, true,
                             "measured four-request concurrent streams on a GB10");
   s.wave_read_align =
       Pick<std::uint32_t>(U32(entry.Integer("wave_read_align")), basis("wave_read_align"), {}, {},
-                          {}, {}, kQwen38WaveReadAlign, "the plans' reuse across depths");
+                          {}, {}, recipe.default_wave_read_align, "the plans' reuse across depths");
   return s;
 }
 

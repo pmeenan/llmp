@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// One owned target/MTP composition, two owners with different pending spans.
-// This is same-implementation state/capture evidence, not a quality comparison.
+// One owned target/MTP composition, two owners with different pending spans:
+// the published v1 ModelOpt target (d145900e) and its MTP drafter (316caa59)
+// from the v1 store (skipped without them). This is same-implementation
+// state/capture evidence, not a quality comparison.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -32,12 +34,11 @@
 #include "engine/paged_weights.h"
 #include "expected_error.h"
 #include "kernels/ggml/graph_plan.h"
-#include "model/qwen38.h"
 #include "planner/plan.h"
 #include "platform/host_probe.h"
 #include "runtime/component_build.h"
 #include "runtime/memory_guard.h"
-#include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace en = llmp::engine;
@@ -74,9 +75,9 @@ static_assert(sizeof(pl::Selected) <= 128 && sizeof(pl::Applied) <= 64);
 static_assert(sizeof(llmp::kernels::ggml::PlanStep) <= 64);
 static_assert(sizeof(std::string) <= 32 && sizeof(en::SlotLifecycle::Range) <= 24);
 constexpr std::string_view kTarget =
-    "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
+    "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d";
 constexpr std::string_view kDrafter =
-    "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40";
+    "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb";
 
 std::string Env(const char* name) {
   const auto* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
@@ -271,8 +272,7 @@ en::Status Add(Lifetime& life, const pl::StepShape& shape) {
 }
 en::Status SetUp(Lifetime& life) {
   auto& node = life.node;
-  if (llmp::model::Qwen38Flash().layers != 48 || llmp::model::Qwen38Flash().experts_used != 10 ||
-      ggml_tensor_overhead() > 512)
+  if (ggml_tensor_overhead() > 512)
     return std::unexpected("compiler source/ABI construction bound changed");
   node.SetHostFloor(0);
   if (auto x = node.Open(); !x) return x;
@@ -286,16 +286,16 @@ en::Status SetUp(Lifetime& life) {
                                        true);
   if (!paid) return std::unexpected("host construction prepayment refused");
   life.floats = std::make_unique<float[]>(kVocabulary);
-  const auto store = fs::path(ts::ModelsDir()) / "m3-artifacts";
+  const auto store = fs::path(ts::V1Store());
   for (const auto& [id, bytes, hash] : std::array{
-           std::tuple{kTarget, 8152364ULL,
+           std::tuple{kTarget, 8236769ULL,
                       std::string_view{
-                          "5b65dcce8169374e638264d7ebdcb5cca517234b3dec26f1272a5f4f9c0e4c89"}},
-           std::tuple{kDrafter, 157885ULL,
+                          "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"}},
+           std::tuple{kDrafter, 159859ULL,
                       std::string_view{
-                          "5cd45fc5354ab224d281c2416027f224c61e32e2ae0acf8e7580d063fc274d99"}}}) {
+                          "c20f71e3c79ad0505f24a5f822a8a644d53a3cdfc4e962e4e34533a508cee316"}}}) {
     if (auto x = Metadata(store / id / "index.json", bytes, hash, true); !x) return x;
-    if (auto x = Metadata(store / id / "manifest.json", id == kTarget ? 23037 : 1861, id, true); !x)
+    if (auto x = Metadata(store / id / "manifest.json", id == kTarget ? 48495 : 2782, id, true); !x)
       return x;
     if (auto x =
             Metadata(store / id / "meta/config.json", 109897,
@@ -390,8 +390,11 @@ en::Status SetUp(Lifetime& life) {
   auto width = en::DrafterHeadRows(parts->mode.drafters[0], kVocabulary);
   if (!width || *width > kDraftLimit || !ids || ids->size() != *width)
     return std::unexpected("factory omitted the actual selected-head vocabulary");
-  if (auto valid = llmp::model::CheckQwen38DraftIds(*ids, kVocabulary); !valid)
-    return std::unexpected(valid.error());
+  // In range and strictly ascending.
+  for (std::size_t i = 0; i < ids->size(); ++i)
+    if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], kVocabulary) ||
+        (i != 0 && (*ids)[i - 1] >= (*ids)[i]))
+      return std::unexpected("draft vocabulary IDs must be in range and strictly ascending");
   life.draft_width = *width;  // Set before any runner setup/lowering.
   // Consume the factory's already-read immutable table, not another source
   // read or a prefix assumption. The source itself still owns device mapping.
@@ -753,6 +756,9 @@ en::Status FinalState(Lifetime& life) {
   return {};
 }
 TEST(Qwen38JoinedMtpGpu, OwnedUnequalPendingRestoresAndChangedInputCapture) {
+  if (ts::V1IdNamed("qwen38-modelopt") != kTarget ||
+      ts::V1IdNamed("qwen38-modelopt-mtp") != kDrafter)
+    GTEST_FAIL() << "no Qwen3.8 ModelOpt v1 target and MTP drafter in " << ts::V1Store();
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available);
   ASSERT_GE(*available, kDomain + rt::kUncountedMargin);

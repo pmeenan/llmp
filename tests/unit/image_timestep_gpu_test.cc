@@ -31,6 +31,7 @@
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
+#include "fixture_source.h"
 #include "kernels/ggml/step_program.h"
 #include "planner/policy.h"
 #include "platform/host_probe.h"
@@ -307,7 +308,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path) {
   if (life.flow) tensors = all_tensors;
   auto ids = mo::BindQwenImageComponent(tensors, "QwenImage21Transformer2DModel", artifact);
   if (!ids) return Error(ids.error());
-  auto source = sp::SourceOfV0(artifact);
+  auto source = llmp::test_support::V0ArtifactSource(artifact);
   if (!source) return Error(source.error());
   std::vector<co::BoundTensor> bound;
   std::vector<en::GroupPlace> groups(33, en::GroupPlace::kNone);

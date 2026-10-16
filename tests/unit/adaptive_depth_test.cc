@@ -106,7 +106,7 @@ TEST(AdaptiveDepthTest, ACheckpointRestoresTheSameChoicesThroughRejectionsAndPro
 using llmp::execution::AdaptiveWaveMode;
 using Mode = AdaptiveWaveMode::Mode;
 
-// A calibration like DeepSeek's (model_settings.h kDsv4WaveCosts; its
+// A calibration like DeepSeek's (its serving recipe's default_wave_costs; its
 // first, without wave lanes): a draft-verify wave costs about 1.9, 2.2 and
 // 2.9 plain waves at widths 2, 3 and 4.
 constexpr AdaptiveWaveMode::Costs kCost = {0, 0, 1.94, 2.21, 2.90};

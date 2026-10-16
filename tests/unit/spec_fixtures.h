@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The Gemma 2 and Gemma 3 tensor tables (tests/unit/data) as mapping
-// sources (spec/mapping.h), as SourceOfV0 reads their artifacts.
+// The Gemma 2, 3 and 4 tensor tables (tests/unit/data) as mapping sources
+// (spec/mapping.h), as the importer describes a GGUF's tensors.
 #ifndef LLMP_TESTS_UNIT_SPEC_FIXTURES_H_
 #define LLMP_TESTS_UNIT_SPEC_FIXTURES_H_
 
@@ -29,7 +29,7 @@
 
 namespace llmp::test_support {
 
-// A fixture's tensor table as a source, as SourceOfV0 reads an artifact.
+// A fixture's tensor table as a source, as the importer describes a GGUF.
 template <typename Resource>
 inline spec::Source SourceOf(std::string architecture, const std::vector<Resource>& resources) {
   spec::Source s{.architecture = std::move(architecture), .container = "gguf"};
@@ -61,14 +61,14 @@ inline spec::Source Gemma2Source() { return SourceOf("gemma2", gemma2::Resources
 inline spec::Source Gemma3Source() { return SourceOf("gemma3", gemma3::Resources()); }
 
 // A Gemma 4 fixture's tables (26 or 31) as sources: an expert array as one
-// tensor of its slices, the expert count its ne[2] (SourceOfV0's form).
+// tensor of its slices, the expert count its ne[2] (the importer's form).
 inline spec::Source Gemma4SourceOf(std::string architecture,
-                                   const std::vector<model::Gemma4Resource>& resources) {
+                                   const std::vector<families::Gemma4Resource>& resources) {
   spec::Source s{.architecture = std::move(architecture), .container = "gguf"};
-  for (const model::Gemma4Resource& r : resources) {
-    model::Gemma4Resource one = r;
+  for (const families::Gemma4Resource& r : resources) {
+    families::Gemma4Resource one = r;
     one.roles = {r.roles.front()};
-    const spec::Source single = SourceOf("x", std::vector<model::Gemma4Resource>{one});
+    const spec::Source single = SourceOf("x", std::vector<families::Gemma4Resource>{one});
     spec::SourceTensor t = single.tensors.front();
     if (r.expert_array) {
       t.format.shape.ne[2] = r.count;

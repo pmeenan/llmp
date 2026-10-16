@@ -22,7 +22,7 @@
 #include "import/files.h"
 #include "import/parameter_folds.h"
 #include "ir/graph.h"
-#include "model/qwen38.h"
+#include "model/state_contract.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -2179,7 +2179,6 @@ NormalizationCost Cost() {
 // scales (ModelOpt's NVFP4, W4A4, rather than W4A16_NVFP4).
 std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>, 3>& semantic,
                                       bool relaid, bool activation_scales) {
-  const auto& p = model::Qwen38Flash();
   std::vector<spec::SourceValue> out;
   out.reserve(64);
   const auto integer = [&](std::string_view key, std::int64_t value) {
@@ -2194,7 +2193,8 @@ std::vector<spec::SourceValue> Values(const std::array<std::vector<std::int64_t>
   integer("qwen4exp.embedding_length", 2560);
   integer("qwen4exp.hyper_connection.count", 4);
   integer("qwen4exp.hyper_connection.low_rank", 320);
-  real("qwen4exp.attention.layer_norm_rms_epsilon", p.rms_eps);
+  // The checkpoint's float32 epsilon, widened.
+  real("qwen4exp.attention.layer_norm_rms_epsilon", 1e-6F);
   integer("qwen4exp.attention.head_count", 24);
   integer("qwen4exp.attention.head_count_kv", 2);
   integer("qwen4exp.attention.key_length", 256);
@@ -2274,7 +2274,6 @@ std::expected<std::vector<PlannedPartFold>, Error> FoldTargetParameters(
   if (!tensors) return std::unexpected(tensors.error());
   const spec::Source unfolded{.architecture = "qwen4exp",
                               .container = "safetensors",
-                              .converter = {},
                               .tensors = std::move(*tensors),
                               .folds = {std::string(kHeadReorder)}};
   auto spec = spec::Synthesize(spec::mappings::Qwen38NativeMapping(), unfolded,
@@ -2636,11 +2635,7 @@ std::expected<void, Error> DrafterDomain(const Checkpoint& source) {
 using Carrier = ModelOptTargetForm;
 std::expected<Carrier, Error> NativeTargetCarrier() {
   Carrier c;
-  c.source = {.architecture = "qwen4exp",
-              .container = "safetensors",
-              .converter = {},
-              .tensors = {},
-              .folds = {}};
+  c.source = {.architecture = "qwen4exp", .container = "safetensors", .tensors = {}, .folds = {}};
   // The target's outputs as its normalization makes them (each part's
   // member count, not its sources), then its experts' relayout.
   std::vector<TensorAssembly> outputs;
@@ -2920,7 +2915,7 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
   // Its parameter folds, by role (import/parameter_folds.h): its stage
   // composed from its unfolded outputs with the target's carrier decides
   // them; its zero-centered norms' 1 + w in F32, as the target's.
-  auto values = spec::mappings::Qwen38MtpNativeValues(model::Qwen38Flash(), rows);
+  auto values = spec::mappings::Qwen38MtpNativeValues(rows);
   if (!values) return Bad("native ModelOpt drafter values refused");
   auto carrier = NativeTargetCarrier();
   if (!carrier) return std::unexpected(carrier.error());
@@ -2941,7 +2936,6 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
     if (head) tensors->push_back(ids_tensor());
     const spec::Source unfolded{.architecture = "qwen4exp-mtp",
                                 .container = "safetensors",
-                                .converter = {},
                                 .tensors = std::move(*tensors),
                                 .folds = {}};
     auto composed = spec::ComposeDrafter(
@@ -2969,7 +2963,6 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
   result.planned_folds_ = std::move(planned);
   result.canonical_ = {.architecture = "qwen4exp-mtp",
                        .container = "safetensors",
-                       .converter = {},
                        .tensors = {},
                        .folds = FoldNames(result.planned_folds_)};
   std::uint32_t output_index = 0;

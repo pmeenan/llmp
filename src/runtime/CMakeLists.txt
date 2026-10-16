@@ -18,7 +18,7 @@
 add_library(llmp_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc approvals.cc binding.cc
                                   calibration.cc cohort_capacity.cc cohort_schedule.cc
                                   completion_tokens.cc component_admission.cc hang_ladder.cc intake_limits.cc
-                                  gemma_profile.cc kept_record.cc memory_guard.cc model_settings.cc
+                                  kept_record.cc memory_guard.cc model_settings.cc
                                   prefill.cc pressure_trim.cc state_keeper.cc swap_room.cc
                                   watchdog.cc)
 target_include_directories(llmp_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")

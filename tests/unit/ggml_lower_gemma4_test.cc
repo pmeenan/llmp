@@ -44,6 +44,7 @@
 #include "components/step.h"
 #include "engine/support.h"
 #include "execution/registry.h"
+#include "families/gemma.h"
 #include "format/encoding.h"
 #include "ggml.h"
 #include "ir/graph.h"
@@ -55,8 +56,7 @@
 #include "kernels/ggml/llmp_ops.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/tensors.h"
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
+#include "model/state_contract.h"
 #include "planner/pattern.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
@@ -70,6 +70,7 @@ namespace {
 namespace kg = llmp::kernels::ggml;
 namespace kn = llmp::kernels;
 namespace md = llmp::model;
+namespace fam = llmp::test_support::families;
 namespace ex = llmp::execution;
 namespace pl = llmp::planner;
 namespace co = llmp::components;
@@ -176,7 +177,7 @@ std::uint64_t PadUp(std::uint64_t value, std::uint64_t to) { return (value + to 
 // (and, within the bounded envelope, mixed ends of two owners), and each
 // head the step may return. A step's read is its end rounded up to 256
 // cells within the global cells.
-std::vector<Case> SetupCases(const md::Gemma4Profile& p, const Recipe& r) {
+std::vector<Case> SetupCases(const fam::Gemma4Profile& p, const Recipe& r) {
   std::vector<Case> out;
   const std::uint32_t global_cells = static_cast<std::uint32_t>(PadUp(r.context, 256));
   const std::uint32_t local_cells = static_cast<std::uint32_t>(
@@ -394,8 +395,8 @@ void ExpectInputs(const Lowered& w, bool device_masks) {
 }
 
 Ir TargetIr(std::uint32_t size, const Recipe& r) {
-  const auto& p = size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();
-  const auto values = llmp::spec::mappings::Gemma4V0Values(p);
+  const auto& p = size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
+  const auto values = fam::Gemma4Values(p);
   Ir ir_;
   ir_.sources.push_back(llmp::test_support::Gemma4Source(size));
   ir_.spec =
@@ -417,7 +418,7 @@ class GgmlLowerGemma4 : public testing::TestWithParam<std::uint32_t> {};
 
 TEST_P(GgmlLowerGemma4, ServingRecipesLowerEverySetupShape) {
   const std::uint32_t size = GetParam();
-  const auto& p = size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();
+  const auto& p = size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
   std::size_t shapes = 0, owner_forms = 0, nodes = 0, routes = 0;
   for (const Recipe& r : Recipes(size)) {
     Ir ir_ = TargetIr(size, r);
@@ -531,11 +532,11 @@ TEST(GgmlLowerGemma4Test, AssistantLowersItsDraftPasses) {
   std::size_t compared = 0;
   for (const std::uint32_t size : {26U, 31U}) {
     SCOPED_TRACE(size);
-    const auto& p = size == 26 ? md::Gemma4_26BA4B() : md::Gemma4_31B();
-    const auto& a = size == 26 ? md::Gemma4Assistant26() : md::Gemma4Assistant31();
-    const auto values = llmp::spec::mappings::Gemma4AssistantV0Values(a, p);
+    const auto& p = size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
+    const auto& a = size == 26 ? fam::Gemma4Assistant26() : fam::Gemma4Assistant31();
+    const auto values = fam::Gemma4AssistantValues(a, p);
     ASSERT_TRUE(values.has_value());
-    const auto target_values = llmp::spec::mappings::Gemma4V0Values(p);
+    const auto target_values = fam::Gemma4Values(p);
     Ir ir_;
     ir_.sources.push_back(llmp::test_support::Gemma4Source(size));
     ir_.sources.push_back(llmp::test_support::Gemma4AssistantSource(size));
@@ -608,13 +609,13 @@ TEST(GgmlLowerGemma4Test, AssistantLowersItsDraftPasses) {
 TEST(GgmlLowerGemma4Test, TargetStepsLowerTheirDraftersTaps) {
   constexpr std::uint32_t kContext = 4096;
   constexpr std::uint32_t kMaxRows = 64;
-  const auto& p = md::Gemma4_26BA4B();
-  const auto& a = md::Gemma4Assistant26();
+  const auto& p = fam::Gemma4_26BA4B();
+  const auto& a = fam::Gemma4Assistant26();
   Ir ir_;
   ir_.sources.push_back(llmp::test_support::Gemma4Source(26));
   ir_.sources.push_back(llmp::test_support::Gemma4AssistantSource(26));
-  const auto target_values = llmp::spec::mappings::Gemma4V0Values(p);
-  const auto values = llmp::spec::mappings::Gemma4AssistantV0Values(a, p);
+  const auto target_values = fam::Gemma4Values(p);
+  const auto values = fam::Gemma4AssistantValues(a, p);
   ASSERT_TRUE(target_values.has_value() && values.has_value());
   const auto target = *llmp::spec::Synthesize(llmp::spec::mappings::Gemma4Mapping(), ir_.sources[0],
                                               *target_values);

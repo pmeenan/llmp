@@ -23,7 +23,8 @@ shape, named independently of any kernel library) and part in the index,
 the model spec as a hashed document of its own, the folds and relayouts
 the importer applied, and its identity in the manifest; target-specific
 layouts are prepared artifacts of their own. The reader takes both
-versions. Every v0 artifact is re-imported; nothing migrates in place
+versions, but serving reads v1 only (D-118): every v0 artifact is
+re-imported; nothing migrates in place
 ([engine-components.md](engine-components.md#weight-and-state-formats)).
 The sections up to [Version 1](#version-1) describe v0, and v1 where it
 does not say otherwise.
@@ -151,8 +152,8 @@ tables (their records' digests) and their slot, and its composition with
 the approved native target; the map's content is checked when it is read.
 Another list's drafter, or one without a head, has no approval yet. Every
 published tensor, the expert tables' slices and the folded norms included,
-equals the v0 drafter `8600a998…`'s byte for byte
-(`NativeMtpDrafterMatchesV0`). It serves with its approved v1 target
+equaled the v0 drafter `8600a998…`'s byte for byte (a check retired with v0
+serving in slice 4b; a re-import reproduces its ID, `verified`). It serves with its approved v1 target
 ([qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)).
 The importer refuses a source outside the closed domain, a missing or
 mismatched `mtp.*` descriptor, a head without `lm_head.weight`, and a list
@@ -459,7 +460,7 @@ converter identity is the record. Resources are named as llama.cpp's
   `NVFP4` slices instead (`block_nvfp4`: 64 elements, 4 scale bytes, then
   32 code bytes, byte j of a 16-element sub-block holding elements j and
   j + 8), as expert arrays `blk.L.ffn_{gate,up,down}_exps.weight`; the
-  runtime binds either (`model/qwen38.h Qwen38Experts`).
+  M3 runtime bound either (v0 serving ended with slice 4b, D-118).
 - **MXFP8 matrices** (attention, linear attention, the shared expert, the
   indexer's fused q/k projection) stay in the checkpoint's layout as plain
   resources: `X.weight` (F8_E4M3 `[out, in]`) and `X.weight_scale` (U8, E8M0,
@@ -488,9 +489,9 @@ one expert group per expert (rule 2; the down slices' 640-value rows
 reserve GGML's over-read); `per_layer_token_embd.weight` (the 28.8 GB
 n-gram table, IQ4_NL `[160, 320,001,536]` in UD-IQ3_XXS, 90 bytes a row)
 is a row table (rule 3); and the first shard's header is kept as
-`meta/<stem>.kv.gguf` (rule 7). The runtime binds it as Qwen3.8's GGUF
-form (`model/qwen38.h` `Qwen38Format::kGguf`), detected by that table
-being a GGML representation:
+`meta/<stem>.kv.gguf` (rule 7). The M3 runtime bound it as Qwen3.8's GGUF
+form, detected by that table being a GGML representation (v0 serving
+ended with slice 4b, D-118):
 
 | Role | GGUF tensors (UD-IQ3_XXS's types) | What the binding takes |
 | --- | --- | --- |
@@ -1164,7 +1165,7 @@ importer's record, which names the norm the stage binds, so
   table from the target's artifact. DeepSeek V4's DSpark import settled
   the binding: the drafter's own artifact holds no copy of the tables, and
   at load it binds the target artifact's `token_embd.weight` and
-  `output.weight` by name (`model/dspark.h`); such a pair's composition
+  `output.weight` by name (the drafter mapping's target-tensor rules); such a pair's composition
   document is [version 1's](#compositions-v1), which needs no
   model_index.json and carries the pair's spec (D-089, D-113); none is
   written until the importer writes version 1.

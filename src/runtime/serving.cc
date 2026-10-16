@@ -46,7 +46,6 @@
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
 #include "memory/reclaim.h"
-#include "model/qwen38.h"
 #include "planner/step_shape.h"
 #include "platform/crash_policy.h"
 #include "platform/files.h"
@@ -289,10 +288,10 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
                                .prefill_lookahead = options_.prefill_lookahead,
                                .prepare_state = options_.prepare_state,
                                .state_only_prefill = options_.state_only_prefill,
-                               // A route with a closed bridge serves only derived; others
-                               // derive their joined and plain envelopes.
+                               // A route without qualified envelopes serves only derived;
+                               // others derive their joined and plain envelopes.
                                .derive_execution_domain =
-                                   shared && (recipe->closed_bridge ||
+                                   shared && (!recipe->qualified_envelopes ||
                                               settings.max_slots.value > 1 || !entry.drafter)}));
         if (options_.diagnostic_capture_first_verify)
           Log(std::format("model {}: experimental Verify capture beside first eager run",

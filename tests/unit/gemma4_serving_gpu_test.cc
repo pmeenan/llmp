@@ -33,10 +33,21 @@
 #include "runtime/engine_llm.h"
 #include "runtime/serving.h"
 #include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace rt = llmp::runtime;
 namespace en = llmp::engine;
 namespace cfg = llmp::config;
+
+namespace {
+// A published v1 artifact's ID by the store's v1-ids.json name, empty when
+// absent (tests/support/v1_frozen.h).
+std::string Published(const char* name) { return llmp::test_support::V1IdNamed(name).value_or(""); }
+// The model's and the other profile's targets.
+const char* TargetName(std::uint32_t profile) { return profile == 26 ? "gemma26" : "gemma31"; }
+const char* OtherName(std::uint32_t profile) { return profile == 26 ? "gemma31" : "gemma26"; }
+}  // namespace
+
 class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
   // The approved 8K/C4 envelope (context 8,192, four slots, the profile's
@@ -45,13 +56,9 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   // The profile's assistant, as the model's `drafter`.
   virtual bool Assistant() const { return false; }
   void SetUp() override {
-    const auto installed = std::filesystem::path(llmp::test_support::ModelsDir()) / "m3-artifacts";
-    const char* artifact = GetParam() == 26
-                               ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
-                               : "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
-    if (std::error_code error; !std::filesystem::exists(installed / artifact, error)) {
-      GTEST_SKIP() << "no Gemma 4 artifact in " << installed;
-    }
+    const std::filesystem::path installed = llmp::test_support::V1Store();
+    const std::string artifact = Published(TargetName(GetParam()));
+    if (artifact.empty()) GTEST_FAIL() << "no published v1 Gemma 4 in " << installed;
     // Spill files need direct I/O: scratch in the build tree.
     const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const std::filesystem::path root = base != nullptr ? base : ::testing::TempDir();
@@ -71,12 +78,9 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
     entry.name = "gemma";
     entry.artifact = artifact;
     if (Assistant()) {
-      const char* assistant =
-          GetParam() == 26 ? "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42"
-                           : "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120";
-      if (std::error_code missing; !std::filesystem::exists(installed / assistant, missing)) {
-        GTEST_SKIP() << "no Gemma 4 assistant in " << installed;
-      }
+      const std::string assistant =
+          Published(GetParam() == 26 ? "gemma26-assistant" : "gemma31-assistant");
+      if (assistant.empty()) GTEST_FAIL() << "no published v1 Gemma 4 assistant in " << installed;
       entry.drafter = assistant;
     }
     entry.overrides["context"] = std::int64_t{Envelope() ? 8192 : 4096};
@@ -161,9 +165,11 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   // settings (its own scratch roles; started and retired here, with no
   // server of this profile running).
   std::string OtherProfileLayout() {
-    const char* artifact = GetParam() == 26
-                               ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
-                               : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+    const std::string artifact = Published(OtherName(GetParam()));
+    if (artifact.empty()) {
+      ADD_FAILURE() << "no published v1 " << OtherName(GetParam());
+      return {};
+    }
     auto bundle = std::make_unique<Lifetime>();
     Lifetime& other = *bundle;
     other.config = config;
@@ -1115,13 +1121,12 @@ TEST_P(Gemma4ServingGpu, CapacityRefusalPreservesCompletedPrefixAndPeerProgress)
 }
 
 TEST_P(Gemma4ServingGpu, PausedGenerationSurvivesOppositeProfileSwitchAndOwnedOutput) {
-  ASSERT_TRUE(RetireServer());
-  server.reset();
   auto opposite = config.models[0];
   opposite.name = "other";
-  opposite.artifact = GetParam() == 26
-                          ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
-                          : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+  opposite.artifact = Published(OtherName(GetParam()));
+  if (opposite.artifact->empty()) GTEST_FAIL() << "no published v1 " << OtherName(GetParam());
+  ASSERT_TRUE(RetireServer());
+  server.reset();
   opposite.overrides["max_slots"] = std::int64_t{2};
   config.models.push_back(opposite);
   ASSERT_TRUE(Start());

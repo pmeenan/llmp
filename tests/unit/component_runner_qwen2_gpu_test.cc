@@ -50,7 +50,6 @@
 #include "engine/support.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/step_program.h"
-#include "model/qwen2.h"
 #include "planner/pattern.h"
 #include "platform/host_probe.h"
 #include "runtime/memory_guard.h"
@@ -69,6 +68,18 @@ namespace kn = llmp::kernels;
 namespace pl = llmp::planner;
 namespace sp = llmp::spec;
 namespace ts = llmp::test_support;
+
+// Qwen2.5 0.5B Instruct's vocabulary (the fixture's: its logit rows).
+constexpr std::uint32_t kVocab = 151936;
+
+// llama.cpp's n_kv (llama_kv_cache::get_n_kv at b29c606e2): the attended
+// cells, the used cells padded to 256 and at most the cache's size.
+std::uint32_t PaddedKv(std::uint32_t used_cells, std::uint32_t cells) {
+  constexpr std::uint32_t kPad = 256;
+  const std::uint64_t padded = (std::uint64_t{used_cells} + kPad - 1) / kPad * kPad;
+  return static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(cells, std::max<std::uint64_t>(kPad, padded)));
+}
 
 std::string Env(const char* name) {
   const char* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
@@ -549,33 +560,23 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
     }
   }
   const auto& oracle = life->oracle;
-  const auto& profile = llmp::model::Qwen25Instruct05B();
-  const std::size_t row_bytes = std::size_t{profile.vocab} * sizeof(float);
+  const std::size_t row_bytes = std::size_t{kVocab} * sizeof(float);
   if (!corpus) ASSERT_EQ(oracle.size(), token_rows * row_bytes);
-  // The v0 fixture, or with LLMP_TEST_QWEN2_ARM=v1 the published v1 import of
-  // the same GGUF (LLMP_TEST_V1_STORE and its v1-ids.json). Both are held to
-  // the same sealed bridge oracle and the same frozen checkpoint digests, so a
-  // pass of both is v0 == v1 bit for bit.
-  const bool v1 = Env("LLMP_TEST_QWEN2_ARM") == "v1";
-  std::string store = Env("LLMP_EXL3_FIXTURE_STORE");
-  if (store.empty()) store = Env("HOME") + "/.local/share/llmp/artifact-layout-20260922/installed";
-  constexpr std::string_view v0_artifact_id =
-      "b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073";
-  std::string artifact_id(v0_artifact_id);
-  if (v1) {
-    store = ts::V1Store();
-    const auto mapped = ts::V1IdFor(v0_artifact_id);
-    if (store.empty() || !mapped) GTEST_SKIP() << "no published v1 FP16 fixture (LLMP_TEST_V1_STORE)";
-    artifact_id = *mapped;
-  }
+  // The published v1 import of the fixture's GGUF (LLMP_TEST_V1_STORE and its
+  // v1-ids.json), held to the sealed bridge oracle and the frozen checkpoint
+  // digests (which its v0 import also met, bit for bit).
+  const std::string store = ts::V1Store();
+  const auto mapped = ts::V1IdNamed("qwen2-fp16");
+  if (!mapped) GTEST_FAIL() << "no published v1 FP16 fixture in " << store;
+  const std::string artifact_id = *mapped;
   const fs::path root = fs::path(store) / artifact_id;
-  if (!fs::is_directory(root)) GTEST_SKIP() << "fixture not installed: " << root;
+  if (!fs::is_directory(root)) GTEST_FAIL() << "fixture not installed: " << root;
   // These pure filesystem bounds precede both artifact parser calls. The
   // checked manifest identity fixes the index's declared length/hash too.
   std::error_code metadata_error;
   const auto manifest_bytes = fs::file_size(root / "manifest.json", metadata_error);
   ASSERT_FALSE(metadata_error);
-  ASSERT_LE(manifest_bytes, v1 ? 64 * 1024U : 16 * 1024U);
+  ASSERT_LE(manifest_bytes, 64 * 1024U);
   const auto index_bytes = fs::file_size(root / "index.json", metadata_error);
   ASSERT_FALSE(metadata_error);
   ASSERT_LE(index_bytes, kMiB);
@@ -583,46 +584,27 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   ASSERT_TRUE(headers.has_value()) << headers.error();
   auto opened = ar::Artifact::Open(root, {.expected_id = artifact_id});
   ASSERT_TRUE(opened.has_value()) << opened.error().ToString();
-  ASSERT_EQ(opened->format_version(), v1 ? 1U : 0U);
+  ASSERT_EQ(opened->format_version(), 1U);
   life->artifact.emplace(std::move(*opened));
   auto& artifact = life->artifact;
-  ASSERT_EQ(profile.layers, 24U);
-  ASSERT_EQ(profile.width, 896U);
-  ASSERT_EQ(profile.vocab, 151936U);
-  ASSERT_EQ(profile.ffn, 4864U);
-  ASSERT_EQ(profile.heads, 14U);
-  ASSERT_EQ(profile.kv_heads, 2U);
-  ASSERT_EQ(profile.head_dim, 64U);
   ASSERT_LE(artifact->resources().size(), 512U);
   ASSERT_LE(artifact->groups().size(), 64U);
   ASSERT_LE(artifact->chunk_sha256().size(), 1024U);
   const auto& mapping = sp::mappings::Qwen2Mapping();
-  auto mapped_values = sp::mappings::Qwen2V0Values(profile);
-  ASSERT_TRUE(mapped_values.has_value()) << mapped_values.error();
-  life->values = std::move(*mapped_values);
-  if (v1) {
-    // The stored spec and the artifact's own tensor formats execute unchanged.
-    auto bound_source = sp::SourceOf(*artifact);
-    ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
-    life->source.emplace(std::move(*bound_source));
-    auto stored = sp::StoredSpec(*artifact);
-    ASSERT_TRUE(stored.has_value()) << stored.error();
-    life->spec.emplace(std::move(*stored));
-  } else {
-    ASSERT_TRUE(llmp::model::BindQwen2(profile, *artifact));
-    auto bound_source = sp::SourceOfV0(*artifact, &mapping);
-    ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
-    life->source.emplace(std::move(*bound_source));
-  }
+  // The stored spec and the artifact's own tensor formats execute unchanged;
+  // the mapping's policy has no gate, so its plans take no values.
+  auto bound_source = sp::SourceOf(*artifact);
+  ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
+  life->source.emplace(std::move(*bound_source));
+  auto stored = sp::StoredSpec(*artifact);
+  ASSERT_TRUE(stored.has_value()) << stored.error();
+  life->spec.emplace(std::move(*stored));
   auto& source = life->source;
   ASSERT_LE(source->tensors.size(), 512U);
   for (const auto& tensor : source->tensors) ASSERT_LE(tensor.name.size(), 128U);
-  if (!v1) {
-    auto synthesized = sp::Synthesize(mapping, *source, life->values);
-    ASSERT_TRUE(synthesized.has_value()) << synthesized.error();
-    life->spec.emplace(std::move(*synthesized));
-  }
   auto& spec = life->spec;
+  // Qwen2.5 0.5B: 24 layers of width 896.
+  ASSERT_EQ(spec->stages.front().stream.width, 896U);
   if (q8_cache) {
     const auto bytes = co::KvCacheEncodingBytes(*spec, llmp::format::Encoding::kQ8_0);
     ASSERT_TRUE(bytes) << bytes.error();
@@ -681,7 +663,7 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
   auto& shapes = life->shapes;
   const auto shape_of = [heldout](std::uint32_t past, std::uint32_t rows) {
     auto shape = Shape(past, rows);
-    if (heldout) shape.segments.front().read_cells = llmp::model::PaddedKv(past + rows, 1024);
+    if (heldout) shape.segments.front().read_cells = PaddedKv(past + rows, 1024);
     return shape;
   };
   if (corpus) {
@@ -770,7 +752,7 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
       return program;
     };
     if (corpus || same_plan) {
-      auto guarded = corpus ? ts::GuardCorpusLower(std::move(checked_backend.lower), profile.vocab)
+      auto guarded = corpus ? ts::GuardCorpusLower(std::move(checked_backend.lower), kVocab)
                             : std::move(checked_backend.lower);
       checked_backend.lower = [held = life.get(), same_plan,
                                guarded = std::move(guarded)](const kn::LowerInput& input)
@@ -887,7 +869,7 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
       life->corpus_composer.emplace(std::move(*composer));
       const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = tokens}};
       auto scorer = ts::CorpusScore::Make(
-          node, *runner, *life->corpus_composer, documents, {profile.vocab, 8},
+          node, *runner, *life->corpus_composer, documents, {kVocab, 8},
           [held = life.get()](const ts::CorpusTargetScore& score) -> en::Status {
             if (held->corpus_score_count == held->corpus_scores.size())
               return std::unexpected("corpus NLL report exceeds prepaid rows");
@@ -949,20 +931,18 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
     }
     // Only the repeated arms add this bounded generation inventory. The
     // source-bound allowance includes 128 KiB for it and operation scratch.
-    // v0 pins 490 extents; the v1 import lays the same bytes out in its own groups.
-    constexpr std::size_t kV0WeightExtents = 490;
-    const std::size_t kWeightExtents = v1 ? paged->extents().size() : kV0WeightExtents;
+    // The artifact's own weight extents, bounded.
+    const std::size_t weight_extents = paged->extents().size();
     constexpr std::uint64_t kRepeatObservation = 128 * 1024;
     static_assert(kInheritedCompiler + kMetadataOwners + kObservationOwners + kRepeatObservation <=
                   kHostAllowance);
     static_assert(kInheritedCompiler + kHeldoutMetadataOwners + kHeldoutObservationOwners +
                       kRepeatObservation <=
                   kHeldoutHostAllowance);
-    if (repeated && (paged->extents().size() != kWeightExtents || kWeightExtents == 0 ||
-                     kWeightExtents > 1024))
+    if (repeated && (weight_extents == 0 || weight_extents > 1024))
       return std::unexpected("repeated fixture weight extent inventory differs");
     std::vector<std::pair<std::uint64_t, std::uint64_t>> generations;
-    if (repeated) generations.resize(kWeightExtents);
+    if (repeated) generations.resize(weight_extents);
     bool reload_pending = false;
     std::size_t backing_before = 0;
     std::uint32_t evictions = 0;
@@ -1069,11 +1049,12 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
             if (auto x = SaveState(*life, true); !x) return x;
             if (life->saved_positions != checkpoint_positions)
               return std::unexpected("FP16 checkpoint starts at the wrong completed position");
-            // The complete checkpoint state at position 32, frozen: v0 and v1
-            // are held to the same digest, as to the same sealed logit rows.
+            // The complete checkpoint state at position 32, frozen (the v0
+            // import met the same digest, as the same sealed logit rows).
             if (!corpus)
-              frozen.Expect(std::string(fusion ? "fused" : "unfused") + (heldout ? ".heldout" : ".control") +
-                                (q8_cache ? ".q8" : "") + ".checkpoint_state",
+              frozen.Expect(std::string(fusion ? "fused" : "unfused") +
+                                (heldout ? ".heldout" : ".control") + (q8_cache ? ".q8" : "") +
+                                ".checkpoint_state",
                             CheckpointDigest(*life));
             if (same_plan) {
               const auto now = CheckpointDigestRaw(*life);
@@ -1102,7 +1083,7 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
             generations[i] = {extent->backing_generation, extent->content_generation};
           }
           if (auto x = node.Evict(paged->extents()); !x) return x;
-          if (node.memory().backings() + kWeightExtents != backing_before)
+          if (node.memory().backings() + weight_extents != backing_before)
             return std::unexpected("weight eviction did not release all backing");
           for (const auto id : paged->extents()) {
             auto extent = node.catalog().Describe(id);
@@ -1174,7 +1155,7 @@ void RunQwen2Control(bool fusion, bool full, bool heldout, bool repeated, bool c
       testing::Test::RecordProperty("same_plan_selected_programs", records);
     }
     if (repeated) {
-      if (evaluations != 4 || evictions != 2 || restored_extents != 2 * kWeightExtents ||
+      if (evaluations != 4 || evictions != 2 || restored_extents != 2 * weight_extents ||
           compared_rows != (same_plan ? 3U : 4U) * (token_rows + 8U))
         return std::unexpected("FP16 repeated control witnesses are incomplete");
       testing::Test::RecordProperty("evaluations", std::to_string(evaluations));

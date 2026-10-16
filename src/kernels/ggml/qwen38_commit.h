@@ -4,7 +4,7 @@
 // A Qwen3.8 speculative verify's commit (docs/experiments/qwen38-mtp/).
 // A verify in its verify form reads the recurrent, convolution and n-gram
 // state but writes none of it; it saves each row's inputs instead
-// (model/qwen38.h Qwen38CommitLayout). Once the host knows how many rows it
+// (the M3 runner's Qwen38CommitLayout, retired). Once the host knows how many rows it
 // keeps, the commit leaves the state those rows alone would have left,
 // with nothing re-run but the recurrences themselves (D-068's truncation):
 //

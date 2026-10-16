@@ -66,7 +66,6 @@ TEST(ImportMlxNormalizeTest, NativeSplitPartsValidateAcrossCompleteTarget) {
   // The ModelOpt target's fast forms (W4A4 and the format ladder's); MLX's
   // admission keeps the planner's default (runtime/component_admission.cc).
   EXPECT_EQ(mapping.policies.size(), 2U);
-  EXPECT_TRUE(mapping.v0_assembly.empty());
 
   auto spec = spec::Synthesize(mapping, f.source, f.values);
   ASSERT_TRUE(spec) << spec.error();

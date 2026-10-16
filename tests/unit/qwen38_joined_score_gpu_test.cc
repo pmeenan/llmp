@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Bounded target-only shared scoring of the fixed authenticated Qwen52 corpus.
+// Bounded target-only shared scoring of the fixed authenticated Qwen52 corpus
+// on the published v1 ModelOpt target (d145900e, from the v1 store).
 // Source weights and histories match the independent quantized reference.
 #include <gtest/gtest.h>
 
@@ -38,14 +39,13 @@
 #include "engine/paged_weights.h"
 #include "engine/prefill.h"
 #include "kernels/ggml/graph_plan.h"
-#include "model/qwen38.h"
 #include "planner/plan.h"
 #include "platform/host_probe.h"
 #include "providers/device_runtime.h"
 #include "runtime/component_build.h"
 #include "runtime/memory_guard.h"
 #include "spec/mappings/qwen38.h"
-#include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 namespace fs = std::filesystem;
@@ -129,7 +129,7 @@ static_assert(kShapes * (4096 * (32 + 129) + 64 * 1024) + 2 * 8 * kMiB +
               kObservationEnvelope);
 
 constexpr std::string_view kArtifact =
-    "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
+    "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d";
 
 bool AllowedShape(const pl::StepShape& shape) {
   if (shape.stage || shape.row_invariant || shape.read_align != 256 ||
@@ -540,10 +540,8 @@ bool BoundedSourceSpellings(std::string_view text) {
 en::Status SetUp(Lifetime& life) {
   auto& node = life.node;
   // All construction-domain prerequisites precede the first graph. The source
-  // manifest/index/config hashes below bind this compiled profile's artifact.
-  const auto& profile = llmp::model::Qwen38Flash();
-  if (profile.layers != 48 || profile.experts_used != 10 || profile.width != 2560 ||
-      ggml_tensor_overhead() > 512)
+  // manifest/index/config hashes below bind the artifact.
+  if (ggml_tensor_overhead() > 512)
     return std::unexpected("compiler construction domain or descriptor ABI changed");
   node.SetHostFloor(0);
   if (auto open = node.Open(); !open) return open;
@@ -557,12 +555,12 @@ en::Status SetUp(Lifetime& life) {
                                         .content = {}},
                                        true);
   if (!paid) return std::unexpected("startup catalog payment refused");
-  const fs::path artifact = fs::path(ts::ModelsDir()) / "m3-artifacts" / kArtifact;
+  const fs::path artifact = fs::path(ts::V1Store()) / kArtifact;
   for (const auto& file : std::array{
-           std::tuple{"manifest.json", std::uint64_t{23037}, kArtifact},
-           std::tuple{"index.json", std::uint64_t{8152364},
+           std::tuple{"manifest.json", std::uint64_t{48495}, kArtifact},
+           std::tuple{"index.json", std::uint64_t{8236769},
                       std::string_view{
-                          "5b65dcce8169374e638264d7ebdcb5cca517234b3dec26f1272a5f4f9c0e4c89"}},
+                          "2b29dc0f905bd670522abda9d8ef5e17f0db328c1d4fcd9f8dae63e9079dc5dd"}},
            std::tuple{"meta/config.json", std::uint64_t{109897},
                       std::string_view{
                           "2d655dfa625c3c018f9685031367bc83f8532d3faf3333d7c838b2bdc13b8a7e"}}}) {
@@ -587,7 +585,7 @@ en::Status SetUp(Lifetime& life) {
   entry.name = ScoreChunk(life.policy) == 1 ? "qwen-policy-single"
                                             : (TunedPolicy(life.policy) ? "qwen50-c" : "qwen50-a");
   entry.artifact = std::string(kArtifact);
-  const fs::path store = fs::path(ts::ModelsDir()) / "m3-artifacts";
+  const fs::path store = fs::path(ts::V1Store());
   auto build = rt::ComponentLlmBuild(node, store, entry, 0, std::move(*options));
   auto parts = build(settings);
   if (!parts) return std::unexpected(parts.error());
@@ -970,6 +968,8 @@ en::Status OrdinarySchedule(Lifetime& life) {
 
 void Screen(TeacherPolicy policy) {
   ASSERT_FALSE(retirement_failed) << "prior owner retirement remains unknown";
+  if (ts::V1IdNamed("qwen38-modelopt") != kArtifact)
+    GTEST_FAIL() << "no Qwen3.8 ModelOpt v1 target in " << ts::V1Store();
   const auto available = llmp::platform::AvailableMemoryBytes();
   ASSERT_TRUE(available);
   ASSERT_GE(*available, kDomainBytes + rt::kUncountedMargin);

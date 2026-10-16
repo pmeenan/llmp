@@ -8,11 +8,12 @@
 > of the `gemma2` mapping (`src/spec/mappings/gemma2.*`) lowered onto GGML,
 > and the files this record names (`model/gemma2.*`'s state and input
 > builders, `kernels/ggml/gemma2_graph.*`, `engine/gemma2_plan.*` and
-> `engine/gemma2_runner.*`) and the serving class are deleted;
-> `model/gemma2.h` keeps the approved profile and tensor binding. What
-> follows is the record of the M3.5 runner's controls and measurements.
+> `engine/gemma2_runner.*`) and the serving class are deleted, and
+> `model/gemma2.*`'s profile and tensor binding went with v0 serving in
+> slice 4b (D-118: the approval table and the stored spec admit the v1
+> import). What follows is the record of the M3.5 runner's controls and measurements.
 
-`model/gemma2.h` supplies a closed profile and checked tensor binding for the
+`model/gemma2.h` supplied a closed profile and checked tensor binding for the
 approved Gemma 2 2B Q8_0 checkpoint. The bounded execution source adds checked
 state/inputs, a native graph/plan and a bounded runner over the shared paged engine.
 The approved source is authenticated and deeply imported; a representative C1

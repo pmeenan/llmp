@@ -100,15 +100,27 @@ constexpr auto kDsv4Ratios = [] {
 }();
 constexpr std::array kDsv4Requirements{
     ScalarRequirement{"deepseek4.attention.value_length", 512, true}};
+// antirez's GGUFs state the checkpoint's MTP depth, whose layers' tensors
+// are not imported (a source holding any is refused, their names unmapped),
+// and its vocabulary, which the token table's shape states.
+constexpr std::array kDsv4Auxiliary{
+    kAuxiliary[0], kAuxiliary[1], kAuxiliary[2],
+    AuxiliaryNamespace{"deepseek4.nextn_predict_layers", "MTP layers the import does not hold"},
+    AuxiliaryNamespace{"deepseek4.vocab_size", "the vocabulary the token table states",
+                       "token_embd.weight", 1}};
+// The layer types may list the MTP layers' after the 43 blocks'; the shared
+// expert's clamps may be absent (antirez's GGUFs), when the mapping clamps
+// it as the routed experts.
 constexpr std::array kDsv4Lists{
-    ListRequirement{"deepseek4.attention.compress_ratios", 46, kDsv4Ratios},
+    ListRequirement{"deepseek4.attention.compress_ratios", 46, kDsv4Ratios, 43},
     ListRequirement{"deepseek4.swiglu_clamp_exp", 43},
-    ListRequirement{"deepseek4.swiglu_clamp_shexp", 43}};
-constexpr std::array kDsv4Encodings{format::Encoding::kF32,   format::Encoding::kBF16,
-                                    format::Encoding::kI32,   format::Encoding::kQ8_0,
-                                    format::Encoding::kQ5_K,  format::Encoding::kIQ2_XS,
-                                    format::Encoding::kQ6_K,  format::Encoding::kIQ3_XXS,
-                                    format::Encoding::kMxfp4, format::Encoding::kQ4_K};
+    ListRequirement{"deepseek4.swiglu_clamp_shexp", 43, {}, 0, true}};
+constexpr std::array kDsv4Encodings{
+    format::Encoding::kF32,    format::Encoding::kBF16, format::Encoding::kF16,
+    format::Encoding::kI32,    format::Encoding::kQ8_0, format::Encoding::kQ5_K,
+    format::Encoding::kIQ2_XS, format::Encoding::kQ6_K, format::Encoding::kIQ3_XXS,
+    format::Encoding::kMxfp4,  format::Encoding::kQ4_K, format::Encoding::kQ2_K,
+    format::Encoding::kIQ2_XXS};
 
 constexpr std::array<std::int64_t, 3> kDsparkRatios{0, 0, 0};
 constexpr std::array<std::int64_t, 3> kDsparkTargetLayers{41, 42, 43};
@@ -194,7 +206,7 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
                                                .row_indices = kQwenRows},
                                  SourceMapping{.container = "gguf",
                                                .architecture = &spec::mappings::Dsv4Mapping(),
-                                               .auxiliary = kAuxiliary,
+                                               .auxiliary = kDsv4Auxiliary,
                                                .requirements = kDsv4Requirements,
                                                .lists = kDsv4Lists,
                                                .encodings = kDsv4Encodings,
@@ -316,8 +328,9 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
   for (std::size_t i = 0; i < table.lists.size(); ++i) {
     const auto& a = table.lists[i];
     const auto& b = registered->lists[i];
-    if (a.key != b.key || a.size != b.size || a.size > 48 ||
-        !std::ranges::equal(a.exact, b.exact) ||
+    if (a.key != b.key || a.size != b.size || a.size > 48 || a.min_size != b.min_size ||
+        a.min_size > a.size || a.optional != b.optional ||
+        (!a.exact.empty() && a.exact.size() != a.size) || !std::ranges::equal(a.exact, b.exact) ||
         (nd::KeyTypes(m, a.key) & (nd::kIntegers | nd::kReals)) == 0)
       return Invalid();
   }
@@ -336,7 +349,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     return Invalid();
   if (m.slots.empty() || m.slots.size() > (table.extended_components ? 16U : 8U) ||
       m.tensors.size() > nd::kRuleLimit || m.params.size() > 128 || m.folds.size() > 8 ||
-      m.policies.size() > 8 || !m.v0_assembly.empty() ||
+      m.policies.size() > 8 ||
       m.pipeline != spec::PipelineKind::kLlm ||
       (!table.extended_components && !m.layer_type_key.empty()) ||
       !spec::IsSourceKey(m.layer_count_key))
@@ -402,11 +415,14 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
   }
   for (std::size_t i = 0; i < table.auxiliary.size(); ++i) {
     const auto& a = table.auxiliary[i];
-    if (a.prefix.empty() || (table.container == "gguf" && !a.prefix.ends_with('.')) ||
-        !spec::IsSourceKey(a.prefix) || a.reason.empty() || a.reason.size() > spec::kMaxText)
+    if (a.prefix.empty() || !spec::IsSourceKey(a.prefix) || a.reason.empty() ||
+        a.reason.size() > spec::kMaxText ||
+        (!a.equals_tensor.empty() &&
+         (a.prefix.ends_with('.') || !spec::IsSourceKey(a.equals_tensor) || a.equals_dim >= 4)))
       return Invalid();
     const auto matches_aux = [&](std::string_view key) {
-      return table.container == "gguf" ? key.starts_with(a.prefix) : key == a.prefix;
+      return table.container == "gguf" && a.prefix.ends_with('.') ? key.starts_with(a.prefix)
+                                                                  : key == a.prefix;
     };
     if (matches_aux(m.layer_count_key) ||
         (!m.layer_flags_key.empty() && matches_aux(m.layer_flags_key)))

@@ -12,13 +12,12 @@
 
 #include "components/step.h"
 #include "engine/component_source.h"
+#include "families/qwen.h"
 #include "ir/graph.h"
 #include "kernels/exl3/selected_source.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/tensors.h"
-#include "model/qwen2.h"
-#include "model/qwen2_exl3.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
 #include "spec/mapping.h"
@@ -32,9 +31,9 @@ namespace fmt = llmp::format;
 using fmt::Encoding;
 
 namespace sp = llmp::spec;
-namespace md = llmp::model;
+namespace fam = llmp::test_support::families;
 sp::Source Source(bool exl3) {
-  const auto& p = exl3 ? md::Qwen25Instruct05BExl3() : md::Qwen25Instruct05B();
+  const auto& p = exl3 ? fam::Qwen25Instruct05BExl3() : fam::Qwen25Instruct05B();
   sp::Source source{.architecture = "qwen2", .container = exl3 ? "exl3" : "gguf"};
   const auto add = [&](std::string name, Encoding encoding, fmt::Shape shape) {
     source.tensors.push_back({.name = std::move(name), .format = ir::Dense(encoding, shape)});
@@ -186,7 +185,6 @@ TEST(Exl3SelectedTest, RefusesMissingDuplicateShortPartsAndWrongNumericalPath) {
 TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation) {
   namespace co = llmp::components;
   namespace sp = llmp::spec;
-  namespace md = llmp::model;
   namespace pl = llmp::planner;
   auto native = ex::SelectedSource(ex::FrozenCache::k40G);
   ASSERT_TRUE(native.has_value()) << native.error();
@@ -197,7 +195,7 @@ TEST(Exl3SelectedTest, SharedGraphKeepsEveryWeightPartAndExactSelectedOperation)
   ASSERT_TRUE(registry.has_value()) << registry.error().detail;
   const auto source = Source(true);
   const auto& mapping = sp::mappings::Qwen2Mapping();
-  const auto values = sp::mappings::Qwen2V0Values(md::Qwen25Instruct05BExl3());
+  const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
   const auto spec = sp::Synthesize(mapping, source, *values);
   ASSERT_TRUE(spec.has_value()) << spec.error();
@@ -330,7 +328,7 @@ TEST(Exl3SelectedTest, UncapturedComponentSelectionIsExplicitAndKeyed) {
   ASSERT_TRUE(registry.has_value());
   const auto source = Source(true);
   const auto& mapping = sp::mappings::Qwen2Mapping();
-  const auto values = sp::mappings::Qwen2V0Values(llmp::model::Qwen25Instruct05BExl3());
+  const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
   const auto spec = sp::Synthesize(mapping, source, *values);
   ASSERT_TRUE(spec.has_value());

@@ -12,13 +12,14 @@
 > those of the runner this file records. `kernels/ggml/gemma4_assistant_graph.*`,
 > `engine/gemma4_assistant{,_plan}.*` and `engine/gemma4_greedy.*` (the
 > target-owned `Gemma4Assistant`, its plan and its C1 transaction) are
-> deleted; `model/gemma4_assistant.{h,cc}` keeps the closed profiles and
-> checked bindings the contracts below describe, which admission and the
-> mapping's values use. What follows is the record of the M3.5 component's
+> deleted, and `model/gemma4_assistant.{h,cc}` (the closed profiles and
+> checked bindings the contracts below describe) went with v0 serving in
+> slice 4b (D-118: the approval table pins each assistant's composition with
+> its target). What follows is the record of the M3.5 component's
 > controls; the served assistant's check is `Gemma4AssistantServingGpu` in
 > `gemma4_serving_gpu_test`.
 
-`model/gemma4_assistant.{h,cc}` defines closed profiles and checked semantic
+`model/gemma4_assistant.{h,cc}` defined closed profiles and checked semantic
 bindings for the approved Q8_0 assistants paired with Gemma 4 26B-A4B and 31B.
 The native graph/component now executes bounded Q-only chains over protected
 target operands. It does not enable serving speculation or qualify target or

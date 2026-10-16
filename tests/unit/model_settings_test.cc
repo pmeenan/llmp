@@ -12,20 +12,21 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <tuple>
 #include <vector>
 
+#include "artifact/artifact.h"
 #include "config/node_config.h"
-#include "model/dsv4.h"
-#include "model/gemma2.h"
-#include "model/gemma4.h"
-#include "model/qwen38.h"
 #include "runtime/approvals.h"
+#include "runtime/component_admission.h"
 #include "spec/mapping.h"
 
 namespace {
@@ -55,15 +56,15 @@ ArtifactFacts Facts(std::string architecture, std::string drafter = {}) {
   facts.architecture = std::move(architecture);
   facts.drafter_architecture = std::move(drafter);
   if (facts.architecture == "deepseek4") {
-    facts.context_ceiling = llmp::model::kDsv4FlashContext;
+    facts.context_ceiling = 1048576;
   } else if (facts.architecture == "qwen4exp") {
-    facts.context_ceiling = llmp::model::kQwen38FlashContext;
+    facts.context_ceiling = 262144;
   } else if (facts.architecture == "gemma4") {
-    facts.context_ceiling = llmp::model::kGemma4Context;
+    facts.context_ceiling = 262144;
   } else if (facts.architecture == "gemma3") {
     facts.context_ceiling = 8448;
   } else if (facts.architecture == "gemma2") {
-    facts.context_ceiling = llmp::model::Gemma2_2B().context;
+    facts.context_ceiling = 8192;
   }
   return facts;
 }
@@ -239,8 +240,10 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(s.top_k.value, 0U);
   EXPECT_EQ(s.draft_rows.value, 3U);
   EXPECT_EQ(s.wave_form.value, llmp::config::WaveForm::kAuto);
-  EXPECT_EQ(s.wave_costs.value, (std::vector<double>(llmp::runtime::kDsv4WaveCosts.begin(),
-                                                     llmp::runtime::kDsv4WaveCosts.end())));
+  // DeepSeek's recipe's measured costs (spec/mappings/dsv4.cc), and the
+  // state its joined waves read rounded as Qwen3.8's.
+  EXPECT_EQ(s.wave_costs.value, (std::vector<double>{2.08, 2.52, 2.81, 2.40, 2.12, 2.21, 2.23}));
+  EXPECT_EQ(s.wave_read_align.value, 2048U);
   EXPECT_EQ(s.wave_costs_override_count, 0U);
   EXPECT_TRUE(s.ignored.empty());
 
@@ -501,10 +504,11 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
   EXPECT_EQ(unknown->prefill_chunk.value, 128U);
 }
 
-// A default configuration resolves within its approval: Gemma 4's
-// approvals stop at 8,192 tokens and four owners, so its default context is
-// theirs (and with its assistant, the assistant's too), and its recipe's
-// qualified chunk follows.
+// A default configuration resolves within its approval: Gemma 4's joined
+// recipes stop at 8,192 tokens and four owners (its owners-alone route,
+// to 262,144 tokens and twelve owners, is an explicit opt-in), so its
+// default context is theirs (and with its assistant within the assistant's
+// too), and its recipe's qualified chunk follows.
 TEST(ModelSettings, Gemma4DefaultsResolveWithinTheirApprovals) {
   for (const auto& [target, assistant, chunk] :
        {std::tuple{"gemma-4-26b-a4b-it-ud-q4_k_m", "mtp-gemma-4-26b-a4b-it", 1024U},
@@ -517,7 +521,8 @@ TEST(ModelSettings, Gemma4DefaultsResolveWithinTheirApprovals) {
       if (drafted) facts.drafter_approval = llmp::runtime::FindApprovalNamed(assistant);
       const auto settings = ResolveSettings(Model("gemma", drafted), facts, nullptr, false);
       ASSERT_TRUE(settings) << settings.error();
-      EXPECT_EQ(settings->context.value, facts.approval->max_context);
+      EXPECT_EQ(settings->context.value, 8192U);
+      EXPECT_EQ(settings->context.value, llmp::runtime::ApprovedDefaultContext(*facts.approval));
       EXPECT_EQ(settings->context.source, SettingSource::kDerived);
       EXPECT_THAT(settings->context.basis, HasSubstr("approved"));
       EXPECT_LE(settings->max_slots.value, facts.approval->max_slots);
@@ -529,7 +534,8 @@ TEST(ModelSettings, Gemma4DefaultsResolveWithinTheirApprovals) {
       }
     }
   }
-  // An override still names its own context (the approval refuses it later).
+  // An override still names its own context (the owners-alone route admits
+  // it; the approval refuses one past its envelope).
   auto facts = Facts("gemma4");
   facts.approval = llmp::runtime::FindApprovalNamed("gemma-4-31b-it-ud-q4_k_xl");
   auto entry = Model("gemma");
@@ -637,6 +643,30 @@ TEST(ModelSettings, DerivesFromTheArtifact) {
   const auto wider = ResolveSettings(Model("ds"), facts, nullptr, false);
   ASSERT_TRUE(wider.has_value());
   EXPECT_EQ(wider.value_or(ModelSettings{}).context.value, 262144U);
+}
+
+// A v0 artifact (the reader's corpus golden) has no facts to serve: it is
+// refused with the re-import (D-118), as a target and as a drafter.
+TEST(ModelSettings, ArtifactFactsRefuseV0Artifacts) {
+  const char* configured =
+      std::getenv("LLMP_TEST_ARTIFACT_CORPUS");  // NOLINT(concurrency-mt-unsafe)
+  const std::filesystem::path corpus =
+      configured == nullptr ? std::filesystem::path("artifact-corpus") : configured;
+  std::error_code error;
+  std::filesystem::path root;
+  for (const auto& entry : std::filesystem::directory_iterator(corpus / "golden" / "tiny", error)) {
+    root = entry.path();
+  }
+  ASSERT_FALSE(root.empty()) << "no corpus at " << corpus;
+  const auto v0 = llmp::artifact::Artifact::Open(root);
+  ASSERT_TRUE(v0.has_value()) << (v0 ? "" : v0.error().ToString());
+  ASSERT_EQ(v0->format_version(), 0U);
+  const auto alone = llmp::runtime::ArtifactFactsOf(*v0, nullptr);
+  ASSERT_FALSE(alone.has_value());
+  EXPECT_THAT(alone.error(), HasSubstr("re-import its source checkpoint with `llmp import"));
+  const auto paired = llmp::runtime::ArtifactFactsOf(*v0, &*v0);
+  ASSERT_FALSE(paired.has_value());
+  EXPECT_THAT(paired.error(), HasSubstr("re-import its source checkpoint with `llmp import"));
 }
 
 // The facts kept metadata gives: DeepSeek V4 Flash's GGUF keys as its
@@ -793,7 +823,7 @@ TEST(ModelSettings, LayersResolveInOrder) {
   EXPECT_EQ(some.wave_costs.source, SettingSource::kCalibrated);
   EXPECT_THAT(some.wave_costs.basis, HasSubstr("widths 3 measured"));
   EXPECT_EQ(some.wave_costs.value[1], 1.25);
-  EXPECT_EQ(some.wave_costs.value[0], llmp::runtime::kDsv4WaveCosts[0]);
+  EXPECT_EQ(some.wave_costs.value[0], llmp::runtime::RecipeOf("deepseek4")->default_wave_costs[0]);
   calibration.wave_costs = {};
   EXPECT_EQ(Resolved(entry, facts, &calibration).wave_costs.source, SettingSource::kFallback);
 
@@ -811,7 +841,7 @@ TEST(ModelSettings, LayersResolveInOrder) {
     EXPECT_EQ(p.wave_costs_override_count, 1U);
     ASSERT_EQ(p.wave_costs.value.size(), 7U);
     EXPECT_EQ(p.wave_costs.value[0], 3.0);
-    EXPECT_EQ(p.wave_costs.value[1], llmp::runtime::kDsv4WaveCosts[1]);
+    EXPECT_EQ(p.wave_costs.value[1], llmp::runtime::RecipeOf("deepseek4")->default_wave_costs[1]);
     EXPECT_EQ(p.wave_costs.value[2], 2.5);
     EXPECT_THAT(p.wave_costs.basis, HasSubstr("widths 2, 4 measured"));
   }
@@ -824,7 +854,7 @@ TEST(ModelSettings, LayersResolveInOrder) {
   ASSERT_EQ(w.wave_costs.value.size(), 7U);
   EXPECT_EQ(w.wave_costs.value[0], 0.0);
   EXPECT_EQ(w.wave_costs.value[1], 3.0);
-  EXPECT_EQ(w.wave_costs.value[2], llmp::runtime::kDsv4WaveCosts[2]);
+  EXPECT_EQ(w.wave_costs.value[2], llmp::runtime::RecipeOf("deepseek4")->default_wave_costs[2]);
 }
 
 // The context within the checkpoint's ceiling; DeepSeek's chunk past

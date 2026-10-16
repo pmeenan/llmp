@@ -9,7 +9,9 @@
 #include <fstream>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "artifact/artifact.h"
@@ -83,6 +85,59 @@ void AddTensor(Checkpoint& s, std::string name, std::span<const std::uint64_t> d
                        .dtype = info.name,
                        .dims = std::vector<std::uint64_t>(dims.begin(), dims.end())});
   s.files[0].bytes = offset + (*parts)[0].bytes;
+}
+
+// The kept GGUF metadata (meta/<stem>.kv.gguf) the importer writes for a
+// GGUF drafter, its header's key/value section: the checkpoint's metadata
+// (GGUF v3; integers I64, reals F32 as the checkpoint stores them, lists
+// of I64). A stored drafter's composition values are read from it.
+std::string KeptGgufHeader(const Checkpoint& s) {
+  std::string out;
+  const auto raw = [&](const void* p, std::size_t n) {
+    out.append(static_cast<const char*>(p), n);
+  };
+  const auto u32 = [&](std::uint32_t v) { raw(&v, 4); };
+  const auto u64 = [&](std::uint64_t v) { raw(&v, 8); };
+  const auto str = [&](std::string_view v) {
+    u64(v.size());
+    out.append(v);
+  };
+  constexpr std::uint32_t kF32 = 6, kBool = 7, kString = 8, kArray = 9, kI64 = 11;
+  std::vector<const MetaEntry*> kept;
+  for (const MetaEntry& e : s.metadata)
+    if (std::holds_alternative<std::int64_t>(e.value) || std::holds_alternative<double>(e.value) ||
+        std::holds_alternative<bool>(e.value) || std::holds_alternative<std::string>(e.value) ||
+        std::holds_alternative<std::vector<std::int64_t>>(e.value))
+      kept.push_back(&e);
+  out.append("GGUF");
+  u32(3);
+  u64(0);  // tensors: a kept header holds none
+  u64(kept.size());
+  for (const MetaEntry* e : kept) {
+    str(e->key);
+    if (const auto* i = std::get_if<std::int64_t>(&e->value)) {
+      u32(kI64);
+      raw(i, 8);
+    } else if (const auto* d = std::get_if<double>(&e->value)) {
+      u32(kF32);
+      const auto f = static_cast<float>(*d);
+      raw(&f, 4);
+    } else if (const auto* b = std::get_if<bool>(&e->value)) {
+      u32(kBool);
+      const auto byte = static_cast<std::uint8_t>(*b ? 1 : 0);
+      raw(&byte, 1);
+    } else if (const auto* t = std::get_if<std::string>(&e->value)) {
+      u32(kString);
+      str(*t);
+    } else {
+      const auto& list = std::get<std::vector<std::int64_t>>(e->value);
+      u32(kArray);
+      u32(kI64);
+      u64(list.size());
+      for (const std::int64_t v : list) raw(&v, 8);
+    }
+  }
+  return out;
 }
 
 std::optional<Checkpoint> SyntheticAssistantCheckpoint(std::uint32_t size) {
@@ -166,11 +221,16 @@ std::expected<artifact::Artifact, artifact::Error> MakeTargetV1(
 std::expected<artifact::Artifact, artifact::Error> MakeDrafterV1(
     const std::filesystem::path& drafter_scratch, std::string arch,
     std::span<const spec::SourceTensor> tensors, std::string source_name, std::uint64_t bytes,
-    std::string sha256) {
+    std::string sha256, std::string kept_gguf = {}) {
   llmp::test::V1Plan p;
   p.architecture = std::move(arch);
   p.container = "gguf";
   p.sources.clear();
+  // Kept as the importer keeps a GGUF drafter's header: meta/<stem>.kv.gguf.
+  if (!kept_gguf.empty())
+    p.meta.emplace_back(
+        source_name.substr(0, source_name.size() - std::string_view(".gguf").size()) + ".kv.gguf",
+        std::move(kept_gguf));
   llmp::test::V1Group g;
   g.kind = artifact::GroupKind::kGlobal;
   for (const auto& t : tensors) {
@@ -196,6 +256,7 @@ TEST(ImportDrafterNormalizeTest,
   if (!cp.has_value()) {
     GTEST_SKIP() << "no synthetic assistant fixture in " << TestDataDir();
   }
+  const std::string kept_gguf = KeptGgufHeader(*cp);
 
   auto cost = NormalizationBound(*cp);
   ASSERT_TRUE(cost) << cost.error().ToString();
@@ -220,7 +281,7 @@ TEST(ImportDrafterNormalizeTest,
   auto drafter_art =
       MakeDrafterV1(scratch / "drafter", "gemma4-assistant", plan->canonical().tensors,
                     "mtp-gemma-4-26B-A4B-it.gguf", 461766816ULL,
-                    "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b");
+                    "6326fb9f5e487aa8dcdd313a091e3c67724cb2a666ec3b7d2895b5b26d93ed1b", kept_gguf);
   ASSERT_TRUE(drafter_art) << (drafter_art ? "" : drafter_art.error().ToString());
   EXPECT_EQ(drafter_art->model().architecture, "gemma4-assistant");
 
@@ -241,12 +302,61 @@ TEST(ImportDrafterNormalizeTest,
   auto admission = rt::CheckComponentDrafterAdmission(*drafter_source, origins);
   ASSERT_TRUE(admission) << (admission ? "" : admission.error());
 
-  // Target composition values
+  // Target composition values: the approved pairing, then the stored
+  // drafter's values from the GGUF metadata it keeps, the keys its mapping
+  // reads as the importer read them (the normalized plan's).
   auto values = rt::ComponentDrafterValues(*target_art, *drafter_art);
   ASSERT_TRUE(values) << (values ? "" : values.error());
   EXPECT_FALSE(values->empty());
+  for (const auto& v : *values) {
+    const auto planned = std::ranges::find(plan->values(), v.key, &spec::SourceValue::key);
+    if (planned == plan->values().end()) continue;
+    if (const auto* real = std::get_if<double>(&planned->value)) {
+      const auto* kept = std::get_if<double>(&v.value);
+      ASSERT_NE(kept, nullptr) << v.key;
+      EXPECT_EQ(*kept, static_cast<double>(static_cast<float>(*real))) << v.key;
+    } else {
+      EXPECT_EQ(v.value, planned->value) << v.key;
+    }
+  }
 
   std::filesystem::remove_all(scratch, ec);
+}
+
+// The assistant's target is the one its parent width names (the drafting
+// recipe's import targets, spec/mapping.h): a width no approved target has,
+// or two widths naming different targets, are refused.
+TEST(ImportDrafterNormalizeTest, AnAssistantNamesExactlyOneApprovedTarget) {
+  for (const auto& [out, parent, refused] :
+       {std::tuple<std::int64_t, std::int64_t, bool>{5376, 0, false},
+        std::tuple<std::int64_t, std::int64_t, bool>{1234, 0, true},
+        std::tuple<std::int64_t, std::int64_t, bool>{2816, 5376, true}}) {
+    SCOPED_TRACE(std::to_string(out) + "/" + std::to_string(parent));
+    auto cp = SyntheticAssistantCheckpoint(26);
+    if (!cp.has_value()) GTEST_SKIP() << "no synthetic assistant fixture in " << TestDataDir();
+    Value(*cp, "gemma4-assistant.embedding_length_out", out);
+    if (parent != 0) Value(*cp, "gemma4-assistant.Parent.embedding_length", parent);
+    auto cost = NormalizationBound(*cp);
+    if (!cost) {
+      // A key the source mapping does not read is refused before selection.
+      EXPECT_TRUE(refused) << cost.error().ToString();
+      continue;
+    }
+    auto plan = Normalize(std::move(*cp), {cost->metadata_bytes, cost->work_units});
+    if (refused) {
+      ASSERT_FALSE(plan);
+      if (parent == 0)
+        EXPECT_NE(plan.error().ToString().find("names no approved target"), std::string::npos)
+            << plan.error().ToString();
+      continue;
+    }
+    // The 26B assistant's tensors against the 31B target: selected, then
+    // refused by the composition's own checks, never by the selection.
+    if (!plan) {
+      EXPECT_EQ(plan.error().ToString().find("unsupported drafter target"), std::string::npos)
+          << plan.error().ToString();
+    }
+  }
 }
 
 TEST(ImportDrafterNormalizeModelsTest,

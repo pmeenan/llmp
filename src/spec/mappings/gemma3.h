@@ -9,32 +9,16 @@
 // 10,000 and the global ones at the checkpoint's base with its linear
 // scaling. Queries are scaled by 1 / sqrt(key length), llama.cpp's rule
 // below 27B: a 62-layer (27B) checkpoint's 1 / sqrt(width / heads) is not
-// expressible yet, and the importer must not use this mapping for one. And
-// the source values of a v0 artifact from today's compiled profile
-// (model/gemma3.h).
+// expressible yet, and the importer must not use this mapping for one.
 
 #ifndef LLMP_SPEC_MAPPINGS_GEMMA3_H_
 #define LLMP_SPEC_MAPPINGS_GEMMA3_H_
 
-#include <expected>
-#include <string>
-#include <vector>
-
 #include "spec/mapping.h"
-
-namespace llmp::model {
-struct Gemma3Profile;
-}
 
 namespace llmp::spec::mappings {
 
 const Mapping& Gemma3Mapping();
-
-// The profile as the GGUF keys the mapping reads. Refused where the
-// profile says what the mapping cannot (a scaling other than linear, other
-// local layers).
-std::expected<std::vector<SourceValue>, std::string> Gemma3V0Values(
-    const model::Gemma3Profile& profile);
 
 }  // namespace llmp::spec::mappings
 

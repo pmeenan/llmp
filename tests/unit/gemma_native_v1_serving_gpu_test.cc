@@ -1,13 +1,12 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Published native Gemma 3/4 artifacts against the pinned v0 imports, through
-// the same component engine and settings. This is a short acceptance screen,
-// not a migration performance gate or permission for another artifact family.
-// Both arms are also asserted against the frozen digests under
-// tests/unit/data/v1_frozen (tests/support/v1_frozen.h), so the v1 proof
-// outlives the v0 artifacts: without the v0 artifact (or with
-// LLMP_TEST_V1_FROZEN_ONLY set) only the v1 arm runs, against them.
+// Published native Gemma 3/4 v1 artifacts through the component engine and
+// their approved settings, against the frozen digests under
+// tests/unit/data/v1_frozen (tests/support/v1_frozen.h), which hold what the
+// pinned v0 imports produced bit for bit before serving became v1-only
+// (D-118). This is a short acceptance screen, not a migration performance
+// gate or permission for another artifact family.
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -19,7 +18,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <memory>
@@ -36,7 +34,6 @@
 #include "engine/paged_node.h"
 #include "runtime/engine_llm.h"
 #include "runtime/serving.h"
-#include "tokenizer_fixtures.h"
 #include "v1_frozen.h"
 
 namespace {
@@ -48,34 +45,24 @@ namespace rt = llmp::runtime;
 constexpr std::uint64_t kResultBytes = 32ULL << 20U;
 constexpr std::uint64_t kSpillCacheBytes = 4ULL << 30U;
 constexpr std::uint64_t kExecutionCap = 32ULL << 30U;
-// Two arms * two owners * (prefill + four generated rows + continuation).
-static_assert(24ULL * 262208 * sizeof(float) + (2ULL << 20U) <= kResultBytes);
+// Two owners * (prefill + four generated rows + continuation).
+static_assert(12ULL * 262208 * sizeof(float) + (2ULL << 20U) <= kResultBytes);
 
 struct Profile {
   const char* name;
-  const char* legacy_store;
-  const char* legacy_id;
-  const char* native_id_env;
-  const char* native_store_env;
+  const char* v1_name;  // the store's v1-ids.json name
   std::uint32_t vocab;
   std::uint32_t prefill;
   bool joined_prefill;
 };
 constexpr std::array<Profile, 3> kProfiles{{
-    {"Gemma3", "gemma3-import-20261007/artifacts",
-     "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb", "LLMP_TEST_GEMMA3_V1_ID",
-     "LLMP_TEST_GEMMA3_V1_STORE", 262208, 128, true},
-    {"Gemma26", "m3-artifacts", "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-     "LLMP_TEST_GEMMA26_V1_ID", "LLMP_TEST_GEMMA26_V1_STORE", 262144, 1024, false},
-    {"Gemma31", "m3-artifacts", "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
-     "LLMP_TEST_GEMMA31_V1_ID", "LLMP_TEST_GEMMA31_V1_STORE", 262144, 256, false},
+    {"Gemma3", "gemma3", 262208, 128, true},
+    {"Gemma26", "gemma26", 262144, 1024, false},
+    {"Gemma31", "gemma31", 262144, 256, false},
 }};
 
 bool Finite(std::span<const float> row, std::size_t width) {
   return row.size() == width && std::ranges::all_of(row, [](float v) { return std::isfinite(v); });
-}
-bool Same(std::span<const float> a, std::span<const float> b) {
-  return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size_bytes()) == 0;
 }
 std::vector<std::int32_t> Tokens(std::uint32_t owner, std::size_t rows) {
   constexpr std::array<std::int32_t, 6> seed{2, 818, 5279, 529, 7001, 563};
@@ -111,10 +98,10 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
     cfg::RuntimeRoles roles;
     rt::ServingOptions options;
     std::unique_ptr<std::FILE, CloseFile> log;
-    fs::path scratch, legacy_store, native_store;
+    fs::path scratch, native_store;
     std::string native_id;
-    std::unique_ptr<rt::Server> retired_server, server;
-    std::array<Result, 2> result;
+    std::unique_ptr<rt::Server> server;
+    Result result;
     rt::GenerateOptions generate;
     std::array<std::vector<std::int32_t>, 2> prompts;
     std::array<std::unique_ptr<rt::Llm::PromptSession>, 2> sessions;
@@ -125,36 +112,22 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
   rt::Llm* model = nullptr;
   bool uncertain = false;
   const Profile& profile() const { return kProfiles.at(GetParam()); }
-  bool have_v0 = true;
   rt::Llm::Branch& Branch(std::uint32_t id) { return **model->branch(id); }
   rt::EngineLlm& Engine() { return dynamic_cast<rt::EngineLlm&>(*model); }
 
   void SetUp() override {
-    const char* store = std::getenv(profile().native_store_env);  // NOLINT(concurrency-mt-unsafe)
-    if (store == nullptr)
-      store = std::getenv("LLMP_TEST_GEMMA_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
-    if (store == nullptr)
-      store = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
-    const char* id = std::getenv(profile().native_id_env);  // NOLINT(concurrency-mt-unsafe)
-    std::string mapped_id;
-    if (id == nullptr) {
-      // The store's v1-ids.json names the v1 ID of each pinned v0 artifact.
-      if (const auto mapped = llmp::test_support::V1IdFor(profile().legacy_id); mapped) {
-        mapped_id = *mapped;
-        id = mapped_id.c_str();
-      }
+    // The store's v1-ids.json names the published v1 artifact.
+    const auto id = llmp::test_support::V1IdNamed(profile().v1_name);
+    if (!id) {
+      GTEST_FAIL() << "no published v1 " << profile().v1_name << " in "
+                   << llmp::test_support::V1Store();
     }
-    if (store == nullptr || id == nullptr) GTEST_SKIP() << "published native store/ID not supplied";
-    life->native_id = id;
+    life->native_id = *id;
     ASSERT_EQ(life->native_id.size(), 64U);
     ASSERT_TRUE(std::ranges::all_of(
         life->native_id, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
-    life->native_store = store;
-    life->legacy_store = fs::path(llmp::test_support::ModelsDir()) / profile().legacy_store;
+    life->native_store = llmp::test_support::V1Store();
     std::error_code error;
-    // NOLINTNEXTLINE(concurrency-mt-unsafe)
-    have_v0 = std::getenv("LLMP_TEST_V1_FROZEN_ONLY") == nullptr &&
-              fs::is_directory(life->legacy_store / profile().legacy_id, error);
     ASSERT_TRUE(fs::is_directory(life->native_store / life->native_id, error));
     const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const fs::path root = base != nullptr ? base : ::testing::TempDir();
@@ -174,8 +147,8 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
     // In particular, keep the approved 26B/31B default prefill recipes.
     life->config.models.push_back(std::move(entry));
     life->options.diagnostic_budget_cap_bytes = kExecutionCap;
-    // Both arms' full rows and a conservative spill page-cache bound are
-    // paid before Start opens either artifact. There is no external parse.
+    // The full rows and a conservative spill page-cache bound are paid
+    // before Start opens the artifact. There is no external parse.
     // Normal runtime admission still pays compiler, device and pinned copies.
     life->options.diagnostic_startup_host_bytes = kResultBytes + kSpillCacheBytes;
     life->generate.max_tokens = 4;
@@ -241,14 +214,12 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
     }
     return life->server->SelectRequestBranches(*model, branches);
   }
-  rt::Status Start(std::size_t arm) {
-    life->roles.installed = arm == 0 ? life->legacy_store : life->native_store;
-    life->config.models.front().artifact = arm == 0 ? profile().legacy_id : life->native_id;
+  rt::Status Start() {
+    life->roles.installed = life->native_store;
+    life->config.models.front().artifact = life->native_id;
     life->server =
         std::make_unique<rt::Server>(life->config, life->roles, life->options, life->log.get());
     if (auto started = life->server->Start(true); !started) return started;
-    // Transfer payment only after the new node has admitted the whole allowance.
-    life->retired_server.reset();
     model = dynamic_cast<rt::Llm*>(life->server->Find("gemma"));
     if (model == nullptr || dynamic_cast<rt::EngineLlm*>(model) == nullptr)
       return std::unexpected("published artifact did not use the common EngineLlm");
@@ -442,114 +413,80 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
   }
 };
 
-TEST_P(GemmaNativeV1ServingGpu, PublishedMatchesV0FullRowsStateAndSpillContinuation) {
-  for (std::size_t arm = 0; arm < life->result.size(); ++arm) {
-    if (arm == 0 && !have_v0) continue;
-    SCOPED_TRACE(arm);
-    const auto started = Start(arm);
-    ASSERT_TRUE(started) << (started ? "" : started.error());
-    auto& out = life->result[arm];
-    const auto prompted = Prompts(out);
-    ASSERT_TRUE(prompted) << (prompted ? "" : prompted.error());
-    const auto generated = GenerateJoined(out);
-    ASSERT_TRUE(generated) << (generated ? "" : generated.error());
-    std::uint64_t spill_bytes = 0;
-    for (std::uint32_t owner = 0; owner < 2; ++owner) {
-      ASSERT_EQ(out.generated[owner].tokens.size(), 4U);
-      ASSERT_EQ(out.generated[owner].logits.size(), 4U);
-      ASSERT_EQ(out.generated[owner].steps, 3U);
-      out.histories[owner] = Branch(owner).history();
-      auto state = StateImage(owner);
-      ASSERT_TRUE(state) << (state ? "" : state.error());
-      out.state[owner] = std::move(*state);
-      // Bound all bytes the spill can preserve before issuing either write.
-      const auto bytes = model->StateBytes(Branch(owner));
-      ASSERT_LE(bytes, kSpillCacheBytes - spill_bytes);
-      ASSERT_GE(bytes, out.state[owner].bytes);
-      spill_bytes += bytes;
-    }
-    ASSERT_TRUE(life->server->EndRequestBranches(*model));
-    for (std::uint32_t owner = 0; owner < 2; ++owner) {
-      const auto spilled = model->SpillIdle(Branch(owner));
-      ASSERT_TRUE(spilled) << (spilled ? "" : spilled.error());
-      ASSERT_TRUE(Branch(owner).spilled());
-    }
-    ASSERT_TRUE(Select());
-    for (std::uint32_t owner = 0; owner < 2; ++owner) {
-      const auto restored = Restore(owner, out.histories[owner]);
-      ASSERT_TRUE(restored) << (restored ? "" : restored.error());
-      auto state = StateImage(owner);
-      ASSERT_TRUE(state) << (state ? "" : state.error());
-      out.restored[owner] = std::move(*state);
-      ASSERT_EQ(out.restored[owner], out.state[owner]);
-      const auto continued = Continue(owner, out);
-      ASSERT_TRUE(continued) << (continued ? "" : continued.error());
-      out.continued_histories[owner] = Branch(owner).history();
-      auto expected = out.histories[owner];
-      expected.push_back(out.generated[owner].tokens.back());
-      ASSERT_EQ(out.continued_histories[owner], expected);
-      state = StateImage(owner);
-      ASSERT_TRUE(state) << (state ? "" : state.error());
-      out.resumed[owner] = std::move(*state);
-    }
-    EXPECT_EQ(Engine().runner().coverage().violations, 0U);
-    ASSERT_TRUE(life->server->EndRequestBranches(*model));
-    if (arm == 0) {
-      const auto stopped = life->server->TearDown();
-      uncertain = !stopped;
-      ASSERT_TRUE(stopped) << (stopped ? "" : stopped.error());
-      life->retired_server = std::move(life->server);
-      model = nullptr;
-      ClearStorage();
-      ASSERT_FALSE(HasFatalFailure());
-    }
-  }
-  // The frozen digests: both arms (the v0 one while it exists) against what
-  // the pinned imports produced when they were recorded.
-  llmp::test_support::FrozenDigests frozen(std::string("gemma_") + profile().name);
-  for (std::size_t arm = have_v0 ? 0 : 1; arm < life->result.size(); ++arm) {
-    SCOPED_TRACE(arm == 0 ? "v0 against frozen" : "v1 against frozen");
-    const auto& r = life->result[arm];
-    const auto state_text = [](const State& state) {
-      return llmp::base::ToHex(state.digest) + ':' + std::to_string(state.bytes) + ':' +
-             std::to_string(state.positions);
-    };
-    for (std::uint32_t owner = 0; owner < 2; ++owner) {
-      const auto o = std::to_string(owner);
-      using llmp::test_support::HexOfFloats;
-      using llmp::test_support::HexOfInts;
-      using llmp::test_support::HexOfRows;
-      frozen.Expect("heads." + o, HexOfFloats(r.heads[owner]));
-      frozen.Expect("tokens." + o, llmp::test_support::JoinTokens(r.generated[owner].tokens));
-      frozen.Expect("logits." + o, HexOfRows(r.generated[owner].logits));
-      frozen.Expect("history." + o, HexOfInts(r.histories[owner]));
-      frozen.Expect("state." + o, state_text(r.state[owner]));
-      frozen.Expect("restored." + o, state_text(r.restored[owner]));
-      frozen.Expect("continued." + o, HexOfFloats(r.continued[owner]));
-      frozen.Expect("resumed." + o, state_text(r.resumed[owner]));
-    }
-    if (frozen.recording()) break;  // one arm records
-  }
-  if (!have_v0) return;
-  const auto& a = life->result[0];
-  const auto& b = life->result[1];
+TEST_P(GemmaNativeV1ServingGpu, PublishedMatchesFrozenRowsStateAndSpillContinuation) {
+  const auto started = Start();
+  ASSERT_TRUE(started) << (started ? "" : started.error());
+  auto& out = life->result;
+  const auto prompted = Prompts(out);
+  ASSERT_TRUE(prompted) << (prompted ? "" : prompted.error());
+  const auto generated = GenerateJoined(out);
+  ASSERT_TRUE(generated) << (generated ? "" : generated.error());
+  std::uint64_t spill_bytes = 0;
   for (std::uint32_t owner = 0; owner < 2; ++owner) {
-    for (const auto& arm : life->result) {
-      ASSERT_TRUE(Finite(arm.heads[owner], profile().vocab));
-      ASSERT_TRUE(Finite(arm.continued[owner], profile().vocab));
-      for (const auto& row : arm.generated[owner].logits) ASSERT_TRUE(Finite(row, profile().vocab));
-    }
-    EXPECT_TRUE(Same(a.heads[owner], b.heads[owner]));
-    EXPECT_TRUE(Same(a.continued[owner], b.continued[owner]));
-    EXPECT_EQ(a.generated[owner].tokens, b.generated[owner].tokens);
-    EXPECT_EQ(a.generated[owner].steps, b.generated[owner].steps);
-    EXPECT_EQ(a.histories[owner], b.histories[owner]);
-    EXPECT_EQ(a.continued_histories[owner], b.continued_histories[owner]);
-    EXPECT_EQ(a.state[owner], b.state[owner]);
-    EXPECT_EQ(a.restored[owner], b.restored[owner]);
-    EXPECT_EQ(a.resumed[owner], b.resumed[owner]);
-    for (std::size_t row = 0; row < 4; ++row)
-      EXPECT_TRUE(Same(a.generated[owner].logits[row], b.generated[owner].logits[row]));
+    ASSERT_EQ(out.generated[owner].tokens.size(), 4U);
+    ASSERT_EQ(out.generated[owner].logits.size(), 4U);
+    ASSERT_EQ(out.generated[owner].steps, 3U);
+    out.histories[owner] = Branch(owner).history();
+    auto state = StateImage(owner);
+    ASSERT_TRUE(state) << (state ? "" : state.error());
+    out.state[owner] = std::move(*state);
+    // Bound all bytes the spill can preserve before issuing either write.
+    const auto bytes = model->StateBytes(Branch(owner));
+    ASSERT_LE(bytes, kSpillCacheBytes - spill_bytes);
+    ASSERT_GE(bytes, out.state[owner].bytes);
+    spill_bytes += bytes;
+  }
+  ASSERT_TRUE(life->server->EndRequestBranches(*model));
+  for (std::uint32_t owner = 0; owner < 2; ++owner) {
+    const auto spilled = model->SpillIdle(Branch(owner));
+    ASSERT_TRUE(spilled) << (spilled ? "" : spilled.error());
+    ASSERT_TRUE(Branch(owner).spilled());
+  }
+  ASSERT_TRUE(Select());
+  for (std::uint32_t owner = 0; owner < 2; ++owner) {
+    const auto restored = Restore(owner, out.histories[owner]);
+    ASSERT_TRUE(restored) << (restored ? "" : restored.error());
+    auto state = StateImage(owner);
+    ASSERT_TRUE(state) << (state ? "" : state.error());
+    out.restored[owner] = std::move(*state);
+    ASSERT_EQ(out.restored[owner], out.state[owner]);
+    const auto continued = Continue(owner, out);
+    ASSERT_TRUE(continued) << (continued ? "" : continued.error());
+    out.continued_histories[owner] = Branch(owner).history();
+    auto expected = out.histories[owner];
+    expected.push_back(out.generated[owner].tokens.back());
+    ASSERT_EQ(out.continued_histories[owner], expected);
+    state = StateImage(owner);
+    ASSERT_TRUE(state) << (state ? "" : state.error());
+    out.resumed[owner] = std::move(*state);
+  }
+  EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+  ASSERT_TRUE(life->server->EndRequestBranches(*model));
+  for (std::uint32_t owner = 0; owner < 2; ++owner) {
+    ASSERT_TRUE(Finite(out.heads[owner], profile().vocab));
+    ASSERT_TRUE(Finite(out.continued[owner], profile().vocab));
+    for (const auto& row : out.generated[owner].logits) ASSERT_TRUE(Finite(row, profile().vocab));
+  }
+  // The frozen digests: what the pinned imports produced when they were
+  // recorded (v0 and v1 alike, bit for bit).
+  llmp::test_support::FrozenDigests frozen(std::string("gemma_") + profile().name);
+  const auto state_text = [](const State& state) {
+    return llmp::base::ToHex(state.digest) + ':' + std::to_string(state.bytes) + ':' +
+           std::to_string(state.positions);
+  };
+  for (std::uint32_t owner = 0; owner < 2; ++owner) {
+    const auto o = std::to_string(owner);
+    using llmp::test_support::HexOfFloats;
+    using llmp::test_support::HexOfInts;
+    using llmp::test_support::HexOfRows;
+    frozen.Expect("heads." + o, HexOfFloats(out.heads[owner]));
+    frozen.Expect("tokens." + o, llmp::test_support::JoinTokens(out.generated[owner].tokens));
+    frozen.Expect("logits." + o, HexOfRows(out.generated[owner].logits));
+    frozen.Expect("history." + o, HexOfInts(out.histories[owner]));
+    frozen.Expect("state." + o, state_text(out.state[owner]));
+    frozen.Expect("restored." + o, state_text(out.restored[owner]));
+    frozen.Expect("continued." + o, HexOfFloats(out.continued[owner]));
+    frozen.Expect("resumed." + o, state_text(out.resumed[owner]));
   }
 }
 INSTANTIATE_TEST_SUITE_P(Approved, GemmaNativeV1ServingGpu, ::testing::Values(0U, 1U, 2U),

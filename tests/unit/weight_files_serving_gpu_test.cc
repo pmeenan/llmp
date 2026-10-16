@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Weight files across real switches (label `models`): Gemma 2 and Gemma 3
-// on one server, their approved artifacts linked into one installed store,
+// on one server, their published v1 artifacts linked into one installed store,
 // the process's descriptors on their shards counted from /proc/self/fd.
 // Registered, neither model's shards are open; each activation opens the
 // incoming model's and, once its swap is done, leaves the outgoing model's
@@ -25,16 +25,13 @@
 
 #include "artifact/artifact.h"
 #include "runtime/serving.h"
-#include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 
 namespace rt = llmp::runtime;
 namespace cfg = llmp::config;
 namespace fs = std::filesystem;
-
-constexpr const char* kGemma2 = "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870";
-constexpr const char* kGemma3 = "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb";
 
 // The descriptors of this process open on a file beneath `root`'s data/.
 std::size_t OpenBeneath(const fs::path& root) {
@@ -56,13 +53,13 @@ std::size_t Shards(const fs::path& root) {
 }
 
 TEST(WeightFilesServingGpu, OnlyTheResidentModelsShardsStayOpenAcrossSwitches) {
-  const fs::path models = llmp::test_support::ModelsDir();
-  const fs::path gemma2 = models / "gemma2-import-20261007/artifacts" / kGemma2;
-  const fs::path gemma3 = models / "gemma3-import-20261007/artifacts" / kGemma3;
+  const fs::path models = llmp::test_support::V1Store();
+  const auto id2 = llmp::test_support::V1IdNamed("gemma2");
+  const auto id3 = llmp::test_support::V1IdNamed("gemma3");
+  if (!id2 || !id3) GTEST_FAIL() << "no published v1 Gemma 2 and Gemma 3 in " << models;
+  const fs::path gemma2 = models / *id2;
+  const fs::path gemma3 = models / *id3;
   std::error_code error;
-  if (!fs::exists(gemma2, error) || !fs::exists(gemma3, error)) {
-    GTEST_SKIP() << "no approved Gemma 2 and Gemma 3 artifacts under " << models;
-  }
   // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
   const char* base = std::getenv("LLMP_TEST_SCRATCH");
   const fs::path root = base != nullptr ? base : ::testing::TempDir();
@@ -74,9 +71,9 @@ TEST(WeightFilesServingGpu, OnlyTheResidentModelsShardsStayOpenAcrossSwitches) {
   // (an artifact's root may be a link, D-056 as amended).
   const fs::path store = scratch / "store";
   ASSERT_TRUE(fs::create_directory(store));
-  fs::create_directory_symlink(gemma2, store / kGemma2, error);
+  fs::create_directory_symlink(gemma2, store / *id2, error);
   ASSERT_FALSE(error) << error.message();
-  fs::create_directory_symlink(gemma3, store / kGemma3, error);
+  fs::create_directory_symlink(gemma3, store / *id3, error);
   ASSERT_FALSE(error) << error.message();
   const std::size_t shards2 = Shards(gemma2);
   const std::size_t shards3 = Shards(gemma3);
@@ -93,7 +90,7 @@ TEST(WeightFilesServingGpu, OnlyTheResidentModelsShardsStayOpenAcrossSwitches) {
     ASSERT_EQ(chmod(path.c_str(), 0700), 0);
   }
   for (const auto& [model, artifact, context] :
-       {std::tuple{"gemma2", kGemma2, 8192}, std::tuple{"gemma3", kGemma3, 4096}}) {
+       {std::tuple{"gemma2", *id2, 8192}, std::tuple{"gemma3", *id3, 4096}}) {
     cfg::ModelEntry entry;
     entry.name = model;
     entry.artifact = artifact;

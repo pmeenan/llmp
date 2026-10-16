@@ -42,9 +42,8 @@ namespace llmp::spec {
 // The spec a v1 artifact carries: FromJson's, its bytes exactly ToJson's
 // (so the digest the manifest lists is the spec's Digest()), every stage
 // of artifact 0, every applied fold the catalog's, every stage's and
-// naming a tensor the stages bind. Refused for a v0 artifact (its spec is
-// synthesized from its architecture's mapping: mapping.h SynthesizeV0)
-// and for an artifact that carries none.
+// naming a tensor the stages bind. Refused for a v0 artifact (which
+// stores none: re-import it, D-118) and for an artifact that carries none.
 std::expected<ModelSpec, std::string> StoredSpec(const artifact::Artifact& artifact);
 
 // The spec a v1 composition carries, with its components opened in the
@@ -58,15 +57,13 @@ std::expected<ModelSpec, std::string> StoredSpec(
     const artifact::Composition& composition,
     std::span<const artifact::Artifact* const> components);
 
-// An artifact's tensors as a source (mapping.h): v0's as SourceOfV0 gives
-// them (with `mapping`, the resources its v0_assembly pairs as one
-// tensor's parts); v1's each resource role and expert array with the
-// format and part its index records (an expert array's slice format with
-// the expert count as ne[2]), its manifest's container, no converter, and
-// its applied folds, checked against the catalog, as the source's folds
-// (so that a spec synthesized from it lists them).
-std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact,
-                                            const Mapping* mapping = nullptr);
+// A v1 artifact's tensors as a source (mapping.h): each resource role and
+// expert array with the format and part its index records (an expert
+// array's slice format with the expert count as ne[2]), its manifest's
+// container, and its applied folds, checked against the catalog, as the
+// source's folds (so that a spec synthesized from it lists them). Any other
+// format version is refused (D-118: re-import a v0 artifact).
+std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact);
 
 }  // namespace llmp::spec
 

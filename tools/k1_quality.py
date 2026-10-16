@@ -4,7 +4,8 @@
 """Slice K1 long-context Q8_0 vs F16 KV quality evaluation tool.
 
 Evaluates opt-in lossy KV cache encoding (kv_cache_encoding = "q8_0") against
-baseline (kv_cache_encoding = "f16") on migrated LLM families across long contexts.
+baseline (kv_cache_encoding = "f16") on migrated LLM families across long contexts, each
+served from its v1 import (D-118).
 """
 
 from __future__ import annotations
@@ -36,17 +37,19 @@ QUALITY_PROMPTS = (
     "Write a short story about a lighthouse keeper who finds a map.",
 )
 
-DSV4 = "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234"
-DSPARK = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5"
-QWEN = "c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93"
-QWEN_MTP = "8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40"
-QWEN_GGUF = "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78"
-GEMMA2 = "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870"
-GEMMA3 = "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
-GEMMA26 = "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
-GEMMA26_ASSISTANT = "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42"
-GEMMA31 = "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
-GEMMA31_ASSISTANT = "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120"
+# The v1 imports of every family (D-118), served from one store.
+V1_STORE = "m36-v1-artifacts"
+DSV4 = "698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd"
+DSPARK = "5c9d95e24769c4d0a06088b0b6a8cc4afd4979b5ffc6d9357b4116f26fa583aa"
+QWEN = "d145900e058ff6470405c396affb9879b5c3c3770cc2b586d846e7e148c2058d"
+QWEN_MTP = "316caa59d577202ea236061ce350e4fa8daa1a9d451586b908cd1e4fedf55eeb"
+QWEN_GGUF = "18a671534a4355a892a7691ad610f90003cc456620353f466e7a08522f1774c2"
+GEMMA2 = "f176f912bc7761beee21cda0c22aff2080b8b84ed99faa6b962846c7e1379076"
+GEMMA3 = "634bc193468f5968ac142c2e5547f72777b182f3f694873075d7a50660f46626"
+GEMMA26 = "f0f72ab3d6c733d15472ceeecd05fdf200c266101c537bd3253548fc38559ab7"
+GEMMA26_ASSISTANT = "23aa1c353091e1ce80309fe8dd55a90f679758525d4abaca2b974819aeae3ede"
+GEMMA31 = "4d9a255ab47519b8061fcbc38bb5e72b9008d8e3538aad5edf0e7530fa82adc8"
+GEMMA31_ASSISTANT = "07067ae0547848e4dcf904148a917df300354f31eb9bed88c78d1b92c83602c0"
 QWEN_TOKENIZER = "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6"
 
 
@@ -86,7 +89,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "gemma2",
             "gemma2",
-            "m3-artifacts",
+            V1_STORE,
             f'[models.gemma2]\nartifact = "{GEMMA2}"\ncontext = 8192\nprefill_chunk = 128\n'
             "max_slots = 2\n",
             target_tokens=8000,
@@ -94,7 +97,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "gemma3",
             "gemma3",
-            "m3-artifacts",
+            V1_STORE,
             f'[models.gemma3]\nartifact = "{GEMMA3}"\ncontext = 8448\nprefill_chunk = 128\n'
             "max_slots = 1\n",
             target_tokens=8000,
@@ -102,7 +105,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "gemma26",
             "gemma26",
-            "m3-artifacts",
+            V1_STORE,
             f'[models.gemma26]\nartifact = "{GEMMA26}"\ncontext = 8192\nprefill_chunk = 1024\n'
             "max_slots = 4\n",
             target_tokens=8000,
@@ -111,7 +114,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "gemma26-assistant",
             "gemma26",
-            "m3-artifacts",
+            V1_STORE,
             f'[models.gemma26]\nartifact = "{GEMMA26}"\ndrafter = "{GEMMA26_ASSISTANT}"\n'
             "speculation = true\ncontext = 8192\nprefill_chunk = 1024\nmax_slots = 4\n",
             target_tokens=1024,
@@ -120,7 +123,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "gemma31",
             "gemma31",
-            "m3-artifacts",
+            V1_STORE,
             f'[models.gemma31]\nartifact = "{GEMMA31}"\ncontext = 8192\nprefill_chunk = 256\n'
             "max_slots = 4\n",
             target_tokens=8000,
@@ -129,7 +132,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "gemma31-assistant",
             "gemma31",
-            "m3-artifacts",
+            V1_STORE,
             f'[models.gemma31]\nartifact = "{GEMMA31}"\ndrafter = "{GEMMA31_ASSISTANT}"\n'
             "speculation = true\ncontext = 8192\nprefill_chunk = 256\nmax_slots = 4\n",
             target_tokens=1024,
@@ -138,7 +141,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "qwen38",
             "qwen3.8",
-            "m3-artifacts",
+            V1_STORE,
             f'[models."qwen3.8"]\nartifact = "{QWEN}"\ndrafter = "{QWEN_MTP}"\nspeculation = true\n'
             "draft_vocab = 65536\ndepth_cost_ratio = 1.16\ncontext = 33792\nprefill_chunk = 4096\n"
             "max_slots = 4\n" + _qwen_files(),
@@ -147,7 +150,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "qwen38-gguf",
             "qwen3.8-gguf",
-            "qgguf-artifacts",
+            V1_STORE,
             f'[models."qwen3.8-gguf"]\nartifact = "{QWEN_GGUF}"\ncontext = 33792\n'
             "prefill_chunk = 4096\nmax_slots = 4\n" + _qwen_files(),
             target_tokens=16000,
@@ -155,7 +158,7 @@ FAMILIES: dict[str, Family] = {
         Family(
             "deepseek",
             "deepseek",
-            "m3-artifacts",
+            V1_STORE,
             f'[models.deepseek]\nartifact = "{DSV4}"\ndrafter = "{DSPARK}"\nspeculation = true\n'
             'wave_form = "plain"\ncontext = 262144\nprefill_chunk = 4096\nmax_slots = 4\n',
             target_tokens=16000,

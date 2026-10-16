@@ -37,6 +37,7 @@
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "execution/registry.h"
+#include "families/qwen.h"
 #include "format/encoding.h"
 #include "ggml.h"
 #include "ir/builder.h"
@@ -49,7 +50,6 @@
 #include "kernels/ggml/lower.h"
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/tensors.h"
-#include "model/qwen38.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
 #include "planner/step_shape.h"
@@ -68,6 +68,7 @@ namespace co = llmp::components;
 namespace ir = llmp::ir;
 namespace sp = llmp::spec;
 namespace fx = llmp::test_support::qwen38;
+namespace fam = llmp::test_support::families;
 
 constexpr std::uint64_t kExtent = 2ULL << 20U;
 constexpr std::uint32_t kGb10 = 121;
@@ -121,15 +122,15 @@ kg::DeviceChoices Device() {
 
 // ------------------------------------------------------------ the imports
 
-md::Qwen38PleHash Hash() {
+fam::Qwen38PleHash Hash() {
   std::vector<std::int64_t> offsets;
   std::vector<std::int64_t> vocab;
   for (std::int64_t h = 0; h < 16; ++h) {
     offsets.push_back(h * 20000096);
     vocab.push_back(20000096 - (h * 8));
   }
-  return *md::CheckQwen38PleHash(md::Qwen38Flash(), std::vector<std::int64_t>{3, 5, 7}, offsets,
-                                 vocab, fx::kTableRows);
+  return *fam::CheckQwen38PleHash(fam::Qwen38Flash(), std::vector<std::int64_t>{3, 5, 7}, offsets,
+                                  vocab, fx::kTableRows);
 }
 
 // A fixture's result, or the error it names (and the test aborts).
@@ -147,10 +148,11 @@ T operator|(std::expected<T, E> e, Must m) {
 }
 
 // The CUTLASS layout's arrays packed from each expert group's start, as
-// the importer writes them (model/qwen38.h Qwen38Layer::gate_up_codes).
-void PackCutlassArrays(std::vector<md::Qwen38Resource>& resources) {
+// the M3 importer wrote them (each layer's gate-up codes and scales, then
+// down's).
+void PackCutlassArrays(std::vector<fam::Qwen38Resource>& resources) {
   std::map<std::string, std::uint64_t> at;  // by layer prefix
-  for (md::Qwen38Resource& r : resources) {
+  for (fam::Qwen38Resource& r : resources) {
     if (!r.expert_array || r.type != "I8") continue;
     const std::string& name = r.roles.front();
     const std::string prefix = name.substr(0, name.find("ffn_"));
@@ -173,13 +175,11 @@ std::string FormName(fx::Form form) {
 
 // An import's target and, for the ModelOpt ones, its MTP drafter: the
 // specs (the target alone, and with the drafter), the state layouts, the
-// policies the mappings give, and today's bindings and state.
+// policies the mappings give, and the fixture's resources.
 struct Import {
   fx::Form form{};
-  std::vector<md::Qwen38Resource> resources;
-  std::vector<md::Qwen38Resource> mtp_resources;
-  md::Qwen38Binding binding;
-  md::Qwen38MtpBinding mtp_binding;
+  std::vector<fam::Qwen38Resource> resources;
+  std::vector<fam::Qwen38Resource> mtp_resources;
   sp::Source source;
   sp::Source mtp_source;
   std::optional<sp::ModelSpec> spec;                // the target alone
@@ -197,17 +197,15 @@ struct Import {
 const Import& ImportOf(fx::Form form) {
   static std::map<fx::Form, Import> imports;
   if (const auto at = imports.find(form); at != imports.end()) return at->second;
-  const auto& p = md::Qwen38Flash();
+  const auto& p = fam::Qwen38Flash();
   Import im;
   im.form = form;
   const bool gguf = form == fx::Form::kGguf;
   im.resources = fx::Resources(p, form);
   PackCutlassArrays(im.resources);
-  im.binding = md::BindQwen38(p, "qwen4exp", im.resources) | Must(__LINE__);
-  im.source = fx::SourceOf("qwen4exp", gguf ? "gguf" : "safetensors",
-                           std::string(gguf ? fx::kGgufConverter : fx::kModelOptConverter),
-                           im.resources, sp::mappings::Qwen38Mapping());
-  const auto values = sp::mappings::Qwen38V0Values(p, im.binding, Hash()) | Must(__LINE__);
+  im.source = fx::SourceOf("qwen4exp", gguf ? "gguf" : "safetensors", im.resources,
+                           gguf ? std::vector<std::string>{} : fx::ModelOptFolds());
+  const auto values = fx::TargetValues(p, Hash(), form) | Must(__LINE__);
   im.spec = sp::Synthesize(sp::mappings::Qwen38Mapping(), im.source, values) | Must(__LINE__);
   const sp::Envelope envelope{.context = kContext, .slots = 1};
   im.policy = pl::ParsePolicy(sp::DefaultPolicy(sp::mappings::Qwen38Mapping(), values, envelope) |
@@ -221,10 +219,9 @@ const Import& ImportOf(fx::Form form) {
   if (!gguf) {
     im.mtp_resources = fx::MtpResources(p);
     PackCutlassArrays(im.mtp_resources);
-    im.mtp_binding = md::BindQwen38Mtp(p, "qwen4exp-mtp", im.mtp_resources) | Must(__LINE__);
-    im.mtp_source = fx::SourceOf("qwen4exp-mtp", "safetensors", std::string(fx::kModelOptConverter),
-                                 im.mtp_resources, sp::mappings::Qwen38MtpMapping());
-    const auto mtp_values = sp::mappings::Qwen38MtpV0Values(p, im.mtp_binding) | Must(__LINE__);
+    im.mtp_source =
+        fx::SourceOf("qwen4exp-mtp", "safetensors", im.mtp_resources, fx::ModelOptFolds());
+    const auto mtp_values = fam::Qwen38MtpValues(p, 0) | Must(__LINE__);
     im.spec_mtp = sp::ComposeDrafter(*im.spec, sp::mappings::Qwen38Mapping(),
                                      sp::mappings::Qwen38MtpMapping(), im.mtp_source, mtp_values) |
                   Must(__LINE__);
@@ -271,7 +268,7 @@ struct Case {
 // products' 16 rows and the recurrence's lanes, the convolution's
 // 32-token windows).
 std::vector<Case> Cases(const Import& im) {
-  const auto& p = md::Qwen38Flash();
+  const auto& p = fam::Qwen38Flash();
   const std::uint32_t unselected =
       std::min<std::uint32_t>(kContext, (p.indexer_budget + p.indexer_ratio - 1) / 256U * 256U);
   const std::uint32_t unselected_rows = std::min(kMaxRows, unselected);
@@ -1181,7 +1178,7 @@ TEST(GgmlLowerQwen38Test, ReadOnlyValidationSeesRealProgramAndRefusesBothAddress
          EXPECT_EQ(input.addresses.activations, addresses.activations);
          EXPECT_EQ(input.token->shape, shape);
          EXPECT_EQ(input.token->step.graph.tensor(input.token->step.logits).shape().ne[0],
-                   md::Qwen38Flash().vocab);
+                   fam::Qwen38Flash().vocab);
          if (refuse) return std::unexpected("full-head observer refused");
          return {};
        }});
@@ -1214,7 +1211,7 @@ TEST(GgmlLowerQwen38Test, ReadOnlyValidationSeesRealProgramAndRefusesBothAddress
 TEST(GgmlLowerQwen38Test, ReservedWeightFactsSelectTypedProductsAndRejectBrokenPromises) {
   const auto& im = ImportOf(fx::Form::kCutlass);
   auto spec = *im.spec;
-  spec.stages.front().layers.resize(md::Qwen38Flash().ple_layer + 1);
+  spec.stages.front().layers.resize(fam::Qwen38Flash().ple_layer + 1);
   auto layout = co::StageLayout(spec, 0, kContext, kMaxRows, kExtent);
   ASSERT_TRUE(layout) << layout.error();
   auto policy = im.policy;
@@ -1315,7 +1312,7 @@ TEST(GgmlLowerQwen38Test, ReservedWeightFactsSelectTypedProductsAndRejectBrokenP
                  const auto count = std::ranges::count_if(
                      physical->plan.steps,
                      [](const auto& step) { return step.implementation == kg::kMulMatVecFRows; });
-                 EXPECT_EQ(count, mode < 2 ? md::Qwen38Flash().ple_layer + 3 : 0);
+                 EXPECT_EQ(count, mode < 2 ? fam::Qwen38Flash().ple_layer + 3 : 0);
                }
                return std::unexpected("observed reserved-weight selection");
              }}});

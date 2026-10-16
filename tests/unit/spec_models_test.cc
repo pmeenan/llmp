@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The model spec synthesized from the installed Gemma 2, Gemma 3 and
-// Gemma 4 v0 artifacts (spec/mapping.h SynthesizeV0, the Gemma 4
-// assistant composed with its target by ComposeDrafterV0) with today's
-// profiles: the same spec their tensor tables give (spec_test), bound to
-// each artifact's ID.
+// The model spec the published Gemma 2, Gemma 3 and Gemma 4 v1 artifacts
+// store (spec/stored.h StoredSpec; the Gemma 4 assistant composed with its
+// target by ComposeDrafter, from the values serving composes it with): the
+// same spec their tensor tables give with the families' values
+// (spec_fixtures.h, tests/support/families/gemma.h; spec_test), every
+// binding resolved in its artifact, bound to each artifact's ID.
 // Needs the model files (label `models`); skipped without them.
 
 #include <gtest/gtest.h>
@@ -13,68 +14,64 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
+#include <vector>
 
 #include "artifact/artifact.h"
 #include "base/sha256.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
+#include "families/gemma.h"
+#include "runtime/component_admission.h"
 #include "spec/mapping.h"
-#include "spec/mappings/gemma2.h"
-#include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
 #include "spec/spec.h"
+#include "spec/stored.h"
 #include "spec_fixtures.h"
+#include "v1_frozen.h"
 
 namespace llmp::spec {
 namespace {
 
-std::filesystem::path Models() {
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): tests read, never set, the environment
-  if (const char* dir = std::getenv("LLMP_TEST_MODELS"); dir != nullptr) {
-    return dir;
-  }
-  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
-  return home != nullptr ? std::filesystem::path(home) / ".local/share/llmp" : "";
+namespace fam = test_support::families;
+
+// The published v1 artifact the store's v1-ids.json names `name`.
+std::optional<artifact::Artifact> OpenPublished(std::string_view name) {
+  const auto id = test_support::V1IdNamed(name);
+  if (!id) return std::nullopt;
+  auto a = artifact::Artifact::Open(std::filesystem::path(test_support::V1Store()) / *id,
+                                    {.expected_id = {}});
+  EXPECT_TRUE(a.has_value()) << a.error().ToString();
+  return a ? std::optional(std::move(*a)) : std::nullopt;
 }
 
 struct Case {
   std::string_view architecture;
-  std::string_view path;
-  std::size_t tensors;  // the resources' roles
+  std::string_view name;  // the store's v1-ids.json name
+  std::size_t tensors;    // the resources' roles
   std::size_t layers;
 };
 
 class SpecModelsTest : public testing::TestWithParam<Case> {};
 
-TEST_P(SpecModelsTest, SynthesizesTheSpecFromTheArtifact) {
+TEST_P(SpecModelsTest, StoredSpecIsTheTensorTablesSpec) {
   const Case& c = GetParam();
-  const std::filesystem::path path = Models() / c.path;
-  if (std::error_code error; !std::filesystem::exists(path, error)) {
-    GTEST_SKIP() << "no artifact in " << path;
-  }
-  auto artifact = artifact::Artifact::Open(path, {.expected_id = {}});
-  ASSERT_TRUE(artifact.has_value()) << artifact.error().ToString();
+  auto artifact = OpenPublished(c.name);
+  if (!artifact) GTEST_FAIL() << "no published v1 " << c.name << " in " << test_support::V1Store();
   const Mapping* mapping = FindMapping(artifact->model().architecture);
   ASSERT_NE(mapping, nullptr);
   EXPECT_EQ(mapping->architecture, c.architecture);
-  const auto values = c.architecture == "gemma2" ? mappings::Gemma2V0Values(model::Gemma2_2B())
-                                                 : mappings::Gemma3V0Values(model::Gemma3_4BQat());
+  const auto values = c.architecture == "gemma2" ? fam::Gemma2Values(fam::Gemma2_2B())
+                                                 : fam::Gemma3Values(fam::Gemma3_4BQat());
   ASSERT_TRUE(values.has_value()) << values.error();
 
-  const auto source = SourceOfV0(*artifact);
+  const auto source = SourceOf(*artifact);
   ASSERT_TRUE(source.has_value()) << source.error();
   EXPECT_EQ(source->container, "gguf");
   EXPECT_EQ(source->tensors.size(), c.tensors);
-  const auto spec = SynthesizeV0(*artifact, *mapping, *values);
+  const auto spec = StoredSpec(*artifact);
   ASSERT_TRUE(spec.has_value()) << spec.error();
   ASSERT_EQ(spec->stages.size(), 1U);
   EXPECT_EQ(spec->stages[0].layers.size(), c.layers);
@@ -120,33 +117,21 @@ TEST_P(SpecModelsTest, SynthesizesTheSpecFromTheArtifact) {
 
 INSTANTIATE_TEST_SUITE_P(
     Gemma, SpecModelsTest,
-    testing::Values(Case{.architecture = "gemma2",
-                         .path = "gemma2-import-20261007/artifacts/"
-                                 "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870",
-                         .tensors = 288,
-                         .layers = 26},
-                    Case{.architecture = "gemma3",
-                         .path = "gemma3-import-20261007/artifacts/"
-                                 "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb",
-                         .tensors = 444,
-                         .layers = 34}),
+    testing::Values(Case{.architecture = "gemma2", .name = "gemma2", .tensors = 288, .layers = 26},
+                    Case{.architecture = "gemma3", .name = "gemma3", .tensors = 444, .layers = 34}),
     [](const testing::TestParamInfo<Case>& info) { return std::string(info.param.architecture); });
-// The Gemma 4 26B-A4B and 31B targets from their installed artifacts, and
-// the 26B-A4B's assistant composed with its target: the specs their tensor
-// tables give (spec_test), every binding resolved in its stage's artifact.
+
+// The Gemma 4 26B-A4B and 31B targets' stored specs, and the 26B-A4B's
+// assistant composed with its target as serving composes it: the specs
+// their tensor tables give (spec_test), every binding resolved in its
+// stage's artifact.
 TEST(SpecModelsTest, Gemma4SpecsFromTheirArtifacts) {
-  const std::filesystem::path store = Models() / "m3-artifacts";
-  const auto open = [&](std::string_view id) -> std::optional<artifact::Artifact> {
-    const std::filesystem::path path = store / id;
-    if (std::error_code error; !std::filesystem::exists(path, error)) return std::nullopt;
-    auto a = artifact::Artifact::Open(path, {.expected_id = {}});
-    EXPECT_TRUE(a.has_value()) << a.error().ToString();
-    return a ? std::optional(std::move(*a)) : std::nullopt;
-  };
-  const auto target26 = open("4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
-  const auto target31 = open("32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08");
-  const auto assistant26 = open("1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42");
-  if (!target26 || !target31 || !assistant26) GTEST_SKIP() << "no Gemma 4 artifacts in " << store;
+  const auto target26 = OpenPublished("gemma26");
+  const auto target31 = OpenPublished("gemma31");
+  const auto assistant26 = OpenPublished("gemma26-assistant");
+  if (!target26 || !target31 || !assistant26) {
+    GTEST_FAIL() << "no published v1 Gemma 4 artifacts in " << test_support::V1Store();
+  }
   const auto resolves = [](const artifact::Artifact& a, const ComponentRef& c,
                            std::string_view own) {
     for (const WeightBinding& w : c.weights) {
@@ -162,10 +147,10 @@ TEST(SpecModelsTest, Gemma4SpecsFromTheirArtifacts) {
     SCOPED_TRACE(size);
     const Mapping* mapping = FindMapping(a->model().architecture);
     ASSERT_EQ(mapping, &mappings::Gemma4Mapping());
-    const auto& p = size == 26 ? model::Gemma4_26BA4B() : model::Gemma4_31B();
-    const auto values = mappings::Gemma4V0Values(p);
+    const auto& p = size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
+    const auto values = fam::Gemma4Values(p);
     ASSERT_TRUE(values.has_value());
-    const auto spec = SynthesizeV0(*a, *mapping, *values);
+    const auto spec = StoredSpec(*a);
     ASSERT_TRUE(spec.has_value()) << spec.error();
     EXPECT_TRUE(spec->stages[0].folds.empty());
     const auto table = Synthesize(*mapping, test_support::Gemma4Source(size), *values);
@@ -178,15 +163,21 @@ TEST(SpecModelsTest, Gemma4SpecsFromTheirArtifacts) {
     }
     if (size == 26) spec26 = *spec;
   }
-  const auto values =
-      mappings::Gemma4AssistantV0Values(model::Gemma4Assistant26(), model::Gemma4_26BA4B());
-  ASSERT_TRUE(values.has_value());
-  const auto composed = ComposeDrafterV0(*spec26, mappings::Gemma4Mapping(), *assistant26,
-                                         mappings::Gemma4AssistantMapping(), *values);
+  // The assistant as serving composes it: the approved pairing's values
+  // from the metadata it keeps, by the mapping its approval names.
+  const auto kept = runtime::ComponentDrafterValues(*target26, *assistant26);
+  ASSERT_TRUE(kept.has_value()) << kept.error();
+  const Mapping* drafter = runtime::ComposedDrafterMapping(*assistant26);
+  ASSERT_NE(drafter, nullptr);
+  const auto source = SourceOf(*assistant26);
+  ASSERT_TRUE(source.has_value()) << source.error();
+  const auto composed =
+      ComposeDrafter(*spec26, mappings::Gemma4Mapping(), *drafter, *source, *kept);
   ASSERT_TRUE(composed.has_value()) << composed.error();
-  const auto table =
-      ComposeDrafter(*spec26, mappings::Gemma4Mapping(), mappings::Gemma4AssistantMapping(),
-                     test_support::Gemma4AssistantSource(26), *values);
+  const auto values = fam::Gemma4AssistantValues(fam::Gemma4Assistant26(), fam::Gemma4_26BA4B());
+  ASSERT_TRUE(values.has_value());
+  const auto table = ComposeDrafter(*spec26, mappings::Gemma4Mapping(), *drafter,
+                                    test_support::Gemma4AssistantSource(26), *values);
   ASSERT_TRUE(table.has_value()) << table.error();
   EXPECT_EQ(*table, *composed);
   const Stage& d = composed->stages.at(1);

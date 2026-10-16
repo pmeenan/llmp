@@ -48,6 +48,7 @@
 
 #include "base/bytes.h"
 #include "execution/registry.h"
+#include "families/dsv4.h"
 #include "ggml.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
@@ -64,7 +65,6 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
-#include "model/dsv4.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 
@@ -78,7 +78,7 @@ using llmp::providers::DeviceExecution;
 using llmp::providers::FenceState;
 using llmp::providers::StreamId;
 namespace kg = llmp::kernels::ggml;
-namespace md = llmp::model;
+namespace fam = llmp::test_support::families;
 
 constexpr std::uint64_t kWorkspace = 1ULL << 30;
 constexpr std::int64_t kWidth = 4096;
@@ -427,7 +427,7 @@ TEST_F(Dsv4StagesTest, OneSharedF16CopyFeedsTheSameCublasProducts) {
 }
 
 TEST_F(Dsv4StagesTest, TheQHeadsF16RowsAreItsF32RowsRoundedToNearest) {
-  const auto& profile = md::Dsv4Flash();
+  const auto& profile = fam::Dsv4Flash();
   for (const std::int64_t rows : {64, 2048}) {
     const auto count = N(512LL * 64 * rows);
     auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 512, 64, rows), Normal(711, count));
@@ -722,7 +722,7 @@ TEST_F(Dsv4StagesTest, TheIq2PairWritesItsActivationAndTheDownProductsInputExact
                                            std::pair{GGML_TYPE_IQ2_XXS, std::int64_t{512}},
                                            std::pair{GGML_TYPE_IQ2_XS, std::int64_t{4096}}}) {
     SCOPED_TRACE(std::format("{}, {} tokens", ggml_type_name(kPairType), kTokens));
-    const float limit = md::Dsv4Flash().swiglu_limit;
+    const float limit = fam::Dsv4Flash().swiglu_limit;
     auto* gate_w =
         Place(ggml_new_tensor_3d(c(), kPairType, kInner, kMiddle, kExperts),
               RandomBlocks(kPairType, kInner, kMiddle * kExperts, 431, {0}, 1.0f / 1024));

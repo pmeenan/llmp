@@ -25,11 +25,10 @@
 #include "artifact/json.h"
 #include "artifact/representation.h"
 #include "base/sha256.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
+#include "families/dsv4.h"
+#include "families/gemma.h"
 #include "spec/mapping.h"
+#include "spec/mappings/dsv4.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -37,6 +36,8 @@
 
 namespace llmp::spec {
 namespace {
+
+namespace fam = llmp::test_support::families;
 
 ComponentRef C(std::string kind, std::vector<Param> params, std::vector<WeightBinding> weights) {
   return {.kind = std::move(kind),
@@ -479,7 +480,7 @@ std::string Tensor(const ComponentRef& c, std::string_view role) {
 }
 
 TEST(MappingTest, Gemma2SpecFromItsTensorsAndProfile) {
-  const auto values = mappings::Gemma2V0Values(model::Gemma2_2B());
+  const auto values = fam::Gemma2Values(fam::Gemma2_2B());
   ASSERT_TRUE(values.has_value()) << values.error();
   const auto spec = Synthesize(mappings::Gemma2Mapping(), test_support::Gemma2Source(), *values);
   ASSERT_TRUE(spec.has_value()) << spec.error();
@@ -539,7 +540,7 @@ TEST(MappingTest, Gemma2SpecFromItsTensorsAndProfile) {
 }
 
 TEST(MappingTest, Gemma3SpecFromItsTensorsAndProfile) {
-  const auto values = mappings::Gemma3V0Values(model::Gemma3_4BQat());
+  const auto values = fam::Gemma3Values(fam::Gemma3_4BQat());
   ASSERT_TRUE(values.has_value()) << values.error();
   const auto spec = Synthesize(mappings::Gemma3Mapping(), test_support::Gemma3Source(), *values);
   ASSERT_TRUE(spec.has_value()) << spec.error();
@@ -571,7 +572,7 @@ TEST(MappingTest, OptionalCheckpointKeysAreRead) {
     v.push_back({.key = std::string(key), .value = std::move(value)});
     return v;
   };
-  const auto g2 = *mappings::Gemma2V0Values(model::Gemma2_2B());
+  const auto g2 = *fam::Gemma2Values(fam::Gemma2_2B());
   const Mapping& m2 = mappings::Gemma2Mapping();
   const auto swa2 =
       Synthesize(m2, test_support::Gemma2Source(), with(g2, "gemma2.rope.freq_base_swa", 500.0));
@@ -585,7 +586,7 @@ TEST(MappingTest, OptionalCheckpointKeysAreRead) {
                           with(g2, "gemma2.attention.sliding_window_pattern", std::int64_t{3}))
                    .has_value());
 
-  const auto g3 = *mappings::Gemma3V0Values(model::Gemma3_4BQat());
+  const auto g3 = *fam::Gemma3Values(fam::Gemma3_4BQat());
   const Mapping& m3 = mappings::Gemma3Mapping();
   auto v3 = with(g3, "gemma3.final_logit_softcapping", 30.0);
   v3 = with(v3, "gemma3.rope.freq_base_swa", 20000.0);
@@ -604,7 +605,7 @@ TEST(MappingTest, OptionalCheckpointKeysAreRead) {
 }
 
 TEST(MappingTest, SynthesisRefusesWhatTheMappingDoesNotCover) {
-  const auto values = *mappings::Gemma2V0Values(model::Gemma2_2B());
+  const auto values = *fam::Gemma2Values(fam::Gemma2_2B());
   const Mapping& m = mappings::Gemma2Mapping();
   {
     Source s = test_support::Gemma2Source();
@@ -651,7 +652,7 @@ TEST(MappingTest, SynthesisRefusesWhatTheMappingDoesNotCover) {
   }
   {
     // Gemma 3's global layers scale linearly, only.
-    auto v = *mappings::Gemma3V0Values(model::Gemma3_4BQat());
+    auto v = *fam::Gemma3Values(fam::Gemma3_4BQat());
     std::ranges::find(v, std::string_view("gemma3.rope.scaling.type"), &SourceValue::key)->value =
         std::string("yarn");
     EXPECT_FALSE(
@@ -661,17 +662,17 @@ TEST(MappingTest, SynthesisRefusesWhatTheMappingDoesNotCover) {
 
 // ------------------------------------------------------------------ Gemma 4
 
-const model::Gemma4Profile& G4(std::uint32_t size) {
-  return size == 26 ? model::Gemma4_26BA4B() : model::Gemma4_31B();
+const fam::Gemma4Profile& G4(std::uint32_t size) {
+  return size == 26 ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
 }
 
-// The spec from the v0 profile's values is the spec from the checkpoint's
+// The spec from the profile's values is the spec from the checkpoint's
 // own GGUF metadata (the fixture's), and holds what today's builder reads.
 TEST(MappingTest, Gemma4SpecsFromTheirTablesAndProfiles) {
   for (const std::uint32_t size : {26U, 31U}) {
     SCOPED_TRACE(size);
     const auto& p = G4(size);
-    const auto values = mappings::Gemma4V0Values(p);
+    const auto values = fam::Gemma4Values(p);
     ASSERT_TRUE(values.has_value()) << values.error();
     const Source source = test_support::Gemma4Source(size);
     const auto spec = Synthesize(mappings::Gemma4Mapping(), source, *values);
@@ -770,8 +771,8 @@ TEST(MappingTest, Gemma4SpecsFromTheirTablesAndProfiles) {
 
 TEST(MappingTest, Gemma4MappingRefusesWhatItDoesNotCover) {
   const Mapping& m = mappings::Gemma4Mapping();
-  const auto values26 = *mappings::Gemma4V0Values(G4(26));
-  const auto values31 = *mappings::Gemma4V0Values(G4(31));
+  const auto values26 = *fam::Gemma4Values(G4(26));
+  const auto values31 = *fam::Gemma4Values(G4(31));
   const auto value = [](std::vector<SourceValue>& v, std::string_view key) -> ParamValue& {
     return std::ranges::find(v, key, &SourceValue::key)->value;
   };
@@ -814,11 +815,9 @@ TEST(MappingTest, Gemma4MappingRefusesWhatItDoesNotCover) {
     EXPECT_FALSE(Synthesize(m, test_support::Gemma4Source(31), v));
   }
   // A drafter's mapping does not synthesize alone.
-  const auto assistant = *mappings::Gemma4AssistantV0Values(model::Gemma4Assistant26(), G4(26));
+  const auto assistant = *fam::Gemma4AssistantValues(fam::Gemma4Assistant26(), G4(26));
   EXPECT_FALSE(Synthesize(mappings::Gemma4AssistantMapping(),
                           test_support::Gemma4AssistantSource(26), assistant));
-  // An assistant's profile of another target.
-  EXPECT_FALSE(mappings::Gemma4AssistantV0Values(model::Gemma4Assistant31(), G4(26)));
 }
 
 // The assistant composed with its target: its stage reads the target's K
@@ -828,11 +827,11 @@ TEST(MappingTest, Gemma4AssistantComposesWithItsTarget) {
   for (const std::uint32_t size : {26U, 31U}) {
     SCOPED_TRACE(size);
     const auto& p = G4(size);
-    const auto& a = size == 26 ? model::Gemma4Assistant26() : model::Gemma4Assistant31();
+    const auto& a = size == 26 ? fam::Gemma4Assistant26() : fam::Gemma4Assistant31();
     const auto target = Synthesize(mappings::Gemma4Mapping(), test_support::Gemma4Source(size),
-                                   *mappings::Gemma4V0Values(p));
+                                   *fam::Gemma4Values(p));
     ASSERT_TRUE(target.has_value()) << target.error();
-    const auto values = mappings::Gemma4AssistantV0Values(a, p);
+    const auto values = fam::Gemma4AssistantValues(a, p);
     ASSERT_TRUE(values.has_value()) << values.error();
     const Source source = test_support::Gemma4AssistantSource(size);
     const auto spec = ComposeDrafter(*target, mappings::Gemma4Mapping(),
@@ -849,7 +848,7 @@ TEST(MappingTest, Gemma4AssistantComposesWithItsTarget) {
     EXPECT_EQ(d.name, "assistant");
     EXPECT_EQ(d.role, StageRole::kDrafter);
     EXPECT_EQ(d.artifact, 1U);
-    EXPECT_EQ(d.stream.width, model::kGemma4AssistantWidth);
+    EXPECT_EQ(d.stream.width, fam::kGemma4AssistantWidth);
     EXPECT_FALSE(d.heads.softcap.has_value());
     ASSERT_EQ(t.taps.size(), 1U);
     EXPECT_EQ(t.taps[0].name, "features");
@@ -860,7 +859,7 @@ TEST(MappingTest, Gemma4AssistantComposesWithItsTarget) {
     EXPECT_EQ(table->stage, "target");
     EXPECT_EQ(table->tensor, "token_embd.weight");
     EXPECT_EQ(P(*d.embedding, "scale").value, ParamValue(std::sqrt(static_cast<double>(p.width))));
-    ASSERT_EQ(d.layers.size(), model::kGemma4AssistantLayers);
+    ASSERT_EQ(d.layers.size(), fam::kGemma4AssistantLayers);
     for (std::uint32_t il = 0; il < d.layers.size(); ++il) {
       const ComponentRef& at = d.layers[il].components[0];
       EXPECT_EQ(at.kind, "attention.borrowed");
@@ -880,8 +879,7 @@ TEST(MappingTest, Gemma4AssistantComposesWithItsTarget) {
     {
       Source folded_target = test_support::Gemma4Source(size);
       folded_target.folds = {"norm.plus_one"};
-      const auto ft =
-          Synthesize(mappings::Gemma4Mapping(), folded_target, *mappings::Gemma4V0Values(p));
+      const auto ft = Synthesize(mappings::Gemma4Mapping(), folded_target, *fam::Gemma4Values(p));
       ASSERT_TRUE(ft.has_value()) << ft.error();
       const auto c = ComposeDrafter(*ft, mappings::Gemma4Mapping(),
                                     mappings::Gemma4AssistantMapping(), source, *values);
@@ -918,6 +916,46 @@ TEST(MappingTest, Gemma4AssistantComposesWithItsTarget) {
     }
     EXPECT_FALSE(Validate(bad));
   }
+}
+
+// A drafter import's targets (DraftRecipe::import_targets, the mapping
+// data its importer composes with) are the approved checkpoints the tests'
+// family fixtures describe: the same values, and tensors their mappings
+// make a valid spec of.
+std::vector<SourceValue> SortedValues(std::vector<SourceValue> values) {
+  std::ranges::sort(values, {}, &SourceValue::key);
+  return values;
+}
+TEST(MappingTest, DrafterImportTargetsAreTheFamiliesApprovedCheckpoints) {
+  const auto check = [](const ImportTarget& target, std::vector<SourceValue> want,
+                        std::uint32_t layers) {
+    ASSERT_NE(target.mapping, nullptr);
+    ASSERT_NE(target.values, nullptr);
+    ASSERT_NE(target.source, nullptr);
+    auto values = target.values();
+    ASSERT_TRUE(values) << values.error();
+    EXPECT_EQ(SortedValues(*values), SortedValues(std::move(want)));
+    const auto source = target.source();
+    auto made = Synthesize(target.mapping(), source, *values);
+    ASSERT_TRUE(made) << made.error();
+    EXPECT_EQ(made->stages.front().layers.size(), layers);
+  };
+  const auto& assistant = *mappings::Gemma4AssistantMapping().draft;
+  ASSERT_EQ(assistant.import_targets.size(), 2U);
+  for (const ImportTarget& t : assistant.import_targets) {
+    const auto& profile =
+        t.value == fam::Gemma4_26BA4B().width ? fam::Gemma4_26BA4B() : fam::Gemma4_31B();
+    ASSERT_EQ(t.value, profile.width);
+    auto want = fam::Gemma4Values(profile);
+    ASSERT_TRUE(want);
+    check(t, std::move(*want), profile.layers);
+  }
+  const auto& dspark = *mappings::DsparkMapping().draft;
+  ASSERT_EQ(dspark.import_targets.size(), 1U);
+  EXPECT_TRUE(dspark.import_targets.front().keys[0].empty());
+  auto want = fam::Dsv4Values(fam::Dsv4Flash());
+  ASSERT_TRUE(want);
+  check(dspark.import_targets.front(), std::move(*want), fam::Dsv4Flash().layers);
 }
 
 }  // namespace

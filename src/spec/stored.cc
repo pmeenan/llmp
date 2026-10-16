@@ -130,7 +130,7 @@ std::expected<ModelSpec, std::string> ReadStored(std::string_view where, std::st
 std::expected<ModelSpec, std::string> StoredSpec(const artifact::Artifact& artifact) {
   const std::string where = std::format("artifact {}", artifact.id());
   if (artifact.format_version() == 0) {
-    return Refuse(where, "a v0 artifact stores no spec (synthesize it from its mapping)");
+    return Refuse(where, "a v0 artifact stores no spec (re-import it with llmp import, D-118)");
   }
   const auto text = artifact.spec_json();
   if (!text) {
@@ -194,17 +194,18 @@ std::expected<ModelSpec, std::string> StoredSpec(
   return spec;
 }
 
-std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact,
-                                            const Mapping* mapping) {
-  if (artifact.format_version() == 0) {
-    return SourceOfV0(artifact, mapping);
+std::expected<Source, std::string> SourceOf(const artifact::Artifact& artifact) {
+  if (artifact.format_version() != 1) {
+    return Refuse(std::format("artifact {}", artifact.id()),
+                  std::format("format version {}: a source is a v1 artifact's (re-import it with "
+                              "llmp import, D-118)",
+                              artifact.format_version()));
   }
   if (auto ok = CheckCatalog(artifact); !ok) {
     return std::unexpected(ok.error());
   }
   Source s{.architecture = artifact.model().architecture,
            .container = artifact.model().container,
-           .converter = {},  // a v1 artifact's folds are its importer's, below
            .tensors = {},
            .folds = {}};
   for (const artifact::AppliedFold& f : artifact.folds()) {

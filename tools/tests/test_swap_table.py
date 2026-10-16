@@ -336,20 +336,39 @@ class Configuration(unittest.TestCase):
         ds = cfg["models"]["deepseek"]
         self.assertEqual((ds["artifact"], ds["drafter"], ds["wave_form"], ds["context"],
                           ds["max_slots"], ds["speculation"]),
-                         (st.sg.DSV4, st.sg.DSPARK, "speculative", 262144, 4, True))
+                         (st.sg.DSV4_V1, st.sg.DSPARK_V1, "speculative", 262144, 4, True))
         q = cfg["models"]["qwen3.8"]
         self.assertEqual((q["artifact"], q["drafter"], q["context"], q["draft_vocab"],
-                          q["prefill_chunk"]), (st.sg.QWEN, st.sg.QWEN_MTP, 33792, 65536, 4096))
+                          q["prefill_chunk"]), (st.sg.QWEN_V1, st.sg.QWEN_MTP_V1, 33792, 65536, 4096))
         self.assertTrue(q["tokenizer"].startswith("/share/models/"))
         self.assertEqual(cfg["models"]["image"], {"composition": st.sg.IMAGE})
 
+    def test_the_default_ids_are_the_v1_imports_and_v0_ids_the_baselines(self):
+        v1 = {"gemma2": "f176f912", "gemma3": "634bc193", "gemma26": "f0f72ab3",
+              "gemma31": "4d9a255a"}
+        for name, prefix in v1.items():
+            self.assertTrue(st.load_ids(None)[name]["artifact"].startswith(prefix), name)
+        ids = st.load_ids(None)
+        self.assertEqual((ids["deepseek"]["artifact"][:8], ids["deepseek"]["drafter"][:8],
+                          ids["qwen3.8"]["artifact"][:8], ids["qwen3.8"]["drafter"][:8]),
+                         ("698b1cd8", "5c9d95e2", "d145900e", "316caa59"))
+        old = st.load_ids(None, v0=True)
+        self.assertEqual((old["deepseek"]["artifact"], old["deepseek"]["drafter"],
+                          old["qwen3.8"]["artifact"], old["qwen3.8"]["drafter"]),
+                         (st.sg.DSV4_V0, st.sg.DSPARK_V0, st.sg.QWEN_V0, st.sg.QWEN_MTP_V0))
+        self.assertEqual([old[n]["artifact"] for n in v1],
+                         [st.sg.GEMMA2_V0, st.sg.GEMMA3_V0, st.sg.GEMMA26_V0, st.sg.GEMMA31_V0])
+        self.assertEqual(old["image"], ids["image"])  # the image slice's, the same in both
+        cfg = tomllib.loads(st.render_config(st.CASES["m3"], old, "/store", "/data", "/share"))
+        self.assertEqual(cfg["models"]["deepseek"]["artifact"], st.sg.DSV4_V0)
+
     def test_gemma_cases_pair_with_a_one_slot_qwen(self):
         cfg = self.render("gemma3")
-        self.assertEqual(cfg["models"]["gemma3"], {"artifact": st.sg.GEMMA3, "context": 8448,
+        self.assertEqual(cfg["models"]["gemma3"], {"artifact": st.sg.GEMMA3_V1, "context": 8448,
                                                    "prefill_chunk": 128, "max_slots": 1})
         q = cfg["models"]["qwen38"]
         self.assertEqual((q["artifact"], q["context"], q["max_slots"]),
-                         (st.sg.QWEN, 8448, 1))
+                         (st.sg.QWEN_V1, 8448, 1))
         self.assertNotIn("drafter", q)
         self.assertEqual(self.render("gemma26")["models"]["gemma26"]["prefill_chunk"], 1024)
 
@@ -361,7 +380,7 @@ class Configuration(unittest.TestCase):
                                     "image": {"composition": "y" * 64}}))
         cfg = self.render("m3", st.load_ids(str(path)))
         self.assertEqual(cfg["models"]["deepseek"]["artifact"], "x" * 64)
-        self.assertEqual(cfg["models"]["deepseek"]["drafter"], st.sg.DSPARK)  # kept
+        self.assertEqual(cfg["models"]["deepseek"]["drafter"], st.sg.DSPARK_V1)  # kept
         self.assertEqual(cfg["models"]["qwen3.8"]["depth_cost_ratio"], 1.16)
         self.assertEqual(cfg["models"]["qwen3.8"]["max_slots"], 2)
         self.assertEqual(cfg["models"]["image"]["composition"], "y" * 64)
@@ -408,6 +427,11 @@ class PlanAndRun(Fixture):
         self.assertIn("--name m3 ", line)
         self.assertIn("--image-pin " + "f" * 64, line)
         self.assertIn("--ids /ids.json", line)
+        self.assertNotIn("--v0-ids", line)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            st.main(self.argv("plan", "--v0-ids"))
+        self.assertTrue(all("--v0-ids" in line for line in out.getvalue().splitlines()))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             st.main(["plan", "--case", "gemma31", "--runtime", "/r", "--store", "/s",

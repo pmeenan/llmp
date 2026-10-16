@@ -3,9 +3,7 @@
 
 // DeepSeek V4's architecture mappings (spec/mapping.h), as llama.cpp's
 // deepseek4 and dflash GGUFs name their tensors and keys (b29c606e2;
-// docs/experiments/dsv4-native/gguf_profile_check.py), and the source
-// values of v0 artifacts from today's compiled profiles (model/dsv4.h,
-// model/dspark.h).
+// docs/experiments/dsv4-native/gguf_profile_check.py).
 //
 // "deepseek4" (DeepSeek V4 Flash): hyper-connection streams mixed by
 // Sinkhorn (residual.hc; each block between hc.mix and hc.combine, the
@@ -25,48 +23,32 @@
 // "dflash" (the DSpark drafter, stage "dspark"): composed with its target
 // (ComposeDrafter); three window-only DeepSeek V4 blocks over an injected
 // ring of 256 cells (the window and a draft block, padded to attention's
-// 256-cell steps: model/dspark.h's ring), every layer routed by its bias;
+// 256-cell steps), every layer routed by its bias;
 // its input embedding.inject: its target's token table, and the injection
 // from its target's streams' means entering each layer dflash.target_layers
 // names (taps features_0 to features_2), projected by fc and normed by
 // enc.output_norm; the head's Sinkhorn mix of every row, its target's
 // output and the Markov head (markov_w1, markov_w2); conf_proj accounted
 // for, unread (llama.cpp's confidence head only shortens drafts below a
-// probability floor it leaves at 0).
+// probability floor it leaves at 0). Its import composes it with DeepSeek
+// V4 Flash's values and tensors as data here.
 //
 // Neither mapping folds a weight: llama.cpp's converter keeps DeepSeek V4's
 // norms as they are. No default planning policy rule: the shared serving
 // route's own recipe (its ServingRecipe's serving_rule) carries
-// kDeepSeekServingPolicy, the patterns that reproduce the fast plan; the
-// closed diagnostic bridge plans with the engine's default.
+// kDeepSeekServingPolicy, the patterns that reproduce the fast plan.
 
 #ifndef LLMP_SPEC_MAPPINGS_DSV4_H_
 #define LLMP_SPEC_MAPPINGS_DSV4_H_
 
-#include <expected>
-#include <string>
-#include <vector>
+#include <string_view>
 
 #include "spec/mapping.h"
-
-namespace llmp::model {
-struct Dsv4Profile;
-struct DsparkProfile;
-}  // namespace llmp::model
 
 namespace llmp::spec::mappings {
 
 const Mapping& Dsv4Mapping();
 const Mapping& DsparkMapping();
-
-// The profile as the GGUF keys the mapping reads. Refused where the
-// profile says what the mapping cannot (another layer form).
-std::expected<std::vector<SourceValue>, std::string> Dsv4V0Values(
-    const model::Dsv4Profile& profile);
-
-// The DSpark drafter's, as its mapping's keys.
-std::expected<std::vector<SourceValue>, std::string> DsparkV0Values(
-    const model::DsparkProfile& profile);
 
 // The planning policy for DeepSeek serving fast forms (the "deepseek4"
 // mapping's serving recipe names it). Its step rules: the

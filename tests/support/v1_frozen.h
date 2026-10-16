@@ -5,12 +5,11 @@
 //
 // A model's v0 artifact and its v1 import must execute bit for bit alike when
 // the selected plan is the same. The proofs first compared the two inside one
-// process. Serving becomes v1-only, so the same facts are also recorded as
-// SHA-256 digests (full prefill heads, greedy tokens and logit rows,
-// complete-state images, the state after a spill and restore) under
-// tests/unit/data/v1_frozen/<family>.json, and the v1 arm is asserted
-// against them. The v0 arm is still compared and asserted against the same
-// digests while a v0 artifact is present, and skipped when it is not.
+// process, and the facts were recorded as SHA-256 digests (full prefill
+// heads, greedy tokens and logit rows, complete-state images, the state
+// after a spill and restore) under tests/unit/data/v1_frozen/<family>.json.
+// Serving is v1-only (D-118): the v1 artifacts are asserted against them,
+// the regression oracle that outlives the v0 path.
 //
 // Reading: LLMP_TEST_DATA/v1_frozen/<family>.json, a flat object of strings
 // (or LLMP_TEST_V1_FROZEN_DIR/<family>.json). Recording: with
@@ -21,8 +20,9 @@
 // that legitimately moves bits re-records the file and says so.
 //
 // The published v1 artifacts' IDs for the tests that take a store: the
-// store's v1-ids.json maps each v0 artifact ID to its v1 ID
-// (LLMP_TEST_V1_STORE names the store).
+// store's v1-ids.json maps each v0 artifact ID to its v1 ID and names them
+// (LLMP_TEST_V1_STORE names the store; by default the Sparks' models
+// directory's m36-v1-artifacts).
 
 #ifndef LLMP_TESTS_SUPPORT_V1_FROZEN_H_
 #define LLMP_TESTS_SUPPORT_V1_FROZEN_H_
@@ -154,16 +154,45 @@ class FrozenDigests {
   bool loaded_ = false;
 };
 
-// The store named by LLMP_TEST_V1_STORE, empty when unset.
+// The published v1 store: LLMP_TEST_V1_STORE, else the models directory's
+// (~/.local/share/llmp/m36-v1-artifacts on the Sparks).
 inline std::string V1Store() {
   const char* store = std::getenv("LLMP_TEST_V1_STORE");  // NOLINT(concurrency-mt-unsafe)
-  return store != nullptr ? store : "";
+  if (store != nullptr) return store;
+  const char* home = std::getenv("HOME");  // NOLINT(concurrency-mt-unsafe)
+  return home != nullptr ? std::string(home) + "/.local/share/llmp/m36-v1-artifacts" : "";
 }
-// The v1 ID the store's v1-ids.json records for a v0 artifact ID.
+// The published v1 IDs, pinned in-tree: tests/unit/data/v1_frozen/v1-ids.json
+// (a copy of the store's), read from LLMP_TEST_DATA (else ctest's working
+// directory's data/). A models test that names an artifact fails, rather
+// than skips, when the store does not hold it: its ID never depends on the
+// store being there.
+inline std::string V1IdsPath() {
+  const char* data = std::getenv("LLMP_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
+  return std::string(data != nullptr ? data : "data") + "/v1_frozen/v1-ids.json";
+}
+
+// The v1 ID the pinned map names `name` (its "names" map: "gemma2",
+// "gemma3", "gemma26", "gemma26-assistant", "gemma31", "gemma31-assistant",
+// "qwen38-gguf", "qwen38-modelopt", "qwen38-modelopt-mtp", "qwen38-mlx",
+// "deepseek", "deepseek-iq2xxs", "dspark", "qwen2-fp16", "qwen2-exl3-4.0",
+// "qwen2-exl3-4.5"), nullopt for a name it does not have.
+inline std::optional<std::string> V1IdNamed(std::string_view name) {
+  const auto path = V1IdsPath();
+  const auto names = ReadStringMap(path, "names");
+  const auto ids = ReadStringMap(path, "artifacts");
+  for (const auto& [key, named] : names) {
+    if (named != name) continue;
+    const auto found = ids.find(key);
+    if (found == ids.end()) return std::nullopt;
+    return found->second;
+  }
+  return std::nullopt;
+}
+
+// The v1 ID the pinned map records for a v0 artifact ID.
 inline std::optional<std::string> V1IdFor(std::string_view v0_id) {
-  const auto store = V1Store();
-  if (store.empty()) return std::nullopt;
-  const auto ids = ReadStringMap(store + "/v1-ids.json", "artifacts");
+  const auto ids = ReadStringMap(V1IdsPath(), "artifacts");
   const auto found = ids.find(std::string(v0_id));
   if (found == ids.end()) return std::nullopt;
   return found->second;

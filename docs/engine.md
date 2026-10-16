@@ -765,16 +765,16 @@ step returns its tokens chosen on the device, and the prefill futures'
 options, and what the source and launch borrow (`keep`: the spec, the
 artifact's tensors, the kernel source's backend), released after the
 runner. Serving's build (`runtime/component_build.h`, which the gate's
-harnesses share) synthesizes the spec from the v0 artifact and, when the
-model speculates, composes its drafter's (`spec::ComposeDrafterV0`: Gemma
+harnesses share) reads the spec its v1 artifact stores (D-118) and, when
+the model speculates, composes its drafter's (`spec::ComposeDrafter`: Gemma
 4's assistant, a stage of its own), takes each stage's layout (each state
 tensor on its own paged extents, as the M3 layouts: packed tensors
 straddle extents, so a prompt would grow its state at staggered positions
 every chunk or two, each growth a host cost between steps) and the
 target's batching from the components, and makes a `ComponentStepSource`
 a stage (a `StagedStepSource` over several) planned under each
-architecture mapping's policy for the serving envelope (its context and
-owners: `spec::DefaultRule`, whose rule also says how serving composes
+approval's policy rule for the serving envelope (its context and
+owners: `ComponentAdmissionPolicy` over its mapping's `spec::DefaultRule`, whose rule also says how serving composes
 the recipe's steps: prompts alone, owners alone, the prompt futures
 planned and captured ahead) over a `GgmlBackend` created on the model's
 own stream (the runner's job stream, which every launch checks; one
@@ -1198,7 +1198,7 @@ rather than works around:
   kernels (`kernels/ggml/`), selected per shape by the plan; the skeleton's
   plan cache and graphs take them unchanged, and a prefill shape's capture
   rule is the runner's. DeepSeek's fast plan has them (its window cache a
-  ring, `model/dsv4.h` `Dsv4Window`; `llmp.dsv4.lid_topk` and
+  ring, its window the spec's attention parameter; `llmp.dsv4.lid_topk` and
   `sparse_mask`, [long-context](experiments/long-context/README.md)), and
   so does Qwen3.8's fast graph (`llmp.qsa.pool`, `.topk`, `.attn`; its
   block keys a state tensor of the model's layout, their verify saves the

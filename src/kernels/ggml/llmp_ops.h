@@ -349,8 +349,8 @@ bool UsesGemvBf16Vector(const ggml_tensor* node);
 // the kernels read them with vector loads (codes and x rows 16-byte
 // aligned), extents within the kernels' 32-bit indexing, and outputs
 // disjoint from their operands. The row lookup's ids are not read here:
-// the caller builds them within the table (model/qwen38.h's n-gram hash
-// over offsets and sizes the binding checked); the kernel writes NaN for
+// the caller builds them within the table (the n-gram hash over the
+// offsets and sizes the stored spec's side.ngram holds); the kernel writes NaN for
 // an id outside the table rather than read out of bounds.
 std::expected<void, KernelFailure> CheckMxfp8MulMatVec(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckMxfp8Dequant(const ggml_tensor* node);
@@ -1148,7 +1148,7 @@ std::int64_t Q8Bytes(std::int64_t k, std::int64_t rows);
 bool VecQType(ggml_type type);
 
 // DeepSeek V4's sparse attention at depth (the fast plan over a ring
-// window, model/dsv4.h Dsv4Window::kRing; dsv4_sparse.cu), deterministic,
+// window, the spec's attention window; dsv4_sparse.cu), deterministic,
 // so a run repeats bit for bit (RE-031):
 //
 //   llmp.dsv4.lid_topk     the lightning indexer and its selection: each

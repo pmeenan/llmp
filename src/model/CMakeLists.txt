@@ -3,17 +3,14 @@
 
 # The model layer's adapters (docs/architecture.md#layers-and-dependency-rules):
 # state representations and their capabilities, a request's live state
-# (state.h) and model contexts composed of components (context.h), as D-068
-# needs them expressed; and architecture adapters, so far Qwen2 dense
-# (qwen2.h) and its immutable EXL3 source bindings (qwen2_exl3.h),
-# and DeepSeek V4 Flash (dsv4.h) with its DSpark
-# drafter (dspark.h), Qwen3.8 Flash Next (qwen38.h) and Qwen-Image-2.1
-# (qwen_image.h) for M3, and Gemma 4 profiles, bindings and bounded inputs
-# (gemma4.h) for M3.5, plus the approved Gemma 3 and Gemma 2 profiles and tensor bindings (gemma3.h,
-# gemma2.h).
+# (state.h), state contracts and what derives from them (state_contract.h),
+# draft progress (draft_progress.h) and model contexts composed of components
+# (context.h), as D-068 needs them expressed; and Qwen-Image-2.1's profiles,
+# bindings and host arithmetic (qwen_image.h), which the image slice moves to
+# stored spec data. LLM families have no code here: their specs are the
+# artifact's (D-107, D-118).
 # Model layer: no vendor or kernel-module types, and
 # the resource core never includes it.
-add_library(llmp_model STATIC context.cc draft_progress.cc dspark.cc dsv4.cc gemma2.cc gemma3.cc gemma4.cc gemma4_assistant.cc qwen2.cc qwen2_exl3.cc qwen38.cc
-                                qwen_image.cc state.cc state_contract.cc)
+add_library(llmp_model STATIC context.cc draft_progress.cc qwen_image.cc state.cc state_contract.cc)
 target_include_directories(llmp_model PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(llmp_model PUBLIC llmp_base llmp_catalog llmp_format PRIVATE llmp_artifact llmp_warnings)

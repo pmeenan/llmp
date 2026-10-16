@@ -11,10 +11,11 @@
 // - each component's fragment, run by the reference executor over several
 //   steps (prefill, decode, several owners, state-only) against its own
 //   scalar reference, with the streams, carries and side input it reads;
-// - the compressors' inputs against model::Dsv4CompressorPlan;
 // - the deepseek4 and dflash mappings over the fixture's tensor tables
-//   (tests/unit/dsv4_fixture.h): the spec's structure, the layouts against
-//   today's Dsv4State and DsparkState, steps of every kind built;
+//   (tests/unit/dsv4_fixture.h) and the profiles' values
+//   (tests/support/families/dsv4.h): the spec's structure, the layouts
+//   against the M3 runners' state in closed form, steps of every kind
+//   built;
 // - a small target and drafter through BuildStep on the reference
 //   executor: the injection writes the drafter's ring from the target's
 //   streams' means as an independent computation of it does.
@@ -38,7 +39,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -46,12 +46,11 @@
 #include "components/defs.h"
 #include "components/step.h"
 #include "dsv4_fixture.h"
+#include "families/dsv4.h"
 #include "format/encoding.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/reference/exec.h"
-#include "model/dspark.h"
-#include "model/dsv4.h"
 #include "model/state_contract.h"
 #include "planner/step_shape.h"
 #include "spec/mapping.h"
@@ -62,7 +61,7 @@ namespace llmp::components {
 namespace {
 
 namespace ref = llmp::kernels::reference;
-namespace md = llmp::model;
+namespace fam = llmp::test_support::families;
 namespace fx = llmp::test_support::dsv4;
 using format::Encoding;
 using spec::ComponentRef;
@@ -820,53 +819,6 @@ TEST(ComponentsDsv4Test, VisibleCellCountsUseOwnerAndRealCapacityWithoutPadding)
   EXPECT_FALSE(context.VisibleCells(0, cells, 257, 3));
 }
 
-TEST(ComponentsDsv4Test, CompressorInputsAreTodaysPlans) {
-  // Every chunk of a CSA (4, overlapping, ring of 8) and an HCA (128, ring
-  // of 128) compressor against Dsv4CompressorPlan: the pooled reads, the
-  // blocks' cells and first positions, the phases, and the ring's kept
-  // rows (its rows and cells as pairs: today's are in cell order).
-  constexpr std::uint64_t kCache = 512;
-  for (const auto& [ratio, overlap, ring] :
-       {std::tuple{4U, true, 8U}, std::tuple{128U, false, 128U}}) {
-    for (const std::uint32_t past : {0U, 1U, 3U, 4U, 127U, 128U, 300U, 1000U}) {
-      for (const std::uint32_t rows : {1U, 2U, 3U, 5U, 8U, 9U, 130U, 300U}) {
-        SCOPED_TRACE(std::format("ratio {} past {} rows {}", ratio, past, rows));
-        auto want = md::Dsv4CompressorPlan(ratio, overlap, ring, kCache, past, rows);
-        ASSERT_TRUE(want.has_value()) << want.error();
-        const planner::StepShape shape{.segments = {Seg(0, rows, past, 256, 0)}};
-        const auto values = [&](InputKind kind, std::uint64_t capacity) {
-          StepInput in{.kind = kind,
-                       .segment = 0,
-                       .cells = {.capacity = capacity, .ring = true, .recent = true},
-                       .ratio = ratio,
-                       .overlap = overlap,
-                       .ring = ring};
-          auto v = InputValues(in, shape, {});
-          EXPECT_TRUE(v.has_value()) << (v ? "" : v.error());
-          return v.value_or(std::vector<std::int64_t>{});
-        };
-        const auto as64 = [](const auto& v) {
-          return std::vector<std::int64_t>(v.begin(), v.end());
-        };
-        EXPECT_EQ(values(InputKind::kPoolReads, ring), as64(want->read_idxs));
-        EXPECT_EQ(values(InputKind::kBlockCells, kCache), as64(want->write_idxs));
-        EXPECT_EQ(values(InputKind::kBlockStarts, ring), as64(want->write_pos));
-        EXPECT_EQ(values(InputKind::kPositionPhases, ring), as64(want->state_pos));
-        EXPECT_EQ(CompressorBlocks(rows, past, ratio, overlap), want->blocks());
-        const auto kept_rows = values(InputKind::kKeptRows, ring);
-        const auto kept_cells = values(InputKind::kKeptCells, ring);
-        std::set<std::pair<std::int64_t, std::int64_t>> got;
-        std::set<std::pair<std::int64_t, std::int64_t>> expect;
-        for (std::size_t i = 0; i < kept_rows.size(); ++i) got.emplace(kept_rows[i], kept_cells[i]);
-        for (std::size_t i = 0; i < want->persist_src.size(); ++i) {
-          expect.emplace(want->persist_src[i], want->persist_dst[i]);
-        }
-        EXPECT_EQ(got, expect);
-      }
-    }
-  }
-}
-
 // ---------------------------------------------------------------- mappings
 
 struct Composed {
@@ -876,11 +828,11 @@ struct Composed {
 };
 
 // The target's spec, and composed with its drafter.
-std::optional<Composed> Compose(const md::Dsv4Profile& p, const md::DsparkProfile& d,
+std::optional<Composed> Compose(const fam::Dsv4Profile& p, const fam::DsparkProfile& d,
                                 const fx::Types& types = {}) {
   Composed out;
   out.target = fx::SourceOf("deepseek4", fx::Resources(p, types), spec::mappings::Dsv4Mapping());
-  auto values = spec::mappings::Dsv4V0Values(p);
+  auto values = fam::Dsv4Values(p);
   EXPECT_TRUE(values.has_value()) << (values ? "" : values.error());
   if (!values) return std::nullopt;
   auto target = spec::Synthesize(spec::mappings::Dsv4Mapping(), out.target, *values);
@@ -888,7 +840,7 @@ std::optional<Composed> Compose(const md::Dsv4Profile& p, const md::DsparkProfil
   if (!target) return std::nullopt;
   out.drafter =
       fx::SourceOf("dflash", fx::DrafterResources(d, types), spec::mappings::DsparkMapping());
-  auto drafter_values = spec::mappings::DsparkV0Values(d);
+  auto drafter_values = fam::DsparkValues(d);
   EXPECT_TRUE(drafter_values.has_value()) << (drafter_values ? "" : drafter_values.error());
   if (!drafter_values) return std::nullopt;
   auto spec = spec::ComposeDrafter(*target, spec::mappings::Dsv4Mapping(),
@@ -905,8 +857,8 @@ const spec::Param* ParamOf(const spec::ComponentRef& c, std::string_view name) {
 }
 
 TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
-  const md::Dsv4Profile& p = md::Dsv4Flash();
-  const md::DsparkProfile& d = md::DsparkDeepSeekV4Flash();
+  const fam::Dsv4Profile& p = fam::Dsv4Flash();
+  const fam::DsparkProfile& d = fam::DsparkDeepSeekV4Flash();
   auto made = Compose(p, d);
   ASSERT_TRUE(made.has_value());
   const spec::ModelSpec& spec = made->spec;
@@ -935,7 +887,7 @@ TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
     const spec::Param* ratio = ParamOf(c[1], "ratio");
     const std::uint32_t want = p.compress_ratios[il];
     EXPECT_EQ(ratio == nullptr ? 0 : std::get<std::int64_t>(ratio->value), want);
-    EXPECT_EQ(ParamOf(c[1], "indexer") != nullptr, want == md::kDsv4CsaRatio);
+    EXPECT_EQ(ParamOf(c[1], "indexer") != nullptr, want == fam::kDsv4CsaRatio);
     EXPECT_EQ(ParamOf(c[1], "rope_factor") != nullptr, want != 0);
     const spec::Param* router = ParamOf(c[4], "router");
     ASSERT_NE(router, nullptr);
@@ -957,12 +909,12 @@ TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
   const std::array<std::span<const BoundTensor>, 2> tensors{made->target.tensors,
                                                             made->drafter.tensors};
   ASSERT_TRUE(ValidateSpec(spec, tensors));
-  // The layouts are today's state: the target's ring and full windows
-  // (Dsv4State), the drafter's ring (DsparkState).
+  // The layouts are the M3 runners' state (in closed form): the target's
+  // ring and full windows (Dsv4State), the drafter's ring (DsparkState).
   for (const auto& [context, rows] : {std::pair{4096U, 512U}, {65536U, 2048U}}) {
-    for (const auto window : {md::Dsv4Window::kRing, md::Dsv4Window::kFull}) {
+    for (const auto window : {fam::Dsv4Window::kRing, fam::Dsv4Window::kFull}) {
       spec::ModelSpec form = spec;
-      if (window == md::Dsv4Window::kFull) {
+      if (window == fam::Dsv4Window::kFull) {
         for (spec::Layer& l : form.stages[0].layers) {
           for (spec::ComponentRef& c : l.components) {
             for (spec::Param& q : c.params) {
@@ -971,7 +923,7 @@ TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
           }
         }
       }
-      auto want = md::Dsv4State(p, context, rows, window);
+      auto want = fam::Dsv4State(p, context, rows, window);
       ASSERT_TRUE(want.has_value());
       auto got = StageLayout(form, 0, context, rows);
       ASSERT_TRUE(got.has_value()) << got.error();
@@ -983,7 +935,7 @@ TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
       EXPECT_EQ(got->bytes, want->bytes);
     }
   }
-  auto ring = md::DsparkState(d, 16);
+  auto ring = fam::DsparkState(d, 16);
   ASSERT_TRUE(ring.has_value());
   auto drafted = StageLayout(spec, 1, 65536, 16);
   ASSERT_TRUE(drafted.has_value()) << drafted.error();
@@ -997,9 +949,9 @@ TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
 // The serving target is not the composed spec above: with no taps or
 // injection, its final stateless FFN is dead on intermediate prompt chunks.
 TEST(ComponentsDsv4Test, SoloNoHeadPrefillKeepsStateWithoutFinalExpertProducts) {
-  const auto& profile = md::Dsv4Flash();
+  const auto& profile = fam::Dsv4Flash();
   auto source = fx::SourceOf("deepseek4", fx::Resources(profile), spec::mappings::Dsv4Mapping());
-  auto values = spec::mappings::Dsv4V0Values(profile);
+  auto values = fam::Dsv4Values(profile);
   ASSERT_TRUE(values.has_value()) << (values ? "" : values.error());
   auto target_spec = spec::Synthesize(spec::mappings::Dsv4Mapping(), source, *values);
   ASSERT_TRUE(target_spec.has_value()) << (target_spec ? "" : target_spec.error());
@@ -1052,8 +1004,8 @@ TEST(ComponentsDsv4Test, SoloNoHeadPrefillKeepsStateWithoutFinalExpertProducts) 
 // injection), joined decodes and a verify, a state-only chunk; the
 // drafter's draft blocks.
 TEST(ComponentsDsv4Test, EveryStepKindBuilds) {
-  const md::Dsv4Profile& p = md::Dsv4Flash();
-  const md::DsparkProfile& d = md::DsparkDeepSeekV4Flash();
+  const fam::Dsv4Profile& p = fam::Dsv4Flash();
+  const fam::DsparkProfile& d = fam::DsparkDeepSeekV4Flash();
   auto made = Compose(p, d);
   ASSERT_TRUE(made.has_value());
   constexpr std::uint32_t kContext = 65536;
@@ -1118,8 +1070,8 @@ TEST(ComponentsDsv4Test, EveryStepKindBuilds) {
 
 // A small DeepSeek V4 (four layers: window and CSA hash-routed, HCA, CSA)
 // and its drafter.
-md::Dsv4Profile Tiny() {
-  md::Dsv4Profile p = md::Dsv4Flash();
+fam::Dsv4Profile Tiny() {
+  fam::Dsv4Profile p = fam::Dsv4Flash();
   p.name = "tiny";
   p.layers = 4;
   p.width = 64;
@@ -1144,7 +1096,7 @@ md::Dsv4Profile Tiny() {
   p.rope_scale = 4.0F;
   p.swiglu_limit = 0.4F;
   p.swiglu_limit_shared = 0.5F;
-  p.compress_ratios = {0, md::kDsv4CsaRatio, md::kDsv4HcaRatio, md::kDsv4CsaRatio};
+  p.compress_ratios = {0, fam::kDsv4CsaRatio, fam::kDsv4HcaRatio, fam::kDsv4CsaRatio};
   return p;
 }
 TEST(ComponentsDsv4Test, RoundedIndexerUsesCompletedCountsAndOneFullSelectedMask) {
@@ -1156,7 +1108,7 @@ TEST(ComponentsDsv4Test, RoundedIndexerUsesCompletedCountsAndOneFullSelectedMask
   profile.indexer_head_dim = 128;
   auto source = fx::SourceOf("deepseek4", fx::Resources(profile, fx::kF16Types),
                              spec::mappings::Dsv4Mapping());
-  auto values = spec::mappings::Dsv4V0Values(profile);
+  auto values = fam::Dsv4Values(profile);
   ASSERT_TRUE(values) << values.error();
   auto spec = spec::Synthesize(spec::mappings::Dsv4Mapping(), source, *values);
   ASSERT_TRUE(spec) << spec.error();
@@ -1219,8 +1171,8 @@ TEST(ComponentsDsv4Test, RoundedIndexerUsesCompletedCountsAndOneFullSelectedMask
   EXPECT_FALSE(BuildStep(*spec, 0, beyond, bindings, {.rounded_indexer = true}));
 }
 
-md::DsparkProfile TinyDrafter() {
-  md::DsparkProfile d;
+fam::DsparkProfile TinyDrafter() {
+  fam::DsparkProfile d;
   d.name = "tiny-dspark";
   d.blocks = Tiny();
   d.blocks.layers = 1;
@@ -1288,8 +1240,8 @@ void BindWeights(ref::Executor& exec, const StepGraph& step,
 }
 
 TEST(ComponentsDsv4Test, ATargetsStepInjectsItsFeaturesIntoItsDraftersRing) {
-  const md::Dsv4Profile p = Tiny();
-  const md::DsparkProfile d = TinyDrafter();
+  const fam::Dsv4Profile p = Tiny();
+  const fam::DsparkProfile d = TinyDrafter();
   auto made = Compose(p, d, fx::kF16Types);
   ASSERT_TRUE(made.has_value());
   constexpr std::uint32_t kContext = 4096;

@@ -6,12 +6,13 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
+#include "format/encoding.h"
+#include "format/tensor_format.h"
 #include "spec/mapping.h"
 #include "spec/mappings/rules.h"
 #include "spec/spec.h"
@@ -271,8 +272,6 @@ constexpr Mapping kMapping{
 
 // -------------------------------------------------------- gemma4-assistant
 
-constexpr std::string_view kA = "gemma4-assistant.";
-
 constexpr std::array kAssistantSlots = {
     SlotRule{.slot = "embedding", .site = Site::kEmbedding, .kind = "embedding.projected"},
     SlotRule{.slot = "attention", .site = Site::kLayer, .kind = "attention.borrowed"},
@@ -382,47 +381,74 @@ constexpr std::array kAssistantPolicies = {
                        "disable rms_norm_mul_add\ndisable rms_norm_mul_rope\ndisable rope_store\n"},
 };
 
-// Anchored on its target's tapped features, borrowing its target's state:
-// three drafts a unit at most, its qualified transaction's
-// (docs/experiments/gemma-assistant-throughput).
-constexpr DraftRecipe kAssistantDraft{.shape = DraftRecipe::Shape::kAnchored, .depth = 3};
-
-constexpr Mapping kAssistantMapping{
-    .architecture = "gemma4-assistant",
-    .version = 1,
-    .pipeline = PipelineKind::kLlm,
-    .layer_count_key = "gemma4-assistant.block_count",
-    .layer_types = "lllg",
-    .slots = kAssistantSlots,
-    .tensors = kAssistantTensors,
-    .params = kAssistantParams,
-    .folds = {},
-    .layer_flags_key = "gemma4-assistant.attention.sliding_window_pattern",
-    .layer_flag_type = 'l',
-    .role = StageRole::kDrafter,
-    .stage = "assistant",
-    .reads = kAssistantReads,
-    .policies = kAssistantPolicies,
-    .draft = &kAssistantDraft,
-};
-
 std::vector<std::int64_t> PerLayerOf(std::uint32_t layers, auto value) {
   std::vector<std::int64_t> out;
   for (std::uint32_t il = 0; il < layers; ++il) out.push_back(static_cast<std::int64_t>(value(il)));
   return out;
 }
 
-}  // namespace
-
-const Mapping& Gemma4Mapping() { return kMapping; }
-const Mapping& Gemma4AssistantMapping() { return kAssistantMapping; }
-
-std::expected<std::vector<SourceValue>, std::string> Gemma4V0Values(const model::Gemma4Profile& p) {
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    if (p.local(il) != (kMapping.layer_types.at(il % kMapping.layer_types.size()) == 'l')) {
-      return std::unexpected("the Gemma 4 profile's local layers are not the mapping's");
-    }
+// The approved checkpoints an assistant pairs with, as the importer
+// composes an assistant's stage with its target (it keeps none of its
+// target's): their GGUF metadata's values and their tensors' names and
+// shapes, by the target width the assistant's metadata names
+// (gemma4-assistant.embedding_length_out). Five local layers to a global
+// one, no inter-layer KV sharing, no per-layer input embedding.
+struct Target {
+  std::uint32_t layers = 0, width = 0, heads = 0;
+  std::uint32_t local_kv_heads = 0, global_kv_heads = 0;
+  std::uint32_t local_head_dim = 0, global_head_dim = 0;
+  std::uint32_t local_rope_dims = 0, global_rope_dims = 0;
+  std::uint32_t ffn = 0, experts = 0, experts_used = 0, expert_ffn = 0;
+  std::uint32_t vocab = 0, context = 0, window = 0;
+  float local_rope_base = 0, global_rope_base = 0, rms_eps = 0, final_softcap = 0;
+  bool local(std::uint32_t layer) const { return (layer + 1) % 6 != 0; }
+  std::uint32_t head_dim(std::uint32_t layer) const {
+    return local(layer) ? local_head_dim : global_head_dim;
   }
+  std::uint32_t kv_heads(std::uint32_t layer) const {
+    return local(layer) ? local_kv_heads : global_kv_heads;
+  }
+};
+// gemma-4-26B-A4B-it and gemma-4-31B-it.
+constexpr Target k26B{.layers = 30,
+                      .width = 2816,
+                      .heads = 16,
+                      .local_kv_heads = 8,
+                      .global_kv_heads = 2,
+                      .local_head_dim = 256,
+                      .global_head_dim = 512,
+                      .local_rope_dims = 256,
+                      .global_rope_dims = 512,
+                      .ffn = 2112,
+                      .experts = 128,
+                      .experts_used = 8,
+                      .expert_ffn = 704,
+                      .vocab = 262144,
+                      .context = 262144,
+                      .window = 1024,
+                      .local_rope_base = 10000,
+                      .global_rope_base = 1000000,
+                      .rms_eps = 1e-6F,
+                      .final_softcap = 30};
+constexpr Target k31B{.layers = 60,
+                      .width = 5376,
+                      .heads = 32,
+                      .local_kv_heads = 16,
+                      .global_kv_heads = 4,
+                      .local_head_dim = 256,
+                      .global_head_dim = 512,
+                      .local_rope_dims = 256,
+                      .global_rope_dims = 512,
+                      .ffn = 21504,
+                      .vocab = 262144,
+                      .context = 262144,
+                      .window = 1024,
+                      .local_rope_base = 10000,
+                      .global_rope_base = 1000000,
+                      .rms_eps = 1e-6F,
+                      .final_softcap = 30};
+
+std::expected<std::vector<SourceValue>, std::string> TargetValues(const Target& p) {
   std::vector<SourceValue> out{
       Value("gemma4.context_length", p.context),
       Value("gemma4.embedding_length", p.width),
@@ -453,49 +479,102 @@ std::expected<std::vector<SourceValue>, std::string> Gemma4V0Values(const model:
   return out;
 }
 
-std::expected<std::vector<SourceValue>, std::string> Gemma4AssistantV0Values(
-    const model::Gemma4AssistantProfile& a, const model::Gemma4Profile& t) {
-  // The composition reads each local layer from the target's last local
-  // layer and the global one from its last global layer.
-  std::uint32_t last_local = 0;
-  std::uint32_t last_global = 0;
-  for (std::uint32_t il = 0; il < t.layers; ++il) {
-    (t.local(il) ? last_local : last_global) = il;
-  }
-  if (a.target_width != t.width || a.local_target_layer != last_local ||
-      a.global_target_layer != last_global || a.local_kv_heads != t.local_kv_heads ||
-      a.global_kv_heads != t.global_kv_heads) {
-    return std::unexpected("the assistant's profile is not its target's");
-  }
-  const auto layers = model::kGemma4AssistantLayers;
-  const auto local = [&](std::uint32_t il) {
-    return kAssistantMapping.layer_types.at(il % kAssistantMapping.layer_types.size()) == 'l';
+// Its tensors as its GGUF names them, BF16 matrices and F32 vectors.
+Source TargetSource(const Target& p) {
+  Source s{.architecture = "gemma4", .container = "gguf"};
+  const auto add = [&](std::string name, std::vector<std::uint64_t> ne, bool experts = false) {
+    const auto encoding = ne.size() == 1 ? format::Encoding::kF32 : format::Encoding::kBF16;
+    format::TensorFormat f{
+        .encoding = encoding,
+        .layout = format::Layout::kDense,
+        .shape = {.ne = {1, 1, 1, 1}, .rank = static_cast<std::uint8_t>(ne.size())},
+    };
+    for (std::size_t i = 0; i < ne.size(); ++i) f.shape.ne[i] = ne[i];
+    s.tensors.push_back({.name = std::move(name),
+                         .format = f,
+                         .part = format::PartRole::kData,
+                         .experts = experts});
   };
-  return std::vector<SourceValue>{
-      Value(std::string(kA) + "context_length", t.context),
-      Value(std::string(kA) + "embedding_length", model::kGemma4AssistantWidth),
-      Value(std::string(kA) + "block_count", layers),
-      Value(std::string(kA) + "feed_forward_length", model::kGemma4AssistantFfn),
-      Value(std::string(kA) + "attention.head_count", a.heads),
-      Value(std::string(kA) + "attention.head_count_kv",
-            PerLayerOf(layers,
-                       [&](std::uint32_t il) {
-                         return local(il) ? a.local_kv_heads : a.global_kv_heads;
-                       })),
-      Value(std::string(kA) + "attention.key_length", t.global_head_dim),
-      Value(std::string(kA) + "attention.key_length_swa", t.local_head_dim),
-      Value(std::string(kA) + "attention.value_length", t.global_head_dim),
-      Value(std::string(kA) + "attention.value_length_swa", t.local_head_dim),
-      Value(kAEps, t.rms_eps),
-      Value(std::string(kA) + "attention.sliding_window", t.window),
-      Value(std::string(kA) + "attention.sliding_window_pattern",
-            PerLayerOf(layers, [&](std::uint32_t il) { return local(il) ? 1 : 0; })),
-      Value(std::string(kA) + "rope.freq_base", t.global_rope_base),
-      Value(std::string(kA) + "rope.freq_base_swa", t.local_rope_base),
-      Value(std::string(kA) + "rope.dimension_count", t.global_rope_dims),
-      Value(std::string(kA) + "rope.dimension_count_swa", t.local_rope_dims),
-      Value(kAOut, a.target_width),
-  };
+  add("token_embd.weight", {p.width, p.vocab});
+  add("output_norm.weight", {p.width});
+  add("output.weight", {p.width, p.vocab});
+  add("rope_freqs.weight", {p.global_head_dim / 2});
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    const std::string prefix = std::format("blk.{}.", il);
+    const std::uint64_t d = p.head_dim(il), kv = p.kv_heads(il) * d, q = p.heads * d;
+    add(prefix + "attn_norm.weight", {p.width});
+    add(prefix + "attn_q.weight", {p.width, q});
+    add(prefix + "attn_k.weight", {p.width, kv});
+    if (p.local(il)) {
+      add(prefix + "attn_v.weight", {p.width, kv});
+    }
+    add(prefix + "attn_q_norm.weight", {d});
+    add(prefix + "attn_k_norm.weight", {d});
+    add(prefix + "attn_output.weight", {q, p.width});
+    add(prefix + "post_attention_norm.weight", {p.width});
+    add(prefix + "layer_output_scale.weight", {1});
+    add(prefix + "ffn_norm.weight", {p.width});
+    add(prefix + "ffn_gate.weight", {p.width, p.ffn});
+    add(prefix + "ffn_up.weight", {p.width, p.ffn});
+    add(prefix + "ffn_down.weight", {p.ffn, p.width});
+    if (p.experts != 0) {
+      add(prefix + "post_ffw_norm_1.weight", {p.width});
+      add(prefix + "ffn_gate_inp.weight", {p.width, p.experts});
+      add(prefix + "ffn_gate_inp.scale", {p.width});
+      add(prefix + "pre_ffw_norm_2.weight", {p.width});
+      add(prefix + "ffn_gate_up_exps.weight", {p.width, 2U * p.expert_ffn, p.experts}, true);
+      add(prefix + "ffn_down_exps.weight", {p.expert_ffn, p.width, p.experts}, true);
+      add(prefix + "ffn_down_exps.scale", {p.experts});
+      add(prefix + "post_ffw_norm_2.weight", {p.width});
+    }
+    add(prefix + "post_ffw_norm.weight", {p.width});
+  }
+  return s;
 }
+
+constexpr std::array<std::string_view, 2> kParentWidth{"gemma4-assistant.embedding_length_out",
+                                                       "gemma4-assistant.Parent.embedding_length"};
+constexpr std::array kAssistantTargets = {
+    ImportTarget{.keys = kParentWidth,
+                 .value = k26B.width,
+                 .mapping = &Gemma4Mapping,
+                 .values = +[] { return TargetValues(k26B); },
+                 .source = +[] { return TargetSource(k26B); }},
+    ImportTarget{.keys = kParentWidth,
+                 .value = k31B.width,
+                 .mapping = &Gemma4Mapping,
+                 .values = +[] { return TargetValues(k31B); },
+                 .source = +[] { return TargetSource(k31B); }},
+};
+
+// Anchored on its target's tapped features, borrowing its target's state:
+// three drafts a unit at most, its qualified transaction's
+// (docs/experiments/gemma-assistant-throughput).
+constexpr DraftRecipe kAssistantDraft{
+    .shape = DraftRecipe::Shape::kAnchored, .depth = 3, .import_targets = kAssistantTargets};
+
+constexpr Mapping kAssistantMapping{
+    .architecture = "gemma4-assistant",
+    .version = 1,
+    .pipeline = PipelineKind::kLlm,
+    .layer_count_key = "gemma4-assistant.block_count",
+    .layer_types = "lllg",
+    .slots = kAssistantSlots,
+    .tensors = kAssistantTensors,
+    .params = kAssistantParams,
+    .folds = {},
+    .layer_flags_key = "gemma4-assistant.attention.sliding_window_pattern",
+    .layer_flag_type = 'l',
+    .role = StageRole::kDrafter,
+    .stage = "assistant",
+    .reads = kAssistantReads,
+    .policies = kAssistantPolicies,
+    .draft = &kAssistantDraft,
+};
+
+}  // namespace
+
+const Mapping& Gemma4Mapping() { return kMapping; }
+const Mapping& Gemma4AssistantMapping() { return kAssistantMapping; }
 
 }  // namespace llmp::spec::mappings

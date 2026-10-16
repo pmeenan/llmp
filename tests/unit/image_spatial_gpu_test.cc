@@ -32,6 +32,7 @@
 #include "engine/step_runs.h"
 #include "engine/support.h"
 #include "expected_error.h"
+#include "fixture_source.h"
 #include "kernels/ggml/conv2d_tiled.h"
 #include "kernels/ggml/step_program.h"
 #include "platform/host_probe.h"
@@ -259,7 +260,7 @@ en::Status SetupFixture(Lifetime& life, const std::filesystem::path& path, bool 
   const auto tensors = mo::VaeDecoderTensors(mo::QwenImage21().vae);
   auto bound = mo::BindQwenImageComponent(tensors, "AutoencoderKLQwenImage21", artifact);
   if (!bound) return Error(bound.error());
-  auto source = sp::SourceOfV0(artifact);
+  auto source = llmp::test_support::V0ArtifactSource(artifact);
   if (!source) return Error(source.error());
   if (source->tensors.size() != 238) return Error("fixed source tensor metadata");
   std::vector<en::GroupPlace> groups(6, en::GroupPlace::kNone);

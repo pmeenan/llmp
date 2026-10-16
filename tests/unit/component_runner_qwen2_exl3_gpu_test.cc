@@ -24,6 +24,7 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -53,8 +54,6 @@
 #include "kernels/exl3/selected_source.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/step_program.h"
-#include "model/qwen2.h"
-#include "model/qwen2_exl3.h"
 #include "planner/pattern.h"
 #include "platform/host_probe.h"
 #include "platform/kept_files.h"
@@ -76,9 +75,29 @@ namespace pl = llmp::planner;
 namespace sp = llmp::spec;
 namespace ts = llmp::test_support;
 
+// Qwen2.5 0.5B Instruct's vocabulary (the fixture's: its logit rows).
+constexpr std::uint32_t kVocab = 151936;
+
 std::string Env(const char* name) {
   const char* value = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
   return value ? value : "";
+}
+// The checked executable identity a kept conversation records: the
+// SHA-256 of this test binary, hashed from /proc/self/exe (empty when it
+// cannot be read whole). LLMP_EXL3_KEPT_BINARY_SHA256 may name it, and then
+// must be it (docs/experiments/m36-exl3-selected's runs pinned it so).
+std::string KeptBinarySha256() {
+  std::ifstream in("/proc/self/exe", std::ios::binary);
+  if (!in) return {};
+  llmp::base::Sha256 hash;
+  std::vector<char> block(std::size_t{1} << 20U);
+  while (in.read(block.data(), static_cast<std::streamsize>(block.size())) || in.gcount() > 0)
+    hash.Update(std::as_bytes(std::span(block.data(), static_cast<std::size_t>(in.gcount()))));
+  if (in.bad()) return {};
+  auto actual = llmp::base::ToHex(hash.Finish());
+  if (const auto named = Env("LLMP_EXL3_KEPT_BINARY_SHA256"); !named.empty() && named != actual)
+    return {};
+  return actual;
 }
 // Validate the opened regular file before allocating. Reading is bounded
 // even if it changes after fstat; a short read or an extra byte is refused.
@@ -987,41 +1006,31 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   }
   auto& tokens = life->tokens;
   const auto& oracle = life->oracle;
-  const auto& profile = llmp::model::Qwen25Instruct05BExl3();
-  const std::size_t row_bytes = std::size_t{profile.vocab} * sizeof(float);
+  const std::size_t row_bytes = std::size_t{kVocab} * sizeof(float);
   std::uint64_t corpus_charge = 0;
   if (corpus) {
     const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = tokens}};
-    auto bound = ts::CorpusScore::Bound(documents, {profile.vocab, corpus_chunk_rows});
+    auto bound = ts::CorpusScore::Bound(documents, {kVocab, corpus_chunk_rows});
     ASSERT_TRUE(bound.has_value()) << bound.error();
     corpus_charge = *bound;
     ASSERT_LE(corpus_charge, 21108224U);
   }
   if (!corpus) ASSERT_EQ(oracle.size(), token_rows * row_bytes);
-  // The v0 fixture, or with LLMP_TEST_QWEN2_ARM=v1 the published v1 import of
-  // the same checkpoint (LLMP_TEST_V1_STORE and its v1-ids.json). The sealed
-  // oracle and the frozen digests hold both arms to the same bits.
-  const bool v1 = Env("LLMP_TEST_QWEN2_ARM") == "v1";
-  std::string store = Env("LLMP_EXL3_FIXTURE_STORE");
-  if (store.empty()) store = Env("HOME") + "/.local/share/llmp/artifact-layout-20260922/installed";
-  const std::string v0_artifact_id =
-      mixed_rate ? "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a"
-                 : "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4";
-  std::string artifact_id = v0_artifact_id;
-  if (v1) {
-    store = ts::V1Store();
-    const auto mapped = ts::V1IdFor(v0_artifact_id);
-    if (store.empty() || !mapped) GTEST_SKIP() << "no published v1 EXL3 fixture (LLMP_TEST_V1_STORE)";
-    artifact_id = *mapped;
-  }
+  // The published v1 import of the checkpoint (LLMP_TEST_V1_STORE and its
+  // v1-ids.json), held to the sealed oracle and the frozen digests (which its
+  // v0 import also met, bit for bit).
+  const std::string store = ts::V1Store();
+  const auto mapped = ts::V1IdNamed(mixed_rate ? "qwen2-exl3-4.5" : "qwen2-exl3-4.0");
+  if (!mapped) GTEST_FAIL() << "no published v1 EXL3 fixture in " << store;
+  const std::string artifact_id = *mapped;
   const fs::path root = fs::path(store) / artifact_id;
-  if (!fs::is_directory(root)) GTEST_SKIP() << "fixture not installed: " << root;
+  if (!fs::is_directory(root)) GTEST_FAIL() << "fixture not installed: " << root;
   // These pure filesystem bounds precede both artifact parser calls. The
   // checked manifest identity fixes the index's declared length/hash too.
   std::error_code metadata_error;
   const auto manifest_bytes = fs::file_size(root / "manifest.json", metadata_error);
   ASSERT_FALSE(metadata_error);
-  ASSERT_LE(manifest_bytes, v1 ? 64 * 1024U : 16 * 1024U);
+  ASSERT_LE(manifest_bytes, 64 * 1024U);
   const auto index_bytes = fs::file_size(root / "index.json", metadata_error);
   ASSERT_FALSE(metadata_error);
   ASSERT_LE(index_bytes, kMiB);
@@ -1029,37 +1038,21 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
   ASSERT_TRUE(headers.has_value()) << headers.error();
   auto opened = ar::Artifact::Open(root, {.expected_id = artifact_id});
   ASSERT_TRUE(opened.has_value()) << opened.error().ToString();
-  ASSERT_EQ(opened->format_version(), v1 ? 1U : 0U);
+  ASSERT_EQ(opened->format_version(), 1U);
   life->artifact.emplace(std::move(*opened));
   auto& artifact = life->artifact;
-  ASSERT_EQ(profile.layers, 24U);
-  ASSERT_EQ(profile.width, 896U);
-  ASSERT_EQ(profile.vocab, 151936U);
-  ASSERT_EQ(profile.ffn, 4864U);
-  ASSERT_EQ(profile.heads, 14U);
-  ASSERT_EQ(profile.kv_heads, 2U);
-  ASSERT_EQ(profile.head_dim, 64U);
   ASSERT_LE(artifact->resources().size(), 1024U);
   ASSERT_LE(artifact->groups().size(), 64U);
   ASSERT_LE(artifact->chunk_sha256().size(), 1024U);
   const auto& mapping = sp::mappings::Qwen2Mapping();
-  auto mapped_values = sp::mappings::Qwen2V0Values(profile);
-  ASSERT_TRUE(mapped_values.has_value()) << mapped_values.error();
-  life->values = std::move(*mapped_values);
-  if (v1) {
-    // The stored spec and the artifact's own tensor formats and parts execute unchanged.
-    auto bound_source = sp::SourceOf(*artifact);
-    ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
-    life->source.emplace(std::move(*bound_source));
-    auto stored = sp::StoredSpec(*artifact);
-    ASSERT_TRUE(stored.has_value()) << stored.error();
-    life->spec.emplace(std::move(*stored));
-  } else {
-    ASSERT_TRUE(llmp::model::BindQwen2Exl3(profile, *artifact));
-    auto bound_source = sp::SourceOfV0(*artifact, &mapping);
-    ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
-    life->source.emplace(std::move(*bound_source));
-  }
+  // The stored spec and the artifact's own tensor formats and parts execute
+  // unchanged; the mapping's policy has no gate, so its plans take no values.
+  auto bound_source = sp::SourceOf(*artifact);
+  ASSERT_TRUE(bound_source.has_value()) << bound_source.error();
+  life->source.emplace(std::move(*bound_source));
+  auto stored = sp::StoredSpec(*artifact);
+  ASSERT_TRUE(stored.has_value()) << stored.error();
+  life->spec.emplace(std::move(*stored));
   auto& source = life->source;
   ASSERT_LE(source->tensors.size(), 1024U);
   if (corpus || lifecycle) {
@@ -1101,12 +1094,9 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
                                   "codes:169,input_signs:169,output_signs:169,marker:169");
   }
   for (const auto& tensor : source->tensors) ASSERT_LE(tensor.name.size(), 128U);
-  if (!v1) {
-    auto synthesized = sp::Synthesize(mapping, *source, life->values);
-    ASSERT_TRUE(synthesized.has_value()) << synthesized.error();
-    life->spec.emplace(std::move(*synthesized));
-  }
   auto& spec = life->spec;
+  // Qwen2.5 0.5B: 24 layers of width 896.
+  ASSERT_EQ(spec->stages.front().stream.width, 896U);
   ASSERT_EQ(spec->stages.size(), 1U);
   ASSERT_EQ(spec->stages.front().layers.size(), 24U);
   std::uint64_t components = 0, parameters = 0, weights_bound = 0;
@@ -1180,8 +1170,9 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
     auto opened_directory = llmp::platform::OpenPrivateDirectory(-1, directory.c_str());
     ASSERT_TRUE(opened_directory.has_value());
     life->kept_dir = *opened_directory;
-    const auto binary_sha = Env("LLMP_EXL3_KEPT_BINARY_SHA256");
-    ASSERT_EQ(binary_sha.size(), 64U);
+    const auto binary_sha = KeptBinarySha256();
+    ASSERT_EQ(binary_sha.size(), 64U)
+        << "the test binary's SHA-256 is unreadable, or LLMP_EXL3_KEPT_BINARY_SHA256 is not it";
     ASSERT_TRUE(std::ranges::all_of(
         binary_sha, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
     if (life->kept_resume)
@@ -1239,9 +1230,9 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
     };
     if (corpus || lifecycle) {
       auto guarded = std::move(checked_backend.lower);
-      if (corpus) guarded = ts::GuardCorpusLower(std::move(guarded), profile.vocab);
+      if (corpus) guarded = ts::GuardCorpusLower(std::move(guarded), kVocab);
       checked_backend.lower = [held = life.get(), registry = checked_backend.registry, lifecycle,
-                               vocabulary = profile.vocab,
+                               vocabulary = kVocab,
                                guarded = std::move(guarded)](const kn::LowerInput& input)
           -> std::expected<std::unique_ptr<kn::StepProgram>, std::string> {
         auto program = guarded(input);
@@ -1417,7 +1408,7 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
       life->corpus_composer.emplace(std::move(*composer));
       const std::array documents{ts::CorpusDocument{.slot = 0, .tokens = tokens}};
       auto scorer = ts::CorpusScore::Make(
-          node, *runner, *life->corpus_composer, documents, {profile.vocab, corpus_chunk_rows},
+          node, *runner, *life->corpus_composer, documents, {kVocab, corpus_chunk_rows},
           [held = life.get()](const ts::CorpusTargetScore& score) -> en::Status {
             if (held->corpus_score_count == held->corpus_scores.size())
               return std::unexpected("corpus NLL report exceeds prepaid rows");
@@ -1753,8 +1744,8 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
             if (life->saved_positions != 161) return std::unexpected("baseline state position");
             life->final_pages = life->saved_pages;
             life->final_bytes = life->saved_bytes;
-            // The 161 baseline rows and the final state, frozen: v0 and v1
-            // are held to the same digests (the later passes equal the baseline).
+            // The 161 baseline rows and the final state, frozen (the v0 import
+            // met the same digests; the later passes equal the baseline).
             frozen.Expect(std::string(ProfileName(life->selected_profile)) + ".rows",
                           ts::HexOfBytes(std::as_bytes(
                               std::span(life->oracle.data(), std::size_t{161} * row_bytes))));
@@ -1813,8 +1804,9 @@ void RunControl(bool full, bool corpus = false, bool mixed_rate = false, bool li
                 if (auto x = SaveState(*life, true); !x) return x;
                 if (life->saved_positions != 145)
                   return std::unexpected("EXL3 checkpoint position");
-                frozen.Expect(std::string(ProfileName(life->selected_profile)) + ".checkpoint_state",
-                              CheckpointDigest(*life));
+                frozen.Expect(
+                    std::string(ProfileName(life->selected_profile)) + ".checkpoint_state",
+                    CheckpointDigest(*life));
               }
             }
             if (slots.positions(0) != 161 || compared_rows != 169 || executed_steps != 42 ||

@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <limits>
 #include <map>
@@ -19,21 +20,8 @@
 #include "artifact/gguf_metadata.h"
 #include "base/sha256.h"
 #include "components/step.h"
-#include "model/dspark.h"
-#include "model/dsv4.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
-#include "model/gemma4_assistant.h"
-#include "model/qwen38.h"
 #include "platform/direct_io.h"
 #include "runtime/approvals.h"
-#include "runtime/gemma_profile.h"
-#include "spec/mappings/dsv4.h"
-#include "spec/mappings/gemma2.h"
-#include "spec/mappings/gemma3.h"
-#include "spec/mappings/gemma4.h"
-#include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 
 namespace llmp::runtime {
@@ -41,6 +29,10 @@ namespace {
 
 std::unexpected<std::string> Refused(std::string_view reason) {
   return std::unexpected("component artifact admission: " + std::string(reason));
+}
+
+std::unexpected<std::string> Unexpected(std::string reason) {
+  return std::unexpected(std::move(reason));
 }
 
 constexpr auto kRefusedInventory =
@@ -168,7 +160,7 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const App
 // The source the approval names: its container, importer folds and tensor
 // count.
 bool SourceMatches(const spec::Source& source, const Approval& approval) {
-  return source.container == approval.container && source.converter.empty() &&
+  return source.container == approval.container &&
          std::ranges::equal(source.folds, approval.folds) &&
          source.tensors.size() == approval.tensors;
 }
@@ -276,11 +268,11 @@ std::expected<std::vector<spec::SourceValue>, std::string> KeptValues(
 
 }  // namespace
 
-// Size anchors for the closed serving mappings' transient settings synthesis.
-// No graph, tensor payload or execution owner is constructed here.
+// Size anchors for the stored specs' transient settings reads. No graph,
+// tensor payload or execution owner is constructed here.
 static_assert(sizeof(spec::Param) <= 128 && sizeof(spec::WeightBinding) <= 128);
 static_assert(sizeof(spec::ComponentRef) <= 128 && sizeof(spec::SourceTensor) <= 256);
-static_assert(sizeof(spec::V0Tensor) <= 128 && sizeof(spec::Stage) <= 2048);
+static_assert(sizeof(spec::Stage) <= 2048);
 
 template <class T>
 std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const artifact::Artifact& artifact,
@@ -311,46 +303,8 @@ std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const artifact::Ar
   return out;
 }
 
-template <class T>
-std::expected<std::vector<T>, std::string> RecipeIntegers(const artifact::Artifact& artifact,
-                                                          const model::Qwen38Tensor& tensor,
-                                                          std::uint32_t maximum,
-                                                          std::string_view type) {
-  const bool vector = type == "I64" && tensor.plain && tensor.ne.size() == 1;
-  const bool table = type == "I32" && !tensor.plain && tensor.ne.size() == 2 && tensor.ne[0] == 1;
-  if (tensor.type != type || (!vector && !table))
-    return std::unexpected("integer recipe metadata has an unsupported type or shape");
-  const auto count = tensor.ne[table ? 1 : 0];
-  if (count == 0 || count > maximum)
-    return std::unexpected("integer recipe metadata exceeds its bound");
-  return ReadRecipeIntegers<T>(artifact, tensor.index, count);
-}
-
 template std::expected<std::vector<std::int32_t>, std::string> ReadRecipeIntegers<std::int32_t>(
     const artifact::Artifact& artifact, std::uint32_t resource, std::uint64_t count);
-template std::expected<std::vector<std::int64_t>, std::string> ReadRecipeIntegers<std::int64_t>(
-    const artifact::Artifact& artifact, std::uint32_t resource, std::uint64_t count);
-template std::expected<std::vector<std::int32_t>, std::string> RecipeIntegers<std::int32_t>(
-    const artifact::Artifact& artifact, const model::Qwen38Tensor& tensor, std::uint32_t maximum,
-    std::string_view type);
-template std::expected<std::vector<std::int64_t>, std::string> RecipeIntegers<std::int64_t>(
-    const artifact::Artifact& artifact, const model::Qwen38Tensor& tensor, std::uint32_t maximum,
-    std::string_view type);
-
-std::expected<model::Qwen38PleHash, std::string> RecipeHash(const artifact::Artifact& artifact,
-                                                            const model::Qwen38Binding& binding) {
-  const auto& p = model::Qwen38Flash();
-  if (binding.gguf()) return model::ReadQwen38GgufHash(p, artifact, binding.ple_table.ne.at(1));
-  const auto& layer = binding.layers.at(p.ple_layer);
-  auto multipliers = RecipeIntegers<std::int64_t>(artifact, layer.ple_multipliers, p.ngram, "I64");
-  auto offsets =
-      RecipeIntegers<std::int64_t>(artifact, layer.ple_head_offsets, p.ple_heads(), "I64");
-  auto vocab = RecipeIntegers<std::int64_t>(artifact, layer.ple_head_vocab, p.ple_heads(), "I64");
-  if (!multipliers) return std::unexpected(multipliers.error());
-  if (!offsets) return std::unexpected(offsets.error());
-  if (!vocab) return std::unexpected(vocab.error());
-  return model::CheckQwen38PleHash(p, *multipliers, *offsets, *vocab, binding.ple_table.ne.at(1));
-}
 
 bool OnComponentEngine(std::string_view architecture) {
   const spec::Mapping* mapping = spec::FindMapping(architecture);
@@ -365,9 +319,7 @@ const spec::Mapping* ComposedDrafterMapping(std::string_view architecture) {
 }
 
 const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter) {
-  const Approval* approval = drafter.format_version() == 1
-                                 ? FindApproval(drafter.model().architecture, drafter.sources())
-                                 : nullptr;
+  const Approval* approval = FindApproval(drafter.model().architecture, drafter.sources());
   if (approval == nullptr || approval->mapping == nullptr)
     return ComposedDrafterMapping(drafter.model().architecture);
   const spec::Mapping* mapping = &approval->mapping();
@@ -375,84 +327,20 @@ const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter) {
   return &mapping->draft->composed();
 }
 
-std::expected<std::vector<spec::SourceValue>, std::string> ComponentV0Values(
-    const artifact::Artifact& artifact) {
-  const auto& architecture = artifact.model().architecture;
-  if (architecture == "gemma2") return spec::mappings::Gemma2V0Values(model::Gemma2_2B());
-  if (architecture == "gemma3") return spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
-  if (architecture == "gemma4") {
-    auto profile = ApprovedGemmaProfile(artifact);
-    if (!profile) return std::unexpected(profile.error());
-    return spec::mappings::Gemma4V0Values(**profile);
-  }
-  if (architecture == "qwen4exp") {
-    auto binding = model::BindQwen38(model::Qwen38Flash(), artifact);
-    if (!binding) return std::unexpected(binding.error());
-    auto hash = RecipeHash(artifact, *binding);
-    if (!hash) return std::unexpected(hash.error());
-    return spec::mappings::Qwen38V0Values(model::Qwen38Flash(), *binding, *hash);
-  }
-  if (architecture == "deepseek4") {
-    auto binding = model::BindDsv4(model::Dsv4Flash(), artifact);
-    if (!binding) return std::unexpected(binding.error());
-    return spec::mappings::Dsv4V0Values(model::Dsv4Flash());
-  }
-  return std::unexpected(
-      std::format("the component engine has no recipe for architecture {} yet", architecture));
-}
-
-std::expected<void, std::string> CheckComponentV0Admission(const artifact::Artifact& artifact) {
-  const auto& architecture = artifact.model().architecture;
-  if (architecture == "gemma2") {
-    if (auto binding = model::BindApprovedGemma2(artifact); !binding)
-      return std::unexpected(binding.error());
-  } else if (architecture == "gemma3") {
-    if (auto binding = model::BindApprovedGemma3(artifact); !binding)
-      return std::unexpected(binding.error());
-  } else if (architecture == "gemma4") {
-    if (auto profile = ApprovedGemmaProfile(artifact); !profile)
-      return std::unexpected(profile.error());
-  }
-  return {};
-}
-
-std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterV0Values(
-    const artifact::Artifact& target, const artifact::Artifact& drafter) {
-  if (drafter.model().architecture == "gemma4-assistant" &&
-      target.model().architecture == "gemma4") {
-    auto profile = ApprovedGemmaProfile(target);
-    if (!profile) return std::unexpected(profile.error());
-    const model::Gemma4AssistantProfile& assistant =
-        *profile == &model::Gemma4_31B() ? model::Gemma4Assistant31() : model::Gemma4Assistant26();
-    if (auto bound = model::BindGemma4Assistant(assistant, drafter); !bound) {
-      return std::unexpected(bound.error());
-    }
-    return spec::mappings::Gemma4AssistantV0Values(assistant, **profile);
-  }
-  if (drafter.model().architecture == "dflash" && target.model().architecture == "deepseek4") {
-    const auto& profile = model::Dsv4Flash();
-    auto target_binding = model::BindDsv4(profile, target);
-    if (!target_binding) return std::unexpected(target_binding.error());
-    const auto& companion = model::DsparkDeepSeekV4Flash();
-    if (auto bound = model::BindDspark(companion, drafter, profile, *target_binding); !bound) {
-      return std::unexpected(bound.error());
-    }
-    return spec::mappings::DsparkV0Values(companion);
-  }
-  if (drafter.model().architecture == "qwen4exp-mtp" && target.model().architecture == "qwen4exp") {
-    auto binding = model::BindQwen38Mtp(model::Qwen38Flash(), drafter);
-    if (!binding) return std::unexpected(binding.error());
-    return spec::mappings::Qwen38MtpV0Values(model::Qwen38Flash(), *binding);
-  }
-  return std::unexpected(std::format("the component engine has no drafter {} for architecture {}",
-                                     drafter.model().architecture, target.model().architecture));
+std::expected<void, std::string> RequireServedVersion(const artifact::Artifact& artifact) {
+  if (artifact.format_version() == 1) return {};
+  return std::unexpected(std::format(
+      "artifact {} ({}) is prepared-artifact format version {}; serving reads version 1 only "
+      "(D-118): re-import its source checkpoint with `llmp import SOURCE --store DIRECTORY` and "
+      "configure the new artifact ID",
+      artifact.id(), artifact.model().architecture, artifact.format_version()));
 }
 
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
     const artifact::Artifact& target, const artifact::Artifact& drafter) {
-  if (target.format_version() == 0 && drafter.format_version() == 0)
-    return ComponentDrafterV0Values(target, drafter);
-  // Either is stored: the approved pairing, by both sources' identities.
+  if (auto served = RequireServedVersion(target); !served) return Refused(served.error());
+  if (auto served = RequireServedVersion(drafter); !served) return Refused(served.error());
+  // The approved pairing, by both sources' identities.
   const Approval* t = FindApproval(target.model().architecture, target.sources());
   if (t == nullptr || t->drafter)
     return Refused("target source identity has no approved v1 execution profile");
@@ -462,13 +350,12 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValue
   if (d->target != t->name)
     return Refused(
         std::format("the approved drafter {} is {}'s, not {}'s", d->name, d->target, t->name));
-  if (drafter.format_version() != 1) return ComponentDrafterV0Values(target, drafter);
   const spec::Mapping* mapping = ComposedDrafterMapping(drafter);
   if (mapping == nullptr || mapping->role != spec::StageRole::kDrafter)
     return Refused("the drafter's architecture has no drafter mapping");
   // A drafter without kept metadata values: its recipe's, from its source.
   if (mapping->draft != nullptr && mapping->draft->values != nullptr) {
-    auto source = spec::SourceOf(drafter, mapping);
+    auto source = spec::SourceOf(drafter);
     if (!source) return Refused(source.error());
     auto values = mapping->draft->values(*source);
     if (!values) return Refused(values.error());
@@ -480,11 +367,7 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValue
 std::expected<void, std::string> ComponentDrafterEnvelope(const artifact::Artifact& drafter,
                                                           const spec::Envelope& envelope) {
   const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
-  if (d == nullptr) {
-    if (drafter.format_version() == 1)
-      return Refused("drafter source identity has no approved v1 execution profile");
-    return {};
-  }
+  if (d == nullptr) return Refused("drafter source identity has no approved v1 execution profile");
   if (envelope.context == 0 || envelope.context > d->max_context || envelope.slots == 0 ||
       envelope.slots > d->max_slots)
     return Refused(std::format("execution envelope exceeds the approved drafter {}", d->name));
@@ -502,9 +385,6 @@ std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
       resource.format->layout == format::Layout::kDense && resource.format->shape.rank == 2 &&
       resource.format->shape.ne[0] == 1)
     rows = resource.format->shape.ne[1];
-  else if (!resource.format && resource.repr.type == "I32" && resource.repr.dims.size() == 2 &&
-           resource.repr.dims[0] == 1)
-    rows = resource.repr.dims[1];
   if (rows == 0 || rows > vocab)
     return Refused("a selected draft head's token map is not I32 [1, rows] within the vocabulary");
   return DraftHeadMap{.resource = *index, .rows = rows};
@@ -527,7 +407,7 @@ std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& a
 
 std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& composed,
                                                         const artifact::Artifact& drafter) {
-  if (drafter.format_version() != 1) return {};
+  if (auto served = RequireServedVersion(drafter); !served) return Refused(served.error());
   const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
   if (d == nullptr || !d->drafter)
     return Refused("drafter source identity has no approved v1 execution profile");
@@ -573,7 +453,7 @@ std::expected<void, std::string> CheckComponentAdmission(
 
 std::expected<void, std::string> CheckComponentArtifactAdmission(
     const artifact::Artifact& artifact) {
-  if (artifact.format_version() != 1) return Refused("requires a native v1 artifact");
+  if (auto served = RequireServedVersion(artifact); !served) return Refused(served.error());
   const Approval* approval = FindApproval(artifact.model().architecture, artifact.sources());
   if (approval == nullptr) return Refused("source identity has no approved v1 execution profile");
   if (!Transforms(artifact, *approval) ||
@@ -618,6 +498,64 @@ std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& a
   return {};
 }
 
+std::expected<void, std::string> CheckStoredHashTables(const artifact::Artifact& artifact,
+                                                       const spec::ModelSpec& model) {
+  for (const spec::Stage& stage : model.stages) {
+    for (const spec::SideInput& side : stage.side) {
+      if (side.source.kind != "side.hash") continue;
+      const spec::Param* experts_param = side.source.Find("experts");
+      const spec::Param* used_param = side.source.Find("used");
+      const auto* experts =
+          experts_param ? std::get_if<std::int64_t>(&experts_param->value) : nullptr;
+      const auto* used = used_param ? std::get_if<std::int64_t>(&used_param->value) : nullptr;
+      if (experts == nullptr || used == nullptr || *experts <= 0 || *used <= 0)
+        return Unexpected("stored hash routing has no expert count");
+      for (const spec::WeightBinding& binding : side.source.weights) {
+        auto index = artifact.FindResource(binding.tensor);
+        if (!index) return Unexpected("stored hash-routing table is missing");
+        auto place = artifact.ResourcePlacement(*index);
+        const auto& format = artifact.resources()[*index].format;
+        // Its entries are read as I32: a table of any other encoding is not
+        // reinterpreted.
+        if (!format || format->encoding != format::Encoding::kI32 ||
+            format->layout != format::Layout::kDense)
+          return Unexpected("stored hash-routing table is not dense I32");
+        if (format->shape.rank != 2 || format->shape.ne[0] != static_cast<std::uint64_t>(*used) ||
+            format->shape.ne[1] == 0 || format->shape.ne[1] > (std::uint64_t{1} << 32U))
+          return Unexpected("stored hash-routing table has another shape");
+        const auto count = format->shape.ne[0] * format->shape.ne[1];
+        if (!place || place->bytes.value() != count * sizeof(std::int32_t))
+          return Unexpected("stored hash-routing table has an inconsistent byte count");
+        const auto& group = artifact.groups()[place->group];
+        const auto& shard = artifact.shards()[group.shard];
+        const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
+        const auto end = begin + place->bytes.value();
+        if (begin % sizeof(std::int32_t))
+          return Unexpected("stored hash-routing table is unaligned");
+        auto file = artifact.OpenShardForDirectRead(group.shard);
+        if (!file) return Unexpected(file.error().ToString());
+        alignas(4096) std::array<std::byte, 4096> window{};
+        for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
+          if (at > shard.data_offset.value() + shard.data_bytes.value() ||
+              window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
+            return Unexpected("stored hash-routing read exceeds its shard");
+          if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
+            return Unexpected(
+                std::format("reading stored hash-routing table: errno {}", read.error()));
+          for (auto offset = std::max(at, begin); offset < std::min(at + window.size(), end);
+               offset += sizeof(std::int32_t)) {
+            std::int32_t expert = 0;
+            std::memcpy(&expert, window.data() + offset - at, sizeof(expert));
+            if (expert < 0 || std::cmp_greater_equal(expert, *experts))
+              return Unexpected("stored hash-routing table names an invalid expert");
+          }
+        }
+      }
+    }
+  }
+  return {};
+}
+
 std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
     const artifact::Artifact& artifact) {
   if (auto checked = CheckComponentArtifactAdmission(artifact); !checked)
@@ -630,6 +568,20 @@ std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
     return std::unexpected(checked.error());
   return ComponentAdmission{std::move(*model), std::move(*source),
                             FindApproval(artifact.model().architecture, artifact.sources())};
+}
+
+std::uint32_t ApprovedDefaultContext(const Approval& approval) {
+  const spec::Mapping* mapping =
+      approval.mapping != nullptr ? &approval.mapping() : spec::FindMapping(approval.architecture);
+  std::uint32_t widest = 0;
+  if (mapping != nullptr && approval.policy != ApprovedPolicy::kNone) {
+    for (const spec::PolicyRule& rule : mapping->policies) {
+      const bool gated = std::ranges::contains(approval.gates, rule.gate);
+      if (!rule.gate.empty() && gated == rule.gate_absent) continue;
+      if (rule.max_context != 0 && !rule.owners_alone) widest = std::max(widest, rule.max_context);
+    }
+  }
+  return widest != 0 ? std::min(widest, approval.max_context) : approval.max_context;
 }
 
 std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval& approval,

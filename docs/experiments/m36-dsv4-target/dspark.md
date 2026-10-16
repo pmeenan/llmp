@@ -3,6 +3,8 @@
 
 # Composed DeepSeek target and DSpark execution screen
 
+> Historical: the closed DeepSeek bridge and `kDsv4WaveCosts` were removed in M3.6 slice 4b.
+
 2026-10-12, Spark B, main candidate based on `b8d156d0` plus the exact image
 integration later committed as `346e1c4f`. The existing shared factory composes
 its prepared target and companion using block drafting, real injection state

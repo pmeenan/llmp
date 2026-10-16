@@ -152,7 +152,6 @@ TEST_F(ComponentBindingsTest, NativeFormatsAliasesAndHeadRowsSurviveWithoutServi
     EXPECT_EQ(key.second, fm::PartRole::kData);
   }
   EXPECT_EQ(table_roles, 2U);
-  EXPECT_EQ(bound->source.converter, "");
   EXPECT_EQ(bound->logit_width, 17U);
   auto malformed = Tiny();
   malformed.stages[0].heads.output->params[0].value = std::int64_t{33};

@@ -36,13 +36,13 @@
 
 #include "components/component.h"
 #include "components/step.h"
+#include "families/gemma.h"
 #include "format/encoding.h"
 #include "format/tensor_format.h"
 #include "ir/builder.h"
 #include "ir/graph.h"
 #include "ir/op.h"
 #include "kernels/reference/exec.h"
-#include "model/gemma2.h"
 #include "planner/partition.h"
 #include "planner/step_shape.h"
 #include "spec/mapping.h"
@@ -54,6 +54,7 @@ namespace llmp::planner {
 namespace {
 
 namespace ref = llmp::kernels::reference;
+namespace fam = llmp::test_support::families;
 using components::BoundTensor;
 using components::SplitKind;
 using format::Encoding;
@@ -1033,7 +1034,7 @@ TEST(PartitionTest, GemmaTwoOnTwoSparks) {
   // The two Sparks' direct link as measured (docs/environment.md: NCCL
   // SendRecv 22.35 GB/s; 1.4 µs one-way latency) and Gemma 2 2B: it fits
   // one; given less than it needs on each, a pipeline of two.
-  auto values = spec::mappings::Gemma2V0Values(model::Gemma2_2B());
+  auto values = fam::Gemma2Values(fam::Gemma2_2B());
   ASSERT_TRUE(values.has_value());
   const spec::Source source = test_support::Gemma2Source();
   auto s = spec::Synthesize(spec::mappings::Gemma2Mapping(), source, *values);

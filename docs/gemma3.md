@@ -8,11 +8,12 @@
 > of the `gemma3` mapping (`src/spec/mappings/gemma3.*`) lowered onto GGML,
 > and the files this record names (`model/gemma3.*`'s state and input
 > builders, `kernels/ggml/gemma3_graph.*`, `engine/gemma3_plan.*` and
-> `engine/gemma3_runner.*`) and the serving class are deleted;
-> `model/gemma3.h` keeps the approved profile and tensor binding. What
-> follows is the record of the M3.5 runner's controls and measurements.
+> `engine/gemma3_runner.*`) and the serving class are deleted, and
+> `model/gemma3.*`'s profile and tensor binding went with v0 serving in
+> slice 4b (D-118: the approval table and the stored spec admit the v1
+> import). What follows is the record of the M3.5 runner's controls and measurements.
 
-`src/model/gemma3.h` supplies a separate fixed profile and strict tensor
+`src/model/gemma3.h` supplied a separate fixed profile and strict tensor
 binding for the approved Gemma 3 4B QAT Q4_0 text checkpoint. Its state/input
 and descriptor graph/plan foundation passes 13 focused CPU/no-launch controls.
 The generic importer supplies the authenticated

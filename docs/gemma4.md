@@ -3,7 +3,8 @@
 
 # Gemma 4 model and graph foundation
 
-`src/model/gemma4.h` describes the approved 26B-A4B and 31B text models:
+`src/model/gemma4.h` described the approved 26B-A4B and 31B text models (retired
+in slice 4b, D-118; see the note below):
 fixed profiles, strict GGML artifact bindings, bounded state layouts,
 initialized read/write footprints and independent request-segment inputs.
 The segmented GGML graph, checked plan adapter and bounded native 26B-A4B/31B
@@ -20,8 +21,8 @@ remains open.
 > assistant this file records ([engine.md](engine.md#the-serving-adapter);
 > the 1% gate in the [baselines report](experiments/m36-baselines/README.md#gemma-4-26b-a4b-and-31b-on-the-shared-engine-slice-g2c)).
 > The files it names are deleted: `model/gemma4.*`'s state and input
-> builders (`model/gemma4.h` keeps the approved profiles and the checked
-> tensor binding, with `model/gemma4_assistant.h`),
+> builders (its profiles and checked tensor binding, with
+> `model/gemma4_assistant.*`, went with v0 serving in slice 4b, D-118),
 > `kernels/ggml/gemma4_graph.*`, `gemma4_assistant_graph.*` and
 > `gemma4_attention.cc`, `engine/gemma4_{runner,plan,assistant,
 > assistant_plan,greedy,wave}.*`, the serving class and its internal joined,

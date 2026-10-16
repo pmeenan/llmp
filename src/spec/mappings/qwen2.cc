@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include "model/qwen2.h"
 #include "spec/mappings/rules.h"
 
 namespace llmp::spec::mappings {
@@ -284,17 +283,6 @@ constexpr std::array kParams = {
     Flag("output_exl3", "f16_output", true),
 };
 
-// Four physical resources form one trellis tensor. Each part must match
-// the format's size rule; a missing part remains unassembled and is refused
-// by component validation. The approved fixtures use the mcg marker.
-constexpr std::array kAssembly = {
-    V0Assembly{.suffixes = {".trellis", ".suh", ".svh", ".mcg"},
-               .roles = {format::PartRole::kCodes, format::PartRole::kInputSigns,
-                         format::PartRole::kOutputSigns, format::PartRole::kCodebookMarker},
-               .encoding = format::Encoding::kExl3Trellis,
-               .layout = format::Layout::kExl3Tiles},
-};
-
 // A correctness recipe, not a serving admission. No capture/row-invariance
 // claim is made for EXL3; the pinned shape controls precede such a claim.
 constexpr std::array kPolicies = {
@@ -312,7 +300,6 @@ constexpr Mapping kMapping{
     .tensors = kTensors,
     .params = kParams,
     .policies = kPolicies,
-    .v0_assembly = kAssembly,
 };
 
 constexpr std::array kGgufSlots = {
@@ -469,25 +456,4 @@ const Mapping& Qwen2Mapping() { return kMapping; }
 const Mapping& Qwen2GgufMapping() { return kGgufMapping; }
 const Mapping& Qwen2Exl3Mapping() { return kExl3Mapping; }
 
-std::expected<std::vector<SourceValue>, std::string> Qwen2V0Values(const model::Qwen2Profile& p) {
-  if (p.weight_type != "F16" && p.weight_type != "exl3") {
-    return std::unexpected("Qwen2 migration requires the approved FP16 or EXL3 profile");
-  }
-  if (p.layers == 0 || p.head_dim == 0 || p.kv_heads == 0 || p.heads % p.kv_heads != 0 ||
-      std::uint64_t{p.heads} * p.head_dim != p.width) {
-    return std::unexpected("Qwen2 profile has inconsistent attention dimensions");
-  }
-  return std::vector<SourceValue>{
-      Value("qwen2.context_length", p.train_context),
-      Value("qwen2.embedding_length", p.width),
-      Value("qwen2.block_count", p.layers),
-      Value("qwen2.feed_forward_length", p.ffn),
-      Value("qwen2.attention.head_count", p.heads),
-      Value("qwen2.attention.head_count_kv", p.kv_heads),
-      Value("qwen2.attention.key_length", p.head_dim),
-      Value("qwen2.attention.layer_norm_rms_epsilon", p.rms_eps),
-      Value("qwen2.rope.freq_base", p.rope_base),
-      FlagValue(kExl3, p.weight_type == "exl3"),
-  };
-}
 }  // namespace llmp::spec::mappings

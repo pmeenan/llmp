@@ -15,16 +15,19 @@ Serving is v1-only (D-118, 2026-10-15): a `[models.<name>]` entry names a
 row's **v1** artifact ID (and its drafter's), each admitted by its entry in
 the approval table (`runtime/approvals.cc`: source receipts, tensor
 inventory and the pinned digest of the spec it executes). A v0 artifact is
-re-imported with `llmp import`, not migrated; this build still serves v0
-until slice 4b removes it. Qwen3.8's native ModelOpt import with its MTP
+refused ("re-import with `llmp import`"), never migrated; the rows' v0 IDs
+below are history (the migration gate's frozen baseline arm still serves
+them with its own old binary). Re-importing a staged source reproduces its
+row's v1 ID (`verified <ID>`). Qwen3.8's native ModelOpt import with its MTP
 drafter (Mia's list) has pinned approval rows and v1 artifacts since
 2026-10-15, served bit for bit as the v0 pair
 ([qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)).
 Its MLX import (`Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80`, its norms
 and A folded as ModelOpt's) has a pinned approval row and is admitted, but
 is not qualified for serving yet: no serving comparison or speed gate has
-run on it, a separate later task. The Qwen-Image composition has none: its
-row keeps its v0 ID.
+run on it, a separate later task. Qwen3.8's v0 GGML-experts form has no v1
+import and is no longer served. The Qwen-Image composition keeps its v0 ID until the image
+slice moves it to stored spec data with its approval row.
 
 Plain target-only greedy decode now publishes a device I32 token by default
 for DeepSeek V4 and native/GGUF Qwen3.8, as for Gemma. Short scalar/joined own
@@ -78,7 +81,7 @@ are recorded separately as they complete.
 | Model | Role | Status | Level |
 | --- | --- | --- | --- |
 | [DeepSeek V4 Flash 0731](#deepseek-v4-flash-0731) UD-Q2_K_XL | target | Served (M3) | paged-correct |
-| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), four-request waves; matched HTTP cells | resident-correct, short oracle trajectories |
+| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), four-request waves; matched HTTP cells; v1 `e7c0d0e4…` approved, smoke-tested | resident-correct, short oracle trajectories |
 | [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one accepted greedy divergence (below) |
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
@@ -173,8 +176,9 @@ all continuation heads/tokens are exact after returns from Qwen3.8, with retaine
 graph replay and a worst prepared handoff of 5.911946 s. The repetitive fixture
 establishes boundary/state evidence only.
 
-Gemma 3 4B QAT Q4_0 has a separate checked profile and strict
-GGML tensor binding in `model/gemma3.h`; the [foundation contract](gemma3.md)
+Gemma 3 4B QAT Q4_0 had a separate checked profile and strict
+GGML tensor binding (`model/gemma3.h`, retired with v0 serving in slice 4b:
+its approval row and stored spec admit it now); the [foundation contract](gemma3.md)
 records the approved checkpoint's complete actual descriptor table and
 three passing focused CPU controls. Its separate bounded state/input and
 descriptor graph/plan foundation passes 13 focused CPU/no-launch controls.
@@ -264,9 +268,9 @@ cursors and final heads. Short n=2 decode falls 21.0667% and total paid latency
 8.26029%. This internal option remains false by default; the original stock
 head-byte FAIL and all broader qualification gates remain open.
 
-Gemma 4 26B-A4B and 31B have checked profiles and strict GGML tensor bindings
-in `model/gemma4.h` (the bounded independent-slot state and segmented
-host-input descriptions it once held are components now). The [foundation
+Gemma 4 26B-A4B and 31B had checked profiles and strict GGML tensor bindings
+(`model/gemma4.h`, retired with v0 serving in slice 4b: their approval rows
+and stored specs admit them now; the state and inputs are components). The [foundation
 contract](gemma4.md) records actual pinned
 metadata, CPU/fake controls and required optimization/batching qualification.
 Both approved artifacts had checked import, segmented graphs, a shared native
@@ -457,7 +461,7 @@ hashes the model files on a Spark).
 | Model | SHA-256 the renderer is keyed on | The bytes hashed | Renderer, stop tokens |
 | --- | --- | --- | --- |
 | DeepSeek V4 Flash 0731 | `e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645` | The 0731 GGUF's `tokenizer.chat_template` (Unsloth's port of DeepSeek's `encoding_dsv4.py`), kept in the artifact's GGUF metadata | `deepseek-v4-flash-0731`; `<｜end▁of▁sentence｜>` |
-| DeepSeek V4 community IQ2_XXS | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The community GGUF's `tokenizer.chat_template` ("chat-v2", 5,016 bytes), kept in artifact `cd39d504…`'s GGUF metadata | `deepseek-v4-flash-chat-v2`; `<｜end▁of▁sentence｜>` |
+| DeepSeek V4 community IQ2_XXS | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The community GGUF's `tokenizer.chat_template` ("chat-v2", 5,016 bytes), kept in artifact `cd39d504…`'s (v1 `e7c0d0e4…`'s) GGUF metadata | `deepseek-v4-flash-chat-v2`; `<｜end▁of▁sentence｜>` |
 | Qwen3.8 Flash Next | `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` | `chat_template.jinja` of `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (pinned in [pins.json](experiments/fast-swap/pins.json); the MLX baseline ships the same bytes) | `qwen3.8-flash-next`; `<\|im_end\|>`, `<\|endoftext\|>` |
 | Qwen3.8 Unsloth GGUFs (Flash Next, 27B) | none pinned; `12827f24…` today | The GGUFs' `tokenizer.chat_template`, Unsloth's variant | `qwen3.8-flash-next-unsloth` by probe equivalence; `<\|im_end\|>`, `<\|endoftext\|>` |
 | Gemma 2 2B Q8_0 | `ecd6ae513fe103f0eb62e8ab5bfa8d0fe45c1074fa398b089c93a7e70c15cfd6` (no renderer) | The approved GGUF's `tokenizer.chat_template` (591 bytes), kept in the artifact ([gemma2.md](gemma2.md#serving-admission-foundation)) | the Jinja-subset interpreter; end-of-turn 107 and EOS 1 |
@@ -478,7 +482,7 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
 
 ## DeepSeek V4 Flash 0731
 
-- **Architecture:** `deepseek4` (`model/dsv4.h`): hyper-connections,
+- **Architecture:** `deepseek4` (`spec/mappings/dsv4.*`): hyper-connections,
   window, CSA and HCA attention with the lightning indexer, 256 routed
   experts, three hash-routed layers.
 - **Checkpoint:** `unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93`,
@@ -598,8 +602,26 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
 The [ds4 study](experiments/ds4-study/README.md) imports
 `antirez/deepseek-v4-gguf@f71f23d552d664e523b422157b2befbf74040380`'s
 `DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf`
-as artifact `cd39d504…`. IQ2_XXS gate/up, Q2_K down and F16 compressor
-APE tables retain their original bytes and precision. Plain greedy runs
+as artifact `cd39d504…` (v0, M3; the results below are its history). Since
+2026-10-16 it serves as v1 `e7c0d0e4…`, published by `llmp import` from the
+staged, manifest-verified GGUF (24 minutes on `spark-b`), and admitted by its
+own approval row (`deepseek-v4-flash-iq2xxs-w2q2k-chat-v2-imatrix-0731`:
+contexts to 262,144 and four owners, from the M3 evidence below; DeepSeek's
+mapping and policy treatment). The importer takes the file's IQ2_XXS, Q2_K
+and F16 tensors, its MTP depth key (no MTP tensors are imported) and its
+44-entry layer-type list. The file lists no shared-expert clamps
+(`deepseek4.swiglu_clamp_shexp`), so the mapping clamps the shared expert as
+the routed experts (10), as M3's profile served it; its stored spec is
+byte-identical to the UD-Q2_K_XL target's. The v1 artifact's own evidence is
+one frozen-digest smoke test
+(`Dsv4EngineTargetGpu.PublishedIq2xxsMatchesFrozenHeadsStateAndSpill`:
+plain greedy on a 2,560-token prompt; heads, tokens, logit rows and state
+after each turn and after a spill and restore). It was not compared with the
+v0 artifact, ds4 or a speed gate, and no drafter approval names it (DSpark
+pairs only with the UD-Q2_K_XL target in v1).
+
+In M3, its IQ2_XXS gate/up, Q2_K down and F16 compressor APE tables retain
+their original bytes and precision. Plain greedy runs
 in the resident native harness through 128,817 prompt tokens, with F16
 caches. On the recorded 8K trajectory all 32 argmaxes agree with ds4,
 including its F32-cache control, and native forced repeats are bit
@@ -652,7 +674,7 @@ seeded-sampling evidence in this study.
 
 ## DSpark
 
-- **Architecture:** `dflash` (`model/dspark.h`): 3 window-only DeepSeek
+- **Architecture:** `dflash` (`spec/mappings/dsv4.*`): 3 window-only DeepSeek
   V4 blocks, MXFP4 experts, a Markov head; drafts 3 tokens a step.
 - **Checkpoint:** `dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf` in the same
   pinned repository and revision.
@@ -697,7 +719,7 @@ bound and remains an open M3.5 quality lead. Same-format GGUF generation takes
 30/32 with both disagreements inside 1.0. These are short generated-history
 controls, not a held-out PPL, all-context or HTTP parity qualification.
 
-- **Architecture:** `qwen4exp` (`model/qwen38.h`): hyper-connections, the
+- **Architecture:** `qwen4exp` (`spec/mappings/qwen38.*`): hyper-connections, the
   n-gram (PLE) layer, Gated DeltaNet, QSA attention with its indexer, 512
   routed experts top-10 plus a shared expert.
 - **Checkpoint:** `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (ModelOpt
@@ -707,8 +729,8 @@ controls, not a held-out PPL, all-context or HTTP parity qualification.
   `316caa59…`: bit for bit as the v0 pair, the speed gate passed against the
   frozen baseline, [qwen-modelopt-v1](experiments/m36-numerical-audit/qwen-modelopt-v1.md)),
   re-imported from v0 `c4fb47a9…`, routed experts in the CUTLASS layout
-  (the earlier GGML-layout `67617f87…` remains for harness options that
-  read that layout)
+  (the earlier GGML-layout v0 `67617f87…` has no v1 import; it is no
+  longer served or used by any test)
   ([qwen38-native](experiments/qwen38-native/README.md#what-runs)). The
   28.8 GB n-gram table is read by rows from the SSD (D-035).
 - **Components:** the target; optionally [its MTP drafter](#qwen38-mtp).
@@ -797,7 +819,7 @@ off/on execution preserves every complete head and initialized state; F32
 fallback uses checked planned source contracts plus the executed shared F32
 primitive ([controls](experiments/qwen-device-masks/README.md)).
 
-- **Architecture:** `qwen4exp` (`model/qwen38.h` `Qwen38Format::kGguf`),
+- **Architecture:** `qwen4exp` (`spec/mappings/qwen38.*`, its GGUF form),
   the same model as [above](#qwen38-flash-next) from a GGUF checkpoint.
 - **Checkpoint:** `unsloth/Qwen3.8-Flash-Next-GGUF@38bb39ee`, UD-IQ3_XXS
   (pins.json id `qwen3.8-flash-next-gguf-ud-iq3xxs`): IQ2_S gate/up
@@ -924,8 +946,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 
 ## Gemma 2 2B
 
-- **Architecture:** Gemma 2 (`model/gemma2.h`), a closed profile with a
-  checked binding of all 288 actual tensors ([gemma2.md](gemma2.md)).
+- **Architecture:** Gemma 2 (`spec/mappings/gemma2.*`); its approval row pins
+  all 288 actual tensors' inventory ([gemma2.md](gemma2.md) records the M3
+  profile and binding, retired in slice 4b).
   Served by the shared engine (D-107): the spec the `gemma2` mapping makes
   of the artifact, its components and the mapping's policy over GGML's
   kernels, step for step bit-identical to the M3 runner it replaced (now
@@ -963,8 +986,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 
 ## Gemma 3 4B QAT
 
-- **Architecture:** Gemma 3 (`model/gemma3.h`), a checked profile and strict
-  binding ([gemma3.md](gemma3.md)). Served by the shared engine (D-107):
+- **Architecture:** Gemma 3 (`spec/mappings/gemma3.*`); its approval row pins
+  its tensor inventory ([gemma3.md](gemma3.md) records the M3 profile and
+  binding, retired in slice 4b). Served by the shared engine (D-107):
   the spec the `gemma3` mapping makes of the artifact, its components and
   the mapping's policy over GGML's kernels, step for step bit-identical to
   the M3 runner it replaced (now deleted) and at the 1% speed gate against
@@ -997,9 +1021,9 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
 
 ## Gemma 4 26B-A4B and 31B
 
-- **Architecture:** Gemma 4 (`model/gemma4.h`): 26B-A4B mixture of experts
-  and 31B dense, checked profiles and strict bindings
-  ([gemma4.md](gemma4.md)).
+- **Architecture:** Gemma 4 (`spec/mappings/gemma4.*`): 26B-A4B mixture of
+  experts and 31B dense, each pinned by its approval row (the M3 profiles and
+  bindings, retired in slice 4b, are recorded in [gemma4.md](gemma4.md)).
 - **Checkpoints:** `unsloth/gemma-4-26B-A4B-it-GGUF@c099eb48`
   `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`; `unsloth/gemma-4-31B-it-GGUF@c1ac76e9`
   `gemma-4-31B-it-UD-Q4_K_XL.gguf`.
@@ -1035,7 +1059,11 @@ primitive ([controls](experiments/qwen-device-masks/README.md)).
   larger configurations keep the scalar route with 128-row chunks, up to
   twelve independent owners
   ([dense31 bridge](experiments/gemma31-serving-bridge/README.md),
-  [Gemma26 recipe](experiments/gemma26-production/README.md)).
+  [Gemma26 recipe](experiments/gemma26-production/README.md)). Each
+  approval admits both domains at M3's bounded admission: twelve scalar
+  owners qualified; context to the trained 262,144, long context not
+  verified (memory bounding it below). A configuration that names no
+  context takes the joined recipes' 8,192.
 - **Verified:** seeded histories and own frontier rows agree across solo and
   1–12 scalar owners, with rollback, spill, kept restart and cross-profile
   switch controls ([gemma31-serving](experiments/gemma31-serving/README.md));
@@ -1072,7 +1100,7 @@ in the table below describe the historical implementations.
 
 | | Qwen2.5-0.5B-Instruct FP16 | Qwen2.5-0.5B-Instruct EXL3 4.0 / 4.5 bpw |
 | --- | --- | --- |
-| Architecture | `qwen2` (`model/qwen2.h`), GGML FP16 | `qwen2` with EXL3 linears (`model/qwen2_exl3.h`) |
+| Architecture | `qwen2` (`spec/mappings/qwen2.*`), GGML FP16 | `qwen2` with EXL3 linears (same mapping) |
 | Checkpoint | `Qwen/Qwen2.5-0.5B-Instruct-GGUF@9217f5db` `qwen2.5-0.5b-instruct-fp16.gguf` ([pins](experiments/first-slice/pins.json)) | `blockblockblock/Qwen2.5-0.5B-Instruct-exl3-4.0bpw@7009334d` and `-4.5bpw@030d3a41` ([pins](experiments/exl3-reference/pins.json)) |
 | Artifact | v0 `b93cdc32…`; v1 `a96092c9…` | v0 `6e96e499…` / `00d77caf…` ([artifact-layout](experiments/artifact-layout/README.md)); v1 `ce8defd9…` / `b62e2d22…` |
 | v0 against v1 | bit-identical ([v1 equivalence](experiments/m36-numerical-audit/v1-equivalence.md)) | bit-identical (same) |

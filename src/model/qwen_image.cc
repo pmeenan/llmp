@@ -21,7 +21,6 @@
 
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
-#include "model/v0_artifact.h"
 
 namespace llmp::model {
 namespace {

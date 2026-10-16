@@ -17,7 +17,6 @@
 #include "base/json.h"
 #include "base/sha256.h"
 #include "chat/chat.h"
-#include "model/qwen38.h"
 #include "tokenizer/hf.h"
 #include "tokenizer/tokenizer.h"
 
@@ -376,8 +375,8 @@ std::expected<void, std::string> Prepare(const Preparation& paths) {
       return Error("prepared manifests are immutable; a fresh output directory is required");
     }
   }
-  const auto state_bytes = model::Qwen38StateBytes(model::Qwen38Flash(), kContext, 8192);
-  const auto mtp_bytes = model::Qwen38MtpStateBytes(model::Qwen38Flash(), kContext, 8192);
+  const auto state_bytes = kTargetStateBytes;
+  const auto mtp_bytes = kMtpStateBytes;
   for (std::string_view split : {"calibration", "held_out"}) {
     std::vector<Example> prepared;
     std::string records;

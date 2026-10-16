@@ -32,6 +32,7 @@
 #include "engine/component_source.h"
 #include "engine/paged_node.h"
 #include "execution/registry.h"
+#include "families/dsv4.h"
 #include "ir/builder.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/dsv4_hc_norm.h"
@@ -3066,6 +3067,7 @@ namespace mapped_csa {
 namespace en = llmp::engine;
 namespace md = llmp::model;
 namespace sp = llmp::spec;
+namespace fam = llmp::test_support::families;
 namespace fx = llmp::test_support::dsv4;
 // Fixed one-layer, one-owner source inventory (external funding derivation).
 // These are source-specific construction ceilings, not the global IR limits.
@@ -3114,7 +3116,7 @@ std::uint64_t Bytes(const ir::TensorDesc& t) {
   return t.nb[3] * t.ne(3);
 }
 void Describe(Owner& life, const pl::StepShape& shape) {
-  auto p = md::Dsv4Flash();
+  auto p = fam::Dsv4Flash();
   p.name = "synthetic-csa-source";
   p.layers = 1;
   p.width = 64;
@@ -3141,7 +3143,7 @@ void Describe(Owner& life, const pl::StepShape& shape) {
   p.compress_ratios = {4};
   life.tensors =
       fx::SourceOf("deepseek4", fx::Resources(p, fx::kF16Types), sp::mappings::Dsv4Mapping());
-  auto values = sp::mappings::Dsv4V0Values(p);
+  auto values = fam::Dsv4Values(p);
   ASSERT_TRUE(values) << values.error();
   auto spec = sp::Synthesize(sp::mappings::Dsv4Mapping(), life.tensors, *values);
   ASSERT_TRUE(spec) << spec.error();

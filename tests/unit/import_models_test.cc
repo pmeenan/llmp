@@ -3,17 +3,17 @@
 
 // The container readers (import/) on the real checkpoints of the current
 // models: the Gemma 2 and Gemma 3 source GGUFs give, through their mappings
-// and their own metadata, the spec the installed v0 artifacts give with
-// today's profiles (spec/mapping.h SynthesizeV0), tensor for tensor in the
-// same formats; the split and single GGUFs of DeepSeek V4, Qwen3.8 and
-// Gemma 4 read whole; Qwen3.8's ModelOpt checkpoint pairs every NVFP4 and
-// MXFP8 weight; Qwen-Image-2.1's pipeline is its v0 composition's
-// components tensor for tensor and byte for byte; the Qwen2.5 EXL3
-// fixtures are their v0 imports; Qwen3.8's MLX checkpoint pairs every
+// and their own metadata, the spec their published v1 artifacts store,
+// tensor for tensor in the same formats, and the GGUFs of Gemma 4, its
+// assistants, DeepSeek V4, DSpark and Qwen3.8 the formats of theirs; the
+// split and single GGUFs read whole; Qwen3.8's ModelOpt checkpoint pairs
+// every NVFP4 and MXFP8 weight; Qwen-Image-2.1's pipeline is its v0
+// composition's components tensor for tensor and byte for byte; the Qwen2.5
+// EXL3 fixtures are their v1 imports; Qwen3.8's MLX checkpoint pairs every
 // quantized module and decodes within its quantization of the native
 // checkpoint's weights; and the safetensors reader leaves an MLX
 // checkpoint to its reader. Needs the model files (label `models`); each
-// legacy case is skipped without its files; the explicitly scheduled closed
+// case is skipped without its files; the explicitly scheduled closed
 // Qwen header-normalization case refuses missing input.
 
 #include <fcntl.h>
@@ -34,6 +34,7 @@
 #include <initializer_list>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -47,6 +48,7 @@
 #include "artifact/layout.h"
 #include "base/sha256.h"
 #include "expected_error.h"
+#include "fixture_source.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
@@ -57,15 +59,11 @@
 #include "import/readers/gguf.h"
 #include "import/readers/safetensors.h"
 #include "kernels/reference/decode.h"
-#include "model/gemma2.h"
-#include "model/gemma3.h"
-#include "model/gemma4.h"
 #include "qwen38_gguf_normalization_fixture.h"
 #include "spec/mapping.h"
-#include "spec/mappings/gemma2.h"
-#include "spec/mappings/gemma3.h"
-#include "spec/mappings/gemma4.h"
 #include "spec/spec.h"
+#include "spec/stored.h"
+#include "v1_frozen.h"
 
 namespace llmp::import {
 namespace {
@@ -100,19 +98,21 @@ void ExpectWellFormed(const Checkpoint& c) {
 struct GemmaCase {
   std::string_view architecture;
   std::string_view gguf;
-  std::string_view artifact;
+  std::string_view artifact;  // the store's v1-ids.json name
   std::size_t tensors;
 };
 
 class ImportGemmaTest : public testing::TestWithParam<GemmaCase> {};
 
-TEST_P(ImportGemmaTest, SourceGgufGivesTheV0ArtifactsSpec) {
+TEST_P(ImportGemmaTest, SourceGgufGivesTheV1ArtifactsSpec) {
   const GemmaCase& c = GetParam();
   const std::filesystem::path gguf = Models() / c.gguf;
-  const std::filesystem::path path = Models() / c.artifact;
-  if (!Exists(gguf) || !Exists(path)) {
-    GTEST_SKIP() << "no " << gguf << " or " << path;
+  const auto id = test_support::V1IdNamed(c.artifact);
+  if (!Exists(gguf) || !id) {
+    GTEST_SKIP() << "no " << gguf << " or published v1 " << c.artifact << " in "
+                 << test_support::V1Store();
   }
+  const std::filesystem::path path = std::filesystem::path(test_support::V1Store()) / *id;
   auto checkpoint = ReadCheckpoint(gguf);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
   EXPECT_EQ(checkpoint->container, "gguf");
@@ -128,17 +128,17 @@ TEST_P(ImportGemmaTest, SourceGgufGivesTheV0ArtifactsSpec) {
   EXPECT_EQ(artifact->sources()[0].name, gguf.filename().string());
   EXPECT_EQ(artifact->sources()[0].bytes.value(), checkpoint->files[0].bytes);
 
-  // Tensor for tensor, the v0 artifact's formats.
-  const auto v0 = spec::SourceOfV0(*artifact);
-  ASSERT_TRUE(v0.has_value()) << v0.error();
+  // Tensor for tensor, the v1 artifact's formats.
+  const auto v1 = spec::SourceOf(*artifact);
+  ASSERT_TRUE(v1.has_value()) << v1.error();
   const spec::Source source = SourceOf(*checkpoint);
-  EXPECT_EQ(source.container, v0->container);
-  ASSERT_EQ(source.tensors.size(), v0->tensors.size());
+  EXPECT_EQ(source.container, v1->container);
+  ASSERT_EQ(source.tensors.size(), v1->tensors.size());
   std::map<std::string, const spec::SourceTensor*> by_name;
   for (const spec::SourceTensor& t : source.tensors) {
     by_name.emplace(t.name, &t);
   }
-  for (const spec::SourceTensor& t : v0->tensors) {
+  for (const spec::SourceTensor& t : v1->tensors) {
     const auto found = by_name.find(t.name);
     ASSERT_NE(found, by_name.end()) << t.name;
     EXPECT_EQ(found->second->format, t.format) << t.name;
@@ -146,25 +146,22 @@ TEST_P(ImportGemmaTest, SourceGgufGivesTheV0ArtifactsSpec) {
     EXPECT_EQ(found->second->experts, t.experts) << t.name;
   }
 
-  // The spec from the checkpoint's own metadata is the profile's.
+  // The spec from the checkpoint's own metadata is the one the v1 artifact
+  // stores.
   const spec::Mapping* mapping = spec::FindMapping(checkpoint->architecture);
   ASSERT_NE(mapping, nullptr);
-  const auto profile = c.architecture == "gemma2"
-                           ? spec::mappings::Gemma2V0Values(model::Gemma2_2B())
-                           : spec::mappings::Gemma3V0Values(model::Gemma3_4BQat());
-  ASSERT_TRUE(profile.has_value()) << profile.error();
-  const auto from_v0 = spec::SynthesizeV0(*artifact, *mapping, *profile);
-  ASSERT_TRUE(from_v0.has_value()) << from_v0.error();
+  const auto stored = spec::StoredSpec(*artifact);
+  ASSERT_TRUE(stored.has_value()) << stored.error();
   const auto from_gguf = spec::Synthesize(*mapping, source, ValuesOf(*checkpoint));
   ASSERT_TRUE(from_gguf.has_value()) << from_gguf.error();
-  EXPECT_EQ(*from_gguf, *from_v0);
-  EXPECT_EQ(spec::ToJson(*from_gguf), spec::ToJson(*from_v0));
+  EXPECT_EQ(*from_gguf, *stored);
+  EXPECT_EQ(spec::ToJson(*from_gguf), spec::ToJson(*stored));
   RecordProperty("metadata_keys", static_cast<int>(checkpoint->metadata.size()));
   const auto bound = NormalizationBound(*checkpoint);
   ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
   auto normalized = Normalize(std::move(*checkpoint), {bound->metadata_bytes, bound->work_units});
   ASSERT_TRUE(normalized) << test_support::Failed(normalized, &Error::ToString).value_or("");
-  EXPECT_EQ(normalized->spec(), *from_v0);
+  EXPECT_EQ(normalized->spec(), *stored);
   ASSERT_EQ(normalized->canonical().tensors.size(), source.tensors.size());
   ASSERT_EQ(normalized->routes().size(), source.tensors.size());
   ASSERT_EQ(normalized->metadata().size(), normalized->source().metadata.size());
@@ -197,14 +194,12 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Values(
         GemmaCase{.architecture = "gemma2",
                   .gguf = "models/bartowski/gemma-2-2b-it-GGUF@855f67ca/gemma-2-2b-it-Q8_0.gguf",
-                  .artifact = "gemma2-import-20261007/artifacts/"
-                              "eb18d30d0a7de3a95c7b6994b65a12a057ffbf42866add6f128873de8b7aa870",
+                  .artifact = "gemma2",
                   .tensors = 288},
         GemmaCase{.architecture = "gemma3",
                   .gguf = "models/ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d0/"
                           "gemma-3-4b-it-qat-Q4_0.gguf",
-                  .artifact = "gemma3-import-20261007/artifacts/"
-                              "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb",
+                  .artifact = "gemma3",
                   .tensors = 444}),
     [](const testing::TestParamInfo<GemmaCase>& info) {
       return std::string(info.param.architecture);
@@ -277,24 +272,27 @@ INSTANTIATE_TEST_SUITE_P(
                  .files = 1}),
     [](const testing::TestParamInfo<GgufCase>& info) { return std::string(info.param.name); });
 
-struct V0Case {
+struct V1Case {
   std::string_view name;
-  std::string_view artifact;
-  std::string_view gguf;  // its source, or the first of its splits
+  std::string_view artifact;  // the store's v1-ids.json name
+  std::string_view gguf;      // its source, or the first of its splits
 };
 
-class ImportV0FormatsTest : public testing::TestWithParam<V0Case> {};
+class ImportV1FormatsTest : public testing::TestWithParam<V1Case> {};
 
-// Every tensor of a v0 artifact imported from GGUF has the format the
-// reader gives the source's tensor of that name (v0's expert arrays as the
-// GGUF's three-dimensional expert tensors).
-TEST_P(ImportV0FormatsTest, SourceFormatsAreTheArtifacts) {
-  const V0Case& c = GetParam();
+// Every tensor of a v1 artifact imported from GGUF has the format the
+// reader gives the source's tensor of that name (expert arrays as the
+// GGUF's three-dimensional expert tensors), but those its import folded or
+// relaid out, which it records by name.
+TEST_P(ImportV1FormatsTest, SourceFormatsAreTheArtifacts) {
+  const V1Case& c = GetParam();
   const std::filesystem::path gguf = Models() / c.gguf;
-  const std::filesystem::path path = Models() / c.artifact;
-  if (!Exists(gguf) || !Exists(path)) {
-    GTEST_SKIP() << "no " << gguf << " or " << path;
+  const auto id = test_support::V1IdNamed(c.artifact);
+  if (!Exists(gguf) || !id) {
+    GTEST_SKIP() << "no " << gguf << " or published v1 " << c.artifact << " in "
+                 << test_support::V1Store();
   }
+  const std::filesystem::path path = std::filesystem::path(test_support::V1Store()) / *id;
   const auto checkpoint = ReadGguf(gguf);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().ToString();
   auto artifact = artifact::Artifact::Open(path, {.expected_id = {}});
@@ -305,23 +303,32 @@ TEST_P(ImportV0FormatsTest, SourceFormatsAreTheArtifacts) {
     EXPECT_EQ(artifact->sources()[i].bytes.value(), checkpoint->files[i].bytes);
   }
   EXPECT_EQ(artifact->model().architecture, checkpoint->architecture);
-  const auto v0 = spec::SourceOfV0(*artifact);
-  ASSERT_TRUE(v0.has_value()) << v0.error();
+  const auto v1 = spec::SourceOf(*artifact);
+  ASSERT_TRUE(v1.has_value()) << v1.error();
+  std::set<std::string> transformed;
+  for (const artifact::AppliedFold& f : artifact->folds()) {
+    transformed.insert(f.tensors.begin(), f.tensors.end());
+  }
+  for (const artifact::Relayout& r : artifact->relayouts()) {
+    transformed.insert(r.tensors.begin(), r.tensors.end());
+  }
   std::map<std::string, const Tensor*> by_name;
   for (const Tensor& t : checkpoint->tensors) {
     by_name.emplace(t.name, &t);
   }
-  for (const spec::SourceTensor& t : v0->tensors) {
+  std::size_t compared = 0;
+  for (const spec::SourceTensor& t : v1->tensors) {
     const auto found = by_name.find(t.name);
     ASSERT_NE(found, by_name.end()) << t.name;
-    EXPECT_EQ(found->second->format, t.format) << t.name;
     EXPECT_EQ(found->second->experts, t.experts) << t.name;
+    if (transformed.contains(t.name)) {
+      continue;
+    }
+    EXPECT_EQ(found->second->format, t.format) << t.name;
+    ++compared;
   }
   if (checkpoint->architecture == "gemma4") {
-    const auto& profile = c.name == "gemma4_26b" ? model::Gemma4_26BA4B() : model::Gemma4_31B();
-    const auto values = spec::mappings::Gemma4V0Values(profile);
-    ASSERT_TRUE(values) << test_support::Failed(values).value_or("");
-    const auto expected = spec::SynthesizeV0(*artifact, spec::mappings::Gemma4Mapping(), *values);
+    const auto expected = spec::StoredSpec(*artifact);
     ASSERT_TRUE(expected) << test_support::Failed(expected).value_or("");
     const auto bound = NormalizationBound(*checkpoint);
     ASSERT_TRUE(bound) << test_support::Failed(bound, &Error::ToString).value_or("");
@@ -343,51 +350,38 @@ TEST_P(ImportV0FormatsTest, SourceFormatsAreTheArtifacts) {
     }
     EXPECT_EQ(normalized->cost().payload_bytes, payload);
   }
-  RecordProperty("v0_tensors", static_cast<int>(v0->tensors.size()));
+  RecordProperty("v1_tensors", static_cast<int>(v1->tensors.size()));
+  RecordProperty("v1_tensors_compared", static_cast<int>(compared));
   RecordProperty("source_tensors", static_cast<int>(checkpoint->tensors.size()));
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    M3, ImportV0FormatsTest,
-    testing::Values(
-        V0Case{.name = "gemma4_26b",
-               .artifact = "m3-artifacts/"
-                           "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
-               .gguf = "reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"},
-        V0Case{.name = "gemma4_31b",
-               .artifact = "m3-artifacts/"
-                           "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
-               .gguf = "reference-models/gemma-4-31B-it-UD-Q4_K_XL.gguf"},
-        V0Case{.name = "gemma4_26b_assistant",
-               .artifact = "m3-artifacts/"
-                           "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42",
-               .gguf = "reference-models/mtp-gemma-4-26B-A4B-it.gguf"},
-        V0Case{.name = "gemma4_31b_assistant",
-               .artifact = "m3-artifacts/"
-                           "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120",
-               .gguf = "reference-models/mtp-gemma-4-31B-it.gguf"},
-        V0Case{.name = "deepseek_v4_ud_q2",
-               .artifact = "m3-artifacts/"
-                           "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234",
-               .gguf = "models/unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93/UD-Q2_K_XL/"
-                       "DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf"},
-        V0Case{.name = "deepseek_v4_antirez",
-               .artifact = "m3-artifacts/"
-                           "cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac",
-               .gguf = "models/antirez/deepseek-v4-gguf@f71f23d5/"
-                       "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-"
-                       "0731.gguf"},
-        V0Case{.name = "dspark_q8",
-               .artifact = "m3-artifacts/"
-                           "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5",
-               .gguf = "models/unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93/"
-                       "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"},
-        V0Case{.name = "qwen38_ud_iq3",
-               .artifact = "qgguf-artifacts/"
-                           "5356b5b05fd93d06419cd842c4946e0df9d57ec816916109af5c724cadf25b78",
-               .gguf = "reference-models/Q/UD-IQ3_XXS/"
-                       "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf"}),
-    [](const testing::TestParamInfo<V0Case>& info) { return std::string(info.param.name); });
+    M3, ImportV1FormatsTest,
+    testing::Values(V1Case{.name = "gemma4_26b",
+                           .artifact = "gemma26",
+                           .gguf = "reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"},
+                    V1Case{.name = "gemma4_31b",
+                           .artifact = "gemma31",
+                           .gguf = "reference-models/gemma-4-31B-it-UD-Q4_K_XL.gguf"},
+                    V1Case{.name = "gemma4_26b_assistant",
+                           .artifact = "gemma26-assistant",
+                           .gguf = "reference-models/mtp-gemma-4-26B-A4B-it.gguf"},
+                    V1Case{.name = "gemma4_31b_assistant",
+                           .artifact = "gemma31-assistant",
+                           .gguf = "reference-models/mtp-gemma-4-31B-it.gguf"},
+                    V1Case{.name = "deepseek_v4_ud_q2",
+                           .artifact = "deepseek",
+                           .gguf = "models/unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93/UD-Q2_K_XL/"
+                                   "DeepSeek-V4-Flash-0731-UD-Q2_K_XL-00001-of-00003.gguf"},
+                    V1Case{.name = "dspark_q8",
+                           .artifact = "dspark",
+                           .gguf = "models/unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93/"
+                                   "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"},
+                    V1Case{.name = "qwen38_ud_iq3",
+                           .artifact = "qwen38-gguf",
+                           .gguf = "reference-models/Q/UD-IQ3_XXS/"
+                                   "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf"}),
+    [](const testing::TestParamInfo<V1Case>& info) { return std::string(info.param.name); });
 
 constexpr std::string_view kQwen38 = "models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6";
 constexpr std::string_view kMlx = "models/Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80";
@@ -444,188 +438,6 @@ TEST(ImportSafetensorsModelsTest, Qwen38ModelOptPairsEveryWeight) {
   RecordProperty("metadata_keys", static_cast<int>(checkpoint->metadata.size()));
 }
 
-// A v0 artifact's bytes: `bytes` at `offset` in group `group`'s data.
-std::vector<std::byte> ReadV0(const std::filesystem::path& root, const artifact::Artifact& a,
-                              std::uint32_t group, std::uint64_t offset, std::uint64_t bytes) {
-  const artifact::Group& g = a.groups()[group];
-  const artifact::Shard& shard = a.shards()[g.shard];
-  std::ifstream in(root / shard.path, std::ios::binary);
-  in.seekg(static_cast<std::streamoff>(shard.data_offset.value() + g.offset.value() + offset));
-  std::vector<std::byte> out(bytes);
-  in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
-  EXPECT_TRUE(in.good());
-  return out;
-}
-
-std::vector<std::byte> ReadV0Resource(const std::filesystem::path& root,
-                                      const artifact::Artifact& a, std::string_view role,
-                                      std::uint64_t offset = 0,
-                                      std::optional<std::uint64_t> bytes = std::nullopt) {
-  const auto r = a.FindResource(role);
-  EXPECT_TRUE(r.has_value()) << role;
-  if (!r) {
-    return {};
-  }
-  const auto p = a.ResourcePlacement(*r);
-  EXPECT_TRUE(p.has_value()) << role;
-  if (!p) {
-    return {};
-  }
-  return ReadV0(root, a, p->group, p->offset.value() + offset,
-                bytes.value_or(p->bytes.value() - offset));
-}
-
-std::vector<std::byte> ReadSource(const Checkpoint& c, std::string_view name,
-                                  std::uint64_t offset = 0,
-                                  std::optional<std::uint64_t> bytes = std::nullopt) {
-  const Tensor* t = c.FindTensor(name);
-  EXPECT_NE(t, nullptr) << name;
-  if (t == nullptr) {
-    return {};
-  }
-  std::vector<std::byte> out(bytes.value_or(t->extent.bytes - offset));
-  const auto ok = c.Read(t->extent, offset, out);
-  EXPECT_TRUE(ok.has_value()) << name << ": " << (ok ? "" : ok.error().ToString());
-  return out;
-}
-
-// Equal bytes, or where they first differ (never the bytes themselves).
-testing::AssertionResult Same(const std::vector<std::byte>& a, const std::vector<std::byte>& b) {
-  if (a.size() != b.size()) {
-    return testing::AssertionFailure() << "sizes " << a.size() << " and " << b.size();
-  }
-  const auto [x, y] = std::ranges::mismatch(a, b);
-  if (x != a.end()) {
-    return testing::AssertionFailure() << "first difference at byte " << (x - a.begin());
-  }
-  return testing::AssertionSuccess();
-}
-
-// The same rows in any order, `row` bytes each.
-testing::AssertionResult SameRows(const std::vector<std::byte>& a, const std::vector<std::byte>& b,
-                                  std::size_t row) {
-  if (a.size() != b.size() || row == 0 || a.size() % row != 0) {
-    return testing::AssertionFailure() << "sizes " << a.size() << " and " << b.size();
-  }
-  const auto rows = [row](const std::vector<std::byte>& v) {
-    std::vector<std::string_view> out;
-    for (std::size_t i = 0; i < v.size(); i += row) {
-      out.emplace_back(reinterpret_cast<const char*>(v.data() + i), row);
-    }
-    std::ranges::sort(out);
-    return out;
-  };
-  if (rows(a) != rows(b)) {
-    return testing::AssertionFailure() << "different rows";
-  }
-  return testing::AssertionSuccess();
-}
-
-// The ModelOpt checkpoint as the reader describes it against the v0
-// import the Python importer made of the same files (the CUTLASS-layout
-// artifact): layer 1's MXFP8 linears have the format v0's codes and scales
-// assemble to, and their bytes: the shared expert's the same, the linear
-// attention's input projections the same rows (v0 reordered their heads
-// as llama.cpp's converter does, which a mapping's fold will do, and its
-// output projection's columns, compared by format only); every routed
-// expert's NVFP4 tensor scale is the value v0 keeps for it, per
-// projection (gate and up the halves v0 stacks); and the n-gram table's
-// 128 shards are v0's row-interleaved table, under the one tensor scale v0
-// keeps for it.
-TEST(ImportSafetensorsModelsTest, Qwen38ModelOptMatchesTheV0Import) {
-  const std::filesystem::path path = Models() / kQwen38;
-  const std::filesystem::path v0 =
-      Models() / "m3-artifacts/c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93";
-  if (!Exists(path) || !Exists(v0)) {
-    GTEST_SKIP() << "no " << path << " or " << v0;
-  }
-  const auto c = ReadCheckpoint(path);
-  ASSERT_TRUE(c.has_value()) << c.error().ToString();
-  auto a = artifact::Artifact::Open(v0, {.expected_id = {}});
-  ASSERT_TRUE(a.has_value()) << a.error().ToString();
-  const std::string l1 = "model.language_model.layers.1.";
-  enum class Bytes : std::uint8_t { kSame, kSameRows, kFormatOnly };
-  struct Linear {
-    std::string_view v0;
-    std::string source;
-    Bytes bytes;
-  };
-  for (const auto& [v0_name, source, bytes] : std::initializer_list<Linear>{
-           {"blk.1.attn_qkv", l1 + "linear_attn.in_proj_qkv", Bytes::kSameRows},
-           {"blk.1.attn_gate", l1 + "linear_attn.in_proj_z", Bytes::kSameRows},
-           {"blk.1.ssm_beta", l1 + "linear_attn.in_proj_b", Bytes::kSameRows},
-           {"blk.1.ssm_alpha", l1 + "linear_attn.in_proj_a", Bytes::kSameRows},
-           {"blk.1.ssm_out", l1 + "linear_attn.out_proj", Bytes::kFormatOnly},
-           {"blk.1.ffn_gate_shexp", l1 + "mlp.shared_expert.gate_proj", Bytes::kSame},
-           {"blk.1.ffn_up_shexp", l1 + "mlp.shared_expert.up_proj", Bytes::kSame},
-           {"blk.1.ffn_down_shexp", l1 + "mlp.shared_expert.down_proj", Bytes::kSame}}) {
-    const std::string codes = std::string(v0_name) + ".weight";
-    const std::string scales = codes + "_scale";
-    const auto ci = a->FindResource(codes);
-    const auto si = a->FindResource(scales);
-    ASSERT_TRUE(ci && si) << v0_name;
-    const std::vector<artifact::V0Part> v0_parts = {
-        {format::PartRole::kCodes, &a->resources()[*ci].repr},
-        {format::PartRole::kBlockScales, &a->resources()[*si].repr}};
-    const auto v0_format =
-        artifact::Assemble(format::Encoding::kMxfp8, format::Layout::kSplit, v0_parts);
-    ASSERT_TRUE(v0_format.has_value()) << v0_name;
-    const Tensor* w = c->FindTensor(source + ".weight");
-    const Tensor* s = c->FindTensor(source + ".weight_scale");
-    ASSERT_TRUE(w != nullptr && s != nullptr) << source;
-    EXPECT_EQ(w->format, *v0_format) << source;
-    EXPECT_EQ(s->format, *v0_format) << source;
-    const std::uint64_t k = w->format.shape.ne[0];
-    if (bytes == Bytes::kSame) {
-      EXPECT_TRUE(Same(ReadSource(*c, w->name), ReadV0Resource(v0, *a, codes))) << source;
-      EXPECT_TRUE(Same(ReadSource(*c, s->name), ReadV0Resource(v0, *a, scales))) << source;
-    } else if (bytes == Bytes::kSameRows) {
-      EXPECT_TRUE(SameRows(ReadSource(*c, w->name), ReadV0Resource(v0, *a, codes), k)) << source;
-      EXPECT_TRUE(SameRows(ReadSource(*c, s->name), ReadV0Resource(v0, *a, scales), k / 32))
-          << source;
-    }
-  }
-  // The routed experts' tensor scales, F32 [512] a projection in v0.
-  for (const std::string_view proj : {"gate", "up", "down"}) {
-    const auto v0_scales =
-        ReadV0Resource(v0, *a, std::format("blk.1.ffn_{}_exps.weight_scale_2", proj));
-    ASSERT_EQ(v0_scales.size(), 512U * 4U) << proj;
-    for (std::uint64_t e = 0; e < 512; ++e) {
-      const std::string module = std::format("{}mlp.experts.{}.{}_proj", l1, e, proj);
-      const Tensor* w = c->FindTensor(module + ".weight");
-      ASSERT_NE(w, nullptr) << module;
-      EXPECT_TRUE(w->format.params.tensor_scale) << module;
-      EXPECT_EQ(w->format.encoding, format::Encoding::kNvfp4) << module;
-      const auto source = ReadSource(*c, module + ".weight_scale_2");
-      EXPECT_TRUE(std::equal(source.begin(), source.end(),
-                             v0_scales.begin() + static_cast<std::ptrdiff_t>(e * 4)))
-          << module;
-    }
-  }
-  // The n-gram table: v0's row r is shard r / rows's row r % rows, its 80
-  // code bytes then its 10 scale bytes.
-  const std::string table = l1 + "ple.ple_embedding.ngram_embedding.";
-  const Tensor* shard0 = c->FindTensor(table + "shard_0.weight");
-  ASSERT_NE(shard0, nullptr);
-  const std::uint64_t rows = shard0->format.shape.ne[1];
-  const std::uint64_t code_row = shard0->format.shape.ne[0] / 2;
-  const std::uint64_t scale_row = shard0->format.shape.ne[0] / 16;
-  for (const std::uint64_t r :
-       {std::uint64_t{0}, rows - 1, rows, std::uint64_t{160000000}, (128 * rows) - 1}) {
-    const std::string shard = std::format("{}shard_{}.", table, r / rows);
-    const std::uint64_t row = r % rows;
-    auto want = ReadSource(*c, shard + "weight", row * code_row, code_row);
-    const auto scales = ReadSource(*c, shard + "weight_scale", row * scale_row, scale_row);
-    want.insert(want.end(), scales.begin(), scales.end());
-    EXPECT_TRUE(Same(ReadV0Resource(v0, *a, "per_layer_token_embd.weight",
-                                    r * (code_row + scale_row), code_row + scale_row),
-                     want))
-        << r;
-  }
-  EXPECT_TRUE(Same(ReadSource(*c, table + "weight_scale_2"),
-                   ReadV0Resource(v0, *a, "per_layer_token_embd.weight_scale_2")));
-}
-
 TEST(ImportSafetensorsModelsTest, ReadsQwenImagesTextEncoder) {
   const std::filesystem::path path = Models() / "models/Qwen/Qwen-Image-2.1@790c9263/text_encoder";
   if (!Exists(path)) {
@@ -664,7 +476,7 @@ TEST(ImportSafetensorsModelsTest, LeavesOtherReadersCheckpointsToThem) {
 
 // ---------------------------------------------------------------- byte checks
 
-// A v0 resource's bytes and a checkpoint tensor's are equal, read in
+// An artifact resource's bytes and a checkpoint tensor's are equal, read in
 // chunks (never the bytes themselves in a failure). Each chunk read is
 // dropped from the page cache after it is compared: on the GB10 the cache
 // shares the GPU's memory, and tens of GB of it would starve the GPU
@@ -682,9 +494,9 @@ testing::AssertionResult SameResourceBytes(const std::filesystem::path& root,
   }
   const artifact::Group& g = a.groups()[p->group];
   const artifact::Shard& shard = a.shards()[g.shard];
-  const artifact::FileDescriptor v0(::open((root / shard.path).c_str(), O_RDONLY | O_CLOEXEC));
-  if (!v0.valid()) {
-    return testing::AssertionFailure() << "cannot open a v0 shard";
+  const artifact::FileDescriptor stored(::open((root / shard.path).c_str(), O_RDONLY | O_CLOEXEC));
+  if (!stored.valid()) {
+    return testing::AssertionFailure() << "cannot open an artifact shard";
   }
   const std::uint64_t base = shard.data_offset.value() + g.offset.value() + p->offset.value();
   // The source file, for dropping what was read from the page cache.
@@ -697,14 +509,14 @@ testing::AssertionResult SameResourceBytes(const std::filesystem::path& root,
     const std::uint64_t n = std::min(kChunk, t.extent.bytes - at);
     want.resize(n);
     got.resize(n);
-    if (::pread(v0.get(), want.data(), n, static_cast<off_t>(base + at)) !=
+    if (::pread(stored.get(), want.data(), n, static_cast<off_t>(base + at)) !=
         static_cast<ssize_t>(n)) {
-      return testing::AssertionFailure() << "short v0 read";
+      return testing::AssertionFailure() << "short artifact read";
     }
     if (auto ok = c.Read(t.extent, at, got); !ok) {
       return testing::AssertionFailure() << ok.error().ToString();
     }
-    ::posix_fadvise(v0.get(), static_cast<off_t>(base + at), static_cast<off_t>(n),
+    ::posix_fadvise(stored.get(), static_cast<off_t>(base + at), static_cast<off_t>(n),
                     POSIX_FADV_DONTNEED);
     ::posix_fadvise(source.get(), static_cast<off_t>(t.extent.offset + at), static_cast<off_t>(n),
                     POSIX_FADV_DONTNEED);
@@ -717,7 +529,7 @@ testing::AssertionResult SameResourceBytes(const std::filesystem::path& root,
   return testing::AssertionSuccess();
 }
 
-// Every resource of a v0 artifact is the checkpoint tensor of each of its
+// Every resource of an artifact is the checkpoint tensor of each of its
 // roles, byte for byte; returns the bytes compared.
 std::uint64_t ExpectResourcesAreTheCheckpoints(const std::filesystem::path& root,
                                                const artifact::Artifact& a, const Checkpoint& c) {
@@ -791,7 +603,7 @@ TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
         EXPECT_FALSE(f.name.ends_with(".safetensors")) << f.name;
       }
     }
-    const auto source = spec::SourceOfV0(*a);
+    const auto source = test_support::V0ArtifactSource(*a);
     ASSERT_TRUE(source.has_value()) << source.error();
     EXPECT_EQ(source->tensors.size(), component.tensors.size());
     for (const spec::SourceTensor& t : source->tensors) {
@@ -810,22 +622,24 @@ TEST(ImportPipelineModelsTest, QwenImageComponentsAreTheV0Imports) {
 struct Exl3Case {
   std::string_view name;
   std::string_view source;
-  std::string_view artifact;
+  std::string_view artifact;  // the store's v1-ids.json name
 };
 
 class ImportExl3ModelsTest : public testing::TestWithParam<Exl3Case> {};
 
 // The Qwen2.5 EXL3 fixtures' source checkpoints as the EXL3 reader gives
-// them against their v0 imports: every linear (169) a trellis whose parts
-// have the format v0's resources assemble to, every other tensor v0's
-// format, and every resource's bytes.
-TEST_P(ImportExl3ModelsTest, FixturesAreTheirV0Imports) {
+// them against their published v1 imports: every resource the checkpoint
+// tensor of its name, in the format and part v1 records (every linear (169)
+// a trellis of four parts), and with its bytes.
+TEST_P(ImportExl3ModelsTest, FixturesAreTheirV1Imports) {
   const Exl3Case& e = GetParam();
   const std::filesystem::path path = Models() / e.source;
-  const std::filesystem::path root = Models() / e.artifact;
-  if (!Exists(path) || !Exists(root)) {
-    GTEST_SKIP() << "no " << path << " or " << root;
+  const auto id = test_support::V1IdNamed(e.artifact);
+  if (!Exists(path) || !id) {
+    GTEST_SKIP() << "no " << path << " or published v1 " << e.artifact << " in "
+                 << test_support::V1Store();
   }
+  const std::filesystem::path root = std::filesystem::path(test_support::V1Store()) / *id;
   const auto c = ReadCheckpoint(path);
   ASSERT_TRUE(c.has_value()) << c.error().ToString();
   EXPECT_EQ(c->container, "exl3");
@@ -842,32 +656,12 @@ TEST_P(ImportExl3ModelsTest, FixturesAreTheirV0Imports) {
   for (const artifact::Resource& r : a->resources()) {
     const Tensor* t = c->FindTensor(r.name);
     ASSERT_NE(t, nullptr) << r.name;
-    EXPECT_EQ(t->part, artifact::V0PartRole(r.repr)) << r.name;
-    if (r.repr.family != artifact::Family::kExl3) {
-      EXPECT_EQ(t->format, artifact::FormatOf(r.repr).value()) << r.name;
-      continue;
-    }
-    if (r.repr.role != "trellis") {
-      continue;  // checked with its trellis
-    }
-    ++trellises;
-    const std::string module =
-        r.name.substr(0, r.name.size() - std::string_view(".trellis").size());
-    std::vector<artifact::V0Part> parts = {{format::PartRole::kCodes, &r.repr}};
-    for (const auto& [suffix, role] : {std::pair{".suh", format::PartRole::kInputSigns},
-                                       std::pair{".svh", format::PartRole::kOutputSigns},
-                                       std::pair{".mcg", format::PartRole::kCodebookMarker}}) {
-      const auto i = a->FindResource(module + suffix);
-      ASSERT_TRUE(i.has_value()) << module << suffix;
-      parts.push_back({role, &a->resources()[*i].repr});
-    }
-    const auto v0 =
-        artifact::Assemble(format::Encoding::kExl3Trellis, format::Layout::kExl3Tiles, parts);
-    ASSERT_TRUE(v0.has_value()) << module;
-    for (const std::string_view suffix : {".trellis", ".suh", ".svh", ".mcg"}) {
-      const Tensor* part = c->FindTensor(module + std::string(suffix));
-      ASSERT_NE(part, nullptr) << module << suffix;
-      EXPECT_EQ(part->format, *v0) << module << suffix;
+    ASSERT_TRUE(r.format.has_value()) << r.name;
+    EXPECT_EQ(t->part, r.part) << r.name;
+    EXPECT_EQ(t->format, *r.format) << r.name;
+    if (r.format->encoding == format::Encoding::kExl3Trellis &&
+        r.part == format::PartRole::kCodes) {
+      ++trellises;
     }
   }
   EXPECT_EQ(trellises, 169U);
@@ -875,18 +669,16 @@ TEST_P(ImportExl3ModelsTest, FixturesAreTheirV0Imports) {
   RecordProperty("bytes_compared", std::to_string(ExpectResourcesAreTheCheckpoints(root, *a, *c)));
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Fixtures, ImportExl3ModelsTest,
-    testing::Values(
-        Exl3Case{.name = "exl3_4_0bpw",
-                 .source = "exl3-reference-20260922/models/4.0bpw",
-                 .artifact = "artifact-layout-20260922/installed/"
-                             "6e96e499ea9b859ea726327d4f82fb1739cb116ce4e9d3541d1ba67506efb4b4"},
-        Exl3Case{.name = "exl3_4_5bpw",
-                 .source = "exl3-reference-20260922/models/4.5bpw",
-                 .artifact = "artifact-layout-20260922/installed/"
-                             "00d77caf056c45b6fa05ebdbeff8b38da79d0556a2fd4f1b661e7e21ef9ed83a"}),
-    [](const testing::TestParamInfo<Exl3Case>& info) { return std::string(info.param.name); });
+INSTANTIATE_TEST_SUITE_P(Fixtures, ImportExl3ModelsTest,
+                         testing::Values(Exl3Case{.name = "exl3_4_0bpw",
+                                                  .source = "exl3-reference-20260922/models/4.0bpw",
+                                                  .artifact = "qwen2-exl3-4.0"},
+                                         Exl3Case{.name = "exl3_4_5bpw",
+                                                  .source = "exl3-reference-20260922/models/4.5bpw",
+                                                  .artifact = "qwen2-exl3-4.5"}),
+                         [](const testing::TestParamInfo<Exl3Case>& info) {
+                           return std::string(info.param.name);
+                         });
 
 // ---------------------------------------------------------------- MLX
 
@@ -1093,6 +885,7 @@ TEST(ImportGgufModelsTest, NormalizesClosedQwen38TargetHeadersWithoutPayloadRead
           ? std::filesystem::path(selected)
           : Models() /
                 "reference-models/Q/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf";
+  if (selected == nullptr && !Exists(path)) GTEST_SKIP() << "no staged Qwen3.8 GGUF: " << path;
   ASSERT_TRUE(Exists(path));
   auto source = ReadGguf(path);
   ASSERT_TRUE(source) << test_support::Failed(source, &Error::ToString).value_or("");

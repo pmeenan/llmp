@@ -15,12 +15,11 @@
 
 #include "components/step.h"
 #include "execution/registry.h"
+#include "families/qwen.h"
 #include "format/tensor_format.h"
 #include "ir/graph.h"
 #include "kernels/ggml/capabilities.h"
 #include "kernels/ggml/lower.h"
-#include "model/qwen2.h"
-#include "model/qwen2_exl3.h"
 #include "planner/plan.h"
 #include "planner/policy.h"
 #include "spec/mapping.h"
@@ -30,12 +29,13 @@ namespace {
 namespace co = llmp::components;
 namespace sp = llmp::spec;
 namespace md = llmp::model;
+namespace fam = llmp::test_support::families;
 namespace ir = llmp::ir;
 namespace fmt = llmp::format;
 using fmt::Encoding;
 
 sp::Source Source(bool exl3) {
-  const auto& p = exl3 ? md::Qwen25Instruct05BExl3() : md::Qwen25Instruct05B();
+  const auto& p = exl3 ? fam::Qwen25Instruct05BExl3() : fam::Qwen25Instruct05B();
   sp::Source source{.architecture = "qwen2", .container = exl3 ? "exl3" : "gguf"};
   const auto add = [&](std::string name, Encoding encoding, fmt::Shape shape) {
     source.tensors.push_back({.name = std::move(name), .format = ir::Dense(encoding, shape)});
@@ -89,8 +89,8 @@ TEST(ComponentsQwen2, BothEncodingsUseTheSharedCatalogAndPhysicalShapes) {
   EXPECT_EQ(sp::FindMapping("qwen2"), &mapping);
   for (const bool exl3 : {false, true}) {
     SCOPED_TRACE(exl3);
-    const auto& p = exl3 ? md::Qwen25Instruct05BExl3() : md::Qwen25Instruct05B();
-    auto values = sp::mappings::Qwen2V0Values(p);
+    const auto& p = exl3 ? fam::Qwen25Instruct05BExl3() : fam::Qwen25Instruct05B();
+    auto values = fam::Qwen2Values(p);
     ASSERT_TRUE(values.has_value()) << values.error();
     const auto source = Source(exl3);
     auto spec = sp::Synthesize(mapping, source, *values);
@@ -153,9 +153,9 @@ TEST(ComponentsQwen2, BothEncodingsUseTheSharedCatalogAndPhysicalShapes) {
   }
 }
 
-TEST(ComponentsQwen2, RefusesMissingBiasPartsAndInconsistentProfiles) {
+TEST(ComponentsQwen2, RefusesMissingBiasAndTrellisParts) {
   auto source = Source(true);
-  const auto values = sp::mappings::Qwen2V0Values(md::Qwen25Instruct05BExl3());
+  const auto values = fam::Qwen2Values(fam::Qwen25Instruct05BExl3());
   ASSERT_TRUE(values.has_value());
   const auto& mapping = sp::mappings::Qwen2Mapping();
   for (const std::string missing :
@@ -165,12 +165,6 @@ TEST(ComponentsQwen2, RefusesMissingBiasPartsAndInconsistentProfiles) {
     std::erase_if(damaged.tensors, [&](const auto& t) { return t.name == missing; });
     EXPECT_FALSE(sp::Synthesize(mapping, damaged, *values)) << missing;
   }
-  auto damaged = md::Qwen25Instruct05B();
-  damaged.heads = 15;
-  EXPECT_FALSE(sp::mappings::Qwen2V0Values(damaged));
-  damaged = md::Qwen25Instruct05B();
-  damaged.weight_type = "Q4_0";
-  EXPECT_FALSE(sp::mappings::Qwen2V0Values(damaged));
 }
 TEST(ComponentsQwen2, Fp16ActualShapesSelectAndLowerThroughTheSharedGgmlBackend) {
   namespace kg = llmp::kernels::ggml;
@@ -190,7 +184,7 @@ TEST(ComponentsQwen2, Fp16ActualShapesSelectAndLowerThroughTheSharedGgmlBackend)
   ASSERT_TRUE(registry.has_value());
   const auto source = Source(false);
   const auto& mapping = sp::mappings::Qwen2Mapping();
-  const auto values = sp::mappings::Qwen2V0Values(md::Qwen25Instruct05B());
+  const auto values = fam::Qwen2Values(fam::Qwen25Instruct05B());
   ASSERT_TRUE(values.has_value());
   const auto spec = sp::Synthesize(mapping, source, *values);
   ASSERT_TRUE(spec.has_value()) << spec.error();
@@ -244,7 +238,7 @@ TEST(ComponentsQwen2, Fp16FloatFusionsAreSelectedOnlyForOneColumn) {
   ASSERT_TRUE(registry.has_value());
   const auto source = Source(false);
   const auto& mapping = sp::mappings::Qwen2Mapping();
-  const auto values = sp::mappings::Qwen2V0Values(md::Qwen25Instruct05B());
+  const auto values = fam::Qwen2Values(fam::Qwen25Instruct05B());
   ASSERT_TRUE(values.has_value());
   const auto spec = sp::Synthesize(mapping, source, *values);
   ASSERT_TRUE(spec.has_value()) << spec.error();

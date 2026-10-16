@@ -25,12 +25,12 @@
 #include "engine/paged_weights.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/step_program.h"
-#include "model/qwen2.h"
 #include "planner/pattern.h"
 #include "platform/host_probe.h"
 #include "providers/device_probe.h"
 #include "spec/mapping.h"
 #include "spec/mappings/qwen2.h"
+#include "spec/stored.h"
 
 namespace llmp::benchmarks {
 namespace {
@@ -77,12 +77,21 @@ class TemporaryCharge {
   bool held_ = false;
 };
 
+// The cells a step reads: its used cells padded to 256, at least 256 and
+// at most the cache's (llama.cpp's n_kv for a single-sequence cache).
+std::uint32_t PaddedKv(std::uint32_t used_cells, std::uint32_t cells) {
+  constexpr std::uint32_t kPad = 256;
+  const std::uint64_t padded = (std::uint64_t{used_cells} + kPad - 1) / kPad * kPad;
+  return static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(cells, std::max<std::uint64_t>(kPad, padded)));
+}
+
 pl::StepShape Shape(std::uint32_t past, std::uint32_t rows, std::uint32_t cells) {
   return {.phase = rows == 1 ? pl::Phase::kDecode : pl::Phase::kPrefill,
           .segments = {{.slot = 0,
                         .rows = rows,
                         .past = past,
-                        .read_cells = model::PaddedKv(past + rows, cells),
+                        .read_cells = PaddedKv(past + rows, cells),
                         .outputs = rows}},
           .read_align = 256};
 }
@@ -183,20 +192,17 @@ Status Fp16Runner::Setup() {
   auto weights = std::make_unique<en::PagedWeights>();
   if (auto opened = weights->Open(o.artifact); !opened) return opened;
   const auto& artifact = weights->artifact();
-  const auto& profile = model::Qwen25Instruct05B();
-  if (auto checked = model::BindQwen2(profile, artifact); !checked) return Error(checked.error());
+  // The v1 import's stored spec and tensors (D-118), planned under its
+  // mapping's policy.
   const auto& mapping = spec::mappings::Qwen2Mapping();
-  auto values = spec::mappings::Qwen2V0Values(profile);
-  if (!values) return Error(values.error());
-  s.values = std::move(*values);
-  auto source = spec::SourceOfV0(artifact, &mapping);
+  auto source = spec::SourceOf(artifact);
   if (!source) return Error(source.error());
   if (source->tensors.size() > 512 || std::ranges::any_of(source->tensors, [](const auto& tensor) {
         return tensor.name.size() > 128;
       }))
     return Error("FP16 prepared tensor metadata exceeds its fixed bound");
   s.source.emplace(std::move(*source));
-  auto specification = spec::Synthesize(mapping, *s.source, s.values);
+  auto specification = spec::StoredSpec(artifact);
   if (!specification) return Error(specification.error());
   s.specification.emplace(std::move(*specification));
   if (s.specification->stages.size() != 1 || s.specification->stages.front().layers.size() != 24)

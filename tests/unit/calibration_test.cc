@@ -17,11 +17,13 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <span>
 #include <string>
 #include <system_error>
 #include <vector>
 
 #include "runtime/prefill.h"
+#include "spec/mapping.h"
 
 namespace {
 
@@ -420,12 +422,12 @@ TEST(Calibration, EqualWaveCostVectorsWithDifferentOverridePrefixesHaveDifferent
   // The runner ceiling its spec states (DeepSeek V4 Flash 1M, Qwen3.8 256K).
   facts.context_ceiling = facts.architecture == "deepseek4" ? 1048576U : 262144U;
   facts.drafter_architecture = "dflash";
-  entry.overrides["wave_costs"] = std::vector<double>{llmp::runtime::kDsv4WaveCosts[0]};
+  const std::span<const double> costs = llmp::runtime::RecipeOf("deepseek4")->default_wave_costs;
+  entry.overrides["wave_costs"] = std::vector<double>{costs[0]};
   const auto one = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(one.has_value());
   const auto first_entry = entry;
-  entry.overrides["wave_costs"] =
-      std::vector<double>{llmp::runtime::kDsv4WaveCosts[0], llmp::runtime::kDsv4WaveCosts[1]};
+  entry.overrides["wave_costs"] = std::vector<double>{costs[0], costs[1]};
   const auto two = llmp::runtime::ResolveSettings(entry, facts, nullptr, false);
   ASSERT_TRUE(two.has_value());
   EXPECT_EQ(one->wave_costs.value, two->wave_costs.value);
@@ -440,7 +442,7 @@ TEST(Calibration, EqualWaveCostVectorsWithDifferentOverridePrefixesHaveDifferent
   ASSERT_TRUE(first_active.has_value());
   ASSERT_TRUE(second_active.has_value());
   EXPECT_EQ(first_active->wave_costs.value[1], 4.5);
-  EXPECT_EQ(second_active->wave_costs.value[1], llmp::runtime::kDsv4WaveCosts[1]);
+  EXPECT_EQ(second_active->wave_costs.value[1], costs[1]);
   CalibrationKey first = Key();
   first.settings = llmp::runtime::MeasuredWith(*one);
   CalibrationKey second = first;

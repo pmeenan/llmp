@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // DeepSeek V4 Flash served by the shared engine (D-107; runtime/engine_llm.h
-// over the component step source) on the installed artifacts (label
-// `models`), through the runtime's server as the service drives it: the
+// over the component step source) on the published v1 artifacts (label
+// `models`; tests/support/v1_frozen.h V1Store: the target 698b1cd8 and the
+// DSpark drafter 5c9d95e2), through the runtime's server as the service drives it: the
 // coverage that the retired Dsv4Runner's serving tests held
 // (plain_tokens_serving_gpu_test, dsv4_prefill_plan_test's lookahead cases)
 // on the one engine every model now shares.
@@ -30,7 +31,10 @@
 // - prefill lookahead on and off: the same heads and states at prompts
 //   crossing CSA and HCA blocks and the raw ring;
 // - the fixed prompt's head and greedy tokens against what the engine
-//   gave on the M3.6 reference run.
+//   gave on the M3.6 reference run;
+// - every program the automatic serving build lowers, target and DSpark,
+//   binds the complete expert domain, the hash routes and DSpark's
+//   injected taps (the retired closed diagnostic bridge's program checks).
 //
 // Every server here takes the ordinary defaults (no LLMP_DIAGNOSTIC_*
 // tuple): the automatic startup payment against the node's measured
@@ -64,14 +68,21 @@
 #include <vector>
 
 #include "base/sha256.h"
+#include "engine/component_source.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
+#include "ir/graph.h"
+#include "ir/op.h"
 #include "kept_restart_serving_checks.h"
+#include "kernels/common/lower.h"
+#include "kernels/common/step_program.h"
 #include "plain_token_serving_checks.h"
 #include "runtime/commands.h"
+#include "runtime/component_build.h"
 #include "runtime/engine_llm.h"
+#include "runtime/model_settings.h"
 #include "runtime/serving.h"
-#include "tokenizer_fixtures.h"
+#include "v1_frozen.h"
 
 namespace {
 
@@ -80,8 +91,8 @@ namespace en = llmp::engine;
 namespace cfg = llmp::config;
 namespace fs = std::filesystem;
 
-constexpr const char* kTarget = "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
-constexpr const char* kDrafter = "dd2d3f9c66f070fb231d27d5a11f38ff22c78dc8f089cecedbb67721e9b4bec5";
+constexpr const char* kTarget = "698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd";
+constexpr const char* kDrafter = "5c9d95e24769c4d0a06088b0b6a8cc4afd4979b5ffc6d9357b4116f26fa583aa";
 constexpr std::uint32_t kVocab = 129280;
 // The speed gate's diagnostic tuple (its NEW arm): the node's cap (112 GiB,
 // 2 MiB aligned) with the automatic startup payment.
@@ -173,15 +184,15 @@ class Dsv4EngineBase : public testing::Test {
   bool retirement_failed = false;
   bool needs_drafter = false;
 
-  static fs::path Installed() { return fs::path(llmp::test_support::ModelsDir()) / "m3-artifacts"; }
+  static fs::path Installed() { return fs::path(llmp::test_support::V1Store()); }
 
   void SetUp() override {
     const fs::path installed = Installed();
     std::error_code error;
     if (!fs::exists(installed / kTarget, error))
-      GTEST_SKIP() << "no DeepSeek V4 Flash artifact " << kTarget << " in " << installed;
+      GTEST_FAIL() << "no DeepSeek V4 Flash artifact " << kTarget << " in " << installed;
     if (needs_drafter && !fs::exists(installed / kDrafter, error))
-      GTEST_SKIP() << "no DSpark drafter artifact " << kDrafter << " in " << installed;
+      GTEST_FAIL() << "no DSpark drafter artifact " << kDrafter << " in " << installed;
     // Spill files need direct I/O: scratch in the build tree.
     const char* base = std::getenv("LLMP_TEST_SCRATCH");  // NOLINT(concurrency-mt-unsafe)
     const fs::path root = base != nullptr ? base : ::testing::TempDir();
@@ -892,7 +903,8 @@ struct TopLogit {
 // The whole-model reference of one fixed prompt: Tokens(0, 1285) (a prompt
 // that crosses CSA and HCA blocks), its head and seven greedy steps' rows
 // (eight rows, the head's first), at the default 4,096-row chunk and 8,704
-// context on the artifact 8a355bfb....
+// context on the artifact 8a355bfb... (v0), whose v1 import 698b1cd8...
+// executes bit for bit alike.
 //
 // kLegacy: the frozen M3 runner's (the baseline build
 // ~/.local/share/llmp/m36-baseline/1facc957-fixed, llmp_dsv4_exec --context
@@ -975,6 +987,112 @@ TEST_F(Dsv4EngineTarget, FixedPromptHeadAndGreedyTokensMatchTheReferences) {
     RecordProperty(std::format("row{}_sha256", row), llmp::base::ToHex(digest.Finish()));
   }
   EXPECT_EQ(Engine().runner().coverage().violations, 0U);
+}
+
+// ---------------------------------------------------------------- lowered closure
+
+// Every program DeepSeek's automatic serving build lowers (each setup
+// shape's measurement on the actual factory, its validator seeing the
+// lowerer's unchanged result; the target with DSpark): every expert product
+// spans the declared 256 experts with six selected (no substitution, no
+// dropped contribution); every routed layer's expert array is bound (126 on a
+// headless target prompt chunk, 129 with the head or DSpark's injected taps,
+// nine in a DSpark pass); the three hash-routed layers' tables are a target
+// step's side-row inputs; and every target step writes DSpark's three
+// injected tap states for each owner it joins. (The retired closed
+// diagnostic bridge's program checks, on the serving route.)
+TEST(Dsv4EngineLowering, EveryServingProgramBindsTheCompleteExpertDomain) {
+  const fs::path installed = llmp::test_support::V1Store();
+  std::error_code error;
+  if (!fs::exists(installed / kTarget, error) || !fs::exists(installed / kDrafter, error))
+    GTEST_FAIL() << "no DeepSeek V4 Flash artifact " << kTarget << " or DSpark " << kDrafter
+                 << " in " << installed;
+  cfg::ModelEntry entry;
+  entry.name = "deepseek";
+  entry.artifact = kTarget;
+  entry.drafter = kDrafter;
+  entry.overrides["context"] = std::int64_t{8704};
+  entry.overrides["prefill_chunk"] = std::int64_t{4096};
+  entry.overrides["max_slots"] = std::int64_t{2};
+  auto facts = rt::ReadArtifactFacts(entry, installed);
+  ASSERT_TRUE(facts) << (facts ? "" : facts.error());
+  auto settings = rt::ResolveSettings(entry, *facts, nullptr, false);
+  ASSERT_TRUE(settings) << (settings ? "" : settings.error());
+  ASSERT_TRUE(settings->speculation.value);
+  struct Seen {
+    std::uint64_t programs = 0, drafts = 0, injected = 0;
+    std::string failure;
+  } seen;
+  const auto check = [&seen](const llmp::kernels::LowerInput& in,
+                             const llmp::kernels::StepProgram& program) -> rt::Status {
+    if (!in.token) return std::unexpected("token source metadata is required");
+    const auto& step = in.token->step;
+    const bool drafting = in.token->shape.stage == 1;
+    const bool headed = std::ranges::any_of(
+        in.token->shape.segments, [](const auto& segment) { return segment.outputs != 0; });
+    std::uint32_t products = 0, arrays = 0, hash_inputs = 0, injected = 0;
+    for (const auto& weight : step.weights)
+      if (weight.ref.expert_array) ++arrays;
+    for (const auto& input : program.inputs())
+      if (input.kind == llmp::kernels::InputKind::kSideRows) ++hash_inputs;
+    for (const auto& node : step.graph.nodes()) {
+      if (node.key.op != llmp::ir::Op::kMatMulId) continue;
+      ++products;
+      if (step.graph.tensor(node.src[0]).shape().ne[2] != 256 ||
+          step.graph.tensor(node.src[2]).shape().ne[0] != 6)
+        return std::unexpected("an expert product omits the declared expert or selected domain");
+    }
+    for (const auto& state : step.state)
+      if (state.ref.stage == 1 && state.written && state.tap) ++injected;
+    const std::uint32_t expected = drafting ? 9U : 129U;
+    const bool arrays_ok =
+        drafting ? arrays == expected : arrays == 129U || (!headed && arrays == 126U);
+    if (!arrays_ok || products != arrays || hash_inputs != (drafting ? 0U : 3U) ||
+        (!drafting && injected != 3 * in.token->shape.segments.size()))
+      return std::unexpected(std::format(
+          "live expert domain differs: stage={} phase={} arrays={} products={} hash_inputs={} "
+          "injected={}",
+          in.token->shape.stage, static_cast<unsigned>(in.token->shape.phase), arrays, products,
+          hash_inputs, injected));
+    ++seen.programs;
+    ++(drafting ? seen.drafts : seen.injected);
+    return {};
+  };
+  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+  ASSERT_TRUE(node.Open());
+  cfg::RuntimeRoles roles;
+  roles.installed = installed;
+  rt::ComponentBuildOptions options{
+      .target_policy = std::nullopt,
+      .diagnostic_solo = true,
+      .automatic_startup_cap = 110ULL << 30U,
+      .shared_compiler = std::make_shared<en::SharedCompilerAllowance>(),
+      .derive_execution_domain = true};
+  options.validate_program = [&seen, check](const llmp::kernels::LowerInput& in,
+                                            const llmp::kernels::StepProgram& program) {
+    auto checked = check(in, program);
+    if (!checked && seen.failure.empty()) seen.failure = checked.error();
+    return checked;
+  };
+  auto model = std::make_unique<rt::EngineLlm>(
+      node, entry, *settings, roles, 0,
+      rt::ComponentLlmBuild(node, installed, entry, 0, std::move(options)));
+  rt::RequestMemory tokens{1ULL << 20U};
+  model->SetTokenMemory(tokens);
+  const auto setup = model->Setup();
+  std::vector<en::PagedModel*> entered;
+  if (model->has_paged()) entered.push_back(&model->paged());
+  EXPECT_TRUE(setup) << (setup ? "" : setup.error()) << " " << seen.failure;
+  EXPECT_TRUE(seen.failure.empty()) << seen.failure;
+  EXPECT_GT(seen.drafts, 0U);
+  EXPECT_GT(seen.injected, 0U);
+  RecordProperty("validated_programs", std::to_string(seen.programs));
+  const auto retired = node.TearDown(entered);
+  if (!retired) {
+    // An unproven retirement keeps every owner.
+    std::ignore = model.release();
+    FAIL() << (retired ? "" : retired.error());
+  }
 }
 
 }  // namespace

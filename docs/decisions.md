@@ -39,7 +39,7 @@ one Spark and on two.
 
 ---
 
-## D-118: Serving is v1-only; v0 artifacts are re-imported, not migrated; approval is data  (2026-10-15, status: accepted by the owner, 2026-10-15 (v1-only serving); amends D-113's "v0 stays readable" for serving; implements D-109's "the approved list is data, not a profile in code")
+## D-118: Serving is v1-only; v0 artifacts are re-imported, not migrated; approval is data  (2026-10-15, status: accepted by the owner, 2026-10-15 (v1-only serving); in effect since slice 4b (2026-10-16); amends D-113's "v0 stays readable" for serving; implements D-109's "the approved list is data, not a profile in code")
 
 **Decision.** The runtime serves format-v1 artifacts only, from slice 4b
 (which deletes v0 synthesis, the binders and v0 serving; slice 4a, below,
@@ -84,6 +84,17 @@ are pinned since 2026-10-15 from their native imports (the ModelOpt pair
 with its MTP drafter, served bit for bit as the v0 pair); no row is
 unpinned. A change that moves a spec's bytes changes its digest and refuses
 the artifact until its approval is renewed.
+
+Since slice 4b a v0 target or drafter is refused at registration ("re-import
+its source checkpoint with `llmp import`"); `src/model/` holds no LLM family
+code, and a GGUF drafter's import composes its stage with its approved
+target's values and tensor shapes as its mapping's data
+(`DraftRecipe::import_targets`). The importer's closed native readers of one
+family's safetensors forms (Qwen3.8's ModelOpt and MLX normalizers and the
+CLI's dispatch to them) remain, as M3.5 debt: generalized when a second
+ModelOpt model (Nemotron NVFP4) arrives. Re-imports of the staged
+sources reproduce the published IDs. The artifact reader still reads v0, for
+tools, tests and the Qwen-Image composition until the image slice moves it.
 
 **Reopen if** a checkpoint must serve that cannot be re-imported, or an
 approval needs a condition a spec digest and envelope cannot state.

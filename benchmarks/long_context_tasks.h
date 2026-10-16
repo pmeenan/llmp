@@ -19,7 +19,7 @@ namespace llmp::benchmarks::long_context {
 inline constexpr std::uint32_t kSeed = 42;
 inline constexpr std::uint32_t kChunkRows = 2048;
 inline constexpr std::string_view kArtifact =
-    "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234";
+    "698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd";
 inline constexpr std::string_view kProtocol = "ds4-long-context-tasks-v1";
 
 enum class AnswerKind : std::uint8_t { kNumbers, kVariables, kQualitative };

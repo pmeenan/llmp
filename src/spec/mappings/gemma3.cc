@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include "model/gemma3.h"
 #include "spec/mapping.h"
 #include "spec/mappings/rules.h"
 #include "spec/spec.h"
@@ -139,31 +138,5 @@ constexpr Mapping kMapping{
 }  // namespace
 
 const Mapping& Gemma3Mapping() { return kMapping; }
-
-std::expected<std::vector<SourceValue>, std::string> Gemma3V0Values(const model::Gemma3Profile& p) {
-  if (p.rope_scaling != "linear") {
-    return std::unexpected("the Gemma 3 profile's rotation scaling is not the mapping's");
-  }
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    if (p.local(il) != (kMapping.layer_types.at(il % kMapping.layer_types.size()) == 'l')) {
-      return std::unexpected("the Gemma 3 profile's local layers are not the mapping's");
-    }
-  }
-  return std::vector<SourceValue>{
-      Value("gemma3.context_length", p.context),
-      Value("gemma3.embedding_length", p.width),
-      Value("gemma3.block_count", p.layers),
-      Value("gemma3.feed_forward_length", p.ffn),
-      Value("gemma3.attention.head_count", p.heads),
-      Value("gemma3.attention.head_count_kv", p.kv_heads),
-      Value(kKeyLength, p.key_dim),
-      Value("gemma3.attention.value_length", p.value_dim),
-      Value(kEps, p.rms_eps),
-      Value("gemma3.attention.sliding_window", p.window),
-      Value("gemma3.rope.freq_base", p.rope_base),
-      Value("gemma3.rope.scaling.type", p.rope_scaling),
-      Value("gemma3.rope.scaling.factor", p.rope_scale),
-  };
-}
 
 }  // namespace llmp::spec::mappings
