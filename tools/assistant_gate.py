@@ -62,7 +62,9 @@ RUN = "rm -rf {d} && CUDA_DISABLE_PTX_JIT=1 {bin} {t} {a} {d} {profile} {i} {mod
 COMPLETED = re.compile(
     r"GREEDY32_COMPLETED mode=(?P<mode>\S+) phase=(?P<phase>timed-first|timed-repeat) "
     r"emitted=32 endpoint=96 verified=46 drafted=34 seconds=(?P<seconds>[0-9.]+)")
-RETIRED = re.compile(r"GREEDY_NATIVE_RETIRED (?P<fields>.*)")
+# The frozen reference harness retires with GREEDY_NATIVE_RETIRED, the engine harness (the
+# new arm, benchmarks/gemma_engine_greedy.cc) with GREEDY_ENGINE_RETIRED; the fields are the same.
+RETIRED = re.compile(r"GREEDY_(?:NATIVE|ENGINE)_RETIRED (?P<fields>.*)")
 IDENTITY_KEYS = ("profile", "mode", "C", "P", "prefill_query", "emitted", "endpoint", "warm",
                  "quality", "timed")
 

@@ -1,0 +1,12 @@
+{
+ "format": "llmp-quality-prereg/1",
+ "name": "gemma3: v1 on the candidate against v0 on the fixed baseline, the quality control's passage",
+ "bounds": {
+  "expected_targets": 1070,
+  "max_abs_ppl_delta_pct": 0.5,
+  "max_mean_abs_diff": 0.05,
+  "max_abs_diff": 1.0,
+  "min_agreement": 0.95,
+  "agreement_tolerance": 0.1
+ }
+}

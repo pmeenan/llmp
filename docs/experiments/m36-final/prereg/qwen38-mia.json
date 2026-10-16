@@ -1,0 +1,12 @@
+{
+ "format": "llmp-quality-prereg/1",
+ "name": "qwen3.8 v1 (native NVFP4/MXFP8, the gate template) against Mia's vLLM, same checkpoint, four documents",
+ "reference_sha256": "42da92d6471da854c910b02f821b29433392a1c5ec1b806a1fb0f2d4256f65cf",
+ "bounds": {
+  "expected_targets": 1016,
+  "max_abs_ppl_delta_pct": 1.0,
+  "max_abs_doc_ppl_delta_pct": 4.0,
+  "max_mean_abs_diff": 0.25,
+  "max_abs_diff": 5.0
+ }
+}

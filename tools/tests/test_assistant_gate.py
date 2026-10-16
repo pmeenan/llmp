@@ -104,6 +104,10 @@ class Parse(unittest.TestCase):
         self.assertEqual(r["identity"]["P"], "64")
         self.assertEqual(r["identity"]["timed"], "2")
 
+    def test_the_engine_harness_line_is_read_like_the_reference_harness(self):
+        engine = RETIRED.replace("GREEDY_NATIVE_RETIRED", "GREEDY_ENGINE_RETIRED")
+        self.assertEqual(ag.parse_log(log(1.5, 1.3, engine)), ag.parse_log(log(1.5, 1.3)))
+
     def test_an_incomplete_log_is_refused(self):
         for text in (log(1.4, 1.4).replace(RETIRED, ""),
                      log(1.4, 1.4).replace("phase=timed-repeat", "phase=quality-repeat"),
