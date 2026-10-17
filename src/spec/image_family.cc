@@ -169,7 +169,7 @@ float ToFloat(double d) {
 }
 
 // A stage's stream width: its family's (the first kind's).
-std::uint64_t WidthOf(const Stage& stage, const model::QwenImageProfile& p) {
+std::uint64_t WidthOf(const Stage& stage, const model::ImageProfile& p) {
   const auto& kind = stage.layers.front().components.front().kind;
   return kind == kImageTextKind   ? p.text.width
          : kind == kImageFlowKind ? p.denoiser.width
@@ -180,9 +180,8 @@ std::string_view WhereOf(const ImageParamRule& r) {
   return !r.role.empty() ? r.role : (!r.file.empty() ? r.file : std::string_view("a constant"));
 }
 
-std::expected<model::QwenImageProfile, std::string> ProfileOf(const ModelSpec& spec,
-                                                              const ImageMapping& mapping,
-                                                              bool widths);
+std::expected<model::ImageProfile, std::string> ProfileOf(const ModelSpec& spec,
+                                                          const ImageMapping& mapping, bool widths);
 
 }  // namespace
 
@@ -198,6 +197,12 @@ const ImageMapping* FindImageMapping(std::string_view architecture) {
     if (m->architecture == architecture) return m;
   return nullptr;
 }
+
+const ImageMapping* ImageFamilyMapping(std::string_view architecture) {
+  return FindImageMapping(architecture);
+}
+
+const ImageMapping& QwenImage21Mapping() { return mappings::QwenImage21Mapping(); }
 
 std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
   if (m.architecture.empty() || m.components.empty() || m.components.size() > kMaxStages)
@@ -267,9 +272,9 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
   // blocks, two up blocks of a small family: each pattern and suffix
   // instantiated), so that no role binds another's tensor.
   {
-    const model::QwenImageTextProfile text{
+    const model::ImageTextProfile text{
         .layers = 2, .width = 2, .heads = 1, .kv_heads = 1, .head_dim = 2, .ffn = 2, .vocab = 2};
-    model::QwenImageDenoiserProfile flow;
+    model::ImageDenoiserProfile flow;
     flow.blocks = 2;
     flow.heads = 1;
     flow.head_dim = 2;
@@ -278,7 +283,7 @@ std::expected<void, std::string> ValidateImageMapping(const ImageMapping& m) {
     flow.in_channels = flow.out_channels = 2;
     flow.context = 2;
     flow.timestep_dim = 2;
-    model::QwenImageVaeProfile vae;
+    model::ImageVaeProfile vae;
     vae.z_dim = 1;
     vae.base = 1;
     vae.dim_mult = {1, 2, 2};
@@ -412,12 +417,12 @@ std::expected<ModelSpec, std::string> SynthesizeImageFamily(
 // ------------------------------------------------------------------ reading
 
 namespace {
-std::expected<model::QwenImageProfile, std::string> ProfileOf(const ModelSpec& spec,
-                                                              const ImageMapping& mapping,
-                                                              bool widths) {
+std::expected<model::ImageProfile, std::string> ProfileOf(const ModelSpec& spec,
+                                                          const ImageMapping& mapping,
+                                                          bool widths) {
   if (spec.pipeline != PipelineKind::kImage || spec.stages.size() != mapping.components.size())
     return Refused("the stored spec is not the mapping's pipeline");
-  model::QwenImageProfile p;
+  model::ImageProfile p;
   // A component's parameters by name, checked against the schema exactly.
   const auto read = [&](const ComponentRef& ref) -> std::expected<std::vector<Param>, std::string> {
     std::vector<Param> out;
@@ -530,8 +535,8 @@ std::expected<model::QwenImageProfile, std::string> ProfileOf(const ModelSpec& s
 }
 }  // namespace
 
-std::expected<model::QwenImageProfile, std::string> ImageProfileOf(const ModelSpec& spec,
-                                                                   const ImageMapping& mapping) {
+std::expected<model::ImageProfile, std::string> ImageProfileOf(const ModelSpec& spec,
+                                                               const ImageMapping& mapping) {
   return ProfileOf(spec, mapping, true);
 }
 

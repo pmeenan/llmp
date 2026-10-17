@@ -4,7 +4,9 @@
 // The dense MXFP8 products (mxfp8_cutlass.h): CUTLASS 4.7.1's SM120
 // block-scaled tensor-op GEMM (the kernel CUTLASS's example 79c builds, both
 // operands MXFP8 E4M3, no source operand), for sm_121a, with an F32 and a
-// BF16 output. The tile (128 x 128 x 128, ping-pong schedule) and the tile
+// BF16 output. The CUTLASS kernel collective configuration adapts NVIDIA
+// CUTLASS 4.7.1 example 79c under BSD-3-Clause (LICENSES/BSD-3-Clause.txt,
+// NOTICE). The tile (128 x 128 x 128, ping-pong schedule) and the tile
 // swizzle were chosen by a quick A/B at Qwen3.8's shapes
 // (docs/experiments/qwen38-native/README.md).
 

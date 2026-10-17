@@ -42,7 +42,7 @@ using en::support::Error;
 // the flow's 19 besides, the decoder's at most 258) at 8 KiB.
 // Request-sized port, pixel and schedule vectors are separately paid below;
 // incoming prompt/noise allocations retain their caller-owned payment.
-std::uint64_t SourceMappingBytes(const md::QwenImageProfile& p) {
+std::uint64_t SourceMappingBytes(const md::ImageProfile& p) {
   const std::uint64_t roles =
       1 + std::uint64_t{p.text.layers} * static_cast<std::uint64_t>(md::TextTensor::kCount) +
       static_cast<std::uint64_t>(md::DenoiserGlobal::kCount) +
@@ -101,7 +101,7 @@ struct RequestGeometry {
 };
 std::expected<RequestGeometry, std::string> RequestOf(const ImageGenerationRequest& source,
                                                       const ModelSettings& settings,
-                                                      const md::QwenImageProfile& profile) {
+                                                      const md::ImageProfile& profile) {
   RequestGeometry r;
   if ((source.width == 0) != (source.height == 0))
     return Error("image request requires both output dimensions or neither");
@@ -154,7 +154,7 @@ struct ImageGenerationModel {
   std::shared_ptr<ImageGenerationSource> source;
   std::shared_ptr<const ImageFamily> family;
   planner::Policy policy;
-  std::array<std::vector<md::QwenImageTensor>, 3> source_tensors;
+  std::array<std::vector<md::ImageTensor>, 3> source_tensors;
   std::array<std::vector<co::BoundTensor>, 3> tables;
   std::array<std::vector<std::uint32_t>, 3> resource_ids;
   std::array<en::PagedWeights*, 3> weights{};
@@ -173,7 +173,7 @@ struct ImageGeometryOwner {
 // Two complete owner/return representations, doubled vector capacities for
 // three stages/eleven input ports, and fixed shared/control blocks.
 // Kernel declaration storage is independently charged by Declare below.
-std::uint64_t SourceOwnerBytes(const md::QwenImageProfile& p) {
+std::uint64_t SourceOwnerBytes(const md::ImageProfile& p) {
   return SourceMappingBytes(p) + 2 * sizeof(ImageGenerationModel) + 2 * sizeof(EngineImageParts) +
          6 * sizeof(ImageStage) + 22 * sizeof(std::optional<std::uint32_t>) + 4096;
 }
@@ -204,7 +204,7 @@ std::expected<std::uint64_t, std::string> CompilerBound(const spec::SpatialCompo
   return result;
 }
 std::expected<std::vector<co::BoundTensor>, std::string> Table(
-    std::span<const md::QwenImageTensor> tensors) {
+    std::span<const md::ImageTensor> tensors) {
   std::vector<co::BoundTensor> out;
   for (const auto& tensor : tensors) {
     if (tensor.shape.empty() || tensor.shape.size() > 4) return Error("image source rank differs");
@@ -248,7 +248,7 @@ Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, st
     const std::uint32_t joint = text + held.request.rows;
     if (slot == 2 && exact(2 * profile.denoiser.timestep_dim)) {
       const auto sinusoid =
-          md::QwenImageTimestepSinusoid(profile.denoiser, held.timesteps[invocation.iteration]);
+          md::ImageTimestepSinusoid(profile.denoiser, held.timesteps[invocation.iteration]);
       for (std::uint32_t c = 0; c < profile.denoiser.timestep_dim; ++c)
         for (std::uint32_t row = 0; row < 2; ++row)
           put(2 * c + row, md::FromBf16(sinusoid[row * profile.denoiser.timestep_dim + c]));
@@ -256,10 +256,10 @@ Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, st
     }
     if (slot == 3 && exact(3ULL * joint)) {
       if (invocation.iteration > 0 && joint >= 2) {
-        const auto pos0 = md::QwenImageDenoiserPosition(text, held.request.grid_height,
-                                                        held.request.grid_width, 0);
-        const auto pos_last = md::QwenImageDenoiserPosition(text, held.request.grid_height,
-                                                            held.request.grid_width, joint - 1);
+        const auto pos0 =
+            md::ImageDenoiserPosition(text, held.request.grid_height, held.request.grid_width, 0);
+        const auto pos_last = md::ImageDenoiserPosition(text, held.request.grid_height,
+                                                        held.request.grid_width, joint - 1);
         std::int32_t cur0 = -1, cur_last = -1;
         std::memcpy(&cur0, bytes.data(), sizeof(std::int32_t));
         std::memcpy(&cur_last, bytes.data() + (3ULL * joint - 1) * sizeof(std::int32_t),
@@ -267,8 +267,8 @@ Status Fill(const ImageRequestOwner& held, const ImageInvocation& invocation, st
         if (cur0 == pos0[0] && cur_last == pos_last[2]) return {};
       }
       for (std::uint32_t row = 0; row < joint; ++row) {
-        const auto positions = md::QwenImageDenoiserPosition(text, held.request.grid_height,
-                                                             held.request.grid_width, row);
+        const auto positions =
+            md::ImageDenoiserPosition(text, held.request.grid_height, held.request.grid_width, row);
         for (std::uint32_t axis = 0; axis < 3; ++axis) {
           put(row + std::size_t{joint} * axis, positions[axis]);
         }
@@ -334,7 +334,7 @@ std::expected<ImageRequest, std::string> ComponentImageGenerationRequest(
   held->request = geometry;
   const auto image_rows = geometry.rows, text_rows = geometry.text_rows;
   const auto channels = p.vae.z_dim;
-  auto schedule = md::QwenImageSchedulerSigmas(p.scheduler, geometry.steps, image_rows);
+  auto schedule = md::ImageSchedulerSigmas(p.scheduler, geometry.steps, image_rows);
   if (!schedule) return Error(schedule.error());
   held->sigmas = std::move(schedule->sigmas);
   held->timesteps = std::move(schedule->timesteps);
@@ -413,7 +413,7 @@ bool SinksLayouts(const planner::Policy& policy) {
   return !planner::Disabled(policy, "layout_sinking");
 }
 // The family's tensors, its mapping's names, in each stage's order.
-std::array<std::vector<md::QwenImageTensor>, 3> SourceTensors(const ImageFamily& family) {
+std::array<std::vector<md::ImageTensor>, 3> SourceTensors(const ImageFamily& family) {
   const auto& p = family.profile;
   const auto& n = family.mapping->names;
   return {md::TextEncoderTensors(p.text, n.text), md::DenoiserTensors(p.denoiser, n.denoiser),
@@ -510,7 +510,7 @@ std::expected<ImageGeometry, std::string> ComponentImageGenerationGeometry(
       if (weight.parts.size() != 1 || weight.parts[0].second != format::PartRole::kData)
         return Error("image source part contract changed");
       auto found =
-          std::ranges::find(source_tensors[i], weight.parts[0].first, &md::QwenImageTensor::name);
+          std::ranges::find(source_tensors[i], weight.parts[0].first, &md::ImageTensor::name);
       if (found == source_tensors[i].end())
         return Error("image graph names an unbound source role");
       const auto index = static_cast<std::size_t>(found - source_tensors[i].begin());
@@ -609,8 +609,7 @@ EngineImageBuild ComponentImageGenerationBuild(
       if (!component || component->artifact != artifact.id() ||
           !std::ranges::contains(rule.architectures, component->architecture))
         return Error("image composition/source artifact identity differs");
-      auto bindings =
-          md::BindQwenImageComponent(source_tensors[i], component->architecture, artifact);
+      auto bindings = md::BindImageComponent(source_tensors[i], component->architecture, artifact);
       if (!bindings) return Error(bindings.error());
       held->resource_ids[i] = std::move(*bindings);
       auto tensors = Table(source_tensors[i]);

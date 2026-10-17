@@ -788,13 +788,6 @@ if(LLMP_CUDA)
   target_link_libraries(dsv4_stages_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory)
   llmp_gpu_gtest(dsv4_stages_test)
 
-  # Llmpalooza's Qwen-Image kernels (kernels/image) against host references.
-  add_executable(image_kernels_test image_kernels_test.cc)
-  target_include_directories(image_kernels_test SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(image_kernels_test PRIVATE llmp_image_kernels)
-  llmp_gpu_gtest(image_kernels_test)
-
   # The block decoders under the product templates (kernels/decode,
   # D-108): every decoder under every template against the CPU reference
   # decode and an F64 product, row invariance, refusals and the

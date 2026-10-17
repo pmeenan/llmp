@@ -1621,9 +1621,10 @@ std::optional<Match> Dsv4QHeadMatch(const MatchContext& c, NodeId anchor) {
   if (q.format.encoding != Encoding::kF32 ||
       c.tensor(nn.out[0]).format.encoding != Encoding::kF32 ||
       c.tensor(ro.out[0]).format.encoding != Encoding::kF32 || !ir::IsContiguous(q) ||
-      q.ne(0) != 512 || q.ne(3) != 1 || p.rope.mode != ir::RopeMode::kNormal || p.rope.dims != 64 ||
-      p.rope.offset != 448 || p.rope.inverse || p.rope.table || nn.component != ro.component ||
-      nn.batch != ro.batch || c.tensor(nn.out[0]).segment != c.tensor(ro.out[0]).segment)
+      q.ne(0) == 0 || q.ne(3) != 1 || p.rope.mode != ir::RopeMode::kNormal || p.rope.dims == 0 ||
+      p.rope.dims % 2 != 0 || p.rope.dims > q.ne(0) || p.rope.offset != q.ne(0) - p.rope.dims ||
+      p.rope.inverse || p.rope.table || nn.component != ro.component || nn.batch != ro.batch ||
+      c.tensor(nn.out[0]).segment != c.tensor(ro.out[0]).segment)
     return std::nullopt;
   Building b(c);
   const std::array<TensorId, 2> sources{nn.src[0], ro.src[1]};

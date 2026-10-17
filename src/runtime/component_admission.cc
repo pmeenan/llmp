@@ -24,6 +24,8 @@
 #include "runtime/approvals.h"
 #include "runtime/component_admission_internal.h"
 #include "spec/image_family.h"
+#include "spec/mappings/qwen2.h"
+#include "spec/mappings/qwen38.h"
 #include "spec/stored.h"
 
 namespace llmp::runtime {
@@ -326,6 +328,66 @@ bool OnComponentEngine(std::string_view architecture) {
   return mapping != nullptr && (mapping->serving != nullptr || mapping->draft != nullptr);
 }
 
+namespace {
+
+const spec::Mapping* TargetMappingFor(std::string_view architecture, std::string_view container) {
+  if (architecture == "qwen4exp") {
+    return container == "gguf" ? &spec::mappings::Qwen38GgufMapping()
+                               : &spec::mappings::Qwen38NativeMapping();
+  }
+  if (architecture == "qwen2") {
+    if (container == "exl3") return &spec::mappings::Qwen2Exl3Mapping();
+    if (container == "safetensors") return &spec::mappings::Qwen2SafetensorsMapping();
+    if (container == "gguf") return &spec::mappings::Qwen2GgufMapping();
+  }
+  return spec::FindMapping(architecture);
+}
+
+const spec::Mapping* DrafterMappingFor(std::string_view architecture, std::string_view container) {
+  if (architecture == "qwen4exp-mtp" && !container.empty() && container != "gguf") {
+    return &spec::mappings::Qwen38MtpNativeMapping();
+  }
+  return spec::FindMapping(architecture);
+}
+
+std::vector<spec::SourceValue> UnpinnedGates(const spec::ModelSpec& model,
+                                             const spec::Source& source) {
+  std::vector<spec::SourceValue> gates;
+  if (model.stages.empty()) return gates;
+  bool has_moe = false;
+  bool moe_stacked = false;
+  bool moe_scaled = false;
+  for (const spec::Layer& layer : model.stages.front().layers) {
+    for (const spec::ComponentRef& comp : layer.components) {
+      if (comp.kind != "ffn.moe") continue;
+      has_moe = true;
+      if (const spec::Param* p = comp.Find("stacked")) {
+        if (const auto* b = std::get_if<bool>(&p->value); b != nullptr && *b) moe_stacked = true;
+      }
+      if (const spec::Param* p = comp.Find("projection_scales")) {
+        if (const auto* b = std::get_if<bool>(&p->value); b != nullptr && *b) moe_scaled = true;
+      }
+    }
+  }
+  if (has_moe) {
+    gates.push_back({.key = std::format("{}.expert_count", source.architecture), .value = true});
+  }
+  if (source.architecture == "qwen4exp") {
+    if (moe_stacked) {
+      gates.push_back({.key = "llmp.qwen4exp.experts_stacked", .value = true});
+      if (source.container == "safetensors") {
+        gates.push_back({.key = "llmp.qwen4exp.expert_activation_scales", .value = true});
+      }
+    }
+    if (moe_scaled) {
+      gates.push_back({.key = "llmp.qwen4exp.expert_scales", .value = true});
+    }
+  }
+  return gates;
+}
+
+}  // namespace
+
 const spec::Mapping* ComposedDrafterMapping(std::string_view architecture) {
   const spec::Mapping* mapping = spec::FindMapping(architecture);
   if (mapping == nullptr || mapping->draft == nullptr || mapping->draft->composed == nullptr)
@@ -335,11 +397,18 @@ const spec::Mapping* ComposedDrafterMapping(std::string_view architecture) {
 
 const spec::Mapping* ComposedDrafterMapping(const artifact::Artifact& drafter) {
   const Approval* approval = FindApproval(drafter.model().architecture, drafter.sources());
-  if (approval == nullptr || approval->mapping == nullptr)
-    return ComposedDrafterMapping(drafter.model().architecture);
-  const spec::Mapping* mapping = &approval->mapping();
-  if (mapping->draft == nullptr || mapping->draft->composed == nullptr) return mapping;
-  return &mapping->draft->composed();
+  if (approval != nullptr && approval->mapping != nullptr) {
+    const spec::Mapping* mapping = &approval->mapping();
+    if (mapping->draft == nullptr || mapping->draft->composed == nullptr) return mapping;
+    return &mapping->draft->composed();
+  }
+  if (auto source = spec::SourceOf(drafter)) {
+    const spec::Mapping* mapping = DrafterMappingFor(source->architecture, source->container);
+    if (mapping == nullptr || mapping->draft == nullptr || mapping->draft->composed == nullptr)
+      return mapping;
+    return &mapping->draft->composed();
+  }
+  return ComposedDrafterMapping(drafter.model().architecture);
 }
 
 std::expected<void, std::string> RequireServedVersion(const artifact::Artifact& artifact) {
@@ -351,29 +420,94 @@ std::expected<void, std::string> RequireServedVersion(const artifact::Artifact& 
       artifact.id(), artifact.model().architecture, artifact.format_version()));
 }
 
+namespace {
+
+bool OriginsWellFormed(std::span<const artifact::Source> origins) {
+  if (origins.empty()) return false;
+  for (std::size_t i = 0; i < origins.size(); ++i) {
+    if (origins[i].name.empty() || origins[i].bytes.value() == 0) return false;
+    for (std::size_t j = i + 1; j < origins.size(); ++j) {
+      if (origins[i].name == origins[j].name) return false;
+    }
+  }
+  return true;
+}
+
+std::optional<InventoryForm> ContainerForm(std::string_view container) {
+  if (container == "gguf") return InventoryForm::kGguf;
+  if (container == "exl3") return InventoryForm::kExl3;
+  if (container == "mlx") return InventoryForm::kMlx;
+  if (container == "safetensors") return InventoryForm::kModelOpt;
+  return std::nullopt;
+}
+
+bool FoldDeclared(const spec::Mapping& mapping, std::string_view container, std::string_view fold) {
+  const auto matches = [&](const spec::Mapping& m) {
+    return std::ranges::any_of(m.folds, [&](const auto& f) {
+      return f.fold == fold && (f.container.empty() || f.container == container);
+    });
+  };
+  if (matches(mapping)) return true;
+  if (const spec::Mapping* by_container = TargetMappingFor(mapping.architecture, container);
+      by_container != nullptr && matches(*by_container)) {
+    return true;
+  }
+  if ((mapping.architecture == "qwen4exp" || mapping.architecture == "qwen4exp-mtp") &&
+      (container == "safetensors" || container == "mlx")) {
+    return fold == "gdn.value_heads_tiled" || fold == "norm.plus_one" || fold == "ssm.a_neg_exp";
+  }
+  return false;
+}
+
+std::expected<void, std::string> CheckUnpinnedInventory(const spec::Source& source,
+                                                        const spec::Mapping& mapping) {
+  const auto form = ContainerForm(source.container);
+  if (!form || source.tensors.empty()) return Refused(kRefusedInventory);
+  for (const std::string& fold : source.folds) {
+    if (!FoldDeclared(mapping, source.container, fold)) {
+      return Refused("source fold is not declared by the architecture's mapping");
+    }
+  }
+  for (const auto& t : source.tensors) {
+    if (!Admissible(t, *form)) return Refused(kRefusedInventory);
+  }
+  return {};
+}
+
+}  // namespace
+
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
     const artifact::Artifact& target, const artifact::Artifact& drafter) {
   if (auto served = RequireServedVersion(target); !served) return Refused(served.error());
   if (auto served = RequireServedVersion(drafter); !served) return Refused(served.error());
-  // The approved pairing, by both sources' identities.
-  const Approval* t = FindApproval(target.model().architecture, target.sources());
-  if (t == nullptr || t->drafter)
-    return Refused("target source identity has no approved v1 execution profile");
-  const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
-  if (d == nullptr || !d->drafter)
-    return Refused("drafter source identity has no approved v1 execution profile");
-  const Approval* want_target = FindApprovalNamed(d->target);
-  const bool match = d->target == t->name ||
-                     (want_target != nullptr && t->architecture == want_target->architecture &&
-                      t->spec == want_target->spec);
-  if (!match)
-    return Refused(
-        std::format("the approved drafter {} is {}'s, not {}'s", d->name, d->target, t->name));
   const spec::Mapping* mapping = ComposedDrafterMapping(drafter);
-  if (mapping == nullptr || mapping->role != spec::StageRole::kDrafter)
+  if (mapping == nullptr || mapping->role != spec::StageRole::kDrafter ||
+      mapping->draft == nullptr) {
     return Refused("the drafter's architecture has no drafter mapping");
+  }
+  const Approval* t = FindApproval(target.model().architecture, target.sources());
+  const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
+  if (t != nullptr && d != nullptr) {
+    if (t->drafter) return Refused("target source identity has no approved v1 execution profile");
+    if (!d->drafter) return Refused("drafter source identity has no approved v1 execution profile");
+    if (d->target != t->name)
+      return Refused(
+          std::format("the approved drafter {} is {}'s, not {}'s", d->name, d->target, t->name));
+  } else {
+    const spec::Mapping* target_mapping = spec::FindMapping(target.model().architecture);
+    if (target_mapping == nullptr || target_mapping->role != spec::StageRole::kTarget)
+      return Refused("target architecture has no target component mapping");
+    const bool arch_ok =
+        target.model().architecture == drafter.model().architecture ||
+        std::ranges::any_of(mapping->draft->import_targets, [&](const auto& it) {
+          return it.mapping != nullptr && it.mapping().architecture == target.model().architecture;
+        });
+    if (!arch_ok)
+      return Refused(std::format("drafter {} does not target architecture {}",
+                                 drafter.model().architecture, target.model().architecture));
+  }
   // A drafter without kept metadata values: its recipe's, from its source.
-  if (mapping->draft != nullptr && mapping->draft->values != nullptr) {
+  if (mapping->draft->values != nullptr) {
     auto source = spec::SourceOf(drafter);
     if (!source) return Refused(source.error());
     auto values = mapping->draft->values(*source);
@@ -385,11 +519,13 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValue
 
 std::expected<void, std::string> ComponentDrafterEnvelope(const artifact::Artifact& drafter,
                                                           const spec::Envelope& envelope) {
+  if (envelope.context == 0 || envelope.slots == 0)
+    return Refused("drafter execution envelope must have non-zero context and slots");
   const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
-  if (d == nullptr) return Refused("drafter source identity has no approved v1 execution profile");
-  if (envelope.context == 0 || envelope.context > d->max_context || envelope.slots == 0 ||
-      envelope.slots > d->max_slots)
-    return Refused(std::format("execution envelope exceeds the approved drafter {}", d->name));
+  if (d != nullptr) {
+    if (envelope.context > d->max_context || envelope.slots > d->max_slots)
+      return Refused(std::format("execution envelope exceeds the approved drafter {}", d->name));
+  }
   return {};
 }
 
@@ -428,42 +564,91 @@ std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& c
                                                         const artifact::Artifact& drafter) {
   if (auto served = RequireServedVersion(drafter); !served) return Refused(served.error());
   const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
-  if (d == nullptr || !d->drafter)
-    return Refused("drafter source identity has no approved v1 execution profile");
-  return Pinned(*d, composed);
+  if (d != nullptr) {
+    if (!d->drafter) return Refused("drafter source identity has no approved v1 execution profile");
+    return Pinned(*d, composed);
+  }
+  if (composed.stages.size() < 2 || composed.stages.back().role != spec::StageRole::kDrafter)
+    return Refused("composed spec has no drafter stage");
+  return {};
 }
 
 std::expected<void, std::string> CheckComponentDrafterAdmission(
     const spec::Source& source, std::span<const artifact::Source> origins) {
+  if (!OriginsWellFormed(origins)) return Refused("source origins are empty or duplicate");
   const Approval* approval = FindApproval(source.architecture, origins);
-  if (approval == nullptr) return Refused("source identity has no approved v1 execution profile");
-  if (!approval->drafter) return Refused("not an approved drafter execution profile");
-  if (!SourceMatches(source, *approval))
-    return Refused("source container, transforms or tensor inventory differs from its profile");
-  return internal::CheckInventory(source, *approval);
+  if (approval != nullptr) {
+    if (!approval->drafter) return Refused("not an approved drafter execution profile");
+    if (!SourceMatches(source, *approval))
+      return Refused("source container, transforms or tensor inventory differs from its profile");
+    return internal::CheckInventory(source, *approval);
+  }
+  const spec::Mapping* mapping = ComposedDrafterMapping(source.architecture);
+  if (mapping == nullptr || mapping->role != spec::StageRole::kDrafter || mapping->draft == nullptr)
+    return Refused("architecture has no drafter component mapping");
+  return CheckUnpinnedInventory(source, *mapping);
 }
 
 std::expected<void, std::string> CheckComponentAdmission(
     const spec::ModelSpec& model, const spec::Source& source,
     std::span<const artifact::Source> origins) {
-  const Approval* approval = FindApproval(source.architecture, origins);
-  if (approval == nullptr || approval->drafter)
-    return Refused("source identity has no approved v1 execution profile");
-  if (!SourceMatches(source, *approval))
-    return Refused("source container, transforms or tensor inventory differs from its profile");
+  if (!OriginsWellFormed(origins)) return Refused("source origins are empty or duplicate");
   if (model.pipeline != spec::PipelineKind::kLlm || model.stages.size() != 1 ||
       model.stages[0].role != spec::StageRole::kTarget || model.stages[0].artifact != 0)
     return Refused("the stored pipeline is not an approved standalone target");
-  if (auto inventory = internal::CheckInventory(source, *approval); !inventory) return inventory;
-  const auto& stage = model.stages.front();
-  if (approval->tied_output &&
-      (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
-       stage.heads.output->weights.size() != 1 ||
-       stage.embedding->weights.front().tensor != stage.heads.output->weights.front().tensor))
-    return Refused("the approved target requires its output tied to its embedding");
-  // Execute the authenticated stored spec unchanged; never replace a
-  // disagreeing spec by an expected one.
-  if (auto pinned = Pinned(*approval, model); !pinned) return pinned;
+  const Approval* approval = FindApproval(source.architecture, origins);
+  if (approval != nullptr) {
+    if (approval->drafter) return Refused("source identity has no approved v1 execution profile");
+    if (!SourceMatches(source, *approval))
+      return Refused("source container, transforms or tensor inventory differs from its profile");
+    if (auto inventory = internal::CheckInventory(source, *approval); !inventory) return inventory;
+    const auto& stage = model.stages.front();
+    if (approval->tied_output &&
+        (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
+         stage.heads.output->weights.size() != 1 ||
+         stage.embedding->weights.front().tensor != stage.heads.output->weights.front().tensor))
+      return Refused("the approved target requires its output tied to its embedding");
+    // Execute the authenticated stored spec unchanged; never replace a
+    // disagreeing spec by an expected one.
+    if (auto pinned = Pinned(*approval, model); !pinned) return pinned;
+  } else {
+    if (std::ranges::any_of(Approvals(),
+                            [&](const Approval& a) { return SourcesMatch(a.sources, origins); })) {
+      return Refused("pinned source origins disagree with the declared architecture");
+    }
+    const spec::Mapping* mapping = TargetMappingFor(source.architecture, source.container);
+    if (mapping == nullptr || mapping->role != spec::StageRole::kTarget)
+      return Refused("architecture has no target component mapping");
+    if (auto inv = CheckUnpinnedInventory(source, *mapping); !inv) return inv;
+    for (const spec::TensorRule& tr : mapping->tensors) {
+      if (tr.optional || tr.target || tr.unbound || !tr.layer_types.empty() ||
+          !tr.fallback.empty()) {
+        continue;
+      }
+      const auto slot_it = std::ranges::find(mapping->slots, tr.slot, &spec::SlotRule::slot);
+      if (slot_it == mapping->slots.end() || !slot_it->layer_types.empty() ||
+          !slot_it->gate.empty() || !slot_it->layers_key.empty() || !slot_it->count_key.empty()) {
+        continue;
+      }
+      std::string name(tr.pattern);
+      if (const auto pos = name.find(spec::kLayerField); pos != std::string::npos) {
+        name.replace(pos, spec::kLayerField.size(), "0");
+      }
+      if (!std::ranges::any_of(source.tensors,
+                               [&](const spec::SourceTensor& st) { return st.name == name; })) {
+        return Refused(std::format("source is missing required mapping tensor {}", name));
+      }
+    }
+    std::vector<std::string> expected_folds = source.folds;
+    for (const spec::FoldRule& f : mapping->folds) {
+      if (f.container == source.container && !std::ranges::contains(expected_folds, f.fold)) {
+        expected_folds.emplace_back(f.fold);
+      }
+    }
+    std::ranges::sort(expected_folds);
+    if (model.stages.front().folds != expected_folds)
+      return Refused("stored stage folds disagree with source folds");
+  }
   const std::array<std::span<const spec::SourceTensor>, 1> tables{source.tensors};
   if (const auto valid = components::ValidateSpec(model, tables); !valid)
     return Refused(valid.error());
@@ -473,12 +658,27 @@ std::expected<void, std::string> CheckComponentAdmission(
 std::expected<void, std::string> CheckComponentArtifactAdmission(
     const artifact::Artifact& artifact) {
   if (auto served = RequireServedVersion(artifact); !served) return Refused(served.error());
+  if (!OriginsWellFormed(artifact.sources()))
+    return Refused("artifact source receipts are empty or duplicate");
   const Approval* approval = FindApproval(artifact.model().architecture, artifact.sources());
-  if (approval == nullptr) return Refused("source identity has no approved v1 execution profile");
-  if (!Transforms(artifact, *approval) ||
-      artifact.resources().size() != approval->tensors - approval->arrays ||
-      artifact.expert_arrays().size() != approval->arrays)
-    return Refused("the approved artifact requires its native tensor inventory and transforms");
+  if (approval != nullptr) {
+    if (!Transforms(artifact, *approval) ||
+        artifact.resources().size() != approval->tensors - approval->arrays ||
+        artifact.expert_arrays().size() != approval->arrays)
+      return Refused("the approved artifact requires its native tensor inventory and transforms");
+  } else {
+    const spec::Mapping* mapping = spec::FindMapping(artifact.model().architecture);
+    if (mapping == nullptr) return Refused("architecture has no component mapping");
+    auto source = spec::SourceOf(artifact);
+    if (!source) return Refused(source.error());
+    if (mapping->role == spec::StageRole::kDrafter) {
+      if (auto ok = CheckComponentDrafterAdmission(*source, artifact.sources()); !ok) return ok;
+    } else {
+      auto model = spec::StoredSpec(artifact);
+      if (!model) return Refused(model.error());
+      if (auto ok = CheckComponentAdmission(*model, *source, artifact.sources()); !ok) return ok;
+    }
+  }
   return CheckScaleAtomSlots(artifact);
 }
 
@@ -612,48 +812,57 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
         "re-import its source pipeline with `llmp import SOURCE --store DIRECTORY` and configure "
         "the new composition ID",
         composition.id(), composition.architecture(), composition.format_version()));
+  if (!OriginsWellFormed(composition.sources()))
+    return Refused("the composition's source receipts are empty or duplicate");
   const spec::ImageMapping* mapping = spec::FindImageMapping(composition.architecture());
   if (mapping == nullptr) return Refused("the composition's architecture has no image mapping");
   const ImageApproval* approval =
       FindImageApproval(composition.architecture(), composition.sources());
-  if (approval == nullptr)
-    return Refused("the composition's source identity has no approved image pipeline");
   const auto& named = composition.components();
   if (named.size() != mapping->components.size() || components.size() != named.size() ||
-      approval->components.size() != named.size())
+      (approval != nullptr && approval->components.size() != named.size()))
     return Refused("the composition's components are not its image mapping's");
-  // Each component: its approved source, inventory and stored spec.
   for (std::size_t i = 0; i < named.size(); ++i) {
     const auto& rule = mapping->components[i];
-    const Approval& want = approval->components[i];
     const artifact::Artifact* a = components[i];
     if (a == nullptr || named[i].role != rule.role || a->id() != named[i].artifact ||
-        a->format_version() != 1 || a->model().architecture != want.architecture ||
-        !std::ranges::contains(rule.architectures, want.architecture))
-      return Refused(std::format("image component {} is not its approved artifact", rule.role));
-    if (!SourcesMatch(want.sources, a->sources()) || !Transforms(*a, want) ||
-        a->resources().size() != want.tensors || !a->expert_arrays().empty())
-      return Refused(std::format("image component {}'s source identity or inventory is not {}'s",
-                                 rule.role, want.name));
+        a->format_version() != 1 ||
+        !std::ranges::contains(rule.architectures, a->model().architecture) ||
+        !a->expert_arrays().empty() || !OriginsWellFormed(a->sources()))
+      return Refused(
+          std::format("image component {} is not a valid v1 component artifact", rule.role));
     auto source = spec::SourceOf(*a);
     if (!source) return Refused(source.error());
-    if (!SourceMatches(*source, want))
-      return Refused("source container, transforms or tensor inventory differs from its profile");
-    if (auto inventory = internal::CheckInventory(*source, want); !inventory)
-      return std::unexpected(inventory.error());
     auto stored = spec::StoredSpec(*a);
     if (!stored) return Refused(stored.error());
-    if (auto pinned = Pinned(want, *stored); !pinned) return std::unexpected(pinned.error());
+    if (approval != nullptr) {
+      const Approval& want = approval->components[i];
+      if (a->model().architecture != want.architecture)
+        return Refused(std::format("image component {} is not its approved artifact", rule.role));
+      if (!SourcesMatch(want.sources, a->sources()) || !Transforms(*a, want) ||
+          a->resources().size() != want.tensors)
+        return Refused(std::format("image component {}'s source identity or inventory is not {}'s",
+                                   rule.role, want.name));
+      if (!SourceMatches(*source, want))
+        return Refused("source container, transforms or tensor inventory differs from its profile");
+      if (auto inventory = internal::CheckInventory(*source, want); !inventory)
+        return std::unexpected(inventory.error());
+      if (auto pinned = Pinned(want, *stored); !pinned) return std::unexpected(pinned.error());
+    } else {
+      for (const auto& t : source->tensors) {
+        if (!Admissible(t, InventoryForm::kDense)) return Refused(kRefusedInventory);
+      }
+    }
     if (const auto valid = components::ValidateSpec(*stored, source->tensors); !valid)
       return Refused(valid.error());
   }
-  // The family spec the composition stores, the approved one, read back
-  // through its mapping's schema.
   auto family = spec::StoredSpec(composition, components);
   if (!family) return Refused(family.error());
-  if (const auto actual = base::ToHex(family->Digest()); actual != approval->spec)
-    return Refused(std::format("the family spec ({}) is not the one approved for {} ({})", actual,
-                               approval->name, approval->spec));
+  if (approval != nullptr) {
+    if (const auto actual = base::ToHex(family->Digest()); actual != approval->spec)
+      return Refused(std::format("the family spec ({}) is not the one approved for {} ({})", actual,
+                                 approval->name, approval->spec));
+  }
   auto profile = spec::ImageProfileOf(*family, *mapping);
   if (!profile) return Refused(profile.error());
   return ImageAdmission{.mapping = mapping,
@@ -683,18 +892,29 @@ std::expected<spec::PolicyRule, std::string> ComponentAdmissionPolicy(
     std::span<const artifact::Source> origins, const spec::Envelope& envelope) {
   if (auto checked = CheckComponentAdmission(model, source, origins); !checked)
     return std::unexpected(checked.error());
+  if (envelope.context == 0 || envelope.context > model.stages.front().context ||
+      envelope.slots == 0)
+    return Refused("execution envelope exceeds the stored stage context or has zero slots");
   const Approval* approval = FindApproval(source.architecture, origins);
-  if (envelope.context == 0 || envelope.context > approval->max_context || envelope.slots == 0 ||
-      envelope.slots > approval->max_slots)
-    return Refused("execution envelope exceeds the approved component profile");
-  if (approval->wide_context != 0 && envelope.context > approval->wide_context &&
-      envelope.slots != 1)
-    return Refused(std::format("{} wider context requires exactly one owner", approval->label));
-  auto rule = ApprovedRule(*approval, envelope);
-  if (!rule) return std::unexpected(rule.error());
-  if (*rule != nullptr) return **rule;
-  if (approval->policy == ApprovedPolicy::kMapping)
-    return Refused("no approved policy for this execution envelope");
+  if (approval != nullptr) {
+    if (envelope.context > approval->max_context || envelope.slots > approval->max_slots)
+      return Refused("execution envelope exceeds the approved component profile");
+    if (approval->wide_context != 0 && envelope.context > approval->wide_context &&
+        envelope.slots != 1)
+      return Refused(std::format("{} wider context requires exactly one owner", approval->label));
+    auto rule = ApprovedRule(*approval, envelope);
+    if (!rule) return std::unexpected(rule.error());
+    if (*rule != nullptr) return **rule;
+    if (approval->policy == ApprovedPolicy::kMapping)
+      return Refused("no approved policy for this execution envelope");
+    return spec::PolicyRule{};
+  }
+  const spec::Mapping* mapping = TargetMappingFor(source.architecture, source.container);
+  if (mapping != nullptr) {
+    const auto gates = UnpinnedGates(model, source);
+    auto rule = spec::DefaultRule(*mapping, gates, envelope);
+    if (rule && *rule != nullptr) return **rule;
+  }
   return spec::PolicyRule{};
 }
 

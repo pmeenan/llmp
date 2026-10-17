@@ -395,7 +395,14 @@ std::size_t ParamSize(OpKey key) {
       case FusedKind::kMoeExperts:
       case FusedKind::kMatMulIdGlu:
         return sizeof(MoeExpertsParams);
-      default:
+      case FusedKind::kNone:
+      case FusedKind::kMatMulAdd:
+      case FusedKind::kGroupedStores:
+      case FusedKind::kMoeCombine:
+      case FusedKind::kPreparedProducts:
+      case FusedKind::kGatedResidual:
+      case FusedKind::kEulerStep:
+      case FusedKind::kGdnGates:
         return 0;
     }
   }

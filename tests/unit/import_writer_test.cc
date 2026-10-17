@@ -1516,5 +1516,42 @@ TEST_F(ImportDrafterWriterTest, AChangedListOrMisfitTokenMapCannotPublish) {
   }
 }
 
+TEST_F(ImportWriterTest, StorePermissionsAndOrphanedStagingJobsCleanup) {
+  auto plan = Plan(false);
+  ASSERT_TRUE(plan);
+  auto result = WriteArtifact(*plan, Options());
+  ASSERT_TRUE(result);
+
+  std::error_code ec;
+  auto dest_status = std::filesystem::status(result->path, ec);
+  ASSERT_FALSE(ec);
+  EXPECT_EQ(static_cast<unsigned>(dest_status.permissions() & std::filesystem::perms::mask), 0755U);
+
+  auto data_status = std::filesystem::status(result->path / "data", ec);
+  ASSERT_FALSE(ec);
+  EXPECT_EQ(static_cast<unsigned>(data_status.permissions() & std::filesystem::perms::mask), 0755U);
+
+  auto meta_status = std::filesystem::status(result->path / "meta", ec);
+  ASSERT_FALSE(ec);
+  EXPECT_EQ(static_cast<unsigned>(meta_status.permissions() & std::filesystem::perms::mask), 0755U);
+
+  auto manifest_status = std::filesystem::status(result->path / "manifest.json", ec);
+  ASSERT_FALSE(ec);
+  EXPECT_EQ(static_cast<unsigned>(manifest_status.permissions() & std::filesystem::perms::mask),
+            0644U);
+
+  const auto staging = dir_ / "store" / ".staging";
+  const auto orphan = staging / "job-orphan123";
+  std::filesystem::create_directory(orphan, ec);
+  ASSERT_FALSE(ec);
+  EXPECT_TRUE(std::filesystem::exists(orphan));
+
+  auto plan2 = Plan(true);
+  ASSERT_TRUE(plan2);
+  auto result2 = WriteArtifact(*plan2, Options());
+  ASSERT_TRUE(result2);
+  EXPECT_FALSE(std::filesystem::exists(orphan));
+}
+
 }  // namespace
 }  // namespace llmp::import

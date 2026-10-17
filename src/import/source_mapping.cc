@@ -29,8 +29,54 @@ constexpr std::array kAuxiliary{
 constexpr std::array kGemma2Requirements{ScalarRequirement{"gemma2.block_count", 46}};
 constexpr std::array kGemma3Requirements{ScalarRequirement{"gemma3.block_count", 62}};
 constexpr std::array kQwen2Encodings{format::Encoding::kF16, format::Encoding::kF32};
-constexpr std::array<std::uint64_t, 2> kQwen2TokenShape{896, 151936};
-constexpr std::array kQwen2Shapes{TensorShapeRequirement{"token_embd.weight", kQwen2TokenShape}};
+constexpr std::array kQwen2HfTensors{
+    TensorAlias{"model.embed_tokens.weight", "token_embd.weight"},
+    TensorAlias{"model.layers.{layer}.input_layernorm.weight", "blk.{layer}.attn_norm.weight"},
+    TensorAlias{"model.layers.{layer}.self_attn.q_proj.weight", "blk.{layer}.attn_q.weight"},
+    TensorAlias{"model.layers.{layer}.self_attn.k_proj.weight", "blk.{layer}.attn_k.weight"},
+    TensorAlias{"model.layers.{layer}.self_attn.v_proj.weight", "blk.{layer}.attn_v.weight"},
+    TensorAlias{"model.layers.{layer}.self_attn.q_proj.bias", "blk.{layer}.attn_q.bias"},
+    TensorAlias{"model.layers.{layer}.self_attn.k_proj.bias", "blk.{layer}.attn_k.bias"},
+    TensorAlias{"model.layers.{layer}.self_attn.v_proj.bias", "blk.{layer}.attn_v.bias"},
+    TensorAlias{"model.layers.{layer}.self_attn.o_proj.weight", "blk.{layer}.attn_output.weight"},
+    TensorAlias{"model.layers.{layer}.post_attention_layernorm.weight",
+                "blk.{layer}.ffn_norm.weight"},
+    TensorAlias{"model.layers.{layer}.mlp.gate_proj.weight", "blk.{layer}.ffn_gate.weight"},
+    TensorAlias{"model.layers.{layer}.mlp.up_proj.weight", "blk.{layer}.ffn_up.weight"},
+    TensorAlias{"model.layers.{layer}.mlp.down_proj.weight", "blk.{layer}.ffn_down.weight"},
+    TensorAlias{"model.norm.weight", "output_norm.weight"},
+    TensorAlias{"lm_head.weight", "output.weight"},
+};
+constexpr std::array kQwen2HfEncodings{format::Encoding::kBF16, format::Encoding::kF16,
+                                       format::Encoding::kF32};
+constexpr std::array kQwen2SafetensorsKeys{
+    KeyAlias{"head_dim", "qwen2.attention.key_length"},
+    KeyAlias{"hidden_act", "qwen2.hidden_act"},
+    KeyAlias{"hidden_size", "qwen2.embedding_length"},
+    KeyAlias{"intermediate_size", "qwen2.feed_forward_length"},
+    KeyAlias{"max_position_embeddings", "qwen2.context_length"},
+    KeyAlias{"num_attention_heads", "qwen2.attention.head_count"},
+    KeyAlias{"num_hidden_layers", "qwen2.block_count"},
+    KeyAlias{"num_key_value_heads", "qwen2.attention.head_count_kv"},
+    KeyAlias{"rms_norm_eps", "qwen2.attention.layer_norm_rms_epsilon"},
+    KeyAlias{"rope_theta", "qwen2.rope.freq_base"},
+    KeyAlias{"use_sliding_window", "qwen2.use_sliding_window"},
+};
+constexpr std::array kSafetensorsAuxiliary{
+    AuxiliaryNamespace{"architectures", "transformers class provenance"},
+    AuxiliaryNamespace{"transformers_version", "transformers writer version provenance"},
+    AuxiliaryNamespace{"attention_dropout", "training dropout configuration"},
+    AuxiliaryNamespace{"bos_token_id", "tokenizer bos token id"},
+    AuxiliaryNamespace{"eos_token_id", "tokenizer eos token id"},
+    AuxiliaryNamespace{"initializer_range", "weight initializer scale"},
+    AuxiliaryNamespace{"max_window_layers", "sliding window layer count"},
+    AuxiliaryNamespace{"sliding_window", "sliding window length"},
+    AuxiliaryNamespace{"tie_word_embeddings", "embedding tying flag"},
+    AuxiliaryNamespace{"torch_dtype", "checkpoint nominal dtype"},
+    AuxiliaryNamespace{"use_cache", "transformers generation cache default"},
+    AuxiliaryNamespace{"vocab_size", "vocabulary size stated by embedding table",
+                       "model.embed_tokens.weight", 1},
+};
 
 constexpr std::array kExl3Auxiliary{
     AuxiliaryNamespace{"architectures", "transformers class provenance"},
@@ -188,14 +234,21 @@ const SourceMapping* FindSourceMapping(std::string_view container, std::string_v
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Qwen2GgufMapping(),
                     .auxiliary = kAuxiliary,
-                    .encodings = kQwen2Encodings,
-                    .shapes = kQwen2Shapes},
+                    .encodings = kQwen2Encodings},
       SourceMapping{.container = "exl3",
                     .architecture = &spec::mappings::Qwen2Exl3Mapping(),
                     .keys = kQwen2Exl3Keys,
                     .auxiliary = kExl3Auxiliary,
                     .encodings = kQwen2Exl3Encodings,
                     .shapes = kQwen2Exl3Shapes},
+      SourceMapping{
+          .container = "safetensors",
+          .architecture = &spec::mappings::Qwen2SafetensorsMapping(),
+          .tensors = kQwen2HfTensors,
+          .keys = kQwen2SafetensorsKeys,
+          .auxiliary = kSafetensorsAuxiliary,
+          .encodings = kQwen2HfEncodings,
+      },
       SourceMapping{.container = "gguf",
                     .architecture = &spec::mappings::Qwen38GgufMapping(),
                     .auxiliary = kAuxiliary,
@@ -309,10 +362,13 @@ std::optional<NameMatch> Match(std::string_view pattern, std::string_view name,
 }  // namespace normalization_detail
 
 std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
-  if ((table.container != "gguf" && table.container != "exl3") || table.version == 0 ||
-      !table.architecture || table.route != RouteOperation::kCopyPart ||
+  if ((table.container != "gguf" && table.container != "exl3" &&
+       table.container != "safetensors") ||
+      table.version == 0 || !table.architecture || table.route != RouteOperation::kCopyPart ||
       table.tensors.size() > nd::kRuleLimit || table.keys.size() > 64 ||
-      table.auxiliary.size() > 8 || table.requirements.size() > 16)
+      table.auxiliary.size() > 16 || table.requirements.size() > 16 ||
+      ((table.container == "exl3" || table.container == "safetensors") &&
+       (table.keys.empty() || table.auxiliary.empty())))
     return Invalid();
   const auto& m = *table.architecture;
   const auto* registered = FindSourceMapping(table.container, m.architecture);
@@ -368,7 +424,8 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
   for (const auto& r : m.tensors)
     if (!nd::Pattern(r.pattern) || (!drafter && r.target) || r.any_part ||
         (!drafter && r.unbound) || (r.target && r.unbound) ||
-        (table.container == "gguf" && r.part != format::PartRole::kData) ||
+        ((table.container == "gguf" || table.container == "safetensors") &&
+         r.part != format::PartRole::kData) ||
         (table.container == "exl3" && r.part != format::PartRole::kData &&
          r.part != format::PartRole::kCodes && r.part != format::PartRole::kInputSigns &&
          r.part != format::PartRole::kOutputSigns && r.part != format::PartRole::kCodebookMarker))

@@ -4,6 +4,8 @@
 // The routed experts' grouped GEMM (moe_cutlass.h): CUTLASS 4.7.1's SM120
 // block-scaled tensor-op grouped GEMM (the kernel CUTLASS's example 79d
 // builds, with a BF16 output and no source operand), for sm_121a. The
+// CUTLASS kernel collective configuration adapts NVIDIA CUTLASS 4.7.1
+// example 79d under BSD-3-Clause (LICENSES/BSD-3-Clause.txt, NOTICE). The
 // problem shapes and operand addresses live on the device: a setup kernel
 // writes them from the routing's offsets before each GEMM, so nothing waits
 // on the host. The tile (128 x 128 x 256, ping-pong schedule) was chosen by

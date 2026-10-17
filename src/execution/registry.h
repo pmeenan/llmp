@@ -380,6 +380,8 @@ struct PlanRejection {
 // The implementations a build compiled. Immutable once created.
 class Registry {
  public:
+  // Per-registry implementation cap (bounded by static compiler memory
+  // accounting in the serving/runner proofs; GGML + Decode + EXL3 total 174).
   static constexpr std::size_t kMaxImplementations = 256;
   static constexpr std::size_t kMaxName = 128;
 

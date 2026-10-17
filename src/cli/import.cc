@@ -188,27 +188,14 @@ int Import(std::span<const std::string_view> args, std::FILE* out, std::FILE* er
     }
     return kExitOk;
   }
-  if (input->container == "safetensors" && input->architecture == "qwen3_8_flash_next" &&
-      input->quantization == "modelopt MIXED_PRECISION") {
-    auto bound = import::ModelOptTargetBound(*input);
+  if (import::IsIndexedTarget(*input)) {
+    auto bound = import::IndexedTargetBound(*input);
     if (!bound) return Failure(err, bound.error());
     if (!funded(*bound))
       return Failure(err, {.rule = import::Rule::kBounds,
                            .reason = "normalization exceeds the requested metadata budget"});
-    auto plan = import::NormalizeModelOptTarget(std::move(*input),
-                                                {bound->metadata_bytes, bound->work_units});
-    if (!plan) return Failure(err, plan.error());
-    return publish(*plan, plan->parts().source(), bound->metadata_bytes);
-  }
-  if (input->container == "mlx" && input->architecture == "qwen4_exp" &&
-      input->quantization == "mlx affine") {
-    auto bound = import::MlxTargetBound(*input);
-    if (!bound) return Failure(err, bound.error());
-    if (!funded(*bound))
-      return Failure(err, {.rule = import::Rule::kBounds,
-                           .reason = "normalization exceeds the requested metadata budget"});
-    auto plan =
-        import::NormalizeMlxTarget(std::move(*input), {bound->metadata_bytes, bound->work_units});
+    auto plan = import::NormalizeIndexedTarget(std::move(*input),
+                                               {bound->metadata_bytes, bound->work_units});
     if (!plan) return Failure(err, plan.error());
     return publish(*plan, plan->parts().source(), bound->metadata_bytes);
   }

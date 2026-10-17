@@ -334,7 +334,7 @@ constexpr std::array kBorrowedSplits{SplitOption{.kind = SplitKind::kHeads,
 
 constexpr std::array<std::string_view, 7> kPatterns{
     "rms_norm_mul",    "rms_norm_mul_rope", "rope_store",      "grouped_stores",
-    "owner_attention", "prepared_products", "rms_norm_mul_add"};
+    "owner_attention", "prepared_inputs",   "rms_norm_mul_add"};
 constexpr std::array<std::string_view, 4> kBorrowedPatterns{"rms_norm_mul", "rms_norm_mul_rope",
                                                             "owner_attention", "rms_norm_mul_add"};
 

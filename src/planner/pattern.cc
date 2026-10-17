@@ -567,6 +567,11 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
     nodes.insert(nodes.end(), under->second.begin(), under->second.end());
     return under->first;
   };
+  const std::uint64_t head_dim = c.tensor(a.src[0]).ne(0);
+  if (head_dim == 0 || head_dim % 2 != 0 || c.tensor(a.src[1]).ne(0) != head_dim ||
+      c.tensor(a.src[2]).ne(0) != head_dim) {
+    return std::nullopt;
+  }
   // q and k: their sectioned norms and rotations of products' heads.
   const auto rotated = [&](TensorId t, NodeId& rot, NodeId& prod) -> bool {
     const auto heads_of = heads(t, true);
@@ -574,7 +579,7 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
     rot = g.producer(*heads_of);
     const ir::Node& r = c.node(rot);
     if (r.key != ir::Fused(FusedKind::kRmsNormMulRopeSections) || c.taken(rot) ||
-        c.tensor(*heads_of).ne(0) != 128)
+        c.tensor(*heads_of).ne(0) != head_dim)
       return false;
     const auto rp = r.Params<ir::RopeSectionsParams>();
     if (rp.mode != ir::RopeMode::kNormal) return false;
@@ -640,7 +645,7 @@ std::optional<Match> QkAttentionMatch(const MatchContext& c, NodeId anchor) {
   packed.format = ir::Dense(format::Encoding::kF16, ir::ShapeOf({mp.cells, mp.rows}));
   packed.nb = ir::NaturalStrides(packed.format);
   ir::TensorDesc table;
-  table.format = ir::Dense(format::Encoding::kF32, ir::ShapeOf({2, 64, rows}));
+  table.format = ir::Dense(format::Encoding::kF32, ir::ShapeOf({2, head_dim / 2, rows}));
   table.nb = ir::NaturalStrides(table.format);
   {
     const std::array<const ir::TensorDesc*, 1> src{&mask};

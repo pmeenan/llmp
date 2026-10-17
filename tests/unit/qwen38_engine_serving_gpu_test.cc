@@ -692,7 +692,7 @@ TEST(Qwen38EngineServingGpu, BadPaymentAndSlotCountRefuseBeforeModelEffects) {
     const auto refused = build(settings);
     ASSERT_FALSE(refused);
     EXPECT_EQ(refused.error(),
-              "the Qwen component qualification requires exactly one configured slot");
+              "the Qwen3.8 component qualification requires exactly one configured slot");
     EXPECT_EQ(life->server->Find("missing"), nullptr);
     EXPECT_EQ(
         life->server->node().catalog().OccupancyOf(life->server->node().domain()).Total().value(),
@@ -796,7 +796,7 @@ TEST(Qwen38EngineServingGpu, JoinedScoringRequiresExactOwnedTargetEnvelope) {
         EXPECT_NE(result.error().find("artifact"), std::string::npos);
       else
         EXPECT_EQ(result.error(),
-                  "the Qwen component qualification requires exactly one configured slot");
+                  "the Qwen3.8 component qualification requires exactly one configured slot");
     }
   }
 }
@@ -851,7 +851,7 @@ TEST(Qwen38EngineServingGpu, JoinedMtpRequiresOwnedWholeCompositionBeforeArtifac
       EXPECT_NE(result.error().find("artifact"), std::string::npos);
     else
       EXPECT_EQ(result.error(),
-                "the Qwen component qualification requires exactly one configured slot");
+                "the Qwen3.8 component qualification requires exactly one configured slot");
   }
 }
 

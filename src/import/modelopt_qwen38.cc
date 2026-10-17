@@ -20,6 +20,7 @@
 #include "components/step.h"
 #include "import/expert_relayout.h"
 #include "import/files.h"
+#include "import/mlx_qwen38.h"
 #include "import/parameter_folds.h"
 #include "ir/graph.h"
 #include "model/state_contract.h"
@@ -3003,4 +3004,39 @@ std::expected<ModelOptDrafterPlan, Error> NormalizeModelOptDrafter(
   result.spec_ = std::move(*composed);
   return result;
 }
+
+bool IsIndexedTarget(const Checkpoint& source) {
+  return (source.container == "safetensors" && source.architecture == "qwen3_8_flash_next" &&
+          source.quantization == "modelopt MIXED_PRECISION") ||
+         (source.container == "mlx" && source.architecture == "qwen4_exp" &&
+          source.quantization == "mlx affine");
+}
+
+std::expected<NormalizationCost, Error> IndexedTargetBound(const Checkpoint& source) {
+  if (source.container == "safetensors" && source.architecture == "qwen3_8_flash_next" &&
+      source.quantization == "modelopt MIXED_PRECISION") {
+    return ModelOptTargetBound(source);
+  }
+  if (source.container == "mlx" && source.architecture == "qwen4_exp" &&
+      source.quantization == "mlx affine") {
+    return MlxTargetBound(source);
+  }
+  return std::unexpected(
+      Error{.rule = Rule::kUnsupported, .reason = "not an indexed target checkpoint"});
+}
+
+std::expected<ModelOptTargetPlan, Error> NormalizeIndexedTarget(Checkpoint&& source,
+                                                                NormalizationLimits prepaid) {
+  if (source.container == "safetensors" && source.architecture == "qwen3_8_flash_next" &&
+      source.quantization == "modelopt MIXED_PRECISION") {
+    return NormalizeModelOptTarget(std::move(source), prepaid);
+  }
+  if (source.container == "mlx" && source.architecture == "qwen4_exp" &&
+      source.quantization == "mlx affine") {
+    return NormalizeMlxTarget(std::move(source), prepaid);
+  }
+  return std::unexpected(
+      Error{.rule = Rule::kUnsupported, .reason = "not an indexed target checkpoint"});
+}
+
 }  // namespace llmp::import

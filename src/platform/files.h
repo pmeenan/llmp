@@ -65,6 +65,12 @@ struct ExecutableStamp {
 };
 std::optional<ExecutableStamp> RunningExecutableStamp();
 
+// Atomically renames `from` to `to` without replacing an existing destination
+// (Linux's renameat2(RENAME_NOREPLACE); macOS has renameatx_np(RENAME_EXCL)).
+// Fails with std::errc::file_exists if `to` already exists.
+std::expected<void, std::error_code> RenameNoReplace(const std::filesystem::path& from,
+                                                     const std::filesystem::path& to);
+
 }  // namespace llmp::platform
 
 #endif  // LLMP_PLATFORM_FILES_H_

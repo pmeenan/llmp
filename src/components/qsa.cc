@@ -261,7 +261,7 @@ constexpr std::array kSplits{SplitOption{
     .state = kHeadState}};
 
 constexpr std::array<std::string_view, 6> kPatterns{"qsa_prep", "qsa_pool", "qsa_topk",
-                                                    "qsa_attn", "qsa_gate", "prepared_products"};
+                                                    "qsa_attn", "qsa_gate", "prepared_inputs"};
 
 ir::RopeParams Rotation(const Dims& d) {
   return {.mode = ir::RopeMode::kInterleavedMulti,

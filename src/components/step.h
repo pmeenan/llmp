@@ -73,10 +73,10 @@
 
 #include "components/component.h"
 #include "components/owner_products.h"
+#include "execution/step_shape.h"
 #include "ir/graph.h"
 #include "model/batching.h"
 #include "model/state_contract.h"
-#include "planner/step_shape.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
 

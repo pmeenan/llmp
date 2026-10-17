@@ -141,6 +141,9 @@ struct ArtifactFacts {
   // The runner's context ceiling derived from the spec's stage context /
   // position limits (0: no runner / unsupported).
   std::uint32_t context_ceiling = 0;
+  // Whether the target stage contains any routed MoE layer (gates bounded
+  // policy rules when unpinned).
+  bool has_moe = false;
 };
 
 struct ModelSettings;

@@ -518,6 +518,10 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
   }
   if (model) {
     facts.context_ceiling = model->stages.front().context;
+    facts.has_moe = std::ranges::any_of(model->stages.front().layers, [](const spec::Layer& layer) {
+      return std::ranges::any_of(layer.components,
+                                 [](const spec::ComponentRef& c) { return c.kind == "ffn.moe"; });
+    });
     if (drafter != nullptr) {
       const auto compose = [&]() -> std::expected<base::Sha256Digest, std::string> {
         const auto* target_mapping = spec::FindMapping(facts.architecture);
@@ -854,23 +858,33 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     // rule for the envelope names (spec/mapping.h PolicyRule::prefill_chunk);
     // larger contexts and cohorts take the default.
     std::uint32_t recipe_chunk = 0;
+    const std::string_view label = facts.approval != nullptr ? facts.approval->label : recipe.name;
     if (facts.approval != nullptr) {
       const auto rule =
           ApprovedRule(*facts.approval, {.context = context, .slots = s.max_slots.value});
       if (!rule) return Error(rule.error());
       if (*rule != nullptr) recipe_chunk = (*rule)->prefill_chunk;
+    } else if (facts.target_spec.has_value()) {
+      if (const spec::Mapping* mapping = spec::FindMapping(arch); mapping != nullptr) {
+        std::vector<spec::SourceValue> gates;
+        if (facts.has_moe) {
+          gates.push_back({.key = std::format("{}.expert_count", arch), .value = true});
+        }
+        const auto rule =
+            spec::DefaultRule(*mapping, gates, {.context = context, .slots = s.max_slots.value});
+        if (!rule) return Error(rule.error());
+        if (*rule != nullptr) recipe_chunk = (*rule)->prefill_chunk;
+      }
     }
     if (recipe_chunk != 0 && s.prefill_chunk.source == SettingSource::kFallback) {
       s.prefill_chunk.value = recipe_chunk;
-      s.prefill_chunk.basis =
-          std::format("qualified bounded {} serving envelope", facts.approval->label);
+      s.prefill_chunk.basis = std::format("qualified bounded {} serving envelope", label);
     }
     const auto cap = std::min(recipe_chunk != 0 ? recipe_chunk : recipe.prefill_rows, context - 1);
     if (s.prefill_chunk.value > cap) {
       s.prefill_chunk.value = cap;
-      s.prefill_chunk.basis +=
-          std::format(", capped by the bounded {} serving envelope",
-                      recipe_chunk != 0 ? facts.approval->label : recipe.family);
+      s.prefill_chunk.basis += std::format(", capped by the bounded {} serving envelope",
+                                           recipe_chunk != 0 ? label : recipe.family);
     }
     if (recipe.max_owners != 0 && s.max_slots.value > recipe.max_owners)
       return Error(std::format("{} serving needs at most {} conversation owners", recipe.name,
@@ -884,9 +898,8 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   }
   if (recipe.speculative_owners != 0 && speculative &&
       s.max_slots.value > recipe.speculative_owners) {
-    s.max_slots.basis +=
-        std::format(", at most {}: a DSpark verify takes two of a wave's sixteen rows",
-                    recipe.speculative_owners);
+    s.max_slots.basis += std::format(", at most {}: {} speculative verify row bound",
+                                     recipe.speculative_owners, recipe.name);
     s.max_slots.value = recipe.speculative_owners;
   }
   s.prefill_floor_tok_s = Pick<std::uint32_t>(
@@ -895,11 +908,11 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.decode_floor_tok_s = Pick<std::uint32_t>(
       U32(entry.Integer("decode_floor_tok_s")), basis("decode_floor_tok_s"), cal.decode_floor_tok_s,
       cal.basis, {}, {}, config::kDefaultDecodeFloor, "the default");
-  s.recompute_ms_per_token =
-      Pick<double>(entry.Real("recompute_ms_per_token"), basis("recompute_ms_per_token"),
-                   cal.recompute_ms_per_token, cal.basis, {}, {}, kRecomputeMsPerToken,
-                   bounded ? "provisional recompute cost; uncalibrated"
-                           : "DeepSeek's prefill measured on a GB10");
+  s.recompute_ms_per_token = Pick<double>(
+      entry.Real("recompute_ms_per_token"), basis("recompute_ms_per_token"),
+      cal.recompute_ms_per_token, cal.basis, {}, {}, kRecomputeMsPerToken,
+      bounded ? "provisional recompute cost; uncalibrated"
+              : (recipe.lid_mask ? "DeepSeek's prefill measured on a GB10" : "measured on a GB10"));
 
   // Sampling defaults: the checkpoint's own, else OpenAI's.
   const std::string& sampled = facts.sampling_from;
@@ -940,10 +953,16 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                             recipe.default_draft_rows, "measured on a GB10");
   } else {
     const std::int64_t asked = draft_rows.value_or(recipe.default_draft_rows);
-    if (asked < 2 || asked > 3) {
-      return Error(std::format(
-          "draft_rows {} is outside {}'s 2 to 3 (its MTP block drafts two or three passes)", asked,
-          arch));
+    if (recipe.mtp_waves) {
+      if (asked < 2 || asked > 3) {
+        return Error(std::format(
+            "draft_rows {} is outside {}'s 2 to 3 (its MTP block drafts two or three passes)",
+            asked, arch));
+      }
+    } else {
+      if (asked < 1 || asked > 16) {
+        return Error(std::format("draft_rows {} is outside {}'s 1 to 16", asked, arch));
+      }
     }
     s.draft_rows = Pick<std::uint32_t>(U32(draft_rows), basis("draft_rows"), {}, {}, {}, {},
                                        recipe.default_draft_rows, "measured on a GB10");

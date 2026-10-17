@@ -13,7 +13,7 @@
 
 #include "artifact/composition.h"
 #include "engine/execution_contract.h"
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 #include "runtime/engine_image.h"
 #include "spec/image_family.h"
 
@@ -25,7 +25,7 @@ namespace llmp::runtime {
 struct ImageFamily {
   const spec::ImageMapping* mapping = nullptr;
   spec::ModelSpec spec{};
-  model::QwenImageProfile profile{};
+  model::ImageProfile profile{};
 };
 // The family of a v1 composition whose components are opened in its
 // component order, admitted against its approval (runtime/approvals.h:

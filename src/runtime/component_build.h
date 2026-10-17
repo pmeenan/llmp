@@ -27,16 +27,11 @@
 #include "engine/execution_contract.h"
 #include "engine/paged_node.h"
 #include "kernels/common/lower.h"
+#include "runtime/component_admission.h"
 #include "runtime/engine_llm.h"
 #include "spec/spec.h"
 
 namespace llmp::runtime {
-
-// The architectures served by the component engine's adapter for their
-// pipeline kind (engine_llm.h, engine_image.h; D-107): those whose mapping
-// carries a serving recipe (a target's) or a drafting recipe (a drafter's;
-// spec/mapping.h). A family joins when its migration passes its gate.
-bool OnComponentEngine(std::string_view architecture);
 
 // What a build may change of its family's recipe (a harness's matched
 // arithmetic): the target stage's planning policy, in its canonical text

@@ -1746,6 +1746,20 @@ TEST(ComponentsTest, MoeFragmentMatchesItsReference) {
     EXPECT_EQ(CountIn(graph, ir::Op::kMatMulId), stacked ? 2U : 3U);
     EXPECT_EQ(CountIn(graph, ir::Op::kGlu), 2U);
   }
+  {
+    ComponentRef sigmoid_moe = Moe(true, true, true);
+    for (Param& p : sigmoid_moe.params) {
+      if (p.name == "router") p.value = N("sigmoid_topk");
+    }
+    auto in = MakeInstance(sigmoid_moe, kFacts, Site::kLayer, 0, 2);
+    ASSERT_TRUE(in.has_value()) << in.error();
+    Compare(*in, MoeFormats(Encoding::kF32, true), {}, rows, 1e-4, 0.0,
+            {{kExpertScale, {0.5F, 0.5F}}});
+    auto g = BuildComponent(*in, rows[0].shape, MoeFormats(Encoding::kF32, true), {});
+    ASSERT_TRUE(g.has_value()) << g.error();
+    const ir::Graph& graph = g->step.graph;
+    EXPECT_EQ(CountIn(graph, ir::Op::kRoute), 1U);
+  }
   // More experts used than there are: no instance.
   ComponentRef bad = Moe(true, true, true);
   for (Param& p : bad.params) {

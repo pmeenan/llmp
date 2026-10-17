@@ -48,7 +48,7 @@ std::optional<Key> Classify(const SourceMapping& t, std::string_view key) {
   if ((t.container == "gguf" &&
        (key == "general.architecture" || key == "general.alignment" || key == "split.no" ||
         key == "split.count" || key == "split.tensors.count")) ||
-      (t.container == "exl3" && key == "model_type"))
+      ((t.container == "exl3" || t.container == "safetensors") && key == "model_type"))
     return Key{.kind = MetadataClass::kStructural, .canonical = key};
   auto canonical = key;
   for (const auto& alias : t.keys)
@@ -222,8 +222,9 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
     // The extended target's only state producers are these compiled catalog
     // contracts (MQA seven, QSA four, GDN two, PLE one). Refuse a newly stateful kind
     // before constructing Instances or allocating a StateContract.
-    if (t.extended_components && def->state && slot.kind != "attention.qsa" &&
-        slot.kind != "attention.gdn" && slot.kind != "residual.ple" && slot.kind != "attention.mqa")
+    if (t.extended_components && def->state && slot.kind != "attention.dense" &&
+        slot.kind != "attention.qsa" && slot.kind != "attention.gdn" &&
+        slot.kind != "residual.ple" && slot.kind != "attention.mqa")
       return Bad("component state producer is outside normalization budget");
     for (const auto& p : def->params) {
       if (p.type == components::ParamType::kReals ||
@@ -294,7 +295,7 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
         split_count = *integer;
       else
         split_tensors = *integer;
-    } else if (t.container == "exl3") {
+    } else if (t.container == "exl3" || t.container == "safetensors") {
       if (e.key == "architectures") {
         const auto* list = std::get_if<std::vector<std::string>>(&e.value);
         if (!list || list->size() != 1 || (*list)[0] != "Qwen2ForCausalLM")
@@ -417,12 +418,13 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
                                                        s.files[1].name != "config.json")))
       return Bad("EXL3 source files differ from the single-shard contract", ItemKind::kNone,
                  kNoItem, Rule::kShards);
-  } else if ((split_no && *split_no != 0) ||
-             (split_count &&
-              (*split_count <= 0 || static_cast<std::uint64_t>(*split_count) != s.files.size())) ||
-             (s.files.size() > 1 && (!split_count || !split_no)) ||
-             (split_tensors && (*split_tensors < 0 ||
-                                static_cast<std::uint64_t>(*split_tensors) != s.tensors.size())))
+  } else if (t.container != "safetensors" &&
+             ((split_no && *split_no != 0) ||
+              (split_count &&
+               (*split_count <= 0 || static_cast<std::uint64_t>(*split_count) != s.files.size())) ||
+              (s.files.size() > 1 && (!split_count || !split_no)) ||
+              (split_tensors && (*split_tensors < 0 ||
+                                 static_cast<std::uint64_t>(*split_tensors) != s.tensors.size()))))
     return Bad("split structure disagrees with checkpoint files", ItemKind::kNone, kNoItem,
                Rule::kShards);
   std::uint64_t maximum = 0;
@@ -454,15 +456,19 @@ std::expected<NormalizationCost, Error> Bound(const Checkpoint& s, const SourceM
       return Bad("tensor is not a complete source part", ItemKind::kTensor, i);
     if (!t.encodings.empty() && !std::ranges::contains(t.encodings, tensor.format.encoding))
       return Bad("tensor encoding is outside this source domain", ItemKind::kTensor, i);
-    if (t.container == "exl3") {
+    if (t.container == "exl3" || t.container == "safetensors") {
       if (tensor.part == format::PartRole::kData) {
         const bool bias = tensor.name.ends_with(".bias");
-        const auto expected_encoding = bias ? format::Encoding::kF16 : format::Encoding::kBF16;
+        const auto expected_encoding =
+            t.container == "safetensors"
+                ? tensor.format.encoding
+                : (bias ? format::Encoding::kF16 : format::Encoding::kBF16);
         if (parts->size() != 1 || tensor.format.encoding != expected_encoding ||
             tensor.format.layout != format::Layout::kDense ||
             tensor.format.params != format::EncodingParams{} ||
             tensor.dims.size() != tensor.format.shape.rank ||
-            (tensor.dtype != (bias ? "F16" : "BF16") && tensor.dtype != (bias ? "f16" : "bf16")))
+            (t.container != "safetensors" && tensor.dtype != (bias ? "F16" : "BF16") &&
+             tensor.dtype != (bias ? "f16" : "bf16")))
           return Bad("EXL3 dense tensor disagrees with its role format", ItemKind::kTensor, i);
         for (std::size_t d = 0; d < tensor.dims.size(); ++d)
           if (tensor.dims[d] != tensor.format.shape.ne[tensor.dims.size() - 1 - d])

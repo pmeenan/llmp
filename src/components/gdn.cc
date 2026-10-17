@@ -164,7 +164,7 @@ constexpr std::array kBatchClasses{
 constexpr std::array<SplitOption, 0> kSplits{};
 
 constexpr std::array<std::string_view, 5> kPatterns{"gdn_conv", "gdn_gates", "gdn_step",
-                                                    "gdn_norm_gate", "prepared_products"};
+                                                    "gdn_norm_gate", "prepared_inputs"};
 
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {
   ir::Builder& b = f.b;

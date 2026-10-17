@@ -140,6 +140,10 @@ RoutedRef RouterReference(std::span<const double> x, std::uint64_t width,
         sum += probs[e];
       }
       for (double& v : probs) v /= sum;
+    } else if (p.kind == ir::RouteKind::kSigmoidTopK) {
+      for (std::uint32_t e = 0; e < p.experts; ++e) {
+        probs[e] = 1.0 / (1.0 + std::exp(-row[e]));
+      }
     } else {
       // sqrt(softplus(x)) (DeepSeek V4's).
       for (std::uint32_t e = 0; e < p.experts; ++e) {
@@ -270,7 +274,8 @@ constexpr std::array<std::string_view, 3> kActivations{"gelu_tanh", "silu", "sil
 // "sqrt_softplus": sqrt(softplus) probabilities, the highest plus a bias
 // per expert chosen (role router_bias); "hash": each row's experts a
 // token-hash side input names (`hash`); both DeepSeek V4's.
-constexpr std::array<std::string_view, 3> kRouters{"softmax_topk", "sqrt_softplus", "hash"};
+constexpr std::array<std::string_view, 4> kRouters{"softmax_topk", "sigmoid_topk", "sqrt_softplus",
+                                                   "hash"};
 constexpr std::array<std::string_view, 2> kRouterInputs{"rms_scaled", "stream"};
 
 constexpr ParamSpec Real(std::string_view name, double fallback) {
@@ -390,6 +395,7 @@ ir::GluKind GluKindOf(std::string_view name) {
   return ir::GluKind::kGeGluTanh;
 }
 ir::RouteKind RouteKindOf(std::string_view name) {
+  if (name == "sigmoid_topk") return ir::RouteKind::kSigmoidTopK;
   if (name == "sqrt_softplus") return ir::RouteKind::kSqrtSoftplusBias;
   if (name == "hash") return ir::RouteKind::kHash;
   return ir::RouteKind::kSoftmaxTopK;
@@ -445,7 +451,8 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   if ((d.route == ir::RouteKind::kHash) != in.params.Given("hash")) {
     return std::unexpected("a hash router's side input, and only its");
   }
-  if (d.route != ir::RouteKind::kSoftmaxTopK && d.rms_router) {
+  if ((d.route == ir::RouteKind::kSqrtSoftplusBias || d.route == ir::RouteKind::kHash) &&
+      d.rms_router) {
     return std::unexpected("a DeepSeek router reads the stream itself");
   }
   if (!(d.route_scale > 0.0F)) return std::unexpected("a route scale above zero");
@@ -512,7 +519,7 @@ constexpr std::array kSplits{SplitOption{
     .state = {}}};
 
 constexpr std::array<std::string_view, 7> kPatterns{
-    "rms_norm_mul", "rms_norm_mul_add", "mul_mat_glu", "prepared_products",
+    "rms_norm_mul", "rms_norm_mul_add", "mul_mat_glu", "prepared_inputs",
     "route_reduce", "moe_router",       "moe_combine"};
 
 std::expected<FragmentOut, std::string> Emit(Fragment& f) {

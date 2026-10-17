@@ -11,10 +11,13 @@ links show. Where evidence is missing the row says "not verified". Started
 in M3 (moved from M5); every change that alters a row's capability or
 evidence updates it in the same change ([workflow](workflow.md)).
 
-Serving is v1-only (D-118, 2026-10-15): a `[models.<name>]` entry names a
-row's **v1** artifact ID (and its drafter's), each admitted by its entry in
-the approval table (`runtime/approvals.cc`: source receipts, tensor
-inventory and the pinned digest of the spec it executes). A v0 artifact is
+Serving is v1-only (D-118, D-119): a `[models.<name>]` entry names a
+row's **v1** artifact ID (and its drafter's), validated at startup by
+`runtime/component_admission.cc` against its stored `spec.json`, tensor
+formats, component catalog, and architecture mapping (`ServingRecipe` /
+`DraftRecipe`). The qualified reference fleet below is also pinned in
+`runtime/approvals.cc` (source receipts, tensor inventory, and spec digest).
+A v0 artifact is
 refused ("re-import with `llmp import`"), never migrated; the rows' v0 IDs
 below are history (the migration gate's frozen baseline arm still serves
 them with its own old binary). Re-importing a staged source reproduces its
@@ -87,9 +90,12 @@ used). Adding a model follows a declarative workflow across four modules:
    reads source checkpoints (GGUF, safetensors, MLX, EXL3) as untrusted input,
    applies the mapping, and writes a version 1 prepared artifact (`spec.json`,
    `index.json`, `data/*.safetensors`).
-4. **Admission and approvals (`src/runtime/`)**: The artifact and its stored spec
-   are admitted via the approval table (`src/runtime/approvals.cc`) and validated
-   at startup by `src/runtime/component_admission.cc`.
+4. **Admission and reference fleet (`src/runtime/`)**: Any valid v1 artifact of a
+   supported architecture is admitted directly at startup by
+   `src/runtime/component_admission.cc` from its stored `spec.json` and mapping
+   recipe (D-119) without rebuilding `llmp-runtime`; once qualified for the
+   reference fleet, its source receipts and spec digest are pinned in
+   `src/runtime/approvals.cc`.
 
 The native GGML dependency uses llama.cpp v0.6.0 (`d8123504`, GGML
 0.26.0); its [integration checks](experiments/ggml-release-refresh/README.md)

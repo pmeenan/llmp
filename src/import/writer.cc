@@ -28,6 +28,7 @@
 #include "import/route.h"
 #include "import/source_mapping.h"
 #include "import/stream.h"
+#include "platform/files.h"
 #include "platform/lock_file.h"
 #include "platform/sockets.h"
 #include "spec/stored.h"
@@ -88,8 +89,18 @@ std::expected<void, Error> Write(int fd, std::uint64_t at, std::span<const std::
   }
   return {};
 }
+void SweepOrphanedStagingJobs(const fs::path& staging) {
+  std::error_code error;
+  for (const auto& entry : fs::directory_iterator(staging, error)) {
+    if (error) break;
+    if (entry.is_directory(error) && entry.path().filename().string().starts_with("job-")) {
+      std::error_code remove_err;
+      fs::remove_all(entry.path(), remove_err);
+    }
+  }
+}
 std::expected<FD, Error> Create(const fs::path& path) {
-  FD file(::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
+  FD file(::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644));
   if (!file.valid()) return Bad("cannot create an artifact staging file");
   return file;
 }
@@ -730,6 +741,7 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
   if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
   auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
   if (!lock) return Bad("another import owns this store or its lock cannot be opened");
+  SweepOrphanedStagingJobs(staging);
   std::array<std::byte, 32> random{};
   if (!platform::FillRandom(random)) return Bad("cannot generate a private staging name");
   const fs::path job = staging / ("job-" + base::ToHex(base::Sha256().Update(random).Finish()));
@@ -1060,12 +1072,12 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
     if (!stored_source) return Bad("the produced artifact does not bind its source", Rule::kConfig);
   }
   if (auto ok = Deep(job, *opened); !ok) return std::unexpected(ok.error());
-  for (const auto& directory : {job / "data", job / "meta", job})
+  for (const auto& directory : {job / "data", job / "meta", job}) {
+    ::chmod(directory.c_str(), 0755);
     if (auto ok = Sync(directory); !ok) return std::unexpected(ok.error());
+  }
   const auto destination = options.store / id;
-  const bool exists = fs::exists(destination, error);
-  if (error) return Bad("cannot inspect an existing artifact");
-  if (exists) {
+  const auto verify_existing = [&]() -> std::expected<WriteResult, Error> {
     auto previous = artifact::Artifact::Open(destination, {.expected_id = id});
     if (!previous) return Bad("the existing artifact is damaged");
     if (auto ok = Deep(destination, *previous); !ok) return Bad("the existing artifact is damaged");
@@ -1081,9 +1093,21 @@ std::expected<WriteResult, Error> Publish(const PublicationView& plan,
       if (!prev_source) return Bad("the existing artifact is damaged");
     }
     return WriteResult{id, destination, true};
+  };
+  const bool exists = fs::exists(destination, error);
+  if (error) return Bad("cannot inspect an existing artifact");
+  if (exists) {
+    return verify_existing();
   }
-  fs::rename(job, destination, error);
-  if (error) return Bad("cannot publish artifact");
+  if (auto renamed = platform::RenameNoReplace(job, destination); !renamed) {
+    if (renamed.error() == std::errc::file_exists) {
+      std::error_code remove_err;
+      fs::remove_all(job, remove_err);
+      cleanup.path.clear();
+      return verify_existing();
+    }
+    return Bad("cannot publish artifact");
+  }
   cleanup.path.clear();
   if (auto ok = Sync(staging); !ok)
     return Bad("artifact published; staging directory durability sync failed");
@@ -1196,6 +1220,7 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
   if (auto ok = CreateImportDirectory(staging, false); !ok) return std::unexpected(ok.error());
   auto lock = platform::LockFile::Acquire(staging / "native-import.lock");
   if (!lock) return Bad("another import owns this store or its lock cannot be opened");
+  SweepOrphanedStagingJobs(staging);
   std::array<std::byte, 32> random{};
   if (!platform::FillRandom(random)) return Bad("cannot generate a private staging name");
   const fs::path job = staging / ("job-" + base::ToHex(base::Sha256().Update(random).Finish()));
@@ -1309,20 +1334,32 @@ std::expected<WriteResult, Error> WriteComposition(const CompositionWriteOptions
   }
 
   if (!options.files.empty()) {
+    ::chmod((job / "meta").c_str(), 0755);
     if (auto ok = Sync(job / "meta"); !ok) return std::unexpected(ok.error());
   }
+  ::chmod(job.c_str(), 0755);
   if (auto ok = Sync(job); !ok) return std::unexpected(ok.error());
 
   const auto destination = options.store / id;
-  const bool exists = fs::exists(destination, error);
-  if (error) return Bad("cannot inspect an existing composition");
-  if (exists) {
+  const auto verify_existing = [&]() -> std::expected<WriteResult, Error> {
     auto previous = artifact::OpenComposition(destination);
     if (!previous) return Bad("the existing composition is damaged");
     return WriteResult{id, destination, true};
+  };
+  const bool exists = fs::exists(destination, error);
+  if (error) return Bad("cannot inspect an existing composition");
+  if (exists) {
+    return verify_existing();
   }
-  fs::rename(job, destination, error);
-  if (error) return Bad("cannot publish composition");
+  if (auto renamed = platform::RenameNoReplace(job, destination); !renamed) {
+    if (renamed.error() == std::errc::file_exists) {
+      std::error_code remove_err;
+      fs::remove_all(job, remove_err);
+      cleanup.path.clear();
+      return verify_existing();
+    }
+    return Bad("cannot publish composition");
+  }
   cleanup.path.clear();
   if (auto ok = Sync(staging); !ok)
     return Bad("composition published; staging directory durability sync failed");

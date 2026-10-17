@@ -22,7 +22,7 @@
 #include "import/readers/diffusers.h"
 #include "import/readers/safetensors.h"
 #include "ir/graph.h"
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 #include "spec/image_family.h"
 #include "spec/image_spatial.h"
 
@@ -109,9 +109,8 @@ std::expected<spec::ModelSpec, Error> Family(const Checkpoint& source,
 // table and one group a layer; the denoiser's globals and one group a
 // block; the VAE's up blocks one group each, the rest of its decoder one.
 std::vector<ComponentGroup> GroupsOf(std::string_view kind,
-                                     std::span<const model::QwenImageTensor> tensors,
-                                     const model::QwenImageProfile& p,
-                                     const model::QwenImageNames& names) {
+                                     std::span<const model::ImageTensor> tensors,
+                                     const model::ImageProfile& p, const model::ImageNames& names) {
   using Kind = ComponentGroup::Kind;
   std::vector<ComponentGroup> out(tensors.size());
   if (kind == spec::kImageTextKind) {
@@ -140,7 +139,7 @@ std::vector<ComponentGroup> GroupsOf(std::string_view kind,
 }
 
 std::expected<ComponentPlan, Error> PlanComponent(
-    const Checkpoint& comp, std::span<const model::QwenImageTensor> expected_tensors,
+    const Checkpoint& comp, std::span<const model::ImageTensor> expected_tensors,
     const spec::ModelSpec& spec, std::vector<ComponentGroup> groups) {
   if (comp.container != "safetensors") {
     return Bad("component container must be safetensors", Rule::kContainer);
@@ -242,7 +241,7 @@ std::expected<ImagePipelinePlan, Error> PlanImagePipeline(const Checkpoint& sour
 
   ImagePipelinePlan out;
   out.components.reserve(mapping.components.size());
-  const std::array<std::pair<const std::vector<model::QwenImageTensor>*, const spec::ModelSpec*>, 3>
+  const std::array<std::pair<const std::vector<model::ImageTensor>*, const spec::ModelSpec*>, 3>
       by_kind{{{&text_tensors, &text_spec->spec},
                {&denoiser_tensors, &denoiser_spec->spec},
                {&vae_tensors, &vae_spec->spec}}};

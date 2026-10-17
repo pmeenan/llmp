@@ -15,28 +15,33 @@
 namespace llmp::spec {
 namespace {
 // A component's tensors by structural role, in its list's order
-// (model/qwen_image.h TextEncoderTensors, DenoiserTensors): the names are
+// (model/image_pipeline.h TextEncoderTensors, DenoiserTensors): the names are
 // its mapping's, never matched here.
 constexpr std::size_t kDenoiserGlobals = static_cast<std::size_t>(model::DenoiserGlobal::kCount);
 constexpr std::size_t kBlockTensors = static_cast<std::size_t>(model::BlockTensor::kCount);
 constexpr std::size_t kTextTensors = static_cast<std::size_t>(model::TextTensor::kCount);
-const model::QwenImageTensor* Global(std::span<const model::QwenImageTensor> tensors,
-                                     model::DenoiserGlobal role) {
+const model::ImageTensor* Global(std::span<const model::ImageTensor> tensors,
+                                 model::DenoiserGlobal role) {
   const auto at = static_cast<std::size_t>(role);
   return at < tensors.size() ? &tensors[at] : nullptr;
 }
-const model::QwenImageTensor* BlockOf(std::span<const model::QwenImageTensor> tensors,
-                                      std::uint32_t block, std::size_t role) {
+const model::ImageTensor* BlockOf(std::span<const model::ImageTensor> tensors, std::uint32_t block,
+                                  std::size_t role) {
   const auto at = kDenoiserGlobals + (std::size_t{block} * kBlockTensors) + role;
   return at < tensors.size() ? &tensors[at] : nullptr;
 }
-const model::QwenImageTensor& TextOf(std::span<const model::QwenImageTensor> tensors,
-                                     std::uint32_t layer, model::TextTensor role) {
-  return tensors[1 + (std::size_t{layer} * kTextTensors) + static_cast<std::size_t>(role)];
+const model::ImageTensor& TextOf(std::span<const model::ImageTensor> tensors, std::uint32_t layer,
+                                 model::TextTensor role) {
+  return tensors[static_cast<std::size_t>(model::TextGlobal::kCount) +
+                 (std::size_t{layer} * kTextTensors) + static_cast<std::size_t>(role)];
+}
+const model::ImageTensor& TextGlobalOf(std::span<const model::ImageTensor> tensors,
+                                       model::TextGlobal role) {
+  return tensors[static_cast<std::size_t>(role)];
 }
 }  // namespace
-std::expected<ModelSpec, std::string> VaeSpatialSpec(
-    std::span<const model::VaeStep> steps, std::span<const model::QwenImageTensor> tensors) {
+std::expected<ModelSpec, std::string> VaeSpatialSpec(std::span<const model::VaeStep> steps,
+                                                     std::span<const model::ImageTensor> tensors) {
   static_assert(sizeof(ComponentRef) <= 512);
   using Kind = model::VaeStep::Kind;
   if (steps.empty() || steps.size() > 64 || tensors.size() > 4096)
@@ -107,7 +112,7 @@ std::expected<ModelSpec, std::string> VaeSpatialSpec(
 }
 
 std::expected<SpatialComposition, std::string> VaeDecoderSpec(
-    std::span<const model::VaeStep> steps, std::span<const model::QwenImageTensor> tensors) {
+    std::span<const model::VaeStep> steps, std::span<const model::ImageTensor> tensors) {
   using Kind = model::VaeStep::Kind;
   if (steps.empty() || steps.size() > 256 || tensors.size() > 4096 ||
       steps.back().kind == Kind::kCopy)
@@ -156,7 +161,7 @@ std::expected<SpatialComposition, std::string> VaeDecoderSpec(
       current[step.out] = input;
       continue;
     }
-    const auto weight = [&](std::int32_t index) -> const model::QwenImageTensor* {
+    const auto weight = [&](std::int32_t index) -> const model::ImageTensor* {
       return index >= 0 && static_cast<std::size_t>(index) < tensors.size()
                  ? &tensors[static_cast<std::size_t>(index)]
                  : nullptr;
@@ -246,8 +251,8 @@ std::expected<SpatialComposition, std::string> VaeDecoderSpec(
 }
 
 std::expected<SpatialComposition, std::string> ImageDecodeSpec(
-    const model::QwenImageVaeProfile& profile, std::uint32_t height, std::uint32_t width,
-    std::span<const model::QwenImageTensor> tensors) {
+    const model::ImageVaeProfile& profile, std::uint32_t height, std::uint32_t width,
+    std::span<const model::ImageTensor> tensors) {
   if (!width || !height || width > UINT32_MAX / height || !profile.z_dim || profile.z_dim > 65536 ||
       !profile.spatial_factor || width > UINT32_MAX / profile.spatial_factor ||
       height > UINT32_MAX / profile.spatial_factor)
@@ -295,16 +300,15 @@ std::expected<SpatialComposition, std::string> ImageDecodeSpec(
 }
 
 std::expected<SpatialComposition, std::string> ImageTimestepSpec(
-    const model::QwenImageDenoiserProfile& profile,
-    std::span<const model::QwenImageTensor> tensors) {
+    const model::ImageDenoiserProfile& profile, std::span<const model::ImageTensor> tensors) {
   using enum model::DenoiserGlobal;
-  constexpr std::array roles{kTime1, kTime2, kModulation, kNormOut};
+  constexpr std::array roles{kTimeLinear1Weight, kTimeLinear2Weight, kModulation, kNormOutWeight};
   const std::uint64_t width = profile.width, input = profile.timestep_dim;
   if (!width || width > 65536 / 4 || !input || input > 65536 || tensors.size() > 4096)
     return std::unexpected("image timestep source dimensions or inventory exceed component bounds");
   const std::array<std::uint64_t, 4> ins{input, width, width, width};
   const std::array<std::uint64_t, 4> outs{width, width, 4 * width, width};
-  std::array<const model::QwenImageTensor*, 4> sources{};
+  std::array<const model::ImageTensor*, 4> sources{};
   for (const auto& tensor : tensors)
     if (tensor.name.empty() || tensor.name.size() > 256 || tensor.shape.size() > 4)
       return std::unexpected("image timestep source metadata exceeds mapping allowance");
@@ -314,7 +318,7 @@ std::expected<SpatialComposition, std::string> ImageTimestepSpec(
     const auto& tensor = *sources[i];
     if (tensor.dtype != "BF16" || tensor.shape.size() != 2 || tensor.shape[0] != outs[i] ||
         tensor.shape[1] != ins[i] ||
-        std::ranges::count(tensors, tensor.name, &model::QwenImageTensor::name) != 1)
+        std::ranges::count(tensors, tensor.name, &model::ImageTensor::name) != 1)
       return std::unexpected("image timestep source role encoding or shape differs");
   }
   Stage stage{.name = "conditioning", .role = StageRole::kDenoiser, .artifact = 0};
@@ -322,12 +326,13 @@ std::expected<SpatialComposition, std::string> ImageTimestepSpec(
   Layer layer;
   layer.components.reserve(4);
   for (std::size_t i = 0; i < roles.size(); ++i)
-    layer.components.push_back({.kind = "projection.spatial",
-                                .version = 1,
-                                .params = {{"in_channels", static_cast<std::int64_t>(ins[i])},
-                                           {"out_channels", static_cast<std::int64_t>(outs[i])},
-                                           {"silu", i < 2}},
-                                .weights = {{.role = "weight", .tensor = sources[i]->name}}});
+    layer.components.push_back(
+        {.kind = "projection.spatial",
+         .version = 1,
+         .params = {{"in_channels", static_cast<std::int64_t>(ins[i])},
+                    {"out_channels", static_cast<std::int64_t>(outs[i])},
+                    {"silu", roles[i] == kTimeLinear1Weight || roles[i] == kTimeLinear2Weight}},
+         .weights = {{.role = "weight", .tensor = sources[i]->name}}});
   stage.layers.push_back(std::move(layer));
   ModelSpec spec{.pipeline = PipelineKind::kImage, .stages = {std::move(stage)}};
   Canonicalize(spec);
@@ -336,8 +341,8 @@ std::expected<SpatialComposition, std::string> ImageTimestepSpec(
 }
 namespace {
 std::expected<std::uint16_t, std::string> AppendImageBlock(
-    SpatialComposition& out, const model::QwenImageDenoiserProfile& p, std::uint32_t block,
-    std::span<const model::QwenImageTensor> tensors, std::uint16_t stream,
+    SpatialComposition& out, const model::ImageDenoiserProfile& p, std::uint32_t block,
+    std::span<const model::ImageTensor> tensors, std::uint16_t stream,
     const std::array<std::uint16_t, 4>& condition, std::uint16_t position_port,
     std::uint16_t mask_port) {
   const std::uint64_t width = p.width, dim = p.head_dim;
@@ -352,14 +357,19 @@ std::expected<std::uint16_t, std::string> AppendImageBlock(
   for (const auto& t : tensors)
     if (t.name.empty() || t.name.size() > 256 || t.shape.empty() || t.shape.size() > 4)
       return std::unexpected("image block source descriptor exceeds mapping allowance");
-  std::array<const model::QwenImageTensor*, kBlockTensors> sources{};
+  using enum model::BlockTensor;
+  std::array<const model::ImageTensor*, kBlockTensors> sources{};
   for (std::size_t i = 0; i < sources.size(); ++i) {
     sources[i] = BlockOf(tensors, block, i);
     if (sources[i] == nullptr) return std::unexpected("image block source role is absent");
     const auto& t = *sources[i];
-    const bool norm = i == 4 || i == 5;
-    const auto input = i == 8 ? std::uint64_t{p.mlp} : width;
-    const auto output = i == 6 || i == 7 ? std::uint64_t{p.mlp} : width;
+    const bool norm =
+        i == static_cast<std::size_t>(kQNorm) || i == static_cast<std::size_t>(kKNorm);
+    const auto input = i == static_cast<std::size_t>(kMlpOut) ? std::uint64_t{p.mlp} : width;
+    const auto output =
+        (i == static_cast<std::size_t>(kGate) || i == static_cast<std::size_t>(kProj))
+            ? std::uint64_t{p.mlp}
+            : width;
     if (t.dtype != "BF16" ||
         (norm ? t.shape.size() != 1 || t.shape[0] != dim
               : t.shape.size() != 2 || t.shape[0] != output || t.shape[1] != input))
@@ -373,12 +383,13 @@ std::expected<std::uint16_t, std::string> AppendImageBlock(
     out.links.push_back(link);
     return static_cast<std::uint16_t>(components.size());
   };
-  const auto projection = [&](std::size_t role, std::uint16_t input) {
+  const auto projection = [&](model::BlockTensor role, std::uint16_t input) {
+    const auto idx = static_cast<std::size_t>(role);
     return add({.kind = "projection.spatial",
                 .version = 1,
-                .params = {{"in_channels", static_cast<std::int64_t>(sources[role]->shape[1])},
-                           {"out_channels", static_cast<std::int64_t>(sources[role]->shape[0])}},
-                .weights = {{.role = "weight", .tensor = sources[role]->name}}},
+                .params = {{"in_channels", static_cast<std::int64_t>(sources[idx]->shape[1])},
+                           {"out_channels", static_cast<std::int64_t>(sources[idx]->shape[0])}},
+                .weights = {{.role = "weight", .tensor = sources[idx]->name}}},
                {input, {}});
   };
   const auto adaptive = [&](std::uint16_t input, std::uint16_t side) {
@@ -392,9 +403,10 @@ std::expected<std::uint16_t, std::string> AppendImageBlock(
                {.input = input, .auxiliary = side, .carry = carry});
   };
   const auto normalized = adaptive(stream, condition[0]);
-  const auto q = projection(0, normalized), k = projection(1, normalized),
-             v = projection(2, normalized);
-  const auto rotated = [&](std::uint16_t input, std::size_t role) {
+  const auto q = projection(kQ, normalized), k = projection(kK, normalized),
+             v = projection(kV, normalized);
+  const auto rotated = [&](std::uint16_t input, model::BlockTensor role) {
+    const auto idx = static_cast<std::size_t>(role);
     return add({.kind = "norm.rope_axes",
                 .version = 1,
                 .params = {{"heads", std::int64_t{p.heads}},
@@ -403,26 +415,26 @@ std::expected<std::uint16_t, std::string> AppendImageBlock(
                            {"axis2", std::int64_t{p.rope_axes[2]}},
                            {"base", double{p.rope_theta}},
                            {"eps", double{p.eps}}},
-                .weights = {{.role = "weight", .tensor = sources[role]->name}}},
+                .weights = {{.role = "weight", .tensor = sources[idx]->name}}},
                {.input = input, .auxiliary_port = position_port});
   };
-  const auto rq = rotated(q, 4), rk = rotated(k, 5);
+  const auto rq = rotated(q, kQNorm), rk = rotated(k, kKNorm);
   const auto qk = add({.kind = "concat.spatial", .version = 1}, {rq, rk});
   const auto qkv = add({.kind = "concat.spatial", .version = 1}, {qk, v});
   const auto attention =
       add({.kind = "attention.spatial", .version = 1, .params = {{"heads", std::int64_t{p.heads}}}},
           {.input = qkv, .auxiliary_port = mask_port});
-  const auto residual = gated(projection(3, attention), condition[1], stream);
+  const auto residual = gated(projection(kOut, attention), condition[1], stream);
   const auto mlp_input = adaptive(residual, condition[2]);
-  const auto gate = projection(6, mlp_input), up = projection(7, mlp_input);
+  const auto gate = projection(kGate, mlp_input), up = projection(kProj, mlp_input);
   const auto glu = add({.kind = "glu.spatial", .version = 1}, {gate, up});
-  const auto result = gated(projection(8, glu), condition[3], residual);
+  const auto result = gated(projection(kMlpOut, glu), condition[3], residual);
   return result;
 }
 }  // namespace
 std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
-    const model::QwenImageDenoiserProfile& p, std::uint32_t block, std::uint32_t text_rows,
-    std::span<const model::QwenImageTensor> tensors) {
+    const model::ImageDenoiserProfile& p, std::uint32_t block, std::uint32_t text_rows,
+    std::span<const model::ImageTensor> tensors) {
   auto out = ImageTimestepSpec(p, tensors);
   if (!out) return std::unexpected(out.error());
   auto& stage = out->spec.stages[0];
@@ -453,7 +465,7 @@ std::expected<SpatialComposition, std::string> ImageTransformerBlockSpec(
 }
 
 std::expected<std::uint64_t, std::string> ImageTextSpecBound(
-    const model::QwenImageTextProfile& p, std::span<const model::QwenImageTensor> tensors) {
+    const model::ImageTextProfile& p, std::span<const model::ImageTensor> tensors) {
   const auto components = std::uint64_t{p.layers} * 17 + 2;
   if (!p.layers || components > kMaxComponents || tensors.size() > 4096 ||
       std::uint64_t{p.layers} * 11 + 1 > tensors.size())
@@ -465,8 +477,8 @@ std::expected<std::uint64_t, std::string> ImageTextSpecBound(
   return 4096 * components + 1024 * tensors.size() + 65536;
 }
 std::expected<SpatialComposition, std::string> ImageTextSpec(
-    const model::QwenImageTextProfile& p, std::uint32_t rows, std::uint32_t drop,
-    std::span<const model::QwenImageTensor> tensors) {
+    const model::ImageTextProfile& p, std::uint32_t rows, std::uint32_t drop,
+    std::span<const model::ImageTensor> tensors) {
   auto bound = ImageTextSpecBound(p, tensors);
   if (!bound) return std::unexpected(bound.error());
   if (!rows || drop >= rows || !p.width || p.width > 65536 || !p.heads || !p.kv_heads ||
@@ -496,10 +508,12 @@ std::expected<SpatialComposition, std::string> ImageTextSpec(
     out.links.push_back(link);
     return static_cast<std::uint16_t>(components.size());
   };
-  auto current = add({.kind = "embedding.token",
-                      .version = 1,
-                      .weights = {{.role = "table", .tensor = tensors.front().name}}},
-                     {0, {}});
+  auto current =
+      add({.kind = "embedding.token",
+           .version = 1,
+           .weights = {{.role = "table",
+                        .tensor = TextGlobalOf(tensors, model::TextGlobal::kEmbedding).name}}},
+          {0, {}});
   for (std::uint32_t layer = 0; layer < p.layers; ++layer) {
     using enum model::TextTensor;
     const auto name = [&](model::TextTensor role) { return TextOf(tensors, layer, role).name; };
@@ -566,7 +580,7 @@ std::expected<SpatialComposition, std::string> ImageTextSpec(
 }
 
 std::expected<std::uint64_t, std::string> ImageFlowSpecBound(
-    const model::QwenImageDenoiserProfile& p, std::span<const model::QwenImageTensor> tensors) {
+    const model::ImageDenoiserProfile& p, std::span<const model::ImageTensor> tensors) {
   constexpr std::uint64_t fixed_components = 19, per_block = 17;
   const std::uint64_t components = fixed_components + per_block * std::uint64_t{p.blocks};
   if (!p.blocks || components > kMaxComponents || tensors.size() > 4096)
@@ -579,8 +593,8 @@ std::expected<std::uint64_t, std::string> ImageFlowSpecBound(
   return 4096 * components + 1024 * tensors.size() + 65536;
 }
 std::expected<SpatialComposition, std::string> ImageFlowSpec(
-    const model::QwenImageDenoiserProfile& p, std::uint32_t text_rows, std::uint32_t image_rows,
-    std::span<const model::QwenImageTensor> tensors) {
+    const model::ImageDenoiserProfile& p, std::uint32_t text_rows, std::uint32_t image_rows,
+    std::span<const model::ImageTensor> tensors) {
   auto bound = ImageFlowSpecBound(p, tensors);
   if (!bound) return std::unexpected(bound.error());
   // The whole denoiser's list, by role (DenoiserTensors' order).
@@ -593,16 +607,16 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
         "image flow needs matching source context/stream and Euler channels with bounded rows");
   using enum model::DenoiserGlobal;
   constexpr std::array roles{kTxtNorm, kTxtIn, kTxtOut, kImgIn, kProjOut};
-  std::array<const model::QwenImageTensor*, 5> sources{};
+  std::array<const model::ImageTensor*, roles.size()> sources{};
   for (std::size_t i = 0; i < roles.size(); ++i) {
     sources[i] = Global(tensors, roles[i]);
     if (sources[i] == nullptr) return std::unexpected("image flow boundary source role is missing");
     const auto& t = *sources[i];
-    const std::uint64_t input = i == 3 ? p.in_channels : p.width;
-    const std::uint64_t output = i == 4 ? p.out_channels : p.width;
+    const std::uint64_t input = roles[i] == kImgIn ? p.in_channels : p.width;
+    const std::uint64_t output = roles[i] == kProjOut ? p.out_channels : p.width;
     if (t.dtype != "BF16" ||
-        (i == 0 ? t.shape.size() != 1 || t.shape[0] != p.context
-                : t.shape.size() != 2 || t.shape[0] != output || t.shape[1] != input))
+        (roles[i] == kTxtNorm ? t.shape.size() != 1 || t.shape[0] != p.context
+                              : t.shape.size() != 2 || t.shape[0] != output || t.shape[1] != input))
       return std::unexpected("image flow boundary source role/encoding/geometry differs");
   }
   auto out = ImageTimestepSpec(p, tensors);
@@ -619,30 +633,32 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
     out->links.push_back(link);
     return static_cast<std::uint16_t>(components.size());
   };
-  const auto projection = [&](std::size_t role, std::uint16_t input, bool gelu = false) {
+  const auto projection = [&](model::DenoiserGlobal role, std::uint16_t input, bool gelu = false) {
+    const auto source = Global(tensors, role);
     return add({.kind = "projection.spatial",
                 .version = 1,
-                .params = {{"in_channels", static_cast<std::int64_t>(sources[role]->shape[1])},
-                           {"out_channels", static_cast<std::int64_t>(sources[role]->shape[0])},
+                .params = {{"in_channels", static_cast<std::int64_t>(source->shape[1])},
+                           {"out_channels", static_cast<std::int64_t>(source->shape[0])},
                            {"gelu", gelu}},
-                .weights = {{.role = "weight", .tensor = sources[role]->name}}},
+                .weights = {{.role = "weight", .tensor = source->name}}},
                {input, {}});
   };
-  const auto text_norm = add({.kind = "norm.rms_spatial",
-                              .version = 1,
-                              .params = {{"channels", std::int64_t{p.context}},
-                                         {"eps", double{p.eps}},
-                                         {"norm_zero_centered", true}},
-                              .weights = {{.role = "weight", .tensor = sources[0]->name}}},
-                             {0, {}});
-  const auto text = projection(2, projection(1, text_norm, true));
+  const auto text_norm =
+      add({.kind = "norm.rms_spatial",
+           .version = 1,
+           .params = {{"channels", std::int64_t{p.context}},
+                      {"eps", double{p.eps}},
+                      {"norm_zero_centered", true}},
+           .weights = {{.role = "weight", .tensor = Global(tensors, kTxtNorm)->name}}},
+          {0, {}});
+  const auto text = projection(kTxtOut, projection(kTxtIn, text_norm, true));
   const auto latent = add({.kind = "slice.spatial",
                            .version = 1,
                            .params = {{"start", std::int64_t{0}},
                                       {"rows", std::int64_t{image_rows}},
                                       {"input_rows", std::int64_t{image_rows}}}},
                           {.input_port = 0});
-  const auto image = projection(3, latent);
+  const auto image = projection(kImgIn, latent);
   auto stream = add({.kind = "concat.spatial", .version = 1, .params = {{"axis", std::int64_t{1}}}},
                     {text, image});
   std::array<std::uint16_t, 4> condition{};
@@ -673,7 +689,7 @@ std::expected<SpatialComposition, std::string> ImageFlowSpec(
                                .version = 1,
                                .params = {{"side", std::string("scale")}, {"eps", double{p.eps}}}},
                               {image_out, scale});
-  const auto noise = projection(4, normalized);
+  const auto noise = projection(kProjOut, normalized);
   const auto next = add({.kind = "residual.scaled", .version = 1},
                         {.input = noise, .auxiliary_port = 4, .carry = latent});
   out->exports = {noise, next};

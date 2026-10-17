@@ -172,7 +172,11 @@ bool ResolvesInside(const fs::path& root, const fs::path& path) {
   for (fs::path at_or_above = tree; at_or_above.has_relative_path();
        at_or_above = at_or_above.parent_path()) {
     if (at_or_above.parent_path().filename() == "snapshots") {
-      return Beneath(at, at_or_above.parent_path().parent_path() / "blobs");
+      const fs::path blobs = at_or_above.parent_path().parent_path() / "blobs";
+      if (!fs::is_symlink(blobs, error) && fs::is_directory(blobs, error)) {
+        return Beneath(at, blobs);
+      }
+      return false;
     }
   }
   return false;

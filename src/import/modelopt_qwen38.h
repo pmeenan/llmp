@@ -56,6 +56,11 @@ std::expected<NormalizationCost, Error> ModelOptTargetBound(const Checkpoint& so
 // MTP drafter is NormalizeModelOptDrafter's, below.
 std::expected<ModelOptTargetPlan, Error> NormalizeModelOptTarget(Checkpoint&& source,
                                                                  NormalizationLimits prepaid);
+// Unified dispatch for indexed target normalizers (ModelOpt and MLX).
+bool IsIndexedTarget(const Checkpoint& source);
+std::expected<NormalizationCost, Error> IndexedTargetBound(const Checkpoint& source);
+std::expected<ModelOptTargetPlan, Error> NormalizeIndexedTarget(Checkpoint&& source,
+                                                                NormalizationLimits prepaid);
 class ModelOptTargetPlan {
  public:
   ModelOptTargetPlan(const ModelOptTargetPlan&) = delete;

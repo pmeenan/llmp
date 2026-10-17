@@ -37,7 +37,7 @@
 #include <string>
 #include <string_view>
 
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 #include "spec/mapping.h"
 #include "spec/spec.h"
 
@@ -92,7 +92,7 @@ struct ImageMapping {
   std::span<const ImageComponentRule> components{};  // sorted by role
   std::span<const ImageParamRule> params{};
   std::span<const ImageRequirement> requirements{};
-  model::QwenImageNames names{};
+  model::ImageNames names{};
   // How serving runs it: its settings' names and, as the recipe's serving
   // rule, the planning policy every stage plans with (planner/policy.h
   // text).
@@ -109,6 +109,8 @@ struct ImageMapping {
 
 std::span<const ImageMapping* const> ImageMappings();
 const ImageMapping* FindImageMapping(std::string_view architecture);
+const ImageMapping* ImageFamilyMapping(std::string_view architecture);
+const ImageMapping& QwenImage21Mapping();
 // Its own rules: components unique and sorted, every schema parameter of
 // its components' kinds read by exactly one rule naming one of them, keys
 // source keys, names present, one policy.
@@ -137,8 +139,8 @@ std::expected<ModelSpec, std::string> SynthesizeImageFamily(
 // The profile a stored family spec gives, its parameters checked against
 // the schema again (stored input is untrusted): stage for stage the
 // mapping's, each with exactly its kinds.
-std::expected<model::QwenImageProfile, std::string> ImageProfileOf(const ModelSpec& spec,
-                                                                   const ImageMapping& mapping);
+std::expected<model::ImageProfile, std::string> ImageProfileOf(const ModelSpec& spec,
+                                                               const ImageMapping& mapping);
 
 }  // namespace llmp::spec
 

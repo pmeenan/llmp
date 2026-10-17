@@ -171,15 +171,6 @@ if(LLMP_CUDA)
                                                         llmp_warnings)
   target_link_options(llmp_gemma_attention_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
-  # Its products' cuBLASLt candidates, timed, for the algorithms the image
-  # kernels pin (kernels/image/gemm.h).
-  add_executable(llmp_qwen_image_gemm_tune qwen_image_gemm_tune.cc)
-  target_include_directories(llmp_qwen_image_gemm_tune SYSTEM PRIVATE
-                             "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(llmp_qwen_image_gemm_tune PRIVATE llmp_image_kernels llmp_warnings)
-  target_link_options(llmp_qwen_image_gemm_tune PRIVATE
-                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
-
   # Qwen3.8's small-column BF16 products, with their actual output types.
   add_executable(llmp_qwen38_gemm_tune qwen38_gemm_tune.cc)
   target_include_directories(llmp_qwen38_gemm_tune SYSTEM PRIVATE

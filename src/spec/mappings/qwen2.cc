@@ -352,15 +352,6 @@ constexpr std::array kGgufParams = {
     Flag("ffn", "f16_inputs", false),
     FromKey("final_norm", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
     Flag("final_norm", "f16_output", false),
-    RequireInt("qwen2.block_count", 24, false),
-    RequireInt("qwen2.context_length", 8192, false),
-    RequireInt("qwen2.embedding_length", 896, false),
-    RequireInt("qwen2.feed_forward_length", 4864, false),
-    RequireInt("qwen2.attention.head_count", 14, false),
-    RequireInt("qwen2.attention.head_count_kv", 2, false),
-    RequireInt("qwen2.attention.key_length", 64, true),
-    RequireInt("qwen2.attention.value_length", 64, true),
-    RequireInt("qwen2.rope.dimension_count", 64, true),
     Require("qwen2.rope.scaling.type", "none", true),
     ParamRule{.key = "qwen2.rope.freq_base", .type = kReal, .value = {.real = 1000000.0}},
     ParamRule{.key = "qwen2.attention.layer_norm_rms_epsilon",
@@ -458,10 +449,56 @@ constexpr Mapping kExl3Mapping{
     .params = kExl3Params,
     .policies = kPolicies,
 };
+constexpr std::array kSafetensorsParams = {
+    FromKey(kStageSlot, "context", "qwen2.context_length", kInt),
+    FromKey(kStreamSlot, "width", "qwen2.embedding_length", kInt),
+    Name("attention", "placement", "pre"),
+    FromKey("attention", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
+    FromKey("attention", "heads", "qwen2.attention.head_count", kInt),
+    FromKey("attention", "kv_heads", "qwen2.attention.head_count_kv", kInt),
+    FromOrRatio("attention", "key_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
+                "qwen2.attention.head_count", kInt),
+    FromOrRatio("attention", "value_dim", "qwen2.attention.key_length", "qwen2.embedding_length",
+                "qwen2.attention.head_count", kInt),
+    FromOrRatio("attention", "scale", "qwen2.attention.key_length", "qwen2.embedding_length",
+                "qwen2.attention.head_count", kReal, Transform::kRsqrt),
+    Int("attention", "window", 0),
+    Name("attention", "rotation", "neox"),
+    FromOrRatio("attention", "rope_dims", "qwen2.attention.key_length", "qwen2.embedding_length",
+                "qwen2.attention.head_count", kInt),
+    FromKey("attention", "rope_base", "qwen2.rope.freq_base", kReal),
+    Real("attention", "rope_scale", 1.0),
+    Flag("attention", "qkv_bias", true),
+    Flag("attention", "scale_scores", true),
+    Flag("attention", "explicit_scores", false),
+    Flag("attention", "f16_projections", false),
+    Name("ffn", "placement", "pre"),
+    FromKey("ffn", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
+    Name("ffn", "activation", "silu"),
+    FromKey("ffn", "hidden", "qwen2.feed_forward_length", kInt),
+    Flag("ffn", "f16_inputs", false),
+    FromKey("final_norm", "eps", "qwen2.attention.layer_norm_rms_epsilon", kReal),
+    Flag("final_norm", "f16_output", false),
+    Require("qwen2.hidden_act", "silu", false),
+    ParamRule{.key = "qwen2.use_sliding_window", .type = kBool, .value = {.flag = false}},
+};
+
+constexpr Mapping kSafetensorsMapping{
+    .architecture = "qwen2",
+    .version = 1,
+    .pipeline = PipelineKind::kLlm,
+    .layer_count_key = "qwen2.block_count",
+    .layer_types = "g",
+    .slots = kGgufSlots,
+    .tensors = std::span(kTensors).first(15),
+    .params = kSafetensorsParams,
+    .policies = kPolicies,
+};
 }  // namespace
 
 const Mapping& Qwen2Mapping() { return kMapping; }
 const Mapping& Qwen2GgufMapping() { return kGgufMapping; }
 const Mapping& Qwen2Exl3Mapping() { return kExl3Mapping; }
+const Mapping& Qwen2SafetensorsMapping() { return kSafetensorsMapping; }
 
 }  // namespace llmp::spec::mappings

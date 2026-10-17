@@ -16,5 +16,7 @@ const Mapping& Qwen2Mapping();
 const Mapping& Qwen2GgufMapping();
 // Closed, multipart-copy EXL3 target normalization.
 const Mapping& Qwen2Exl3Mapping();
+// Closed, multipart-copy safetensors target normalization.
+const Mapping& Qwen2SafetensorsMapping();
 }  // namespace llmp::spec::mappings
 #endif  // LLMP_SPEC_MAPPINGS_QWEN2_H_

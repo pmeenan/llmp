@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "model/qwen_image.h"
+#include "model/image_pipeline.h"
 
 #include <algorithm>
 #include <array>
@@ -44,7 +44,7 @@ std::string Joined(std::string_view prefix, std::string_view suffix) {
 // The decoder's tensors and steps, built together.
 class VaeBuilder {
  public:
-  VaeBuilder(const QwenImageVaeProfile& p, const QwenImageVaeNames& n) : p_(p), n_(n) {}
+  VaeBuilder(const ImageVaeProfile& p, const ImageVaeNames& n) : p_(p), n_(n) {}
 
   std::int32_t Tensor(std::string name, std::vector<std::uint64_t> shape) {
     tensors_.push_back({.name = std::move(name), .dtype = "F32", .shape = std::move(shape)});
@@ -196,21 +196,21 @@ class VaeBuilder {
     Conv(n_.conv_out, kVaeH, kVaeX, dims.back(), p_.out_channels, 3, h, w);
   }
 
-  std::vector<QwenImageTensor> tensors_;
+  std::vector<ImageTensor> tensors_;
   std::vector<VaeStep> steps_;
 
  private:
-  const QwenImageVaeProfile& p_;
-  const QwenImageVaeNames& n_;
+  const ImageVaeProfile& p_;
+  const ImageVaeNames& n_;
 };
 
 float Round32(double v) { return static_cast<float>(v); }
 
 }  // namespace
 
-std::vector<QwenImageTensor> TextEncoderTensors(const QwenImageTextProfile& p,
-                                                const QwenImageTextNames& names) {
-  std::vector<QwenImageTensor> out;
+std::vector<ImageTensor> TextEncoderTensors(const ImageTextProfile& p,
+                                            const ImageTextNames& names) {
+  std::vector<ImageTensor> out;
   const std::uint64_t w = p.width;
   const std::uint64_t q = std::uint64_t{p.heads} * p.head_dim;
   const std::uint64_t kv = std::uint64_t{p.kv_heads} * p.head_dim;
@@ -226,8 +226,8 @@ std::vector<QwenImageTensor> TextEncoderTensors(const QwenImageTextProfile& p,
   return out;
 }
 
-std::vector<QwenImageTensor> DenoiserTensors(const QwenImageDenoiserProfile& p,
-                                             const QwenImageDenoiserNames& names) {
+std::vector<ImageTensor> DenoiserTensors(const ImageDenoiserProfile& p,
+                                         const ImageDenoiserNames& names) {
   const std::uint64_t w = p.width;
   // In DenoiserGlobal order.
   const std::array<std::vector<std::uint64_t>, 9> globals{Shape({w, p.in_channels}),
@@ -244,7 +244,7 @@ std::vector<QwenImageTensor> DenoiserTensors(const QwenImageDenoiserProfile& p,
       Shape({w, w}),     Shape({w, w}),       Shape({w, w}),
       Shape({w, w}),     Shape({p.head_dim}), Shape({p.head_dim}),
       Shape({p.mlp, w}), Shape({p.mlp, w}),   Shape({w, p.mlp})};
-  std::vector<QwenImageTensor> out;
+  std::vector<ImageTensor> out;
   for (std::size_t t = 0; t < globals.size(); ++t)
     out.push_back({std::string(names.globals[t]), "BF16", globals[t]});
   for (std::uint32_t b = 0; b < p.blocks; ++b)
@@ -253,31 +253,30 @@ std::vector<QwenImageTensor> DenoiserTensors(const QwenImageDenoiserProfile& p,
   return out;
 }
 
-std::vector<QwenImageTensor> VaeDecoderTensors(const QwenImageVaeProfile& p,
-                                               const QwenImageVaeNames& names) {
+std::vector<ImageTensor> VaeDecoderTensors(const ImageVaeProfile& p, const ImageVaeNames& names) {
   VaeBuilder b(p, names);
   b.Build(1, 1);
   return std::move(b.tensors_);
 }
 
-std::vector<VaeStep> VaeDecoderPlan(const QwenImageVaeProfile& p, std::uint32_t height,
+std::vector<VaeStep> VaeDecoderPlan(const ImageVaeProfile& p, std::uint32_t height,
                                     std::uint32_t width) {
   // The steps name tensors by index; their names are not needed.
-  const QwenImageVaeNames names{};
+  const ImageVaeNames names{};
   VaeBuilder b(p, names);
   b.Build(height, width);
   return std::move(b.steps_);
 }
 
-std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
-    std::span<const QwenImageTensor> tensors, std::string_view want, std::string_view architecture,
-    std::span<const QwenImageResource> resources) {
+std::expected<std::vector<std::uint32_t>, std::string> BindImageComponent(
+    std::span<const ImageTensor> tensors, std::string_view want, std::string_view architecture,
+    std::span<const ImageResource> resources) {
   if (architecture != want) {
     return Refused(std::format("the artifact's architecture is {}, not {}", architecture, want));
   }
   std::vector<std::uint32_t> out;
   out.reserve(tensors.size());
-  for (const QwenImageTensor& t : tensors) {
+  for (const ImageTensor& t : tensors) {
     std::optional<std::uint32_t> found;
     for (std::uint32_t r = 0; r < resources.size() && !found; ++r) {
       if (std::ranges::find(resources[r].roles, t.name) != resources[r].roles.end()) {
@@ -287,7 +286,7 @@ std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
     if (!found) {
       return Refused(std::format("{}: no resource of that role", t.name));
     }
-    const QwenImageResource& r = resources[*found];
+    const ImageResource& r = resources[*found];
     if (r.family != "plain" || r.dtype != t.dtype || r.shape != t.shape) {
       return Refused(
           std::format("{}: not a plain {} tensor of the profile's shape", t.name, t.dtype));
@@ -297,8 +296,8 @@ std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
   return out;
 }
 
-std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
-    std::span<const QwenImageTensor> tensors, std::string_view want,
+std::expected<std::vector<std::uint32_t>, std::string> BindImageComponent(
+    std::span<const ImageTensor> tensors, std::string_view want,
     const artifact::Artifact& artifact) {
   if (artifact.format_version() != 1) {
     return Refused(std::format(
@@ -310,7 +309,7 @@ std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
       !artifact.relayouts().empty()) {
     return Refused("an image component cannot have expert arrays, folds, or relayouts");
   }
-  std::vector<QwenImageResource> resources;
+  std::vector<ImageResource> resources;
   resources.reserve(artifact.resources().size());
   for (const artifact::Resource& r : artifact.resources()) {
     const bool is_plain = r.format && r.part == format::PartRole::kData &&
@@ -336,7 +335,7 @@ std::expected<std::vector<std::uint32_t>, std::string> BindQwenImageComponent(
                          .dtype = dtype,
                          .shape = std::move(shape)});
   }
-  return BindQwenImageComponent(tensors, want, artifact.model().architecture, resources);
+  return BindImageComponent(tensors, want, artifact.model().architecture, resources);
 }
 
 // ---------------------------------------------------------------- host arithmetic
@@ -354,14 +353,15 @@ float FromBf16(std::uint16_t bits) {
   return std::bit_cast<float>(static_cast<std::uint32_t>(bits) << 16U);
 }
 
-std::expected<QwenImageSchedule, std::string> QwenImageSchedulerSigmas(
-    const QwenImageSchedulerProfile& p, std::uint32_t steps, std::uint32_t image_tokens) {
+std::expected<ImageSchedule, std::string> ImageSchedulerSigmas(const ImageSchedulerProfile& p,
+                                                               std::uint32_t steps,
+                                                               std::uint32_t image_tokens) {
   if (!steps || !image_tokens || !std::isfinite(p.base_shift) || !std::isfinite(p.max_shift) ||
       p.max_image_seq_len <= p.base_image_seq_len || !std::isfinite(p.shift_terminal) ||
       p.shift_terminal <= 0 || p.shift_terminal >= 1 || !p.train_timesteps ||
       std::uint64_t{steps} + 1 > std::vector<float>().max_size())
     return Refused("scheduler geometry or source parameters are not representable");
-  QwenImageSchedule s;
+  ImageSchedule s;
   // calculate_shift, in Python floats.
   const double m = (p.max_shift - p.base_shift) /
                    (static_cast<double>(p.max_image_seq_len) - p.base_image_seq_len);
@@ -409,7 +409,7 @@ std::expected<QwenImageSchedule, std::string> QwenImageSchedulerSigmas(
   return s;
 }
 
-std::vector<std::uint16_t> QwenImageTimestepSinusoid(const QwenImageDenoiserProfile& p, float t) {
+std::vector<std::uint16_t> ImageTimestepSinusoid(const ImageDenoiserProfile& p, float t) {
   // t.to(bf16), then / the divisor in BF16, then the [t, 0] rows.
   const float scaled = FromBf16(ToBf16(FromBf16(ToBf16(t)) / p.timestep_divisor));
   const std::uint32_t half = p.timestep_dim / 2;
@@ -428,7 +428,7 @@ std::vector<std::uint16_t> QwenImageTimestepSinusoid(const QwenImageDenoiserProf
   return out;
 }
 
-RotaryTables QwenImageTextRotary(const QwenImageTextProfile& p, std::uint32_t rows) {
+RotaryTables ImageTextRotary(const ImageTextProfile& p, std::uint32_t rows) {
   const std::uint32_t half = p.head_dim / 2;
   std::vector<float> inv(half);
   for (std::uint32_t i = 0; i < half; ++i) {
@@ -453,8 +453,8 @@ RotaryTables QwenImageTextRotary(const QwenImageTextProfile& p, std::uint32_t ro
   return t;
 }
 
-std::array<std::int32_t, 3> QwenImageDenoiserPosition(std::uint32_t text_rows, std::uint32_t height,
-                                                      std::uint32_t width, std::uint32_t row) {
+std::array<std::int32_t, 3> ImageDenoiserPosition(std::uint32_t text_rows, std::uint32_t height,
+                                                  std::uint32_t width, std::uint32_t row) {
   if (row < text_rows) {
     const auto position = static_cast<std::int32_t>(row);
     return {position, position, position};
@@ -465,8 +465,8 @@ std::array<std::int32_t, 3> QwenImageDenoiserPosition(std::uint32_t text_rows, s
           static_cast<std::int32_t>(image % width) - static_cast<std::int32_t>(width - width / 2)};
 }
 
-std::vector<float> QwenImageDenoiserRotary(const QwenImageDenoiserProfile& p,
-                                           std::uint32_t text_rows, std::uint32_t grid) {
+std::vector<float> ImageDenoiserRotary(const ImageDenoiserProfile& p, std::uint32_t text_rows,
+                                       std::uint32_t grid) {
   // rope_params per axis: 1 / theta ** (arange(0, dim, 2) / dim), F32.
   std::array<std::vector<float>, 3> inv;
   for (std::size_t a = 0; a < 3; ++a) {
@@ -505,9 +505,9 @@ std::vector<float> QwenImageDenoiserRotary(const QwenImageDenoiserProfile& p,
   return out;
 }
 
-std::vector<std::uint8_t> QwenImagePixels(std::span<const std::uint16_t> decoded,
-                                          std::uint32_t channels, std::uint32_t height,
-                                          std::uint32_t width) {
+std::vector<std::uint8_t> ImagePixels(std::span<const std::uint16_t> decoded,
+                                      std::uint32_t channels, std::uint32_t height,
+                                      std::uint32_t width) {
   const std::size_t pixels = std::size_t{height} * width;
   std::vector<std::uint8_t> out(pixels * channels);
   for (std::uint32_t c = 0; c < channels; ++c) {

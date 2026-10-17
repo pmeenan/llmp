@@ -14,6 +14,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <expected>
 #include <filesystem>
 #include <optional>
@@ -126,6 +127,14 @@ std::optional<ExecutableStamp> RunningExecutableStamp() {
       .device = static_cast<std::uint64_t>(status.st_dev),
       .inode = static_cast<std::uint64_t>(status.st_ino),
       .generation = generation};
+}
+
+std::expected<void, std::error_code> RenameNoReplace(const std::filesystem::path& from,
+                                                     const std::filesystem::path& to) {
+  if (::renameat2(AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE) != 0) {
+    return std::unexpected(LastError());
+  }
+  return {};
 }
 
 }  // namespace llmp::platform

@@ -380,10 +380,10 @@ Qwen/DeepSeek shapes, scaling and contraction contracts require separate proof.
 | GGML float primitives and structural fusions | [Registry declarations](../src/kernels/ggml/implementations.cc), [fusion gates](../src/kernels/ggml/fusion.cc), [planner](../src/kernels/ggml/graph_plan.cc); Qwen2, DeepSeek, Qwen3.8 and the EXL3 plan's non-linear operations | Vector versus tiled/cuBLAS products; RMSNorm/scale, bias/product, gate/up/SwiGLU and RoPE/cache-store fusions; activation lifetime placement |
 | Ordinary GGUF products | [Quantized products](../src/kernels/ggml/mul_mat_q.cu), [row products](../src/kernels/ggml/mmvq_rows.cu), [DeepSeek fast products](../src/kernels/ggml/dsv4_fast.cu); DeepSeek target and DSpark | Raw expert strides, Q8 input preparation reuse, adjacent gate/up preparation, vector rows that share expert reads, compact expert-major prefill scheduling |
 | NVFP4/MXFP8 products | [Qwen3.8 graph](../src/kernels/ggml/qwen38_graph.cc), [NVFP4 GEMV](../src/kernels/ggml/llmp_moe.cu), [grouped GEMM](../src/kernels/ggml/moe_cutlass.cu), [MXFP8](../src/kernels/ggml/mxfp8_cutlass.cu) | Cached input conversions, quantized tensor-core prefill, fused activation/quantization, one-row kernels and shape-specific product choices |
-| Attention and selection | [GGML attention](../src/kernels/ggml/fattn_mma.cu), [DeepSeek sparse path](../src/kernels/ggml/dsv4_sparse.cu), [QSA](../src/kernels/ggml/qsa_sparse.cu), [image attention](../src/kernels/image/flash_attention.cu) | Selected-cell gathers, sparse query unions, cached block keys, deterministic index ties, live cell counts, fused normalization/rotation |
-| Hyper-connections, routing and recurrence | [DeepSeek](../src/kernels/ggml/dsv4_fast.cu), [Qwen fusions](../src/kernels/ggml/llmp_fused.cu), [Qwen graph](../src/kernels/ggml/qwen38_graph.cc) | Clustered reductions, PDL, fused small operations, in-place state and commit of accepted verify rows |
-| EXL3 packed and reconstruction products | [Registry](../src/kernels/exl3/implementations.cc), [linears](../src/kernels/exl3/linear.cc), [Qwen2 plan](../src/kernels/exl3/qwen2.cc) | Packed GEMV/GEMM, fused gate/up, shared transforms, bounded reconstruction slices, fused reconstruction and pinned cuBLASLt algorithms |
-| Image BF16 pipeline | [Registry](../src/kernels/image/implementations.cc), [pipeline](../src/kernels/image/pipeline.cc), [products](../src/kernels/image/gemm.cc), [convolution](../src/kernels/image/conv.cu) | Per-shape GEMM pins, residual/next-norm fusion, implicit GEMM, prefix KV reuse and norm/rotation inside attention |
+| Attention and selection | [GGML attention](../src/kernels/ggml/fattn_mma.cu), [DeepSeek sparse path](../src/kernels/ggml/dsv4_sparse.cu), [QSA](../src/kernels/ggml/qsa_sparse.cu), [image attention](../src/kernels/ggml/llmp_image.cu) | Selected-cell gathers, sparse query unions, cached block keys, deterministic index ties, live cell counts, fused normalization/rotation |
+| Hyper-connections, routing and recurrence | [DeepSeek](../src/kernels/ggml/dsv4_fast.cu), [Qwen fusions](../src/kernels/ggml/llmp_fused.cu), [Qwen lowering](../src/kernels/ggml/lower_qwen38.cc) | Clustered reductions, PDL, fused small operations, in-place state and commit of accepted verify rows |
+| EXL3 packed and reconstruction products | [Registry](../src/kernels/exl3/implementations.cc), [linears](../src/kernels/exl3/linear.cc), [selected source](../src/kernels/exl3/selected_source.cc) | Packed GEMV/GEMM, fused gate/up, shared transforms, bounded reconstruction slices, fused reconstruction and pinned cuBLASLt algorithms |
+| Image BF16 pipeline | [Image GGML operations](../src/kernels/ggml/llmp_image.cu), [component image build](../src/runtime/component_image_build.cc), [serving adapter](../src/runtime/engine_image.cc) | Per-shape GEMM pins, residual/next-norm fusion, implicit GEMM, prefix KV reuse and norm/rotation inside attention |
 | Paging and shared engine | [Paging kernels](../src/kernels/paging/), [runner skeleton](engine.md), [serving](runtime-serving.md) | Stable-address graphs, one request lease, sleeping lanes, bounded staging, initialized state extents, sparse spill and turn checkpoints |
 | Sampling and draft control | [Sampling](../src/execution/sampling.cc), [draft-head study](experiments/qwen38-draft-head/README.md) | Validated top-k-one greedy shortcut; optional confidence computation; selected head with original IDs; observed acceptance, depth and avoiding unused draft passes |
 
@@ -787,10 +787,13 @@ Source cross-checks at `3ab8d5c`:
   G2d): their techniques are the shared components', patterns' and
   runner's, and the recipes are the mappings' policy rules.
   Internal options alone never establish ordinary selection.
-- [Image runner](../src/engine/qwen_image_runner.cc) and
-  [pipeline](../src/kernels/image/pipeline.cc) distinguish Encode, repeated
-  Step and Decode; [image evidence](experiments/qwen-image-native/README.md)
-  qualifies its BF16 kernels and rejects the neutral batched/stage factors.
+- [Image serving adapter](../src/runtime/engine_image.cc),
+  [component image build](../src/runtime/component_image_build.cc) and
+  [image GGML kernels](../src/kernels/ggml/llmp_image.cu) (replacing the
+  retired M3 `src/engine/qwen_image_runner.cc` and `src/kernels/image/`)
+  distinguish Encode, repeated Step and Decode;
+  [image evidence](experiments/qwen-image-native/README.md) qualifies its BF16
+  kernels and rejects the neutral batched/stage factors.
 - [Shared planning](../src/engine/planned.cc),
   [GGML binding](../src/kernels/ggml/executor.cc),
   [GraphRuns](../src/engine/graph_runs.cc),

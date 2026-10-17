@@ -25,6 +25,7 @@
 
 #include "base/check.h"
 #include "components/component.h"
+#include "execution/step_shape.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
@@ -34,7 +35,6 @@
 #include "ir/verify.h"
 #include "model/batching.h"
 #include "model/state_contract.h"
-#include "planner/step_shape.h"
 #include "spec/spec.h"
 
 namespace llmp::components {

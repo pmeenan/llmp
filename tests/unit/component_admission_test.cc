@@ -306,11 +306,14 @@ TEST_F(ComponentAdmissionTest, ApprovesCompleteNativeFormatsAndPreservesTheStore
             model.stages.front().heads.output->weights.front().tensor);
 }
 
-TEST_F(ComponentAdmissionTest, UnknownOriginOrFamilyHasNoV1Admission) {
+TEST_F(ComponentAdmissionTest,
+       UnpinnedOriginAdmitsValidSpecWhileMalformedOriginOrWrongFamilyFails) {
   origins[0].sha256[0] ^= 1;
-  EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
   origins = Origins();
   origins[0].bytes = llmp::base::Bytes(origins[0].bytes.value() - 1);
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
+  origins[0].bytes = llmp::base::Bytes(0);
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   origins = Origins();
   source.architecture = "gemma3";
@@ -395,7 +398,7 @@ TEST(ComponentAdmissionQwenTest, FullNormalizedTargetKeepsItsUntiedHeadAndSource
     auto changed_origins = origins;
     switch (mutation) {
       case 0:
-        changed_origins[2].sha256[0] ^= 1;
+        changed_origins[2].bytes = llmp::base::Bytes(0);
         break;
       case 1:
         changed_origins[2] = changed_origins[1];
@@ -492,6 +495,8 @@ TEST_P(NativeGemmaAdmissionTest, RefusesChangedFormatPlacementExpertIdentityAndA
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
   model = saved_model;
   origins.front().sha256.front() ^= 1;
+  EXPECT_TRUE(rt::CheckComponentAdmission(model, source, origins));
+  origins.front().bytes = llmp::base::Bytes(0);
   EXPECT_FALSE(rt::CheckComponentAdmission(model, source, origins));
 }
 TEST_P(NativeGemmaAdmissionTest, ChoosesExactProfileAndEnvelopeRecipeWithoutCheckpointKeys) {
@@ -575,7 +580,7 @@ TEST(ComponentAdmissionDsv4Test, FullStoredTargetPreservesProfilePolicyAndClosed
     auto changed_model = model;
     auto changed_source = source;
     auto changed_origins = origins;
-    if (mutation == 0) changed_origins[2].sha256[0] ^= 1;
+    if (mutation == 0) changed_origins[2].bytes = llmp::base::Bytes(0);
     if (mutation == 1) changed_origins[2] = changed_origins[1];
     if (mutation == 2) changed_source.tensors[0].format.encoding = fm::Encoding::kF16;
     if (mutation == 3) changed_model.stages[0].side.pop_back();
@@ -611,8 +616,8 @@ TEST(ComponentAdmissionQwen2Test, FullStoredTargetPreservesProfilePolicyAndClose
     auto changed_model = model;
     auto changed_source = source;
     auto changed_origins = origins;
-    if (mutation == 0) changed_origins[0].sha256[0] ^= 1;
-    if (mutation == 1) changed_origins[0].bytes = llmp::base::Bytes(1266425695ULL);
+    if (mutation == 0) changed_origins[0].name.clear();
+    if (mutation == 1) changed_origins[0].bytes = llmp::base::Bytes(0);
     if (mutation == 2) changed_source.tensors[0].format.encoding = fm::Encoding::kBF16;
     if (mutation == 3)
       changed_model.stages[0].heads.output->weights[0].tensor =
@@ -651,7 +656,7 @@ TEST(ComponentAdmissionQwen2Exl3Test,
       auto changed_model = model;
       auto changed_source = source;
       auto changed_origins = origins;
-      if (mutation == 0) changed_origins[0].sha256[0] ^= 1;
+      if (mutation == 0) changed_origins[0].bytes = llmp::base::Bytes(0);
       if (mutation == 1) changed_origins[1] = changed_origins[0];
       if (mutation == 2) changed_source.container = "gguf";
       if (mutation == 3) changed_source.tensors[2].format.params.k_bits = 6;
@@ -713,9 +718,11 @@ TEST(ComponentAdmissionDrafterTest, CheckComponentDrafterAdmissionApprovesGemma4
     bad_source.folds = {"some_fold"};
     EXPECT_FALSE(rt::CheckComponentDrafterAdmission(bad_source, origins));
 
-    auto bad_origins = origins;
-    bad_origins[0].sha256[0] ^= 1;
-    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(source, bad_origins));
+    auto unpinned_origins = origins;
+    unpinned_origins[0].sha256[0] ^= 1;
+    EXPECT_TRUE(rt::CheckComponentDrafterAdmission(source, unpinned_origins));
+    unpinned_origins[0].bytes = llmp::base::Bytes(0);
+    EXPECT_FALSE(rt::CheckComponentDrafterAdmission(source, unpinned_origins));
   }
 }
 
@@ -827,9 +834,8 @@ TEST(ComponentAdmissionModelOptTest,
     auto changed_model = model;
     auto changed_source = source;
     auto changed_origins = origins;
-    if (mutation == 0) changed_origins[0].sha256[0] ^= 1;
-    if (mutation == 1)
-      changed_origins[0].bytes = llmp::base::Bytes(changed_origins[0].bytes.value() + 1);
+    if (mutation == 0) changed_origins[0].name.clear();
+    if (mutation == 1) changed_origins[0].bytes = llmp::base::Bytes(0);
     if (mutation == 2) changed_source.container = "gguf";
     if (mutation == 3) changed_source.folds.clear();
     if (mutation == 4) changed_model.stages[0].folds.clear();
@@ -905,9 +911,8 @@ TEST(ComponentAdmissionMlxTest,
     auto changed_model = model;
     auto changed_source = source;
     auto changed_origins = origins;
-    if (mutation == 0) changed_origins[0].sha256[0] ^= 1;
-    if (mutation == 1)
-      changed_origins[0].bytes = llmp::base::Bytes(changed_origins[0].bytes.value() + 1);
+    if (mutation == 0) changed_origins[0].name.clear();
+    if (mutation == 1) changed_origins[0].bytes = llmp::base::Bytes(0);
     if (mutation == 2) changed_source.container = "safetensors";
     if (mutation == 3) changed_source.folds.clear();
     if (mutation == 4) changed_model.stages[0].folds.clear();

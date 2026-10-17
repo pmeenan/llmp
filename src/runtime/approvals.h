@@ -1,20 +1,18 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The approved checkpoints, as data (D-109: "the approved list is data, not
-// a profile in code"; docs/engine-components.md#admitting-a-checkpoint).
+// The pinned reference checkpoints, as data (D-109, D-118, D-119;
+// docs/engine-components.md#admitting-a-checkpoint).
 //
-// Each entry is one approved source checkpoint: its identity (the source
+// Each entry is one qualified reference checkpoint: its identity (the source
 // files' receipts and the native tensor inventory's digest), the stored
 // spec it must carry (for a drafter, the spec it composes with its approved
 // target), the execution envelope it was qualified for and how its
-// mapping's planning policy is selected there. A v1 artifact is admitted
-// when its source receipts name an entry, its tensors hash to the entry's
-// inventory and its stored spec's digest is the entry's
-// (runtime/component_admission.h); nothing is synthesized from a compiled
-// profile. approvals.cc holds the table, reviewed as a lock file is: a new
-// entry or digest is a new approval, whose evidence the owner accepts
-// (AGENTS.md: agents never invent supported combinations).
+// mapping's planning policy is selected there. When a v1 artifact's source
+// receipts match an entry, admission verifies its inventory, transforms and
+// stored spec digest against the entry; unpinned v1 artifacts of supported
+// architectures are admitted directly by stored spec and mapping validation
+// (D-119, runtime/component_admission.h).
 #ifndef LLMP_RUNTIME_APPROVALS_H_
 #define LLMP_RUNTIME_APPROVALS_H_
 

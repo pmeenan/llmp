@@ -61,7 +61,7 @@ namespace co = llmp::components;
 
 // The measured compact expert scheduling floor for production DeepSeek
 // prefill.
-inline constexpr std::int64_t kDsv4CompactMinRows = 2048;
+inline constexpr std::int64_t kCompactExpertMinRows = 2048;
 // Upstream's product routing groups (capabilities.cc): an IR selection in
 // one is resolved by PlanGraph inside it.
 inline constexpr std::string_view kMulMatGroupName = "ggml.mul_mat";
@@ -359,7 +359,7 @@ class Lowering {
   std::vector<std::size_t> impl_of_;  // by planned node: its step's implementation
   std::vector<bool> needed_;          // by planned node: made
   std::vector<bool> quiet_;           // by planned node: launches nothing of its own
-  bool dsv4_fast_ = false;
+  bool fast_mmq_stages_ = false;
   // The queries DeepSeek's query head writes as F16 where the IR records
   // F32 (MakeDirect's kDsv4QHead), and their views, reshapes,
   // permutations and contiguous copies: the only tensors Matches takes in
@@ -719,12 +719,15 @@ std::expected<void, KernelFailure> Lowering::Index() {
   launched_.assign(p_.nodes().size(), {});
   quiet_.assign(p_.nodes().size(), false);
   impl_of_.assign(p_.nodes().size(), kNoImplementation);
+  // Plans selecting the DeepSeek V4 stage kernels (`llmp.dsv4.*`) enable the
+  // paired/compact expert MMQ and D2R choices that reproduce DeepSeek V4's v0
+  // parity (PlanAndCompare); Qwen3.8 GGUF (`llmp.vecq.*`) uses standard MMQ.
   for (const planner::Selected& s : plan_.steps) {
     for (const NodeId id : s.nodes) impl_of_.at(id.v) = s.implementation;
     const std::string_view name = registry_.at(s.implementation).name;
     if (name == kDsv4RouteName || name == "llmp.dsv4.lid_mask" || name == kDsv4QHeadName ||
         name == kDsv4HcMixName || name == kDsv4CompressName || name == kDsv4OutAFastPackName) {
-      dsv4_fast_ = true;
+      fast_mmq_stages_ = true;
     }
   }
   if (in_.token)
@@ -793,8 +796,12 @@ std::expected<void, KernelFailure> Lowering::Matches(const ir::TensorDesc& want,
                                                      const ggml_tensor* got,
                                                      std::string_view what) const {
   const auto type = TypeOf(want.format.encoding);
-  // DeepSeek's query head writes its F32 result as F16 for its attention
-  // alone (MakeDirect's kDsv4QHead): that tensor and its views only.
+  // Cross-layer contract: FusedKind::kDsv4QHead keeps DataType::kF32 in the IR
+  // so the CPU reference executor uses F32, while the GGML lowering allocates
+  // and writes GGML_TYPE_F16 in the physical buffer for the downstream
+  // flash-attention consumer (MakeDirect's kDsv4QHead). That tensor, its views,
+  // reshapes, permutations, and contiguous copies are the only tensors Matches
+  // takes in a type differing from the IR's.
   const bool f16_q = want.format.encoding == Encoding::kF32 && got->type == GGML_TYPE_F16 &&
                      f16_queries_.contains(got);
   const std::uint64_t scale = f16_q ? 2 : 1;
@@ -1765,6 +1772,11 @@ std::expected<void, KernelFailure> Lowering::MakeRoute(NodeId id, const ir::Node
     placed_root_[n.out[0].v] = route;
     return {};
   }
+  // MakeRoute is only reached when a fused Op::kRoute implementation is
+  // selected (`llmp.dsv4.route` above, or `ggml.gemma.route.fused` here,
+  // which requires the exact 10-node GGML sequence for GemmaRoutingFusionAt).
+  // General Op::kRoute (including kSigmoidTopK, !p.normalize, and p.scale != 1)
+  // is decomposed into primitive ops by ir::Decompose (ir/decompose.cc).
   if (p.kind != ir::RouteKind::kSoftmaxTopK || !p.normalize || p.scale != 1.0F || n.nsrc != 1 ||
       n.nout != 2) {
     return Refused("a routing other than a normalized softmax top-k");
@@ -3003,23 +3015,14 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       return wide_attention.contains(node) || (prior && prior(node));
     };
   }
-  bool dsv4_fast = dsv4_fast_ || !wide_attention.empty();
-  if (!dsv4_fast) {
-    for (const planner::Selected& s : plan_.steps) {
-      const std::string_view name = registry_.at(s.implementation).name;
-      if (name == kDsv4RouteName || name == "llmp.dsv4.lid_mask" || name == kDsv4QHeadName ||
-          name == kDsv4HcMixName || name == kDsv4CompressName || name == kDsv4OutAFastPackName) {
-        dsv4_fast = true;
-        break;
-      }
-    }
-  }
-  if (dsv4_fast) {
+  const bool fast_mmq = fast_mmq_stages_ || !wide_attention.empty();
+  if (fast_mmq) {
     const bool draft = in_.token && in_.token->shape.stage != 0;
     choices.vector_floats = true;
     choices.d2r_experts = !draft;
     choices.pair_experts = true;
-    choices.compact_experts = !draft && in_.token && in_.token->shape.rows() >= kDsv4CompactMinRows;
+    choices.compact_experts =
+        !draft && in_.token && in_.token->shape.rows() >= kCompactExpertMinRows;
     choices.pair_glu = choices.compact_experts;
     choices.pair_glu_q8 = choices.compact_experts;
     choices.dense_pair = !draft;
@@ -3222,7 +3225,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     // The owners' row-invariant products (the plan's owner_row_invariant)
     // stand for their group's.
     same = same ||
-           ((plan_.owner_row_invariant || dsv4_fast) && got.nodes == want &&
+           ((plan_.owner_row_invariant || fast_mmq) && got.nodes == want &&
             (((got.implementation == kMulMatVecFRows || got.implementation == kMulMatVecQRows) &&
               s.group == kMulMatGroupName) ||
              (got.implementation == kMulMatIdVecQRows && s.group == kMulMatIdGroupName)));
@@ -4260,7 +4263,8 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
               return p_.node(r_id).key == ir::Fused(FusedKind::kHcNormPost);
             });
         if (has_hc_norm_post && src(0)->ne[2] > kVecQTokens &&
-            (device_.hc_post_experts || dsv4_fast_) && Dsv4WeightedReduceFits(src(0), w_down)) {
+            (device_.hc_post_experts || fast_mmq_stages_) &&
+            Dsv4WeightedReduceFits(src(0), w_down)) {
           ggml_tensor* reduce = Dsv4OrderedReduce(c_, src(0), w_down);
           Node(reduce, id);
           ggml_tensor* add = ggml_add(c_, reduce, src(3));

@@ -397,6 +397,9 @@ struct DraftRecipe {
   // none of its target's tensors or values): the first whose key, of
   // `keys`, the drafter's source holds with `value` (no keys: the only one).
   std::span<const ImportTarget> import_targets{};
+  double default_depth_cost = 1.16;
+  std::uint32_t small_chunk_rows = 4;
+  std::uint32_t small_chunk_max_depth = 2;
 };
 
 // A layer type by a source key's value (Mapping::layer_type_key).

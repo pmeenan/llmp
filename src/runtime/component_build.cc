@@ -625,10 +625,13 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                                drafter->model().architecture));
     const bool block = draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kBlock;
     const bool mtp = draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp;
-    const auto depth = mtp     ? (configured_chunk >= 4 ? settings.draft_rows.value
-                                                        : std::min(settings.draft_rows.value, 2U))
-                       : block ? settings.draft_rows.value
-                               : (draft != nullptr ? draft->depth : 0U);
+    const auto small_rows = draft != nullptr ? draft->small_chunk_rows : 4U;
+    const auto small_depth = draft != nullptr ? draft->small_chunk_max_depth : 2U;
+    const auto depth =
+        mtp ? (configured_chunk >= small_rows ? settings.draft_rows.value
+                                              : std::min(settings.draft_rows.value, small_depth))
+        : block ? settings.draft_rows.value
+                : (draft != nullptr ? draft->depth : 0U);
     // A block drafter's bound and fill token, from the metadata it keeps.
     std::int32_t block_fill = 0;
     if (block) {
@@ -802,9 +805,15 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       for (const auto& [key, place] : hold->place)
         if (place.array)
           hold->pitch[key.first] = placements.at(place.artifact).pitch.at(place.index);
-      for (const auto& row : stored_bindings->rows)
-        placements.at(hold->spec.stages.at(row.weight.stage).artifact)
-            .places.at(artifact->resources()[row.resource].group) = engine::GroupPlace::kNone;
+      for (const auto& row : stored_bindings->rows) {
+        const auto art_idx = hold->spec.stages.at(row.weight.stage).artifact;
+        const ja::Artifact& owner = art_idx == 0 ? *artifact : *drafter;
+        if (row.resource >= owner.resources().size()) {
+          return Error("a paged row table names a resource outside its artifact");
+        }
+        placements.at(art_idx).places.at(owner.resources()[row.resource].group) =
+            engine::GroupPlace::kNone;
+      }
     }
     // The stored target's maps came from its validated component roles
     // above; only a speculating model builds the setup graphs, to place its
@@ -825,15 +834,17 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           // feature projection a prompt chunk runs when the model speculates),
           // and those have no other source of places.
           if (weight.ref.stage == 0) continue;
-          const ja::Artifact& a = weight.ref.stage == 0 ? *artifact : *drafter;
+          const auto art_idx = hold->spec.stages.at(weight.ref.stage).artifact;
+          const ja::Artifact& a = *drafter;
           for (const auto& [name, role] : weight.parts) {
             const auto found =
                 weight.ref.expert_array ? a.FindExpertArray(name) : a.FindResource(name);
             if (!found) return Error(std::format("no weight part holds {}", name));
-            hold->place[{weight.ref, role}] = {
-                .artifact = weight.ref.stage, .array = weight.ref.expert_array, .index = *found};
+            hold->place[{weight.ref, role}] = {.artifact = static_cast<std::uint16_t>(art_idx),
+                                               .array = weight.ref.expert_array,
+                                               .index = *found};
             if (weight.ref.expert_array)
-              hold->pitch[weight.ref] = placements.at(weight.ref.stage).pitch.at(*found);
+              hold->pitch[weight.ref] = placements.at(art_idx).pitch.at(*found);
           }
         }
         if (s.stage == 0 && step->logits.valid() && logit_width == 0) {
@@ -873,8 +884,12 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // the block-scaled grouped GEMM (a W4A16 checkpoint's policy, a device
     // without FP4) decodes on chip, and the rows of a split NVFP4 table.
     bool has_affine = false, has_atoms = false, has_rows = false;
+    bool has_exl3 = false;
     for (const auto& table : hold->tables) {
       for (const auto& tensor : table) {
+        if (tensor.format.encoding == format::Encoding::kExl3Trellis) {
+          has_exl3 = true;
+        }
         const bool nvfp4 = tensor.format.encoding == format::Encoding::kNvfp4;
         if (tensor.format.encoding == format::Encoding::kAffine ||
             (tensor.experts && nvfp4 && tensor.format.layout == format::Layout::kSplit))
@@ -884,6 +899,21 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         if (nvfp4 && !tensor.experts && tensor.format.layout == format::Layout::kSplit)
           has_rows = true;
       }
+    }
+    const std::string_view policy_text = options.target_policy
+                                             ? std::string_view(*options.target_policy)
+                                             : std::string_view(composition.text);
+    if (policy_text.find("llmp.decode.") != std::string_view::npos) {
+      has_affine = true;
+    }
+    if (has_exl3) {
+      // exllamav3 is locked with `use: test` in third_party/sources.lock.json
+      // (tests/sources/check_closure.py), so llmp-runtime does not link
+      // llmp_exl3_selected; test harnesses attach kernels::exl3::SelectedSource
+      // directly on ModelRunner.
+      return Error(
+          "EXL3 trellis execution is test-only until exllamav3 is promoted from use:test in "
+          "third_party/sources.lock.json");
     }
     if (has_affine) {
       // Resident experts: the grouped products route on the device.
@@ -916,27 +946,29 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
             .value();
     engine::DecodingMode mode;
     if (speculate) {
-      mode = {.kind = engine::DecodingMode::Kind::kSpeculative,
-              .drafters = {{.stage = 1,
-                            .shape = block ? engine::DrafterSpec::Shape::kBlock
-                                           : engine::DrafterSpec::Shape::kAutoregressive,
-                            .max_depth = depth,
-                            .shared_wave_depth =
-                                mtp ? std::min(settings.shared_wave_depth.value, depth) : 0,
-                            .draft_wave_max = mtp ? settings.draft_wave_max.value : 0,
-                            .catch_up = mtp,
-                            .fill = block_fill,
-                            .borrows_target = !mtp && !block,
-                            .anchored = !mtp && !block,
-                            .features = !block,
-                            .adaptive = mtp && depth >= 3,
-                            .depth_cost = mtp ? settings.depth_cost_ratio.value : 1.16,
-                            .device_tokens = shared,
-                            .draft_before_limit = shared,
-                            .head_ids = hold->draft_head_ids,
-                            .head_rows = hold->draft_head_rows}},
-              .combine = engine::DecodingMode::Drafters::kCascade,
-              .row_invariant = false};
+      mode = {
+          .kind = engine::DecodingMode::Kind::kSpeculative,
+          .drafters = {{.stage = 1,
+                        .shape = block ? engine::DrafterSpec::Shape::kBlock
+                                       : engine::DrafterSpec::Shape::kAutoregressive,
+                        .max_depth = depth,
+                        .shared_wave_depth =
+                            mtp ? std::min(settings.shared_wave_depth.value, depth) : 0,
+                        .draft_wave_max = mtp ? settings.draft_wave_max.value : 0,
+                        .catch_up = mtp,
+                        .fill = block_fill,
+                        .borrows_target = !mtp && !block,
+                        .anchored = !mtp && !block,
+                        .features = !block,
+                        .adaptive = mtp && depth >= 3,
+                        .depth_cost = mtp ? settings.depth_cost_ratio.value
+                                          : (draft != nullptr ? draft->default_depth_cost : 1.16),
+                        .device_tokens = shared,
+                        .draft_before_limit = shared,
+                        .head_ids = hold->draft_head_ids,
+                        .head_rows = hold->draft_head_rows}},
+          .combine = engine::DecodingMode::Drafters::kCascade,
+          .row_invariant = false};
     }
     auto execution_domain = options.execution_domain;
     if (options.derive_execution_domain && !metadata) {

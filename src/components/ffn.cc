@@ -85,7 +85,7 @@ constexpr std::array kSplits{SplitOption{.kind = SplitKind::kColumns,
                                          .state = {}}};
 
 constexpr std::array<std::string_view, 4> kPatterns{"rms_norm_mul", "rms_norm_mul_add",
-                                                    "mul_mat_glu", "prepared_products"};
+                                                    "mul_mat_glu", "prepared_inputs"};
 
 ir::GluKind Kind(const Instance& in) {
   return in.params.Name("activation") == "silu" ? ir::GluKind::kSwiGlu : ir::GluKind::kGeGluTanh;

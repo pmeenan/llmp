@@ -39,7 +39,52 @@ one Spark and on two.
 
 ---
 
-## D-118: Serving is v1-only; v0 artifacts are re-imported, not migrated; approval is data  (2026-10-15, status: accepted by the owner, 2026-10-15 (v1-only serving); in effect since slice 4b (2026-10-16); amends D-113's "v0 stays readable" for serving; implements D-109's "the approved list is data, not a profile in code")
+## D-119: Runtime admission validates v1 artifacts by stored spec and architecture mapping; approvals.cc pins the reference fleet, not admission  (2026-10-17, status: accepted at the owner's direction of 2026-10-17; amends D-118's lock-file admission requirement and restores D-109's rule that a new checkpoint or size of a known architecture requires no C++ edit or rebuild)
+
+**Decision.** The runtime admits any format-v1 artifact or composition of a
+supported architecture by structural and capability validation against its
+stored `spec.json` (`spec::StoredSpec`), its native tensor inventory, and its
+architecture's declarative mapping (`spec::Mapping` with a `ServingRecipe` or
+`DraftRecipe`, or `spec::ImageMapping`), without requiring a compiled entry in
+`runtime/approvals.cc`. Specifically:
+
+- **Unpinned v1 artifacts of supported architectures are admitted directly.**
+  When a v1 artifact's source receipts do not match an entry in
+  `runtime/approvals.cc`, admission verifies that its architecture has a
+  registered serving, drafter, or image mapping, that every tensor's format is
+  admissible for its container (`InventoryForm`), that its applied folds are
+  declared by the mapping, and that its stored `ModelSpec` passes
+  `components::ValidateSpec` against its tensor inventory plus
+  `CheckScaleAtomSlots` and `CheckStoredHashTables`. Its execution envelope and
+  planning policy derive from the stored spec (`stage.context`), its mapping's
+  `ServingRecipe`, `DraftRecipe`, and `PolicyRule`, and the three-layer model
+  settings (`D-103`).
+- **`runtime/approvals.cc` pins the qualified reference fleet.** When a v1
+  artifact's source receipts match a pinned entry in `approvals.cc`
+  (`FindApproval` or `FindImageApproval`), admission additionally verifies that
+  the artifact matches that reference entry's inventory digest, transform
+  records, and spec digest, and applies its qualified envelope defaults and
+  policy gates (`max_context`, `max_slots`, `wide_context`, `gates`).
+
+**Context.** D-118 made `runtime/approvals.cc` a mandatory gate for all v1
+artifacts, refusing any checkpoint whose source-file SHA-256 receipts,
+inventory digest, and spec digest were not compiled into C++. Because a spec
+digest is only known after import, even testing or serving a new checkpoint,
+quantization, or model size of an already-supported architecture required
+`import → edit C++ → rebuild`, contradicting D-109 ("a new size of a known
+architecture is not a code change; the runtime validates the spec against its
+compiled component catalog and refuses what it cannot run").
+
+**Consequences.** Users and developers can import any checkpoint of a
+supported architecture with `llmp import` and serve it immediately without
+editing C++ or rebuilding `llmp-runtime`. The qualified reference checkpoints
+in `approvals.cc` retain their bit-level inventory and spec-digest protection.
+
+**Reopen if** an unpinned checkpoint of a supported architecture can pass
+`ValidateSpec` and capability selection yet violate a safety or memory
+invariant that only a compiled approval row could catch.
+
+## D-118: Serving is v1-only; v0 artifacts are re-imported, not migrated; approval is data  (2026-10-15, status: accepted by the owner, 2026-10-15 (v1-only serving); in effect since slice 4b (2026-10-16); amends D-113's "v0 stays readable" for serving; implements D-109's "the approved list is data, not a profile in code"; amended by D-119, 2026-10-17, so unpinned v1 artifacts of supported architectures are admitted by stored spec and mapping validation)
 
 **Decision.** The runtime serves format-v1 artifacts only, from slice 4b
 (which deletes v0 synthesis, the binders and v0 serving; slice 4a, below,

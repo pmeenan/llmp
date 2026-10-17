@@ -729,7 +729,9 @@ runners, plans and graph builders have been deleted.
 `src/runtime/serving.cc` (`Server::Make`) builds all LLM and drafter sessions
 through `ComponentLlmBuild` (`src/runtime/component_build.h`) onto `EngineLlm`
 and image compositions onto `EngineImage`, gated by `src/runtime/component_admission.h`
-and `src/runtime/approvals.h`.
+(validating the stored v1 `spec.json`, tensor formats, component catalog, and
+mapping recipes directly under D-119, and enforcing pinned source receipts and
+digests when a checkpoint matches the reference fleet in `src/runtime/approvals.h`).
 A Gemma 4 model with a `drafter` (its assistant) speculates on the engine: three
 drafts a unit, each pass at the committed positions reading the target's cache
 frozen and its final-norm features, then one verify, greedy agreement or seeded
@@ -745,7 +747,7 @@ engine-backed model's runner are built at its Setup
 (`runtime/component_build.h`): the spec its v1 artifact stores (composed
 with its drafter's when it speculates), its components' state layouts and
 batching, and a component step source a stage planned under its
-approval's policy rule for the serving envelope (the family's recipe as data: its context and request slots
+mapping's policy rule for the serving envelope (the family's recipe as data: its context and request slots
 choose the rule, which also says whether prompt chunks and owners step
 alone and how many prompt chunks are planned ahead) over GGML's registry
 and lowered onto its graphs, on the model's own stream, with a cuBLAS

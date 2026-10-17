@@ -34,6 +34,7 @@
 #include "qwen2_exl3_normalization_fixture.h"
 #include "qwen2_gguf_normalization_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
+#include "spec/mappings/qwen2.h"
 #include "spec/mappings/qwen38.h"
 
 namespace llmp::import {
@@ -1337,6 +1338,46 @@ TEST(ImportNormalizeDrafterTest, RejectsMissingDrafterKeysAndMismatchedParentWid
   cp = AssistantCheckpoint(26);
   Value(cp, "gemma4-assistant.embedding_length_out", std::int64_t{1024});
   EXPECT_FALSE(Normalize(std::move(cp), kFunded));
+}
+
+TEST(ImportNormalizeSafetensorsTest, Qwen2SafetensorsMappingValidatesAndGgufSynthesizesNon05B) {
+  const auto* qwen2_sf = FindSourceMapping("safetensors", "qwen2");
+  ASSERT_NE(qwen2_sf, nullptr);
+  EXPECT_TRUE(ValidateSourceMapping(*qwen2_sf));
+
+  spec::Source source;
+  source.architecture = "qwen2";
+  source.container = "gguf";
+  const std::vector<std::string> names = {
+      "token_embd.weight",     "blk.0.attn_norm.weight", "blk.0.attn_q.weight",
+      "blk.0.attn_k.weight",   "blk.0.attn_v.weight",    "blk.0.attn_q.bias",
+      "blk.0.attn_k.bias",     "blk.0.attn_v.bias",      "blk.0.attn_output.weight",
+      "blk.0.ffn_norm.weight", "blk.0.ffn_gate.weight",  "blk.0.ffn_up.weight",
+      "blk.0.ffn_down.weight", "output_norm.weight",     "output.weight",
+  };
+  std::vector<spec::SourceTensor> tensors;
+  for (const auto& name : names) {
+    tensors.push_back({.name = name});
+  }
+  source.tensors = tensors;
+
+  const std::vector<spec::SourceValue> values = {
+      {.key = "qwen2.block_count", .value = std::int64_t{1}},
+      {.key = "qwen2.context_length", .value = std::int64_t{32768}},
+      {.key = "qwen2.embedding_length", .value = std::int64_t{3584}},
+      {.key = "qwen2.feed_forward_length", .value = std::int64_t{18944}},
+      {.key = "qwen2.attention.head_count", .value = std::int64_t{28}},
+      {.key = "qwen2.attention.head_count_kv", .value = std::int64_t{4}},
+      {.key = "qwen2.attention.key_length", .value = std::int64_t{128}},
+      {.key = "qwen2.attention.value_length", .value = std::int64_t{128}},
+      {.key = "qwen2.rope.scaling.type", .value = std::string("none")},
+      {.key = "qwen2.rope.freq_base", .value = 1000000.0},
+      {.key = "qwen2.attention.layer_norm_rms_epsilon", .value = static_cast<double>(1e-6F)},
+  };
+  auto spec = spec::Synthesize(spec::mappings::Qwen2GgufMapping(), source, values);
+  ASSERT_TRUE(spec.has_value()) << spec.error();
+  EXPECT_EQ(spec->stages[0].stream.width, 3584U);
+  EXPECT_EQ(spec->stages[0].layers.size(), 1U);
 }
 
 }  // namespace
