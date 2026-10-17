@@ -2915,6 +2915,21 @@ quantized drafters matched to EXL3 targets (M3.5's EXL3 work).
    and a hierarchical indexer, which no GGML code covers. Its ~190 GiB of
    Engram lookup tables may stay row-paged from each node's SSD (D-035).
 
+*Owner addition, 2026-10-16:* a second GLM-5.3 Flash quant,
+[`nvidia/GLM-5.3-Flash-FP4-Local`](https://huggingface.co/nvidia/GLM-5.3-Flash-FP4-Local)
+(NVIDIA Open Model Agreement over GLM's MIT license; recorded, never
+blocking, D-087), served in the same cycle as the EXL3 target (AGENTS.md
+rule 11: every quant runs). It is ModelOpt QAD: NVFP4 routed experts,
+MXFP8 decoder attention, NVFP4 MTP experts with BF16 activations, and a
+vision tower (MXFP8 attention, NVFP4 MLP and merger). It uses the same
+undocumented lossless compression of NVFP4 scale factors as M3.5's
+[Qwen3.8 FP4-Local](m35-families.md#owner-requested-addition-qwen38-flash-next-fp4-local)
+(that work lands first and is reused here). The card validates two DGX
+Sparks over ConnectX with an FP8 KV cache to 2M tokens (about 166 GiB of
+weights, creator-reported). Reference: the card's community vLLM
+configuration, or the latest TensorFold if it supports the checkpoint at
+M4's entry re-pin.
+
 **Oracles and comparators,** under M3's rule (cross-quantization is speed
 and memory only):
 
@@ -2928,6 +2943,7 @@ requantization from optimizations at unchanged quality.
 | --- | --- | --- | --- |
 | GLM-5.3 Flash | Same-format EXL3 configuration, re-pinned at entry | Latest TensorFold where the EXL3 layout matches; Mia's configuration | TensorFold (MLX affine) |
 | DeepSeek v4.1 Flash | Mia's configuration | Mia's configuration | none |
+| GLM-5.3 Flash FP4-Local | The card's vLLM configuration, or TensorFold if it supports it at entry | Same; the EXL3 target's results | none |
 
 **Scope:**
 
