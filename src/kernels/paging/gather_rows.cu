@@ -20,17 +20,14 @@ namespace {
 
 constexpr std::uint64_t kMaxGrid = 0x7fffffff;
 
-__global__ void GatherKernel(const unsigned char* landing, const std::uint32_t* sources,
+__global__ void GatherKernel(const unsigned char* landing, const std::uint64_t* sources,
                              const std::uint32_t* count, std::uint32_t row_bytes,
                              unsigned char* slots) {
   const std::uint32_t slot = blockIdx.x;
   if (slot >= *count) {
     return;
   }
-  const std::uint32_t source = sources[slot];
-  if (static_cast<std::int32_t>(source) < 0) {
-    return;
-  }
+  const std::uint64_t source = sources[slot];
   const unsigned char* from = landing + source;
   unsigned char* to = slots + (static_cast<std::uint64_t>(slot) * row_bytes);
   for (std::uint32_t i = threadIdx.x; i < row_bytes; i += blockDim.x) {
@@ -40,7 +37,7 @@ __global__ void GatherKernel(const unsigned char* landing, const std::uint32_t* 
 
 }  // namespace
 
-bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
+bool GatherPleRows(const std::byte* landing, const std::uint64_t* sources,
                    const std::uint32_t* count, std::uint32_t max_count, std::uint32_t row_bytes,
                    std::byte* slots, void* stream) {
   if (max_count == 0) {

@@ -482,9 +482,13 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       // vocabulary; the head's token IDs are read and checked.
       if (const spec::DraftRecipe* draft = drafter_mapping->draft;
           draft != nullptr && !draft->vocab_key.empty()) {
-        std::uint64_t rows = recipe.vocab;
         auto map = DraftHeadRows(*drafter, draft->head_ids, recipe.vocab);
         if (!map) return Error(map.error());
+        auto width = ConfigureDraftVocabulary(
+            *dvalues, *draft, settings.draft_vocab.value, recipe.vocab,
+            *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt);
+        if (!width) return Error(width.error());
+        hold->draft_head_rows = *width;
         if (*map) {
           auto ids = ReadRecipeIntegers<std::int32_t>(*drafter, (*map)->resource, (*map)->rows);
           if (!ids) return Error(ids.error());
@@ -493,18 +497,9 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
             if ((*ids)[i] < 0 || std::cmp_greater_equal((*ids)[i], recipe.vocab) ||
                 (i != 0 && (*ids)[i] <= (*ids)[i - 1]))
               return Error("a selected draft head's token IDs are not strictly ascending");
-          rows = ids->size();
-          const auto width = std::min<std::size_t>(settings.draft_vocab.value, ids->size());
-          if (width == 0) return Error("a selected draft head needs a positive source row count");
-          ids->resize(width);
+          ids->resize(*width);
           hold->draft_head_ids = std::make_shared<const std::vector<std::int32_t>>(std::move(*ids));
         }
-        for (auto& value : *dvalues)
-          if (value.key == draft->vocab_key) {
-            hold->draft_head_rows = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(settings.draft_vocab.value, rows));
-            value.value = static_cast<std::int64_t>(hold->draft_head_rows);
-          }
       }
       hold->drafter_values = std::move(*dvalues);
       auto dsource = spec::SourceOf(*drafter);
@@ -1018,6 +1013,18 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto parsed = planner::ParsePolicy(*options.drafter_policy);
       if (!parsed) return Error(std::format("the drafter's policy: {}", parsed.error()));
       drafter_policy = std::move(*parsed);
+    }
+    if (!drafter_policy && forced && target_policy && speculate) {
+      // The forced route retains its shared fusion rules for the drafter,
+      // but each stage's independent product policies come from its mapping.
+      auto text = spec::DefaultPolicy(*drafter_mapping, hold->drafter_values,
+                                      {.context = settings.context.value, .slots = slots});
+      if (!text) return Error(text.error());
+      auto own = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
+                               : planner::ParsePolicy(*text);
+      if (!own) return Error(own.error());
+      drafter_policy = *target_policy;
+      drafter_policy->products = own->products;
     }
     std::vector<std::unique_ptr<engine::ComponentStepSource>> sources;
     for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {

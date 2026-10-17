@@ -546,7 +546,9 @@ and slots its reads need for a setup shape's lookups (`RowPagingPays`):
 Qwen3.8's n-gram table is; DeepSeek V4's hash-routing tables are resident.
 Their full artifact groups stay unplaced; each table owns a direct-read ring,
 pinned landing and offsets, and pinned device weight slots sized from its
-setup shapes. Every side-row input must be supplied in full and pass the
+setup shapes. Landing byte offsets are explicitly 64-bit through the planner
+and both gather implementations; row counts and slot IDs retain their bounded
+32-bit representation. Every side-row input must be supplied in full and pass the
 row-table planner before I/O starts. A completed read is gathered on the
 GPU before either an eager program or a graph replay. An unretired read
 prevents reuse; teardown retains its ring and landing until completion is

@@ -477,9 +477,9 @@ std::expected<void, std::string> FactsFromGenerationConfig(std::string_view text
   return {};
 }
 
-std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& target,
-                                                          const ja::Artifact* drafter,
-                                                          std::string_view kv_cache_encoding) {
+std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
+    const ja::Artifact& target, const ja::Artifact* drafter, std::string_view kv_cache_encoding,
+    std::optional<std::uint32_t> draft_vocab) {
   ArtifactFacts facts;
   if (kv_cache_encoding != "f16" && kv_cache_encoding != "q8_0")
     return Error("unknown KV cache encoding");
@@ -541,6 +541,23 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
         if (!composed) return Error(composed.error());
         if (auto approved = CheckComposedAdmission(*composed, *drafter); !approved)
           return Error(approved.error());
+        if (draft_mapping->draft != nullptr && !draft_mapping->draft->vocab_key.empty()) {
+          if (target_mapping->serving == nullptr)
+            return Error("component calibration has no target serving recipe");
+          const auto& serving = *target_mapping->serving;
+          auto map = DraftHeadRows(*drafter, draft_mapping->draft->head_ids, serving.vocab);
+          if (!map) return Error(map.error());
+          const auto selected =
+              *map ? std::optional(static_cast<std::uint32_t>((*map)->rows)) : std::nullopt;
+          auto width = ConfigureDraftVocabulary(*draft_values, *draft_mapping->draft,
+                                                draft_vocab.value_or(serving.default_draft_vocab),
+                                                serving.vocab, selected);
+          if (!width) return Error(width.error());
+          facts.composed_draft_vocab = *width;
+          composed = spec::ComposeDrafter(*model, *target_mapping, *draft_mapping, *draft_source,
+                                          *draft_values);
+          if (!composed) return Error(composed.error());
+        }
         if (auto configured = configure(*composed); !configured) return Error(configured.error());
         const std::array<std::string_view, 2> both{target.id(), drafter->id()};
         return spec::BoundDigest(*composed, both);
@@ -642,7 +659,8 @@ std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelE
     drafter.emplace(std::move(*opened));
   }
   return ArtifactFactsOf(*target, drafter ? &*drafter : nullptr,
-                         entry.Text("kv_cache_encoding").value_or("f16"));
+                         entry.Text("kv_cache_encoding").value_or("f16"),
+                         U32(entry.Integer("draft_vocab")));
 }
 
 std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target,
@@ -829,13 +847,6 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     return Error(
         std::format("{} serving has no qualified assistant or speculative path", recipe.family));
   const bool speculative = s.speculation.value;
-  if (facts.target_spec) {
-    s.bound_spec = speculative ? facts.composed_spec : facts.target_spec;
-    if (!s.bound_spec)
-      return Error(facts.composed_spec_error.empty()
-                       ? "component calibration has no active composed spec identity"
-                       : facts.composed_spec_error);
-  }
 
   // Speed trades: calibrated on the machine, else M3's measured constants.
   const bool bounded = recipe.bounded;
@@ -1029,6 +1040,18 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       s.draft_vocab.source = SettingSource::kDerived;
     }
   }
+  if (facts.target_spec) {
+    s.bound_spec = speculative ? facts.composed_spec : facts.target_spec;
+    if (!s.bound_spec)
+      return Error(facts.composed_spec_error.empty()
+                       ? "component calibration has no active composed spec identity"
+                       : facts.composed_spec_error);
+  }
+  if (speculative && facts.composed_draft_vocab &&
+      *facts.composed_draft_vocab !=
+          (s.draft_vocab.value == 0 ? recipe.vocab : s.draft_vocab.value))
+    return Error("artifact facts were derived for a different draft vocabulary");
+
   s.depth_cost_ratio =
       Pick<double>(entry.Real("depth_cost_ratio"), basis("depth_cost_ratio"), cal.depth_cost_ratio,
                    cal.basis, {}, {}, recipe.default_depth_cost_ratio, "measured on a GB10");

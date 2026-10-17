@@ -359,7 +359,6 @@ class Lowering {
   std::vector<std::size_t> impl_of_;  // by planned node: its step's implementation
   std::vector<bool> needed_;          // by planned node: made
   std::vector<bool> quiet_;           // by planned node: launches nothing of its own
-  bool fast_mmq_stages_ = false;
   // The queries DeepSeek's query head writes as F16 where the IR records
   // F32 (MakeDirect's kDsv4QHead), and their views, reshapes,
   // permutations and contiguous copies: the only tensors Matches takes in
@@ -719,17 +718,8 @@ std::expected<void, KernelFailure> Lowering::Index() {
   launched_.assign(p_.nodes().size(), {});
   quiet_.assign(p_.nodes().size(), false);
   impl_of_.assign(p_.nodes().size(), kNoImplementation);
-  // Plans selecting the DeepSeek V4 stage kernels (`llmp.dsv4.*`) enable the
-  // paired/compact expert MMQ and D2R choices that reproduce DeepSeek V4's v0
-  // parity (PlanAndCompare); Qwen3.8 GGUF (`llmp.vecq.*`) uses standard MMQ.
-  for (const planner::Selected& s : plan_.steps) {
+  for (const planner::Selected& s : plan_.steps)
     for (const NodeId id : s.nodes) impl_of_.at(id.v) = s.implementation;
-    const std::string_view name = registry_.at(s.implementation).name;
-    if (name == kDsv4RouteName || name == "llmp.dsv4.lid_mask" || name == kDsv4QHeadName ||
-        name == kDsv4HcMixName || name == kDsv4CompressName || name == kDsv4OutAFastPackName) {
-      fast_mmq_stages_ = true;
-    }
-  }
   if (in_.token)
     for (const co::StepInput& input : in_.token->step.inputs) {
       if (!input.tensor.valid() || input.tensor.v >= g_.tensor_count() ||
@@ -2975,6 +2965,9 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
         choices.group_set_rows || name == kSetRowsGroupedName || name == kSetRowsQuantGroupName;
     choices.fuse_rope_store =
         choices.fuse_rope_store || name == kRopeSetRowsFused || name == kRopeSetRowsQuantName;
+    choices.outa_fast_pack = choices.outa_fast_pack || name == kDsv4OutAFastPackName;
+    choices.hc_post_experts = choices.hc_post_experts || (name == kDsv4CombineName && in_.token &&
+                                                          in_.token->shape.stage == 0);
     choices.fuse_gemma_route = choices.fuse_gemma_route || name == kGemmaRouteName;
     choices.fuse_gemma_reduce = choices.fuse_gemma_reduce || name == kGemmaReduceName;
   }
@@ -3015,20 +3008,18 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
       return wide_attention.contains(node) || (prior && prior(node));
     };
   }
-  const bool fast_mmq = fast_mmq_stages_ || !wide_attention.empty();
-  if (fast_mmq) {
-    const bool draft = in_.token && in_.token->shape.stage != 0;
-    choices.vector_floats = true;
-    choices.d2r_experts = !draft;
-    choices.pair_experts = true;
-    choices.compact_experts =
-        !draft && in_.token && in_.token->shape.rows() >= kCompactExpertMinRows;
-    choices.pair_glu = choices.compact_experts;
-    choices.pair_glu_q8 = choices.compact_experts;
-    choices.dense_pair = !draft;
-    choices.hc_post_experts = !draft;
-    choices.outa_fast_pack = !draft;
-  }
+  // These choices are explicit policy data in the plan key, independent of
+  // which attention, route or HC operations happen to share this graph.
+  const auto& products = plan_.products;
+  choices.vector_floats = choices.vector_floats || products.vector_floats;
+  choices.d2r_experts = choices.d2r_experts || products.d2r_experts;
+  choices.pair_experts = choices.pair_experts || products.pair_experts;
+  choices.compact_experts =
+      choices.compact_experts ||
+      (products.compact_experts && in_.token && in_.token->shape.rows() >= kCompactExpertMinRows);
+  choices.pair_glu = choices.pair_glu || (products.pair_glu && choices.compact_experts);
+  choices.pair_glu_q8 = choices.pair_glu_q8 || (products.pair_glu_q8 && choices.compact_experts);
+  choices.dense_pair = choices.dense_pair || products.dense_pair;
   for (const TensorId t : p_.outputs()) out_.keep.push_back(made_.at(t.v));
   for (const TensorId t : p_.keep()) out_.keep.push_back(made_.at(t.v));
   if (std::ranges::contains(out_.keep, nullptr)) return Refused("an output was not made");
@@ -3225,7 +3216,7 @@ std::expected<void, KernelFailure> Lowering::PlanAndCompare() {
     // The owners' row-invariant products (the plan's owner_row_invariant)
     // stand for their group's.
     same = same ||
-           ((plan_.owner_row_invariant || fast_mmq) && got.nodes == want &&
+           ((plan_.owner_row_invariant || products.vector_floats) && got.nodes == want &&
             (((got.implementation == kMulMatVecFRows || got.implementation == kMulMatVecQRows) &&
               s.group == kMulMatGroupName) ||
              (got.implementation == kMulMatIdVecQRows && s.group == kMulMatIdGroupName)));
@@ -4263,7 +4254,7 @@ std::expected<void, KernelFailure> Lowering::MakeDirect(NodeId id, const ir::Nod
               return p_.node(r_id).key == ir::Fused(FusedKind::kHcNormPost);
             });
         if (has_hc_norm_post && src(0)->ne[2] > kVecQTokens &&
-            (device_.hc_post_experts || fast_mmq_stages_) &&
+            (device_.hc_post_experts || (in_.token && in_.token->shape.stage == 0)) &&
             Dsv4WeightedReduceFits(src(0), w_down)) {
           ggml_tensor* reduce = Dsv4OrderedReduce(c_, src(0), w_down);
           Node(reduce, id);

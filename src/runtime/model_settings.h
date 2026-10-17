@@ -107,6 +107,7 @@ struct ArtifactFacts {
   // model is retained. Legacy facts leave these absent.
   std::optional<base::Sha256Digest> target_spec{};
   std::optional<base::Sha256Digest> composed_spec{};
+  std::optional<std::uint32_t> composed_draft_vocab{};
   std::string composed_spec_error;  // ignored when speculation is disabled
   // The target's approval (runtime/approvals.h), by its source identity:
   // its envelope's policy rules and label; null for an unapproved source.
@@ -183,7 +184,8 @@ std::expected<ArtifactFacts, std::string> ReadArtifactFacts(const config::ModelE
 // The same from what an opened artifact keeps (and its drafter's, if any).
 std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
     const artifact::Artifact& target, const artifact::Artifact* drafter,
-    std::string_view kv_cache_encoding = "f16");
+    std::string_view kv_cache_encoding = "f16",
+    std::optional<std::uint32_t> draft_vocab = std::nullopt);
 // Its parts, each adding to `facts` (`facts.architecture` set): the kept
 // GGUF metadata's keys (GgufFactKeys: the context, its rope scaling, the
 // sampling defaults), config.json's (max_position_embeddings and

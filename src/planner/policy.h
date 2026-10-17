@@ -20,6 +20,7 @@
 //   vector_rows <n>                     when set (1 to 65,536)
 //   row_invariant                       when set
 //   allow_lossy                         when set
+//   product <choice>                    independent product policies, names ascending
 //   enable <pattern>                    an opt-in pattern of the table, names ascending
 //   disable <pattern>                   a pattern of the table (pattern.h), names ascending
 //   when <scope> <test> <n> <action>    step rules, ascending (StepRule's order)
@@ -77,6 +78,20 @@ struct StepRule {
   bool operator==(const StepRule&) const = default;
 };
 
+// Independent product policies. Each is default-off and still subject to
+// backend shape/device/liveness checks. D2R changes arithmetic and requires
+// its own explicit choice; pairing never opts into it.
+struct ProductPolicy {
+  bool compact_experts = false;
+  bool d2r_experts = false;
+  bool dense_pair = false;
+  bool pair_experts = false;
+  bool pair_glu = false;
+  bool pair_glu_q8 = false;
+  bool vector_floats = false;
+  bool operator==(const ProductPolicy&) const = default;
+};
+
 struct Policy {
   // Opt-in patterns it enables (pattern.h Pattern::opt_in), ascending, each
   // once.
@@ -92,6 +107,7 @@ struct Policy {
   // Rules for some steps only, in StepRule order, each once; ForStep
   // applies them.
   std::vector<StepRule> rules{};
+  ProductPolicy products{};
   bool operator==(const Policy&) const = default;
 };
 

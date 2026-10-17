@@ -69,7 +69,7 @@ struct PleRowPlan {
   // For each lookup (the chunk's ple_rows, in order), its row slot.
   std::vector<std::int32_t> slots;
   // For each slot, where its row starts in the landing.
-  std::vector<std::uint32_t> sources;
+  std::vector<std::uint64_t> sources;
   std::vector<PleRead> reads;
   std::uint64_t landing_bytes = 0;  // the reads' total
   std::uint64_t useful_bytes = 0;   // distinct rows x row bytes

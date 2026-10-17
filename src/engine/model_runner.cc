@@ -1033,8 +1033,9 @@ Status ModelRunner::SetupRowTables() {
         return Error("a row table's capacity overflows");
       capacity = std::max(capacity, count);
     }
-    if (capacity == 0 || capacity > std::numeric_limits<std::uint32_t>::max() / (2 * kPleBlock))
-      return Error("a row table's bounded landing exceeds its gather offsets");
+    if (capacity == 0 ||
+        capacity > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+      return Error("a row table's lookup count exceeds its slot IDs");
     const auto first =
         artifact::ChunkRangeOf(artifact.layout(), {.group = resource.group, .chunk = 0});
     if (!first) return Error("a row table's file range");
@@ -1100,11 +1101,11 @@ Status ModelRunner::SetupRowTables() {
       table->capacity =
           std::max(table->capacity, std::uint64_t{shape.rows()} * config.rows_per_token);
     }
-    // Offsets and counts are U32 in the gather. A lookup can span at most
-    // two blocks; the same bound is checked again by PlanPleRows.
+    // Slot IDs are I32 and counts are U32; byte offsets are U64. A lookup
+    // can span at most two blocks. Bound allocation arithmetic separately.
     if (table->capacity == 0 ||
-        table->capacity > std::numeric_limits<std::uint32_t>::max() / (2 * kPleBlock)) {
-      return Error("a row table's bounded landing exceeds its gather offsets");
+        table->capacity > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+      return Error("a row table's lookup count exceeds its slot IDs");
     }
     const auto valid =
         PlanPleRows(table->table, {}, PleLandingBound(table->capacity), table->capacity);
@@ -1114,8 +1115,14 @@ Status ModelRunner::SetupRowTables() {
     table->storage = std::move(*ring);
     row_tables_.push_back(std::move(table));
     auto& held = *row_tables_.back();  // stable through partial setup and release
-    if (auto mapped = memory_.Map(held.slots, "row-table slots", held.capacity * *row_bytes,
-                                  catalog::MemoryClass::kWeights);
+    std::uint64_t slot_bytes = 0, source_bytes = 0;
+    if (__builtin_mul_overflow(held.capacity, *row_bytes, &slot_bytes) ||
+        __builtin_mul_overflow(held.capacity, std::uint64_t{sizeof(std::uint64_t)},
+                               &source_bytes) ||
+        __builtin_add_overflow(source_bytes, std::uint64_t{sizeof(std::uint32_t)}, &source_bytes))
+      return Error("a row table's allocation size overflows");
+    if (auto mapped =
+            memory_.Map(held.slots, "row-table slots", slot_bytes, catalog::MemoryClass::kWeights);
         !mapped)
       return mapped;
     auto landing = memory_.PinnedAligned(PleLandingBound(held.capacity), kPleBlock);
@@ -1124,10 +1131,10 @@ Status ModelRunner::SetupRowTables() {
     held.landing = landing->data;
     if (Address(held.landing) % kPleBlock != 0)
       return Error("a row table's landing is not aligned");
-    auto sources = memory_.Pinned((held.capacity + 1) * sizeof(std::uint32_t));
+    auto sources = memory_.Pinned(source_bytes);
     if (!sources) return Error(sources.error());
-    held.sources = static_cast<std::uint32_t*>(*sources);
-    held.count = held.sources + held.capacity;
+    held.sources = static_cast<std::uint64_t*>(*sources);
+    held.count = reinterpret_cast<std::uint32_t*>(held.sources + held.capacity);
     *held.count = 0;
   }
   return {};

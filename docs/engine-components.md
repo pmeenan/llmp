@@ -377,11 +377,18 @@ primitive ids). It is deterministic. The steps:
   `execution::kOutputOperand`.
 - **Policy** (`policy.h`): disabled patterns, the decode-row bound, the
   vector forms' row bound, row-invariant plans (D-092), the lossy opt-in,
+  independent product choices (`product <choice>`: expert and GLU pairing,
+  compact experts, quantized GLU pairing, dense pairing, D2R experts and
+  vector float products, each still subject to backend eligibility),
   step rules (`when <any|solo|joined> <past|under> <n> <action>`: a
   pattern off or a tighter bound for some steps only, by owners and rows,
   which the component step source applies per step with `ForStep`; the
   planner holds no family's row gates) and measured ranks per
   device class, as canonical text whose digest is a plan key's input. The
+  product choices default off. DeepSeek mappings select their eligible
+  schedules explicitly; Qwen retains its ordinary product choices. A
+  neighboring attention or routing operation does not enable them.
+  Existing artifact spec identities are unchanged. The
   first migrations' selections are policies: Gemma 2 serves with
   `disable grouped_stores`, `disable rms_norm_mul_rope` and `disable
   rope_store`, Gemma 3 with `disable rope_store`. Each family's default
@@ -3029,7 +3036,9 @@ table fits each stage's devices whole).
   row gather. A tensor leaving its group goes to
   each device that needs it from the holder with the cheapest link,
   receivers holding it too, so a stream crosses a slow link once and then
-  spreads over the fast one. The objective is the decode-share-weighted
+  spreads over the fast one. Side outputs use their component graph's output
+  size and travel only to groups containing readers; subsequent readers can
+  receive from any earlier holder. The objective is the decode-share-weighted
   modelled time of a prefill and a decode step; bytes are reported too.
 - **Memory.** Each device holds its components' weights (a tensor bound by
   several components once, a split part at its own format's bytes) and
@@ -3037,8 +3046,9 @@ table fits each stage's devices whole).
   workspace and graphs are not counted: a device's described bytes must
   leave room for them.
 - **The choice** (`Assign`). A pipeline cuts the layers into contiguous
-  ranges, each on a group of devices; the embedding runs with the first
-  range, the final norm and the head with the last. Within a stage of
+  ranges, each on a group of devices; the embedding, side sources and stream
+  mixing run with the first range, the final norm and head with the last.
+  Within a stage of
   several devices every layer component splits by its first option of
   least modelled traffic that fits the group (a stage of several devices
   exists only because its layers need splitting), and one without a fitting
@@ -3059,8 +3069,8 @@ table fits each stage's devices whole).
   pipeline cuts beat tensor splits (one stream transfer a boundary against
   two collectives a layer), and tensor parallelism appears where a layer
   does not fit a device, inside the fast-linked groups, with the pipeline
-  cut across the slow link (the survey's TP-inside, PP-across). A layer's
-  memory in the search is summed without cross-layer sharing (conservative);
+  cut across the slow link (the survey's TP-inside, PP-across). The search
+  deduplicates each device's weights across layers and extras and adds state;
   `AssignPipeline` evaluates the chosen pipeline exactly, and evaluates a
   configured one the same way. An `Assignment` names each component's
   devices (rank order) and split option, each layer's stage, the weight

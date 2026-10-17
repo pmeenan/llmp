@@ -53,6 +53,16 @@ std::optional<E> Named(const std::array<std::string_view, N>& names, std::string
   return static_cast<E>(at - names.begin());
 }
 
+constexpr std::array kProducts{
+    std::pair{"compact_experts", &ProductPolicy::compact_experts},
+    std::pair{"d2r_experts", &ProductPolicy::d2r_experts},
+    std::pair{"dense_pair", &ProductPolicy::dense_pair},
+    std::pair{"pair_experts", &ProductPolicy::pair_experts},
+    std::pair{"pair_glu", &ProductPolicy::pair_glu},
+    std::pair{"pair_glu_q8", &ProductPolicy::pair_glu_q8},
+    std::pair{"vector_floats", &ProductPolicy::vector_floats},
+};
+
 bool Bound(std::uint32_t n) { return n != 0 && n <= kMaxDecodeRowsBound; }
 
 std::string RuleText(const StepRule& r) {
@@ -199,6 +209,8 @@ std::string ToText(const Policy& policy) {
   if (policy.allow_lossy) {
     text += "allow_lossy\n";
   }
+  for (const auto& [name, member] : kProducts)
+    if (policy.products.*member) text += std::format("product {}\n", name);
   for (const std::string& name : policy.enabled) {
     text += std::format("enable {}\n", name);
   }
@@ -271,6 +283,11 @@ std::expected<Policy, std::string> ParsePolicy(std::string_view text) {
       policy.row_invariant = true;
     } else if (w.size() == 1 && w[0] == "allow_lossy") {
       policy.allow_lossy = true;
+    } else if (w.size() == 2 && w[0] == "product") {
+      const auto found =
+          std::ranges::find_if(kProducts, [&](const auto& p) { return p.first == w[1]; });
+      if (found == kProducts.end()) return Error("unknown product policy");
+      policy.products.*(found->second) = true;
     } else if (w.size() == 2 && w[0] == "enable") {
       if (policy.enabled.size() == kMaxDisabled) {
         return Error("more enabled patterns than a policy holds");

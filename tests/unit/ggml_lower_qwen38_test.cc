@@ -1001,6 +1001,10 @@ TEST(GgmlLowerQwen38Test, DefaultPoliciesFollowTheImportsForm) {
     EXPECT_TRUE(pl::Disabled(im->policy, "rms_norm_mul"));
     EXPECT_TRUE(pl::Disabled(im->policy, "owner_attention"));
     EXPECT_FALSE(pl::Disabled(im->policy, "qsa_select"));
+    // Production QSA selects its own fused attention, so it never enabled
+    // the old generic sparse-attention product bundle. Keep that arithmetic.
+    EXPECT_EQ(im->policy.products, pl::ProductPolicy{});
+    EXPECT_EQ(im->mtp_policy.products, pl::ProductPolicy{});
   }
   EXPECT_FALSE(pl::Disabled(cutlass.mtp_policy, "bf16_inputs"));
   EXPECT_TRUE(pl::Disabled(cutlass.mtp_policy, "mxfp8_inputs"));

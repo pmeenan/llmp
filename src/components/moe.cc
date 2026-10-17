@@ -582,7 +582,8 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     return FragmentOut{.stream = out};
   }
   const ir::TensorId dense =
-      norm(moe::EmitGlu(b, norm(x, kNorm), w(kGate), w(kUp), w(kDown), d.kind), kDensePostNorm);
+      norm(moe::EmitGlu(b, norm(x, kNorm), w(kGate), w(kUp), w(kDown), d.kind, d.shared_limit),
+           kDensePostNorm);
   ir::TensorId shared = dense;
   if (d.shared_gate) {
     const ir::TensorId logit = b.SumRows(b.Mul(x, w(kSharedGate)));

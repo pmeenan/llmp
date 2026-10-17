@@ -232,6 +232,23 @@ TEST(PlannerPolicyTest, TextIsCanonicalAndChecked) {
   }
 }
 
+TEST(PlannerPolicyTest, ProductChoicesAreIndependentCanonicalAndKeyed) {
+  const Policy base{};
+  Policy p;
+  p.products.dense_pair = true;
+  const auto text = ToText(p);
+  EXPECT_EQ(text, "max_decode_rows 16\nproduct dense_pair\n");
+  EXPECT_EQ(ParsePolicy(text).value(), p);
+  EXPECT_NE(Digest(base), Digest(p));
+  EXPECT_FALSE(p.products.d2r_experts);
+  EXPECT_FALSE(p.products.vector_floats);
+  p.products.d2r_experts = true;
+  EXPECT_NE(Digest(ParsePolicy(text).value()), Digest(p));
+  EXPECT_EQ(ParsePolicy(ToText(p)).value(), p);
+  EXPECT_FALSE(ParsePolicy("max_decode_rows 16\nproduct unknown\n"));
+  EXPECT_FALSE(ParsePolicy("max_decode_rows 16\nproduct dense_pair\nproduct dense_pair\n"));
+}
+
 TEST(PlannerPolicyTest, DigestsFollowWhatChanges) {
   const Policy base{};
   const Policy off = Disabling({"rms_norm_mul_rope"});

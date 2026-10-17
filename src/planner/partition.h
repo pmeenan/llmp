@@ -7,22 +7,24 @@
 //
 // Assign chooses where a stage's components run. A pipeline cuts the
 // layers into contiguous ranges, each on its own group of devices (a
-// pipeline stage); the embedding runs with the first range, the final norm
-// and the output head with the last. Within a stage of several devices
+// pipeline stage); the embedding, side sources and stream mixing run with
+// the first range, the final norm and the output head with the last.
+// Within a stage of several devices
 // every layer component that has a split fitting the group's size splits
 // (its first such option of least modelled traffic: attention by heads,
 // a feed-forward block by its hidden columns, routed experts placed whole,
 // expert parallelism, before any split inside an expert); one that has
-// none runs whole on every device of the group. The embedding, the final
-// norm and the head run whole on every device of their stage where that
+// none runs whole on every device of the group. The embedding, side sources,
+// stream mixing, the final norm and the head run whole on every device
+// of their stage where that
 // fits, and split otherwise. The search is exact under those rules: a
 // dynamic program over the layer cuts and the device groups (interchangeable
 // devices, twins in the topology, are taken in one order, and a group's ring
 // runs in twin-class order, which makes that pruning lossless) that is
 // memory-feasible on every device and minimizes the modelled communication
 // time per step, weighted by the workload's mix of prefill and decode steps;
-// ties go to fewer devices, then fewer stages. Its memory sums each layer's
-// most loaded device without cross-layer sharing (conservative), and it
+// ties go to fewer devices, then fewer stages. Its memory deduplicates each
+// device's accumulated weights across layers and extras and adds its state; it
 // refuses a topology past its state or work bound rather than search long.
 // Compute is not modelled, so one device wins whenever the stage fits it.
 // AssignPipeline evaluates a pipeline given (a configured placement), its
@@ -37,8 +39,10 @@
 // link once, then spreads over the fast ones). Memory counts each device's
 // weights (a tensor once however many components bind it, a split part as
 // its own format's bytes) and the state its components keep for the
-// workload's slots at its context; not activations, workspace or graphs,
-// which the device's budget must leave room for.
+// workload's slots at its context, excluding activations, workspace and
+// graphs, which the device's budget must leave room for. Side outputs
+// transfer lazily to groups containing their readers, reusing every earlier
+// holder; their sizes come from the source component's one-row graph.
 //
 // Partition rewrites a step's primitive graph (components/step.h's
 // BuildStep, before patterns) into one graph per device. Each node runs on
@@ -144,6 +148,8 @@ struct StageModel {
   std::uint16_t stage = 0;
   components::StageInstances instances{};
   std::vector<std::vector<RoleTensor>> roles{};
+  // Reader layers for each side source, in instances.side order.
+  std::vector<std::vector<std::uint32_t>> side_layers{};
 };
 std::expected<StageModel, std::string> ModelOf(const spec::ModelSpec& spec, std::uint16_t stage,
                                                std::span<const components::BoundTensor> tensors);
@@ -179,6 +185,8 @@ struct Assignment {
   std::vector<std::vector<std::uint32_t>> stages{};
   std::vector<std::uint32_t> stage_of_layer{};
   std::optional<ComponentPlacement> embedding{};
+  std::vector<ComponentPlacement> side{};
+  std::optional<ComponentPlacement> mixing{};
   std::vector<std::vector<ComponentPlacement>> per_layer{};
   std::optional<ComponentPlacement> final_norm{};
   std::optional<ComponentPlacement> output{};

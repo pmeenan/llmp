@@ -257,10 +257,11 @@ std::expected<SpatialComposition, std::string> ImageDecodeSpec(
       !profile.spatial_factor || width > UINT32_MAX / profile.spatial_factor ||
       height > UINT32_MAX / profile.spatial_factor)
     return std::unexpected("latent decode geometry exceeds source representation");
-  // Bound the existing source emitter before it creates its vectors. Five
-  // residual groups contribute five steps/six source roles per residual;
-  // channel-changing first residuals add one step/two roles. The remaining
-  // mid-block, upsample and boundary inventory is fixed by the five-level plan.
+  // Bound the source emitter before it creates vectors or indexes the profile.
+  const auto levels = profile.dim_mult.size();
+  if (levels < 2 || levels > 16 || profile.temporal_upsample.size() < levels - 1 ||
+      profile.spatial_factor != (1U << (levels - 1)) || !profile.out_channels)
+    return std::unexpected("latent decode level geometry differs from its source trajectory");
   std::uint64_t transitions = 0;
   auto previous = profile.dim_mult.back();
   for (const auto multiplier : std::views::reverse(profile.dim_mult)) {
@@ -269,11 +270,13 @@ std::expected<SpatialComposition, std::string> ImageDecodeSpec(
     transitions += previous != multiplier;
     previous = multiplier;
   }
+  // Boundaries and mid-block: 19 steps/24 roles. Each upsample adds four
+  // steps/two roles; each level adds five steps/six roles per residual,
+  // with one step/two roles for a channel-changing first residual.
   const auto residuals = std::uint64_t{profile.res_blocks} + 1;
-  const auto step_count = 35 + 25 * residuals + transitions;
-  const auto role_count = 32 + 30 * residuals + 2 * transitions;
-  if (step_count > 256 || role_count > tensors.size() || tensors.size() > 4096 ||
-      profile.spatial_factor != (1U << (profile.dim_mult.size() - 1)) || !profile.out_channels)
+  const auto step_count = 19 + 4 * (levels - 1) + 5 * levels * residuals + transitions;
+  const auto role_count = 24 + 2 * (levels - 1) + 6 * levels * residuals + 2 * transitions;
+  if (step_count > 256 || role_count > tensors.size() || tensors.size() > 4096)
     return std::unexpected("latent decode emitter exceeds its source trajectory allowance");
   const auto steps = model::VaeDecoderPlan(profile, height, width);
   auto out = VaeDecoderSpec(steps, tensors);

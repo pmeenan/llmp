@@ -50,6 +50,8 @@ std::unexpected<std::string> Refused(std::string detail) {
 std::vector<const Instance*> All(const components::StageInstances& s) {
   std::vector<const Instance*> out;
   if (s.embedding) out.push_back(&*s.embedding);
+  for (const Instance& in : s.side) out.push_back(&in);
+  if (s.mixing) out.push_back(&*s.mixing);
   for (const auto& layer : s.layers) {
     for (const Instance& in : layer) out.push_back(&in);
   }
@@ -206,6 +208,7 @@ struct Info {
   // It runs after the step's narrowing (components::NarrowPoint), so with a
   // head it works on the step's output rows, not its rows.
   bool narrowed = false;
+  std::uint64_t side_bytes = 0;  // a side source's output bytes per row
 };
 
 // With `state`, its state's bytes for the workload too.
@@ -229,6 +232,18 @@ std::expected<Info, std::string> InfoOf(const StageModel& m, const Instance& in,
     if (!bytes) return std::unexpected(bytes.error());
     info.shapes[r.role] = t.format.shape;
     info.weights.push_back({.name = t.name, .role = r.role, .format = t.format, .bytes = *bytes});
+  }
+  if (in.def->side_source) {
+    if (!in.def->row_local) return Refused("a side source must be row-local for partitioning");
+    std::vector<format::TensorFormat> formats(in.def->roles.size());
+    for (const auto& weight : info.weights) formats[weight.role] = weight.format;
+    const StepShape one{.stage = m.stage, .segments = {{.rows = 1, .outputs = 1}}};
+    auto fragment = components::BuildComponent(in, one, formats, {});
+    if (!fragment) return Refused(std::format("{}: {}", in.def->kind, fragment.error()));
+    if (!fragment->stream_out.valid()) return Refused("a side source without an output");
+    auto bytes = FormatBytes(fragment->step.graph.tensor(fragment->stream_out).format);
+    if (!bytes) return std::unexpected(bytes.error());
+    info.side_bytes = *bytes;
   }
   if (in.def->state != nullptr) info.contract = in.def->state(in);
   if (in.def->state != nullptr && state) {
@@ -396,6 +411,8 @@ const SplitOption* OptionOf(const Info& info, std::uint8_t choice) {
 struct Infos {
   std::vector<Info> all{};
   std::optional<std::size_t> embedding{};
+  std::vector<std::size_t> side{};
+  std::optional<std::size_t> mixing{};
   std::optional<std::size_t> final_norm{};
   std::optional<std::size_t> output{};
   std::vector<std::vector<std::size_t>> layers{};
@@ -405,6 +422,10 @@ std::expected<Infos, std::string> InfosOf(const StageModel& m, const Workload& w
                                           bool state = true) {
   Infos out;
   const auto& s = m.instances;
+  if (m.side_layers.size() != s.side.size()) return Refused("reader layers for every side source");
+  for (const auto& readers : m.side_layers)
+    for (const auto layer : readers)
+      if (layer >= s.layers.size()) return Refused("a side reader outside the stage's layers");
   const auto add = [&](const Instance& in,
                        std::uint16_t first) -> std::expected<std::size_t, std::string> {
     auto info = InfoOf(m, in, w, first, state);
@@ -416,6 +437,16 @@ std::expected<Infos, std::string> InfosOf(const StageModel& m, const Workload& w
     auto i = add(*s.embedding, 0);
     if (!i) return std::unexpected(i.error());
     out.embedding = *i;
+  }
+  for (const Instance& in : s.side) {
+    auto i = add(in, 0);
+    if (!i) return std::unexpected(i.error());
+    out.side.push_back(*i);
+  }
+  if (s.mixing) {
+    auto i = add(*s.mixing, 0);
+    if (!i) return std::unexpected(i.error());
+    out.mixing = *i;
   }
   for (const auto& layer : s.layers) {
     auto& ids = out.layers.emplace_back();
@@ -451,19 +482,24 @@ std::expected<Infos, std::string> InfosOf(const StageModel& m, const Workload& w
 }
 
 // The stage's components outside the layers that run with the first
-// stage (the embedding) or the last (the final norm and the head).
+// stage (the embedding, side sources and stream mixing) or the last
+// (the final norm and the head).
 std::vector<std::size_t> Extras(const Infos& infos, bool first, bool last) {
   std::vector<std::size_t> out;
-  if (first && infos.embedding) out.push_back(*infos.embedding);
+  if (first) {
+    if (infos.embedding) out.push_back(*infos.embedding);
+    out.insert(out.end(), infos.side.begin(), infos.side.end());
+    if (infos.mixing) out.push_back(*infos.mixing);
+  }
   if (last && infos.final_norm) out.push_back(*infos.final_norm);
   if (last && infos.output) out.push_back(*infos.output);
   return out;
 }
 
-// A choice for each of the extras: its per-device bytes and its cost.
+// A choice for each of the extras and its cost. Memory is checked together
+// with the layers' holdings, so aliases across either inventory count once.
 struct ExtrasChoice {
   std::vector<std::uint8_t> choice{};
-  std::uint64_t memory = 0;  // the most any device of the group holds
   double cost = 0.0;
 };
 // Every combination of whole and fitting options, whole first.
@@ -484,15 +520,6 @@ std::vector<ExtrasChoice> ExtrasChoices(const Net& net, const Workload& w, const
   while (true) {
     ExtrasChoice c;
     for (std::size_t k = 0; k < extras.size(); ++k) c.choice.push_back(options[k][at[k]]);
-    for (std::uint32_t rank = 0; rank < g; ++rank) {
-      std::vector<Held> held;
-      std::uint64_t state = 0;
-      for (std::size_t k = 0; k < extras.size(); ++k) {
-        Hold(infos.all[extras[k]], OptionOf(infos.all[extras[k]], c.choice[k]), g, rank, w.slots,
-             held, state);
-      }
-      c.memory = std::max(c.memory, Total(held, state));
-    }
     for (std::size_t k = 0; k < extras.size(); ++k) {
       if (const SplitOption* o = OptionOf(infos.all[extras[k]], c.choice[k]); o != nullptr) {
         c.cost += OptionCost(net, w, infos.all[extras[k]], *o, group);
@@ -504,17 +531,6 @@ std::vector<ExtrasChoice> ExtrasChoices(const Net& net, const Workload& w, const
     if (k == extras.size()) break;
   }
   return out;
-}
-
-// The cheapest choice within `budget` bytes a device (whole first among
-// equals), if any.
-const ExtrasChoice* Cheapest(std::span<const ExtrasChoice> choices, std::uint64_t budget) {
-  const ExtrasChoice* best = nullptr;
-  for (const ExtrasChoice& c : choices) {
-    if (c.memory > budget) continue;
-    if (best == nullptr || c.cost < best->cost) best = &c;
-  }
-  return best;
 }
 
 std::vector<std::size_t> SortedSlots(std::uint32_t mask) {
@@ -569,6 +585,10 @@ std::expected<void, std::string> Validate(const Topology& t) {
 
 const ComponentPlacement* Assignment::Find(std::uint16_t component) const {
   if (embedding && embedding->component == component) return &*embedding;
+  for (const ComponentPlacement& p : side) {
+    if (p.component == component) return &p;
+  }
+  if (mixing && mixing->component == component) return &*mixing;
   for (const auto& layer : per_layer) {
     for (const ComponentPlacement& p : layer) {
       if (p.component == component) return &p;
@@ -584,6 +604,7 @@ std::expected<StageModel, std::string> ModelOf(const spec::ModelSpec& spec, std:
   auto instances = components::InstancesOf(spec, stage);
   if (!instances) return std::unexpected(instances.error());
   StageModel m{.stage = stage, .instances = std::move(*instances), .roles = {}};
+  for (const auto& side : spec.stages[stage].side) m.side_layers.push_back(side.layers);
   for (const Instance* in : All(m.instances)) {
     if (m.roles.size() <= in->index) m.roles.resize(in->index + 1);
     auto& roles = m.roles[in->index];
@@ -627,6 +648,23 @@ Traffic ModelTraffic(const StageModel& model, const Assignment& a, std::uint32_t
     const auto from = slots(a.stages[s - 1]);
     const auto to = slots(a.stages[s]);
     Add(t, Relay(net, from, to, StreamBytes(model, rows)));
+  }
+  // Side outputs are immutable: a group receives each one only if it has
+  // a reader, and later groups can relay it from any previous recipient.
+  for (std::size_t i = 0; i < infos->side.size(); ++i) {
+    const auto* source = a.Find(infos->all[infos->side[i]].in->index);
+    if (source == nullptr) return {.bytes = 0, .seconds = kInf};
+    auto holders = slots(source->devices);
+    for (std::size_t s = 0; s < a.stages.size(); ++s) {
+      const bool reads = std::ranges::any_of(model.side_layers[i], [&](std::uint32_t l) {
+        return l < a.stage_of_layer.size() && a.stage_of_layer[l] == s;
+      });
+      if (!reads) continue;
+      const auto targets = slots(a.stages[s]);
+      Add(t, Relay(net, holders, targets, infos->all[infos->side[i]].side_bytes * rows));
+      for (const auto target : targets)
+        if (!std::ranges::contains(holders, target)) holders.push_back(target);
+    }
   }
   return t;
 }
@@ -715,6 +753,8 @@ std::expected<Assignment, std::string> AssignPipeline(const StageModel& model,
       const Info& info = infos->all[extras[k]];
       ComponentPlacement p = place(info, best->choice[k], groups[s]);
       if (infos->embedding == extras[k]) a.embedding = std::move(p);
+      if (std::ranges::contains(infos->side, extras[k])) a.side.push_back(std::move(p));
+      if (infos->mixing == extras[k]) a.mixing = std::move(p);
       if (infos->final_norm == extras[k]) a.final_norm = std::move(p);
       if (infos->output == extras[k]) a.output = std::move(p);
     }
@@ -820,7 +860,7 @@ class Search {
       return Refused(std::format("{} candidate device groups, past the exact search's {}",
                                  groups - 1, kMaxGroups));
     }
-    const Value v = F(0, 0, 0);
+    const Value v = F(0, 0, 0, std::vector<std::uint32_t>(infos_.side.size()));
     if (overflow_) return Refused("the topology is past the exact search's bound");
     if (std::isinf(v.cost)) return Refused("no placement fits the devices' memory");
     return v;
@@ -831,8 +871,11 @@ class Search {
     std::uint32_t i = 0;
     std::uint32_t prev = 0;
     std::uint32_t used = 0;
+    std::vector<std::uint32_t> side(infos_.side.size());
     while (i < layers_) {
-      const Value v = memo_.at(Key(i, prev, used));
+      const Value v = memo_.at(Key(i, prev, used, side));
+      for (std::size_t k = 0; k < side.size(); ++k)
+        if (i == 0 || Reads(k, i, v.end)) side[k] |= v.group;
       std::vector<std::uint32_t> ids;
       for (const std::size_t s : Ordered(v.group)) ids.push_back(net_.Id(s));
       p.stages.push_back(std::move(ids));
@@ -870,28 +913,40 @@ class Search {
     return out;
   }
 
-  static std::uint64_t Key(std::uint32_t i, std::uint32_t prev, std::uint32_t used) {
-    return (std::uint64_t{i} << 40U) | (std::uint64_t{prev} << 20U) | used;
+  struct StateKey {
+    std::uint64_t pipeline = 0;
+    std::vector<std::uint32_t> side{};
+    bool operator==(const StateKey&) const = default;
+  };
+  struct StateHash {
+    std::size_t operator()(const StateKey& key) const {
+      auto hash = std::hash<std::uint64_t>{}(key.pipeline);
+      for (const auto holders : key.side) hash = (hash * 31) + holders;
+      return hash;
+    }
+  };
+  static StateKey Key(std::uint32_t i, std::uint32_t prev, std::uint32_t used,
+                      const std::vector<std::uint32_t>& side) {
+    return {(std::uint64_t{i} << 40U) | (std::uint64_t{prev} << 20U) | used, side};
+  }
+  bool Reads(std::size_t side, std::uint32_t begin, std::uint32_t end) const {
+    return std::ranges::any_of(model_.side_layers[side],
+                               [&](std::uint32_t layer) { return layer >= begin && layer < end; });
   }
 
   struct Group {
     std::vector<std::size_t> slots{};
-    std::uint64_t capacity = 0;
-    std::vector<std::uint64_t> memory{};  // per layer, the most a device holds
-    std::vector<double> cost{};           // per layer
+    std::vector<std::vector<std::uint8_t>> choices{};  // by layer, then component
+    std::vector<double> cost{};                        // per layer
     std::map<std::pair<bool, bool>, std::vector<ExtrasChoice>> extras{};
   };
 
   const Group& GroupOf(std::uint32_t mask) {
     if (const auto at = groups_.find(mask); at != groups_.end()) return at->second;
     Group g{.slots = Ordered(mask)};
-    g.capacity = std::numeric_limits<std::uint64_t>::max();
-    for (const std::size_t s : g.slots) g.capacity = std::min(g.capacity, net_.Memory(s));
-    const auto ways = static_cast<std::uint32_t>(g.slots.size());
     for (std::uint32_t l = 0; l < layers_; ++l) {
       double cost = 0.0;
-      std::uint64_t most = 0;
-      std::vector<std::uint8_t> choices;
+      auto& choices = g.choices.emplace_back();
       for (const std::size_t i : infos_.layers[l]) {
         const std::uint8_t c = LayerChoice(net_, w_, infos_.all[i], g.slots);
         choices.push_back(c);
@@ -899,16 +954,6 @@ class Search {
           cost += OptionCost(net_, w_, infos_.all[i], *o, g.slots);
         }
       }
-      for (std::uint32_t r = 0; r < ways; ++r) {
-        std::vector<Held> held;
-        std::uint64_t state = 0;
-        for (std::size_t k = 0; k < infos_.layers[l].size(); ++k) {
-          const Info& info = infos_.all[infos_.layers[l][k]];
-          Hold(info, OptionOf(info, choices[k]), ways, r, w_.slots, held, state);
-        }
-        most = std::max(most, Total(held, state));
-      }
-      g.memory.push_back(most);
       g.cost.push_back(cost);
     }
     for (const bool first : {false, true}) {
@@ -959,10 +1004,11 @@ class Search {
     return out;
   }
 
-  Value F(std::uint32_t i, std::uint32_t prev, std::uint32_t used) {
-    const std::uint64_t key = Key(i, prev, used);
+  Value F(std::uint32_t i, std::uint32_t prev, std::uint32_t used,
+          const std::vector<std::uint32_t>& side) {
+    const StateKey key = Key(i, prev, used, side);
     if (const auto at = memo_.find(key); at != memo_.end()) return at->second;
-    if (memo_.size() >= kMaxStates) {
+    if (!Spend(1 + side.size()) || memo_.size() >= kMaxStates) {
       overflow_ = true;
       return {};
     }
@@ -974,23 +1020,61 @@ class Search {
       const Group& g = GroupOf(mask);
       const double boundary = i == 0 ? 0.0 : Boundary(prev, mask);
       if (std::isinf(boundary)) continue;
-      std::uint64_t memory = 0;
+      std::vector<std::vector<Held>> held(g.slots.size());
+      std::vector<std::uint64_t> state(g.slots.size(), 0);
       double cost = boundary;
+      auto next_side = side;
+      if (i == 0) std::ranges::fill(next_side, mask);
       for (std::uint32_t j = i + 1; j <= layers_; ++j) {
         if (!Spend(1)) return {};
-        memory += g.memory[j - 1];
+        // Keep each rank's accumulated inventory, including aliases across
+        // layers. Extra choices below are evaluated against this same set.
+        const auto parts = static_cast<std::uint32_t>(g.slots.size());
+        for (std::uint32_t rank = 0; rank < parts; ++rank) {
+          if (!Spend(1 + infos_.layers[j - 1].size())) return {};
+          for (std::size_t k = 0; k < infos_.layers[j - 1].size(); ++k) {
+            const Info& info = infos_.all[infos_.layers[j - 1][k]];
+            Hold(info, OptionOf(info, g.choices[j - 1][k]), parts, rank, w_.slots, held[rank],
+                 state[rank]);
+          }
+        }
         cost += g.cost[j - 1];
-        if (memory > g.capacity) break;
+        if (!Spend(side.size())) return {};
+        for (std::size_t k = 0; k < side.size(); ++k) {
+          if ((next_side[k] & mask) != 0 || !Reads(k, j - 1, j)) continue;
+          const auto holders = Ordered(next_side[k]);
+          const auto bytes = infos_.all[infos_.side[k]].side_bytes;
+          cost += Weighted(w_, Relay(net_, holders, g.slots, bytes * w_.prefill_rows),
+                           Relay(net_, holders, g.slots, bytes * w_.decode_rows));
+          next_side[k] |= mask;
+        }
         const bool last = j == layers_;
-        const ExtrasChoice* extras = Cheapest(g.extras.at({i == 0, last}), g.capacity - memory);
-        if (extras == nullptr) break;  // more layers leave less room
+        const auto extra_ids = Extras(infos_, i == 0, last);
+        const ExtrasChoice* extras = nullptr;
+        for (const auto& choice : g.extras.at({i == 0, last})) {
+          bool fits = true;
+          for (std::uint32_t rank = 0; rank < parts && fits; ++rank) {
+            if (!Spend(1 + held[rank].size() + extra_ids.size())) return {};
+            auto h = held[rank];
+            auto st = state[rank];
+            for (std::size_t k = 0; k < extra_ids.size(); ++k) {
+              const Info& info = infos_.all[extra_ids[k]];
+              Hold(info, OptionOf(info, choice.choice[k]), parts, rank, w_.slots, h, st);
+            }
+            fits = Total(h, st) <= net_.Memory(g.slots[rank]);
+          }
+          if (fits && (extras == nullptr || choice.cost < extras->cost)) extras = &choice;
+        }
+        // A later whole-weight alias can cover earlier split holdings;
+        // neither layers nor extras have a monotone standalone byte sum.
+        if (extras == nullptr) continue;
         Value v{.cost = cost + extras->cost,
                 .devices = static_cast<std::uint32_t>(std::popcount(mask)),
                 .stages = 1,
                 .group = mask,
                 .end = j};
         if (!last) {
-          const Value rest = F(j, mask, used | mask);
+          const Value rest = F(j, mask, used | mask, next_side);
           if (overflow_) return {};
           if (std::isinf(rest.cost)) continue;
           v.cost += rest.cost;
@@ -1014,7 +1098,7 @@ class Search {
   std::vector<std::size_t> class_of_;  // by slot
   std::unordered_map<std::uint32_t, Group> groups_;
   std::map<std::pair<std::uint32_t, std::uint32_t>, double> boundaries_;
-  std::unordered_map<std::uint64_t, Value> memo_;
+  std::unordered_map<StateKey, Value, StateHash> memo_;
   std::uint64_t work_ = 0;
   bool overflow_ = false;
 };

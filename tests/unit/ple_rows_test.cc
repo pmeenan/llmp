@@ -14,12 +14,14 @@
 
 #include "engine/ple_rows.h"
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -41,6 +43,7 @@
 namespace {
 
 using llmp::engine::kPleBlock;
+using llmp::engine::kPleMaxRead;
 using llmp::engine::PlanPleRows;
 using llmp::engine::PleLandingBound;
 using llmp::engine::PleRowPlan;
@@ -269,6 +272,31 @@ TEST(PleRowsTest, UnknownSubmissionsAreWaitedForAndShortOrFailedReadsRefuseAfter
   EXPECT_TRUE(drained);
 }
 
+TEST(PleRowsTest, EachRowsBlockSpanMustFitOneBoundedDirectRead) {
+  const PleTable table{.rows = 2, .row_bytes = kPleMaxRead, .file_bytes = 2 * kPleMaxRead};
+  const std::int32_t rows[] = {0, 1};
+  EXPECT_TRUE(PlanPleRows(table, rows, table.file_bytes, 2));
+  EXPECT_FALSE(PlanPleRows(table, rows, table.file_bytes, 2, kPleMaxRead - kPleBlock));
+  // Both the aggregate landing and capacity fit U64, but an individual
+  // read larger than U32 must never be narrowed at submission.
+  constexpr std::uint64_t huge = (std::uint64_t{1} << 32U) + kPleBlock;
+  const PleTable oversized{.rows = 1, .row_bytes = huge, .file_bytes = huge};
+  EXPECT_FALSE(PlanPleRows(oversized, std::span(rows).first(1), huge, 1));
+}
+
+TEST(PleRowsTest, LandingAndSourcesCanExceedFourGiB) {
+  // The plan owns only metadata; no landing or file is allocated. Individual
+  // direct reads stay U32 while their aggregate spans more than 4 GiB.
+  constexpr std::uint64_t kRows = (std::uint64_t{1} << 20U) + 1;
+  const PleTable blocks{.rows = kRows, .row_bytes = kPleBlock, .file_bytes = kRows * kPleBlock};
+  std::vector<std::int32_t> ids(kRows);
+  for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = static_cast<std::int32_t>(i);
+  const auto plan = PlanPleRows(blocks, ids, blocks.file_bytes, kRows);
+  ASSERT_TRUE(plan) << (plan ? "" : plan.error());
+  EXPECT_GT(plan->landing_bytes, std::uint64_t{1} << 32U);
+  EXPECT_EQ(plan->sources.back(), std::uint64_t{1} << 32U);
+}
+
 // On a GB10: a real file read through io_uring into pinned memory, the rows
 // gathered by the kernel into device memory.
 TEST(CudaPleRowsTest, ReadsLandAndTheGatherPutsEveryRowInItsSlot) {
@@ -307,18 +335,20 @@ TEST(CudaPleRowsTest, ReadsLandAndTheGatherPutsEveryRowInItsSlot) {
   const std::size_t count = plan->sources.size();
   const std::size_t grid = count + 16;
   ASSERT_EQ(cudaMallocHost(&landing, capacity), cudaSuccess);
-  ASSERT_EQ(cudaMallocHost(&sources, (count + 1) * 4), cudaSuccess);
+  ASSERT_EQ(cudaMallocHost(&sources, count * sizeof(std::uint64_t) + sizeof(std::uint32_t)),
+            cudaSuccess);
   ASSERT_EQ(cudaMalloc(&slots, grid * 90), cudaSuccess);
   ASSERT_EQ(cudaMemset(slots, 0xAB, grid * 90), cudaSuccess);
   const auto read = ReadPleRows(**ring, fd, *plan, static_cast<std::byte*>(landing));
   ASSERT_TRUE(read.has_value()) << read.error();
-  std::memcpy(sources, plan->sources.data(), count * 4);
-  auto* const rows_count = static_cast<std::uint32_t*>(sources) + count;
+  std::memcpy(sources, plan->sources.data(), count * sizeof(std::uint64_t));
+  auto* const rows_count =
+      reinterpret_cast<std::uint32_t*>(static_cast<std::uint64_t*>(sources) + count);
   *rows_count = static_cast<std::uint32_t>(count);
   cudaStream_t stream = nullptr;
   ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
   ASSERT_TRUE(GatherPleRows(
-      static_cast<const std::byte*>(landing), static_cast<const std::uint32_t*>(sources),
+      static_cast<const std::byte*>(landing), static_cast<const std::uint64_t*>(sources),
       rows_count, static_cast<std::uint32_t>(grid), 90, static_cast<std::byte*>(slots), stream));
   ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
   std::vector<std::byte> gathered(grid * 90);
@@ -339,6 +369,51 @@ TEST(CudaPleRowsTest, ReadsLandAndTheGatherPutsEveryRowInItsSlot) {
   (void)cudaFreeHost(landing);
   (void)::close(fd);
   std::filesystem::remove(path);
+}
+
+TEST(CudaPleRowsTest, GatherAddressesSparseVirtualLandingBeyondFourGiB) {
+  ASSERT_EQ(cudaFree(nullptr), cudaSuccess);  // establish the primary context
+  CUmemAllocationProp prop{};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = 0;
+  std::size_t granularity = 0;
+  ASSERT_EQ(cuMemGetAllocationGranularity(&granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+            CUDA_SUCCESS);
+  const std::uint64_t high = ((std::uint64_t{1} << 32U) / granularity + 1) * granularity;
+  CUdeviceptr base = 0;
+  ASSERT_EQ(cuMemAddressReserve(&base, high + granularity, granularity, 0, 0), CUDA_SUCCESS);
+  CUmemGenericAllocationHandle backing{};
+  ASSERT_EQ(cuMemCreate(&backing, granularity, &prop, 0), CUDA_SUCCESS);
+  // Map only the high virtual page. The gather must use the
+  // full offset; the old narrowed offset names unmapped virtual memory.
+  ASSERT_EQ(cuMemMap(base + high, granularity, 0, backing, 0), CUDA_SUCCESS);
+  CUmemAccessDesc access{};
+  access.location = prop.location;
+  access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  ASSERT_EQ(cuMemSetAccess(base + high, granularity, &access, 1), CUDA_SUCCESS);
+  const std::array<std::byte, 8> expected{std::byte{1},  std::byte{3}, std::byte{5},
+                                          std::byte{7},  std::byte{9}, std::byte{11},
+                                          std::byte{13}, std::byte{15}};
+  ASSERT_EQ(cuMemcpyHtoD(base + high, expected.data(), expected.size()), CUDA_SUCCESS);
+  void* metadata = nullptr;
+  void* slots = nullptr;
+  ASSERT_EQ(cudaMallocHost(&metadata, sizeof(std::uint64_t) + sizeof(std::uint32_t)), cudaSuccess);
+  auto* sources = static_cast<std::uint64_t*>(metadata);
+  *sources = high;
+  auto* count = reinterpret_cast<std::uint32_t*>(sources + 1);
+  *count = 1;
+  ASSERT_EQ(cudaMalloc(&slots, expected.size()), cudaSuccess);
+  ASSERT_TRUE(GatherPleRows(reinterpret_cast<const std::byte*>(base), sources, count, 1,
+                            expected.size(), static_cast<std::byte*>(slots), nullptr));
+  std::array<std::byte, 8> got{};
+  ASSERT_EQ(cudaMemcpy(got.data(), slots, got.size(), cudaMemcpyDeviceToHost), cudaSuccess);
+  EXPECT_EQ(got, expected);
+  EXPECT_EQ(cudaFree(slots), cudaSuccess);
+  EXPECT_EQ(cudaFreeHost(metadata), cudaSuccess);
+  EXPECT_EQ(cuMemUnmap(base + high, granularity), CUDA_SUCCESS);
+  EXPECT_EQ(cuMemRelease(backing), CUDA_SUCCESS);
+  EXPECT_EQ(cuMemAddressFree(base, high + granularity), CUDA_SUCCESS);
 }
 
 }  // namespace

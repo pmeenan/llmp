@@ -52,7 +52,7 @@ bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t v
   });
 }
 
-bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
+bool GatherPleRows(const std::byte* landing, const std::uint64_t* sources,
                    const std::uint32_t* count, std::uint32_t max_count, std::uint32_t row_bytes,
                    std::byte* slots, void* stream) {
   if (max_count == 0) {

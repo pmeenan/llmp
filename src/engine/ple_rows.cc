@@ -23,7 +23,6 @@ constexpr std::uint64_t kChunk = std::uint64_t{2} << 20U;
 using support::Error;
 
 std::uint64_t Down(std::uint64_t v, std::uint64_t to) { return v / to * to; }
-std::uint64_t Up(std::uint64_t v, std::uint64_t to) { return (v + to - 1) / to * to; }
 
 }  // namespace
 
@@ -35,7 +34,7 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
   if (table.row_bytes == 0 || table.rows == 0 || max_read < 2 * kPleBlock ||
       max_read % kPleBlock != 0 || table.file_offset < table.chunk_file_offset ||
       table.chunk_file_offset % kPleBlock != 0 || table.file_offset > table.file_bytes ||
-      landing_capacity > std::numeric_limits<std::uint32_t>::max() ||
+      max_read > std::numeric_limits<std::uint32_t>::max() ||
       table.rows > (table.file_bytes - table.file_offset) / table.row_bytes) {
     return Error("an n-gram table the row reads cannot address");
   }
@@ -48,7 +47,8 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
   std::ranges::sort(distinct);
   const auto [end, last] = std::ranges::unique(distinct);
   distinct.erase(end, last);
-  if (distinct.size() > max_slots) {
+  if (distinct.size() > max_slots ||
+      distinct.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
     return Error(std::format("{} distinct n-gram rows, more than the {} row slots", distinct.size(),
                              max_slots));
   }
@@ -65,7 +65,12 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
     const std::uint64_t start =
         table.file_offset + (static_cast<std::uint64_t>(distinct[i]) * table.row_bytes);
     const std::uint64_t a = Down(start, kPleBlock);
-    const std::uint64_t b = Up(start + table.row_bytes, kPleBlock);
+    std::uint64_t rounded_end = 0;
+    if (__builtin_add_overflow(start + table.row_bytes, kPleBlock - 1, &rounded_end))
+      return Error("an n-gram row's rounded end overflows");
+    const std::uint64_t b = Down(rounded_end, kPleBlock);
+    if (b - a > max_read)
+      return Error("an n-gram row's block span exceeds the maximum direct read");
     if (b > table.file_bytes) {
       return Error("an n-gram row's blocks pass the end of its group's stored range");
     }
@@ -95,7 +100,8 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
   }
   for (PleRead& read : plan.reads) {
     read.landing = plan.landing_bytes;
-    plan.landing_bytes += read.length;
+    if (__builtin_add_overflow(plan.landing_bytes, read.length, &plan.landing_bytes))
+      return Error("the n-gram rows' landing size overflows");
   }
   if (plan.landing_bytes > landing_capacity) {
     return Error(std::format("the n-gram rows' reads need {} bytes, more than the landing's {}",
@@ -106,7 +112,7 @@ std::expected<PleRowPlan, std::string> PlanPleRows(const PleTable& table,
     const PleRead& read = plan.reads[read_of[i]];
     const std::uint64_t start =
         table.file_offset + (static_cast<std::uint64_t>(distinct[i]) * table.row_bytes);
-    plan.sources.push_back(static_cast<std::uint32_t>(read.landing + (start - read.file_offset)));
+    plan.sources.push_back(read.landing + (start - read.file_offset));
   }
   plan.useful_bytes = distinct.size() * table.row_bytes;
   return plan;

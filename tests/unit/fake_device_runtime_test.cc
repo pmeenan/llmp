@@ -14,6 +14,7 @@
 #include "providers/fake/fake_device_runtime.h"
 
 #include <gtest/gtest.h>
+#include <sys/mman.h>
 
 #include <array>
 #include <cstddef>
@@ -105,6 +106,28 @@ TEST_F(FakeDeviceRuntimeTest, ReportsTheFakeDevice) {
   EXPECT_FALSE(pr::TakeLastError().ok());  // the refused query's
   EXPECT_TRUE(pr::PeekLastError().ok());
   EXPECT_NE(pr::DeviceStatus(1).text(), nullptr);
+}
+
+// Only two pages receive physical backing; the offset crosses both the old
+// signed 2 GiB guard and the U32 4 GiB limit.
+TEST_F(FakeDeviceRuntimeTest, GatherAddressesRowsBeyondFourGiB) {
+  constexpr std::uint64_t kOffset = (std::uint64_t{1} << 32U) + 4096;
+  constexpr std::size_t kMapping = kOffset + 4096;
+  void* mapping = ::mmap(nullptr, kMapping, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  ASSERT_NE(mapping, MAP_FAILED);
+  auto* landing = static_cast<std::byte*>(mapping);
+  std::memset(landing, 0x19, 8);
+  std::memset(landing + kOffset, 0xA7, 8);
+  const std::uint64_t sources[] = {kOffset, 0};
+  const std::uint32_t count = 2;
+  const auto native = Native();
+  ASSERT_TRUE(paging::GatherPleRows(landing, sources, &count, 3, 8, on_device_, native.handle));
+  Finish();
+  EXPECT_TRUE(Holds(on_device_, 0xA7, 8));
+  EXPECT_TRUE(Holds(on_device_ + 8, 0x19, 8));
+  EXPECT_TRUE(Holds(on_device_ + 16, 0, 8));
+  EXPECT_EQ(::munmap(mapping, kMapping), 0);
 }
 
 TEST_F(FakeDeviceRuntimeTest, QueuedWorkRunsOnlyWhenTheStreamRunsInOrder) {
@@ -212,7 +235,7 @@ TEST_F(FakeDeviceRuntimeTest, PagingKernelsReadTheirOperandsWhenTheyRun) {
   std::memset(on_device_, 0, kBytes);
   std::byte* const landing = host_ + 3072;
   for (std::size_t i = 0; i < 64; ++i) landing[i] = static_cast<std::byte>(i);
-  auto* sources = reinterpret_cast<std::uint32_t*>(host_ + 3584);
+  auto* sources = reinterpret_cast<std::uint64_t*>(host_ + 3584);
   auto* count = reinterpret_cast<std::uint32_t*>(host_ + 3840);
   ASSERT_TRUE(paging::GatherPleRows(landing, sources, count, 3, 8, on_device_, native.handle));
   sources[0] = 16;

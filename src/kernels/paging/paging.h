@@ -40,7 +40,7 @@ bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t v
 // place, so a captured graph replays the gather with whatever the host
 // wrote there for the next chunk (D-090: data, not launch parameters);
 // `slots` is device memory.
-bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
+bool GatherPleRows(const std::byte* landing, const std::uint64_t* sources,
                    const std::uint32_t* count, std::uint32_t max_count, std::uint32_t row_bytes,
                    std::byte* slots, void* stream);
 

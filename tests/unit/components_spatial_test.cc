@@ -1530,6 +1530,66 @@ TEST(SpatialComponentsTest, Actual1024DecoderHandoffIsPaidBeforeReferenceAllocat
   EXPECT_FALSE(spec::ImageDecodeSpec(profile, 64, std::span(source).first(127)));
 }
 
+TEST(SpatialComponentsTest, DecoderBoundsFollowTheNumberOfLevels) {
+  for (const std::uint32_t levels : {2U, 3U, 6U, 16U}) {
+    SCOPED_TRACE(levels);
+    auto profile = ::llmp::test_support::QwenImageProfile().vae;
+    profile.z_dim = 2;
+    profile.base = 1;
+    profile.res_blocks = levels == 16 ? 0 : 1;
+    profile.dim_mult.assign(levels, 4);
+    profile.dim_mult[0] = 1;
+    profile.dim_mult[1] = 2;
+    profile.temporal_upsample.assign(levels - 1, false);
+    profile.spatial_factor = 1U << (levels - 1);
+    const auto source =
+        model::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);
+    const auto steps = model::VaeDecoderPlan(profile, 1, 1);
+    if (levels == 3) EXPECT_EQ(source.size(), 68U);
+    auto mapping = spec::ImageDecodeSpec(profile, 1, source);
+    ASSERT_TRUE(mapping) << Failed(mapping).value_or("");
+    EXPECT_EQ(mapping->links.size(), steps.size() - (levels - 1) + 2);
+    auto tensors = FlowTensors(source);
+    const std::array<std::span<const BoundTensor>, 1> tables{tensors};
+    const std::array owners{SpatialOwner{0, {1, 1, 2, 1}}};
+    const std::array ports{SpatialInput{0, 0, {1, 2, 2, 1}}};
+    Budget budget;
+    auto graph = BuildSpatialStep(mapping->spec, tables, owners, budget.Payment(),
+                                  {.links = mapping->links,
+                                   .reference_buffers = false,
+                                   .exports = mapping->exports,
+                                   .inputs = ports});
+    if (levels == 16) {
+      // The bounded source spec is valid, but even a 1x1 latent expands
+      // to 32768x32768 pixels. Its F32 graph exceeds the existing GGML
+      // stride representation, which remains a separate admission bound.
+      ASSERT_FALSE(graph);
+      EXPECT_NE(Failed(graph).value_or("").find("past INT32_MAX"), std::string::npos);
+      EXPECT_EQ(budget.used, 0U);
+    } else {
+      ASSERT_TRUE(graph) << Failed(graph).value_or("");
+      EXPECT_EQ(graph->weights().size(), source.size());
+      EXPECT_EQ(
+          graph->outputs()[0].shape,
+          (SpatialShape{profile.spatial_factor, profile.spatial_factor, profile.out_channels, 1}));
+    }
+    EXPECT_FALSE(spec::ImageDecodeSpec(profile, 1, std::span(source).first(source.size() - 1)));
+    auto invalid = profile;
+    invalid.dim_mult.clear();
+    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
+    invalid.dim_mult = {1};
+    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
+    invalid.dim_mult.assign(17, 1);
+    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
+    invalid = profile;
+    invalid.temporal_upsample.resize(levels - 2);
+    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
+    invalid = profile;
+    invalid.res_blocks = UINT32_MAX;
+    EXPECT_FALSE(spec::ImageDecodeSpec(invalid, 1, source));
+  }
+}
+
 TEST(ComponentsSpatial, RectangularDecoderCarriesGeometryInItsGraphIdentity) {
   const auto profile = ::llmp::test_support::QwenImageProfile().vae;
   const auto source = model::VaeDecoderTensors(profile, ::llmp::test_support::QwenImageNames().vae);

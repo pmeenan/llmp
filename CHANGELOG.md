@@ -24,6 +24,18 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- A smaller `draft_vocab` override now uses the same composed model identity
+  during settings resolution and runner construction.
+- On-demand row gathers use 64-bit byte offsets from planning through CPU and
+  GPU execution, removing the 4 GiB landing-buffer limit.
+- Shared partition planning places and budgets side sources and residual
+  mixing components alongside the model's layers.
+- Parallel routed feed-forward blocks apply the shared branch's own clamp
+  limit, including when it differs from the routed experts' limit.
+- Image decoder graph bounds follow the configured number of levels instead
+  of assuming five.
+- Quantized product optimizations are independent planner choices, so a
+  model can use them without selecting unrelated DeepSeek operations.
 - Component planning can enable indexed compressed-attention masks alongside
   dense, borrowed and QSA attention without reading another component's
   parameter schema. Other attention masks keep their ordinary behavior.

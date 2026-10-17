@@ -1775,6 +1775,29 @@ TEST(ComponentsTest, MoeFragmentMatchesItsReference) {
   EXPECT_EQ(def.splits[0].units(*in), 8U);
 }
 
+TEST(ComponentsTest, ParallelClampedMoeMatchesItsReferenceWithDistinctLimits) {
+  auto component = Moe(false, false, true);
+  for (auto& param : component.params)
+    if (param.name == "activation") param.value = N("silu_clamp");
+  component.params.push_back(P("limit", R(0.2)));
+  component.params.push_back(P("shared_limit", R(0.05)));
+  auto in = MakeInstance(component, kFacts, Site::kLayer, 0, 2);
+  ASSERT_TRUE(in) << in.error();
+  const std::vector<Step> rows{
+      {.shape = {.segments = {Seg(0, 3, 0, 256, 1), Seg(1, 2, 7, 256, 2)}}},
+      {.shape = {.segments = {Seg(0, 1, 3, 256, 1)}}},
+  };
+  Compare(*in, MoeFormats(Encoding::kF32, false), {}, rows, 1e-4);
+  auto graph = BuildComponent(*in, rows[0].shape, MoeFormats(Encoding::kF32, false), {});
+  ASSERT_TRUE(graph) << graph.error();
+  std::vector<float> limits;
+  for (const auto& node : graph->step.graph.nodes())
+    if (node.key.op == ir::Op::kGlu) limits.push_back(node.Params<ir::GluParams>().limit);
+  ASSERT_EQ(limits.size(), 2U);
+  EXPECT_FLOAT_EQ(limits[0], 0.2F);
+  EXPECT_FLOAT_EQ(limits[1], 0.05F);
+}
+
 ComponentRef MoePre(bool stacked, bool scales, bool normalize) {
   return C("ffn.moe", {P("placement", N("pre")), P("eps", R(1e-6)), P("activation", N("gelu_tanh")),
                        P("hidden", I(0)), P("experts", I(8)), P("used", I(3)),

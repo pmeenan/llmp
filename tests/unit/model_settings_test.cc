@@ -422,6 +422,42 @@ TEST(ModelSettings, ReportsTheSelectedDraftHeadsPhysicalLimit) {
   EXPECT_EQ(plain.draft_vocab.value, 65536U);
 }
 
+TEST(ModelSettings, ZeroDraftVocabularyWithoutSelectedHeadBindsTheFullVocabulary) {
+  auto facts = Facts("qwen4exp", "qwen4exp_mtp");
+  facts.composed_draft_vocab = llmp::runtime::RecipeOf("qwen4exp")->vocab;
+  facts.target_spec = llmp::base::Sha256Digest{};
+  facts.composed_spec = llmp::base::Sha256Digest{};
+  auto entry = Model("full", true);
+  entry.overrides["draft_vocab"] = std::int64_t{0};
+  const auto settings = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(settings) << (settings ? "" : settings.error());
+  EXPECT_EQ(settings->draft_vocab.value, 0U);
+  EXPECT_EQ(settings->bound_spec, facts.composed_spec);
+  const llmp::spec::DraftRecipe recipe{.vocab_key = "draft.rows"};
+  std::vector<llmp::spec::SourceValue> values{{"draft.rows", std::int64_t{65536}}};
+  const auto width = llmp::runtime::ConfigureDraftVocabulary(
+      values, recipe, settings->draft_vocab.value, *facts.composed_draft_vocab);
+  ASSERT_TRUE(width);
+  EXPECT_EQ(*width, *facts.composed_draft_vocab);
+  EXPECT_EQ(std::get<std::int64_t>(values.front().value), *facts.composed_draft_vocab);
+}
+
+TEST(ModelSettings, DraftVocabularyIdentityRequiresFactsForTheSameOverride) {
+  auto facts = Facts("qwen4exp", "qwen4exp_mtp");
+  facts.drafter_selected_rows = 47172;
+  facts.composed_draft_vocab = 32768;
+  facts.target_spec = llmp::base::Sha256Digest{};
+  facts.composed_spec = llmp::base::Sha256Digest{};
+  auto entry = Model("narrow", true);
+  entry.overrides["draft_vocab"] = std::int64_t{32768};
+  const auto resolved = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(resolved) << (resolved ? "" : resolved.error());
+  EXPECT_EQ(resolved->draft_vocab.value, 32768U);
+  entry.overrides["draft_vocab"] = std::int64_t{16384};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  EXPECT_TRUE(ResolveSettings(entry, facts, nullptr, true));
+}
+
 TEST(ModelSettings, OwnerCanDisableConcurrentWaveLanes) {
   ModelEntry entry = Model("q");
   entry.overrides["wave_lanes"] = false;

@@ -547,6 +547,8 @@ constexpr DraftRecipe kDsparkDraft{.shape = DraftRecipe::Shape::kBlock,
                                    .fill_key = "tokenizer.ggml.mask_token_id",
                                    .import_targets = kDsparkTargets};
 
+constexpr std::array kDsparkPolicies = {PolicyRule{.text = kDsparkServingPolicy}};
+
 constexpr Mapping kDsparkMapping{
     .architecture = "dflash",
     .version = 1,
@@ -561,6 +563,7 @@ constexpr Mapping kDsparkMapping{
     .role = StageRole::kDrafter,
     .stage = "dspark",
     .reads = kDsparkReads,
+    .policies = kDsparkPolicies,
     .draft = &kDsparkDraft,
 };
 

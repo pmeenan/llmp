@@ -38,6 +38,7 @@
 #include "platform/host_probe.h"
 #include "runtime/component_build.h"
 #include "runtime/memory_guard.h"
+#include "runtime/model_settings.h"
 #include "v1_frozen.h"
 
 namespace {
@@ -50,7 +51,7 @@ namespace fs = std::filesystem;
 using llmp::test_support::Failed;
 constexpr std::uint64_t kMiB = 1ULL << 20, kGiB = 1ULL << 30;
 constexpr std::uint64_t kDomain = 104 * kGiB, kHost = 12 * kGiB;
-constexpr std::uint32_t kVocabulary = 248320, kDraftLimit = 65536;
+constexpr std::uint32_t kVocabulary = 248320, kDraftLimit = 32768;
 // Factory: at most eleven classes for each of lone/joined owners. Actual
 // script: two lone prompts + two companion tails + three joined shapes.
 // Commit: three possible accepted widths for each of two real slots.
@@ -328,20 +329,25 @@ en::Status SetUp(Lifetime& life) {
   }
   auto domain = en::NumericalDomain::Create(std::move(stages));
   if (!domain) return std::unexpected(domain.error());
-  rt::ModelSettings settings;
-  settings.name = "joined-mtp";
-  settings.architecture = "qwen4exp";
-  settings.max_slots.value = 2;
-  settings.context.value = 512;
-  settings.prefill_chunk.value = 16;
-  settings.wave_read_align.value = 256;
-  settings.speculation.value = true;
-  settings.draft_rows.value = 2;
-  settings.draft_vocab.value = kDraftLimit;
   llmp::config::ModelEntry entry;
   entry.name = "joined-mtp";
   entry.artifact = kTarget;
   entry.drafter = kDrafter;
+  entry.overrides["max_slots"] = std::int64_t{2};
+  entry.overrides["context"] = std::int64_t{512};
+  entry.overrides["prefill_chunk"] = std::int64_t{16};
+  entry.overrides["wave_read_align"] = std::int64_t{256};
+  entry.overrides["draft_rows"] = std::int64_t{2};
+  entry.overrides["draft_vocab"] = std::int64_t{kDraftLimit};
+  auto facts = rt::ReadArtifactFacts(entry, store);
+  if (!facts) return std::unexpected(facts.error());
+  if (facts->drafter_selected_rows != 47172 || facts->composed_draft_vocab != kDraftLimit)
+    return std::unexpected("fixture no longer tests narrowing the actual selected head");
+  auto resolved = rt::ResolveSettings(entry, *facts, nullptr, false);
+  if (!resolved) return std::unexpected(resolved.error());
+  const auto& settings = *resolved;
+  if (settings.draft_vocab.value != kDraftLimit || !settings.bound_spec)
+    return std::unexpected("settings did not retain the narrowed composed identity");
   rt::ComponentBuildOptions options{
       .target_policy = {},
       .diagnostic_solo = true,
@@ -382,13 +388,15 @@ en::Status SetUp(Lifetime& life) {
   auto build = rt::ComponentLlmBuild(node, store, entry, 0, std::move(options));
   auto parts = build(settings);
   if (!parts) return std::unexpected(parts.error());
+  if (parts->config.slots.spec != *settings.bound_spec)
+    return std::unexpected("actual factory spec differs from the resolved override identity");
   if (parts->logit_width != kVocabulary || parts->config.slots.stages.size() != 2 ||
       parts->config.setup_shapes.size() > kFactoryClasses || parts->caps.max_segments < 2 ||
       parts->mode.drafters.size() != 1)
     return std::unexpected("factory left the paid target/MTP domain");
   const auto& ids = parts->mode.drafters[0].head_ids;
   auto width = en::DrafterHeadRows(parts->mode.drafters[0], kVocabulary);
-  if (!width || *width > kDraftLimit || !ids || ids->size() != *width)
+  if (!width || *width != kDraftLimit || !ids || ids->size() != *width)
     return std::unexpected("factory omitted the actual selected-head vocabulary");
   // In range and strictly ascending.
   for (std::size_t i = 0; i < ids->size(); ++i)

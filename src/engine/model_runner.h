@@ -578,7 +578,7 @@ class ModelRunner final : public PagedModel {
     Mapped slots;
     void* landing_allocation = nullptr;  // raw owner retained if a read stalls
     std::byte* landing = nullptr;
-    std::uint32_t* sources = nullptr;
+    std::uint64_t* sources = nullptr;
     std::uint32_t* count = nullptr;
     std::unique_ptr<providers::Storage> storage;
     bool stalled = false;

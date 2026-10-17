@@ -58,6 +58,13 @@ const Mapping& DsparkMapping();
 // rows; a joined step past 16 rows without the HC pre's.
 inline constexpr std::string_view kDeepSeekServingPolicy =
     "max_decode_rows 16\n"
+    "product compact_experts\n"
+    "product d2r_experts\n"
+    "product dense_pair\n"
+    "product pair_experts\n"
+    "product pair_glu\n"
+    "product pair_glu_q8\n"
+    "product vector_floats\n"
     "enable biased_route\n"
     "enable dsv4_compress\n"
     "enable dsv4_hc_post\n"
@@ -90,6 +97,13 @@ inline constexpr std::string_view kDeepSeekServingPolicy =
     "when solo past 8 max_decode_rows 8\n"
     "when solo past 8 vector_rows 8\n"
     "when joined past 16 disable dsv4_hc_pre\n";
+
+// The block drafter retains ordinary expert pairs and vector float products;
+// target-only compact schedules and D2R are independent choices above.
+inline constexpr std::string_view kDsparkServingPolicy =
+    "max_decode_rows 16\n"
+    "product pair_experts\n"
+    "product vector_floats\n";
 
 }  // namespace llmp::spec::mappings
 

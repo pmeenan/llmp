@@ -1455,6 +1455,127 @@ TEST(GgmlLowerTest, Q8DenseCacheUsesBlockedPrimitiveAttentionAndStores) {
   }
 }
 
+// Product choices do not depend on an unrelated selected route. A standalone
+// dense pair gets the same shared preparation under the explicit policy;
+// enabling routing alone never opts its neighboring products into anything.
+TEST(GgmlLowerTest, DensePairPolicyIsIndependentOfUnrelatedRouteSelection) {
+  using llmp::format::Encoding;
+  const auto registry = PlanningRegistry();
+  for (const unsigned unrelated : {0U, 1U, 2U}) {
+    for (const bool pair : {false, true}) {
+      SCOPED_TRACE(unrelated);
+      SCOPED_TRACE(pair);
+      ir::Builder b;
+      const auto x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({256, 64})));
+      const llmp::format::TensorFormat quant{.encoding = Encoding::kQ4_0,
+                                             .layout = llmp::format::Layout::kGgmlBlocks,
+                                             .shape = ir::ShapeOf({256, 128})};
+      const ir::WeightRef a_ref{.role = 0}, b_ref{.role = 1};
+      const auto a = b.Weight(quant, a_ref);
+      const auto other = b.Weight(quant, b_ref);
+      b.Output(b.MatMul(a, x));
+      b.Output(b.MatMul(other, x));
+      auto expert_format = quant;
+      expert_format.shape = ir::ShapeOf({256, 128, 8});
+      const ir::WeightRef gate_ref{.role = 2, .expert_array = true};
+      const ir::WeightRef up_ref{.role = 3, .expert_array = true};
+      const auto gate = b.Weight(expert_format, gate_ref);
+      const auto up = b.Weight(expert_format, up_ref);
+      const auto expert_x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({256, 1, 64})));
+      const auto expert_ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2, 64})));
+      b.Output(b.MatMulId(gate, expert_x, expert_ids));
+      b.Output(b.MatMulId(up, expert_x, expert_ids));
+      const ir::WeightRef float_ref{.role = 4};
+      const auto float_w = b.Weight(ir::Dense(Encoding::kF32, ir::ShapeOf({256, 128})), float_ref);
+      const auto float_x = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({256, 3})));
+      b.Output(b.MatMul(float_w, float_x));
+      std::vector<ir::TensorId> staged{x, expert_x, expert_ids, float_x};
+      if (unrelated == 1) {
+        const auto logits = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({256, 3})));
+        const auto ids = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({6, 3})));
+        staged.push_back(logits);
+        staged.push_back(ids);
+        const auto routed = b.Route(logits, {}, ids, {},
+                                    {.kind = ir::RouteKind::kHash,
+                                     .normalize = true,
+                                     .experts = 256,
+                                     .used = 6,
+                                     .scale = 1.5F});
+        b.Output(routed[0]);
+        b.Output(routed[1]);
+      }
+      if (unrelated == 2) {
+        const auto q = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({512, 3, 64})));
+        const auto kv = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({512, 768, 1})));
+        const auto mask = b.Input(ir::Dense(Encoding::kF16, ir::ShapeOf({768, 32})));
+        const auto sinks = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({64})));
+        staged.insert(staged.end(), {q, kv, mask, sinks});
+        b.Output(b.Attention(q, kv, kv, mask, sinks,
+                             {.scale = 0.044194173F,
+                              .sinks = true,
+                              .accumulate = ir::Accumulate::kF32,
+                              .sparse_any = true,
+                              .n_kv_max = 128}));
+      }
+      auto graph = std::move(b).Finish();
+      ASSERT_TRUE(graph) << (graph ? "" : graph.error().detail);
+      co::StepGraph step{.graph = std::move(*graph),
+                         .inputs = {},
+                         .weights = {{.tensor = a,
+                                      .ref = a_ref,
+                                      .parts = {{"pair.a", llmp::format::PartRole::kData}}},
+                                     {.tensor = other,
+                                      .ref = b_ref,
+                                      .parts = {{"pair.b", llmp::format::PartRole::kData}}}},
+                         .state = {}};
+      step.weights.push_back({.tensor = gate,
+                              .ref = gate_ref,
+                              .parts = {{"pair.gate", llmp::format::PartRole::kData}}});
+      step.weights.push_back(
+          {.tensor = up, .ref = up_ref, .parts = {{"pair.up", llmp::format::PartRole::kData}}});
+      step.weights.push_back({.tensor = float_w,
+                              .ref = float_ref,
+                              .parts = {{"pair.float", llmp::format::PartRole::kData}}});
+      for (const auto tensor : staged)
+        step.inputs.push_back({.tensor = tensor, .kind = co::InputKind::kFeatures});
+      pl::Policy policy;
+      policy.products.dense_pair = pair;
+      policy.products.pair_experts = pair;
+      policy.products.vector_floats = pair;
+      policy.products.compact_experts = true;
+      policy.products.pair_glu = true;
+      policy.products.pair_glu_q8 = true;
+      if (unrelated == 1) policy.enabled = {"hash_route"};
+      const pl::StepShape shape{.segments = {{.rows = 64, .outputs = 0, .want_head = false}}};
+      auto plan =
+          pl::Plan(step.graph.Clone(), registry, Gb10(), policy,
+                   {.staged = staged, .written = &kg::WrittenBytes, .within = &kg::WithinRoot});
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      EXPECT_EQ(plan->products, policy.products);
+      const kn::Addresses addresses{};
+      // The compact GLU policies are ineligible at 64 rows and must not
+      // require the reader index that only their wide recipe consumes.
+      auto device = Device();
+      device.quant =
+          [](const ggml_tensor*) -> std::expected<kg::QuantMulMatPath, kg::KernelFailure> {
+        return kg::QuantMulMatPath::kTile;
+      };
+      auto lowered = kg::LowerStep({*plan, step, shape, addresses}, registry, device,
+                                   {.index_scratch_limit = 0});
+      ASSERT_TRUE(lowered) << (lowered ? "" : lowered.error().detail);
+      const auto count = [&](std::string_view name) {
+        return std::ranges::count_if(lowered->plan.steps,
+                                     [&](const auto& s) { return s.implementation == name; });
+      };
+      EXPECT_EQ(count(kg::kMulMatQPairDense), pair ? 1 : 0);
+      EXPECT_EQ(count(kg::kMulMatIdQPair), pair ? 1 : 0);
+      EXPECT_EQ(count(kg::kMulMatVecFRows), pair ? 1 : 0);
+      EXPECT_EQ(count(kg::kDsv4RouteName), unrelated == 1 ? 1 : 0);
+      EXPECT_EQ(count(kg::kMulMatIdQ2D2r), 0);
+    }
+  }
+}
+
 // A late-built norm scale is a dependency of the selected fusion, although
 // the original RMS primitive only needs the already-built activation.
 TEST(GgmlLowerTest, FusedExpansionWaitsForComputedNormScale) {

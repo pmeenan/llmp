@@ -136,6 +136,7 @@ struct StepPlan {
   // The enabled policy, independent of the all-input-rows-one fast path.
   // Lowering may prove a narrower selected-output basis for individual ops.
   bool owner_rows_policy_enabled = false;
+  ProductPolicy products{};  // independent choices, included in the policy digest
   // Promises used by selection, authenticated again at final placement/binding.
   std::vector<RootAlignmentFact> root_alignments{};
   // Exact products retained through rewrites; lowering authenticates recipes.

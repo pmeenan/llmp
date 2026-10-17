@@ -545,6 +545,20 @@ std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
   return DraftHeadMap{.resource = *index, .rows = rows};
 }
 
+std::expected<std::uint32_t, std::string> ConfigureDraftVocabulary(
+    std::span<spec::SourceValue> values, const spec::DraftRecipe& recipe, std::uint32_t requested,
+    std::uint32_t target_vocab, std::optional<std::uint32_t> selected_rows) {
+  if (recipe.vocab_key.empty()) return 0;
+  const std::uint32_t available = selected_rows.value_or(target_vocab);
+  const std::uint32_t width = requested == 0 ? available : std::min(requested, available);
+  if (width == 0 || available > target_vocab)
+    return Refused("a draft head needs a positive row count within the target vocabulary");
+  const auto found = std::ranges::find(values, recipe.vocab_key, &spec::SourceValue::key);
+  if (found == values.end()) return Refused("a drafter has no draft vocabulary value");
+  found->value = static_cast<std::int64_t>(width);
+  return width;
+}
+
 std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
                                                      std::string_view key) {
   const std::string kv = KeptGguf(artifact);

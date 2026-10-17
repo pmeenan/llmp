@@ -159,6 +159,57 @@ Tiny TinyGemma(bool tied, Encoding ffn = Encoding::kF32, std::uint64_t hidden = 
   return t;
 }
 
+// Two small hyper-connected layers consume the same side-table lookup.
+Tiny TinyHcSide(bool sparse = false) {
+  Tiny t;
+  const auto bind = [&](std::string name, std::initializer_list<std::uint64_t> ne) {
+    t.tensors.push_back({.name = name, .format = Format(Encoding::kF32, ne)});
+    return name;
+  };
+  spec::Stage stage{.name = "target", .context = kContext};
+  stage.embedding = C("embedding.token", {}, {{"table", bind("tokens", {4, 8})}});
+  stage.stream = {
+      .streams = 2, .width = 4, .mixing = C("residual.hc", {P("mix", N("sigmoid"))}, {})};
+  stage.side = {{.name = "ngram",
+                 .source = C("side.ngram",
+                             {P("ngram", I(2)), P("heads_per_ngram", I(1)), P("row", I(2)),
+                              P("eos", I(0)), P("multipliers", std::vector<std::int64_t>{3, 5}),
+                              P("offsets", std::vector<std::int64_t>{0}),
+                              P("vocab", std::vector<std::int64_t>{8})},
+                             {{"table", bind("side", {2, 8})}}),
+                 .layers = {0, 1}}};
+  if (sparse) {
+    stage.side[0].layers = {0, 2};
+    auto alternate = stage.side[0];
+    alternate.name = "alternate";
+    alternate.layers = {1, 3};
+    alternate.source.weights[0].tensor = bind("side.alternate", {2, 8});
+    stage.side.push_back(std::move(alternate));
+  }
+  for (std::uint32_t l = 0; l < (sparse ? 4U : 2U); ++l) {
+    const auto prefix = std::format("layer.{}.", l);
+    stage.layers.push_back(
+        {.components = {
+             C("residual.ple",
+               {P("eps", R(1e-6)), P("input", N(sparse && l % 2 == 1 ? "alternate" : "ngram")),
+                P("conv", I(2)), P("dilation", I(1))},
+               {{"key", bind(prefix + "key", {2, 8})},
+                {"value", bind(prefix + "value", {2, 4})},
+                {"norm_key", bind(prefix + "norm_key", {8})},
+                {"norm_query", bind(prefix + "norm_query", {8})},
+                {"norm_conv", bind(prefix + "norm_conv", {8})},
+                {"conv", bind(prefix + "conv", {2, 8})}})}});
+  }
+  stage.heads.final_norm = C("hc.mix", {P("eps", R(1e-6)), P("rank", I(2)), P("inject", false)},
+                             {{"norm", bind("head.norm", {8})},
+                              {"down", bind("head.down", {8, 2})},
+                              {"up", bind("head.up", {2, 8})}});
+  stage.heads.output = C("head.linear", {}, {{"weight", bind("head.output", {4, 8})}});
+  t.spec.stages.push_back(std::move(stage));
+  spec::Canonicalize(t.spec);
+  return t;
+}
+
 planner::Segment Seg(std::uint8_t slot, std::uint32_t rows, std::uint32_t past,
                      std::uint32_t outputs, bool greedy = false) {
   return {.slot = slot,
@@ -1204,6 +1255,17 @@ TEST(PartitionTest, TheSearchIsExactOverRandomTopologiesWithTwins) {
   }
 }
 
+TEST(PartitionTest, SparseSideHolderSearchMatchesEnumeration) {
+  const Tiny t = TinyHcSide(true);
+  auto model = ModelOf(t.spec, 0, t.tensors);
+  ASSERT_TRUE(model) << model.error();
+  for (const std::uint64_t memory : {600U, 900U, 1300U})
+    for (std::uint32_t seed = 0; seed < 4; ++seed) {
+      SCOPED_TRACE(std::format("memory {} seed {}", memory, seed));
+      ExpectSearchExact(*model, RandomTopology(4, memory, seed), Mix(), 4);
+    }
+}
+
 TEST(PartitionTest, ASearchPastItsBoundIsRefusedPromptly) {
   // Sixteen devices without twins (every link its own bandwidth): 65,535
   // candidate groups, refused at once; AssignPipeline still evaluates a
@@ -1266,6 +1328,156 @@ TEST(PartitionTest, TopologiesAndGraphsItCannotTakeAreRefused) {
     ASSERT_TRUE(g.has_value());
     EXPECT_FALSE(Partition(*g, a));
   }
+}
+
+TEST(PartitionTest, HyperConnectionsAndSideSourcesHavePlacementsAndPayTheirWeights) {
+  const Tiny t = TinyHcSide();
+  ASSERT_TRUE(components::ValidateSpec(t.spec, t.tensors));
+  auto model = ModelOf(t.spec, 0, t.tensors);
+  ASSERT_TRUE(model) << model.error();
+  ASSERT_EQ(model->instances.side.size(), 1U);
+  ASSERT_TRUE(model->instances.mixing);
+  const auto side = model->instances.side[0].index;
+  const auto mixing = model->instances.mixing->index;
+  ASSERT_EQ(model->roles[side][0].name, "side");
+  const auto layout = components::StageLayout(t.spec, 0, kContext, kMaxRows);
+  ASSERT_TRUE(layout) << layout.error();
+  const StepShape shape{.segments = {Seg(0, 2, 0, 2)}};
+  auto step = components::BuildStep(t.spec, 0, shape, {.tensors = t.tensors, .state = &*layout});
+  ASSERT_TRUE(step) << step.error();
+  Leaves leaves;
+  const std::array<std::int32_t, 2> tokens{1, 2};
+  for (const auto& input : step->inputs) {
+    if (input.kind == components::InputKind::kSideRows) {
+      leaves.ints[input.tensor.v] = {3, 4};
+    } else {
+      auto values = components::InputValues(input, shape, tokens);
+      ASSERT_TRUE(values) << values.error();
+      leaves.ints[input.tensor.v] = *values;
+    }
+  }
+  const auto weights = Weights(t);
+  for (const auto& weight : step->weights)
+    leaves.floats[weight.tensor.v] = weights.at(weight.parts.front().first);
+  Check check{.results = {step->logits}, .rows = 2, .outputs = 2, .tolerance = 1e-5};
+  for (const auto& state : step->state) {
+    leaves.floats[state.tensor.v].resize(ir::Elements(step->graph.tensor(state.tensor).shape()));
+    check.state.push_back(state.tensor);
+  }
+  std::uint64_t bytes = 0;
+  for (const auto& tensor : t.tensors) bytes += 4 * ir::Elements(tensor.format.shape);
+  // Each layer owns one fixed history row of two four-wide streams.
+  bytes += 2 * 2 * 4 * 4;
+  for (const Pipeline& pipeline : {Pipeline{.stages = {{0, 1}}, .first_layer = {0}},
+                                   Pipeline{.stages = {{0}, {1}}, .first_layer = {0, 1}}}) {
+    auto assignment = AssignPipeline(*model, Uniform(2, kAmple), Mix(), pipeline);
+    ASSERT_TRUE(assignment) << assignment.error();
+    ASSERT_NE(assignment->Find(side), nullptr);
+    ASSERT_NE(assignment->Find(mixing), nullptr);
+    EXPECT_EQ(assignment->Find(side)->devices, pipeline.stages[0]);
+    EXPECT_EQ(assignment->Find(mixing)->devices, pipeline.stages[0]);
+    Equivalent(step->graph, leaves, *assignment, *model, check);
+    if (pipeline.stages.size() == 1) {
+      for (const auto& [device, memory] : assignment->memory) EXPECT_EQ(memory, bytes) << device;
+    } else {
+      EXPECT_EQ(ModelTraffic(*model, *assignment, 2, 2).bytes, 80U);
+    }
+  }
+  auto exact = Assign(*model, Uniform(1, bytes), Mix());
+  ASSERT_TRUE(exact) << exact.error();
+  EXPECT_EQ(exact->memory[0].second, bytes);
+  // Without the side table this budget fits; it must now be refused.
+  EXPECT_FALSE(Assign(*model, Uniform(1, bytes - 1), Mix()));
+}
+
+TEST(PartitionTest, SideTableSharedWithReaderCountsOnceAtTheExactBudget) {
+  Tiny t = TinyHcSide();
+  auto& key = t.spec.stages[0].layers[0].components[0].weights;
+  const auto bound = std::ranges::find(key, "key", &spec::WeightBinding::role);
+  ASSERT_NE(bound, key.end());
+  bound->tensor = "side";
+  spec::Canonicalize(t.spec);
+  ASSERT_TRUE(components::ValidateSpec(t.spec, t.tensors));
+  auto model = ModelOf(t.spec, 0, t.tensors);
+  ASSERT_TRUE(model) << model.error();
+  const Pipeline pipeline{.stages = {{0}}, .first_layer = {0}};
+  auto ample = AssignPipeline(*model, Uniform(1, kAmple), Mix(), pipeline);
+  ASSERT_TRUE(ample) << ample.error();
+  const auto bytes = ample->memory[0].second;
+  auto explicit_exact = AssignPipeline(*model, Uniform(1, bytes), Mix(), pipeline);
+  ASSERT_TRUE(explicit_exact) << explicit_exact.error();
+  auto searched = Assign(*model, Uniform(1, bytes), Mix());
+  ASSERT_TRUE(searched) << searched.error();
+  EXPECT_EQ(searched->memory[0].second, bytes);
+  EXPECT_FALSE(Assign(*model, Uniform(1, bytes - 1), Mix()));
+}
+
+TEST(PartitionTest, TiedEmbeddingHeadAndLayerNormsUseTheExactBudget) {
+  Tiny t = TinyGemma(true);
+  for (auto& layer : t.spec.stages[0].layers) {
+    auto& weights = layer.components[0].weights;
+    const auto norm = std::ranges::find(weights, "norm", &spec::WeightBinding::role);
+    ASSERT_NE(norm, weights.end());
+    norm->tensor = "output_norm.weight";
+  }
+  spec::Canonicalize(t.spec);
+  ASSERT_TRUE(components::ValidateSpec(t.spec, t.tensors));
+  auto model = ModelOf(t.spec, 0, t.tensors);
+  ASSERT_TRUE(model) << model.error();
+  const Pipeline pipeline{.stages = {{0}}, .first_layer = {0}};
+  auto ample = AssignPipeline(*model, Uniform(1, kAmple), Mix(), pipeline);
+  ASSERT_TRUE(ample) << ample.error();
+  const auto bytes = ample->memory[0].second;
+  auto explicit_exact = AssignPipeline(*model, Uniform(1, bytes), Mix(), pipeline);
+  ASSERT_TRUE(explicit_exact) << explicit_exact.error();
+  auto searched = Assign(*model, Uniform(1, bytes), Mix());
+  ASSERT_TRUE(searched) << searched.error();
+  EXPECT_EQ(searched->memory[0].second, bytes);
+  EXPECT_FALSE(Assign(*model, Uniform(1, bytes - 1), Mix()));
+}
+
+TEST(PartitionTest, SparseSideReadersTransferOnlyOnceToEachReadingGroup) {
+  const Tiny t = TinyHcSide(true);
+  ASSERT_TRUE(components::ValidateSpec(t.spec, t.tensors));
+  auto model = ModelOf(t.spec, 0, t.tensors);
+  ASSERT_TRUE(model) << model.error();
+  auto topology = Uniform(4, kAmple);
+  // The last reader relays from its earlier reader rather than the source.
+  for (auto& link : topology.links)
+    if (link.a == 1 && link.b == 3) link.bytes_per_s *= 10;
+  const Pipeline pipeline{.stages = {{0}, {1}, {2}, {3}}, .first_layer = {0, 1, 2, 3}};
+  auto assignment = AssignPipeline(*model, topology, Mix(), pipeline);
+  ASSERT_TRUE(assignment) << assignment.error();
+  const auto layout = components::StageLayout(t.spec, 0, kContext, kMaxRows);
+  ASSERT_TRUE(layout) << layout.error();
+  const StepShape shape{.segments = {Seg(0, 2, 0, 2)}};
+  auto step = components::BuildStep(t.spec, 0, shape, {.tensors = t.tensors, .state = &*layout});
+  ASSERT_TRUE(step) << step.error();
+  Leaves leaves;
+  const std::array<std::int32_t, 2> tokens{1, 2};
+  for (const auto& input : step->inputs) {
+    if (input.kind == components::InputKind::kSideRows) {
+      leaves.ints[input.tensor.v] = {3, 4};
+    } else {
+      auto values = components::InputValues(input, shape, tokens);
+      ASSERT_TRUE(values) << values.error();
+      leaves.ints[input.tensor.v] = *values;
+    }
+  }
+  const auto weights = Weights(t);
+  for (const auto& weight : step->weights)
+    leaves.floats[weight.tensor.v] = weights.at(weight.parts.front().first);
+  Check check{.results = {step->logits}, .rows = 2, .outputs = 2, .tolerance = 1e-5};
+  for (const auto& state : step->state) {
+    leaves.floats[state.tensor.v].resize(ir::Elements(step->graph.tensor(state.tensor).shape()));
+    check.state.push_back(state.tensor);
+  }
+  Equivalent(step->graph, leaves, *assignment, *model, check);
+  EXPECT_EQ(ModelTraffic(*model, *assignment, 2, 2).bytes, 240U);
+  // Missing reader metadata must refuse rather than silently omit traffic.
+  auto incomplete = *model;
+  incomplete.side_layers.clear();
+  EXPECT_FALSE(Assign(incomplete, topology, Mix()));
 }
 
 TEST(PartitionTest, StreamBytesScalesWithStreamsCount) {

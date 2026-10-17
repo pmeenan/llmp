@@ -57,6 +57,12 @@ struct DraftHeadMap {
 };
 std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
     const artifact::Artifact& drafter, std::string_view head_ids, std::uint64_t vocab);
+// Apply the effective draft vocabulary to composition values. Zero requests
+// all available rows; a selected head bounds the available rows. Shared by
+// settings identity derivation and the executable factory.
+std::expected<std::uint32_t, std::string> ConfigureDraftVocabulary(
+    std::span<spec::SourceValue> values, const spec::DraftRecipe& recipe, std::uint32_t requested,
+    std::uint32_t target_vocab, std::optional<std::uint32_t> selected_rows = std::nullopt);
 // An integer the artifact's kept GGUF metadata holds under `key`.
 std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
                                                      std::string_view key);
