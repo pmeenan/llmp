@@ -40,8 +40,10 @@ path of a verify's snapshot (`live_state_launch.h`) and each family's runner.
 `paged_node.h`: device 0 with its providers, a stream per model and the
 copy stream, the storage ring, one catalog domain, the landing zone
 (D-081), the scheduler and its lanes, and the workspace the models share
-(activations and the GGML pool; in the runtime it pages with the active
-model, each model's closures and steps bounded to its own prefix of it,
+(activations and the GGML pool; in the runtime it is resident for the
+node's life when it fits beside the largest model's weights, and otherwise
+pages with the active model; either way each model's closures and steps
+are bounded to its own prefix of it,
 [runtime-serving.md](runtime-serving.md#registration-and-the-swap); so
 two models never execute concurrently on one node, a constraint M4's
 placement must revisit). A runner registers its memory and page

@@ -554,6 +554,7 @@ Status Server::Start(bool snapshot) {
   std::uint64_t activations = 0;
   std::uint64_t pool = 0;
   std::uint64_t largest = 0;
+  std::uint64_t largest_weights = 0;  // the largest weights alone
   std::uint64_t host_inputs = 0;
   std::uint64_t plans = 0;
   for (const auto& m : models_) {
@@ -572,6 +573,7 @@ Status Server::Start(bool snapshot) {
     const std::uint64_t footprint =
         ActiveFootprint(m->weights().size() * kExtent, m->activations_needed(), m->pool_needed());
     largest = std::max(largest, footprint);
+    largest_weights = std::max<std::uint64_t>(largest_weights, m->weights().size() * kExtent);
     std::string chunks;
     if (m->llm()) {
       const auto& l = static_cast<Llm&>(*m);
@@ -636,7 +638,33 @@ Status Server::Start(bool snapshot) {
                                   .available = startup_available,
                                   .fixed = 0,
                                   .requests = RequestFloor(config_.client)};
-  // The largest footprint holds its model's workspace already.
+  // The workspace's mode, per node (2026-10-17): resident for the node's life,
+  // mapped as one region before anything pages, when the whole workspace
+  // fits beside the largest model's weights under the guard (with 1 GiB to
+  // spare for what the guard measures again below); paged with the active
+  // model otherwise. Backed piecemeal during a page-in, while the kernel
+  // reclaims the page cache for the weights, the workspace ran the image's
+  // denoiser products up to 5% slower on a node whose page cache was full;
+  // mapped resident at the start it did not (docs/runtime-serving.md).
+  const std::uint64_t resident_largest = ActiveFootprint(largest_weights, activations, pool);
+  const std::uint64_t resident_need = GuardReserve(startup_guard) + resident_largest;
+  const bool fits =
+      startup_available == 0 || resident_need + (std::uint64_t{1} << 30U) <= startup_available;
+  const bool pageable = options_.pageable_workspace.value_or(!fits);
+  Log(std::format(
+      "workspace: {} ({:.2f} GiB of activations and {:.2f} GiB of pool); {}",
+      pageable ? "paged with the active model" : "resident for the node's life",
+      static_cast<double>(activations) / (1ULL << 30U), static_cast<double>(pool) / (1ULL << 30U),
+      options_.pageable_workspace
+          ? "forced by the serving options"
+          : std::format("the whole of it beside the largest weights needs {:.2f} GiB of the "
+                        "{:.2f} GiB available{}",
+                        static_cast<double>(resident_need) / (1ULL << 30U),
+                        static_cast<double>(startup_available) / (1ULL << 30U),
+                        fits ? "" : ", which does not fit")));
+  if (!pageable) largest = resident_largest;
+  // The largest footprint holds its model's workspace already (a resident
+  // workspace counted whole).
   const auto startup_reserve = GuardReserve(startup_guard) + largest;
   // Unknown availability (0) bounds nothing here, as the guard skips it;
   // the execution budget bounds what is adopted once it is set (Start).
@@ -656,10 +684,14 @@ Status Server::Start(bool snapshot) {
   // Pageable: virtually reserved and cataloged at the largest need, each model's
   // closure naming only its own prefix, so a swap brings in what the
   // incoming model uses and evicts what only the outgoing one did. Nothing
-  // of it is resident before the first activation.
-  if (auto r = node_.MapWorkspace(activations, pool, startup_available, true); !r) {
+  // of it is resident before the first activation. Resident: mapped whole
+  // now, and counted in the fixed memory below.
+  if (auto r = node_.MapWorkspace(activations, pool, startup_available, pageable); !r) {
     return r;
   }
+  // The budget's largest term: with a resident workspace (now in the fixed
+  // memory) the largest weights alone.
+  if (!pageable) largest = largest_weights;
   workspace_ = activations + pool;
   snapshot_enabled_ = snapshot;
   // The budget (D-050's B): everything mapped for the node's life (the zone,
@@ -795,14 +827,17 @@ Status Server::Start(bool snapshot) {
   const std::uint64_t room = budget_ > fixed_ + largest ? budget_ - fixed_ - largest : 0;
   state_room_ = room;
   Log(std::format(
-      "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed; the workspace {:.2f} GiB virtually "
-      "reserved, each model's part of it resident while that model is active; host-built "
+      "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed; the workspace {:.2f} GiB {}; "
+      "host-built "
       "chunk inputs {:.2f} GiB, a step's plans {:.2f} GiB and {:.2f} GiB of request memory "
       "beside it); conversation state room {:.2f} GiB beside the largest weights and workspace; "
       "{:.2f} GiB "
       "available; idle conversations spill, kept {} h within {} GiB",
       models_.size(), static_cast<double>(budget_) / (1ULL << 30U),
       static_cast<double>(fixed_) / (1ULL << 30U), static_cast<double>(workspace_) / (1ULL << 30U),
+      node_.workspace_pageable()
+          ? "virtually reserved, each model's part of it resident while that model is active"
+          : "resident, in the fixed memory",
       static_cast<double>(host_inputs_) / (1ULL << 30U),
       static_cast<double>(plans_) / (1ULL << 30U),
       static_cast<double>(request_memory_) / (1ULL << 30U),

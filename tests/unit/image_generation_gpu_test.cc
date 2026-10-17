@@ -993,6 +993,10 @@ struct ServerGrowthLifetime {
     if (!quality) config.models.push_back(std::move(gemma_entry));
     options.plain = true;
     options.diagnostic_budget_cap_bytes = kCap;
+    // The geometry growth's checks are a paged workspace's (where it fits,
+    // an ordinary start maps it resident): forced paged here; the quality
+    // run keeps the ordinary choice.
+    if (!quality) options.pageable_workspace = true;
     // The existing Server parser/settings phase is separate from the held
     // image construction owner. Both live charges are included in node admission.
     options.diagnostic_startup_host_bytes = ordinary ? 0 : kStartup;

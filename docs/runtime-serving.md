@@ -441,7 +441,17 @@ model on one paged node: its artifacts opened (validated, with their
 shards left closed until the model is activated, below), its runner set
 up on its own stream, its tokenizer and renderer found, the shared workspace
 (the activations and the GGML pool) virtually reserved and cataloged at the largest
-model's need. The workspace pages with the active model (2026-10-16): each
+model's need. The start chooses the workspace's mode for the node
+(2026-10-17) and logs which and why: resident for the node's life, mapped
+as one region before anything pages and counted in the fixed memory,
+when the whole of it fits beside the largest model's weights under the
+memory guard (below) with 1 GiB to spare; otherwise it pages with the
+active model, as M3's swap configuration needs (DeepSeek V4 beside
+Qwen3.8's 8.05 GiB of activations with MTP at four slots). A resident
+workspace is the faster one: backed piecemeal during a page-in, while the
+kernel reclaims the page cache for the weights, it ran the image's
+denoiser products up to 5% slower on a node whose page cache was full,
+and mapped at the start it did not. A paged workspace (2026-10-16): each
 model's closures name only its own prefix of each region, its steps are
 bound to that prefix, and its extents are paged like weights, at fixed
 places pinned for captured graphs, by a source that only maps backing

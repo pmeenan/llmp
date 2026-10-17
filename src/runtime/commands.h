@@ -123,6 +123,11 @@ struct ServingOptions {
   // Matched controls must record the actual selected capacity of each arm.
   // Unset, startup's execution cap is the node's measured headroom.
   std::optional<std::uint64_t> diagnostic_budget_cap_bytes;
+  // The shared workspace's mode (Server::Start): unset, resident for the
+  // node's life when it fits beside the largest model's weights under the
+  // guard, else paged with the active model; true or false forces paged or
+  // resident. Internal, for tests and matched controls only.
+  std::optional<bool> pageable_workspace;
   // engine::NodeSettings::zero_state and handle_reserve; internal
   // overrides for matched controls only.
   bool zero_state = true;

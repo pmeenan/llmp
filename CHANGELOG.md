@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- A node whose shared workspace fits beside its largest model's weights
+  maps it resident at the start again, as one region, and pages it with the
+  active model only when it does not fit (the start logs which and why).
+  Backed during each activation's page-in, the workspace could run the
+  image's denoiser 1.7% slower on average, and up to 5%, on a host whose
+  page cache was full.
 - Gemma 2 prefills at the M3 speed again (it was 1% slower for one
   request, 1.3% for two; docs/experiments/m36-final/README.md, "State
   layout"): state is laid out by a per-tensor rule, each growing tensor of

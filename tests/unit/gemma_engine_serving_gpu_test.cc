@@ -1370,6 +1370,8 @@ TEST_P(GemmaEngineServingGpu, TheWorkspaceFollowsTheActiveModelThroughRefusalAnd
   other.overrides["context"] = std::int64_t{4096};
   other.overrides["max_slots"] = std::int64_t{1};  // narrower waves: a workspace of another size
   life->config.models.push_back(other);
+  // Two small models fit a resident workspace; this test is the paged one's.
+  life->options.pageable_workspace = true;
   // An ordinary start sizes the cap below: what the node holds fixed and the
   // larger active footprint, so a few GiB of staging fill the free room.
   if (const auto started = Start(); !started) FAIL() << started.error() << "\n" << Log();
