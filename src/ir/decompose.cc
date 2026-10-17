@@ -666,7 +666,8 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const std::uint64_t per = w.ne(0);
       const std::uint64_t total_features = x.ne(0) * x.ne(1);
       const std::uint64_t groups = per > 0 ? (total_features / per) : 1;
-      const std::uint64_t o_rank = groups > 0 ? (w.ne(1) / groups) : 512;
+      const std::uint64_t o_rank =
+          w.shape().rank == 3 ? w.ne(1) : (groups > 0 ? (w.ne(1) / groups) : 512);
       const std::uint64_t rows = x.ne(2);
       TensorId out = b.Permute(b.Reshape(rotated, S(per, groups, rows)), {0, 2, 1, 3});
       TensorId g = w.shape().rank == 3 ? d.s(0) : b.Reshape(d.s(0), S(per, o_rank, groups));

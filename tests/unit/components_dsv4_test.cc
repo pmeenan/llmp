@@ -1099,6 +1099,44 @@ fam::Dsv4Profile Tiny() {
   p.compress_ratios = {0, fam::kDsv4CsaRatio, fam::kDsv4HcaRatio, fam::kDsv4CsaRatio};
   return p;
 }
+TEST(ComponentsDsv4Test, IndexerPolicyKeepsMasksForUnselectedCompressedAttention) {
+  auto profile = Tiny();
+  profile.indexer_heads = 64;
+  profile.indexer_head_dim = 128;
+  auto source = fx::SourceOf("deepseek4", fx::Resources(profile, fx::kF16Types),
+                             spec::mappings::Dsv4Mapping());
+  auto values = fam::Dsv4Values(profile);
+  ASSERT_TRUE(values) << values.error();
+  auto spec = spec::Synthesize(spec::mappings::Dsv4Mapping(), source, *values);
+  ASSERT_TRUE(spec) << spec.error();
+  auto layout = StageLayout(*spec, 0, 257, 8);
+  ASSERT_TRUE(layout) << layout.error();
+  const Bindings bindings{.tensors = source.tensors, .state = &*layout};
+  const planner::StepShape shape{.segments = {Seg(0, 4, 2, 256, 4)}};
+  auto ordinary = BuildStep(*spec, 0, shape, bindings);
+  ASSERT_TRUE(ordinary) << ordinary.error();
+  auto selected = BuildStep(*spec, 0, shape, bindings, {.dsv4_lid_mask = true});
+  ASSERT_TRUE(selected) << selected.error();
+  const auto count = [](const ir::Graph& graph, ir::Op op) {
+    return std::ranges::count_if(graph.nodes(),
+                                 [op](const auto& node) { return node.key == ir::Primitive(op); });
+  };
+  EXPECT_EQ(count(selected->graph, ir::Op::kAttention), 4);
+  EXPECT_EQ(count(selected->graph, ir::Op::kSelectedMask), 2);
+  EXPECT_EQ(count(selected->graph, ir::Op::kMaskBuild),
+            count(ordinary->graph, ir::Op::kMaskBuild) - 1);
+  // The HCA's unselected compressed bank still reads its causal mask;
+  // only the two CSA layers receive a mask from indexer selection.
+  int causal_compressed = 0;
+  for (const auto& node : selected->graph.nodes()) {
+    if (node.key != ir::Primitive(ir::Op::kAttention)) continue;
+    const auto& mask = selected->graph.node(selected->graph.producer(node.src[3]));
+    if (mask.key != ir::Primitive(ir::Op::kConcat)) continue;
+    ++causal_compressed;
+  }
+  EXPECT_EQ(causal_compressed, 1);
+}
+
 TEST(ComponentsDsv4Test, RoundedIndexerUsesCompletedCountsAndOneFullSelectedMask) {
   auto profile = Tiny();
   profile.layers = 1;

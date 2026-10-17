@@ -374,6 +374,9 @@ struct MaskUse {
   std::uint16_t tensor = 0;
   std::uint32_t window = 0;
   bool ahead = false;
+  // An enabled indexer mask policy supplies this mask through selection
+  // instead of the framework's causal mask.
+  bool indexer_selected = false;
 };
 
 struct ComponentDef {

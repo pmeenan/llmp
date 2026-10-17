@@ -1392,6 +1392,9 @@ TEST(ComponentsTest, BuildStepMakesTheGemmaStepsFromTheirSpecs) {
     const planner::StepShape two{.segments = {Seg(3, 3, 4351, 4608, 1), Seg(1, 1, 7, 256, 1)}};
     auto step = BuildStep(m.spec, 0, two, bindings);
     ASSERT_TRUE(step.has_value()) << step.error();
+    auto indexed_policy = BuildStep(m.spec, 0, two, bindings, {.dsv4_lid_mask = true});
+    ASSERT_TRUE(indexed_policy) << indexed_policy.error();
+    EXPECT_EQ(indexed_policy->graph.Digest(), step->graph.Digest());
     const ir::Graph& g = step->graph;
     EXPECT_EQ(Count(g, ir::Op::kAttention), m.layers * 2);
     EXPECT_EQ(Count(g, ir::Op::kCacheStore), m.layers * 4);
@@ -1966,6 +1969,14 @@ TEST(ComponentsTest, Gemma4AssistantStageReadsItsTarget) {
                          .artifacts = artifacts});
   ASSERT_TRUE(step.has_value()) << step.error();
   EXPECT_EQ(CountIn(step->graph, ir::Op::kCacheStore), 0U);
+  auto indexed_policy = BuildStep(s, 1, draft,
+                                  {.tensors = assistant.tensors,
+                                   .state = &*drafter_layout,
+                                   .stages = layouts,
+                                   .artifacts = artifacts},
+                                  {.dsv4_lid_mask = true});
+  ASSERT_TRUE(indexed_policy) << indexed_policy.error();
+  EXPECT_EQ(indexed_policy->graph.Digest(), step->graph.Digest());
   EXPECT_EQ(CountIn(step->graph, ir::Op::kAttention), 8U);
   ASSERT_TRUE(step->features.valid());
   EXPECT_EQ(step->graph.tensor(step->features).ne(0), p.width);

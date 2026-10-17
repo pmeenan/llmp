@@ -1493,6 +1493,10 @@ TensorId SegmentPositions(RewriteContext& r, const StepShape* shape, TensorId po
                           first * 4);
 }
 
+bool PrimitiveDefinition(const MatchContext& c, Building& match, const ir::Graph& definition,
+                         TensorId expected, TensorId actual, std::span<const TensorId> sources,
+                         const ir::Node& anchor, std::vector<TensorId>& mapped);
+
 }  // namespace
 
 // ------------------------------------------------ DeepSeek local fast forms
@@ -1658,7 +1662,11 @@ std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
   if (!Is(c, rope, Op::kRope) || Only(c, c.node(reshape1).src[0]) != reshape1) return std::nullopt;
   const ir::Node& ro = c.node(rope);
   const auto rp = ro.Params<ir::RopeParams>();
-  if (!rp.inverse || rp.mode != ir::RopeMode::kNormal || rp.dims != 64) return std::nullopt;
+  // The kernel rotates only the last 64 channels and computes its own
+  // frequencies. Preserve the primitive graph for every other rotation.
+  if (!rp.inverse || rp.mode != ir::RopeMode::kNormal || rp.dims != 64 || rp.offset != 448 ||
+      rp.table || ro.src[2].valid())
+    return std::nullopt;
 
   const ir::TensorDesc& heads = c.tensor(ro.src[0]);
   const auto rows = heads.ne(2);
@@ -1676,17 +1684,31 @@ std::optional<Match> Dsv4OutAMatch(const MatchContext& c, NodeId anchor) {
     return std::nullopt;
   }
 
-  Building b(c);
-  if (!b.Add({rope, reshape1, perm1, matmul, perm2, anchor})) return std::nullopt;
-  if (weight_out_a != mm.src[0] && !b.Add(groups_node)) return std::nullopt;
   const std::array<TensorId, 3> sources = {weight_out_a, ro.src[0], ro.src[1]};
   const std::array<TensorId, 1> outputs = {cont.out[0]};
   const std::array<const ir::TensorDesc*, 1> descs = {&c.tensor(cont.out[0])};
 
-  if (!b.Closed(outputs) ||
-      !Has(c, ir::Fused(FusedKind::kDsv4OutA), Descs(c, sources), descs, ir::ToBytes(rp))) {
+  if (!Has(c, ir::Fused(FusedKind::kDsv4OutA), Descs(c, sources), descs, ir::ToBytes(rp))) {
     return std::nullopt;
   }
+  // Authenticate the complete assembly: valid overall input/output sizes
+  // alone do not establish which rows and groups the product multiplies.
+  ir::Builder definition_builder;
+  std::array<TensorId, 3> inputs{};
+  for (std::size_t i = 0; i < sources.size(); ++i)
+    inputs[i] = definition_builder.Input(c.tensor(sources[i]).format);
+  const auto expanded = ir::Decompose(definition_builder, ir::Fused(FusedKind::kDsv4OutA),
+                                      ir::ToBytes(rp), inputs, {});
+  if (!definition_builder.ok() || expanded.n != 1) return std::nullopt;
+  definition_builder.Output(expanded[0]);
+  auto definition = std::move(definition_builder).Finish();
+  if (!definition) return std::nullopt;
+  Building b(c);
+  std::vector<TensorId> mapped(definition->tensor_count());
+  if (!PrimitiveDefinition(c, b, *definition, definition->outputs()[0], outputs[0], sources, cont,
+                           mapped) ||
+      !b.Closed(outputs))
+    return std::nullopt;
 
   const auto emit = [=](RewriteContext& r, int) {
     ContextOf(r, r.original().node(anchor));

@@ -1600,7 +1600,8 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
   if (options.dsv4_lid_mask) {
     for (const auto& layer : instances->layers) {
       for (const auto& in : layer) {
-        if (in.def->kind == "attention.mqa" && in.params.Flag("indexer")) {
+        if (in.def->masks != nullptr &&
+            std::ranges::any_of(in.def->masks(in), &MaskUse::indexer_selected)) {
           has_indexer = true;
           break;
         }
@@ -1695,8 +1696,7 @@ std::expected<StepGraph, std::string> BuildStep(const spec::ModelSpec& spec, std
       }
       if (in.def->masks != nullptr) {
         for (const MaskUse& m : in.def->masks(in)) {
-          if ((options.rounded_indexer || (options.dsv4_lid_mask && in.params.Flag("indexer"))) &&
-              st.contract.tensors.at(m.tensor).kind == model::StateKind::kCompressed) {
+          if ((options.rounded_indexer || options.dsv4_lid_mask) && m.indexer_selected) {
             continue;
           }
           masks.push_back({.cells = KeyOf(st.contract.tensors.at(m.tensor), st.cells.at(m.tensor)),

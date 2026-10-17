@@ -1508,6 +1508,9 @@ TEST(ComponentsQwen38Test, TheTargetWritesItsDraftersStreamsEveryRow) {
         std::pair{planner::StepShape{.segments = {Seg(0, 16, 0, 256, 0)}}, false}}) {
     auto step = BuildStep(*spec, 0, shape, target_bindings);
     ASSERT_TRUE(step.has_value()) << step.error();
+    auto indexed_policy = BuildStep(*spec, 0, shape, target_bindings, {.dsv4_lid_mask = true});
+    ASSERT_TRUE(indexed_policy) << indexed_policy.error();
+    EXPECT_EQ(indexed_policy->graph.Digest(), step->graph.Digest());
     // Every owner's rows at their cells (the rows before the chunk first).
     EXPECT_EQ(streams_stores(*step), shape.segments.size());
     EXPECT_EQ(step->logits.valid(), outputs);

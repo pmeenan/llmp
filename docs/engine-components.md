@@ -772,7 +772,10 @@ A component is everything one building block needs, declared once:
    which ranges a step reads and writes, and whether the state supports
    truncation, snapshot or neither for speculative rollback. The live-state
    skeleton derives regions, backing, spill, restore, snapshot and adoption
-   from this contract; no runner writes them.
+   from this contract; no runner writes them. Each mask use also declares
+   whether indexer selection supplies it, so an enabled indexer policy
+   leaves other components' causal masks intact without reading their
+   private parameters.
 4. **Batching capability**: which ops join rows across requests (products,
    routed experts, heads) and which stay per owner (attention over one
    request's cache, recurrences), so the wave composer can join any model.
@@ -2430,7 +2433,10 @@ constants and the selected head's rows from its tensors),
 its envelope (context, owners, the context above which one owner; a
 default context is cut to it) and the gate keys that select its mapping's
 policy rule. The inventory digest covers every tensor's name, encoding,
-layout, part, stacking, parameters and shape; receipts are the importer's
+layout, part, stacking, parameters and shape. Expert counts and affine
+quantization parameters are checkpoint properties pinned by that digest,
+not constants in admission's format checks; execution capabilities still
+decide which implementations support them. Receipts are the importer's
 declared ones, not re-hashed. Admission compares digests; it no longer
 synthesizes an expected spec from a compiled profile (every row pins one;
 Qwen3.8's ModelOpt and MLX rows since their native imports of 2026-10-15,

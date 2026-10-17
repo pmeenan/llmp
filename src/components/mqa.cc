@@ -379,7 +379,8 @@ std::vector<MaskUse> Masks(const Instance& in) {
   std::vector<MaskUse> out{{.tensor = kWindowKv,
                             .window = static_cast<std::uint32_t>(d.window),
                             .ahead = d.cache == Cache::kInjected}};
-  if (d.ratio != 0) out.push_back({.tensor = kCompressed, .window = 0});
+  if (d.ratio != 0)
+    out.push_back({.tensor = kCompressed, .window = 0, .indexer_selected = d.indexer});
   return out;
 }
 

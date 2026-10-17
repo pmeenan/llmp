@@ -1116,15 +1116,14 @@ bool AcceptsDsv4OutA(const ex::CapabilityQuery& q) {
   const auto tokens = Ne(q, 1, 2);
   if (!Built(q) || !p || tokens < static_cast<std::uint64_t>(kDsv4OutAMinRows) ||
       tokens > static_cast<std::uint64_t>(kDsv4OutAMaxRows) ||
-      (!ShapedOperand(q, 0, {4096, 8192, 1, 1}) && !ShapedOperand(q, 0, {4096, 1024, 8, 1}) &&
-       !ShapedOperand(q, 0, {2048, 8192, 1, 1})) ||
+      (!ShapedOperand(q, 0, {4096, 8192, 1, 1}) && !ShapedOperand(q, 0, {4096, 1024, 8, 1})) ||
       !ShapedOperand(q, 1, {512, 64, tokens, 1}) || !ShapedOperand(q, 2, {tokens, 1, 1, 1}) ||
       !ShapedOperand(q, kOut, {8192, tokens, 1, 1}) || Has(q, 3))
     return false;
   const auto& r = *p;
   const std::array values{r.base, r.scale, r.ext_factor, r.attn_factor, r.beta_fast, r.beta_slow};
   return r.mode == ir::RopeMode::kNormal && r.inverse && !r.table && r.dims == 64 &&
-         (r.offset == 448 || r.offset == 0) &&
+         r.offset == 448 &&
          r.original_context <=
              static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) &&
          std::ranges::all_of(values, [](float v) { return std::isfinite(v); }) && r.base > 0 &&

@@ -22,6 +22,7 @@
 #include "components/step.h"
 #include "platform/direct_io.h"
 #include "runtime/approvals.h"
+#include "runtime/component_admission_internal.h"
 #include "spec/image_family.h"
 #include "spec/stored.h"
 
@@ -42,7 +43,8 @@ constexpr auto kRefusedInventory =
 // One tensor's native format within the approved inventory's form.
 bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
   const auto& f = t.format;
-  if (!format::Validate(f)) return false;
+  const auto parts = format::PartsOf(f);
+  if (!parts || !parts->Find(t.part)) return false;
   if (f.stacked != 1 && form != InventoryForm::kModelOpt) return false;
   switch (form) {
     case InventoryForm::kExl3: {
@@ -61,11 +63,12 @@ bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
     case InventoryForm::kModelOpt:
     case InventoryForm::kMlx: {
       const bool modelopt = form == InventoryForm::kModelOpt;
-      // Dense: BF16, or F32 (the importer's folded parameters; ModelOpt's
+      // Dense: F16/BF16, or F32 (the importer's folded parameters; ModelOpt's
       // gathered tensor-scale vectors), and for ModelOpt I32 (a draft
       // head's map).
       if (f.layout == format::Layout::kDense)
-        return (f.encoding == format::Encoding::kBF16 || f.encoding == format::Encoding::kF32 ||
+        return (f.encoding == format::Encoding::kF16 || f.encoding == format::Encoding::kBF16 ||
+                f.encoding == format::Encoding::kF32 ||
                 (modelopt && f.encoding == format::Encoding::kI32)) &&
                t.part == format::PartRole::kData && f.params == format::EncodingParams{} &&
                f.stacked == 1 && !t.experts && f.shape.rank >= 1 && f.shape.rank <= 2;
@@ -74,7 +77,7 @@ bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
       // scales gathered apart), an NVFP4 row table row-interleaved.
       if (modelopt && f.layout == format::Layout::kScaleAtoms)
         return f.encoding == format::Encoding::kNvfp4 && t.experts && f.shape.rank == 3 &&
-               f.shape.ne[2] == 512 && (f.stacked == 1 || f.stacked == 2) &&
+               (f.stacked == 1 || f.stacked == 2) &&
                (t.part == format::PartRole::kCodes || t.part == format::PartRole::kBlockScales) &&
                !f.params.tensor_scale && f.params.k_bits == 0;
       if (modelopt && f.layout == format::Layout::kRowInterleaved)
@@ -84,7 +87,7 @@ bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
                f.params.tensor_scale && f.params.k_bits == 0;
       if (f.layout != format::Layout::kSplit || f.stacked != 1) return false;
       const bool geometry =
-          t.experts ? (f.shape.rank == 3 && f.shape.ne[2] == 512)
+          t.experts ? f.shape.rank == 3
                     : (form == InventoryForm::kModelOpt ? f.shape.rank == 2
                                                         : (f.shape.rank >= 1 && f.shape.rank <= 2));
       if (form == InventoryForm::kModelOpt) {
@@ -96,13 +99,14 @@ bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
                f.params.tensor_scale == nv && f.params.k_bits == 0 &&
                f.params.codebook == format::Exl3Codebook::kNone && geometry;
       }
+      // Affine widths, groups and scale types are the format layer's
+      // structural rules, not the qualified checkpoint's constants (or a
+      // decoder's capability list). The pinned inventory qualifies the
+      // exact parameters; implementation selection checks capability.
       return f.encoding == format::Encoding::kAffine &&
              (t.part == format::PartRole::kCodes || t.part == format::PartRole::kBlockScales ||
               t.part == format::PartRole::kBiases) &&
-             f.params.bits == 4 && f.params.group == 32 &&
-             f.params.scale == format::AffineScale::kBF16 && !f.params.zero_point &&
-             !f.params.tensor_scale && f.params.k_bits == 0 &&
-             f.params.codebook == format::Exl3Codebook::kNone && geometry;
+             !f.params.zero_point && geometry;
     }
     case InventoryForm::kDense:
       return (f.encoding == format::Encoding::kBF16 || f.encoding == format::Encoding::kF32) &&
@@ -118,12 +122,15 @@ bool Admissible(const spec::SourceTensor& t, InventoryForm form) {
                                                          : format::Layout::kDense);
 }
 
+}  // namespace
+
 // The approved inventory: every tensor admissible in its form, and the
 // digest of every tensor's complete native description, sorted by name:
 // its name, encoding, layout (by its enumerator), part role, stacked count,
 // expert flag, every encoding parameter and its dimensions, one line each
 // field.
-std::expected<void, std::string> Inventory(const spec::Source& source, const Approval& approval) {
+std::expected<void, std::string> internal::CheckInventory(const spec::Source& source,
+                                                          const Approval& approval) {
   std::vector<const spec::SourceTensor*> sorted;
   sorted.reserve(source.tensors.size());
   for (const auto& t : source.tensors) {
@@ -162,6 +169,8 @@ std::expected<void, std::string> Inventory(const spec::Source& source, const App
         actual_hash, approval.inventory));
   return {};
 }
+
+namespace {
 
 // The source the approval names: its container, importer folds and tensor
 // count.
@@ -427,7 +436,7 @@ std::expected<void, std::string> CheckComponentDrafterAdmission(
   if (!approval->drafter) return Refused("not an approved drafter execution profile");
   if (!SourceMatches(source, *approval))
     return Refused("source container, transforms or tensor inventory differs from its profile");
-  return Inventory(source, *approval);
+  return internal::CheckInventory(source, *approval);
 }
 
 std::expected<void, std::string> CheckComponentAdmission(
@@ -441,7 +450,7 @@ std::expected<void, std::string> CheckComponentAdmission(
   if (model.pipeline != spec::PipelineKind::kLlm || model.stages.size() != 1 ||
       model.stages[0].role != spec::StageRole::kTarget || model.stages[0].artifact != 0)
     return Refused("the stored pipeline is not an approved standalone target");
-  if (auto inventory = Inventory(source, *approval); !inventory) return inventory;
+  if (auto inventory = internal::CheckInventory(source, *approval); !inventory) return inventory;
   const auto& stage = model.stages.front();
   if (approval->tied_output &&
       (!stage.embedding || !stage.heads.output || stage.embedding->weights.size() != 1 ||
@@ -626,7 +635,7 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
     if (!source) return Refused(source.error());
     if (!SourceMatches(*source, want))
       return Refused("source container, transforms or tensor inventory differs from its profile");
-    if (auto inventory = Inventory(*source, want); !inventory)
+    if (auto inventory = internal::CheckInventory(*source, want); !inventory)
       return std::unexpected(inventory.error());
     auto stored = spec::StoredSpec(*a);
     if (!stored) return Refused(stored.error());

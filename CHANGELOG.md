@@ -24,6 +24,16 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- Component planning can enable indexed compressed-attention masks alongside
+  dense, borrowed and QSA attention without reading another component's
+  parameter schema. Other attention masks keep their ordinary behavior.
+- The fused output-A projection keeps unsupported group geometries, rotation
+  offsets and frequency inputs on the primitive path instead of aborting or
+  changing the requested arithmetic.
+- Native checkpoint admission takes expert counts and affine quantization
+  parameters from the approved inventory instead of hardcoding Qwen3.8's
+  values. Source, spec and complete tensor-inventory approval checks still
+  apply; this does not qualify additional checkpoints for serving.
 - A node whose shared workspace fits beside its largest model's weights
   maps it resident at the start again, as one region, and pages it with the
   active model only when it does not fit (the start logs which and why).

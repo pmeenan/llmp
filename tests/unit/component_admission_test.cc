@@ -24,6 +24,7 @@
 #include "base/bytes.h"
 #include "base/sha256.h"
 #include "dsv4_gguf_normalization_fixture.h"
+#include "expected_error.h"
 #include "families/gemma.h"
 #include "import/normalize.h"
 #include "qwen2_exl3_normalization_fixture.h"
@@ -31,6 +32,7 @@
 #include "qwen38_fixture.h"
 #include "qwen38_gguf_normalization_fixture.h"
 #include "runtime/calibration.h"
+#include "runtime/component_admission_internal.h"
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
@@ -70,6 +72,203 @@ class ComponentAdmissionTest : public testing::Test {
     model = std::move(*made);
   }
 };
+
+// These descriptor-only approvals pin small independent inventories, not
+// production checkpoints. The literal digests cover the dense F16 tensor
+// and every part of the expert table and affine matrix; they are never
+// derived by admission.
+struct InventoryCase {
+  std::string name;
+  rt::InventoryForm form;
+  fm::TensorFormat format;
+  std::string_view digest;
+};
+
+InventoryCase ModelOptInventory(std::string name, fm::Encoding encoding, fm::Layout layout,
+                                std::uint8_t stacked, std::uint64_t experts,
+                                std::string_view digest) {
+  return {.name = std::move(name),
+          .form = rt::InventoryForm::kModelOpt,
+          .format = {.encoding = encoding,
+                     .params = {.tensor_scale = encoding == fm::Encoding::kNvfp4 &&
+                                                layout == fm::Layout::kSplit},
+                     .layout = layout,
+                     .shape = {.ne = {128, 256, experts, 1}, .rank = 3},
+                     .stacked = stacked},
+          .digest = digest};
+}
+
+InventoryCase MlxInventory(std::uint8_t bits, std::uint32_t group, fm::AffineScale scale,
+                           std::string_view digest) {
+  const auto scale_name = fm::Info(fm::AffineScaleEncoding(scale)).name;
+  return {.name = "Affine" + std::to_string(bits) + "Group" + std::to_string(group) +
+                  std::string(scale_name),
+          .form = rt::InventoryForm::kMlx,
+          .format = {.encoding = fm::Encoding::kAffine,
+                     .params = {.bits = bits, .group = group, .scale = scale},
+                     .layout = fm::Layout::kSplit,
+                     .shape = {.ne = {128, 64, 8, 1}, .rank = 3}},
+          .digest = digest};
+}
+
+class ComponentInventoryTest : public testing::TestWithParam<InventoryCase> {
+ protected:
+  sp::Source source;
+  rt::Approval approval;
+  void SetUp() override {
+    const auto& c = GetParam();
+    source.architecture = "inventory-test";
+    source.container = c.form == rt::InventoryForm::kMlx ? "mlx" : "safetensors";
+    source.tensors = {
+        {.name = "dense.weight",
+         .format = {.encoding = fm::Encoding::kF16,
+                    .layout = fm::Layout::kDense,
+                    .shape = {.ne = {128, 64, 1, 1}, .rank = 2}}},
+        {.name = "weight", .format = c.format, .part = fm::PartRole::kCodes, .experts = true},
+        {.name = "weight",
+         .format = c.format,
+         .part = fm::PartRole::kBlockScales,
+         .experts = true}};
+    if (c.form == rt::InventoryForm::kMlx || c.format.params.tensor_scale)
+      source.tensors.push_back({.name = "weight",
+                                .format = c.format,
+                                .part = c.form == rt::InventoryForm::kMlx
+                                            ? fm::PartRole::kBiases
+                                            : fm::PartRole::kTensorScale,
+                                .experts = true});
+    if (c.form == rt::InventoryForm::kMlx) {
+      auto matrix = c.format;
+      matrix.shape.rank = 2;
+      matrix.shape.ne[2] = 1;
+      for (const auto part :
+           {fm::PartRole::kCodes, fm::PartRole::kBlockScales, fm::PartRole::kBiases})
+        source.tensors.push_back({.name = "linear.weight", .format = matrix, .part = part});
+    }
+    approval = {.name = c.name,
+                .architecture = source.architecture,
+                .container = source.container,
+                .tensors = source.tensors.size(),
+                .arrays = 1,
+                .form = c.form,
+                .inventory = c.digest};
+  }
+};
+
+TEST_P(ComponentInventoryTest, ExplicitApprovalAcceptsAlternateExpertCountsAndAffineParameters) {
+  const auto checked = rt::internal::CheckInventory(source, approval);
+  ASSERT_TRUE(checked) << (checked ? "" : checked.error());
+  // The complete digest is independent of descriptor ordering.
+  std::ranges::reverse(source.tensors);
+  EXPECT_TRUE(rt::internal::CheckInventory(source, approval));
+}
+
+TEST_P(ComponentInventoryTest, PinnedInventoryRejectsDigestShapeEncodingAndParameterMutations) {
+  const auto original = source;
+  const auto differs = [](const std::string& error) {
+    return error.contains("native tensor inventory differs from the approved checkpoint");
+  };
+  auto wrong_pin = approval;
+  wrong_pin.inventory = "0000000000000000000000000000000000000000000000000000000000000000";
+  EXPECT_EQ(llmp::test_support::Failed(rt::internal::CheckInventory(source, wrong_pin), differs),
+            true);
+  // These mutations remain structurally admissible, so rejection must be
+  // by the immutable digest rather than a checkpoint-specific shape rule.
+  for (auto& t : source.tensors)
+    if (t.experts) ++t.format.shape.ne[2];
+  EXPECT_EQ(llmp::test_support::Failed(rt::internal::CheckInventory(source, approval), differs),
+            true);
+  source = original;
+  source.tensors.front().format.encoding = fm::Encoding::kBF16;
+  EXPECT_EQ(llmp::test_support::Failed(rt::internal::CheckInventory(source, approval), differs),
+            true);
+  if (approval.form == rt::InventoryForm::kMlx) {
+    for (int mutation = 0; mutation != 3; ++mutation) {
+      SCOPED_TRACE(mutation);
+      source = original;
+      for (auto& t : source.tensors) {
+        if (!t.experts) continue;
+        auto& params = t.format.params;
+        if (mutation == 0) params.bits = params.bits == 4 ? 8 : 4;
+        if (mutation == 1) params.group = params.group == 32 ? 64 : 32;
+        if (mutation == 2)
+          params.scale = params.scale == fm::AffineScale::kF16 ? fm::AffineScale::kBF16
+                                                               : fm::AffineScale::kF16;
+      }
+      EXPECT_EQ(llmp::test_support::Failed(rt::internal::CheckInventory(source, approval), differs),
+                true);
+    }
+  }
+}
+
+TEST_P(ComponentInventoryTest, GenericStructureRejectsInvalidExpertGeometryAndParts) {
+  const auto original = source;
+  constexpr std::string_view kStructureError =
+      "component artifact admission: native tensor layout, part, parameters or expert geometry "
+      "differs";
+  for (int mutation = 0; mutation != 5; ++mutation) {
+    SCOPED_TRACE(mutation);
+    source = original;
+    auto& t = source.tensors[1];
+    if (mutation == 0) t.format.shape.ne[2] = 0;
+    if (mutation == 1) {
+      // A valid matrix format cannot describe an expert array.
+      t.format.shape.rank = 2;
+      t.format.shape.ne[2] = 1;
+    }
+    if (mutation == 2) t.part = fm::PartRole::kData;
+    if (mutation == 3) t.format.stacked = 0;
+    if (mutation == 4) {
+      if (approval.form == rt::InventoryForm::kMlx)
+        t.format.params.group = 0;
+      else
+        t.format.shape.ne[0] = 127;  // not whole NVFP4/MXFP8 blocks
+    }
+    EXPECT_EQ(llmp::test_support::Failed(rt::internal::CheckInventory(source, approval)),
+              kStructureError);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ExplicitApprovals, ComponentInventoryTest,
+    testing::Values(
+        ModelOptInventory("Nvfp4Split8Experts", fm::Encoding::kNvfp4, fm::Layout::kSplit, 1, 8,
+                          "9be42456b6011e75207978d20cb7065d2b4414499819f8b8eeee227275577fd4"),
+        ModelOptInventory("Mxfp8Split64Experts", fm::Encoding::kMxfp8, fm::Layout::kSplit, 1, 64,
+                          "066262bcff9e44b7db430a54c32a00be1a29e2453d10dab53c3d4380aa191af3"),
+        ModelOptInventory("Nvfp4ScaleAtoms7Experts", fm::Encoding::kNvfp4, fm::Layout::kScaleAtoms,
+                          1, 7, "b6a40f817de8c0059b2d3418bed55cd2b999c33192c439b0a99183252b17f0dc"),
+        ModelOptInventory("Nvfp4StackedScaleAtoms16Experts", fm::Encoding::kNvfp4,
+                          fm::Layout::kScaleAtoms, 2, 16,
+                          "9d0c0a20b6ccf45a429bc0d30f0702bfd7c4aea9fefc540767b59164cc92802a"),
+        MlxInventory(4, 32, fm::AffineScale::kF16,
+                     "840ea77db0852ee13534ba17e47f7ac76d95d9b82d84cc9669f72b02b1f0a88b"),
+        MlxInventory(4, 32, fm::AffineScale::kBF16,
+                     "ae3c027084b41c84ef963cba255a0915dd0fc4102263252a4b15e473938f6d2e"),
+        MlxInventory(4, 64, fm::AffineScale::kF16,
+                     "7993d555be8ff0fcef2439251441c8f0b9174d956ba9d981152b1d6e967e5c10"),
+        MlxInventory(4, 64, fm::AffineScale::kBF16,
+                     "cbe6a966652357de6e92f285bb476a18cb529f9668db3b73f09a055818c68da6"),
+        MlxInventory(4, 128, fm::AffineScale::kF16,
+                     "2e72cc64ca3a96eb63e1667b9d578a70e893454628175ab5bf3bcd5476b29579"),
+        MlxInventory(4, 128, fm::AffineScale::kBF16,
+                     "c690b1b50094d34adb4de744bbe545f4774958e1ca319003c6b75a9b184187fa"),
+        MlxInventory(8, 32, fm::AffineScale::kF16,
+                     "424ce8883b291925e7353039ac0460aea7ed1fd10de66a52d3a029660ffef16b"),
+        MlxInventory(8, 32, fm::AffineScale::kBF16,
+                     "b4cb467d4db0d032090a6d94f18124532ce8df39fd35dc19a963e6a5e2baf1f9"),
+        MlxInventory(8, 64, fm::AffineScale::kF16,
+                     "ca8e9f80bc32001eddabe8c52bd35461035a8120cfadae1f4d04bb797a9646bb"),
+        MlxInventory(8, 64, fm::AffineScale::kBF16,
+                     "bdd85d682602bef01d73c7d546327ee32beb3d1ce63660a33e11b274bb12055f"),
+        MlxInventory(8, 128, fm::AffineScale::kF16,
+                     "48b663ba8aec4b7735c748380365a062d86f9975d1f0f6b26b4f3f61380840b6"),
+        MlxInventory(8, 128, fm::AffineScale::kBF16,
+                     "1bd4fb54172b709a871634b6f3dfab4f9a31e39645aa32c61b11704a99462ac4"),
+        // A format-valid configuration beyond the shared GPU decoder's
+        // current capability list: inventory qualification is separate.
+        MlxInventory(3, 16, fm::AffineScale::kF32,
+                     "fc4ddbe599ecf50d4a373f37455318cf5dd99fd30d30639d71a2d3817f5ea000")),
+    [](const testing::TestParamInfo<InventoryCase>& info) { return info.param.name; });
 
 TEST_F(ComponentAdmissionTest, ActualSpecChangesInvalidateCalibrationForTheSameArtifact) {
   rt::CalibrationKey key{.artifact = std::string(64, 'a'),
@@ -624,7 +823,7 @@ TEST(ComponentAdmissionModelOptTest,
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262144, .slots = 0}));
 
-  for (unsigned mutation = 0; mutation != 8; ++mutation) {
+  for (unsigned mutation = 0; mutation != 9; ++mutation) {
     auto changed_model = model;
     auto changed_source = source;
     auto changed_origins = origins;
@@ -645,6 +844,10 @@ TEST(ComponentAdmissionModelOptTest,
     if (mutation == 7) {
       changed_model.stages[0].heads.output->weights[0].tensor =
           changed_model.stages[0].embedding->weights[0].tensor;
+    }
+    if (mutation == 8) {
+      for (auto& t : changed_source.tensors)
+        if (t.experts) t.format.shape.ne[2] = 16;
     }
     EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
         << mutation;
@@ -698,7 +901,7 @@ TEST(ComponentAdmissionMlxTest,
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262144, .slots = 0}));
 
-  for (unsigned mutation = 0; mutation != 9; ++mutation) {
+  for (unsigned mutation = 0; mutation != 12; ++mutation) {
     auto changed_model = model;
     auto changed_source = source;
     auto changed_origins = origins;
@@ -726,6 +929,17 @@ TEST(ComponentAdmissionMlxTest,
       });
       ASSERT_NE(it, changed_source.tensors.end());
       it->format.params.zero_point = true;
+    }
+    if (mutation == 9) {
+      for (auto& t : changed_source.tensors)
+        if (t.experts) t.format.shape.ne[2] = 16;
+    }
+    if (mutation == 10 || mutation == 11) {
+      for (auto& t : changed_source.tensors) {
+        if (t.format.encoding != fm::Encoding::kAffine) continue;
+        if (mutation == 10) t.format.params.group = 64;
+        if (mutation == 11) t.format.params.scale = fm::AffineScale::kF16;
+      }
     }
     EXPECT_FALSE(rt::CheckComponentAdmission(changed_model, changed_source, changed_origins))
         << mutation;

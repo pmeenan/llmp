@@ -1505,6 +1505,89 @@ TEST(GgmlLowerDsv4Test, StridedHcPostBoundariesRetainThePrimitiveFallback) {
   }
 }
 
+TEST(GgmlLowerDsv4Test, OutARequiresItsKernelGeometryAndTailRotation) {
+  using llmp::format::Encoding;
+  const auto* capability = kg::CapabilityOf(kg::kDsv4OutAFastPackName);
+  ASSERT_NE(capability, nullptr);
+  for (const bool grouped : {false, true}) {
+    for (const std::uint64_t per : {2048ULL, 4096ULL}) {
+      for (const std::uint32_t offset : {0U, 448U}) {
+        ir::RopeParams p{.inverse = true, .dims = 64, .offset = offset, .base = 10000};
+        const auto raw = ir::ToBytes(p);
+        const std::array<ex::OperandFormat, 4> operands{
+            {{.operand = 0,
+              .encoding = Encoding::kQ8_0,
+              .ne = grouped ? std::array<std::uint64_t, 4>{per, 1024, 8, 1}
+                            : std::array<std::uint64_t, 4>{per, 8192, 1, 1}},
+             {.operand = 1, .encoding = Encoding::kF32, .ne = {512, 64, 64, 1}},
+             {.operand = 2, .encoding = Encoding::kI32, .ne = {64, 1, 1, 1}},
+             {.operand = ex::kOutputOperand, .encoding = Encoding::kF32, .ne = {8192, 64, 1, 1}}}};
+        const ex::CapabilityQuery query{
+            .op = capability->op, .operands = operands, .arch = 121, .params = raw};
+        EXPECT_EQ(capability->accepts(query), per == 4096 && offset == 448);
+      }
+    }
+  }
+}
+
+TEST(GgmlLowerDsv4Test, OutAFusionKeepsUnsupportedShapesAndFrequenciesPrimitive) {
+  using llmp::format::Encoding;
+  for (int variant = 0; variant < 6; ++variant) {
+    SCOPED_TRACE(variant);
+    const std::uint64_t per = variant == 1 ? 2048 : 4096;
+    const std::uint64_t groups = 32768 / per;
+    const bool grouped = variant >= 4;
+    ir::Builder b;
+    std::vector<co::StepInput> inputs;
+    const auto input = [&](Encoding encoding, llmp::format::Shape shape) {
+      auto format = ir::Dense(encoding, shape);
+      if (encoding == Encoding::kQ8_0) format.layout = llmp::format::Layout::kGgmlBlocks;
+      const auto id = b.Input(format);
+      inputs.push_back({.tensor = id, .kind = co::InputKind::kFeatures});
+      return id;
+    };
+    const auto weights =
+        input(Encoding::kQ8_0, grouped ? ir::ShapeOf({per, 1024, 8}) : ir::ShapeOf({per, 8192}));
+    const auto heads = input(Encoding::kF32, ir::ShapeOf({512, 64, 64}));
+    const auto positions = input(Encoding::kI32, ir::ShapeOf({64}));
+    const auto frequencies =
+        variant == 3 ? input(Encoding::kF32, ir::ShapeOf({32})) : ir::TensorId{};
+    const ir::RopeParams params{
+        .inverse = true, .dims = 64, .offset = variant == 2 ? 0U : 448U, .base = 10000};
+    const auto rotated = b.Rope(heads, positions, frequencies, params);
+    const auto grouped_heads =
+        variant == 5 ? ir::ShapeOf({per, 64, groups}) : ir::ShapeOf({per, groups, 64});
+    const auto values = b.Permute(b.Reshape(rotated, grouped_heads), {0, 2, 1, 3});
+    const auto matrices =
+        grouped ? weights : b.Reshape(weights, ir::ShapeOf({per, 8192 / groups, groups}));
+    b.Output(b.Cont(b.Permute(b.MatMul(matrices, values), {0, 2, 1, 3}), ir::ShapeOf({8192, 64})));
+    auto graph = std::move(b).Finish();
+    ASSERT_TRUE(graph) << graph.error().detail;
+    co::StepGraph step{.graph = std::move(*graph), .inputs = inputs, .weights = {}, .state = {}};
+    const pl::StepShape shape{.segments = {{.rows = 64, .outputs = 0, .want_head = false}}};
+    auto registry = Registry();
+    pl::Policy policy;
+    policy.enabled = {"dsv4_out_a"};
+    for (const auto& pattern : pl::Patterns())
+      if (pattern.name != "dsv4_out_a") policy.disabled.emplace_back(pattern.name);
+    pl::Canonicalize(policy);
+    std::vector<ir::TensorId> staged;
+    for (const auto& in : inputs) staged.push_back(in.tensor);
+    auto plan = pl::Plan(step.graph.Clone(), registry, {.device_class = "sm_121", .arch = 121},
+                         policy, {.staged = staged, .written = kg::WrittenBytes, .shape = &shape});
+    ASSERT_TRUE(plan) << plan.error().detail;
+    const bool supported = variant == 0 || variant == 4;
+    EXPECT_EQ(plan->applied.empty(), !supported);
+    if (!supported) {
+      EXPECT_TRUE(std::ranges::any_of(plan->graph.nodes(), [](const auto& node) {
+        return node.key == ir::Primitive(ir::Op::kRope);
+      }));
+    }
+    auto lowered = kg::LowerStep({*plan, step, shape, {}, 65536}, registry, Device());
+    ASSERT_TRUE(lowered) << lowered.error().detail;
+  }
+}
+
 TEST(GgmlLowerDsv4Test, CompressorCapabilitiesAndLaunchValidationBoundBothGridAxes) {
   using llmp::format::Encoding;
   const auto* capability = kg::CapabilityOf(kg::kDsv4CompressName);
