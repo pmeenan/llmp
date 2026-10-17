@@ -2914,6 +2914,16 @@ quantized drafters matched to EXL3 targets (M3.5's EXL3 work).
    per node, creator-reported): a 552B encoder-decoder with CSA2 attention
    and a hierarchical indexer, which no GGML code covers. Its ~190 GiB of
    Engram lookup tables may stay row-paged from each node's SSD (D-035).
+   *Owner update, 2026-10-17:* target the updated
+   [`deepseek-ai/DeepSeek-V4.1-Flash-1017`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017)
+   (MIT), a "minor update" of V4.1 Flash with substantial reasoning, coding,
+   agentic and visual gains and shorter outputs; the card names no
+   architecture change (1M context; FP8/BF16 safetensors; it reports 763B
+   parameters, which may count the Engram tables). At entry: confirm the
+   architecture matches, pick a 1017 quant that fits two Sparks (Mia's EXL3
+   if re-made from 1017, else one of the card's linked quants) with its
+   same-format reference, and keep the original V4.1 Flash only as a
+   fallback if no 1017 quant fits.
 
 *Owner addition, 2026-10-16:* a second GLM-5.3 Flash quant,
 [`nvidia/GLM-5.3-Flash-FP4-Local`](https://huggingface.co/nvidia/GLM-5.3-Flash-FP4-Local)
