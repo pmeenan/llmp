@@ -355,7 +355,9 @@ model::StateContract State(const Instance& in) {
                          .window_or_ratio = d.ratio,
                          .basis = model::BlockBasis::kPositions,
                          .dummy_last = true,
-                         .rollback = model::Rollback::kSnapshot});
+                         .rollback = model::Rollback::kSnapshot,
+                         // The compressed cache follows the raw window: one bank.
+                         .bank_with_previous = kind == model::StateKind::kCompressed});
     const std::uint64_t coff = kind == model::StateKind::kIndex ? 2 : Coff(d);
     for (const char* part : {"_kv", "_score"}) {
       c.tensors.push_back({.name = name + part,

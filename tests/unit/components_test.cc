@@ -327,7 +327,7 @@ GemmaStateRef GemmaState(const Profile& p, std::uint32_t context, std::uint32_t 
 TEST(ComponentsTest, StageLayoutsAreTheGemmaLayouts) {
   for (const auto& [context, rows] : {std::pair{4096U, 128U}, {8192U, 512U}, {8192U, 16U}}) {
     const auto want = GemmaState(fam::Gemma2_2B(), context, rows);
-    const auto got = StageLayout(Gemma2Spec(), 0, context, rows, kExtent);
+    const auto got = StageLayoutUniform(Gemma2Spec(), 0, context, rows, kExtent);
     ASSERT_TRUE(got.has_value()) << got.error();
     ASSERT_EQ(got->items.size(), want.tensors.size());
     for (std::size_t i = 0; i < want.tensors.size(); ++i) {
@@ -340,7 +340,7 @@ TEST(ComponentsTest, StageLayoutsAreTheGemmaLayouts) {
   }
   for (const auto& [context, rows] : {std::pair{8192U, 512U}, {131072U, 2048U}}) {
     const auto want = GemmaState(fam::Gemma3_4BQat(), context, rows);
-    const auto got = StageLayout(Gemma3Spec(), 0, context, rows, kExtent);
+    const auto got = StageLayoutUniform(Gemma3Spec(), 0, context, rows, kExtent);
     ASSERT_TRUE(got.has_value()) << got.error();
     ASSERT_EQ(got->items.size(), want.tensors.size());
     for (std::size_t i = 0; i < want.tensors.size(); ++i) {
@@ -1005,7 +1005,7 @@ TEST(ComponentsTest, ChannelNormBuildsInACompleteStatelessSpec) {
   };
   const std::array<std::span<const spec::SourceTensor>, 1> tables{tensors};
   ASSERT_TRUE(ValidateSpec(model_spec, tables));
-  const auto layout = StageLayout(model_spec, 0, 256, 3, kExtent);
+  const auto layout = StageLayoutUniform(model_spec, 0, 256, 3, kExtent);
   ASSERT_TRUE(layout.has_value()) << layout.error();
   EXPECT_TRUE(layout->items.empty());
   const planner::StepShape shape{.segments = {Seg(0, 2, 0, 256, 1), Seg(1, 1, 0, 256, 1)}};
@@ -1037,8 +1037,8 @@ TEST(ComponentsTest, Q8CacheOverrideIsPaidAtomicAndChangesStateIdentity) {
     ASSERT_TRUE(ApplyKvCacheEncoding(model_spec, Encoding::kQ8_0, *bytes));
     const auto digest = model_spec.Digest();
     EXPECT_NE(digest, old_digest);
-    const auto before = StageLayout(original, 0, 4096, 128, kExtent);
-    const auto after = StageLayout(model_spec, 0, 4096, 128, kExtent);
+    const auto before = StageLayoutUniform(original, 0, 4096, 128, kExtent);
+    const auto after = StageLayoutUniform(model_spec, 0, 4096, 128, kExtent);
     ASSERT_TRUE(before) << before.error();
     ASSERT_TRUE(after) << after.error();
     ASSERT_EQ(before->items.size(), after->items.size());
@@ -1385,7 +1385,7 @@ TEST(ComponentsTest, BuildStepMakesTheGemmaStepsFromTheirSpecs) {
   for (const Model& m : {Model{Gemma2Spec(), test_support::Gemma2Source(), 26, 288},
                          Model{Gemma3Spec(), test_support::Gemma3Source(), 34, 444}}) {
     SCOPED_TRACE(m.source.architecture);
-    const auto layout = StageLayout(m.spec, 0, 8192, 16, kExtent);
+    const auto layout = StageLayoutUniform(m.spec, 0, 8192, 16, kExtent);
     ASSERT_TRUE(layout.has_value());
     const Bindings bindings{.tensors = m.source.tensors, .state = &*layout};
     // Two owners (3 rows after 4351 positions, 1 row after 7).
@@ -1435,7 +1435,7 @@ struct GemmaOwner {
 void ExpectGemmaCellsAndHostMasks(const spec::ModelSpec& spec, const spec::Source& source,
                                   std::uint32_t window, std::uint32_t context,
                                   std::uint32_t max_rows, std::span<const GemmaOwner> owners) {
-  const auto layout = StageLayout(spec, 0, context, max_rows, kExtent);
+  const auto layout = StageLayoutUniform(spec, 0, context, max_rows, kExtent);
   ASSERT_TRUE(layout.has_value());
   const auto global_cells = static_cast<std::uint32_t>(PadUp(context, 256));
   const auto local_cells =
@@ -1876,7 +1876,7 @@ TEST(ComponentsTest, Gemma4SpecsValidateAndLayTheGemma4State) {
       const auto global_cells = static_cast<std::uint32_t>(PadUp(context, 256));
       const auto local_cells =
           static_cast<std::uint32_t>(PadUp(std::min<std::uint64_t>(context, p.window + rows), 256));
-      const auto got = StageLayout(s, 0, context, rows, kExtent);
+      const auto got = StageLayoutUniform(s, 0, context, rows, kExtent);
       ASSERT_TRUE(got.has_value()) << got.error();
       ASSERT_EQ(got->items.size(), std::size_t{p.layers} * 2);
       std::uint64_t at = 0;
@@ -1895,7 +1895,7 @@ TEST(ComponentsTest, Gemma4SpecsValidateAndLayTheGemma4State) {
       EXPECT_EQ(got->bytes, at);
     }
     // Every layer's attention, feed-forward block and output scale.
-    const auto layout = StageLayout(s, 0, 4096, 16, kExtent);
+    const auto layout = StageLayoutUniform(s, 0, 4096, 16, kExtent);
     ASSERT_TRUE(layout.has_value());
     const Bindings bindings{.tensors = source.tensors, .state = &*layout};
     const planner::StepShape two{.segments = {Seg(3, 3, 1500, 1792, 1), Seg(1, 1, 7, 256, 1)}};
@@ -1934,8 +1934,8 @@ TEST(ComponentsTest, Gemma4AssistantStageReadsItsTarget) {
   EXPECT_EQ(s.stages[1].role, spec::StageRole::kDrafter);
   ASSERT_EQ(s.stages[0].taps.size(), 1U);
   EXPECT_EQ(s.stages[0].taps[0].point, spec::TapPoint::kPostFinalNorm);
-  const auto target_layout = StageLayout(s, 0, 4096, 16, kExtent);
-  const auto drafter_layout = StageLayout(s, 1, 4096, 16, kExtent);
+  const auto target_layout = StageLayoutUniform(s, 0, 4096, 16, kExtent);
+  const auto drafter_layout = StageLayoutUniform(s, 1, 4096, 16, kExtent);
   ASSERT_TRUE(target_layout.has_value() && drafter_layout.has_value());
   // Its own bytes are the tap's ring; its K and V are the target's last
   // local (28) and global (29) layers'.
@@ -2124,8 +2124,8 @@ TEST(ComponentsTest, ANarrowedTargetStepTapsItsOutputRows) {
   EXPECT_EQ(NarrowPoint(*target_instances), (std::pair<std::size_t, std::size_t>{0, 0}));
   EXPECT_FALSE(NarrowPoint(*drafter_instances).has_value());
 
-  const auto target_layout = StageLayout(s, 0, 4096, 16, kExtent);
-  const auto drafter_layout = StageLayout(s, 1, 4096, 16, kExtent);
+  const auto target_layout = StageLayoutUniform(s, 0, 4096, 16, kExtent);
+  const auto drafter_layout = StageLayoutUniform(s, 1, 4096, 16, kExtent);
   ASSERT_TRUE(target_layout.has_value()) << target_layout.error();
   ASSERT_TRUE(drafter_layout.has_value()) << drafter_layout.error();
   const std::array<const model::StateLayoutDerived*, 2> layouts{&*target_layout, &*drafter_layout};

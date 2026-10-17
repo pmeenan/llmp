@@ -131,7 +131,8 @@ std::optional<std::string> Invalid(const StateTensorContract& t) {
 
 bool Valid(const StateLayoutDerived& layout) {
   return layout.context != 0 && layout.max_rows != 0 && layout.max_rows <= layout.context &&
-         std::has_single_bit(layout.tensor_align) && layout.tensor_align >= 256;
+         std::has_single_bit(layout.tensor_align) && layout.tensor_align >= 256 &&
+         (layout.extent == 0 || (std::has_single_bit(layout.extent) && layout.extent >= 256));
 }
 
 bool AlignValid(std::uint32_t align) { return align != 0 && align % 256 == 0; }
@@ -246,22 +247,49 @@ std::expected<std::uint64_t, std::string> CellBytes(Encoding encoding, std::uint
   return *bytes;
 }
 
-std::expected<StateLayoutDerived, std::string> Layout(
+bool GrowsWithPositions(const StateTensorContract& t) {
+  switch (t.cells) {
+    case CellRule::kPerPosition:
+    case CellRule::kPerBlock:
+      return true;
+    case CellRule::kRing:
+      return !t.ring_reads_whole;
+    case CellRule::kFixed:
+    case CellRule::kPerRow:
+    case CellRule::kPositionRing:
+      return false;
+  }
+  return false;
+}
+
+namespace {
+
+// Layout's and ExtentLayout's placement: every tensor at `tensor_align`
+// (extent 0), or by ExtentLayout's per-tensor rule.
+std::expected<StateLayoutDerived, std::string> Place(
     std::span<const std::pair<std::uint32_t, StateContract>> per_layer, std::uint32_t context,
-    std::uint32_t max_rows, std::uint64_t tensor_align) {
+    std::uint32_t max_rows, std::uint64_t tensor_align, std::uint64_t extent) {
   StateLayoutDerived s;
   s.context = context;
   s.max_rows = max_rows;
   s.tensor_align = tensor_align;
+  s.extent = extent;
   if (!Valid(s)) {
-    return Refused(std::format("no state layout for {} positions in chunks of {}, aligned to {}",
-                               context, max_rows, tensor_align));
+    return Refused(
+        std::format("no state layout for {} positions in chunks of {}, aligned to {} (extent {})",
+                    context, max_rows, tensor_align, extent));
   }
+  std::uint64_t end = 0;  // the last item's end (the rule's cursor)
   for (const auto& [layer, contract] : per_layer) {
     for (std::uint32_t i = 0; i < contract.tensors.size(); ++i) {
       const StateTensorContract& t = contract.tensors[i];
       if (auto bad = Invalid(t)) {
         return Refused(std::format("layer {} state {}: {}", layer, t.name, *bad));
+      }
+      if (t.bank_with_previous && (i == 0 || s.items.empty() || s.items.back().layer != layer ||
+                                   s.items.back().tensor != i - 1)) {
+        return Refused(std::format("layer {} state {} continues no tensor before it in its layer",
+                                   layer, t.name));
       }
       if (t.borrowed_from_target) {
         s.borrowed.push_back({.layer = layer, .tensor = i, .contract = t});
@@ -269,22 +297,55 @@ std::expected<StateLayoutDerived, std::string> Layout(
       }
       const auto cells = CellsOf(t, context, max_rows);
       const auto bytes = cells ? Mul(*cells, t.cell_bytes) : std::nullopt;
-      const auto end = bytes ? Add(s.bytes, *bytes) : std::nullopt;
-      const auto next = end ? Pad(*end, tensor_align) : std::nullopt;
-      if (!next || *cells == 0) {
+      if (!bytes || *cells == 0) {
         return Refused(std::format("layer {} state {} has no cells or overflows", layer, t.name));
+      }
+      // Uniform: after the previous tensor's padded end. The rule: a bank's
+      // continuation exactly at its predecessor's end (refused unless that
+      // is 256-byte aligned: no gap), a growing tensor of an extent or more
+      // on an extent boundary, any other packed at 256 bytes.
+      if (extent != 0 && t.bank_with_previous && end % 256 != 0) {
+        return Refused(std::format("layer {} state {} cannot start at its bank's unaligned end",
+                                   layer, t.name));
+      }
+      const auto offset = extent == 0                                 ? std::optional(s.bytes)
+                          : t.bank_with_previous                      ? std::optional(end)
+                          : *bytes >= extent && GrowsWithPositions(t) ? Pad(end, extent)
+                                                                      : Pad(end, 256);
+      const auto item_end = offset ? Add(*offset, *bytes) : std::nullopt;
+      const auto next = item_end ? Pad(*item_end, tensor_align) : std::nullopt;
+      if (!next) {
+        return Refused(std::format("layer {} state {} overflows", layer, t.name));
       }
       s.items.push_back({.layer = layer,
                          .tensor = i,
                          .contract = t,
                          .cells = *cells,
-                         .offset = s.bytes,
+                         .offset = *offset,
                          .bytes = *bytes});
+      end = *item_end;
       s.bytes = *next;
     }
   }
   if (auto progress = DraftBounds(s); !progress) return std::unexpected(progress.error());
   return s;
+}
+
+}  // namespace
+
+std::expected<StateLayoutDerived, std::string> Layout(
+    std::span<const std::pair<std::uint32_t, StateContract>> per_layer, std::uint32_t context,
+    std::uint32_t max_rows, std::uint64_t tensor_align) {
+  return Place(per_layer, context, max_rows, tensor_align, 0);
+}
+
+std::expected<StateLayoutDerived, std::string> ExtentLayout(
+    std::span<const std::pair<std::uint32_t, StateContract>> per_layer, std::uint32_t context,
+    std::uint32_t max_rows, std::uint64_t extent) {
+  if (extent < 256 || !std::has_single_bit(extent)) {
+    return Refused(std::format("no state layout over extents of {} bytes", extent));
+  }
+  return Place(per_layer, context, max_rows, 256, extent);
 }
 
 std::optional<StateBankSpan> ContiguousStateSpan(const StateLayoutDerived& layout,
@@ -732,6 +793,8 @@ std::string KeptLayoutId(const base::Sha256Digest& spec,
   for (const StateLayoutDerived& s : stages) {
     hash.Update(std::format("stage {} {} {} {} {} {}\n", s.context, s.max_rows, s.tensor_align,
                             s.bytes, s.items.size(), s.borrowed.size()));
+    // ExtentLayout's rule (a uniform layout's ID is unchanged).
+    if (s.extent != 0) hash.Update(std::format("extent {}\n", s.extent));
     for (const Item& item : s.items) {
       const StateTensorContract& t = item.contract;
       // The name length-prefixed: no separator in it can collide.

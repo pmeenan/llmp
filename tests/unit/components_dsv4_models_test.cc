@@ -46,6 +46,7 @@
 #include "spec/mappings/dsv4.h"
 #include "spec/spec.h"
 #include "spec/stored.h"
+#include "state_layouts.h"
 #include "v1_frozen.h"
 
 namespace {
@@ -133,7 +134,7 @@ TEST(ComponentsDsv4Models, EveryInstalledTargetAndItsDrafterMakeTheirSpecs) {
         }
       }
     }
-    const auto layout = co::StageLayout(form, 0, 65536, 512);
+    const auto layout = co::StageLayoutUniform(form, 0, 65536, 512, 256);
     ASSERT_TRUE(layout.has_value()) << layout.error();
     const auto want = fm::Dsv4State(p, 65536, 512, window);
     ASSERT_TRUE(want.has_value());
@@ -163,8 +164,8 @@ TEST(ComponentsDsv4Models, EveryInstalledTargetAndItsDrafterMakeTheirSpecs) {
       sp::ComposeDrafter(*fixture, mapping, drafter_mapping, drafted, *drafter_values);
   ASSERT_TRUE(fixture_composed.has_value()) << fixture_composed.error();
   EXPECT_EQ(sp::ToJson(*composed), sp::ToJson(*fixture_composed));
-  const auto t_layout = co::StageLayout(*composed, 0, 65536, 512);
-  const auto d_layout = co::StageLayout(*composed, 1, 65536, 16);
+  const auto t_layout = co::StageLayoutUniform(*composed, 0, 65536, 512, 256);
+  const auto d_layout = co::StageLayoutUniform(*composed, 1, 65536, 16, 256);
   ASSERT_TRUE(t_layout.has_value() && d_layout.has_value());
   const auto ring = fm::DsparkState(d, 16);
   ASSERT_TRUE(ring.has_value());
@@ -210,6 +211,43 @@ TEST(ComponentsDsv4Models, EveryInstalledTargetAndItsDrafterMakeTheirSpecs) {
       d_bindings);
   ASSERT_TRUE(block.has_value()) << block.error();
   EXPECT_TRUE(block->greedy.valid());
+}
+
+// Serving's layouts (components::StageLayout) of the composed target and
+// drafter, at the speed gate's context and chunk and at the C2 capacity
+// screen's (docs/experiments/m36-dsv4-target/dspark.md): every compressed
+// bank contiguous, and a slot's state (its region, a prompt's first demand)
+// near the packed layout's, which C2's capacity needs (padding each small
+// tensor to an extent cost 506 MiB a slot, not 56): at the C2 screen's
+// context the same, at the gate's within an extent and a straddle for
+// each growing tensor of an extent or more.
+TEST(ComponentsDsv4Models, ServingStateLayoutsKeepBanksAndPackedCapacity) {
+  const auto& mapping = sp::mappings::Dsv4Mapping();
+  const auto& drafter_mapping = sp::mappings::DsparkMapping();
+  auto target = Open("deepseek", mapping);
+  auto drafter = Open("dspark", drafter_mapping);
+  if (!target || !drafter) {
+    GTEST_FAIL() << "no DeepSeek V4 and DSpark v1 artifacts in " << llmp::test_support::V1Store();
+  }
+  auto spec = sp::StoredSpec(target->artifact);
+  ASSERT_TRUE(spec.has_value()) << spec.error();
+  auto kept = rt::ComponentDrafterValues(target->artifact, drafter->artifact);
+  ASSERT_TRUE(kept.has_value()) << kept.error();
+  auto composed = sp::ComposeDrafter(*spec, mapping, drafter_mapping, drafter->source, *kept);
+  ASSERT_TRUE(composed.has_value()) << composed.error();
+  for (const auto& [context, rows] : {std::pair{262144U, 4096U}, {8448U, 256U}}) {
+    for (std::size_t stage = 0; stage < 2; ++stage) {
+      const auto f =
+          llmp::test_support::ExpectServingLayout("deepseek", *composed, stage, context, rows);
+      if (stage == 0) EXPECT_GT(f.banks, 0U);
+      if (context == 8448) EXPECT_EQ(f.rule.initial, f.packed.initial);
+      // Each tensor on its own extents costs at most that extent and one
+      // its neighbours straddle.
+      EXPECT_LE(f.rule.region, f.packed.region + f.big);
+      EXPECT_LE(f.rule.initial, f.packed.initial + 2 * f.big);
+      EXPECT_LE(f.rule.growths, f.packed.growths);
+    }
+  }
 }
 
 }  // namespace

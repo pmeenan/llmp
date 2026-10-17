@@ -7,6 +7,7 @@
 // same spec their tensor tables give with the families' values
 // (spec_fixtures.h, tests/support/families/gemma.h; spec_test), every
 // binding resolved in its artifact, bound to each artifact's ID.
+// Serving lays each one's state out with every tensor on its own extents.
 // Needs the model files (label `models`); skipped without them.
 
 #include <gtest/gtest.h>
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -30,6 +32,7 @@
 #include "spec/spec.h"
 #include "spec/stored.h"
 #include "spec_fixtures.h"
+#include "state_layouts.h"
 #include "v1_frozen.h"
 
 namespace llmp::spec {
@@ -189,6 +192,31 @@ TEST(SpecModelsTest, Gemma4SpecsFromTheirArtifacts) {
   resolves(*assistant26, *d.heads.output, {});
   const std::array<std::string_view, 2> ids = {target26->id(), assistant26->id()};
   EXPECT_TRUE(BoundDigest(*composed, ids).has_value());
+}
+
+// Serving's state layouts (components::StageLayout) of the Gemma targets at
+// the speed gate's contexts and chunks: every tensor is an extent or more,
+// so each starts on its own extents as M3's layouts did (a prompt grows its
+// state once every extent's worth of cells), the layout every tensor on its
+// own extents gives.
+TEST(SpecModelsTest, GemmaServingStateLayoutsPutEachTensorOnItsOwnExtents) {
+  struct Serving {
+    std::string_view name;
+    std::uint32_t context, chunk;
+  };
+  for (const Serving& c : {Serving{"gemma2", 8192, 128}, Serving{"gemma3", 4096, 128},
+                           Serving{"gemma26", 8192, 1024}, Serving{"gemma31", 8192, 256}}) {
+    auto artifact = OpenPublished(c.name);
+    if (!artifact)
+      GTEST_FAIL() << "no published v1 " << c.name << " in " << test_support::V1Store();
+    const auto spec = StoredSpec(*artifact);
+    ASSERT_TRUE(spec.has_value()) << spec.error();
+    const auto f = test_support::ExpectServingLayout(c.name, *spec, 0, c.context, c.chunk);
+    EXPECT_EQ(f.banks, 0U);
+    EXPECT_EQ(f.rule.region, f.spread.region) << c.name;
+    EXPECT_EQ(f.rule.growths, f.spread.growths) << c.name;
+    EXPECT_LE(f.rule.growths, f.packed.growths) << c.name;
+  }
 }
 
 }  // namespace

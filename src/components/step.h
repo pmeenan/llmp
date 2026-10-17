@@ -178,11 +178,17 @@ std::expected<void, std::string> ValidateSpec(const spec::ModelSpec& spec,
 // state are left out.
 std::expected<std::vector<std::pair<std::uint32_t, model::StateContract>>, std::string>
 StageContracts(const spec::ModelSpec& spec, std::size_t stage);
+// A stage's state layout: model::ExtentLayout over model::kStateExtent,
+// as serving lays it out.
 std::expected<model::StateLayoutDerived, std::string> StageLayout(const spec::ModelSpec& spec,
                                                                   std::size_t stage,
                                                                   std::uint32_t context,
-                                                                  std::uint32_t max_rows,
-                                                                  std::uint64_t tensor_align = 256);
+                                                                  std::uint32_t max_rows);
+// The same contracts at one uniform `tensor_align` (model::Layout): a
+// fixed reference layout (M3's runners', a test's), never serving's.
+std::expected<model::StateLayoutDerived, std::string> StageLayoutUniform(
+    const spec::ModelSpec& spec, std::size_t stage, std::uint32_t context, std::uint32_t max_rows,
+    std::uint64_t tensor_align);
 
 // The stage's batching capability: its components' own limits combined
 // (the tightest of each), over a step of any segments up to kMaxSegments.

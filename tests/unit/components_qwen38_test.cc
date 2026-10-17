@@ -1447,11 +1447,11 @@ TEST(ComponentsQwen38Test, TheStageLayoutsHoldTodaysQwenState) {
   EXPECT_EQ(composed->stages[0].folds, Folds());
   EXPECT_EQ(composed->stages[1].folds, Folds());
   for (const auto& [context, rows] : {std::pair{8192U, 512U}, {262144U, 2048U}}) {
-    auto got = StageLayout(*composed, 0, context, rows);
+    auto got = StageLayoutUniform(*composed, 0, context, rows, 256);
     ASSERT_TRUE(got.has_value()) << got.error();
     EXPECT_EQ(got->bytes, fam::Qwen38StateBytes(p, context, rows));
     // The drafter's: its caches and the streams its target writes.
-    auto drafter = StageLayout(*composed, 1, context, rows);
+    auto drafter = StageLayoutUniform(*composed, 1, context, rows, 256);
     ASSERT_TRUE(drafter.has_value()) << drafter.error();
     EXPECT_EQ(drafter->bytes, fam::Qwen38MtpStateBytes(p, context, rows));
     const auto streams = std::ranges::find(drafter->items, std::string("streams"),

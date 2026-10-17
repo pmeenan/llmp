@@ -13,6 +13,15 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Gemma 2 prefills at the M3 speed again (it was 1% slower for one
+  request, 1.3% for two; docs/experiments/m36-final/README.md, "State
+  layout"): state is laid out by a per-tensor rule, each growing tensor of
+  2 MiB or more on its own extents (as M3's layouts were) so that a prompt
+  grows its state once every extent's worth of cells instead of every
+  chunk or two, and smaller or whole-used tensors packed at 256 bytes, so
+  that a slot's state stays near the packed layout's (DeepSeek V4's C2
+  capacity); a compressed cache stays contiguous with its raw window.
+  Kept conversations from before are not adopted (their layout changed).
 - Planning a new step shape takes about half as long (Gemma 4
   26B-A4B 23 to 12 ms a plan, 31B 28 to 16 ms), so a decode that meets a
   new shape (a joined wave whose owners cross a read boundary) stalls less:

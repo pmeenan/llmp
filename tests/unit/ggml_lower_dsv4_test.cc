@@ -174,7 +174,7 @@ TEST(GgmlLowerDsv4Test, PlanKeysFollowCompressorDimensionsAndPreserveReuse) {
 TEST(GgmlLowerDsv4Test, StateBankLayoutIdentityChangesOnlyOptedInSourceKeys) {
   Fixture f;
   ASSERT_TRUE(f.Init());
-  auto separated = co::StageLayout(f.spec, 0, 65536, 512, 2 * 1024 * 1024);
+  auto separated = co::StageLayoutUniform(f.spec, 0, 65536, 512, 2 * 1024 * 1024);
   ASSERT_TRUE(separated);
   const pl::StepShape shape{
       .segments = {{.rows = 7, .past = 127, .read_cells = 768, .outputs = 1}}};
@@ -481,7 +481,7 @@ TEST(GgmlLowerDsv4Test, ComponentSourcesForwardBankLayoutFactsAndRejectMissingBi
   auto spec = f.spec;
   spec.stages.resize(1);
   spec.stages[0].taps.clear();
-  const auto separated = co::StageLayout(spec, 0, 65536, 512, 2 * 1024 * 1024);
+  const auto separated = co::StageLayoutUniform(spec, 0, 65536, 512, 2 * 1024 * 1024);
   ASSERT_TRUE(separated);
   const pl::StepShape shape{
       .segments = {{.slot = 3, .rows = 2, .past = 1027, .read_cells = 2048, .outputs = 2},

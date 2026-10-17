@@ -641,9 +641,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (depth == 0 || depth == UINT32_MAX || std::cmp_greater(depth, *most))
         return Error("the resolved draft depth exceeds the bound block drafter");
     }
-    // State tensors pack at StageLayout's standard 256-byte alignment across
-    // all models so contiguous state banks and multi-slot state footprints
-    // behave uniformly.
+    // Each stage's state by model::ExtentLayout's per-tensor rule: a tensor
+    // of an extent or more on its own extents (its growth crosses extents
+    // with every other's), smaller ones packed, a bank kept contiguous.
+    static_assert(model::kStateExtent == kExtent, "state is laid out over the paged extent");
     for (std::uint16_t stage = 0; stage < hold->spec.stages.size(); ++stage) {
       auto layout =
           components::StageLayout(hold->spec, stage, settings.context.value, configured_chunk);

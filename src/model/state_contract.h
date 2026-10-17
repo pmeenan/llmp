@@ -8,7 +8,8 @@
 // cells it holds against the context and the chunk bound (CellRule), which
 // cells a step reads (its read alignment), and how a speculative verify's
 // rejected rows are undone (Rollback). From a stage's contracts, layer by
-// layer, Layout derives the region's byte layout; from that layout:
+// layer, ExtentLayout derives the region's byte layout as serving lays it
+// out (Layout, a uniform reference layout); from that layout:
 //
 // - UsedThrough: the ranges a state holding `positions` positions reads and
 //   must have backed (padded reads, rings, fixed state, a scratch row);
@@ -164,6 +165,12 @@ struct StateTensorContract {
   // can influence a read. This is a component guarantee, not inferred from
   // kTruncate. Required for a repeatable drafter's private numeric state.
   bool replayable = false;
+  // Read with the tensor before it in its layer as one contiguous bank (a
+  // compressed cache after its raw window, which state-bank attention
+  // reads as one span, ContiguousStateSpan): ExtentLayout places it right
+  // after that tensor. Its effect is the layout's offsets, which
+  // KeptLayoutId already covers.
+  bool bank_with_previous = false;
   bool operator==(const StateTensorContract&) const = default;
 };
 
@@ -189,11 +196,13 @@ struct StateContract {
 };
 
 // A stage's state region, derived: each owned tensor's place, in layer
-// order and each layer's tensor order, at `tensor_align` boundaries.
+// order and each layer's tensor order: at `tensor_align` boundaries
+// (Layout), or by ExtentLayout's per-tensor rule over `extent`.
 struct StateLayoutDerived {
   std::uint32_t context = 0;
   std::uint32_t max_rows = 0;
   std::uint64_t tensor_align = 256;
+  std::uint64_t extent = 0;  // ExtentLayout's; 0: Layout's uniform alignment
   struct Item {
     std::uint32_t layer = 0;
     std::uint32_t tensor = 0;  // index in its layer's contract
@@ -268,14 +277,41 @@ std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
     const StateLayoutDerived& layout);
 
 // The region for `per_layer` contracts (layer index, contract) at a
-// context and chunk bound. Refused for a zero or inconsistent bound, a
-// tensor with no cells or bytes, a cell of partial elements or (in a block
-// encoding) partial blocks, a ring with no window, a block with no
-// ratio, an alignment that is not a power of two of at least 256 bytes, or
-// any arithmetic that overflows.
+// context and chunk bound, every tensor at `tensor_align` (a reference
+// layout, M3's runners' or a test's; serving's is ExtentLayout's).
+// Refused for a zero or inconsistent bound, a tensor with no cells or
+// bytes, a cell of partial elements or (in a block encoding) partial
+// blocks, a ring with no window, a block with no ratio, a bank
+// continuation first in its layer, an alignment that is not a power of
+// two of at least 256 bytes, or any arithmetic that overflows.
 std::expected<StateLayoutDerived, std::string> Layout(
     std::span<const std::pair<std::uint32_t, StateContract>> per_layer, std::uint32_t context,
     std::uint32_t max_rows, std::uint64_t tensor_align = 256);
+
+// Whether a tensor's used cells grow with positions (per position, per
+// block, a ring read as written): only such a tensor's growth crosses
+// extents during a request (ExtentLayout).
+bool GrowsWithPositions(const StateTensorContract& t);
+
+// The backing's granularity serving lays state out over (the engine's
+// paged extent, engine::kPagedExtent).
+inline constexpr std::uint64_t kStateExtent = std::uint64_t{2} << 20U;
+
+// The region by the per-tensor rule over extents of `extent` bytes (the
+// backing's granularity, a power of two of at least 256): a tensor of
+// `extent` bytes or more whose used cells grow with positions (per
+// position, per block, a ring read as written) starts on an extent
+// boundary, so that its growth crosses extents at the same positions as
+// every other such tensor's (a prompt grows its state once every extent's
+// worth of cells, not every chunk or two, each growth a fixed host cost
+// between steps); every other tensor (smaller, or used whole from the
+// first position) packs at 256 bytes, sharing extents (padding many small
+// tensors to an extent each would multiply a slot's state); a bank's
+// continuation (bank_with_previous) right after its predecessor. Refused
+// as Layout is.
+std::expected<StateLayoutDerived, std::string> ExtentLayout(
+    std::span<const std::pair<std::uint32_t, StateContract>> per_layer, std::uint32_t context,
+    std::uint32_t max_rows, std::uint64_t extent);
 
 // The ranges a state of `positions` positions reads, each tensor's from
 // its start (and a dummy row's), skipping empty ones; `read_align` a

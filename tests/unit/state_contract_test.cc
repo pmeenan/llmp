@@ -208,6 +208,105 @@ TEST(StateContractTest, Gemma2ContractsDeriveItsLayoutUsedStateAndChunkWrites) {
   }
 }
 
+// ExtentLayout's per-tensor rule: Gemma's tensors (each an extent or more)
+// on their own extents as M3 laid them out; small tensors packed at 256
+// bytes, sharing extents; a bank's continuation right after its
+// predecessor whatever its size; a continuation with nothing before it in
+// its layer refused.
+TEST(StateContractTest, ExtentLayoutPlacesLargeTensorsOnExtentsAndPacksTheRest) {
+  const auto& p = fam::Gemma2_2B();
+  const Layers gemma = GemmaContracts(p);
+  for (const auto& [context, rows] : {std::pair{4096U, 128U}, {8192U, 512U}}) {
+    auto rule = md::ExtentLayout(gemma, context, rows, kExtent);
+    auto spread = md::Layout(gemma, context, rows, kExtent);
+    ASSERT_TRUE(rule.has_value() && spread.has_value());
+    EXPECT_EQ(rule->extent, kExtent);
+    ASSERT_EQ(rule->items.size(), spread->items.size());
+    for (std::size_t i = 0; i < rule->items.size(); ++i)
+      EXPECT_EQ(rule->items[i].offset, spread->items[i].offset) << i;
+    EXPECT_NE(md::KeptLayoutId({}, std::array{*rule}), md::KeptLayoutId({}, std::array{*spread}));
+  }
+  const StateTensorContract small{.name = "conv",
+                                  .kind = StateKind::kConvolution,
+                                  .cell_bytes = 4096,
+                                  .cells = CellRule::kFixed,
+                                  .window_or_ratio = 3};
+  const StateTensorContract large{.name = "kv", .kind = StateKind::kKv, .cell_bytes = 1024};
+  StateTensorContract raw{.name = "kv",
+                          .kind = StateKind::kRing,
+                          .cell_bytes = 1024,
+                          .cells = CellRule::kRing,
+                          .window_or_ratio = 128,
+                          .ring_reads_whole = true};
+  StateTensorContract compressed{.name = "compressed",
+                                 .kind = StateKind::kCompressed,
+                                 .cell_bytes = 1024,
+                                 .cells = CellRule::kPerBlock,
+                                 .window_or_ratio = 4,
+                                 .bank_with_previous = true};
+  // Used whole from the first position: packed whatever its size.
+  const StateTensorContract whole{.name = "recurrent",
+                                  .kind = StateKind::kRecurrent,
+                                  .cell_bytes = 3 << 20,
+                                  .cells = CellRule::kFixed,
+                                  .window_or_ratio = 1};
+  const Layers layers = {{0, StateContract{.tensors = {small, large}}},
+                         {1, StateContract{.tensors = {small, small}}},
+                         {2, StateContract{.tensors = {raw, compressed}}},
+                         {3, StateContract{.tensors = {whole}}}};
+  auto rule = md::ExtentLayout(layers, 65536, 128, kExtent);
+  ASSERT_TRUE(rule.has_value()) << rule.error();
+  ASSERT_EQ(rule->items.size(), 7U);
+  EXPECT_EQ(rule->items[6].offset, rule->items[5].offset + rule->items[5].bytes);
+  const auto& it = rule->items;
+  EXPECT_EQ(it[0].offset, 0U);                     // 12 KiB, packed
+  EXPECT_EQ(it[1].offset, kExtent);                // 64 MiB, on the next extent
+  EXPECT_EQ(it[2].offset, kExtent + it[1].bytes);  // packed after it
+  EXPECT_EQ(it[3].offset, it[2].offset + it[2].bytes);
+  EXPECT_EQ(it[4].offset, it[3].offset + it[3].bytes);  // 256 KiB raw window, packed
+  EXPECT_GE(it[5].bytes, kExtent);
+  EXPECT_EQ(it[5].offset, it[4].offset + it[4].bytes);  // the bank, contiguous
+  EXPECT_TRUE(
+      md::ContiguousStateSpan(
+          *rule, std::array{md::StateSlice{.layer = 2, .tensor = 0, .first = 0, .cells = 256},
+                            md::StateSlice{.layer = 2, .tensor = 1, .first = 0, .cells = 1}})
+          .has_value());
+  // Small tensors only: the same offsets and bytes as Layout's packed
+  // layout, but another identity (a kept record names its rule).
+  const Layers packed_only = {{0, StateContract{.tensors = {small, small}}},
+                              {1, StateContract{.tensors = {raw, small}}}};
+  auto small_rule = md::ExtentLayout(packed_only, 4096, 128, kExtent);
+  auto small_packed = md::Layout(packed_only, 4096, 128, 256);
+  ASSERT_TRUE(small_rule.has_value() && small_packed.has_value());
+  ASSERT_EQ(small_rule->items.size(), small_packed->items.size());
+  for (std::size_t i = 0; i < small_rule->items.size(); ++i)
+    EXPECT_EQ(small_rule->items[i].offset, small_packed->items[i].offset) << i;
+  EXPECT_EQ(small_rule->bytes, small_packed->bytes);
+  EXPECT_NE(md::KeptLayoutId({}, std::array{*small_rule}),
+            md::KeptLayoutId({}, std::array{*small_packed}));
+  // A continuation starts exactly at its predecessor's end: one that would
+  // need a gap (an end off 256 bytes) is refused, never padded apart.
+  StateTensorContract odd = raw;
+  odd.cell_bytes = 384;
+  StateTensorContract odd_bank = compressed;
+  odd_bank.cell_bytes = 384;
+  const Layers whole_end = {{0, StateContract{.tensors = {odd, odd_bank}}}};
+  EXPECT_EQ(md::ExtentLayout(whole_end, 4096, 128, kExtent).value().items[1].offset % 256, 0U)
+      << "256 cells of 384 bytes end on 256";
+  StateTensorContract three = odd;
+  three.window_or_ratio = 1;
+  three.cells = CellRule::kFixed;
+  three.ring_reads_whole = false;
+  const Layers gap = {{0, StateContract{.tensors = {three, odd_bank}}}};
+  EXPECT_FALSE(md::ExtentLayout(gap, 4096, 128, kExtent).has_value());
+  EXPECT_TRUE(md::Layout(gap, 4096, 128).has_value());
+  // Uniform layouts are unchanged by the flag; a continuation needs a predecessor.
+  EXPECT_TRUE(md::Layout(layers, 65536, 128).has_value());
+  const Layers orphan = {{0, StateContract{.tensors = {compressed}}}};
+  EXPECT_FALSE(md::ExtentLayout(orphan, 65536, 128, kExtent).has_value());
+  EXPECT_FALSE(md::ExtentLayout(layers, 65536, 128, 3 * 256).has_value());
+}
+
 TEST(StateContractTest, Gemma3ContractsDeriveItsLayoutAndUsedState) {
   const auto& p = fam::Gemma3_4BQat();
   for (const auto& [context, rows] : {std::pair{8448U, 128U}, {4096U, 512U}}) {

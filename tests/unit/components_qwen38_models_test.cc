@@ -49,6 +49,7 @@
 #include "spec/mappings/qwen38.h"
 #include "spec/spec.h"
 #include "spec/stored.h"
+#include "state_layouts.h"
 #include "v1_frozen.h"
 
 namespace {
@@ -177,7 +178,7 @@ TEST(ComponentsQwen38Models, EveryInstalledImportMakesItsSpec) {
       EXPECT_EQ(sp::ToJson(t->spec), sp::ToJson(*fixture));
     }
     // The M3 runner's state, and every target step kind builds.
-    const auto layout = co::StageLayout(t->spec, 0, 8192, 512);
+    const auto layout = co::StageLayoutUniform(t->spec, 0, 8192, 512, 256);
     ASSERT_TRUE(layout.has_value()) << layout.error();
     EXPECT_EQ(layout->bytes, fm::Qwen38StateBytes(p, 8192, 512));
     const std::array<const md::StateLayoutDerived*, 1> layouts{&*layout};
@@ -241,8 +242,8 @@ TEST(ComponentsQwen38Models, TheMtpDrafterComposesWithItsTargets) {
                                 [](const sp::WeightBinding& w) { return w.role == "ids"; }),
             selected);
   // State layouts.
-  const auto t_layout = co::StageLayout(*spec, 0, 8192, 512);
-  const auto d_layout = co::StageLayout(*spec, 1, 8192, 512);
+  const auto t_layout = co::StageLayoutUniform(*spec, 0, 8192, 512, 256);
+  const auto d_layout = co::StageLayoutUniform(*spec, 1, 8192, 512, 256);
   ASSERT_TRUE(t_layout.has_value() && d_layout.has_value());
   EXPECT_EQ(t_layout->bytes, fm::Qwen38StateBytes(p, 8192, 512));
   // The M3 runner's drafter state and the serving (replay) composition's
@@ -257,8 +258,8 @@ TEST(ComponentsQwen38Models, TheMtpDrafterComposesWithItsTargets) {
   // the drafter's without its progress record.
   {
     namespace dv = llmp::benchmarks::draft_vocab;
-    const auto study_target = co::StageLayout(*spec, 0, dv::kContext, 8192);
-    const auto study_drafter = co::StageLayout(*spec, 1, dv::kContext, 8192);
+    const auto study_target = co::StageLayoutUniform(*spec, 0, dv::kContext, 8192, 256);
+    const auto study_drafter = co::StageLayoutUniform(*spec, 1, dv::kContext, 8192, 256);
     ASSERT_TRUE(study_target.has_value()) << study_target.error();
     ASSERT_TRUE(study_drafter.has_value()) << study_drafter.error();
     EXPECT_EQ(study_target->bytes, dv::kTargetStateBytes);
@@ -283,6 +284,35 @@ TEST(ComponentsQwen38Models, TheMtpDrafterComposesWithItsTargets) {
   EXPECT_TRUE(pass->greedy.valid());
   const auto catch_up = co::BuildStep(*spec, 1, {.stage = 1, .segments = {Seg(3, 16, 0)}}, d);
   ASSERT_TRUE(catch_up.has_value()) << catch_up.error();
+}
+
+// Serving's layouts (components::StageLayout) at the speed gate's context
+// and chunk: the ModelOpt target with its MTP drafter, and the GGUF target.
+// Their small fixed tensors (recurrent and convolution state) pack; each
+// tensor of an extent or more starts on its own.
+TEST(ComponentsQwen38Models, ServingStateLayouts) {
+  auto drafter = OpenNamed("qwen38-modelopt-mtp");
+  auto t = Open("qwen38-modelopt");
+  auto gguf = Open("qwen38-gguf");
+  if (!drafter || !t || !gguf) {
+    GTEST_FAIL() << "no Qwen3.8 v1 targets and MTP drafter in " << llmp::test_support::V1Store();
+  }
+  const sp::Mapping* mapping = rt::ComposedDrafterMapping(drafter->artifact);
+  ASSERT_NE(mapping, nullptr);
+  auto values = rt::ComponentDrafterValues(t->opened.artifact, drafter->artifact);
+  ASSERT_TRUE(values.has_value()) << values.error();
+  auto spec = sp::ComposeDrafter(t->spec, sp::mappings::Qwen38Mapping(), *mapping, drafter->source,
+                                 *values);
+  ASSERT_TRUE(spec.has_value()) << spec.error();
+  for (std::size_t stage = 0; stage < 2; ++stage) {
+    const auto f =
+        llmp::test_support::ExpectServingLayout("qwen38-modelopt", *spec, stage, 33792, 4096);
+    EXPECT_EQ(f.banks, 0U);
+    EXPECT_LE(f.rule.region, f.spread.region);
+    EXPECT_LE(f.rule.region, f.packed.region + f.big);
+  }
+  const auto f = llmp::test_support::ExpectServingLayout("qwen38-gguf", gguf->spec, 0, 33792, 4096);
+  EXPECT_LE(f.rule.region, f.spread.region);
 }
 
 }  // namespace

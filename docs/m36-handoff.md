@@ -218,7 +218,10 @@ completes with 118 joined waves / 236 joined units, and the two-cycle
 full-head continuations ([report](experiments/m36-dsv4-target/dspark.md#c2-concurrent-serving-and-dsparkgemma-8k16-swap)).
 Uniform 256-byte state tensor alignment across all models in `ComponentLlmBuild`
 landed in `ef215344`, with GPU serving and state alignment expectations updated
-in `021ccdd6` and test fixes in `5e8b40f2`.
+in `021ccdd6` and test fixes in `5e8b40f2`; it made Gemma 2's prefill 1 to 2%
+slower (staggered state growth), so state is now laid out by
+`model::ExtentLayout`'s per-tensor rule: growing tensors of an extent or more
+on their own extents, the rest packed, banks contiguous.
 Native DeepSeek GGUF publication and target serving landed in `926a4f40`
 (N4b9). Artifact
 `698b1cd8696f75355d8a130b71369099c2c5d1d241932330565d33480cbc0bfd`

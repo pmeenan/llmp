@@ -251,3 +251,40 @@ the final pass from about 9.5 GPU-hours on one host to a tiered pass on both:
 - Quality, peak-memory reporting and the bounds above are unchanged. The
   image family keeps its full gate on `c8f0f80b` (PASS, −0.36%); after the
   image constants slice it is re-confirmed by tier 1.
+
+## State layout (2026-10-16, investigation of the tier-1 regressions)
+
+Screens on `spark`, 2 blocks each against `1facc957-fixed`, raw records in
+`spark:~/scratch/m36-imgreg/` (deleted at the milestone's close).
+
+- **Gemma 2 prefill.** `ef215344` packed every state tensor at 256 bytes.
+  Gemma 2's 8.25 MiB local rings then stagger every later tensor across
+  extents, so a prompt grows its state every chunk or two: the runtime's
+  lookahead `prepared` count rose from 13 to 42 a run, and C1/C2 prefill
+  were +1.8%/+2.1% (`c8f0f80b`), +0.83%/+1.30% (`343d375e`), while the G1c
+  candidate measured +0.00%/+0.30% in the same window. `model::ExtentLayout`
+  (each growing tensor of 2 MiB or more on its own extents, the rest packed
+  at 256 bytes, a compressed cache contiguous with its raw window) gives
+  `prepared` 13 and C1/C2 prefill −0.63%/−0.20% (decode −0.52%/−0.37%).
+- **Slot state, in 2 MiB extents** (packed → rule → every tensor on its own
+  extents; the region, then what 256 positions back; `state_layouts.h`
+  measures it in `spec_models_test` and `components_*_models_test`):
+
+  | Model (context/chunk) | Region | 256 positions | Growths over 8K |
+  | --- | --- | --- | --- |
+  | Gemma 2 (8192/128) | 319 → 338 → 338 | 52 → 52 → 52 | 23 → 8 → 8 |
+  | Gemma 3 (4096/128) | 113 → 156 → 156 | 68 → 68 → 68 | 9 → 4 → 4 |
+  | Gemma 4 26B (8192/1024) | 280 → 280 → 280 | 60 → 60 → 60 | 8 → 8 → 8 |
+  | Gemma 4 31B (8192/256) | 820 → 820 → 820 | 120 → 120 → 120 | 18 → 18 → 18 |
+  | Qwen3.8 target (33792/4096) | 564 → 589 → 649 | 106 → 108 → 157 | 2 → 2 → 2 |
+  | Qwen3.8 MTP (33792/4096) | 123 → 126 → 127 | 84 → 85 → 86 | 2 → 2 → 2 |
+  | DeepSeek V4 (262144/4096) | 958 → 968 → 1113 | 164 → 191 → 357 | 2 → 2 → 1 |
+  | DeepSeek V4 (8448/256, C2's) | 49 → 49 → 250 | 49 → 49 → 250 | 1 → 1 → 1 |
+  | DSpark (either) | 1 → 1 → 3 | 1 → 1 → 3 | 1 → 1 → 1 |
+
+- **Image.** Not a code change: `c8f0f80b`'s binary, −0.4 to −1% in the
+  morning, measured +3.28% in the afternoon beside `103686f5` (+3.39%) and
+  `343d375e` (+3.94%), with `1facc957` against `1facc957-fixed` at +0.05%.
+  After 17 idle minutes (GPU 41 °C, from 74 °C idle under the queue)
+  `343d375e` measured −0.1% in one block: the migrated image path slows more
+  than the M3 one when the host is heat-soaked, at the same SM clocks.

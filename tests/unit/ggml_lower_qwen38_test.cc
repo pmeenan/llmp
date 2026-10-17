@@ -211,7 +211,8 @@ const Import& ImportOf(fx::Form form) {
   im.policy = pl::ParsePolicy(sp::DefaultPolicy(sp::mappings::Qwen38Mapping(), values, envelope) |
                               Must(__LINE__)) |
               Must(__LINE__);
-  im.layouts.push_back(co::StageLayout(*im.spec, 0, kContext, kMaxRows, kExtent) | Must(__LINE__));
+  im.layouts.push_back(co::StageLayoutUniform(*im.spec, 0, kContext, kMaxRows, kExtent) |
+                       Must(__LINE__));
   if (form == fx::Form::kCutlass) {
     const kg::moe::ExpertLayout layout{.ffn = p.expert_ffn, .width = p.width};
     im.stride.assign(p.layers, (layout.bytes() + 4095) / 4096 * 4096);
@@ -230,8 +231,8 @@ const Import& ImportOf(fx::Form form) {
                         Must(__LINE__)) |
         Must(__LINE__);
     for (std::uint16_t s = 0; s < 2; ++s) {
-      im.layouts_mtp.push_back(co::StageLayout(*im.spec_mtp, s, kContext, kMaxRows, kExtent) |
-                               Must(__LINE__));
+      im.layouts_mtp.push_back(
+          co::StageLayoutUniform(*im.spec_mtp, s, kContext, kMaxRows, kExtent) | Must(__LINE__));
     }
     const kg::moe::ExpertLayout layout{.ffn = p.expert_ffn, .width = p.width};
     im.mtp_stride = (layout.bytes() + 4095) / 4096 * 4096;
@@ -1212,7 +1213,7 @@ TEST(GgmlLowerQwen38Test, ReservedWeightFactsSelectTypedProductsAndRejectBrokenP
   const auto& im = ImportOf(fx::Form::kCutlass);
   auto spec = *im.spec;
   spec.stages.front().layers.resize(fam::Qwen38Flash().ple_layer + 1);
-  auto layout = co::StageLayout(spec, 0, kContext, kMaxRows, kExtent);
+  auto layout = co::StageLayoutUniform(spec, 0, kContext, kMaxRows, kExtent);
   ASSERT_TRUE(layout) << layout.error();
   auto policy = im.policy;
   ASSERT_EQ(std::erase(policy.enabled, "owner_row_invariant"), 1U);

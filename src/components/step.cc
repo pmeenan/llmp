@@ -889,8 +889,15 @@ StageContracts(const spec::ModelSpec& spec, std::size_t stage) {
 std::expected<model::StateLayoutDerived, std::string> StageLayout(const spec::ModelSpec& spec,
                                                                   std::size_t stage,
                                                                   std::uint32_t context,
-                                                                  std::uint32_t max_rows,
-                                                                  std::uint64_t tensor_align) {
+                                                                  std::uint32_t max_rows) {
+  auto contracts = StageContracts(spec, stage);
+  if (!contracts) return std::unexpected(contracts.error());
+  return model::ExtentLayout(*contracts, context, max_rows, model::kStateExtent);
+}
+
+std::expected<model::StateLayoutDerived, std::string> StageLayoutUniform(
+    const spec::ModelSpec& spec, std::size_t stage, std::uint32_t context, std::uint32_t max_rows,
+    std::uint64_t tensor_align) {
   auto contracts = StageContracts(spec, stage);
   if (!contracts) return std::unexpected(contracts.error());
   return model::Layout(*contracts, context, max_rows, tensor_align);

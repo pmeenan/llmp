@@ -925,7 +925,7 @@ TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
       }
       auto want = fam::Dsv4State(p, context, rows, window);
       ASSERT_TRUE(want.has_value());
-      auto got = StageLayout(form, 0, context, rows);
+      auto got = StageLayoutUniform(form, 0, context, rows, 256);
       ASSERT_TRUE(got.has_value()) << got.error();
       ASSERT_EQ(got->items.size(), want->tensors.size());
       for (std::size_t i = 0; i < got->items.size(); ++i) {
@@ -937,7 +937,7 @@ TEST(ComponentsDsv4Test, TheMappingsDescribeDeepSeekV4FlashAndItsDrafter) {
   }
   auto ring = fam::DsparkState(d, 16);
   ASSERT_TRUE(ring.has_value());
-  auto drafted = StageLayout(spec, 1, 65536, 16);
+  auto drafted = StageLayoutUniform(spec, 1, 65536, 16, 256);
   ASSERT_TRUE(drafted.has_value()) << drafted.error();
   ASSERT_EQ(drafted->items.size(), ring->offsets.size());
   for (std::size_t i = 0; i < ring->offsets.size(); ++i) {

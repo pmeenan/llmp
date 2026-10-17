@@ -770,10 +770,14 @@ artifact's tensors, the kernel source's backend), released after the
 runner. Serving's build (`runtime/component_build.h`, which the gate's
 harnesses share) reads the spec its v1 artifact stores (D-118) and, when
 the model speculates, composes its drafter's (`spec::ComposeDrafter`: Gemma
-4's assistant, a stage of its own), takes each stage's layout (each state
-tensor on its own paged extents, as the M3 layouts: packed tensors
-straddle extents, so a prompt would grow its state at staggered positions
-every chunk or two, each growth a host cost between steps) and the
+4's assistant, a stage of its own), takes each stage's layout
+(`model::ExtentLayout`: each growing state tensor of an extent or more on
+its own paged extents, as the M3 layouts, since packed tensors straddle
+extents and a prompt would grow its state at staggered positions every
+chunk or two, each growth a host cost between steps; smaller or whole-used
+tensors packed at 256 bytes, since an extent each would multiply a slot's
+state, DeepSeek V4's 229 small tensors 506 MiB instead of 56; a compressed
+cache right after its raw window, the bank state-bank attention reads) and the
 target's batching from the components, and makes a `ComponentStepSource`
 a stage (a `StagedStepSource` over several) planned under each
 approval's policy rule for the serving envelope (its context and

@@ -447,7 +447,7 @@ void ExpectFamilyLowers() {
   for (const auto& [context, slots, cohorts] : runs) {
     const Cells state = F::State(context, 128);
     Ir ir_{.spec = F::Spec(), .source = F::Source()};
-    auto layout = co::StageLayout(ir_.spec, 0, context, 128, kExtent);
+    auto layout = co::StageLayoutUniform(ir_.spec, 0, context, 128, kExtent);
     ASSERT_TRUE(layout.has_value()) << layout.error();
     ir_.layout.emplace(std::move(*layout));
     for (const Case& c : cohorts ? CohortCases(context, slots) : SetupCases(context, slots)) {
@@ -1427,7 +1427,7 @@ TEST(GgmlLowerTest, Q8DenseCacheUsesBlockedPrimitiveAttentionAndStores) {
   const auto bytes = co::KvCacheEncodingBytes(inputs.spec, llmp::format::Encoding::kQ8_0);
   ASSERT_TRUE(bytes) << bytes.error();
   ASSERT_TRUE(co::ApplyKvCacheEncoding(inputs.spec, llmp::format::Encoding::kQ8_0, *bytes));
-  auto layout = co::StageLayout(inputs.spec, 0, 512, 8, kExtent);
+  auto layout = co::StageLayoutUniform(inputs.spec, 0, 512, 8, kExtent);
   ASSERT_TRUE(layout) << layout.error();
   inputs.layout.emplace(std::move(*layout));
   const Cells cells = Gemma2Family::State(512, 8);
@@ -1762,7 +1762,7 @@ TEST(GgmlLowerTest, RopeStoreUsesReadOperandStandInWithoutAliasingRetainedRotati
 TEST(GgmlLowerTest, RefusesASelectionPlanGraphDoesNotMake) {
   Ir ir_{.spec = Gemma2Family::Spec(), .source = Gemma2Family::Source()};
   const Cells state = Gemma2Family::State(8192, 128);
-  auto layout = co::StageLayout(ir_.spec, 0, 8192, 128, kExtent);
+  auto layout = co::StageLayoutUniform(ir_.spec, 0, 8192, 128, kExtent);
   ASSERT_TRUE(layout.has_value());
   ir_.layout.emplace(std::move(*layout));
   const Case c{.segments = {{0, 1, 7}}, .out = Out::kHead};

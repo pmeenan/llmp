@@ -402,7 +402,7 @@ Ir TargetIr(std::uint32_t size, const Recipe& r) {
   ir_.spec =
       *llmp::spec::Synthesize(llmp::spec::mappings::Gemma4Mapping(), ir_.sources[0], *values);
   ir_.tables.emplace_back(ir_.sources[0].tensors);
-  auto layout = co::StageLayout(ir_.spec, 0, r.context, r.max_rows, kExtent);
+  auto layout = co::StageLayoutUniform(ir_.spec, 0, r.context, r.max_rows, kExtent);
   EXPECT_TRUE(layout.has_value()) << layout.error();
   ir_.layouts.push_back(std::move(*layout));
   ir_.stages.push_back(&ir_.layouts[0]);
@@ -549,7 +549,7 @@ TEST(GgmlLowerGemma4Test, AssistantLowersItsDraftPasses) {
     ir_.spec = std::move(*composed);
     for (const auto& s : ir_.sources) ir_.tables.emplace_back(s.tensors);
     for (std::uint16_t stage = 0; stage < 2; ++stage) {
-      auto layout = co::StageLayout(ir_.spec, stage, kContext, kMaxRows, kExtent);
+      auto layout = co::StageLayoutUniform(ir_.spec, stage, kContext, kMaxRows, kExtent);
       ASSERT_TRUE(layout.has_value()) << layout.error();
       ir_.layouts.push_back(std::move(*layout));
     }
@@ -626,7 +626,7 @@ TEST(GgmlLowerGemma4Test, TargetStepsLowerTheirDraftersTaps) {
   ir_.spec = std::move(*composed);
   for (const auto& s : ir_.sources) ir_.tables.emplace_back(s.tensors);
   for (std::uint16_t stage = 0; stage < 2; ++stage) {
-    auto layout = co::StageLayout(ir_.spec, stage, kContext, kMaxRows, kExtent);
+    auto layout = co::StageLayoutUniform(ir_.spec, stage, kContext, kMaxRows, kExtent);
     ASSERT_TRUE(layout.has_value()) << layout.error();
     ir_.layouts.push_back(std::move(*layout));
   }

@@ -469,7 +469,7 @@ void ExpectFamilyPlans(std::string_view policy_text) {
   for (auto& [context, cases] : AllCases<F>()) {
     const Cells state = F::State(context, 128);
     Ir<F> ir;
-    auto layout = components::StageLayout(ir.spec, 0, context, 128, kExtent);
+    auto layout = components::StageLayoutUniform(ir.spec, 0, context, 128, kExtent);
     ASSERT_TRUE(layout.has_value()) << layout.error();
     ir.layout.emplace(std::move(*layout));
     for (const Case& c : cases) {
