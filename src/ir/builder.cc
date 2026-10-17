@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <span>
@@ -13,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/sha256.h"
 #include "format/encoding.h"
 #include "format/layout.h"
 #include "format/tensor_format.h"
@@ -90,6 +92,11 @@ Outputs Builder::Emit(OpKey key, const ParamBytes& params, std::span<const Tenso
         PreparedRows(r->format)) {
       t.format.encoding = r->format.encoding;
       t.format.layout = r->format.layout;
+      if (!format::Validate(t.format)) {
+        Refuse(GraphError::kFormat,
+               std::format("{}'s output {} is not valid as prepared rows", OpKeyName(key), i));
+        return {};
+      }
       t.nb = NaturalStrides(t.format);
     } else if (r != nullptr && inferred->float_result.at(i) &&
                r->format.encoding != t.format.encoding) {
@@ -148,7 +155,7 @@ TensorId Builder::One(OpKey key, const ParamBytes& params, std::span<const Tenso
 }
 
 TensorId Builder::Leaf(Op op, Role role, const format::TensorFormat& format, Binding binding,
-                       std::uint8_t segment, std::string_view name) {
+                       std::uint8_t segment, std::string_view name, const ParamBytes& params) {
   TensorDesc r;
   r.role = role;
   r.format = format;
@@ -156,15 +163,24 @@ TensorId Builder::Leaf(Op op, Role role, const format::TensorFormat& format, Bin
       ShapeOf({format.shape.ne[0], format.shape.ne[1], format.shape.ne[2], format.shape.ne[3]});
   r.binding = binding;
   r.segment = segment;
-  return Emit(Primitive(op), ParamBytes{}, {}, std::span(&r, 1), name)[0];
+  return Emit(Primitive(op), params, {}, std::span(&r, 1), name)[0];
 }
 
 TensorId Builder::Input(const format::TensorFormat& format, std::string_view name) {
   return Leaf(Op::kInput, Role::kInput, format, {}, segment_, name);
 }
 
-TensorId Builder::Constant(const format::TensorFormat& format, std::string_view name) {
-  return Leaf(Op::kInput, Role::kConstant, format, {}, segment_, name);
+TensorId Builder::Constant(const format::TensorFormat& format, std::string_view name,
+                           std::span<const std::byte> content) {
+  ParamBytes params{};
+  if (!content.empty()) {
+    base::Sha256 hash;
+    hash.Update(content);
+    const base::Sha256Digest digest = hash.Finish();
+    static_assert(sizeof(digest) <= kConstantDigestBytes);
+    std::memcpy(params.data(), digest.data(), sizeof(digest));
+  }
+  return Leaf(Op::kInput, Role::kConstant, format, {}, segment_, name, params);
 }
 
 TensorId Builder::Weight(const format::TensorFormat& format, const WeightRef& ref,

@@ -265,7 +265,8 @@ __global__ static void __launch_bounds__(512, 1) attention_tokentile_hmma_q16_ke
             const float old_m = max_s[m];
             const float new_m = fmaxf(old_m, sink);
             const float old_scale = old_m == -INFINITY ? 0.0f : expf(old_m - new_m);
-            const float sink_scale = expf(sink - new_m);
+            // A -inf sink over a fully masked row: -inf - -inf would be NaN.
+            const float sink_scale = sink == -INFINITY ? 0.0f : expf(sink - new_m);
             const float den = sum_s[m] * old_scale + sink_scale;
             final_scale[m] = den == 0.0f ? 0.0f : old_scale / den;
         } else {

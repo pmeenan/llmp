@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Explicit independent cache roots for checked Gemma owner cohorts.
-// No selector uses this operation automatically. The caller holds every real
-// operand span, output and workspace through completion/captured graph lifetime.
+// Explicit independent cache roots for checked Gemma owner cohorts: the
+// fused owner attention (ir FusedKind::kOwnerAttention), which the planner
+// selects where its capability accepts (capabilities.cc,
+// llmp.flash_attn.owner_roots). The caller holds every real operand span,
+// output and workspace through completion/captured graph lifetime.
 #ifndef LLMP_KERNELS_GGML_FATTN_OWNER_H_
 #define LLMP_KERNELS_GGML_FATTN_OWNER_H_
 

@@ -619,10 +619,13 @@ Addresses are rebuilt at load and never serialized.
   stored with no padding and `S` is 2,764,800), which the runtime copies
   or pages in as they are, with no rewrite at load. ModelOpt's codes are
   already CUTLASS's; the scales are a permutation, so the import is
-  lossless, and what it writes equals the harness's former load-time
+  lossless, and what it writes equalled the harness's former load-time
   conversion of the GGML-layout artifact byte for byte (unit-tested on
-  synthetic experts; every logit of the six prompts' 32 steps equal
-  between the two, [qwen38-native](experiments/qwen38-native/README.md)).
+  synthetic experts while that conversion existed; every logit of the six
+  prompts' 32 steps equal between the two,
+  [qwen38-native](experiments/qwen38-native/README.md)). The load-time
+  conversion is retired: a relayout happens at import only (AGENTS.md
+  rule 11).
   The slab serves CUTLASS's grouped GEMM (prefill) and llmpalooza's vector
   products over the same layout (decode), not GGML's `mul_mat_id`. The
   arrays are GGML `I8` bytes, so the container and both readers are

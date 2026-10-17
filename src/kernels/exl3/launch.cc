@@ -218,6 +218,15 @@ std::expected<void, KernelFailure> LaunchContext::End(std::expected<void, Kernel
   return {};
 }
 
+std::expected<void, KernelFailure> LaunchContext::AfterQueued(
+    std::expected<void, KernelFailure> result) {
+  if (result || result.error().error == KernelError::kUnknown) {
+    return result;
+  }
+  faulted_ = true;
+  return Fault("refused after earlier launches were queued: " + result.error().detail);
+}
+
 std::expected<int, KernelFailure> LaunchContext::Coresident(const void* kernel, int threads,
                                                             int shared) {
   if (kernel == nullptr) {

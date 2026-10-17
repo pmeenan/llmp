@@ -1353,8 +1353,12 @@ static std::expected<void, KernelFailure> CheckFlashAttnMmaGroup(const ggml_tens
   }
   for (const ggml_tensor* tensor : {q, k, v, mask}) {
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+      // A head or sequence axis of extent 1 is only ever indexed at 0 (the
+      // mask's by head % ne[2] and sequence % ne[3]), so its stride, which
+      // a long mask's whole rows make large, never enters the arithmetic.
+      const bool unused_stride = i >= 2 && tensor->ne[i] == 1;
       if (std::cmp_greater(tensor->ne[i], kInt32Max) ||
-          ((tensor == q || i < 3) && tensor->nb[i] > kInt32Max)) {
+          ((tensor == q || i < 3) && !unused_stride && tensor->nb[i] > kInt32Max)) {
         return Rejected("flash attention beyond the kernel's 32-bit extents and strides");
       }
     }

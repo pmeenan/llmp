@@ -236,7 +236,8 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::BindImpl(
   using CachedWrapper = std::pair<const execution::Implementation*, std::size_t>;
   static_assert(sizeof(CachedWrapper) <= 16);
   std::vector<CachedWrapper> wrappers;
-  wrappers.reserve(std::min(plan.steps.size(), execution::Registry::kMaxImplementations));
+  // At most one entry a distinct implementation: the registry's.
+  wrappers.reserve(std::min(plan.steps.size(), registry.size()));
   for (std::size_t i = 0; i < plan.steps.size(); ++i) {
     const PlanStep& planned = plan.steps[i];
     const execution::Implementation& implementation = bound->at(i);

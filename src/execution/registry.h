@@ -113,16 +113,10 @@ enum class Operation : std::uint8_t {
   kMoeRoute,    // routed rows sorted by expert
   kQuantize,    // activations into a quantized format
   kNormGate,    // rows scaled to unit RMS, times a weight and a sigmoid gate
-  // Qwen-Image-2.1's operations (M3; kernels/image/implementations.h).
-  kHeadNormRope,       // each head's rows scaled to unit RMS, times a weight, then rotated
-  kLayerNormModulate,  // rows layer-normed, then scaled by a modulation row
-  kGatedResidual,      // x + tanh(gate) * y, the gate a modulation row
-  kGatedResidualNorm,  // the gated residual, then the next layer_norm_modulate of its x
-  kEulerStep,          // the flow-matching scheduler's step
-  kConv2d,             // a 2-D convolution plus a bias
-  kChannelNorm,        // each pixel's channels scaled to unit norm, times a weight
-  kUpsample,           // nearest 2x upsampling
-  kDupUpAdd,           // a shortcut's channels spread over 2x2 pixels, added
+  // The image pipeline's spatial operations (M3).
+  kConv2d,    // a 2-D convolution plus a bias
+  kUpsample,  // nearest 2x upsampling
+  kDupUpAdd,  // a shortcut's channels spread over 2x2 pixels, added
   // Gemma 4 primitives (M3.5), preserving existing operation identities.
   kGeGlu,              // GELU-tanh(gate) * up
   kMulMatGeGlu,        // gate and up products of one input, then GELU-tanh GLU
@@ -380,9 +374,12 @@ struct PlanRejection {
 // The implementations a build compiled. Immutable once created.
 class Registry {
  public:
-  // Per-registry implementation cap (bounded by static compiler memory
-  // accounting in the serving/runner proofs; GGML + Decode + EXL3 total 174).
-  static constexpr std::size_t kMaxImplementations = 256;
+  // Per-registry implementation cap, a bound on the registry's host memory
+  // (the serving and runner proofs' static accounting pins it). A GGML
+  // backend's registry holds the GGML module's declarations (about 155)
+  // and one selected source's (the decode products' 62, or EXL3's), so the
+  // cap leaves room for the families to come.
+  static constexpr std::size_t kMaxImplementations = 512;
   static constexpr std::size_t kMaxName = 128;
 
   static std::expected<Registry, PlanRejection> Create(std::vector<Implementation> implementations);

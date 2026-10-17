@@ -56,7 +56,7 @@ std::expected<void, KernelFailure> PackedGemmLinear(LaunchContext& launch,
   if (auto product = launch.Gemm(operands, plan); !product) {
     return product;
   }
-  return bias == 0 ? std::expected<void, KernelFailure>() : launch.Bias(*add);
+  return bias == 0 ? std::expected<void, KernelFailure>() : launch.AfterQueued(launch.Bias(*add));
 }
 
 std::expected<void, KernelFailure> PackedGemvLinear(LaunchContext& launch,
@@ -75,7 +75,7 @@ std::expected<void, KernelFailure> PackedGemvLinear(LaunchContext& launch,
   if (auto product = launch.Gemv(operands, plan); !product) {
     return product;
   }
-  return bias == 0 ? std::expected<void, KernelFailure>() : launch.Bias(*add);
+  return bias == 0 ? std::expected<void, KernelFailure>() : launch.AfterQueued(launch.Bias(*add));
 }
 
 std::expected<void, KernelFailure> MultiLinear(LaunchContext& launch,
@@ -156,25 +156,36 @@ std::expected<void, KernelFailure> ReconstructedLinear(LaunchContext& launch, Re
     }
   }
 
+  // After the first launch, a refusal (which the checks above make
+  // unexpected) is reported as a fault: earlier work is queued.
+  bool queued = false;
+  const auto step = [&](std::expected<void, KernelFailure> result) {
+    if (queued) {
+      return launch.AfterQueued(std::move(result));
+    }
+    queued = true;
+    return result;
+  };
   if (!fused) {
-    if (auto transformed = launch.Hadamard(input); !transformed) {
+    if (auto transformed = step(launch.Hadamard(input)); !transformed) {
       return transformed;
     }
   }
   for (std::size_t i = 0; i < slices.size(); ++i) {
-    if (auto reconstructed = launch.Reconstruct(reconstructs[i]); !reconstructed) {
+    if (auto reconstructed = step(launch.Reconstruct(reconstructs[i])); !reconstructed) {
       return reconstructed;
     }
-    if (auto product = gemm.Run(launch, products[i], algorithms[i], launch.sm_count()); !product) {
+    if (auto product = step(gemm.Run(launch, products[i], algorithms[i], launch.sm_count()));
+        !product) {
       return product;
     }
   }
   if (!fused) {
-    if (auto transformed = launch.Hadamard(output); !transformed) {
+    if (auto transformed = step(launch.Hadamard(output)); !transformed) {
       return transformed;
     }
   }
-  return o.bias == 0 ? std::expected<void, KernelFailure>() : launch.Bias(*add);
+  return o.bias == 0 ? std::expected<void, KernelFailure>() : step(launch.Bias(*add));
 }
 
 }  // namespace llmp::kernels::exl3

@@ -64,7 +64,6 @@ using detail::Rejected;
 // unlike functions a linker may fold).
 void LlmpCustomTag(ggml_tensor* /*dst*/, int /*ith*/, int /*nth*/, void* /*userdata*/) {}
 constinit std::array kTagMxfp8MulMatVec = std::to_array("llmp.mxfp8.mul_mat_vec");
-constinit std::array kTagMxfp8Dequant = std::to_array("llmp.mxfp8.dequant");
 constinit std::array kTagNvfp4Rows = std::to_array("llmp.nvfp4.get_rows");
 constinit std::array kTagQRows = std::to_array("llmp.qrows.get_rows");
 constinit std::array kTagArgmax = std::to_array("llmp.argmax");
@@ -205,9 +204,6 @@ LlmpOp LlmpOpOf(const ggml_tensor* node) {
   }
   if (params.userdata == kTagMxfp8MulMatVec.data()) {
     return LlmpOp::kMxfp8MulMatVec;
-  }
-  if (params.userdata == kTagMxfp8Dequant.data()) {
-    return LlmpOp::kMxfp8Dequant;
   }
   if (params.userdata == kTagNvfp4Rows.data()) {
     return LlmpOp::kNvfp4Rows;
@@ -350,7 +346,9 @@ std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node) {
     return Rejected("F32 rows into one I32 index a row (and its probability)");
   }
   if (!Packed(x) || !Packed(node) || !Aligned(x, 4) || !Aligned(node, 4) ||
-      std::cmp_greater(x->ne[0], kInt32Max) || x->ne[1] > 65535) {
+      // A block a row (grid x takes 2^31 - 1); the row offset is 64-bit and
+      // the probability's (rows + row) unsigned.
+      std::cmp_greater(x->ne[0], kInt32Max) || std::cmp_greater(x->ne[1], kInt32Max)) {
     return Rejected("packed operands within the kernel's grid");
   }
   if (!AllCurrent({node, x}) || !Disjoint(node, x, false)) {
@@ -365,17 +363,15 @@ ggml_tensor* Mxfp8MulMatVec(ggml_context* context, ggml_tensor* codes, ggml_tens
                 kTagMxfp8MulMatVec.data());
 }
 
-ggml_tensor* Mxfp8Dequant(ggml_context* context, ggml_tensor* codes, ggml_tensor* scales) {
-  return Custom(context, GGML_TYPE_BF16, {codes->ne[0], codes->ne[1], 1, 1}, {codes, scales},
-                kTagMxfp8Dequant.data());
-}
-
 ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids,
                        ggml_tensor* scale, std::int64_t values) {
   return Custom(context, GGML_TYPE_F32, {values, ids->ne[0], 1, 1}, {table, ids, scale},
                 kTagNvfp4Rows.data());
 }
 
+namespace {
+
+// Whether llmp.qrows.get_rows takes a table of `type`.
 bool QRowsType(ggml_type type) {
   switch (type) {
     case GGML_TYPE_Q4_0:
@@ -389,6 +385,8 @@ bool QRowsType(ggml_type type) {
       return false;
   }
 }
+
+}  // namespace
 
 ggml_tensor* QRows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids) {
   return Custom(context, GGML_TYPE_F32, {table->ne[0], ids->ne[0], 1, 1}, {table, ids},
@@ -671,27 +669,6 @@ std::expected<void, KernelFailure> CheckMxfp8MulMatVec(const ggml_tensor* node) 
   if (!AllCurrent({node, codes, scales, x}) || !Disjoint(node, codes, false) ||
       !Disjoint(node, scales, false) || !Disjoint(node, x, false)) {
     return Rejected("a stale view, or an output overlapping an operand");
-  }
-  return {};
-}
-
-std::expected<void, KernelFailure> CheckMxfp8Dequant(const ggml_tensor* node) {
-  if (auto checked = CheckCustom(node, LlmpOp::kMxfp8Dequant, 2); !checked) {
-    return checked;
-  }
-  const ggml_tensor* codes = node->src[0];
-  const ggml_tensor* scales = node->src[1];
-  if (auto checked = CheckMxfp8Weights(codes, scales); !checked) {
-    return checked;
-  }
-  if (node->type != GGML_TYPE_BF16 || !ggml_are_same_shape(node, codes) || !Packed(node) ||
-      !Aligned(node, 16)) {
-    return Rejected("a packed, 16-byte aligned BF16 matrix of the codes' shape");
-  }
-  if (std::cmp_greater(ggml_nelements(codes) / 16, kInt32Max) ||
-      !AllCurrent({node, codes, scales}) || !Disjoint(node, codes, false) ||
-      !Disjoint(node, scales, false)) {
-    return Rejected("beyond the kernel's grid, a stale view, or an overlapping output");
   }
   return {};
 }
@@ -2119,7 +2096,8 @@ std::expected<void, KernelFailure> CheckQsaPrep(const ggml_tensor* node) {
   if (!IsF32(x) || x->ne[1] != t || x->ne[2] != 1 || x->ne[3] != 1 || !Packed(x) ||
       x->ne[0] < ((heads - 1) * stride) + d || !Aligned(x, sizeof(float)) || !Vector(weight, d) ||
       positions->type != GGML_TYPE_I32 || ggml_nelements(positions) < t || !Packed(positions) ||
-      !IsF32(node) || !Shaped(node, d, heads, t)) {
+      !IsF32(node) || !Shaped(node, d, heads, t) || !Aligned(weight, 4) || !Aligned(positions, 4) ||
+      !Aligned(node, 4)) {
     return Rejected(
         "F32 rows [n, t] holding the heads, a weight [d], I32 positions, into [d, "
         "heads, t]");
@@ -2810,7 +2788,11 @@ std::expected<void, KernelFailure> CheckVecQ(const ggml_tensor* node) {
   }
   if (!Packed(node) || !Aligned(node, 4) || !AllCurrent({node, q8}) || !Disjoint(node, w, false) ||
       !Disjoint(node, q8, false) || (gate != nullptr && !Disjoint(node, gate, false)) ||
-      std::cmp_greater(n, kInt32Max) || std::cmp_greater(k, kInt32Max)) {
+      std::cmp_greater(n, kInt32Max) || std::cmp_greater(k, kInt32Max) ||
+      // The kernel's destination offsets (token, slot, row) are int.
+      std::cmp_greater(static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(used) *
+                           static_cast<std::uint64_t>(tokens),
+                       kInt32Max)) {
     return Rejected("a packed output disjoint from its operands, within the kernel's grid");
   }
   return {};
@@ -2853,18 +2835,34 @@ std::expected<void, KernelFailure> CheckDsv4Route(const ggml_tensor* node) {
       return Rejected("packed selected IDs [used,tokens] and finite route parameters");
     for (std::size_t i = 2; i < GGML_MAX_SRC; ++i)
       if (node->src[i] != nullptr) return Rejected("unexpected selected-ID route operand");
-  } else if (hashed) {
-    const ggml_tensor* table = node->src[1];
-    const ggml_tensor* ids = node->src[2];
-    if (table == nullptr || table->type != GGML_TYPE_I32 || !Bound(table) || !Packed(table) ||
-        table->ne[0] != used || table->ne[2] != 1 || ids->type != GGML_TYPE_I32 || !Bound(ids) ||
-        !Packed(ids) || !Shaped(ids, tokens, 1, 1) || !Disjoint(node, table, false) ||
-        !Disjoint(node, ids, false) || std::cmp_greater(table->ne[1], kInt32Max)) {
-      return Rejected("a hash table I32 [used, vocab] and the tokens I32 [tokens]");
+  } else {
+    // Mode 0 (the interleaved output): the same parameter bounds as mode 1.
+    if ((LlmpOpInt(node, 1) != 0 && LlmpOpInt(node, 1) != 1) ||
+        !std::isfinite(LlmpOpFloat(node, 2)) || LlmpOpFloat(node, 2) < 0.0F ||
+        !std::isfinite(LlmpOpFloat(node, 3)) || !Aligned(logits, 4) || !Aligned(node, 4))
+      return Rejected("a 0/1 normalization, a finite non-negative clamp and a finite scale");
+    for (std::size_t i = 3; i < GGML_MAX_SRC; ++i)
+      if (node->src[i] != nullptr) return Rejected("unexpected route operand");
+    if (hashed) {
+      const ggml_tensor* table = node->src[1];
+      const ggml_tensor* ids = node->src[2];
+      // The kernel clamps each token ID into the table's rows (RouteKernel),
+      // which bounds the table's rows by int.
+      if (table == nullptr || table->type != GGML_TYPE_I32 || !Bound(table) || !Packed(table) ||
+          table->ne[0] != used || table->ne[1] < 1 || table->ne[2] != 1 || table->ne[3] != 1 ||
+          ids->type != GGML_TYPE_I32 || !Bound(ids) || !Packed(ids) || !Shaped(ids, tokens, 1, 1) ||
+          !Aligned(table, 4) || !Aligned(ids, 4) || !Disjoint(node, table, false) ||
+          !Disjoint(node, ids, false) || !AllCurrent({table, ids}) || !AllSane({table, ids}) ||
+          std::cmp_greater(
+              static_cast<std::uint64_t>(table->ne[0]) * static_cast<std::uint64_t>(table->ne[1]),
+              kInt32Max)) {
+        return Rejected("a hash table I32 [used, vocab] and the tokens I32 [tokens]");
+      }
+    } else if (!Vector(node->src[1], 256) || !Bound(node->src[1]) || !Packed(node->src[1]) ||
+               !Aligned(node->src[1], 4) || !Disjoint(node, node->src[1], false) ||
+               !AllCurrent({node->src[1]}) || !AllSane({node->src[1]})) {
+      return Rejected("a bias F32 [256]");
     }
-  } else if (!Vector(node->src[1], 256) || !Bound(node->src[1]) ||
-             !Disjoint(node, node->src[1], false)) {
-    return Rejected("a bias F32 [256]");
   }
   if (!AllCurrent({node, logits}) || !Disjoint(node, logits, false) || AnyEmpty({logits}) ||
       !AllSane({logits, node})) {

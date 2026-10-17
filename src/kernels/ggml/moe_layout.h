@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The routed experts' CUTLASS layout (the grouped GEMM's executable view,
-// docs/artifact-format.md#executable-views), and the conversions between it
-// and GGML's block_nvfp4 layout the artifact stores. No CUDA types: the
-// conversions (llmp_moe.cu) take device addresses and a cudaStream_t as
-// void*.
+// docs/artifact-format.md#executable-views), which the importer writes
+// (import/expert_relayout.h, import/writer.cc; AGENTS.md rule 11: a
+// relayout happens at import, never at load), and the layouts of the
+// routed products' working buffers. No CUDA types.
 //
 // An expert's slot in its layer's slab holds, from its start:
 //   gate and up codes   2f rows (gate's f, then up's f) of w / 2 bytes,
@@ -17,8 +17,8 @@
 // f the expert's hidden width (640), w the model's width (2560). Each part
 // is a multiple of 16 bytes; together they are exactly the bytes GGML's
 // blocks of the three projections hold (36 bytes a 64-element block), so
-// the layout fits the slot GGML's layout did. The conversion is a
-// permutation of those bytes, lossless both ways.
+// the layout fits the slot GGML's layout did: a permutation of those
+// bytes, lossless both ways.
 
 #ifndef LLMP_KERNELS_GGML_MOE_LAYOUT_H_
 #define LLMP_KERNELS_GGML_MOE_LAYOUT_H_
@@ -36,19 +36,6 @@ struct ExpertLayout {
   constexpr std::uint64_t down_codes() const { return gate_up_scales() + (2 * ffn * (width / 16)); }
   constexpr std::uint64_t down_scales() const { return down_codes() + (width * (ffn / 2)); }
   constexpr std::uint64_t bytes() const { return down_scales() + (width * (ffn / 16)); }
-};
-
-// One layer's slab: `experts` slots `stride` bytes apart, each holding (in
-// GGML's layout) the gate, up and down projections' block_nvfp4 rows at
-// those byte offsets in the slot.
-struct ExpertSlab {
-  void* base = nullptr;
-  std::uint64_t stride = 0;
-  std::int64_t experts = 0;
-  std::uint64_t gate = 0;
-  std::uint64_t up = 0;
-  std::uint64_t down = 0;
-  ExpertLayout layout;
 };
 
 // The tokens a block of llmp.moe.route counts.
@@ -104,15 +91,6 @@ struct QuantLayout {
   }
   constexpr std::uint64_t bytes() const { return row_scales() + (slots * 4); }
 };
-
-// Rewrites the slab's slots from GGML's layout into the CUTLASS layout,
-// `batch` experts at a time through `temp` (batch · stride bytes of device
-// memory), on `stream`. The slot bytes past the layout are zeroed. Returns
-// false (nothing queued) for a slab whose parts do not fit its stride.
-bool ToCutlassLayout(const ExpertSlab& slab, void* temp, std::int64_t batch, void* stream);
-// The inverse, into `out` (experts · stride bytes, GGML's layout at the
-// same offsets, other bytes untouched): the layout proof's check.
-bool ToGgmlLayout(const ExpertSlab& slab, void* out, void* stream);
 
 }  // namespace llmp::kernels::ggml::moe
 

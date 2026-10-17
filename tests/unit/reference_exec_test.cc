@@ -1611,6 +1611,50 @@ TEST_F(ExecTest, RoutesSelectAndWeightExperts) {
   EXPECT_EQ(Get(looked[1]), Get(hash[1]));
 }
 
+// A view of a route's ids addresses the packed [used, tokens] the node
+// records. Expanded, a route whose ids are its looked-up side input reads
+// the same elements as the route itself; one whose ids are a view of its
+// whole sort is refused rather than read the rest of the sort.
+TEST(ReferenceDecompositionTest, ViewsOfRouteIdsKeepTheirElementsOrAreRefused) {
+  const auto build = [](bool hashed, TensorId& logits, TensorId& given) {
+    ir::Builder b;
+    logits = b.Input(ir::Dense(Encoding::kF32, ir::ShapeOf({4, 2})));
+    given = b.Input(ir::Dense(Encoding::kI32, ir::ShapeOf({2, 2})));
+    const ir::Outputs route =
+        hashed
+            ? b.Route(logits, {}, given, {},
+                      ir::RouteParams{
+                          .kind = ir::RouteKind::kHash, .normalize = true, .experts = 4, .used = 2})
+            : b.Route(logits, {}, {}, {},
+                      ir::RouteParams{.normalize = true, .experts = 4, .used = 2});
+    b.Output(b.Cont(b.View(route[0], ir::ShapeOf({2, 1}), {4, 8, 8, 8}, 8)));
+    auto g = std::move(b).Finish();
+    EXPECT_TRUE(g.has_value());
+    return std::move(*g);
+  };
+  TensorId logits, given;
+  const ir::Graph sorted = build(false, logits, given);
+  const auto refused = ir::Expand(sorted, true);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().error, ir::GraphError::kFormat);
+  const ir::Graph hashed = build(true, logits, given);
+  const auto expanded = ir::Expand(hashed, true);
+  ASSERT_TRUE(expanded.has_value()) << expanded.error().detail;
+  const auto run = [&](const ir::Graph& g) {
+    auto e = Executor::Create(g);
+    EXPECT_TRUE(e.has_value());
+    if (!e) return std::vector<std::int64_t>{};
+    const std::vector<float> values = {1, 3, 2, 3, 0, -1, 0.5f, 0.25f};
+    const std::vector<std::int64_t> ids = {2, 1, 3, 0};
+    EXPECT_TRUE(e->BindValues(logits, values).has_value());
+    EXPECT_TRUE(e->BindInts(given, ids).has_value());
+    EXPECT_TRUE(e->Run().has_value());
+    return e->Ints(g.outputs()[0]).value_or(std::vector<std::int64_t>{});
+  };
+  EXPECT_EQ(run(hashed), (std::vector<std::int64_t>{3, 0}));
+  EXPECT_EQ(run(*expanded), (std::vector<std::int64_t>{3, 0}));
+}
+
 TEST_F(ExecTest, ExpertReductionScalesWeighsAndSumsSlots) {
   const TensorId x = F({2, 2, 1});
   const TensorId w = F({2, 1});
@@ -2567,7 +2611,7 @@ TEST(ReferenceDecompositionTest, FusedStoresAndOwnerAttention) {
 }
 
 TEST(ReferenceDecompositionTest, DupUpAddSpreadsTheShortcutsChannels) {
-  // kernels/image/ops.h AddDupUp: output channel o's sub-pixel (b, d) reads
+  // kernels/ggml/ops_ext.h DupUpAddF32: output channel o's sub-pixel (b, d) reads
   // input channel (((o · ft + ft - 1) · 2 + b) · 2 + d) / repeats.
   constexpr std::uint64_t kW = 3;
   constexpr std::uint64_t kH = 2;

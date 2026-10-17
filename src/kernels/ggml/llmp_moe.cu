@@ -4,8 +4,8 @@
 
 // The routed experts over the CUTLASS layout (llmp_ops.h, moe_layout.h):
 // routing, NVFP4 activation quantization, the gate/up SwiGLU and its
-// quantization, the sorted rows' weighted sum, decode's vector products,
-// and the layout conversions. The activation quantization repeats GGML's
+// quantization, the sorted rows' weighted sum and decode's vector
+// products. The activation quantization repeats GGML's
 // quantize_mmq_nvfp4 (ggml-cuda/quantize.cu at llama.cpp b29c606e2, MIT): a
 // row scale of amax / (6 · 448), each 16-value block's E4M3 scale searched
 // over five codes around amax / 6 for the least squared error
@@ -749,156 +749,11 @@ __global__ void __launch_bounds__(256) GemvExperts(GemvArgs a) {
   }
 }
 
-// ------------------------------------------------------------------ layout conversion
-
-// One projection of the experts' slots: its GGML rows at `ggml` (each k / 64
-// blocks of 36 bytes: 4 E4M3 scales, then 32 bytes in which byte 8s + j
-// holds elements 16s + j and 16s + j + 8) and its CUTLASS rows row0 .. of a
-// block of `rows` rows at `codes` and `scales`.
-struct Projection {
-  std::uint64_t ggml;
-  std::uint64_t codes;
-  std::uint64_t scales;
-  int rows_here;
-  int row0;
-  int k;
-};
-
-// One 64-value block a thread: GGML to CUTLASS (`to_cutlass`) or back.
-__global__ void ConvertBlocks(const std::uint8_t* __restrict__ src, std::uint8_t* __restrict__ dst,
-                              std::uint64_t src_stride, std::uint64_t dst_stride, int experts,
-                              Projection p, bool to_cutlass) {
-  const int per_row = p.k / 64;
-  const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
-  const std::int64_t total = static_cast<std::int64_t>(experts) * p.rows_here * per_row;
-  if (i >= total) {
-    return;
-  }
-  const auto e = static_cast<std::uint64_t>(i / (static_cast<std::int64_t>(p.rows_here) * per_row));
-  const int r = static_cast<int>((i / per_row) % p.rows_here);
-  const int blk = static_cast<int>(i % per_row);
-  const auto row = static_cast<std::uint64_t>(p.row0 + r);
-  const auto blocks16 = static_cast<std::uint64_t>(p.k / kSub);
-  const std::uint64_t g_off =
-      p.ggml + (static_cast<std::uint64_t>(r) * static_cast<std::uint64_t>(per_row) * 36) +
-      (static_cast<std::uint64_t>(blk) * 36);
-  const std::uint64_t c_off = p.codes + (row * static_cast<std::uint64_t>(p.k / 2)) +
-                              (static_cast<std::uint64_t>(blk) * 32);
-  if (to_cutlass) {
-    const std::uint8_t* g = src + (e * src_stride) + g_off;
-    std::uint8_t* c = dst + (e * dst_stride);
-    std::uint8_t v[64];
-#pragma unroll
-    for (int s = 0; s < 4; ++s) {
-#pragma unroll
-      for (int j = 0; j < 8; ++j) {
-        const std::uint8_t b = g[4 + (8 * s) + j];
-        v[(16 * s) + j] = b & 15U;
-        v[(16 * s) + j + 8] = b >> 4U;
-      }
-      c[p.scales + moe::SfOffset(row, static_cast<std::uint64_t>((blk * 4) + s), blocks16)] = g[s];
-    }
-#pragma unroll
-    for (int b = 0; b < 32; ++b) {
-      c[c_off + b] = static_cast<std::uint8_t>(v[2 * b] | (v[(2 * b) + 1] << 4U));
-    }
-  } else {
-    const std::uint8_t* c = src + (e * src_stride);
-    std::uint8_t* g = dst + (e * dst_stride) + g_off;
-    std::uint8_t v[64];
-#pragma unroll
-    for (int b = 0; b < 32; ++b) {
-      const std::uint8_t byte = c[c_off + b];
-      v[2 * b] = byte & 15U;
-      v[(2 * b) + 1] = byte >> 4U;
-    }
-#pragma unroll
-    for (int s = 0; s < 4; ++s) {
-      g[s] = c[p.scales + moe::SfOffset(row, static_cast<std::uint64_t>((blk * 4) + s), blocks16)];
-#pragma unroll
-      for (int j = 0; j < 8; ++j) {
-        g[4 + (8 * s) + j] =
-            static_cast<std::uint8_t>(v[(16 * s) + j] | (v[(16 * s) + j + 8] << 4U));
-      }
-    }
-  }
-}
-
 unsigned Blocks(std::int64_t items, int threads) {
   return static_cast<unsigned>((items + threads - 1) / threads);
 }
 
-bool SlabFits(const moe::ExpertSlab& s) {
-  const moe::ExpertLayout& l = s.layout;
-  const std::uint64_t gate_up = l.ffn * (l.width / 64) * 36;
-  const std::uint64_t down = l.width * (l.ffn / 64) * 36;
-  return s.base != nullptr && s.experts > 0 && l.ffn % 64 == 0 && l.width % 128 == 0 &&
-         l.ffn % 64 == 0 && s.stride % 16 == 0 && l.bytes() <= s.stride &&
-         s.gate + gate_up <= s.stride && s.up + gate_up <= s.stride && s.down + down <= s.stride;
-}
-
-void ConvertAll(const moe::ExpertSlab& s, const std::uint8_t* src, std::uint8_t* dst,
-                std::int64_t experts, bool to_cutlass, cudaStream_t stream) {
-  const moe::ExpertLayout& l = s.layout;
-  const auto f = static_cast<int>(l.ffn);
-  const auto w = static_cast<int>(l.width);
-  const Projection parts[3] = {{.ggml = s.gate,
-                                .codes = l.gate_up_codes(),
-                                .scales = l.gate_up_scales(),
-                                .rows_here = f,
-                                .row0 = 0,
-                                .k = w},
-                               {.ggml = s.up,
-                                .codes = l.gate_up_codes(),
-                                .scales = l.gate_up_scales(),
-                                .rows_here = f,
-                                .row0 = f,
-                                .k = w},
-                               {.ggml = s.down,
-                                .codes = l.down_codes(),
-                                .scales = l.down_scales(),
-                                .rows_here = w,
-                                .row0 = 0,
-                                .k = f}};
-  for (const Projection& p : parts) {
-    const std::int64_t items = experts * p.rows_here * (p.k / 64);
-    ConvertBlocks<<<Blocks(items, 256), 256, 0, stream>>>(src, dst, s.stride, s.stride,
-                                                          static_cast<int>(experts), p, to_cutlass);
-  }
-}
-
 }  // namespace
-
-namespace moe {
-
-bool ToCutlassLayout(const ExpertSlab& slab, void* temp, std::int64_t batch, void* stream) {
-  if (!SlabFits(slab) || temp == nullptr || batch <= 0) {
-    return false;
-  }
-  auto* s = static_cast<cudaStream_t>(stream);
-  auto* base = static_cast<std::uint8_t*>(slab.base);
-  auto* t = static_cast<std::uint8_t*>(temp);
-  for (std::int64_t e0 = 0; e0 < slab.experts; e0 += batch) {
-    const std::int64_t n = std::min(batch, slab.experts - e0);
-    const std::uint64_t bytes = static_cast<std::uint64_t>(n) * slab.stride;
-    std::uint8_t* src = base + (static_cast<std::uint64_t>(e0) * slab.stride);
-    (void)cudaMemsetAsync(t, 0, bytes, s);
-    ConvertAll(slab, src, t, n, true, s);
-    (void)cudaMemcpyAsync(src, t, bytes, cudaMemcpyDeviceToDevice, s);
-  }
-  return true;
-}
-
-bool ToGgmlLayout(const ExpertSlab& slab, void* out, void* stream) {
-  if (!SlabFits(slab) || out == nullptr) {
-    return false;
-  }
-  ConvertAll(slab, static_cast<const std::uint8_t*>(slab.base), static_cast<std::uint8_t*>(out),
-             slab.experts, false, static_cast<cudaStream_t>(stream));
-  return true;
-}
-
-}  // namespace moe
 
 // ------------------------------------------------------------------ launchers
 
@@ -984,11 +839,17 @@ std::expected<void, KernelFailure> RunMoeGemm(LaunchContext& launch, ggml_tensor
                                 .d = node->data,
                                 .scratch = pool.get()};
     status = moe::RunGroupedGemm(gemm, sms, context.stream());
+    if (status < 0) {
+      // Work was queued: recorded for LaunchContext::End, which faults.
+      const std::string what =
+          std::format("the CUTLASS grouped GEMM failed after queuing (status {})", -status - 1);
+      ggml_cuda_error("moe::RunGroupedGemm", __func__, __FILE__, __LINE__, what.c_str());
+    }
   });
   if (!ran) {
     return ran;
   }
-  if (status != 0) {
+  if (status > 0) {
     return Refused(std::format("CUTLASS refused the grouped GEMM (status {})", status - 1));
   }
   return {};

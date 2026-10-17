@@ -278,12 +278,16 @@ std::expected<std::optional<DraftProgressBounds>, std::string> DraftBounds(
 
 // The region for `per_layer` contracts (layer index, contract) at a
 // context and chunk bound, every tensor at `tensor_align` (a reference
-// layout, M3's runners' or a test's; serving's is ExtentLayout's).
-// Refused for a zero or inconsistent bound, a tensor with no cells or
-// bytes, a cell of partial elements or (in a block encoding) partial
-// blocks, a ring with no window, a block with no ratio, a bank
-// continuation first in its layer, an alignment that is not a power of
-// two of at least 256 bytes, or any arithmetic that overflows.
+// layout, M3's runners', the partitioner's sizing or a test's; serving's
+// is ExtentLayout's). A bank's continuation (bank_with_previous) is padded
+// like any other tensor here, deliberately: the flag places it only in
+// ExtentLayout, and a span read across the bank (ContiguousStateSpan) is
+// refused where a gap separates them. Refused for a zero or inconsistent
+// bound, a tensor with no cells or bytes, a cell of partial elements or
+// (in a block encoding) partial blocks, a ring with no window, a block
+// with no ratio, a bank continuation first in its layer, an alignment that
+// is not a power of two of at least 256 bytes, or any arithmetic that
+// overflows.
 std::expected<StateLayoutDerived, std::string> Layout(
     std::span<const std::pair<std::uint32_t, StateContract>> per_layer, std::uint32_t context,
     std::uint32_t max_rows, std::uint64_t tensor_align = 256);

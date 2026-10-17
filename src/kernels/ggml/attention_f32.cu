@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 
@@ -189,7 +190,10 @@ void LaunchPackAttentionKv(cudaStream_t stream, const ggml_tensor* src, ggml_ten
     const dim3 grid(static_cast<unsigned>(padded_cols), static_cast<unsigned>((heads + 7) / 8), 1);
     PackAttentionKvContigKernel<nv_bfloat16><<<grid, block, 0, stream>>>(
         in, out, real_cols, padded_cols, heads, src->nb[1] / 2, src->nb[2] / 2);
-  } else if (src->nb[0] == sizeof(float)) {
+  } else if (src->nb[0] == sizeof(float) && reinterpret_cast<std::uintptr_t>(src->data) % 16 == 0 &&
+             src->nb[1] % 16 == 0 && src->nb[2] % 16 == 0) {
+    // The contiguous kernel loads float4 rows; any view that is only
+    // element-aligned (CheckAttentionF32's bound) takes the tiled kernel.
     const dim3 block(32, 8, 1);
     const dim3 grid(static_cast<unsigned>(padded_cols), static_cast<unsigned>((heads + 7) / 8), 1);
     PackAttentionKvContigKernel<float><<<grid, block, 0, stream>>>(in, out, real_cols, padded_cols,
@@ -922,13 +926,17 @@ std::expected<void, KernelFailure> RunAttentionMaskPack(LaunchContext& launch, g
 
 std::expected<void, KernelFailure> RunQkAttention(LaunchContext& launch, ggml_tensor* node) {
   if (auto checked = CheckQkAttention(node); !checked) return checked;
-  static const bool ready = [] {
+  static PerDeviceOnce raised;
+  const bool ready = raised.Ensure(launch.device(), [] {
     const int smem = SmemForF16(kF16Depth);
-    return cudaFuncSetAttribute(FlashForwardBf16RowMajorKernel<kF16Depth, false, true>,
-                                cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess &&
-           cudaFuncSetAttribute(FlashForwardBf16RowMajorKernel<kF16Depth, true, true>,
-                                cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess;
-  }();
+    if (cudaFuncSetAttribute(FlashForwardBf16RowMajorKernel<kF16Depth, false, true>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess &&
+        cudaFuncSetAttribute(FlashForwardBf16RowMajorKernel<kF16Depth, true, true>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, smem) == cudaSuccess)
+      return true;
+    (void)cudaGetLastError();
+    return false;
+  });
   if (!ready) return detail::Rejected("attention shared memory limit");
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* q = node->src[0];

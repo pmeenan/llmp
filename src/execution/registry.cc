@@ -314,20 +314,8 @@ std::string_view OperationName(Operation operation) {
       return "quantize";
     case Operation::kNormGate:
       return "norm_gate";
-    case Operation::kHeadNormRope:
-      return "head_norm_rope";
-    case Operation::kLayerNormModulate:
-      return "layer_norm_modulate";
-    case Operation::kGatedResidual:
-      return "gated_residual";
-    case Operation::kGatedResidualNorm:
-      return "gated_residual_norm";
-    case Operation::kEulerStep:
-      return "euler_step";
     case Operation::kConv2d:
       return "conv2d";
-    case Operation::kChannelNorm:
-      return "channel_norm";
     case Operation::kUpsample:
       return "upsample";
     case Operation::kDupUpAdd:
@@ -451,20 +439,8 @@ ir::OpKey OpKeyOf(Operation operation) {
       return Primitive(Op::kPrepare);
     case Operation::kNormGate:
       return Fused(FusedKind::kNormGate);
-    case Operation::kHeadNormRope:
-      return Fused(FusedKind::kQkPrep);
-    case Operation::kLayerNormModulate:
-      return Fused(FusedKind::kLayerNormModulate);
-    case Operation::kGatedResidual:
-      return Fused(FusedKind::kGatedResidual);
-    case Operation::kGatedResidualNorm:
-      return Fused(FusedKind::kGatedResidualNorm);
-    case Operation::kEulerStep:
-      return Fused(FusedKind::kEulerStep);
     case Operation::kConv2d:
       return Primitive(Op::kConv2d);
-    case Operation::kChannelNorm:
-      return Primitive(Op::kChannelNorm);
     case Operation::kUpsample:
       return Primitive(Op::kUpsample);
     case Operation::kDupUpAdd:

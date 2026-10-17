@@ -1291,6 +1291,11 @@ __global__ void __launch_bounds__(256)
   }
 }
 
+// Both kernels load W before ggml_cuda_pdl_sync, while the kernel before may
+// still run: W must be resident before the step and written by no kernel
+// of it. The lowering gives the vector form only a weight leaf (lower.cc,
+// the hyper-connections' products); anything else takes GemmBf16's other
+// paths.
 template <typename Out>
 void LaunchGemvBf16As(const ggml_tensor* node, cudaStream_t s) {
   const auto* w = static_cast<const uint4*>(node->src[0]->data);

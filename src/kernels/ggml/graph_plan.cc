@@ -723,9 +723,6 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case LlmpOp::kMxfp8MulMatVec:
             add(Operation::kMatMul, kMxfp8MulMatVecName, i, {node}, 1);
             break;
-          case LlmpOp::kMxfp8Dequant:
-            add(Operation::kConvert, kMxfp8DequantName, i, {node}, 1);
-            break;
           case LlmpOp::kNvfp4Rows:
             add(Operation::kGetRows, kNvfp4RowsName, i, {node}, 1);
             break;

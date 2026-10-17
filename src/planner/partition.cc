@@ -1924,13 +1924,15 @@ std::expected<TensorId, std::string> Partitioner::LocalIds(TensorId ids, std::si
   const TensorId flat = b.Reshape(dense, ir::ShapeOf({used * tokens}));
   // Each expert's index among the device's own; another's, 0 (its slot is
   // masked out of the sum).
-  const TensorId table =
-      b.Constant(ir::Dense(format::Encoding::kI32, ir::ShapeOf({1, experts})), "expert_ids");
-  ConstantValues values{.local = table, .ints = {}, .values = {}};
+  ConstantValues values{.local = {}, .ints = {}, .values = {}};
   const std::uint32_t own = experts / parts;
   for (std::uint32_t e = 0; e < experts; ++e) {
     values.ints.push_back(e / own == rank ? e - (rank * own) : 0);
   }
+  // Each rank's table digests by its values (ir Builder::Constant).
+  const TensorId table = b.Constant(ir::Dense(format::Encoding::kI32, ir::ShapeOf({1, experts})),
+                                    "expert_ids", std::as_bytes(std::span(values.ints)));
+  values.local = table;
   constants_[slot].push_back(std::move(values));
   const TensorId local = b.Reshape(b.GetRows(table, flat), ir::ShapeOf({used, tokens}));
   if (!b.ok()) return Refused(std::format("expert ids: {}", b.error()->detail));
@@ -1946,13 +1948,14 @@ std::expected<TensorId, std::string> Partitioner::ExpertMask(TensorId scale, Ten
   ir::Builder& b = b_[slot];
   b.SetComponent(component);
   b.SetJoined();
-  const TensorId mask =
-      b.Constant(ir::Dense(format::Encoding::kF32, ir::ShapeOf({experts})), "expert_mask");
-  ConstantValues values{.local = mask, .ints = {}, .values = {}};
+  ConstantValues values{.local = {}, .ints = {}, .values = {}};
   const std::uint32_t own = experts / parts;
   for (std::uint32_t e = 0; e < experts; ++e) {
     values.values.push_back(e / own == rank ? 1.0F : 0.0F);
   }
+  const TensorId mask = b.Constant(ir::Dense(format::Encoding::kF32, ir::ShapeOf({experts})),
+                                   "expert_mask", std::as_bytes(std::span(values.values)));
+  values.local = mask;
   constants_[slot].push_back(std::move(values));
   if (!scale.valid()) return mask;
   auto s = FullOn(scale, slot);

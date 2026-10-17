@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -77,6 +78,12 @@ std::optional<std::uint64_t> CellsOf(const StateTensorContract& t, std::uint32_t
 
 std::optional<std::string> Invalid(const StateTensorContract& t) {
   if (t.cell_bytes == 0 || t.cell_pad == 0) return "a state tensor has no cell bytes or padding";
+  // A numeric tensor's encoding is a state encoding (format::StateEncodings);
+  // the drafter progress control's I64 is checked with it below.
+  if (t.kind != StateKind::kDrafterProgress && !format::IsStateEncoding(t.encoding)) {
+    return std::format("a state tensor's encoding ({}) is not a state encoding",
+                       static_cast<std::uint16_t>(t.encoding));
+  }
   if (t.kind == StateKind::kDrafterProgress) {
     if (!ValidDraftPolicy(t.draft) || t.draft.progress != DraftProgressPolicy::kRepeatPending ||
         t.encoding != Encoding::kI64 || t.cell_bytes != kDraftProgressBytes ||
@@ -136,8 +143,6 @@ bool Valid(const StateLayoutDerived& layout) {
 }
 
 bool AlignValid(std::uint32_t align) { return align != 0 && align % 256 == 0; }
-
-std::uint64_t Round256(std::uint64_t bytes) { return (bytes + 255) / 256 * 256; }
 
 // Cells a state of `positions` reads of one tensor (dummy row aside).
 std::uint64_t UsedCells(const StateLayoutDerived& layout, const Item& item, std::uint32_t positions,
@@ -300,10 +305,12 @@ std::expected<StateLayoutDerived, std::string> Place(
       if (!bytes || *cells == 0) {
         return Refused(std::format("layer {} state {} has no cells or overflows", layer, t.name));
       }
-      // Uniform: after the previous tensor's padded end. The rule: a bank's
-      // continuation exactly at its predecessor's end (refused unless that
-      // is 256-byte aligned: no gap), a growing tensor of an extent or more
-      // on an extent boundary, any other packed at 256 bytes.
+      // Uniform: after the previous tensor's padded end, a bank's
+      // continuation too (the reference layout pads every tensor alike;
+      // Layout's doc). The rule: a bank's continuation exactly at its
+      // predecessor's end (refused unless that is 256-byte aligned: no
+      // gap), a growing tensor of an extent or more on an extent boundary,
+      // any other packed at 256 bytes.
       if (extent != 0 && t.bank_with_previous && end % 256 != 0) {
         return Refused(std::format("layer {} state {} cannot start at its bank's unaligned end",
                                    layer, t.name));
@@ -687,9 +694,20 @@ std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& 
   // Its refusals are WritesFor's (bounds, rollbacks, rings).
   if (auto any = WritesFor(layout, 0, rows, scope); !any) return std::unexpected(any.error());
   SaveBound out;
+  bool overflow = false;
   const auto add = [&](std::uint64_t ranges, std::uint64_t bytes) {
-    out.ranges += static_cast<std::uint32_t>(ranges);
-    out.bytes += ranges * Round256(bytes);
+    // Each range's bytes rounded to 256, every sum and product checked.
+    const auto rounded = Add(bytes, 255);
+    const auto total = rounded ? Mul(ranges, *rounded / 256 * 256) : std::nullopt;
+    const auto sum = total ? Add(out.bytes, *total) : std::nullopt;
+    const std::uint64_t count = std::uint64_t{out.ranges} + ranges;
+    if (!sum || ranges > std::numeric_limits<std::uint32_t>::max() ||
+        count > std::numeric_limits<std::uint32_t>::max()) {
+      overflow = true;
+      return;
+    }
+    out.ranges = static_cast<std::uint32_t>(count);
+    out.bytes = *sum;
   };
   for (const Item& item : layout.items) {
     const auto saves = Saves(item, scope);
@@ -703,7 +721,12 @@ std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& 
         add(rows, t.cell_bytes);
         if (t.cells == CellRule::kPerRow && t.target_writes && t.kind == StateKind::kFeatures &&
             t.window_or_ratio != 0) {
-          add(1, t.window_or_ratio * t.cell_bytes);
+          const auto tail = Mul(t.window_or_ratio, t.cell_bytes);
+          if (!tail) {
+            overflow = true;
+          } else {
+            add(1, *tail);
+          }
         }
         break;
       case CellRule::kPerBlock:
@@ -720,6 +743,7 @@ std::expected<SaveBound, std::string> VerifySaveBound(const StateLayoutDerived& 
         break;
     }
   }
+  if (overflow) return Refused("the verify's save bound overflows");
   return out;
 }
 

@@ -13,8 +13,10 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/sha256.h"
@@ -745,6 +747,99 @@ TEST(IrTest, NothingStoresIntoAWeightOrAConstant) {
             std::array{b.Input(F32({8, 2, 3})), b.Input(I32({3})), table, b.Input(I32({3}))},
             RopeParams{.mode = RopeMode::kNeox, .dims = 8});
     EXPECT_EQ(ErrorOf(b), GraphError::kBinding);
+  }
+}
+
+// Shapes a parameter or a request gives are valid formats: a zero extent
+// is refused as the builder's error, never a division by zero or a tensor
+// of no values.
+TEST(IrTest, ZeroExtentResultsAreRefusedNotAborted) {
+  {
+    Builder b;
+    b.Fill(ShapeOf({0, 2}), 1.0F);
+    EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+  }
+  {
+    Builder b;
+    b.Repeat(b.Input(F32({4, 2})), ShapeOf({0, 2}));
+    EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+  }
+  {
+    // A tile of a valid tensor still builds.
+    Builder b;
+    b.Output(b.Repeat(b.Input(F32({4, 2})), ShapeOf({8, 2})));
+    EXPECT_TRUE(std::move(b).Finish().has_value());
+  }
+}
+
+TEST(IrTest, AViewsSourceMustKeepItsLayout) {
+  Builder b;
+  const TensorId x = b.Input(F32({4, 6}));
+  const TensorId packed = b.Cont(b.View(x, ShapeOf({2, 6}), {4, 16, 96, 96}, 0));
+  const TensorId strided = b.View(x, ShapeOf({2, 6}), {4, 16, 96, 96}, 0);
+  const TensorId shifted = b.View(x, ShapeOf({2, 6}), {4, 16, 96, 96}, 8);
+  EXPECT_TRUE(SameViewSource(b.tensor(packed), b.tensor(packed)));
+  EXPECT_FALSE(SameViewSource(b.tensor(packed), b.tensor(strided)));
+  EXPECT_FALSE(SameViewSource(b.tensor(strided), b.tensor(shifted)));
+}
+
+// Fused kinds' flags are 0 or 1 and their reserved bytes zero, checked
+// before a decomposition reads a flag as a bool.
+TEST(IrTest, FusedFlagsAndReservedBytesAreChecked) {
+  {
+    Builder b;
+    ParamBytes p = ToBytes(SpatialNormParams{.eps = 1e-6F, .scale = 1.0F, .silu = true});
+    p.at(8) = std::byte{2};
+    b.FusedBytes(FusedKind::kSpatialChannelNorm,
+                 std::array{b.Input(F32({4, 4, 8})), b.Input(F32({8}))}, p, {});
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+  {
+    Builder b;
+    ParamBytes p = ToBytes(RouteParams{.normalize = true, .experts = 4, .used = 2});
+    p.at(2) = std::byte{1};
+    b.FusedBytes(FusedKind::kMoeRouter, std::array{b.Input(F32({4, 2}))}, p, {});
+    EXPECT_EQ(ErrorOf(b), GraphError::kParams);
+  }
+}
+
+// A plan constant given its content digests by it: the partitioner's
+// per-rank tables of one shape are two graphs.
+TEST(IrTest, ConstantContentIsPartOfTheDigest) {
+  const auto digest = [](std::span<const std::byte> content) {
+    Builder b;
+    const TensorId c = b.Constant(I32({4}), "table", content);
+    b.Output(b.Cont(c));
+    auto g = std::move(b).Finish();
+    EXPECT_TRUE(g.has_value());
+    return g ? g->Digest() : base::Sha256Digest{};
+  };
+  const std::array<std::int32_t, 4> a{0, 1, 0, 0};
+  const std::array<std::int32_t, 4> c{0, 0, 0, 1};
+  EXPECT_NE(digest(std::as_bytes(std::span(a))), digest(std::as_bytes(std::span(c))));
+  EXPECT_EQ(digest(std::as_bytes(std::span(a))), digest(std::as_bytes(std::span(a))));
+  EXPECT_NE(digest(std::as_bytes(std::span(a))), digest({}));
+}
+
+// DeepSeek's output-A takes a weight of exactly the rows' groups.
+TEST(IrTest, Dsv4OutARefusesAWeightOfAnotherGroupCount) {
+  const RopeParams rope{.mode = RopeMode::kNormal, .dims = 64};
+  for (const auto& [ne, ok] : {std::pair{std::array<std::uint64_t, 3>{128, 16, 4}, true},
+                               std::pair{std::array<std::uint64_t, 3>{128, 16, 2}, false},
+                               std::pair{std::array<std::uint64_t, 3>{128, 64, 1}, true},
+                               std::pair{std::array<std::uint64_t, 3>{128, 62, 1}, false}}) {
+    Builder b;
+    const TensorId w = b.Input(ne[2] == 1 ? F32({ne[0], ne[1]}) : F32({ne[0], ne[1], ne[2]}));
+    const TensorId x = b.Input(F32({64, 8, 2}));
+    const TensorId pos = b.Input(I32({2}));
+    const Outputs out = b.Fused(FusedKind::kDsv4OutA, std::array{w, x, pos}, rope);
+    EXPECT_EQ(b.ok(), ok) << ne[1] << " " << ne[2];
+    if (ok) {
+      b.Output(out[0]);
+      EXPECT_TRUE(std::move(b).Finish().has_value());
+    } else {
+      EXPECT_EQ(ErrorOf(b), GraphError::kShape);
+    }
   }
 }
 

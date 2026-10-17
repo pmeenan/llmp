@@ -4,7 +4,9 @@
 #include "kernels/decode/selected_source.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -21,6 +23,22 @@
 namespace llmp::kernels::decode {
 namespace {
 namespace kg = ggml;
+
+// Each child's persistent workspace starts at a 256-byte boundary.
+constexpr std::uint64_t kChildAlign = 256;
+std::optional<std::uint64_t> AlignedTotal(
+    std::span<const std::shared_ptr<const kg::SelectedSource>> sources) {
+  std::uint64_t total = 0;
+  constexpr auto max = std::numeric_limits<std::uint64_t>::max();
+  for (const auto& source : sources) {
+    const auto bytes = source->persistent_bytes();
+    if (bytes > max - (kChildAlign - 1)) return {};
+    const auto aligned = (bytes + kChildAlign - 1) / kChildAlign * kChildAlign;
+    if (aligned > max - total) return {};
+    total += aligned;
+  }
+  return total;
+}
 
 class CompositeLaunch final : public kg::SelectedLaunch {
  public:
@@ -118,12 +136,11 @@ class CompositeSource final : public kg::SelectedSource {
     return hash.Finish();
   }
 
+  // The children's workspaces, each at a 256-byte boundary (Launch).
   std::uint64_t persistent_bytes() const override {
-    std::uint64_t total = 0;
-    for (const auto& s : sources_) {
-      total += s->persistent_bytes();
-    }
-    return total;
+    // The interface has no error result: an unrepresentable workspace
+    // advertises the largest bound, and Launch refuses it before children run.
+    return AlignedTotal(sources_).value_or(std::numeric_limits<std::uint64_t>::max());
   }
 
   std::expected<std::unique_ptr<kg::SelectedCall>, kg::KernelFailure> Lower(
@@ -144,13 +161,21 @@ class CompositeSource final : public kg::SelectedSource {
   std::expected<std::unique_ptr<kg::SelectedLaunch>, kg::KernelFailure> Launch(
       int device, providers::DeviceExecution& execution, providers::StreamId stream,
       kg::SelectedWorkspace persistent) const override {
+    const auto needed = AlignedTotal(sources_);
+    if (!needed || persistent.bytes < *needed ||
+        (*needed > 0 && (persistent.base == 0 || persistent.base % kChildAlign != 0)) ||
+        persistent.base + persistent.bytes < persistent.base) {
+      return std::unexpected(kg::KernelFailure{
+          .detail = "the composite's persistent workspace does not cover its children aligned"});
+    }
     std::vector<std::unique_ptr<kg::SelectedLaunch>> launches;
     launches.reserve(sources_.size());
     std::uint64_t offset = 0;
     for (const auto& s : sources_) {
       const auto bytes = s->persistent_bytes();
       kg::SelectedWorkspace child_ws{.base = persistent.base + offset, .bytes = bytes};
-      offset += bytes;
+      // AlignedTotal proved that each round-up and the complete sum fit.
+      offset += (bytes + kChildAlign - 1) / kChildAlign * kChildAlign;
       auto l = s->Launch(device, execution, stream, child_ws);
       if (!l) return std::unexpected(l.error());
       launches.push_back(std::move(*l));
@@ -171,34 +196,50 @@ std::shared_ptr<const ggml::SelectedSource> CompositeSelectedSource(
   return std::make_shared<CompositeSource>(std::move(sources));
 }
 
-std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> DecodeSelectedSource(
-    std::optional<format::Encoding> encoding) {
+namespace {
+
+using Child = std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string>;
+
+// The grouped, rows and products children that serve the encoding. A child
+// that serves it must construct: its failure (the build lacks its
+// declarations) is the source's, never a silently smaller source.
+std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> Decode(
+    std::optional<format::Encoding> encoding, Child (*grouped)(std::optional<format::Encoding>)) {
+  using format::Encoding;
+  struct Kind {
+    bool nvfp4 = false;  // which encodings the child decodes
+    bool affine = false;
+    Child (*make)(std::optional<Encoding>) = nullptr;
+  };
+  const std::array<Kind, 3> children{{{.nvfp4 = true, .affine = true, .make = grouped},
+                                      {.nvfp4 = true, .affine = true, .make = &RowsSelectedSource},
+                                      {.affine = true, .make = &ProductsSelectedSource}}};
   std::vector<std::shared_ptr<const ggml::SelectedSource>> sources;
-
-  auto grouped = GroupedSelectedSource(encoding);
-  if (grouped) sources.push_back(std::move(*grouped));
-
-  auto rows = RowsSelectedSource(encoding);
-  if (rows) sources.push_back(std::move(*rows));
-
-  auto products = ProductsSelectedSource(encoding);
-  if (products) sources.push_back(std::move(*products));
-
+  for (const Kind& child : children) {
+    // All of them when no encoding is requested.
+    if (encoding && !(*encoding == Encoding::kNvfp4 && child.nvfp4) &&
+        !(*encoding == Encoding::kAffine && child.affine))
+      continue;
+    auto made = child.make(encoding);
+    if (!made) return std::unexpected("a decode source failed: " + made.error());
+    sources.push_back(std::move(*made));
+  }
   if (sources.empty()) {
     return std::unexpected("no decode sources available for requested encoding");
   }
   return CompositeSelectedSource(std::move(sources));
 }
 
+}  // namespace
+
+std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string> DecodeSelectedSource(
+    std::optional<format::Encoding> encoding) {
+  return Decode(encoding, &GroupedSelectedSource);
+}
+
 std::expected<std::shared_ptr<const ggml::SelectedSource>, std::string>
 DecodeResidentSelectedSource(std::optional<format::Encoding> encoding) {
-  std::vector<std::shared_ptr<const ggml::SelectedSource>> sources;
-  if (auto grouped = ResidentGroupedSelectedSource(encoding))
-    sources.push_back(std::move(*grouped));
-  if (auto rows = RowsSelectedSource(encoding)) sources.push_back(std::move(*rows));
-  if (auto products = ProductsSelectedSource(encoding)) sources.push_back(std::move(*products));
-  if (sources.empty()) return std::unexpected("no decode sources available for requested encoding");
-  return CompositeSelectedSource(std::move(sources));
+  return Decode(encoding, &ResidentGroupedSelectedSource);
 }
 
 }  // namespace llmp::kernels::decode

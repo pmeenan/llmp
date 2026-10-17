@@ -1269,8 +1269,13 @@ bool AcceptsMxfp8Quantize(const ex::CapabilityQuery& q) {
   return Built(q) && q.arch == kCutlassArch && Ne(q, 0, 0) % 128 == 0 && Ne(q, 0, 2) <= 1 &&
          Ne(q, 0, 3) <= 1;
 }
-// llmp.nvfp4.get_rows: rows of 16-value blocks.
-bool AcceptsNvfp4Rows(const ex::CapabilityQuery& q) { return Built(q) && Ne(q, 0, 0) % 16 == 0; }
+// llmp.nvfp4.get_rows: CheckNvfp4Rows' rows of 16 to 1,024 values (a
+// thread a value) and its grid of ids.
+bool AcceptsNvfp4Rows(const ex::CapabilityQuery& q) {
+  return Built(q) && Ne(q, 0, 0) % 16 == 0 && Ne(q, 0, 0) >= 16 && Ne(q, 0, 0) <= 1024 &&
+         Ne(q, 0, 1) <= static_cast<std::uint64_t>(INT32_MAX) &&
+         Ne(q, 1, 0) <= std::uint64_t{65535} * 1024;
+}
 // llmp.qrows.get_rows: a table of 32-value blocks whose rows are not GGML's
 // whole 256-value steps (its get_rows takes those), at most 1,024 values.
 bool AcceptsQRows(const ex::CapabilityQuery& q) {

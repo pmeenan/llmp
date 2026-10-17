@@ -405,8 +405,8 @@ enum class FusedKind : std::uint16_t {
   kGatedResidualNorm,
   kEulerStep,  // (sample, noise, dt [1]): sample + dt · noise
   // (x [2W, 2H, Co], shortcut [W, H, Ci]): DupUpParams: x plus Qwen-Image's
-  // DupUp3D of the shortcut at its last kept frame (kernels/image/ops.h
-  // AddDupUp): output channel o's sub-pixel (b, d) reads input channel
+  // DupUp3D of the shortcut at its last kept frame (kernels/ggml/ops_ext.h
+  // DupUpAddF32): output channel o's sub-pixel (b, d) reads input channel
   // (((o · ft + ft - 1) · 2 + b) · 2 + d) / (Co · ft · 4 / Ci).
   kDupUpAdd,
   // Qwen3.8's fast form (slice G3b, 2026-10-10; still op set v1, nothing

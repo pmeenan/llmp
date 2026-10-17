@@ -3,7 +3,8 @@
 
 // A speculative verify's row-invariant operations (D-092;
 // kernels/ggml/ops_ext.h MulMatVecQRows and MulMatVecFRows, llmp_ops.h
-// Argmax and CopyRanges) under llmpalooza's launch context on a GB10 (label
+// Argmax; kernels/paging/paging.h CopyRanges) under llmpalooza's launch
+// context on a GB10 (label
 // `gpu`):
 // - every column of a row-invariant quantized product of 1 to 8 columns
 //   equals, bit for bit, GGML's own one-column MMVQ launch on that column
@@ -51,6 +52,7 @@
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate_ext.h"
+#include "kernels/paging/paging.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 
@@ -65,6 +67,7 @@ using llmp::providers::DeviceExecution;
 using llmp::providers::FenceState;
 using llmp::providers::StreamId;
 namespace kg = llmp::kernels::ggml;
+namespace paging = llmp::kernels::paging;
 
 constexpr std::uint64_t kWorkspace = 256ULL << 20;
 
@@ -582,12 +585,14 @@ TEST_F(SpecRowsTest, RangeCopiesCopyExactlyTheRangesNamed) {
   ggml_tensor* from = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I8, kBytes), source);
   ggml_tensor* to =
       Place(ggml_new_tensor_1d(c(), GGML_TYPE_I8, kBytes), std::vector<std::uint8_t>(kBytes, 0));
-  kg::RangeCopy* ranges = nullptr;
-  ASSERT_EQ(cudaMallocHost(&ranges, 3 * sizeof(kg::RangeCopy)), cudaSuccess);
+  paging::RangeCopy* ranges = nullptr;
+  ASSERT_EQ(cudaMallocHost(&ranges, 3 * sizeof(paging::RangeCopy)), cudaSuccess);
   ranges[0] = {.from = Address(from), .to = Address(to) + 4096, .bytes = 1024};
   ranges[1] = {.from = Address(from) + 8192, .to = Address(to), .bytes = 16};
   ranges[2] = {.from = Address(from) + 32768, .to = Address(to) + 40960, .bytes = 20480};
-  Launched(kg::CopyRanges(launch(), ranges, 3), "range copies");
+  // The engine's copy (engine/live_state.cc), on the launch context's stream.
+  void* const stream = launch().native_stream().handle;
+  EXPECT_TRUE(paging::CopyRanges(ranges, 3, stream));
   const std::vector<std::uint8_t> got = Download<std::uint8_t>(to);
   std::vector<std::uint8_t> want(kBytes, 0);
   std::copy_n(source.begin(), 1024, want.begin() + 4096);
@@ -596,7 +601,7 @@ TEST_F(SpecRowsTest, RangeCopiesCopyExactlyTheRangesNamed) {
   EXPECT_EQ(got, want);
   // Unaligned ranges are refused before anything is queued.
   ranges[0].bytes = 1000;
-  EXPECT_FALSE(kg::CopyRanges(launch(), ranges, 1).has_value());
+  EXPECT_FALSE(paging::CopyRanges(ranges, 1, stream));
   EXPECT_EQ(cudaFreeHost(ranges), cudaSuccess);
 }
 

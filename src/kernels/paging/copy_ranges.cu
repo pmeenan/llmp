@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// CopyRanges (paging.h): one block per range, 16 bytes a thread per step,
-// as the GGML module's launch-context copy (kernels/ggml/llmp_ops.h
-// CopyRanges), which the legacy runners still queue.
+// CopyRanges (paging.h): one block per range, 16 bytes a thread per step.
+// The engine's live state queues a verify's snapshot and restore with it
+// (engine/live_state.cc).
 
 #include <cuda_runtime.h>
 

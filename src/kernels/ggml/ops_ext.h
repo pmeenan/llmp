@@ -191,8 +191,7 @@ std::expected<void, KernelFailure> RmsNormMulRope3d(
     LaunchContext& launch, const ggml_tensor* x_in, const ggml_tensor* weight, float eps,
     std::span<const ggml_tensor* const> pos_views, std::span<const int> axis_dims, float freq_base,
     bool neox, ggml_tensor* dst, bool transpose_out = false, bool x_is_bf16 = false,
-    bool dst_is_f16 = false, int padded_rows = 0, bool dst_in_workspace = false,
-    bool dst_is_bf16 = false);
+    bool dst_is_f16 = false, int padded_rows = 0, bool dst_is_bf16 = false);
 std::expected<void, KernelFailure> SpatialChannelNormF32(LaunchContext& launch,
                                                          const ggml_tensor* x_whc,
                                                          const ggml_tensor* gamma,
@@ -201,10 +200,10 @@ std::expected<void, KernelFailure> SpatialChannelNormF32(LaunchContext& launch,
 std::expected<void, KernelFailure> DupUpAddF32(LaunchContext& launch, const ggml_tensor* x,
                                                const ggml_tensor* sc, ggml_tensor* dst, int ft,
                                                int repeats);
+// silu(gate) · up into BF16 at `dst`, the operands F32 or (bf16_inputs)
+// BF16.
 std::expected<void, KernelFailure> SwiGluToBf16(LaunchContext& launch, const ggml_tensor* gate,
-                                                const ggml_tensor* up, bool swapped = false,
-                                                bool bf16_inputs = false,
-                                                void* dst_override = nullptr);
+                                                const ggml_tensor* up, bool bf16_inputs, void* dst);
 
 // MoE routing and the indexer's selection, in llmpalooza's build without CUB
 // (third_party/patches/ggml/0001). Argsort takes the bitonic kernel only,

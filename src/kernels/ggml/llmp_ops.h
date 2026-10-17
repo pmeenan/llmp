@@ -10,10 +10,6 @@
 //                             scale per 32 along k), each 32-element block's
 //                             dot product in F32, then scaled, the blocks
 //                             summed in F32; memory-bound decode products.
-//   llmp.mxfp8.dequant      W as BF16 [k, n], exactly (an E4M3 value times
-//                             a power of two) wherever that is a BF16 value,
-//                             for GGML's float products (cuBLAS) over wider
-//                             batches. E8M0 0xFF and E4M3 0x7F/0xFF are NaN.
 //   llmp.nvfp4.get_rows     rows of a table in ModelOpt NVFP4, each row its
 //                             v/2 code bytes (element 2i in the low nibble)
 //                             then its v/16 E4M3 scales, times the table's
@@ -91,14 +87,12 @@
 
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
-#include "kernels/paging/paging.h"
 
 namespace llmp::kernels::ggml {
 
 enum class LlmpOp : std::uint8_t {
   kNone,
   kMxfp8MulMatVec,
-  kMxfp8Dequant,
   kNvfp4Rows,
   kArgmax,
   kHcCombine,
@@ -202,8 +196,8 @@ std::expected<void, KernelFailure> RunSelectedMask(LaunchContext& launch, ggml_t
 // slots, four V slots; inactive slots are null. Cohort2/3 uses all active
 // roots; cohort4/8/12 retains four roots per call. Equal-width partial cohorts
 // use canonical offset groups of up to four roots on the whole original grid.
-// Qualified Gemma2/Gemma3 runners select actual roots for compatible C2
-// prefill at 2..128 rows; other owner recipes require explicit selection.
+// The planner selects it for the fused owner attention where its capability
+// accepts (capabilities.cc).
 inline constexpr const char* kFlashAttnOwnersName = "llmp.flash_attn.owner_roots";
 ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_tensor* mask,
                                  const std::array<ggml_tensor*, 4>& k,
@@ -261,7 +255,6 @@ inline constexpr std::int64_t kMxfp8VecWaveColumns = 16;
 // Builders. `codes` I8 [k, n], `scales` I8 [k / 32, n], `x` F32 [k, t].
 ggml_tensor* Mxfp8MulMatVec(ggml_context* context, ggml_tensor* codes, ggml_tensor* scales,
                             ggml_tensor* x);
-ggml_tensor* Mxfp8Dequant(ggml_context* context, ggml_tensor* codes, ggml_tensor* scales);
 // `table` I8 [values / 2 + values / 16, rows], `ids` I32 [n], `scale` F32
 // [1]: F32 [values, n].
 ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids,
@@ -276,8 +269,6 @@ ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* i
 // multiple of 32 values, at most 1,024; an id outside the table gives NaN
 // rather than a read out of bounds.
 ggml_tensor* QRows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids);
-// Whether llmp.qrows.get_rows takes a table of `type`.
-bool QRowsType(ggml_type type);
 // `x` F32 [n, rows]: I32 [rows]; with `probability`, I32 [2 · rows]: the
 // indices, then each row's softmax probability of its highest value (F32
 // bits; 0 for a row of NaN), the drafter's confidence that TensorFold's
@@ -353,11 +344,10 @@ bool UsesGemvBf16Vector(const ggml_tensor* node);
 // offsets and sizes the stored spec's side.ngram holds); the kernel writes NaN for
 // an id outside the table rather than read out of bounds.
 std::expected<void, KernelFailure> CheckMxfp8MulMatVec(const ggml_tensor* node);
-std::expected<void, KernelFailure> CheckMxfp8Dequant(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckNvfp4Rows(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckQRows(const ggml_tensor* node);
 // Packed F32 rows of at most 2^31 - 1 values into a packed I32 row of one
-// index a row, at most 65,535 rows.
+// index a row, at most 2^31 - 1 rows.
 std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node);
 // The fusions' checks: every operand bound, typed and shaped as its
 // builder's, packed (the expert ids may have a longer row stride), 16-byte
@@ -491,7 +481,9 @@ std::expected<void, KernelFailure> RunGdnStep(LaunchContext& launch, ggml_tensor
 //                             weights) summed in expert order, plus the
 //                             gated shared expert: llmp.moe.combine's
 //                             arithmetic over the sorted rows;
-//   llmp.moe.gemv           up to 8 tokens' routed products straight from
+//   llmp.moe.gemv           up to 16 tokens' routed products (a graph's
+//                             own up to 8, a wave's shared products up to
+//                             16: kMoeGemvTokens, kMoeGemvWaveTokens) straight from
 //                             the layout, the F32 activations quantized to
 //                             8 bits as MMVQ quantizes them, F32 out as
 //                             mul_mat_id's (decode's); in its SwiGLU form
@@ -541,7 +533,6 @@ std::expected<void, KernelFailure> CheckMoeGemv(const ggml_tensor* node);
 // its workspace.
 class LaunchContext;
 std::expected<void, KernelFailure> RunMxfp8MulMatVec(LaunchContext& launch, ggml_tensor* node);
-std::expected<void, KernelFailure> RunMxfp8Dequant(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunNvfp4Rows(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunQRows(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor* node);
@@ -996,17 +987,6 @@ std::expected<void, KernelFailure> RunQsaPool(LaunchContext& launch, ggml_tensor
 std::expected<void, KernelFailure> RunQsaTopK(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunQsaAttn(LaunchContext& launch, ggml_tensor* node);
 
-// Byte ranges copied device to device in one kernel, not a graph node
-// (kernels/paging/paging.h's RangeCopy, whose rules apply), run through the
-// launch context: refused while it is faulted, and a failed launch faults
-// it. The legacy runners queue a verify's snapshot this way
-// (engine/live_state_launch.h) and their own commits' copies; the engine
-// core queues the same descriptors with paging::CopyRanges.
-using RangeCopy = kernels::paging::RangeCopy;
-inline constexpr std::uint32_t kMaxRangeCopies = kernels::paging::kMaxRangeCopies;
-std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const RangeCopy* ranges,
-                                              std::uint32_t count);
-
 // DeepSeek V4's fast decode plan (the owner's policy, 2026-09-28: speed
 // before bit-exactness; the DeepSeek fused plan), llmpalooza's own
 // kernels (dsv4_fast.cu), none of them GGML's arithmetic bit for bit:
@@ -1076,7 +1056,8 @@ ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, 
 void SetVecQOneToken(ggml_tensor* node);
 bool VecQOneToken(const ggml_tensor* node);
 // Same routing arithmetic with explicit per-row IDs. Output planes are
-// packed I32 IDs[used,T], then F32 weights[used,T], rather than legacy rows.
+// packed I32 IDs[used,T], then F32 weights[used,T], rather than Dsv4Route's
+// interleaved rows.
 ggml_tensor* RouteSelectedIds(ggml_context* context, ggml_tensor* logits, ggml_tensor* ids,
                               std::int64_t used, bool norm, float clamp, float scale);
 

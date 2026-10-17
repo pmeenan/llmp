@@ -4,8 +4,6 @@
 // Qwen3.8's routed experts over the CUTLASS layout (kernels/ggml/
 // moe_layout.h, llmp_ops.h) on a GB10 (label `gpu`), at the model's
 // expert shapes (hidden 640, width 2560) with 16 experts, 10 selected:
-// - the layout conversion is lossless: GGML's blocks, converted and back,
-//   are the same bytes;
 // - the routing sorts every slot by expert, token order within an expert;
 // - the grouped GEMM equals the FP64 product of its quantized inputs (the
 //   activations' codes and scales as quantized, the weights as stored) to
@@ -275,9 +273,6 @@ class Qwen38MoeTest : public ::testing::Test {
 
   ggml_context* c() const { return arena_->context(); }
   LaunchContext& launch() { return *launch_; }
-  cudaStream_t Stream() {
-    return static_cast<cudaStream_t>(execution_->Submission(stream_).value().handle);
-  }
 
   template <typename T>
   ggml_tensor* Leaf(ggml_tensor* tensor, const std::vector<T>& data) {
@@ -316,21 +311,45 @@ class Qwen38MoeTest : public ::testing::Test {
     return values;
   }
 
-  moe::ExpertSlab Slab() const {
-    return {.base = Pointer(slab_),
-            .stride = stride_,
-            .experts = kExperts,
-            .gate = 0,
-            .up = slice_,
-            .down = 2 * slice_,
-            .layout = {.ffn = kFfn, .width = kWidth}};
+  // Rewrites the slab in the CUTLASS layout (moe_layout.h ExpertLayout),
+  // as the importer writes it (import/expert_relayout.h): each expert's
+  // gate and up codes rows, their scales at the scale atoms' offsets, then
+  // down's; the slot's other bytes zero.
+  void ToCutlass() {
+    const moe::ExpertLayout l{.ffn = kFfn, .width = kWidth};
+    std::vector<std::uint8_t> slab(stride_ * kExperts, 0);
+    const auto place = [&](std::uint8_t* slot, const Weights& w, std::uint64_t codes,
+                           std::uint64_t scales, std::int64_t row0) {
+      const auto blocks = static_cast<std::uint64_t>(w.k / 16);
+      for (std::int64_t r = 0; r < w.n; ++r) {
+        const auto row = static_cast<std::uint64_t>(row0 + r);
+        std::copy_n(w.codes.begin() + (r * w.k / 2), w.k / 2,
+                    slot + codes + (row * static_cast<std::uint64_t>(w.k / 2)));
+        for (std::uint64_t b = 0; b < blocks; ++b) {
+          slot[scales + moe::SfOffset(row, b, blocks)] =
+              w.scales[static_cast<std::size_t>((static_cast<std::uint64_t>(r) * blocks) + b)];
+        }
+      }
+    };
+    for (std::int64_t e = 0; e < kExperts; ++e) {
+      std::uint8_t* slot = slab.data() + (static_cast<std::size_t>(e) * stride_);
+      place(slot, gate_[U(e)], moe::ExpertLayout::gate_up_codes(), l.gate_up_scales(), 0);
+      place(slot, up_[U(e)], moe::ExpertLayout::gate_up_codes(), l.gate_up_scales(), kFfn);
+      place(slot, down_[U(e)], l.down_codes(), l.down_scales(), 0);
+    }
+    Finish();
+    ASSERT_EQ(cudaMemcpy(Pointer(slab_), slab.data(), slab.size(), cudaMemcpyHostToDevice),
+              cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   }
 
-  // Converts the slab to the CUTLASS layout in place.
-  void ToCutlass() {
-    const std::uint64_t temp = Allocate(stride_ * 5);
-    ASSERT_TRUE(moe::ToCutlassLayout(Slab(), Pointer(temp), 5, Stream()));
+  // Restores the slab in GGML's layout.
+  void RestoreGgml() {
     Finish();
+    ASSERT_EQ(
+        cudaMemcpy(Pointer(slab_), ggml_slab_.data(), ggml_slab_.size(), cudaMemcpyHostToDevice),
+        cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   }
 
   // Routes: each token's 10 distinct experts of 16, and softmax-like weights.
@@ -358,56 +377,6 @@ class Qwen38MoeTest : public ::testing::Test {
   std::uint64_t stride_ = 0;
   std::uint64_t slice_ = 0;
 };
-
-TEST_F(Qwen38MoeTest, TheLayoutConversionIsLossless) {
-  ToCutlass();
-  // The CUTLASS layout holds each weight where moe_layout.h says.
-  std::vector<std::uint8_t> cutlass(stride_ * kExperts);
-  ASSERT_EQ(cudaMemcpy(cutlass.data(), Pointer(slab_), cutlass.size(), cudaMemcpyDeviceToHost),
-            cudaSuccess);
-  const moe::ExpertLayout l{.ffn = kFfn, .width = kWidth};
-  for (std::int64_t e = 0; e < kExperts; e += 5) {
-    const std::uint8_t* s = cutlass.data() + (static_cast<std::size_t>(e) * stride_);
-    for (std::int64_t r = 0; r < 2 * kFfn; r += 37) {
-      const Weights& w = r < kFfn ? gate_[U(e)] : up_[U(e)];
-      const std::int64_t wr = r % kFfn;
-      for (std::int64_t i = 0; i < kWidth; i += 13) {
-        EXPECT_EQ(s[moe::ExpertLayout::gate_up_codes() +
-                    static_cast<std::uint64_t>((r * kWidth / 2) + (i / 2))],
-                  w.codes[static_cast<std::size_t>((wr * kWidth / 2) + (i / 2))]);
-        EXPECT_EQ(
-            s[l.gate_up_scales() + moe::SfOffset(static_cast<std::uint64_t>(r),
-                                                 static_cast<std::uint64_t>(i / 16), kWidth / 16)],
-            w.scales[static_cast<std::size_t>((wr * kWidth / 16) + (i / 16))]);
-      }
-    }
-    for (std::int64_t r = 0; r < kWidth; r += 101) {
-      for (std::int64_t i = 0; i < kFfn; i += 7) {
-        EXPECT_EQ(s[l.down_codes() + static_cast<std::uint64_t>((r * kFfn / 2) + (i / 2))],
-                  down_[U(e)].codes[static_cast<std::size_t>((r * kFfn / 2) + (i / 2))]);
-      }
-    }
-  }
-  // And back: GGML's bytes exactly.
-  const std::uint64_t back = Allocate(stride_ * kExperts);
-  ASSERT_TRUE(moe::ToGgmlLayout(Slab(), Pointer(back), Stream()));
-  Finish();
-  std::vector<std::uint8_t> ggml(stride_ * kExperts);
-  ASSERT_EQ(cudaMemcpy(ggml.data(), Pointer(back), ggml.size(), cudaMemcpyDeviceToHost),
-            cudaSuccess);
-  std::size_t differing = 0;
-  for (std::int64_t e = 0; e < kExperts; ++e) {
-    for (std::size_t b = 0; b < 3 * slice_; ++b) {
-      const std::size_t at = (static_cast<std::size_t>(e) * stride_) + b;
-      differing += ggml[at] != ggml_slab_[at];
-    }
-  }
-  EXPECT_EQ(differing, 0U);
-  // A slab whose stride cannot hold the layout is refused.
-  moe::ExpertSlab small = Slab();
-  small.stride = l.bytes() - 16;
-  EXPECT_FALSE(moe::ToCutlassLayout(small, Pointer(back), 1, Stream()));
-}
 
 // The prefill path against GGML's MMQ path, the grouped GEMM against the
 // FP64 product of its quantized inputs, and the whole against FP64.
@@ -594,13 +563,7 @@ TEST_F(Qwen38MoeTest, ThePrefillPathMatchesMmqAndTheReference) {
     EXPECT_LE(against_ref, 3e-2) << what;
     EXPECT_TRUE(std::ranges::all_of(got, [](float v) { return std::isfinite(v); })) << what;
     // Back to GGML's layout for the next shape.
-    const std::uint64_t back = Allocate(stride_ * kExperts);
-    ASSERT_TRUE(moe::ToGgmlLayout(Slab(), Pointer(back), Stream()));
-    Finish();
-    ASSERT_EQ(
-        cudaMemcpy(Pointer(slab_), Pointer(back), stride_ * kExperts, cudaMemcpyDeviceToDevice),
-        cudaSuccess);
-    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    RestoreGgml();
   }
 }
 

@@ -77,6 +77,12 @@ class Bound final : public kg::BoundSelectedCall {
         break;
       case Kind::kMulti:
         ran = runtime_.launch->Run([&](void* stream_handle) -> std::expected<void, KernelFailure> {
+          // From pageable host memory: CUDA stages a pageable host-to-device
+          // copy before cudaMemcpyAsync returns, so `written` need not
+          // outlive the call, but stream capture refuses such a copy. That
+          // is one reason no EXL3 operation is declared capturable
+          // (implementations.cc); capturing this needs pinned staging whose
+          // lifetime follows the stream's completion.
           const auto copied =
               cudaMemcpyAsync(reinterpret_cast<void*>(multi.trellis_table), multi.written.data(),
                               sizeof(multi.written), cudaMemcpyHostToDevice,
@@ -86,7 +92,9 @@ class Bound final : public kg::BoundSelectedCall {
                                                  .detail = cudaGetErrorString(copied)});
           return {};
         });
-        if (ran) ran = kernel_.Run(*runtime_.launch, multi, multi_plan);
+        // The upload is queued: a refused product must fault, not refuse.
+        if (ran)
+          ran = runtime_.launch->AfterQueued(kernel_.Run(*runtime_.launch, multi, multi_plan));
         break;
       case Kind::kReconstruct:
       case Kind::kFused:
@@ -305,7 +313,9 @@ bool AcceptsBias(const execution::CapabilityQuery& query) {
   const auto* y = operand(execution::kOutputOperand);
   return query.arch == 121 && x && b && y && x->ne == y->ne && x->ne[0] >= 1 &&
          x->ne[0] <= kMaxDimension && x->ne[1] >= 1 && x->ne[1] <= kMaxRows && x->ne[2] == 1 &&
-         x->ne[3] == 1 && b->ne[0] == x->ne[0] && b->ne[1] == 1 && b->ne[2] == 1 && b->ne[3] == 1;
+         x->ne[3] == 1 && b->ne[0] == x->ne[0] && b->ne[1] == 1 && b->ne[2] == 1 && b->ne[3] == 1 &&
+         // CheckBias's (CheckExtent's) element bound, so a planned bias lowers.
+         static_cast<std::uint64_t>(x->ne[0]) * static_cast<std::uint64_t>(x->ne[1]) <= INT32_MAX;
 }
 std::string_view ProfileName(FrozenCache cache) {
   switch (cache) {
@@ -599,8 +609,12 @@ std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device) {
   if (device != 0 || !facts || facts->architecture != 1210 ||
       cudaGetDevice(&current) != cudaSuccess || current != device ||
       cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess ||
-      sms != 48)
+      sms != 48) {
+    // A failed query leaves the runtime's last error set, which the next
+    // launch context's Begin would take for its own launch's.
+    (void)cudaGetLastError();
     return std::unexpected("frozen GEMV occupancy requires current device0 sm_121 with48SMs");
+  }
   GemvCapacity result;
   for (std::size_t output = 0; output < 2; ++output) {
     for (std::size_t rows = 0; rows < 2; ++rows) {
@@ -611,8 +625,10 @@ std::expected<GemvCapacity, std::string> QueryGemvCapacity(int device) {
         if (kernel == nullptr ||
             cudaOccupancyMaxActiveBlocksPerMultiprocessor(
                 &per_sm, kernel, GemvThreads(static_cast<int>(config)), 0) != cudaSuccess ||
-            per_sm < 1 || per_sm > 32)
+            per_sm < 1 || per_sm > 32) {
+          (void)cudaGetLastError();
           return std::unexpected("the frozen GEMV kernel occupancy query failed");
+        }
         result.blocks[output][rows][config] = per_sm * sms;
       }
     }

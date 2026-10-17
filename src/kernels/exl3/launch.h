@@ -130,6 +130,14 @@ class LaunchContext {
     return End(launch(*stream));
   }
 
+  // The result of a later launch of an operation whose earlier launches
+  // are already queued (a product's bias, a reconstruction's next slice,
+  // the multi-GEMM after its table upload). A refusal there would tell the
+  // caller that nothing was queued, and it might free the operands of the
+  // queued work without a fence, so it faults the context and is reported
+  // as a fault (kUnknown) instead.
+  std::expected<void, KernelFailure> AfterQueued(std::expected<void, KernelFailure> result);
+
   int device() const { return device_; }
   int sm_count() const { return sm_count_; }
   CcClass cc_class() const { return cc_class_; }

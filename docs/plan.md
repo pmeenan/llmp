@@ -189,7 +189,7 @@ before new families land; each item lands as one reviewed commit.
 - [x] R1 Runtime and engine correctness (HTTP intake, hang-ladder drain,
       approvals envelopes as defaults, kept-state and calibration fixes,
       spill-range growth, plan-cache index, the `Llm` interface, legacy code)
-- [ ] R2 Kernel, decode and IR correctness (validator gaps, CUTLASS and EXL3
+- [x] R2 Kernel, decode and IR correctness (validator gaps, CUTLASS and EXL3
       error paths, alignment, per-device opt-ins, latent IR rewrite bugs,
       dead kernel code)
 - [ ] R3 Importer correctness and structural normalization (safetensors

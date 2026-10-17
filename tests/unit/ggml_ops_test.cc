@@ -422,6 +422,23 @@ TEST_F(GgmlOpsTest, F16ApeRowsWidenExactlyAcrossMemoryDomains) {
   }
 }
 
+// Overlapping source rows are valid views, but cannot use cudaMemcpy2D.
+TEST_F(GgmlOpsTest, ContCopiesOverlappingRowsWithoutFaultingTheContext) {
+  auto arena = TensorArena::Create(8).value();
+  auto* c = arena.context();
+  auto launch = Launcher();
+  ASSERT_TRUE(launch);
+  // GGML checks the dense element count before installing the view's
+  // pitch, so the root holds 12 floats although the view reads only eight.
+  const std::vector<float> values{0, 1, 2, 3, 4, 5, 6, 7, -1, -1, -1, -1};
+  auto* root = Place(Memory::kDeviceVmm, ggml_new_tensor_1d(c, GGML_TYPE_F32, 12), values);
+  auto* view = ggml_view_2d(c, root, 4, 3, 2 * sizeof(float), 0);
+  auto* result = Place(Memory::kDeviceVmm, ggml_cont(c, view));
+  ASSERT_TRUE(llmp::kernels::ggml::Cont(*launch, result));
+  EXPECT_EQ(Download(result), (std::vector<float>{0, 1, 2, 3, 2, 3, 4, 5, 4, 5, 6, 7}));
+  EXPECT_FALSE(launch->faulted());
+}
+
 TEST_F(GgmlOpsTest, GroupedStoresMatchPrimitiveFullBuffersAndChangedCapturedIndices) {
   namespace kg = llmp::kernels::ggml;
   auto arena = TensorArena::Create(256).value();

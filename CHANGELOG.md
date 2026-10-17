@@ -62,6 +62,13 @@ The entries below record each change; the record of the milestone is
 - A conversation's spill record keeps each written range once, so a long
   speculative session that is never spilled no longer grows it (and the
   reclaim order's scan of it) without bound.
+- Element-aligned F32 attention views and overlapping-row copies use safe
+  kernel paths. Validators reject oversized EXL3 slice bounds and overlapping
+  pointer tables, and check DeepSeek routing and vector-product bounds.
+  Failures after work was queued fault the device context (CUTLASS grouped
+  and MXFP8 products, multi-launch EXL3 linears). Flash attention accepts
+  long-context masks whose unused head stride exceeds 32 bits, and argmax
+  accepts more than 65,535 rows.
 - A smaller `draft_vocab` override now uses the same composed model identity
   during settings resolution and runner construction.
 - On-demand row gathers use 64-bit byte offsets from planning through CPU and

@@ -50,6 +50,8 @@
 #ifndef LLMP_KERNELS_GGML_LAUNCH_H_
 #define LLMP_KERNELS_GGML_LAUNCH_H_
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -106,6 +108,30 @@ class CapturedGraph {
   double instantiate_seconds_ = 0;
 };
 
+// A setting made once per device, such as raising a kernel's dynamic shared
+// memory limit: cudaFuncSetAttribute applies to the current device only, so
+// a process-wide flag set on one device would leave another's kernels
+// unraised. Ensure runs `set` (on the launching thread, where the context's
+// device is current) until it succeeds once for `device`; concurrent first
+// calls may both run it, which an idempotent setting tolerates.
+class PerDeviceOnce {
+ public:
+  static constexpr int kDevices = 16;  // GGML_CUDA_MAX_DEVICES (launch.cu)
+
+  template <typename Set>
+  bool Ensure(int device, Set&& set) {
+    if (device < 0 || device >= kDevices) return false;
+    std::atomic<bool>& done = done_[static_cast<std::size_t>(device)];
+    if (done.load(std::memory_order_acquire)) return true;
+    if (!std::forward<Set>(set)()) return false;
+    done.store(true, std::memory_order_release);
+    return true;
+  }
+
+ private:
+  std::array<std::atomic<bool>, kDevices> done_{};
+};
+
 class LaunchContext {
  public:
   // A device range the pool hands out: mapped with access and charged by
@@ -160,6 +186,9 @@ class LaunchContext {
   std::expected<void, KernelFailure> LaneWait(std::uint32_t waiter, std::uint32_t on);
   // The scratch a run on `lane` may draw.
   base::Bytes scratch_size(std::uint32_t lane) const;
+  // Where the next Run's scratch starts: the selected lane's pool, which
+  // for a lane is carved from the workspace's end, not its base.
+  std::uint64_t scratch_base() const;
 
   // Captures what `record(*this)` queues on the context's stream (its runs,
   // and copies the caller queues on the same stream) into a graph, which it

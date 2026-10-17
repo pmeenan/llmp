@@ -194,7 +194,7 @@ if(LLMP_CUDA)
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
-                   fattn_mma_shape.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fattn_owner_partial_kernel.cuh fusion.cc
+                   fattn_mma_shape.cuh fattn_mma_shape_body.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fattn_owner_partial_kernel.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h llmp_fused.cu llmp_moe.cu llmp_ops.cc llmp_ops.cu
                    llmp_ops.h rounded_index_score.h launch.cu launch.h

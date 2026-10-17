@@ -104,7 +104,12 @@ class Builder {
 
   // ---- leaves
   TensorId Input(const format::TensorFormat& format, std::string_view name = {});
-  TensorId Constant(const format::TensorFormat& format, std::string_view name = {});
+  // A plan constant: its values are bound once, outside the graph. Given,
+  // `content` (the values' bytes, as the binder holds them) is recorded by
+  // its SHA-256 in the leaf's parameters, so two constants of one shape but
+  // other values (the partitioner's per-rank tables) digest apart.
+  TensorId Constant(const format::TensorFormat& format, std::string_view name = {},
+                    std::span<const std::byte> content = {});
   TensorId Weight(const format::TensorFormat& format, const WeightRef& ref,
                   std::string_view name = {});
   // Its segment is the StateRef's.
@@ -229,7 +234,7 @@ class Builder {
   TensorId One(OpKey key, const ParamBytes& params, std::span<const TensorId> sources,
                std::span<const TensorDesc> requested = {});
   TensorId Leaf(Op op, Role role, const format::TensorFormat& format, Binding binding,
-                std::uint8_t segment, std::string_view name);
+                std::uint8_t segment, std::string_view name, const ParamBytes& params = {});
   bool Known(TensorId id) const { return id.valid() && id.v < graph_.tensors_.size(); }
 
   Graph graph_;

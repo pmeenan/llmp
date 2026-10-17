@@ -68,8 +68,11 @@ bool GroupedGemmAvailable();
 // The scratch the GEMM needs for `groups` groups on a device of `sms` SMs.
 std::size_t GroupedGemmScratch(int groups, int sms);
 // Builds the groups' arguments on the device from the offsets, then runs
-// the grouped GEMM, both on `stream` (a cudaStream_t). Returns 0, or a
-// nonzero CUTLASS status if CUTLASS refuses the problem.
+// the grouped GEMM, both on `stream` (a cudaStream_t). Returns 0; a
+// positive CUTLASS status + 1 if CUTLASS refuses the problem, before
+// anything is queued; or a negative -(status + 1) if queuing the setup or
+// initializing or running the GEMM failed after work was queued, which
+// faults the caller's launch context.
 int RunGroupedGemm(const GroupedGemm& gemm, int sms, void* stream);
 
 }  // namespace llmp::kernels::ggml::moe

@@ -205,7 +205,7 @@ static_assert(sizeof(pl::Match) + sizeof(void*) <= 256);
 static_assert(sizeof(pl::RootAlignmentFact) <= 16 && sizeof(kn::InputSlot) <= 512);
 static_assert(sizeof(std::pair<llmp::ir::TensorDesc, std::uint64_t>) <= 176);
 static_assert(sizeof(kg::PlanStep) <= 64 && sizeof(kn::TensorUse) <= 64);
-static_assert(llmp::execution::Registry::kMaxImplementations == 256);
+static_assert(llmp::execution::Registry::kMaxImplementations == 512);
 static_assert(llmp::ir::kMaxSources == 10 && llmp::ir::kMaxOutputs == 4);
 static_assert(sizeof(llmp::execution::OperandMemory) <= 48 &&
               sizeof(llmp::execution::OperandFormat) <= 112 &&

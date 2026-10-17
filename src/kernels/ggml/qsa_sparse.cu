@@ -1090,10 +1090,16 @@ std::expected<void, KernelFailure> RunQsaTopK(LaunchContext& launch, ggml_tensor
     return checked;
   }
   // The second selection's shared memory is past the default 48 KiB.
-  static const cudaError_t merge_shared =
-      cudaFuncSetAttribute(QsaSelectMergeKernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                           static_cast<int>(kMergeShared));
-  if (merge_shared != cudaSuccess) {
+  static PerDeviceOnce raised;
+  cudaError_t merge_shared = cudaSuccess;
+  if (!raised.Ensure(launch.device(), [&merge_shared] {
+        merge_shared =
+            cudaFuncSetAttribute(QsaSelectMergeKernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 static_cast<int>(kMergeShared));
+        if (merge_shared == cudaSuccess) return true;
+        (void)cudaGetLastError();
+        return false;
+      })) {
     return Refused(std::string("the selection's shared memory: ") +
                    cudaGetErrorString(merge_shared));
   }

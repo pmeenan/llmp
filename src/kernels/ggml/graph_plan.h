@@ -339,7 +339,6 @@ inline constexpr std::string_view kSsmConvName = "ggml.ssm_conv";
 inline constexpr std::string_view kGatedDeltaNetName = "ggml.gated_delta_net";
 // llmpalooza's own operations on GGML tensors (llmp_ops.h).
 inline constexpr std::string_view kMxfp8MulMatVecName = "llmp.mxfp8.mul_mat_vec";
-inline constexpr std::string_view kMxfp8DequantName = "llmp.mxfp8.dequant";
 inline constexpr std::string_view kNvfp4RowsName = "llmp.nvfp4.get_rows";
 inline constexpr std::string_view kQRowsName = "llmp.qrows.get_rows";
 inline constexpr std::string_view kHcCombineName = "llmp.hc.combine";

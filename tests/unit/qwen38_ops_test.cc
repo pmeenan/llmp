@@ -6,8 +6,8 @@
 // - Llmpalooza's MXFP8 vector product (llmp_ops.h) at the model's input widths
 //   (2560, 6144, 640) and 1 to 8 columns, within upstream's default bound
 //   for float products (NMSE 1e-7: its F32 block sums differ only in order);
-//   a wave's 9 to 16 columns equal to the lone columns bit for bit; and its
-//   BF16 dequantization, exactly;
+//   a wave's 9 to 16 columns equal to the lone columns bit for bit; and the
+//   format's edge codes and scales;
 // - the n-gram table's NVFP4 row lookup, exactly, and NaN for an id outside
 //   the table; and a GGUF checkpoint's (IQ4_NL and the other 32-value block
 //   types), GGML's CPU dequantization bit for bit;
@@ -368,77 +368,53 @@ TEST_F(Qwen38OpsTest, Mxfp8VectorProductRefusesWhatItCannotRun) {
 
 // E8M0 scales at the ends of their range decode as powers of two, 0x00 the
 // subnormal 2^-127, and 0xFF as NaN (OCP MX); E4M3 codes likewise, 0x7F NaN.
-// Dequantization is exact wherever the product is a BF16 value.
+// Each row of the vector product holds one edge code (the rest zero) under
+// one edge scale, against x = 1: its sum is that value in F32, exactly where
+// F32 holds it normal (a subnormal scale or result may flush under the
+// module's fast-math flags; a value past F32's range is an infinity).
 TEST_F(Qwen38OpsTest, Mxfp8ScaleAndCodeEdgesDecodeAsTheFormatSays) {
   constexpr std::int64_t k = 32;
   const std::vector<std::uint8_t> scale_edges = {0x00, 0x01, 127, 254, 0xFF};
   const std::vector<std::uint8_t> code_edges = {0x38, 0xB8, 0x01, 0x07, 0x08,
                                                 0x7E, 0xFE, 0x00, 0x80, 0x7F};
-  const auto rows = static_cast<std::int64_t>(scale_edges.size());
-  std::vector<std::uint8_t> codes(static_cast<std::size_t>(k * rows), 0x38);
-  for (std::size_t r = 0; r < scale_edges.size(); ++r) {
-    std::ranges::copy(code_edges, codes.begin() + static_cast<std::ptrdiff_t>(r * k));
-  }
-  ggml_tensor* wc = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, k, rows), codes);
-  ggml_tensor* ws = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, 1, rows), scale_edges);
-  ggml_tensor* out = Place(kg::Mxfp8Dequant(c(), wc, ws));
-  ASSERT_TRUE(kg::RunMxfp8Dequant(launch(), out).has_value());
-  const std::vector<std::uint16_t> got = Download<std::uint16_t>(out);
-  for (std::size_t r = 0; r < scale_edges.size(); ++r) {
-    for (std::size_t i = 0; i < static_cast<std::size_t>(k); ++i) {
-      const std::uint8_t code = codes[(r * k) + i];
-      const auto value =
-          static_cast<double>(std::bit_cast<float>(std::uint32_t{got[(r * k) + i]} << 16U));
-      if (scale_edges[r] == 0xFF || (code & 0x7F) == 0x7F) {
-        EXPECT_TRUE(std::isnan(value)) << r << " " << i;
-        continue;
-      }
-      const double want = E4m3(code) * std::ldexp(1.0, scale_edges[r] - 127);
-      // BF16 holds 2^-133 to below 2^128 with an 8-bit significand.
-      const double magnitude = std::abs(want);
-      if (magnitude == 0.0 || (magnitude >= std::ldexp(1.0, -133) && magnitude < 0x1p128)) {
-        const auto bf16 = static_cast<double>(std::bit_cast<float>(
-            std::bit_cast<std::uint32_t>(static_cast<float>(want)) & 0xFFFF0000U));
-        if (bf16 == want) {
-          EXPECT_EQ(value, want) << "scale " << int{scale_edges[r]} << " code " << int{code};
-        }
-      }
+  const auto rows = static_cast<std::int64_t>(scale_edges.size() * code_edges.size());
+  std::vector<std::uint8_t> codes(static_cast<std::size_t>(k * rows), 0x00);
+  std::vector<std::uint8_t> scales(static_cast<std::size_t>(rows));
+  for (std::size_t s = 0; s < scale_edges.size(); ++s) {
+    for (std::size_t i = 0; i < code_edges.size(); ++i) {
+      const std::size_t row = (s * code_edges.size()) + i;
+      codes[row * k] = code_edges[i];
+      scales[row] = scale_edges[s];
     }
   }
-  // The vector product: the same edges against x = 1 (NaN rows and codes aside).
+  ggml_tensor* wc = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, k, rows), codes);
+  ggml_tensor* ws = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, 1, rows), scales);
   ggml_tensor* in =
       Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, 1), std::vector<float>(k, 1.0f));
   ggml_tensor* y = Place(kg::Mxfp8MulMatVec(c(), wc, ws, in));
   ASSERT_TRUE(kg::RunMxfp8MulMatVec(launch(), y).has_value());
   const std::vector<float> sums = Download(y);
-  for (std::size_t r = 0; r < scale_edges.size(); ++r) {
-    EXPECT_TRUE(std::isnan(sums[r])) << r;  // every row holds the NaN code 0x7F
+  for (std::size_t row = 0; row < sums.size(); ++row) {
+    const std::uint8_t code = codes[row * k];
+    const std::uint8_t scale = scales[row];
+    const auto got = static_cast<double>(sums[row]);
+    if (scale == 0xFF || (code & 0x7F) == 0x7F) {
+      EXPECT_TRUE(std::isnan(got)) << "scale " << int{scale} << " code " << int{code};
+      continue;
+    }
+    const double want = E4m3(code) * std::ldexp(1.0, scale - 127);
+    const double magnitude = std::abs(want);
+    if (magnitude > static_cast<double>(std::numeric_limits<float>::max())) {
+      EXPECT_TRUE(std::isinf(got) && std::signbit(got) == std::signbit(want))
+          << "scale " << int{scale} << " code " << int{code};
+    } else if (scale == 0x00 ||
+               magnitude < static_cast<double>(std::numeric_limits<float>::min())) {
+      // A subnormal scale (2^-127) or result: flushed, or exact.
+      EXPECT_TRUE(got == want || got == 0.0) << "scale " << int{scale} << " code " << int{code};
+    } else {
+      EXPECT_EQ(got, want) << "scale " << int{scale} << " code " << int{code};
+    }
   }
-}
-
-TEST_F(Qwen38OpsTest, Mxfp8DequantizationIsExact) {
-  constexpr std::int64_t k = 256;
-  constexpr std::int64_t rows = 24;
-  const std::vector<std::uint8_t> codes = E4m3Codes(5, k * rows);
-  std::vector<std::uint8_t> scales(k / 32 * rows);
-  for (std::size_t i = 0; i < scales.size(); ++i) {
-    scales[i] = static_cast<std::uint8_t>(110 + (i % 30));
-  }
-  ggml_tensor* wc = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, k, rows), codes);
-  ggml_tensor* ws = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, k / 32, rows), scales);
-  ggml_tensor* out = Place(kg::Mxfp8Dequant(c(), wc, ws));
-  ASSERT_TRUE(kg::RunMxfp8Dequant(launch(), out).has_value());
-  const std::vector<std::uint16_t> got = Download<std::uint16_t>(out);
-  for (std::size_t i = 0; i < got.size(); ++i) {
-    const double want = E4m3(codes[i]) * std::ldexp(1.0, scales[i / 32] - 127);
-    const auto as_float = std::bit_cast<float>(std::uint32_t{got[i]} << 16U);
-    ASSERT_EQ(static_cast<double>(as_float), want) << i;
-  }
-  // The checks: scales of the wrong shape are refused.
-  ggml_tensor* bad = ggml_new_tensor_2d(c(), GGML_TYPE_I8, k / 16, rows);
-  Place(bad);
-  ggml_tensor* refused = Place(kg::Mxfp8Dequant(c(), wc, bad));
-  EXPECT_EQ(FailedCode(kg::RunMxfp8Dequant(launch(), refused)), KernelError::kRejected);
 }
 
 TEST_F(Qwen38OpsTest, Nvfp4TableRowsDequantizeExactly) {

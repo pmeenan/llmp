@@ -79,7 +79,7 @@ std::vector<Choice> Layer(std::string norm, std::string mul_mat = "fake.mul_mat.
 // no two operations share one.
 TEST(PlanRegistryTest, EveryOperationHasItsOwnName) {
   std::set<std::string_view> names;
-  for (int i = 0; i <= static_cast<int>(Operation::kGemmaScaledReduce); ++i) {
+  for (int i = 0; i <= static_cast<int>(Operation::kGatedResidualModulateSplit); ++i) {
     const std::string_view name = OperationName(static_cast<Operation>(i));
     EXPECT_NE(name, "unknown") << i;
     EXPECT_TRUE(names.insert(name).second) << name;
@@ -251,7 +251,7 @@ TEST(CapabilityTest, EveryOperationHasAKeyInTheOpSet) {
     EXPECT_NE(name, "unknown") << i;
     EXPECT_TRUE(fused.insert(name).second) << name;
   }
-  for (int i = 0; i <= static_cast<int>(Operation::kGemmaScaledReduce); ++i) {
+  for (int i = 0; i <= static_cast<int>(Operation::kGatedResidualModulateSplit); ++i) {
     const auto operation = static_cast<Operation>(i);
     const ir::OpKey key = ex::OpKeyOf(operation);
     EXPECT_EQ(key.op == ir::Op::kFused, key.fused != ir::FusedKind::kNone)

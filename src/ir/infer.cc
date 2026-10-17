@@ -11,6 +11,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -229,7 +230,7 @@ std::expected<void, VerifyError> Want(bool ok, const Ctx& c, const std::string& 
 
 bool Broadcasts(const Shape& a, const Shape& b) {
   for (std::size_t d = 0; d < format::kMaxDims; ++d) {
-    if (a.ne.at(d) % b.ne.at(d) != 0) {
+    if (b.ne.at(d) == 0 || a.ne.at(d) % b.ne.at(d) != 0) {
       return false;
     }
   }
@@ -307,8 +308,10 @@ std::expected<void, VerifyError> InRoot(const Ctx& c, const TensorDesc& view,
   return {};
 }
 
-// A store's target: state or a result of this step, never a weight or a
-// plan constant (bound once, shared, read-only).
+// A store's target: state, a result of this step or an input (bound each
+// step from the caller's buffer; production stores target state or a
+// result, and tests store into inputs to probe write hazards), never a
+// weight or a plan constant (bound once, shared, read-only).
 std::expected<void, VerifyError> Writable(const Ctx& c, std::size_t i) {
   const Role role = c.root_desc(i).role;
   if (role == Role::kWeight || role == Role::kConstant) {
@@ -582,11 +585,13 @@ Out RopeOf(const Ctx& c, const RopeParams& p, std::size_t x_at, std::size_t pos_
 
 Out Leaf(const Ctx& c) {
   LLMP_TRY(Arity(c, 0, 0));
-  LLMP_TRY(Tail(c, 0));
   const TensorDesc* r = c.req(0);
   if (r == nullptr) {
     return Fail(GraphError::kArity, c, "a leaf needs its description");
   }
+  // Only a plan constant's parameters hold anything: its content's digest.
+  LLMP_TRY(
+      Tail(c, c.key().op == Op::kInput && r->role == Role::kConstant ? kConstantDigestBytes : 0));
   if (!format::Validate(r->format)) {
     return Fail(GraphError::kFormat, c, "a leaf's format is not valid");
   }
@@ -599,7 +604,9 @@ Out Leaf(const Ctx& c) {
 
 Out InferPrimitive(const Ctx& c) {
   const Op op = c.key().op;
-  LLMP_TRY(Tail(c, ParamSize(c.key())));
+  if (op != Op::kInput && op != Op::kWeight && op != Op::kState) {
+    LLMP_TRY(Tail(c, ParamSize(c.key())));  // a leaf's: Leaf
+  }
   switch (op) {
     case Op::kInput:
     case Op::kWeight:
@@ -705,6 +712,8 @@ Out InferPrimitive(const Ctx& c) {
       std::array<std::uint64_t, 4> ne = a.shape().ne;
       for (std::size_t d = 0; d < 4; ++d) {
         if (d == p.dim) {
+          LLMP_TRY(Want(ne.at(d) <= std::numeric_limits<std::uint64_t>::max() - b.ne(d), c,
+                        "a join past 64 bits"));
           ne.at(d) += b.ne(d);
         } else {
           LLMP_TRY(Want(a.ne(d) == b.ne(d), c,
@@ -1323,6 +1332,9 @@ Out InferPrimitive(const Ctx& c) {
         return Fail(GraphError::kParams, c, "a factor of at least one");
       }
       const TensorDesc& x = *c.src(0);
+      LLMP_TRY(Want(x.ne(0) <= std::numeric_limits<std::uint64_t>::max() / f &&
+                        x.ne(1) <= std::numeric_limits<std::uint64_t>::max() / f,
+                    c, "an upsampled shape past 64 bits"));
       return FloatResult(S(x.ne(0) * f, x.ne(1) * f, x.ne(2), x.ne(3)), FloatOf(x));
     }
 
@@ -1468,6 +1480,18 @@ Out InferPrimitive(const Ctx& c) {
   return Fail(GraphError::kParams, c, "an op outside op set v1");
 }
 
+// The byte offsets InferFused's flag and reserved-byte checks name.
+static_assert(offsetof(ProductParams, reserved) == 2 && offsetof(HcParams, reserved) == 2);
+static_assert(offsetof(GluParams, swapped) == 1 && offsetof(GluParams, reserved) == 2 &&
+              offsetof(MoeExpertsParams, glu) == 0);
+static_assert(offsetof(RouteParams, normalize) == 1 && offsetof(RouteParams, reserved) == 2);
+static_assert(offsetof(AttnParams, sinks) == 16 && offsetof(AttnParams, sparse_any) == 18 &&
+              offsetof(AttnParams, reserved) == 19 && offsetof(OwnerAttnParams, attn) == 0 &&
+              offsetof(QsaAttnParams, attn) == 0);
+static_assert(offsetof(SpatialNormParams, silu) == 8 && offsetof(SpatialNormParams, reserved) == 9);
+static_assert(offsetof(RopeSectionsParams, sections) == 9 &&
+              offsetof(RopeSectionsParams, reserved) == 10);
+
 Out InferFused(const Ctx& c) {
   LLMP_TRY(Tail(c, ParamSize(c.key())));
   if (c.key().fused == FusedKind::kNone ||
@@ -1507,6 +1531,38 @@ Out InferFused(const Ctx& c) {
   }
   if (c.key().fused == FusedKind::kScaledUnary) {
     LLMP_TRY(Zero(c, 5, 3));
+  }
+  // Every other kind's flags and reserved bytes (op.h's layouts), checked
+  // before its decomposition reads a flag as a bool.
+  switch (c.key().fused) {
+    case FusedKind::kGroupedMatMul:  // ProductParams
+    case FusedKind::kHcCombine:      // HcParams
+      LLMP_TRY(Zero(c, 2, 2));
+      break;
+    case FusedKind::kMatMulGlu:  // GluParams
+    case FusedKind::kMoeGlu:
+    case FusedKind::kMoeExperts:  // MoeExpertsParams: GluParams first
+    case FusedKind::kMatMulIdGlu:
+    case FusedKind::kMoeRouter:  // RouteParams
+      LLMP_TRY(Bool(c, 1));
+      LLMP_TRY(Zero(c, 2, 2));
+      break;
+    case FusedKind::kOwnerAttention:  // AttnParams first
+    case FusedKind::kQsaAttention:
+      LLMP_TRY(Bool(c, 16));
+      LLMP_TRY(Bool(c, 18));
+      LLMP_TRY(Zero(c, 19, 1));
+      break;
+    case FusedKind::kSpatialChannelNorm:  // SpatialNormParams
+      LLMP_TRY(Bool(c, 8));
+      LLMP_TRY(Zero(c, 9, 3));
+      break;
+    case FusedKind::kRmsNormMulRopeSections:  // RopeSectionsParams
+    case FusedKind::kRopeTable:
+      LLMP_TRY(Zero(c, 10, 2));
+      break;
+    default:
+      break;
   }
   // The decomposition over stand-ins of the sources: its outputs are the
   // node's.
@@ -1558,13 +1614,25 @@ std::expected<Inferred, VerifyError> Infer(OpKey key,
   if (sources.size() > kMaxSources) {
     return Err(GraphError::kArity, std::format("{} sources, past {}", sources.size(), kMaxSources));
   }
-  if (key.op == Op::kFused) {
-    return InferFused(c);
-  }
-  if (key.fused != FusedKind::kNone) {
+  if (key.op != Op::kFused && key.fused != FusedKind::kNone) {
     return Err(GraphError::kParams, "a fused kind on a primitive op");
   }
-  return InferPrimitive(c);
+  Out r = key.op == Op::kFused ? InferFused(c) : InferPrimitive(c);
+  if (!r || key.op == Op::kInput || key.op == Op::kWeight || key.op == Op::kState) {
+    return r;
+  }
+  // Every computed output (not a view) is a valid format: no zero extent,
+  // no size past 64 bits, whatever shape a parameter or a requested
+  // description gave it (a fill's, a repeat's, a copy's, a join's).
+  for (std::size_t i = 0; i < r->nout; ++i) {
+    const TensorDesc& t = r->out.at(i);
+    if (!t.view_of.valid() && !format::Validate(t.format)) {
+      return Fail(GraphError::kShape, c,
+                  std::format("output {} of {} is not a valid {} tensor", i, Text(t.shape()),
+                              format::Info(t.format.encoding).name));
+    }
+  }
+  return r;
 }
 
 }  // namespace llmp::ir

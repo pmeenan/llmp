@@ -100,7 +100,7 @@ static_assert(sizeof(llmp::execution::OperandMemory) <= 48 &&
               sizeof(llmp::execution::OperandFormat) <= 112 &&
               sizeof(llmp::execution::CapabilityQuery) <= 256);
 static_assert(sizeof(llmp::ir::WeightRef) <= 16 && sizeof(llmp::ir::StateRef) <= 16);
-static_assert(llmp::execution::Registry::kMaxImplementations == 256);
+static_assert(llmp::execution::Registry::kMaxImplementations == 512);
 static_assert(llmp::ir::kMaxSources == 10 && llmp::ir::kMaxOutputs == 4);
 // Inherited hard-cap compiler peak plus the source-inventoried serving
 // owners below. The fixture fingerprints are checked before either arm;

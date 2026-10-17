@@ -35,9 +35,10 @@
 //
 // Inputs are F32 rows (16-byte aligned, a row stride that is a multiple
 // of 4 floats); outputs are F32. A weight's part addresses must be aligned
-// for its decoder's loads (16 bytes for dense and MXFP8 codes, 8 for NVFP4
-// codes, 4 for GGML's NVFP4 blocks and tensor scales, 2 for Q8_0's
-// blocks). Every Run checks its operands completely and refuses, with
+// for its decoder's loads (16 bytes for dense, MXFP8 and 8-bit affine
+// codes, 8 for NVFP4 and 4-bit affine codes, 4 for GGML's NVFP4 blocks,
+// tensor scales and F32 affine scales, 2 for Q8_0's blocks and other
+// scales). Every Run checks its operands completely and refuses, with
 // nothing queued, a format without a decoder, parts that do not hold the
 // format's bytes, misaligned addresses, a K that is not a multiple of the
 // decoder's segment, or sizes the kernels cannot index; then it only

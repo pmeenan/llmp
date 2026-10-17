@@ -225,12 +225,21 @@ std::expected<Operand, std::string> OperandOf(const Weight& weight) {
     const std::uint64_t scale_elem_bytes = f.params.scale == format::AffineScale::kF32 ? 4 : 2;
     op.scale_row_bytes = static_cast<std::uint32_t>(groups * scale_elem_bytes);
   }
-  if (!Aligned(op.data, d.align) || op.row_bytes % d.align != 0 ||
-      (op.scales != nullptr && !Aligned(op.scales, 2)) ||
-      (op.biases != nullptr && !Aligned(op.biases, 2)) ||
+  // The decoder's loads: the table's alignment of the codes, but 16 bytes
+  // for 8-bit affine codes (AffineSplit loads a segment's 16 codes at once,
+  // 4-bit codes 8 bytes); scales (and an affine bias of the scale's type)
+  // at their element's size, F32 scales 4 bytes; zero points are bytes.
+  const bool affine = f.encoding == Encoding::kAffine;
+  const std::uint64_t code_align = affine && f.params.bits == 8 ? 16 : d.align;
+  const std::uint64_t scale_align = affine && f.params.scale == format::AffineScale::kF32 ? 4 : 2;
+  const std::uint64_t bias_align = affine && f.params.zero_point ? 1 : scale_align;
+  if (!Aligned(op.data, code_align) || op.row_bytes % code_align != 0 ||
+      (op.scales != nullptr && !Aligned(op.scales, scale_align)) ||
+      (op.biases != nullptr && !Aligned(op.biases, bias_align)) ||
       (op.tensor_scale != nullptr && !Aligned(op.tensor_scale, 4))) {
     return Refused(
-        std::format("{}: parts must be {}-byte aligned (tensor scales 4)", d.name, d.align));
+        std::format("{}: codes must be {}-byte aligned, scales {}, biases {} (tensor scales 4)",
+                    d.name, code_align, scale_align, bias_align));
   }
   return op;
 }

@@ -347,7 +347,10 @@ std::expected<void, KernelFailure> Cont(LaunchContext& launch, ggml_tensor* node
                                    cudaMemcpyDeviceToDevice, stream));
         return;
       }
-      if (c.dims == 2 && c.nb[0] == sizeof(float)) {
+      // cudaMemcpy2DAsync refuses a source pitch below the row's width, so a
+      // view of overlapping rows takes a kernel below.
+      if (c.dims == 2 && c.nb[0] == sizeof(float) &&
+          c.nb[1] >= static_cast<std::size_t>(c.ne[0]) * sizeof(float)) {
         const std::size_t width = static_cast<std::size_t>(c.ne[0]) * sizeof(float);
         CUDA_CHECK(cudaMemcpy2DAsync(node->data, width, src->data, c.nb[1], width,
                                      static_cast<std::size_t>(c.ne[1]), cudaMemcpyDeviceToDevice,

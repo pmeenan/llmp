@@ -1378,6 +1378,19 @@ TEST(StateContractTest, BlockEncodedCellsAreWholeBlocksAndRangesStartAtBlocks) {
   }
 }
 
+// A numeric state tensor's encoding is a state encoding.
+TEST(StateContractTest, LayoutsRefuseANonStateEncoding) {
+  const Layers ints = {
+      {0, {.tensors = {{.name = "k", .encoding = Encoding::kI32, .cell_bytes = 512}}}}};
+  EXPECT_FALSE(md::Layout(ints, 16, 16).has_value());
+  Layers unknown = ints;
+  unknown[0].second.tensors[0].encoding = static_cast<Encoding>(0xFFFF);
+  EXPECT_FALSE(md::Layout(unknown, 16, 16).has_value());
+  const Layers floats = {
+      {0, {.tensors = {{.name = "k", .encoding = Encoding::kF32, .cell_bytes = 512}}}}};
+  EXPECT_TRUE(md::Layout(floats, 16, 16).has_value());
+}
+
 TEST(StateContractTest, LayoutsRefuseInconsistentBoundsAndEmptyTensors) {
   const Layers kv = {{0, {.tensors = {{.name = "k", .cell_bytes = 512}}}}};
   EXPECT_FALSE(md::Layout(kv, 0, 1).has_value());

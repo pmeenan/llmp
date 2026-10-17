@@ -40,6 +40,20 @@ bool Shaped(const ggml_tensor* t, ggml_type type, std::int64_t n0, std::int64_t 
 
 bool Rows(std::int64_t rows) { return rows >= 1 && rows <= kMaxRows; }
 
+// The fused kernel's hard-coded HC post: width 4096, four streams, every
+// operand packed.
+bool PostShaped(const ggml_tensor* post) {
+  if (post == nullptr) {
+    return false;
+  }
+  const std::int64_t rows = post->ne[2];
+  return Rows(rows) && Shaped(post, GGML_TYPE_F32, kWidth, kStreams, rows) &&
+         Shaped(post->src[0], GGML_TYPE_F32, kWidth, rows, 1) &&
+         Shaped(post->src[1], GGML_TYPE_F32, kWidth, kStreams, rows) &&
+         Shaped(post->src[2], GGML_TYPE_F32, kStreams, rows, 1) &&
+         Shaped(post->src[3], GGML_TYPE_F32, kStreams, kStreams, rows) && OnlySources(post, 4);
+}
+
 }  // namespace
 
 bool Dsv4HcNormF16Fits(const ggml_tensor* flat, float eps) {
@@ -79,13 +93,8 @@ std::optional<Dsv4HcPostNormF16Nodes> Dsv4HcPostNormF16At(std::span<ggml_tensor*
       flat->view_offs != 0 || LlmpOpOf(norm) != LlmpOp::kDsv4HcNormF16 || norm->src[0] != flat) {
     return std::nullopt;
   }
-  const std::int64_t rows = post->ne[2];
-  if (!Rows(rows) || !Shaped(post, GGML_TYPE_F32, kWidth, kStreams, rows) ||
-      !Shaped(post->src[0], GGML_TYPE_F32, kWidth, rows, 1) ||
-      !Shaped(post->src[1], GGML_TYPE_F32, kWidth, kStreams, rows) ||
-      !Shaped(post->src[2], GGML_TYPE_F32, kStreams, rows, 1) ||
-      !Shaped(post->src[3], GGML_TYPE_F32, kStreams, kStreams, rows) || !OnlySources(post, 4) ||
-      !Dsv4HcNormF16Fits(flat, LlmpOpEps(norm))) {
+  if (!PostShaped(post) || !Dsv4HcNormF16Fits(flat, LlmpOpEps(norm)) ||
+      post->ne[2] != flat->ne[1]) {
     return std::nullopt;
   }
   return Dsv4HcPostNormF16Nodes{.post = post, .norm = norm};
@@ -104,6 +113,12 @@ std::expected<void, KernelFailure> CheckDsv4HcPostNormF16(const ggml_tensor* pos
     return checked;
   }
   const ggml_tensor* flat = norm->src[0];
+  // The kernel's fixed width, streams and packed layout, which CheckHcPost
+  // (the unfused post's) does not require.
+  if (!PostShaped(post) || post->ne[2] != flat->ne[1]) {
+    return detail::Rejected(
+        "HC post/F16 norm requires the packed [4096, 4, rows] post of the norm's rows");
+  }
   if (flat->data != post->data || !detail::Disjoint(norm, post, false)) {
     return detail::Rejected("HC post/F16 norm requires separate outputs over the post");
   }

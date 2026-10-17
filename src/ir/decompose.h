@@ -49,7 +49,9 @@ std::optional<std::size_t> AliasedSource(OpKey key, std::size_t output);
 // `graph` with every fused node, and with `composites` every composite op,
 // replaced by its decomposition. `map`, when given, receives the new id of
 // each of graph's tensors (a decomposed node's outputs map to its
-// decomposition's).
+// decomposition's). Refused (kBounds) if fused nodes still remain after a
+// bounded number of passes, and (kFormat) where a view's source would
+// change layout (graph.h SameViewSource).
 std::expected<Graph, VerifyError> Expand(const Graph& graph, bool composites,
                                          std::vector<TensorId>* map = nullptr);
 

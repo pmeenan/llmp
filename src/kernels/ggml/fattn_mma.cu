@@ -250,11 +250,15 @@ static std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMmaGroup(
   } else {
     plan.columns = 8;
   }
-  auto shape = group2 ? detail::FlashAttnMmaShapeGqa2(plan.columns, launch.device(),
-                                                      detail::ParamF32(node, 2) != 0.0f)
-               : plan.head == 512
-                   ? detail::FlashAttnMmaShape512(plan.columns, plan.sparse, launch.device())
-                   : detail::FlashAttnMmaShape256(plan.columns, plan.sparse, launch.device());
+  auto shape =
+      group2 ? detail::FlashAttnMmaShapeGqa2(plan.columns, launch.device(),
+                                             detail::ParamF32(node, 2) != 0.0f)
+      : plan.head == 512
+          ? (q->type == GGML_TYPE_F16
+                 // The F16-Q copy's kernel, which its case launches.
+                 ? detail::FlashAttnMmaShape512Q16(plan.columns, plan.sparse, launch.device())
+                 : detail::FlashAttnMmaShape512(plan.columns, plan.sparse, launch.device()))
+          : detail::FlashAttnMmaShape256(plan.columns, plan.sparse, launch.device());
   if (!shape) {
     return std::unexpected(KernelFailure{.error = KernelError::kUnknown, .detail = shape.error()});
   }

@@ -208,9 +208,11 @@ exl3::MultiLinearOperands GateUp(int m) {
   up.svh = (10 * kMiB) + 4096;
   return {.first = gate,
           .second = up,
-          .trellis_table = 11 * kMiB,
-          .suh_table = (11 * kMiB) + 16,
-          .svh_table = (11 * kMiB) + 32,
+          // Apart from up's trellis (9 MiB and 2 MiB on), which a table
+          // must not overlap.
+          .trellis_table = 15 * kMiB,
+          .suh_table = (15 * kMiB) + 16,
+          .svh_table = (15 * kMiB) + 32,
           .written = exl3::MultiGemmTables(gate, up),
           .x = 12 * kMiB,
           .a_had = 13 * kMiB,
@@ -241,6 +243,17 @@ TEST(Exl3ValidateTest, MultiGemmPlansBoundTheWholeGrid) {
   EXPECT_FALSE(exl3::CheckMultiGemm(o, plan, kCoresident, kLocks).has_value());
   o = GateUp(1);
   o.y = o.trellis_table;
+  EXPECT_FALSE(exl3::CheckMultiGemm(o, plan, kCoresident, kLocks).has_value());
+  // The tables are written before the launch: apart from each other, the
+  // input and both weights.
+  o = GateUp(1);
+  o.svh_table = o.suh_table + 8;
+  EXPECT_FALSE(exl3::CheckMultiGemm(o, plan, kCoresident, kLocks).has_value());
+  o = GateUp(1);
+  o.trellis_table = o.x;
+  EXPECT_FALSE(exl3::CheckMultiGemm(o, plan, kCoresident, kLocks).has_value());
+  o = GateUp(1);
+  o.suh_table = o.second.trellis + 1024;
   EXPECT_FALSE(exl3::CheckMultiGemm(o, plan, kCoresident, kLocks).has_value());
   // Two slabs of transformed input.
   EXPECT_EQ(exl3::ScratchBytes(GateUp(8)), 2ULL * 8 * 896 * 2);

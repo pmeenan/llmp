@@ -97,6 +97,12 @@ bool IsContiguous(const TensorDesc& tensor) {
   return UnitBytes(tensor.format) != 0 && tensor.nb == NaturalStrides(tensor.format);
 }
 
+bool SameViewSource(const TensorDesc& was, const TensorDesc& now) {
+  return was.format.shape == now.format.shape && was.format.encoding == now.format.encoding &&
+         was.format.layout == now.format.layout && was.format.params == now.format.params &&
+         was.nb == now.nb && was.view_offset == now.view_offset;
+}
+
 std::uint64_t Elements(const format::Shape& shape) {
   return shape.ne[0] * shape.ne[1] * shape.ne[2] * shape.ne[3];
 }
@@ -328,6 +334,13 @@ base::Sha256Digest Graph::Digest() const {
       leaf.U64(b);
     }
     leaf.U8(t.segment);
+    // A plan constant's content digest, where it has one (its parameters
+    // are otherwise zero, and then add nothing: the digests of graphs
+    // without one are unchanged).
+    if (t.role == Role::kConstant &&
+        std::ranges::any_of(node.params, [](std::byte b) { return b != std::byte{0}; })) {
+      leaf.Bytes(std::as_bytes(std::span(node.params).first(kConstantDigestBytes)));
+    }
     leaves.push_back(leaf.Finish());
   }
   std::ranges::sort(leaves);

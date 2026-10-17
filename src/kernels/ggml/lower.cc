@@ -3622,10 +3622,14 @@ std::expected<void, KernelFailure> Lowering::MakeSpecial(NodeId id, const ir::No
       if (w.format.encoding == Encoding::kBF16 && x.format.encoding == Encoding::kBF16) {
         // The hyper-connections' products (their normed streams' and
         // low-rank rows): GemvBf16, which takes its vector kernel at one
-        // column; any other GemmBf16.
+        // column; any other GemmBf16. The vector kernel loads its weights
+        // before its PDL wait (llmp_fused.cu LaunchGemvBf16As), so it takes
+        // only a weight, never what an earlier kernel writes.
         const ir::Node& from = p_.node(p_.producer(p_.root(n.src[1])));
-        const bool hc = from.key == ir::Fused(FusedKind::kHcPrep) ||
-                        from.key == ir::Fused(FusedKind::kScaledUnary);
+        const bool weight =
+            p_.node(p_.producer(p_.root(n.src[0]))).key == ir::Primitive(Op::kWeight);
+        const bool hc = weight && (from.key == ir::Fused(FusedKind::kHcPrep) ||
+                                   from.key == ir::Fused(FusedKind::kScaledUnary));
         ggml_tensor* t =
             hc ? GemvBf16(c_, src(0), src(1), out_type) : GemmBf16(c_, src(0), src(1), out_type);
         if (!hc && impl == kGemmBf16LtName) SetGemmBf16Pinned(t);

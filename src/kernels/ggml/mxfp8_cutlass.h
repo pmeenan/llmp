@@ -72,8 +72,10 @@ struct Gemm {
 bool Available();
 // The scratch the product needs on a device of `sms` SMs.
 std::size_t Scratch(const Gemm& gemm, int sms);
-// Runs the product on `stream` (a cudaStream_t). Returns 0, or a nonzero
-// CUTLASS status if CUTLASS refuses the problem.
+// Runs the product on `stream` (a cudaStream_t). Returns 0; a positive
+// CUTLASS status + 1 if CUTLASS refuses the problem, before anything is
+// queued; or a negative -(status + 1) if initializing or running it failed,
+// after work may have been queued, which faults the caller's launch context.
 int Run(const Gemm& gemm, int sms, void* stream);
 
 }  // namespace llmp::kernels::ggml::mxfp8

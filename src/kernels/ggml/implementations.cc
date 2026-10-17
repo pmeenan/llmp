@@ -112,7 +112,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
 
-constexpr std::array<Kernel::Entry, 153> kKernels = {{
+constexpr std::array<Kernel::Entry, 152> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -727,12 +727,6 @@ constexpr std::array<Kernel::Entry, 153> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMxfp8MulMatVec(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8MulMatVec(launch, n[0]); }},
-    {.name = "llmp.mxfp8.dequant",
-     .operation = execution::Operation::kConvert,
-     .variant = "Mxfp8ToBf16: sixteen codes a thread",
-     .arity = 1,
-     .check = [](ConstNodes n) { return CheckMxfp8Dequant(n[0]); },
-     .run = [](LaunchContext& launch, Nodes n) { return RunMxfp8Dequant(launch, n[0]); }},
     {.name = "llmp.nvfp4.get_rows",
      .operation = execution::Operation::kGetRows,
      .variant = "Nvfp4RowsKernel: a block an id, a thread a value",

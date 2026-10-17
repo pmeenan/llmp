@@ -7,6 +7,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -17,6 +19,7 @@
 #include "kernels/decode/selected_products.h"
 #include "kernels/decode/selected_source.h"
 #include "kernels/ggml/tensors.h"
+#include "providers/fake/fake_device_execution.h"
 
 namespace {
 
@@ -126,6 +129,80 @@ struct GluProductFixture {
     node.SetParams(ir::GluParams{.kind = ir::GluKind::kSwiGlu, .swapped = swapped});
   }
 };
+
+// A host-only source that records the exact workspace lent to it.
+class WorkspaceSource final : public kg::SelectedSource {
+ public:
+  explicit WorkspaceSource(std::uint64_t bytes) : bytes_(bytes) {}
+  std::vector<ex::Implementation> Implementations() const override { return {}; }
+  std::vector<ex::TunedShape> Tuning(std::uint32_t) const override { return {}; }
+  bool Owns(std::string_view) const override { return false; }
+  std::uint64_t persistent_bytes() const override { return bytes_; }
+  std::expected<std::unique_ptr<kg::SelectedCall>, kg::KernelFailure> Lower(
+      const ex::Implementation&, const ir::Node&, std::span<const kg::SelectedOperand>,
+      std::span<const kg::SelectedOperand>) const override {
+    return std::unexpected(kg::KernelFailure{.detail = "no calls"});
+  }
+  std::expected<std::unique_ptr<kg::SelectedLaunch>, kg::KernelFailure> Launch(
+      int, llmp::providers::DeviceExecution& execution, llmp::providers::StreamId stream,
+      kg::SelectedWorkspace workspace) const override {
+    workspaces.push_back(workspace);
+    class LaunchState final : public kg::SelectedLaunch {
+     public:
+      using SelectedLaunch::SelectedLaunch;
+      bool faulted() const override { return false; }
+    };
+    return std::make_unique<LaunchState>(this, *execution.Submission(stream));
+  }
+  mutable std::vector<kg::SelectedWorkspace> workspaces;
+
+ private:
+  std::uint64_t bytes_;
+};
+
+TEST(DecodeSelectedProducts, CompositeWorkspacesAlignAndRefuseInvalidBoundsBeforeAnyChild) {
+  llmp::providers::fake::FakeDeviceExecution execution;
+  const auto stream = execution.CreateStream();
+  ASSERT_TRUE(stream);
+  const auto a = std::make_shared<WorkspaceSource>(1);
+  const auto b = std::make_shared<WorkspaceSource>(257);
+  const auto source = de::CompositeSelectedSource({a, b});
+  EXPECT_EQ(source->persistent_bytes(), 768U);
+  for (const kg::SelectedWorkspace workspace :
+       {kg::SelectedWorkspace{.base = 0x100000, .bytes = 767},
+        kg::SelectedWorkspace{.base = 0x100001, .bytes = 768},
+        kg::SelectedWorkspace{.base = 0, .bytes = 768},
+        kg::SelectedWorkspace{.base = UINT64_MAX - 255, .bytes = 768}}) {
+    EXPECT_FALSE(source->Launch(0, execution, *stream, workspace));
+    EXPECT_TRUE(a->workspaces.empty());
+    EXPECT_TRUE(b->workspaces.empty());
+  }
+  auto launched = source->Launch(0, execution, *stream, {.base = 0x100000, .bytes = 768});
+  ASSERT_TRUE(launched);
+  ASSERT_EQ(a->workspaces.size(), 1U);
+  ASSERT_EQ(b->workspaces.size(), 1U);
+  EXPECT_EQ(a->workspaces[0].base, 0x100000U);
+  EXPECT_EQ(a->workspaces[0].bytes, 1U);
+  EXPECT_EQ(b->workspaces[0].base, 0x100100U);
+  EXPECT_EQ(b->workspaces[0].bytes, 257U);
+  // Overflow while rounding a child, and while summing individually valid children.
+  for (const auto sizes : {std::array<std::uint64_t, 2>{UINT64_MAX, 1},
+                           std::array<std::uint64_t, 2>{UINT64_MAX - 255, 256}}) {
+    const auto huge = std::make_shared<WorkspaceSource>(sizes[0]);
+    const auto tail = std::make_shared<WorkspaceSource>(sizes[1]);
+    const auto overflow = de::CompositeSelectedSource({huge, tail});
+    EXPECT_EQ(overflow->persistent_bytes(), UINT64_MAX);
+    EXPECT_FALSE(overflow->Launch(0, execution, *stream, {.base = 0, .bytes = UINT64_MAX}));
+    EXPECT_TRUE(huge->workspaces.empty());
+    EXPECT_TRUE(tail->workspaces.empty());
+  }
+  const auto fence = execution.Record(*stream);
+  ASSERT_TRUE(fence);
+  execution.Drain();
+  ASSERT_TRUE(execution.Query(*fence));
+  EXPECT_TRUE(execution.Release(*fence));
+  EXPECT_TRUE(execution.DestroyStream(*stream));
+}
 
 TEST(DecodeSelectedProducts, DeclaresAllAffineImplementations) {
   auto source = de::ProductsSelectedSource();

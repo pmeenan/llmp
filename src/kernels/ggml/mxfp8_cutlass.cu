@@ -113,12 +113,14 @@ int RunOf(const Gemm& gemm, int sms, cudaStream_t stream) {
   if (status != cutlass::Status::kSuccess) {
     return static_cast<int>(status) + 1;
   }
+  // initialize() may queue workspace setup and run() queues the kernel;
+  // either failing leaves queued work undetermined (and CUTLASS has read
+  // and cleared the runtime's launch error), so it is reported negative.
   status = op.initialize(arguments, gemm.scratch, stream);
-  if (status != cutlass::Status::kSuccess) {
-    return static_cast<int>(status) + 1;
+  if (status == cutlass::Status::kSuccess) {
+    status = op.run(stream);
   }
-  status = op.run(stream);
-  return status == cutlass::Status::kSuccess ? 0 : static_cast<int>(status) + 1;
+  return status == cutlass::Status::kSuccess ? 0 : -(static_cast<int>(status) + 1);
 }
 
 }  // namespace
@@ -141,7 +143,7 @@ int Run(const Gemm& gemm, int sms, void* stream) {
 
 bool Available() { return false; }
 std::size_t Scratch(const Gemm& /*gemm*/, int /*sms*/) { return 0; }
-int Run(const Gemm& /*gemm*/, int /*sms*/, void* /*stream*/) { return -1; }
+int Run(const Gemm& /*gemm*/, int /*sms*/, void* /*stream*/) { return 1; }
 
 #endif  // defined(CUTLASS_ARCH_MMA_SM121_SUPPORTED)
 

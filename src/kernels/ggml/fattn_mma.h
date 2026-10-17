@@ -45,7 +45,10 @@ std::expected<MmaKernelShape, std::string> FlashAttnMmaShapeGqa2(int columns, in
                                                                  bool softcap = false);
 MmaCase FlashAttnMmaCaseGqa2(int columns);
 MmaCase FlashAttnMmaCase512(int columns);
-// Experimental: the same cases reading F16 Q (fattn_mma_q16.cuh).
+// Experimental: the same cases reading F16 Q (fattn_mma_q16.cuh), and
+// their kernels' shape (the copy's occupancy, which may differ from GGML's).
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShape512Q16(int columns, bool sparse,
+                                                                   int device);
 MmaCase FlashAttnMmaCase512Q16(int columns);
 
 // Head dimension 128 without grouping (ncols2 1: multi-head attention, the

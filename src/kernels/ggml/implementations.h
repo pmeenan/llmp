@@ -69,7 +69,6 @@
 // and llmpalooza's own operations on GGML tensors, for Qwen3.8's MXFP8 and
 // NVFP4 tensors (llmp_ops.h), each a GGML_OP_CUSTOM node:
 //   llmp.mxfp8.mul_mat_vec     {custom}                RunMxfp8MulMatVec
-//   llmp.mxfp8.dequant         {custom}                RunMxfp8Dequant
 //   llmp.nvfp4.get_rows        {custom}                RunNvfp4Rows
 //   llmp.qrows.get_rows        {custom}                RunQRows
 // (GGML's NVFP4 experts take ggml.mul_mat_id.mmvq and .mmq above; the last,

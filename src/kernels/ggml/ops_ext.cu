@@ -965,11 +965,13 @@ std::expected<void, KernelFailure> SetRowsExt(LaunchContext& launch, ggml_tensor
   return RunChecked(launch, node, CheckSetRowsExt(node), &ggml_cuda_op_set_rows);
 }
 
-std::expected<void, KernelFailure> RmsNormMulRope3d(
-    LaunchContext& launch, const ggml_tensor* x_in, const ggml_tensor* weight, float eps,
-    std::span<const ggml_tensor* const> pos_views, std::span<const int> axis_dims, float freq_base,
-    bool neox, ggml_tensor* dst, bool transpose_out, bool x_is_bf16, bool dst_is_f16,
-    int padded_rows, bool dst_in_workspace, bool dst_is_bf16) {
+std::expected<void, KernelFailure> RmsNormMulRope3d(LaunchContext& launch, const ggml_tensor* x_in,
+                                                    const ggml_tensor* weight, float eps,
+                                                    std::span<const ggml_tensor* const> pos_views,
+                                                    std::span<const int> axis_dims, float freq_base,
+                                                    bool neox, ggml_tensor* dst, bool transpose_out,
+                                                    bool x_is_bf16, bool dst_is_f16,
+                                                    int padded_rows, bool dst_is_bf16) {
   const int dim = static_cast<int>(x_in->ne[0]);
   const int heads = static_cast<int>(x_in->ne[1]);
   const int rows = static_cast<int>(x_in->ne[2]);
@@ -981,18 +983,8 @@ std::expected<void, KernelFailure> RmsNormMulRope3d(
   const int d0 = axis_dims[0];
   const int d1 = axis_dims.size() > 1 ? axis_dims[1] : 0;
   const int d2 = axis_dims.size() > 2 ? axis_dims[2] : 0;
-  const std::uint64_t ws_bytes =
-      dst_in_workspace
-          ? static_cast<std::uint64_t>(dim) * static_cast<std::uint64_t>(heads) *
-                static_cast<std::uint64_t>(out_rows) * (dst_is_f16 ? sizeof(half) : sizeof(float))
-          : 0U;
-  if (ws_bytes > launch.workspace().size.value()) {
-    return Rejected("RmsNormMulRope3d workspace output exceeds pool");
-  }
-  return launch.Run(base::Bytes(ws_bytes), [=](ggml_backend_cuda_context& ctx) {
-    ggml_cuda_pool_alloc<char> ws_alloc(ctx.pool());
-    void* out_ptr =
-        dst_in_workspace ? ws_alloc.alloc(static_cast<std::size_t>(ws_bytes)) : dst->data;
+  return launch.Run(base::Bytes(0), [=](ggml_backend_cuda_context& ctx) {
+    void* out_ptr = dst->data;
     const dim3 block(32, 8, 1);
     const dim3 grid(static_cast<unsigned>(out_rows), 1, 1);
     RmsNormMulRope3dKernel<<<grid, block, 0, ctx.stream()>>>(
@@ -1228,8 +1220,8 @@ std::expected<void, KernelFailure> RunRopeTable(LaunchContext& launch, ggml_tens
 
 std::expected<void, KernelFailure> RunSwiGluBf16(LaunchContext& launch, ggml_tensor* node) {
   if (auto checked = CheckSwiGluBf16(node); !checked) return checked;
-  return SwiGluToBf16(launch, node->src[0], node->src[1], /*swapped=*/false,
-                      node->src[0]->type == GGML_TYPE_BF16, node->data);
+  return SwiGluToBf16(launch, node->src[0], node->src[1], node->src[0]->type == GGML_TYPE_BF16,
+                      node->data);
 }
 
 std::expected<void, KernelFailure> RunNormRopeSections(LaunchContext& launch, ggml_tensor* node) {
@@ -1239,8 +1231,7 @@ std::expected<void, KernelFailure> RunNormRopeSections(LaunchContext& launch, gg
                           std::span(args->positions).first(args->sections),
                           std::span(args->dims).first(args->sections), args->base, args->neox, node,
                           /*transpose_out=*/false, node->src[0]->type == GGML_TYPE_BF16,
-                          /*dst_is_f16=*/false, /*padded_rows=*/0, /*dst_in_workspace=*/false,
-                          node->type == GGML_TYPE_BF16);
+                          /*dst_is_f16=*/false, /*padded_rows=*/0, node->type == GGML_TYPE_BF16);
 }
 
 std::expected<void, KernelFailure> DupUpAddF32(LaunchContext& launch, const ggml_tensor* x,
@@ -1260,20 +1251,13 @@ std::expected<void, KernelFailure> DupUpAddF32(LaunchContext& launch, const ggml
 }
 
 std::expected<void, KernelFailure> SwiGluToBf16(LaunchContext& launch, const ggml_tensor* gate,
-                                                const ggml_tensor* up, bool swapped,
-                                                bool bf16_inputs, void* dst_override) {
+                                                const ggml_tensor* up, bool bf16_inputs,
+                                                void* dst) {
   const std::int64_t n = ggml_nelements(gate);
-  const std::uint64_t bytes =
-      dst_override != nullptr ? 0U : static_cast<std::uint64_t>(n) * sizeof(nv_bfloat16);
-  if (bytes > launch.workspace().size.value()) {
-    return Rejected("SwiGluToBf16 exceeds workspace");
-  }
-  const void* g_raw = swapped ? up->data : gate->data;
-  const void* u_raw = swapped ? gate->data : up->data;
-  return launch.Run(base::Bytes(bytes), [=](ggml_backend_cuda_context& ctx) {
-    ggml_cuda_pool_alloc<nv_bfloat16> dst_alloc(ctx.pool());
-    nv_bfloat16* out_ptr = dst_override != nullptr ? static_cast<nv_bfloat16*>(dst_override)
-                                                   : dst_alloc.alloc(static_cast<std::size_t>(n));
+  const void* g_raw = gate->data;
+  const void* u_raw = up->data;
+  return launch.Run(base::Bytes(0), [=](ggml_backend_cuda_context& ctx) {
+    auto* out_ptr = static_cast<nv_bfloat16*>(dst);
     if (bf16_inputs && (n % 8) == 0 && (reinterpret_cast<std::uintptr_t>(g_raw) % 16) == 0 &&
         (reinterpret_cast<std::uintptr_t>(u_raw) % 16) == 0 &&
         (reinterpret_cast<std::uintptr_t>(out_ptr) % 16) == 0) {

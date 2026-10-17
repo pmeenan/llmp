@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <string>
 
 #include "base/bytes.h"
 #include "common.cuh"
@@ -404,28 +405,6 @@ __global__ void __launch_bounds__(kWarps * 32)
   }
 }
 
-// Sixteen codes a thread, into sixteen BF16 (exact: an E4M3 value times a
-// power of two, within BF16's range for the scales real weights carry).
-__global__ void Mxfp8ToBf16(const std::uint8_t* __restrict__ codes,
-                            const std::uint8_t* __restrict__ scales,
-                            __nv_bfloat16* __restrict__ out, std::int64_t vectors) {
-  const std::int64_t v = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (v >= vectors) {
-    return;
-  }
-  float wf[16];
-  Decode16(*reinterpret_cast<const uint4*>(codes + v * 16), wf);
-  const float scale = E8m0(scales[v / 2]);
-  __align__(16) __nv_bfloat16 b[16];
-#pragma unroll
-  for (int i = 0; i < 16; ++i) {
-    b[i] = __float2bfloat16_rn(wf[i] * scale);
-  }
-  uint4* dst = reinterpret_cast<uint4*>(out + v * 16);
-  dst[0] = *reinterpret_cast<const uint4*>(&b[0]);
-  dst[1] = *reinterpret_cast<const uint4*>(&b[8]);
-}
-
 // One block per id, one thread per value.
 __global__ void Nvfp4RowsKernel(const std::uint8_t* __restrict__ table, std::int64_t rows,
                                 const std::int32_t* __restrict__ ids,
@@ -581,17 +560,6 @@ __global__ void __launch_bounds__(kArgmaxThreads)
       const float p = none || !(values[0] > 0.0f) ? 0.0f : 1.0f / values[0];
       out[gridDim.x + blockIdx.x] = __float_as_int(p);
     }
-  }
-}
-
-// One block a range, 16 bytes a thread per step.
-__global__ void CopyRangesKernel(const RangeCopy* __restrict__ ranges) {
-  const RangeCopy r = ranges[blockIdx.x];
-  const std::uint64_t vectors = r.bytes / 16;
-  const auto* from = reinterpret_cast<const uint4*>(r.from);  // NOLINT(performance-no-int-to-ptr)
-  auto* to = reinterpret_cast<uint4*>(r.to);                  // NOLINT(performance-no-int-to-ptr)
-  for (std::uint64_t v = threadIdx.x; v < vectors; v += blockDim.x) {
-    to[v] = from[v];
   }
 }
 
@@ -800,20 +768,6 @@ std::expected<void, KernelFailure> RunMxfp8MulMatVec(LaunchContext& launch, ggml
   });
 }
 
-std::expected<void, KernelFailure> RunMxfp8Dequant(LaunchContext& launch, ggml_tensor* node) {
-  if (auto checked = CheckMxfp8Dequant(node); !checked) {
-    return checked;
-  }
-  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
-    const std::int64_t vectors = ggml_nelements(node->src[0]) / 16;
-    constexpr int kThreads = 256;
-    Mxfp8ToBf16<<<static_cast<unsigned>((vectors + kThreads - 1) / kThreads), kThreads, 0,
-                  context.stream()>>>(static_cast<const std::uint8_t*>(node->src[0]->data),
-                                      static_cast<const std::uint8_t*>(node->src[1]->data),
-                                      static_cast<__nv_bfloat16*>(node->data), vectors);
-  });
-}
-
 std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor* node) {
   if (auto checked = CheckArgmax(node); !checked) {
     return checked;
@@ -834,28 +788,6 @@ std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor*
           static_cast<const float*>(x->data), static_cast<std::int32_t*>(node->data),
           static_cast<int>(x->ne[0]));
     }
-  });
-}
-
-std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const RangeCopy* ranges,
-                                              std::uint32_t count) {
-  if (count == 0) {
-    return {};
-  }
-  if (ranges == nullptr || count > kMaxRangeCopies) {
-    return std::unexpected(KernelFailure{.error = KernelError::kRejected,
-                                         .detail = "range copies: none given, or too many"});
-  }
-  for (std::uint32_t i = 0; i < count; ++i) {
-    const RangeCopy& r = ranges[i];
-    if (r.from == 0 || r.to == 0 || r.from % 16 != 0 || r.to % 16 != 0 || r.bytes % 16 != 0) {
-      return std::unexpected(KernelFailure{
-          .error = KernelError::kRejected,
-          .detail = "range copies: every range 16-byte aligned, a multiple of 16 bytes"});
-    }
-  }
-  return launch.Run(base::Bytes(0), [ranges, count](ggml_backend_cuda_context& context) {
-    CopyRangesKernel<<<count, 256, 0, context.stream()>>>(ranges);
   });
 }
 
@@ -1011,11 +943,17 @@ std::expected<void, KernelFailure> RunMxfp8Gemm(LaunchContext& launch, ggml_tens
     } else {
       status = mxfp8::Run(gemm, sms, context.stream());
     }
+    if (status < 0) {
+      // Work may be queued: recorded for LaunchContext::End, which faults.
+      const std::string what =
+          std::format("the CUTLASS MXFP8 product failed after queuing (status {})", -status - 1);
+      ggml_cuda_error("mxfp8::Run", __func__, __FILE__, __LINE__, what.c_str());
+    }
   });
   if (!ran) {
     return ran;
   }
-  if (status != 0) {
+  if (status > 0) {
     return std::unexpected(KernelFailure{
         .error = KernelError::kRejected,
         .detail = std::format("CUTLASS refused the MXFP8 product (status {})", status - 1)});

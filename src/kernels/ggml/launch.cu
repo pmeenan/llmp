@@ -107,6 +107,8 @@ struct LaunchContext::Lane {
   std::unique_ptr<ggml_backend_cuda_context> context;
 };
 
+static_assert(PerDeviceOnce::kDevices == GGML_CUDA_MAX_DEVICES);
+
 std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Create(
     int device, providers::DeviceExecution& execution, providers::StreamId stream,
     Workspace workspace, CublasHandle* cublas) {
@@ -292,6 +294,16 @@ base::Bytes LaunchContext::scratch_size(std::uint32_t lane) const {
     return base::Bytes(lane <= lanes_.size() ? lane_scratch_ : 0);
   }
   return base::Bytes(workspace_.size.value() - (lane_scratch_ * lanes_.size()));
+}
+
+std::uint64_t LaunchContext::scratch_base() const {
+  if (active_ == 0) {
+    return workspace_.base;
+  }
+  // ConfigureLanes: lane i's pool follows lane i - 1's, from the workspace's
+  // end less every lane's scratch.
+  const std::uint64_t start = workspace_.size.value() - (lane_scratch_ * lanes_.size());
+  return workspace_.base + start + ((active_ - 1) * lane_scratch_);
 }
 
 ggml_backend_cuda_context* LaunchContext::ActiveContext() {

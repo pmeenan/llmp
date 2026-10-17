@@ -371,12 +371,17 @@ Outputs Route(D& d, const RouteParams& p) {
   TensorId ids{};
   if (p.kind == RouteKind::kHash) {
     // [U, T]: the table read by the tokens, or without them each row's ids
-    // looked up already (a token-hash side input's).
+    // looked up already (a token-hash side input's), aliased as they are
+    // (a view of a strided side input is refused: SameViewSource).
     ids = d.s(3).valid() ? b.GetRows(d.s(2), d.s(3)) : d.s(2);
   } else {
     const TensorId selection = d.s(1).valid() ? b.Add(probs, d.s(1)) : probs;
     const TensorId order = b.Argsort(selection, true);
     const TensorDesc& ot = d.t(order);
+    // The top U of each row's order, a view at the sort's row pitch (which
+    // routed reads take back at that pitch). The fused node records packed
+    // ids, so an expansion refuses a later view of them (SameViewSource)
+    // rather than read the sort's other elements.
     ids = b.View(order, S(u, t), Nb{ot.nb[0], ot.nb[1], ot.nb[1] * t, ot.nb[1] * t}, 0);
   }
   TensorId w = b.Reshape(b.GetRows(rows, ids), S(u, t));
@@ -662,15 +667,24 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       const auto p = Get<RopeParams>(params);
       const TensorDesc w = d.t(d.s(0));
       const TensorDesc x = d.t(d.s(1));
-      TensorId rotated = b.Rope(d.s(1), d.s(2), {}, p);
+      // The weight's groups: [per, o_rank, groups], or [per, o_rank ·
+      // groups] for the rotated rows' features split into groups of `per`.
       const std::uint64_t per = w.ne(0);
       const std::uint64_t total_features = x.ne(0) * x.ne(1);
-      const std::uint64_t groups = per > 0 ? (total_features / per) : 1;
-      const std::uint64_t o_rank =
-          w.shape().rank == 3 ? w.ne(1) : (groups > 0 ? (w.ne(1) / groups) : 512);
+      const bool stacked = w.shape().rank == 3;
+      const std::uint64_t groups = per > 0 ? total_features / per : 0;
+      if (!d.check(per > 0 && groups > 0 && total_features % per == 0 && x.ne(3) == 1 &&
+                       w.ne(3) == 1 &&
+                       (stacked ? w.ne(2) == groups : w.ne(2) == 1 && w.ne(1) % groups == 0),
+                   GraphError::kShape,
+                   "a weight of groups of the rows' features, each `per` wide, as many groups "
+                   "as the weight holds"))
+        return {};
+      const std::uint64_t o_rank = stacked ? w.ne(1) : w.ne(1) / groups;
       const std::uint64_t rows = x.ne(2);
+      TensorId rotated = b.Rope(d.s(1), d.s(2), {}, p);
       TensorId out = b.Permute(b.Reshape(rotated, S(per, groups, rows)), {0, 2, 1, 3});
-      TensorId g = w.shape().rank == 3 ? d.s(0) : b.Reshape(d.s(0), S(per, o_rank, groups));
+      TensorId g = stacked ? d.s(0) : b.Reshape(d.Packed(d.s(0)), S(per, o_rank, groups));
       TensorId low = b.Permute(b.MatMul(g, out), {0, 2, 1, 3});
       return One(b.Cont(low, S(o_rank * groups, rows)));
     }
@@ -1047,7 +1061,7 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
         return {};
       // Each vector repeated over its rows.
       const auto rows_of = [&](TensorId v, std::uint64_t n) {
-        return b.Repeat(b.Reshape(v, ShapeOf({cols, 1})), ShapeOf({cols, n}));
+        return b.Repeat(b.Reshape(d.Packed(v), ShapeOf({cols, 1})), ShapeOf({cols, n}));
       };
       const TensorId side = p.split == 0 ? rows_of(bv, rows)
                             : p.split == rows
@@ -1122,19 +1136,23 @@ Outputs DecomposeFused(D& d, FusedKind kind, const ParamBytes& params) {
       TensorId w = d.s(1);
       if (d.t(w).format.encoding != format::Encoding::kF32)
         w = b.Convert(w, format::Encoding::kF32);
-      TensorId qh = b.Mul(b.RmsNorm(b.Reshape(d.s(0), ShapeOf({dim, heads, rows})), p.eps), w);
+      TensorId qh =
+          b.Mul(b.RmsNorm(b.Reshape(d.Packed(d.s(0)), ShapeOf({dim, heads, rows})), p.eps), w);
       qh = b.Rope(
           qh, d.s(5), {},
           {.mode = RopeMode::kNormal, .table = true, .dims = static_cast<std::uint32_t>(dim)});
       const TensorId qa = b.Cont(b.Permute(qh, {0, 2, 1, 3}));
-      const TensorId ka =
-          b.Cont(b.Permute(b.Reshape(d.s(2), ShapeOf({dim, kv_heads, rows})), {0, 2, 1, 3}));
+      const TensorId ka = b.Cont(
+          b.Permute(b.Reshape(d.Packed(d.s(2)), ShapeOf({dim, kv_heads, rows})), {0, 2, 1, 3}));
       const TensorId va =
-          b.Permute(b.Reshape(d.s(3), ShapeOf({dim, kv_heads, rows})), {0, 2, 1, 3});
-      const TensorDesc& packed = d.t(d.s(4));
+          b.Permute(b.Reshape(d.Packed(d.s(3)), ShapeOf({dim, kv_heads, rows})), {0, 2, 1, 3});
+      // The mask's first rows and cells, viewed by its extents: of a packed
+      // copy where it is strided.
+      const TensorId masks = d.Packed(d.s(4));
+      const TensorDesc packed = d.t(masks);
       const std::uint64_t unit = UnitBytes(packed.format);
       const TensorId mask = b.View(
-          d.s(4), ShapeOf({rows, rows}),
+          masks, ShapeOf({rows, rows}),
           {unit, unit * packed.ne(0), unit * packed.ne(0) * rows, unit * packed.ne(0) * rows}, 0);
       const TensorId out = b.Attention(qa, ka, va, mask, {}, {.scale = p.scale});
       return One(b.Reshape(out, ShapeOf({dim * heads, rows})));
@@ -1510,8 +1528,15 @@ std::expected<Graph, VerifyError> ExpandOnce(const Graph& graph, bool composites
       for (const TensorId o : node.outputs()) {
         requested.push_back(graph.tensor(o));
       }
-      outs = b.Emit(node.key, node.params, sources, requested,
-                    node.nout > 0 ? graph.name(node.out[0]) : std::string_view());
+      if (node.key == Primitive(Op::kView) && sources[0].valid() &&
+          !SameViewSource(graph.tensor(node.src[0]), b.tensor(sources[0]))) {
+        b.Refuse(GraphError::kFormat,
+                 "a view's source changed layout in its expansion: the view would read "
+                 "other elements");
+      } else {
+        outs = b.Emit(node.key, node.params, sources, requested,
+                      node.nout > 0 ? graph.name(node.out[0]) : std::string_view());
+      }
     }
     if (!b.ok()) {
       VerifyError e = *b.error();
@@ -1633,9 +1658,17 @@ std::expected<Graph, VerifyError> Expand(const Graph& graph, bool composites,
   std::vector<TensorId> step;
   bool more = false;
   auto g = ExpandOnce(graph, composites, total, more);
-  // A decomposition may emit composite ops (kMoeCombine's expert
-  // reduction, kHcNormPost's spread): expand again until none is left.
-  for (int pass = 0; g && more && pass < 4; ++pass) {
+  // A decomposition may emit fused or composite ops (kMoeCombine's expert
+  // reduction, kHcNormPost's spread): expand again until none is left, a
+  // bounded number of times (the deepest nesting is a few levels).
+  constexpr int kMaxPasses = 16;
+  for (int pass = 1; g && more; ++pass) {
+    if (pass == kMaxPasses) {
+      return std::unexpected(VerifyError{
+          .error = GraphError::kBounds,
+          .node = 0,
+          .detail = std::format("fused nodes remain after {} expansion passes", kMaxPasses)});
+    }
     auto next = ExpandOnce(*g, composites, step, more);
     if (!next) {
       return next;

@@ -441,7 +441,7 @@ TEST(ReferenceDecodeTest, Mxfp4LayoutsHoldTheSameValues) {
   }
 }
 
-// MXFP8 (as qwen38_ops_test's Mxfp8DequantizationIsExact): each value is
+// MXFP8: each value is
 // exactly E4M3(code) · 2^(scale - 127), split or in scale atoms; NaN codes
 // and scales are NaN.
 TEST(ReferenceDecodeTest, Mxfp8IsExact) {

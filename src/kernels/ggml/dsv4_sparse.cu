@@ -33,6 +33,7 @@
 
 #include "base/bytes.h"
 #include "common.cuh"
+#include "kernels/ggml/ggml_support.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/llmp_ops.h"
 
@@ -785,6 +786,8 @@ std::expected<void, KernelFailure> RunRoundedIndexScore(LaunchContext& launch, g
     constexpr unsigned threads = 256;
     FillScoreBits<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
                     context.stream()>>>(static_cast<std::uint32_t*>(node->data), elements);
+    CUDA_CHECK(cudaGetLastError());
+    if (internal::CudaErrorPending()) return;
     const std::int64_t group = LidGroupRows(rows, cells);
     for (std::int64_t g0 = 0; g0 < rows; g0 += group) {
       const std::int64_t g_rows = std::min(group, rows - g0);

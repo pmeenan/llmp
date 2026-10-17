@@ -157,6 +157,17 @@ int Slices(int shape, const Weights& w) {
   return (w.k / kTileK.at(index)) * (w.n / kTileN.at(index));
 }
 
+// The kernels bound each block's slices as int (tiles_k * tiles_n *
+// (blockIdx.x + 1) / gridDim.x, exl3_gemm_inner.cuh), so the product of the
+// slices and the grid must fit it.
+std::expected<void, KernelFailure> CheckSliceBounds(int slices, int blocks) {
+  if (static_cast<std::uint64_t>(slices) * static_cast<std::uint64_t>(blocks) > INT32_MAX) {
+    return Rejected(
+        std::format("{} slices over {} blocks overflow the kernel's slice bounds", slices, blocks));
+  }
+  return {};
+}
+
 }  // namespace
 
 bool RateCompiled(int bits) { return bits == 4 || bits == 5 || bits == 6 || bits == 8; }
@@ -213,6 +224,9 @@ std::expected<void, KernelFailure> CheckGemm(const LinearOperands& o, const Gemm
   if (plan.blocks > Slices(plan.shape, o.weights)) {
     return Rejected(
         std::format("{} blocks for {} split-K slices", plan.blocks, Slices(plan.shape, o.weights)));
+  }
+  if (auto bounds = CheckSliceBounds(Slices(plan.shape, o.weights), plan.blocks); !bounds) {
+    return bounds;
   }
   return CheckCoresident(plan.blocks, coresident);
 }
@@ -308,6 +322,25 @@ std::expected<void, KernelFailure> CheckMultiGemm(const MultiLinearOperands& o,
   if (auto disjoint = Disjoint(y, {x, lock_area, tables[0], tables[1], tables[2]}); !disjoint) {
     return disjoint;
   }
+  // The tables are uploaded before the launch (MultiGemmTables), so each
+  // is written: apart from one another, the input, the lock area and both
+  // weights.
+  for (std::size_t i = 0; i < tables.size(); ++i) {
+    if (auto disjoint = Disjoint(tables[i], {x, lock_area}); !disjoint) {
+      return disjoint;
+    }
+    for (std::size_t j = i + 1; j < tables.size(); ++j) {
+      if (auto disjoint = Disjoint(tables[i], {tables[j]}); !disjoint) {
+        return disjoint;
+      }
+    }
+    for (const Weights* w : {&o.first, &o.second}) {
+      if (auto disjoint = Disjoint(tables[i], {TrellisRange(*w), SuhRange(*w), SvhRange(*w)});
+          !disjoint) {
+        return disjoint;
+      }
+    }
+  }
   if (auto shape = CheckShape(plan.shape, o.first); !shape) {
     return shape;
   }
@@ -320,6 +353,9 @@ std::expected<void, KernelFailure> CheckMultiGemm(const MultiLinearOperands& o,
   }
   if (plan.blocks < 1) {
     return Rejected(std::format("a grid of {} blocks", plan.blocks));
+  }
+  if (auto bounds = CheckSliceBounds(Slices(plan.shape, o.first), plan.blocks); !bounds) {
+    return bounds;
   }
   return CheckCoresident(plan.blocks * plan.concurrency, coresident);
 }

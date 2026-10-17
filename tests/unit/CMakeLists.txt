@@ -757,7 +757,8 @@ if(LLMP_CUDA)
   add_executable(spec_rows_test spec_rows_test.cc)
   target_include_directories(spec_rows_test SYSTEM PRIVATE
                              "${LLMP_SDK}/cuda/targets/${LLMP_CUDA_TARGET_DIR}/include")
-  target_link_libraries(spec_rows_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory)
+  target_link_libraries(spec_rows_test PRIVATE llmp_ggml_kernels llmp_cuda_device_memory
+                                               llmp_paging_kernels)
   llmp_gpu_gtest(spec_rows_test)
 
   # DeepSeek V4's fast plan (kernels/ggml/llmp_ops.h, dsv4_fast.cu; D-085's
@@ -982,7 +983,7 @@ if(LLMP_CUDA)
   llmp_gtest(decode_selected_grouped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(decode_selected_products_test decode_selected_products_test.cc)
-  target_link_libraries(decode_selected_products_test PRIVATE llmp_decode_selected)
+  target_link_libraries(decode_selected_products_test PRIVATE llmp_decode_selected llmp_fake_providers)
   llmp_gtest(decode_selected_products_test TEST_PREFIX unit. PROPERTIES LABELS unit)
   add_executable(routed_component_gpu_test routed_component_gpu_test.cc)
   target_link_libraries(routed_component_gpu_test PRIVATE llmp_decode_selected llmp_engine

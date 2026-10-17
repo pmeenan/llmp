@@ -171,29 +171,35 @@ std::size_t GroupedGemmScratch(int groups, int sms) {
 int RunGroupedGemm(const GroupedGemm& gemm, int sms, void* stream) {
   auto* cuda_stream = static_cast<cudaStream_t>(stream);
   const Arrays arrays = Carve(reinterpret_cast<std::uintptr_t>(gemm.scratch), gemm.groups);
-  constexpr int kThreads = 128;
-  SetupGroups<<<static_cast<unsigned>((gemm.groups + kThreads - 1) / kThreads), kThreads, 0,
-                cuda_stream>>>(arrays, gemm);
+  // The arguments name the groups' device arrays, not their contents, so
+  // CUTLASS can refuse the problem before anything is queued.
   const typename Gemm::Arguments arguments = ArgumentsOf(arrays, gemm.groups, sms);
   Gemm op;
   cutlass::Status status = op.can_implement(arguments);
   if (status != cutlass::Status::kSuccess) {
     return static_cast<int>(status) + 1;
   }
+  constexpr int kThreads = 128;
+  SetupGroups<<<static_cast<unsigned>((gemm.groups + kThreads - 1) / kThreads), kThreads, 0,
+                cuda_stream>>>(arrays, gemm);
+  if (cudaGetLastError() != cudaSuccess) {
+    return -(static_cast<int>(cutlass::Status::kErrorInternal) + 1);
+  }
+  // From here work is queued: a failure is the caller's to fault on.
+  // (CUTLASS reads and clears the runtime's launch error itself.)
   void* workspace = static_cast<char*>(gemm.scratch) + arrays.bytes;
   status = op.initialize(arguments, workspace, cuda_stream);
-  if (status != cutlass::Status::kSuccess) {
-    return static_cast<int>(status) + 1;
+  if (status == cutlass::Status::kSuccess) {
+    status = op.run(cuda_stream);
   }
-  status = op.run(cuda_stream);
-  return status == cutlass::Status::kSuccess ? 0 : static_cast<int>(status) + 1;
+  return status == cutlass::Status::kSuccess ? 0 : -(static_cast<int>(status) + 1);
 }
 
 #else
 
 bool GroupedGemmAvailable() { return false; }
 std::size_t GroupedGemmScratch(int /*groups*/, int /*sms*/) { return 0; }
-int RunGroupedGemm(const GroupedGemm& /*gemm*/, int /*sms*/, void* /*stream*/) { return -1; }
+int RunGroupedGemm(const GroupedGemm& /*gemm*/, int /*sms*/, void* /*stream*/) { return 1; }
 
 #endif  // defined(CUTLASS_ARCH_MMA_SM121_SUPPORTED)
 

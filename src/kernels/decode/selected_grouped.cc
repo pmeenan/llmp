@@ -29,12 +29,8 @@ constexpr std::string_view kAffineName = "llmp.decode.grouped.affine.split";
 // NVFP4 routed experts the importer relaid out into the scale-atom layout,
 // decoded on chip (W4A16) where the block-scaled grouped GEMM is not taken.
 constexpr std::string_view kNvfp4AtomsName = "llmp.decode.grouped.nvfp4.scale_atoms";
-constexpr std::string_view kBlockName = "llmp.decode.grouped.block";
 
 bool CheckGroupedFormat(std::string_view name, const format::TensorFormat& f) {
-  if (name == kBlockName) {
-    return f.layout == format::Layout::kGgmlBlocks || f.layout == format::Layout::kGgmlNvfp4Blocks;
-  }
   if (name == kNvfp4Name) {
     return f.encoding == format::Encoding::kNvfp4 && f.layout == format::Layout::kSplit;
   }

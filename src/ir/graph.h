@@ -21,12 +21,15 @@
 //
 // Its digest (Digest()) is canonical: the plan-key and pattern input. Two
 // graphs digest the same when they run the same operations in the same
-// order on the same tensors, however they were built: leaves are named by
-// what they bind (a weight's WeightRef, a state tensor's StateRef, an
-// input's position among the inputs) rather than by when they were
-// declared, a tensor by the node and output that make it, a view by its
-// root; names (diagnostics only) are excluded. Nodes are not reordered:
-// two orders of independent nodes are two graphs.
+// order on the same tensors: weights and state are named by what they bind
+// (a WeightRef, a StateRef), so declaring them in another order digests
+// the same; an input (or plan constant) by its position among the inputs,
+// which is their declaration order, so inputs declared in another order
+// are another graph; a plan constant also by its content's digest where
+// Builder::Constant was given its content (a constant's values are bound
+// outside the graph); a tensor by the node and output that make it, a view
+// by its root; names (diagnostics only) are excluded. Nodes are not
+// reordered: two orders of independent nodes are two graphs.
 
 #ifndef LLMP_IR_GRAPH_H_
 #define LLMP_IR_GRAPH_H_
@@ -99,6 +102,10 @@ struct StateRef {
 
 using Binding = std::variant<std::monostate, WeightRef, StateRef>;
 
+// The bytes of a plan constant's parameters that may hold its content's
+// SHA-256 (Builder::Constant); every other leaf's parameters are zero.
+inline constexpr std::size_t kConstantDigestBytes = 32;
+
 // The segment of joined rows: a tensor no single owner's.
 inline constexpr std::uint8_t kJoinedSegment = 0xFF;
 inline constexpr std::uint32_t kNoName = ~std::uint32_t{0};
@@ -136,6 +143,13 @@ std::uint64_t UnitElements(const format::TensorFormat& format);
 std::array<std::uint64_t, format::kMaxDims> NaturalStrides(const format::TensorFormat& format);
 // Whether its strides are its shape's natural ones (a packed tensor).
 bool IsContiguous(const TensorDesc& tensor);
+// Whether a kView re-emitted over `now` in place of its original source
+// `was` (a copy pass's substituted source: an expansion's, a rewrite's)
+// reads the same elements. A view's description holds strides and an
+// offset into its source's root, so the source must be laid out alike:
+// the same format, strides and offset into its root. A pass refuses a view
+// whose source changed layout rather than read other elements.
+bool SameViewSource(const TensorDesc& was, const TensorDesc& now);
 
 // MXFP8 rows: activations prepared for a block-scaled MXFP8 product (the
 // codes, then the scales in CUTLASS's atoms, in one root; kPrepare's

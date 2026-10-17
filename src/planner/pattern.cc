@@ -2641,6 +2641,13 @@ ir::Outputs RewriteContext::Copy(const ir::Node& node) {
   for (const TensorId o : node.outputs()) {
     requested.push_back(original_.tensor(o));
   }
+  if (node.key == ir::Primitive(Op::kView) && !sources.empty() && sources[0].valid() &&
+      !ir::SameViewSource(original_.tensor(node.src[0]), builder_.tensor(sources[0]))) {
+    builder_.Refuse(ir::GraphError::kFormat,
+                    "a view's source changed layout in a rewrite: the view would read other "
+                    "elements");
+    return {};
+  }
   const ir::Outputs outs =
       builder_.Emit(node.key, node.params, sources, requested,
                     node.nout > 0 ? original_.name(node.out[0]) : std::string_view());

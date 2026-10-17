@@ -951,6 +951,7 @@ struct RouteArgs {
   const float* bias = nullptr;
   const std::int32_t* table = nullptr;  // the hash layers' [used, vocab]
   const std::int32_t* tokens = nullptr;
+  int vocab = 0;  // the table's rows, into which a token ID is clamped
   std::int32_t* out = nullptr;
   int n_tokens = 0;
   int used = 0;
@@ -984,7 +985,10 @@ __global__ void __launch_bounds__(32 * kRouteWarps) RouteKernel(const RouteArgs 
     int best = 0;
     float weight = 0.0f;
     if (a.table != nullptr) {
-      best = a.table[((a.selected_ids ? t : a.tokens[t]) * a.used) + k];
+      // A token ID outside the table is clamped into it rather than read
+      // out of bounds (the hash layers' IDs are device data).
+      const int row = a.selected_ids ? t : min(max(a.tokens[t], 0), a.vocab - 1);
+      best = a.table[(row * a.used) + k];
       const int owner = best & 31;
       const int slot = (best >> 5) & (kPerLane - 1);
       float mine = 0.0f;
@@ -1462,6 +1466,7 @@ std::expected<void, KernelFailure> RunDsv4Route(LaunchContext& launch, ggml_tens
     a.bias = hashed ? nullptr : static_cast<const float*>(node->src[1]->data);
     a.table = hashed ? static_cast<const std::int32_t*>(node->src[1]->data) : nullptr;
     a.tokens = hashed && !selected ? static_cast<const std::int32_t*>(node->src[2]->data) : nullptr;
+    a.vocab = hashed && !selected ? static_cast<int>(node->src[1]->ne[1]) : 0;
     a.out = static_cast<std::int32_t*>(node->data);
     a.n_tokens = static_cast<int>(logits->ne[1]);
     a.used = LlmpOpInt(node, 0);

@@ -54,7 +54,9 @@ __global__ void PackOutAFast(const std::uint16_t* __restrict__ raw,
 }
 
 bool WorkspaceOverlaps(const LaunchContext& launch, const ggml_tensor* node) {
-  const auto base = launch.workspace().base;
+  // The run's scratch is the first kScratch bytes of the selected lane's
+  // pool, which the pool hands out from its base (empty between runs).
+  const auto base = launch.scratch_base();
   const std::array<const ggml_tensor*, 4> operands = {node, node->src[0], node->src[1],
                                                       node->src[2]};
   // NOLINTNEXTLINE(readability-use-anyofallof): explicit bounded overlap checks.
