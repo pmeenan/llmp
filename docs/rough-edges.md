@@ -28,6 +28,49 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-059: GB10 kernel speed depends on where the kernel's free memory puts a device allocation  (2026-10-17, status: open)
+
+Environment: `spark` and `spark-b` (GB10, driver 580.178.04, CUDA 13.0,
+4 KiB kernel pages, THP `madvise`), DeepSeek V4 with DSpark at four
+slots, 262144/4096, its 2.77 GiB shared workspace resident (`be5c4db6`),
+and the Qwen-Image composition.
+Measurement: `cuMemCreate` of a 2 MiB device handle (or of one 2.77 GiB
+handle) is backed by 64 KiB (order-4) pieces that the kernel's buddy
+allocator takes from its smallest free blocks first: mapping the
+workspace at the start used 51,131 order-4 free blocks (3.1 GiB) of
+`/proc/buddyinfo` and nothing larger, on a host whose free memory lay
+69 GiB in blocks under 2 MiB and 30 GiB in larger ones (the previous
+runtime's freed backing). Observed, DeepSeek: the same binary's C4
+prefill steps took 1.3% more GPU time (34.67 against 34.18 s a pass,
+eight 4096-row chunks, identical step counts, growths and plans) than
+with the workspace backed during the page-in, and C4 wall throughput was
+0.9-1.1% lower in two-run screens on both hosts. Taking fresh backing
+first and releasing it after the workspace is mapped (so the workspace
+comes from larger free blocks): 6 GiB (128 KiB blocks) recovered 0.32%,
+24 GiB (512 KiB) or 66-70 GiB (2 MiB) all of it (−1.0 to −1.1%).
+Per-extent `cuMemSetAccess` instead of one range-wide call changed
+nothing (−0.16%). Observed, image: the opposite. With the workspace from
+2 MiB blocks (and the weights' first gigabytes from the small blocks it
+left) the denoiser ran 1.13% (`spark-b`) and 1.25% (`spark`) slower, and
+with the small blocks held through the page-in (weights and workspace
+all from 2 MiB blocks) 3.47% slower, than with the workspace in the
+start's scattered 64 KiB pieces, yet 0.74% faster with only 28 GiB taken
+first (the cap below; `spark`); a paged workspace was 3.2% slower in
+the 343d375e gate. Expected: device backing whose speed does not depend
+on the host's free-memory history; the driver API has no way to ask for
+a placement. Impact: a matched comparison can move by 1-3% with which
+allocations come first. A `borrow` step in `PagedNode::MapWorkspace`
+(take and release the smaller free blocks before a resident workspace, at
+most the largest model's weights) recovered DeepSeek's loss (DSpark C4
+wall, −0.38%) in an investigation worktree and was **not landed**: the
+image's response to placement is not monotonic (−0.74% to +1.25%), so it
+would be a workaround for the measured cases, not a placement policy. The
+dedicated physical pool ([features.md](features.md), "Physical-memory mode
+per node"; M3.5's first work item) is where placement becomes
+deterministic: handles allocated once at start while memory is clean and
+recycled on eviction. This is the root cause of M3.6's accepted DSpark C4
+wall exception ([m36-record.md](m36-record.md)).
+
 ## RE-058: EXL3's selected source keeps its persistent lock slots at the shared pool's base  (2026-10-16, status: open)
 
 Environment: any node that would serve an EXL3 model through the GGML

@@ -11,6 +11,17 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ## [Unreleased]
 
+**M3.6, engine components (2026-10-17).** One engine of shared components
+over llmpalooza's own graph IR now serves every model M3 served (Gemma 2, 3
+and 4 with their assistants, Qwen3.8 native with MTP and GGUF, DeepSeek V4
+with DSpark, Qwen-Image-2.1), within the matched 1% speed gate of M3's
+speed, bar the accepted exceptions listed in the record; a native importer (`llmp import`)
+publishes the format-v1 artifacts they serve from, and the per-family
+runners, plans, graph builders and serving classes are gone (the Python
+importers of the experiments are no longer in the production path).
+The entries below record each change; the record of the milestone is
+[docs/m36-record.md](docs/m36-record.md). Re-import any v0 artifact (D-118).
+
 ### Fixed
 
 - A node whose shared workspace fits beside its largest model's weights

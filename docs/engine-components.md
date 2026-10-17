@@ -1744,7 +1744,7 @@ import composes its stage with (`DraftRecipe::import_targets`: Gemma 4
 26B-A4B's and 31B's by the target width the assistant's metadata names,
 DeepSeek V4 Flash's for DSpark), each with its values and tensor shapes,
 which the importer selects by data (its closed Qwen3.8 ModelOpt and MLX
-normalizers remain per family, M3.5 debt: docs/m36-handoff.md). The tests
+normalizers remain per family, M3.5 debt: [M3.6 record](m36-record.md#deferred-items-from-the-reviews)). The tests
 that synthesize a real family's spec from a fixture's tensor table take
 the profile values from `tests/support/families/`, and the frozen v1
 digests (`tests/unit/data/v1_frozen/`) are the regression oracle of every

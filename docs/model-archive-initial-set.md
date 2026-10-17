@@ -118,7 +118,7 @@ are included here once. EXL3 rates are expanded in the next table.
 | Phi-3.5-mini-instruct | `bartowski/Phi-3.5-mini-instruct-GGUF@6d70da17e749a471ccb62ade694486011a75cda3` | `Phi-3.5-mini-instruct-Q8_0.gguf` |
 | Command R7B 12-2024 | `bartowski/c4ai-command-r7b-12-2024-GGUF@bfc7a934c45cb839d84c8ca01d87f1cfa51aaa3f` | `c4ai-command-r7b-12-2024-Q8_0.gguf` |
 | Bonsai-27B, 1-bit | `prism-ml/Bonsai-27B-gguf@f10afb355f104535e3e3e98cf7ab7795c72bd292` | `Bonsai-27B-Q1_0.gguf` plus `Bonsai-27B-dspark-Q4_1.gguf`; vision projector if supplied |
-| Ternary Bonsai, 2-bit | Exact build and commit pending | Prefer an actually correct upstream Q2_0 pack; alternative `prism-ml/Ternary-Bonsai-2-27B-gguf` uses PQ2_0/PTQ1_0 and the PrismML fork. [Selection rule](plan.md#m35--model-families--parked) |
+| Ternary Bonsai, 2-bit | Exact build and commit pending | Prefer an actually correct upstream Q2_0 pack; alternative `prism-ml/Ternary-Bonsai-2-27B-gguf` uses PQ2_0/PTQ1_0 and the PrismML fork. [Selection rule](plan.md#m35--model-families--in-progress) |
 
 The Mistral-native NVFP4 layout was rejected for this bring-up; it is not
 an initial-set pick. The [format survey](m35-families.md#format-coverage)
@@ -166,7 +166,7 @@ execution work is pending. Preserve complete compositions and their media
 processors/codecs; a language-only repack may omit the required encoders.
 Sources: [media research](m35-families.md#generative-media-video-and-image),
 [speech research](m35-families.md#text-to-speech-testbeds) and
-[the current plan](plan.md#m35--model-families--parked).
+[the current plan](plan.md#m35--model-families--in-progress).
 
 | Model | Repository / documented revision | Format / selection |
 | --- | --- | --- |

@@ -42,7 +42,7 @@ demand-paged MoE with the first daily-driver models at M7; sharding under
 pressure and failure at M8; performance and the remaining decoding modes at
 M9; and the remaining product scope with the first tagged release at M10.
 On 2026-10-08 the owner inserted M3.6, one engine of shared components,
-ahead of M3.5's remaining work, which is parked until M3.6 exits (D-107).
+ahead of M3.5's remaining work, which was parked until M3.6 exited (done 2026-10-17, D-107; see the [M3.6 record](m36-record.md)).
 Each milestone leaves a usable, testable result. None has a promised date.
 
 | Milestone | Result | Needs |
@@ -50,8 +50,8 @@ Each milestone leaves a usable, testable result. None has a promised date.
 | M1 Bootstrap | Pinned SDK, builds, local check gate, package skeleton, confined-job proof | M0 (done) |
 | M2 Resource core | Catalog, admission and leases on a fake backend and a Spark; the backend proof settles the operation contract | M1 (done) |
 | M3 Single-Spark fast swap | DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swap A→B→A on one Spark, aiming at ~10 s to first token, as correct, fast and lean as their references | M2 |
-| M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it; image, video and audio file inputs on the models that take them, decision models over the Jev API, and image, video and speech generation routes (D-101) | M3; parked 2026-10-08, resumes on M3.6's exit |
-| M3.6 Engine components | One engine of shared components over llmpalooza's own graph IR: the format layer, one runner and serving adapter, the native importer, every current model migrated within 1% of its current speed (D-107 to D-110) | M3; runs before M3.5 resumes |
+| M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it; image, video and audio file inputs on the models that take them, decision models over the Jev API, and image, video and speech generation routes (D-101) | M3; parked 2026-10-08, resumed on M3.6's exit |
+| M3.6 Engine components | One engine of shared components over llmpalooza's own graph IR: the format layer, one runner and serving adapter, the native importer, every current model migrated within 1% of its current speed (D-107 to D-110); done, see the [record](m36-record.md) | M3 |
 | M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle, with their image (and GLM's video) inputs | M3.5 |
 | M5 One resident model | Importer, verifier, the three client protocols plus the Gemini API and code completion, TLS and management on the small fixtures | M4 |
 | M6 First useful product | A→B→A with partial retention; switching policy chosen from measurement | M5 |
@@ -159,15 +159,25 @@ The [frozen M3 record](m3-record.md) retains all task history, evidence,
 exceptions and later work. Focused workstation, Spark and ARM package
 checks pass; whole shipment tiers remain owed before publishing a package.
 
-## M3.5 — Model families  `parked`
+## M3.5 — Model families  `in progress`
 
 **Parked 2026-10-08 for M3.6 (below)**
-(owner, D-107). M3.5's work resumes on M3.6's exit, on the component
+(owner, D-107); **resumed on M3.6's exit** (2026-10-17). M3.5's work runs on the component
 engine: there a family is an architecture mapping and any components its
 shape lacks, not a runner, so items below that name a runner, plan or graph
 builder are re-expressed against the shared engine when they resume. Their
 history and evidence stay valid as recorded. The transfer item is retired.
 Kernel-level work behind the per-operation contract may continue meanwhile.
+
+**Carried in from M3.6** ([record](m36-record.md#deferred-items-from-the-reviews)): the importer's family-specific
+native normalizers (Qwen3.8's ModelOpt and MLX readers and the CLI dispatch),
+generalized into mapping-driven normalizers when Nemotron NVFP4 brings a second
+ModelOpt model; MLX serving qualification (imported and admitted, not
+qualified for serving); the split NVFP4 experts' own fast products; the
+MXFP4/MXFP8 relayout of routed experts and dense NVFP4 linears;
+Nemotron 3.5 Super VL ([m35-families.md](m35-families.md)); the stored per-geometry
+image spec; EXL3 serving (RE-058's lock slots); and the carried review list
+of the record.
 
 **Gemma31 gap closing, 2026-10-06:** [state reuse across Clear, capture beside
 eager execution and the fused decode FFN](experiments/gemma-gap-closing/README.md)
@@ -253,6 +263,29 @@ family" guide, and its long-context scaling work.
 
 **Scope:**
 
+- [ ] **Physical memory modes (owner, 2026-10-16/17): the first M3.5 work
+      item.** The accepted M3.6 exception for DeepSeek DSpark's C4 wall has
+      this as its fix ([RE-059](rough-edges.md#re-059-gb10-kernel-speed-depends-on-where-the-kernels-free-memory-puts-a-device-allocation--2026-10-17-status-open):
+      the driver backs a resident workspace with scattered 64 KiB pieces on a
+      long-running host, which costs big prefill steps about 1.3% GPU time),
+      and the image's response to placement is not monotonic, so placement
+      must be made deterministic rather than worked around. Scope
+      ([features.md](features.md), "Physical-memory mode per node", now
+      `confirmed`):
+      - the **dedicated node pool**: physical handles allocated once at start
+        while memory is clean, up to the node budget, recycled on eviction, so
+        placement is deterministic and swaps never fragment host memory;
+      - the **shared-machine mode**: inference brought up on demand, the
+        working set idled out after a configurable time, and physical backing
+        released by manual, idle-timer and pressure-driven levers, re-acquired
+        on demand;
+      - configuration per node, platform-neutral behind the provider
+        interfaces (D-110);
+      - heavy-path design and review (workflow.md: it touches the pager, VMM
+        mapping and the catalog; a decision entry);
+      - **re-gate** DeepSeek DSpark's C4 wall, the Qwen-Image generation and
+        Gemma 2's prefill with it, and retire M3.6's accepted DSpark exception
+        when the first passes ([record](m36-record.md#accepted-exceptions)).
 - [x] **Family selection** (approved by the owner 2026-09-29: all 13
       checkpoints of [m35-families.md](m35-families.md), with the answers
       recorded there). The goal is
@@ -1369,1520 +1402,132 @@ TensorFold comparisons report speed, memory and separate quality controls.
   in a chat turn.
 - The support matrix lists every approved family with its evidence.
 
-## M3.6 — Engine components  `in progress`
+## M3.6 — Engine components  `done`
 
-Working state, in-flight slices and deferred review items: [m36-handoff.md](m36-handoff.md).
+Completed 2026-10-17. Every model M3 served (Gemma 2, Gemma 3, Gemma 4
+26B-A4B and 31B with their assistants, Qwen3.8 native with MTP and GGUF,
+DeepSeek V4 Flash with DSpark, Qwen-Image-2.1) and the Qwen2 FP16 and EXL3
+fixtures run from a stored spec on one engine of shared components over
+llmpalooza's own graph IR, within the matched 1% speed gate of the frozen
+`1facc957` baseline, bar the accepted exceptions listed in the record. The format layer keeps
+weights in their source encoding and decodes on-chip, the native importer
+publishes format-v1 artifacts from every migrated model's verified source,
+serving is v1-only with approval as data (D-118), the legacy runners,
+plans, graph builders, bindings and serving classes are deleted, and the
+Python importers are out of the production path. The [frozen M3.6 record](m36-record.md) retains the task history,
+the exit criteria with their evidence, the owner's decisions, the accepted
+exceptions, the classified review follow-ups and the work handed on. The
+design is [engine-components.md](engine-components.md); the protocol and
+baselines are [m36-baselines](experiments/m36-baselines/README.md) and the
+final verification [m36-final](experiments/m36-final/README.md).
 
 Goal (the owner, 2026-10-08; D-107 to D-110): replace the per-family
 runners, plans, graph builders, bindings, serving classes and Python
 importers with one engine of shared components over llmpalooza's own graph IR,
 so every optimization, format and platform is written once and every model
 benefits. Take the architecture hit now, before more families, formats or
-platforms. The design is [engine-components.md](engine-components.md).
+platforms.
 
-**Entry:** owner direction of 2026-10-08. M3.5 is parked at `cc70d69`; its
-open families, formats and pipelines resume on this engine after M3.6, and
-each is checked against the design as M3.6 proceeds.
+**Entry:** owner direction of 2026-10-08. M3.5 was parked at `cc70d69`; its
+open families, formats and pipelines resume on this engine.
 
-**Scope:**
+**Scope** (every box's sub-tasks, with their commits and reports, are in the
+[record](m36-record.md#task-history-by-slice); the original nested scope text
+is [retained there](m36-record.md#retained-scope-history)):
 
 - [x] **Design and decisions:** [engine-components.md](engine-components.md),
       D-107 (components, IR, execution, partitioning, migration gate),
       D-108 (formats), D-109 (importer), D-110 (platform order); M3.5's
       transfer item retired with its [mapping](engine-components.md#retired-transfer-items).
-- [x] **Baselines and the 1% protocol.** Before any family moves, fix the
-      matched, bookended timing protocol that resolves 1% for each family's
-      prefill and decode, solo and at its qualified cohorts, and record the
-      current implementation's speed, quality controls, peak memory and
-      swap rows as each family's baseline.
-      *2026-10-08:* protocol, frozen `1facc957` baseline, same-binary
-      spread and baseline rows recorded in
-      [m36-baselines](experiments/m36-baselines/README.md) (harness
-      `tools/speed_gate.py`). Its two defects (DeepSeek's four-slot DSpark
-      waves, the swap table's Qwen3.8 continuation) are fixed; the
-      `1facc957-fixed` baseline (the frozen build plus exactly those
-      fixes) holds DeepSeek's DSpark cohort rows and the swap table's
-      Qwen3.8-as-A rows (its 32 rows all exact there, worst LLM-to-LLM
-      8.494 s).
-- [ ] **Reference-model quality and numerical recovery** (owner, 2026-10-12):
-      compare candidate and baseline with a reference implementation of the
-      same quantized checkpoint using NLL/perplexity and behavioral controls.
-      Use original source-precision evidence when available; it is required
-      for a closer-to-original claim, not for same-quantized-model qualification.
-      Preserve the 1% speed and same-implementation state gates.
-      - [x] Retrospective numerical-policy audit and prospective gate clarification
-            ([audit](experiments/m36-numerical-audit/README.md)).
-      - [x] Image timing output controls use a frozen pin per implementation,
-            preserving the old arm and historical records without requiring
-            candidate pixels to match legacy bits. Reference image quality
-            remains separate; workload and the 1% speed protocol are unchanged.
-      - [x] Shared target-only teacher-forced scorer foundation: paid finite
-            IDs/outputs, global next-target alignment, full-vocabulary NLL and
-            guarded head/owner semantics; ten host controls pass. This is
-            test support, without a real-model quality qualification.
-      - [x] Real Qwen2 FP16 scorer adapter: bounded per-target reports through
-            the actual shared backend, selected implementation identities and
-            sink refusal/cancellation controls. Main native build, 114 affected
-            controls and both actual natural-ID policies pass without skips.
-      - [x] [Original Qwen2 BF16 likelihood smoke](experiments/m36-original-qwen2/README.md):
-            authenticated complete original weights and 43 natural token meanings,
-            42 aligned target losses through original and shared FP16 recipes.
-            This is a tiny observation, not a quality acceptance gate.
-      - [x] Real EXL3 4.0-bpw G scorer adapter: shared scorer/plan recorder,
-            complete original-tokenizer identity and all 42 natural targets.
-            Supported seven/one-row tuning is retained; missing three-row tuning
-            refuses. Main native build, 124 affected registrations and all three
-            FP16/EXL3 scoring cases pass without skips. Original-model observation
-            is bounded, without a quality gate.
-      - [ ] Broader fixed corpus and same-checkpoint reference comparisons;
-            optional original-reference comparisons for original-agreement claims;
-            production-phase, speculation, context and cohort controls for chosen candidates.
-            - [x] Pinned Mia Qwen same-quantized-checkpoint baseline and
-                  current-main manual A/C diagnostic: all 1,016 fixed targets
-                  independently checked. Mia PPL 35.144838403; native A/C
-                  +0.389325%/−0.248639% relative to it. Main native build,
-                  32 host controls and both actual cases pass. Experimental
-                  policies and cache differences are explicit
-                  ([reference and replay](experiments/m36-numerical-audit/qwen-quantized-reference.md)).
-            - [x] Matched one-row Qwen mapping-policy screen: unchanged policy
-                  PPL 35.402897009 versus 35.281665930 with only the owner-row
-                  restriction disabled (−0.342433%, same 1,016 targets).
-                  Full native build, 32 host controls and both actual cases
-                  pass. This whole-policy observation does not adopt a default.
-            - [x] Bounded ordinary Qwen policy/state follow-up: real C1/C4
-                  Prompt/Decode at read256, 20 independently measured classes,
-                  checkpoint/spill replay and complete final initialized-state
-                  hashes. Main native build, 33 host controls and both actual
-                  cases pass. No cross-cohort bits gate, new NLL or memory-saving
-                  claim; default adoption, MTP, context and family gates remain open.
-      - [x] First Qwen2 fused-attention recovery screen: actual selected attention,
-            aligned natural smoke losses and four fresh-fixture ABBA cases pass.
-            Timing includes setup/I/O and baseline drift; no quality, serving-speed
-            or production-adoption gate follows ([observation](experiments/m36-original-qwen2/README.md)).
-      - [ ] Evaluate recovery candidates for quality, speed, reuse, simplicity,
-            CPU cost and memory traffic. Equal quality/speed with greater reuse
-            or simpler code, or measured resource savings hidden by another
-            bottleneck, can justify a switch within the migration gates. Retire
-            dominated machinery after functional and quality qualification.
-- [ ] **Format layer** (D-108): encodings named independently of kernel
-      libraries and layouts recorded separately; a block decoder per
-      encoding on CUDA under shared vector, matrix and grouped templates;
-      the fallback ladder; decoders composable inside fused kernels for
-      mixed per-tensor encodings; state encodings, lossy ones as per-alias
-      settings. First proof: Qwen3.8's native NVFP4/MXFP8 tensors on the
-      discrete `sm_86` target, product by product against CPU references
-      (D-082; the whole model does not fit the 3080 Ti). The Qwen2
-      EXL3 fixture proves the trellis encoding through the same layer.
-      Sub-tasks (owner, 2026-10-08: each lands as one reviewed commit):
-      - [x] Encodings, layouts and the size rule; v0 representations
-            mapped at read time; CPU reference decoders; registry
-            capabilities and the ladder's ordering.
-      - [x] CUDA block decoders under the vector, matrix, grouped and GLU
-            templates; the `sm_86` proof.
-      - [x] The EXL3 trellis through the layer; state encodings (the
-            format half: which encodings, exact or lossy, CPU encode and
-            decode).
-      - [ ] Lossy state encodings end to end: attention that reads them,
-            quantizing cache stores, the state contracts' sizes and
-            kept-state layout, and the per-alias setting
-            (engine-components.md).
-            *2026-10-09:* the kernel half landed: GGML's vector attention
-            over Q8_0 and Q4_0 K and V at D 64 and 256, the quantizing
-            stores (plain, grouped, fused with RoPE) byte for byte with
-            the reference encoder, cell sizes by the size rule, with
-            capabilities and graph planning
-            ([engine-components.md](engine-components.md#weight-and-state-formats)).
-            - [x] Bounded shared dense Q8_0 opt-in at D64/D256: blocked
-                  stores/readers, source/state/kept identity and explicit
-                  per-alias `kv_cache_encoding` (D-117), preserving F16 by
-                  default. Main native build and 519 host controls pass;
-                  four actual cases cover short paired NLL and same-Q8
-                  checkpoint/spill/kept restoration. PPL rises 4.598%/1.452%
-                  in the two short samples; no quality threshold or speed
-                  claim. [Evidence](experiments/m36-numerical-audit/q8-state.md).
-            K1 extends it to every migrated LLM (D512, QSA, MQA, borrowed
-            and drafter state) with 6K–16K-token quality against F16;
-            Qwen3.8/DeepSeek at their full contexts remain open
-            ([report](experiments/m36-numerical-audit/q8-state.md#long-context-q8_0-vs-f16-quality-across-migrated-llms-k1)).
-- [x] **Shared slot lifecycle, one runner interface, one serving adapter
-      per pipeline kind**, derived from state contracts; reconcile today's
-      divergent copies (Gemma2's restore guards against Gemma3's).
-      Decoding-mode orchestration takes any number of drafters and the
-      planning and capture path is backend-neutral (M3.5's moved skeleton
-      gaps), tested on the fake backend with two drafters.
-      Sub-tasks:
-      - [x] The engine core builds in every profile, with a fake device
-            runtime and host paging kernels (D-096 amended).
-      - [x] State contracts and the shared slot lifecycle, with the
-            reconciled guards (the legacy runners do not delegate yet).
-      - [x] One runner interface: step programs, wave composition,
-            prefill and decoding-mode orchestration with any number of
-            drafters (cascaded or alternative, chosen by policy).
-            *2026-10-09:* `engine/model_runner.h`, `wave_composer.h`,
-            `prefill.h`, `decoding.h`, on the fake backend with two
-            drafters; no family uses them yet.
-      - [x] One serving adapter per pipeline kind.
-            *2026-10-09:* `runtime/engine_llm.h` and `engine_image.h` (the
-            image one a shell until Qwen-Image moves), `Server::Make`'s
-            dispatch by pipeline kind behind a diagnostic set of
-            architectures (empty: each family's migration wires its parts),
-            kept conversations in a file a stage (record version 2, D-112);
-            `engine_llm_test` on the fake backend.
-- [x] **IR and planner** (D-107): the op set and tensor descriptors,
-      construction from a spec, fusion patterns covering today's selected
-      fused paths, implementation selection, activation placement, lowering
-      to recorded work, plan keys; a CPU reference and fake-backend tests
-      for every component.
-      Sub-tasks:
-      - [x] The IR graph, its verifier and the reference executor; the
-            model spec and its v0 synthesis.
-            *2026-10-09:* `src/ir`, `kernels/reference/exec.h`, `src/spec`
-            with the Gemma 2 and Gemma 3 mappings
-            ([as built](engine-components.md#the-model-spec)).
-      - [x] The component framework and the planner; lowering to the
-            GGML kernel source with structural parity (EXL3's and the
-            image kernels' lowerings land with their families'
-            migrations).
-            *2026-10-09:* `src/components`, `src/planner`, the GGML
-            module's capabilities and lowering and the component step
-            source ([as built](engine-components.md#the-graph-ir)), at
-            parity with Gemma 2's and Gemma 3's builders; their
-            owner-attention forms and narrowed final layer land with the
-            Gemma 2/3 migration.
-- [x] **Partitioning in the planner:** tensor, pipeline and expert
-      parallelism with any split count and mixed, chosen by modelled
-      traffic for a described topology; equivalence tests over four or more
-      fake devices. Two-Spark execution is M4's.
-      *2026-10-09:* `planner/partition.h`, the components' splits as data;
-      TP, PP, EP, TP2×PP2 and six-device mixes equal the unpartitioned
-      graphs on the reference executor
-      ([as built](engine-components.md#partitioning)).
-- [x] **Migrate Gemma2 and Gemma3**, then delete their runners, plans,
-      graph builders, bindings and serving classes.
-      - [x] Components, patterns and the mapping.
-      - [x] Wiring and the gate, then deletion of the old code.
-            *2026-10-09:* wired: Gemma 2 and Gemma 3 serve on the shared
-            engine by default (the mapping's policy, the head's width,
-            cuBLAS over a runner-mapped workspace, device greedy;
-            [as built](engine.md#the-serving-adapter)); same-binary heads
-            and tokens bit-identical to the M3 classes, the quality
-            control's scores and the near-8K switch rows' continuations
-            equal the frozen baseline's. The 1% gate passes (Gemma 2 at 5
-            blocks, Gemma 3 at 7; the new arm runs with the gate-only
-            switch `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`, which saves no
-            turn checkpoint, as the baseline's M3 classes never could;
-            [the results](experiments/m36-baselines/README.md#gemma-2-and-gemma-3-on-the-shared-engine-slice-g1c)).
-            *2026-10-10:* deleted: the M3 runners, plans, graph builders and
-            serving classes with their `ServingOptions` flags, tests and
-            benchmarks; `model/gemma{2,3}.h` keep the approved profile and
-            tensor binding the admission and the mappings use.
-- [x] **Migrate Gemma4** 26B-A4B and 31B with their assistants.
-      - [x] Components, patterns and the mapping.
-            *2026-10-09:* the components and mappings landed (slice G2a:
-            `ffn.moe`, `attention.borrowed`, `embedding.projected`,
-            `scale.learned`, Gemma 4's attention and head forms; the
-            `gemma4` and `gemma4-assistant` mappings, the assistant a
-            drafter stage composed with its target; [as
-            built](engine-components.md#initial-catalog)), at parity with
-            today's builders' graphs (the narrowed final layer included;
-            the assistant's head reads every row and does not narrow).
-            The patterns and lowering (slice G2b: the fused routing and
-            reduce as `route_reduce`, owner attention's Gemma 4 forms, the
-            narrowed final layer as a policy option, the gemma4 mapping's
-            policy per serving envelope, `kMatMulId`, the drafter's
-            features, tap cells and frozen masks; [as
-            built](engine-components.md#the-graph-ir)) plan and lower
-            every setup shape of today's three recipes to today's
-            launches, and the 26B-A4B, 31B and both assistants' draft
-            passes run bit for bit today's through the model runner.
-      - [x] Wiring and the gate, then deletion of the old code.
-            *2026-10-10:* wired and gated (slice G2c). Both profiles serve
-            on the shared engine, and with a `drafter` their assistants (an anchored drafter reading the
-            target's tapped features: `FeatureFrom`, the runner's carry,
-            frozen reads, `StagedStepSource`; [as
-            built](engine.md#the-model-runner)); the quality control's
-            scores and replies equal the frozen baseline's, the near-8K
-            switch rows are exact and the frozen build's kept records are
-            refused. The 1% gate passes (26B-A4B at 9 blocks, 31B at 7, the
-            new arm with `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`: the M3
-            class has defect 3 too), and the 31B assistant's screen runs
-            4.41% faster with its transactions byte-exact
-            ([the results](experiments/m36-baselines/README.md#gemma-4-26b-a4b-and-31b-on-the-shared-engine-slice-g2c));
-            the 26B-A4B's assistant has no baseline to gate against.
-            *2026-10-10:* deleted (slice G2d): the M3 `Gemma` serving class,
-            `engine/gemma4_*`, the GGML graph builders and the owner
-            transform, the state and chunk builders (`model/gemma4.h` keeps
-            the approved profiles and the tensor binding), the
-            `ServingOptions` Gemma diagnostics and
-            `gemma26_production`/`gemma31_production` (the 256- and
-            1,024-row prompt chunks are the mapping's `prefill_chunk`),
-            their benchmarks and tests. Coverage is on the engine: the
-            run-to-run and reference checks of `component_runner_gemma4_gpu_test`
-            and `components_gemma4_models_gpu_test`, the served four-owner
-            8K check (`Gemma4EnvelopeServingGpu`), the cross-variant kept
-            tag and the served assistant (`Gemma4AssistantServingGpu`).
-- [ ] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF.
-      - [x] Components, patterns and the mapping.
-            *2026-10-10:* the components and mappings landed (slice G3a:
-            `residual.hc`, `hc.mix`, `hc.combine`, `attention.gdn`,
-            `attention.qsa`, `side.ngram`, `residual.ple`, `embedding.mtp`,
-            `ffn.moe`'s shared-gated form; streams, side inputs, fixed,
-            per-block and per-row cells, a verify's saves and its commit;
-            the `qwen4exp` mapping over the ModelOpt and GGUF imports and
-            `qwen4exp-mtp`, the MTP drafter a stage composed with its
-            target; [as built](engine-components.md#initial-catalog)), at
-            parity with the unfused builder's graphs but for the n-gram
-            layer's node order. The fast form's patterns, the default
-            policies and the lowering (slice G3b: [as
-            built](engine-components.md#the-graph-ir)) plan and lower
-            every setup shape of the three imports, with the MTP drafter,
-            to today's fast-form launches; on the real artifacts the
-            model runner's 31 outputs and 242 state tensors are bit-identical
-            to today's fast form in each import, including joined owners,
-            selection beyond the QSA budget and captured replays. G3c1
-            proves native verify and all-three-format commits; G3c2a proves
-            native single-owner MTP and persistence. Joined MTP arithmetic
-            remains G3c2b1 before serving and the family gates.
-      - [ ] Wiring and the gate, then deletion of the old code.
-            - [x] **G3c1 — shared runner execution:** bind verify saves and
-                  commit execution; bind n-gram side tables on demand; stage
-                  drafter features with fake-backend lifecycle controls.
-                  Prove focused GPU numerical correctness for native target
-                  verify and commits of k of n rows across all three formats.
-            - [ ] **G3c2 — composed MTP, serving and gate:** prove actual
-                  MTP catch-up and draft-pass GPU numerics and checkpoint/
-                  kept-state feature restoration, then wire native, GGUF
-                  and MTP through serving; pass state, quality and swap
-                  controls and the matched 1% gate for all three paths.
-                  - [x] **G3c2a — MTP progress and persistence:** declare the
-                        cache/token/feature relation and pending replay
-                        range as shared stage policy; preserve it with the
-                        feature span through checkpoint, spill and adoption;
-                        run the prefill companion and prove actual MTP GPU
-                        and restoration behavior before serving.
-                        *2026-10-10:* opt-in replay progress, completion-owned
-                        control, prompt companions and layout-derived checkpoint
-                        tails pass native single-owner MTP/persistence proof.
-                        Unsupported joined operations and lookahead shapes refuse
-                        before mutation; joined arithmetic remains G3c2b1.
-                  - [ ] **G3c2b — joined lowering, serving and gate:**
-                        qualify joined MTP arithmetic before serving and the
-                        cohort gates.
-                        - [ ] **G3c2b1 — joined arithmetic:** qualify shared
-                              arithmetic and routing for joined MTP steps,
-                              including expanded streams and unequal pending
-                              ranges. Use a reference implementation of the same
-                              quantized checkpoint as the quality baseline;
-                              original-model evidence is needed for claims of
-                              closer agreement with the original.
-                              Preserve owner coverage and every selected expert
-                              contribution; prove same-implementation state
-                              restoration and changed-input capture replay.
-                              - [x] **G3c2b1a — default-off owner products:**
-                                    typed physical-column proof, per-owner
-                                    primitive rewrite and bound native-recipe
-                                    audit; structural and descriptor controls.
-                                    No source/runtime opt-in or numerical/
-                                    persistence qualification.
-                              - [ ] **G3c2b1b — native qualification:** qualify
-                                    joined full-head quality and routing,
-                                    same-implementation state and changed-input
-                                    replay, old/new persistence and bounded
-                                    admission before enabling repeat-pending
-                                    execution.
-                                    - [x] **G3c2b1b1 — selected-HC recipe
-                                          correction:** keep source policy
-                                          default-off; prove actual selected-row
-                                          handling and the native recipe/selector;
-                                          pass the bounded first screen and
-                                          permanent host, direct-GPU and
-                                          integrated regression checks (clean03:
-                                          169 host and six GPU checks passed,
-                                          including model-free `hc.mix` complete
-                                          outputs and ragged/replay coverage).
-                                          The bounded 09c screen covers both owners' full
-                                          selected HC products and K1/K3 heads;
-                                          joined state and runtime admission
-                                          remain outside this correction.
-                                    - [ ] **G3c2b1b2 — remaining joined
-                                          qualification:** prove joined quality,
-                                          same-implementation state, changed-input
-                                          replay, old/new persistence and bounded
-                                          admission. The G3c2b1b parent remains
-                                          open after the selected-HC correction.
-                                          The owned target/MTP diagnostic now
-                                          carries explicit joined-repeat-pending
-                                          source eligibility and a two-owner
-                                          unequal-pending recovery/capture test.
-                                          Main native build and 305 affected host
-                                          controls pass; the actual two-owner
-                                          target/MTP screen passes 13 units,
-                                          132 finite heads, checkpoint/spill
-                                          restoration and changed-input capture
-                                          replay (2026-10-12). The source accepts
-                                          complete v0 multipart row tables through
-                                          the shared artifact assembler, and draft
-                                          heads use their actual selected width.
-                                          Broader same-quantized-reference quality, durable old/new
-                                          persistence and serving admission remain
-                                          open ([evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md)).
-                              - [x] **G3c2b1c — inactive accurate dense-product
-                                    capability:** expose the existing joined
-                                    BF16-weight/F32-input vector kernel through
-                                    exact typed tuning and physical descriptor
-                                    checks, independently of owner-width legacy
-                                    recipes. No runtime source installs pins;
-                                    wider shapes keep ordinary selection.
-                                    Full main Spark B native build and all98 focused
-                                    owner/registry/planner/identity controls pass
-                                    (2026-10-12). The inherited bounded kernel
-                                    [replays46/47](experiments/m36-numerical-audit/qwen-products.md)
-                                    measure local error and paired path timing,
-                                    not original-model quality or serving gates.
-                              - [x] **G3c2b1d — owned backend configuration:**
-                                    immutable qualified build/runtime and tuning
-                                    declarations, paid preparation before source
-                                    identity, and source/plan/snapshot/kept bindings.
-                                    Explicit pre-start metadata allowance and
-                                    stable launch generations protect retries and
-                                    stale direct/captured work. Main passes the full
-                                    native build, 148 focused host/refusal controls,
-                                    one model-free native backend control and the
-                                    three existing FP16 adapter controls. No new
-                                    numerical policy or joined capability follows
-                                    ([evidence](experiments/m36-numerical-audit/qwen-products.md#owned-backend-configuration)).
-                              - [x] **G3c2b1e — shared phase admission:**
-                                    qualify actual prefill/decode/score target
-                                    waves before effects, retaining compound
-                                    permissions. Main native build and all 60
-                                    affected host controls pass; arithmetic
-                                    qualification remains separate ([evidence](experiments/m36-numerical-audit/qwen-products.md#shared-phase-admission-correction--2026-10-12)).
-                              - [x] **G3c2b1f — checked weight reservation facts:**
-                                    carry actual single-part reserved-address
-                                    alignment through shared measurement, planning
-                                    and lowering. Unknown facts preserve ordinary
-                                    selection; invalid promises refuse. Full native
-                                    main build and 108 focused host controls pass,
-                                    including eleven valid/invalid/no-tuning modes.
-                                    No arithmetic or tuning policy is activated
-                                    ([evidence](experiments/m36-numerical-audit/qwen-products.md#checked-weight-alignment--2026-10-12)).
-                              - [x] **G3c2b1g — real-program and full-head witnesses:**
-                                    validate the actual lowerer's unchanged program
-                                    and stream finite full-head rows with exact
-                                    document/owner/position coordinates. Admit only
-                                    the closed target-only diagnostic factory domain,
-                                    measuring all fallback score shapes. Main native
-                                    build and 127 focused controls pass; no tuning or
-                                    serving default changes ([evidence](experiments/m36-numerical-audit/qwen-products.md#shared-quality-witnesses--2026-10-12)).
-                              - [x] **G3c2b1h — short actual decode diagnostic:**
-                                    independently measure and execute the private
-                                    C4 Decode256 class; eight generated steps plus
-                                    checkpoint/spill replay pass with 32 reference
-                                    and 32 exact replay heads/tokens, eight checkpoint
-                                    and four spill restores. This closes only the
-                                    bounded diagnostic, with broader quality and
-                                    family gates open ([evidence](experiments/m36-numerical-audit/qwen-joined-score.md#actual-decode-continuation--2026-10-12)).
-                              - [x] **G3c2b1i — broader fixed natural secondary corpus:**
-                                    four pre-fixed 255-input histories, 1,016 targets;
-                                    complete actual Score8/4 program and finite-head
-                                    controls pass in one fresh A/C pair. Aggregate
-                                    PPL changes −0.635489%, but new 888 targets only
-                                    −0.057291% with two documents regressing. This
-                                    descriptive result adopts no policy or threshold;
-                                    broader same-quantized-reference quality and family gates remain open
-                                    ([report](experiments/m36-numerical-audit/qwen-joined-score.md#broader-fixed-natural-corpus--qwen52)).
-                        - [ ] **G3c2b2 — serving and gate:** compose the
-                              native, GGUF and MTP serving paths, pass state,
-                              quality and swap controls, then the matched 1%
-                              gate at every qualified cohort.
-                              - [x] **G3c2b2a — sole-owner serving:** compose
-                                    native MTP and GGUF through the shared
-                                    adapter, with bounded startup accounting
-                                    and complete-draft context admission.
-                                    Focused serving and final Spark regression
-                                    checks pass (2026-10-11).
-                                    Joined execution and the family gates
-                                    remain G3c2b1b2 and G3c2b2.
-                              - [x] **G3c2b2b — cold kept-state hydration:**
-                                    preserve an adopted prefix while its drafter
-                                    progress awaits restoration. Permit reuse
-                                    and selection only for valid cold tickets;
-                                    execution still requires completed hydration.
-                                    Native build and 77 focused host/fake controls
-                                    pass on Spark B (2026-10-12), including partial
-                                    restore capacity refusal/retry without
-                                    recomputation
-                                    and independent restoration of two cold peers.
-                                    The actual owned C2 target/MTP durable
-                                    control also passes on Spark A (2026-10-13):
-                                    two sequential EngineLlm owners, four kept
-                                    stage files, cold hydration without prefix
-                                    execution, eight fresh continuation heads,
-                                    and complete boundary/final initialized
-                                    state within the same selected implementation
-                                    ([report](experiments/m36-numerical-audit/qwen-joined-mtp.md#fresh-owner-durable-c2-continuation)).
-                                    The internal Server route additionally derives
-                                    its paid domain from the actual composition
-                                    and passes default lookahead/capture, retained
-                                    turn checkpoints and fresh-owner C2 hydration
-                                    with eight finite new continuation heads
-                                    ([Server control](experiments/m36-numerical-audit/qwen-joined-mtp.md#internal-server-c2-defaults-and-reopen)).
-                                    A short current-implementation C2 MTP ABBA
-                                    observes shared prompt/generation walls
-                                    8.53%/2.17% lower, with slower startup and
-                                    equal observed token work. This is a coarse
-                                    diagnostic, not the fixed-baseline 1% gate
-                                    ([timing screen](experiments/m36-numerical-audit/qwen-joined-mtp.md#short-c2-mtp-whole-implementation-timing-screen)).
-                                    An explicitly funded internal HTTP selector
-                                    also passes two overlapping streamed requests:
-                                    331 fresh prompt and 128 output tokens each,
-                                    with 29 joined MTP waves and graceful retirement
-                                    ([HTTP control](experiments/m36-numerical-audit/qwen-joined-mtp.md#supervised-shared-http-c2-control)).
-                                    The same internal selector now derives an
-                                    ordinary target-only Prompt/Decode domain.
-                                    Native C2 HTTP requests complete 128 tokens
-                                    each through 127 joined ordinary waves;
-                                    repeating the first prompt reuses 326 tokens
-                                    and completes 16 more
-                                    ([plain control](experiments/m36-numerical-audit/qwen-joined-mtp.md#supervised-native-target-only-http-c2-control)).
-                                    The same source also passes native C4: four
-                                    overlapping 128-token responses, an actual
-                                    four-owner joined wave and a 325-token reused
-                                    prefix before 16 more outputs
-                                    ([C4 control](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-target-only-http-c4-control)).
-                                    The existing GGUF target-only route also
-                                    passes C2: two overlapping 128-token replies,
-                                    127 joined ordinary waves and a 326-token
-                                    reused prefix before 16 more outputs, with
-                                    rendered counts authenticated before inference
-                                    ([GGUF control](experiments/m36-numerical-audit/qwen-joined-mtp.md#gguf-target-only-http-c2-control)).
-                                    GGUF C4 also passes with four overlapping
-                                    128-token replies, a proven four-owner wave
-                                    and a 325-token reused prefix before 16 more
-                                    outputs, on the same qualified runtime
-                                    ([GGUF C4](experiments/m36-numerical-audit/qwen-joined-mtp.md#gguf-target-only-http-c4-control)).
-                                    Automatic internal startup accounting now
-                                    derives parser, compiler/domain and retained
-                                    tokenizer/chat payments from enforced limits
-                                    and actual source/settings; explicit grants
-                                    remain supported. Full native compilation and
-                                    456 combined host controls pass, including
-                                    355 startup-affected controls. The existing
-                                    33,792-context family quality/geometry screen
-                                    passes admission and complete work; its
-                                    same-host current legacy/shared pair confirms
-                                    a 15.55% C4 decode throughput gap, with
-                                    6.38% lower wall throughput. Bounded tracing
-                                    motivated a generic owner-lane candidate,
-                                    but its fresh pair remains 16.66% slower in
-                                    C4 decode and does not justify adoption.
-                                    The experiment is preserved privately; only
-                                    its independent unknown-join safety fix lands,
-                                    without a family gate verdict
-                                    ([startup accounting](experiments/m36-numerical-audit/qwen-joined-mtp.md#automatic-startup-accounting-and-family-geometry)).
-                                    A default-off Verify capture policy now reuses
-                                    the first eager run before recording. One shared
-                                    off/on screen observes 3.03% higher C4 decode
-                                    throughput but 0.48% lower wall throughput and
-                                    extra graph/plan memory, with complete work
-                                    and no reclaims. The option remains experimental
-                                    ([capture screen](experiments/m36-numerical-audit/qwen-joined-mtp.md#default-off-first-verify-capture-screen)).
-                                    Local commands now consume the same strict
-                                    internal selector. A grouped check captures
-                                    exact 996-target IDs/losses and observes PPL
-                                    15.743782 versus 16.354833 from the pinned
-                                    same-quantized reference (target-only; cache
-                                    precision differs). Existing 8K/16 swap-table
-                                    controls pass both ordered native+MTP/GGUF
-                                    pairs, including real spill and exact
-                                    same-selected state/full-head continuation.
-                                    Full native, 156 host and 48 tool controls pass
-                                    ([grouped evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#grouped-exact-quality-and-8k-saved-state-swaps)).
-                                    Automatic public selection, wider mixed-family
-                                    swaps, broader quality and family gates remain open.
-            - [ ] **G3d — deletion:** remove the Qwen3.8 M3 runner, plans,
-                  graph builders, bindings and serving class after G3c2.
-- [ ] **Migrate DeepSeek V4 Flash** with DSpark.
-      - [ ] Components, patterns and the mapping.
-            *2026-10-10:* the components and mappings landed (slice G4a:
-            the Sinkhorn mix of `residual.hc`, `hc.mix` and `hc.combine`,
-            `attention.mqa` with the CSA/HCA compressors and the lightning
-            indexer, `ffn.moe`'s √softplus, hash and clamped-SwiGLU forms,
-            `side.hash`, `embedding.inject` and the Markov head; the
-            `deepseek4` mapping and `dflash`, DSpark a stage composed with
-            its target, its injection run in the target's steps;
-            [as built](engine-components.md#initial-catalog)), at parity
-            with the reference-form builder's one-owner graphs but for the
-            mixes' carries and the hash lookups' node order. The patterns,
-            the policy, owner-safe verification and the lowering of the
-            new inputs are slice G4b's.
-      - [ ] Wiring and the gate, then deletion of the old code.
-            - [x] **G4b1 — shape contract and primitive lowering:** make the
-                  HCA block count and compressed read width safe for `past`
-                  (key both in the plan key or make both past-independent by
-                  padding), align the MQA reference width, then prove focused
-                  primitive lowering correctness for the new inputs.
-            - [ ] **G4b2 — fast forms:** add patterns and default policy,
-                  then prove graph/source coverage and GPU execution for the
-                  fast forms and owner-safe verification. Numerical choices use
-                  same-checkpoint reference quality, measured speed and
-                  same-implementation state controls; external bit equality
-                  is diagnostic.
-                  - [x] **G4b2a — local opt-in forms:** Q-head, compressor
-                        pooling, full-carry HC pre and flat-norm HC post;
-                        prove guarded fallback and existing-kernel operand
-                        execution without changing the default policy.
-                  - [x] **G4b2a1 — lazy input ownership:** preserve the
-                        caller's graph-builder component and owner when creating
-                        framework inputs; prove cold/cache equivalence and all
-                        four main/indexer compressor assemblies. This changes
-                        metadata correctness, not arithmetic recipes. Main
-                        native build and 162 focused IR/component/planner/state
-                        controls pass on Spark; no whole-model run is required
-                        to prove this graph metadata invariant.
-                  - [ ] **G4b2b — indexer and sparse banks:** prove their
-                        ownership, backing and execution contracts.
-                        - [x] **G4b2b1 — state banks:** derive and bind
-                              contiguous spans of owned state; prove sparse
-                              attention and primitive fallback with existing
-                              indexer/TopK/mask semantics retained.
-                              *2026-10-10:* opt-in bank lowering derives exact
-                              layout spans, checks bound addresses and whole
-                              state-use coverage, and preserves primitive
-                              fallback. D256/D512 operand execution matches
-                              the original copy bit for bit, including unequal
-                              owners and changed-input capture replay. Default
-                              policy and whole-artifact parity remain G4b2c.
-                        - [ ] **G4b2b2 — indexer contract:** make query
-                              rounding, visibility and nonfinite selection
-                              explicit; prove the native recipe without
-                              silently changing the primitive TopK contract.
-                              - [x] **G4b2b2a — exact selection and counts:**
-                                    define visible-prefix selection and a
-                                    bit-preserving mask for arbitrary IDs;
-                                    stage owner-authenticated completed-block
-                                    counts within logical real capacity.
-                                    Scalar/native operands and changed-input
-                                    replay pass; existing score, TopK and
-                                    default component semantics are retained.
-                              - [ ] **G4b2b2b — score and fusion:** define
-                                    rounded-query scoring with a real primitive
-                                    fallback and recorded numerical relation;
-                                    expose one native score producer and measure
-                                    unfused/fused/legacy numerical relations before
-                                    opting in a quality/performance-qualified recipe.
-                                    - [x] **G4b2b2b1 — typed score and fallback:**
-                                          define half-rounded query scoring
-                                          with an independent wider reference;
-                                          overwrite invisible scores with a
-                                          literal value and fund both query
-                                          conversions in the portable path.
-                                          B1 introduces no specialized native
-                                          score; existing component/default
-                                          semantics are unchanged.
-                                    - [x] **G4b2b2b2 — native score producer:**
-                                          share the actual Lid score kernel and
-                                          its launch grouping with standalone
-                                          scoring; fund defined tails, prove
-                                          launch/backing guards and exact
-                                          original-helper operand execution.
-                                          Authenticated root facts fail closed;
-                                          462 native operand scenarios cover
-                                          pitches, tiles, row groups and replay.
-                                          No component/default consumer yet.
-                                    - [ ] **G4b2b2b3 — component and fusion:**
-                                          add the opt-in component recipe and
-                                          full-mask fusion with observer/owner
-                                          guards; enforce separate execution
-                                          compatibility on kept/adopt/restore
-                                          paths; prove source, selection and lifetime
-                                          controls and measure numerical relations.
-                                          - [x] **G4b2b2b3a — physical facts:**
-                                                declare provider reservation
-                                                alignment, bind owned/borrowed
-                                                state facts and forward exact
-                                                leaf maps through planner passes;
-                                                audit placement and binding.
-                                                No new component consumer.
-                                          - [ ] **G4b2b2b3b — execution compatibility:**
-                                                enforce execution identity,
-                                                authenticated snapshots and
-                                                numerical-domain refusals before
-                                                any new recipe becomes reachable.
-                                                - [x] **G4b2b2b3b1 — identity values and snapshots:**
-                                                      add owned generic identity/domain
-                                                      values and one accounted opaque
-                                                      snapshot allocation with issuer,
-                                                      generation and completion checks;
-                                                      preserve legacy raw API behavior.
-                                                      No production declaration or
-                                                      numerical admission consumer yet.
-                                                - [x] **G4b2b2b3b2 — backend declaration:**
-                                                      own qualified build/runtime and
-                                                      immutable tuning declarations; bind
-                                                      actual paid handle/workspace readiness
-                                                      through source, plan, snapshot and kept
-                                                      identity. Full operation admission is
-                                                      separate; no recursive invocation or
-                                                      runtime loader-attestation prerequisite.
-                                                      Complete through the shared owned-backend
-                                                      configuration and its actual mapped DS
-                                                      attention-source consumer: main native
-                                                      build, 59 host controls and one GPU case
-                                                      pass, comparing 320 complete head values
-                                                      and 376,832 initialized state bytes
-                                                      ([evidence](experiments/m36-dsv4-rounded-consumer/README.md#bounded-mapped-attention-source-execution--2026-10-12)).
-                                                      Whole-operation admission, DSpark and
-                                                      full-model kept/state/quality/speed gates
-                                                      remain separate.
-                                                - [ ] **G4b2b2b3b3 — admission enforcement:**
-                                                      bind source/plan/kept identities;
-                                                      enforce owned whole-operation and
-                                                      declared-unit admission on all current,
-                                                      ahead, companion and restore paths.
-                                                      Present prepared execution identities
-                                                      now also bind the shared durable kept
-                                                      layout before registration; null/legacy
-                                                      sources keep their existing identity.
-                                                      Complete operation-shape enumeration
-                                                      and broader admission remain open.
-                                          - [ ] **G4b2b2b3c — component and fusion:**
-                                                add the opt-in rounded-score
-                                                component and guarded full-mask
-                                                fusion; prove source, selection and lifetime
-                                                controls, then evaluate quality and speed.
-                                                - [x] **G4b2b2b3c1 — bounded consumer foundation:**
-                                                      default-off rounded score, actual-ID
-                                                      selection and one full mask; owned
-                                                      source/domain host admission controls
-                                                      and a paid declared-backend synthetic
-                                                      changed-input capture pass. Full source
-                                                      GPU/model admission and fusion remain
-                                                      open ([evidence](experiments/m36-dsv4-rounded-consumer/README.md)).
-                                                - [x] **G4b2b2b3c2 — mapped attention source execution:**
-                                                      execute a bounded synthetic mapped
-                                                      attention prefix through the actual
-                                                      owned source/lower callback; 320 finite
-                                                      head values and 376832 state bytes
-                                                      match eager/capture across changed
-                                                      tokens. Main native build, 59 host
-                                                      controls and one GPU case pass.
-                                                      Full model admission/fusion remains
-                                                      open; no family quality/speed claim.
-                  - [ ] **G4b2c — full policy:** output-A and product forms,
-                        mixed encodings and default policy; same-checkpoint
-                        reference quality, all selected contributions and same-implementation
-                        state/verify correctness, without mandatory legacy bits.
-            - [ ] **G4c — serving and gate:** bind hash-routing IDs with
-                  expert-count checks, compressor inputs and injection
-                  features with one drafter slot per target slot; pass the
-                  family state, quality, swap and matched 1% controls.
-                  Internal Server admission now derives actual composition bounds
-                  and shares a paid transient compiler across aliases. At context
-                  8448/chunk 256, three serial speculative HTTP requests complete
-                  384 outputs. The two-client gate remains FAIL: another 506 MiB
-                  of prompt state cannot join the active request, so zero joined
-                  waves execute. Fixed-plain and the planned 8K/16 swap are unrun;
-                  public/default adoption and the family gates remain open
-                  ([service outcome](experiments/m36-dsv4-target/dspark.md#shared-server-admission-and-the-remaining-c2-capacity-wall)).
-                  - [x] **G4c1 — full target factory execution screen:**
-                        the fixed prepared GGUF executes through ComponentLlmBuild,
-                        EngineLlm and ModelRunner with real hash/compressor inputs
-                        and the ordinary complete expert closure. Main native build
-                        and 307 affected host controls pass; 18 finite complete
-                        head rows and nine snapshot-restored rows pass at frontier
-                        2568 on Spark B. The unchanged 110 GiB cap and 6 GiB
-                        physical margin admit actual setup. Broader same-checkpoint
-                        quality, serving, swap and matched speed remain open
-                        ([evidence](experiments/m36-dsv4-target/README.md)).
-                  - [x] **G4c2 — composed DSpark execution screen:**
-                        the exact prepared target/companion execute through shared
-                        block drafting, injected features and combined snapshots.
-                        Main native build and 308 affected host controls pass;
-                        two continuations each complete seven steps, 17 required
-                        proposals and one accepted draft, with 18 finite complete
-                        target heads and nine restored rows at frontier 2568.
-                        Actual paid setup fits the unchanged 110 GiB cap and
-                        6 GiB physical margin. Draft-head finiteness, broader same-checkpoint
-                        quality, joined serving and family speed/swap gates
-                        remain open ([evidence](experiments/m36-dsv4-target/dspark.md)).
-                  - [x] **G4c3 — bounded same-checkpoint target scoring:**
-                        the real target factory admits a closed Score domain and
-                        independently measures its full-head shapes. Shared
-                        CorpusScore and current fused llama.cpp score the same
-                        256 natural targets; native PPL changes
-                        +1.265162% relative to that quantized reference.
-                        A separate 2,560-target history reaches selective indexer
-                        execution beyond past 2048: native PPL changes +0.803531%
-                        overall and −0.034072% on its final 512 targets. Full native
-                        build/474 combined host controls (39 DS-related), repository
-                        checks and both actual cases pass; a stale wrapper overhead
-                        constant is corrected by a source-backed offline audit.
-                        Complete-key plan owners and one replacement are measured
-                        and paid before payload. Broader sparse histories, DSpark
-                        quality, joined serving and family speed/swap remain open
-                        ([evidence](experiments/m36-dsv4-target/README.md#same-quantized-checkpoint-scoring)).
-            - [ ] **G4d — deletion:** remove DeepSeek V4's M3 runner, plans,
-                  graph builders, bindings and serving class after G4c.
-- [x] **Migrate Qwen2 FP16 and EXL3 fixtures** (required by the exit criteria).
-      The approved fixtures use shared components and selected operation
-      lowerings. They are unserved with no speed baseline. Original-model
-      corpus observations and same-implementation checkpoint/spill/kept/reload
-      controls qualify the bounded fixture scope; historical bridge/Tier C
-      comparisons remain recorded diagnostics. Changed virtual addresses,
-      OS-process restart/crash recovery and broader serving qualification are
-      future capabilities rather than claims of this fixture slice. The final
-      integrated legacy deletion build and affected controls pass.
-      - [x] **G5a — components and mapping:** the approved FP16 and both
-            EXL3 fixtures synthesize specs over the shared catalog; all three
-            installed-artifact metadata controls pass. Shared FP16 execution
-            matches the frozen fused and unfused 76-token control trajectories
-            ([evidence](experiments/m36-qwen2/README.md)); historical heldout
-            and lifecycle controls remain G5c's.
-      - [x] **G5b — lowering:** implement shared GGML and EXL3 operation
-            lowerings; supply and enforce approved EXL3 reconstruction tuning
-            facts and supported shapes. All four profiles have selected-source
-            and actual execution controls; final deletion integration passes.
-            - [x] **G5b1 — selected operations and reconstruction screen:**
-                  the shared step program binds approved EXL3 products and
-                  pinned tuning facts. All 145 full-vocabulary rows of the
-                  4.0-bpw G fixture match a newly sealed native reference
-                  bit for bit; 33 focused controls and two admission/input
-                  controls passed with zero skips ([evidence](experiments/m36-exl3-selected/README.md)).
-                  Final Spark checks passed: 2,554 native, 2,003 CPU and all
-                  134 model/timing tests (179 raw GTest arms), with zero failures
-                  or skips; quality gates passed. Main built and passed 91
-                  focused integration checks and the quality gates. Other
-                  profiles, packed execution and lifecycle gates stay open.
-            - [x] **G5b2a — full 4.0-bpw G suffix trajectory:** the shared
-                  runner matches all 161 full-vocabulary rows of the original
-                  145-token prefill and 16 decode steps, bit for bit against a
-                  fresh native reference. The original 145-row control and
-                  38 focused input, selected-operation and state/lifecycle
-                  checks also pass, with zero skips; native build and quality
-                  gates pass ([evidence](experiments/m36-exl3-selected/README.md)).
-                  Other profiles, packed execution and Tier C remain open.
-            - [x] **G5b2b — mixed-rate 4.5-bpw G scoring screen:** the
-                  shared runner executes the approved packed 4/5/6/8-bit
-                  products and all 24 paired gate/up products on the same
-                  authenticated 43 teacher IDs as the original BF16 reference.
-                  Both 7-row and 1-row plans select the pinned G implementations;
-                  all 42 next-token scores are finite. Eight focused controls
-                  and the actual case pass without skips. Main builds and passes
-                  all eight checks plus both EXL3 scoring cases
-                  ([evidence](experiments/m36-exl3-selected/README.md)). This
-                  small primary-reference observation adds no quality threshold,
-                  performance, O-profile, Tier C or lifecycle qualification.
-            - [x] **G5b2c — 4.0-bpw O GEMV scoring screen:** the shared
-                  runner executes the existing O profile on the same 43 teacher
-                  IDs and 7/1 chunk schedule as G. Eight queried occupancy facts
-                  are rechecked at launch; each actual plan records 120 GEMVs,
-                  one head GEMM, 24 paired MGEMMs and 72 bias operations.
-                  All 42 full-vocabulary target scores are finite; nine focused
-                  controls and the actual case pass without skips. Main builds
-                  and passes the same nine controls and scoring case
-                  ([evidence](experiments/m36-exl3-selected/README.md)).
-                  This short primary-reference observation adds no speed or
-                  broad quality claim. Broader O shapes and lifecycle remain open.
-            - [x] **G5b2d — mixed-rate 4.5-bpw O scoring screen:** the same
-                  shared scorer executes all 169 products/676 source parts on
-                  the original 43 teacher IDs and 7/1 chunks. Each actual plan
-                  records 14 GEMVs, 107 GEMMs, 24 paired MGEMMs and 72 bias
-                  operations, with all eight occupancy facts checked at launch.
-                  All 42 full-vocabulary scores are finite; nine focused
-                  controls and the actual case pass without skips. Main builds
-                  and passes the same nine controls and scoring case
-                  ([evidence](experiments/m36-exl3-selected/README.md)).
-                  No tuning, kernel or production default changes; broader
-                  quality, performance and O lifecycle controls remain open.
-      - [x] **G5c — execution controls:** run FP16 and both EXL3 fixtures
-            through the shared runner, with original-model quality observations
-            and same-implementation state, spill, restore and kept-file controls.
-            Historical FP16 bridge / EXL3 Tier C bit comparisons remain evidence
-            for their source-era recipes. This fixture slice has no serving,
-            process-restart, changed-address or timing claim.
-            Grouped primary-reference scoring also records all four EXL3 profiles
-            on the existing four 256-token passages (1,020 targets per profile):
-            14 focused controls and all 16 actual cases pass without skips,
-            with unchanged tuning/arithmetic and no new quality threshold
-            ([observations](experiments/m36-exl3-selected/README.md#grouped-original-reference-observations)).
-            Main passes the full native build, 14 focused controls and all 16
-            document/profile cases, with no failures or skips.
-            - [x] **G5c1 — FP16 checkpoint and spill continuation:** both
-                  fused and unfused full control trajectories restore checkpoint
-                  pages after eight decode writes, replay all eight full-vocabulary
-                  rows, and restore the complete used state after spill. Exact
-                  bytes, counters, footprints and remaining logits pass
-                  ([evidence](experiments/m36-qwen2/README.md)). Historical
-                  heldout, repeated/kept-state and EXL3 controls remain open.
-            - [x] **G5c2 — historical FP16 heldout trajectories:** both fusion
-                  modes match all 577 frozen full-vocabulary rows, including the
-                  original 512-row prefill and suffix. Checkpoint rewind at 33,
-                  eight replayed rows and spill continuation at 49 also pass.
-                  Weight relocation, kept-state/restart and EXL3 controls remain
-                  open ([evidence](experiments/m36-qwen2/README.md)).
-            - [x] **G5c3 — repeated FP16 execution and weight eviction:** both
-                  complete trajectories repeat four times in each fusion mode,
-                  clearing state between evaluations. Two full 490-extent weight
-                  evictions per case release all backing; reload advances backing
-                  generations and preserves content generations and complete
-                  checkpoint state before writes. All full-vocabulary rows match.
-                  Address relocation, kept-state/restart and EXL3 remain open
-                  ([evidence](experiments/m36-qwen2/README.md)).
-            - [x] **G5c4 — EXL3 same-implementation checkpoint/spill:** both
-                  approved G fixtures create an uninterrupted 161-row reference
-                  with their own selected programs, then compare all 161 rows
-                  plus eight rewind/replay rows exactly. Checkpoint at 145,
-                  spill/restore at 157 and final state at 161 each preserve
-                  6,291,456 initialized state bytes, with unchanged weights
-                  and recorded plan identities. Nine focused controls and both
-                  actual cases pass without skips; main builds and passes the
-                  same nine checks and both lifecycle cases
-                  ([evidence](experiments/m36-exl3-selected/README.md)).
-                  Kept-state/restart, relocation/eviction, broader shapes,
-                  Tier C and deletion remain open.
-            - [x] **G5c5 — FP16 shared-attention recovery:** select the existing
-                  fused attention operation instead of materialized scores for
-                  the fixture default. Four fixed natural passages provide 1,020
-                  original/baseline/candidate targets; the measured +0.003826683%
-                  candidate perplexity change versus native baseline is accepted
-                  prospectively as a fixture tradeoff, not a new quality threshold.
-                  Same-plan 76/577-row controls preserve exact heads, checkpoint,
-                  spill and two full weight reloads. Historical Bridge recipes
-                  remain explicit compatibility diagnostics. Final main passes
-                  six host and twelve actual controls with no failures/skips
-                  ([quality](experiments/m36-original-qwen2/README.md),
-                  [state](experiments/m36-qwen2/README.md)). F16 conversion
-                  lineage, restart/relocation and serving qualification remain open.
-            - [x] **G5c6 — EXL3 O checkpoint/spill continuation:** both
-                  approved O profiles use the same uninterrupted 161-row control
-                  and paid buffers as G5c4. All 169 compared rows and 6,291,456
-                  initialized state bytes match each profile's own reference
-                  after checkpoint rewind/replay and spill/restore. Actual
-                  occupancy facts and reconstruction/scalar selected operations
-                  are recorded with unchanged 292/302 weight extents. Nine
-                  focused controls and both actual cases pass on main without skips
-                  ([evidence](experiments/m36-exl3-selected/README.md)).
-                  Kept-state/restart, eviction/relocation, broader shapes,
-                  Tier C, performance and deletion remain open.
-            - [x] **G5c7 — EXL3 O kept-file adoption into a fresh owner:** both
-                  approved O profiles publish authenticated v2 state at 157,
-                  destroy the first native owner after proven retirement, and
-                  adopt into a newly constructed empty owner. All 161 compared
-                  full heads and 6,291,456 initialized state bytes match each
-                  profile's uninterrupted reference. Model/layout/file identity,
-                  selected recipes and refusal controls are checked. Thirteen
-                  focused controls and both actual cases pass on main without
-                  failures or skips
-                  ([evidence](experiments/m36-exl3-selected/README.md)).
-                  Process restart/crash recovery, serving history, weight
-                  eviction/relocation, broader shapes and deletion remain open.
-            - [x] **G5c8 — EXL3 four-profile weight reload and kept continuation:**
-                  40G/45G/40O/45O evict all 292/302 immutable weight extents
-                  between completed requests, reload at unchanged addresses,
-                  and retain both selected programs. All 798 resource addresses,
-                  content generations and 6,291,456 initialized state bytes
-                  survive before continuation. Fresh-owner adoption at 157 then
-                  completes all 161 compared rows and final state against each
-                  candidate's uninterrupted reference. Fourteen focused controls
-                  and all four actual cases pass on main, with no failures or
-                  skips ([evidence](experiments/m36-exl3-selected/README.md)).
-                  Actual address relocation, process restart/crash, serving
-                  history, broader shapes and deletion remain open.
-      - [x] **G5d — deletion:** remove the legacy Qwen2 FP16/EXL3 execution
-            path after G5c. Both standalone executor families and graph/phase
-            builders are removed; generic kernels, immutable source bindings and
-            active swap/spec comparison consumers remain. The full native build,
-            30 focused host/refusal controls and eight actual affected checks
-            pass without failures or skips
-            ([evidence](experiments/m36-exl3-selected/README.md#legacy-executor-retirement)).
-            - [x] **G5d1 — active FP16 benchmark adapter:** move the swap
-                  and speculation harnesses' FP16 comparison to the shared
-                  component source/runner. Keep full control/heldout heads,
-                  same-implementation repeats and weight reloads; retire the
-                  separate graph executor. Explicit host inventory and distinct
-                  setup classes replace implicit accounting and repeated
-                  compilation. Main passes a full native build and three actual
-                  controls (76/577 rows, three evaluations, complete 490-extent
-                  weight reload, and pre-construction host refusal), without
-                  failures or skips. No serving or speed claim
-                  ([evidence](experiments/m36-exl3-selected/README.md#active-fp16-benchmark-adapter)).
-- [ ] **Native importer** (D-109): container readers for GGUF,
-      safetensors with `config.json`, diffusers pipelines (Qwen-Image's
-      components, composed under D-089), MLX and EXL3; architecture mappings
-      and the fold catalog for every migrated family; the new artifact
-      format version, with every current artifact re-imported; the standard
-      admission gate. The Python importers leave the production path.
-      *2026-10-09:* format version 1 and its reader, v0 still read
-      (D-113, [artifact-format.md](artifact-format.md#version-1)); the
-      container readers ([as built](engine-components.md#the-importer)).
-      The BF16 norm/A fold primitives and F32/MXFP8 value-head permutation
-      are implemented; their source-normalization tables, the rest of the
-      fold catalog, the writer, the CLI, the re-import and the gate remain.
-      *2026-10-10 (D-114):* the writer and `llmp import` slice (N4)
-      also imports straight from the [model archive](model-archive.md) or a
-      staged copy, verifying every file against its manifest and reading
-      each needed byte once, and records an `import` event in its catalog;
-      the interim archive tools landed. Native `llmp install` (fetching
-      into the archive with libcurl) stays in M5's importer item.
+- [x] **Baselines and the 1% protocol:** the matched, bookended protocol and
+      the frozen `1facc957` baseline (`1facc957-fixed` with the DSpark
+      cohort and swap-table continuation fixes), harness `tools/speed_gate.py`
+      ([m36-baselines](experiments/m36-baselines/README.md)).
+- [x] **Reference-model quality and numerical recovery** (owner, 2026-10-12):
+      the numerical-policy audit, the shared teacher-forced scorer, the
+      same-quantized-checkpoint references (Mia's vLLM for Qwen native, the
+      old arm's per-target losses for Qwen GGUF and DeepSeek), image output
+      pins per implementation, and the quality rules and bounds of the final
+      verification ([audit](experiments/m36-numerical-audit/README.md),
+      [m36-final](experiments/m36-final/README.md)). Comparisons against the
+      original unquantized models are not required for same-quantized-model
+      qualification and were not run; they stay optional for closer-to-original
+      claims (M3.5, per family).
+- [x] **Format layer** (D-108): encodings and layouts, CPU reference decoders,
+      the fallback ladder, CUDA block decoders under shared vector, matrix,
+      grouped and GLU templates, the `sm_86` proof, the EXL3 trellis through
+      the same layer, and lossy state encodings end to end as a per-alias
+      setting (`kv_cache_encoding = "q8_0"`, D-117) on every migrated LLM with
+      its long-context quality measured (K1,
+      [q8-state.md](experiments/m36-numerical-audit/q8-state.md)).
+- [x] **Shared slot lifecycle, one runner interface, one serving adapter per
+      pipeline kind**, with decoding modes over any number of drafters, tested
+      on the fake backend with two drafters.
+- [x] **IR and planner** (D-107): the op set, construction from a spec, fusion
+      patterns covering the selected fused paths (the image's included), implementation
+      selection, activation placement, lowering and plan keys, a CPU reference and
+      fake-backend tests for every component.
+- [x] **Partitioning in the planner:** TP, PP, EP and mixed layouts chosen by
+      modelled traffic; equivalence on four or more fake devices. Two-Spark
+      execution is M4's.
+- [x] **Migrate Gemma2 and Gemma3**, then delete their runners, plans, graph
+      builders, bindings and serving classes (G1).
+- [x] **Migrate Gemma4** 26B-A4B and 31B with their assistants (G2).
+- [x] **Migrate Qwen3.8**: native NVFP4/MXFP8 with MTP, and GGUF (G3), the
+      legacy runner deleted. Open from it, moved to **M3.5**: the split NVFP4
+      experts' own fast products (a grouped vector product for decode rows and
+      the block-scaled grouped GEMM over split scales), and a relayout of
+      MXFP4/MXFP8 routed experts and dense NVFP4 linears.
+- [x] **Migrate DeepSeek V4 Flash** with DSpark (G4), the legacy runner, plans
+      and graph builder deleted (G4d).
+- [x] **Migrate Qwen2 FP16 and EXL3 fixtures** (G5): shared components and
+      selected-operation lowerings, unserved, no speed baseline; the legacy
+      executors deleted.
+- [x] **Native importer** (D-109): readers for GGUF, safetensors with
+      `config.json`, MLX, EXL3 and diffusers pipelines (Qwen-Image as a v1
+      composition), architecture mappings, folds and relayouts recorded in the
+      artifact, the v1 format (D-113), `llmp import` from the verified archive
+      or a staged copy (D-114, D-116), every migrated model re-imported and
+      admitted by an approval row (D-118), the adversarial challenge (N6).
+      Moved to **M3.5**: the family-specific native readers (Qwen3.8's ModelOpt
+      and MLX normalizers and the CLI's dispatch to them) generalized into
+      mapping-driven normalizers when Nemotron NVFP4 brings a second ModelOpt
+      model; MLX serving qualification (the checkpoint imports and is admitted,
+      not yet qualified for serving); a Qwen3.8 drafter with another head list.
+- [x] **Qwen-Image-2.1 onto the shared blocks**, with qualified numerical
+      choices: the complete shared generation core, request-driven geometry and
+      schedules, the fusions as planner patterns, the family as stored spec
+      data; the legacy pipeline deleted. A stored per-geometry spec waits for
+      M3.5.
+- [x] **Structural techniques land once:** each technique landed in the
+      component, pattern or lifecycle piece it belongs to as the migrations
+      needed it, with every family's production selection reproduced and gated.
+      The per-technique adoption audit against the retired transfer table was
+      not run; the remaining adoptions move to **M9's** optimization pass
+      ([optimization-inventory.md](optimization-inventory.md)), with the other
+      performance leads (Qwen3.8 MTP activation sizing, about 12 against 9 ms
+      of planning per new shape, the roughly 0.25 s workspace mapping in a
+      Qwen3.8 swap, the decode-template leads).
+- [x] **Persisted state and settings:** shared kept-state identity bound to the
+      spec and the prepared execution identity, spec-bound calibration, and
+      settings, applicability and defaults derived from the spec and its mapping
+      (R1, `e3d7be83`; serving from data, `47cde2ed`, `d918ada4`); no
+      per-architecture selector remains.
 
-      - [x] **N3a — bounded transform primitives:** internal BF16-to-F32
-            `norm.plus_one` and `ssm.a_neg_exp` scalar folds, with atomic
-            refusal and integer nearest-even output encoding; complete
-            F32/MXFP8 `gdn.value_heads_tiled` permutations with independent
-            per-part cursors and constant-size metadata. Existing fold
-            identities are unchanged; source normalization and checkpoint
-            import remain N3b/N4.
-      - [ ] **N3b — source normalization and remaining folds:** declarative
-            mappings and transforms for every migrated family/container.
-            - [x] **N3b1 — owned GGUF Gemma 2/3/4 target normalization:**
-                  implemented and independently reviewed with exhaustive
-                  key/tensor classification, tied heads, per-layer lists,
-                  dense/MoE roles, byte-preserving routes and common
-                  component validation. Focused native checks passed:
-                  70 host controls and four real target profiles (Gemma 2
-                  2B, Gemma 3 4B QAT, Gemma 4 26B-A4B and 31B), no skips.
-                  Final Spark checks passed: 2,516 native, 1,971 CPU and
-                  all 114 model tests, with no skips. Main build and integration checks passed.
-                  Gemma 2/3's GGUF norm fold is asserted already applied;
-                  Gemma 4 adds no fold. Assistants, Qwen/DeepSeek, other
-                  containers and remaining transforms stay open in N3b.
-            - [x] **N3b2a — source-preserving BF16 parameter operands:**
-                  shared HC, QSA, PLE, MTP and GDN components accept their
-                  declared small BF16 parameters and compute with transient
-                  F32 values. GDN's explicit logarithmic-A option computes
-                  its negative exponential without expanding resident weights.
-                  Independent challenge and 30 focused native controls passed
-                  (24 component and six lowering cases), with zero failures or
-                  skips; all ten historical F32 graph digests match the parent.
-                  Final Spark checks passed 2,561 native and 2,010 CPU tests
-                  with zero failures or skips; format, boundary, header and
-                  REUSE gates passed. Main built and passed 30
-                  integration checks and the quality gates.
-                  MLX source normalization, norm/head-order authentication,
-                  publication and runtime admission remain open.
-            - [x] **N3b2b — explicit zero-centered component norms:**
-                  optional norm offsets for sigmoid HC, QSA/indexer, PLE
-                  and MTP compute source-plus-one in paid F32 workspace,
-                  preserving F32/BF16 resident bytes and default graph order.
-                  Contradictory applied folds, Sinkhorn and GDN are refused.
-                  Independent review, 36 focused native controls and all ten
-                  historical F32 graph digests passed. Isolated final checks
-                  passed 2,567 native and 2,016 CPU cases with zero failures
-                  or skips, plus quality gates. Final main checks passed
-                  2,582 native and 2,027 CPU cases, 36 integration controls,
-                  and 135 model/timing cases (182 raw GoogleTest runs), all
-                  with zero failures or skips. Source, recipe and model-binary
-                  guards and the quality gates passed.
-                  This component foundation does not establish source
-                  normalization, converter/head-order authority, publication
-                  or runtime admission.
-            - [x] **N3b2c — encoding-preserving BF16 head permutation:**
-                  generic dense BF16 rank-one/two support in the
-                  existing bounded grouped-to-tiled copy plan. Synthetic full
-                  payload controls cover vectors, prefixed rows, reshaped
-                  convolution rows and columns, with byte coverage and refusal
-                  guards. Independent review and final main checks passed:
-                  2,576 native, 2,021 CPU and 135 model/timing cases
-                  (182 raw GoogleTest runs), with zero failures or skips.
-                  Format, boundary, header and REUSE gates passed;
-                  source, recipe and selected model-binary guards passed.
-                  No source head-order authority, checkpoint normalization,
-                  publication or runtime admission is established by this foundation.
-            - [x] **N3b2d — bounded streaming part-route execution:**
-                  checked copies, per-part head permutation and historical
-                  scalar-fold streams with caller-funded workspace and exact
-                  sink-acknowledged coverage. Existing writer copy routes
-                  use the executor. Independent review, 44 focused controls,
-                  2,581 isolated native and 2,026 CPU tests and quality gates
-                  passed with no failures or skips. Combined checks passed
-                  2,587 native and 2,032 CPU cases; main build, 44 integration
-                  controls and all 135 model/timing cases (182 raw GoogleTest
-                  runs) passed with zero failures or skips. Source, recipe,
-                  model-binary guards and quality gates passed. Source mappings, gathers,
-                  head-order authority, normalization and new publication/
-                  runtime admission remain open.
-            - [x] **N3b2e — owned indexed multipart assembly:**
-                  prepaid indexed source ownership, complete dispositions,
-                  numeric expert/row gathers, shared tensor scales and
-                  encoding-preserving reshape/permutation routes. Eight
-                  full-payload and refusal controls, 2,595 native and 2,040
-                  CPU checks and quality gates passed with no failures or
-                  skips. Main build, eight integration controls and all
-                  135 model/timing cases (182 raw GoogleTest runs) passed
-                  with zero failures or skips. Source, recipe, model-binary
-                  guards and quality gates passed. Source mapping authority,
-                  byte authentication, publication and admission remain separate.
-            - [x] **N3b2f — closed native ModelOpt target normalization:**
-                  owned indexed multipart assembly and a finite source mapping
-                  for the pinned Qwen3.8 ModelOpt target. Preserve BF16,
-                  split MXFP8/NVFP4 and embedded expert scales; derive numeric
-                  expert/ngram gathers and byte-preserving head permutations.
-                  Validate all source roles, excluded auxiliary entries,
-                  configuration and the 280-byte semantic input against a
-                  complete component spec under prepaid metadata bounds.
-                  Independent challenge, 26 main focused controls, confined
-                  actual-source metadata normalization, 2,599 native and
-                  2,044 CPU checks, all 136 model/timing cases (183 raw
-                  GoogleTest runs) and quality gates passed with zero failures
-                  or skips (2026-10-12). Publication, MTP/vision import, runtime admission
-                  and migration gates remain separate.
-            - [x] **N3b2g — owned GGUF Qwen3.8 target normalization:**
-                  preserve all 1,224 source tensors in the supported target
-                  profile and seven encodings, source-owned n-gram lists and
-                  existing GGUF fold assertions. Validate complete component
-                  roles and prepaid construction; check common writer placement
-                  for row tables, mixing and all expert slices. Registering the
-                  mapping also enables the ordinary CLI writer path. Full native build, 103 affected host controls and one
-                  actual-header-only check pass on spark-b with no failures or
-                  skips (2026-10-12). Subsequent N4b8 completes ordinary GGUF
-                  target publication and stored-target admission; family
-                  migration and other source domains remain open.
-                  [Scope and source evidence](experiments/m36-qwen-gguf-normalization/README.md).
-      - [ ] **N4 — native v1 writer, CLI and archive input:** deterministic
-            publication, embedded specs, verified source streaming and
-            catalog import events.
-            - [x] **N4a — closed copy-only writer and CLI:** Gemma target
-                  plans, embedded specs, exact archived/staged variant closure,
-                  authenticated bounded streaming and independent import events.
-                  79 focused Spark host tests and repeat independent challenge
-                  pass (2026-10-11); final combined checks passed 2,530 native,
-                  1,985 CPU, all 114 model tests and quality gates, with no skips. Actual Gemma 2 Q8_0 publication
-                  and reuse verified all 288 tensors, 2,778,448,896 payload bytes
-                  and 1,340 chunks with the same artifact ID. Main build, 43 integration checks and quality gates passed.
-            - [x] **N4b1 — Gemma 2 native v1 runtime admission:**
-                  shared admission reads the stored spec and native tensor
-                  formats, checks the approved source/profile and preserves
-                  declared folds, tied heads and policy. Registration and the
-                  component build share it; v0 remains supported. Focused
-                  host checks (31) and the actual v0/v1 full-logit, initialized-state
-                  and spill-continuation comparison passed with zero skips.
-                  Final regression passed 2,544 native, 1,999 CPU and all 131 model/timing
-                  tests with zero skips; quality gates passed. Main built and passed
-                  31 integration checks and quality gates. This historical
-                  qualification covers Gemma 2; the three-target extension follows.
-            - [x] **N4b2 — approved Gemma 3/4 native target admission:**
-                  exact source and native tensor inventories for
-                  Gemma 3 4B QAT, Gemma 4 26B-A4B and 31B, stored-spec equality,
-                  profile-gated policy and native expert slab geometry. Host
-                  controls (44) and all three complete copy-only publications
-                  passed. Actual v0/v1 serving passed for each target: 24 full
-                  vocabulary rows, tokens/history, initialized state and
-                  spill/restore continuation, with three joined two-owner decode
-                  waves per arm. Gemma 4 keeps prompts-alone and its defaults.
-                  Final Spark checks passed 2,567 native, 2,012 CPU and all 135
-                  model/timing tests (182 raw GoogleTest cases), with zero failures
-                  or skips; quality gates passed. Main build, 74 integration controls,
-                  all three actual comparisons and quality gates passed;
-                  unsupported identities and drafter compositions stay closed.
-            - [x] **N4b3 — indexed-part publication foundation:**
-                  one native writer path for owned copy-only and closed ModelOpt
-                  plans, whole-member routing, multipart expert scatter and
-                  byte-preserving permutations. Prepaid metadata bounds,
-                  complete binding/output coverage and same-stream semantic
-                  reauthentication precede applied-fold receipts and verified
-                  durable publication. Independent challenge, 21 main integration
-                  controls, 2,601 native and 2,046 CPU checks, all 137
-                  model/timing cases (184 raw GoogleTest runs) and quality
-                  gates passed with zero failures or skips (2026-10-12).
-                  Actual publication authenticated all 38 source files
-                  (105,872,821,791 bytes), preserved 103,797,070,596 weight
-                  bytes and verified all 25 files and 66,261 chunks.
-                  All 468 permuted parts (2,153,140,992 bytes) matched
-                  an independent destination-order oracle. The confined
-                  8 GiB, zero-swap run completed in 31 minutes without OOM.
-                  CLI source expansion, MTP/vision import, runtime admission
-                  and migration qualification remain separate.
-            - [x] **N4b4 — closed native ModelOpt CLI dispatch:**
-                  route the existing import command's exact supported
-                  safetensors architecture/quantization combination through
-                  the closed normalizer and common writer/archive flow;
-                  unsupported source contracts refuse without fallback.
-                  Preserve Gemma dispatch, flags and metadata accounting.
-                  Independent challenge and main checks passed: 22 import
-                  integration controls, 2,602 native and 2,047 CPU checks,
-                  all 137 model/timing cases (184 raw GoogleTest runs) and
-                  quality gates, with zero failures or skips (2026-10-12).
-                  Confined actual CLI checks passed the 1 MiB normalization
-                  and 512 MiB writer funding refusals without store creation,
-                  followed by funded ordinary-source publication using the
-                  default 4 GiB metadata ceiling. All 38 complete source hashes,
-                  canonical bindings and 468 full permuted parts matched the
-                  pinned target under the 8 GiB, zero-swap process/cache cap.
-                  Runtime admission, MTP/vision import and migration
-                  qualification remain separate.
-            - [x] **N4b5 — multipart native row execution foundation:**
-                  bind every row-addressable format part separately and
-                  require identical lookup-order slot maps before effects;
-                  execute split NVFP4 GetRows through the existing selected
-                  decoder and shared ModelRunner. Check a bounded synthetic
-                  table, changed/repeated/reordered IDs, refusals and completed
-                  capture replay. Main native build, 117 focused host controls
-                  and both tiny GPU cases pass ([evidence](experiments/m36-decode-templates/README.md#native-split-row-foundation--2026-10-12)).
-                  Products, expert worklists and native ModelOpt target
-                  admission remain separate.
-            - [x] **N4b6a — completed-route and multipart descriptor helpers:**
-                  validate the complete route bijection and preserve original
-                  routed slots, including repeated expert contributions; bind
-                  all expert descriptors from exact part extents and padded
-                  pitches without expanding source encodings. Caller-sized
-                  storage and refusal-before-output-write controls pass:
-                  eight focused host cases and full native main build on Spark,
-                  with independent source challenge clean
-                  ([evidence](experiments/m36-native-grouped-foundation/README.md)).
-            - [x] **N4b6b — owned grouped operation execution:** connect those
-                  helpers to an actual selected-expert closure with current
-                  leases, bounded preparation and completed capture replay.
-                  Both bounded synthetic GPU cases pass on the isolated source
-                  and main (288 output values each), with full native main
-                  build and all eight helper controls passing.
-                  A shared ModelRunner mid-step routing/admission continuation
-                  and native ModelOpt target admission remain open separately.
-            - [x] **N4b6c — base-lease-preserving selected closure:** expose
-                  supplemental admission through the ordinary scheduler while
-                  the original request lease remains held. Retain the complete
-                  payload until both device work and scoped page-ins positively
-                  retire; unknown completion prevents continuation and teardown.
-                  Full native main build and 145 focused host controls pass,
-                  including six new malformed-input, funding, cancellation and
-                  retirement cases. Production routed ModelRunner integration
-                  and native ModelOpt target admission remain separate
-                  ([evidence](experiments/m36-native-grouped-foundation/README.md#supplemental-selected-closure--2026-10-12)).
-            - [x] **N4b6d — one shared routed ModelRunner step:** connect a
-                  completed routing prefix, checked native split expert bindings
-                  and supplemental selected closure to the original step's
-                  continuation. Preserve the base lease, whole-plan placement,
-                  fresh routing on capture replay and complete ownership on
-                  uncertain completion. Full native main build, 101 routed host
-                  and 34 fusion/validation controls, and all three GPU cases pass
-                  without skips. The bounded real ComponentStepSource fixture
-                  checks 288 complete outputs across three steps, selected-only
-                  residency and state frontier 9; this is not full-model quality
-                  or performance qualification
-                  ([evidence](experiments/m36-native-grouped-foundation/README.md#shared-routed-step--2026-10-12)).
-            - [x] **N4b6e — ordered routed groups:** extend the same whole-plan
-                  placement and complete owner through multiple ordered router
-                  boundaries, with fresh selected closure admission per group
-                  and final-only output/carry publication. Full native main build,
-                  104 routed and 34 fusion/validation host controls, and all four
-                  GPU cases pass without skips. The two-group fixture checks
-                  288 outputs, 36 actual routed IDs, nine completed segments and
-                  state frontier 9 across eager/captured/replayed steps. Family
-                  admission and full-model quality/performance remain separate
-                  ([evidence](experiments/m36-native-grouped-foundation/README.md#ordered-routed-groups--2026-10-12)).
-            - [x] **N4b6f — allocation-free page ordinal lookup:** derive selected
-                  multipart page ordinals from checked current device reservation
-                  geometry, retaining the original fallback and atomic output
-                  validation. Main native build/157 host controls and four routed
-                  GPU cases pass. A bounded same-host A/B/B/A CPU screen measures
-                  large-inventory selected-span savings with explicit small dense
-                  and host-fallback regressions; no model-speed claim or new index
-                  ([evidence](experiments/m36-native-grouped-foundation/README.md#ordinal-page-lookup-cpu-screen--2026-10-12)).
-            - [x] **N4b7 — paid consumable stored-spec bindings:** one prepaid
-                  spec/source and the shared role/owner visitor replace redundant
-                  binding-discovery graphs in admitted stored Gemma targets;
-                  actual setup measurement remains. Main native build and 191
-                  affected host controls, four existing published Gemma execution
-                  cases, and the mapped DeepSeek source case pass. Admission,
-                  native multipart expert placement and shared row-group ownership
-                  are not widened by this foundation. ModelOpt/MLX serving and
-                  family qualification remain open ([scope and checks](engine-components.md)).
-            - [x] **N4b8 — ordinary Qwen GGUF publication and stored target:**
-                  publish the complete approved three-shard UD-IQ3_XXS source
-                  through the native CLI; retain exclusive embedding/PLE groups
-                  and execute the admitted stored spec. Actual v0/v1 comparison
-                  passes 36 complete finite head rows, six initialized-state
-                  observations and two spill/zero-compute restores with
-                  continuation. Main native/476 host controls pass. Public
-                  defaults, stored drafter, ModelOpt/MLX serving, family speed
-                  gates and full N5 remain open
-                  ([evidence](experiments/m36-numerical-audit/qwen-joined-mtp.md#native-gguf-publication-and-target-serving--2026-10-13)).
-            - [x] **N4b9 — native DeepSeek GGUF target publication and serving:**
-                  normalize the complete approved three-shard UD-Q2_K_XL target
-                  (1,328 tensors, 129 expert arrays, 43 layers), publish through
-                  the ordinary CLI and execute its validated stored spec.
-                  Actual v0/v1 comparison passes 36 full finite head rows,
-                  six initialized-state observations and two spill/zero-compute
-                  restores with continuation at 2,560 prompt tokens. Final native
-                  build/66 affected controls pass; prior full normalization,
-                  admission and writer controls remain separately recorded.
-                  Other formats/folds, stored DSpark, public defaults, family
-                  matched 1% gates and full N5 remain open
-                  ([evidence](experiments/m36-dsv4-target/README.md#native-gguf-publication-and-stored-target--2026-10-13)).
-            The remaining fold catalog, normalized publication domains and
-            runtime import admission remain open in N4; N5's all-artifact
-            re-import and serving qualification remain separate.
-      - [ ] **N5 — re-import and admission gates:** every current artifact,
-            lossless equivalence and qualified family execution.
+**Exit criteria:** met, with the accepted exceptions (DeepSeek DSpark's C4 wall and the Gemma 3, Qwen3.8 GGUF and Qwen3.8 native quality tripwires), each with its evidence, in the
+[record's mapping](m36-record.md#final-gate-and-evidence-mapping): one engine;
+speed within 1% of the recorded baselines (final results in the
+[record](m36-record.md#final-speed-verification)); quality and state against
+the same-quantized references with the swap table and the Gemma near-8K
+switch controls; formats and the `sm_86` proof; state encodings; import,
+including the MLX admission and the adversarial challenge; partitioning on the
+fake backend; and the Spark check set, with its skipped tiers named
+(the shared set 2,839 of 2,839, the CPU-only guardrail 2,273 of 2,273 and the 214 model and timing tests all passed on `53c2610b`). Whole shipment tiers remain owed before publishing a
+package.
 
-      N5's all-artifact re-import and family gates follow G3, G4, G5,
-      Qwen-Image and N3/N4;
-      K1's lossy-state work covers every migrated LLM, including Qwen2 once
-      G5 has supplied its shared execution path.
-- [ ] **Qwen-Image-2.1 onto the shared blocks**, with qualified numerical choices.
-      - [x] **Q1a — channel-normalization component:** stateless shared
-            channel L2 normalization, learned scaling and optional SiLU;
-            independent scalar and primitive-graph controls, F32 arithmetic
-            without a legacy rounding gate. Main native build and all 96
-            affected host cases pass on Spark B (2026-10-12), including four
-            new channel-normalization controls. Image GPU lowering,
-            pipeline wiring and family qualification remain open.
-      - [x] **Q1b — adaptive normalization and gated residual components:**
-            shared scale-only LayerNorm and tanh-gated residual with an explicit
-            saved pre-branch carry and matching per-owner conditioning rows.
-            CPU/IR `BuildComponent` composition and refusal controls pass review;
-            main native build and all 99 affected host cases pass on Spark B
-            (2026-10-12). Whole-stage conditioning, image
-            GPU lowering and pipeline qualification remain open. No mandatory
-            host row expansion or legacy intermediate-rounding gate.
-      - [x] **Q1c — typed spatial graph composition:** the shared
-            component-to-plan path consumes explicit image geometry, nearest2
-            upsampling and channel-changing `conv.spatial` fragments. Source
-            weight encodings and owner-specific dimensions remain intact.
-            Main native build and all 239 affected host cases pass on Spark B
-            (2026-10-12), including three new spatial and 45 planner controls;
-            source quality checks pass. No new token phase or production
-            executor. Whole-pipeline wiring and image qualification remain open.
-      - [x] **Q3a — shared spatial execution:** typed graph ports and optional
-            token metadata use the existing planner, `StepProgram`, `StepRuns`
-            and owned completion/capture path. The full main Spark A native build,
-            129 affected host controls and one actual F32 VAE-span screen pass
-            (2026-10-12); source quality checks pass. The actual decoder
-            prefix and a reduced nearest2/resample span cover 4,737,024 finite
-            outputs and two eager/capture/replay paths each. This physical
-            convolution implementation supports F32 source weights; BF16 remains
-            unsupported here without changing the catalog's source formats.
-            Flow/timestep composition, broader VAE qualification, original-image
-            quality, comparative speed and serving remain open
-            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md)).
-      - [x] **Q3b — complete first-frame VAE composition:** reuse shared
-            spatial components, backward value links, source-owned roles and
-            the existing program/completion path for the stored F32 decoder.
-            A 2x2 latent produces all 32x32x4 decoder outputs; a small actual
-            prefix has a separate source-reference control. Focused native
-            compilation and all 52 host controls pass, followed by the full
-            main Spark B native build and 227 host cases across 17 targets.
-            The actual Spark B case passes all 4,096 finite decoder outputs,
-            4,608 local source-reference outputs and two eager/capture/replay
-            paths each (2026-10-12). No full-decoder scalar quality oracle,
-            original-image quality, comparative-speed or serving claim
-            ([scope and evidence](experiments/m36-shared-spatial-execution/README.md#complete-first-frame-decoder)).
-      - [x] **Q3c — complete timestep conditioner:** shared source-typed
-            projections and bounded exported values retain the prior single-output
-            default. Four actual BF16 matrices produce both modulation and final
-            scale for two unequal conditioning rows, without a mandatory legacy
-            intermediate-rounding policy. Full main Spark B native build and
-            443 host cases across 25 targets pass, including the four-target
-            55-case affected subset. One actual case checks all 40,960 output
-            values at five completed steps (204,800 finite values), both changed
-            first-row branches, unchanged zero-time rows and retained capture
-            replay (2026-10-12). Full flow, image quality against a same-source
-            reference, comparative speed and serving remain open
-            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-timestep-conditioner)).
-      - [x] **Q3d — conditioned transformer block:** complete conditioner and
-            one source-shaped block share typed ports, backward links and saved
-            residual carries. Existing NORMAL rotations implement three axes;
-            explicit F32 attention applies causal-text/all-image masking. Scoped
-            Spark B compilation and all 63 affected host controls pass, including
-            a reduced independent CPU oracle. The actual 13-BF16-part block checks
-            229,376 finite values across seven eager/captured/replayed steps,
-            changed/restored time and image inputs, masked text and zero-time
-            isolation; the existing conditioner regression also passes.
-            Full main Spark B native build and all 452 host cases across 25
-            targets pass; format, boundaries, headers and REUSE checks pass.
-            Broader shapes, same-source reference quality, speed and serving
-            remain open; the complete 32-block forward follows in Q3e
-            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#conditioned-transformer-block)).
-      - [x] **Q3e — complete denoiser forward and Euler step:** source-owned
-            text/image projections and all 32 shared blocks feed final adaptive
-            normalization, noise projection and the original-latent Euler carry.
-            Generic learned RMS, row slicing/concatenation and scaled residuals
-            preserve BF16 source encodings and existing fusions. Full main Spark B
-            native build and 455 host controls across 25 targets pass, including
-            the reduced independent two-owner complete-flow reference and complete
-            source-shaped physical planning. All three actual cases pass: the
-            complete flow checks 3,584 finite values and 1,792 Euler contributions
-            across seven eager/captured/replayed steps with changed/restored inputs;
-            the conditioner and single-block regressions also pass. Broader
-            geometries, same-source reference quality, repeated sampling,
-            text encoder/VAE integration and serving remain separate. Final
-            formatting, boundaries, headers and REUSE checks pass.
-            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-denoiser-forward-and-euler-step)).
-      - [x] **Q3f — complete shared generation core:** the real 36-layer text
-            encoder, two full 32-block flow/Euler steps and complete first-frame
-            VAE execute through `EngineImage` at 1024×1024. `ProgramLifecycle`
-            shares paid measurement, binding, coverage, plan accounting and
-            retained `StepRuns` with `ModelRunner`; token state and cache keys
-            remain unchanged. Typed device handoffs complete under the current
-            stage lease, and unknown completion retains the complete owner.
-            Full main Spark B native build and all 197 affected host controls
-            across eight targets pass. The actual case completes two generations
-            and eight stages, checks all 4,194,304 finite decoded values per
-            generation and reproduces its own first-flow and pixel digests.
-            The measured 41,224,157,952-byte envelope fits the unchanged 48GiB
-            node cap. Same-source image quality, broader prompts/schedules,
-            serving/swap qualification and the matched 1% migration gate remain
-            open; legacy serving is retained
-            ([bounded evidence](experiments/m36-shared-spatial-execution/README.md#complete-shared-image-generation)).
-      - [x] **Q3g — two-step native migration agreement screen:** compare
-            completed legacy/shared images from the same checkpoint, prompt,
-            noise and 1024×1024 schedule. Two generations per arm retain their
-            own pins; PSNR46.438 dB / SSIM0.99873 pass the fixed32 dB / 0.98
-            screen. The existing native pipeline is a migration baseline,
-            not an independent upstream reference. Descriptive quality-run
-            counters expose a shared remainder cost; no matched speed result
-            or default adoption is claimed. Independent upstream quality,
-            broader schedules and the 40-step/1% family gate remain open
-            ([report](experiments/m36-shared-spatial-execution/README.md#two-step-native-migration-quality-screen)).
-      - [x] **Q3h — shared pointwise convolution reuse:** supported F32 1×1
-            spatial components emit existing layout copies and matrix products;
-            padded/BF16/3×3 cases preserve their existing path. A source-backed
-            64×64 pointwise comparison passes its F64 enclosure and reduces
-            five warm completed-job median from249.584 to73.552µs (70.53%).
-            Complete1024 two-step output passes retained native comparison at
-            PSNR46.477 dB / SSIM0.99873. This is bounded reuse evidence, not
-            independent upstream quality, isolated decoder timing or the1%
-            family gate ([report](experiments/m36-shared-spatial-execution/README.md#shared-pointwise-convolution-reuse)).
-      - [x] **Q3i — shared tiled F32 convolution reuse:** existing F32 im2col,
-            cuBLAS, transpose and pitched copies initially qualify at64MiB;
-            a1GiB experiment reduces calls7,706→870 and prepaid capture
-            metadata106.8125MiB, but adds1,102,249,984 admission bytes without
-            meaningful observed latency or measuredCPU/BW gain. Keep64MiB
-            default. Quality remains46.495dB/.99873; decoder2.752s versus
-            9.653s prefix directs next optimization toward text/flow.
-            Exact measured sm_121 physical geometries become ordinary shared
-            candidates; other geometries keep direct fallback. Representative
-            completed-job median falls90.64%; the full1024 two-step sample
-            passes retained native agreement at46.495dB /0.99873. Output-disabled
-            warm complete generation is12.459s versus53.164s, a descriptive
-            76.57% reduction, not the matched1% gate. Same-source upstream
-            quality, serving/swap and broader schedules remain open
-            ([report](experiments/m36-shared-spatial-execution/README.md#shared-tiled-f32-convolution-reuse)).
-      - [x] **Packed masked-attention candidate:** shared Attention emission
-            retains dense fallback and adds explicitly selected F16 transient
-            packing. Empty-row SoftMax/MMA fixes preserve finite-row arithmetic.
-            Representative1,057-row completed median falls41.14%; seven-row
-            control regresses8.35%, so no universal shape policy follows.
-            Complete1024/two-step native agreement passes48.229dB/.99877.
-            Wide finite V overflows F16: the approximation remains opt-in,
-            with unrestricted dense default. Independent upstream quality and
-            family gates stay open
-            ([report](experiments/m36-shared-spatial-execution/README.md#opt-in-packed-masked-attention)).
-      - [x] **Q3j1 — request image geometry and schedules:** shared composition
-            accepts paired source width/height or the existing square setting,
-            actual prompt/drop/noise and configured steps. Rectangular VAE
-            mappings, independent odd-axis positions and checked payment replace
-            incidental diagnostic ceilings. One Euler step explicitly goes from
-            source sigma 1 to 0; the existing multi-step scalar contract remains.
-            Native 32 controls pass. A 2048×512 request with 35 native prompt
-            tokens, actual drop 14 and one Euler step completes twice through
-            six stages with all 4,194,304 pixel values finite each time and own
-            repeat digests ([report](experiments/m36-shared-spatial-execution/README.md#request-driven-image-composition)).
-      - [x] **Q3j2a — completed-request content and counts:** replace paid
-            prompt/noise/schedule payloads only after successful Finish and
-            release of the request lease. Same-layout requests retain model,
-            weights, backend, ports and program/capture identity; active or
-            unknown completion and incompatible payloads refuse atomically.
-            Serial callers release prior request content without a count cap
-            or accumulated images. Thirty-five focused host controls pass,
-            including 33 replacements with stable captures and failure-atomic
-            refusal. One retained native model completes three requests with
-            changed/restored prompt and noise, 1/2/1 Euler steps, two released
-            request owners and warmed resource reuse; all 12,582,912 decoded
-            values are finite
-            ([report](experiments/m36-shared-spatial-execution/README.md#completed-request-content-and-count-reuse)).
-      - [x] **Q3j2b — geometry and resource growth:** paid backing grows
-            behind stable shared workspace addresses and extent IDs; geometry
-            ports, staging and plans retire after positive completion. The
-            existing Server adapter retains a validated prepared source and
-            Gemma state through four images: 512×512 → 1024×512 → repeat →
-            512×512, with six activation calls and two retired geometry owners.
-            Activation backing grows from 1,132,462,080 to 2,264,924,160 bytes;
-            own repeated/restored pixels and retained Gemma state pass. The
-            combined native build passes 474 host controls; the placement-pin
-            correction passes ten targeted controls and the actual retry.
-            Ordinary installed-source preparation now consumes the same Server
-            route under the internal shared-engine selector, retaining paid
-            sources while four requests change prompt, geometry and 1/2/2/1
-            steps. All 14 image stages, six activation calls and retained Gemma
-            state pass. The combined native build passes 476 unique controls,
-            including 144 current image controls. One ordinary 1024²/40-step
-            request passes retained same-checkpoint diffusers quality at
-            37.059 dB PSNR/.99041 luma SSIM (floors 32/.98). Public defaults,
-            legacy retirement and matched 1% family qualification remain open
-            ([report](experiments/m36-shared-spatial-execution/README.md#ordinary-installed-source-image-service)).
-- [ ] **Structural techniques land once**: each retired transfer technique
-      in its component, pattern or lifecycle piece, adopted where qualified
-      comparisons improve speed, quality, reuse, simplicity or resource cost.
-- [ ] **Persisted state and settings:**
-      - [x] **Shared kept-state identity:** the bound spec and every stage's
-            layout derive `llmp-state-v2`. When the source provides a prepared
-            execution identity, setup folds it into that same opaque layout
-            before registration, so durable records and slot restore/adoption
-            refuse another declared configuration. Legacy/null sources retain
-            their original layouts; ordinary serving does not implicitly gain
-            a required domain. Record fields/version stay unchanged (D-105).
-            Main Spark A native build and all 229 host controls across nine
-            targets pass, including current-identity fresh-owner continuation
-            and changed-identity refusal before adoption/restore effects.
-      - [x] **Spec-bound calibration:** key shared serving measurements by
-            the actual bound spec, preserving artifact storage paths, default
-            settings and legacy-runner handling (D-103). Main native build,
-            321 host controls across 15 affected targets and six existing
-            Gemma serving/assistant model cases pass without failures or skips.
-            The companion metadata parser has a separate 384 MiB startup
-            envelope; this is not a quality or performance qualification.
-      - [ ] **Component-derived settings and legacy retirement:** replace
-            architecture-based applicability and defaults as the remaining
-            serving paths migrate; retain their qualification limits.
-
-**Exit criteria:**
-
-- **One engine:** every current model (Gemma2, Gemma3, Gemma4 26B-A4B and
-  31B with assistants, Qwen3.8 native with MTP and GGUF, DeepSeek V4 Flash
-  with DSpark, Qwen-Image-2.1, and the Qwen2 FP16/EXL3 fixtures) runs from
-  a spec on the shared components. No family-specific runner, plan, graph
-  builder, binding or serving class remains, and serving dispatches by
-  pipeline kind, not architecture name. Every catalog component has a CPU
-  reference, and fake-backend tests compare its fragment with it.
-- **Speed:** against its recorded baseline, each LLM's prefill and
-  decode, solo and at its qualified cohorts, and Qwen-Image's generation
-  latency, are no more than 1% slower at worst under the fixed protocol,
-  and preferably at least as fast.
-- **Quality and state:** prospective numerical improvements are judged
-  against a reference implementation of the same quantized checkpoint
-  (owner clarification, 2026-10-12), with frozen reference provenance,
-  coverage and bounds, NLL/perplexity and existing behavioral controls.
-  Original-model evidence is required only for claims of closer agreement
-  with that original; missing original weights do not block this gate;
-  historical completed gates are not reclassified. Exact same-implementation
-  state, continuation, spill, restore and kept-state controls pass; the M3
-  swap table and the Gemma
-  near-8K switch controls pass within their bounds. Report peak memory;
-  a worthwhile speed or quality benefit may use more than the baseline
-  when the complete workload safely fits the hardware (owner, 2026-10-13).
-- **Formats:** Qwen3.8's NVFP4 and MXFP8 tensors, read from its
-  artifacts, run every product shape on `sm_86` through on-chip decode
-  within tolerance of the CPU references; no resident weight
-  is larger than its source encoding. DeepSeek V4's mixed-type GGUF runs
-  its fused patterns across differently encoded operands where they gain,
-  checked against the CPU references.
-- **State encodings:** a lossy KV encoding runs as an opt-in per-alias mode
-  on every migrated LLM, off by default, with its long-context quality
-  against F16 measured and reported (an opt-in mode carries no parity
-  claim).
-- **Import:** the native importer imports every migrated model from its
-  source checkpoint (archived or staged, verified against its archive
-  manifest, D-114) into the new format version, and each passes the
-  admission gate and the gates above; the MLX checkpoint of a migrated
-  architecture, `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP@dadefa80` (chosen
-  with the owner, 2026-10-09), imports and passes the admission
-  gate; the
-  importer and the new artifact format pass their adversarial challenge
-  (workflow.md's heavy path).
-- **Partitioning:** the planner's split choices and their equivalence pass
-  on the fake backend for TP, PP, EP and a mixed TP×PP layout.
-- The Spark check set passes; skipped tiers are named.
+**Handed on:** M3.5 resumes on this engine (below), physical memory modes first; M4 gains the deferred item
+on concurrent models and a shared pageable workspace; M9 takes the
+optimization leads.
 
 ## M4 — Two-Spark fast full swap  `pending`
 
@@ -3009,6 +1654,19 @@ requantization from optimizations at unchanged quality.
       not its validation target, and llama.cpp has no V4.1 architecture,
       so V4.1's oracle is its repository's own inference code.
 - [ ] The minimal `/v1/chat/completions` serves the sharded models.
+- [ ] **Concurrent models and the shared workspace** (deferred from M3.6,
+      [record](m36-record.md#deferred-items-from-the-reviews)): the node's
+      shared pageable workspace (activations and the GGML pool) pages with
+      the active model and every model draws on it from its base, so a shared
+      pageable workspace rules out two models executing concurrently on one
+      node. Revisit with placement: a workspace per executing model, or
+      disjoint ranges of one, before the conductor places two models' work on
+      one node at once (D-019 to D-025). Also from M3.6's partitioning: a TP
+      stage never mixes split and replicated layers, the device cap is 16, no
+      embedding split by vocabulary, expert parallelism is local experts plus
+      a mask plus one all-reduce (no all-to-all, no DP-attention mode), and
+      the lowering's per-runner backend and stream assumptions
+      ([engine-components.md](engine-components.md#partitioning)).
 
 **Exit criteria:**
 
@@ -3469,6 +2127,13 @@ partial-retention benefit workload are pinned before acceptance runs
       in the shared engine and reach these models as they are found, not
       held for this pass (D-107, [workflow.md](workflow.md)'s "optimize
       once"); this pass takes what remains of the accepted M3 gaps.
+      M3.6 hands on its leads ([record](m36-record.md#deferred-items-from-the-reviews)):
+      Qwen3.8 MTP activation sizing (8.05 GiB at four slots against 1.42 GB
+      in M3), planning cost (about 12 against 9 ms a new shape, joined steps
+      admitting each owner twice), the roughly 0.25 s workspace mapping in a
+      Qwen3.8 swap, the decode-template leads, the per-technique structural
+      adoption audit and a full-context Q8_0 KV scoring path for Qwen3.8 and
+      DeepSeek.
 - [ ] **Larger-than-memory library:** DeepSeek V4 Flash with Qwen3.8 Flash
       Next on one node is the canonical pair (D-036). M3 runs both, with
       their compressed attention and indexers, Qwen3.8's sparse n-gram rows
