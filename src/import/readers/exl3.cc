@@ -9,11 +9,11 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -55,8 +55,7 @@ std::uint64_t Elements(const Tensor& t) {
 }
 
 std::expected<void, Error> Apply(std::vector<Tensor>& tensors) {
-  std::unordered_map<std::string_view, std::size_t> index;
-  index.reserve(tensors.size());
+  std::map<std::string_view, std::size_t> index;
   for (std::size_t i = 0; i < tensors.size(); ++i) {
     index.emplace(tensors[i].name, i);
   }

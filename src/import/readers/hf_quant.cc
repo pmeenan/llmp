@@ -7,10 +7,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -410,8 +410,7 @@ std::expected<void, Error> ApplyQuantization(const std::optional<Quantization>& 
     return {};
   }
   const Quantization& q = *quantization;
-  std::unordered_map<std::string_view, std::size_t> index;
-  index.reserve(tensors.size());
+  std::map<std::string_view, std::size_t> index;
   for (std::size_t i = 0; i < tensors.size(); ++i) {
     index.emplace(tensors[i].name, i);
   }

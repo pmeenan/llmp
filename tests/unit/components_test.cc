@@ -1761,6 +1761,29 @@ TEST(ComponentsTest, MoeFragmentMatchesItsReference) {
   EXPECT_EQ(def.splits[0].units(*in), 8U);
 }
 
+ComponentRef MoePre(bool stacked, bool scales, bool normalize) {
+  return C("ffn.moe", {P("placement", N("pre")), P("eps", R(1e-6)), P("activation", N("gelu_tanh")),
+                       P("hidden", I(0)), P("experts", I(8)), P("used", I(3)),
+                       P("expert_hidden", I(32)), P("router", N("softmax_topk")),
+                       P("router_input", N("rms_scaled")), P("normalize", ParamValue(normalize)),
+                       P("expert_scales", ParamValue(scales)), P("stacked", ParamValue(stacked))});
+}
+
+TEST(ComponentsTest, MoePreFragmentMatchesItsReference) {
+  constexpr std::uint16_t kExpertScale = 12;
+  const std::vector<Step> rows{
+      {.shape = {.segments = {Seg(0, 3, 0, 256, 1), Seg(1, 2, 7, 256, 2)}}},
+      {.shape = {.segments = {Seg(0, 1, 3, 256, 1)}}},
+  };
+  auto in = MakeInstance(MoePre(true, true, true), kFacts, Site::kLayer, 0, 2);
+  ASSERT_TRUE(in.has_value()) << in.error();
+  Compare(*in, MoeFormats(Encoding::kF32, true), {}, rows, 1e-4, 0.0,
+          {{kExpertScale, {0.5F, 0.5F}}});
+  auto g = BuildComponent(*in, rows[0].shape, MoeFormats(Encoding::kF32, true), {});
+  ASSERT_TRUE(g.has_value()) << g.error();
+  EXPECT_EQ(CountIn(g->step.graph, ir::Op::kAdd), 1U);
+}
+
 // Each piece alone, through the reference executor against its own
 // reference: the router, the routed experts with their reduce, the GLU.
 TEST(ComponentsTest, MoePiecesMatchTheirReferences) {
@@ -2298,6 +2321,28 @@ TEST(ComponentsTest, StoresIntoBorrowedOrForeignStateAreRefused) {
     EXPECT_EQ(CheckStateWrites(step, 0).has_value(), allowed)
         << borrowed << " " << foreign << " " << tap;
   }
+}
+
+TEST(ComponentsTest, ApplyKvCacheEncodingLeavesNonAttentionComponentsUnchanged) {
+  spec::ModelSpec spec = Gemma2Spec();
+  const auto glu_before = spec.stages[0].layers[0].components[1].params;
+  auto bytes = KvCacheEncodingBytes(spec, format::Encoding::kQ8_0);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error();
+  auto applied = ApplyKvCacheEncoding(spec, format::Encoding::kQ8_0, *bytes);
+  ASSERT_TRUE(applied.has_value()) << applied.error();
+  EXPECT_EQ(spec.stages[0].layers[0].components[1].params, glu_before);
+  EXPECT_EQ(spec.stages[0].layers[0].components[1].Find("kv_encoding"), nullptr);
+
+  // A spec with only non-attention components cannot compute KV cache encoding bytes.
+  spec::ModelSpec no_attn = spec;
+  for (auto& stage : no_attn.stages) {
+    for (auto& layer : stage.layers) {
+      std::erase_if(layer.components,
+                    [](const spec::ComponentRef& c) { return c.kind == "attention.dense"; });
+    }
+  }
+  auto no_attn_bytes = KvCacheEncodingBytes(no_attn, format::Encoding::kQ8_0);
+  EXPECT_FALSE(no_attn_bytes.has_value());
 }
 
 }  // namespace

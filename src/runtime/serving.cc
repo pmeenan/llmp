@@ -40,7 +40,6 @@
 #include "components/step.h"
 #include "engine/component_source.h"
 #include "engine/paged_weights.h"
-#include "engine/planned.h"
 #include "execution/adaptive_depth.h"
 #include "execution/adaptive_wave_mode.h"
 #include "kernels/ggml/cublas.h"
@@ -93,9 +92,7 @@ static_assert(config::kMaxWaveCostWidths + 1 == execution::AdaptiveWaveMode::kMa
 EngineImageBuild ComponentImageBuild(std::string architecture) {
   return [architecture = std::move(architecture)](
              const ModelSettings&) -> std::expected<EngineImageParts, std::string> {
-    return Error(std::format(
-        "the component engine has no step source for architecture {} yet (its migration wires it)",
-        architecture));
+    return Error(std::format("unsupported image composition {}", architecture));
   };
 }
 
@@ -634,7 +631,7 @@ Status Server::Start(bool snapshot) {
   const auto startup_available = measured_startup_available - allowance;
   const MemoryGuard startup_guard{.largest = largest,
                                   .host_inputs = host_inputs,
-                                  .plans = plans + engine::ScratchArenaBytes(),
+                                  .plans = plans,
                                   .available = startup_available,
                                   .fixed = 0,
                                   .requests = RequestFloor(config_.client)};
@@ -704,15 +701,11 @@ Status Server::Start(bool snapshot) {
   // in the budget the catalog enforces. One model runs chunks at a time, so
   // the most any model's chunk builds, not their sum.
   host_inputs_ = host_inputs;
-  // So are its plans and graphs (engine/planned.h), but only the floor is
+  // So are its plans and graphs, but only the floor is
   // set apart here: what one step of any model holds at once. Every plan
   // and graph past it is charged inside the budget (PagedNode::ChargeHost)
   // and given back through the reclaim order when the budget is needed.
-  // Beside it, the scratch arena every plan's first build uses (one for the
-  // process, at the largest estimate the models' setups measured).
-  const std::uint64_t step_plans = plans;
-  plans_ = plans + engine::ScratchArenaBytes();
-  plans = plans_;
+  plans_ = plans;
   // The startup payments are catalog occupancy now, inside fixed_, which
   // the budget below counts beside this availability: counted once, there,
   // not subtracted from the measured availability as well.
@@ -791,7 +784,7 @@ Status Server::Start(bool snapshot) {
   node_.Run();
   // Plans and graphs past the floor are charged inside the budget; a charge
   // that does not fit has the reclaim order make room first.
-  node_.SetHostFloor(step_plans);
+  node_.SetHostFloor(plans);
   node_.SetReclaimer([this](std::uint64_t needed, engine::PagedNode::ReclaimFor what,
                             std::span<const catalog::ExtentId> protect) {
     // Cache charges displace only other plans and graphs, never

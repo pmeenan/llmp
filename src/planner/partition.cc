@@ -345,7 +345,9 @@ std::uint64_t Total(std::span<const Held> held, std::uint64_t state) {
 std::uint64_t StreamBytes(const StageModel& m, std::uint32_t rows) {
   const auto all = All(m.instances);
   const std::uint64_t width = all.empty() ? 0 : all.front()->stage.width;
-  return width * rows * 4;
+  const std::uint64_t streams =
+      all.empty() ? 1 : std::max<std::uint32_t>(1, all.front()->stage.streams);
+  return width * streams * rows * 4;
 }
 
 // The modelled traffic of an option's collective over `group`.
@@ -1684,6 +1686,12 @@ std::expected<std::vector<TensorId>, std::string> Partitioner::MakeFull(TensorId
   const ir::TensorDesc& desc = g_.tensor(t);
   const ir::Node& prod = Producer(t);
   if (w.lay.kind == LayKind::kFull) return w.local;
+  if (!stateful_[t.v] && !w.slots.empty() && full_.contains({t.v, w.slots.front()})) {
+    std::vector<TensorId> out;
+    out.reserve(w.slots.size());
+    for (const std::size_t s : w.slots) out.push_back(full_.at({t.v, s}));
+    return out;
+  }
   if (w.lay.kind == LayKind::kExperts) {
     return Refused(std::format("{}: an expert-local value read whole", g_.name(t)));
   }

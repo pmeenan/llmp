@@ -29,6 +29,24 @@ constexpr std::string_view kAffineName = "llmp.decode.grouped.affine.split";
 // NVFP4 routed experts the importer relaid out into the scale-atom layout,
 // decoded on chip (W4A16) where the block-scaled grouped GEMM is not taken.
 constexpr std::string_view kNvfp4AtomsName = "llmp.decode.grouped.nvfp4.scale_atoms";
+constexpr std::string_view kBlockName = "llmp.decode.grouped.block";
+
+bool CheckGroupedFormat(std::string_view name, const format::TensorFormat& f) {
+  if (name == kBlockName) {
+    return f.layout == format::Layout::kGgmlBlocks || f.layout == format::Layout::kGgmlNvfp4Blocks;
+  }
+  if (name == kNvfp4Name) {
+    return f.encoding == format::Encoding::kNvfp4 && f.layout == format::Layout::kSplit;
+  }
+  if (name == kNvfp4AtomsName) {
+    return f.encoding == format::Encoding::kNvfp4 && f.layout == format::Layout::kScaleAtoms;
+  }
+  if (name == kAffineName) {
+    return f.encoding == format::Encoding::kAffine && f.layout == format::Layout::kSplit;
+  }
+  return false;
+}
+
 std::unexpected<Failure> Reject(std::string detail) {
   return std::unexpected(Failure{.detail = std::move(detail)});
 }
@@ -334,10 +352,7 @@ class Source final : public kg::SelectedSource {
       return Reject("foreign grouped declaration");
     auto geometry = Shape(node, inputs, outputs);
     if (!geometry) return std::unexpected(geometry.error());
-    if (implementation.name == kNvfp4Name && geometry->format.encoding != format::Encoding::kNvfp4)
-      return Reject("grouped implementation and weight encoding differ");
-    if (implementation.name == kAffineName &&
-        geometry->format.encoding != format::Encoding::kAffine)
+    if (!CheckGroupedFormat(implementation.name, geometry->format))
       return Reject("grouped implementation and weight encoding differ");
     return std::make_unique<Call>(this, std::move(*geometry),
                                   execution::IdentityOf(implementation));
@@ -547,10 +562,7 @@ class ResidentSource final : public kg::SelectedSource {
       return Reject("foreign resident grouped declaration");
     auto geometry = Shape(node, inputs, outputs);
     if (!geometry) return std::unexpected(geometry.error());
-    if ((implementation.name == kNvfp4Name &&
-         geometry->format.encoding != format::Encoding::kNvfp4) ||
-        (implementation.name == kAffineName &&
-         geometry->format.encoding != format::Encoding::kAffine))
+    if (!CheckGroupedFormat(implementation.name, geometry->format))
       return Reject("resident grouped implementation and weight encoding differ");
     return std::make_unique<ResidentCall>(this, std::move(*geometry),
                                           execution::IdentityOf(implementation));

@@ -29,11 +29,6 @@
 #include "engine/runner_memory.h"
 #include "engine/support.h"
 #include "expected_error.h"
-#ifdef LLMP_LIVE_STATE_LAUNCH_TEST
-#include "engine/live_state_launch.h"
-#include "engine/runner_resources.h"
-#include "kernels/ggml/launch.h"
-#endif
 #include "platform/direct_io.h"
 #include "providers/device_runtime.h"
 #include "runtime/intake_limits.h"
@@ -1459,44 +1454,6 @@ TEST_F(LiveStateTest, ACommitRefusedAfterTheRestoreQueuedFailsAsQueuedWork) {
   EXPECT_TRUE(model_.live.quarantined());
   ASSERT_TRUE(model_.live.Clear(node_, model_.fence_closure(), 0, "clear quarantined state"));
 }
-
-#ifdef LLMP_LIVE_STATE_LAUNCH_TEST
-// The legacy runners' launch-context path (live_state_launch.h) and the
-// core's never mix: each QueueOwed refuses the other's commit before
-// queuing anything, and the commit stays owed.
-TEST_F(LiveStateTest, EachQueueOwedRefusesTheOtherPathsCommit) {
-  namespace kg = llmp::kernels::ggml;
-  en::RunnerResources resources(node_, 0, 0);
-  std::uint32_t launched = 0;
-  en::SetCommitThrough(
-      model_.live, resources,
-      [&](kg::LaunchContext&, std::uint32_t) -> std::expected<void, kg::KernelFailure> {
-        ++launched;
-        return {};
-      });
-  model_.live.Verified(2);
-  ASSERT_TRUE(model_.live.Accept(1));
-  auto core = model_.live.QueueOwed(pr::NativeStream{});
-  ASSERT_FALSE(core);
-  EXPECT_FALSE(core.error().unknown) << core.error().detail;
-  EXPECT_EQ(launched, 0U);
-  EXPECT_TRUE(model_.live.owed());
-
-  std::uint32_t queued = 0;
-  model_.live.SetCommit([&](pr::NativeStream, std::uint32_t) -> en::LiveState::Queued {
-    ++queued;
-    return {};
-  });
-  auto launch = resources.MeasuringContext();
-  ASSERT_TRUE(launch) << launch.error();
-  auto legacy = en::QueueOwedThrough(model_.live, **launch);
-  ASSERT_FALSE(legacy);
-  EXPECT_EQ(legacy.error().error, kg::KernelError::kRejected) << legacy.error().detail;
-  EXPECT_EQ(queued, 0U);
-  EXPECT_TRUE(model_.live.owed());
-  EXPECT_FALSE(model_.live.quarantined());
-}
-#endif  // LLMP_LIVE_STATE_LAUNCH_TEST
 
 TEST(LiveStateBufferTest, UnprovenCopyRefusesReuseAndKeepsItsDestinationUntilExit) {
   en::PagedNode node(en::NodeSettings{});

@@ -73,8 +73,11 @@ std::expected<std::uint64_t, std::string> KvCacheEncodingBytes(const spec::Model
     auto visited = Visit(
         stage,
         [&](const spec::ComponentRef& component, bool layer) -> std::expected<void, std::string> {
-          if (component.kind == "attention.dense" || component.kind == "attention.borrowed" ||
-              component.kind == "attention.qsa" || component.kind == "attention.mqa") {
+          const auto* definition = Find(component.kind, component.version);
+          if (!definition) return std::unexpected("KV encoding encountered an unknown component");
+          const bool has_kv_encoding = std::ranges::any_of(
+              definition->params, [](const ParamSpec& p) { return p.name == "kv_encoding"; });
+          if (has_kv_encoding) {
             if (!layer || component.params.size() >= spec::kMaxParams ||
                 ++count > spec::kMaxComponents)
               return std::unexpected("Q8_0 KV parameter inventory exceeds the catalog bound");
@@ -121,19 +124,12 @@ std::expected<void, std::string> ApplyKvCacheEncoding(spec::ModelSpec& model,
         [&](const spec::ComponentRef& component, bool layer) -> std::expected<void, std::string> {
           const auto* definition = Find(component.kind, component.version);
           if (!definition) return std::unexpected("KV encoding encountered an unknown component");
-          if (component.kind != "attention.dense" && component.kind != "attention.borrowed" &&
-              component.kind != "attention.qsa" && component.kind != "attention.mqa") {
-            if (component.kind == "attention.gdn" || component.kind == "residual.ple" ||
-                component.kind == "embedding.mtp" || component.kind == "embedding.inject" ||
-                component.kind == "embedding.projected") {
-              return {};
-            }
-            if (definition->state != nullptr || definition->inject != nullptr)
-              return std::unexpected(
-                  "Q8_0 KV does not cover a borrowed or specialized state consumer");
+          const bool has_kv_encoding = std::ranges::any_of(
+              definition->params, [](const ParamSpec& p) { return p.name == "kv_encoding"; });
+          if (!has_kv_encoding) {
             return {};
           }
-          // The dense/qsa catalog has bounded canonical parameters. Reject list inputs
+          // The catalog has bounded canonical parameters. Reject list inputs
           // (except rope_sections) before copying so malformed values cannot exceed budget.
           std::string_view previous;
           for (const auto& p : component.params) {
@@ -159,10 +155,14 @@ std::expected<void, std::string> ApplyKvCacheEncoding(spec::ModelSpec& model,
   }
   for (auto& stage : model.stages)
     for (auto& layer : stage.layers)
-      for (auto& component : layer.components)
-        if (component.kind == "attention.dense" || component.kind == "attention.borrowed" ||
-            component.kind == "attention.qsa" || component.kind == "attention.mqa")
+      for (auto& component : layer.components) {
+        const auto* definition = Find(component.kind, component.version);
+        if (definition && std::ranges::any_of(definition->params, [](const ParamSpec& p) {
+              return p.name == "kv_encoding";
+            })) {
           SetEncoding(component, "q8_0");
+        }
+      }
   return {};
 }
 

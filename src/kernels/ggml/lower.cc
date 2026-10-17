@@ -4911,6 +4911,9 @@ std::expected<LoweredStep, KernelFailure> Lowering::Run() {
     if (n.key == ir::Primitive(Op::kExpertReduce) && n.nsrc >= 1) {
       tensors += 3 + (2 * p_.tensor(n.src[0]).ne(1));
     }
+    if (n.key == ir::Primitive(Op::kSsmConv) && SsmConvPad(p_, n) != 0) {
+      tensors += 4;
+    }
     tensors += n.key.op == Op::kFused || n.key.op == Op::kMatMul || n.key.op == Op::kWeight ||
                        n.key.op == Op::kGatedDeltaNet
                    ? 8

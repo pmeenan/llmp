@@ -89,7 +89,22 @@ OperandRule DenseRule(std::uint8_t operand, std::span<const Encoding> encodings)
 }
 
 bool Accepts(const execution::CapabilityQuery& q) {
-  return CompiledFor(q.arch) && q.k < (std::uint64_t{1} << 30U) && q.n < (std::uint64_t{1} << 31U);
+  if (!CompiledFor(q.arch) || q.k >= (std::uint64_t{1} << 30U) ||
+      q.n >= (std::uint64_t{1} << 31U)) {
+    return false;
+  }
+  for (const auto& o : q.operands) {
+    if (o.encoding == Encoding::kAffine && o.params.bits != 0) {
+      if (!((o.params.bits == 4 || o.params.bits == 8) &&
+            (o.params.group == 32 || o.params.group == 64 || o.params.group == 128) &&
+            (o.params.scale == format::AffineScale::kBF16 ||
+             o.params.scale == format::AffineScale::kF16) &&
+            !o.params.zero_point && (q.k == 0 || q.k % o.params.group == 0))) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 std::string TemplateText(Template t, std::string_view mma) {

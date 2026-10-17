@@ -11,29 +11,37 @@ family's own. `llmp-runtime` serves through it
 ([runtime-serving.md](runtime-serving.md)) and the paged harnesses drive the
 same code (`tests/support/paged_node.h`).
 
-**Being replaced (M3.6, D-107).** The per-family runners, plans and graph
-builders described below give way to one engine of shared components over
-llmpalooza's own graph IR ([engine-components.md](engine-components.md)). This
-file describes the code as it is, and changes as each piece lands.
+**Completed in M3.6 (D-107).** The per-family runners, plans and graph
+builders have been replaced by one engine of shared components over
+llmpalooza's own graph IR ([engine-components.md](engine-components.md)).
+All LLMs (Gemma 2, Gemma 3, Gemma 4, Qwen2, Qwen3.8, DeepSeek V4 Flash),
+drafters (`gemma4_assistant`, `dspark`), and `Qwen-Image-2.1` execute on
+`ModelRunner` (`src/engine/model_runner.h`) and `SlotLifecycle` (`src/engine/slot_lifecycle.h`).
+This file describes the shared engine architecture.
 
-**Two libraries** (D-096 as amended 2026-10-08). `llmp_engine_core` builds
-in every profile and names no kernel library: the node, the weights'
-paging, live state (with its spill, checkpoints and a verify's snapshot),
-the runner's own memory (`runner_memory.h`), what plans hold
-(`plan_account.h`: the charge, the step a reclaim spares, the reclaimer's
-view of a cache), prefill lookahead, the request cohort, the shared slot
-lifecycle (`slot_lifecycle.h`, below), the n-gram rows, and the one model runner
-over step programs with its wave composer and prefill orchestrator
-(`model_runner.h`, [below](#the-model-runner)). It reaches the device through the providers, the device runtime and
-the paging kernels (`kernels/paging/paging.h`), and links no device
-backend: a program links the CUDA one, or the fake device runtime
-(`providers/fake/fake_device_runtime.h`: host memory, work queued on fake
-streams that runs when a fence is queried) with the paging kernels' host
-loops (`llmp_fake_device_backend`), which the core's tests use in every
-profile. `llmp_engine` (CUDA builds) adds the GGML plans and runs
-(`planned.h`, `graph_runs.h`), the runners' cuBLAS and launch context
-(`runner_resources.h`), `ExpertSlab` (`expert_slab.h`), the launch-context
-path of a verify's snapshot (`live_state_launch.h`) and each family's runner.
+**Two libraries** (D-096 as amended for M3.6). `llmp_engine_core` builds
+in every profile and names no kernel library: the node (`paged_node.h`), the
+weights' paging (`paged_weights.h`), live state (with its spill, checkpoints
+and a verify's snapshot: `live_state.h`, `checkpoint_file.h`), the runner's own
+memory (`runner_memory.h`), what plans hold (`plan_account.h`: the charge, the
+step a reclaim spares, the reclaimer's view of a cache), prefill lookahead
+(`prefill_lookahead.h`), the request cohort (`request_cohort.h`), the shared
+slot lifecycle (`slot_lifecycle.h`), Qwen3.8's n-gram rows (`ple_rows.h`), and
+the one model runner over step programs (`model_runner.h`, `step_runs.h`,
+`plan_cache.h`, `coverage.h`) with its wave composer (`wave_composer.h`),
+prefill orchestrator (`prefill.h`), decoding modes with any number of drafters
+(`decoding.h`, `draft_progress.h`, `draft_companions.h`), and the component
+step source (`component_source.h`, `graph_plan.h`, `execution_contract.h`,
+`program_lifecycle.h`, `supplemental_run.h`). It reaches the device through the
+providers, the device runtime and the paging kernels (`kernels/paging/paging.h`),
+and links no device backend: a program links the CUDA one, or the fake device
+runtime (`providers/fake/fake_device_runtime.h`: host memory, work queued on fake
+streams that runs when a fence is queried) with the paging kernels' host loops
+(`llmp_fake_device_backend`), which the core's tests use in every profile.
+`llmp_engine` (CUDA builds only) adds GGML plan caches and graph runs (`planned.h`,
+`graph_runs.h`), the runners' cuBLAS and launch context (`runner_resources.h`),
+and `ExpertSlab` (`expert_slab.h`). All per-family runners and per-family graph
+builders are deleted.
 
 ## The node
 
@@ -65,13 +73,51 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Part | File | What it does | The runner supplies |
 | --- | --- | --- | --- |
 | Weights | `paged_weights.h` | Opens an artifact; registers its shards as the model's weight files (`PagedNode::AddWeightFile`), open for direct reads only while the model is active and size-checked as they open; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`; a GGML runner's `ExpertSlab`, `expert_slab.h`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
-| Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify, queued on the job's stream as the paging kernels' range copies (a GGML runner queues them through its launch context, `live_state_launch.h`) | The state layout and each step's used ranges; which ranges a verify writes; a commit if kept rows need one |
+| Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify, queued on the job's stream as the paging kernels' range copies | The state layout and each step's used ranges; which ranges a verify writes; a commit if kept rows need one |
 | Planned shapes | `planned.h` (`plan_account.h`, `plan_cache.h`, `coverage.h`) | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`; the core's `BasicPlanCache` over GGML's `PlanRuns`); in the core, `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `PlanCacheBase`, `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim); `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
 | Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run (or when the runner asks), beside that run's launch-by-launch execution (so capture and instantiation overlap the device's work) unless work is queued between inputs and plan, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `CaptureAhead` records another planned shape's graph without running it, from the input layout `Layout` predicts; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts, hinted prefill) and what it copies out |
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
 | Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
-| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, a verify's Accept, discard and settle among them, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); the model runner's, so Gemma 2's, Gemma 3's and Gemma 4's (the other families' runners move to it as they migrate) | The stages' contracts and read alignments, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
+| Slot lifecycle | `slot_lifecycle.h` (`model/state_contract.h`) | Request slots of one LiveState per stage (target, then each drafter) and every verb that moves their state, a verify's Accept, discard and settle among them, derived from the stages' state contracts, with the reconciled guards ([below](#the-shared-slot-lifecycle)); used by all models on `ModelRunner` (Gemma 2, Gemma 3, Gemma 4, Qwen2, Qwen3.8, DeepSeek V4 Flash, drafters, and image compositions) | The stages' contracts and read alignments, the shared extents, the spec's digest, its invalidation and plan-dropping hooks, and a write record before every job that writes a slot |
+
+### Engine file inventory (`src/engine/`)
+
+The module contains only shared engine code (no per-family code):
+
+| Header | Implementation | Role |
+| --- | --- | --- |
+| `checkpoint_file.h` | `checkpoint_file.cc` | Direct-I/O turn boundary checkpoint files |
+| `component_source.h` | `component_source.cc` | Step source for models built from components |
+| `coverage.h` | `coverage.cc` | Tensor role and coverage checks |
+| `decoding.h` | `decoding.cc` | Decoding modes: plain, sampled, speculative cascade/alternatives |
+| `draft_companions.h` | `draft_companions.cc` | Companion drafter orchestration |
+| `draft_progress.h` | `draft_progress.cc` | Repeatable drafter progress and durable pending records |
+| `execution_contract.h` | `execution_contract.cc` | Execution contract validation and lifecycle |
+| `expert_slab.h` | `expert_slab.cc` | Expert slab layout and pitch (`llmp_engine`) |
+| `graph_mask_inputs.h` | — | Mask source validation and host staging |
+| `graph_plan.h` | `graph_plan.cc` | Planned step graph binding and lowering |
+| `graph_runs.h` | `graph_runs.cc` | Input staging, execution and CUDA graph capture (`llmp_engine`) |
+| `live_state.h` | `live_state.cc` | Virtual state regions, sparse spill files, verify snapshots |
+| `model_runner.h` | `model_runner.cc`, `model_runner_routed.cc` | The single shared model runner over step programs |
+| `paged_node.h` | `paged_node.cc` | Paged node: device, streams, io_uring, scheduler, workspace |
+| `paged_weights.h` | `paged_weights.cc` | Weight files, group reservation, slab layout, direct reads |
+| `plan_account.h` | `plan_account.cc` | Plan memory accounting and charges |
+| `plan_cache.h` | — | Basic plan cache template |
+| `planned.h` | `planned.cc` | Bound GGML planned graphs and activation placement (`llmp_engine`) |
+| `ple_rows.h` | `ple_rows.cc` | On-demand n-gram row gathering and direct reads |
+| `prefill.h` | `prefill.cc` | Prefill orchestrator: chunking, joins and futures |
+| `prefill_lookahead.h` | — | Future shape prediction and lookahead groups |
+| `program_lifecycle.h` | `program_lifecycle.cc` | Step program lifecycle and resource bindings |
+| `request_cohort.h` | `request_cohort.cc` | Request slots, active sets, closures, fault isolation |
+| `runner_memory.h` | `runner_memory.cc` | Runner device memory and pinned staging |
+| `runner_resources.h` | `runner_resources.cc` | cuBLAS handles, workspace and launch context (`llmp_engine`) |
+| `run_stats.h` | — | Execution statistics, graph paths, run counts |
+| `slot_lifecycle.h` | `slot_lifecycle.cc` | Shared request slot lifecycle derived from state contracts |
+| `step_runs.h` | `step_runs.cc` | Step program input staging, positions, outputs |
+| `supplemental_run.h` | `supplemental_run.cc` | Supplemental execution and commit steps |
+| `support.h` | — | Address, rounding, and error helpers |
+| `wave_composer.h` | `wave_composer.cc` | Wave composition across request slots |
 
 Startup measurement can skip greedy activation placement when a checked
 disjoint root-storage bound fits the current exact maximum. Gemma2/3,
@@ -249,8 +295,9 @@ current test. The retired runner's wave construction and its evidence are in the
 
 M3.6's replacement for the lifecycle each family wrote (D-107;
 [engine-components.md](engine-components.md#execution)), in the core and
-tested on the fake backend. The family runners do not use it yet: each
-family's migration moves to it with the rest of its runner.
+tested on the fake backend. All LLMs (Gemma 2, Gemma 3, Gemma 4, Qwen2,
+Qwen3.8, DeepSeek V4 Flash), drafters (`gemma4_assistant`, `dspark`), and
+`Qwen-Image-2.1` run on `SlotLifecycle` (`slot_lifecycle.h`).
 
 **State contracts** (`model/state_contract.h`). Each state tensor declares
 its kind, encoding (`format::Encoding`), cell bytes, cell rule (a cell per
@@ -341,10 +388,11 @@ for a known next chunk, drained after the current job) through the slots.
 M3.6's one runner (D-107; [engine-components.md](engine-components.md#execution)),
 in the core and tested on the fake backend (`model_runner_test`, over
 `tests/support/fake_step_source.h`; `decoding_test` for the decoding
-modes) and, over the component step source and GGML's lowering, on the
-Gemma artifacts. No family serves on it yet: each family's migration
-moves onto it with its components and is served through
-[the serving adapter](#the-serving-adapter).
+modes) and, over the component step source and GGML's lowering, on all
+supported models. All LLMs (Gemma 2, Gemma 3, Gemma 4, Qwen2, Qwen3.8,
+DeepSeek V4 Flash), drafters (`gemma4_assistant`, `dspark`), and
+`Qwen-Image-2.1` run on `ModelRunner` (`model_runner.h`) and are served
+through [the serving adapter](#the-serving-adapter).
 
 **Step programs** (`kernels/common/step_program.h`, vendor-free). A
 kernel source's lowering makes a `StepProgram` from a planned step and
@@ -730,18 +778,15 @@ completes, the dummy rows as scratch, no commit) and DSpark's injection
 (`DsparkWrites`), compared as each row's set of ranges (the order only
 places them in the snapshot).
 
-What each family's speculation maps onto, and what its migration must
-still bring:
+How each family's speculation maps onto the shared engine (all migrations completed in M3.6):
 
-| Family | Maps onto | Not yet |
+| Family | Maps onto | Migration milestone |
 | --- | --- | --- |
-| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with generated component commits; bounded on-demand n-gram rows and chunk-feature inputs | Runtime wiring and gates; the catch-up and passes in one job, the selected draft head's rows; the opt-in shared repeat-pending policy supplies durable chunk spans and prompt companions |
-| DeepSeek V4 + DSpark | A block drafter (its fill the mask token) over its ring (a position ring the target's injection writes); the target's window cells, compressor rings and compressed rows snapshot by row, no commit; the exact mode a row-invariant verify | The draft and the verify chained in one job (drafts copied into the verify's staged tokens and embedded on the device), the Markov head, shortening a draft before a mask width (`Dsv4SameWidths`: policy) |
-| Gemma4 assistant | An anchored autoregressive drafter with `borrows_target` and `features`, its contract viewing the target's KV (`borrowed_from_target`) and its tap of the target's final-norm rows; the target's KV truncates (a ring holds a chunk's rows beside its window, so a rejected row is never read) | The device's verify verdicts (`GreedyUnit`'s device judge); its adaptive depth (three drafts a unit, M3's screen's) |
+| Qwen3.8 MTP | An autoregressive drafter with `catch_up` over its own stage (K, V and indexer cells truncating; the streams a per-row tap the target writes, snapshot); the target's K, V, indexer and completed block keys snapshot by row, its linear layers' state `kCommit` with generated component commits; bounded on-demand n-gram rows and chunk-feature inputs | Completed in M3.6 (slice G3b/G3c); served via `EngineLlm` |
+| DeepSeek V4 + DSpark | A block drafter (its fill the mask token) over its ring (a position ring the target's injection writes); the target's window cells, compressor rings and compressed rows snapshot by row, no commit; the exact mode a row-invariant verify | Completed in M3.6 (slice G4b); served via `EngineLlm` |
+| Gemma4 assistant | An anchored autoregressive drafter with `borrows_target` and `features`, its contract viewing the target's KV (`borrowed_from_target`) and its tap of the target's final-norm rows; the target's KV truncates (a ring holds a chunk's rows beside its window, so a rejected row is never read) | Completed in M3.6 (slice G2c); served via `EngineLlm` |
 
-What the shared pieces reproduce of each family, and what a migration
-must still bring (as components' capabilities, planner patterns or
-policy):
+What the shared pieces reproduce of each family (completed in M3.6):
 
 | Family | Reproduced | Not yet |
 | --- | --- | --- |
@@ -800,13 +845,12 @@ retired at Release after the launch, before the memory), as
 `RunnerResources` does for the M3 runners. Its setup shapes are a
 prompt chunk and a decode row, joined and alone, with logits and with
 device tokens, at the end of the context reading all of it, and with a
-drafter a verify of its rows and a draft pass, joined and alone. Gemma 2
-and Gemma 3 have it and are served by it since their migration, Gemma 4
-26B-A4B and 31B and their assistants since theirs (the assistant an
-anchored drafter of three drafts a unit reading the target's tapped
-features; the M3 class's chat slice kept: thinking off and refused on,
-tools refused, the channel and tool-call openers ending a reply);
-any other architecture is refused at Setup. The tests'
+drafter a verify of its rows and a draft pass, joined and alone. All
+supported LLM architectures (Gemma 2, Gemma 3, Gemma 4 26B-A4B and 31B,
+Qwen2, Qwen3.8, and DeepSeek V4 Flash) and drafters (`gemma4_assistant`,
+`dspark`) are built by `ComponentLlmBuild` (`src/runtime/component_build.h`)
+and served by `EngineLlm` (`src/runtime/engine_llm.h`); any unapproved or
+unmapped architecture is refused at Setup. The tests'
 build is the fake's. Speculation on with parts that have no drafter is
 refused at Setup (the M3 classes refused it too), never served plain in
 its place. At Setup the adapter makes
@@ -847,17 +891,18 @@ costs acceptance only), and the adaptive wave form
 
 ## Adding a model family
 
-*From M3.6 (D-107, D-109) a family is added as an architecture mapping for
-the importer, plus any component its shape still lacks
-([engine-components.md](engine-components.md)); no family gets a runner of
-its own, and the guidance below describes the M3/M3.5 runners until they
-move. Gemma 2's and Gemma 3's are gone (slice G1d: `engine/gemma{2,3}_
-{runner,plan}.*`, `kernels/ggml/gemma{2,3}_graph.*`, the serving classes),
-and Gemma 4's (slice G2d: `engine/gemma4_{runner,plan,assistant,
-assistant_plan,greedy,wave}.*`, `kernels/ggml/gemma4_graph.*`,
-`gemma4_assistant_graph.*`, `gemma4_attention.cc`, the serving class);
-their paragraphs below stay as the record of the techniques the shared
-engine carries for them, and name files that no longer exist.* Start from the [optimization inventory's catalog](optimization-inventory.md#transfers-and-gaps):
+*Completed in M3.6 (D-107, D-109).* A model family is defined by declarative
+mappings for the native importer (`src/spec/mappings/`), plus any component
+its shape needs in the component catalog (`src/components/`), normalized into
+v1 artifacts by `src/import/`, and admitted via `src/runtime/approvals.cc` and
+`src/runtime/component_admission.cc` ([engine-components.md](engine-components.md)).
+No model family has a runner or graph builder of its own: all deleted per-family
+runners (`Gemma2Runner`, `Gemma3Runner`, `Gemma4Runner`, `Qwen38Runner`,
+`Dsv4Runner`, `Qwen2Runner`, `Gemma4AssistantRunner`, `DsparkRunner`,
+`QwenImageRunner`) and graph builders (`gemma2_graph.h`, `qwen38_graph.h`,
+`dsv4_graph.h`, etc.) are gone.
+The historical sections below document the techniques the shared engine carries
+for each family. Start from the [optimization inventory's catalog](optimization-inventory.md#transfers-and-gaps):
 a new runner adopts each technique there whose contract it meets before the
 family's speed is compared with its reference. Shared mechanisms (graph
 capture policy, held direct steps, state reuse across Clear, the pager's
@@ -1044,9 +1089,9 @@ native plain and 1.25% above original assistant on this short C1/P64 suffix.
 Own repeat/timed carry checks pass; EOG is ignored, with no terminal/serving,
 other-prefix, sustained or 26 qualification and no engine default change.
 
-What a new family writes, and nothing else:
+*(Historical M3/M3.5 reference — superseded in M3.6 by declarative mappings in `src/spec/mappings/`, components in `src/components/`, and approvals in `src/runtime/approvals.cc`)*: What a new family wrote before M3.6:
 
-- `model/<family>.h`: its profile, the binding to an artifact, its state
+- `model/<family>.h`: (historical) its profile, the binding to an artifact, its state
   layout (bytes per region, where each tensor lives), each chunk's
   host-built inputs, and for speculation which state ranges a verify
   writes, by row.

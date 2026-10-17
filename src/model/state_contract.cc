@@ -408,7 +408,9 @@ const StateLayoutDerived::Item* BorrowedItem(const StateLayoutDerived& target,
   for (const Item& item : target.items) {
     if (item.layer == borrowed.contract.target_layer &&
         item.contract.name == borrowed.contract.name &&
-        item.contract.cell_bytes == borrowed.contract.cell_bytes) {
+        item.contract.cell_bytes == borrowed.contract.cell_bytes &&
+        item.contract.encoding == borrowed.contract.encoding &&
+        item.contract.kind == borrowed.contract.kind) {
       return &item;
     }
   }

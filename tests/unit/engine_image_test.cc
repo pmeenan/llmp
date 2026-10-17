@@ -130,10 +130,10 @@ class Owner final : public kn::BackendOwner {
   bool Charge(std::uint64_t n) const override { return payment_->Charge(n); }
   void Release(std::uint64_t n) const override { payment_->Release(n); }
   std::expected<llmp::execution::BackendDeclaration, std::string> Ready() const override {
-    const auto id = llmp::base::Sha256{}
-                        .Update(trace_->backend_changed ? "typed-copy-changed"
-                                                        : "typed-copy-lifecycle-only")
-                        .Finish();
+    const auto id =
+        llmp::base::Sha256{}
+            .Update(trace_->backend_changed ? "typed-copy-changed" : "typed-copy-lifecycle-only")
+            .Finish();
     return llmp::execution::BackendDeclaration{id, id, id};
   }
 

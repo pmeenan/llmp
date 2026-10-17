@@ -720,29 +720,26 @@ Serving is v1-only (D-118, slice 4b): a target or drafter of any other
 format version is refused at registration ("re-import its source checkpoint
 with `llmp import`"), and a configuration names the v1 import's ID; nothing
 is synthesized from a compiled profile or bound by a per-family binder.
-The v0 IDs in older reports are history. Gemma 2 and Gemma 3 are moved (since their migration, whose
-gate passed and whose M3 classes, runners, plans, graph builders and
-`ServingOptions` flags are deleted), and so are Gemma 4 26B-A4B and 31B
-with their assistants (since theirs, whose M3 Gemma 4 class, runner,
-plans and graph builders, with their joined, row-invariant, prepare-state
-and `gemma26_production`/`gemma31_production` `ServingOptions`
-diagnostics, are deleted: the recipes are the mapping's policy rules, whose
-prompt chunk, 1,024 rows for 26B-A4B and 256 for 31B, serving takes where
-no setting overrides it); the other LLM families and the image
-pipeline keep their M3 classes until theirs. A Gemma 4 model with a
-`drafter` (its assistant) speculates on the engine: three drafts a unit,
-each pass at the committed positions reading the target's cache frozen
-and its final-norm features, then one verify, greedy agreement or seeded
-speculative sampling deciding what stays; M3 refused a Gemma drafter. A
-gate-only diagnostic
-(`ServingOptions::diagnostic_skip_turn_checkpoints`, set by the service
-from `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`, never from configuration)
-makes an engine-backed model skip each turn checkpoint's save, so M3.6's
-speed gate compares equal work with a baseline whose M3 classes could not
-save one
+The v0 IDs in older reports are history. All LLM models (Gemma 2, Gemma 3,
+Gemma 4 26B-A4B and 31B, Qwen3.8 native ModelOpt with MTP and GGUF, DeepSeek V4
+with DSpark) and their drafters, as well as image compositions (Qwen-Image-2.1),
+are served on the shared engine through `EngineLlm` (`runtime/engine_llm.h`) and
+`EngineImage` (`runtime/engine_image.h`). All legacy per-family serving classes,
+runners, plans and graph builders have been deleted.
+`src/runtime/serving.cc` (`Server::Make`) builds all LLM and drafter sessions
+through `ComponentLlmBuild` (`src/runtime/component_build.h`) onto `EngineLlm`
+and image compositions onto `EngineImage`, gated by `src/runtime/component_admission.h`
+and `src/runtime/approvals.h`.
+A Gemma 4 model with a `drafter` (its assistant) speculates on the engine: three
+drafts a unit, each pass at the committed positions reading the target's cache
+frozen and its final-norm features, then one verify, greedy agreement or seeded
+speculative sampling deciding what stays; M3 refused a Gemma drafter. A gate-only
+diagnostic (`ServingOptions::diagnostic_skip_turn_checkpoints`, set by the service
+from `LLMP_DIAGNOSTIC_SKIP_TURN_CHECKPOINTS=1`, never from configuration) makes an
+engine-backed model skip each turn checkpoint's save, so M3.6's speed gate compares
+equal work with a baseline whose M3 classes could not save one
 ([defect 3](experiments/m36-baselines/README.md#defects-in-the-baseline));
-the Gemma gates ran with it (the M3 Gemma 4 class's saves failed the same
-way), and it stays for the later families' gates.
+the gates ran with it, and it stays as a diagnostic.
 The parts of an
 engine-backed model's runner are built at its Setup
 (`runtime/component_build.h`): the spec its v1 artifact stores (composed

@@ -397,7 +397,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
           "derived serving qualification needs an ordinary target or composed replay source");
     if (solo && (!options.diagnostic_solo ||
                  (settings.max_slots.value != 1 && !joined_score && !joined_mtp && !plain_serving)))
-      return Error("the Qwen component qualification requires exactly one configured slot");
+      return Error(std::format(
+          "the {} component qualification requires exactly one configured slot", recipe.name));
     auto artifact = OpenInstalled(store, id);
     if (!artifact) return Error(artifact.error());
 
@@ -775,6 +776,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // landing and slots for the most lookups a setup shape makes,
     // engine::RowPagingPays); a smaller one stays resident with its group,
     // so no step waits on its reads.
+    const bool had_rows = !stored_bindings->rows.empty();
     {
       const auto& rows = stored_bindings->rows;
       std::vector<engine::RunnerConfig::RowTable> paged;
@@ -848,7 +850,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (block && std::cmp_greater_equal(block_fill, logit_width))
       return Error("a block drafter's fill token is outside the vocabulary");
     // A layer's routed experts in one slab (the M3 runners' pitch).
-    if (solo && stored_bindings->rows.empty())
+    if (solo && had_rows && stored_bindings->rows.empty())
       return Error("the component recipe has no n-gram row table");
     ComponentHold* held = hold.get();
     kernels::ggml::GgmlBackendOptions backend_options{

@@ -260,8 +260,6 @@ if(LLMP_CUDA)
 
   add_executable(live_state_test live_state_test.cc)
   target_link_libraries(live_state_test PRIVATE llmp_runtime llmp_engine)
-  # Also the legacy runners' launch-context path (engine/live_state_launch.h).
-  target_compile_definitions(live_state_test PRIVATE LLMP_LIVE_STATE_LAUNCH_TEST)
   llmp_gpu_gtest(live_state_test
                    ENVIRONMENT "LLMP_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 

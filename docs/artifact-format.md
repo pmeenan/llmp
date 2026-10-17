@@ -16,18 +16,20 @@ importer (M3.6, D-109) or the verifier (M5); until the importer lands it
 writes the artifacts (D-087).
 
 **Version 1 (M3.6, D-108, D-109, D-113).** The native C++ importer
-replaces the prototype and the per-checkpoint scripts and writes
-[version 1](#version-1): the same directory, container, profile, groups,
-chunks and page-in, with each tensor's format (encoding, layout and
-shape, named independently of any kernel library) and part in the index,
-the model spec as a hashed document of its own, the folds and relayouts
-the importer applied, and its identity in the manifest; target-specific
-layouts are prepared artifacts of their own. The reader takes both
-versions, but serving reads v1 only (D-118): every v0 artifact is
-re-imported; nothing migrates in place
+(`llmp import`) replaces the prototype and the per-checkpoint scripts and
+writes [version 1](#version-1): `format_version = 1`, the same directory,
+container, profile, groups, chunks and page-in, with each tensor's format
+(encoding, layout and shape, named independently of any kernel library) and part
+in the index, the model spec stored as a hashed document of its own
+(`spec.json`, D-113), the folds (`folds`) and relayouts (`relayouts`) the
+importer applied, and its identity in the manifest. While the artifact reader
+(`artifact/artifact.h`, `composition.h`) parses both versions for tooling and
+migration-baseline comparisons, **runtime serving is strictly v1-only** (D-118):
+`llmp-runtime` refuses v0 artifacts at registration ("re-import its source
+checkpoint with `llmp import`"); nothing migrates in place
 ([engine-components.md](engine-components.md#weight-and-state-formats)).
-The sections up to [Version 1](#version-1) describe v0, and v1 where it
-does not say otherwise.
+The sections up to [Version 1](#version-1) describe v0 as historical background,
+and v1 where it does not say otherwise.
 
 ## Native writer
 
@@ -868,6 +870,8 @@ the artifact). Experimental under D-018 like v0. The reader
 (`artifact/artifact.h`, `composition.h`) takes both versions, and gives
 v1 the same groups, chunks, placements, row lookups and read plans as
 v0, so nothing that pages an artifact in knows which version it read.
+However, runtime serving is strictly v1-only (D-118): the runtime refuses
+v0 artifacts at model registration.
 
 **What stays v0's.** The directory and its identity (the SHA-256 of
 `manifest.json`), staging and one-rename publication, the walk's rules

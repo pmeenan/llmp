@@ -1289,14 +1289,6 @@ LiveState::Status LiveState::Accept(std::uint32_t keep) {
 }
 
 LiveState::Queued LiveState::QueueOwed(providers::NativeStream stream) {
-  if (commit_keep_ != 0 && launch_commit_) {
-    // The two paths never mix (live_state_launch.h): such a commit ignores
-    // `stream` and the launch context's fault.
-    return std::unexpected(QueueFailure{
-        .unknown = false,
-        .detail = std::format("{}'s commit queues through its launch context (QueueOwedThrough)",
-                              model_)});
-  }
   if (owed()) InvalidatePlaces();
   bool restored = false;
   if (restore_count_ != 0) {

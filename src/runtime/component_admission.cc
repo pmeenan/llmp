@@ -362,7 +362,11 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValue
   const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
   if (d == nullptr || !d->drafter)
     return Refused("drafter source identity has no approved v1 execution profile");
-  if (d->target != t->name)
+  const Approval* want_target = FindApprovalNamed(d->target);
+  const bool match = d->target == t->name ||
+                     (want_target != nullptr && t->architecture == want_target->architecture &&
+                      t->spec == want_target->spec);
+  if (!match)
     return Refused(
         std::format("the approved drafter {} is {}'s, not {}'s", d->name, d->target, t->name));
   const spec::Mapping* mapping = ComposedDrafterMapping(drafter);

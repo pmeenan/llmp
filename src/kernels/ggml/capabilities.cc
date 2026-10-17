@@ -1759,12 +1759,30 @@ bool AcceptsGatedCombine(const ex::CapabilityQuery& q) { return Built(q) && Has(
 bool AcceptsAny(const ex::CapabilityQuery& q) { return Built(q); }
 bool AcceptsPrepared(const ex::CapabilityQuery& q) { return Built(q) && Routed(q); }
 
-// kv_quant.h's: head sizes 64 and 256, and 512 for Q8_0 alone (fattn_vec_quant.cu
-// compiles no Q4_0 instance there), optional F32 sinks; rows of whole blocks.
-bool QuantAttention(const ex::CapabilityQuery& q, bool d512) {
+// kv_quant.h's: head sizes 64, 256 (with optional positive logit softcap
+// at D=256), and 512 for Q8_0 alone (fattn_vec_quant.cu compiles no Q4_0 instance
+// there), optional F32 sinks; rows of whole blocks.
+bool QuantAttention(const ex::CapabilityQuery& q, bool d512 = true) {
   const auto* sinks = Operand(q, 4);
-  return Built(q) && (q.k == 64 || q.k == 256 || (d512 && q.k == 512)) && q.n == q.k &&
-         (!sinks || (sinks->encoding == Encoding::kF32 && sinks->layout == Layout::kDense));
+  if (!Built(q) || !(q.k == 64 || q.k == 256 || (d512 && q.k == 512)) || q.n != q.k) {
+    return false;
+  }
+  if (sinks && (sinks->encoding != Encoding::kF32 || sinks->layout != Layout::kDense)) {
+    return false;
+  }
+  if (const auto p = ParamsOf<ir::AttnParams>(q)) {
+    if (p->max_bias > 0.0F || p->sparse_any ||
+        (p->softcap != 0.0F && !(q.k == 256 && p->softcap > 0.0F))) {
+      return false;
+    }
+  }
+  const auto* qo = Operand(q, 0);
+  const auto* ko = Operand(q, 1);
+  if (qo != nullptr && qo->ne[0] > 0 && qo->ne[3] != 1) return false;
+  if (ko != nullptr && ko->ne[0] > 0 && (ko->ne[3] != 1 || ko->ne[1] % 256 != 0)) {
+    return false;
+  }
+  return true;
 }
 bool AcceptsQuantAttention(const ex::CapabilityQuery& q) { return QuantAttention(q, true); }
 bool AcceptsQ4Attention(const ex::CapabilityQuery& q) { return QuantAttention(q, false); }

@@ -16,7 +16,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -292,8 +291,7 @@ std::expected<format::TensorFormat, Error> Describe(const Scheme& scheme,
 }
 
 std::expected<void, Error> Apply(const Quantization& q, std::vector<Tensor>& tensors) {
-  std::unordered_map<std::string_view, std::size_t> index;
-  index.reserve(tensors.size());
+  std::map<std::string_view, std::size_t> index;
   for (std::size_t i = 0; i < tensors.size(); ++i) {
     index.emplace(tensors[i].name, i);
   }

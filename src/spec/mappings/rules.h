@@ -34,6 +34,39 @@ constexpr ParamRule FromKey(std::string_view slot, std::string_view param, std::
           .optional = optional};
 }
 
+// A parameter from a source key, or if absent, a ratio of two keys;
+// `optional`: left out when both the key and the ratio are absent and no later rule gives it.
+constexpr ParamRule FromOrRatio(std::string_view slot, std::string_view param, std::string_view key,
+                                std::string_view numerator_key, std::string_view divisor_key,
+                                ValueType type, Transform transform = Transform::kNone,
+                                std::string_view layer_types = {}, bool optional = false) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .key = key,
+          .numerator_key = numerator_key,
+          .divisor_key = divisor_key,
+          .type = type,
+          .transform = transform,
+          .optional = optional};
+}
+
+// A parameter from the ratio of two keys; `optional`: left out when absent and no later rule gives
+// it.
+constexpr ParamRule FromRatio(std::string_view slot, std::string_view param,
+                              std::string_view numerator_key, std::string_view divisor_key,
+                              ValueType type, Transform transform = Transform::kNone,
+                              std::string_view layer_types = {}, bool optional = false) {
+  return {.slot = slot,
+          .param = param,
+          .layer_types = layer_types,
+          .numerator_key = numerator_key,
+          .divisor_key = divisor_key,
+          .type = type,
+          .transform = transform,
+          .optional = optional};
+}
+
 // A parameter from a key listing a value a layer (or one for all).
 constexpr ParamRule PerLayer(std::string_view slot, std::string_view param, std::string_view key,
                              ValueType type, std::string_view layer_types = {}) {

@@ -367,7 +367,7 @@ Prologue PrologueOf(const ir::Graph& graph, std::span<const Selected> steps,
         if (src.valid() && (!fixed.at(src.v) || written.at(graph.root(src).v))) all = false;
       if (all)
         for (const TensorId o : n.outputs())
-          if (!written.at(graph.root(o).v)) fixed.at(o.v) = true;
+          if (!written.at(graph.root(o).v) && !demoted[i]) fixed.at(o.v) = true;
     }
     // A root placed inside another (RootWithin: a blob's later output, a
     // preparation in its norm's place) shares its bytes: both fixed or

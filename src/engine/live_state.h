@@ -24,8 +24,7 @@
 //   (Qwen3.8's recurrent state), so the state is what a verify of the kept
 //   rows alone would have left. A failed verify is undone whole. The saves
 //   and restores are the paging kernels' range copies
-//   (kernels/paging/paging.h) on the job's stream; a GGML runner queues
-//   them through its launch context instead (live_state_launch.h).
+//   (kernels/paging/paging.h) on the job's stream.
 //
 // A growing region keeps its layout's virtual bytes; only initialized
 // extents have backing and spill contents. Turn-boundary
@@ -63,7 +62,6 @@
 namespace llmp::engine {
 
 class RunnerMemory;
-struct LiveStateLaunch;
 
 class LiveState {
  public:
@@ -276,13 +274,10 @@ class LiveState {
     snapshot_base_ = base;
     snapshot_bytes_ = bytes;
   }
-  // A commit queued on the job's stream by QueueOwed (and Rollback); a
-  // legacy runner's goes through its launch context instead
-  // (SetCommitThrough), and each path refuses the other's.
+  // A commit queued on the job's stream by QueueOwed (and Rollback).
   void SetCommit(Commit commit, std::function<Status(std::uint32_t)> prepare = {}) {
     commit_ = std::move(commit);
     prepare_commit_ = std::move(prepare);
-    launch_commit_ = false;
   }
   // Host preparation before a job queues the owed commit (plan selection
   // and input staging). The caller keeps a PlanStep alive through that job.
@@ -319,8 +314,7 @@ class LiveState {
   bool owed() const { return restore_count_ != 0 || commit_keep_ != 0; }
   // Queues what is owed on the job's stream; each part stays owed unless
   // queued. A commit refused after the restore was queued fails as
-  // `unknown`: the job has queued work. A SetCommitThrough commit owed is
-  // refused before anything is queued (QueueOwedThrough queues it).
+  // `unknown`: the job has queued work.
   Queued QueueOwed(providers::NativeStream stream);
   // What is owed, now, as a job of its own over `closure`.
   Status Rollback(PagedNode& node, const catalog::Closure& closure, std::uint32_t stream,
@@ -340,8 +334,6 @@ class LiveState {
 
  private:
   friend class PagedNode;
-  // The legacy GGML runners' queueing through their launch context.
-  friend struct LiveStateLaunch;
   struct Preparation;
   std::unique_ptr<Preparation> preparation_;
   LiveState* next_preparing_ = nullptr;
@@ -391,9 +383,6 @@ class LiveState {
   std::uint32_t commit_keep_ = 0;    // owed: rows to commit (0: none)
   Commit commit_;
   std::function<Status(std::uint32_t)> prepare_commit_;
-  // commit_ is SetCommitThrough's (live_state_launch.h): queued only
-  // through its launch context, never by QueueOwed.
-  bool launch_commit_ = false;
   std::vector<Saved> saved_;       // the last verify's
   std::uint32_t verify_rows_ = 0;  // its rows; 0 once accepted
 };
@@ -427,7 +416,7 @@ struct SpillTrack {
   // A spill or a swap's write-back completed (or a restore read the file):
   // the file holds `live` as it is. Not while a verify awaits its Accept
   // or owes a restore or commit: what runs those later may be a job of its
-  // own (LiveState::Rollback, RollbackThrough) that records no write, so
+  // own (LiveState::Rollback) that records no write, so
   // the next spill writes the state whole. Every place that marks a file
   // current goes through here.
   void FileHolds(const LiveState& live) {

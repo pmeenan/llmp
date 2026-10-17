@@ -50,12 +50,11 @@ target_link_libraries(llmp_fake_device_backend INTERFACE llmp_fake_device_runtim
                                                          llmp_host_paging_kernels)
 
 if(LLMP_CUDA)
-  add_library(llmp_engine STATIC planned.cc graph_runs.cc runner_resources.cc expert_slab.cc
-                                   live_state_launch.cc)
+  add_library(llmp_engine STATIC planned.cc graph_runs.cc runner_resources.cc expert_slab.cc)
   target_include_directories(llmp_engine PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(llmp_engine PUBLIC llmp_engine_core llmp_scheduler llmp_memory llmp_storage
                                              llmp_device_runtime llmp_ggml_kernels
-                                             llmp_image_kernels llmp_paging_kernels
+                                             llmp_paging_kernels
                                              llmp_artifact llmp_model llmp_tokenizer
                                              llmp_chat
                                       PRIVATE llmp_base llmp_platform llmp_warnings)

@@ -32,6 +32,7 @@
 #include "spec/mappings/gemma2.h"
 #include "spec/mappings/gemma3.h"
 #include "spec/mappings/gemma4.h"
+#include "spec/mappings/qwen2.h"
 #include "spec_fixtures.h"
 
 namespace llmp::spec {
@@ -956,6 +957,61 @@ TEST(MappingTest, DrafterImportTargetsAreTheFamiliesApprovedCheckpoints) {
   auto want = fam::Dsv4Values(fam::Dsv4Flash());
   ASSERT_TRUE(want);
   check(dspark.import_targets.front(), std::move(*want), fam::Dsv4Flash().layers);
+}
+
+Source Qwen2GgufSource(std::uint32_t layers = 1) {
+  Source s{.architecture = "qwen2", .container = "gguf"};
+  const auto add = [&](std::string name) { s.tensors.push_back({.name = std::move(name)}); };
+  add("token_embd.weight");
+  add("output_norm.weight");
+  for (std::uint32_t il = 0; il < layers; ++il) {
+    add(std::format("blk.{}.attn_norm.weight", il));
+    add(std::format("blk.{}.attn_q.weight", il));
+    add(std::format("blk.{}.attn_k.weight", il));
+    add(std::format("blk.{}.attn_v.weight", il));
+    add(std::format("blk.{}.attn_q.bias", il));
+    add(std::format("blk.{}.attn_k.bias", il));
+    add(std::format("blk.{}.attn_v.bias", il));
+    add(std::format("blk.{}.attn_output.weight", il));
+    add(std::format("blk.{}.ffn_norm.weight", il));
+    add(std::format("blk.{}.ffn_gate.weight", il));
+    add(std::format("blk.{}.ffn_up.weight", il));
+    add(std::format("blk.{}.ffn_down.weight", il));
+  }
+  return s;
+}
+
+TEST(MappingTest, FromOrRatioEvaluatesMissingKeyOnNonHalfBillionQwen) {
+  const Source source = Qwen2GgufSource(1);
+  const std::vector<SourceValue> values{
+      {.key = "qwen2.context_length", .value = std::int64_t{32768}},
+      {.key = "qwen2.embedding_length", .value = std::int64_t{1536}},
+      {.key = "qwen2.block_count", .value = std::int64_t{1}},
+      {.key = "qwen2.feed_forward_length", .value = std::int64_t{4096}},
+      {.key = "qwen2.attention.head_count", .value = std::int64_t{12}},
+      {.key = "qwen2.attention.head_count_kv", .value = std::int64_t{2}},
+      {.key = "qwen2.attention.layer_norm_rms_epsilon", .value = 1e-6},
+      {.key = "qwen2.rope.freq_base", .value = 10000.0},
+  };
+  const auto spec = Synthesize(mappings::Qwen2Mapping(), source, values);
+  ASSERT_TRUE(spec.has_value()) << spec.error();
+  const ComponentRef& attn = spec->stages[0].layers[0].components[0];
+  EXPECT_EQ(attn.kind, "attention.dense");
+  EXPECT_EQ(P(attn, "key_dim").value, ParamValue(std::int64_t{128}));
+  EXPECT_EQ(P(attn, "value_dim").value, ParamValue(std::int64_t{128}));
+  EXPECT_EQ(P(attn, "rope_dims").value, ParamValue(std::int64_t{128}));
+  const double want_scale = 1.0 / std::sqrt(128.0);
+  EXPECT_DOUBLE_EQ(std::get<double>(P(attn, "scale").value), want_scale);
+}
+
+TEST(MappingTest, CheckLayerFlagsRefusesFlagWhenScheduleResolvesToAllA) {
+  Mapping m = mappings::Gemma4Mapping();
+  m.layer_flag_type = 'g';
+  auto source = test_support::Gemma4Source(26);
+  auto values = *fam::Gemma4Values(fam::Gemma4_26BA4B());
+  const auto s = Synthesize(m, source, values);
+  ASSERT_FALSE(s.has_value());
+  EXPECT_NE(s.error().find("not of the mapping's layer types"), std::string::npos) << s.error();
 }
 
 }  // namespace

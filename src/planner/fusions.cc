@@ -255,6 +255,8 @@ class Building {
     std::set<TensorId> reads, writes;
     const auto written = [&](const ir::Node& n, auto&& f) {
       if (n.key == Prim(Op::kCacheStore)) f(g.root(n.src[0]));
+      if (n.key == ir::Fused(FusedKind::kGdnStep) && n.src[5].valid()) f(g.root(n.src[5]));
+      if (n.key == ir::Fused(FusedKind::kQsaPool) && n.src[3].valid()) f(g.root(n.src[3]));
       for (std::size_t i = 0; i < n.nout; ++i) {
         if (const auto alias = ir::AliasedSource(n.key, i); alias && n.src.at(*alias).valid())
           f(g.root(n.src.at(*alias)));
@@ -3137,7 +3139,7 @@ std::optional<Match> GroupedVecQMatch(const MatchContext& c, NodeId anchor) {
   if (!available) return std::nullopt;
   const ir::Node& cont_node = c.node(*consumer);
   const TensorId cont_out = cont_node.out[0];
-  const bool fold_cont = !std::ranges::contains(c.graph().outputs(), cont_out);
+  const bool fold_cont = !c.external(cont_out);
   Building b(c);
   if (fold_cont) {
     if (!b.Add({input_id, product_id, anchor, *consumer}) || !b.Closed(std::array{cont_out}))

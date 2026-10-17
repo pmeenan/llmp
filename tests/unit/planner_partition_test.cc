@@ -1268,5 +1268,56 @@ TEST(PartitionTest, TopologiesAndGraphsItCannotTakeAreRefused) {
   }
 }
 
+TEST(PartitionTest, StreamBytesScalesWithStreamsCount) {
+  Tiny t1 = TinyGemma(false);
+  auto model1 = ModelOf(t1.spec, 0, t1.tensors);
+  ASSERT_TRUE(model1.has_value());
+  const Pipeline pipeline{.stages = {{0}, {1}}, .first_layer = {0, 3}};
+  auto a1 = AssignPipeline(*model1, Uniform(2, kAmple), Mix(), pipeline);
+  ASSERT_TRUE(a1.has_value()) << a1.error();
+  const Traffic traffic1 = ModelTraffic(*model1, *a1, 4, 4);
+
+  StageModel model2 = *model1;
+  ASSERT_TRUE(model2.instances.embedding.has_value());
+  model2.instances.embedding->stage.streams = 2;
+  auto a2 = AssignPipeline(model2, Uniform(2, kAmple), Mix(), pipeline);
+  ASSERT_TRUE(a2.has_value()) << a2.error();
+  const Traffic traffic2 = ModelTraffic(model2, *a2, 4, 4);
+
+  EXPECT_GT(traffic1.bytes, 0U);
+  EXPECT_EQ(traffic2.bytes, 2 * traffic1.bytes);
+}
+
+TEST(PartitionTest, MakeFullDoesNotEmitDuplicateAllGather) {
+  const Tiny t = TinyGemma(false);
+  const Assignment a = TinyAssignment(t, 2, {.stages = {{0, 1}}, .first_layer = {0}});
+  const std::uint16_t c = a.per_layer[0][1].component;
+  ASSERT_EQ(a.per_layer[0][1].split, SplitKind::kColumns);
+  ir::Builder b;
+  b.SetComponent(c);
+  const auto f32 = [](std::initializer_list<std::uint64_t> ne) {
+    return ir::Dense(Encoding::kF32, ir::ShapeOf(ne));
+  };
+  const auto weight = [&](std::uint16_t role, std::initializer_list<std::uint64_t> ne) {
+    return b.Weight(f32(ne), {.stage = 0, .component = c, .role = role, .layer = 0});
+  };
+  const ir::TensorId x = b.Input(f32({kWidth, 2}));
+  const ir::TensorId p = b.MatMul(weight(1, {kWidth, kHidden}), x);
+  const ir::TensorId norm1 = b.RmsNorm(p, 1e-6F);
+  const ir::TensorId norm2 = b.RmsNorm(p, 1e-5F);
+  b.Output(norm1);
+  b.Output(norm2);
+  auto g = std::move(b).Finish();
+  ASSERT_TRUE(g.has_value()) << g.error().detail;
+  auto parts = Partition(*g, a);
+  ASSERT_TRUE(parts.has_value()) << parts.error();
+  ASSERT_EQ(parts->devices.size(), 2U);
+  for (const DeviceGraph& d : parts->devices) {
+    const auto gathers = std::ranges::count_if(
+        d.graph.nodes(), [](const ir::Node& n) { return n.key.op == ir::Op::kAllGather; });
+    EXPECT_EQ(gathers, 1U);
+  }
+}
+
 }  // namespace
 }  // namespace llmp::planner

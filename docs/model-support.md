@@ -66,10 +66,32 @@ the owner's M9 deferral beside the qualification evidence.
 
 M3.6 (D-107) moves every model below onto one engine of shared components,
 each judged against its current implementation by the matched 1% gate
-([engine-components.md](engine-components.md#migration-and-its-gate)); a row
-changes only when its evidence does.
+([engine-components.md](engine-components.md#migration-and-its-gate)); all
+models run on the shared `ModelRunner` (`src/engine/model_runner.h`) and
+`SlotLifecycle` (`src/engine/slot_lifecycle.h`).
 
-The native GGML dependency now uses llama.cpp v0.6.0 (`d8123504`, GGML
+### Workflow for adding a model
+
+From M3.6 (D-107, D-109), no model family gets a custom runner, plan, or graph
+builder (`src/model/<family>.cc` and `src/kernels/ggml/<family>_graph.cc` are not
+used). Adding a model follows a declarative workflow across four modules:
+
+1. **Declarative mapping (`src/spec/mappings/`)**: Define the architecture's
+   slots, tensor rules, parameter rules, and default policies as data structures
+   (`Mapping`, `ServingRecipe`, `DraftRecipe` in `src/spec/mapping.h`) over the
+   shared component catalog (`src/components/`).
+2. **Component catalog (`src/components/`)**: Any novel layer block or operation
+   is added as a shared component (declaring its parameters, weight roles, state
+   contract, IR fragment, and scalar reference) rather than per-model code.
+3. **Artifact normalization (`src/import/`)**: The native C++ importer (`llmp import`)
+   reads source checkpoints (GGUF, safetensors, MLX, EXL3) as untrusted input,
+   applies the mapping, and writes a version 1 prepared artifact (`spec.json`,
+   `index.json`, `data/*.safetensors`).
+4. **Admission and approvals (`src/runtime/`)**: The artifact and its stored spec
+   are admitted via the approval table (`src/runtime/approvals.cc`) and validated
+   at startup by `src/runtime/component_admission.cc`.
+
+The native GGML dependency uses llama.cpp v0.6.0 (`d8123504`, GGML
 0.26.0); its [integration checks](experiments/ggml-release-refresh/README.md)
 cover the source update. Model-quality and performance results below retain
 the source/image identities of their linked experiments. Those historical
@@ -107,19 +129,14 @@ listing is separate from the supported summary above.
 
 ## Architecture foundations
 
-*Gemma 2 and Gemma 3 since M3.6's migration (slice G1d), and Gemma 4 since
-slice G2d: the bounded runners, plans, graph builders, state layouts and
-serving classes the next paragraphs and [gemma2.md](gemma2.md),
-[gemma3.md](gemma3.md), [gemma4.md](gemma4.md) and
-[gemma4-assistant.md](gemma4-assistant.md) record are deleted; the models
-serve on the shared engine, the 1% speed gate passed against the frozen M3
-build
-([Gemma 2 and 3](experiments/m36-baselines/README.md#gemma-2-and-gemma-3-on-the-shared-engine-slice-g1c),
-[Gemma 4](experiments/m36-baselines/README.md#gemma-4-26b-a4b-and-31b-on-the-shared-engine-slice-g2c)),
-and `model/gemma{2,3,4}.h` keep only the approved profile and tensor binding.
-The controls and screens below were taken on the M3 runners; the shared
-engine's own are in [engine.md](engine.md#the-serving-adapter) and
-`gemma_engine_serving_gpu_test`.*
+*All models serve on the shared engine (D-107, D-118). The bounded runners,
+plans, graph builders, state layouts and serving classes described in older
+reports and in [gemma2.md](gemma2.md), [gemma3.md](gemma3.md), [gemma4.md](gemma4.md)
+and [gemma4-assistant.md](gemma4-assistant.md) have been deleted; `src/model/`
+holds no LLM family code (`model/gemma{2,3,4}.h` were retired in slice 4b, and
+a model's spec is its v1 artifact's). All models passed the 1% speed gate against
+their frozen M3 baselines. The historical controls and screens below document the
+qualification evidence for each model.*
 
 Gemma 2 2B Q8_0 has a separate [closed profile and bounded runner](gemma2.md)
 for all 288 actual descriptors, with checked quantized readable tails and

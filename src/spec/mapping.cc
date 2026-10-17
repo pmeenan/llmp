@@ -200,7 +200,58 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& 
                                                                const Values& values,
                                                                std::string_view where,
                                                                LayerAt layer = {}) {
+  const auto eval_ratio = [&]() -> std::expected<std::optional<ParamValue>, std::string> {
+    const auto num_found = values.find(r.numerator_key);
+    const auto den_found = values.find(r.divisor_key);
+    if (num_found == values.end() || den_found == values.end()) {
+      return std::optional<ParamValue>();
+    }
+    const std::string at = std::format("{} (from {} / {})", where, r.numerator_key, r.divisor_key);
+    const auto* num_i = std::get_if<std::int64_t>(num_found->second);
+    const auto* den_i = std::get_if<std::int64_t>(den_found->second);
+    const auto* num_d = std::get_if<double>(num_found->second);
+    const auto* den_d = std::get_if<double>(den_found->second);
+    if (num_i == nullptr && num_d == nullptr) {
+      return Refuse(at, "numerator is not a number");
+    }
+    if (den_i == nullptr && den_d == nullptr) {
+      return Refuse(at, "divisor is not a number");
+    }
+    if (r.type == ValueType::kInt) {
+      if (num_i != nullptr && den_i != nullptr) {
+        if (*den_i == 0) return Refuse(at, "division by zero");
+        if (*num_i == std::numeric_limits<std::int64_t>::min() && *den_i == -1) {
+          return Refuse(at, "ratio overflows");
+        }
+        if (*num_i % *den_i != 0) return Refuse(at, "ratio is not an integer");
+        return ParamValue(*num_i / *den_i);
+      }
+      const double num_val = num_i != nullptr ? static_cast<double>(*num_i) : *num_d;
+      const double den_val = den_i != nullptr ? static_cast<double>(*den_i) : *den_d;
+      if (den_val == 0.0) return Refuse(at, "division by zero");
+      const double q = num_val / den_val;
+      if (!std::isfinite(q) || std::floor(q) != q ||
+          q < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
+          q >= 9223372036854775808.0) {
+        return Refuse(at, "ratio is not an integer");
+      }
+      return ParamValue(static_cast<std::int64_t>(q));
+    }
+    if (r.type == ValueType::kReal) {
+      const double num_val = num_i != nullptr ? static_cast<double>(*num_i) : *num_d;
+      const double den_val = den_i != nullptr ? static_cast<double>(*den_i) : *den_d;
+      if (den_val == 0.0) return Refuse(at, "division by zero");
+      auto y = Transformed(num_val / den_val, r.transform, at);
+      if (!y) return std::unexpected(y.error());
+      return ParamValue(*y);
+    }
+    return Refuse(at, "ratio of an unsupported type");
+  };
+
   if (r.key.empty()) {
+    if (!r.numerator_key.empty() && !r.divisor_key.empty()) {
+      return eval_ratio();
+    }
     switch (r.type) {
       case ValueType::kInt:
         return ParamValue(r.value.integer);
@@ -222,6 +273,9 @@ std::expected<std::optional<ParamValue>, std::string> Evaluate(const ParamRule& 
   }
   const auto found = values.find(r.key);
   if (found == values.end()) {
+    if (!r.numerator_key.empty() && !r.divisor_key.empty()) {
+      return eval_ratio();
+    }
     return std::optional<ParamValue>();
   }
   const std::string at = std::format("{} (from {})", where, r.key);
@@ -336,6 +390,8 @@ std::expected<void, std::string> CheckRequirements(const Mapping& m, const Value
     }
     ParamRule constant = r;
     constant.key = {};
+    constant.numerator_key = {};
+    constant.divisor_key = {};
     constant.transform = Transform::kNone;
     auto want = Evaluate(constant, values, r.key);
     if (!want || **v != **want) {
@@ -652,7 +708,7 @@ std::expected<std::string, std::string> LayerTypes(const Mapping& m, const Value
 // A layer-flag list (layer_flags_key): one flag a layer, set exactly at
 // the layers of layer_flag_type.
 std::expected<void, std::string> CheckLayerFlags(const Mapping& m, const Values& values,
-                                                 std::uint64_t layers) {
+                                                 std::string_view types, std::uint64_t layers) {
   if (m.layer_flags_key.empty()) {
     return {};
   }
@@ -665,7 +721,7 @@ std::expected<void, std::string> CheckLayerFlags(const Mapping& m, const Values&
     return Refuse(m.layer_flags_key, std::format("not a flag for each of {} layers", layers));
   }
   for (std::uint64_t il = 0; il < layers; ++il) {
-    const bool typed = m.layer_types.at(il % m.layer_types.size()) == m.layer_flag_type;
+    const bool typed = types.at(il % types.size()) == m.layer_flag_type;
     if (((*flags)[il] != 0) != typed) {
       return Refuse(m.layer_flags_key, std::format("layer {} is not of the mapping's layer types "
                                                    "(\"{}\")",
@@ -713,11 +769,11 @@ std::expected<Made, std::string> MakeStage(const Mapping& mapping, const Source&
   if (auto ok = CheckRequirements(mapping, by_key); !ok) {
     return std::unexpected(ok.error());
   }
-  if (auto ok = CheckLayerFlags(mapping, by_key, *layers); !ok) {
-    return std::unexpected(ok.error());
-  }
   auto types = LayerTypes(mapping, by_key, *layers);
   if (!types) return std::unexpected(types.error());
+  if (auto ok = CheckLayerFlags(mapping, by_key, *types, *layers); !ok) {
+    return std::unexpected(ok.error());
+  }
   Synthesis syn(mapping, source, by_key, static_cast<std::uint32_t>(*layers), target_stage,
                 std::move(*types));
   if (auto ok = syn.Gate(); !ok) {
@@ -907,7 +963,11 @@ std::vector<std::string_view> SourceKeys(const Mapping& m) {
     add(s.layers_key);
     add(s.count_key);
   }
-  for (const ParamRule& p : m.params) add(p.key);
+  for (const ParamRule& p : m.params) {
+    add(p.key);
+    add(p.numerator_key);
+    add(p.divisor_key);
+  }
   for (const ReadRule& r : m.reads) add(r.layers_key);
   for (const PolicyRule& p : m.policies) add(p.gate);
   return keys;
@@ -1080,6 +1140,18 @@ Status ValidateMapping(const Mapping& m) {
     if (!r.key.empty() && !IsText(r.key)) {
       return Refuse(at, "an invalid key");
     }
+    if (r.numerator_key.empty() != r.divisor_key.empty()) {
+      return Refuse(at, "a ratio requires both numerator and divisor keys");
+    }
+    if (!r.numerator_key.empty() && (!IsText(r.numerator_key) || !IsText(r.divisor_key))) {
+      return Refuse(at, "an invalid numerator or divisor key");
+    }
+    if (!r.numerator_key.empty() && r.type != ValueType::kInt && r.type != ValueType::kReal) {
+      return Refuse(at, "a ratio must be an integer or real");
+    }
+    if (!r.numerator_key.empty() && r.per_layer) {
+      return Refuse(at, "a ratio cannot be per-layer");
+    }
     // A layer slot's constant may name its layer (kLayerField).
     const SlotRule* named = r.slot.empty() ? nullptr : FindSlot(m, r.slot);
     const bool layer_name = named != nullptr && named->site == Site::kLayer &&
@@ -1096,8 +1168,9 @@ Status ValidateMapping(const Mapping& m) {
       return Refuse(at, "unless a fold the catalog does not have");
     }
     if (r.slot.empty()) {
-      if (r.key.empty() || !r.param.empty() || !r.layer_types.empty() ||
-          r.transform != Transform::kNone || r.per_layer || !r.unless_fold.empty()) {
+      if (r.key.empty() || !r.param.empty() || !r.layer_types.empty() || !r.numerator_key.empty() ||
+          !r.divisor_key.empty() || r.transform != Transform::kNone || r.per_layer ||
+          !r.unless_fold.empty()) {
         return Refuse(at, "a requirement is a key and its value");
       }
       continue;

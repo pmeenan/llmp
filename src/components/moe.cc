@@ -262,7 +262,7 @@ std::vector<double> ExpertsReference(std::span<const double> h, const RoutedRef&
 namespace defs {
 namespace {
 
-constexpr std::array<std::string_view, 2> kPlacements{"parallel", "none"};
+constexpr std::array<std::string_view, 3> kPlacements{"parallel", "none", "pre"};
 // "silu_clamp": SwiGLU with the gate clamped above and up both ways
 // (DeepSeek V4's, at `limit` for the routed experts and `shared_limit` for
 // the dense GLU).
@@ -296,7 +296,12 @@ constexpr std::array kParams{
     ParamSpec{.name = "eps", .type = ParamType::kReal, .least = 0.0, .most = 1.0},
     ParamSpec{.name = "activation", .type = ParamType::kName, .choices = kActivations},
     // The dense GLU's width (the shared expert's, placement "none").
-    ParamSpec{.name = "hidden", .type = ParamType::kInt, .least = 1, .most = 1 << 20},
+    ParamSpec{.name = "hidden",
+              .type = ParamType::kInt,
+              .required = false,
+              .least = 0,
+              .most = 1 << 20,
+              .fallback = 0},
     ParamSpec{.name = "experts", .type = ParamType::kInt, .least = 1, .most = 4096},
     ParamSpec{.name = "used", .type = ParamType::kInt, .least = 1, .most = 64},
     // An expert's GLU width.
@@ -372,7 +377,7 @@ constexpr std::array kRoles{
 
 struct Dims {
   std::uint64_t width, hidden, experts, used, expert_hidden;
-  bool parallel, rms_router, normalize, expert_scales, stacked, projection_scales, shared_gate;
+  bool parallel, pre, rms_router, normalize, expert_scales, stacked, projection_scales, shared_gate;
   ir::GluKind kind;
   float eps;
   ir::RouteKind route;
@@ -391,12 +396,14 @@ ir::RouteKind RouteKindOf(std::string_view name) {
 }
 Dims DimsOf(const Instance& in) {
   const Params& p = in.params;
+  const std::string_view placement = p.Name("placement");
   return {.width = in.stage.width,
           .hidden = static_cast<std::uint64_t>(p.Int("hidden")),
           .experts = static_cast<std::uint64_t>(p.Int("experts")),
           .used = static_cast<std::uint64_t>(p.Int("used")),
           .expert_hidden = static_cast<std::uint64_t>(p.Int("expert_hidden")),
-          .parallel = p.Name("placement") == "parallel",
+          .parallel = placement == "parallel",
+          .pre = placement == "pre",
           .rms_router = p.Name("router_input") == "rms_scaled",
           .normalize = p.Flag("normalize"),
           .expert_scales = p.Flag("expert_scales"),
@@ -418,11 +425,19 @@ std::string_view HashInput(const Instance& in) {
 
 std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   const Dims d = DimsOf(in);
+  if (d.parallel && d.hidden == 0) {
+    return std::unexpected("parallel MoE requires a dense GLU (hidden > 0)");
+  }
+  if (d.hidden == 0 && (d.shared_gate || in.params.Given("shared_limit"))) {
+    return std::unexpected("shared_gate and shared_limit require a shared expert (hidden > 0)");
+  }
   if (d.used > d.experts) return std::unexpected("more experts used than there are");
   if (d.expert_scales && d.projection_scales) {
     return std::unexpected("a learned expert scale and the products' scales both");
   }
-  if ((d.kind == ir::GluKind::kSwiGluClamp) != (d.limit > 0.0F && d.shared_limit > 0.0F) ||
+  const bool valid_limits =
+      d.hidden > 0 ? (d.limit > 0.0F && d.shared_limit > 0.0F) : (d.limit > 0.0F);
+  if ((d.kind == ir::GluKind::kSwiGluClamp) != valid_limits ||
       (d.kind != ir::GluKind::kSwiGluClamp &&
        (in.params.Given("limit") || in.params.Given("shared_limit")))) {
     return std::unexpected("a clamped SwiGLU's limits, both above zero, and only its");
@@ -437,14 +452,19 @@ std::expected<std::vector<RoleShape>, std::string> Shapes(const Instance& in) {
   const std::uint64_t w = d.width;
   const std::uint64_t e = d.experts;
   const std::uint64_t f = d.expert_hidden;
-  std::vector<RoleShape> out{Role(kGate, {w, d.hidden}), Role(kUp, {w, d.hidden}),
-                             Role(kDown, {d.hidden, w}), Role(kRouter, {w, e}),
-                             Role(kDownExperts, {f, w, e})};
+  std::vector<RoleShape> out{Role(kRouter, {w, e}), Role(kDownExperts, {f, w, e})};
+  if (d.hidden > 0) {
+    out.push_back(Role(kGate, {w, d.hidden}));
+    out.push_back(Role(kUp, {w, d.hidden}));
+    out.push_back(Role(kDown, {d.hidden, w}));
+  }
   if (d.parallel) {
     // Gemma 4's norms around both branches and their sum.
     for (const std::uint16_t r : {kNorm, kDensePostNorm, kRoutedNorm, kRoutedPostNorm, kPostNorm}) {
       out.push_back(Role(r, {w}));
     }
+  } else if (d.pre) {
+    out.push_back(Role(kNorm, {w}));
   }
   if (d.rms_router) out.push_back(Role(kRouterScale, {w}));
   if (d.stacked) {
@@ -511,8 +531,9 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
     hashed = f.Side(HashInput(f.instance));
     if (!hashed.valid()) return std::unexpected("a hash router without its side input");
   }
+  const ir::TensorId in = d.pre ? norm(x, kNorm) : x;
   const moe::Routed routed = moe::EmitRouter(
-      b, x, w(kRouter), d.rms_router ? w(kRouterScale) : ir::TensorId{},
+      b, in, w(kRouter), d.rms_router ? w(kRouterScale) : ir::TensorId{},
       {.experts = static_cast<std::uint32_t>(d.experts),
        .used = static_cast<std::uint32_t>(d.used),
        .normalize = d.normalize,
@@ -523,7 +544,7 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
        .f32 = d.router_f32},
       d.route == ir::RouteKind::kSqrtSoftplusBias ? w(kRouterBias) : ir::TensorId{}, hashed);
   const ir::TensorId reduced =
-      moe::EmitExperts(b, d.parallel ? norm(x, kRoutedNorm) : x, routed,
+      moe::EmitExperts(b, d.parallel ? norm(x, kRoutedNorm) : in, routed,
                        w(d.stacked ? kGateUpExperts : kGateExperts),
                        d.stacked ? ir::TensorId{} : w(kUpExperts), w(kDownExperts),
                        d.expert_scales       ? w(kExpertScale)
@@ -537,15 +558,21 @@ std::expected<FragmentOut, std::string> Emit(Fragment& f) {
                        d.projection_scales ? w(kGateScale) : ir::TensorId{},
                        d.projection_scales ? w(kUpScale) : ir::TensorId{});
   if (!d.parallel) {
-    // Inside hyper-connections (Qwen3.8's, DeepSeek V4's): the experts' sum
-    // and the shared expert, behind its gate where it has one; no norm or
-    // residual of its own.
-    ir::TensorId shared = moe::EmitGlu(b, x, w(kGate), w(kUp), w(kDown), d.kind, d.shared_limit);
-    if (d.shared_gate) {
-      const ir::TensorId logit = b.SumRows(b.Mul(x, w(kSharedGate)));
-      shared = b.Mul(shared, b.Unary(logit, ir::UnaryFn::kSigmoid));
+    // Inside hyper-connections (Qwen3.8's, DeepSeek V4's) or pre-norm:
+    // the experts' sum and optional shared expert.
+    ir::TensorId out = reduced;
+    if (d.hidden > 0) {
+      ir::TensorId shared = moe::EmitGlu(b, in, w(kGate), w(kUp), w(kDown), d.kind, d.shared_limit);
+      if (d.shared_gate) {
+        const ir::TensorId logit = b.SumRows(b.Mul(in, w(kSharedGate)));
+        shared = b.Mul(shared, b.Unary(logit, ir::UnaryFn::kSigmoid));
+      }
+      out = b.Add(reduced, shared);
     }
-    return FragmentOut{.stream = b.Add(reduced, shared)};
+    if (d.pre) {
+      out = b.Add(out, x);
+    }
+    return FragmentOut{.stream = out};
   }
   const ir::TensorId dense =
       norm(moe::EmitGlu(b, norm(x, kNorm), w(kGate), w(kUp), w(kDown), d.kind), kDensePostNorm);
@@ -577,8 +604,12 @@ std::expected<void, std::string> Reference(RefIO& io) {
                                           }))) {
     return std::unexpected("moe reference: a hash router's ids, each below the experts");
   }
+  const std::vector<double> in_normed = d.pre ? normed(io.stream, kNorm) : std::vector<double>{};
+  const std::span<const double> in_ref =
+      d.pre ? std::span<const double>(in_normed) : std::span<const double>(io.stream);
+
   const moe::RoutedRef routed = moe::RouterReference(
-      io.stream, d.width, w(kRouter), d.rms_router ? w(kRouterScale) : std::span<const float>{},
+      in_ref, d.width, w(kRouter), d.rms_router ? w(kRouterScale) : std::span<const float>{},
       {.experts = static_cast<std::uint32_t>(d.experts),
        .used = static_cast<std::uint32_t>(d.used),
        .normalize = d.normalize,
@@ -590,7 +621,7 @@ std::expected<void, std::string> Reference(RefIO& io) {
       d.route == ir::RouteKind::kSqrtSoftplusBias ? w(kRouterBias) : std::span<const float>{},
       io.side_ids);
   std::vector<double> reduced =
-      moe::ExpertsReference(d.parallel ? normed(io.stream, kRoutedNorm) : io.stream, routed,
+      moe::ExpertsReference(d.parallel ? normed(io.stream, kRoutedNorm) : in_ref, routed,
                             w(d.stacked ? kGateUpExperts : kGateExperts),
                             d.stacked ? std::span<const float>{} : w(kUpExperts), w(kDownExperts),
                             d.expert_scales       ? w(kExpertScale)
@@ -603,24 +634,32 @@ std::expected<void, std::string> Reference(RefIO& io) {
                              .limit = d.limit},
                             d.projection_scales ? w(kGateScale) : std::span<const float>{},
                             d.projection_scales ? w(kUpScale) : std::span<const float>{});
-  const std::vector<double> x = d.parallel ? normed(io.stream, kNorm) : io.stream;
-  std::vector<double> shared =
-      moe::GluReference(x, w(kGate), w(kUp), w(kDown), d.width, d.hidden, d.kind, d.shared_limit);
-  if (d.parallel) shared = normed(shared, kDensePostNorm);
-  if (d.shared_gate) {
-    const std::span<const float> g = w(kSharedGate);
-    for (std::size_t t = 0; t < io.rows(); ++t) {
-      double logit = 0.0;
-      for (std::uint64_t i = 0; i < d.width; ++i) {
-        logit += io.stream[(t * d.width) + i] * static_cast<double>(g[i]);
+  std::vector<double> shared{};
+  if (d.hidden > 0) {
+    shared = moe::GluReference(d.parallel ? normed(io.stream, kNorm) : in_ref, w(kGate), w(kUp),
+                               w(kDown), d.width, d.hidden, d.kind, d.shared_limit);
+    if (d.parallel) shared = normed(shared, kDensePostNorm);
+    if (d.shared_gate) {
+      const std::span<const float> g = w(kSharedGate);
+      for (std::size_t t = 0; t < io.rows(); ++t) {
+        double logit = 0.0;
+        for (std::uint64_t i = 0; i < d.width; ++i) {
+          logit += in_ref[(t * d.width) + i] * static_cast<double>(g[i]);
+        }
+        const double gate = 1.0 / (1.0 + std::exp(-logit));
+        for (std::uint64_t i = 0; i < d.width; ++i) shared[(t * d.width) + i] *= gate;
       }
-      const double gate = 1.0 / (1.0 + std::exp(-logit));
-      for (std::uint64_t i = 0; i < d.width; ++i) shared[(t * d.width) + i] *= gate;
     }
   }
   if (!d.parallel) {
-    for (std::size_t i = 0; i < reduced.size(); ++i) reduced[i] += shared[i];
-    io.stream = std::move(reduced);
+    std::vector<double> out = std::move(reduced);
+    if (d.hidden > 0) {
+      for (std::size_t i = 0; i < out.size(); ++i) out[i] += shared[i];
+    }
+    if (d.pre) {
+      for (std::size_t i = 0; i < out.size(); ++i) out[i] += io.stream[i];
+    }
+    io.stream = std::move(out);
     return {};
   }
   reduced = normed(reduced, kRoutedPostNorm);

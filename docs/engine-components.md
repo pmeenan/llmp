@@ -1252,6 +1252,8 @@ These regression checks do not extend source or GPU arithmetic qualification.
 (`router_input` `stream`), per-expert projection scales (gate, up and down
 roles; down's applied in the reduce) and the shared expert behind its
 sigmoid gate (`shared_gate`: SumRows of the stream times the gate's row).
+It also supports `hidden = 0` (routed-only MoE without a shared expert, where
+no dense GLU is instantiated) and `placement = "pre"` (pre-norm MoE with residual).
 `embedding.mtp` is the MTP drafter's input: its target's token row,
 normed and projected, added to every stream of the feature it reads (its
 target's last layer's streams, or its own last pass's), the feature
@@ -1634,6 +1636,8 @@ final norm and the output), tensor-name patterns with `{layer}` (and
 fallbacks: Gemma's tied output binds the embedding), parameter rules from
 source keys with a fixed set of transforms (reciprocal, square root,
 reciprocal square root) and constants, tried in order per layer type,
+ratio rules deriving parameters from two keys (`ParamRule::FromRatio` and
+`FromOrRatio` over `numerator_key` and `divisor_key`),
 requirements on source values, and folds from a fixed catalog
 (`norm.plus_one`, `ssm.a_neg_exp`, `gdn.value_heads_tiled`) asserted per
 source container; a stage's folds are its source container's with the
@@ -2123,7 +2127,8 @@ stores and vector attention at D64/D256, and retains the F16 primitive/fusion
 behavior by default. The CPU component oracle reuses `EncodeRows`/`DecodeRows`
 through a synchronous bounded row codec. An alias's `kv_cache_encoding` override
 validates the complete authenticated target spec and pays parameter storage
-before mutation; the same transformed spec drives settings, graph/state layout
+before mutation (`src/components/state_encoding.h`: `KvCacheEncodingBytes`,
+`ApplyKvCacheEncoding`); the same transformed spec drives settings, graph/state layout
 and kept identity. There is no resident weight transcode or second model copy.
 
 The public values are `"f16"` (default) and `"q8_0"`. Calibration never selects

@@ -9,7 +9,8 @@
 //   ggml.flash_attn_ext.vec_q8_0  {flash_attn_ext}  FlashAttnVecQuant
 //   ggml.flash_attn_ext.vec_q4_0  {flash_attn_ext}  FlashAttnVecQuant
 //       GGML's vector kernel at the pin over Q8_0 (Q4_0) K and V of one
-//       encoding, head size 64 or 256 (template-instances/
+//       encoding, head sizes 64, 256 (with optional positive logit softcap
+//       at D=256), and 512 (template-instances/
 //       fattn-vec-instance-q8_0-q8_0.cu's and q4_0-q4_0.cu's cases,
 //       compiled in fattn_vec_quant.cu). The kernel reads the blocks
 //       directly at any number of query rows, two to a CUDA block beyond

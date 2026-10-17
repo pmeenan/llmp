@@ -129,8 +129,7 @@ constexpr std::array kDsparkRequirements{
     ScalarRequirement{"dflash.block_size", 5, true}};
 constexpr std::array kDsparkLists{
     ListRequirement{"dflash.attention.compress_ratios", 3, kDsparkRatios},
-    ListRequirement{"dflash.swiglu_clamp_exp", 3},
-    ListRequirement{"dflash.swiglu_clamp_shexp", 3},
+    ListRequirement{"dflash.swiglu_clamp_exp", 3}, ListRequirement{"dflash.swiglu_clamp_shexp", 3},
     ListRequirement{"dflash.target_layers", 3, kDsparkTargetLayers}};
 
 bool SameShape(std::string_view a, std::string_view b) {
@@ -171,53 +170,54 @@ bool IsName(std::string_view s) {
 }  // namespace
 
 const SourceMapping* FindSourceMapping(std::string_view container, std::string_view architecture) {
-  static const std::array tables{SourceMapping{.container = "gguf",
-                                               .architecture = &spec::mappings::Gemma2Mapping(),
-                                               .auxiliary = kAuxiliary,
-                                               .requirements = kGemma2Requirements},
-                                 SourceMapping{.container = "gguf",
-                                               .architecture = &spec::mappings::Gemma3Mapping(),
-                                               .auxiliary = kAuxiliary,
-                                               .requirements = kGemma3Requirements},
-                                 SourceMapping{.container = "gguf",
-                                               .architecture = &spec::mappings::Gemma4Mapping(),
-                                               .auxiliary = kAuxiliary},
-                                 SourceMapping{.container = "gguf",
-                                               .architecture = &spec::mappings::Gemma4AssistantMapping(),
-                                               .auxiliary = kAuxiliary},
-                                 SourceMapping{.container = "gguf",
-                                               .architecture = &spec::mappings::Qwen2GgufMapping(),
-                                               .auxiliary = kAuxiliary,
-                                               .encodings = kQwen2Encodings,
-                                               .shapes = kQwen2Shapes},
-                                 SourceMapping{.container = "exl3",
-                                               .architecture = &spec::mappings::Qwen2Exl3Mapping(),
-                                               .keys = kQwen2Exl3Keys,
-                                               .auxiliary = kExl3Auxiliary,
-                                               .encodings = kQwen2Exl3Encodings,
-                                               .shapes = kQwen2Exl3Shapes},
-                                 SourceMapping{.container = "gguf",
-                                               .architecture = &spec::mappings::Qwen38GgufMapping(),
-                                               .auxiliary = kAuxiliary,
-                                               .lists = kQwenLists,
-                                               .encodings = kQwenEncodings,
-                                               .extended_components = true,
-                                               .shapes = kQwenShapes,
-                                               .row_indices = kQwenRows},
-                                 SourceMapping{.container = "gguf",
-                                               .architecture = &spec::mappings::Dsv4Mapping(),
-                                               .auxiliary = kDsv4Auxiliary,
-                                               .requirements = kDsv4Requirements,
-                                               .lists = kDsv4Lists,
-                                               .encodings = kDsv4Encodings,
-                                               .extended_components = true},
-                                 SourceMapping{.container = "gguf",
-                                               .architecture = &spec::mappings::DsparkMapping(),
-                                               .auxiliary = kAuxiliary,
-                                               .requirements = kDsparkRequirements,
-                                               .lists = kDsparkLists,
-                                               .encodings = kDsv4Encodings,
-                                               .extended_components = true}};
+  static const std::array tables{
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::Gemma2Mapping(),
+                    .auxiliary = kAuxiliary,
+                    .requirements = kGemma2Requirements},
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::Gemma3Mapping(),
+                    .auxiliary = kAuxiliary,
+                    .requirements = kGemma3Requirements},
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::Gemma4Mapping(),
+                    .auxiliary = kAuxiliary},
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::Gemma4AssistantMapping(),
+                    .auxiliary = kAuxiliary},
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::Qwen2GgufMapping(),
+                    .auxiliary = kAuxiliary,
+                    .encodings = kQwen2Encodings,
+                    .shapes = kQwen2Shapes},
+      SourceMapping{.container = "exl3",
+                    .architecture = &spec::mappings::Qwen2Exl3Mapping(),
+                    .keys = kQwen2Exl3Keys,
+                    .auxiliary = kExl3Auxiliary,
+                    .encodings = kQwen2Exl3Encodings,
+                    .shapes = kQwen2Exl3Shapes},
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::Qwen38GgufMapping(),
+                    .auxiliary = kAuxiliary,
+                    .lists = kQwenLists,
+                    .encodings = kQwenEncodings,
+                    .extended_components = true,
+                    .shapes = kQwenShapes,
+                    .row_indices = kQwenRows},
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::Dsv4Mapping(),
+                    .auxiliary = kDsv4Auxiliary,
+                    .requirements = kDsv4Requirements,
+                    .lists = kDsv4Lists,
+                    .encodings = kDsv4Encodings,
+                    .extended_components = true},
+      SourceMapping{.container = "gguf",
+                    .architecture = &spec::mappings::DsparkMapping(),
+                    .auxiliary = kAuxiliary,
+                    .requirements = kDsparkRequirements,
+                    .lists = kDsparkLists,
+                    .encodings = kDsv4Encodings,
+                    .extended_components = true}};
   for (const auto& table : tables)
     if (container == table.container && architecture == table.architecture->architecture)
       return &table;
@@ -236,6 +236,9 @@ std::uint8_t KeyTypes(const spec::Mapping& m, std::string_view key) {
   if (!m.layer_type_key.empty() && key == m.layer_type_key) add(kIntegers);
   if (!m.layer_flags_key.empty() && key == m.layer_flags_key) add(kIntegers);
   for (const auto& rule : m.params) {
+    if (!key.empty() && (key == rule.numerator_key || key == rule.divisor_key)) {
+      add(kInteger | kReal);
+    }
     if (key != rule.key || rule.key.empty()) continue;
     switch (rule.type) {
       case spec::ValueType::kInt:
@@ -343,14 +346,12 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
   }
   const bool drafter = m.role == spec::StageRole::kDrafter;
   if ((m.role != spec::StageRole::kTarget && !drafter) ||
-      (drafter ? m.stage.empty() || !IsName(m.stage) || m.stage == "target" ||
-                     m.reads.size() > 8
+      (drafter ? m.stage.empty() || !IsName(m.stage) || m.stage == "target" || m.reads.size() > 8
                : !m.stage.empty() || !m.reads.empty()))
     return Invalid();
   if (m.slots.empty() || m.slots.size() > (table.extended_components ? 16U : 8U) ||
       m.tensors.size() > nd::kRuleLimit || m.params.size() > 128 || m.folds.size() > 8 ||
-      m.policies.size() > 8 ||
-      m.pipeline != spec::PipelineKind::kLlm ||
+      m.policies.size() > 8 || m.pipeline != spec::PipelineKind::kLlm ||
       (!table.extended_components && !m.layer_type_key.empty()) ||
       !spec::IsSourceKey(m.layer_count_key))
     return Invalid();
@@ -397,9 +398,7 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
             (!left->count_key.empty() && left->count_key == right->count_key &&
              left->count_above != right->count_above));
   };
-  const auto is_target = [&](std::size_t k) {
-    return k < m.tensors.size() && m.tensors[k].target;
-  };
+  const auto is_target = [&](std::size_t k) { return k < m.tensors.size() && m.tensors[k].target; };
   for (std::size_t i = 0; i < count; ++i)
     for (std::size_t j = 0; j < i; ++j)
       if (is_target(i) == is_target(j) && Overlap(spelling(i), spelling(j)) &&
@@ -434,7 +433,10 @@ std::expected<void, Error> ValidateSourceMapping(const SourceMapping& table) {
     for (const auto& policy : m.policies)
       if (!policy.gate.empty() && matches_aux(policy.gate)) return Invalid();
     for (const auto& p : m.params)
-      if (!p.key.empty() && matches_aux(p.key)) return Invalid();
+      if ((!p.key.empty() && matches_aux(p.key)) ||
+          (!p.numerator_key.empty() && matches_aux(p.numerator_key)) ||
+          (!p.divisor_key.empty() && matches_aux(p.divisor_key)))
+        return Invalid();
     for (const auto& k : table.keys)
       if (matches_aux(k.source)) return Invalid();
     for (std::size_t j = 0; j < i; ++j)

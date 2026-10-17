@@ -175,6 +175,8 @@ struct ParamRule {
   // kLayer slots: the layer types the rule applies to; empty: every type.
   std::string_view layer_types{};
   std::string_view key{};  // the source key; empty: `value` is the parameter
+  std::string_view numerator_key{};
+  std::string_view divisor_key{};
   ValueType type = ValueType::kInt;
   Transform transform = Transform::kNone;
   Literal value{};
