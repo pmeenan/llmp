@@ -8,8 +8,10 @@
 #ifndef LLMP_RUNTIME_COMPONENT_ADMISSION_H_
 #define LLMP_RUNTIME_COMPONENT_ADMISSION_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -45,9 +47,9 @@ std::expected<void, std::string> RequireServedVersion(const artifact::Artifact& 
 // (spec::DraftRecipe::values).
 std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValues(
     const artifact::Artifact& target, const artifact::Artifact& drafter);
-// A drafter's approved envelope (its approval's context and owners).
-std::expected<void, std::string> ComponentDrafterEnvelope(const artifact::Artifact& drafter,
-                                                          const spec::Envelope& envelope);
+// A drafter's execution envelope: a context and owners. An approved
+// drafter's envelope is its settings' default, not a bound (D-119).
+std::expected<void, std::string> ComponentDrafterEnvelope(const spec::Envelope& envelope);
 // A drafter's selected draft head by its token map `head_ids` (its drafting
 // recipe's): the map's resource and rows, I32 [1, rows] with 0 < rows <=
 // `vocab`; nullopt without one; refused for another shape.
@@ -63,12 +65,26 @@ std::expected<std::optional<DraftHeadMap>, std::string> DraftHeadRows(
 std::expected<std::uint32_t, std::string> ConfigureDraftVocabulary(
     std::span<spec::SourceValue> values, const spec::DraftRecipe& recipe, std::uint32_t requested,
     std::uint32_t target_vocab, std::optional<std::uint32_t> selected_rows = std::nullopt);
+// The kept GGUF metadata file's name (a single file's, or the first
+// shard's, beneath `meta/`); empty when the artifact keeps none.
+std::string KeptGguf(const artifact::Artifact& artifact);
+// [0, place.bytes) of `artifact`'s data at `place`, read directly through
+// 4 KiB windows within its shard, handed to `each` a window's part at a
+// time with its offset from the start; the first refusal (each's, or the
+// read's) ends it.
+std::expected<void, std::string> ReadPlaced(const artifact::Artifact& artifact,
+                                            const artifact::Placement& place,
+                                            const std::function<std::expected<void, std::string>(
+                                                std::uint64_t, std::span<const std::byte>)>& each);
 // An integer the artifact's kept GGUF metadata holds under `key`.
 std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& artifact,
                                                      std::string_view key);
-// A drafter's composition (before any per-alias KV encoding) is the one its
-// approval pins.
+// A drafter's composition (before any per-alias KV encoding) with `target`:
+// one with a drafter stage, and beside its approved target the one its
+// approval pins. A pinned drafter beside another target is pinned by its
+// own inventory and checked structurally (the composition's validation).
 std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& composed,
+                                                        const artifact::Artifact& target,
                                                         const artifact::Artifact& drafter);
 
 // `count` integers of a resource, read directly (a draft head's token map).
@@ -77,8 +93,15 @@ std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const artifact::Ar
                                                               std::uint32_t resource,
                                                               std::uint64_t count);
 
+// An admitted target (ReadComponentAdmission) or drafter
+// (ReadComponentDrafterAdmission): what admission read, checked once, for
+// what follows to use rather than check again.
 struct ComponentAdmission {
   spec::ModelSpec model;
+  spec::Source source;
+  const Approval* approval = nullptr;
+};
+struct ComponentDrafterAdmission {
   spec::Source source;
   const Approval* approval = nullptr;
 };
@@ -92,7 +115,14 @@ std::expected<void, std::string> CheckComponentAdmission(const spec::ModelSpec& 
 std::expected<void, std::string> CheckComponentDrafterAdmission(
     const spec::Source& source, std::span<const artifact::Source> origins);
 
-// Artifact-only prerequisite, before owned spec/source construction.
+// The artifact-level prerequisites, before its spec or source is read: a v1
+// artifact with well-formed source receipts, an approved one's transforms
+// and inventory counts (an unpinned one's architecture with a mapping), and
+// its scale-atom expert slots.
+std::expected<void, std::string> CheckArtifactPrerequisites(const artifact::Artifact& artifact);
+// The whole admission of a target or drafter artifact, by its mapping's
+// role (ReadComponentAdmission or ReadComponentDrafterAdmission, results
+// dropped): for callers that only ask whether it is admitted.
 std::expected<void, std::string> CheckComponentArtifactAdmission(
     const artifact::Artifact& artifact);
 
@@ -113,9 +143,14 @@ std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& a
 std::expected<void, std::string> CheckStoredHashTables(const artifact::Artifact& artifact,
                                                        const spec::ModelSpec& model);
 
-// Reads StoredSpec and SourceOf of a v1 artifact.
+// A target's admission, once: its prerequisites, then its StoredSpec and
+// SourceOf checked (CheckComponentAdmission).
 std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
     const artifact::Artifact& artifact);
+// A drafter's admission, once: its prerequisites, then its SourceOf checked
+// (CheckComponentDrafterAdmission).
+std::expected<ComponentDrafterAdmission, std::string> ReadComponentDrafterAdmission(
+    const artifact::Artifact& drafter);
 
 // The context a configuration that names none takes within an approval:
 // the widest context of its mapping's rule domains that its gates select
@@ -144,8 +179,20 @@ std::expected<ImageAdmission, std::string> ReadImageAdmission(
 std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval& approval,
                                                                  const spec::Envelope& envelope);
 
-// Recheck the complete declaration, then the approved envelope, before
-// selecting the approved policy rule for the requested execution envelope.
+// Whether an envelope lies within an approval's qualified one (its context
+// and owners, and one owner above its wide context): its settings' default.
+bool WithinApprovedEnvelope(const Approval& approval, const spec::Envelope& envelope);
+// An admitted target's planning policy rule for an execution envelope
+// within its stored stage context: an approved one's rule (refused where
+// its kMapping policy has none within its qualified envelope; past that
+// envelope, an override, the engine's default where none holds), an
+// unpinned one's mapping's rule for its gates, else the engine's default.
+std::expected<spec::PolicyRule, std::string> AdmittedPolicy(const spec::ModelSpec& model,
+                                                            const spec::Source& source,
+                                                            const Approval* approval,
+                                                            const spec::Envelope& envelope);
+// CheckComponentAdmission, then AdmittedPolicy (descriptor checks: the
+// runtime admits once, ReadComponentAdmission, and asks AdmittedPolicy).
 std::expected<spec::PolicyRule, std::string> ComponentAdmissionPolicy(
     const spec::ModelSpec& model, const spec::Source& source,
     std::span<const artifact::Source> origins, const spec::Envelope& envelope);

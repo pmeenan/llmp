@@ -24,12 +24,10 @@
 #   and names no kernel library. It links no device backend: a program
 #   links the CUDA one (llmp_engine does) or the fake device runtime and
 #   the host paging kernels (llmp_fake_device_backend), never both.
-# - llmp_engine, CUDA builds only: the GGML plans and graph runs
-#   (planned.h, graph_runs.h), the runners' cuBLAS and launch context
-#   (runner_resources.h), and each M3 model's runner on the core, with
-#   their plans, state layouts and steps. It is not given CUDA's headers
-#   (docs/portability.md). llmp-runtime links it, and so do the paged
-#   harnesses and their tests.
+# - llmp_engine, CUDA builds only: the runners' cuBLAS and launch context
+#   (runner_resources.h) and the expert slab's device side (expert_slab.h)
+#   over the core. It is not given CUDA's headers (docs/portability.md).
+#   llmp-runtime links it, and so do the paged harnesses and their tests.
 add_library(llmp_engine_core STATIC paged_node.cc paged_weights.cc live_state.cc checkpoint_file.cc
                                       request_cohort.cc slot_lifecycle.cc ple_rows.cc runner_memory.cc
                                       plan_account.cc coverage.cc program_lifecycle.cc step_runs.cc model_runner.cc
@@ -50,7 +48,7 @@ target_link_libraries(llmp_fake_device_backend INTERFACE llmp_fake_device_runtim
                                                          llmp_host_paging_kernels)
 
 if(LLMP_CUDA)
-  add_library(llmp_engine STATIC planned.cc graph_runs.cc runner_resources.cc expert_slab.cc)
+  add_library(llmp_engine STATIC runner_resources.cc expert_slab.cc)
   target_include_directories(llmp_engine PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(llmp_engine PUBLIC llmp_engine_core llmp_scheduler llmp_memory llmp_storage
                                              llmp_device_runtime llmp_ggml_kernels

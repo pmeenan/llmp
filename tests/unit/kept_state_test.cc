@@ -30,6 +30,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -111,9 +112,13 @@ kept::Record Sample() {
                 .drafter = "dd2d3f9c",
                 .layout = "deepseek4-state/1;context=8704;dspark=1;window=ring;regions=t:1:2"};
   r.slot = 2;
-  r.files = {{.name = kept::StateFileName(2),
+  // A spill file a stage, each its region's bytes.
+  r.files = {{.name = kept::StateFileName(2, 0),
               .id = {.device = 66306, .inode = 1234567, .generation = 99},
-              .bytes = 6 * kExtent}};
+              .bytes = 4 * kExtent},
+             {.name = kept::StateFileName(2, 1),
+              .id = {.device = 66306, .inode = 1234568, .generation = 99},
+              .bytes = 2 * kExtent}};
   r.regions = {4 * kExtent, 2 * kExtent};
   r.extents = {{.region = 0, .index = 0, .digest = {}},
                {.region = 0, .index = 1, .digest = {}},
@@ -604,28 +609,33 @@ TEST(KeptRecord, AForeignOrExpiredRecordIsRefused) {
   }
 }
 
-// What a record's extents do not cover of its spill file, region by
-// region in file order, adjacent runs joined (across regions too).
+// What a record's extents do not cover of each spill file (its stage's
+// region alone, from 0), adjacent runs joined.
 TEST(KeptRecord, UnlistedPlacesAreWhatItsExtentsDoNotCover) {
   kept::Record r = Sample();  // regions of 4 and 2 extents; (0,0), (0,1), (1,0) listed
-  const auto places = [](const kept::Record& record) {
+  const auto places = [](const kept::Record& record, std::size_t file) {
     std::vector<std::pair<std::uint64_t, std::uint64_t>> out;
-    for (const kept::Place& p : kept::UnlistedPlaces(record)) {
+    for (const kept::Place& p : kept::UnlistedPlaces(record, file)) {
       out.emplace_back(p.offset, p.bytes);
     }
     return out;
   };
   using Runs = std::vector<std::pair<std::uint64_t, std::uint64_t>>;
-  EXPECT_EQ(places(r), (Runs{{2 * kExtent, 2 * kExtent}, {5 * kExtent, kExtent}}));
+  EXPECT_EQ(places(r, 0), (Runs{{2 * kExtent, 2 * kExtent}}));
+  EXPECT_EQ(places(r, 1), (Runs{{kExtent, kExtent}}));
+  EXPECT_TRUE(places(r, 2).empty());  // no such file
   r.extents = {{.region = 0, .index = 0, .digest = {}}};
-  EXPECT_EQ(places(r), (Runs{{kExtent, 5 * kExtent}}));
+  EXPECT_EQ(places(r, 0), (Runs{{kExtent, 3 * kExtent}}));
+  EXPECT_EQ(places(r, 1), (Runs{{0, 2 * kExtent}}));
   r.extents = {{.region = 0, .index = 3, .digest = {}}, {.region = 1, .index = 1, .digest = {}}};
-  EXPECT_EQ(places(r), (Runs{{0, 3 * kExtent}, {4 * kExtent, kExtent}}));
+  EXPECT_EQ(places(r, 0), (Runs{{0, 3 * kExtent}}));
+  EXPECT_EQ(places(r, 1), (Runs{{0, kExtent}}));
   for (std::uint32_t i = 0; i < 4; ++i) {
     r.extents.push_back({.region = 0, .index = i, .digest = {}});
   }
   r.extents.push_back({.region = 1, .index = 0, .digest = {}});
-  EXPECT_TRUE(places(r).empty());
+  EXPECT_TRUE(places(r, 0).empty());
+  EXPECT_TRUE(places(r, 1).empty());
 }
 
 TEST(KeptRecord, FileNamesAreTheSlotsOwn) {
@@ -791,7 +801,7 @@ TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
   kept::Record r = Sample();
   r.slot = 0;
   r.files = {{.name = kept::StateFileName(0), .id = Id(state), .bytes = 4 * kExtent}};
-  r.regions = {3 * kExtent, kExtent};
+  r.regions = {4 * kExtent};
   r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 0, .index = 2, .digest = {}}};
   r.checkpoints.clear();
   const auto hash = [&](std::span<const kept::Place> places) {
@@ -847,7 +857,7 @@ TEST(StateKeeper, FilesFoundOpenedUpAreUsedAndTheRecordsChecksHold) {
   kept::Record r = Sample();
   r.slot = 0;
   r.files = {{.name = kept::StateFileName(0), .id = Id(state), .bytes = 4 * kExtent}};
-  r.regions = {3 * kExtent, kExtent};
+  r.regions = {4 * kExtent};
   r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 0, .index = 2, .digest = {}}};
   r.checkpoints.clear();
   ASSERT_EQ(llmp::runtime::EmptyUnlisted(model.fd, r), "");
@@ -864,6 +874,142 @@ TEST(StateKeeper, FilesFoundOpenedUpAreUsedAndTheRecordsChecksHold) {
   ASSERT_EQ(::unlinkat(model.fd, "slot-0.state", 0), 0);
   ASSERT_EQ(::symlinkat("elsewhere", model.fd, "slot-0.state"), 0);
   EXPECT_FALSE(llmp::runtime::EmptyUnlisted(model.fd, r).empty());
+  fs::remove_all(root);
+}
+
+// A keeper stopped while it hashes (here held by a Quiet) finishes the
+// record it is making, every checkpoint with it: one cut short would leave
+// its slot's files or checkpoints unlisted, and the next start removes
+// whatever no record lists.
+TEST(StateKeeper, StoppingFinishesTheRecordBeingMade) {
+  const fs::path root = Scratch("stopped");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity state = WriteExtents(model.fd, "slot-1.state", 2, 5);
+  const pf::FileIdentity turn = WriteExtents(model.fd, "slot-1.turn-4.state", 1, 9);
+  kept::Record r = Sample();
+  r.slot = 1;
+  r.files = {{.name = kept::StateFileName(1), .id = Id(state), .bytes = 2 * kExtent}};
+  r.regions = {2 * kExtent};
+  r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 0, .index = 1, .digest = {}}};
+  r.checkpoints[0].file = "slot-1.turn-4.state";
+  r.checkpoints[0].id = Id(turn);
+  r.checkpoints[0].file_bytes = kExtent;
+  r.checkpoints[0].ranges = {{.region = 0, .offset = 0, .bytes = kExtent}};
+  r.checkpoints[0].digests.clear();
+  {
+    auto keeper = std::make_unique<StateKeeper>(1, StateKeeper::Log{});
+    const std::size_t index = keeper->AddModel(::dup(model.fd));
+    // Never destroyed: its keeper goes first (a Quiet's end touches it).
+    alignas(StateKeeper::Quiet) std::array<std::byte, sizeof(StateKeeper::Quiet)> quiet{};
+    new (quiet.data()) StateKeeper::Quiet(keeper.get());
+    keeper->Keep(index, r);
+    // The worker takes the record up, then waits between places.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(keeper->pending(), 1U);
+    EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record"));
+    keeper.reset();
+  }
+  auto text = pf::ReadPrivateFile(model.fd, "slot-1.record", kept::kMostRecordBytes);
+  ASSERT_TRUE(text.has_value());
+  auto written = kept::Decode(*text);
+  ASSERT_TRUE(written.has_value()) << written.error();
+  EXPECT_EQ(written->extents.size(), 2U);
+  ASSERT_EQ(written->checkpoints.size(), 1U);
+  EXPECT_EQ(written->checkpoints[0].digests.size(), 1U);
+  EXPECT_EQ(llmp::runtime::VerifyKeptState(model.fd, *written), "");
+  fs::remove_all(root);
+}
+
+// Nothing waits on a file or a log under the keeper's lock: a worker held
+// there (a drive that holds a write, a log that cannot be written) holds
+// neither the driver's calls nor a drain, which ends at its deadline.
+TEST(StateKeeper, AHeldWorkerHoldsNeitherTheDriverNorADrain) {
+  const fs::path root = Scratch("held");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity state = WriteExtents(model.fd, "slot-1.state", 1, 5);
+  std::atomic<bool> holding{false};
+  std::atomic<bool> release{false};
+  StateKeeper keeper(1, [&](std::string_view /*line*/) {
+    holding.store(true);
+    for (int i = 0; i < 2000 && !release.load(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  });
+  const std::size_t index = keeper.AddModel(::dup(model.fd));
+  kept::Record wrong = Sample();
+  wrong.slot = 1;
+  wrong.files = {{.name = kept::StateFileName(1), .id = Id(state), .bytes = kExtent}};
+  wrong.files[0].id.inode += 1;  // not the file: refused, and said
+  wrong.regions = {kExtent};
+  wrong.extents = {{.region = 0, .index = 0, .digest = {}}};
+  wrong.checkpoints.clear();
+  keeper.Keep(index, wrong);
+  for (int i = 0; i < 2000 && !holding.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_TRUE(holding.load());
+  const auto began = std::chrono::steady_clock::now();
+  EXPECT_FALSE(keeper.Drain(began + std::chrono::milliseconds(200)));
+  keeper.Invalidate(index, 1);
+  EXPECT_FALSE(keeper.Kept(index, 1));
+  EXPECT_LT(std::chrono::steady_clock::now() - began, std::chrono::seconds(5));
+  release.store(true);
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  EXPECT_EQ(keeper.stats().failed, 1U);
+  fs::remove_all(root);
+}
+
+TEST(StateKeeper, StoppingAbandonsRecordsStillQueued) {
+  const fs::path root = Scratch("stop-queued");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity state = WriteExtents(model.fd, "slot-1.state", 1, 5);
+  std::atomic<bool> holding{false};
+  std::atomic<bool> release{false};
+  auto keeper = std::make_unique<StateKeeper>(1, [&](std::string_view) {
+    holding.store(true);
+    while (!release.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+  const std::size_t index = keeper->AddModel(::dup(model.fd));
+  kept::Record record = Sample();
+  record.slot = 1;
+  record.files = {{.name = kept::StateFileName(1), .id = Id(state), .bytes = kExtent}};
+  record.regions = {kExtent};
+  record.extents = {{.region = 0, .index = 0, .digest = {}}};
+  record.checkpoints.clear();
+  kept::Record wrong = record;
+  wrong.files[0].id.inode += 1;
+  keeper->Keep(index, std::move(wrong));
+  // The first job's failure log holds the worker; the valid record stays queued.
+  const auto deadline = StateKeeper::Clock::now() + std::chrono::seconds(10);
+  while (!holding.load() && StateKeeper::Clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  if (!holding.load()) {
+    release.store(true);
+    FAIL() << "the worker never reached its failure log";
+  }
+  keeper->Keep(index, record);
+  EXPECT_EQ(keeper->pending(), 2U);
+  // The worker remains held until this thread releases it, so the
+  // destructor's members remain alive while pending() observes the queue.
+  StateKeeper* stopping = keeper.get();
+  std::thread destroy([owned = std::move(keeper)]() mutable { owned.reset(); });
+  const auto stopped_by = StateKeeper::Clock::now() + std::chrono::seconds(10);
+  while (stopping->pending() != 1 && StateKeeper::Clock::now() < stopped_by) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_EQ(stopping->pending(), 1U);  // only the current record, not the queued one
+  release.store(true);
+  destroy.join();
+  EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record"));
   fs::remove_all(root);
 }
 
@@ -999,27 +1145,16 @@ TEST(KeptRecordStages, AStageRecordReadsBackAsWritten) {
   EXPECT_EQ(Sealed(Unsealed(text)), text);
 }
 
-// A model keeps the version it writes: a record of the other version is
-// refused (and so discarded), whichever way round; a version neither
-// reads is refused by the reader.
-TEST(KeptRecordStages, EachVersionIsRefusedWhereTheOtherIsKept) {
+// A model keeps the version it writes: a record that says another is
+// refused (and so discarded); a version the reader does not read is
+// refused unread.
+TEST(KeptRecordStages, AnotherVersionIsRefused) {
   kept::Record stages = SampleStages();
-  kept::Expected one_file = ExpectStages(stages);
-  one_file.version = kept::kOneFileVersion;
-  auto refused = kept::Check(stages, one_file);
+  kept::Expected other = ExpectStages(stages);
+  other.version = 1;
+  auto refused = kept::Check(stages, other);
   ASSERT_FALSE(refused.has_value());
   EXPECT_NE(refused.error().find("format version 2"), std::string::npos) << refused.error();
-  // An old record (one spill file a slot) where the shared runner keeps
-  // version 2: decoded, then refused.
-  const std::string old_text = kept::Encode(Sample());
-  auto old = kept::Decode(old_text);
-  ASSERT_TRUE(old.has_value()) << old.error();
-  EXPECT_EQ(old->version, kept::kOneFileVersion);
-  kept::Expected stage_files = Expect(Sample());
-  stage_files.version = kept::kStageFilesVersion;
-  auto old_refused = kept::Check(*old, stage_files);
-  ASSERT_FALSE(old_refused.has_value());
-  EXPECT_NE(old_refused.error().find("format version 1"), std::string::npos) << old_refused.error();
   // A third version, sealed as a writer of it would: refused unread.
   std::string body = Unsealed(kept::Encode(stages));
   const auto at = body.find(R"("version":2)");
@@ -1130,12 +1265,6 @@ TEST(KeptRecordStages, StageFilesAreNamedAndPlacedByStage) {
   EXPECT_EQ(places(r, 1), (Runs{{kExtent, kExtent}}));
   EXPECT_TRUE(places(r, 2).empty());
   EXPECT_TRUE(places(r, 3).empty());
-  // Version 1: one file, the regions one after another.
-  const kept::Record one = Sample();
-  const auto old = kept::ExtentPlace(one, {.region = 1, .index = 0, .digest = {}});
-  EXPECT_EQ(old.file, 0U);
-  EXPECT_EQ(old.offset, 4 * kExtent);
-  EXPECT_TRUE(places(one, 1).empty());
 }
 
 // The keeper hashes each stage's file at its own extents; the start's
@@ -1215,7 +1344,8 @@ TEST(StateKeeperStages, AStageRecordDescribesEachFileExactly) {
 
 namespace {
 
-// The M3 runtime's encoding of Sample() (format version 1), byte for byte.
+// The M3 runtime's encoding of a record (format version 1, one spill file a
+// slot), byte for byte: no longer read.
 constexpr std::string_view kVersionOneSample =
     R"({"format":"llmp-kept-conversation","version":1,)"
     R"("build":"0.1.0;abc;sdk;aarch64;exe=1:2:3:4:5.000000006","artifact":"8a355bfb",)"
@@ -1328,22 +1458,17 @@ TEST(StateKeeperStages, ChangedProgressControlCannotReuseTheOldKeptRecord) {
 
 }  // namespace
 
-TEST(KeptRecord, VersionOneBytesAreTheM3Runtimes) {
-  const kept::Record r = Sample();
-  EXPECT_EQ(r.version, kept::kOneFileVersion);
-  EXPECT_EQ(kept::Encode(r), kVersionOneSample);
-  auto back = kept::Decode(kVersionOneSample);
-  ASSERT_TRUE(back.has_value()) << back.error();
-  EXPECT_EQ(*back, r);
-  // Version 1's spill file name, and its extents' places, as M3's.
-  EXPECT_EQ(kept::StateFileName(2), "slot-2.state");
-  EXPECT_EQ(kept::ExtentPlace(r, r.extents[2]).offset, 4 * kExtent);
-  // Version 1 holds no stages, and version 2's shape is not version 1's.
+// Version 1 (the retired M3 runners' one spill file a slot) is no longer
+// read: its record is refused whole, as is one relabelled version 2 or
+// given version 2's stages, and so discarded (no compatibility is owed).
+TEST(KeptRecord, VersionOneIsNoLongerRead) {
   const std::string text(kVersionOneSample);
-  auto staged = kept::Decode(Forged(text, R"("regions":)", R"("stages":)"));
-  EXPECT_FALSE(staged.has_value());
-  auto relabelled = kept::Decode(Forged(text, R"("version":1,)", R"("version":2,)"));
-  EXPECT_FALSE(relabelled.has_value());
+  auto old = kept::Decode(text);
+  ASSERT_FALSE(old.has_value());
+  EXPECT_NE(old.error().find("version"), std::string::npos) << old.error();
+  EXPECT_FALSE(kept::Decode(Forged(text, R"("regions":)", R"("stages":)")).has_value());
+  EXPECT_FALSE(kept::Decode(Forged(text, R"("version":1,)", R"("version":2,)")).has_value());
+  EXPECT_EQ(kept::Record{}.version, kept::kVersion);
 }
 
 TEST(KeptRecordStages, ACraftedStageRecordIsRefused) {

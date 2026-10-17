@@ -675,14 +675,12 @@ class Server::Stream final : public Exchange {
     if (cooperative_) {
       return;  // the driver declares and completes units, not channel polling
     }
-    bool recovered = false;
+    std::optional<std::string> recovered;
     {
       const std::scoped_lock lock(server_.mutex_);
       recovered = server_.BeatLocked(next.value_or(server_.watchdog_.health().phase), expected);
     }
-    if (recovered) {
-      server_.HealthChanged();
-    }
+    server_.Recovered(recovered);
   }
 
   // A beat (above), then whether the generation goes on.
@@ -849,7 +847,7 @@ void Server::HealthChanged() const {
   options_.on_health(health());
 }
 
-bool Server::BeatLocked(Phase next, double expected) {
+std::optional<std::string> Server::BeatLocked(Phase next, double expected) {
   const auto now = Clock::now();
   const Health before = watchdog_.health();
   // The hang ladder (hang_ladder.h) sees the same beat: the unit that
@@ -857,18 +855,25 @@ bool Server::BeatLocked(Phase next, double expected) {
   ladder_->Unit(next != Phase::kIdle && next != Phase::kPaused,
                 Allowance(watchdog_.stall(), expected), PhaseName(next), now);
   if (!watchdog_.Beat(next, expected, now)) {
-    return false;
+    return std::nullopt;
   }
-  Log(
-      std::format("the model backend made progress again ({}), {:.1f} s after its last; "
-                  "requests are accepted again",
-                  PhaseName(before.phase), Seconds(now - before.last_progress)));
-  return true;
+  return std::format(
+      "the model backend made progress again ({}), {:.1f} s after its last; requests are "
+      "accepted again",
+      PhaseName(before.phase), Seconds(now - before.last_progress));
+}
+
+void Server::Recovered(const std::optional<std::string>& line) const {
+  if (line) {
+    Log(*line);
+    HealthChanged();
+  }
 }
 
 // ---------------------------------------------------------------- I/O thread
 
 void Server::WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& ended) {
+  std::vector<std::string> lines;  // logged once mutex_ is released
   {
     const std::scoped_lock lock(mutex_);
     if (!watchdog_.Check(now)) {
@@ -879,13 +884,16 @@ void Server::WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& end
     if (!options_.stall_fails) {
       // Detection is not a limit (D-102): reported, while the requests go
       // on (a hang that never returns is the node's to end).
-      Log(std::format(
+      lines.push_back(std::format(
           "the model backend made no progress for {:.1f} s ({}; stall {}); it is reported "
           "unhealthy until it makes progress; its {} active and {} queued requests go on",
           Seconds(idle), PhaseName(health.phase), health.stalls, running_.size(), queue_.size()));
     } else {
-      FailStalledLocked(idle, ended);
+      FailStalledLocked(idle, ended, lines);
     }
+  }
+  for (const std::string& line : lines) {
+    Log(line);
   }
   HealthChanged();
 }
@@ -901,7 +909,8 @@ void Server::WatchHang(Clock::time_point now) {
   (void)ladder_->Check(now);
 }
 
-void Server::FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>& ended) {
+void Server::FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>& ended,
+                               std::vector<std::string>& lines) {
   const Health& health = watchdog_.health();
   {
     std::string which = "no request";
@@ -917,7 +926,7 @@ void Server::FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>&
       ch.stalled = true;  // not `gone`: the connection stays to carry the error
       ended.push_back(ch.connection);
     }
-    Log(
+    lines.push_back(
         std::format("the model backend made no progress for {:.1f} s ({}; stall {}): {}; it is "
                     "unhealthy, and requests get 503 until it makes progress",
                     Seconds(idle), PhaseName(health.phase), health.stalls, which));
@@ -930,7 +939,7 @@ void Server::FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>&
     for (Pending& p : queue_) {
       Channel& ch = *p.channel;
       ch.queued = false;
-      Log(std::format("request {}: 503, the backend is not making progress", ch.id));
+      lines.push_back(std::format("request {}: 503, the backend is not making progress", ch.id));
       ch.PutError(Unresponsive());
       ended.push_back(ch.connection);
     }
@@ -1235,10 +1244,17 @@ void Server::OnReadable(Connection& c) {
     // kIdle, kHead, kBody: at most what the request may still hold.
     std::size_t most = kReadChunk;
     if (c.state == State::kBody) {
-      most = std::min(most, c.head_end + c.request.body_bytes - c.in.size());
+      // What the body still owes: none when it all arrived (with pipelined
+      // bytes after it, perhaps) while it waited for the request memory.
+      const std::size_t whole = c.head_end + c.request.body_bytes;
+      most = std::min(most, whole - std::min(whole, c.in.size()));
       // Room for it in the request memory first, or the connection waits,
       // unread, until the driver grows the memory (or refuses).
       if (const Growth grown = GrowBody(c, most); grown != Growth::kOk) {
+        return;
+      }
+      if (most == 0) {
+        BodyArrived(c);
         return;
       }
     } else {
@@ -1281,6 +1297,18 @@ void Server::OnReadable(Connection& c) {
       c.head_end = **end;
       c.request = std::move(*request);
       c.state = State::kBody;
+      // Its head's checks come first: a request the head refuses has none
+      // of its body read or charged, and is not asked to continue. With its
+      // body still to come it closes the connection (where the next request
+      // would begin is unknown); one whole already is refused as usual.
+      if (std::optional<HeadRefusal> refused = Screen(c, c.request)) {
+        if (c.in.size() < c.head_end + c.request.body_bytes) {
+          Refuse(c, refused->error, std::move(refused->extra));
+        } else {
+          BodyArrived(c);
+        }
+        return;
+      }
       // The body is charged to the request memory as it arrives, not as
       // declared (D-102): a client that declares a large body and sends
       // little holds little. What arrived with the head is charged now; a
@@ -1324,6 +1352,57 @@ void Server::BodyArrived(Connection& c) {
   OnRequest(c, std::move(request));
 }
 
+std::optional<Server::HeadRefusal> Server::Screen(const Connection& c,
+                                                  const http::Request& request) const {
+  const auto refuse = [](Error error, std::vector<std::string> extra = {}) {
+    return std::optional<HeadRefusal>(
+        HeadRefusal{.error = std::move(error), .extra = std::move(extra)});
+  };
+  // Browser guards (D-045, D-064): the Host names this node as it listens,
+  // and nothing arrives from another site's page.
+  const std::string* host = request.Find("host");
+  if (host == nullptr || !options_.hosts.AllowsHost(*host)) {
+    return refuse(Refusal(403, "the Host header must name this node as the chat route listens"));
+  }
+  const std::string* origin = request.Find("origin");
+  const std::string* site = request.Find("sec-fetch-site");
+  if ((origin != nullptr && !options_.hosts.AllowsOrigin(*origin)) ||
+      (site != nullptr && *site != "none" && *site != "same-origin")) {
+    return refuse(Refusal(403, "requests from other sites' web pages are refused on this route"));
+  }
+  const auto method_not_allowed = [&](std::string_view allow) {
+    return refuse(Refusal(405, std::format("use {}", allow)), {std::format("Allow: {}", allow)});
+  };
+  if ((request.path == "/llmp/v1/ignored-fields" && c.peer_loopback) ||
+      request.path == "/v1/models" || request.path.starts_with("/v1/models/")) {
+    if (request.method != "GET") {
+      return method_not_allowed("GET");
+    }
+    return std::nullopt;
+  }
+  if (request.path != "/v1/chat/completions" && request.path != "/v1/completions") {
+    return refuse(Refusal(404,
+                          "no such route; this runtime serves /v1/chat/completions, "
+                          "/v1/completions and /v1/models"));
+  }
+  if (request.method != "POST") {
+    return method_not_allowed("POST");
+  }
+  const std::string* type = request.Find("content-type");
+  std::string media;
+  if (type != nullptr) {
+    for (const char ch : std::string_view(*type).substr(0, type->find(';'))) {
+      if (ch != ' ' && ch != '\t') {
+        media += ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch;
+      }
+    }
+  }
+  if (media != kJson) {
+    return refuse(Refusal(415, "the body must be Content-Type: application/json"));
+  }
+  return std::nullopt;
+}
+
 void Server::OnRequest(Connection& c, http::Request request) {
   // The body's charge is the request's now: handed to its parse, or
   // released with the body when another route answers or refuses it.
@@ -1338,23 +1417,12 @@ void Server::OnRequest(Connection& c, http::Request request) {
   c.channel = channel;
   c.state = Connection::State::kBusy;
 
-  // Browser guards (D-045, D-064): the Host names this node as it listens,
-  // and nothing arrives from another site's page.
-  const std::string* host = request.Find("host");
-  if (host == nullptr || !options_.hosts.AllowsHost(*host)) {
-    Refuse(c, Refusal(403, "the Host header must name this node as the chat route listens"));
+  // Its head's checks: here a request whose body arrived with its head (the
+  // others were screened before their bodies were read).
+  if (std::optional<HeadRefusal> refused = Screen(c, request)) {
+    Refuse(c, refused->error, std::move(refused->extra));
     return;
   }
-  const std::string* origin = request.Find("origin");
-  const std::string* site = request.Find("sec-fetch-site");
-  if ((origin != nullptr && !options_.hosts.AllowsOrigin(*origin)) ||
-      (site != nullptr && *site != "none" && *site != "same-origin")) {
-    Refuse(c, Refusal(403, "requests from other sites' web pages are refused on this route"));
-    return;
-  }
-  const auto method_not_allowed = [&](std::string_view allow) {
-    Refuse(c, Refusal(405, std::format("use {}", allow)), {std::format("Allow: {}", allow)});
-  };
   const auto answer = [&](const std::string& body) {
     {
       const std::scoped_lock lock(mutex_);
@@ -1364,23 +1432,15 @@ void Server::OnRequest(Connection& c, http::Request request) {
     }
     Flush(c);
   };
-  if (request.path == "/llmp/v1/ignored-fields" && c.peer_loopback) {
-    if (request.method != "GET") {
-      method_not_allowed("GET");
-      return;
-    }
+  if (request.path == "/llmp/v1/ignored-fields") {
     answer(ignored_.Json());
     return;
   }
-  if (request.path == "/v1/models" || request.path.starts_with("/v1/models/")) {
-    if (request.method != "GET") {
-      method_not_allowed("GET");
-      return;
-    }
-    if (request.path == "/v1/models") {
-      answer(ModelsJson(models_, created_));
-      return;
-    }
+  if (request.path == "/v1/models") {
+    answer(ModelsJson(models_, created_));
+    return;
+  }
+  if (request.path.starts_with("/v1/models/")) {
     const std::string_view id = std::string_view(request.path).substr(11);
     const auto it = std::ranges::find(models_, id, &ModelInfo::name);
     if (it == models_.end()) {
@@ -1391,29 +1451,6 @@ void Server::OnRequest(Connection& c, http::Request request) {
     return;
   }
   const bool literal_route = request.path == "/v1/completions";
-  if (request.path != "/v1/chat/completions" && !literal_route) {
-    Refuse(c, Refusal(404,
-                      "no such route; this runtime serves /v1/chat/completions, /v1/completions "
-                      "and /v1/models"));
-    return;
-  }
-  if (request.method != "POST") {
-    method_not_allowed("POST");
-    return;
-  }
-  const std::string* type = request.Find("content-type");
-  std::string media;
-  if (type != nullptr) {
-    for (const char ch : std::string_view(*type).substr(0, type->find(';'))) {
-      if (ch != ' ' && ch != '\t') {
-        media += ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch;
-      }
-    }
-  }
-  if (media != kJson) {
-    Refuse(c, Refusal(415, "the body must be Content-Type: application/json"));
-    return;
-  }
   auto parse = std::make_unique<Parse>();
   parse->connection = c.id;
   parse->channel = channel;
@@ -1556,7 +1593,10 @@ void Server::RetryBody(Connection& c) {
     return;
   }
   c.inactive_by = Clock::now() + options_.request_inactivity;
-  const std::size_t remaining = c.head_end + c.request.body_bytes - c.in.size();
+  // None when the whole body (and perhaps pipelined bytes after it)
+  // arrived with its head.
+  const std::size_t whole = c.head_end + c.request.body_bytes;
+  const std::size_t remaining = whole - std::min(whole, c.in.size());
   const bool denied = memory_->denials() != c.wait_denials;
   switch (GrowBody(c, std::min(kReadChunk, remaining))) {
     case Growth::kRefused:
@@ -1801,6 +1841,7 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
   // The queue: only with queue_wait set does a non-streaming request that
   // waited that long get a 429 (D-102); a stream, held by keepalives,
   // waits its turn.
+  std::vector<std::string> lines;  // logged once mutex_ is released
   {
     const std::scoped_lock lock(mutex_);
     if (const auto due = watchdog_.due()) {
@@ -1819,7 +1860,8 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
           return false;
         }
         ch.queued = false;
-        Log(std::format("request {}: 429 after waiting {} s in the queue", ch.id,
+        lines.push_back(
+            std::format("request {}: 429 after waiting {} s in the queue", ch.id,
                         std::chrono::duration_cast<std::chrono::seconds>(*wait).count()));
         ch.PutError(Refusal(429,
                             "the request waited longer than [client] queue_wait_seconds behind "
@@ -1828,6 +1870,9 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
         return true;
       });
     }
+  }
+  for (const std::string& line : lines) {
+    Log(line);
   }
   for (const std::uint64_t id : expired) {
     if (auto it = connections_.find(id); it != connections_.end()) {
@@ -2033,22 +2078,24 @@ void Server::Loop() {
 void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake) {
   const auto started = Clock::now();
   Channel& channel = *pending.channel;
-  bool recovered = false;
+  std::optional<std::string> recovered;
+  bool gone = false;
   {
     const std::scoped_lock lock(mutex_);
-    if (channel.gone) {
-      Log(std::format("request {}: the client left while it was queued", channel.id));
-      return;
+    gone = channel.gone;
+    if (!gone) {
+      running_.push_back(pending.channel);
+      // Whatever is queued now waits for this request alone: a paused
+      // stream yields its place to it (YieldDueLocked).
+      blocked_ = true;
+      recovered = BeatLocked(Phase::kStarting, 0);
     }
-    running_.push_back(pending.channel);
-    // Whatever is queued now waits for this request alone: a paused stream
-    // yields its place to it (YieldDueLocked).
-    blocked_ = true;
-    recovered = BeatLocked(Phase::kStarting, 0);
   }
-  if (recovered) {
-    HealthChanged();
+  if (gone) {
+    Log(std::format("request {}: the client left while it was queued", channel.id));
+    return;
   }
+  Recovered(recovered);
   Stream stream(*this, pending, wake_fd, on_wake, started);
   std::expected<Completion, Error> result;
   if (pending.literal) {
@@ -2083,22 +2130,23 @@ bool Server::YieldDueLocked(const Channel& channel, Clock::time_point now) const
 void Server::Requeue(Pending& pending, Stream& stream, std::shared_ptr<Yielded> yielded) {
   stream.Carry(pending, true);
   pending.resume = std::move(yielded);
-  bool recovered = false;
+  std::optional<std::string> recovered;
+  std::string line;
   {
     const std::scoped_lock lock(mutex_);
     std::erase(running_, pending.channel);
     recovered = BeatLocked(Phase::kFinishing, 0);
     Channel& channel = *pending.channel;
     if (channel.gone || channel.stalled) {
-      Log(std::format("request {}: {} as it yielded its place", channel.id,
-                      channel.gone ? "499, the client left" : "504, the backend stalled"));
+      line = std::format("request {}: {} as it yielded its place", channel.id,
+                         channel.gone ? "499, the client left" : "504, the backend stalled");
     } else {
       // Positions and counts only (D-014).
-      Log(
-          std::format("request {}: its client has read nothing for {:.1f} s while {} requests "
-                      "wait; it yields its place and continues once its client reads",
-                      channel.id, Seconds(Clock::now() - channel.paused_at),
-                      queue_.size() + suspended_requests_));
+      line = std::format(
+          "request {}: its client has read nothing for {:.1f} s while {} requests wait; it "
+          "yields its place and continues once its client reads",
+          channel.id, Seconds(Clock::now() - channel.paused_at),
+          queue_.size() + suspended_requests_);
       if (channel.paused) {
         // Parked until its client reads (Flush, UnparkLocked): taken up
         // while it still could not send, it would only yield again (after
@@ -2113,9 +2161,8 @@ void Server::Requeue(Pending& pending, Stream& stream, std::shared_ptr<Yielded> 
       }
     }
   }
-  if (recovered) {
-    HealthChanged();
-  }
+  Log(line);
+  Recovered(recovered);
 }
 
 void Server::UnparkLocked(const Channel& channel) {
@@ -2136,14 +2183,12 @@ void Server::UnparkLocked(const Channel& channel) {
 }
 
 void Server::Progress(Phase next, double expected) {
-  bool recovered = false;
+  std::optional<std::string> recovered;
   {
     const std::scoped_lock lock(mutex_);
     recovered = BeatLocked(next, expected);
   }
-  if (recovered) {
-    HealthChanged();
-  }
+  Recovered(recovered);
 }
 
 bool Server::AwaitReaders(const std::function<bool()>& paused, int wake_fd,
@@ -2185,7 +2230,7 @@ void Server::FinishResponse(Pending& pending, Stream& stream,
   Channel& channel = *pending.channel;
   const int status = stream.End(result);
   bool stalled = false;
-  bool recovered = false;
+  std::optional<std::string> recovered;
   {
     const std::scoped_lock lock(mutex_);
     stalled = channel.stalled;
@@ -2193,9 +2238,7 @@ void Server::FinishResponse(Pending& pending, Stream& stream,
     // The backend returned: progress, and what follows the response.
     recovered = BeatLocked(Phase::kFinishing, 0);
   }
-  if (recovered) {
-    HealthChanged();
-  }
+  Recovered(recovered);
   const Usage& u = stream.usage();
   std::string_view why;
   if (stalled) {
@@ -2240,14 +2283,18 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
   // False means deferred with no effects. The caller still owns the frame
   // and either restores it to the FIFO or uses the serial path alone.
   const auto start = [&](std::unique_ptr<Active>& frame) {
+    bool gone = false;
     {
       const std::scoped_lock lock(mutex_);
-      if (frame->pending.channel->gone) {
-        Log(std::format("request {}: the client left while it was queued",
-                        frame->pending.channel->id));
-        return true;
+      gone = frame->pending.channel->gone;
+      if (!gone) {
+        running_.push_back(frame->pending.channel);
       }
-      running_.push_back(frame->pending.channel);
+    }
+    if (gone) {
+      Log(std::format("request {}: the client left while it was queued",
+                      frame->pending.channel->id));
+      return true;
     }
     Progress(Phase::kStarting, 0);
     auto created = cooperative.Start(frame->request, frame->exchange);
@@ -2657,6 +2704,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
     }
   }
   // Whatever still waits is refused; the I/O thread writes it out.
+  std::vector<std::string> lines;
   {
     const std::scoped_lock lock(mutex_);
     stopping_ = true;
@@ -2669,7 +2717,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
       Channel& channel = *p.channel;
       channel.queued = false;
       channel.keep_alive = false;
-      Log(std::format("request {}: 503, the runtime is stopping", channel.id));
+      lines.push_back(std::format("request {}: 503, the runtime is stopping", channel.id));
       channel.PutError(Refusal(503, "the runtime is stopping"));
       if (!channel.dirty) {
         channel.dirty = true;
@@ -2677,6 +2725,9 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
       }
     }
     queue_.clear();
+  }
+  for (const std::string& line : lines) {
+    Log(line);
   }
   WakeIo();
   stop_.Signal();

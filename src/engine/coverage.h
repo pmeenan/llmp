@@ -5,8 +5,7 @@
 // tensor a plan binds lies in cataloged, resident device memory of the
 // class its role says (PagedNode::Covered), the owner's or shared. The
 // engine core's form, over a step program's tensor uses
-// (kernels/common/step_program.h); the legacy GGML runners' form over a
-// ggml graph's nodes is planned.h's.
+// (kernels/common/step_program.h).
 
 #ifndef LLMP_ENGINE_COVERAGE_H_
 #define LLMP_ENGINE_COVERAGE_H_

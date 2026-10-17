@@ -85,17 +85,17 @@ HangLadder::Clock::time_point HangLadder::cancelled_at() const {
 
 std::string HangLadder::EnterRestart(std::string why) {
   rung_.store(Rung::kRestart, std::memory_order_release);
-  std::string line = std::format(
+  return std::format(
       "hang recovery, {}: {}; the runtime exits for its supervisor to restart it ([client] "
       "hang_seconds {:.0f} s)",
       RungName(Rung::kRestart), why, Seconds(hang_));
-  Say(line);
-  return line;
 }
 
 std::optional<HangLadder::Rung> HangLadder::Check(Clock::time_point now) {
-  std::string restart;
-  {
+  // The rung entered now and its line, decided under mutex_ and said (and
+  // the last resort run) once it is released.
+  std::string line;
+  const std::optional<Rung> entered = [&]() -> std::optional<Rung> {
     const std::scoped_lock lock(mutex_);
     const Rung current = rung_.load(std::memory_order_acquire);
     if (current == Rung::kRestart) {
@@ -114,24 +114,31 @@ std::optional<HangLadder::Rung> HangLadder::Check(Clock::time_point now) {
       const std::optional<Clock::time_point> oldest =
           operations_ ? operations_() : std::optional<Clock::time_point>{};
       const bool stuck_io = oldest.has_value() && *oldest <= cancel_at_;
-      const bool moved = progress_ > cancel_at_ || !under_way;
+      bool moved = progress_ > cancel_at_ || !under_way;
+      if (!cancelled_wait_) {
+        // CPU work asked to stop has stopped once it saw the cancellation
+        // at a checkpoint, or its unit ended (a new one began, or nothing is
+        // under way): its beats alone are not enough, since it beats before
+        // it looks, and clearing the cancellation then would let it go on.
+        moved = !under_way || unit_began_ > cancel_at_ || pulse_.seen() >= cancel_number_;
+      }
       if (moved && !stuck_io) {
         rung_.store(Rung::kWatching, std::memory_order_release);
         pulse_.Clear();
         drained_.fetch_add(1, std::memory_order_relaxed);
-        Say(std::format(
+        line = std::format(
             "hang recovery, {}: the cancellation drained {:.1f} s after it (the {} stopped and "
             "nothing it submitted is still in flight); the requests that needed it fail and the "
             "model is recovered in place",
             RungName(Rung::kCancel), Seconds(now - cancel_at_),
-            cancelled_wait_ ? "node wait" : "CPU work"));
+            cancelled_wait_ ? "node wait" : "CPU work");
         return Rung::kWatching;
       }
       if (stuck_io) {
         if (now - cancel_at_ < grace_) {
           return std::nullopt;
         }
-        restart = EnterRestart(std::format(
+        line = EnterRestart(std::format(
             "the cancellation of the work under way ({}) did not drain: a storage operation it "
             "submitted {:.0f} s ago is still in flight {:.0f} s after the cancellation (a stuck "
             "drive or mount, which no cancellation ends)",
@@ -141,7 +148,7 @@ std::optional<HangLadder::Rung> HangLadder::Check(Clock::time_point now) {
         if (now - since < grace_) {
           return std::nullopt;
         }
-        restart = EnterRestart(std::format(
+        line = EnterRestart(std::format(
             "the cancellation of the work under way ({}) did not drain: nothing moved for {:.0f} "
             "s after it (the device or a lane is hung, or the work never reached a cancellation "
             "checkpoint, which nothing in the process can free)",
@@ -163,21 +170,29 @@ std::optional<HangLadder::Rung> HangLadder::Check(Clock::time_point now) {
       cancels_.fetch_add(1, std::memory_order_relaxed);
       if (!cancelled_wait_) {
         pulse_.Cancel();
+        cancel_number_ = pulse_.cancels();
       }
-      Say(std::format(
+      line = std::format(
           "hang recovery, {}: the model backend made no progress of any kind for {:.0f} s ({}: "
           "no unit ended, no fence completed, no read or write landed, no CPU work beat): a "
           "confirmed hang; {} ([client] hang_seconds)",
           RungName(Rung::kCancel), Seconds(quiet), what_,
           cancelled_wait_ ? "the request the node waits for is cancelled"
-                          : "the driver's CPU work is asked to stop at its next checkpoint"));
+                          : "the driver's CPU work is asked to stop at its next checkpoint");
       return Rung::kCancel;
     }
+    return Rung::kRestart;
+  }();
+  if (!entered) {
+    return std::nullopt;
   }
-  if (last_resort_) {
-    last_resort_(restart);
+  if (*entered == Rung::kRestart && last_resort_) {
+    // Arm the last resort before anything that can block, including the
+    // logger. A last resort that exits logs its own diagnosis after arming.
+    last_resort_(line);
   }
-  return Rung::kRestart;
+  Say(line);
+  return entered;
 }
 
 void HangLadder::Restart(const std::string& why) {
@@ -192,6 +207,7 @@ void HangLadder::Restart(const std::string& why) {
   if (last_resort_) {
     last_resort_(restart);
   }
+  Say(restart);
 }
 
 std::optional<std::string> HangLadder::Resetting(std::string_view model) {

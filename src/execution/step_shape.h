@@ -12,7 +12,9 @@
 #ifndef LLMP_EXECUTION_STEP_SHAPE_H_
 #define LLMP_EXECUTION_STEP_SHAPE_H_
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "base/sha256.h"
@@ -86,7 +88,42 @@ struct PlanKey {
   bool operator==(const PlanKey&) const = default;
 };
 
+// A plan key's hash, over exactly what its equality compares (a segment's
+// `past` is not): the plan cache's index.
+inline std::size_t HashOf(const PlanKey& key) {
+  std::uint64_t h = 0xcbf29ce484222325ULL;
+  const auto mix = [&h](std::uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6U) + (h >> 2U);
+  };
+  const auto digest = [&mix](const base::Sha256Digest& d) {
+    std::uint64_t word = 0;
+    for (std::size_t i = 0; i < 8; ++i) word |= std::uint64_t{d[i]} << (8U * i);
+    mix(word);
+  };
+  digest(key.spec);
+  digest(key.patterns);
+  digest(key.policy);
+  mix(key.partition);
+  mix((std::uint64_t{key.shape.stage} << 32U) | (std::uint64_t{key.shape.row_invariant} << 16U) |
+      static_cast<std::uint64_t>(key.shape.phase));
+  mix(key.shape.read_align);
+  for (const Segment& s : key.shape.segments) {
+    mix((std::uint64_t{s.slot} << 56U) | (std::uint64_t{s.group} << 48U) |
+        (std::uint64_t{s.want_head} << 40U) | (std::uint64_t{s.greedy} << 32U) | s.rows);
+    mix((std::uint64_t{s.read_cells} << 32U) | s.outputs);
+  }
+  for (const std::uint64_t p : key.parameters) mix(p);
+  return static_cast<std::size_t>(h);
+}
+
 }  // namespace llmp::execution
+
+template <>
+struct std::hash<llmp::execution::PlanKey> {
+  std::size_t operator()(const llmp::execution::PlanKey& key) const noexcept {
+    return llmp::execution::HashOf(key);
+  }
+};
 
 namespace llmp::planner {
 

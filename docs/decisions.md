@@ -84,6 +84,20 @@ in `approvals.cc` retain their bit-level inventory and spec-digest protection.
 `ValidateSpec` and capability selection yet violate a safety or memory
 invariant that only a compiled approval row could catch.
 
+*Amended 2026-10-17 (M3.6 review follow-up R1).* "Qualified envelope
+defaults" is what admission now does: a pinned entry's `max_context`,
+`max_slots` and `wide_context` set the settings' defaults (a default
+context and slot count resolve within them, the basis naming the entry),
+and an override past them is served with a warning in the log and in
+`llmp-runtime settings` (its JSON gains `warnings`), never refused at
+setup, so a pinned checkpoint is no more restricted than an unpinned
+re-quant; past its envelope its mapping's rule applies where one holds,
+else the engine's default. Real bounds still refuse (the stored spec's
+context, a recipe's owner bounds). A pinned drafter beside a target other
+than its approved one is pinned by its own inventory and its composition
+checked structurally; beside its approved target, its composition is
+still the pinned one.
+
 ## D-118: Serving is v1-only; v0 artifacts are re-imported, not migrated; approval is data  (2026-10-15, status: accepted by the owner, 2026-10-15 (v1-only serving); in effect since slice 4b (2026-10-16); amends D-113's "v0 stays readable" for serving; implements D-109's "the approved list is data, not a profile in code"; amended by D-119, 2026-10-17, so unpinned v1 artifacts of supported architectures are admitted by stored spec and mapping validation)
 
 **Decision.** The runtime serves format-v1 artifacts only, from slice 4b
@@ -537,6 +551,13 @@ in the 0.x line, a minor change (D-062).
 **Reopen if** an upgrade must keep conversations across a family's
 migration (then a reader that maps version 1's regions to stages for that
 family's layouts).
+
+*Amended 2026-10-17 (M3.6 review follow-up R1).* The last M3 serving class
+is gone, so version 1's reader and writer are removed: a record of version
+1 is refused (and its files discarded at start) as any record that does not
+validate. Version 2's reader is unchanged, so its version number stays 2
+(the owner, 2026-10-15: no compatibility with old records is owed in early
+development).
 
 ## D-111: The project is llmpalooza (`llmp`), formerly jitLLM  (2026-10-08, status: accepted by the owner, 2026-10-08; renames every name D-062, D-063 and D-074 fixed; keeps D-056's v0 format identifiers until D-109's format replaces them)
 
@@ -1232,6 +1253,16 @@ time within a service. Prefill chunk rows and the slot knee need
 controlled runs and keep their fallbacks (the record takes them); kernel
 schedule tables (D2R, IQ2 pair, output-A, MXFP8 tiers) are not yet
 settings; their calibration is a later milestone.
+
+*Amended 2026-10-17 (M3.6 review follow-up R1).* The record's file is
+`roles.state/calibration/<artifact>-<configuration>.json`, the
+configuration 16 hex digits of the SHA-256 of the drafter and the settings
+measured with (`CalibrationName`): two aliases of one artifact (another
+drafter, other settings) each keep their record instead of replacing each
+other's on every measurement. The device and the build stay out of the
+name, so a record measured for another replaces its stale one in place;
+the record an earlier build kept as `<artifact>.json` is removed when one
+is written. Its format (`llmp-model-calibration-v1`) is unchanged.
 
 ## D-102: Limits come from real resources, not time or abuse caps  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; applies across the runtime; amends how D-067's interpreter bounds, D-097's intake bounds and deadlines, and D-101's starting bounds are chosen; each affected limit is changed in its own reviewed task)
 

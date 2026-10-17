@@ -89,13 +89,6 @@ static_assert(Llm::kMaxBranches == engine::kMaxRequestSlots);
 static_assert(config::kMaxModelSlots == engine::kMaxRequestSlots);
 static_assert(config::kMaxWaveCostWidths + 1 == execution::AdaptiveWaveMode::kMaxWidth);
 
-EngineImageBuild ComponentImageBuild(std::string architecture) {
-  return [architecture = std::move(architecture)](
-             const ModelSettings&) -> std::expected<EngineImageParts, std::string> {
-    return Error(std::format("unsupported image composition {}", architecture));
-  };
-}
-
 // The reclaim order's cost of idle conversation state (Server::Reclaim):
 // its write-back and its restore, at the node's rates measured so far, and
 // before any at the rates measured on a GB10 (spark-b, DeepSeek's four
@@ -278,7 +271,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
             ComponentLlmBuild(node_, roles_.installed, entry, index,
                               {.target_policy = {},
                                .drafter_policy = options_.diagnostic_drafter_policy,
-                               .diagnostic_solo = shared,
+                               .shared_route = shared,
                                .capture_first_verify = options_.diagnostic_capture_first_verify,
                                .automatic_startup_cap = AutomaticStartup() ? startup_cap_ : 0,
                                .shared_compiler = compiler_,
@@ -302,9 +295,12 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
         return {};
       }
       case spec::PipelineKind::kImage:
-        models_.push_back(std::make_unique<EngineImage>(
-            node_, entry, settings, index, ComponentImageBuild(settings.architecture)));
-        return {};
+        // An image pipeline is served from its composition (below), never
+        // from one of its component artifacts.
+        return Error(
+            std::format("model {}: an image pipeline is served from its composition; configure the "
+                        "composition's ID, not a component artifact's",
+                        entry.name));
       default:
         return Error(std::format("model {}: no serving adapter for the {} pipeline kind yet",
                                  entry.name, spec::PipelineName(settings.pipeline)));
@@ -528,6 +524,9 @@ Status Server::Start(bool snapshot) {
     }
     for (const std::string& ignored : resolved->ignored) {
       Log(std::format("model {}: ignored {}", entry.name, ignored));
+    }
+    for (const std::string& warning : resolved->warnings) {
+      Log(std::format("model {}: warning: {}", entry.name, warning));
     }
     settings.push_back(std::move(*resolved));
     calibrations.push_back(std::move(record));
@@ -840,6 +839,8 @@ Status Server::Start(bool snapshot) {
     if (m->llm()) {
       static_cast<Llm&>(*m).SetTokenMemory(token_memory_);
       static_cast<Llm&>(*m).set_retention(retention_);
+      static_cast<Llm&>(*m).set_checkpoint_admission(
+          [this](std::uint64_t bytes) { return TrimTurnCheckpoints(bytes); });
       static_cast<Llm&>(*m).set_log([this](std::string_view text) { Log(text); });
     } else {
       static_cast<Image&>(*m).set_log([this](std::string_view text) { Log(text); });
@@ -1592,7 +1593,75 @@ bool Server::SpillBudgetFits(std::uint64_t extra, SpillView view,
   ForEachDeletableSpill(view, older_than,
                         [&](Llm&, Llm::Branch&, std::uint64_t counted) { deletable += counted; });
   const std::uint64_t left = held - std::min(held, deletable);
-  return left <= spill_budget_ && extra <= spill_budget_ - left;
+  // Eligible checkpoints may go before spilled conversations, but those
+  // a request holds cannot: they consume disk at either admission point.
+  return TurnCheckpointFits(spill_budget_, left, TurnCheckpointBytes(true), extra);
+}
+
+std::uint64_t Server::TurnCheckpointBytes(bool held_only) {
+  std::uint64_t checkpoints = 0;
+  for (const auto& m : models_) {
+    if (m->llm()) {
+      auto& l = static_cast<Llm&>(*m);
+      for (std::size_t i = 0; i < l.branches(); ++i) {
+        if (auto b = l.branch(i); b && (!held_only || !l.OldestTurnCheckpoint(**b))) {
+          const auto bytes = (*b)->turn_checkpoint_bytes();
+          if (bytes > std::numeric_limits<std::uint64_t>::max() - checkpoints)
+            return std::numeric_limits<std::uint64_t>::max();
+          checkpoints += bytes;
+        }
+      }
+    }
+  }
+  return checkpoints;
+}
+
+bool Server::TrimTurnCheckpoints(std::uint64_t extra, SpillView view) {
+  std::size_t dropped = 0;
+  std::uint64_t dropped_bytes = 0;
+  const auto drop = [&]() {
+    // The oldest checkpoint of any idle conversation no request holds.
+    Llm* model = nullptr;
+    Llm::Branch* branch = nullptr;
+    std::optional<Clock::time_point> oldest;
+    for (const auto& m : models_) {
+      if (!m->llm()) {
+        continue;
+      }
+      auto& l = static_cast<Llm&>(*m);
+      for (std::size_t i = 0; i < l.branches(); ++i) {
+        auto b = l.branch(i);
+        if (!b) {
+          continue;
+        }
+        if (const auto at = l.OldestTurnCheckpoint(**b); at && (!oldest || *at < *oldest)) {
+          oldest = at;
+          model = &l;
+          branch = *b;
+        }
+      }
+    }
+    if (branch == nullptr) {
+      return false;  // what is left, requests hold
+    }
+    const std::uint64_t bytes = model->DropOldestTurnCheckpoint(*branch);
+    if (bytes == 0) {
+      return false;
+    }
+    ++dropped;
+    dropped_bytes += bytes;
+    return true;
+  };
+  const bool fits = TrimTurnCheckpointBudget(
+      spill_budget_, extra, [this, view] { return SpilledBytes(view); },
+      [this] { return TurnCheckpointBytes(); }, drop);
+  if (dropped != 0) {
+    Log(std::format(
+        "deleted {} turn checkpoints ({:.1f} MiB), the oldest, past the spill budget of {} GiB "
+        "beside the spilled conversations",
+        dropped, static_cast<double>(dropped_bytes) / (1U << 20U), spill_budget_ >> 30U));
+  }
+  return fits;
 }
 
 bool Server::KeepWithinSpillBudget(std::uint64_t extra, SpillView view,
@@ -1604,12 +1673,15 @@ bool Server::KeepWithinSpillBudget(std::uint64_t extra, SpillView view,
 
 bool Server::DeleteSpilledPast(std::uint64_t extra, SpillView view,
                                std::optional<Clock::time_point> older_than) {
+  // Optional caches yield first, before deleting any conversation; held
+  // checkpoints remain charged and may leave too little room for a spill.
+  (void)TrimTurnCheckpoints(extra, view);
   std::size_t deleted = 0;
   std::uint64_t deleted_bytes = 0;
   bool fits = false;
   for (;;) {
     const std::uint64_t held = SpilledBytes(view);
-    if (held <= spill_budget_ && extra <= spill_budget_ - held) {
+    if (TurnCheckpointFits(spill_budget_, held, TurnCheckpointBytes(), extra)) {
       fits = true;
       break;
     }
@@ -2133,7 +2205,10 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
     value += bytes;
     return true;
   };
-  for (int round = 0; round < memory::kReclaimRounds + 1; ++round) {
+  // Round after round while each makes progress (RoomProgress): the bytes
+  // still short shrink every round, so this ends.
+  RoomProgress progress;
+  for (;;) {
     std::uint64_t need = 0;
     std::uint64_t credit = 0;
     auto sized = node_.Call(
@@ -2184,7 +2259,7 @@ Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out
         "sizing actual missing incoming and selected swap extents");
     if (!sized) return sized;
     if (credit >= need) return {};
-    if (round == memory::kReclaimRounds) break;
+    if (!progress.Shrank(need - credit)) break;
     const auto selected_before = pending == nullptr ? 0 : pending->selected.size();
     const auto freed = Reclaim(need - credit, false, "a swap's incoming model", &m, std::nullopt,
                                false, nullptr, 0, {}, pending);

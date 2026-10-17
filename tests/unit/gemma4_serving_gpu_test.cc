@@ -1048,8 +1048,10 @@ TEST_P(Gemma4ServingGpu, CapacityRefusalPreservesCompletedPrefixAndPeerProgress)
   // each require new state extents for the next scalar decode.
   const std::uint32_t boundary = GetParam() == 26 ? 512 : 256;
   std::vector<std::int32_t> long_prompt(boundary);
-  ASSERT_GT(model->StateBytesThrough(boundary + 1),
-            model->StateBytesThrough(boundary) + (16U << 20U));
+  const auto through = model->StateBytesThrough(boundary);
+  const auto past = model->StateBytesThrough(boundary + 1);
+  ASSERT_TRUE(through && past);
+  ASSERT_GT(*past, *through + (16U << 20U));
   for (std::size_t i = 0; i < long_prompt.size(); ++i) long_prompt[i] = prompt[i % prompt.size()];
   std::array<std::vector<float>, 2> last;
   ASSERT_TRUE(Branch(0).Prefill(long_prompt, last[0]));

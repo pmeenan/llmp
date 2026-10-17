@@ -41,13 +41,14 @@ struct ComponentBuildOptions {
   // The same for a drafter stage (a diagnostic: its mapping's default
   // otherwise).
   std::optional<std::string> drafter_policy{};
-  // The derived shared route (Server sets it for the architectures whose
-  // serving recipe names it, ServingRecipe::shared_route). Explicit
-  // diagnostic domains retain their closed envelopes (a route without
-  // qualified envelopes has none: it serves only its automatic shape).
-  // Automatic service admission derives the domain and payment from its
-  // actual source, state, decoding mode and configured owners.
-  bool diagnostic_solo = false;
+  // On the shared route (the Server sets it for the architectures whose
+  // serving recipe names one, ServingRecipe::shared_route): its plain,
+  // joined MTP and automatic serving envelopes. Explicit diagnostic domains
+  // retain their closed envelopes (a route without qualified envelopes has
+  // none: it serves only its automatic shape). Automatic service admission
+  // derives the domain and payment from its actual source, state, decoding
+  // mode and configured owners.
+  bool shared_route = false;
   // Default-off capture scheduling experiment; numerical policy is unchanged.
   bool capture_first_verify = false;
   // Nonzero only under the Server's admitted metadata bootstrap loan (its

@@ -114,7 +114,7 @@ std::uint64_t SelectedRoutePlane(const ir::Graph& graph, const ir::Node& node) {
 // A commit's input of a verify's save: its saver's layer.
 std::uint32_t SavedLayer(const co::StepInput& input) { return input.layer; }
 
-// Placeholder addresses, as PlaceAndPlan's first pass gives (planned.h):
+// Placeholder addresses, as a measuring plan's first pass gives them:
 // activations of a measurement from kDistinct, leaves without an address
 // (a test's) from kLeaves, each its own range.
 constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;

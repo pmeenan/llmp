@@ -192,7 +192,8 @@ composition = "2170db12…"  # a pipeline (D-089)
                              #   turn checkpoints stay reusable this long: 1 to 8,760
                              #   (across a restart too, D-105)
 # spill_budget_gib = 128     # spilled conversation state kept on disk at most,
-                             #   the least recently used deleted first: 0 to 1,048,576
+                             #   the least recently used deleted first, then turn
+                             #   checkpoints, the oldest first: 0 to 1,048,576
                              #   (0: idle state is dropped, never kept spilled,
                              #   and nothing is kept across a restart)
 # keep_across_restart = true # conversations wholly on disk survive a restart
@@ -353,7 +354,11 @@ not); the exactness controls `wave_form = "speculative"` and `"plain"`
 never alternate.
 
 Once a value is measured it is written, between units and at teardown, to
-`<storage.state>/calibration/<artifact ID>.json` (created 0600 in a 0700
+`<storage.state>/calibration/<artifact ID>-<configuration>.json`, the
+configuration 16 hex digits of the SHA-256 of the drafter and the settings
+measured with, so two aliases of one artifact each keep their own record
+(a record for another device or build replaces its stale one in place;
+created 0600 in a 0700
 directory, written to a new file, synced and renamed over the old; a
 directory or record found with another owner, modes or links is used and
 said once, D-105 as amended on 2026-10-09):
@@ -489,7 +494,7 @@ outside the catalog (the driver and cuBLAS; [long-context](experiments/long-cont
 A model's plans and graphs are host and driver memory outside the
 catalog's extents, but counted (D-090 and D-055 as amended 2026-10-02):
 each runner charges what each plan and graph holds to the node as it
-keeps it (`engine/planned.h`). The guard sets apart only what one step of
+keeps it (`engine/plan_account.h`). The guard sets apart only what one step of
 the largest model holds at once (`Served::plan_floor_bytes`: a chunk
 beside its draft block, or one wave); everything past that floor is a
 charge inside the budget, so plans and graphs grow into room the budget
@@ -711,10 +716,19 @@ block or MTP drafting). A v1 artifact is admitted by the approval table
 (`runtime/approvals.cc`, D-109, D-118): its source receipts and native
 tensor inventory name an entry, and its stored spec's SHA-256 is the
 entry's (a stored drafter's composition with its approved target, its
-values read from the GGUF metadata it keeps, likewise); the entry's
-envelope bounds the context and owners (a default context is cut to it,
-and to a configured drafter's, so a default configuration starts), and its
-gates select its mapping's policy rule. Source receipts are as the importer
+values read from the GGUF metadata it keeps, likewise; a pinned drafter
+beside a target that is not its approved one is pinned by its inventory and
+its composition checked structurally); the entry's envelope is the
+configuration's default, not a bound (D-119): a default context and slot
+count are cut to it, and to a configured drafter's, the basis saying so,
+while an override past it is admitted with a warning in the log and in
+`llmp-runtime settings` (the stored spec's context and the recipe's own
+owner bounds still hold), and its gates select its mapping's policy rule
+(past its envelope, its rule where one holds, else the engine's default).
+A target's stage plans with exactly the rule admission chose, or the
+engine's default where it chose none (an entry's `kNone`); admission runs
+once a registration's settings and once its build, each over its own open
+of the artifact. Source receipts are as the importer
 verified and declared them; admission compares them without re-hashing.
 Serving is v1-only (D-118, slice 4b): a target or drafter of any other
 format version is refused at registration ("re-import its source checkpoint
@@ -763,7 +777,7 @@ on, tool declarations refused, its channel and tool-call openers ending a
 reply); DeepSeek V4, like its M3 class, thinks unless a request turns
 thinking off (llama-server's `/apply-template` default, which rendered its
 references' prompts); the others serve their whole template. A conversation an M3 class kept across a restart
-(record version 1) is refused by the engine's start and its files
+(record version 1, no longer read) is refused at start and its files
 discarded, once ([below](#conversations-kept-across-a-restart)).
 
 `EngineLlm` is an `Llm` like the M3 classes: the conversation code
@@ -859,8 +873,25 @@ result through the same acceptance and history logic as scalar generation.
 The legacy methods forward to this model-owned default branch. Only this branch
 is exposed; native execution still uses the runner's default state.
 
-The turn cache keeps two checkpoints per model on the current branch,
-captured before the renderer's assistant opening. That boundary survives
+The turn cache keeps a checkpoint a turn on the current branch, captured
+before the renderer's assistant opening, bounded by real resources (D-102),
+not a count: each expires `retention_hours` after its creation, they count
+toward `spill_budget_gib` beside the spilled conversations (which come
+first: before a capture and between units the oldest checkpoints of idle
+conversations are deleted until both fit, `Server::TrimTurnCheckpoints`).
+The capture's complete padded file is admitted before it is written,
+counting checkpoints held by active requests too: if those leave too little
+room, the optional capture is skipped; a zero budget writes none. State
+spills also count these files: eligible checkpoints yield first, and a
+spill that cannot fit beside checkpoints still held by a request is
+refused or deferred. Trimming remeasures both totals after each deletion:
+updating a kept record may itself reclaim memory and spill another conversation.
+An admitted capture reserves its padded disk capacity until its file is
+published or the failed/cancelled capture is cleaned up. State-spill admission
+counts that capacity too, including when fallback checkpoint staging reclaims
+memory synchronously before the checkpoint file is published.
+A conversation
+keeps at most the 64 its kept record can list (the format's bound). That boundary survives
 a client removing earlier reasoning; the opening itself can change when
 the assistant becomes a history message. Checkpoints copy whole used
 physical pages that later work can overwrite: recurrent and ring state,
@@ -938,27 +969,24 @@ keeps a spill file per pipeline stage (D-112): `slot-N.state` for the
 target, `slot-N.stage-S.state` for drafter stage S. A model's directory is
 named by its artifact's ID.
 
-**The record** (`runtime/kept_record.h`, format version 1, or 2 for an
-engine-backed model) is strict JSON,
-written whole (a temporary file synced and renamed over it, only if it
-is still the file written, the directory synced) and ending with the SHA-256 of everything before it.
-Version 2 (D-112) replaces version 1's file fields and `regions` with
-`stages`, one object a stage's file (`file`, `device`, `inode`,
-`generation`, `file_bytes`; the stage's region's bytes are its file's), and
-its extents' and checkpoint ranges' `region` is the stage; its layout is
-`model::KeptLayoutId` (the spec bound to its artifacts and every stage's
-layout). A model holds a record to the version it writes (the M3 serving
-classes version 1, the engine-backed adapter version 2) and refuses the
-other like any record that does not validate; nothing is migrated.
-Version 1's fields:
+**The record** (`runtime/kept_record.h`, format version 2, D-112) is
+strict JSON, written whole (a temporary file synced and renamed over it,
+only if it is still the file written, the directory synced) and ending
+with the SHA-256 of everything before it. It names a file a stage
+(`stages`), and its extents' and checkpoint ranges' `region` is the stage;
+its layout is `model::KeptLayoutId` (the spec bound to its artifacts and
+every stage's layout). Version 1 (the retired M3 runners' one spill file a
+slot) is no longer read: a record of it is refused like any record that
+does not validate and its files discarded; nothing is migrated. Its
+fields:
 
 | Field | What it holds | Refused when |
 | --- | --- | --- |
-| `format`, `version` | `llmp-kept-conversation`, 1 (2: above) | another format, or a version the model does not write |
+| `format`, `version` | `llmp-kept-conversation`, 2 | another format or version |
 | `build` | the version, commit, SDK, target and the executable file's device, inode, inode generation, size and modification time | not this build's (another build, or this one rebuilt or reinstalled) |
-| `artifact`, `drafter`, `layout` | the model's artifact and drafter IDs; the runner's state format version, context, drafter and each region's name and bytes | not this model's or layout's (a changed context is another layout) |
-| `slot`, `file`, `device`, `inode`, `generation`, `file_bytes`, `regions` | the slot, its spill file's name, identity and size, each region's bytes in it | another slot's, or not the file it names, or another size |
-| `extents` | each used extent (region, index) with the SHA-256 of its 2 MiB in the file | outside its region or layout, out of order, none, or a digest the file does not match |
+| `artifact`, `drafter`, `layout` | the model's artifact and drafter IDs; `model::KeptLayoutId` | not this model's or layout's (a changed context is another layout) |
+| `slot`, `stages` (each `file`, `device`, `inode`, `generation`, `file_bytes`) | the slot, and each stage's spill file's name, identity and size (its region's bytes) | another slot's or stage's, or not the file it names, or another size |
+| `extents` | each used extent (stage, index) with the SHA-256 of its 2 MiB in its stage's file | outside its region or layout, out of order, none, or a digest the file does not match |
 | `tokens`, `cursor`, `decoding`, `used_unix_ms` | every token the state has seen, the speculation cursor and adaptive draft depth that go with it (its relative cost is the machine's calibration's now, D-103, never a reason to refuse), and the last use (wall clock) | a token outside the vocabulary, more than the context, a draft depth of another maximum, past `retention_hours`, or more than a minute in the future |
 | `checkpoints` | each turn checkpoint: its file and identity, position, creation, pages, footprint, cursor, draft depth and each page's SHA-256 | (that checkpoint alone is left out) |
 | `digest` | the SHA-256 of the record before it | the record cut short or edited |
@@ -974,14 +1002,20 @@ slot stays, and invalidation drops its queued token and checkpoint copies
 immediately; the worker may hold one other record while hashing. A keeper
 thread (`runtime/state_keeper.h`) syncs the files, hashes them on four threads and writes
 the record unless the slot was invalidated meanwhile, off the driver's
-path (written and synced beside its name, renamed over it under the
-keeper's lock only while the slot is still current, its directory synced
-after, so a turn that invalidates a slot never waits on a sync); turn
+path (written and synced beside its name, renamed over it only while the
+slot is still current, its directory synced after; no file is read,
+written, renamed or removed and nothing logged under the keeper's lock, so
+a turn that invalidates a slot never waits on the worker's filesystem calls
+and the last resort's drain keeps its deadline. Invalidation's own unlink
+still waits on the filesystem. An invalidation during the rename removes the record, and the
+worker removes it again once it sees one came); turn
 checkpoints, which never change, are hashed once. The hashing is
 background work: its threads run at the lowest CPU and I/O priority
 (nice 19, the idle I/O class), wait between extents while a swap or a
 prefill runs and for 250 ms after, and stop at the next extent once their
-slot is invalidated. A crash at any moment leaves a record that
+slot is invalidated. A keeper stopped while it hashes finishes the record
+it is making (no longer yielding), so its slot's files and checkpoints stay
+listed; what is still queued then is abandoned. A crash at any moment leaves a record that
 describes its files exactly, or none, or one removed just before it (a
 removal is not synced) whose spill file may have changed since: the next
 start refuses it unless every extent it lists still hashes as recorded,
@@ -1009,7 +1043,9 @@ it (the least recently used first); one that cannot fit is not kept, and the kee
 queued while it makes progress (a minute without any ends the wait),
 extending the stop timeout as it goes; the log says how many and how much
 was hashed. **At a hang's exit** the records already queued get at most
-10 s; nothing new is spilled.
+10 s (the drain's deadline holds even for the keeper's lock), and the
+process exits 2 s past it whatever still blocks (a drive that holds a
+write, a log that cannot be written); nothing new is spilled.
 
 Retention and the spill budget apply while the service runs and across
 the restart: an idle conversation, adopted or not, expires
@@ -1531,7 +1567,12 @@ HTTP/1.0, it ends with the connection). A request sent before the
 previous response ended (pipelining) is not read: that response carries
 `Connection: close` and the connection closes after it, so the client
 retries the request on a new one (RFC 9112's rule for unanswered
-requests). `Expect: 100-continue` is answered before the body.
+requests). A request's head is checked first (its Host, Origin and
+`Sec-Fetch-Site`, route, method and media type), before reading more body
+data or charging it: one it refuses is not asked to continue, and its
+connection closes when a body was still to come. `Expect: 100-continue`
+is then answered before the body, on HTTP/1.1 only (an HTTP/1.0 client's
+expectation is ignored, RFC 9110).
 
 **Logging.** One line a request: an opaque ID, the model, the status, the
 token counts and times; one a swap, with its parts; once per unknown field
@@ -1982,7 +2023,9 @@ job (a wide prefill chunk) is allowed its expected time at the floors.
    cancellation check (its pulse): a rendering or tokenization fails with
    a 503 `backend_hung`. **The cancellation has drained** once the driver
    moved again and no storage operation submitted before it is still in
-   flight (`engine::PagedNode::oldest_io`). A wait's cancellation ends
+   flight (`engine::PagedNode::oldest_io`); CPU work's, once the work saw
+   the cancellation at a check or its unit ended (its beats alone are not
+   enough: it beats before it looks). A wait's cancellation ends
    only the request's interest: a read still queued is cancelled, but one
    the drive (or a hung mount) holds is not (io_uring's cancellation is
    best effort), and the wait returns without it. Until that read
@@ -2013,7 +2056,8 @@ job (a wide prefill chunk) is allowed its expected time at the floors.
    again would loop), or when rung 2 cannot reset the model, the ladder's
    last resort runs on the thread that saw it: the conversation
    records already queued get at most 10 s, and the process exits with
-   status 1 for `llmp.service` to restart it. Nothing is torn down (the
+   status 1 for `llmp.service` to restart it, 2 s past that whatever still
+   blocks. The ladder logs, and runs its last resort, outside its lock. Nothing is torn down (the
    driver may be the thread that hangs); requests under way and queued
    end with their connections. Conversations whose whole state was on
    disk survive the restart ([kept](#conversations-kept-across-a-restart));
@@ -2245,9 +2289,10 @@ short DeepSeek and Qwen prompts, with speculation on and off.
   such names later.
 - The image serves one prompt a process, from a latents file (above), and
   only through the commands.
-- Turn reuse keeps two stable boundaries on the current branch. A client
-  editing a prefix before those boundaries, or returning after their
-  expiry, needs a fresh prefill. Independent shared-prefix caching and
+- Turn reuse keeps a stable boundary a turn on the current branch, within
+  retention and the spill budget. A client editing a prefix before the
+  oldest kept boundary, or returning after their expiry, needs a fresh
+  prefill. Independent shared-prefix caching and
   retained forks follow under D-031; prefix matching does not identify a
   conversation.
 - Long-context prefill and decode are now nearly flat with depth on the

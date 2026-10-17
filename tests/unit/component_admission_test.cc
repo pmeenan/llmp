@@ -359,10 +359,27 @@ TEST_F(ComponentAdmissionTest, PolicyRechecksTheApprovedSpecBeforeSelectingItsRe
   auto rule = rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 2});
   ASSERT_TRUE(rule) << (rule ? "" : rule.error());
   EXPECT_EQ(rule->text, mapping.policies.front().text);
+  // The stored stage context is a bound; the approved envelope (two owners)
+  // a default an override passes (D-119).
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8193, .slots = 2}));
-  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 3}));
+  EXPECT_TRUE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 3}));
   model.stages.front().context = 8193;
   EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 2}));
+}
+
+// An approved row's envelope is its settings' default, not a refusal: an
+// envelope past it is admitted, its mapping's rule where one holds, else
+// the engine's default; within it, an approval whose policy is its
+// mapping's still refuses an envelope no rule covers.
+TEST_F(ComponentAdmissionTest, AnApprovedEnvelopeIsADefaultNotABound) {
+  const rt::Approval* approval = rt::FindApproval(source.architecture, origins);
+  ASSERT_NE(approval, nullptr);
+  EXPECT_TRUE(rt::WithinApprovedEnvelope(*approval, {.context = 8192, .slots = 2}));
+  EXPECT_FALSE(rt::WithinApprovedEnvelope(*approval, {.context = 8192, .slots = 3}));
+  const auto past = rt::AdmittedPolicy(model, source, approval, {.context = 4096, .slots = 16});
+  ASSERT_TRUE(past) << (past ? "" : past.error());
+  EXPECT_FALSE(rt::AdmittedPolicy(model, source, approval, {.context = 8193, .slots = 1}));
+  EXPECT_FALSE(rt::AdmittedPolicy(model, source, approval, {.context = 8192, .slots = 0}));
 }
 
 TEST(ComponentAdmissionQwenTest, FullNormalizedTargetKeepsItsUntiedHeadAndSourceHash) {
@@ -511,7 +528,9 @@ TEST_P(NativeGemmaAdmissionTest, ChoosesExactProfileAndEnvelopeRecipeWithoutChec
   if (gemma3) {
     EXPECT_TRUE(
         rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 2}));
-    EXPECT_FALSE(
+    // Past the approval's wide context with two owners: an override past
+    // its envelope (the recipe's own owner bound is the settings').
+    EXPECT_TRUE(
         rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4097, .slots = 2}));
   }
   if (!gemma3) {
@@ -522,10 +541,12 @@ TEST_P(NativeGemmaAdmissionTest, ChoosesExactProfileAndEnvelopeRecipeWithoutChec
     EXPECT_FALSE(small->text.contains("disable owner_bounded_roots"));
   }
   if (gemma3) {
-    EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins,
-                                              {.context = context + 1, .slots = slots}));
-    EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins,
-                                              {.context = context, .slots = slots + 1}));
+    EXPECT_EQ(rt::ComponentAdmissionPolicy(model, source, origins,
+                                           {.context = context + 1, .slots = slots})
+                  .has_value(),
+              model.stages.front().context > context);
+    EXPECT_TRUE(rt::ComponentAdmissionPolicy(model, source, origins,
+                                             {.context = context, .slots = slots + 1}));
   } else {
     // Past the joined recipes' domains, the owners-alone route at M3's
     // bounded admission: twelve scalar owners qualified; context to the
@@ -540,8 +561,11 @@ TEST_P(NativeGemmaAdmissionTest, ChoosesExactProfileAndEnvelopeRecipeWithoutChec
     }
     EXPECT_FALSE(
         rt::ComponentAdmissionPolicy(model, source, origins, {.context = 262145, .slots = 1}));
-    EXPECT_FALSE(
-        rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 13}));
+    // Past the approved twelve owners: admitted, owners alone.
+    const auto more =
+        rt::ComponentAdmissionPolicy(model, source, origins, {.context = 4096, .slots = 13});
+    ASSERT_TRUE(more) << (more ? "" : more.error());
+    EXPECT_TRUE(more->owners_alone);
   }
   EXPECT_FALSE(
       rt::ComponentAdmissionPolicy(model, source, origins, {.context = 0, .slots = slots}));
@@ -610,8 +634,12 @@ TEST(ComponentAdmissionQwen2Test, FullStoredTargetPreservesProfilePolicyAndClose
   auto policy = rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 1});
   ASSERT_TRUE(policy) << (policy ? "" : policy.error());
   EXPECT_TRUE(policy->text.contains("max_decode_rows 1"));
-  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8193, .slots = 1}));
-  EXPECT_FALSE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 2}));
+  // The stored stage context bounds it; the approval's one owner is a
+  // default an override passes.
+  EXPECT_EQ(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8193, .slots = 1})
+                .has_value(),
+            model.stages.front().context >= 8193);
+  EXPECT_TRUE(rt::ComponentAdmissionPolicy(model, source, origins, {.context = 8192, .slots = 2}));
   for (unsigned mutation = 0; mutation != 5; ++mutation) {
     auto changed_model = model;
     auto changed_source = source;
@@ -808,6 +836,28 @@ TEST(ComponentAdmissionDrafterTest, ComponentDrafterValuesApprovesV1DraftersAndR
   EXPECT_NE(arch_mismatch.error().find("the approved drafter dspark-deepseek-v4-flash-0731-q8_0"),
             std::string::npos)
       << arch_mismatch.error();
+
+  // A pinned drafter's composition: beside its approved target, the one its
+  // approval pins (this one is not); beside an unpinned target of its
+  // architecture (a re-quant), checked structurally, its own identity
+  // pinned by its inventory. Without a drafter stage it is refused.
+  const auto requant =
+      make_v1(scratch / "g26-requant", "gemma4", "gemma-4-26B-A4B-it-Q8_0.gguf", 27000000000ULL,
+              "0000000000000000000000000000000000000000000000000000000000000001");
+  ASSERT_TRUE(requant.has_value()) << (requant ? "" : requant.error().ToString());
+  ASSERT_EQ(rt::FindApproval("gemma4", requant->sources()), nullptr);
+  sp::ModelSpec composed;
+  composed.stages.resize(2);
+  composed.stages.front().role = sp::StageRole::kTarget;
+  composed.stages.back().role = sp::StageRole::kDrafter;
+  const auto pinned = rt::CheckComposedAdmission(composed, *g26_target, *g26_asst);
+  ASSERT_FALSE(pinned.has_value());
+  EXPECT_NE(pinned.error().find("is not the one approved"), std::string::npos) << pinned.error();
+  const auto paired = rt::CheckComposedAdmission(composed, *requant, *g26_asst);
+  EXPECT_TRUE(paired.has_value()) << (paired ? "" : paired.error());
+  sp::ModelSpec alone = composed;
+  alone.stages.pop_back();
+  EXPECT_FALSE(rt::CheckComposedAdmission(alone, *requant, *g26_asst));
 }
 
 TEST(ComponentAdmissionModelOptTest,

@@ -484,7 +484,7 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Lifetime& life) {
   if (!domain) return std::unexpected(domain.error());
   rt::ComponentBuildOptions options{
       .target_policy = pl::ToText(*policy),
-      .diagnostic_solo = true,
+      .shared_route = true,
       .prefill_lookahead = false,
       .prepare_state = false,
       .state_only_prefill = false,

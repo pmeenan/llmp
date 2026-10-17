@@ -159,6 +159,87 @@ TEST(HangLadder, CpuWorkThatBeatsIsNotAHangAndOneThatStopsIsCancelled) {
   EXPECT_TRUE(r.restarts.empty());
 }
 
+// CPU work beats its pulse before it looks at the cancellation: a beat seen
+// between the two is not the cancellation's draining, or clearing it then
+// would let the work go on. It drains once the work saw it at a checkpoint,
+// or once its unit ended.
+TEST(HangLadder, ACpuCancellationDrainsOnlyOnceTheWorkSawIt) {
+  const Clock::time_point t0{};
+  Recorded r(t0, seconds(60));
+  r.ladder.Unit(true, seconds(10), "starting a request", t0);
+  ASSERT_EQ(r.ladder.Check(t0 + seconds(60)), Rung::kCancel);
+  r.ladder.pulse().Beat();  // a checkpoint's beat, before its look
+  EXPECT_FALSE(r.ladder.Check(t0 + seconds(61)).has_value());
+  EXPECT_EQ(r.ladder.rung(), Rung::kCancel);
+  EXPECT_TRUE(r.ladder.pulse().cancelled());  // still asked to stop
+  llmp::base::SetThreadPulse(&r.ladder.pulse());
+  EXPECT_FALSE(llmp::base::Pulse());  // the look: it stops
+  llmp::base::SetThreadPulse(nullptr);
+  EXPECT_EQ(r.ladder.Check(t0 + seconds(62)), Rung::kWatching);
+  EXPECT_FALSE(r.ladder.pulse().cancelled());
+  // A second hang whose work ends without reaching a checkpoint: a new unit
+  // began, so the cancellation drained, and the next work is not asked to
+  // stop.
+  r.ladder.Unit(true, seconds(10), "starting a request", t0 + seconds(100));
+  ASSERT_EQ(r.ladder.Check(t0 + seconds(160)), Rung::kCancel);
+  r.ladder.pulse().Beat();
+  EXPECT_FALSE(r.ladder.Check(t0 + seconds(161)).has_value());
+  r.ladder.Unit(true, seconds(10), "finishing", t0 + seconds(162));
+  EXPECT_EQ(r.ladder.Check(t0 + seconds(163)), Rung::kWatching);
+  EXPECT_FALSE(r.ladder.pulse().cancelled());
+  EXPECT_EQ(r.ladder.drained(), 2U);
+  EXPECT_TRUE(r.restarts.empty());
+}
+
+// The ladder logs, and runs its last resort, outside its lock: a log or a
+// last resort that asks the ladder again does not deadlock.
+TEST(HangLadder, ItLogsOutsideItsLock) {
+  const Clock::time_point t0{};
+  rt::HangLadder ladder(seconds(60), t0);
+  std::vector<std::string> lines;
+  int restarts = 0;
+  ladder.set_log([&](std::string_view line) {
+    (void)ladder.cancelled_at();  // takes the ladder's lock
+    lines.emplace_back(line);
+  });
+  ladder.set_last_resort([&](const std::string& /*why*/) {
+    (void)ladder.cancelled_at();
+    ++restarts;
+  });
+  ladder.Unit(true, seconds(10), "decoding", t0);
+  ladder.BeginWait();
+  ASSERT_EQ(ladder.Check(t0 + seconds(60)), Rung::kCancel);
+  EXPECT_EQ(ladder.Check(t0 + seconds(120)), Rung::kRestart);
+  EXPECT_EQ(lines.size(), 2U);
+  EXPECT_EQ(restarts, 1);
+}
+
+// The restart callback must arm its deadline before a logger can block.
+// Exercise both escalation from a stuck unit and an explicit failed reset.
+TEST(HangLadder, TheLastResortRunsBeforeTheRestartLog) {
+  const Clock::time_point t0{};
+  for (const bool explicit_restart : {false, true}) {
+    rt::HangLadder ladder(seconds(60), t0);
+    bool armed = false;
+    bool logged = false;
+    ladder.set_last_resort([&](const std::string&) { armed = true; });
+    ladder.set_log([&](std::string_view line) {
+      if (line.find("rung 3") != std::string_view::npos) {
+        EXPECT_TRUE(armed);
+        logged = true;
+      }
+    });
+    if (explicit_restart) {
+      ladder.Restart("a failed reset");
+    } else {
+      ladder.Unit(true, seconds(10), "decoding", t0);
+      ASSERT_EQ(ladder.Check(t0 + seconds(60)), Rung::kCancel);
+      EXPECT_EQ(ladder.Check(t0 + seconds(120)), Rung::kRestart);
+    }
+    EXPECT_TRUE(logged);
+  }
+}
+
 // CPU work that never reaches a checkpoint (a deadlock): rung 3 once the
 // grace passes.
 TEST(HangLadder, CpuWorkThatNeverStopsRestarts) {

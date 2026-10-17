@@ -413,6 +413,39 @@ TEST_F(AnchoredDrafterTest, FeaturesNothingHoldsAreRefused) {
             std::string::npos);
 }
 
+// A drafter's rows reach its slot's committed positions (a catch-up runs
+// through them, a pass sits at or past them): a draft step wholly behind
+// them is refused before anything runs; one at them is admitted.
+TEST_F(AnchoredDrafterTest, ADraftWhollyBehindTheCommittedPositionsIsRefused) {
+  const std::array<std::uint32_t, kSlots> prompts = {40, 41};
+  Prefill(prompts);
+  auto borrow = runner_->slots().Borrow(0, 0);
+  ASSERT_TRUE(borrow.has_value());
+  const std::uint32_t positions = runner_->slots().positions(0);
+  const auto draft = [&](std::uint32_t past) -> std::string {
+    const std::array<std::int32_t, 1> token = {history_[0].back()};
+    const std::array<en::SegmentWork, 1> work = {en::SegmentWork{
+        .tokens = token,
+        .bytes = {},
+        .feature = {.kind = en::FeatureFrom::Kind::kTap, .position = positions - 1}}};
+    const pl::StepShape shape{.stage = kAssistant,
+                              .phase = pl::Phase::kDraft,
+                              .segments = {{.slot = 0,
+                                            .rows = 1,
+                                            .past = past,
+                                            .read_cells = 256,
+                                            .outputs = 1,
+                                            .want_head = true}},
+                              .read_align = 256};
+    auto ran = runner_->RunStep(
+        {.shape = shape, .work = work, .step_bytes = {}, .advance = false, .ahead = {}});
+    return ran ? std::string() : ran.error().what;
+  };
+  EXPECT_NE(draft(positions - 2).find("behind its"), std::string::npos);
+  EXPECT_NE(draft(0).find("behind its"), std::string::npos);
+  EXPECT_EQ(draft(positions), "");
+}
+
 TEST_F(AnchoredDrafterTest, ATargetsOutputsFitItsDraftersTap) {
   const std::array<std::int32_t, 20> tokens{};
   const std::array<en::SegmentWork, 1> work = {en::SegmentWork{.tokens = tokens}};

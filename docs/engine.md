@@ -38,10 +38,10 @@ and links no device backend: a program links the CUDA one, or the fake device
 runtime (`providers/fake/fake_device_runtime.h`: host memory, work queued on fake
 streams that runs when a fence is queried) with the paging kernels' host loops
 (`llmp_fake_device_backend`), which the core's tests use in every profile.
-`llmp_engine` (CUDA builds only) adds GGML plan caches and graph runs (`planned.h`,
-`graph_runs.h`), the runners' cuBLAS and launch context (`runner_resources.h`),
-and `ExpertSlab` (`expert_slab.h`). All per-family runners and per-family graph
-builders are deleted.
+`llmp_engine` (CUDA builds only) adds the runners' cuBLAS and launch context
+(`runner_resources.h`) and `ExpertSlab` (`expert_slab.h`). All per-family
+runners, per-family graph builders and the legacy GGML plan caches and graph
+runs (`planned.h`, `graph_runs.h`) are deleted.
 
 ## The node
 
@@ -74,8 +74,8 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | --- | --- | --- | --- |
 | Weights | `paged_weights.h` | Opens an artifact; registers its shards as the model's weight files (`PagedNode::AddWeightFile`), open for direct reads only while the model is active and size-checked as they open; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`; a GGML runner's `ExpertSlab`, `expert_slab.h`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
 | Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify, queued on the job's stream as the paging kernels' range copies | The state layout and each step's used ranges; which ranges a verify writes; a commit if kept rows need one |
-| Planned shapes | `planned.h` (`plan_account.h`, `plan_cache.h`, `coverage.h`) | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`; the core's `BasicPlanCache` over GGML's `PlanRuns`); in the core, `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `PlanCacheBase`, `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim); `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
-| Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run (or when the runner asks), beside that run's launch-by-launch execution (so capture and instantiation overlap the device's work) unless work is queued between inputs and plan, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `CaptureAhead` records another planned shape's graph without running it, from the input layout `Layout` predicts; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts, hinted prefill) and what it copies out |
+| Planned shapes | `plan_cache.h` (`plan_account.h`, `coverage.h`) | `BasicPlanCache` (per key, found through an index of the keys' hashes, variants, no fixed number, each plan's host bytes and planning time kept); `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `PlanCacheBase`, `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim); the coverage check (BP-A1) | The step source and its plan key |
+| Runs and graphs | `step_runs.h` (`run_stats.h`) | `StepRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the step program and the outputs; captures a shape (or when the runner asks), replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; records another planned shape's graph without running it; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts, hinted prefill) and what it copies out |
 | Prefill lookahead | `prefill_lookahead.h` | `PrefillLookahead` and fixed-capacity `PrefillLookaheadGroup`: independent optional host allowances before CPU-only future plans, sequential builds during current device work, ordered installation after successful completion, exact cache-charge transfer and destruction before unused-grant release | Shape prediction, graph construction, binding/coverage/cache installation and capture policy |
 | Resources | `runner_memory.h`, `runner_resources.h` | The runner's own device memory (pinned) and pinned staging (`RunnerMemory`, the core's); for a GGML runner, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry (`RunnerResources`); and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
@@ -97,14 +97,12 @@ The module contains only shared engine code (no per-family code):
 | `expert_slab.h` | `expert_slab.cc` | Expert slab layout and pitch (`llmp_engine`) |
 | `graph_mask_inputs.h` | — | Mask source validation and host staging |
 | `graph_plan.h` | `graph_plan.cc` | Planned step graph binding and lowering |
-| `graph_runs.h` | `graph_runs.cc` | Input staging, execution and CUDA graph capture (`llmp_engine`) |
 | `live_state.h` | `live_state.cc` | Virtual state regions, sparse spill files, verify snapshots |
 | `model_runner.h` | `model_runner.cc`, `model_runner_routed.cc` | The single shared model runner over step programs |
 | `paged_node.h` | `paged_node.cc` | Paged node: device, streams, io_uring, scheduler, workspace |
 | `paged_weights.h` | `paged_weights.cc` | Weight files, group reservation, slab layout, direct reads |
 | `plan_account.h` | `plan_account.cc` | Plan memory accounting and charges |
-| `plan_cache.h` | — | Basic plan cache template |
-| `planned.h` | `planned.cc` | Bound GGML planned graphs and activation placement (`llmp_engine`) |
+| `plan_cache.h` | — | Basic plan cache template, indexed by its keys' hashes |
 | `ple_rows.h` | `ple_rows.cc` | On-demand n-gram row gathering and direct reads |
 | `prefill.h` | `prefill.cc` | Prefill orchestrator: chunking, joins and futures |
 | `prefill_lookahead.h` | — | Future shape prediction and lookahead groups |
@@ -650,10 +648,11 @@ fresh-node adoption, with changed-input replay of the same multirow MTP
 graph. Runtime wiring and the unchanged quality/state/swap
 and matched 1% speed gates remain G3c2's; serving defaults are unchanged.
 
-`PlanCache` is now `BasicPlanCache<Key, Planned, Variants, Runs>` in the
-core (`plan_cache.h`); `planned.h`'s `PlanCache` is the alias over GGML's
-`PlanRuns`, and `StepPlanRuns` is the step programs'. `RunPath`,
-`GraphStats` and the run copies moved to `run_stats.h`.
+`PlanCache` is now `BasicPlanCache<Key, Planned, Variants, Runs, Hash>` in
+the core (`plan_cache.h`), found through an index of its keys' hashes
+(`execution::HashOf` for a `PlanKey`); `StepPlanRuns` is the step
+programs' runs (the GGML-only `planned.h` and `graph_runs.h` are deleted).
+`RunPath`, `GraphStats` and the run copies are in `run_stats.h`.
 
 **The wave composer** (`wave_composer.h`). Pending work per slot becomes
 step shapes by a `model::Batching` capability (`model/batching.h`, data

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -156,6 +157,27 @@ struct Ledger {
   }
 };
 
+// The rounds Server::MakeRoomForSwap runs, against the ledger: sized, then
+// reclaimed for what is short in whole extents, until it fits or a round
+// makes no progress (RoomProgress), with no count of rounds. Refused (the
+// swap does not start) when room is still short.
+bool MakeRoom(Ledger& l, const std::function<std::uint64_t(std::uint64_t)>& reclaim, int& rounds) {
+  rt::RoomProgress progress;
+  for (;;) {
+    const std::uint64_t short_by = l.Shortfall();
+    if (short_by == 0) {
+      return true;
+    }
+    if (!progress.Shrank(short_by)) {
+      return false;
+    }
+    ++rounds;
+    if (reclaim((short_by + kExtent - 1) / kExtent * kExtent) == 0) {
+      return false;
+    }
+  }
+}
+
 TEST(SwapRoom, AShortfallUnderAnExtentIsRecheckedUntilItFits) {
   Ledger l;
   l.plans = l.floor + (20 * kMiB) + (kMiB / 2);  // charged as 22 MiB
@@ -163,21 +185,29 @@ TEST(SwapRoom, AShortfallUnderAnExtentIsRecheckedUntilItFits) {
   l.budget = l.others + l.Charge() + (8 * kMiB);
   l.incoming = (8 * kMiB) + (kMiB / 2);  // short by half a MiB
   ASSERT_EQ(l.Shortfall(), kMiB / 2);
-  // A reclaim of exactly what is short (the review's 50.3 of 50.0 MiB) can
-  // leave occupancy where it was: 0.6 MiB of plans freed, the charge still
-  // 22 MiB. The room is checked again and more taken.
-  int calls = 0;
-  auto made = rt::MakeRoom([&] { return l.Shortfall(); },
-                           [&](std::uint64_t ask) {
-                             ++calls;
-                             EXPECT_EQ(ask % kExtent, 0U);  // whole extents
-                             return l.Reclaim(ask, std::uint64_t{600} * 1024);
-                           },
-                           kExtent);
-  ASSERT_TRUE(made) << made.error();
+  // A reclaim of exactly what is short can leave occupancy where it was:
+  // 0.6 MiB of plans freed, the charge still 22 MiB. The room is checked
+  // again and more taken.
+  int rounds = 0;
+  EXPECT_TRUE(MakeRoom(
+      l, [&](std::uint64_t ask) { return l.Reclaim(ask, std::uint64_t{600} * 1024); }, rounds));
   EXPECT_EQ(l.Shortfall(), 0U);
-  EXPECT_GE(calls, 1);
-  EXPECT_GE(made->freed, made->asked);
+  EXPECT_GE(rounds, 1);
+}
+
+// No count of rounds: a reclaimer that frees a little each round goes on
+// as long as the shortfall shrinks, past the four rounds it once had.
+TEST(SwapRoom, RoundsGoOnWhileEachMakesProgress) {
+  Ledger l;
+  l.plans = l.floor + (64 * kMiB);
+  l.others = 100 * kMiB;
+  l.budget = l.others + l.Charge();
+  l.incoming = 16 * kMiB;
+  int rounds = 0;
+  // One extent's worth a round, whatever is asked.
+  EXPECT_TRUE(MakeRoom(l, [&](std::uint64_t) { return l.Reclaim(kExtent, kExtent); }, rounds));
+  EXPECT_EQ(l.Shortfall(), 0U);
+  EXPECT_EQ(rounds, 8);
 }
 
 TEST(SwapRoom, WithTooLittleToReclaimTheSwapIsRefusedBeforeItStarts) {
@@ -186,51 +216,29 @@ TEST(SwapRoom, WithTooLittleToReclaimTheSwapIsRefusedBeforeItStarts) {
   l.others = 100 * kMiB;
   l.budget = l.others + l.Charge();
   l.incoming = 4 * kMiB;
-  auto made = rt::MakeRoom([&] { return l.Shortfall(); },
-                           [&](std::uint64_t ask) { return l.Reclaim(ask, kMiB); }, kExtent);
-  ASSERT_FALSE(made);
-  EXPECT_NE(made.error().find("short"), std::string::npos);
+  int rounds = 0;
+  EXPECT_FALSE(MakeRoom(l, [&](std::uint64_t ask) { return l.Reclaim(ask, kMiB); }, rounds));
   EXPECT_GT(l.Shortfall(), 0U);  // refused: the caller does not swap
-  // Nothing to reclaim at all: refused at once.
-  Ledger empty;
-  empty.budget = 10 * kMiB;
-  empty.incoming = 11 * kMiB;
-  int calls = 0;
-  auto none = rt::MakeRoom([&] { return empty.Shortfall(); },
-                           [&](std::uint64_t) {
-                             ++calls;
-                             return std::uint64_t{0};
-                           },
-                           kExtent);
-  EXPECT_FALSE(none);
-  EXPECT_EQ(calls, 1);
   // Room already there: nothing asked.
   Ledger roomy;
   roomy.budget = 10 * kMiB;
   roomy.incoming = 5 * kMiB;
-  auto fits = rt::MakeRoom([&] { return roomy.Shortfall(); },
-                           [](std::uint64_t) { return std::uint64_t{0}; }, kExtent);
-  ASSERT_TRUE(fits);
-  EXPECT_EQ(fits->reclaims, 0);
+  rounds = 0;
+  EXPECT_TRUE(MakeRoom(roomy, [](std::uint64_t) { return std::uint64_t{0}; }, rounds));
+  EXPECT_EQ(rounds, 0);
 }
 
-TEST(SwapRoom, TheAttemptsAreBounded) {
+// A reclaimer that reports freed bytes but drops nothing (a ledger that
+// never moves): stopped after the first round that made no progress.
+TEST(SwapRoom, ARoundWithoutProgressStops) {
   Ledger l;
   l.plans = l.floor + (64 * kMiB);
   l.others = 100 * kMiB;
   l.budget = l.others + l.Charge();
   l.incoming = 3 * kMiB;
-  // A reclaimer that reports freed bytes but drops nothing (a ledger that
-  // never moves): refused after the bounded attempts.
-  int calls = 0;
-  auto made = rt::MakeRoom([&] { return l.Shortfall(); },
-                           [&](std::uint64_t ask) {
-                             ++calls;
-                             return ask;
-                           },
-                           kExtent, 3);
-  EXPECT_FALSE(made);
-  EXPECT_EQ(calls, 3);
+  int rounds = 0;
+  EXPECT_FALSE(MakeRoom(l, [](std::uint64_t ask) { return ask; }, rounds));
+  EXPECT_EQ(rounds, 1);
 }
 
 }  // namespace

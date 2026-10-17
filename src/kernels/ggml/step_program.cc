@@ -48,9 +48,9 @@ std::expected<void, StepFailure> SameStream(const LaunchContext& context,
   return {};
 }
 
-// What a planned step holds on the host besides its arena (engine/planned.h
-// kPlanNodeHostBytes: the plan's steps, the activations' places and the
-// bound launches, an upper bound a node measured on GB10).
+// What a planned step holds on the host besides its arena (the plan's
+// steps, the activations' places and the bound launches, an upper bound a
+// node measured on GB10).
 constexpr std::uint64_t kPlanNodeHostBytes = 512;
 
 class GgmlRecorded final : public Recorded {
@@ -137,8 +137,8 @@ class GgmlStepProgram final : public StepProgram, public RoutedProgram {
   std::span<const TensorUse> tensors() const override { return lowered_.tensors; }
   const execution::BoundPlan* bound() const override { return bound_ ? &bound_->bound() : nullptr; }
 
-  // As engine/planned.h BindPlanned: the pool scratch against the launch's
-  // pools, then every implementation bound.
+  // The pool scratch against the launch's pools, then every implementation
+  // bound.
   std::expected<void, StepFailure> Bind(StepLaunch& launch) override {
     if (owner_) {
       if (auto ready = owner_->Ready(); !ready)

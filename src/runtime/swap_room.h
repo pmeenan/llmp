@@ -6,8 +6,9 @@
 // budget's free room is reclaimed first, and the room checked again after
 // each reclaim, because what a reclaim reports freed need not be what the
 // budget's occupancy dropped by (the plans' and graphs' charge moves in
-// whole extents past its floor). Vendor-free and host-only, so the CPU
-// tests drive it with a ledger of their own.
+// whole extents past its floor); it stops once a round makes no progress
+// (RoomProgress), never after a count of rounds. Vendor-free and
+// host-only, so the CPU tests drive it with a ledger of their own.
 
 #ifndef LLMP_RUNTIME_SWAP_ROOM_H_
 #define LLMP_RUNTIME_SWAP_ROOM_H_
@@ -26,10 +27,22 @@
 
 namespace llmp::runtime {
 
-struct SwapRoomSteps {
-  int reclaims = 0;         // reclaims asked
-  std::uint64_t asked = 0;  // bytes asked in all
-  std::uint64_t freed = 0;  // bytes the reclaims reported
+// The rounds of a swap's room-making go on while each makes progress: the
+// bytes still short must shrink from one round's sizing to the next, so
+// the rounds end however many it takes, and stop at the first that does
+// not (a reclaim that reports bytes freed but moves no occupancy).
+class RoomProgress {
+ public:
+  // After a round's sizing, `short_by` bytes short: whether another round
+  // may follow (the first always may).
+  bool Shrank(std::uint64_t short_by) {
+    const bool shrank = !last_ || short_by < *last_;
+    last_ = short_by;
+    return shrank;
+  }
+
+ private:
+  std::optional<std::uint64_t> last_;
 };
 
 // A scheduler donor matches all three fields and charges exactly `size`.
@@ -53,15 +66,6 @@ struct SwapBackingExtent {
 std::expected<std::vector<catalog::ExtentId>, std::string> ReleaseForHandoff(
     catalog::DomainId domain, std::uint64_t occupancy, std::uint64_t budget,
     std::span<const SwapBackingExtent> missing, std::span<const SwapBackingExtent> selected);
-
-// Until `shortfall()` (the bytes the swap lacks now) is 0: asks `reclaim`
-// for it rounded up to whole `unit`s, then checks again, at most
-// `attempts` times. Refused (the swap must not start) when a reclaim
-// frees nothing or the attempts run out with room still short.
-std::expected<SwapRoomSteps, std::string> MakeRoom(
-    const std::function<std::uint64_t()>& shortfall,
-    const std::function<std::uint64_t(std::uint64_t)>& reclaim, std::uint64_t unit,
-    int attempts = 4);
 
 }  // namespace llmp::runtime
 

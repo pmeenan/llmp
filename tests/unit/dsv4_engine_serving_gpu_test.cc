@@ -1064,7 +1064,7 @@ TEST(Dsv4EngineLowering, EveryServingProgramBindsTheCompleteExpertDomain) {
   roles.installed = installed;
   rt::ComponentBuildOptions options{
       .target_policy = std::nullopt,
-      .diagnostic_solo = true,
+      .shared_route = true,
       .automatic_startup_cap = 110ULL << 30U,
       .shared_compiler = std::make_shared<en::SharedCompilerAllowance>(),
       .derive_execution_domain = true};

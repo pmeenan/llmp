@@ -50,19 +50,6 @@ bool Keeps(const ja::Artifact& a, std::string_view name) {
   });
 }
 
-// The kept GGUF metadata (import rule 7): a single file's, or the first
-// shard's; empty when there is none.
-std::string KeptGguf(const ja::Artifact& a) {
-  std::string kv;
-  for (const ja::ListedFile& f : a.files()) {
-    if (f.role == ja::FileRole::kSourceMetadata && f.path.starts_with("meta/") &&
-        f.path.ends_with(".kv.gguf") && (kv.empty() || f.path.contains("-00001-of-"))) {
-      kv = f.path.substr(5);
-    }
-  }
-  return kv;
-}
-
 std::expected<ja::GgufMetadata, std::string> ReadKeptGguf(const ja::Artifact& a,
                                                           const std::string& kv,
                                                           std::span<const std::string_view> keys) {
@@ -516,6 +503,14 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
     facts.pipeline = admitted->model.pipeline;
     model = std::move(admitted->model);
   }
+  // The drafter's admission, once: its source as checked, for its
+  // composition below.
+  std::optional<ComponentDrafterAdmission> drafter_admitted;
+  if (drafter != nullptr) {
+    auto admitted = ReadComponentDrafterAdmission(*drafter);
+    if (!admitted) return Error(admitted.error());
+    drafter_admitted.emplace(std::move(*admitted));
+  }
   if (model) {
     facts.context_ceiling = model->stages.front().context;
     facts.has_moe = std::ranges::any_of(model->stages.front().layers, [](const spec::Layer& layer) {
@@ -530,16 +525,11 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
         if (draft_mapping == nullptr) return Error("component calibration has no drafter mapping");
         auto draft_values = ComponentDrafterValues(target, *drafter);
         if (!draft_values) return Error(draft_values.error());
-        auto draft_source = spec::SourceOf(*drafter);
-        if (!draft_source) return Error(draft_source.error());
-        // The drafter's complete tensor inventory is its approval's.
-        if (auto admitted = CheckComponentDrafterAdmission(*draft_source, drafter->sources());
-            !admitted)
-          return Error(admitted.error());
+        const spec::Source* draft_source = &drafter_admitted->source;
         auto composed = spec::ComposeDrafter(*model, *target_mapping, *draft_mapping, *draft_source,
                                              *draft_values);
         if (!composed) return Error(composed.error());
-        if (auto approved = CheckComposedAdmission(*composed, *drafter); !approved)
+        if (auto approved = CheckComposedAdmission(*composed, target, *drafter); !approved)
           return Error(approved.error());
         if (draft_mapping->draft != nullptr && !draft_mapping->draft->vocab_key.empty()) {
           if (target_mapping->serving == nullptr)
@@ -609,10 +599,8 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(
     facts.trained_context_from = "the admitted stored spec";
   }
   if (drafter != nullptr) {
-    if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
-      return Error(admitted.error());
     facts.drafter_architecture = drafter->model().architecture;
-    facts.drafter_approval = FindApproval(facts.drafter_architecture, drafter->sources());
+    facts.drafter_approval = drafter_admitted->approval;
     const spec::Mapping* draft_mapping = ComposedDrafterMapping(*drafter);
     const spec::DraftRecipe* draft = draft_mapping != nullptr ? draft_mapping->draft : nullptr;
     if (draft != nullptr && draft->shape == spec::DraftRecipe::Shape::kMtp &&
@@ -863,6 +851,39 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                                     cal.max_slots, cal.basis, {}, {}, bounded ? 1U : kDefaultSlots,
                                     bounded ? "bounded scalar-cohort route; uncalibrated"
                                             : "the knee measured on a GB10 (D-104)");
+  // The approved envelopes (the target's approval's and its configured
+  // drafter's; D-119's qualified envelope defaults): within them by
+  // default, as the context is above, the basis saying so; an override past
+  // one is served unqualified, with a warning (D-102: no refusal for want
+  // of a qualification; real bounds, the stored context among them, hold).
+  const auto envelope = [&](const Approval* approval) {
+    if (approval == nullptr) return;
+    const auto past = [&](std::string_view what) {
+      s.warnings.push_back(std::format(
+          "{} is past the approved {} envelope ({} tokens, {} owners{}): "
+          "served, unqualified",
+          what, approval->label, approval->max_context, approval->max_slots,
+          approval->wide_context != 0 ? std::format(", one above {} tokens", approval->wide_context)
+                                      : std::string()));
+    };
+    if (approval->max_context != 0 && context > approval->max_context &&
+        s.context.source == SettingSource::kOverride)
+      past(std::format("context {}", context));
+    std::uint32_t owners = approval->max_slots;
+    if (approval->wide_context != 0 && context > approval->wide_context) owners = 1;
+    if (owners == 0 || s.max_slots.value <= owners) return;
+    if (s.max_slots.source == SettingSource::kOverride) {
+      past(std::format("max_slots {}", s.max_slots.value));
+    } else {
+      s.max_slots = {owners, SettingSource::kDerived,
+                     owners == approval->max_slots
+                         ? std::format("the approved {} envelope's {}", approval->label, owners)
+                         : std::format("the approved {} envelope's one owner above {} tokens",
+                                       approval->label, approval->wide_context)};
+    }
+  };
+  envelope(facts.approval);
+  if (entry.drafter) envelope(facts.drafter_approval);
   if (bounded) {
     // Gemma 4's bounded recipes (a context of at most 8,192 and four
     // owners) were qualified at a prompt chunk, which its mapping's policy
@@ -923,7 +944,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       entry.Real("recompute_ms_per_token"), basis("recompute_ms_per_token"),
       cal.recompute_ms_per_token, cal.basis, {}, {}, kRecomputeMsPerToken,
       bounded ? "provisional recompute cost; uncalibrated"
-              : (recipe.lid_mask ? "DeepSeek's prefill measured on a GB10" : "measured on a GB10"));
+              : "the slowest prefill measured on a GB10 (M3's; uncalibrated for this model)");
 
   // Sampling defaults: the checkpoint's own, else OpenAI's.
   const std::string& sampled = facts.sampling_from;
@@ -1254,6 +1275,11 @@ int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE*
         text += i == 0 ? "" : ",";
         json::AppendQuoted(settings->ignored[i], text);
       }
+      text += "],\"warnings\":[";
+      for (std::size_t i = 0; i < settings->warnings.size(); ++i) {
+        text += i == 0 ? "" : ",";
+        json::AppendQuoted(settings->warnings[i], text);
+      }
       text += "],\"calibration\":";
       json::AppendQuoted(calibration.note, text);
       text += "}";
@@ -1268,6 +1294,9 @@ int PrintSettings(const config::NodeConfig& config, bool json_output, std::FILE*
       }
       for (const std::string& ignored : settings->ignored) {
         text += std::format("  ignored: {}\n", ignored);
+      }
+      for (const std::string& warning : settings->warnings) {
+        text += std::format("  warning: {}\n", warning);
       }
     }
     first = false;

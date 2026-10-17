@@ -350,7 +350,7 @@ en::Status SetUp(Lifetime& life) {
     return std::unexpected("settings did not retain the narrowed composed identity");
   rt::ComponentBuildOptions options{
       .target_policy = {},
-      .diagnostic_solo = true,
+      .shared_route = true,
       .prefill_lookahead = false,
       .prepare_state = false,
       .state_only_prefill = false,

@@ -279,7 +279,7 @@ struct ComponentHold {
   std::vector<std::span<const components::BoundTensor>> tables;
   std::vector<model::StateLayoutDerived> layouts;  // by stage
   std::vector<const model::StateLayoutDerived*> stages;
-  std::vector<spec::SourceValue> values, drafter_values;
+  std::vector<spec::SourceValue> drafter_values;
   std::shared_ptr<const std::vector<std::int32_t>> draft_head_ids;
   std::uint32_t draft_head_rows = 0;
   // Each weight's place: its holding stage's artifact, whether it is
@@ -294,11 +294,16 @@ struct ComponentHold {
 };
 static_assert(sizeof(ComponentHold) <= 4096);  // StoredBindingBytes fixed owner inventory.
 
-// Closed internal scoring experiment, not a serving route. A non-null domain
-// alone is not authority to lift the ordinary single-owner diagnostic bound.
+// Closed internal scoring experiment, not a serving route: only a caller's
+// explicit execution domain reaches it (the Server derives its own, so no
+// served configuration does). Its four owners, 512-token context, 2-row
+// chunks and 256-byte read alignment are that experiment's one matched
+// shape (tests/unit/qwen38_joined_score_gpu_test.cc), fixed so its domain
+// is checked against exactly what it was matched at; a non-null domain
+// alone is not authority to lift the single-owner bound.
 bool JoinedScoreEnvelope(const ModelSettings& settings, std::string_view drafter,
                          const ComponentBuildOptions& options) {
-  if (!options.diagnostic_solo || !options.execution_domain || !drafter.empty() ||
+  if (!options.shared_route || !options.execution_domain || !drafter.empty() ||
       settings.speculation.value || settings.max_slots.value != 4 ||
       settings.context.value != 512 || settings.prefill_chunk.value != 2 ||
       settings.wave_read_align.value != 256)
@@ -330,18 +335,20 @@ bool JoinedScoreEnvelope(const ModelSettings& settings, std::string_view drafter
 // domains keep their existing (including closed scoring) admission contract.
 bool PlainServingEnvelope(const ModelSettings& settings, std::string_view drafter,
                           const ComponentBuildOptions& options) {
-  return options.diagnostic_solo && options.derive_execution_domain && !options.execution_domain &&
+  return options.shared_route && options.derive_execution_domain && !options.execution_domain &&
          drafter.empty() && !settings.speculation.value && settings.max_slots.value >= 1 &&
          settings.max_slots.value <= Llm::kMaxBranches && settings.context.value != 0 &&
          settings.prefill_chunk.value != 0;
 }
 
-// Internal composed diagnostic only. The actual source seal additionally
-// validates every stage/layout/phase and binds real prepared backend owners.
-// Ordinary Server admission remains single-owner until qualification closes.
+// The joined MTP envelope: a composed (speculating) source of two or more
+// owners on the shared route, its domain derived from the actual source by
+// the Server's serving request, or a caller's explicit domain with every
+// joined mode. The actual source seal additionally validates every
+// stage/layout/phase and binds real prepared backend owners.
 bool JoinedMtpEnvelope(const ModelSettings& settings, std::string_view drafter,
                        const ComponentBuildOptions& options) {
-  if (!options.diagnostic_solo || (!options.execution_domain && !options.derive_execution_domain) ||
+  if (!options.shared_route || (!options.execution_domain && !options.derive_execution_domain) ||
       drafter.empty() || !settings.speculation.value || settings.max_slots.value < 2 ||
       settings.max_slots.value > Llm::kMaxBranches || !settings.context.value ||
       !settings.prefill_chunk.value || !settings.draft_rows.value)
@@ -373,7 +380,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     // A shared route qualified by its plain or joined envelopes (else one
     // owner), or one served only in its automatic serving shape.
     const bool solo = recipe.shared_route && recipe.qualified_envelopes;
-    if (options.derive_execution_domain && (!options.diagnostic_solo || options.execution_domain))
+    if (options.derive_execution_domain && (!options.shared_route || options.execution_domain))
       return Error(
           "derived serving qualification needs an internal request without a caller domain");
     const bool automatic_only = recipe.shared_route && !recipe.qualified_envelopes;
@@ -395,7 +402,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (options.derive_execution_domain && !plain_serving && !joined_mtp && !automatic_serving)
       return Error(
           "derived serving qualification needs an ordinary target or composed replay source");
-    if (solo && (!options.diagnostic_solo ||
+    if (solo && (!options.shared_route ||
                  (settings.max_slots.value != 1 && !joined_score && !joined_mtp && !plain_serving)))
       return Error(std::format(
           "the {} component qualification requires exactly one configured slot", recipe.name));
@@ -406,12 +413,13 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
     if (mapping == nullptr) return Error("the artifact's architecture has no mapping");
     if (settings.architecture != artifact->model().architecture)
       return Error("resolved architecture differs from the opened artifact");
-    // Stored source construction is admitted before parsing/copying its spec,
-    // component parameters or role maps (a v1 artifact's alone: D-118).
-    // Retain one catalog payment on retries.
+    // The artifact's prerequisites are admitted before its spec, component
+    // parameters or role maps are parsed or copied (a v1 artifact's alone:
+    // D-118); those are admitted once read, below. Retain one catalog
+    // payment on retries.
     std::unique_ptr<StoredBindingPayment> stored_payment;
     {
-      if (auto admitted = CheckComponentArtifactAdmission(*artifact); !admitted)
+      if (auto admitted = CheckArtifactPrerequisites(*artifact); !admitted)
         return Error(admitted.error());
       auto bytes = StoredBindingBytes(*artifact);
       if (!bytes) return Error(bytes.error());
@@ -442,9 +450,15 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (settings.context.value == 0 ||
           settings.context.value > stored_bindings->model.stages.front().context)
         return Error("resolved context exceeds the admitted stored spec");
-      auto policy = ComponentAdmissionPolicy(
-          stored_bindings->model, stored_bindings->source, artifact->sources(),
-          {.context = settings.context.value, .slots = settings.max_slots.value});
+      // Admitted once, as read; its policy from that admission.
+      if (auto admitted = CheckComponentAdmission(stored_bindings->model, stored_bindings->source,
+                                                  artifact->sources());
+          !admitted)
+        return Error(admitted.error());
+      auto policy =
+          AdmittedPolicy(stored_bindings->model, stored_bindings->source,
+                         FindApproval(artifact->model().architecture, artifact->sources()),
+                         {.context = settings.context.value, .slots = settings.max_slots.value});
       if (!policy) return Error(policy.error());
       stored_policy = *policy;
       if (auto checked = CheckStoredHashTables(*artifact, stored_bindings->model); !checked)
@@ -462,8 +476,10 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto opened = OpenInstalled(store, drafter_id);
       if (!opened) return Error(opened.error());
       drafter.emplace(std::move(*opened));
-      if (auto admitted = CheckComponentArtifactAdmission(*drafter); !admitted)
-        return Error(admitted.error());
+      // Admitted once: its source as checked (its complete tensor
+      // inventory its approval's, where it has one).
+      auto drafter_admitted = ReadComponentDrafterAdmission(*drafter);
+      if (!drafter_admitted) return Error(drafter_admitted.error());
       // The drafter's mapping as composed (its drafting recipe's replay
       // form; a stored one's by its approval).
       drafter_mapping = ComposedDrafterMapping(*drafter);
@@ -502,26 +518,22 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         }
       }
       hold->drafter_values = std::move(*dvalues);
-      auto dsource = spec::SourceOf(*drafter);
-      if (!dsource) return Error(dsource.error());
-      // The drafter's complete tensor inventory is its approval's.
-      if (auto admitted = CheckComponentDrafterAdmission(*dsource, drafter->sources()); !admitted)
-        return Error(admitted.error());
+      spec::Source* dsource = &drafter_admitted->source;
       if (auto envelope = ComponentDrafterEnvelope(
-              *drafter, {.context = settings.context.value, .slots = settings.max_slots.value});
+              {.context = settings.context.value, .slots = settings.max_slots.value});
           !envelope)
         return Error(envelope.error());
       auto composed = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
                                            hold->drafter_values);
       if (!composed) return Error(composed.error());
       if (approved_values == hold->drafter_values) {
-        if (auto approved = CheckComposedAdmission(*composed, *drafter); !approved)
+        if (auto approved = CheckComposedAdmission(*composed, *artifact, *drafter); !approved)
           return Error(approved.error());
       } else {
         auto pinned = spec::ComposeDrafter(*synthesized, *mapping, *drafter_mapping, *dsource,
                                            approved_values);
         if (!pinned) return Error(pinned.error());
-        if (auto approved = CheckComposedAdmission(*pinned, *drafter); !approved)
+        if (auto approved = CheckComposedAdmission(*pinned, *artifact, *drafter); !approved)
           return Error(approved.error());
       }
       hold->spec = std::move(*composed);
@@ -565,12 +577,8 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       return Error(valid.error());
     }
     if (options.automatic_startup_cap != 0) {
-      // Already migrated component families use the same paid construction
-      // inventory without inventing a NumericalDomain. Newly opted families
-      // still require their explicit diagnostic request and derived domain.
-      if (!OnComponentEngine(settings.architecture) &&
-          (!options.diagnostic_solo || !options.derive_execution_domain))
-        return Error("automatic construction requires a qualified shared serving route");
+      // Component families use the same paid construction inventory without
+      // inventing a NumericalDomain (their serving recipe is checked above).
       auto bytes =
           ServingConstructionBytes(hold->spec, *artifact, drafter ? &*drafter : nullptr, settings);
       if (!bytes) return Error(bytes.error());
@@ -999,9 +1007,11 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
         return Error(declared.error());
     }
 
-    // A harness's matched recipe, or the shared route's own, in place of the
-    // target's mapping's.
-    std::optional<planner::Policy> target_policy;
+    // The target's policy: a harness's matched recipe, the shared route's
+    // own, or the rule admission chose (AdmittedPolicy); where it chose none
+    // (an approval's kNone, or no rule holds), the engine's default. Its
+    // step source never chooses a rule again from its mapping.
+    planner::Policy target_policy;
     if (!composition.text.empty() || options.target_policy || forced) {
       auto parsed =
           planner::ParsePolicy(options.target_policy ? *options.target_policy : composition.text);
@@ -1014,7 +1024,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       if (!parsed) return Error(std::format("the drafter's policy: {}", parsed.error()));
       drafter_policy = std::move(*parsed);
     }
-    if (!drafter_policy && forced && target_policy && speculate) {
+    if (!drafter_policy && forced && speculate) {
       // The forced route retains its shared fusion rules for the drafter,
       // but each stage's independent product policies come from its mapping.
       auto text = spec::DefaultPolicy(*drafter_mapping, hold->drafter_values,
@@ -1023,7 +1033,7 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
       auto own = text->empty() ? std::expected<planner::Policy, std::string>(planner::Policy{})
                                : planner::ParsePolicy(*text);
       if (!own) return Error(own.error());
-      drafter_policy = *target_policy;
+      drafter_policy = target_policy;
       drafter_policy->products = own->products;
     }
     std::vector<std::unique_ptr<engine::ComponentStepSource>> sources;
@@ -1037,14 +1047,14 @@ EngineBuild ComponentLlmBuild(engine::PagedNode& node, fs::path store,
                         .artifacts = hold->tables},
            .bound_digest = *bound,
            .mapping = stage == 0 ? mapping : drafter_mapping,
-           .values = stage == 0 ? std::span<const spec::SourceValue>(hold->values)
+           .values = stage == 0 ? std::span<const spec::SourceValue>{}
                                 : std::span<const spec::SourceValue>(hold->drafter_values),
            .slots = slots,
            // A drafter stage: the diagnostic's policy, else a forced
            // shared-route recipe's (the target's), else its mapping's.
-           .policy = stage == 0       ? target_policy
+           .policy = stage == 0       ? std::optional(target_policy)
                      : drafter_policy ? drafter_policy
-                     : forced         ? target_policy
+                     : forced         ? std::optional(target_policy)
                                       : std::nullopt,
            .backend = hold->backend->Backend(),
            .execution_domain = execution_domain,

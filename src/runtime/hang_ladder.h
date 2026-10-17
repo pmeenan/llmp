@@ -121,7 +121,8 @@ class HangLadder {
   void EndWait();
 
   // Advances the ladder: the rung it entered now, if any, logged with why.
-  // Entering rung 3 runs the last resort first (outside the ladder's lock).
+  // Entering rung 3 runs the last resort before logging (outside the
+  // ladder's lock), so it can arm its exit deadline before a log blocks.
   std::optional<Rung> Check(Clock::time_point now);
   // Rung 2 could not recover the model in place: rung 3, with why (the last
   // resort runs). Once; later calls do nothing.
@@ -142,7 +143,8 @@ class HangLadder {
   Clock::time_point cancelled_at() const;
 
  private:
-  // With mutex_ held: rung 3 entered (the caller runs the last resort).
+  // With mutex_ held: rung 3 entered; its line, passed to the last resort
+  // before logging, both once mutex_ is released.
   std::string EnterRestart(std::string why);
   void Say(std::string_view line) const;
 
@@ -153,6 +155,7 @@ class HangLadder {
   std::chrono::milliseconds allowance_{0};
   std::uint64_t count_ = 0;
   std::uint64_t beats_ = 0;
+  std::uint64_t cancel_number_ = 0;  // the pulse's count of rung 1's CPU cancellation
   Clock::time_point progress_;
   Clock::time_point cancel_at_;
   std::atomic<std::uint64_t> cancels_{0};

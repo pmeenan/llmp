@@ -174,7 +174,7 @@ TEST(ApprovalsModels, PublishedArtifactsAndPairsMatchTheirPinnedSpecs) {
     auto policy = rt::ComponentAdmissionPolicy(admitted->model, admitted->source, target->sources(),
                                                envelope);
     EXPECT_TRUE(policy) << (policy ? "" : policy.error());
-    auto drafter_envelope = rt::ComponentDrafterEnvelope(*drafter, envelope);
+    auto drafter_envelope = rt::ComponentDrafterEnvelope(envelope);
     EXPECT_TRUE(drafter_envelope) << (drafter_envelope ? "" : drafter_envelope.error());
     // The kept values compose the pinned composition.
     const sp::Mapping* draft_mapping = rt::ComposedDrafterMapping(*drafter);

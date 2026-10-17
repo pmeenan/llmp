@@ -230,7 +230,7 @@ class GemmaNativeV1ServingGpu : public ::testing::TestWithParam<std::size_t> {
     rt::SwapParts activation;
     if (auto active = life->server->Activate(*model, activation); !active) return active;
     const auto state_bound = model->StateBytesThrough(4096);
-    if (state_bound == 0 || state_bound > kSpillCacheBytes / 2)
+    if (!state_bound || *state_bound == 0 || *state_bound > kSpillCacheBytes / 2)
       return std::unexpected("two owners exceed the prepaid spill-cache envelope");
     return Select();
   }

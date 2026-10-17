@@ -315,21 +315,28 @@ Status EngineLlm::SelectBranches(std::span<Branch* const> active) {
   return runner_->slots().SelectSlots(std::span(ids).first(active.size()));
 }
 
-std::uint64_t EngineLlm::StateBytesThrough(std::uint32_t positions) const {
-  if (!runner_) return 0;
+std::expected<std::uint64_t, std::string> EngineLlm::StateBytesThrough(
+    std::uint32_t positions) const {
+  if (!runner_) return std::unexpected(std::format("{} is not built", name_));
   const en::SlotLifecycle& slots = runner_->slots();
   std::uint64_t total = 0;
   for (std::size_t s = 0; s < slots.stages(); ++s) {
     const model::StateLayoutDerived& layout = slots.layout(s);
     auto used =
         model::UsedThrough(layout, std::min(positions, layout.context), slots.read_align(s));
-    if (!used) return 0;
+    if (!used) {
+      return std::unexpected(std::format("{}'s stage {} state through {} positions: {}", name_, s,
+                                         positions, used.error()));
+    }
     std::vector<en::LiveState::Range> ranges;
     ranges.reserve(used->size());
     for (const auto& r : *used)
       ranges.push_back({.region = 0, .offset = r.offset, .bytes = r.bytes});
     auto bytes = slots.live(0, s).UsedBytesOf(ranges);
-    if (!bytes) return 0;
+    if (!bytes) {
+      return std::unexpected(std::format("{}'s stage {} state through {} positions: {}", name_, s,
+                                         positions, bytes.error()));
+    }
     total += *bytes;
   }
   return total;
@@ -392,10 +399,6 @@ std::vector<std::uint64_t> EngineLlm::KeptLayouts() const {
     out.push_back(runner_->slots().live(0, s).bytes(0));
   }
   return out;
-}
-
-const en::LiveState* EngineLlm::KeptLiveFor(const Branch& branch) const {
-  return runner_ ? &runner_->slots().live(Slot(branch), 0) : nullptr;
 }
 
 std::vector<const en::LiveState*> EngineLlm::KeptLivesFor(const Branch& branch) const {
@@ -784,12 +787,6 @@ Status EngineLlm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all,
   return {};
 }
 
-Status EngineLlm::SpecStep(std::span<const std::int32_t> all, std::uint32_t pos, std::uint32_t left,
-                           std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
-                           std::uint64_t& drafted) {
-  return SpecStepFor(default_branch(), all, pos, left, kept, logits, drafted, nullptr);
-}
-
 bool EngineLlm::GenerationCohortUsable() const {
   return runner_ != nullptr && !runner_->slots().faulted();
 }
@@ -837,7 +834,8 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
   }
   // The same owners' next two chunks, as their sessions said (an owner
   // whose prompt ends there drops out), as the steps they will run in:
-  // together when Llm would join them (CompatiblePrefill), else each alone.
+  // together when Llm would join them (PromptSession::CanJoin: equal heads
+  // and CompatiblePrefill), else each alone.
   const auto future = [&](std::span<const std::size_t> owners,
                           bool after) -> std::vector<pl::StepShape> {
     std::vector<en::PendingWork> next;
@@ -861,7 +859,8 @@ Status EngineLlm::RunPrefill(std::span<PreparedPrefill> prepared) {
     std::vector<pl::StepShape> steps;
     if (next.empty()) return steps;
     const bool join = std::ranges::all_of(next, [&](const en::PendingWork& w) {
-      return CompatiblePrefill(next.front().past, next.front().rows, w.past, w.rows);
+      return w.want_head == next.front().want_head &&
+             CompatiblePrefill(next.front().past, next.front().rows, w.past, w.rows);
     });
     const auto compose = [&](std::span<const en::PendingWork> work) {
       en::Composition composed = composer_->Compose(work);
@@ -1224,11 +1223,6 @@ std::optional<Status> EngineLlm::RunGreedyChunkFor(Branch& branch,
   }
   ++counts_.greedy_tokens;
   return Status{};
-}
-
-Status EngineLlm::RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
-                           std::vector<float>& logits) {
-  return RunChunkFor(default_branch(), all, past, inject, logits);
 }
 
 // ------------------------------------------------------------- the state

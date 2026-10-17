@@ -60,7 +60,7 @@ Calibration Measured() {
   return c;
 }
 
-TEST(Calibration, BoundSpecInvalidatesOnlySharedRecordsWithoutChangingTheirPath) {
+TEST(Calibration, BoundSpecInvalidatesOnlySharedRecords) {
   llmp::runtime::ModelSettings legacy;
   auto legacy_key = Key();
   legacy_key.settings = llmp::runtime::MeasuredWith(legacy);
@@ -78,8 +78,9 @@ TEST(Calibration, BoundSpecInvalidatesOnlySharedRecordsWithoutChangingTheirPath)
   (*shared.bound_spec)[31] = 1;
   key.settings = llmp::runtime::MeasuredWith(shared);
   EXPECT_FALSE(ParseCalibration(record, key).calibration);
-  EXPECT_EQ(llmp::runtime::CalibrationPath("state", key.artifact),
-            llmp::runtime::CalibrationPath("state", legacy_key.artifact));
+  // Each configuration of one artifact has a record of its own.
+  EXPECT_NE(llmp::runtime::CalibrationPath("state", key),
+            llmp::runtime::CalibrationPath("state", legacy_key));
   EXPECT_EQ(FormatCalibration(Measured(), legacy_key), old_record);
   EXPECT_TRUE(ParseCalibration(old_record, legacy_key).calibration);
 }
@@ -561,7 +562,7 @@ TEST(Calibration, WritesAndReadsItsRecord) {
   EXPECT_EQ(none.note, "none recorded");
 
   ASSERT_TRUE(llmp::runtime::WriteCalibration(state, Key(), Measured()).has_value());
-  const fs::path file = llmp::runtime::CalibrationPath(state, Key().artifact);
+  const fs::path file = llmp::runtime::CalibrationPath(state, Key());
   struct stat status{};
   ASSERT_EQ(::stat(file.c_str(), &status), 0);
   EXPECT_EQ(status.st_mode & 0777U, 0600U);
@@ -615,7 +616,7 @@ TEST(Calibration, UsesADirectoryAndRecordFoundOpen) {
   struct stat status{};
   ASSERT_EQ(::stat(directory.c_str(), &status), 0);
   EXPECT_EQ(status.st_mode & 07777U, 0755U);  // left as it was
-  const fs::path file = llmp::runtime::CalibrationPath(state, Key().artifact);
+  const fs::path file = llmp::runtime::CalibrationPath(state, Key());
   ASSERT_EQ(::stat(file.c_str(), &status), 0);
   EXPECT_EQ(status.st_mode & 07777U, 0600U);  // what it makes is private
   auto read = llmp::runtime::ReadCalibration(state, Key());
@@ -646,7 +647,7 @@ TEST(Calibration, UsesADirectoryAndRecordFoundOpen) {
   read = llmp::runtime::ReadCalibration(state, Key());
   ASSERT_TRUE(read.calibration.has_value()) << read.note;
   EXPECT_EQ(read.calibration.value_or(Calibration{}).max_slots, Measured().max_slots);
-  EXPECT_TRUE(fs::exists(moved / (Key().artifact + ".json")));
+  EXPECT_TRUE(fs::exists(moved / llmp::runtime::CalibrationName(Key())));
 
   // A link to nothing is refused by name, and nothing is created through it.
   fs::remove(directory);
@@ -655,6 +656,55 @@ TEST(Calibration, UsesADirectoryAndRecordFoundOpen) {
   ASSERT_FALSE(refused.has_value());
   EXPECT_THAT(refused.error(), HasSubstr("Link has been severed"));
   EXPECT_FALSE(fs::exists(state / "nowhere"));
+  fs::remove_all(state, error);
+}
+
+// Two aliases of one artifact (another drafter, other settings) keep a
+// record each rather than replacing each other's on every measurement; a
+// record for another build replaces its stale one in place, and the record
+// an earlier build named by the artifact alone goes.
+TEST(Calibration, AliasesOfOneArtifactKeepTheirOwnRecords) {
+  std::error_code error;
+  fs::create_directories(Scratch(), error);
+  std::string pattern = (Scratch() / "calibration-aliases-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const fs::path state = pattern;
+  fs::create_directories(state / "calibration");
+  std::ofstream(state / "calibration" / (Key().artifact + ".json")) << "{}\n";
+  CalibrationKey plain = Key();
+  plain.drafter.clear();
+  CalibrationKey other = Key();
+  other.settings += " max_slots_override=true";
+  Calibration first = Measured();
+  first.max_slots = 3;
+  Calibration second = Measured();
+  second.max_slots = 5;
+  Calibration third = Measured();
+  third.max_slots = 7;
+  ASSERT_TRUE(llmp::runtime::WriteCalibration(state, Key(), first).has_value());
+  ASSERT_TRUE(llmp::runtime::WriteCalibration(state, plain, second).has_value());
+  ASSERT_TRUE(llmp::runtime::WriteCalibration(state, other, third).has_value());
+  EXPECT_EQ(
+      llmp::runtime::ReadCalibration(state, Key()).calibration.value_or(Calibration{}).max_slots,
+      3U);
+  EXPECT_EQ(
+      llmp::runtime::ReadCalibration(state, plain).calibration.value_or(Calibration{}).max_slots,
+      5U);
+  EXPECT_EQ(
+      llmp::runtime::ReadCalibration(state, other).calibration.value_or(Calibration{}).max_slots,
+      7U);
+  EXPECT_FALSE(fs::exists(state / "calibration" / (Key().artifact + ".json")));
+  CalibrationKey rebuilt = Key();
+  rebuilt.build += ".1";
+  EXPECT_EQ(llmp::runtime::CalibrationPath(state, rebuilt),
+            llmp::runtime::CalibrationPath(state, Key()));
+  EXPECT_FALSE(llmp::runtime::ReadCalibration(state, rebuilt).calibration.has_value());  // stale
+  std::size_t entries = 0;
+  for (const auto& entry : fs::directory_iterator(state / "calibration")) {
+    (void)entry;
+    ++entries;
+  }
+  EXPECT_EQ(entries, 3U);
   fs::remove_all(state, error);
 }
 

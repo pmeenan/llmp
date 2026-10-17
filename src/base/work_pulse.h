@@ -34,13 +34,26 @@ class WorkPulse {
     cancel_.store(true, std::memory_order_release);
   }
   void Clear() { cancel_.store(false, std::memory_order_release); }
+  // The cancellations the work has seen at a checkpoint that stopped it: a
+  // watcher that clears its cancellation before the work saw it would let
+  // the work go on (it beats before it looks).
+  std::uint64_t seen() const { return seen_.load(std::memory_order_acquire); }
 
   // The working thread's.
   void Beat() { beats_.fetch_add(1, std::memory_order_relaxed); }
+  // At a checkpoint: whether to stop, recorded as seen when so.
+  bool Stopping() {
+    if (!cancelled()) {
+      return false;
+    }
+    seen_.store(cancels(), std::memory_order_release);
+    return true;
+  }
 
  private:
   std::atomic<std::uint64_t> beats_{0};
   std::atomic<std::uint64_t> cancels_{0};
+  std::atomic<std::uint64_t> seen_{0};
   std::atomic<bool> cancel_{false};
 };
 
@@ -62,7 +75,7 @@ inline bool Pulse() {
     return true;
   }
   pulse->Beat();
-  return !pulse->cancelled();
+  return !pulse->Stopping();
 }
 
 }  // namespace llmp::base

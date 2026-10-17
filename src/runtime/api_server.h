@@ -492,6 +492,13 @@ class Server {
   void OnEvent(Connection& c, std::uint32_t events);
   void OnReadable(Connection& c);
   void OnRequest(Connection& c, http::Request request);
+  // The checks a request's head decides (Host, Origin, route, method, media
+  // type): the refusal, if any, before its body is read or charged.
+  struct HeadRefusal {
+    Error error;
+    std::vector<std::string> extra;  // response headers (Allow)
+  };
+  std::optional<HeadRefusal> Screen(const Connection& c, const http::Request& request) const;
   // A parsed body's request (inline, or from the parse thread): admitted to
   // the queue, or refused.
   void OnParsed(Connection& c, Parse& parse);
@@ -545,9 +552,11 @@ class Server {
   // back to the system.
   void TrimIfOwed();
   void Progress(Phase next, double expected);
-  // Progress (with mutex_ held): the watchdog's beat, and a recovery's log
-  // line; true when the backend recovered (on_health is then owed).
-  bool BeatLocked(Phase next, double expected);
+  // Progress (with mutex_ held): the watchdog's beat; when the backend
+  // recovered, the recovery's log line (Recovered, without mutex_, logs it
+  // and calls on_health).
+  std::optional<std::string> BeatLocked(Phase next, double expected);
+  void Recovered(const std::optional<std::string>& line) const;
   // Backpressure: waits while `paused` (called with mutex_ held) holds and
   // the runtime is not stopping, the watchdog seeing a pause meanwhile,
   // then resumes the phase it saw before. False when the runtime stops.
@@ -558,7 +567,9 @@ class Server {
   // with stall_fails the active requests end and the queue is refused
   // (connections to flush in `ended`; FailStalledLocked, mutex_ held).
   void WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& ended);
-  void FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>& ended);
+  // Their log lines go to `lines`, written once mutex_ is released.
+  void FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>& ended,
+                         std::vector<std::string>& lines);
 
   // Any thread.
   void Log(std::string_view line) const;

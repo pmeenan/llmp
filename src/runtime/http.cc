@@ -230,7 +230,9 @@ std::expected<Request, Failure> ParseHead(std::string_view full, const Limits& l
     if (!EqualsIgnoringCase(*expect, "100-continue")) {
       return Fail(417, "only Expect: 100-continue is understood");
     }
-    request.expect_continue = true;
+    // An HTTP/1.0 client knows no interim responses: its expectation is
+    // ignored (RFC 9110, section 10.1.1).
+    request.expect_continue = !request.http10;
   }
   return request;
 }

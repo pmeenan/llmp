@@ -9,9 +9,11 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -223,19 +225,6 @@ std::expected<void, std::string> Pinned(const Approval& approval, const spec::Mo
   return {};
 }
 
-// The kept GGUF metadata (a single file's, or the first shard's); empty
-// when none.
-std::string KeptGguf(const artifact::Artifact& a) {
-  std::string kv;
-  for (const artifact::ListedFile& f : a.files()) {
-    if (f.role == artifact::FileRole::kSourceMetadata && f.path.starts_with("meta/") &&
-        f.path.ends_with(".kv.gguf") && (kv.empty() || f.path.contains("-00001-of-"))) {
-      kv = f.path.substr(5);
-    }
-  }
-  return kv;
-}
-
 // GGUF's bool type.
 constexpr std::uint32_t kGgufBool = 7;
 
@@ -285,6 +274,42 @@ std::expected<std::vector<spec::SourceValue>, std::string> KeptValues(
 
 }  // namespace
 
+std::string KeptGguf(const artifact::Artifact& a) {
+  std::string kv;
+  for (const artifact::ListedFile& f : a.files()) {
+    if (f.role == artifact::FileRole::kSourceMetadata && f.path.starts_with("meta/") &&
+        f.path.ends_with(".kv.gguf") && (kv.empty() || f.path.contains("-00001-of-"))) {
+      kv = f.path.substr(5);
+    }
+  }
+  return kv;
+}
+
+std::expected<void, std::string> ReadPlaced(const artifact::Artifact& artifact,
+                                            const artifact::Placement& place,
+                                            const std::function<std::expected<void, std::string>(
+                                                std::uint64_t, std::span<const std::byte>)>& each) {
+  const auto& group = artifact.groups()[place.group];
+  const auto& shard = artifact.shards()[group.shard];
+  const auto begin = shard.data_offset.value() + group.offset.value() + place.offset.value();
+  const auto end = begin + place.bytes.value();
+  const auto shard_end = shard.data_offset.value() + shard.data_bytes.value();
+  auto file = artifact.OpenShardForDirectRead(group.shard);
+  if (!file) return std::unexpected(file.error().ToString());
+  alignas(4096) std::array<std::byte, 4096> window{};
+  for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
+    if (at > shard_end || window.size() > shard_end - at)
+      return std::unexpected("a direct read passes its shard");
+    if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
+      return std::unexpected(std::format("a direct read failed: errno {}", read.error()));
+    const auto first = std::max(at, begin), last = std::min(at + window.size(), end);
+    if (auto taken = each(first - begin, std::span(window).subspan(first - at, last - first));
+        !taken)
+      return taken;
+  }
+  return {};
+}
+
 // Size anchors for the stored specs' transient settings reads. No graph,
 // tensor payload or execution owner is constructed here.
 static_assert(sizeof(spec::Param) <= 128 && sizeof(spec::WeightBinding) <= 128);
@@ -298,25 +323,14 @@ std::expected<std::vector<T>, std::string> ReadRecipeIntegers(const artifact::Ar
   auto place = artifact.ResourcePlacement(resource);
   if (!place || place->bytes.value() != count * sizeof(T))
     return std::unexpected("integer recipe metadata has an inconsistent byte count");
-  const auto& group = artifact.groups()[place->group];
-  const auto& shard = artifact.shards()[group.shard];
-  const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
-  const auto end = begin + place->bytes.value();
-  auto file = artifact.OpenShardForDirectRead(group.shard);
-  if (!file) return std::unexpected(file.error().ToString());
   std::vector<T> out(count);
-  alignas(4096) std::array<std::byte, 4096> window{};
-  for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
-    if (at > shard.data_offset.value() + shard.data_bytes.value() ||
-        window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
-      return std::unexpected("integer recipe metadata's direct read passes its shard");
-    if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
-      return std::unexpected(
-          std::format("reading integer recipe metadata: errno {}", read.error()));
-    const auto first = std::max(at, begin), last = std::min(at + window.size(), end);
-    std::memcpy(reinterpret_cast<std::byte*>(out.data()) + first - begin,
-                window.data() + first - at, last - first);
-  }
+  auto read = ReadPlaced(
+      artifact, *place,
+      [&](std::uint64_t at, std::span<const std::byte> bytes) -> std::expected<void, std::string> {
+        std::memcpy(reinterpret_cast<std::byte*>(out.data()) + at, bytes.data(), bytes.size());
+        return {};
+      });
+  if (!read) return std::unexpected("reading integer recipe metadata: " + read.error());
   return out;
 }
 
@@ -517,15 +531,11 @@ std::expected<std::vector<spec::SourceValue>, std::string> ComponentDrafterValue
   return KeptValues(drafter, *mapping);
 }
 
-std::expected<void, std::string> ComponentDrafterEnvelope(const artifact::Artifact& drafter,
-                                                          const spec::Envelope& envelope) {
+std::expected<void, std::string> ComponentDrafterEnvelope(const spec::Envelope& envelope) {
+  // An approved drafter's envelope is its settings' default (model_settings
+  // .cc), not a bound here: an override past it is served, with a warning.
   if (envelope.context == 0 || envelope.slots == 0)
     return Refused("drafter execution envelope must have non-zero context and slots");
-  const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
-  if (d != nullptr) {
-    if (envelope.context > d->max_context || envelope.slots > d->max_slots)
-      return Refused(std::format("execution envelope exceeds the approved drafter {}", d->name));
-  }
   return {};
 }
 
@@ -575,16 +585,23 @@ std::expected<std::int64_t, std::string> KeptInteger(const artifact::Artifact& a
 }
 
 std::expected<void, std::string> CheckComposedAdmission(const spec::ModelSpec& composed,
+                                                        const artifact::Artifact& target,
                                                         const artifact::Artifact& drafter) {
   if (auto served = RequireServedVersion(drafter); !served) return Refused(served.error());
-  const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
-  if (d != nullptr) {
-    if (!d->drafter) return Refused("drafter source identity has no approved v1 execution profile");
-    return Pinned(*d, composed);
-  }
   if (composed.stages.size() < 2 || composed.stages.back().role != spec::StageRole::kDrafter)
     return Refused("composed spec has no drafter stage");
-  return {};
+  const Approval* d = FindApproval(drafter.model().architecture, drafter.sources());
+  if (d == nullptr) return {};
+  if (!d->drafter) return Refused("drafter source identity has no approved v1 execution profile");
+  // A pinned drafter's own identity is its inventory (its source receipts,
+  // container, folds and native tensors: CheckComponentDrafterAdmission).
+  // Its pinned composition is its approved pairing's: beside its approved
+  // target the composition is that one exactly; beside another target
+  // (unpinned, of an architecture it drafts for: ComponentDrafterValues) it
+  // is validated structurally, as an unpinned drafter's is.
+  const Approval* t = FindApproval(target.model().architecture, target.sources());
+  if (t == nullptr || t->name != d->target) return {};
+  return Pinned(*d, composed);
 }
 
 std::expected<void, std::string> CheckComponentDrafterAdmission(
@@ -669,8 +686,7 @@ std::expected<void, std::string> CheckComponentAdmission(
   return {};
 }
 
-std::expected<void, std::string> CheckComponentArtifactAdmission(
-    const artifact::Artifact& artifact) {
+std::expected<void, std::string> CheckArtifactPrerequisites(const artifact::Artifact& artifact) {
   if (auto served = RequireServedVersion(artifact); !served) return Refused(served.error());
   if (!OriginsWellFormed(artifact.sources()))
     return Refused("artifact source receipts are empty or duplicate");
@@ -680,20 +696,35 @@ std::expected<void, std::string> CheckComponentArtifactAdmission(
         artifact.resources().size() != approval->tensors - approval->arrays ||
         artifact.expert_arrays().size() != approval->arrays)
       return Refused("the approved artifact requires its native tensor inventory and transforms");
-  } else {
-    const spec::Mapping* mapping = spec::FindMapping(artifact.model().architecture);
-    if (mapping == nullptr) return Refused("architecture has no component mapping");
-    auto source = spec::SourceOf(artifact);
-    if (!source) return Refused(source.error());
-    if (mapping->role == spec::StageRole::kDrafter) {
-      if (auto ok = CheckComponentDrafterAdmission(*source, artifact.sources()); !ok) return ok;
-    } else {
-      auto model = spec::StoredSpec(artifact);
-      if (!model) return Refused(model.error());
-      if (auto ok = CheckComponentAdmission(*model, *source, artifact.sources()); !ok) return ok;
-    }
+  } else if (spec::FindMapping(artifact.model().architecture) == nullptr) {
+    return Refused("architecture has no component mapping");
   }
   return CheckScaleAtomSlots(artifact);
+}
+
+std::expected<void, std::string> CheckComponentArtifactAdmission(
+    const artifact::Artifact& artifact) {
+  const spec::Mapping* mapping = spec::FindMapping(artifact.model().architecture);
+  if (mapping != nullptr && mapping->role == spec::StageRole::kDrafter) {
+    auto admitted = ReadComponentDrafterAdmission(artifact);
+    if (!admitted) return std::unexpected(admitted.error());
+    return {};
+  }
+  auto admitted = ReadComponentAdmission(artifact);
+  if (!admitted) return std::unexpected(admitted.error());
+  return {};
+}
+
+std::expected<ComponentDrafterAdmission, std::string> ReadComponentDrafterAdmission(
+    const artifact::Artifact& drafter) {
+  if (auto checked = CheckArtifactPrerequisites(drafter); !checked)
+    return std::unexpected(checked.error());
+  auto source = spec::SourceOf(drafter);
+  if (!source) return Refused(source.error());
+  if (auto checked = CheckComponentDrafterAdmission(*source, drafter.sources()); !checked)
+    return std::unexpected(checked.error());
+  return ComponentDrafterAdmission{std::move(*source),
+                                   FindApproval(drafter.model().architecture, drafter.sources())};
 }
 
 std::expected<void, std::string> CheckScaleAtomSlots(const artifact::Artifact& artifact) {
@@ -761,28 +792,28 @@ std::expected<void, std::string> CheckStoredHashTables(const artifact::Artifact&
           return Unexpected("stored hash-routing table has an inconsistent byte count");
         const auto& group = artifact.groups()[place->group];
         const auto& shard = artifact.shards()[group.shard];
-        const auto begin = shard.data_offset.value() + group.offset.value() + place->offset.value();
-        const auto end = begin + place->bytes.value();
-        if (begin % sizeof(std::int32_t))
+        if ((shard.data_offset.value() + group.offset.value() + place->offset.value()) %
+            sizeof(std::int32_t))
           return Unexpected("stored hash-routing table is unaligned");
-        auto file = artifact.OpenShardForDirectRead(group.shard);
-        if (!file) return Unexpected(file.error().ToString());
-        alignas(4096) std::array<std::byte, 4096> window{};
-        for (auto at = begin / window.size() * window.size(); at < end; at += window.size()) {
-          if (at > shard.data_offset.value() + shard.data_bytes.value() ||
-              window.size() > shard.data_offset.value() + shard.data_bytes.value() - at)
-            return Unexpected("stored hash-routing read exceeds its shard");
-          if (auto read = platform::TransferDirectFile(file->get(), at, window, false); !read)
-            return Unexpected(
-                std::format("reading stored hash-routing table: errno {}", read.error()));
-          for (auto offset = std::max(at, begin); offset < std::min(at + window.size(), end);
-               offset += sizeof(std::int32_t)) {
-            std::int32_t expert = 0;
-            std::memcpy(&expert, window.data() + offset - at, sizeof(expert));
-            if (expert < 0 || std::cmp_greater_equal(expert, *experts))
-              return Unexpected("stored hash-routing table names an invalid expert");
-          }
-        }
+        // Aligned: each window holds whole entries (4,096 is a multiple of 4).
+        bool invalid = false;
+        auto read =
+            ReadPlaced(artifact, *place,
+                       [&](std::uint64_t,
+                           std::span<const std::byte> bytes) -> std::expected<void, std::string> {
+                         for (std::size_t at = 0; at + sizeof(std::int32_t) <= bytes.size();
+                              at += sizeof(std::int32_t)) {
+                           std::int32_t expert = 0;
+                           std::memcpy(&expert, bytes.data() + at, sizeof(expert));
+                           if (expert < 0 || std::cmp_greater_equal(expert, *experts)) {
+                             invalid = true;
+                             return std::unexpected("invalid");
+                           }
+                         }
+                         return {};
+                       });
+        if (invalid) return Unexpected("stored hash-routing table names an invalid expert");
+        if (!read) return Unexpected("reading stored hash-routing table: " + read.error());
       }
     }
   }
@@ -791,7 +822,7 @@ std::expected<void, std::string> CheckStoredHashTables(const artifact::Artifact&
 
 std::expected<ComponentAdmission, std::string> ReadComponentAdmission(
     const artifact::Artifact& artifact) {
-  if (auto checked = CheckComponentArtifactAdmission(artifact); !checked)
+  if (auto checked = CheckArtifactPrerequisites(artifact); !checked)
     return std::unexpected(checked.error());
   auto model = spec::StoredSpec(artifact);
   if (!model) return Refused(model.error());
@@ -901,25 +932,36 @@ std::expected<const spec::PolicyRule*, std::string> ApprovedRule(const Approval&
   return *rule;
 }
 
+bool WithinApprovedEnvelope(const Approval& approval, const spec::Envelope& envelope) {
+  return envelope.context <= approval.max_context && envelope.slots <= approval.max_slots &&
+         (approval.wide_context == 0 || envelope.context <= approval.wide_context ||
+          envelope.slots == 1);
+}
+
 std::expected<spec::PolicyRule, std::string> ComponentAdmissionPolicy(
     const spec::ModelSpec& model, const spec::Source& source,
     std::span<const artifact::Source> origins, const spec::Envelope& envelope) {
   if (auto checked = CheckComponentAdmission(model, source, origins); !checked)
     return std::unexpected(checked.error());
+  return AdmittedPolicy(model, source, FindApproval(source.architecture, origins), envelope);
+}
+
+std::expected<spec::PolicyRule, std::string> AdmittedPolicy(const spec::ModelSpec& model,
+                                                            const spec::Source& source,
+                                                            const Approval* approval,
+                                                            const spec::Envelope& envelope) {
+  // The stored stage context is a real bound (the spec's position tables).
   if (envelope.context == 0 || envelope.context > model.stages.front().context ||
       envelope.slots == 0)
     return Refused("execution envelope exceeds the stored stage context or has zero slots");
-  const Approval* approval = FindApproval(source.architecture, origins);
   if (approval != nullptr) {
-    if (envelope.context > approval->max_context || envelope.slots > approval->max_slots)
-      return Refused("execution envelope exceeds the approved component profile");
-    if (approval->wide_context != 0 && envelope.context > approval->wide_context &&
-        envelope.slots != 1)
-      return Refused(std::format("{} wider context requires exactly one owner", approval->label));
+    // The approved envelope is a qualified default (D-119; the settings
+    // resolve within it unless overridden, with a warning), not a refusal:
+    // past it, no approved rule is promised and the engine's default plans.
     auto rule = ApprovedRule(*approval, envelope);
     if (!rule) return std::unexpected(rule.error());
     if (*rule != nullptr) return **rule;
-    if (approval->policy == ApprovedPolicy::kMapping)
+    if (approval->policy == ApprovedPolicy::kMapping && WithinApprovedEnvelope(*approval, envelope))
       return Refused("no approved policy for this execution envelope");
     return spec::PolicyRule{};
   }

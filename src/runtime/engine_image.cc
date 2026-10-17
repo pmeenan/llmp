@@ -68,9 +68,22 @@ struct EngineImage::State {
     std::uint32_t stage = 0;
     bool operator==(const Key&) const = default;
   };
+  // The plan cache's index: the digests' first words and the stage (the
+  // backend compared with the whole key).
+  struct KeyHash {
+    std::size_t operator()(const Key& key) const noexcept {
+      std::uint64_t h = key.stage;
+      for (const base::Sha256Digest* d : {&key.composition, &key.graph}) {
+        std::uint64_t word = 0;
+        for (std::size_t i = 0; i < 8; ++i) word |= std::uint64_t{(*d)[i]} << (8U * i);
+        h = (h * 0x9e3779b97f4a7c15ULL) ^ word;
+      }
+      return static_cast<std::size_t>(h);
+    }
+  };
   // Two runs a plan: a cold run's, and a warm run's (a run right after a
   // run of the same plan, skipping its prologue and invariant inputs).
-  using Plans = en::BasicPlanCache<Key, en::StepPlanned, 2, en::StepPlanRuns>;
+  using Plans = en::BasicPlanCache<Key, en::StepPlanned, 2, en::StepPlanRuns, KeyHash>;
   struct Model {
     EngineImageParts parts;
     en::RunnerMemory memory;

@@ -182,6 +182,13 @@ StateKeeper::StateKeeper(std::size_t threads, Log log)
       worker_([this](const std::stop_token& stop) { Work(stop); }) {}
 
 StateKeeper::~StateKeeper() {
+  {
+    const std::scoped_lock lock(mutex_);
+    // A stop-aware wait still returns true with stop requested when its
+    // predicate is true. Remove queued records explicitly: only the one
+    // the worker already owns may finish during destruction.
+    queue_.clear();
+  }
   worker_.request_stop();
   ready_.notify_all();
   if (worker_.joinable()) {
@@ -205,30 +212,44 @@ std::size_t StateKeeper::AddModel(int directory) {
 }
 
 void StateKeeper::Invalidate(std::size_t model, std::uint32_t slot) {
-  const std::scoped_lock lock(mutex_);
-  SlotState& state = slots_[{model, slot}];
-  ++state.sequence;
-  invalidations_.fetch_add(1, std::memory_order_release);
-  // The worker may be yielding to prompt or swap work for a long time.
-  // Drop stale token/checkpoint copies now instead of retaining them until
-  // it catches up; the one it already owns still checks its sequence.
-  stats_.stale += std::erase_if(
-      queue_, [&](const Job& job) { return job.model == model && job.record.slot == slot; });
-  if (queue_.empty() && !busy_) {
-    idle_.notify_all();
-  }
-  if (state.kept) {
-    const std::string name = kept::RecordFileName(slot);
-    if (auto removed = platform::RemovePrivate(models_.at(model), name.c_str()); !removed) {
-      // A record that cannot be removed would describe a file about to
-      // change: say so (the next start refuses it if its digests no longer
-      // match, as they then will not), and try again at the next
-      // Invalidate.
-      Say(std::format("a kept conversation's record {} could not be removed: {}", name,
-                      Errno(removed.error())));
-      return;
+  bool remove = false;
+  {
+    const std::scoped_lock lock(mutex_);
+    SlotState& state = slots_[{model, slot}];
+    ++state.sequence;
+    invalidations_.fetch_add(1, std::memory_order_release);
+    // The worker may be yielding to prompt or swap work for a long time.
+    // Drop stale token/checkpoint copies now instead of retaining them
+    // until it catches up; the one it already owns still checks its
+    // sequence.
+    stats_.stale += std::erase_if(
+        queue_, [&](const Job& job) { return job.model == model && job.record.slot == slot; });
+    if (queue_.empty() && !busy_) {
+      idle_.notify_all();
     }
+    // A record on disk, or one the worker is renaming into place now (it
+    // removes that one again itself once it sees this Invalidate).
+    remove = state.kept || state.committing;
     state.kept = false;
+  }
+  if (!remove) {
+    return;
+  }
+  // Removed off the lock: a drive that holds the removal holds neither the
+  // worker nor a drain (the last resort's, which has a deadline). Only the
+  // driver calls Invalidate and Keep, so no record of a later Keep can be
+  // put in place before this returns.
+  const std::string name = kept::RecordFileName(slot);
+  if (auto removed = platform::RemovePrivate(models_.at(model), name.c_str()); !removed) {
+    {
+      // A record that cannot be removed would describe a file about to
+      // change: tried again at the next Invalidate (the next start refuses
+      // it if its digests no longer match, as they then will not).
+      const std::scoped_lock lock(mutex_);
+      slots_[{model, slot}].kept = true;
+    }
+    Say(std::format("a kept conversation's record {} could not be removed: {}", name,
+                    Errno(removed.error())));
   }
 }
 
@@ -263,7 +284,12 @@ bool StateKeeper::Kept(std::size_t model, std::uint32_t slot) const {
 
 bool StateKeeper::Drain(Clock::time_point deadline) {
   draining_.store(true, std::memory_order_release);
-  std::unique_lock lock(mutex_);
+  // The lock with the deadline too: nothing waits on a drive under it, but
+  // the last resort's drain must end at its deadline regardless.
+  std::unique_lock lock(mutex_, std::defer_lock);
+  if (!lock.try_lock_until(deadline)) {
+    return false;
+  }
   return idle_.wait_until(lock, deadline, [this] { return queue_.empty() && !busy_; });
 }
 
@@ -277,9 +303,6 @@ void StateKeeper::Unquiet() {
 
 bool StateKeeper::GoOn(const Job& job, std::uint64_t seen, const std::stop_token& stop) {
   for (;;) {
-    if (stop.stop_requested()) {
-      return false;
-    }
     if (invalidations_.load(std::memory_order_acquire) != seen) {
       const std::scoped_lock lock(mutex_);
       const auto found = slots_.find({job.model, job.record.slot});
@@ -292,7 +315,10 @@ bool StateKeeper::GoOn(const Job& job, std::uint64_t seen, const std::stop_token
             .count();
     const bool quiet = quiet_.load(std::memory_order_acquire) > 0 ||
                        now < quiet_until_ns_.load(std::memory_order_acquire);
-    if (!quiet || draining_.load(std::memory_order_acquire)) {
+    // Stopping finishes the record being made, unyielding: one cut short
+    // would leave its slot's files (or its checkpoints') unlisted, and the
+    // next start removes what no record lists.
+    if (!quiet || draining_.load(std::memory_order_acquire) || stop.stop_requested()) {
       return true;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -357,7 +383,7 @@ bool StateKeeper::Hash(Job& job, std::uint64_t seen, const std::stop_token& stop
       const std::optional<kept::Digest>& digest = digests[i];
       if (!digest.has_value()) {
         if (!go_on()) {
-          stale = true;  // stopped: invalidated, or the keeper stops
+          stale = true;  // stopped: invalidated
           return false;
         }
         why = std::format("{} could not be read whole", state.name);
@@ -401,6 +427,10 @@ bool StateKeeper::Hash(Job& job, std::uint64_t seen, const std::stop_token& stop
       c.digests.push_back(*digest);
     }
     if (c.digests.size() != digests.size()) {
+      if (!go_on()) {
+        stale = true;  // stopped: invalidated
+        return false;
+      }
       continue;  // a page could not be read whole: kept without it
     }
     {
@@ -462,7 +492,11 @@ void StateKeeper::Work(const std::stop_token& stop) {
         unwritten = written.error();
       }
     }
-    bool committed = false;
+    // Whether the record goes in place, decided under the lock; the rename
+    // itself, the removals and the log lines off it (a drive that holds
+    // one holds neither the driver's Invalidate nor a drain).
+    std::string line;
+    bool commit = false;
     {
       const std::scoped_lock lock(mutex_);
       SlotState& state = slots_[{job.model, job.record.slot}];
@@ -470,21 +504,39 @@ void StateKeeper::Work(const std::stop_token& stop) {
         ++stats_.stale;
       } else if (!hashed) {
         ++stats_.failed;
-        Say(std::format("a kept conversation's record was not written: {}", why));
+        line = std::format("a kept conversation's record was not written: {}", why);
       } else if (!prepared) {
         ++stats_.failed;
-        Say(std::format("a kept conversation's record {} was not written: {}", name,
-                        Errno(unwritten.value_or(EIO))));
-      } else if (auto renamed = platform::CommitPrivateReplacement(dir, name.c_str(), *prepared);
-                 !renamed) {
-        // Nothing moved (a rename is atomic, and never of a temporary file
-        // other than the one written): whatever stood there stands.
-        ++stats_.failed;
-        Say(std::format("a kept conversation's record {} was not written: {}", name,
-                        Errno(renamed.error())));
+        line = std::format("a kept conversation's record {} was not written: {}", name,
+                           Errno(unwritten.value_or(EIO)));
       } else {
-        // Under the lock, still current: an Invalidate from here on finds
-        // it and removes it.
+        // An Invalidate from here on removes the record (state.kept or
+        // this), and this worker removes it again if one came meanwhile.
+        state.committing = true;
+        commit = true;
+      }
+    }
+    bool committed = false;
+    bool undo = false;
+    if (commit) {
+      const auto renamed = platform::CommitPrivateReplacement(dir, name.c_str(), *prepared);
+      const std::scoped_lock lock(mutex_);
+      SlotState& state = slots_[{job.model, job.record.slot}];
+      state.committing = false;
+      if (!renamed) {
+        // Nothing moved (a rename is atomic, and never of a temporary file
+        // other than the one written, which the failure removed): whatever
+        // stood there stands.
+        ++stats_.failed;
+        line = std::format("a kept conversation's record {} was not written: {}", name,
+                           Errno(renamed.error()));
+      } else if (state.sequence != job.sequence) {
+        // An Invalidate came while it was renamed: its removal may have
+        // come first, so the record goes again here (before any later
+        // record of this slot, which only this worker writes).
+        ++stats_.stale;
+        undo = true;
+      } else {
         committed = true;
         state.kept = true;
         ++stats_.written;
@@ -498,16 +550,28 @@ void StateKeeper::Work(const std::stop_token& stop) {
         });
       }
     }
-    if (prepared && !committed) {
-      // Gone stale meanwhile (or the commit refused or failed, which
-      // removed it where it was the one written): no temporary file of
-      // this write stays; another's in its place is left to it.
+    if (!line.empty()) {
+      Say(line);
+    }
+    if (prepared && !commit) {
+      // Gone stale meanwhile: no temporary file of this write stays;
+      // another's in its place is left to it.
       platform::AbandonPrivateReplacement(dir, name.c_str(), *prepared);
+    }
+    if (undo) {
+      if (auto removed = platform::RemovePrivate(dir, name.c_str()); !removed) {
+        {
+          const std::scoped_lock lock(mutex_);
+          slots_[{job.model, job.record.slot}].kept = true;  // the next Invalidate tries again
+        }
+        Say(std::format("a kept conversation's record {} could not be removed: {}", name,
+                        Errno(removed.error())));
+      }
     }
     if (committed) {
       // The rename made durable, off the lock. An Invalidate racing it
-      // (between the rename and this sync, or during it) has already
-      // removed the record under the lock; a crash before either reaches
+      // (between the rename and this sync, or during it) has removed the
+      // record (it saw it kept, or being renamed); a crash before either reaches
       // the device can leave the record in place, describing a file a
       // later turn may have written since. That is the case of any
       // removal not yet on disk: the next start refuses the record if its

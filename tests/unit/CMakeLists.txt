@@ -541,14 +541,11 @@ add_executable(ggml_graph_test ggml_graph_test.cc)
 target_link_libraries(ggml_graph_test PRIVATE llmp_ggml_tensors)
 llmp_gtest(ggml_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-if(LLMP_CUDA)
-  # A runner's plan and graph caps (engine/planned.h), host-only.
-  add_executable(plan_cache_test plan_cache_test.cc)
-  target_link_libraries(plan_cache_test PRIVATE llmp_engine)
-  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(plan_cache_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  llmp_gtest(plan_cache_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-endif()
+# A runner's plan cache (engine/plan_cache.h) and prefill lookahead
+# (engine/prefill_lookahead.h), host-only, in every profile.
+add_executable(plan_cache_test plan_cache_test.cc)
+target_link_libraries(plan_cache_test PRIVATE llmp_engine_core llmp_fake_device_backend)
+llmp_gtest(plan_cache_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # The engine core (engine/CMakeLists.txt) on the fake device backend, in
 # every profile: the device runtime over host memory and the paging

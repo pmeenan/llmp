@@ -556,7 +556,7 @@ class PagedNode {
   std::size_t kept_pinned() const { return kept_pinned_.size(); }
 
   // Memory the node counts beside the catalog's extents (D-090 as amended
-  // 2026-10-02): the models' plans and graphs (engine/planned.h
+  // 2026-10-02): the models' plans and graphs (engine/plan_account.h
   // PlanAccount), host heap and driver memory. The first `floor` bytes of
   // them are what the start's guard sets apart outside the budget (what
   // one step of the largest model holds at once); the rest is charged

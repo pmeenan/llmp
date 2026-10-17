@@ -36,11 +36,15 @@ struct SourceReceipt {
   std::uint64_t bytes = 0;
 };
 
-// How the entry's planning policy is selected for an envelope: its
-// architecture's mapping's first rule whose gate (by `gates`, the source
-// keys the checkpoint holds as flags) and envelope hold, refused where none
-// does (kMapping) or the engine's default where none does (kMappingOrNone),
-// or always the engine's default (kNone).
+// How a target entry's planning policy is selected for an envelope: its
+// mapping's first rule whose gate (by `gates`, the source keys the
+// checkpoint holds as flags) and envelope hold, refused where none does
+// within its qualified envelope (kMapping) or the engine's default where
+// none does (kMappingOrNone), or always the engine's default (kNone): the
+// target's stage plans with exactly the rule admission chose
+// (runtime/component_admission.h AdmittedPolicy), or with none. A drafter
+// entry names no rule of its own (kNone): its stage plans with its drafting
+// mapping's rule for its values, or a shared route's (component_build.cc).
 enum class ApprovedPolicy : std::uint8_t { kMapping, kMappingOrNone, kNone };
 
 // The tensor formats an inventory admits: GGUF's data parts (GGML blocks,
@@ -89,8 +93,9 @@ struct Approval {
   std::string_view spec{};
   // A target whose output head must read its embedding's tensor.
   bool tied_output = false;
-  // The envelope: a stage context and owners at most, and above
-  // `wide_context` exactly one owner (0: none).
+  // The qualified envelope: a stage context and owners at most, and above
+  // `wide_context` exactly one owner (0: none). Its settings' default, not
+  // a bound: an override past it is served with a warning (D-119).
   std::uint32_t max_context = 0;
   std::uint32_t max_slots = 0;
   std::uint32_t wide_context = 0;

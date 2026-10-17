@@ -412,8 +412,23 @@ bool ModelRunner::Verifies(std::uint32_t slot, std::size_t stage) const {
 }
 
 pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
-  pl::PlanKey key = key_base_;
-  key.shape = shape;
+  pl::PlanKey key;
+  FillKey(shape, key);
+  return key;
+}
+
+void ModelRunner::FillKey(const pl::StepShape& shape, pl::PlanKey& key) const {
+  // Assigned field by field into `key`'s own storage (its segments and
+  // parameters keep their capacity): no allocation once it has grown.
+  key.spec = key_base_.spec;
+  key.patterns = key_base_.patterns;
+  key.policy = key_base_.policy;
+  key.partition = key_base_.partition;
+  key.shape.stage = shape.stage;
+  key.shape.phase = shape.phase;
+  key.shape.row_invariant = shape.row_invariant;
+  key.shape.read_align = shape.read_align;
+  key.shape.segments.assign(shape.segments.begin(), shape.segments.end());
   if (shape.stage < slots_.stages()) {
     // A stage whose steps read only part of their read cells (position
     // rings, min(their cells, the read cells)) or none keys only that part.
@@ -425,8 +440,8 @@ pl::PlanKey ModelRunner::KeyOf(const pl::StepShape& shape) const {
       }
     }
   }
-  key.parameters = source_->ShapeParameters(key.shape);
-  return key;
+  key.parameters.clear();
+  source_->AppendShapeParameters(key.shape, key.parameters);
 }
 
 Status ModelRunner::CheckRoutedWeightBindings(std::span<const kn::RoutedWeight> reads) const {
@@ -807,13 +822,22 @@ std::expected<std::vector<RunCopy>, std::string> ModelRunner::FeatureCopies(
                last > std::uint64_t{held.first} + held.count)) {
             return Error("a chunk tap does not hold the requested features");
           }
+          // The rows' cells are contiguous but for one wrap of a position
+          // ring: a row whose cell follows the last row's extends its copy,
+          // so a segment takes at most two (bits unchanged: the same bytes).
           for (std::uint32_t r = 0; r < seg.rows; ++r) {
             const std::uint64_t cell =
                 tap->contract.cells == model::CellRule::kPerRow
                     ? std::uint64_t{tap->contract.window_or_ratio} + from.position + r - held.first
                     : (std::uint64_t{from.position} + r) % tap->cells;
-            copies.push_back(
-                {to + (r * row_bytes), base + (cell * tap->contract.cell_bytes), row_bytes});
+            const std::uint64_t dst = to + (r * row_bytes);
+            const std::uint64_t src = base + (cell * tap->contract.cell_bytes);
+            if (r != 0 && copies.back()[0] + copies.back()[2] == dst &&
+                copies.back()[1] + copies.back()[2] == src) {
+              copies.back()[2] += row_bytes;
+            } else {
+              copies.push_back({dst, src, row_bytes});
+            }
           }
           break;
         }
@@ -1326,7 +1350,8 @@ std::expected<ModelRunner::Plans::Entry*, std::string> ModelRunner::Planned(
     const pl::StepShape& shape) {
   if (auto identity = source_->ExecutionIdentity(); !identity) return Error(identity.error());
   if (auto current = CheckRoutingSource(); !current) return Error(current.error());
-  if (Plans::Entry* found = plans_.Find(KeyOf(shape)); found != nullptr) return found;
+  FillKey(shape, lookup_key_);
+  if (Plans::Entry* found = plans_.Find(lookup_key_); found != nullptr) return found;
   const auto started = std::chrono::steady_clock::now();
   auto program = source_->Build(shape, AddressesFor(shape, false));
   if (!program) return Error(std::format("planning a step: {}", program.error()));
@@ -1384,8 +1409,22 @@ std::expected<void, StepRefusal> ModelRunner::Admit(const pl::Segment& segment, 
   } else {
     // A drafter's: never committed, and within one chunk bound of its
     // stage past the committed positions (a draft's proposals); from
-    // wherever its catch-up starts.
+    // wherever its catch-up starts, but reaching them: a catch-up runs
+    // through the committed positions, a pass sits at or past them (an
+    // anchored one at them), so a step wholly behind them (the last
+    // committed position not among its rows or before them) re-runs
+    // positions its state already holds and drafts from none. A drafter
+    // with progress of its own (repeat-pending: its cache may trail the
+    // committed positions) runs exactly its owned schedule's rows, which
+    // authorized them above.
     if (advance) return Refused("a drafter's step never commits positions", true, slot);
+    if (slots_.progress(slot, stage) == nullptr &&
+        std::uint64_t{segment.past} + segment.rows < positions) {
+      return Refused(std::format("slot {}'s draft rows end at {}, behind its {} committed "
+                                 "positions",
+                                 slot, std::uint64_t{segment.past} + segment.rows, positions),
+                     true, slot);
+    }
     if (std::uint64_t{segment.past} + segment.rows >
         std::uint64_t{positions} + slots_.layout(stage).max_rows) {
       return Refused(std::format("slot {}'s draft rows end past {} positions and its stage's {} "
@@ -1742,18 +1781,20 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
   // cached ones protected (found) before any optional funding.
   const StepAhead& ahead = request.ahead;
   std::array<Plans::Entry*, 8> ahead_cached{};
-  std::array<std::optional<pl::PlanKey>, 8> ahead_keys{};
+  // Each future's key in ahead_keys_ (storage reused), where it has one.
+  std::array<bool, 8> keyed{};
   std::array<bool, 8> distinct{};
   for (std::size_t k = 0; k < ahead.shapes.size(); ++k) {
     if (!ahead.shapes[k] || !CheckShape(*ahead.shapes[k])) continue;
-    ahead_keys[k] = KeyOf(*ahead.shapes[k]);
-    if (*ahead_keys[k] == entry.key) {
+    FillKey(*ahead.shapes[k], ahead_keys_[k]);
+    keyed[k] = true;
+    if (ahead_keys_[k] == entry.key) {
       ahead_cached[k] = &entry;
       continue;
     }
     bool duplicate = false;
     for (std::size_t prior = 0; prior < k; ++prior) {
-      if (ahead_keys[prior] && *ahead_keys[k] == *ahead_keys[prior]) {
+      if (keyed[prior] && ahead_keys_[k] == ahead_keys_[prior]) {
         ahead_cached[k] = ahead_cached[prior];
         duplicate = true;
         break;
@@ -1761,7 +1802,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
     if (duplicate) continue;
     distinct[k] = true;
-    ahead_cached[k] = plans_.Find(*ahead_keys[k]);
+    ahead_cached[k] = plans_.Find(ahead_keys_[k]);
   }
   StepPlanRuns& runs = entry.runs[0];
   // A recording made ahead holds the layout its plan's inputs predicted;
@@ -1770,7 +1811,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     runs.DropGraph();
     ++lookahead_.dropped_ahead;
   }
-  const bool repeats = ahead_keys[0].has_value() && *ahead_keys[0] == entry.key;
+  const bool repeats = keyed[0] && ahead_keys_[0] == entry.key;
   const bool first_capture =
       (config_.capture_first_phases & config_.capture_phases & PhaseBit(shape.phase)) != 0 &&
       programs_.runs().graphs() && runs.eager_runs == 0 && !runs.has_graph() &&
@@ -1926,6 +1967,10 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
     }
   }
   bool wrote = false, unknown = false;
+  // What of `wrote` is the step's own work (its program's queueing), apart
+  // from what its owners owed: owed work runs whole or stays owed, so a
+  // failure after it alone leaves their states as consistent as before.
+  bool own_wrote = false;
   // A verify's saves queued: work on the stream (the job never "not
   // started"), though they write no state.
   bool saves_queued = false;
@@ -2021,6 +2066,7 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
             unknown = true;
             return sc::JobResult::kUnknown;
           }
+          own_wrote = true;  // a drafter's tap cells: the step's own write
         }
         for (const auto& [to, from, bytes] : *features) {
           if (const providers::DeviceStatus copied =
@@ -2049,7 +2095,8 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
                                  ? QueueRoutedPrefix(native)
                                  : programs_.runs().Queue(runs, *copies, {}, program, *outputs,
                                                           capture, graph_stats_, native);
-        wrote = wrote || q.before || q.result.has_value();
+        own_wrote = own_wrote || q.before || q.result.has_value();
+        wrote = wrote || own_wrote;
         report.path = q.path;
         if (!q.result) {
           failure = q.result.error().detail;
@@ -2118,9 +2165,11 @@ std::expected<StepReport, StepRefusal> ModelRunner::RunStep(const StepRequest& r
       for (std::size_t stage = 0; stage < slots_.stages(); ++stage) {
         LiveState& live = slots_.live(s.slot, stage);
         // A verify whose saves were queued is undone whole; anything else
-        // the step may have written quarantines.
+        // the step's own work may have written quarantines (not what its
+        // owners owed, which ran whole: counting it would quarantine a
+        // state the failure left consistent).
         const auto sv = std::ranges::find(saving, &live, &Saving::live);
-        (void)live.Settle(sv != saving.end() && sv->queued, wrote && written(stage), unknown);
+        (void)live.Settle(sv != saving.end() && sv->queued, own_wrote && written(stage), unknown);
       }
       if (verify) slots_.ProgressVerifyFailed(s.slot);
     }

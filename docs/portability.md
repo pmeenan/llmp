@@ -367,9 +367,9 @@ value the audit recommended:
 
 | Concern | Now | Was |
 | --- | --- | --- |
-| Graph capture and replay (D-090) | `graph_runs.h`: `GraphRuns` (staging, input and output copies, capture, replay, the launch-by-launch fallback), `PlanRuns`, `GraphStats`, `RunPath` | two `QueueRuns`, `Stage`, graph eviction inline, path counting copied three times; `Dsv4Path` and `Dsv4GraphStats` (the harnesses keep those names as aliases) |
+| Graph capture and replay (D-090) | `step_runs.h`: `StepRuns` over step programs (staging, input and output copies, capture, replay, the launch-by-launch fallback), `StepPlanRuns`; `run_stats.h`: `GraphStats`, `RunPath` | two `QueueRuns`, `Stage`, graph eviction inline, path counting copied three times; `Dsv4Path` and `Dsv4GraphStats` (the harnesses keep those names as aliases) |
 | State spill and restore | `live_state.h`: `LiveState` regions, spill file, clear, read, places, quarantine | byte-identical `RegisterState`, `Clear`, `ReadState` in each |
-| Plans and shape caches | `planned.h`: `PlannedGraph`, one `PlaceAndPlan`, `BindPlanned`, `PlanCache`, `RoomForGraph`, `CheckCoverage` | four identical `Planned` structs, `PlaceAndPlan` and `PlanPlaced`, four planning bodies, three coverage checks |
+| Plans and shape caches | `plan_cache.h`: `BasicPlanCache` (indexed by the key's hash); `model_runner.h`: one plan per step shape over the step source; `coverage.h` | four identical `Planned` structs, `PlaceAndPlan` and `PlanPlaced`, four planning bodies, three coverage checks |
 | Speculation mechanics | `LiveState`'s snapshot: saves, `Accept`, the owed restore and a commit hook (Qwen3.8's kernel), `Rollback`, `Settle`; queued as the paging kernels' range copies on the job's stream, or through a GGML runner's launch context (`live_state_launch.h`) | the same semantics written twice |
 | Setup and teardown | `runner_memory.h` (own memory, staging) and `runner_resources.h` (cuBLAS, the launch context and registry), their ordered release; `ReleaseMapped` for the node, the runners and the FP16 and EXL3 harness runners | copied per runner |
 | Weight paging | `paged_weights.h` for every runner: host groups (DeepSeek's token table), `ExpertSlab`, per-extent groups, place checks; `LayOutSlab` moved here | DeepSeek's own `ReservePart`/`Register` |

@@ -427,8 +427,30 @@ struct SpillTrack {
     }
   }
   void Wrote(std::uint32_t from) { written_from = std::min(written_from, from); }
+  // Kept as disjoint ranges, by region and offset, joined where they
+  // overlap or touch: the same range recorded after every step (a drafter's
+  // control, after each accepted verify) holds one entry, however long the
+  // conversation runs without a spill, so the record and what scans it
+  // (LiveState::SplitExtents) stay bounded by the state's own ranges.
   void Wrote(std::span<const LiveState::Range> ranges) {
-    written.insert(written.end(), ranges.begin(), ranges.end());
+    for (const LiveState::Range& range : ranges) {
+      if (range.bytes != 0) {
+        written.push_back(range);
+      }
+    }
+    std::ranges::sort(written, {},
+                      [](const LiveState::Range& r) { return std::pair(r.region, r.offset); });
+    std::size_t kept = 0;
+    for (const LiveState::Range& range : written) {
+      if (kept != 0 && written[kept - 1].region == range.region &&
+          range.offset <= written[kept - 1].offset + written[kept - 1].bytes) {
+        LiveState::Range& last = written[kept - 1];
+        last.bytes = std::max(last.offset + last.bytes, range.offset + range.bytes) - last.offset;
+      } else {
+        written[kept++] = range;
+      }
+    }
+    written.resize(kept);
   }
 };
 

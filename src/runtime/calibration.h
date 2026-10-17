@@ -6,7 +6,9 @@
 // recorded under the state role and used by registration whenever the
 // record was measured for the same artifacts, device, driver and build.
 //
-// The record: `<state>/calibration/<artifact ID>.json`, one JSON object,
+// The record: `<state>/calibration/<artifact ID>-<configuration>.json`
+// (CalibrationName: the configuration is 16 hex digits of the SHA-256 of
+// the drafter and the settings measured with), one JSON object,
 //
 //   {"format":"llmp-model-calibration-v1",
 //    "artifact":"<64 hex>", "drafter":"<64 hex>" or null,
@@ -102,9 +104,13 @@ std::string BuildIdentity();
 // without calibration (MeasuredWith).
 CalibrationKey CalibrationKeyOf(const config::ModelEntry& entry, const ModelSettings& uncalibrated);
 
-// The record's path for `artifact` under the state role.
+// The record's file name for `key`: its artifact, and a digest of its
+// drafter and settings, so aliases of one artifact keep a record each; a
+// record for another device or build replaces the stale one in place.
+std::string CalibrationName(const CalibrationKey& key);
+// The record's path for `key` under the state role.
 std::filesystem::path CalibrationPath(const std::filesystem::path& state,
-                                      std::string_view artifact);
+                                      const CalibrationKey& key);
 
 // A record as found: the calibration in force, if any, and otherwise why
 // none ("none recorded", "stale: ...", or "refused: ..." for a corrupt or
@@ -117,8 +123,8 @@ struct CalibrationRead {
 
 // A record's text, checked against `key` (stale) and its format (refused).
 CalibrationRead ParseCalibration(std::string_view text, const CalibrationKey& key);
-// The record of `key.artifact` under `state` (a regular file; its owner
-// and mode are the filesystem's business).
+// The record of `key` under `state` (a regular file; its owner and mode
+// are the filesystem's business).
 CalibrationRead ReadCalibration(const std::filesystem::path& state, const CalibrationKey& key);
 // How `<state>/calibration`, if it exists, departs from owner-only (empty
 // if not): a note for the log, once per start (platform::PrivacyNote).

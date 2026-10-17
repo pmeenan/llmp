@@ -224,7 +224,7 @@ TEST(ComponentsQwen38Models, TheMtpDrafterComposesWithItsTargets) {
   auto spec = sp::ComposeDrafter(t->spec, sp::mappings::Qwen38Mapping(), *mapping, source, *values);
   ASSERT_TRUE(spec.has_value()) << spec.error();
   // Its approval pins this composition.
-  const auto approved = rt::CheckComposedAdmission(*spec, drafter->artifact);
+  const auto approved = rt::CheckComposedAdmission(*spec, t->opened.artifact, drafter->artifact);
   EXPECT_TRUE(approved.has_value()) << (approved ? "" : approved.error());
   const auto& tensors = t->opened.source.tensors;
   const std::array<std::span<const co::BoundTensor>, 2> artifacts{tensors, source.tensors};

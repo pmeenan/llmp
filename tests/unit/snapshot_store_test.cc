@@ -93,34 +93,34 @@ class SnapshotLlm final : public rt::Llm {
   llmp::execution::AdaptiveDepth decoding{3};
 
  protected:
-  rt::Status RunChunk(std::span<const std::int32_t> all, std::uint32_t, bool,
-                      std::vector<float>& logits) override {
+  rt::Status RunChunkFor(Branch&, std::span<const std::int32_t> all, std::uint32_t, bool,
+                         std::vector<float>& logits) override {
     position = static_cast<std::uint32_t>(all.size());
     logits = {1.0F, 0.0F};
     return {};
   }
-  rt::Status SpecStep(std::span<const std::int32_t>, std::uint32_t, std::uint32_t,
-                      std::vector<std::int32_t>&, std::vector<std::vector<float>>*,
-                      std::uint64_t&) override {
+  rt::Status SpecStepFor(Branch&, std::span<const std::int32_t>, std::uint32_t, std::uint32_t,
+                         std::vector<std::int32_t>&, std::vector<std::vector<float>>*,
+                         std::uint64_t&, bool*) override {
     return std::unexpected("no fake speculation");
   }
-  rt::Status Settle() override {
+  rt::Status SettleFor(Branch&) override {
     ++settlements;
     return {};
   }
-  rt::Status ClearState() override {
+  rt::Status ClearStateFor(Branch&) override {
     position = 0;
     return {};
   }
-  bool StateUsable() const override { return true; }
-  rt::Status PrepareDecodeState(std::uint32_t, std::uint32_t) override { return {}; }
-  std::uint64_t target_state_base() const override { return 0; }
-  std::uint64_t target_state_bytes() const override { return state_bytes.size(); }
-  std::uint64_t drafter_state_base() const override { return 0; }
-  std::uint64_t drafter_state_bytes() const override { return 0; }
-  std::uint64_t used_state_bytes() const override { return state_bytes.size(); }
-  std::vector<Range> used_state_ranges() const override { return ranges; }
-  rt::Status SaveUsedState(void* host, std::span<const Range> copied) override {
+  bool StateUsableFor(const Branch&) const override { return true; }
+  rt::Status PrepareDecodeStateFor(Branch&, std::uint32_t, std::uint32_t) override { return {}; }
+  std::uint64_t TargetStateBaseFor(const Branch&) const override { return 0; }
+  std::uint64_t TargetStateBytesFor(const Branch&) const override { return state_bytes.size(); }
+  std::uint64_t DrafterStateBaseFor(const Branch&) const override { return 0; }
+  std::uint64_t DrafterStateBytesFor(const Branch&) const override { return 0; }
+  std::uint64_t UsedStateBytesFor(const Branch&) const override { return state_bytes.size(); }
+  std::vector<Range> UsedStateRangesFor(const Branch&) const override { return ranges; }
+  rt::Status SaveUsedStateFor(Branch&, void* host, std::span<const Range> copied) override {
     ++saves;
     last_destination = host;
     if (fail_save) {
@@ -133,7 +133,7 @@ class SnapshotLlm final : public rt::Llm {
     if (count != 0) std::memcpy(host, state_bytes.data(), count);
     return {};
   }
-  rt::Status RestoreUsedState(void* host, std::span<const Range> copied) override {
+  rt::Status RestoreUsedStateFor(Branch&, void* host, std::span<const Range> copied) override {
     ++restores;
     if (fail_restore) return std::unexpected("synthetic restore has unknown completion");
     std::size_t count = 0;
@@ -142,15 +142,20 @@ class SnapshotLlm final : public rt::Llm {
     if (count != 0) std::memcpy(state_bytes.data(), host, count);
     return {};
   }
-  std::expected<std::vector<Range>, std::string> CheckpointRanges(std::uint32_t) const override {
+  std::expected<std::vector<Range>, std::string> CheckpointRangesFor(const Branch&,
+                                                                     std::uint32_t) const override {
     return ranges;
   }
-  rt::Status PrepareRestoreState(std::span<const Range>) override { return {}; }
-  rt::Status CopyCheckpointState(void*, std::span<const Range>, bool) override { return {}; }
-  std::uint32_t cursor() const override { return position; }
-  void set_cursor(std::uint32_t value) override { position = value; }
-  llmp::execution::AdaptiveDepth TurnDecodingState() const override { return decoding; }
-  void RestoreTurnDecodingState(const llmp::execution::AdaptiveDepth& value) override {
+  rt::Status PrepareRestoreStateFor(Branch&, std::span<const Range>) override { return {}; }
+  rt::Status CopyCheckpointStateFor(Branch&, void*, std::span<const Range>, bool) override {
+    return {};
+  }
+  std::uint32_t CursorFor(const Branch&) const override { return position; }
+  void SetCursorFor(Branch&, std::uint32_t value) override { position = value; }
+  llmp::execution::AdaptiveDepth TurnDecodingStateFor(const Branch&) const override {
+    return decoding;
+  }
+  void RestoreTurnDecodingStateFor(Branch&, const llmp::execution::AdaptiveDepth& value) override {
     decoding = value;
   }
 

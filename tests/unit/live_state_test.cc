@@ -1293,6 +1293,43 @@ TEST_F(LiveStateTest, AVerifysSnapshotRestoresTheRejectedRowsThenCommitsTheKept)
   EXPECT_FALSE(model_.live.Save(base, kSnapshot + 16, 0));
 }
 
+// SpillTrack's ranges stay disjoint: the same range recorded after every
+// step (a drafter's control, after each accepted verify, in a conversation
+// never spilled) is one entry, not one a step; overlapping and touching
+// ranges of a region join, another region's stay apart, empty ones are
+// none.
+TEST(SpillTrack, WrittenRangesStayBoundedAndDisjoint) {
+  using Range = en::LiveState::Range;
+  en::SpillTrack track;
+  const std::array<Range, 1> control = {{{.region = 1, .offset = 4096, .bytes = 64}}};
+  for (int step = 0; step < 100000; ++step) {
+    track.Wrote(control);
+  }
+  ASSERT_EQ(track.written.size(), 1U);
+  EXPECT_EQ(track.written[0].offset, 4096U);
+  EXPECT_EQ(track.written[0].bytes, 64U);
+  const std::array<Range, 5> more = {{{.region = 0, .offset = 100, .bytes = 50},
+                                      {.region = 0, .offset = 150, .bytes = 10},   // touches
+                                      {.region = 0, .offset = 120, .bytes = 100},  // overlaps
+                                      {.region = 1, .offset = 0, .bytes = 0},      // empty
+                                      {.region = 0, .offset = 1000, .bytes = 8}}};
+  track.Wrote(more);
+  ASSERT_EQ(track.written.size(), 3U);
+  EXPECT_EQ(track.written[0].region, 0U);
+  EXPECT_EQ(track.written[0].offset, 100U);
+  EXPECT_EQ(track.written[0].bytes, 120U);
+  EXPECT_EQ(track.written[1].offset, 1000U);
+  EXPECT_EQ(track.written[2].region, 1U);
+  EXPECT_EQ(track.written[2].offset, 4096U);
+  // Covering both of region 0's: one.
+  const std::array<Range, 1> cover = {{{.region = 0, .offset = 0, .bytes = 2048}}};
+  track.Wrote(cover);
+  ASSERT_EQ(track.written.size(), 2U);
+  EXPECT_EQ(track.written[0].bytes, 2048U);
+  track.Saved();
+  EXPECT_TRUE(track.written.empty());
+}
+
 // An incremental spill (SpillTrack) of a state whose last verify owes its
 // restore and commit: the owed work runs later as a job of its own
 // (Rollback, as the runners' ReadState and DiscardVerify and serving's

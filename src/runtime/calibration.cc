@@ -14,10 +14,12 @@
 #include <format>
 #include <limits>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 #include "base/build_info.h"
 #include "base/json.h"
+#include "base/sha256.h"
 #include "config/storage_roles.h"
 #include "platform/files.h"
 #include "platform/kept_files.h"
@@ -132,8 +134,18 @@ CalibrationKey CalibrationKeyOf(const config::ModelEntry& entry,
           .settings = MeasuredWith(uncalibrated)};
 }
 
-fs::path CalibrationPath(const fs::path& state, std::string_view artifact) {
-  return state / config::kCalibrationDirectory / std::format("{}.json", artifact);
+std::string CalibrationName(const CalibrationKey& key) {
+  // The drafter and the settings name the record too: two aliases of one
+  // artifact (another drafter, other settings) each keep their own. The
+  // device and the build do not: a record measured for another replaces
+  // its stale one rather than collecting beside it.
+  const std::string configuration = std::format("{}\n{}", key.drafter, key.settings);
+  const std::string digest = base::ToHex(base::Sha256().Update(configuration).Finish());
+  return std::format("{}-{}.json", key.artifact, std::string_view(digest).substr(0, 16));
+}
+
+fs::path CalibrationPath(const fs::path& state, const CalibrationKey& key) {
+  return state / config::kCalibrationDirectory / CalibrationName(key);
 }
 
 CalibrationRead ParseCalibration(std::string_view text, const CalibrationKey& key) {
@@ -247,7 +259,7 @@ CalibrationRead ParseCalibration(std::string_view text, const CalibrationKey& ke
 }
 
 CalibrationRead ReadCalibration(const fs::path& state, const CalibrationKey& key) {
-  const fs::path path = CalibrationPath(state, key.artifact);
+  const fs::path path = CalibrationPath(state, key);
   std::error_code error;
   if (!fs::exists(fs::symlink_status(path, error))) {
     return {.calibration = std::nullopt, .note = "none recorded", .refused = false};
@@ -337,9 +349,13 @@ std::expected<void, std::string> WriteCalibration(const fs::path& state, const C
   if (!dfd) {
     return std::unexpected(std::format("{}: {}", dir.string(), Errno(dfd.error())));
   }
-  const std::string name = std::format("{}.json", key.artifact);
+  const std::string name = CalibrationName(key);
   const auto written =
       platform::ReplacePrivateFile(*dfd, name.c_str(), FormatCalibration(calibration, key) + "\n");
+  // The record this artifact had under its earlier name (the artifact
+  // alone), which no build reads now.
+  const std::string earlier = std::format("{}.json", key.artifact);
+  std::ignore = platform::RemovePrivate(*dfd, earlier.c_str());
   (void)::close(*dfd);
   if (!written) {
     return std::unexpected(std::format("{}: {}", (dir / name).string(), Errno(written.error())));

@@ -467,6 +467,51 @@ TEST(ModelSettings, OwnerCanDisableConcurrentWaveLanes) {
   EXPECT_THAT(q.Summary(), HasSubstr("wave_lanes=false (override)"));
 }
 
+// An approved checkpoint's envelope is its default (D-119), not a bound: a
+// configuration that names no slots resolves within it, the basis saying
+// so; one that names more owners or a wider context than it qualified is
+// served, with a warning, never refused at setup for it. A pinned
+// checkpoint is no more restricted than an unpinned re-quant.
+TEST(ModelSettings, AnApprovedEnvelopeIsADefaultAnOverridePassesWithAWarning) {
+  const llmp::runtime::Approval approval{
+      .name = "test", .label = "Test", .max_context = 131072, .max_slots = 2};
+  const llmp::runtime::Approval wide{.name = "wide",
+                                     .label = "Wide",
+                                     .max_context = 262144,
+                                     .max_slots = 8,
+                                     .wide_context = 65536};
+  auto facts = Facts("qwen4exp");
+  facts.approval = &approval;
+  const ModelSettings defaults = Resolved(Model("q"), facts);
+  EXPECT_EQ(defaults.max_slots.value, 2U);
+  EXPECT_EQ(defaults.max_slots.source, SettingSource::kDerived);
+  EXPECT_THAT(defaults.max_slots.basis, HasSubstr("approved Test envelope"));
+  EXPECT_LE(defaults.context.value, 131072U);
+  EXPECT_TRUE(defaults.warnings.empty());
+  auto entry = Model("q");
+  entry.overrides["max_slots"] = std::int64_t{6};
+  entry.overrides["context"] = std::int64_t{200000};
+  const ModelSettings past = Resolved(entry, facts);
+  EXPECT_EQ(past.max_slots.value, 6U);
+  EXPECT_EQ(past.context.value, 200000U);
+  ASSERT_EQ(past.warnings.size(), 2U);
+  EXPECT_THAT(past.warnings[0], HasSubstr("context 200000 is past the approved Test envelope"));
+  EXPECT_THAT(past.warnings[1], HasSubstr("max_slots 6 is past the approved Test envelope"));
+  // The same without an approval: no warning, the same values.
+  facts.approval = nullptr;
+  const ModelSettings unpinned = Resolved(entry, facts);
+  EXPECT_EQ(unpinned.max_slots.value, 6U);
+  EXPECT_TRUE(unpinned.warnings.empty());
+  // Above a wide context, one owner by default.
+  facts.approval = &wide;
+  entry.overrides.erase("max_slots");
+  entry.overrides["context"] = std::int64_t{100000};
+  const ModelSettings alone = Resolved(entry, facts);
+  EXPECT_EQ(alone.max_slots.value, 1U);
+  EXPECT_THAT(alone.max_slots.basis, HasSubstr("one owner above 65536"));
+  EXPECT_TRUE(alone.warnings.empty());
+}
+
 TEST(ModelSettings, GemmaDefaultsAreBoundedAndExplicitlyUncalibrated) {
   auto entry = Model("gemma");
   auto facts = Facts("gemma4");

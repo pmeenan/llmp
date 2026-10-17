@@ -688,7 +688,7 @@ TEST(Qwen38EngineServingGpu, BadPaymentAndSlotCountRefuseBeforeModelEffects) {
     settings.architecture = "qwen4exp";
     settings.max_slots.value = count;
     auto build = rt::ComponentLlmBuild(life->server->node(), life->roles.installed, entry, 0,
-                                       {.target_policy = {}, .diagnostic_solo = true});
+                                       {.target_policy = {}, .shared_route = true});
     const auto refused = build(settings);
     ASSERT_FALSE(refused);
     EXPECT_EQ(refused.error(),
@@ -742,7 +742,7 @@ TEST(Qwen38EngineServingGpu, JoinedScoringRequiresExactOwnedTargetEnvelope) {
       auto declared = target;
       if (prompt) declared.uses.insert(declared.uses.begin(), en::NumericalUse::kPrompt);
       auto model = entry;
-      rt::ComponentBuildOptions options{.target_policy = std::nullopt, .diagnostic_solo = true};
+      rt::ComponentBuildOptions options{.target_policy = std::nullopt, .shared_route = true};
       switch (mutation) {
         case 1:
           settings.max_slots.value = 3;
@@ -772,7 +772,7 @@ TEST(Qwen38EngineServingGpu, JoinedScoringRequiresExactOwnedTargetEnvelope) {
           declared.phases.back().row_invariant = true;
           break;
         case 10:
-          options.diagnostic_solo = false;
+          options.shared_route = false;
           break;
         case 12:
           declared.uses.push_back(en::NumericalUse::kPromptCompanions);
@@ -841,7 +841,7 @@ TEST(Qwen38EngineServingGpu, JoinedMtpRequiresOwnedWholeCompositionBeforeArtifac
     ASSERT_TRUE(domain);
     rt::ComponentBuildOptions options{
         .target_policy = std::nullopt,
-        .diagnostic_solo = mutation != 6,
+        .shared_route = mutation != 6,
         .execution_domain = std::make_shared<const en::NumericalDomain>(std::move(*domain))};
     auto build = rt::ComponentLlmBuild(node, "/nonexistent-joined-mtp-control", model, 0,
                                        std::move(options));
@@ -871,13 +871,13 @@ TEST(Qwen38EngineServingGpu, DerivedServingDomainRequiresAnExplicitComposedReque
     settings.draft_rows.value = 2;
     settings.speculation.value = true;
     rt::ComponentBuildOptions options{
-        .target_policy = {}, .diagnostic_solo = true, .derive_execution_domain = true};
+        .target_policy = {}, .shared_route = true, .derive_execution_domain = true};
     switch (mutation) {
       case 1:
         options.derive_execution_domain = false;
         break;
       case 2:
-        options.diagnostic_solo = false;
+        options.shared_route = false;
         break;
       case 3:
         model.drafter.reset();
@@ -922,7 +922,7 @@ TEST(Qwen38EngineServingGpu, DerivedPlainDomainRequiresAnOrdinaryTargetRequest) 
     settings.prefill_chunk.value = 16;
     settings.speculation.value = false;
     rt::ComponentBuildOptions options{
-        .target_policy = {}, .diagnostic_solo = true, .derive_execution_domain = true};
+        .target_policy = {}, .shared_route = true, .derive_execution_domain = true};
     switch (mutation) {
       case 1:
         settings.max_slots.value = 1;
@@ -949,7 +949,7 @@ TEST(Qwen38EngineServingGpu, DerivedPlainDomainRequiresAnOrdinaryTargetRequest) 
         entry.drafter = std::string(64, '1');
         break;
       case 9:
-        options.diagnostic_solo = false;
+        options.shared_route = false;
         break;
       case 10:
         options.derive_execution_domain = false;
@@ -1283,7 +1283,7 @@ std::expected<rt::ComponentBuildOptions, std::string> Options(Owner& owner) {
   if (!domain) return std::unexpected(domain.error());
   rt::ComponentBuildOptions options{
       .target_policy = pl::ToText(*policy),
-      .diagnostic_solo = true,
+      .shared_route = true,
       .prefill_lookahead = false,
       .prepare_state = false,
       .state_only_prefill = false,

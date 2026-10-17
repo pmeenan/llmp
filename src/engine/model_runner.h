@@ -110,6 +110,13 @@ class StepSource {
   // Only baked graph dimensions that depend on positions; empty when
   // positions affect input data alone. Pure, also called by lookahead.
   virtual std::vector<std::uint64_t> ShapeParameters(const planner::StepShape&) const { return {}; }
+  // The same appended to `out`: a plan's lookup (every step's) reuses its
+  // key's storage rather than allocating. By default ShapeParameters'.
+  virtual void AppendShapeParameters(const planner::StepShape& shape,
+                                     std::vector<std::uint64_t>& out) const {
+    const std::vector<std::uint64_t> parameters = ShapeParameters(shape);
+    out.insert(out.end(), parameters.begin(), parameters.end());
+  }
   // Immutable numerical qualification for this stage's contribution to a
   // multi-owner repeat-pending submission (including target, companions,
   // head-bearing replay and continuation). The runner requires every
@@ -413,8 +420,10 @@ class ModelRunner final : public PagedModel {
   // - on the target (stage 0), advancing or not (a verify), from the
   //   slot's committed positions (`past` == SlotLifecycle::positions);
   // - on a drafter, never advancing (drafts commit nothing): from anywhere
-  //   its catch-up starts, ending within one chunk bound of its stage
-  //   (its layout's max_rows) past the committed positions; a drafter
+  //   its catch-up starts, ending at or past the committed positions (no
+  //   step wholly behind them, but for a repeat-pending drafter's owned
+  //   schedule) and within one chunk bound of its stage (its layout's
+  //   max_rows) past them; a drafter
   //   whose contract borrows the target's state only while the target's
   //   stage is borrowed (SlotLifecycle::Borrow).
   // Refusal names the slot; peers are untouched. RunStep admits a joined
@@ -494,7 +503,10 @@ class ModelRunner final : public PagedModel {
   std::expected<std::vector<RunCopy>, std::string> TapCarries(
       const planner::StepShape& shape) const;
 
+  // A step's plan key: KeyOf a new one (a plan being added), FillKey into
+  // one whose storage a lookup reuses (lookup_key_, ahead_keys_).
   planner::PlanKey KeyOf(const planner::StepShape& shape) const;
+  void FillKey(const planner::StepShape& shape, planner::PlanKey& key) const;
   kernels::Addresses AddressesFor(const planner::StepShape& shape, bool measuring) const;
   std::expected<void, std::string> CheckShape(const planner::StepShape& shape) const;
   // A plan found, or built, bound, checked and cached.
@@ -546,6 +558,8 @@ class ModelRunner final : public PagedModel {
   ProgramLifecycle programs_;
   Plans plans_;
   planner::PlanKey key_base_;
+  planner::PlanKey lookup_key_;                 // Planned's, reused
+  std::array<planner::PlanKey, 8> ahead_keys_;  // RunStep's futures', reused
 
   std::uint64_t activations_needed_ = 0;
   std::uint64_t pool_needed_ = 0;

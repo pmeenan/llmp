@@ -4,8 +4,7 @@
 // A runner's plans by key, whatever its kernels (docs/engine.md): the
 // cache every runner keeps per kind of plan, its charge to the node's
 // account (plan_account.h) and its plans and graphs as the reclaim order's
-// candidates. `Runs` is a plan's runs (GraphRuns' PlanRuns for the legacy
-// GGML plans, planned.h's PlanCache; StepPlanRuns for step programs,
+// candidates. `Runs` is a plan's runs (StepPlanRuns for step programs,
 // step_runs.h): it has_graph(), and holds that graph's `seconds` (what
 // capturing it again costs), its `measured_bytes` and DropGraph().
 // Part of the engine core.
@@ -17,8 +16,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -44,8 +45,10 @@ inline constexpr std::uint64_t kGraphNodeHostBytes = 16384;
 // and each graph before its capture (ChargeGraph; kGraphNodeHostBytes a
 // node its plan launches), and uncharged as it goes. Entries never move:
 // one stays put until it is dropped, and a step's own (used since its
-// PlanStep began) are never reclaimed.
-template <typename Key, typename Planned, std::size_t Variants, typename Runs>
+// PlanStep began) are never reclaimed. Found by an index of the keys'
+// hashes (`Hash`), each candidate's whole key compared only on a match.
+template <typename Key, typename Planned, std::size_t Variants, typename Runs,
+          typename Hash = std::hash<Key>>
 class BasicPlanCache final : public PlanCacheBase {
  public:
   static constexpr std::uint64_t kNever = std::numeric_limits<std::uint64_t>::max();
@@ -89,12 +92,14 @@ class BasicPlanCache final : public PlanCacheBase {
   void set_account(PlanAccount* account) { account_ = account; }
 
   Entry* Find(const Key& key) {
-    Settle();
-    for (const auto& e : entries_) {
+    const auto [first, last] = index_.equal_range(Hash{}(key));
+    for (auto it = first; it != last; ++it) {
+      Entry* e = it->second;
       if (e->key == key) {
+        Settle(*e);
         e->used = NextPlanUse();
         e->stamp = memory::StampUse();
-        return e.get();
+        return e;
       }
     }
     return nullptr;
@@ -116,6 +121,7 @@ class BasicPlanCache final : public PlanCacheBase {
     entry->serial = NextPlanUse();
     entry->used = NextPlanUse();
     entry->stamp = memory::StampUse();
+    index_.emplace(Hash{}(entry->key), entry.get());
     return *entries_.emplace_back(std::move(entry));
   }
   // Before capturing variant `variant` of `entry`'s plan: its graph's
@@ -126,7 +132,7 @@ class BasicPlanCache final : public PlanCacheBase {
   // searched for room at every step.
   static constexpr std::uint32_t kGraphRetryMost = 256;
   bool ChargeGraph(Entry& entry, std::size_t variant = 0) {
-    Settle();
+    Settle(entry);
     if (variant >= Variants || entry.charged[variant]) {
       return variant < Variants;
     }
@@ -152,6 +158,7 @@ class BasicPlanCache final : public PlanCacheBase {
     for (const auto& e : entries_) {
       bytes += e->host_bytes + Charged(*e);
     }
+    index_.clear();
     entries_.clear();
     if (account_ != nullptr) {
       account_->Uncharge(bytes);
@@ -248,6 +255,7 @@ class BasicPlanCache final : public PlanCacheBase {
       ++reclaimed_graphs_;
     } else if (kind == memory::ReclaimKind::kPlan) {
       bytes += e.host_bytes;
+      Unindex(e);
       entries_.erase(at);
       ++reclaimed_plans_;
     } else {
@@ -274,26 +282,53 @@ class BasicPlanCache final : public PlanCacheBase {
     std::uint64_t release = 0;
     const std::uint64_t since = PlanStepStart();
     for (const auto& e : entries_) {
-      for (std::size_t v = 0; v < Variants; ++v) {
-        const bool has = e->runs[v].has_graph();
-        if (e->charged[v] && !has && e->used < since) {
-          release += e->nodes * kGraphNodeHostBytes;
-          e->charged[v] = false;
-        } else if (!e->charged[v] && has) {
-          if (account_ != nullptr) {
-            (void)account_->Charge(e->nodes * kGraphNodeHostBytes, true);
-          }
-          e->charged[v] = true;
-        }
-      }
+      release += Reconcile(*e, since);
     }
     if (release != 0 && account_ != nullptr) {
       account_->Uncharge(release);
     }
   }
 
+  // Lookups and captures inspect only their own entry. Reclaim and cache
+  // growth still reconcile every entry, so stale graph charges elsewhere
+  // are released before memory pressure makes a decision about them.
+  void Settle(Entry& e) {
+    const std::uint64_t release = Reconcile(e, PlanStepStart());
+    if (release != 0 && account_ != nullptr) {
+      account_->Uncharge(release);
+    }
+  }
+
+  std::uint64_t Reconcile(Entry& e, std::uint64_t since) {
+    std::uint64_t release = 0;
+    for (std::size_t v = 0; v < Variants; ++v) {
+      const bool has = e.runs[v].has_graph();
+      if (e.charged[v] && !has && e.used < since) {
+        release += e.nodes * kGraphNodeHostBytes;
+        e.charged[v] = false;
+      } else if (!e.charged[v] && has) {
+        if (account_ != nullptr) {
+          (void)account_->Charge(e.nodes * kGraphNodeHostBytes, true);
+        }
+        e.charged[v] = true;
+      }
+    }
+    return release;
+  }
+
+  void Unindex(const Entry& e) {
+    const auto [first, last] = index_.equal_range(Hash{}(e.key));
+    for (auto it = first; it != last; ++it) {
+      if (it->second == &e) {
+        index_.erase(it);
+        return;
+      }
+    }
+  }
+
   PlanAccount* account_ = nullptr;
   std::vector<std::unique_ptr<Entry>> entries_;
+  std::unordered_multimap<std::size_t, Entry*> index_;  // by the key's hash
 };
 
 }  // namespace llmp::engine

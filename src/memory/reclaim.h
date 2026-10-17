@@ -175,7 +175,7 @@ ReclaimRun RunReclaim(std::uint64_t needed, bool partial, const GatherReclaim& g
 // Served::plan_floor_bytes), with those plans' graphs. Its next step then
 // finds them, so no reclaim (a capacity refusal's, a swap's, pressure from
 // outside) has it plan and capture them again at once. What a step under
-// way uses never is a candidate (engine/planned.h, PlanStep). A floor of 0
+// way uses never is a candidate (engine/plan_account.h, PlanStep). A floor of 0
 // keeps nothing.
 void ProtectFloor(std::vector<ReclaimCandidate>& candidates, std::uint64_t floor_bytes);
 

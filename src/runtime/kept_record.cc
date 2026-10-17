@@ -422,30 +422,15 @@ std::string Encode(const Record& r) {
   Key("slot", out);
   Number(r.slot, out);
   out += ',';
-  if (r.version == kOneFileVersion) {
-    const StateFile file = r.files.empty() ? StateFile{} : r.files.front();
-    FileFields(file.name, file.id, file.bytes, out);
-    out += ',';
-    Key("regions", out);
-    out += '[';
-    for (std::size_t i = 0; i < r.regions.size(); ++i) {
-      if (i != 0) {
-        out += ',';
-      }
-      Number(r.regions[i], out);
-    }
-    out += "],";
-  } else {
-    // A stage's region's bytes are its file's.
-    Key("stages", out);
-    out += '[';
-    for (std::size_t i = 0; i < r.files.size(); ++i) {
-      out += i == 0 ? "{" : ",{";
-      FileFields(r.files[i].name, r.files[i].id, r.files[i].bytes, out);
-      out += '}';
-    }
-    out += "],";
+  // A stage's region's bytes are its file's.
+  Key("stages", out);
+  out += '[';
+  for (std::size_t i = 0; i < r.files.size(); ++i) {
+    out += i == 0 ? "{" : ",{";
+    FileFields(r.files[i].name, r.files[i].id, r.files[i].bytes, out);
+    out += '}';
   }
+  out += "],";
   Key("extents", out);
   out += '[';
   for (std::size_t i = 0; i < r.extents.size(); ++i) {
@@ -552,23 +537,14 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
   }
   // The version first: it says which fields the record holds.
   const auto version = Get<std::uint32_t>(At(root, "version"), "its version");
-  if (!version || (*version != kOneFileVersion && *version != kStageFilesVersion)) {
-    return Bad(std::format("its version is not {} or {}, the ones this build reads",
-                           kOneFileVersion, kStageFilesVersion));
+  if (!version || *version != kVersion) {
+    return Bad(std::format("its version is not {}, the one this build reads", kVersion));
   }
-  const bool one_file = *version == kOneFileVersion;
-  if (auto exact =
-          one_file
-              ? Exactly(root, {"format",     "version",    "build",        "artifact",    "drafter",
-                               "layout",     "slot",       "file",         "device",      "inode",
-                               "generation", "file_bytes", "regions",      "extents",     "tokens",
-                               "cursor",     "decoding",   "used_unix_ms", "checkpoints", "digest"},
-                        "the record")
-              : Exactly(root,
-                        {"format", "version", "build", "artifact", "drafter", "layout", "slot",
-                         "stages", "extents", "tokens", "cursor", "decoding", "used_unix_ms",
-                         "checkpoints", "digest"},
-                        "the record");
+  if (auto exact = Exactly(
+          root,
+          {"format", "version", "build", "artifact", "drafter", "layout", "slot", "stages",
+           "extents", "tokens", "cursor", "decoding", "used_unix_ms", "checkpoints", "digest"},
+          "the record");
       !exact) {
     return std::unexpected(exact.error());
   }
@@ -602,8 +578,7 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
   r.cursor = *cursor;
   r.decoding = std::move(*decoding);
   r.used_unix_ms = *used;
-  // Its spill file and the regions it holds one after another (version 1),
-  // or a file a stage, whose region's bytes are its file's (version 2).
+  // A file a stage, whose region's bytes are its file's.
   const auto state_file = [](json::Value object,
                              std::string_view what) -> std::expected<StateFile, std::string> {
     auto name = GetString(At(object, "file"), what);
@@ -614,24 +589,7 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
     if (!bytes) return std::unexpected(bytes.error());
     return StateFile{.name = std::move(*name), .id = *id, .bytes = *bytes};
   };
-  if (one_file) {
-    auto file = state_file(root, "its file");
-    if (!file) {
-      return std::unexpected(file.error());
-    }
-    r.files.push_back(std::move(*file));
-    const json::Value regions = At(root, "regions");
-    if (!regions.is_array() || regions.size() == 0 || regions.size() > 64) {
-      return Bad("its regions are not an array of 1 to 64");
-    }
-    for (std::size_t i = 0; i < regions.size(); ++i) {
-      auto region = Get<std::uint64_t>(regions.at(i), "a region's bytes");
-      if (!region) {
-        return std::unexpected(region.error());
-      }
-      r.regions.push_back(*region);
-    }
-  } else {
+  {
     const json::Value stages = At(root, "stages");
     if (!stages.is_array() || stages.size() == 0 || stages.size() > kMostStages) {
       return Bad(std::format("its stages are not an array of 1 to {}", kMostStages));
@@ -691,7 +649,7 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
     r.tokens.push_back(static_cast<std::int32_t>(*token));
   }
   const json::Value checkpoints = At(root, "checkpoints");
-  if (!checkpoints.is_array() || checkpoints.size() > 64) {
+  if (!checkpoints.is_array() || checkpoints.size() > kMostCheckpoints) {
     return Bad("its checkpoints are not an array");
   }
   for (std::size_t i = 0; i < checkpoints.size(); ++i) {
@@ -704,32 +662,15 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
   return r;
 }
 
-std::uint64_t ExtentOffset(std::span<const std::uint64_t> regions, const Extent& extent) {
-  std::uint64_t base = 0;
-  for (std::uint32_t i = 0; i < extent.region && i < regions.size(); ++i) {
-    base += regions[i];
-  }
-  return base + (std::uint64_t{extent.index} * kExtentBytes);
-}
-
-ExtentAt ExtentPlace(const Record& record, const Extent& extent) {
-  if (record.version == kOneFileVersion) {
-    return {.file = 0, .offset = ExtentOffset(record.regions, extent)};
-  }
+ExtentAt ExtentPlace(const Record& /*record*/, const Extent& extent) {
   return {.file = extent.region, .offset = std::uint64_t{extent.index} * kExtentBytes};
 }
 
 std::vector<Place> UnlistedPlaces(const Record& record, std::size_t file) {
   std::vector<Place> places;
-  if (record.version == kOneFileVersion && file != 0) {
-    return places;
-  }
-  std::uint64_t base = 0;
-  for (std::size_t region = 0; region < record.regions.size(); ++region) {
-    // Version 2: file `file` holds its region alone, from 0.
-    if (record.version != kOneFileVersion && region != file) {
-      continue;
-    }
+  // File `file` holds its region alone, from 0.
+  if (file < record.regions.size()) {
+    const std::size_t region = file;
     const std::uint64_t bytes = record.regions[region];
     const std::uint64_t count = (bytes + kExtentBytes - 1) / kExtentBytes;
     std::vector<bool> listed(static_cast<std::size_t>(count), false);
@@ -742,7 +683,7 @@ std::vector<Place> UnlistedPlaces(const Record& record, std::size_t file) {
       if (listed[static_cast<std::size_t>(i)]) {
         continue;
       }
-      const std::uint64_t offset = base + (i * kExtentBytes);
+      const std::uint64_t offset = i * kExtentBytes;
       const std::uint64_t length = std::min(kExtentBytes, bytes - (i * kExtentBytes));
       if (!places.empty() && places.back().offset + places.back().bytes == offset) {
         places.back().bytes += length;
@@ -750,7 +691,6 @@ std::vector<Place> UnlistedPlaces(const Record& record, std::size_t file) {
         places.push_back({.offset = offset, .bytes = length});
       }
     }
-    base += bytes;
   }
   return places;
 }
@@ -854,27 +794,17 @@ std::expected<void, std::string> Check(Record& r, const Expected& e,
     }
     total += bytes;
   }
-  // Its files: version 1's one, the size of every region; version 2's one a
-  // region, each the size of its own; each named as its slot's (and
-  // stage's) own.
-  if (r.version == kOneFileVersion) {
-    if (r.files.size() != 1 || r.files.front().name != StateFileName(e.slot)) {
-      return Bad("it names another request slot");
+  // Its files: one a region, each the size of its own, each named as its
+  // slot's and stage's own.
+  if (r.files.size() != r.regions.size()) {
+    return Bad("its stages are not this runner's");
+  }
+  for (std::size_t s = 0; s < r.files.size(); ++s) {
+    if (r.files[s].name != StateFileName(e.slot, static_cast<std::uint32_t>(s))) {
+      return Bad("it names another request slot's or stage's file");
     }
-    if (r.files.front().bytes != total) {
-      return Bad("its file is not the size of the regions");
-    }
-  } else {
-    if (r.files.size() != r.regions.size()) {
-      return Bad("its stages are not this runner's");
-    }
-    for (std::size_t s = 0; s < r.files.size(); ++s) {
-      if (r.files[s].name != StateFileName(e.slot, static_cast<std::uint32_t>(s))) {
-        return Bad("it names another request slot's or stage's file");
-      }
-      if (r.files[s].bytes != r.regions[s]) {
-        return Bad("a stage's file is not the size of its region");
-      }
+    if (r.files[s].bytes != r.regions[s]) {
+      return Bad("a stage's file is not the size of its region");
     }
   }
   if (r.extents.empty()) {

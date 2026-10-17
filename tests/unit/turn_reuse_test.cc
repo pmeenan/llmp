@@ -8,6 +8,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 #include "chat/chat.h"
@@ -16,6 +17,53 @@ namespace {
 namespace rt = llmp::runtime;
 namespace ch = llmp::chat;
 using Clock = std::chrono::steady_clock;
+
+TEST(TurnReuseTest, CheckpointBudgetCountsHeldFilesAndCannotWrap) {
+  EXPECT_TRUE(rt::TurnCheckpointFits(100, 20, 50, 30));
+  EXPECT_FALSE(rt::TurnCheckpointFits(100, 20, 50, 31));
+  EXPECT_FALSE(rt::TurnCheckpointFits(0, 0, 0, 4096));
+  EXPECT_FALSE(rt::TurnCheckpointFits(100, 101, 0, 0));
+  const auto most = std::numeric_limits<std::uint64_t>::max();
+  EXPECT_TRUE(rt::TurnCheckpointFits(most, most - 2, 1, 1));
+  EXPECT_FALSE(rt::TurnCheckpointFits(most, most - 2, 1, 2));
+  EXPECT_FALSE(rt::TurnCheckpointFits(most, most, most, 2));
+  EXPECT_FALSE(rt::TurnCheckpointFits(100, 0, most, most));
+}
+
+TEST(TurnReuseTest, CheckpointDeletionCountsStateSpilledByItsKeptRecordUpdate) {
+  std::uint64_t spilled = 0, checkpoints = 80;
+  std::size_t attempts = 0;
+  const bool fits = rt::TrimTurnCheckpointBudget(
+      100, 30, [&] { return spilled; }, [&] { return checkpoints; },
+      [&] {
+        if (++attempts != 1) return false;  // the remaining files are held
+        checkpoints -= 20;
+        // Rewriting the kept record needs token storage. Its synchronous
+        // reclaim spills another conversation before deletion returns.
+        spilled += 30;
+        return true;
+      });
+  EXPECT_FALSE(fits);  // 30 spilled + 60 held checkpoints + 30 incoming
+  EXPECT_EQ(attempts, 2U);
+}
+
+TEST(TurnReuseTest, CheckpointDeletionCountsFilesRemovedByANestedTrim) {
+  std::uint64_t checkpoints = 80;
+  std::size_t attempts = 0;
+  const bool fits = rt::TrimTurnCheckpointBudget(
+      100, 70, [] { return 0; }, [&] { return checkpoints; },
+      [&] {
+        ++attempts;
+        if (attempts != 1) return false;
+        checkpoints -= 20;
+        // A nested reclaim also removes other optional checkpoint files.
+        checkpoints -= 40;
+        return true;
+      });
+  EXPECT_TRUE(fits);
+  EXPECT_EQ(attempts, 1U);  // no unnecessary second deletion/refusal
+  EXPECT_EQ(checkpoints, 20U);
+}
 
 TEST(TurnReuseTest, SelectsTheNearestCheckpointInsideTheExactCommonPrefix) {
   const std::array<std::int32_t, 6> old = {1, 2, 3, 4, 5, 6};

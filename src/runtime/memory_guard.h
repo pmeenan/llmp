@@ -22,7 +22,7 @@
 //   one model's (one model runs chunks at a time, so the most of any),
 //   beside the margin rather than in it.
 // - The plans: what one step of a model holds of plans at once at most
-//   (Served::plan_floor_bytes, engine/planned.h), the largest model's.
+//   (Served::plan_floor_bytes, engine/plan_account.h), the largest model's.
 //   Every plan and graph past it is charged inside the budget and given
 //   back through the reclaim order (D-090 as amended 2026-10-02), so the
 //   guard sets apart only this in-use minimum, not a worst case.

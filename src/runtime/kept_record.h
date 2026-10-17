@@ -4,18 +4,13 @@
 // A kept conversation's record (D-105; docs/runtime-serving.md#state-kept-
 // across-a-restart): what lets a new process adopt a request slot's
 // conversation that the one before it spilled, instead of prefilling it
-// again. A durable on-disk format in two versions, each refused whole
-// unless every field validates:
-//
-// - version 1 (the M3 runners'): one spill file a slot, `slot-<N>.state`,
-//   holding the slot's regions one after another;
-// - version 2 (the shared runner's, D-112): one spill file a stage (the
-//   target, then each drafter: a region each), `slot-<N>.state` for the
-//   target and `slot-<N>.stage-<S>.state` for stage S.
-//
-// The reader takes both; a model expects exactly the version it writes
-// (Expected::version), so a record of the other version is refused and
-// discarded, never migrated (engine-components.md, "Execution").
+// again. A durable on-disk format, refused whole unless every field
+// validates: version 2 (the shared runner's, D-112), one spill file a stage
+// (the target, then each drafter: a region each), `slot-<N>.state` for the
+// target and `slot-<N>.stage-<S>.state` for stage S. Version 1 (the
+// retired M3 runners' one spill file a slot) is no longer read: a record of
+// it is refused and discarded, never migrated (engine-components.md,
+// "Execution").
 //
 // One record a request slot, `slot-<N>.record` beside the slot's spill
 // files and its turn checkpoints' files (`slot-<N>.turn-<K>.state`), in
@@ -26,35 +21,27 @@
 // it), and ends with the SHA-256 of everything before it, so a record cut
 // short or edited is refused:
 //
-//   {"format":"llmp-kept-conversation","version":1,
-//    "build":B,"artifact":A,"drafter":D,"layout":L,"slot":N,
-//    "file":F,"device":N,"inode":N,"generation":N|null,"file_bytes":N,
-//    "regions":[N,...],"extents":[[region,index,"sha256"],...],
-//    "tokens":[N,...],"cursor":N,"decoding":["hex64",...],"used_unix_ms":N,
-//    "checkpoints":[{"file":F,"device":N,"inode":N,"generation":N|null,
-//      "file_bytes":N,"position":N,"created_unix_ms":N,
-//      "ranges":[[region,offset,bytes],...],"footprint":[[...],...],
-//      "cursor":N,"decoding":["hex64",...],"digests":["sha256",...]},...],
-//    "digest":"sha256"}
-//
 //   {"format":"llmp-kept-conversation","version":2,
 //    "build":B,"artifact":A,"drafter":D,"layout":L,"slot":N,
 //    "stages":[{"file":F,"device":N,"inode":N,"generation":N|null,
 //      "file_bytes":N},...],
 //    "extents":[[stage,index,"sha256"],...],
-//    "tokens":...,"cursor":...,"decoding":...,"used_unix_ms":...,
-//    "checkpoints":[...],"digest":"sha256"}
+//    "tokens":[N,...],"cursor":N,"decoding":["hex64",...],"used_unix_ms":N,
+//    "checkpoints":[{"file":F,"device":N,"inode":N,"generation":N|null,
+//      "file_bytes":N,"position":N,"created_unix_ms":N,
+//      "ranges":[[stage,offset,bytes],...],"footprint":[[...],...],
+//      "cursor":N,"decoding":["hex64",...],"digests":["sha256",...]},...],
+//    "digest":"sha256"}
 //
-//   (version 2's checkpoint ranges and footprints name the stage as their
-//   region; each stage's file holds that stage's region alone, so its
-//   region's bytes are its file's.)
+//   (checkpoint ranges and footprints name the stage as their region; each
+//   stage's file holds that stage's region alone, so its region's bytes
+//   are its file's.)
 //
 // - Identity: the build that wrote it (its version, commit and the
 //   executable file's identity, so another build or a reinstalled one
 //   never reads it), the artifact and drafter, and the runner's state
-//   layout (version 1: its architecture, context, regions and their
-//   bytes; version 2: model::KeptLayoutId, the spec bound to its artifacts
-//   and every stage's layout). A new process adopts only what it would
+//   layout (model::KeptLayoutId: the spec bound to its artifacts and every
+//   stage's layout). A new process adopts only what it would
 //   have written itself.
 // - The state: each spill file (its device, inode and inode generation,
 //   and size: the very file the record was made for) and the 2 MiB
@@ -93,13 +80,12 @@ class MemoryCharge;
 namespace llmp::runtime::kept {
 
 inline constexpr std::string_view kFormat = "llmp-kept-conversation";
-// One spill file a slot (the M3 runners', until each family migrates).
-inline constexpr std::uint32_t kOneFileVersion = 1;
-// One spill file a stage (the shared runner's, D-112).
+// One spill file a stage (the shared runner's, D-112): the version this
+// build writes and reads (version 1, one file a slot, retired with the M3
+// runners, is refused).
 inline constexpr std::uint32_t kStageFilesVersion = 2;
-// The newest version this build writes.
 inline constexpr std::uint32_t kVersion = kStageFilesVersion;
-// The most stages (spill files) a version 2 record names.
+// The most stages (spill files) a record names.
 inline constexpr std::size_t kMostStages = 16;
 // Beneath the spill role.
 inline constexpr std::string_view kDirectory = config::kKeptConversationsDirectory;
@@ -110,6 +96,9 @@ inline constexpr std::uint64_t kFileAlignment = 4096;
 // The largest record read: a 1,048,576-token conversation's tokens, its
 // extents' digests and its checkpoints fit many times over.
 inline constexpr std::size_t kMostRecordBytes = std::size_t{64} << 20U;
+// The turn checkpoints a record lists at most (the format's bound): a
+// conversation keeps no more.
+inline constexpr std::size_t kMostCheckpoints = 64;
 
 using Digest = base::Sha256Digest;
 
@@ -167,11 +156,10 @@ struct StateFile {
 };
 
 struct Record {
-  std::uint32_t version = kOneFileVersion;
+  std::uint32_t version = kVersion;
   Identity identity;
   std::uint32_t slot = 0;
-  // Version 1: one, holding every region in order; version 2: one a
-  // region (a stage), whose bytes are its region's.
+  // One a region (a stage), whose bytes are its region's.
   std::vector<StateFile> files;
   std::vector<std::uint64_t> regions;  // each region's bytes in its file (whole extents)
   std::vector<Extent> extents;         // the used ones, in region and index order
@@ -183,9 +171,9 @@ struct Record {
   bool operator==(const Record&) const = default;
 };
 
-// File names beneath a model's directory: a slot's spill file (stage 0's,
-// or version 1's only one: `slot-<N>.state`; stage S's from 1:
-// `slot-<N>.stage-<S>.state`), its record and its turn checkpoints.
+// File names beneath a model's directory: a slot's spill file (stage 0's:
+// `slot-<N>.state`; stage S's from 1: `slot-<N>.stage-<S>.state`), its
+// record and its turn checkpoints.
 std::string StateFileName(std::uint32_t slot, std::uint32_t stage = 0);
 std::string RecordFileName(std::uint32_t slot);
 std::string CheckpointFileName(std::uint32_t slot, std::uint64_t serial);
@@ -214,12 +202,8 @@ std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* 
                                           MemoryCharge* token_charge = nullptr,
                                           bool* memory_refused = nullptr);
 
-// Where an extent lies in a version 1 spill file (the regions one after
-// another).
-std::uint64_t ExtentOffset(std::span<const std::uint64_t> regions, const Extent& extent);
-// Where an extent lies: the index of its file in Record::files, and its
-// offset there (version 1: ExtentOffset; version 2: its region's file,
-// from 0). For a record Decode returned.
+// Where an extent lies: the index of its file in Record::files (its
+// region's), and its offset there, from 0. For a record Decode returned.
 struct ExtentAt {
   std::size_t file = 0;
   std::uint64_t offset = 0;
@@ -232,8 +216,8 @@ struct Place {
 };
 std::vector<Place> CheckpointPlaces(const Checkpoint& checkpoint);
 // What of the record's spill file `file` (an index into Record::files) its
-// extents do not cover: each run of unlisted extents, region by region, in
-// file order (adjacent runs joined). Adopting the record empties them
+// extents do not cover: each run of unlisted extents of its region, in file
+// order (adjacent runs joined). Adopting the record empties them
 // (they read as zeros, as a fresh slot's do): a removed record can outlive
 // a crash, its listed extents still matching while the others hold what
 // the file took since.
@@ -241,9 +225,8 @@ std::vector<Place> UnlistedPlaces(const Record& record, std::size_t file = 0);
 
 // What the adopting process holds a record against.
 struct Expected {
-  // The version its model writes: the M3 runners' 1 by default, the
-  // shared runner's 2 (Llm::KeptVersion).
-  std::uint32_t version = kOneFileVersion;
+  // The version its model writes (kVersion).
+  std::uint32_t version = kVersion;
   Identity identity;
   std::uint32_t slot = 0;
   std::vector<std::uint64_t> regions;  // the slot's regions' bytes in their files

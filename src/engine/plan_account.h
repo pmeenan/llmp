@@ -6,8 +6,7 @@
 // (PlanAccount, D-090 as amended 2026-10-02), the order plans were last
 // used in and the step under way that a reclaim spares (PlanStep), and
 // what the node's one reclaim order (memory/reclaim.h) sees of a plan
-// cache (PlanCacheBase). The engine core's part of planned.h, whose GGML
-// plan cache (PlanCache) builds on it.
+// cache (PlanCacheBase), which the plan cache (plan_cache.h) builds on.
 
 #ifndef LLMP_ENGINE_PLAN_ACCOUNT_H_
 #define LLMP_ENGINE_PLAN_ACCOUNT_H_

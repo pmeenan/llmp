@@ -3,9 +3,8 @@
 
 // The serving adapter of the LLM pipeline kind (D-107; docs/runtime-
 // serving.md, "Engine-backed models"; docs/engine.md, "The serving
-// adapter"): one Llm over the shared runner, for every family that has
-// moved to the component engine, where each M3 family had a serving class
-// of its own (serving.cc).
+// adapter"): the one Llm, over the shared runner, of every LLM the runtime
+// serves.
 //
 // It holds a ModelRunner (engine/model_runner.h: the slot lifecycle with
 // every stage's state, the plans, the step runs), a WaveComposer over the
@@ -30,10 +29,8 @@
 //   speculative sampling seeded by position);
 // - settle, clear, spill, restore, checkpoint ranges and restores, copies,
 //   adoption, place checks and recovery are the SlotLifecycle's, each
-//   checked there (its layout ID, footprint and positions), so the M3
-//   defaults Llm keeps for the legacy classes (an unchecked checkpoint
-//   metadata, a completion that does nothing, recovery by dropping plans)
-//   are never used here;
+//   checked there (its layout ID, footprint and positions), in place of
+//   Llm's unchecked defaults (which only its tests' fakes use);
 // - a conversation kept across a restart (D-105) is the record's version 2
 //   (kept_record.h): a spill file a stage, the layout model::KeptLayoutId of
 //   the spec bound to its artifacts and every stage's layout.
@@ -197,7 +194,8 @@ class EngineLlm final : public Llm {
   void Defaults(chat::Conversation& conversation) const override;
   std::span<const std::int32_t> ChatStops() const override { return chat_stops_; }
   Status SelectBranches(std::span<Branch* const> active) override;
-  std::uint64_t StateBytesThrough(std::uint32_t positions) const override;
+  std::expected<std::uint64_t, std::string> StateBytesThrough(
+      std::uint32_t positions) const override;
   bool supports_generation_waves() const override { return true; }
   std::size_t generation_wave_capacity() const override;
   std::size_t prefill_wave_capacity() const override;
@@ -205,7 +203,6 @@ class EngineLlm final : public Llm {
                          std::uint32_t peer_rows) const override;
   std::string KeptLayout() const override;
   std::expected<std::optional<base::Sha256Digest>, std::string> ExecutionIdentity() const override;
-  std::uint32_t KeptVersion() const override { return kept::kStageFilesVersion; }
   std::vector<std::uint64_t> KeptRegions() const override;
   std::vector<std::uint64_t> KeptLayouts() const override;
 
@@ -226,11 +223,6 @@ class EngineLlm final : public Llm {
  protected:
   Status CheckConversation(const chat::Conversation& conversation) const override;
   // -------------------------------------------- the units of work
-  Status RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
-                  std::vector<float>& logits) override;
-  Status SpecStep(std::span<const std::int32_t> all, std::uint32_t pos, std::uint32_t left,
-                  std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
-                  std::uint64_t& drafted) override;
   Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
                      bool inject, std::vector<float>& logits) override;
   std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
@@ -253,44 +245,6 @@ class EngineLlm final : public Llm {
   void RetireSamplingScratchFor(Branch& branch) override;
 
   // -------------------------------------------- the state
-  Status Settle() override { return SettleFor(default_branch()); }
-  Status ClearState() override { return ClearStateFor(default_branch()); }
-  bool StateUsable() const override { return StateUsableFor(default_branch()); }
-  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
-    return PrepareDecodeStateFor(default_branch(), pos, left);
-  }
-  std::uint64_t target_state_base() const override { return TargetStateBaseFor(default_branch()); }
-  std::uint64_t target_state_bytes() const override {
-    return TargetStateBytesFor(default_branch());
-  }
-  std::uint64_t drafter_state_base() const override {
-    return DrafterStateBaseFor(default_branch());
-  }
-  std::uint64_t drafter_state_bytes() const override {
-    return DrafterStateBytesFor(default_branch());
-  }
-  std::uint64_t used_state_bytes() const override { return UsedStateBytesFor(default_branch()); }
-  std::vector<engine::LiveState::Range> used_state_ranges() const override {
-    return UsedStateRangesFor(default_branch());
-  }
-  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return SaveUsedStateFor(default_branch(), host, ranges);
-  }
-  Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return RestoreUsedStateFor(default_branch(), host, ranges);
-  }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
-      std::uint32_t positions) const override {
-    return CheckpointRangesFor(default_branch(), positions);
-  }
-  Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) override {
-    return PrepareRestoreStateFor(default_branch(), footprint);
-  }
-  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
-                             bool to_host) override {
-    return CopyCheckpointStateFor(default_branch(), host, ranges, to_host);
-  }
-
   Status SettleFor(Branch& branch) override;
   Status ClearStateFor(Branch& branch) override;
   bool StateUsableFor(const Branch& branch) const override;
@@ -355,7 +309,6 @@ class EngineLlm final : public Llm {
   }
 
   // -------------------------------------------- kept (D-105)
-  const engine::LiveState* KeptLiveFor(const Branch& branch) const override;
   std::vector<const engine::LiveState*> KeptLivesFor(const Branch& branch) const override;
   bool KeptWholeFor(const Branch& branch) const override;
   bool OwedFor(const Branch& branch) const override;

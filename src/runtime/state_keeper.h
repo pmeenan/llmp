@@ -15,9 +15,12 @@
 // immutable and hashed once), and writes the record atomically, unless an
 // Invalidate came meanwhile (a sequence number a slot: the record would
 // describe a file that has changed since). The record is written and
-// synced beside its name off the lock, renamed over it under the lock if
-// its slot's sequence still holds, and its directory synced after, so the
-// driver never waits for hashing or a sync. A crash leaves a record that
+// synced beside its name, renamed over it if its slot's sequence still
+// holds (an Invalidate during the rename removes it, and so does the
+// worker once it sees one came), and its directory synced after; no file
+// is touched under the keeper's lock, so the driver never waits for the
+// worker's hashing or filesystem calls. Its own invalidation's unlink
+// still waits on the filesystem. A crash leaves a record that
 // describes its files exactly, or none, or one whose removal had not yet
 // reached the device (Invalidate syncs nothing): its file may have changed
 // since, which the next start's check of every listed extent refuses, and
@@ -91,7 +94,8 @@ class StateKeeper {
   StateKeeper& operator=(const StateKeeper&) = delete;
   StateKeeper(StateKeeper&&) = delete;
   StateKeeper& operator=(StateKeeper&&) = delete;
-  // Stops the worker: what is still queued is abandoned (no record).
+  // Stops the worker: the record it is making is finished (no longer
+  // yielding, Quiet), what is still queued is abandoned (no record).
   ~StateKeeper();
 
   // A model's private directory, taken (closed at the keeper's end): its
@@ -115,8 +119,9 @@ class StateKeeper {
   // Whether a slot has a record now.
   bool Kept(std::size_t model, std::uint32_t slot) const;
 
-  // Waits until every queued record is written or dropped, or `deadline`;
-  // true if none is left. Hashing no longer yields (Quiet) once asked.
+  // Waits until every queued record is written or dropped, or `deadline`
+  // (however long another holds the keeper's lock); true if none is left.
+  // Hashing no longer yields (Quiet) once asked.
   bool Drain(Clock::time_point deadline);
 
   // The driver's: while a Quiet lives (a swap, a prefill), and kLinger
@@ -181,6 +186,7 @@ class StateKeeper {
   struct SlotState {
     std::uint64_t sequence = 0;  // advanced by every Invalidate
     bool kept = false;           // its record is on disk
+    bool committing = false;     // the worker renames its record into place now
   };
   using SlotKey = std::pair<std::size_t, std::uint32_t>;
 
@@ -190,8 +196,8 @@ class StateKeeper {
   // `seen`: the Invalidates counted when its sequence was last checked.
   bool Hash(Job& job, std::uint64_t seen, const std::stop_token& stop, std::string& why,
             bool& stale);
-  // Between places: waits while quiet (unless draining); false once the
-  // job went stale (an Invalidate of its slot) or the keeper stops.
+  // Between places: waits while quiet (unless draining or stopping); false
+  // once the job went stale (an Invalidate of its slot).
   bool GoOn(const Job& job, std::uint64_t seen, const std::stop_token& stop);
   void Unquiet();
   void Say(std::string_view line) const;
@@ -200,9 +206,11 @@ class StateKeeper {
   Log log_;
   // Read unlocked in Hash and Work: safe only as AddModel runs at startup, before any Keep.
   std::vector<int> models_;
-  mutable std::mutex mutex_;
+  // Held for bookkeeping only: no file is read, written, renamed or removed,
+  // and nothing logged, under it. Timed, for Drain's deadline.
+  mutable std::timed_mutex mutex_;
   std::condition_variable_any ready_;
-  std::condition_variable idle_;
+  std::condition_variable_any idle_;
   std::deque<Job> queue_;
   bool busy_ = false;
   std::map<SlotKey, SlotState> slots_;

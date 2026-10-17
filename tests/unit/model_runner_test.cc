@@ -2311,6 +2311,46 @@ TEST_F(PositionedPrefillTest, ProgramsThatTakeTheirPositionsAreNeverRecordedAhea
   EXPECT_EQ(source_->positioned(), 4U);
 }
 
+// A joined prompt step reports each prompt's place in it beside the step's
+// joined outputs (its segment, and the rows and outputs before it), as a
+// generation wave's outcomes do: none of them is dropped.
+TEST_F(PrefillTest, AJoinedStepReportsEachPromptsShareOfItsOutputs) {
+  auto caps = Caps();
+  caps.join_prefill = true;
+  caps.max_step_rows = 0;
+  caps.joined_read_align = 0;
+  auto composer = en::WaveComposer::Make(caps, kContext, 256);
+  ASSERT_TRUE(composer.has_value());
+  en::PrefillOrchestrator prefill(*runner_, *composer,
+                                  {.chunk_rows = 128,
+                                   .lookahead = 0,
+                                   .capture_ahead = false,
+                                   .prepare_ahead = false,
+                                   .state_only = true});
+  const auto a = Tokens(30, 1);
+  const auto b = Tokens(20, 2);
+  const std::vector<en::PromptWork> prompts{
+      {.slot = 0, .stage = 0, .tokens = a, .past = 0, .want_head = true, .all_outputs = false},
+      {.slot = 1, .stage = 0, .tokens = b, .past = 0, .want_head = true, .all_outputs = false}};
+  const auto report = prefill.Step(prompts);
+  ASSERT_EQ(report.steps, 1U);  // one joined step
+  ASSERT_EQ(report.outcomes.size(), 2U);
+  for (const auto& outcome : report.outcomes) {
+    ASSERT_FALSE(outcome.refusal.has_value()) << outcome.refusal->what;
+    EXPECT_TRUE(outcome.last);
+    EXPECT_FALSE(outcome.outputs.empty());
+  }
+  // The step's joined outputs, whatever they hold (this fake's program
+  // returns each owner's own), are the same step's for both.
+  EXPECT_EQ(report.outcomes[0].joined, report.outcomes[1].joined);
+  EXPECT_EQ(report.outcomes[0].segment, 0U);
+  EXPECT_EQ(report.outcomes[0].first_row, 0U);
+  EXPECT_EQ(report.outcomes[0].first_output, 0U);
+  EXPECT_EQ(report.outcomes[1].segment, 1U);
+  EXPECT_EQ(report.outcomes[1].first_row, 30U);
+  EXPECT_EQ(report.outcomes[1].first_output, 1U);
+}
+
 TEST_F(PrefillTest, AllRowsOutputsAndCheckpointBoundaries) {
   auto composer = en::WaveComposer::Make(Caps(), kContext, 256);
   ASSERT_TRUE(composer.has_value());

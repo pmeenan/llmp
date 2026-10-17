@@ -179,6 +179,49 @@ Nemotron 3.5 Super VL ([m35-families.md](m35-families.md)); the stored per-geome
 image spec; EXL3 serving (RE-058's lock slots); and the carried review list
 of the record.
 
+**M3.6 review follow-ups (owner, 2026-10-17).** A whole-milestone review of
+M3.6 found the one-engine structure sound but family knowledge moved into
+import pins, per-mapping fusion lists, kernel shape whitelists, admission
+branches, duplicated attention components and an unwired decode ladder,
+plus a set of correctness defects. The owner asked for all of it to be fixed
+before new families land; each item lands as one reviewed commit.
+
+- [x] R1 Runtime and engine correctness (HTTP intake, hang-ladder drain,
+      approvals envelopes as defaults, kept-state and calibration fixes,
+      spill-range growth, plan-cache index, the `Llm` interface, legacy code)
+- [ ] R2 Kernel, decode and IR correctness (validator gaps, CUTLASS and EXL3
+      error paths, alignment, per-device opt-ins, latent IR rewrite bugs,
+      dead kernel code)
+- [ ] R3 Importer correctness and structural normalization (safetensors
+      metadata, composition roles, open-world keys, no encoding or shape pins,
+      kept tokenizer documents, reproducible artifact identity)
+- [ ] R4 Mapping-driven admission and spec-derived bounds (no architecture
+      branches in the runtime or CLI, container variants, gates and folds as
+      mapping data, row and vocabulary bounds from the spec, admissible
+      formats from capabilities)
+- [ ] R5 Kernel gates by real limits (F16 GQA attention at head sizes
+      64–192, parametric norm and MoE fusions, EXL3 beyond one fixture)
+- [ ] R6 The decode ladder in every backend (dense NVFP4, MXFP8 grouped,
+      MXFP4; honest rungs, feature bits and measured ranks)
+- [ ] R7 Planner: quality-preserving fusions on by default, plan and
+      coverage reports, family constants out of the planner, `Operation`
+      retired
+- [ ] R8 Tokenizer: GGUF and `tokenizer.json` pre-tokenizers from their
+      regexes, post-processors
+- [ ] R9 Components: one attention core (YaRN, sections, gate, sinks,
+      compression, selection), merged fused kinds, format-independent specs,
+      the image text encoder from token components
+- [ ] R10 Serving: one LLM route (every model batches by default), prefill
+      policy in the engine, build and step phases, the image staged executor
+      in the engine
+- [ ] R11 Generality canary: a generic dense-decoder mapping and default
+      serving recipe; Llama 3.2 served
+- [ ] R12 Test coverage: layer-level reference-against-GPU checks per family,
+      the Qwen2/EXL3 controls, maintainable frozen expectations
+- [ ] R13 Docs: engine.md and portability.md describe the current code,
+      "how to add" checklists, AGENTS.md trimmed, the record's carried items
+      triaged
+
 **Gemma31 gap closing, 2026-10-06:** [state reuse across Clear, capture beside
 eager execution and the fused decode FFN](experiments/gemma-gap-closing/README.md)
 take the bounded C1/C4 paid cycles from 3.15%/3.51% to 0.73%/1.36% slower than

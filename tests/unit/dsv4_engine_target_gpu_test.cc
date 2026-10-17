@@ -240,12 +240,12 @@ TEST(Dsv4EngineTargetInputs, AutomaticServingRefusesUnpaidOrMixedAuthorityBefore
     settings.context.value = 8192;
     settings.max_slots.value = 4;
     rt::ComponentBuildOptions options{.target_policy = std::nullopt,
-                                      .diagnostic_solo = true,
+                                      .shared_route = true,
                                       .automatic_startup_cap = kCap,
                                       .derive_execution_domain = true};
     if (mutation == 0) options.automatic_startup_cap = 0;
     if (mutation == 1) options.execution_domain = *domain;
-    if (mutation == 2) options.diagnostic_solo = false;
+    if (mutation == 2) options.shared_route = false;
     if (mutation == 3) options.target_policy = "";
     if (mutation == 4) settings.speculation.value = true;  // no drafter
     if (mutation >= 5) {

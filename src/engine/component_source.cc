@@ -371,6 +371,12 @@ planner::PlanKey ComponentStepSource::KeyBase() const {
 std::vector<std::uint64_t> ComponentStepSource::ShapeParameters(
     const planner::StepShape& shape) const {
   std::vector<std::uint64_t> out;
+  AppendShapeParameters(shape, out);
+  return out;
+}
+
+void ComponentStepSource::AppendShapeParameters(const planner::StepShape& shape,
+                                                std::vector<std::uint64_t>& out) const {
   if (!o_.require_capture) out.push_back(0x6e6f636170747572ULL);  // uncaptured selection identity
   if (!planner::Disabled(policy_, "state_bank_attention")) {
     out.push_back(0x737461746562616eULL);  // state-bank layout identity, fixed four words
@@ -384,7 +390,6 @@ std::vector<std::uint64_t> ComponentStepSource::ShapeParameters(
   for (const auto& in : shaped_)
     for (const auto& segment : shape.segments)
       in.def->shape_parameters(in, segment.rows, segment.past, shape.read_align, out);
-  return out;
 }
 
 planner::StateSpans ComponentStepSource::StateSpans(const planner::StepShape& shape,
@@ -639,6 +644,11 @@ std::vector<std::uint64_t> StagedStepSource::ShapeParameters(
     const planner::StepShape& shape) const {
   return shape.stage < stages_.size() ? stages_[shape.stage]->ShapeParameters(shape)
                                       : std::vector<std::uint64_t>{};
+}
+
+void StagedStepSource::AppendShapeParameters(const planner::StepShape& shape,
+                                             std::vector<std::uint64_t>& out) const {
+  if (shape.stage < stages_.size()) stages_[shape.stage]->AppendShapeParameters(shape, out);
 }
 
 std::expected<std::unique_ptr<kernels::StepProgram>, std::string> StagedStepSource::Build(

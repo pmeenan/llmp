@@ -72,6 +72,8 @@ constexpr std::uint64_t kExtentBytes = std::uint64_t{2} << 20U;
 // Persist), and asks the service manager each second for kStopExtension
 // more.
 constexpr auto kLastResortKeep = std::chrono::seconds(10);
+// Past kLastResortKeep, the last resort exits however far it got.
+constexpr auto kLastResortExitSlack = std::chrono::seconds(2);
 constexpr auto kPersistLongest = std::chrono::hours(1);
 constexpr std::chrono::microseconds kStopExtension = std::chrono::seconds(15);
 // A start step's extension of the start timeout: llmp.service's
@@ -761,17 +763,26 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // a peer retires. A lone request always starts: the capacity policy
     // governs it as before.
     if (claimed != 0 && server_.resident() == &model) {
-      std::uint64_t needed = PromptStateToCome(model, **branch, rendered->tokens().size());
+      // An estimate that failed is no estimate of nothing: the request is
+      // refused, not admitted for room the budget may lack.
+      auto needed = PromptStateToCome(model, **branch, rendered->tokens().size());
       for (const ChatWork* peer : cohort_) {
-        if (peer != nullptr && !peer->terminal() && peer->stage == ChatWork::Stage::kPrompt) {
-          needed += PromptStateToCome(model, peer->branch, peer->rendered.tokens().size());
+        if (needed && peer != nullptr && !peer->terminal() &&
+            peer->stage == ChatWork::Stage::kPrompt) {
+          auto more = PromptStateToCome(model, peer->branch, peer->rendered.tokens().size());
+          needed = more ? std::expected<std::uint64_t, std::string>(*needed + *more) : more;
         }
       }
-      if (needed != 0 && !server_.RoomFor(needed, "a request slot", *branch)) {
+      if (!needed) {
+        return std::unexpected(Failure(
+            500,
+            "the request's state could not be measured for a request slot: " + needed.error()));
+      }
+      if (*needed != 0 && !server_.RoomFor(*needed, "a request slot", *branch)) {
         memory_wait_.NoRoom();
         Say(log_, std::format("{}'s request waits for memory for a request slot: {:.1f} MiB of "
                               "prompt state to come for {} tokens beside {} active requests",
-                              model.name(), static_cast<double>(needed) / (1U << 20U),
+                              model.name(), static_cast<double>(*needed) / (1U << 20U),
                               rendered->tokens().size(), claimed));
         return std::unique_ptr<api::CooperativeBackend::Work>{};
       }
@@ -2087,11 +2098,16 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   // What a prompt of `tokens` on `branch` has yet to take of the budget:
   // its state through its tokens and its first step, less what the branch
   // holds now (continued, or cleared for it).
-  static std::uint64_t PromptStateToCome(const Llm& model, const Llm::Branch& branch,
-                                         std::size_t tokens) {
+  static std::expected<std::uint64_t, std::string> PromptStateToCome(const Llm& model,
+                                                                     const Llm::Branch& branch,
+                                                                     std::size_t tokens) {
     const auto positions =
         static_cast<std::uint32_t>(std::min<std::size_t>(tokens + 1, model.context()));
-    return StateToCome(model.StateBytesThrough(positions), model.ResidentStateBytes(branch));
+    auto total = model.StateBytesThrough(positions);
+    if (!total) {
+      return std::unexpected(total.error());
+    }
+    return StateToCome(*total, model.ResidentStateBytes(branch));
   }
 
   void Fail(std::string what) {
@@ -2281,7 +2297,15 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
   // records already queued are written (their spill files are whole on
   // disk); nothing new is spilled, since the device may be what hangs.
   std::atomic<Server*> running{nullptr};
-  ladder.set_last_resort([log, &running](const std::string& /*why*/) {
+  ladder.set_last_resort([log, &running](const std::string& why) {
+    // The exit at the deadline, whatever blocks below (a drive that holds
+    // a record's write, a log that cannot be written): the keeping is
+    // bounded, never a wait on the hang itself.
+    std::thread([] {
+      std::this_thread::sleep_for(kLastResortKeep + kLastResortExitSlack);
+      std::_Exit(kExitFailure);
+    }).detach();
+    Say(log, why);
     std::ignore = platform::NotifyServiceManager("STATUS=exiting after a confirmed hang");
     if (Server* server = running.load(); server != nullptr) {
       const bool kept = server->DrainKept(Clock::now() + kLastResortKeep);

@@ -38,6 +38,7 @@
 #include <span>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -446,6 +447,14 @@ class EngineLlmTest : public ::testing::Test {
 // Snapshot payload and variable metadata have one catalog charge. These are
 // integration controls over the real slot copy/restore path on the fake node;
 // no test receives a writable pointer into the opaque snapshot.
+TEST_F(EngineLlmTest, AnUnbuiltStateEstimateIsAnErrorNotZeroBytes) {
+  en::PagedNode node(en::NodeSettings{});
+  rt::EngineLlm model(node, entry_, Settings(false), roles_, 0, Build(false));
+  auto bytes = model.StateBytesThrough(100);
+  ASSERT_FALSE(bytes.has_value());
+  EXPECT_NE(bytes.error().find("not built"), std::string::npos);
+}
+
 TEST_F(EngineLlmTest, OpaqueSnapshotRestoresCapturedBytesAndHistoryWithOneCharge) {
   Start(false, false);
   auto& branch = BranchAt(0);
@@ -968,6 +977,231 @@ TEST_F(EngineLlmTest, ATurnCheckpointRestoresItsPrefix) {
   EXPECT_EQ(second.out.tokens, Chain(diverged, 10));
 }
 
+// Turn checkpoints are bounded by real resources (retention, the spill
+// budget's disk, the kept record's format), not a count: a conversation
+// keeps one a turn, and the spill budget's trim drops the oldest first.
+TEST_F(EngineLlmTest, TurnCheckpointsAreBoundByResourcesNotACount) {
+  Start(true, true);
+  Turned turn = Turn(0, Prompt(300, 4), 8, false, /*boundary=*/200);
+  for (int i = 0; i < 2; ++i) {
+    const auto next = Continue(0, turn.out, Prompt(40, 5 + i));
+    turn = Turn(0, next, 8, false, static_cast<std::uint32_t>(next.size() - 10));
+  }
+  rt::Llm::Branch& branch = BranchAt(0);
+  ASSERT_EQ(branch.turn_checkpoints(), 3U);  // past the count of two it once kept
+  const std::uint64_t bytes = branch.turn_checkpoint_bytes();
+  ASSERT_TRUE(llm_->OldestTurnCheckpoint(branch).has_value());
+  const std::uint64_t dropped = llm_->DropOldestTurnCheckpoint(branch);
+  EXPECT_GT(dropped, 0U);
+  EXPECT_EQ(branch.turn_checkpoints(), 2U);
+  EXPECT_EQ(branch.turn_checkpoint_bytes(), bytes - dropped);
+}
+
+TEST_F(EngineLlmTest, ACheckpointIsAdmittedBeforeItWritesAndRefusalKeepsTheConversation) {
+  Start(true, true);
+  rt::Llm::Branch& branch = BranchAt(0);
+  std::uint64_t budget = 0;
+  std::uint64_t asked = 0;
+  std::size_t attempts = 0;
+  llm_->set_checkpoint_admission([&](std::uint64_t bytes) {
+    ++attempts;
+    asked = bytes;
+    // Capture runs while the prompt holds its branch: those checkpoints
+    // cannot be trimmed, but their complete files still count.
+    EXPECT_FALSE(llm_->OldestTurnCheckpoint(branch));
+    return rt::TurnCheckpointFits(budget, 0, branch.turn_checkpoint_bytes(), bytes);
+  });
+  Turned turn = Turn(0, Prompt(300, 4), 8, false, /*boundary=*/200);
+  EXPECT_EQ(branch.turn_checkpoints(), 0U);
+  EXPECT_EQ(attempts, 1U);
+  EXPECT_GT(asked, 0U);
+  EXPECT_EQ(asked % kept::kFileAlignment, 0U);
+  EXPECT_EQ(turn.out.tokens, Chain(Prompt(300, 4), 8));
+  budget = asked;
+  auto next = Continue(0, turn.out, Prompt(40, 5));
+  turn = Turn(0, next, 8, false, static_cast<std::uint32_t>(next.size() - 10));
+  ASSERT_EQ(branch.turn_checkpoints(), 1U);
+  EXPECT_LE(branch.turn_checkpoint_bytes(), budget);
+  const auto held = branch.turn_checkpoint_bytes();
+  next = Continue(0, turn.out, Prompt(40, 6));
+  turn = Turn(0, next, 8, false, static_cast<std::uint32_t>(next.size() - 10));
+  EXPECT_EQ(branch.turn_checkpoints(), 1U);
+  EXPECT_EQ(branch.turn_checkpoint_bytes(), held);
+  EXPECT_EQ(attempts, 3U);
+  EXPECT_EQ(turn.out.tokens, Chain(next, 8));
+}
+
+TEST_F(EngineLlmTest, TrimmingAKeptCheckpointCanSpillAnotherConversationSynchronously) {
+  const fs::path directory = root_ / "trim-kept";
+  auto opened = pf::OpenPrivateDirectory(-1, directory.c_str());
+  ASSERT_TRUE(opened.has_value());
+  const int dir = *opened;
+  rt::RequestMemory memory(0, 128 * kExtent, true);
+  rt::StateKeeper keeper(1, {});
+  const auto model = keeper.AddModel(::dup(dir));
+  Start(false, false, [&](rt::EngineLlm& llm) {
+    llm.SetTokenMemory(memory);
+    llm.set_kept({.keeper = &keeper,
+                  .model = model,
+                  .directory = dir,
+                  .identity = {.build = "test build",
+                               .artifact = "abcdef",
+                               .drafter = "",
+                               .layout = llm.KeptLayout()},
+                  .adopt = {}});
+  });
+  bool trimming = false, reentered = false;
+  memory.SetDriver(std::this_thread::get_id(), [&](std::uint64_t incoming) {
+    if (trimming && incoming != 0 && !reentered) {
+      reentered = true;
+      // Server's token grower can reclaim idle state this way while the
+      // outer DropOldestTurnCheckpoint is updating its kept record.
+      EXPECT_TRUE(llm_->SpillIdle(BranchAt(1)));
+    }
+    return true;
+  });
+  Turn(0, Prompt(300, 4), 8, false, 200);
+  Turn(1, Prompt(40, 5), 8);
+  auto& branch = BranchAt(0);
+  ASSERT_EQ(branch.turn_checkpoints(), 1U);
+  ASSERT_TRUE(llm_->SpillIdle(branch));
+  ASSERT_TRUE(keeper.Drain(rt::Clock::now() + std::chrono::seconds(30)));
+  ASSERT_TRUE(keeper.Kept(model, 0));
+  // Drain reports completed publication before the worker destroys its
+  // Job and returns the record's token charge. Once that charge is gone,
+  // shrink the exact grant so the replacement record must call Grow.
+  const auto released_by = rt::Clock::now() + std::chrono::seconds(30);
+  while (memory.used() != llm_->token_history_bytes() && rt::Clock::now() < released_by) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_EQ(memory.used(), llm_->token_history_bytes());
+  memory.Settle(0, std::chrono::milliseconds{0});
+  ASSERT_EQ(memory.grant(), memory.used());
+  const auto spilled = [&] {
+    return llm_->SpilledStateBytes(branch) + llm_->SpilledStateBytes(BranchAt(1));
+  };
+  const auto checkpoints = [&] { return branch.turn_checkpoint_bytes(); };
+  const auto extra = checkpoints();
+  ASSERT_GT(extra, 0U);
+  const auto initially_spilled = spilled();
+  const auto newly_spilled = llm_->ResidentStateBytes(BranchAt(1));
+  ASSERT_GT(newly_spilled, 0U);
+  // Both the checkpoint and the smaller second conversation must exceed
+  // the available room. Their file sizes need not be the same.
+  const auto budget = initially_spilled + extra + std::min(extra, newly_spilled) - 1;
+  ASSERT_FALSE(rt::TurnCheckpointFits(budget, initially_spilled, checkpoints(), extra));
+  ASSERT_TRUE(rt::TurnCheckpointFits(budget, initially_spilled, 0, extra));
+  trimming = true;
+  const bool fits = rt::TrimTurnCheckpointBudget(budget, extra, spilled, checkpoints, [&] {
+    return llm_->DropOldestTurnCheckpoint(branch) != 0;
+  });
+  trimming = false;
+  EXPECT_TRUE(reentered);
+  EXPECT_TRUE(BranchAt(1).spilled());
+  EXPECT_GT(spilled(), initially_spilled);
+  EXPECT_EQ(checkpoints(), 0U);
+  EXPECT_FALSE(fits);
+  EXPECT_FALSE(rt::TurnCheckpointFits(budget, spilled(), checkpoints(), extra));
+  ASSERT_TRUE(keeper.Drain(rt::Clock::now() + std::chrono::seconds(30)));
+  Stop();
+  ::close(dir);
+}
+
+TEST_F(EngineLlmTest, CheckpointCapacityIsHeldWhileFallbackStagingReclaims) {
+  Start(false, false);  // no reserved staging: Capture uses its fallback
+  Turn(1, Prompt(40, 5), 8);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  const auto tokens = Prompt(300, 4);
+  auto begun = branch.BeginPrompt(tokens, 200);
+  ASSERT_TRUE(begun) << Failed(begun).value_or("");
+  auto prompt = std::move(*begun);
+  for (;;) {
+    auto next = prompt->NextUnit();
+    ASSERT_TRUE(next) << Failed(next).value_or("");
+    if (next->phase == rt::Llm::PromptSession::Phase::kCheckpoint) break;
+    ASSERT_TRUE(prompt->Advance());
+  }
+  const auto occupied = node_->catalog().OccupancyOf(node_->domain()).Total().value();
+  ASSERT_GT(node_->budget().value(), occupied + kExtent);
+  std::vector<llmp::catalog::ExtentId> staging;
+  auto pad = node_->Pinned(node_->budget().value() - occupied - kExtent, 0, staging);
+  ASSERT_TRUE(pad) << Failed(pad).value_or("");
+  const auto victim = llm_->ResidentStateBytes(BranchAt(1));
+  ASSERT_GT(victim, 0U);
+  std::uint64_t budget = 0, admitted = 0;
+  llm_->set_checkpoint_admission([&](std::uint64_t bytes) {
+    admitted = bytes;
+    budget = std::max(bytes, victim);  // either fits alone, never both
+    return rt::TurnCheckpointFits(budget, 0, branch.turn_checkpoint_bytes(), bytes);
+  });
+  bool reclaimed = false;
+  node_->SetReclaimer([&](std::uint64_t, en::PagedNode::ReclaimFor what,
+                          std::span<const llmp::catalog::ExtentId>) -> std::uint64_t {
+    EXPECT_EQ(what, en::PagedNode::ReclaimFor::kStaging);
+    reclaimed = true;
+    EXPECT_GT(admitted, 0U);
+    EXPECT_EQ(branch.turn_checkpoint_bytes(), admitted);
+    EXPECT_FALSE(llm_->OldestTurnCheckpoint(branch));
+    // The server's spill admission counts the capture's capacity even
+    // though its file has not yet been published on the branch.
+    if (!rt::TurnCheckpointFits(budget, 0, branch.turn_checkpoint_bytes(), victim)) return 0;
+    EXPECT_TRUE(llm_->SpillIdle(BranchAt(1)));
+    return victim;
+  });
+  ASSERT_TRUE(prompt->Advance());  // staging refuses this optional save
+  EXPECT_TRUE(reclaimed);
+  EXPECT_FALSE(BranchAt(1).spilled());
+  EXPECT_EQ(branch.turn_checkpoints(), 0U);
+  EXPECT_EQ(branch.turn_checkpoint_bytes(), 0U);  // failed capture returned its capacity
+  node_->SetReclaimer({});
+  ASSERT_TRUE(node_->FreePinned(*pad));
+  while (!prompt->done()) ASSERT_TRUE(prompt->Advance());
+  ASSERT_TRUE(prompt->Finish());
+  prompt.reset();
+  Close();
+  // A later successful capture transfers the reservation to its file,
+  // counted once, and still produces the uninterrupted token chain.
+  const auto turn = Turn(0, Prompt(320, 7), 8, false, 220);
+  EXPECT_EQ(turn.out.tokens, Chain(Prompt(320, 7), 8));
+  EXPECT_EQ(branch.turn_checkpoints(), 1U);
+  EXPECT_EQ(branch.turn_checkpoint_bytes(), admitted);
+}
+
+TEST_F(EngineLlmTest, CancelledCheckpointCaptureReturnsItsDiskCapacity) {
+  Start(false, false);
+  auto& branch = BranchAt(0);
+  Open({&branch});
+  auto begun = branch.BeginPrompt(Prompt(300, 4), 200);
+  ASSERT_TRUE(begun) << Failed(begun).value_or("");
+  auto prompt = std::move(*begun);
+  for (;;) {
+    auto next = prompt->NextUnit();
+    ASSERT_TRUE(next) << Failed(next).value_or("");
+    if (next->phase == rt::Llm::PromptSession::Phase::kCheckpoint) break;
+    ASSERT_TRUE(prompt->Advance());
+  }
+  std::uint64_t admitted = 0;
+  llm_->set_checkpoint_admission([&](std::uint64_t bytes) {
+    admitted = bytes;
+    return true;
+  });
+  unsigned calls = 0;
+  ASSERT_TRUE(prompt->Advance([&](std::uint32_t) {
+    if (++calls == 1) return true;  // before capture admission
+    EXPECT_GT(admitted, 0U);
+    EXPECT_EQ(branch.turn_checkpoint_bytes(), admitted);
+    return false;  // Capture's first cancellation checkpoint
+  }));
+  EXPECT_EQ(calls, 2U);
+  EXPECT_TRUE(prompt->done());
+  EXPECT_EQ(branch.turn_checkpoints(), 0U);
+  EXPECT_EQ(branch.turn_checkpoint_bytes(), 0U);
+  ASSERT_TRUE(prompt->Finish());
+  prompt.reset();
+  Close();
+}
+
 // The speed gate's diagnostic (ServingOptions::diagnostic_skip_turn_
 // checkpoints): the turn saves no checkpoint and is otherwise the same (its
 // tokens and the steps it ran); a later divergent prompt then has none to
@@ -1315,7 +1549,7 @@ TEST_F(EngineLlmTest, AConversationIsKeptAcrossARestartInStageFiles) {
     EXPECT_EQ(rt::EmptyUnlisted(dir, *record), "");
     // The other slot's record of the old version: decoded, refused.
     old = *record;
-    old.version = kept::kOneFileVersion;
+    old.version = 1;  // the retired M3 runners' one spill file a slot
     old.slot = 1;
     old.files = {{.name = kept::StateFileName(1), .id = record->files[0].id, .bytes = 0}};
     old.checkpoints.clear();
@@ -1342,15 +1576,16 @@ TEST_F(EngineLlmTest, AConversationIsKeptAcrossARestartInStageFiles) {
   EXPECT_EQ(branch.turn_checkpoints(), 1U);
   EXPECT_TRUE(keeper.Kept(model, 0));
 
-  // The old record, written where the other slot's would be: refused at
-  // adoption too, and removed.
+  // The old record, written where the other slot's would be: no longer
+  // read, and refused at adoption too (as decoded before), and removed.
   ASSERT_TRUE(pf::ReplacePrivateFile(dir, kept::RecordFileName(1).c_str(), kept::Encode(old)));
   auto old_text = pf::ReadPrivateFile(dir, kept::RecordFileName(1).c_str(), kept::kMostRecordBytes);
   ASSERT_TRUE(old_text.has_value());
   auto old_record = kept::Decode(*old_text);
-  ASSERT_TRUE(old_record.has_value()) << old_record.error();
+  ASSERT_FALSE(old_record.has_value());
+  EXPECT_NE(old_record.error().find("version"), std::string::npos) << old_record.error();
   rt::MemoryCharge old_charge;
-  auto old_adopted = llm_->Adopt(BranchAt(1), *old_record, old_charge);
+  auto old_adopted = llm_->Adopt(BranchAt(1), old, old_charge);
   ASSERT_FALSE(old_adopted);
   EXPECT_NE(Why(old_adopted).find("format version"), std::string::npos) << Why(old_adopted);
   EXPECT_FALSE(fs::exists(directory / kept::RecordFileName(1)));

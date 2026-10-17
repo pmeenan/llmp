@@ -46,7 +46,7 @@ class TensorArena {
   // Room for `tensors` tensors, views and operation nodes.
   static std::expected<TensorArena, KernelFailure> Create(std::size_t tensors);
   // Exactly `bytes` of metadata (at least one tensor's): what an earlier
-  // build of the same graph used (engine/planned.h SizedArena), standing
+  // build of the same graph used (a sized arena), standing
   // for the `stands_for` bytes that build was checked against (Reserve
   // answers as it did there; 0: for itself).
   static std::expected<TensorArena, KernelFailure> CreateBytes(std::size_t bytes,

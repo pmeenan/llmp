@@ -24,6 +24,44 @@ The entries below record each change; the record of the milestone is
 
 ### Fixed
 
+- The chat route serves a request whose whole body, with pipelined bytes
+  behind it, arrived with its head and then waited for request memory
+  (it was left waiting for bytes it did not owe until its inactivity
+  timeout, a 408). A request's head is checked (Host, Origin, route, method,
+  media type) before reading more body data, charging it or sending `100 Continue`; an HTTP/1.0 request's `Expect: 100-continue` is ignored.
+- Hang recovery's last resort exits at its deadline whatever blocks (a
+  drive holding a kept record's write, a log that cannot be written): the
+  state keeper touches no file and logs nothing under its lock, and its
+  drain has a deadline for the lock too. The ladder and the chat route log
+  outside their locks. A CPU-work cancellation is no longer cleared before
+  the work saw it.
+- A state keeper stopped while it hashes finishes the record it is making
+  instead of writing one without its turn checkpoints (whose files the next
+  start then removed).
+- Calibration records of two aliases of one artifact (another drafter,
+  other settings) no longer overwrite each other: the record's file is
+  named by its configuration too (D-103 as amended).
+- Turn checkpoint files are admitted against the spill budget before they
+  are written, including checkpoints held by active requests. A full or
+  zero budget skips this optional cache and preserves the conversation.
+  State spills count the checkpoint files too, reclaiming eligible caches
+  first and refusing a spill when held files leave too little room. Admission
+  counts state spilled synchronously while updating a trimmed checkpoint's
+  kept record too. Captures hold disk capacity through staging and copies,
+  so synchronous reclaim cannot spend it on a state spill before publication;
+  failure or cancellation returns that capacity.
+- A request slot's admission by memory refuses a request whose state could
+  not be measured instead of counting it as none.
+- A pinned drafter pairs with an unpinned target of its architecture (a
+  re-quant): its own inventory is pinned, its composition checked
+  structurally (D-119 as amended).
+- A drafter step wholly behind its slot's committed positions is refused;
+  the prefill lookahead predicts joined futures only where their heads
+  match, as the steps join; a failed step quarantines only what its own work
+  may have written, not what its owners owed.
+- A conversation's spill record keeps each written range once, so a long
+  speculative session that is never spilled no longer grows it (and the
+  reclaim order's scan of it) without bound.
 - A smaller `draft_vocab` override now uses the same composed model identity
   during settings resolution and runner construction.
 - On-demand row gathers use 64-bit byte offsets from planning through CPU and
@@ -1009,6 +1047,25 @@ The entries below record each change; the record of the milestone is
 
 ### Changed
 
+- An approved checkpoint's envelope (its context, owners and wide context)
+  is its settings' default, not a refusal: a configuration naming more is
+  served with a warning in the log and in `llmp-runtime settings` (its JSON
+  gains a `warnings` array), while the stored spec's context and the
+  recipes' own bounds still refuse (D-119 as amended).
+- Turn checkpoints are kept by real resources, not two a conversation:
+  within `retention_hours`, the 64 a kept record lists, and the spill
+  budget's disk beside the spilled conversations, the oldest deleted first.
+- A target's planning policy is exactly the rule admission chose, or the
+  engine's default where it chose none, never one chosen again from its
+  mapping without its gates; admission runs once a registration's settings
+  and once its build.
+- Plans are found through an index of their keys' hashes, with no
+  allocation a lookup; a drafter's feature rows are copied in at most two
+  copies a segment.
+- A swap makes room round after round while each makes progress, not at
+  most four rounds.
+- The component build option for the shared route is `shared_route` (was
+  `diagnostic_solo`).
 - Qwen-Image-2.1 serves from a native v1 import: `llmp import` of the
   diffusers pipeline publishes its three components (each the tensors text
   to image runs: not the text encoder's vision tower and output head, nor
@@ -1569,6 +1626,14 @@ The entries below record each change; the record of the milestone is
 
 ### Removed
 
+- Kept conversation records of version 1 (the M3 runners' one spill file a
+  slot) are no longer read: such a record is refused and its files
+  discarded at start; version 2's records read as before (D-112 as
+  amended).
+- `Llm`'s per-request state interface beside its per-branch one: a model
+  implements the per-branch interface alone.
+- The legacy GGML plan caches and graph runs (`engine/planned.h`,
+  `engine/graph_runs.h`), unused since the per-family runners went.
 - Serving prepared-artifact format version 0 (D-118): a configured target or
   drafter of v0 is refused at registration with "re-import its source
   checkpoint with `llmp import SOURCE --store DIRECTORY` and configure the new

@@ -398,6 +398,29 @@ TEST(HttpRequest, ChecksTheCodingBodyCeilingFromTheHead) {
   EXPECT_THAT(request.error().message, HasSubstr("max_body_bytes"));
 }
 
+// Expect: 100-continue is honoured on HTTP/1.1 only: an HTTP/1.0 client
+// knows no interim responses, so its expectation is ignored (RFC 9110,
+// section 10.1.1); another expectation is refused on either.
+TEST(HttpRequest, IgnoresAContinueExpectationFromHttp10) {
+  const auto head = [](std::string_view version, std::string_view expect) {
+    return std::format(
+        "POST /v1/chat/completions {}\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+        "Expect: {}\r\nContent-Length: 2\r\n\r\n",
+        version, expect);
+  };
+  auto request = llmp::runtime::http::ParseHead(head("HTTP/1.1", "100-continue"), {});
+  ASSERT_TRUE(request.has_value()) << request.error().message;
+  EXPECT_TRUE(request->expect_continue);
+  request = llmp::runtime::http::ParseHead(head("HTTP/1.0", "100-continue"), {});
+  ASSERT_TRUE(request.has_value()) << request.error().message;
+  EXPECT_FALSE(request->expect_continue);
+  for (const std::string_view version : {"HTTP/1.0", "HTTP/1.1"}) {
+    request = llmp::runtime::http::ParseHead(head(version, "something-else"), {});
+    ASSERT_FALSE(request.has_value()) << version;
+    EXPECT_EQ(request.error().status, 417);
+  }
+}
+
 TEST(ChatRequest, AcceptsLargeCodingTextWithinBoundedIntake) {
   // A 12 MiB coding prompt with doubled JSON escaping: a 24 MiB body, past
   // the old 16 MiB and 8 MiB caps. This checks the byte envelope; the
@@ -2304,6 +2327,70 @@ TEST_F(ServerTest, BoundsTheHttpRequest) {
   (void)::close(fd);
 }
 
+// A request's head is checked (Host, Origin, route, method, media type)
+// before any of its body is read or charged, and before it is asked to
+// continue: refused at once, the connection closing, since its body was
+// not read.
+TEST_F(ServerTest, ChecksTheHeadBeforeTheBody) {
+  const auto head = [](std::string_view line, std::string_view headers) {
+    return std::format("{}\r\n{}Expect: 100-continue\r\nContent-Length: {}\r\n\r\n", line, headers,
+                       std::size_t{1} << 20U);
+  };
+  struct Case {
+    std::string bytes;
+    std::string_view status;
+  };
+  const std::string json = "Content-Type: application/json\r\n";
+  const std::array<Case, 6> cases{{
+      {head("POST /v1/chat/completions HTTP/1.1", "Host: evil.example\r\n" + json), "403"},
+      {head("POST /v1/chat/completions HTTP/1.1",
+            "Host: localhost\r\nOrigin: http://evil.example\r\n" + json),
+       "403"},
+      {head("POST /v1/other HTTP/1.1", "Host: localhost\r\n" + json), "404"},
+      {head("PUT /v1/chat/completions HTTP/1.1", "Host: localhost\r\n" + json), "405"},
+      {head("POST /v1/models HTTP/1.1", "Host: localhost\r\n" + json), "405"},
+      {head("POST /v1/completions HTTP/1.1", "Host: localhost\r\nContent-Type: text/plain\r\n"),
+       "415"},
+  }};
+  for (const Case& c : cases) {
+    const int fd = Connect(c.bytes);
+    std::string pending;
+    const std::string response = ReadResponse(fd, pending);
+    EXPECT_THAT(response, AllOf(StartsWith(std::format("HTTP/1.1 {} ", c.status)),
+                                HasSubstr("Connection: close\r\n"), Not(HasSubstr("100 Continue"))))
+        << c.bytes;
+    EXPECT_TRUE(Closed(fd)) << c.bytes;
+    (void)::close(fd);
+  }
+  ASSERT_TRUE(WaitFor([&] { return server_->response_bytes() == 0; }));
+  // A refused request whose (empty) body is whole keeps its connection.
+  const int fd = Open();
+  std::string pending;
+  ASSERT_TRUE(
+      llmp::runtime::http::WriteAll(fd, "GET /v1/nothing HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  EXPECT_THAT(ReadResponse(fd, pending),
+              AllOf(StartsWith("HTTP/1.1 404 "), HasSubstr("Connection: keep-alive")));
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(fd, Post(Chat("One"))));
+  EXPECT_THAT(ReadResponse(fd, pending), AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("One")));
+  (void)::close(fd);
+}
+
+// An HTTP/1.0 request's Expect: 100-continue is ignored: no interim
+// response, the body read as it comes.
+TEST_F(ServerTest, AnHttp10ExpectationIsIgnored) {
+  const std::string body = Chat("Hi there");
+  const int fd = Connect(std::format(
+      "POST /v1/chat/completions HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+      "Expect: 100-continue\r\nContent-Length: {}\r\n\r\n",
+      body.size()));
+  pollfd ready{.fd = fd, .events = POLLIN, .revents = 0};
+  EXPECT_EQ(::poll(&ready, 1, 200), 0);  // nothing sent before the body
+  ASSERT_TRUE(llmp::runtime::http::WriteAll(fd, body));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(fd, pending), StartsWith("HTTP/1.1 200 OK"));
+  (void)::close(fd);
+}
+
 // Bodies follow memory (D-102): past the old 16 MiB a request is served
 // (the nominal pool's 64 MiB body here). A body is charged to the request
 // memory as it arrives, not as declared: one that declares much and sends
@@ -2476,6 +2563,25 @@ TEST_F(GrowingServerTest, AParseWaitingForGrowthHoldsUpNoOther) {
     EXPECT_THAT(ReadResponse(fd, pending), StartsWith("HTTP/1.1 200 "));
     (void)::close(fd);
   }
+}
+
+// A body that arrived whole with its head, pipelined bytes behind it, and
+// then waited for the driver to grow the request memory is served once the
+// memory grows (the bytes it still owed were none, not a wrapped count that
+// left it waiting for more until its inactivity timeout).
+TEST_F(GrowingServerTest, AWholeBodyWithPipelinedBytesIsServedAfterItsMemoryWait) {
+  StartGrowing(std::uint64_t{4} << 10U,
+               [](api::ServerOptions& o) { o.request_inactivity = std::chrono::seconds(2); });
+  const std::string body = Chat(std::string(std::size_t{8} << 10U, 'w'));
+  // One write, read with its head (within the head's 16 KiB read): more than
+  // the 4 KiB floor, so it waits for growth.
+  const int fd = Connect(Post(body) + "GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  std::string pending;
+  EXPECT_THAT(ReadResponse(fd, pending),
+              AllOf(StartsWith("HTTP/1.1 200 OK"), HasSubstr("Connection: close\r\n")));
+  EXPECT_GT(backend_.granted.load(), std::uint64_t{4} << 10U);  // it waited for growth
+  EXPECT_TRUE(Closed(fd));  // the pipelined request is not served
+  (void)::close(fd);
 }
 
 // Expect: 100-continue is answered once, even when the body then waits

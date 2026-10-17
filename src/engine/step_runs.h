@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// How a runner's step programs run (docs/engine.md; D-090): GraphRuns
-// (graph_runs.h) over the vendor-free StepProgram
+// How a runner's step programs run (docs/engine.md; D-090) over the
+// vendor-free StepProgram
 // (kernels/common/step_program.h), in the engine core. Each run's inputs
 // are written by the host into the model's pinned staging, slot by slot,
 // then queued in a device job as the input copies, anything the model

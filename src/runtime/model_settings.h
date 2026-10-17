@@ -286,6 +286,9 @@ struct ModelSettings {
   // Overrides the model's architecture does not use: ignored, each with
   // why, for the log.
   std::vector<std::string> ignored;
+  // Overrides past an approved checkpoint's qualified envelope: served,
+  // each with why, for the log (D-119).
+  std::vector<std::string> warnings;
 
   // One setting as listed: its key (ModelKeys'), value, source and basis.
   struct Line {

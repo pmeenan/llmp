@@ -115,8 +115,57 @@ class FakeLlm : public rt::Llm {
   std::uint32_t StepTokenBoundFor(const Branch&, std::uint32_t left) const override {
     return std::min<std::uint32_t>(left, static_cast<std::uint32_t>(step.size()));
   }
+  // The Llm interface over this fake's one state (its default branch).
+  rt::Status RunChunkFor(Branch&, std::span<const std::int32_t> all, std::uint32_t past,
+                         bool inject, std::vector<float>& row) override {
+    return RunChunk(all, past, inject, row);
+  }
+  rt::Status SpecStepFor(Branch&, std::span<const std::int32_t> all, std::uint32_t past,
+                         std::uint32_t left, std::vector<std::int32_t>& kept,
+                         std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
+                         bool* /*prefix_kept*/) override {
+    return SpecStep(all, past, left, kept, logits, drafted);
+  }
+  rt::Status SettleFor(Branch&) override { return Settle(); }
+  rt::Status ClearStateFor(Branch&) override { return ClearState(); }
+  bool StateUsableFor(const Branch&) const override { return StateUsable(); }
+  rt::Status PrepareDecodeStateFor(Branch&, std::uint32_t pos, std::uint32_t left) override {
+    return PrepareDecodeState(pos, left);
+  }
+  std::uint64_t TargetStateBaseFor(const Branch&) const override { return target_state_base(); }
+  std::uint64_t TargetStateBytesFor(const Branch&) const override { return target_state_bytes(); }
+  std::uint64_t DrafterStateBaseFor(const Branch&) const override { return drafter_state_base(); }
+  std::uint64_t DrafterStateBytesFor(const Branch&) const override { return drafter_state_bytes(); }
+  std::uint64_t UsedStateBytesFor(const Branch&) const override { return used_state_bytes(); }
+  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch&) const override {
+    return used_state_ranges();
+  }
+  rt::Status SaveUsedStateFor(Branch&, void* host,
+                              std::span<const engine::LiveState::Range> ranges) override {
+    return SaveUsedState(host, ranges);
+  }
+  rt::Status RestoreUsedStateFor(Branch&, void* host,
+                                 std::span<const engine::LiveState::Range> ranges) override {
+    return RestoreUsedState(host, ranges);
+  }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
+      const Branch&, std::uint32_t positions) const override {
+    return CheckpointRanges(positions);
+  }
+  rt::Status PrepareRestoreStateFor(Branch&,
+                                    std::span<const engine::LiveState::Range> footprint) override {
+    return PrepareRestoreState(footprint);
+  }
+  rt::Status CopyCheckpointStateFor(Branch&, void* host,
+                                    std::span<const engine::LiveState::Range> ranges,
+                                    bool to_host) override {
+    return CopyCheckpointState(host, ranges, to_host);
+  }
+
+  // This fake's state, one conversation's (NativeBranchesFake keeps one a
+  // branch).
   rt::Status RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
-                      std::vector<float>& row) override {
+                      std::vector<float>& row) {
     EXPECT_EQ(past, target.size());
     capacity_refused = refuse_capacity;
     if (refuse_capacity) {
@@ -137,7 +186,7 @@ class FakeLlm : public rt::Llm {
   }
   rt::Status SpecStep(std::span<const std::int32_t> all, std::uint32_t past, std::uint32_t left,
                       std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
-                      std::uint64_t& drafted) override {
+                      std::uint64_t& drafted) {
     EXPECT_EQ(past, target.size());
     const auto count = std::min<std::size_t>(left, step.size());
     kept.assign(step.begin(), step.begin() + static_cast<std::ptrdiff_t>(count));
@@ -155,7 +204,7 @@ class FakeLlm : public rt::Llm {
     pending = true;
     return {};
   }
-  rt::Status Settle() override {
+  rt::Status Settle() {
     ++settlements;
     if (fail_settle) {
       usable = false;
@@ -164,7 +213,7 @@ class FakeLlm : public rt::Llm {
     pending = false;
     return {};
   }
-  rt::Status ClearState() override {
+  rt::Status ClearState() {
     ++clearings;
     if (fail_clear) {
       return std::unexpected("fake clear refused before dispatch");
@@ -176,8 +225,8 @@ class FakeLlm : public rt::Llm {
     pending = false;
     return {};
   }
-  bool StateUsable() const override { return usable; }
-  rt::Status PrepareDecodeState(std::uint32_t /*pos*/, std::uint32_t /*left*/) override {
+  bool StateUsable() const { return usable; }
+  rt::Status PrepareDecodeState(std::uint32_t /*pos*/, std::uint32_t /*left*/) {
     capacity_refused = refuse_capacity;
     if (refuse_capacity) {
       return std::unexpected("loading would exceed the execution budget");
@@ -187,30 +236,29 @@ class FakeLlm : public rt::Llm {
     }
     return {};
   }
-  std::uint64_t target_state_base() const override { return 0; }
-  std::uint64_t target_state_bytes() const override { return 0; }
-  std::uint64_t drafter_state_base() const override { return 0; }
-  std::uint64_t drafter_state_bytes() const override { return 0; }
-  std::uint64_t used_state_bytes() const override { return target.size(); }
-  std::vector<engine::LiveState::Range> used_state_ranges() const override { return {}; }
-  rt::Status SaveUsedState(void* /*host*/,
-                           std::span<const engine::LiveState::Range> /*ranges*/) override {
+  std::uint64_t target_state_base() const { return 0; }
+  std::uint64_t target_state_bytes() const { return 0; }
+  std::uint64_t drafter_state_base() const { return 0; }
+  std::uint64_t drafter_state_bytes() const { return 0; }
+  std::uint64_t used_state_bytes() const { return target.size(); }
+  std::vector<engine::LiveState::Range> used_state_ranges() const { return {}; }
+  rt::Status SaveUsedState(void* /*host*/, std::span<const engine::LiveState::Range> /*ranges*/) {
     return {};
   }
   rt::Status RestoreUsedState(void* /*host*/,
-                              std::span<const engine::LiveState::Range> /*ranges*/) override {
+                              std::span<const engine::LiveState::Range> /*ranges*/) {
     return {};
   }
   std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
-      std::uint32_t /*positions*/) const override {
+      std::uint32_t /*positions*/) const {
     return std::vector<engine::LiveState::Range>{};
   }
-  rt::Status PrepareRestoreState(std::span<const engine::LiveState::Range> /*footprint*/) override {
+  rt::Status PrepareRestoreState(std::span<const engine::LiveState::Range> /*footprint*/) {
     return {};
   }
   rt::Status CopyCheckpointState(void* /*host*/,
                                  std::span<const engine::LiveState::Range> /*ranges*/,
-                                 bool /*to_host*/) override {
+                                 bool /*to_host*/) {
     return {};
   }
 

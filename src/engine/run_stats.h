@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // How a runner's runs went and the copies a run queues, whatever its
-// kernels (D-090): the engine core's part of the graph runs, shared by the
-// GGML runs (graph_runs.h) and the step runs (step_runs.h).
+// kernels (D-090): the engine core's part of the step runs (step_runs.h).
 
 #ifndef LLMP_ENGINE_RUN_STATS_H_
 #define LLMP_ENGINE_RUN_STATS_H_

@@ -1,14 +1,17 @@
 // SPDX-FileCopyrightText: 2026 llmpalooza contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// A runner's plans and graphs (engine/planned.h), host-only: a cache keeps
-// every shape (no fixed number) with its measured planning time, charges
-// each plan's bytes to its account as it is added (and a graph's before
-// its capture, refused when the account refuses it), gives each back as it
-// goes, and offers its plans and graphs to the node's reclaim order
-// (memory/reclaim.h) as candidates, least recently used ones first, never
-// one a step under way holds (PlanStep). Entries never move. A plan's
-// arena is sized to what its graph uses (SizedArena).
+// A runner's plans and graphs (engine/plan_cache.h), host-only: a cache
+// keeps every shape (no fixed number) with its measured planning time,
+// finds each by its key's hash, charges each plan's bytes to its account
+// as it is added (and a graph's before its capture, refused when the
+// account refuses it), gives each back as it goes, and offers its plans and
+// graphs to the node's reclaim order (memory/reclaim.h) as candidates,
+// least recently used ones first, never one a step under way holds
+// (PlanStep). Entries never move. And the prefill lookahead's plans
+// (engine/prefill_lookahead.h), funded under their own grant.
+
+#include "engine/plan_cache.h"
 
 #include <gtest/gtest.h>
 
@@ -23,13 +26,9 @@
 #include <utility>
 #include <vector>
 
-#include "engine/graph_runs.h"
-#include "engine/planned.h"
 #include "engine/prefill_lookahead.h"
 #include "engine/support.h"
-#include "ggml.h"
-#include "kernels/ggml/graph_read_index.h"
-#include "kernels/ggml/tensors.h"
+#include "execution/step_shape.h"
 #include "memory/reclaim.h"
 
 namespace {
@@ -38,7 +37,16 @@ namespace en = llmp::engine;
 using llmp::memory::ReclaimCandidate;
 using llmp::memory::ReclaimKind;
 
-using Cache = en::PlanCache<int, int>;
+// A plan's runs as a cache holds them: none here captures a graph.
+struct TestRuns {
+  double seconds = 0;
+  std::uint64_t measured_bytes = 0;
+  bool has_graph() const { return false; }
+  void DropGraph() {}
+};
+template <typename Planned, std::size_t Variants = 1>
+using PlanCache = en::BasicPlanCache<int, Planned, Variants, TestRuns>;
+using Cache = PlanCache<int>;
 
 std::unique_ptr<int> Plan(int v) { return std::make_unique<int>(v); }
 
@@ -63,21 +71,27 @@ struct Ledger {
 };
 
 // Records whether a future plan was destroyed while its host bytes were
-// still funded. Real plans own arenas/vectors whose teardown has the same order.
-struct FuturePlan : en::PlannedBase {
+// still funded. Real plans own arenas/vectors whose teardown has the same
+// order. Its host bytes grow with its nodes (a 2-node plan is past a
+// 512-byte grant).
+struct FuturePlan {
   Ledger& ledger;
   std::uint64_t minimum;
   int& destroyed;
+  std::uint64_t bytes;
   FuturePlan(Ledger& l, std::uint64_t m, int& d, std::size_t nodes = 1)
-      : ledger(l), minimum(m), destroyed(d) {
-    plan.steps.resize(1);
-    plan.steps.front().nodes.resize(nodes);
-  }
+      : ledger(l), minimum(m), destroyed(d), bytes(300 * nodes) {}
+  FuturePlan(const FuturePlan&) = delete;
+  FuturePlan& operator=(const FuturePlan&) = delete;
+  FuturePlan(FuturePlan&&) = delete;
+  FuturePlan& operator=(FuturePlan&&) = delete;
   ~FuturePlan() {
     EXPECT_GE(ledger.charged, minimum);
     ++destroyed;
   }
 };
+// The lookahead's measure of a plan (found by argument-dependent lookup).
+std::uint64_t PlannedHostBytes(const FuturePlan& plan) { return plan.bytes; }
 using Future = en::PrefillLookahead<FuturePlan>;
 using FutureResult = std::expected<std::unique_ptr<FuturePlan>, std::string>;
 
@@ -213,7 +227,7 @@ TEST(PrefillLookaheadTest, TransfersOnceToCacheWhileCurrentPlanAndCaptureStayPro
   int destroyed = 0;
   Cache current(&ledger.account);
   auto& entry = current.Add(1, Plan(1), 100, 1);
-  en::PlanCache<int, FuturePlan> next(&ledger.account);
+  PlanCache<FuturePlan> next(&ledger.account);
   {
     const en::PlanStep step;
     ASSERT_EQ(current.Find(1), &entry);
@@ -356,7 +370,7 @@ TEST(PrefillLookaheadGroupTest, FailedCurrentUnitDestroysBothPlansUnderTheirOwnG
 TEST(PrefillLookaheadGroupTest, OrderedCacheTransferProtectsTheFirstFromTheSecondCharge) {
   Ledger ledger;
   int destroyed = 0;
-  en::PlanCache<int, FuturePlan> cache(&ledger.account);
+  PlanCache<FuturePlan> cache(&ledger.account);
   std::uint64_t first = 0;
   ledger.account.Bind(
       [&](auto bytes, bool required) {
@@ -531,7 +545,7 @@ TEST(PlanCacheTest, PlansAreCandidatesOnceNoStepHoldsThem) {
 TEST(PlanCacheTest, AReclaimFindsItsPlanAmongARunnersCaches) {
   Ledger ledger;
   Cache a(&ledger.account);
-  en::PlanCache<int, int, 2> b(&ledger.account);
+  PlanCache<int, 2> b(&ledger.account);
   a.Add(1, Plan(1), 10);
   auto& kept = b.Add(1, Plan(2), 20);
   std::array<en::PlanCacheBase*, 2> caches = {&a, &b};
@@ -545,177 +559,90 @@ TEST(PlanCacheTest, AReclaimFindsItsPlanAmongARunnersCaches) {
   EXPECT_EQ(ledger.charged, 10U);
 }
 
-TEST(PlanCacheTest, APlansHostBytesAreItsArenaAndItsLaunchedNodes) {
-  en::PlannedBase empty;
-  EXPECT_EQ(en::PlannedHostBytes(empty), 0U);
-  EXPECT_EQ(en::PlannedNodes(empty), 0U);
-  auto arena = llmp::kernels::ggml::TensorArena::Create(16);
-  ASSERT_TRUE(arena.has_value());
-  const std::uint64_t arena_bytes = arena->bytes();
-  EXPECT_GE(arena_bytes, 16U * sizeof(ggml_tensor));
-  en::PlannedBase planned;
-  planned.arena.emplace(std::move(*arena));
-  planned.plan.steps.emplace_back().nodes = {nullptr, nullptr};
-  planned.plan.steps.emplace_back().nodes = {nullptr};
-  EXPECT_EQ(en::PlannedNodes(planned), 3U);
-  EXPECT_EQ(en::PlannedHostBytes(planned), arena_bytes + (3 * en::kPlanNodeHostBytes));
-  // Uses are ordered across caches and never repeat.
-  const std::uint64_t a = en::NextPlanUse();
-  EXPECT_GT(en::NextPlanUse(), a);
+// Plans are found by their keys' hashes: a key whose hash collides with
+// another's is still told apart by the whole key, and a reclaimed plan's
+// key finds nothing.
+struct Collide {
+  std::size_t operator()(int) const { return 7; }
+};
+TEST(PlanCacheTest, AHashCollisionIsToldApartByTheWholeKey) {
+  Ledger ledger;
+  en::BasicPlanCache<int, int, 1, TestRuns, Collide> cache(&ledger.account);
+  for (int i = 0; i < 16; ++i) cache.Add(i, Plan(i * 10), 1);
+  for (int i = 0; i < 16; ++i) {
+    auto* found = cache.Find(i);
+    ASSERT_NE(found, nullptr) << i;
+    EXPECT_EQ(*found->planned, i * 10);
+  }
+  EXPECT_EQ(cache.Find(16), nullptr);
+  const std::uint64_t serial = cache.Find(5)->serial;
+  EXPECT_EQ(cache.Reclaim(ReclaimKind::kPlan, serial), 1U);
+  EXPECT_EQ(cache.Find(5), nullptr);
+  EXPECT_NE(cache.Find(6), nullptr);
+  cache.Clear();
+  EXPECT_EQ(cache.Find(6), nullptr);
 }
 
-// A graph of `tensors` leaf tensors built on an arena (false: no room).
-bool Build(llmp::kernels::ggml::TensorArena& arena, int tensors) {
-  for (int i = 0; i < tensors; ++i) {
-    if (!arena.Reserve(1)) {
+// Finding a plan must not inspect every unrelated plan's graph ownership:
+// a hash index alone would still leave linear lookup if it settled them all.
+TEST(PlanCacheTest, LookupAndCaptureInspectOnlyTheirOwnGraphs) {
+  struct CountedRuns {
+    std::size_t* inspected = nullptr;
+    double seconds = 0;
+    std::uint64_t measured_bytes = 0;
+    bool has_graph() const {
+      if (inspected != nullptr) ++*inspected;
       return false;
     }
-    (void)ggml_new_tensor_1d(arena.context(), GGML_TYPE_F32, 4);
-  }
-  return true;
-}
-
-TEST(PlanCacheTest, APlansArenaHoldsWhatItsGraphUsesNotTheEstimate) {
-  auto sized =
-      en::SizedArena(1000, [](llmp::kernels::ggml::TensorArena& a) { return Build(a, 10); });
-  ASSERT_TRUE(sized.has_value());
-  // Metadata keeps ten tensors and one slack slot. Traversal storage
-  // retains its separate 1,000-descriptor bound and total host charge.
-  const auto traversal_bytes = sized->graph_visited().size_bytes();
-  EXPECT_EQ(sized->graph_capacity(), 1000U);
-  EXPECT_GE(sized->graph_visited().size(), 2000U);
-  EXPECT_EQ(sized->bytes(), 11 * ggml_tensor_overhead() + traversal_bytes);
-  const auto total_bytes = sized->bytes();
-  EXPECT_EQ(sized->used(), 0U);
-  // Its checks answer for the estimate the build was checked against, so
-  // the same build passes them; sealed, it answers for its own room.
-  EXPECT_TRUE(sized->Reserve(1000).has_value());
-  EXPECT_TRUE(Build(*sized, 10));
-  sized->Seal();
-  EXPECT_EQ(sized->bytes(), total_bytes);
-  EXPECT_EQ(sized->graph_visited().size_bytes(), traversal_bytes);
-  EXPECT_EQ(sized->graph_capacity(), 1000U);
-  EXPECT_TRUE(sized->Reserve(1).has_value());
-  EXPECT_FALSE(sized->Reserve(2).has_value());
-  // A build that fails keeps the estimate, for the caller's own error.
-  auto failed = en::SizedArena(8, [](llmp::kernels::ggml::TensorArena& a) { return Build(a, 10); });
-  ASSERT_TRUE(failed.has_value());
-  EXPECT_EQ(failed->graph_capacity(), 8U);
-  EXPECT_EQ(failed->graph_visited().size(), 16U);
-  EXPECT_EQ(failed->bytes(), 8 * ggml_tensor_overhead() + failed->graph_visited().size_bytes());
-}
-
-TEST(PlanCacheTest, ReaderScratchIsMeasuredOnceAndRuntimeCannotGrowIt) {
-  namespace kg = llmp::kernels::ggml;
-  auto arena = kg::TensorArena::Create(8);
-  ASSERT_TRUE(arena);
-  auto* input = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 4);
-  auto* output = ggml_scale(arena->context(), input, 2.0f);
-  const std::array nodes{output};
-  const std::array inputs{input};
-  const std::array keep{output};
-  kg::DeviceChoices choices;
-  choices.fuse_norms = true;
-  en::PlannedBase measured;
-  auto measure = en::PlaceAndPlan(measured, nodes, inputs, keep, choices, 0, 0);
-  ASSERT_TRUE(measure);
-  const auto envelope = en::ScratchArenaBytes();
-  const auto allowance = kg::detail::GraphReadIndex::ScratchBytes(nodes, keep);
-  ASSERT_TRUE(allowance);
-  EXPECT_GE(envelope, *allowance);
-  en::PlannedBase placed;
-  auto place =
-      en::PlaceAndPlan(placed, nodes, inputs, keep, choices, 1ULL << 40, measured.placement.extent);
-  ASSERT_TRUE(place);
-  EXPECT_TRUE(kg::SamePlan(measured.plan, placed.plan));
-  EXPECT_EQ(en::ScratchArenaBytes(), envelope);
-  // A caller cannot silently enlarge the startup envelope, even by duplicate
-  // keep entries. Refusal precedes address rebinding and index allocation.
-  std::vector<ggml_tensor*> oversized_keep(envelope / 1024 + 1, output);
-  const auto address = output->data;
-  en::PlannedBase refused;
-  EXPECT_FALSE(en::PlaceAndPlan(refused, nodes, inputs, oversized_keep, choices, 1ULL << 42,
-                                measured.placement.extent));
-  EXPECT_EQ(output->data, address);
-  EXPECT_EQ(en::ScratchArenaBytes(), envelope);
-}
-
-// A runtime graph may have more nodes than every shape the start measured
-// (a row-count-gated fusion, such as DeepSeek's four-slot verify waves of 9
-// to 15 rows): the allowance keeps a quarter's margin over the measurement,
-// and still refuses what is past it.
-TEST(PlanCacheTest, ReaderScratchAdmitsAMarginOverTheMeasuredShapes) {
-  namespace kg = llmp::kernels::ggml;
-  auto arena = kg::TensorArena::Create(4096);
-  ASSERT_TRUE(arena);
-  auto* input = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 4);
-  const auto chain = [&](std::size_t length) {
-    std::vector<ggml_tensor*> nodes;
-    ggml_tensor* at = input;
-    for (std::size_t i = 0; i < length; ++i)
-      nodes.push_back(at = ggml_scale(arena->context(), at, 2.0f));
-    return nodes;
+    void DropGraph() {}
   };
-  kg::DeviceChoices choices;
-  choices.fuse_norms = true;
-  const std::array inputs{input};
-  // Larger than any other test's measurement in this process.
-  const auto measured_nodes = chain(800);
-  const std::array measured_keep{measured_nodes.back()};
-  en::PlannedBase measured;
-  ASSERT_TRUE(en::PlaceAndPlan(measured, measured_nodes, inputs, measured_keep, choices, 0, 0));
-  const auto measured_bytes =
-      kg::detail::GraphReadIndex::ScratchBytes(measured_nodes, measured_keep);
-  ASSERT_TRUE(measured_bytes);
-  EXPECT_EQ(en::GraphIndexAllowance(*measured_bytes), *measured_bytes + (*measured_bytes / 4));
-  EXPECT_GE(en::ScratchArenaBytes(), en::GraphIndexAllowance(*measured_bytes));
-  const auto envelope = en::ScratchArenaBytes();
-  // 10% more nodes than measured: planned, and the envelope does not move.
-  const auto wider = chain(880);
-  const std::array wider_keep{wider.back()};
-  en::PlannedBase placed;
-  const auto place =
-      en::PlaceAndPlan(placed, wider, inputs, wider_keep, choices, 1ULL << 40, 1ULL << 30);
-  ASSERT_TRUE(place) << (place ? "" : place.error());
-  EXPECT_EQ(en::ScratchArenaBytes(), envelope);
-  // Past the margin: refused before planning.
-  const auto past = chain(1100);
-  const std::array past_keep{past.back()};
-  en::PlannedBase refused;
-  const auto too_wide =
-      en::PlaceAndPlan(refused, past, inputs, past_keep, choices, 1ULL << 41, 1ULL << 30);
-  ASSERT_FALSE(too_wide);
-  EXPECT_NE(too_wide.error().find("exceeds the startup scratch allowance"), std::string::npos);
-  EXPECT_EQ(en::ScratchArenaBytes(), envelope);
+  Ledger ledger;
+  en::BasicPlanCache<int, int, 1, CountedRuns> cache(&ledger.account);
+  std::size_t inspected = 0;
+  for (int i = 0; i < 100; ++i) {
+    cache.Add(i, Plan(i), 1).runs[0].inspected = &inspected;
+  }
+  inspected = 0;
+  EXPECT_EQ(cache.Find(100), nullptr);
+  EXPECT_EQ(inspected, 0U);
+  auto* found = cache.Find(50);
+  ASSERT_NE(found, nullptr);
+  EXPECT_EQ(inspected, 1U);
+  EXPECT_TRUE(cache.ChargeGraph(*found));
+  EXPECT_EQ(inspected, 2U);
 }
 
-TEST(GraphRuns, LayoutPredictsTheCopiesStageReturns) {
-  // A graph captured ahead copies its inputs from the offsets Layout
-  // predicts; a replay checks them against what Stage placed.
-  ggml_init_params params{.mem_size = 1U << 16U, .mem_buffer = nullptr, .no_alloc = true};
-  auto* context = ggml_init(params);
-  ASSERT_NE(context, nullptr);
-  std::vector<ggml_tensor*> inputs;
-  for (const auto elements : {128, 129, 1, 300})
-    inputs.push_back(ggml_new_tensor_1d(context, GGML_TYPE_I32, elements));
-  std::uintptr_t fake = 0x10000;
-  for (auto* tensor : inputs) tensor->data = reinterpret_cast<void*>(fake += 0x1000);
-  std::vector<std::byte> staging(4096), source(4096, std::byte{7});
-  en::GraphRuns runs(true);
-  runs.SetStaging(staging.data(), staging.size());
-  std::vector<std::pair<ggml_tensor*, const void*>> sources;
-  for (auto* tensor : inputs) sources.emplace_back(tensor, source.data());
-  for (const std::uint64_t base : {0U, 256U}) {
-    const auto staged = runs.Stage(sources, base);
-    const auto laid = runs.Layout(inputs, base);
-    ASSERT_TRUE(staged && laid);
-    EXPECT_EQ(*staged, *laid);
+// A step's plan key hashes what its equality compares and nothing else: a
+// segment's `past` (positions, data to a program) changes neither, so a
+// later step of the same shape finds its plan; a change of rows, cells,
+// stage or parameters is another key.
+TEST(PlanCacheTest, AStepsKeyFindsItsPlanWhateverItsPositions) {
+  Ledger ledger;
+  en::BasicPlanCache<llmp::planner::PlanKey, int, 1, TestRuns> cache(&ledger.account);
+  llmp::planner::PlanKey key;
+  key.spec[0] = 1;
+  key.policy[3] = 9;
+  key.shape.phase = llmp::planner::Phase::kDecode;
+  key.shape.segments = {{.slot = 0, .rows = 1, .past = 100, .read_cells = 2048, .outputs = 1},
+                        {.slot = 1, .rows = 1, .past = 7, .read_cells = 256, .outputs = 1}};
+  key.parameters = {5, 6};
+  cache.Add(key, Plan(42), 1);
+  llmp::planner::PlanKey later = key;
+  later.shape.segments[0].past = 101;
+  later.shape.segments[1].past = 8;
+  ASSERT_EQ(later, key);
+  EXPECT_EQ(llmp::execution::HashOf(later), llmp::execution::HashOf(key));
+  ASSERT_NE(cache.Find(later), nullptr);
+  EXPECT_EQ(*cache.Find(later)->planned, 42);
+  for (int change = 0; change < 5; ++change) {
+    llmp::planner::PlanKey other = key;
+    if (change == 0) other.shape.segments[1].rows = 2;
+    if (change == 1) other.shape.segments[0].read_cells = 4096;
+    if (change == 2) other.shape.stage = 1;
+    if (change == 3) other.parameters.back() = 7;
+    if (change == 4) other.patterns[0] = 1;
+    EXPECT_EQ(cache.Find(other), nullptr) << change;
   }
-  // Both refuse the same overflow.
-  runs.SetStaging(staging.data(), 1024);
-  EXPECT_FALSE(runs.Stage(sources, 0));
-  EXPECT_FALSE(runs.Layout(inputs, 0));
-  ggml_free(context);
 }
 
 // Every bounded ordered composition of owners' rows a shared-preparation

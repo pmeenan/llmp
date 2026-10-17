@@ -212,8 +212,10 @@ schema_version = 2
 # retention_hours = 24
 # The most spilled conversation state the spill directory keeps (0 to
 # 1048576 GiB), a swapped-out model's conversations included: past it the
-# least recently used is deleted first. 0 keeps none: idle state is then
-# dropped, its next turn prefills again, and nothing survives a restart.
+# least recently used is deleted first. Turn checkpoints count too, after
+# the spilled conversations: past it the oldest are deleted first. 0 keeps
+# none: idle state is then dropped, its next turn prefills again, and
+# nothing survives a restart.
 # spill_budget_gib = 128
 # Whether conversations wholly on disk survive a restart (D-105). Their
 # records hold each conversation's tokens and their files its state, kept

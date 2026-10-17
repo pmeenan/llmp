@@ -625,11 +625,6 @@ void Llm::CheckBranch(const Branch& branch) const {
               "conversation branch does not belong to this model's native slot");
 }
 
-void Llm::CheckDefaultBranch(const Branch& branch) const {
-  CheckBranch(branch);
-  base::Check(&branch == &default_branch_, "this family forwards native work only for branch zero");
-}
-
 std::uint32_t Llm::BranchIndex(const Branch& branch) const {
   CheckBranch(branch);
   return branch.slot_;
@@ -712,27 +707,23 @@ void Llm::set_kept(Kept kept) {
     return;
   }
   // Each slot's spill files named beneath the model's private directory
-  // (version 2: one a stage), kept as they are for the slots whose records
-  // validated.
-  SetStageSpillPlaces(
-      [dir = kept_.directory, adopt = kept_.adopt, files = kept_.files,
-       spill = checkpoint_directory_,
-       one_file = KeptVersion() == kept::kOneFileVersion](std::uint32_t slot, std::uint32_t stage) {
-        const auto at = std::ranges::find(adopt, slot);
-        const auto index = static_cast<std::size_t>(at - adopt.begin());
-        // A stage's file is kept only as the one its record names, which
-        // the start checked: without that identity it starts fresh.
-        std::optional<platform::FileIdentity> expect;
-        if (at != adopt.end() && index < files.size() && stage < files[index].size()) {
-          expect = serving_support::FileIdentityOf(files[index][stage]);
-        }
-        return engine::LiveState::SpillPlace{
-            .directory = spill,
-            .dir = dir,
-            .name = one_file ? kept::StateFileName(slot) : kept::StateFileName(slot, stage),
-            .keep = expect.has_value(),
-            .expect = expect};
-      });
+  // (one a stage), kept as they are for the slots whose records validated.
+  SetStageSpillPlaces([dir = kept_.directory, adopt = kept_.adopt, files = kept_.files,
+                       spill = checkpoint_directory_](std::uint32_t slot, std::uint32_t stage) {
+    const auto at = std::ranges::find(adopt, slot);
+    const auto index = static_cast<std::size_t>(at - adopt.begin());
+    // A stage's file is kept only as the one its record names, which
+    // the start checked: without that identity it starts fresh.
+    std::optional<platform::FileIdentity> expect;
+    if (at != adopt.end() && index < files.size() && stage < files[index].size()) {
+      expect = serving_support::FileIdentityOf(files[index][stage]);
+    }
+    return engine::LiveState::SpillPlace{.directory = spill,
+                                         .dir = dir,
+                                         .name = kept::StateFileName(slot, stage),
+                                         .keep = expect.has_value(),
+                                         .expect = expect};
+  });
 }
 
 void Llm::Unkeep(const Branch& branch) {
@@ -763,14 +754,10 @@ void Llm::KeepBranch(Branch& branch) {
       !KeptWholeFor(branch)) {
     return;
   }
-  // Version 1: one file of every region; version 2: one a stage, each of
-  // its stage's one region.
-  const std::uint32_t version = KeptVersion();
+  // One file a stage, each of its stage's one region.
   const std::vector<const engine::LiveState*> lives = KeptLivesFor(branch);
-  if (lives.empty() || (version == kept::kOneFileVersion && lives.size() != 1) ||
-      std::ranges::any_of(lives, [&](const engine::LiveState* live) {
-        return live == nullptr || !live->spill_identity() ||
-               (version != kept::kOneFileVersion && live->regions() != 1);
+  if (lives.empty() || std::ranges::any_of(lives, [&](const engine::LiveState* live) {
+        return live == nullptr || !live->spill_identity() || live->regions() != 1;
       })) {
     return;
   }
@@ -782,14 +769,12 @@ void Llm::KeepBranch(Branch& branch) {
                     name()));
     return;
   }
-  r.version = version;
+  r.version = kept::kVersion;
   r.identity = kept_.identity;
   r.slot = BranchIndex(branch);
   for (std::size_t f = 0; f < lives.size(); ++f) {
     const engine::LiveState& live = *lives[f];
-    kept::StateFile file{.name = version == kept::kOneFileVersion
-                                     ? kept::StateFileName(r.slot)
-                                     : kept::StateFileName(r.slot, static_cast<std::uint32_t>(f)),
+    kept::StateFile file{.name = kept::StateFileName(r.slot, static_cast<std::uint32_t>(f)),
                          .id = KeptId(*live.spill_identity()),
                          .bytes = 0};
     for (std::size_t i = 0; i < live.regions(); ++i) {
@@ -797,10 +782,9 @@ void Llm::KeepBranch(Branch& branch) {
       file.bytes += live.mapped_bytes(i);
     }
     r.files.push_back(std::move(file));
-    // Version 1's ranges name the file's region; version 2's the stage.
+    // An extent's region is its stage.
     for (const engine::LiveState::Range& range : live.used_ranges()) {
-      r.extents.push_back({.region = static_cast<std::uint32_t>(
-                               version == kept::kOneFileVersion ? range.region : f),
+      r.extents.push_back({.region = static_cast<std::uint32_t>(f),
                            .index = static_cast<std::uint32_t>(range.offset / kExtent),
                            .digest = {}});
     }
@@ -872,7 +856,7 @@ Status Llm::Adopt(Branch& branch, kept::Record& record, MemoryCharge& token_char
     return refused("its adaptive draft depth is not this model's");
   }
   const execution::AdaptiveDepth decoding = loaded->WithCost(cost);
-  if (record.version != KeptVersion()) {
+  if (record.version != kept::kVersion) {
     return refused("its format version is not this model's");
   }
   // The slot's spill files, reopened since the start checked them, are the
@@ -1097,134 +1081,10 @@ void Llm::RestoreBranchDecoding(Branch& branch) {
   branch.decoding_ = branch.saved_decoding_;
 }
 
-Status Llm::RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
-                        bool inject, std::vector<float>& logits) {
-  CheckDefaultBranch(branch);
-  return RunChunk(all, n_past, inject, logits);
-}
-
 Status Llm::RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
                                std::uint32_t n_past, bool inject, bool /*want_head*/,
                                std::vector<float>& logits, PrefillHint /*next*/) {
   return RunChunkFor(branch, all, n_past, inject, logits);
-}
-
-Status Llm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
-                        std::uint32_t left, std::vector<std::int32_t>& kept,
-                        std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
-                        bool* /*prefix_kept*/) {
-  CheckDefaultBranch(branch);
-  return SpecStep(all, pos, left, kept, logits, drafted);
-}
-
-Status Llm::SettleFor(Branch& branch) {
-  CheckDefaultBranch(branch);
-  return Settle();
-}
-
-Status Llm::ClearStateFor(Branch& branch) {
-  CheckDefaultBranch(branch);
-  return ClearState();
-}
-
-bool Llm::StateUsableFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return StateUsable();
-}
-
-Status Llm::PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) {
-  CheckDefaultBranch(branch);
-  return PrepareDecodeState(pos, left);
-}
-
-std::uint64_t Llm::TargetStateBaseFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return target_state_base();
-}
-
-std::uint64_t Llm::TargetStateBytesFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return target_state_bytes();
-}
-
-std::uint64_t Llm::DrafterStateBaseFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return drafter_state_base();
-}
-
-std::uint64_t Llm::DrafterStateBytesFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return drafter_state_bytes();
-}
-
-std::uint64_t Llm::UsedStateBytesFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return used_state_bytes();
-}
-
-std::vector<engine::LiveState::Range> Llm::UsedStateRangesFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return used_state_ranges();
-}
-
-Status Llm::SaveUsedStateFor(Branch& branch, void* host,
-                             std::span<const engine::LiveState::Range> ranges) {
-  CheckDefaultBranch(branch);
-  return SaveUsedState(host, ranges);
-}
-
-Status Llm::RestoreUsedStateFor(Branch& branch, void* host,
-                                std::span<const engine::LiveState::Range> ranges) {
-  CheckDefaultBranch(branch);
-  return RestoreUsedState(host, ranges);
-}
-
-std::expected<std::vector<engine::LiveState::Range>, std::string> Llm::CheckpointRangesFor(
-    const Branch& branch, std::uint32_t positions) const {
-  CheckDefaultBranch(branch);
-  return CheckpointRanges(positions);
-}
-
-Status Llm::PrepareRestoreStateFor(Branch& branch,
-                                   std::span<const engine::LiveState::Range> footprint) {
-  CheckDefaultBranch(branch);
-  return PrepareRestoreState(footprint);
-}
-
-Status Llm::CopyCheckpointStateFor(Branch& branch, void* host,
-                                   std::span<const engine::LiveState::Range> ranges, bool to_host) {
-  CheckDefaultBranch(branch);
-  return CopyCheckpointState(host, ranges, to_host);
-}
-
-std::uint32_t Llm::CursorFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return cursor();
-}
-
-void Llm::SetCursorFor(Branch& branch, std::uint32_t value) {
-  CheckDefaultBranch(branch);
-  set_cursor(value);
-}
-
-void Llm::SaveDecodingStateFor(Branch& branch) {
-  CheckDefaultBranch(branch);
-  SaveDecodingState();
-}
-
-void Llm::RestoreDecodingStateFor(Branch& branch) {
-  CheckDefaultBranch(branch);
-  RestoreDecodingState();
-}
-
-execution::AdaptiveDepth Llm::TurnDecodingStateFor(const Branch& branch) const {
-  CheckDefaultBranch(branch);
-  return TurnDecodingState();
-}
-
-void Llm::RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) {
-  CheckDefaultBranch(branch);
-  RestoreTurnDecodingState(state);
 }
 
 void Llm::CheckIdleGeneration(const Branch& branch, const PromptSession* prompt) const {
@@ -1291,9 +1151,12 @@ std::size_t Llm::ExpireTurnCheckpoints(Branch& branch, Clock::time_point now) {
 }
 
 std::uint64_t Llm::Branch::turn_checkpoint_bytes() const {
-  std::uint64_t bytes = 0;
+  std::uint64_t bytes = checkpoint_capture_bytes_;
   for (const TurnCheckpoint& checkpoint : turn_checkpoints_) {
-    bytes += checkpoint.file.bytes();
+    const auto file_bytes = checkpoint.file.file_bytes();
+    if (file_bytes > std::numeric_limits<std::uint64_t>::max() - bytes)
+      return std::numeric_limits<std::uint64_t>::max();
+    bytes += file_bytes;
   }
   return bytes;
 }
@@ -1319,6 +1182,28 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
   if (!turn_checkpoints_) {
     return {};  // the speed gate's diagnostic: no save, as the M3 Gemma classes'
   }
+  std::uint64_t file_bytes = 0;
+  for (const auto& range : *ranges) {
+    constexpr auto alignment = kept::kFileAlignment;
+    const auto most = std::numeric_limits<std::uint64_t>::max();
+    if (range.bytes > most - (alignment - 1)) return {};
+    const auto padded = (range.bytes + alignment - 1) / alignment * alignment;
+    if (padded > most - file_bytes) return {};
+    file_bytes += padded;
+  }
+  if (checkpoint_admission_ && !checkpoint_admission_(file_bytes)) {
+    return {};  // the disk budget has no room for this optional cache
+  }
+  // Staging can synchronously reclaim idle state after the admission.
+  // Hold its disk capacity in the branch's accounting throughout capture;
+  // release it after a failed file is destroyed, or transfer it to the
+  // published file without invoking any intervening callback.
+  base::Check(branch.checkpoint_capture_bytes_ == 0, "a checkpoint capture is already under way");
+  struct CaptureCapacity {
+    std::uint64_t& bytes;
+    ~CaptureCapacity() { bytes = 0; }
+  } capacity{branch.checkpoint_capture_bytes_};
+  capacity.bytes = file_bytes;
   const engine::CheckpointFile::Continue progress =
       go_on ? engine::CheckpointFile::Continue([&]() { return go_on(0); })
             : engine::CheckpointFile::Continue{};
@@ -1356,10 +1241,39 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
                             .decoding = TurnDecodingStateFor(branch),
                             .layout = KeptLayout()};
   branch.turn_checkpoints_.push_back(std::move(checkpoint));
-  if (branch.turn_checkpoints_.size() > kTurnCheckpointLimit) {
+  capacity.bytes = 0;  // its retained file now carries the charge
+  // The kept record's format bound; the disk's is the spill budget's
+  // (Server::TrimTurnCheckpoints, between units).
+  if (branch.turn_checkpoints_.size() > kept::kMostCheckpoints) {
     branch.turn_checkpoints_.erase(branch.turn_checkpoints_.begin());
   }
   return {};
+}
+
+std::optional<Clock::time_point> Llm::OldestTurnCheckpoint(const Branch& branch) const {
+  CheckBranch(branch);
+  if (branch.turn_checkpoints_.empty() || branch.checkpoint_capture_bytes_ != 0 ||
+      !BranchIdle(branch) || branch.HeldByContinuation()) {
+    return std::nullopt;
+  }
+  return std::ranges::min_element(branch.turn_checkpoints_, {},
+                                  [](const TurnCheckpoint& c) { return c.boundary.created; })
+      ->boundary.created;
+}
+
+std::uint64_t Llm::DropOldestTurnCheckpoint(Branch& branch) {
+  if (!OldestTurnCheckpoint(branch)) {
+    return 0;
+  }
+  const auto oldest = std::ranges::min_element(
+      branch.turn_checkpoints_, {}, [](const TurnCheckpoint& c) { return c.boundary.created; });
+  const std::uint64_t bytes = oldest->file.file_bytes();
+  branch.turn_checkpoints_.erase(oldest);  // its file with it
+  // A kept record names it no more.
+  if (kept_.keeper != nullptr && kept_.keeper->Kept(kept_.model, BranchIndex(branch))) {
+    KeepBranch(branch);
+  }
+  return bytes;
 }
 
 std::uint32_t Llm::ReusableFor(const Branch& branch, std::span<const std::int32_t> tokens,
