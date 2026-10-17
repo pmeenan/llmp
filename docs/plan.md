@@ -2134,6 +2134,30 @@ partial-retention benefit workload are pinned before acceptance runs
       Qwen3.8 swap, the decode-template leads, the per-technique structural
       adoption audit and a full-context Q8_0 KV scoring path for Qwen3.8 and
       DeepSeek.
+- [ ] **Evaluate lossless weight compression with fused on-chip decode**
+      (owner, 2026-10-17): M9 candidate, with a bounded experiment eligible
+      earlier after M3.6 if measured weight-bandwidth pressure justifies it.
+      Keep active weights compressed in device memory and reconstruct their
+      exact values inside the consuming compute kernel; inactive-RAM
+      compression and expansion into a separate bulk weight buffer are out
+      of scope. Start with Qwen3.8's BF16 MTP draft head (the
+      [prior lossy-head experiment](experiments/qwen38-quantized-draft-head/README.md)
+      is context, not evidence for lossless speedups), then consider MXFP8
+      linears. Rank further candidates by measured bytes read per generated
+      token and their contribution to decode time; do not assume savings
+      for Q8, low-bit GGUF, NVFP4 or EXL3 from BF16 results.
+      [NWC](https://github.com/parda21/NWC) and
+      [ZipServ](https://arxiv.org/abs/2603.17435) are research leads, not
+      adopted dependencies or Spark performance evidence. Screen one
+      representative operand on a Spark against its current kernel, counting
+      metadata/alignment bytes and decoding overhead; stop if savings or
+      potential whole-engine benefit do not justify further work. Adoption
+      requires exact weight reconstruction, numerical and draft-acceptance
+      checks, and measured end-to-end decode benefit. Production work lands
+      in the shared format/kernel path (D-107/D-108), with prepared-artifact,
+      paging and memory accounting, prefill and multi-token verification
+      paths qualified before selection; a negative screen closes the
+      evaluation without requiring a new format to ship.
 - [ ] **Larger-than-memory library:** DeepSeek V4 Flash with Qwen3.8 Flash
       Next on one node is the canonical pair (D-036). M3 runs both, with
       their compressed attention and indexers, Qwen3.8's sparse n-gram rows
