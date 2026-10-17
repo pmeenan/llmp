@@ -220,6 +220,8 @@ GEMMA26_V1 = "f0f72ab3d6c733d15472ceeecd05fdf200c266101c537bd3253548fc38559ab7"
 GEMMA31_V1 = "4d9a255ab47519b8061fcbc38bb5e72b9008d8e3538aad5edf0e7530fa82adc8"
 # The image composition is the image slice's: both arms keep it as it is.
 IMAGE = "eca21baad38229e471a44cb2479d392ffcf745fb812e8a41668f336139fa1acd"
+# The image composition as v1 (the image family slice, D-118) and its frozen pixels there.
+IMAGE_V1 = "2170db12b295d308b4ec071765a8c1b9fb6651b45b210aeaa3976603de82e3ac"
 V1_STORE = "m36-v1-artifacts"
 
 
@@ -287,7 +289,7 @@ FAMILIES = {f.name: f for f in (
 
 # The new arm's [models.*] tables: the old arm's settings with the v1 imports' IDs, served from
 # V1_STORE (D-118). Kept beside FAMILIES, not in Family, so the protocol constants a record
-# carries (family_spec) stay the frozen ones. The image family has none (the image slice's).
+# carries (family_spec) stay the frozen ones.
 V1_MODELS = {
     "gemma2": _gemma("gemma2", GEMMA2_V1, 8192, 128, 2),
     "gemma3": _gemma("gemma3", GEMMA3_V1, 4096, 128, 2),
@@ -296,6 +298,7 @@ V1_MODELS = {
     "qwen38": _qwen(QWEN_V1, QWEN_MTP_V1),
     "qwen38-gguf": _qwen_gguf(QWEN_GGUF_V1),
     "deepseek": _deepseek(DSV4_V1, DSPARK_V1),
+    "image": f'[models.image]\ncomposition = "{IMAGE_V1}"\n',
 }
 
 TIME_METRICS = ("prefill_s", "generation_s", "peak_gib")  # lower is better; the rest are rates

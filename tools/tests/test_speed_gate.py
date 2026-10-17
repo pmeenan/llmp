@@ -713,10 +713,11 @@ class Inputs(unittest.TestCase):
             new = gate.arm_template(family, None, "new")
             self.assertEqual(old, gate.config_template(family))  # the frozen baseline's
             self.assertIn(f'installed = "{{share}}/{family.store}"', old)
-            if name == "image":  # the image slice's: both arms as today
-                self.assertEqual(old, new)
-                continue
             self.assertIn('installed = "{share}/m36-v1-artifacts"', new)
+            if name == "image":  # the v1 composition in place of the v0 one
+                self.assertIn(gate.IMAGE_V1, new)
+                self.assertIn(gate.IMAGE, old)
+                continue
             self.assertNotEqual(old, new)
             # The same settings, only the artifact and drafter IDs differ.
             ids = {"artifact", "drafter"}

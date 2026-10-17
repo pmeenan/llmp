@@ -97,11 +97,10 @@ JOB_SECONDS = 600
 QWEN_FILES = {"tokenizer": f"{{share}}/{sg.QWEN_TOKENIZER}/tokenizer.json",
               "chat_template": f"{{share}}/{sg.QWEN_TOKENIZER}/chat_template.jinja"}
 # The v1 imports serving uses (D-118), and with --v0-ids the frozen baseline's M3 v0 artifacts.
-# The image composition is the image slice's: both sets name it as it is.
 DEFAULT_IDS = {
     "deepseek": {"artifact": sg.DSV4_V1, "drafter": sg.DSPARK_V1},
     "qwen3.8": {"artifact": sg.QWEN_V1, "drafter": sg.QWEN_MTP_V1, **QWEN_FILES},
-    "image": {"composition": sg.IMAGE},
+    "image": {"composition": sg.IMAGE_V1},
     "gemma2": {"artifact": sg.GEMMA2_V1},
     "gemma3": {"artifact": sg.GEMMA3_V1},
     "gemma26": {"artifact": sg.GEMMA26_V1},

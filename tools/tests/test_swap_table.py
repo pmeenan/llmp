@@ -341,7 +341,7 @@ class Configuration(unittest.TestCase):
         self.assertEqual((q["artifact"], q["drafter"], q["context"], q["draft_vocab"],
                           q["prefill_chunk"]), (st.sg.QWEN_V1, st.sg.QWEN_MTP_V1, 33792, 65536, 4096))
         self.assertTrue(q["tokenizer"].startswith("/share/models/"))
-        self.assertEqual(cfg["models"]["image"], {"composition": st.sg.IMAGE})
+        self.assertEqual(cfg["models"]["image"], {"composition": st.sg.IMAGE_V1})
 
     def test_the_default_ids_are_the_v1_imports_and_v0_ids_the_baselines(self):
         v1 = {"gemma2": "f176f912", "gemma3": "634bc193", "gemma26": "f0f72ab3",
@@ -358,7 +358,8 @@ class Configuration(unittest.TestCase):
                          (st.sg.DSV4_V0, st.sg.DSPARK_V0, st.sg.QWEN_V0, st.sg.QWEN_MTP_V0))
         self.assertEqual([old[n]["artifact"] for n in v1],
                          [st.sg.GEMMA2_V0, st.sg.GEMMA3_V0, st.sg.GEMMA26_V0, st.sg.GEMMA31_V0])
-        self.assertEqual(old["image"], ids["image"])  # the image slice's, the same in both
+        self.assertEqual((old["image"], ids["image"]),
+                         ({"composition": st.sg.IMAGE}, {"composition": st.sg.IMAGE_V1}))
         cfg = tomllib.loads(st.render_config(st.CASES["m3"], old, "/store", "/data", "/share"))
         self.assertEqual(cfg["models"]["deepseek"]["artifact"], st.sg.DSV4_V0)
 
